@@ -18189,6 +18189,8 @@ class V35ModelConfigReq(BaseModel):
     remark: Optional[str] = ""
     # v42.7: keep ordinary-user workflows simple; the system uses these templates automatically.
     annotation_prompt_template: Optional[str] = ""
+    # Native WeVisOne detection query for each durable class code; not a chat prompt.
+    wevisone_label_queries: Optional[Dict[str, str]] = None
     training_intervention_prompt: Optional[str] = ""
     default_for_annotation: bool = False
     default_for_training_ai: bool = False
@@ -18344,9 +18346,10 @@ def _v35_normalize_adapter(item: Dict[str, Any]) -> None:
     if kind not in {"", "cloud", "local", "volcengine_ark", "aliyun_qwen", "local_openai", "ollama", "wevisone_vl"}:
         raise HTTPException(status_code=400, detail="不支持的模型适配方式")
     if kind == "wevisone_vl":
-        from platform_core.providers.wevisone_vision import _endpoint
+        from platform_core.providers.wevisone_vision import _endpoint, normalize_label_queries
         try:
             _endpoint(item.get("base_url") or item.get("detect_url") or "", "detect")
+            item["wevisone_label_queries"] = normalize_label_queries(item.get("wevisone_label_queries"))
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         if not str(item.get("model_name") or "").strip():
@@ -18355,6 +18358,8 @@ def _v35_normalize_adapter(item: Dict[str, Any]) -> None:
                      "coordinate_space": "pixel", "coordinate_order": "xyxy",
                      "coordinate_origin": "top_left", "coordinate_image_space": "original_input",
                      "output_protocol": "json_boxes", "api_protocol": "auto", "structured_output": "auto"})
+    else:
+        item.pop("wevisone_label_queries", None)
     if item.get("enabled") is False and item.get("default_for_annotation"):
         raise HTTPException(status_code=400, detail="停用的模型不能设为默认自动标注模型")
 
@@ -18429,6 +18434,8 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
                         data[field] = item.get(field) or "auto"
                 if "enabled" not in payload.model_fields_set:
                     data["enabled"] = item.get("enabled", True)
+                if "wevisone_label_queries" not in payload.model_fields_set and "wevisone_label_queries" in item:
+                    data["wevisone_label_queries"] = item["wevisone_label_queries"]
                 for field in ("coordinate_space", "coordinate_order", "coordinate_origin", "coordinate_image_space", "output_protocol", "coordinate_contract_version"):
                     if field not in payload.model_fields_set:
                         if field in item:

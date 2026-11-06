@@ -30,6 +30,34 @@ _MAX_DETECTIONS = 300
 _MAX_PREVIEW_INSTANCES = 32
 _PNG_FIELDS = {"mask": "mask_png", "foreground": "cutout_png"}
 _MIME_FORMATS = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
+_MAX_QUERY_LENGTH = 300
+
+
+def normalize_label_queries(value: Mapping[str, str] | None) -> dict[str, str]:
+    """Keep native referring descriptions separate from durable class codes."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or len(value) > 100:
+        raise ValueError("WeVisOne 标签描述必须是至多 100 项的键值对象")
+    cleaned: dict[str, str] = {}
+    descriptions: set[str] = set()
+    for code, description in value.items():
+        if not isinstance(code, str) or not isinstance(description, str):
+            raise ValueError("WeVisOne 标签和定位描述必须是字符串")
+        code, description = code.strip(), description.strip()
+        if not code or len(code) > 80 or any(char.isspace() for char in code):
+            raise ValueError("WeVisOne 标签 code 不能为空、含空格或超过 80 字符")
+        if (not description or len(description) > _MAX_QUERY_LENGTH or
+                any(char in description for char in "\r\n\x00") or
+                re.search(r"<\|[^>]*\|>|</?c>|</?(?:ref|box)>", description, re.I)):
+            raise ValueError("WeVisOne 定位描述不能为空、超过 300 字符或包含协议控制字符")
+        if description in descriptions or description in cleaned:
+            raise ValueError("WeVisOne 不同标签的定位描述不能重复或与其他标签 code 相同")
+        cleaned[code] = description
+        descriptions.add(description)
+    if any(code in descriptions for code in cleaned):
+        raise ValueError("WeVisOne 定位描述不能与其他标签 code 相同")
+    return cleaned
 
 
 def _endpoint(base_url: str, operation: str) -> str:
@@ -208,12 +236,14 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
 
 
 class WeVisOneVisionProvider:
-    def __init__(self, *, base_url: str, model: str, api_key: str = "", timeout: float = 180, session: Any = requests):
+    def __init__(self, *, base_url: str, model: str, api_key: str = "", timeout: float = 180,
+                 session: Any = requests, label_queries: Mapping[str, str] | None = None):
         self.model = str(model or "").strip()
         if not self.model:
             raise ValueError("WeVisOne 模型 ID 不能为空")
         self.base_url = base_url
         self.timeout, self.session, self.api_key = timeout, session, str(api_key or "")
+        self.label_queries = normalize_label_queries(label_queries)
         self.detect_endpoint = _endpoint(base_url, "detect")
 
     def _headers(self) -> dict[str, str]:
@@ -224,13 +254,17 @@ class WeVisOneVisionProvider:
 
     def _request(self, operation: str, *, image_bytes: bytes, labels: list[str], prompt: str = "") -> tuple[dict, int]:
         # The installed FastAPI service consumes image/image_url as a *data URI*
-        # and query as a label list or string. Do not pass generic VLM fields.
+        # and query as a list or string. Generic chat prompts are NOT supported;
+        # use label-specific native detection descriptions instead.
         del prompt
         _, _, mime = _validate_image(image_bytes)
         if not labels or len(labels) > 100 or any(not isinstance(x, str) or not x.strip() for x in labels):
             raise ProviderRequestError("WeVisOne 需提供 1～100 个冻结目标标签", code="MODEL_LABEL_NOT_ALLOWED")
+        queries = [self.label_queries.get(label, label) if operation == "detect" else label for label in labels]
+        if len(set(queries)) != len(queries):
+            raise ProviderRequestError("WeVisOne 不同正式标签使用了相同的检测描述", code="MODEL_LABEL_AMBIGUOUS")
         data = {"image": f"data:{mime};base64," + base64.b64encode(image_bytes).decode("ascii"),
-                "query": list(labels)}
+                "query": queries}
         start = time.perf_counter()
         try:
             response = self.session.post(_endpoint(self.base_url, operation), json=data, headers=self._headers(), timeout=self.timeout)
@@ -274,9 +308,15 @@ class WeVisOneVisionProvider:
             raise ValueError("WeVisOne 专用检测需要本次任务明确允许的标签")
         width, height, _ = _validate_image(image_bytes)
         payload, elapsed = self._request("detect", image_bytes=image_bytes, labels=labels, prompt=prompt)
-        boxes = normalize_detection(payload, width=width, height=height, labels=labels, label_aliases=label_aliases)
+        aliases = {code: list(names) for code, names in (label_aliases or {}).items()}
+        for code in labels:
+            description = self.label_queries.get(code)
+            if description:
+                aliases.setdefault(code, []).append(description)
+        boxes = normalize_detection(payload, width=width, height=height, labels=labels, label_aliases=aliases)
         return {"text": json.dumps({"boxes": boxes}, ensure_ascii=False), "latency_ms": elapsed,
                 "provider": "wevisone_vl", "model": self.model, "api_protocol": "wevisone_native_v1",
+                "native_descriptions_applied": bool(self.label_queries and any(code in self.label_queries for code in labels)),
                 "request_id": ""}
 
     def preview(self, operation: str, *, image_bytes: bytes, labels: list[str]) -> dict:

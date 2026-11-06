@@ -49,6 +49,7 @@ def provider_factory(provider_config: Mapping[str, Any]):
             base_url=str(config.get("base_url") or config.get("detect_url") or ""),
             api_key=str(config.get("_api_key") or ""),
             model=str(config.get("model_name") or ""),
+            label_queries=config.get("wevisone_label_queries") or {},
         )
     if provider == "ollama":
         return OllamaVisionProvider(

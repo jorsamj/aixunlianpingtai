@@ -1010,21 +1010,55 @@ window.installUsability417=function(){
 (()=>{
   const providerNames={volcengine_ark:'通用 · 火山方舟',aliyun_qwen:'通用 · 阿里云千问',local_openai:'通用 · OpenAI 兼容',ollama:'通用 · Ollama',wevisone_vl:'WeVisOne · 专用视觉'};
   const providerDefaults={volcengine_ark:'https://ark.cn-beijing.volces.com/api/v3',aliyun_qwen:'',local_openai:'http://127.0.0.1:8000/v1',ollama:'http://127.0.0.1:11434',wevisone_vl:'http://127.0.0.1:18000'};
+  const wevisoneDormitoryQueries={
+    person:'A real human standing or walking upright on the floor, outside any bed. Not a person lying in bed. Not a fire extinguisher or other upright object.',
+    tangzhe:'A real human lying or reclining on a bed or mattress, covered by a blanket or uncovered. Blue bedsheets may be present but are not proof of a human. Not an empty bed or pillow.'
+  };
+  function wevisoneQueryRowM4(code='',description=''){
+    return `<div class="model-m4-query-row"><input class="input" data-query-code aria-label="正式标签 code" value="${esc(code)}" placeholder="标签 code，例如 person" maxlength="80"><input class="input" data-query-text aria-label="原生检测描述" value="${esc(description)}" placeholder="英文目标描述：姿态、位置、排除对象" maxlength="300"><button type="button" class="btn mini" onclick="this.closest('.model-m4-query-row').remove()" aria-label="移除该描述">移除</button></div>`;
+  }
+  function readWevisoneQueriesM4(){
+    const values={},rows=[...document.querySelectorAll('#mcWevisoneQueryRows .model-m4-query-row')];
+    for(const row of rows){
+      const code=String(row.querySelector('[data-query-code]')?.value||'').trim(),description=String(row.querySelector('[data-query-text]')?.value||'').trim();
+      if(!code&&!description)continue;
+      if(!code||!description||/\s/.test(code)||code.length>80||description.length>300||/[\r\n]/.test(description)||/<\|[^>]*\|>|<\/?c>|<\/?(?:ref|box)>/i.test(description))return{error:'请为每行填写有效的标签 code 和描述（最多 300 字符，不含协议控制标记）'};
+    if(Object.prototype.hasOwnProperty.call(values,code))return{error:`标签 ${code} 的描述重复`};
+      values[code]=description;
+    }
+    const entries=Object.entries(values);
+    if(entries.length>100||new Set(entries.map(([,description])=>description)).size!==entries.length||entries.some(([code])=>entries.some(([other,description])=>other!==code&&description===code)))return{error:'描述不能重复，也不能与其他标签 code 重名'};
+    return{value:values};
+  }
+  window.addWevisoneQueryRowM4=function(code='',description=''){
+    const root=document.getElementById('mcWevisoneQueryRows');if(!root||root.children.length>=100)return;
+    root.insertAdjacentHTML('beforeend',wevisoneQueryRowM4(code,description));
+  };
+  window.useWevisoneDormitoryM4=function(){
+    const root=document.getElementById('mcWevisoneQueryRows');if(!root)return;
+    root.innerHTML=Object.entries(wevisoneDormitoryQueries).map(([code,description])=>wevisoneQueryRowM4(code,description)).join('');
+  };
   window.changeVisionProviderM4=function(){
     const kind=document.getElementById('mcProviderAdapter')?.value||'local_openai',dedicated=kind==='wevisone_vl',url=document.getElementById('mcUrl'),key=document.getElementById('mcKeyWrap'),help=document.getElementById('mcProviderHelp');
     if(url&&(!url.value.trim()||Object.values(providerDefaults).some(def=>def&&url.value===def)))url.value=providerDefaults[kind]||url.value;
     if(key)key.classList.toggle('hidden',kind==='ollama');
     for(const id of ['mcApiProtocol','mcStructuredOutput']){const field=document.getElementById(id);if(field)field.disabled=kind==='ollama'||dedicated}
-    const advanced=document.querySelector('.model-m4-advanced'),prompt=document.getElementById('mcAnnPrompt')?.closest('.field'),helper=document.getElementById('mcProviderHelp');
+    const advanced=document.querySelector('.model-m4-advanced'),prompt=document.getElementById('mcAnnPrompt')?.closest('.field'),helper=document.getElementById('mcProviderHelp'),form=document.querySelector('.model-m4 > .form');
     if(advanced)advanced.classList.toggle('hidden',dedicated);
     if(prompt)prompt.classList.toggle('hidden',dedicated);
-    if(helper)helper.textContent=dedicated?'专用适配器自动处理检测协议、坐标与空目标；连接测试不代表检测准确。':kind==='volcengine_ark'?'填写已开通的模型 ID 或 Endpoint ID。':kind==='aliyun_qwen'?'填写所在地域的服务地址与模型 ID。':kind==='ollama'?'确认 Ollama 已启动并已加载视觉模型。':'支持 Chat Completions 或 Responses 兼容服务。';
+    const querySection=document.getElementById('mcWevisoneQueries');
+    if(form&&!querySection){
+      const button=document.querySelector('[onclick^="saveVisionModelM4"]'),id=button?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1]||'',cfg=(state.modelConfigs||[]).find(row=>String(row.id)===id)||{},queries=cfg.wevisone_label_queries||{};
+      form.insertAdjacentHTML('beforeend',`<section id="mcWevisoneQueries" class="field full model-m4-query-editor"><div class="row between"><div><b>标签定位描述</b><small>只对 WeVisOne 生效。每个标签使用自己的原生检测 query，结果仍映射回正式 code。</small></div><button class="btn mini" type="button" onclick="useWevisoneDormitoryM4()">填入宿舍示例</button></div><div class="model-m4-query-head"><span>正式标签 code</span><span>检测描述（推荐英文）</span></div><div id="mcWevisoneQueryRows">${Object.entries(queries).map(([code,description])=>wevisoneQueryRowM4(code,description)).join('')}</div><div class="row between"><button class="btn mini" type="button" onclick="addWevisoneQueryRowM4()">+ 添加描述</button><small>未配置的标签仍使用原标签名称；不要把 person 当成所有姿态的人。</small></div></section>`);
+    }
+    document.getElementById('mcWevisoneQueries')?.classList.toggle('hidden',!dedicated);
+    if(helper)helper.textContent=dedicated?'专用原生接口使用下方的标签定位描述；不接收通用聊天提示词。连接测试不代表检测准确。':kind==='volcengine_ark'?'填写已开通的模型 ID 或 Endpoint ID。':kind==='aliyun_qwen'?'填写所在地域的服务地址与模型 ID。':kind==='ollama'?'确认 Ollama 已启动并已加载视觉模型。':'支持 Chat Completions 或 Responses 兼容服务。';
     const modelLabel=document.getElementById('mcModel')?.closest('.field')?.querySelector('label'),urlLabel=url?.closest('.field')?.querySelector('label');if(modelLabel)modelLabel.textContent=dedicated?'模型 ID':'模型名称 / Endpoint ID';if(urlLabel)urlLabel.textContent=dedicated?'服务地址':'Base URL';
     if(document.getElementById('mcModel'))document.getElementById('mcModel').placeholder=dedicated?'例如 wevisone-vl-2b':'例如 qwen3.5-9b';
     const op=document.getElementById('mcVisionOperation');if(op)op.closest('.field')?.classList.toggle('hidden',!dedicated);
     const note=document.querySelector('.model-m4 > section.field > p');if(note)note.classList.toggle('hidden',dedicated);
     document.querySelector('.model-m4')?.classList.toggle('wevisone-mode',dedicated);
-    const section=document.querySelector('.model-m4 > section.field'),form=document.querySelector('.model-m4 > .form');
+    const section=document.querySelector('.model-m4 > section.field');
     if(section&&!document.getElementById('mcVisionOperation'))section.insertAdjacentHTML('afterbegin',`<div class="field hidden"><label for="mcVisionOperation">本次验证能力</label><select id="mcVisionOperation" class="select"><option value="detect">检测画框</option><option value="segment">实例分割预览</option><option value="matting">透明抠图预览</option></select><small>只展示候选结果，不写入正式 GT。</small></div>`);
     document.getElementById('mcVisionOperation')?.closest('.field')?.classList.toggle('hidden',!dedicated);
     if(section&&!document.getElementById('mcConnectionResult'))section.insertAdjacentHTML('beforebegin','<div id="mcConnectionResult" aria-live="polite"></div>');
@@ -1038,6 +1072,7 @@ window.installUsability417=function(){
     const dedicated=(cfg.provider_adapter||cfg.provider_type)==='wevisone_vl';
     const fields=dedicated?{mcModel:'model_name',mcUrl:'base_url',mcProviderAdapter:'provider_adapter'}:{mcModel:'model_name',mcUrl:'base_url',mcAnnPrompt:'annotation_prompt_template',mcCoordinateSpace:'coordinate_space',mcCoordinateOrder:'coordinate_order',mcProviderAdapter:'provider_adapter',mcApiProtocol:'api_protocol',mcStructuredOutput:'structured_output'};
     return Object.entries(fields).some(([dom,key])=>String(document.getElementById(dom)?.value||'')!==String(cfg[key]||({coordinate_space:'legacy_auto',coordinate_order:'xyxy',api_protocol:'auto',structured_output:'auto'}[key]||'')))
+      ||(dedicated&&JSON.stringify(readWevisoneQueriesM4().value||{})!==JSON.stringify(cfg.wevisone_label_queries||{}))
       ||!!document.getElementById('mcApiKey')?.value
       || (!!document.getElementById('mcEnabled')?.checked !== (cfg.enabled!==false))
       ||!!document.getElementById('mcDefaultAnn')?.checked!==!!cfg.default_for_annotation;
@@ -1078,6 +1113,8 @@ window.installUsability417=function(){
     if(!name||!model||!url)return toast('请填写配置名称、模型 ID 和服务地址');
     if(!dedicated&&read('mcCoordinateSpace')==='legacy_auto')return toast('请先在高级设置中选择坐标范围');
     if(!enabled&&asDefault)return toast('停用的模型不能设置为默认模型');
+    const labelQueries=dedicated?readWevisoneQueriesM4():{value:{}};
+    if(labelQueries.error)return toast(labelQueries.error);
     const body={name,provider_type:kind,provider_adapter:kind,model_kind:'vlm',model_name:model,
       base_url:url,detect_url:url,api_key:read('mcApiKey'),enabled,default_for_annotation:asDefault,
       coordinate_origin:dedicated?'top_left':read('mcCoordinateOrigin')||'top_left',
@@ -1088,6 +1125,7 @@ window.installUsability417=function(){
       api_protocol:dedicated?'auto':read('mcApiProtocol')||'auto',
       structured_output:dedicated?'auto':read('mcStructuredOutput')||'auto',
       annotation_prompt_template:dedicated?'':read('mcAnnPrompt'),
+      wevisone_label_queries:dedicated?labelQueries.value:null,
       health_url:dedicated?'':read('mcHealth'),remark:read('mcRemark'),
       request_mode:'openai_vision',image_field:'image',prompt_field:'prompt'};
     const button=document.querySelector('[onclick^="saveVisionModelM4"]');if(button)button.disabled=true;
@@ -4710,7 +4748,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
   function aiCreateLabelName429(label){return String(label?.display_name_zh||label?.display_name||label?.code||'')}
   function aiCreateSyncLabelInput429(){const draft=aiCreateCurrent429(),input=document.getElementById('ai429Labels'),count=document.getElementById('ai429LabelCount');if(input)input.value=[...(draft?.labels||[])].join('、');if(count)count.textContent=`已选 ${draft?.labels?.size||0} 个`}
-  function aiCreateRenderLabels429(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429LabelGrid');if(!draft||!root)return;const q=String(document.getElementById('ai429LabelQ')?.value||'').trim().toLowerCase();const rows=(state.labels||[]).filter(label=>{const code=String(label.code||'').toLowerCase(),name=aiCreateLabelName429(label).toLowerCase();return !q||code.includes(q)||name.includes(q)});root.innerHTML=rows.map(label=>{const code=String(label.code||''),on=draft.labels.has(code);return `<button type="button" class="ai-create-label ${on?'on':''}" onclick="toggleAiCreateLabel429('${esc(code)}')"><i>${on?'✓':'+'}</i><span><b>${esc(aiCreateLabelName429(label)||code)}</b><small>${esc(code)}</small></span></button>`}).join('')||'<div class="empty compact">没有匹配的有效标签</div>';aiCreateSyncLabelInput429()}
+  function aiCreateRenderLabels429(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429LabelGrid');if(!draft||!root)return;const q=String(document.getElementById('ai429LabelQ')?.value||'').trim().toLowerCase();const rows=(state.labels||[]).filter(label=>{const code=String(label.code||'').toLowerCase(),name=aiCreateLabelName429(label).toLowerCase();return !q||code.includes(q)||name.includes(q)});root.innerHTML=rows.map(label=>{const code=String(label.code||''),on=draft.labels.has(code);return `<button type="button" class="ai-create-label ${on?'on':''}" onclick="toggleAiCreateLabel429('${esc(code)}')"><i>${on?'✓':'+'}</i><span><b>${esc(aiCreateLabelName429(label)||code)}</b><small>${esc(code)}</small></span></button>`}).join('')||'<div class="empty compact">没有匹配的有效标签</div>';aiCreateSyncLabelInput429();syncAiNativeQueries429()}
   window.aiCreateRenderLabels429=aiCreateRenderLabels429;
   window.toggleAiCreateLabel429=function(code){const draft=aiCreateCurrent429();if(!draft)return;draft.labels.has(code)?draft.labels.delete(code):draft.labels.add(code);aiCreateRenderLabels429();scheduleAiPromptPreview429()};
   function aiCreateRenderModels429(){
@@ -4723,6 +4761,20 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       return `<label class="ai-create-model ${on?'on':''}"><input type="radio" name="ai429ModelChoice" value="${esc(id)}" ${on?'checked':''} onchange="selectAiCreateModel429('${esc(id)}')"><i></i><span><b>${esc(row.name||row.model_name||id)}</b><small>${esc(row.model_name||'视觉模型')} · ${dedicated?'WeVisOne 专用':'通用视觉'}${unavailable?' · 上次测试未加载，请切换服务':''}</small></span>${row.default_for_annotation?'<em>默认</em>':''}</label>`;
     }).join('');
     const hidden=document.getElementById('ai429Model');if(hidden)hidden.value=draft.modelId;
+    syncAiNativeQueries429();
+  }
+  function aiCreateDedicatedModel429(){const draft=aiCreateCurrent429();return (state.modelConfigs||[]).find(row=>String(row.id)===String(draft?.modelId)&&(row.provider_adapter||row.provider_type)==='wevisone_vl')||null}
+  function syncAiNativeQueries429(){
+    const draft=aiCreateCurrent429(),section=document.getElementById('ai429Prompt')?.closest('.ai-create-section');if(!draft||!section)return;
+    const cfg=aiCreateDedicatedModel429(),dedicated=!!cfg;
+    section.classList.toggle('ai-create-native',dedicated);
+    let notice=section.querySelector('#ai429NativeQueryNotice');
+    if(!notice){section.querySelector('header')?.insertAdjacentHTML('afterend','<div id="ai429NativeQueryNotice" class="ai-create-native-notice" role="status"></div>');notice=section.querySelector('#ai429NativeQueryNotice')}
+    if(!notice)return;
+    notice.hidden=!dedicated;
+    if(!dedicated)return;
+    const mapping=cfg.wevisone_label_queries||{},labels=[...(draft.labels||[])];
+    notice.innerHTML=`<b>WeVisOne 原生检测 · 实际发送的标签查询</b><p>该模型不读取通用聊天提示词。下列描述来自已保存的模型配置，在创建任务时冻结；请到「视觉模型管理 → 编辑配置」修改。</p><div class="ai-create-native-queries">${labels.length?labels.map(code=>`<div><strong>${esc(code)}</strong><span>${esc(mapping[code]||code)}</span>${mapping[code]?'':'<em>未配置专属描述</em>'}</div>`).join(''):'<small>先在步骤 3 选择标签，查看实际 query。</small>'}</div><small>这里展示的是发送给 /v1/vision/detect 的查询文本，不保证模型对姿态分类的准确率；候选框仍需人工复核。</small>`;
   }
   window.selectAiCreateModel429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.modelId=String(id||'');aiCreateRenderModels429();aiCreatePreviewInvalidate429();if(!draft.templateId)restoreAiPrompt429()};
   function aiCreateTemplateText429(){const draft=aiCreateCurrent429(),template=(state.promptTemplates||[]).find(row=>String(row.id)===String(draft?.templateId));if(template)return String(template.prompt||'');const model=(state.modelConfigs||[]).find(row=>String(row.id)===String(draft?.modelId));return String(model?.annotation_prompt_template||'你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。图片尺寸为 {{image_width}}x{{image_height}}。{{business_instruction}}必须只返回符合此结构的 JSON：{{output_schema}}')}
@@ -4731,7 +4783,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.restoreAiPrompt429=function(){const area=document.getElementById('ai429Prompt');if(!area)return;area.value=aiCreateTemplateText429();area.dataset.userEdited='0';scheduleAiPromptPreview429()};
   let aiPromptPreviewTimer429=0;
   window.scheduleAiPromptPreview429=function(){aiCreatePreviewInvalidate429();clearTimeout(aiPromptPreviewTimer429);aiPromptPreviewTimer429=setTimeout(()=>previewAiPrompt429(),180)};
-  window.previewAiPrompt429=async function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429PromptPreview');if(!draft||!root)return;const epoch=draft.epoch,prompt=String(document.getElementById('ai429Prompt')?.value||'');root.innerHTML='<span class="loading-line">正在生成最终提示词预览…</span>';try{const labels=[...draft.labels].map(code=>{const row=(state.labels||[]).find(label=>String(label.code)===code)||{};return{code,display_name_zh:aiCreateLabelName429(row)||code}});const result=await api('/api/v35/prompt-templates/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,labels,image_width:640,image_height:480,business_instruction:String(document.getElementById('ai429Instruction')?.value||'')})});if(aiCreateIsCurrent429(epoch))root.innerHTML=`<pre>${esc(result.rendered_prompt||'')}</pre>`}catch(error){if(aiCreateIsCurrent429(epoch))root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="previewAiPrompt429()">重试</button></div>`}};
+  window.previewAiPrompt429=async function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429PromptPreview');if(!draft||!root)return;if(aiCreateDedicatedModel429()){syncAiNativeQueries429();return}const epoch=draft.epoch,prompt=String(document.getElementById('ai429Prompt')?.value||'');root.innerHTML='<span class="loading-line">正在生成最终提示词预览…</span>';try{const labels=[...draft.labels].map(code=>{const row=(state.labels||[]).find(label=>String(label.code)===code)||{};return{code,display_name_zh:aiCreateLabelName429(row)||code}});const result=await api('/api/v35/prompt-templates/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,labels,image_width:640,image_height:480,business_instruction:String(document.getElementById('ai429Instruction')?.value||'')})});if(aiCreateIsCurrent429(epoch))root.innerHTML=`<pre>${esc(result.rendered_prompt||'')}</pre>`}catch(error){if(aiCreateIsCurrent429(epoch))root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="previewAiPrompt429()">重试</button></div>`}};
   function aiCreatePreviewInvalidate429(){
     const draft=aiCreateCurrent429();if(!draft)return;
     aiCreateInvalidateConfirmation429();

@@ -108,6 +108,36 @@ def test_wevisone_is_optional_and_technical_fields_are_server_owned(client):
     assert client.post("/api/v35/model-configs", json={"name": "invalid", "provider_adapter": "wevisone_vl", "base_url": "http://localhost:18000/v1/chat/completions", "model_name": "wevisone-vl-2b"}).status_code == 400
 
 
+def test_wevisone_native_descriptions_persist_without_changing_generic_configs(client):
+    payload = {"name": "Dorm 2B", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000",
+               "model_name": "wevisone-vl-2b", "wevisone_label_queries": {
+                   "person": "A standing human outside a bed, never a fire extinguisher",
+                   "tangzhe": "A person lying on a bed, with or without a blanket",
+               }}
+    created = client.post("/api/v35/model-configs", json=payload)
+    assert created.status_code == 200, created.text
+    original = created.json()
+    assert original["wevisone_label_queries"] == payload["wevisone_label_queries"]
+    payload.pop("wevisone_label_queries")
+    payload["name"] = "Dorm 2B updated by an older client"
+    updated = client.put(f"/api/v35/model-configs/{original['id']}", json=payload)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["wevisone_label_queries"] == original["wevisone_label_queries"]
+    assert client.get("/api/v35/model-configs").json()["items"][0]["wevisone_label_queries"] == original["wevisone_label_queries"]
+    generic = client.post("/api/v35/model-configs", json={"name": "Generic", "provider_adapter": "local_openai",
+        "base_url": "http://127.0.0.1:8000/v1", "model_name": "qwen35", "wevisone_label_queries": original["wevisone_label_queries"]})
+    assert generic.status_code == 200, generic.text
+    assert "wevisone_label_queries" not in generic.json()
+
+
+def test_wevisone_native_queries_reject_ambiguous_descriptions(client):
+    payload = {"name": "invalid queries", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000",
+               "model_name": "wevisone-vl-2b", "wevisone_label_queries": {"person": "same", "tangzhe": "same"}}
+    response = client.post("/api/v35/model-configs", json=payload)
+    assert response.status_code == 400
+    assert "描述" in response.json()["detail"]
+
+
 def test_wevisone_probe_empty_does_not_claim_accuracy_and_persists_safe_receipt(client, monkeypatch):
     from types import SimpleNamespace
     import platform_core.providers.wevisone_vision as vision
