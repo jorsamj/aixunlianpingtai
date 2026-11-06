@@ -85,6 +85,15 @@ def resolve_inference_policy(config, now=None):
     if entry.get("config_fingerprint") != config_fingerprint(config):
         policy["evidence_status"] = "configuration_changed"
         return policy
+    quota_scope = entry.get("quota_scope")
+    if quota_scope is not None and (not isinstance(quota_scope, str) or not quota_scope.strip()):
+        policy["evidence_status"] = "insufficient_evidence"
+        return policy
+    if quota_scope:
+        # The trusted identity binding remains an ADDITIONAL constraint after
+        # capacity expiry. Dropping it would let a newly serial alias bypass
+        # an old task still holding this account's shared reservation.
+        policy["shared_domain"] = "inference:" + _hash(["quota", quota_scope])
     try:
         expiry = float(entry.get("expires_at", 0))
         valid = math.isfinite(expiry) and expiry > now
@@ -92,10 +101,6 @@ def resolve_inference_policy(config, now=None):
         valid = False
     if not valid:
         policy["evidence_status"] = "expired"
-        return policy
-    quota_scope = entry.get("quota_scope")
-    if quota_scope is not None and (not isinstance(quota_scope, str) or not quota_scope.strip()):
-        policy["evidence_status"] = "insufficient_evidence"
         return policy
     mode = entry.get("mode")
     replicas = entry.get("instances") or []
@@ -120,8 +125,6 @@ def resolve_inference_policy(config, now=None):
         return policy
     if mode in {"native_gateway", "service_quota"}:
         policy["upstream_deadline_seconds"] = deadline
-    if entry.get("quota_scope"):
-        policy["shared_domain"] = "inference:" + _hash(["quota", entry["quota_scope"]])
     policy["evidence_expires_at"] = float(entry["expires_at"])
     policy["evidence_status"] = "operator_attested"
     if entry.get("requests_per_minute") is not None:

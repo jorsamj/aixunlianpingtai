@@ -1,4 +1,4 @@
-# WeVisOne 双实例与跨 Provider 安全推理｜42.24.556
+# WeVisOne 双实例与跨 Provider 安全推理｜42.24.557
 
 状态：平台侧开发与隔离验收；4070 内网、生产部署与 GPU 吞吐 **NOT VERIFIED**。
 起点：长期分支 `feature/external-algorithm-publishing`，42.24.552，
@@ -158,3 +158,7 @@ npx -y node@24 node_modules/@playwright/test/cli.js test tests/browser/inference
 ## 42.24.556 取消显示语义
 
 555准确提交cc8361c9的AI Annotation Recovery和Release Regression已成功，修复的Linux身份探测及Schema迁移红项已恢复。最后核对取消指标后，API保留取消任务的执行指标，但不把主动取消投影为模型连续故障；新增/强化终态接口断言与原取消/并发执行回归12/12通过。未改变租约、候选写入或GT。最终提交CI仍按准确SHA核对。
+
+## 42.24.557 过期容量的共享身份保留
+
+配置指纹未变化时，运维指定的跨地址quota_scope是额外身份约束，容量证据到期只降并发，不移除该约束；否则新创建的串行别名任务可能绕开仍持有共享域的旧任务。先修改断言复现KeyError，再修复并保持伪造/配置不匹配不可改基础域、未知容量仍1；策略/共享许可/取消执行/冻结请求聚合38/38通过。原配置、凭据或地址变更仍需重新核验证据。该修正不新增调度中心/数据库。556通过官方Git数据API逐对象校验同一提交并force=false快进发布；最终SHA及CI以交付核对为准。

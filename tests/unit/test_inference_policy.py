@@ -133,4 +133,5 @@ def test_accepted_scope_is_additional_domain_not_replacement(monkeypatch, tmp_pa
     assert accepted["shared_domain"] != baseline
     expired = resolve_inference_policy(cfg, now=201)
     assert expired["domain"] == baseline
-    assert "shared_domain" not in expired
+    assert expired["concurrency"] == 1
+    assert expired["shared_domain"] == accepted["shared_domain"]
