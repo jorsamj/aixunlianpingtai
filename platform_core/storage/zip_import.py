@@ -323,6 +323,15 @@ def _inspect_archive(archive: zipfile.ZipFile, limits: ZipImportLimits):
     return planned, total
 
 
+def inspect_zip_archive(archive: zipfile.ZipFile, limits: ZipImportLimits | None = None):
+    """Preflight an open archive without reading payloads or creating outputs.
+
+    Return the existing normalized member plan and declared total so legacy
+    import callers can keep their own selection and directory lifecycle.
+    """
+    return _inspect_archive(archive, limits or read_limits())
+
+
 def _nearest_existing(path: Path) -> Path:
     while _plain_info(path) is None:
         path = path.parent

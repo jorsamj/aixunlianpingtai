@@ -1,3 +1,5 @@
+> **2026-11-07 / 42.24.561 证据限定整改第三批（活跃ZIP）**：复用原统一MC_ZIP_*预检，仅app三ZIP定义与9行公开包装；旧helper分块边界/磁盘/取消、CRC后close+replace，选择保留ALL sidecar并修./与//；SCAN有界节流。原安全引擎44定义/训练68文件与63定义保持。ZIP综合215通过1跳过、训练202通过1跳过、Node1561、真实Chrome16通过；19新安全用例先RED后GREEN。远程8020按用户决定不改；大sidecar内存/单文件解析取消保留。详见docs/ARCHITECTURE_EVIDENCE_SCOPED_2026_11_07.md，准确561 CI另核，560仅字体下载分片重试中；不部署、不改生产/账号/GT。
+
 > **2026-11-07 / 42.24.560 AI回归夹具治理（仅测试）**：559/04467ba2准确AI Recovery暴露既有跨进程单次claim和1秒expiry夹具竞态，Linux233/1、Windows232/2；未改生产源码。保留全部安全断言，仅有界poll原claim、局部clock在双请求进入后到期、finally计数，并强化初始2/后续1/6空目标。原234项集合全过、独立复核通过；准确560 CI待核，不把559称全绿。详见证据限定整改文档；ZIP未实施，训练/GT/Worker/账号/生产不动。
 
 > **2026-11-07 / 42.24.559 证据限定整改第二批（负样本池）**：558/31c897c准确26项Actions全成功后实施；原NegativePool与runtime支持显式真实计数、同fence空GT批查、200顺序批、失败/未知核验及部分移出清选；原modal lease保护迟到上传/切页。默认响应/GT/训练资格/Worker不变，无新存储或任务。相关Python93、GT候选76、Node1561、新Chrome4通过（三视口/键盘/触屏/reduced-motion）；68冻结文件/63训练定义保持。详见docs/ARCHITECTURE_EVIDENCE_SCOPED_2026_11_07.md，559准确SHA CI须另核；ZIP尚未实施，生产未动。

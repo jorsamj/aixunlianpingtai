@@ -14,6 +14,10 @@ on:
       - 'platform_core/annotations.py'
       - 'tests/unit/test_annotations.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/storage/zip_import.py'
+      - 'tests/unit/storage/test_zip_import.py'
+      - 'tests/api/test_v19_zip_safety_limits.py'
+      - 'tests/api/test_zip_processing_p1.py'
       - 'static/index.html'
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
@@ -215,6 +219,8 @@ jobs:
           tests/api/test_v19_multipart_background_finalize.py
           tests/api/test_zip_class_samples_v19.py
           tests/api/test_v19_import_failure_rollback.py
+          tests/api/test_v19_zip_safety_limits.py
+          tests/api/test_zip_processing_p1.py
       - name: ZIP compression capability preflight
         run: >-
           python -m pytest -q tests/unit/storage/test_zip_import.py

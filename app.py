@@ -14491,10 +14491,10 @@ def v12_test_models(project_id: str, probe_optional: bool = True, model_scope: s
 # v18 robust annotated dataset import
 # -----------------------------
 
-def _v19_check_zip_compression(archive):
-    from platform_core.storage.zip_import import inspect_zip_compression, UnsupportedZipCompression
+def _v19_check_zip_compression(archive, limits=None):
+    from platform_core.storage.zip_import import inspect_zip_archive, UnsupportedZipCompression
     try:
-        inspect_zip_compression(archive)
+        return inspect_zip_archive(archive, limits)
     except UnsupportedZipCompression as error:
         raise HTTPException(status_code=400, detail=error.message + " " + error.solution) from error
 
@@ -14513,37 +14513,97 @@ def _v18_safe_extract(
     existing COCO/VOC/YOLO parsers keep the same semantics. This avoids the old
     full-extract -> second-copy selected_root I/O path.
     """
-    dest = dest.resolve()
+    import stat
+    from platform_core.storage.zip_import import (
+        ActualSizeExceeded, CHUNK_BYTES, InsufficientDiskSpace,
+        UnsafeArchive, read_limits, required_disk_bytes,
+    )
+
+    dest = dest.absolute()
+    limits = read_limits()
     selected = None
     if selected_image_paths is not None:
         selected = {
-            v19_normalize_zip_path(value)
+            safe_member_path(v19_normalize_zip_path(value)).as_posix()
             for value in selected_image_paths
             if v19_normalize_zip_path(value)
         }
     with zipfile.ZipFile(zip_path, 'r') as zf:
-        _v19_check_zip_compression(zf)
+        archive_plan, _ = _v19_check_zip_compression(zf, limits)
         planned = []
-        for member in zf.infolist():
-            if not member.filename or member.filename.endswith('/'):
+        for member, relative, directory in archive_plan:
+            if directory:
                 continue
-            raw_name = str(member.filename or '').replace('\\', '/')
-            if raw_name.startswith('/') or '..' in Path(raw_name).parts:
-                raise HTTPException(status_code=400, detail=f'压缩包包含不安全路径：{raw_name}')
-            name = v19_normalize_zip_path(raw_name)
-            target = (dest / name).resolve()
-            if target != dest and dest not in target.parents:
-                raise HTTPException(status_code=400, detail=f'压缩包包含越权路径：{name}')
+            name = relative.as_posix()
+            target = dest / name
             is_image = Path(name).suffix.lower() in IMAGE_EXTS
             if selected is not None and is_image and name not in selected:
                 continue
             planned.append((member, name, target))
 
+        def check_target(target):
+            # Inspect the original path before resolve can hide a reparse hop.
+            for path in reversed((target, *target.parents)):
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x0400:
+                    raise UnsafeArchive('ZIP destination contains a link or reparse point')
+            if target.exists() and not target.is_file():
+                raise UnsafeArchive('ZIP destination is not a regular file')
+
+        declared = sum(member.file_size for member, _, _ in planned)
+        written = 0
+        def check_disk():
+            existing = dest
+            while not existing.exists():
+                existing = existing.parent
+            free = shutil.disk_usage(existing).free
+            required = required_disk_bytes(declared, limits, written_bytes=written)
+            if free < required:
+                raise InsufficientDiskSpace('Insufficient free space for ZIP extraction',
+                    context={'free_bytes': free, 'required_bytes': required, 'written_bytes': written})
+
+        for _, _, target in planned:
+            check_target(target)
+        check_disk()
         total = len(planned)
         for idx, (member, name, target) in enumerate(planned, 1):
+            check_target(target)
             target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(member) as src, open(target, 'wb') as out:
-                shutil.copyfileobj(src, out, length=8*1024*1024)
+            temporary = target.with_name(f'.part-{uuid.uuid4().hex}.tmp')
+            owns_temporary = False
+            try:
+                with temporary.open('xb') as out:
+                    owns_temporary = True
+                    actual = 0
+                    with zf.open(member) as src:
+                        while True:
+                            if progress_cb:
+                                progress_cb(idx - 1, total, f'正在解压 {idx}/{total} 个文件')
+                            chunk = src.read(CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            if actual + len(chunk) > min(member.file_size, limits.max_single_bytes) or written + len(chunk) > min(declared, limits.max_total_bytes):
+                                raise ActualSizeExceeded('Streamed ZIP data exceeds its size ceiling')
+                            check_disk()
+                            out.write(chunk)
+                            actual += len(chunk)
+                            written += len(chunk)
+                    if actual != member.file_size:
+                        raise UnsafeArchive('ZIP member ended before its declared size', code='ZIP_INVALID_ARCHIVE')
+                    out.flush()
+                check_target(target)
+                os.replace(temporary, target)
+            except OSError as error:
+                import errno
+                if error.errno in {errno.ENOSPC, getattr(errno, 'EDQUOT', errno.ENOSPC)}:
+                    raise InsufficientDiskSpace('Insufficient free space for ZIP extraction') from error
+                raise
+            finally:
+                if owns_temporary:
+                    temporary.unlink(missing_ok=True)
             if progress_cb:
                 progress_cb(idx, total, f'正在解压 {idx}/{total} 个文件')
         if progress_cb and total == 0:
@@ -15585,6 +15645,18 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
     detected_format = "images"
     annotation_box_count = 0
     annotated_image_stems: set[str] = set()
+    last_scan_checkpoint = 0.0
+    def scan_checkpoint(name):
+        nonlocal last_scan_checkpoint
+        tick = time.monotonic()
+        if progress_cb and tick - last_scan_checkpoint >= 0.5:
+            last_scan_checkpoint = tick
+            try:
+                progress_cb("SCAN", None, None, name)
+            except (ServerZipImportError, _V19ImportStopped):
+                raise
+            except Exception:
+                pass
     with zipfile.ZipFile(zip_path, "r") as zf:
         _v19_check_zip_compression(zf)
         members = []
@@ -15623,6 +15695,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
             ):
                 try:
                     progress_cb("VERIFY", scan_index, scan_total, name)
+                except (ServerZipImportError, _V19ImportStopped):
+                    raise
                 except Exception:
                     pass
 
@@ -15634,15 +15708,20 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     None,
                     "ZIP 目录校验完成，正在识别图片与外部标注",
                 )
+            except (ServerZipImportError, _V19ImportStopped):
+                raise
             except Exception:
                 pass
 
         # Match the worker's import priority: COCO -> VOC -> YOLO.
         for name, info in members:
+            scan_checkpoint(name)
             if Path(name).suffix.lower() != ".json":
                 continue
             try:
                 data = json.loads(zf.read(info).decode("utf-8", errors="ignore"))
+            except (ServerZipImportError, _V19ImportStopped):
+                raise
             except Exception:
                 continue
             if not (
@@ -15682,10 +15761,13 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
         if not external_classes:
             stats: Dict[str, Dict[str, Any]] = {}
             for name, info in members:
+                scan_checkpoint(name)
                 if Path(name).suffix.lower() != ".xml":
                     continue
                 try:
                     root = ET.fromstring(zf.read(info))
+                except (ServerZipImportError, _V19ImportStopped):
+                    raise
                 except Exception:
                     continue
                 seen = set()
@@ -15707,6 +15789,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
         if not external_classes:
             names: List[str] = []
             for name, info in members:
+                scan_checkpoint(name)
                 low = name.lower()
                 base = Path(low).name
                 if base in {"data.yaml", "data.yml"} or low.endswith(".yaml") or low.endswith(".yml"):
@@ -15720,6 +15803,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                             ]
                         elif isinstance(raw_names, list):
                             names = [normalize_label(value) for value in raw_names]
+                    except (ServerZipImportError, _V19ImportStopped):
+                        raise
                     except Exception:
                         names = []
                     if names:
@@ -15734,6 +15819,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                             for value in zf.read(info).decode("utf-8", errors="ignore").splitlines()
                             if normalize_label(value)
                         ]
+                    except (ServerZipImportError, _V19ImportStopped):
+                        raise
                     except Exception:
                         names = []
                     if names:
@@ -15742,6 +15829,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
             counts: Dict[int, int] = {}
             image_sets: Dict[int, set] = {}
             for name, info in members:
+                scan_checkpoint(name)
                 low = name.lower()
                 if Path(low).suffix != ".txt":
                     continue
@@ -15749,6 +15837,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     continue
                 try:
                     lines = zf.read(info).decode("utf-8", errors="ignore").splitlines()
+                except (ServerZipImportError, _V19ImportStopped):
+                    raise
                 except Exception:
                     continue
                 for line in lines:
@@ -15782,6 +15872,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
         unreadable_annotations = 0
         annotation_sidecars = 0
         for name, info in members:
+            scan_checkpoint(name)
             suffix = Path(name).suffix.lower()
             base = Path(name).name.lower()
             if suffix == ".txt":
@@ -15794,6 +15885,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         continue
                     if zf.read(info).strip():
                         nonempty_annotations += 1
+                except (ServerZipImportError, _V19ImportStopped):
+                    raise
                 except Exception:
                     unreadable_annotations += 1
             elif suffix == ".xml":
@@ -15804,6 +15897,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         continue
                     if ET.fromstring(zf.read(info)).find("object") is not None:
                         nonempty_annotations += 1
+                except (ServerZipImportError, _V19ImportStopped):
+                    raise
                 except Exception:
                     unreadable_annotations += 1
             elif suffix == ".json" and ("coco" in name.lower() or "annotation" in name.lower()):
@@ -15816,6 +15911,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         annotation_sidecars += 1
                         if raw["annotations"]:
                             nonempty_annotations += 1
+                except (ServerZipImportError, _V19ImportStopped):
+                    raise
                 except Exception:
                     unreadable_annotations += 1
 
@@ -15840,6 +15937,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     None,
                     f"扫描完成：{len(images)} 张图片，格式 {detected_format}",
                 )
+            except (ServerZipImportError, _V19ImportStopped):
+                raise
             except Exception:
                 pass
 
