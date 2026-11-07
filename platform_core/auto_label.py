@@ -5,6 +5,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from typing import Literal
 
 
 MARKDOWN_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.IGNORECASE | re.DOTALL)
@@ -42,6 +43,14 @@ def provider_factory(provider_config: Mapping[str, Any]):
     provider = str(config.get("provider_adapter") or config.get("provider_type") or "local_openai")
     if provider in {"cloud", "local"}:
         provider = "local_openai"
+    if provider == "wevisone_vl":
+        from .providers.wevisone_vision import WeVisOneVisionProvider
+        return WeVisOneVisionProvider(
+            base_url=str(config.get("base_url") or config.get("detect_url") or ""),
+            api_key=str(config.get("_api_key") or ""),
+            model=str(config.get("model_name") or ""),
+            label_queries=config.get("wevisone_label_queries") or {},
+        )
     if provider == "ollama":
         return OllamaVisionProvider(
             base_url=str(config.get("base_url") or config.get("detect_url") or "http://127.0.0.1:11434"),
@@ -55,6 +64,8 @@ def provider_factory(provider_config: Mapping[str, Any]):
         api_key=str(config.get("_api_key") or ""),
         model=str(config.get("model_name") or ""),
         headers=config.get("headers_json") or {},
+        api_protocol=str(config.get("api_protocol") or "auto"),
+        structured_output=str(config.get("structured_output") or "auto"),
     )
 
 
@@ -75,6 +86,25 @@ class CandidateResponse(BaseModel):
     boxes: list[CandidateAnnotation]
 
 
+class WeVisOneCandidateAnnotation(BaseModel):
+    """Only the dedicated adapter may omit a model-supplied confidence."""
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    confidence: float | None = None
+    confidence_status: Literal["provided", "unavailable"]
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class WeVisOneCandidateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    boxes: list[WeVisOneCandidateAnnotation]
+
+
 def raw_response_hash(text: str) -> str:
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
 
@@ -85,6 +115,65 @@ def _json_text(text: str) -> str:
     return fenced.group(1).strip() if fenced else clean
 
 
+def coordinate_contract(config, *, legacy=False):
+    """An explicit contract; names and coordinate magnitudes never select a new protocol."""
+    if legacy and "coordinate_space" not in config:
+        return {"coordinate_space": "legacy_auto", "coordinate_order": "xyxy", "output_protocol": "json_boxes", "coordinate_contract_version": 0}
+    result = {"coordinate_space": config.get("coordinate_space", "pixel"),
+              "coordinate_order": config.get("coordinate_order", "xyxy"),
+              "output_protocol": config.get("output_protocol", "json_boxes"),
+              "coordinate_contract_version": 1,
+              "coordinate_origin": config.get("coordinate_origin", "top_left"),
+              "coordinate_image_space": config.get("coordinate_image_space", "original_input")}
+    if result["coordinate_space"] not in {"pixel", "normalized_01", "normalized_1000"} or result["coordinate_order"] not in {"xyxy", "yxyx"} or result["output_protocol"] != "json_boxes":
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate contract")
+    if result["coordinate_origin"] not in {"top_left", "bottom_left"} or result["coordinate_image_space"] not in {"original_input", "processed_image"}:
+        raise ValueError("UNVERIFIED_CONTRACT: unknown origin or image space")
+    return result
+
+
+def adapt_coordinates(coordinates, *, width, height, coordinate_space, coordinate_order, coordinate_origin="top_left", geometry=None):
+    original_width, original_height = width, height
+    if geometry is not None:
+        required = ("width", "height", "scale_x", "scale_y", "pad_x", "pad_y", "crop_x", "crop_y")
+        if any(key not in geometry or not isinstance(geometry[key], (int, float)) or not math.isfinite(geometry[key]) for key in required):
+            raise ValueError("UNVERIFIED_CONTRACT: incomplete preprocessing geometry")
+        if any(geometry[k] <= 0 for k in ("width", "height", "scale_x", "scale_y")):
+            raise ValueError("UNVERIFIED_CONTRACT: invalid preprocessing geometry")
+        width, height = geometry["width"], geometry["height"]
+    if coordinate_origin not in {"top_left", "bottom_left"}:
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate origin")
+    if coordinate_order not in {"xyxy", "yxyx"}:
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate order")
+    x1, y1, x2, y2 = map(float, coordinates)
+    if coordinate_order == "yxyx":
+        x1, y1, x2, y2 = y1, x1, y2, x2
+    values = (x1, y1, x2, y2)
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("COORDINATE_CONVERSION_ERROR: non-finite coordinate")
+    if coordinate_space == "legacy_auto":
+        coordinate_space = ("normalized_01" if all(0 <= v <= 1 for v in values) else
+                            "normalized_1000" if (x2 > width or y2 > height) and all(0 <= v <= 1000 for v in values) else "pixel")
+    divisor = {"pixel": None, "normalized_01": 1, "normalized_1000": 1000}.get(coordinate_space, -1)
+    if divisor == -1:
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate space")
+    if divisor is not None:
+        if not all(0 <= v <= divisor for v in values):
+            raise ValueError("COORDINATE_CONVERSION_ERROR: coordinate outside declared range")
+        x1, x2 = x1 * width / divisor, x2 * width / divisor
+        y1, y2 = y1 * height / divisor, y2 * height / divisor
+    if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+        raise ValueError("COORDINATE_CONVERSION_ERROR: reversed or out-of-bounds box")
+    if coordinate_origin == "bottom_left":
+        y1, y2 = height - y2, height - y1
+    if geometry is not None:
+        x1, x2 = ((v - geometry["pad_x"]) / geometry["scale_x"] + geometry["crop_x"] for v in (x1,x2))
+        y1, y2 = ((v - geometry["pad_y"]) / geometry["scale_y"] + geometry["crop_y"] for v in (y1,y2))
+        if not (0 <= x1 < x2 <= original_width and 0 <= y1 < y2 <= original_height):
+            raise ValueError("COORDINATE_CONVERSION_ERROR: inverse mapping outside original pixels")
+    return x1, y1, x2, y2
+
+
 def parse_candidate_response(
     text: str,
     *,
@@ -92,6 +181,12 @@ def parse_candidate_response(
     height: int,
     label_ids: Mapping[str, int],
     label_aliases: Mapping[str, Sequence[str]] | None = None,
+    coordinate_space: str = "legacy_auto",
+    coordinate_order: str = "xyxy",
+    diagnostics: dict | None = None,
+    coordinate_origin: str = "top_left",
+    geometry: dict | None = None,
+    allow_missing_confidence: bool = False,
 ) -> list[dict[str, Any]]:
     if width <= 0 or height <= 0:
         raise ValueError("图片尺寸无效")
@@ -102,49 +197,50 @@ def parse_candidate_response(
     if not isinstance(payload, dict):
         raise ValueError("模型返回必须是一个包含 boxes 的 JSON object")
     try:
-        parsed = CandidateResponse.model_validate(payload)
+        parsed = (WeVisOneCandidateResponse if allow_missing_confidence else CandidateResponse).model_validate(payload)
     except ValidationError as error:
-        raise ValueError(f"候选标注字段不符合协议：{error.errors(include_url=False)}") from error
+        raise ValueError(f"候选标注字段不符合协议：{error.errors(include_url=False, include_input=False)}") from None
 
+    # Alias metadata is intentionally ignored here. The model must return one
+    # of the exact canonical codes explicitly allowed by this task.
+    del label_aliases
+    if diagnostics is not None:
+        diagnostics["raw_candidate_count"] = len(parsed.boxes)
+        diagnostics["raw_candidates"] = [
+            {"confidence": b.confidence, "x1": b.x1, "y1": b.y1, "x2": b.x2, "y2": b.y2,
+             "label": b.label if b.label in label_ids else "[unknown label]"}
+            for b in parsed.boxes[:100]
+            if all(math.isfinite(v) for v in (b.x1, b.y1, b.x2, b.y2)) and (b.confidence is None or math.isfinite(b.confidence))
+        ]
+        diagnostics["raw_candidates_truncated"] = len(parsed.boxes) > 100
     result: list[dict[str, Any]] = []
     for index, box in enumerate(parsed.boxes):
         label = box.label.strip()
-        values = (box.confidence, box.x1, box.y1, box.x2, box.y2)
-        if not all(math.isfinite(value) for value in values):
+        values = (box.x1, box.y1, box.x2, box.y2)
+        if not all(math.isfinite(value) for value in values) or (box.confidence is not None and not math.isfinite(box.confidence)):
             raise ValueError(f"第 {index + 1} 个框包含非有限数字")
-        if label not in label_ids and label:
-            matches = []
-            for code, aliases in (label_aliases or {}).items():
-                if code not in label_ids:
-                    continue
-                values = [str(alias or "").strip() for alias in aliases]
-                if any(alias and (label == alias or label in alias or alias in label) for alias in values):
-                    matches.append(code)
-            if len(matches) == 1:
-                label = matches[0]
         if label not in label_ids:
-            raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签：{label}")
-        if not 0 <= box.confidence <= 1:
+            raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签")
+        if box.confidence is not None and not 0 <= box.confidence <= 1:
             raise ValueError(f"第 {index + 1} 个框置信度必须在 0 到 1 之间")
-        x1, y1, x2, y2 = float(box.x1), float(box.y1), float(box.x2), float(box.y2)
-        coordinates = (x1, y1, x2, y2)
-        if all(0 <= value <= 1 for value in coordinates):
-            x1, x2 = x1 * width, x2 * width
-            y1, y2 = y1 * height, y2 * height
-        elif (x2 > width or y2 > height) and all(0 <= value <= 1000 for value in coordinates):
-            x1, x2 = x1 * width / 1000, x2 * width / 1000
-            y1, y2 = y1 * height / 1000, y2 * height / 1000
-        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
-            raise ValueError(f"第 {index + 1} 个框坐标越界或宽高无效")
-        result.append({
+        if allow_missing_confidence and box.confidence_status != ("unavailable" if box.confidence is None else "provided"):
+            raise ValueError(f"第 {index + 1} 个框置信度状态与数值不一致")
+        x1, y1, x2, y2 = adapt_coordinates(
+            (box.x1, box.y1, box.x2, box.y2), width=width, height=height,
+            coordinate_space=coordinate_space, coordinate_order=coordinate_order, coordinate_origin=coordinate_origin, geometry=geometry,
+        )
+        candidate = {
             "class_id": int(label_ids[label]),
             "label": label,
-            "confidence": float(box.confidence),
+            "confidence": float(box.confidence) if box.confidence is not None else None,
             "x1": x1,
             "y1": y1,
             "x2": x2,
             "y2": y2,
-        })
+        }
+        if allow_missing_confidence:
+            candidate["confidence_status"] = box.confidence_status
+        result.append(candidate)
     return result
 
 
@@ -166,7 +262,7 @@ def nms_candidates(boxes: Sequence[Mapping[str, Any]], *, iou_threshold: float =
     ordered = sorted(
         (dict(box) for box in boxes),
         key=lambda box: (
-            -float(box.get("confidence", 0)),
+            -float(box["confidence"] if box.get("confidence") is not None else -1),
             str(box.get("label", "")),
             float(box.get("x1", 0)),
             float(box.get("y1", 0)),

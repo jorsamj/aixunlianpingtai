@@ -1,0 +1,153 @@
+import {test,expect} from '@playwright/test';
+
+test('P2 review and reviewed-candidate handoff retain frozen Test and open original training without executing it',async({page,request},testInfo)=>{
+  const c=await fixture(page,request),posts=[];
+  const version={id:'v2',version_name:'v2',framework:'ultralytics',trainable:true,training_status:'SUCCEEDED',artifact_verified:true,stored_path:'/controlled/v2/best.pt',evaluation:c.evaluation,
+    iteration_decision:{decision:'needs_data',decision_id:sha('8'),evaluation_id:c.evaluation.evaluation_id,automatic_execution:false,requires_confirmation:true,weak_labels:['object']}};
+  await page.route(`**/api/v12/projects/${c.project.id}/algorithms/${c.algorithm.id}`,route=>json(route,{algorithm:{...c.algorithm,current_version_id:'v2',versions:[version]}}));
+  await page.route('**/evaluation/report',route=>json(route,{algorithm:{id:c.algorithm.id,current_version_id:'v2',versions:[version]}}));
+  await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{evaluation_id:c.evaluation.evaluation_id,checks:[],coverage:[]}}));
+  await page.route('**/evaluation/samples?**',route=>json(route,{evaluation_id:c.evaluation.evaluation_id,items:c.evaluation.error_samples,total:1,cohort_complete:false}));
+  await page.route('**/online-feedback?limit=100',route=>json(route,{items:[]}));
+  await page.route('**/evaluation/review',route=>{posts.push(route.request().postDataJSON());return json(route,{feedback:{id:'controlled-review',status:'confirmed',result:{formal_gt_changed:false}},frozen_test_protected:true});});
+  await page.route('**/iteration-actions/confirm',route=>{posts.push(route.request().postDataJSON());version.confirmed_iteration_action={status:'confirmed',action:'supplement_data',action_id:sha('7'),automatic_execution:false,source:{algorithm_id:c.algorithm.id,version_id:'v2'}};return json(route,{action:version.confirmed_iteration_action});});
+  await page.route('**/hard-sample-mining/reviewed-task/reviewed?**',route=>json(route,{items:[{image_id:'reviewed-image',eligible:true,candidate_digest:sha('6')}],has_more:false}));
+  await page.route('**/hard-sample-mining/reviewed-task/adopt',route=>{posts.push(route.request().postDataJSON());version.supplement_data_candidate_set={candidate_set_id:sha('5'),material_ids:['reviewed-image'],status:'confirmed',automatic_execution:false};return json(route,{candidate_set:version.supplement_data_candidate_set});});
+  await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();await root.getByRole('tab',{name:'复核与迭代',exact:true}).click();
+  await root.locator('[data-review-observation]').selectOption('gt_error');await root.getByRole('button',{name:'保存复核意见',exact:true}).click();await expect(root).toContainText('复核意见已保存，正式GT未修改');expect(posts[0].image_id).toBe('frozen-image');expect(posts[0].expected_evaluation_id).toBe(c.evaluation.evaluation_id);
+  await root.getByRole('button',{name:'确认当前建议',exact:true}).click();await expect(root).toContainText('已确认原持久化建议');await root.locator('[data-mining-task]').fill('reviewed-task');await root.getByRole('button',{name:'检测已审核候选',exact:true}).click();await expect(root.locator('[data-mining-adopt]')).toBeVisible();await root.locator('[data-mining-adopt]').check();await root.locator('[data-mining-confirm]').check();await root.getByRole('button',{name:'确认采纳为原 Candidate Set',exact:true}).click();await expect(root).toContainText('已冻结原Candidate Set');
+  await page.evaluate(()=>{state.targets=[{id:'isolated-cpu',name:'隔离CPU',status:'ready',framework:'ultralytics',python_path:'isolated-python',type:'local',algorithms:[{key:'yolo_detect',name:'隔离检测',base_model:'controlled.pt'}],base_models:[{name:'controlled.pt',path:'/controlled/v2/best.pt'}]}];state.rec={};});
+  await root.getByRole('button',{name:/用于下一轮训练/}).click();await expect(page.locator('.train429-create')).toBeVisible();await expect(page.locator('.train429-create')).toContainText('已预填 1 张已审核候选');expect(await page.evaluate(()=>state.trainingDraft.materialIds)).toContain('reviewed-image');expect(await page.evaluate(()=>state.trainingDraft.baseVersionId)).toBe('v2');expect(posts).toHaveLength(3);expect(c.posts).toHaveLength(0);
+  await page.screenshot({path:testInfo.outputPath('p2-iteration-original-training.png')});
+});
+
+test('P2 same-benchmark sample comparison pairs both versions and blocks incompatible improvement',async({page,request},testInfo)=>{
+  const c=await fixture(page,request);let compatible=true;
+  const before=structuredClone(c.evaluation.error_samples[0]),after=structuredClone(before);after.fp_count=0;after.pred_boxes=after.pred_boxes.slice(0,1);
+  await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{checks:[],coverage:[]}}));
+  await page.route('**/evaluation/report',route=>{const version=new URL(route.request().url()).pathname.split('/')[8],evaluation=structuredClone(c.evaluation);if(version==='v1'){evaluation.task_id='training-v1';evaluation.model_sha256=sha('a');evaluation.evaluation_id=sha('9');}return json(route,{algorithm:{id:c.algorithm.id,versions:[{id:version,evaluation}]}});});
+  await page.route('**/evaluation/deep-compare/v1?**',route=>json(route,{comparison:{source_version_id:'v1',current_version_id:'v2',comparable:compatible,reason_codes:compatible?[]:['benchmark_scope_mismatch'],metrics:compatible?{map50:{before:.6,after:.8,delta:.2}}:{},classes:[],sample_counts:{improved:1},sample_cohort_complete:true,total:compatible?1:0,samples:compatible?[{image_id:after.image_id,category:'improved',before,after}]:[]}}));
+  await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();await root.getByRole('tab',{name:'版本对比',exact:true}).click();await root.getByRole('button',{name:'添加对比版本',exact:true}).click();
+  await expect(root).toContainText('+20.0 个百分点');await expect(root.locator('figure:not([hidden])')).toHaveCount(2);await expect(root.locator('[data-comparison-sample]')).toContainText('改善样本');
+  for(const width of [1920,1440,1366]){await page.setViewportSize({width,height:width===1920?1080:width===1440?900:768});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath(`p2-comparison-${width}.png`)});}
+  compatible=false;await root.getByRole('button',{name:'刷新证据',exact:true}).click();await expect(root).toContainText('不能计算模型提升');await expect(root).not.toContainText('+20.0 个百分点');await expect(root.locator('figure')).toHaveCount(0);
+});
+
+test('P2 advanced diagnostics reuses original SVG and sample pagination without a modal or invented matches',async({page,request},testInfo)=>{
+  const c=await fixture(page,request);let sampleGets=0;
+  await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{checks:[],coverage:[]}}));
+  const sample=structuredClone(c.evaluation.error_samples[0]);sample.pred_boxes[0].matched_iou=.83;sample.pred_boxes[0].target_index=0;
+  await page.route('**/evaluation/samples?**',route=>{sampleGets++;return json(route,{evaluation_id:c.evaluation.evaluation_id,items:[sample],total:1,cohort_complete:false});});
+  await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();
+  await root.getByRole('tab',{name:'错误诊断',exact:true}).click();await expect(root.locator('figure:not([hidden]) svg rect')).toHaveCount(3);await expect(root).toContainText('IoU 0.830');expect(await root.locator('figure:not([hidden]) svg text').first().evaluate(el=>el.getBoundingClientRect().height)).toBeLessThan(24);await expect(root).toContainText('历史仅保留部分问题图片');
+  // Click the painted rectangle: the SVG group also includes a label whose bounding-box center can fall on the image.
+  await root.locator('svg [data-box-index]').last().locator('rect').click();await expect(root.locator('.scn-box-row.selected')).toHaveCount(1);await root.getByRole('checkbox',{name:'正式 GT',exact:true}).uncheck();await expect(root.locator('svg rect')).toHaveCount(2);
+  expect(sampleGets).toBe(1);await expect(page.getByRole('dialog')).toHaveCount(0);await page.screenshot({path:testInfo.outputPath('p2-diagnostics.png')});
+  await page.getByRole('button',{name:'质量概览',exact:true}).click();await expect(root).toHaveCount(0);
+});
+
+test('P2 advanced trust uses existing qualified models, honest unknowns, retry and page isolation',async({page,request},testInfo)=>{
+  const c=await fixture(page,request);let failed=false,gets=0;
+  await page.route('**/evaluation/trust?**',route=>{gets++;if(failed)return json(route,{detail:'受控可信度读取失败'},500);
+    const parts=new URL(route.request().url()).pathname.split('/');return json(route,{ok:true,project_id:c.project.id,algorithm_id:parts[6],version_id:parts[8],analysis:{checks:[
+      {code:'cross_split_sha256',title:'Train / Val / Test 同图泄漏',status:'risk',count:1,details:[{members:[{image_id:'frozen-test',roles:['train','test']}]}]},
+      {code:'near_duplicate',title:'近重复',status:'not_checked',details:[]},{code:'video_time',title:'视频连续帧',status:'insufficient_evidence',details:[]}],coverage:[{label:'uncovered',status:'not_covered',image_count:0}]}});});
+  await c.open();await page.screenshot({path:testInfo.outputPath('p2-before-scenario.png')});
+  await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');
+  await expect(root).toContainText('存在风险');await expect(root).toContainText('未执行检查');await expect(root).toContainText('证据不足');await expect(root).toContainText('未覆盖');
+  for(const width of [1920,1440,1366]){await page.setViewportSize({width,height:width===1920?1080:width===1440?900:768});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath(`p2-trust-${width}.png`)});}
+  failed=true;await root.getByRole('button',{name:'刷新证据',exact:true}).click();await expect(root.getByRole('alert')).toContainText('受控可信度读取失败');await expect(root).not.toContainText('正在核验');
+  failed=false;await root.getByRole('button',{name:'重试',exact:true}).click();await expect(root.getByRole('alert')).toHaveCount(0);await expect.poll(()=>gets).toBe(3);await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();
+  await page.getByRole('button',{name:'场景算法实测',exact:true}).click();await expect(page.locator('.scenario-workbench')).toBeVisible();await expect(root).toHaveCount(0);
+});
+
+// Real Chrome + isolated real project/algorithm APIs. Model, evaluation and
+// durable task responses below are controlled contracts, not GPU inference.
+const sha=c=>c.repeat(64);
+function bmp(w=96,h=72){const row=Math.ceil(w*3/4)*4,b=Buffer.alloc(54+row*h);b.write('BM');b.writeUInt32LE(b.length,2);b.writeUInt32LE(54,10);b.writeUInt32LE(40,14);b.writeInt32LE(w,18);b.writeInt32LE(h,22);b.writeUInt16LE(1,26);b.writeUInt16LE(24,28);b.writeUInt32LE(row*h,34);return b;}
+const json=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
+async function fixture(page,request,{empty=false}={}){
+  const response=await request.post('/api/projects',{data:{name:`SCN合同-${Date.now()}-${Math.random()}`,labels:[{code:'object',display_name:'目标'}]}});expect(response.ok()).toBeTruthy();const project=await response.json();
+  const created=await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'场景合同算法',industry:'隔离浏览器合同',algorithm_type:'yolo_ultralytics',remark:''}});expect(created.ok()).toBeTruthy();const algorithm=(await created.json()).algorithm;
+  const model=(id,date)=>({model_source:'algorithm_version',scenario_eligible:true,algorithm_id:algorithm.id,algorithm_name:algorithm.name,version_id:id,version_name:id,training_task_id:`training-${id}`,model_sha256:sha(id==='v2'?'b':'a'),model_size:1234,path:`/controlled/${id}/best.pt`,framework:'ultralytics',created_at:date});
+  const models=empty?[]:[{model_source:'builtin',label:'禁止母模型',path:'yolo11n.pt'},{...model('untrained','2026-10-23'),scenario_eligible:false},model('v1','2026-10-20'),model('v2','2026-10-22')];
+  const selected=models.at(-1),evaluation=empty?null:{status:'succeeded',evaluation_id:sha('c'),evaluation_protocol_id:sha('d'),image_count:1,task_id:selected.training_task_id,model_sha256:selected.model_sha256,snapshot_id:'frozen-snapshot',dataset_revision_id:sha('e'),finished_at:'2026-10-22T08:00:00Z',benchmark_scope:{binding_level:'bundle_verified',scope_id:sha('1'),content_digest:sha('2'),ground_truth_digest:sha('3'),label_schema_digest:sha('4'),evaluation_input_digest:sha('5'),training_input_policy:'excluded',test_image_count:1},metrics:{precision:.8,recall:.75,map50:.7,map50_95:.5},per_class:[{label:'object',ground_truth_count:1,true_positive:1,false_positive:0,false_negative:0,f1:.77}],error_samples:[{image:'frozen.bmp',image_id:'frozen-image',image_content_sha256:sha('f'),image_width:96,image_height:72,fp_count:1,fn_count:0,gt_boxes:[{label:'object',box:[10,8,52,44],matched:true}],pred_boxes:[{label:'object',box:[11,9,53,45],confidence:.91,matched:true},{label:'other',box:[60,10,80,30],confidence:.4,matched:false}]}]};
+  const control={project,algorithm,models,evaluation,reportMode:'ok',imageMode:'ok',reportGets:0,imageGets:[],posts:[],taskMode:'ok',creationGets:[],historyGets:[],releaseReport:null};
+  await page.route('**/api/v53/bootstrap/snapshot**',route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);return route.continue({url:url.toString()});});
+  await page.route(`**/api/v12/projects/${project.id}/test_models**`,route=>{expect(new URL(route.request().url()).searchParams.get('model_scope')).toBe('scenario');return json(route,{ok:true,items:models});});
+  await page.route('**/api/v16/inference_envs',route=>json(route,{items:[{id:'controlled-env',name:'受控环境',framework:'ultralytics',status:'ready',python_path:'/controlled/python'}]}));
+  await page.route(`**/api/v12/projects/${project.id}/algorithms/${algorithm.id}`,async route=>{control.reportGets++;const mode=control.reportMode,reportEvaluation=structuredClone(control.evaluation);if(mode==='hold')await new Promise(resolve=>control.releaseReport=resolve);if(mode==='500')return json(route,{detail:'controlled report failure'},500);return json(route,{algorithm:{...algorithm,versions:[{id:'v2',version_name:'v2',evaluation:reportEvaluation}]}});});
+  await page.route(`**/evaluation/images/frozen.bmp?**`,route=>{control.imageGets.push(new URL(route.request().url()));if(control.imageMode==='bad')return json(route,{detail:'受控坏图'},404);return route.fulfill({status:200,contentType:'image/bmp',body:bmp(control.imageMode==='mismatch'?95:96)});});
+  await page.route(`**/api/v61/projects/${project.id}/deployment-tests`,async route=>{control.posts.push(route.request().postDataBuffer().toString());if(control.taskMode==='hold')await new Promise(resolve=>control.releaseTask=resolve);if(control.taskMode==='500')return json(route,{detail:'controlled unknown creation'},503);return json(route,{id:'controlled-task',task_id:'controlled-task',kind:'DEPLOYMENT_TEST',status:'QUEUED',progress_percent:0});});
+  await page.route(`**/api/v61/projects/${project.id}/deployment-test-creations/*`,route=>{control.creationGets.push(route.request().url());return json(route,{creation_state:'CREATING'});});
+  await page.route(`**/api/v62/projects/${project.id}/tasks/*`,route=>json(route,{id:'controlled-task',kind:'DEPLOYMENT_TEST',status:'SUCCEEDED',phase:'completed',progress_percent:100}));
+  await page.route(`**/api/v61/projects/${project.id}/deployment-tests/*`,route=>json(route,{id:'controlled-task',status:'SUCCEEDED',result:{detections:[{label:'object',confidence:.91,x1:10,y1:8,x2:52,y2:44}],input_image_url:'/scn-controlled.bmp',inference_ms:4.8}}));
+  await page.route('**/scn-controlled.bmp',route=>route.fulfill({status:200,contentType:'image/bmp',body:bmp()}));
+  await page.route(`**/api/v64/projects/${project.id}/detection-batches**`,route=>{control.historyGets.push(new URL(route.request().url()));return json(route,{items:[]});});
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
+  await page.route('**/evaluation/report',route=>json(route,{algorithm:{...algorithm,versions:[{id:'v2',version_name:'v2',evaluation:control.evaluation}]}}));
+  control.open=async()=>{await page.goto('/');await page.evaluate(()=>window.setPage('质量中心'));await page.getByRole('button',{name:'场景算法实测',exact:true}).click();await expect(page.locator('.scenario-workbench')).toBeVisible();};
+  return control;
+}
+
+test('SCN default accuracy with no qualified models has explicit empty report and no parent selector',async({page,request})=>{const c=await fixture(page,request,{empty:true});await c.open();await expect(page.getByRole('tab',{name:'准确性评测',exact:true})).toHaveAttribute('aria-selected','true');await expect(page.locator('#scenarioAccuracy64')).toContainText('尚未进行独立评测');await expect(page.locator('#benchAlgorithmA')).toHaveText('暂无合格算法');await expect(page.locator('#benchModelB')).toBeHidden();expect(c.posts).toHaveLength(0);});
+
+test('SCN qualified latest version, trusted frozen GT layers and inline interactions in three desktop viewports',async({page,request})=>{const c=await fixture(page,request);await c.open();await expect(page.locator('#benchModelA')).toHaveValue('3');await expect(page.locator('#benchModelA option')).toHaveCount(2);await expect(page.locator('#benchAlgorithmA')).not.toContainText('禁止母模型');await expect(page.locator('#benchModelB')).toBeHidden();await page.locator('#benchAddCompare64').click();await expect(page.locator('#benchModelB')).toBeVisible();
+  const root=page.locator('#scenarioEvidence64');await expect(page.locator('#scenarioAccuracy64')).toContainText('可信独立测试集评测');await expect(root.locator('figure:not([hidden]) svg rect')).toHaveCount(3);expect(c.imageGets.some(url=>url.searchParams.get('expected_evaluation_id')===sha('c')&&url.searchParams.get('expected_image_id')==='frozen-image'&&url.searchParams.get('expected_sha256')===sha('f'))).toBe(true);await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(root.locator('svg')).toBeVisible();await expect(root.locator('svg rect').first()).toBeVisible();await root.locator('svg [data-box-index] rect').last().click();await expect(root.locator('[data-scn-box].selected')).toHaveCount(1);await root.locator('[data-scn-class]').selectOption('object');await expect(root.locator('svg rect')).toHaveCount(2);await root.locator('[data-scn-confidence]').fill('0.95');await root.locator('[data-scn-confidence]').dispatchEvent('change');await expect(root.locator('svg rect')).toHaveCount(1);await root.getByRole('checkbox',{name:'正式 GT',exact:true}).uncheck();await expect(root.locator('svg rect')).toHaveCount(0);await root.getByRole('checkbox',{name:'正式 GT',exact:true}).check();await root.getByRole('button',{name:'放大图片'}).click();await expect(root.locator('[data-scn-box-details]')).toContainText('正式 GT');
+  await root.locator('[data-scn-class]').selectOption('');await root.locator('[data-scn-confidence]').fill('0.25');await root.locator('[data-scn-confidence]').dispatchEvent('change');await root.getByRole('button',{name:'适应窗口',exact:true}).click();await expect(root.locator('svg rect')).toHaveCount(3);
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){await page.setViewportSize(viewport);await page.evaluate(()=>document.querySelectorAll('*').forEach(el=>{if(el.scrollTop)el.scrollTop=0;}));await page.screenshot({path:`C:/tmp/scenario-evidence-trusted-${viewport.width}.png`,fullPage:true});await root.scrollIntoViewIfNeeded();await page.screenshot({path:`C:/tmp/scenario-evidence-workspace-${viewport.width}.png`,fullPage:true});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
+});
+
+test('SCN untrusted report identity is empty and frozen image failure retries without displaying mismatched SVG',async({page,request})=>{const c=await fixture(page,request);c.evaluation.task_id='wrong-task';await c.open();await expect(page.locator('#scenarioAccuracy64')).toContainText('尚未进行独立评测');c.evaluation.task_id=c.models.at(-1).training_task_id;c.imageMode='bad';await page.evaluate(()=>window.retryScenarioReport64());const root=page.locator('#scenarioEvidence64');await expect(root.getByRole('button',{name:'重试图片'})).toBeVisible();await expect(root.locator('.scn-stage figure')).toBeHidden();c.imageMode='mismatch';await root.getByRole('button',{name:'重试图片'}).click();await expect(root).toContainText('图片尺寸与冻结框证据不一致');await expect(root.locator('.scn-stage figure')).toBeHidden();c.imageMode='ok';await root.getByRole('button',{name:'重试图片'}).click();await expect(root.locator('figure:not([hidden]) svg rect')).toHaveCount(3);});
+
+test('SCN report 500 and real 30 second deadline offer safe GET retry',async({page,request})=>{test.setTimeout(75000);const c=await fixture(page,request);c.reportMode='500';await c.open();const root=page.locator('#scenarioAccuracy64');await expect(root).toContainText('评测报告读取失败');c.reportMode='hold';await root.getByRole('button',{name:'重试',exact:true}).click();await expect(root).toContainText('正在读取可信独立评测');await expect(root).toContainText('评测报告读取失败',{timeout:35000});c.releaseReport?.();c.reportMode='ok';await root.getByRole('button',{name:'重试',exact:true}).click();await expect(root).toContainText('可信独立测试集评测');expect(c.posts).toHaveLength(0);});
+
+test('SCN late report cannot overwrite selected version without credible report',async({page,request})=>{const c=await fixture(page,request);c.reportMode='hold';await c.open();await expect.poll(()=>typeof c.releaseReport).toBe('function');const release=c.releaseReport;c.reportMode='ok';c.evaluation=null;await page.locator('#benchModelA').selectOption('2');await expect(page.locator('#scenarioAccuracy64')).toContainText('尚未进行独立评测');release();await expect(page.locator('#benchModelA')).toHaveValue('2');await expect(page.locator('#scenarioAccuracy64')).toContainText('尚未进行独立评测');});
+
+test('SCN original durable task creation prevents duplicates and first result is inline without GT metrics',async({page,request})=>{const c=await fixture(page,request);let polls=0;await page.route('**/api/v61/projects/*/deployment-tests/controlled-task',route=>json(route,{id:'controlled-task',kind:'DEPLOYMENT_TEST',status:++polls<3?'RUNNING':'SUCCEEDED',phase:'INFERENCING',current_item:'受控任务真实阶段',progress_percent:polls<3?0:100,result:polls<3?undefined:{detections:[{label:'object',confidence:.91,x1:10,y1:8,x2:52,y2:44}],input_image_url:'/scn-controlled.bmp'}}));await c.open();await page.getByRole('tab',{name:'快速图片检测',exact:true}).click();await page.locator('#benchFiles64').setInputFiles({name:'controlled.bmp',mimeType:'image/bmp',buffer:bmp()});c.taskMode='hold';await page.locator('#benchRun64').click();await expect.poll(()=>c.posts.length).toBe(1);await expect(page.locator('#benchRun64')).toBeDisabled();expect(c.posts[0]).toContain('name="model_scope"');expect(c.posts[0]).toContain('\r\n\r\nscenario\r\n');c.releaseTask();await expect(page.locator('.scn-run-status')).toContainText('受控任务真实阶段');await expect(page.locator('#scenarioQuickEvidence64 figure:not([hidden]) svg rect')).toHaveCount(1);await expect(page.getByRole('dialog',{name:'检测详情'})).toHaveCount(0);await expect(page.locator('#scenarioQuickEvidence64')).toContainText('正式 GT 不可用');await expect(page.locator('#scenarioQuickEvidence64 .scn-metrics')).toHaveCount(0);expect(c.historyGets.every(url=>!url.pathname.endsWith('detection-batches')||url.searchParams.get('limit')==='12')).toBe(true);});
+
+test('SCN unknown 5xx creation permits original identity verification without another POST',async({page,request})=>{
+ const c=await fixture(page,request);c.taskMode='500';await c.open();await page.getByRole('tab',{name:'快速图片检测',exact:true}).click();await page.locator('#benchFiles64').setInputFiles({name:'unknown.bmp',mimeType:'image/bmp',buffer:bmp()});await page.locator('#benchRun64').click();
+ await expect(page.locator('#benchBatchList64 .unknown')).toHaveCount(1);await expect(page.locator('#benchRun64')).toBeEnabled();expect(c.posts).toHaveLength(1);const reads=c.creationGets.length;
+ await page.locator('#benchRun64').click();await expect.poll(()=>c.creationGets.length).toBeGreaterThan(reads);await expect.poll(()=>page.evaluate(()=>state.benchBatch64.running)).toBe(false);expect(c.posts).toHaveLength(1);await expect(page.locator('#scenarioQuickEvidence64 img').first()).toBeVisible();
+});
+
+test('SCN frozen sample pagination stays bounded and late historical batch cannot replace newer selection',async({page,request})=>{
+  const c=await fixture(page,request);const sample=c.evaluation.error_samples[0];c.evaluation.error_samples=Array.from({length:25},(_,i)=>({...sample,image:`sample-${i}.bmp`,image_id:`frozen-${i}`}));
+  await page.route('**/evaluation/images/sample-*.bmp?**',route=>route.fulfill({status:200,contentType:'image/bmp',body:bmp()}));
+  await c.open();const evidence=page.locator('#scenarioEvidence64');await expect(evidence.locator('[data-scn-sample]')).toHaveCount(24);await evidence.getByRole('button',{name:'下一页',exact:true}).click();await expect(evidence.locator('[data-scn-sample]')).toHaveCount(1);await expect(evidence.locator('[data-scn-sample]')).toHaveAttribute('data-scn-sample','24');
+  let release;const batch=id=>({batch_id:id,total:1,completed_items:1,failed_items:0,items:[{index:0,original_filename:`${id}.bmp`,models:{A:{status:'SUCCEEDED',task_id:`${id}-task`,model_source:'algorithm_version',algorithm_id:c.algorithm.id,version_id:'v2',detections:[],input_image_url:'/scn-controlled.bmp'}}}]});
+  await page.route(`**/api/v64/projects/${c.project.id}/detection-batches/old`,async route=>{await new Promise(resolve=>release=resolve);return json(route,{batch:batch('old')});});
+  await page.route(`**/api/v64/projects/${c.project.id}/detection-batches/new`,route=>json(route,{batch:batch('new')}));
+  await page.evaluate(()=>void window.openDetectionBatch64('old'));await expect.poll(()=>typeof release).toBe('function');await page.evaluate(()=>window.openDetectionBatch64('new'));await expect(page.locator('#scenarioQuickEvidence64')).toContainText('new.bmp');release();await expect.poll(()=>page.evaluate(()=>state.benchBatch64.id)).toBe('new');await expect(page.locator('#scenarioQuickEvidence64')).not.toContainText('old.bmp');
+});
+
+test('SCN controlled project lifecycle rejects late prior-project report without claiming project-navigation E2E',async({page,request})=>{
+  const c=await fixture(page,request);c.reportMode='hold';await c.open();await expect.poll(()=>typeof c.releaseReport).toBe('function');
+  const response=await request.post('/api/projects',{data:{name:`SCN第二生命周期-${Date.now()}`,labels:[]}});expect(response.ok()).toBeTruthy();const other=await response.json();
+  // The product has one default workspace. This deliberately drives its existing
+  // render owner with a real second project; it is a lifecycle race contract.
+  await page.evaluate(project=>{state.project=project;state.algorithms=[];state.scenarioTestModels=[];state.scenarioModelsProjectId=project.id;window.renderQualityDetectionBench64();},other);
+  await expect(page.locator('#benchAlgorithmA')).toHaveText('暂无合格算法');c.releaseReport();await expect(page.locator('#scenarioAccuracy64')).toContainText('尚未进行独立评测');await expect(page.locator('#scenarioAccuracy64')).not.toContainText('可信独立测试集评测');await expect.poll(()=>page.evaluate(()=>state.project.id)).toBe(other.id);
+});
+
+
+test('SCN incomplete durable query cannot unlock an unknown request or permit duplicate POST',async({page,request})=>{
+ const c=await fixture(page,request);c.taskMode='500';await c.open();await page.getByRole('tab',{name:'快速图片检测',exact:true}).click();
+ await page.locator('#benchFiles64').setInputFiles({name:'uncertain.bmp',mimeType:'image/bmp',buffer:bmp()});await page.locator('#benchRun64').click();
+ await expect(page.locator('#benchBatchList64 .unknown')).toHaveCount(1);const id=await page.evaluate(()=>state.benchBatch64.id);
+ await page.route(`**/api/v64/projects/${c.project.id}/detection-batches/${id}`,route=>json(route,{batch:{batch_id:id,total:1,items:[]}}));
+ await page.evaluate(id=>window.openDetectionBatch64(id),id);await expect(page.locator('#toast')).toContainText('尚未确认');await expect(page.locator('#benchRun64')).toBeEnabled();
+ expect(await page.evaluate(()=>state.benchBatch64.outcomeUncertain)).toBe(true);expect(c.posts).toHaveLength(1);
+ await page.evaluate(()=>window.openDetectionBatch64('unrelated'));await expect(page.locator('#toast')).toContainText('原批次');await expect(page.locator('#benchRun64')).toBeEnabled();expect(c.posts).toHaveLength(1);
+});
+
+
+for(const compare of [false,true])test(`SCN stopping subsequent work retains the finished A image without running B: ${compare?'compare':'A-only'}`,async({page,request})=>{
+ const c=await fixture(page,request);c.taskMode='hold';await c.open();if(compare)await page.locator('#benchAddCompare64').click();await page.getByRole('tab',{name:'快速图片检测',exact:true}).click();
+ await page.locator('#benchFiles64').setInputFiles({name:'stopped.bmp',mimeType:'image/bmp',buffer:bmp()});await page.locator('#benchRun64').click();await expect.poll(()=>typeof c.releaseTask).toBe('function');
+ await page.getByRole('button',{name:'停止后续检测',exact:true}).click();c.releaseTask();await expect.poll(()=>page.evaluate(()=>state.benchBatch64.running)).toBe(false);
+ await expect(page.locator('#scenarioQuickEvidence64 figure:not([hidden])').first()).toBeVisible();await expect(page.locator('#scenarioQuickEvidence64 figure:not([hidden]) svg rect')).toHaveCount(1);await expect(page.locator('#scenarioQuickEvidence64 .scn-sample')).toContainText(compare?'部分结果可用':'完成');
+ expect(await page.evaluate(()=>state.benchBatch64.results[0].a.task_id)).toBe('controlled-task');expect(c.posts).toHaveLength(1);await expect(page.locator('#benchBatchSummary64')).toContainText('已停止后续图片检测');await expect(page.locator('#benchRun64')).toBeEnabled();
+});

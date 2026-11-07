@@ -115,10 +115,27 @@ class OSSStorageProvider:
         try: return self.bucket.sign_url("GET", self._key(object_key), max(1,min(3600,int(expires_seconds))))
         except Exception as error: self._error("presign", error)
 
-    def generate_upload_contract(self, object_key, *, expires_seconds=900, content_type="application/octet-stream"):
-        """Return the signed PUT URL together with every header the client must send."""
+    def generate_upload_contract(
+        self,
+        object_key,
+        *,
+        expires_seconds=900,
+        content_type="application/octet-stream",
+        metadata=None,
+        size_bytes=None,
+    ):
+        """Return a signed PUT contract with optional immutable content evidence."""
         expires = max(1, min(3600, int(expires_seconds)))
-        headers = {"Content-Type": content_type}
+        normalized_metadata = {str(key): str(value) for key, value in dict(metadata or {}).items()}
+        headers = {
+            "Content-Type": content_type,
+            **{f"x-oss-meta-{key}": value for key, value in normalized_metadata.items()},
+        }
+        if size_bytes is not None:
+            expected_size = int(size_bytes)
+            if expected_size <= 0:
+                raise ValueError("size_bytes must be positive")
+            headers["Content-Length"] = str(expected_size)
         if self.protect_existing_objects:
             headers["x-oss-forbid-overwrite"] = "true"
         try:

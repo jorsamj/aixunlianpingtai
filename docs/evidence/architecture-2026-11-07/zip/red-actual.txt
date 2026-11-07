@@ -1,0 +1,91 @@
+FFFFFF                                                                   [100%]
+================================== FAILURES ===================================
+________ test_active_entrypoints_enforce_configured_safety[ratio-scan] ________
+C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py:29: in test_active_entrypoints_enforce_configured_safety
+    with pytest.raises((HTTPException, ServerZipImportError)):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE any of (<class 'fastapi.exceptions.HTTPException'>, <class 'platform_core.storage.zip_import.ServerZipImportError'>)
+______ test_active_entrypoints_enforce_configured_safety[ratio-extract] _______
+C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py:29: in test_active_entrypoints_enforce_configured_safety
+    with pytest.raises((HTTPException, ServerZipImportError)):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE any of (<class 'fastapi.exceptions.HTTPException'>, <class 'platform_core.storage.zip_import.ServerZipImportError'>)
+________ test_active_entrypoints_enforce_configured_safety[count-scan] ________
+C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py:29: in test_active_entrypoints_enforce_configured_safety
+    with pytest.raises((HTTPException, ServerZipImportError)):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE any of (<class 'fastapi.exceptions.HTTPException'>, <class 'platform_core.storage.zip_import.ServerZipImportError'>)
+______ test_active_entrypoints_enforce_configured_safety[count-extract] _______
+C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py:29: in test_active_entrypoints_enforce_configured_safety
+    with pytest.raises((HTTPException, ServerZipImportError)):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE any of (<class 'fastapi.exceptions.HTTPException'>, <class 'platform_core.storage.zip_import.ServerZipImportError'>)
+_________________ test_scan_preserves_original_stop_exception _________________
+C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py:41: in test_scan_preserves_original_stop_exception
+    with pytest.raises(app_module._V19ImportStopped):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE <class 'app._V19ImportStopped'>
+_______________ test_real_v19_create_rejects_over_count_archive _______________
+C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py:54: in test_real_v19_create_rejects_over_count_archive
+    assert response.status_code == 400, response.text[:200]
+E   AssertionError: {"id":"5b86c3cb9d","project_id":"a992c5432620","dataset_id":"default","batch_id":"5b86c3cb9d","file_name":"fixture.zip","file_size_mb":0.0,"uploaded_bytes":295,"upload_seconds":0.0,"scan_seconds":0.01
+E   assert 200 == 400
+E    +  where 200 = <Response [200 OK]>.status_code
+============================== warnings summary ===============================
+app.py:12601
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:12601: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+  D:\python\Lib\site-packages\fastapi\applications.py:4675: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+app.py:12614
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:12614: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("shutdown")
+
+app.py:22645
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:22645: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event('startup')
+
+app.py:27897
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:27897: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py::test_active_entrypoints_enforce_configured_safety[ratio-scan]
+FAILED C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py::test_active_entrypoints_enforce_configured_safety[ratio-extract]
+FAILED C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py::test_active_entrypoints_enforce_configured_safety[count-scan]
+FAILED C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py::test_active_entrypoints_enforce_configured_safety[count-extract]
+FAILED C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py::test_scan_preserves_original_stop_exception
+FAILED C:\Users\jorsam\AppData\Local\Temp\p04-zip560-f63db72ad83a4c5da0005edded3e3cd3\test_zip560_red.py::test_real_v19_create_rejects_over_count_archive
+6 failed, 8 warnings in 1.56s

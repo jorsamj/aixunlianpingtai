@@ -108,15 +108,22 @@ def _trusted_retry_candidate(context, data_dir: Path) -> dict[str, Any] | None:
     if not assigned_device:
         return None
 
+    old_resource_context = context.artifacts.read_json(
+        context.task.task_id,
+        "resource-context.json",
+        default={},
+    )
+    resource_context = dict(old_resource_context) if isinstance(old_resource_context, Mapping) else {}
+    resource_context.update(
+        gpu_uuid=assignment.get("gpu_uuid"),
+        reserved_bytes=assignment.get("reserved_bytes"),
+        recovery=True,
+    )
     resource_context_ref = "recovery-resource-context.json"
     context.artifacts.atomic_write_json(
         context.task.task_id,
         resource_context_ref,
-        {
-            "gpu_uuid": assignment.get("gpu_uuid"),
-            "reserved_bytes": assignment.get("reserved_bytes"),
-            "recovery": True,
-        },
+        resource_context,
     )
 
     payload = context.artifacts.read_json(

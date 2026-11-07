@@ -1,0 +1,54 @@
+..............................s......................................... [ 33%]
+........................................................................ [ 66%]
+........................................................................ [100%]
+============================== warnings summary ===============================
+app.py:12601
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:12601: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+..\..\..\python\Lib\site-packages\fastapi\applications.py:4675
+  D:\python\Lib\site-packages\fastapi\applications.py:4675: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+app.py:12614
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:12614: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("shutdown")
+
+app.py:22744
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:22744: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event('startup')
+
+app.py:27996
+  D:\lab\yolosuanfa\aixunlianpingtai-review-20261106\app.py:27996: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+215 passed, 1 skipped, 8 warnings in 30.22s

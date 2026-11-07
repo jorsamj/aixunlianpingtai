@@ -1,3 +1,7 @@
+import logging
+import sqlite3
+from types import SimpleNamespace
+
 from platform_core.task_runtime import (
     ArtifactStore,
     Scheduler,
@@ -331,3 +335,68 @@ def test_failed_task_releases_resource_before_next_scheduler_claim(tmp_path):
     assert scheduler.run_once() is True
     assert repository.get("next").status is TaskStatus.SUCCEEDED
     assert calls == ["first", "next"]
+
+
+def test_transient_sqlite_busy_leaves_task_recoverable(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    repository.create(TaskRecord.new(
+        "sqlite-busy",
+        "project-1",
+        TaskKind.VIDEO_FRAMES,
+        "payload.json",
+        "cpu:video",
+    ))
+
+    class BusyThenRecover:
+        def run(self, _context):
+            raise sqlite3.OperationalError("database is locked")
+
+        def recover(self, _context):
+            return TaskStatus.SUCCEEDED, "result.json"
+
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "worker-sqlite",
+        {TaskKind.VIDEO_FRAMES: BusyThenRecover()},
+        set(),
+    )
+    assert scheduler.run_once() is True
+    uncertain = repository.get("sqlite-busy")
+    assert uncertain is not None and uncertain.status is TaskStatus.RUNNING
+    assert uncertain.error is None
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+    assert scheduler.run_once() is True
+    assert repository.get("sqlite-busy").status is TaskStatus.SUCCEEDED
+
+
+def test_lease_renewal_failure_logs_non_secret_diagnostics(tmp_path, caplog):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    scheduler = Scheduler(repository, ArtifactStore(tmp_path / "artifacts"), "worker-a800", {}, set())
+
+    class StopAfterOneCycle:
+        def wait(self, _seconds):
+            return False
+
+    context = SimpleNamespace(
+        task=SimpleNamespace(task_id="trainprep-1", kind=TaskKind.TRAINING_PREPARE),
+        execution_generation=2,
+        diagnostic_stage="materializing_sources",
+        heartbeat=lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+        mark_lease_lost=lambda: None,
+        terminate_bound_process=lambda: True,
+    )
+    with caplog.at_level(logging.ERROR, logger="platform_core.task_runtime.scheduler"):
+        scheduler._renew_lease(context, StopAfterOneCycle())
+
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "trainprep-1" in message
+    assert "TRAINING_PREPARE" in message
+    assert "worker-a800" in message
+    assert "generation=2" in message
+    assert "materializing_sources" in message
+    assert "database_unavailable" in message
+    assert "OperationalError" in message
+    assert "database is locked" in message
+    assert "lease_token" not in message

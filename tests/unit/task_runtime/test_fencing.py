@@ -230,6 +230,71 @@ def test_execution_generation_fences_old_attempt_even_if_token_matches(tmp_path)
     assert finished.status is TaskStatus.SUCCEEDED
 
 
+def test_parent_training_mutations_require_current_prepare_generation(tmp_path):
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "train-parent",
+        "project-1",
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:pending",
+        required_capabilities=("training.input.ready",),
+    ))
+    repository.create(TaskRecord.new(
+        "trainprep-parent",
+        "project-1",
+        TaskKind.TRAINING_PREPARE,
+        "payload.json",
+        "training-prepare:project-1",
+        required_capabilities=("training.prepare",),
+    ))
+    first = repository.claim_next(
+        "worker-a", [TaskKind.TRAINING_PREPARE], {"training.prepare"}, lease_seconds=30,
+    )
+    assert first is not None
+    _expire(repository, "trainprep-parent")
+    assert repository.release_expired() == 1
+    second = repository.claim_next(
+        "worker-b", [TaskKind.TRAINING_PREPARE], {"training.prepare"}, lease_seconds=30,
+    )
+    assert second is not None
+
+    owner = {
+        "preparation_task_id": first.task.task_id,
+        "preparation_lease_token": first.lease_token,
+        "preparation_execution_generation": first.task.attempt,
+    }
+    with pytest.raises(PermissionError, match="preparation execution"):
+        repository.activate_prepared_training(
+            "train-parent",
+            resource_key="training:remote:scheduler",
+            required_capabilities=("training.ultralytics",),
+            **owner,
+        )
+    with pytest.raises(PermissionError, match="preparation execution"):
+        repository.fail_queued_precondition(
+            "train-parent",
+            "must-not-publish",
+            status=TaskStatus.FAILED,
+            **owner,
+        )
+    parent = repository.get("train-parent")
+    assert parent is not None and parent.status is TaskStatus.QUEUED
+    assert parent.required_capabilities == ("training.input.ready",)
+    assert parent.error is None
+
+    activated = repository.activate_prepared_training(
+        "train-parent",
+        resource_key="training:remote:scheduler",
+        required_capabilities=("training.ultralytics",),
+        preparation_task_id=second.task.task_id,
+        preparation_lease_token=second.lease_token,
+        preparation_execution_generation=second.task.attempt,
+    )
+    assert activated.status is TaskStatus.QUEUED
+    assert activated.required_capabilities == ("training.ultralytics",)
+
+
 def test_fenced_context_refuses_artifact_publication(tmp_path):
     repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "artifacts")

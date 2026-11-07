@@ -125,3 +125,18 @@ test('video task canonical task_status wins and inexact rank is not rendered as 
   assert.match(task.runtimeText, /VIDEO_WORKER_BUSY/);
   assert.doesNotMatch(task.runtimeText, /资源队列第 6 位/);
 });
+
+
+test('video delta patch keeps task and progress DOM identity contract', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function videoTaskRow424(t)');
+  const end = source.indexOf('window.refreshVideo424Delta', start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /data-progress=/);
+  assert.match(block, /style="transform:scaleX/);
+  assert.match(block, /function patchVideoRow424\(current,next\)/);
+  assert.match(block, /currentBar\.style\.transform=nextBar\.style\.transform/);
+  assert.doesNotMatch(block, /old\.replaceWith\(next\)/);
+  assert.doesNotMatch(block, /progress424"><i style="width:/);
+});

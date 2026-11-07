@@ -17,6 +17,7 @@ BACKGROUND_ROLES = (
     "annotation",
     "conversion",
     "deployment-test",
+    "training-prep",
 )
 SUPERVISOR_POLL_SECONDS = 0.25
 

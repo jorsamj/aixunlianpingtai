@@ -36,7 +36,10 @@ def _config():
     )
 
 
-def _add_gpu(repository, *, node_id, worker_id, gpu_uuid, physical_index, logical_index=0):
+def _add_gpu(
+    repository, *, node_id, worker_id, gpu_uuid, physical_index, logical_index=0,
+    total_bytes=16 * GIB, free_bytes=14 * GIB, utilization=5.0,
+):
     stamp = datetime.now(timezone.utc).isoformat()
     with closing(repository._connect()) as database:
         database.execute(
@@ -47,8 +50,8 @@ def _add_gpu(repository, *, node_id, worker_id, gpu_uuid, physical_index, logica
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                node_id, gpu_uuid, physical_index, "Synthetic GPU", 16 * GIB,
-                14 * GIB, 5.0, stamp, "nvml", 1, "disabled",
+                node_id, gpu_uuid, physical_index, "Synthetic GPU", total_bytes,
+                free_bytes, utilization, stamp, "nvml", 1, "disabled",
             ),
         )
         database.execute(
@@ -231,6 +234,95 @@ def test_same_slot_and_gpu_uuid_are_independent_across_nodes(tmp_path):
     ]
 
 
+def test_deferred_auto_prefers_larger_idle_gpu_and_reserves_its_profile_budget(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    floor = 2 * GIB
+    artifacts = _Artifacts({
+        "task-auto": {
+            "requested_device": "auto",
+            "device": "auto",
+            "gpu_policy": "auto",
+            "resource_strategy": "auto",
+            "resource_profile": "balanced",
+            "resource_resolution_deferred": True,
+            "gpu_memory_floor_bytes": floor,
+        },
+    })
+    manager = NodeScopedGPUResourceManager(
+        repository, artifacts, node_id="node-a", worker_id="worker-a",
+        worker_slot="slot-a", sampler=lambda _python: [], config=_config(),
+    )
+    _add_gpu(
+        repository, node_id="node-a", worker_id="worker-a",
+        gpu_uuid="GPU-24G", physical_index=0, logical_index=0,
+        total_bytes=24 * GIB, free_bytes=22 * GIB,
+    )
+    _add_gpu(
+        repository, node_id="node-a", worker_id="worker-a",
+        gpu_uuid="GPU-48G", physical_index=1, logical_index=1,
+        total_bytes=48 * GIB, free_bytes=44 * GIB,
+    )
+
+    assert _admit(
+        manager, repository, "task-auto", "worker-a", lease_token="lease-auto",
+    ) == (True, None)
+    lease = SimpleNamespace(
+        task=SimpleNamespace(task_id="task-auto", payload_ref="payload.json"),
+        lease_token="lease-auto",
+        worker_id="worker-a",
+    )
+    assignment = manager.assignment(lease)
+
+    assert assignment["gpu_uuid"] == "GPU-48G"
+    assert assignment["assigned_device"] == "cuda:1"
+    assert assignment["estimated_bytes"] == floor
+    assert assignment["reserved_bytes"] > 20 * GIB
+
+
+def test_deferred_auto_avoids_high_pressure_large_gpu(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    floor = 2 * GIB
+    artifacts = _Artifacts({
+        "task-pressure": {
+            "requested_device": "auto",
+            "device": "auto",
+            "gpu_policy": "auto",
+            "resource_strategy": "auto",
+            "resource_profile": "balanced",
+            "resource_resolution_deferred": True,
+            "gpu_memory_floor_bytes": floor,
+        },
+    })
+    manager = NodeScopedGPUResourceManager(
+        repository, artifacts, node_id="node-a", worker_id="worker-a",
+        worker_slot="slot-a", sampler=lambda _python: [], config=_config(),
+    )
+    _add_gpu(
+        repository, node_id="node-a", worker_id="worker-a",
+        gpu_uuid="GPU-24G-IDLE", physical_index=0, logical_index=0,
+        total_bytes=24 * GIB, free_bytes=22 * GIB, utilization=5.0,
+    )
+    _add_gpu(
+        repository, node_id="node-a", worker_id="worker-a",
+        gpu_uuid="GPU-48G-BUSY", physical_index=1, logical_index=1,
+        total_bytes=48 * GIB, free_bytes=44 * GIB, utilization=90.0,
+    )
+
+    assert _admit(
+        manager, repository, "task-pressure", "worker-a",
+        lease_token="lease-pressure",
+    ) == (True, None)
+    lease = SimpleNamespace(
+        task=SimpleNamespace(task_id="task-pressure", payload_ref="payload.json"),
+        lease_token="lease-pressure",
+        worker_id="worker-a",
+    )
+    assignment = manager.assignment(lease)
+
+    assert assignment["gpu_uuid"] == "GPU-24G-IDLE"
+    assert assignment["assigned_device"] == "cuda:0"
+
+
 def test_assignment_binds_node_uuid_physical_and_worker_logical_index(tmp_path):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     artifacts = _Artifacts({
@@ -356,3 +448,8 @@ def test_same_worker_id_visibility_is_preserved_across_nodes(tmp_path):
         ("shared-worker", "node-b", "GPU-B", 0),
     ]
     assert "UNIQUE(worker_id, node_id, logical_cuda_index)" in table_sql
+
+
+def test_default_gpu_config_is_single_card_exclusive(monkeypatch):
+    monkeypatch.delenv("TRAINING_GPU_MAX_CONCURRENT", raising=False)
+    assert GPUConfig.from_env().max_concurrent == 1

@@ -1,0 +1,45 @@
+{
+  "scope": "whole page after 4 warmup cycles and CDP garbage collection; bounded DOM/listener growth in this fixture, not proof of absolute leak freedom",
+  "samples": [
+    {
+      "cycle": 4,
+      "documents": 1,
+      "nodes": 1157,
+      "jsEventListeners": 110,
+      "usedSize": 3923380,
+      "totalSize": 4251648
+    },
+    {
+      "cycle": 8,
+      "documents": 1,
+      "nodes": 1157,
+      "jsEventListeners": 110,
+      "usedSize": 4095984,
+      "totalSize": 4775936
+    },
+    {
+      "cycle": 12,
+      "documents": 1,
+      "nodes": 1157,
+      "jsEventListeners": 110,
+      "usedSize": 4337336,
+      "totalSize": 4775936
+    },
+    {
+      "cycle": 16,
+      "documents": 1,
+      "nodes": 1157,
+      "jsEventListeners": 110,
+      "usedSize": 4336052,
+      "totalSize": 4775936
+    },
+    {
+      "cycle": 20,
+      "documents": 1,
+      "nodes": 1157,
+      "jsEventListeners": 110,
+      "usedSize": 4373036,
+      "totalSize": 5038080
+    }
+  ]
+}

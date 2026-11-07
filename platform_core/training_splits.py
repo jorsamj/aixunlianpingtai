@@ -45,6 +45,8 @@ class SplitRequest:
                 raise ValueError("随机抽取模式不能设置 test_image_ids")
             if self.experiment_percent is None or not 0 < float(self.experiment_percent) < 100:
                 raise ValueError("experiment_percent 必须大于 0 且小于 100")
+            if float(self.experiment_percent) + float(self.validation_percent) >= 100:
+                raise ValueError("experiment_percent 与 validation_percent 之和必须小于 100，保留训练集")
 
 
 @dataclass(frozen=True)
@@ -72,13 +74,13 @@ _COMPONENT_RELATION_FIELDS = (
 
 
 def _processed(row: Mapping[str, Any]) -> bool:
-    return bool(
-        row.get("annotation_state") in {"annotated", "confirmed_empty"}
-        or row.get("annotated")
-        or row.get("processing_status") == "processed"
-        or row.get("cleaned_at")
-        or row.get("clean_skipped")
-    )
+    """Training eligibility is formal annotation truth, never cleaning state."""
+    state = str(row.get("annotation_state") or "").strip().lower()
+    if state:
+        return state in {"annotated", "confirmed_empty"}
+    # Legacy callers may not carry annotation_state yet. Keep only the old
+    # explicit annotation flag; processing/cleaning metadata is not Ground Truth.
+    return bool(row.get("annotated"))
 
 
 def _identity(row: Mapping[str, Any]) -> str:
@@ -91,6 +93,18 @@ def _identity(row: Mapping[str, Any]) -> str:
 
 def _relation_tokens(row: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     tokens: list[tuple[str, str]] = []
+    # Originals and derivatives share one identity namespace. A child must join
+    # its original even when only the child carries provenance fields.
+    image_id = str(row.get('id') or row.get('image_id') or '').strip()
+    if image_id:
+        tokens.append(('image_id', image_id))
+    for field in ('source_root_id', 'derived_from_image_id'):
+        value = row.get(field)
+        if value is None or value == '':
+            continue
+        if not isinstance(value, str) or value.strip() in {'.','..'} or any(char in value for char in ('/','\\',':')):
+            raise ValueError('training derivative source identity must be a project image id')
+        tokens.append(('image_id', value.strip()))
     content_hash = str(row.get("content_sha256") or "").strip().lower()
     if content_hash:
         tokens.append(("content_sha256", content_hash))
@@ -168,7 +182,7 @@ def _valid_annotation(row: Mapping[str, Any]) -> bool:
     return False
 
 
-def _annotation_digest(row: Mapping[str, Any]) -> str:
+def training_annotation_digest(row: Mapping[str, Any]) -> str:
     boxes = sorted(
         (_canonical_box(box) for box in (row.get("boxes") or [])),
         key=lambda box: json.dumps(box, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -183,14 +197,78 @@ def _annotation_digest(row: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def analyze_training_duplicates(
+    rows: Sequence[Mapping[str, Any]],
+    train_image_ids: Sequence[str],
+    test_image_ids: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Describe original GT duplicates without choosing which annotation is correct.
+
+    The full membership stays server-side. Callers must page the member projection
+    rather than sending these groups to the browser. Leakage always sorts first.
+    """
+    train, test = set(train_image_ids), set(test_image_ids)
+    selected = train | test
+    by_hash: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if str(row.get("id") or "") not in selected:
+            continue
+        sha = str(row.get("content_sha256") or "").strip().lower()
+        if sha:
+            by_hash.setdefault(sha, []).append(row)
+    groups = []
+    for sha, members in by_hash.items():
+        if len(members) < 2:
+            continue
+        ids = tuple(str(row.get("id") or "") for row in members)
+        dimensions: dict[str, set[str]] = {key: set() for key in (
+            "annotation_state", "annotation_scope", "labels", "box_count", "coordinates",
+        )}
+        digests = set()
+        for row in members:
+            boxes = [_canonical_box(box) for box in row.get("boxes") or []]
+            dimensions["annotation_state"].add(str(row.get("annotation_state") or ("annotated" if boxes else "unannotated")))
+            dimensions["annotation_scope"].add(json.dumps(_annotation_scope(row)))
+            dimensions["labels"].add(json.dumps(sorted({str(box.get("label") or box.get("class_id") or "") for box in boxes})))
+            dimensions["box_count"].add(str(len(boxes)))
+            coordinates = [json.dumps({key: value for key, value in box.items()
+                if key not in {"label", "class_id"}}, sort_keys=True, separators=(",", ":")) for box in boxes]
+            dimensions["coordinates"].add(json.dumps(sorted(coordinates)))
+            digests.add(training_annotation_digest(row))
+        conflicts = [key for key, values in dimensions.items() if len(values) > 1]
+        leakage = bool(train.intersection(ids) and test.intersection(ids))
+        groups.append({
+            "content_sha256": sha,
+            "image_ids": ids,
+            "issue_type": ("content_hash_leakage" if leakage else
+                           "duplicate_annotation_conflict" if len(digests) > 1 else
+                           "duplicate_identical"),
+            "conflict_types": (["cross_role"] if leakage else []) + conflicts,
+            "ground_truth_conflict": len(digests) > 1,
+        })
+    return sorted(groups, key=lambda group: (group["issue_type"] != "content_hash_leakage", group["content_sha256"]))
+
+
+def assert_training_duplicate_safety(rows, train_image_ids, test_image_ids=()) -> None:
+    for group in analyze_training_duplicates(rows, train_image_ids, test_image_ids):
+        if group["issue_type"] == "duplicate_identical":
+            continue
+        if group["issue_type"] == "content_hash_leakage":
+            raise ValueError(f"content hash leakage: {group['content_sha256']} 同时被显式选择为训练素材和独立试验素材")
+        raise ValueError(
+            "duplicate_annotation_conflict: "
+            f"content_sha256={group['content_sha256']} 的重复素材标注不一致: "
+            + ", ".join(group["image_ids"][:5])
+        )
+
+
 def _deduplicate_selected(
     rows: Sequence[Mapping[str, Any]],
     request: SplitRequest,
 ) -> tuple[list[Mapping[str, Any]], tuple[str, ...], dict[str, tuple[str, ...]]]:
+    assert_training_duplicate_safety(rows, request.train_image_ids, request.test_image_ids)
     by_hash: dict[str, list[Mapping[str, Any]]] = {}
     without_hash: list[Mapping[str, Any]] = []
-    train_ids = set(request.train_image_ids)
-    test_ids = set(request.test_image_ids)
     for row in rows:
         content_hash = str(row.get("content_sha256") or "").strip().lower()
         if content_hash:
@@ -218,23 +296,10 @@ def _deduplicate_selected(
             canonical_rows.append(ordered[0])
             continue
 
-        digests = {_annotation_digest(row) for row in ordered}
         ids = tuple(str(row.get("id") or "") for row in ordered)
         duplicate_groups[content_hash] = ids
-        if len(digests) != 1:
-            raise ValueError(
-                "duplicate_annotation_conflict: "
-                f"content_sha256={content_hash} 的重复素材标注不一致: {', '.join(ids[:5])}"
-            )
-
-        if request.mode is SplitMode.INDEPENDENT_TEST_SET:
-            has_train = any(image_id in train_ids for image_id in ids)
-            has_test = any(image_id in test_ids for image_id in ids)
-            if has_train and has_test:
-                raise ValueError(
-                    f"content hash leakage: {content_hash} 同时被显式选择为训练素材和独立试验素材"
-                )
-
+        # The shared analyzer above has already rejected differing original GT
+        # and any cross-role SHA; only equivalent same-role samples reach here.
         canonical_rows.append(ordered[0])
         excluded.extend(ids[1:])
 
@@ -296,6 +361,135 @@ def _component_keys(
     return result
 
 
+def exclude_reserved_test_components(
+    images: Sequence[Mapping[str, Any]],
+    train_image_ids: Sequence[str],
+    test_image_ids: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Remove training candidates connected to a reserved independent test cohort.
+
+    This reuses the same component relation truth as the split leakage guard so
+    fixed-benchmark identities stay server-private while exact images, duplicate
+    content, video/group siblings and other coupled samples cannot enter train/val.
+    Callers may expose counts, but should not expose the excluded identities.
+    """
+    train_ids = tuple(dict.fromkeys(
+        str(value).strip() for value in train_image_ids if str(value).strip()
+    ))
+    test_ids = tuple(dict.fromkeys(
+        str(value).strip() for value in test_image_ids if str(value).strip()
+    ))
+    if not train_ids or not test_ids:
+        return train_ids, ()
+
+    wanted = set(train_ids) | set(test_ids)
+    rows = [
+        row for row in images
+        if str(row.get("id") or "").strip() in wanted
+    ]
+    component_keys = _component_keys(rows)
+    reserved_components = {
+        component_keys[image_id]
+        for image_id in test_ids
+        if image_id in component_keys
+    }
+    test_id_set = set(test_ids)
+    excluded = tuple(
+        image_id for image_id in train_ids
+        if image_id in test_id_set
+        or component_keys.get(image_id) in reserved_components
+    )
+    excluded_set = set(excluded)
+    return (
+        tuple(image_id for image_id in train_ids if image_id not in excluded_set),
+        excluded,
+    )
+
+
+def _row_label_codes(row: Mapping[str, Any]) -> set[str]:
+    return {
+        str(box.get("label") or box.get("code") or "").strip()
+        for box in (row.get("boxes") or [])
+        if isinstance(box, Mapping)
+        and str(box.get("label") or box.get("code") or "").strip()
+    }
+
+
+def _split_failure_summary(rows: Sequence[Mapping[str, Any]],
+                           component_keys: Mapping[str, str],
+                           required_labels: Sequence[str],
+                           forbidden_keys: Sequence[str]) -> str:
+    """Only summarize the frozen selection on failure, never the global pool."""
+    components: dict[str, set[str]] = {}
+    negative_groups: set[str] = set()
+    for row in rows:
+        component = component_keys[str(row.get('id') or '')]
+        components.setdefault(component, set()).update(_row_label_codes(row))
+        if str(row.get('annotation_state') or '') == 'confirmed_empty':
+            negative_groups.add(component)
+    counts = ', '.join(f'{label}={sum(label in values for values in components.values())}组'
+                       for label in required_labels)
+    return (f'已选{len(rows)}张；不可拆来源{len(components)}组；'
+            f'负样本来源{len(negative_groups)}组；已知历史保护{len(set(forbidden_keys))}组；'
+            f'训练类别正样本来源：{counts or "未指定"}')
+
+
+def _reserve_required_train_components(
+    rows: Sequence[Mapping[str, Any]],
+    component_keys: Mapping[str, str],
+    required_labels: Sequence[str],
+    seed: int,
+) -> set[str]:
+    required = tuple(dict.fromkeys(
+        str(value).strip() for value in required_labels if str(value).strip()
+    ))
+    if not required:
+        return set()
+
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    group_labels: dict[str, set[str]] = {}
+    for row in rows:
+        image_id = str(row.get("id") or "")
+        key = component_keys[image_id]
+        grouped.setdefault(key, []).append(row)
+        group_labels.setdefault(key, set()).update(_row_label_codes(row))
+
+    available = set().union(*(group_labels.values())) if group_labels else set()
+    missing = [label for label in required if label not in available]
+    if missing:
+        raise ValueError(
+            "本次新增训练标签在训练候选中没有正样本: "
+            + ", ".join(missing[:20])
+        )
+
+    order = sorted(grouped)
+    random.Random(int(seed)).shuffle(order)
+    rank = {key: index for index, key in enumerate(order)}
+    needed = set(required)
+    reserved: set[str] = set()
+    while needed:
+        candidates = [
+            key for key in order
+            if key not in reserved and group_labels.get(key, set()) & needed
+        ]
+        if not candidates:
+            raise ValueError(
+                "无法为本次新增训练标签保留训练正样本: "
+                + ", ".join(sorted(needed)[:20])
+            )
+        chosen = min(
+            candidates,
+            key=lambda key: (
+                -len(group_labels.get(key, set()) & needed),
+                len(grouped[key]),
+                rank[key],
+            ),
+        )
+        reserved.add(chosen)
+        needed.difference_update(group_labels.get(chosen, set()))
+    return reserved
+
+
 def _select_grouped(
     rows: Sequence[Mapping[str, Any]],
     component_keys: Mapping[str, str],
@@ -303,6 +497,7 @@ def _select_grouped(
     seed: int,
     *,
     min_remaining_groups: int = 1,
+    reserved_component_keys: Sequence[str] = (),
 ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
@@ -312,18 +507,52 @@ def _select_grouped(
         raise ValueError("按不可拆分数据组件分组后组数不足，无法避免数据泄漏")
     keys = sorted(grouped)
     random.Random(int(seed)).shuffle(keys)
-    sizes = [len(grouped[key]) for key in keys]
+    reserved = {
+        str(key) for key in reserved_component_keys
+        if str(key) in grouped
+    }
+    selectable_keys = [key for key in keys if key not in reserved]
+    if not selectable_keys:
+        raise ValueError("保留新增标签训练正样本后，没有可用于验证/试验划分的数据组件")
+    sizes = [len(grouped[key]) for key in selectable_keys]
     target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
 
-    choices: dict[int, tuple[int, ...]] = {0: ()}
+    # Exact subset-sum with O(number_of_rows) Python-side state.
+    #
+    # The previous implementation stored the complete selected-index tuple for
+    # every reachable total. With thousands of singleton components that means
+    # sum(1..N) tuple entries and can consume quadratic memory before training
+    # even starts. A Python integer is an efficient reachability bitset; each
+    # total is discovered at most once, while predecessor arrays reconstruct the
+    # exact same first-reached subset semantics as the old DP.
+    max_total = len(rows) - 1
+    reachable = 1  # bit 0
+    mask = (1 << (max_total + 1)) - 1
+    parent_total = [-1] * (max_total + 1)
+    parent_group = [-1] * (max_total + 1)
+    selected_counts = [-1] * (max_total + 1)
+    selected_counts[0] = 0
+
     for index, size in enumerate(sizes):
-        for total, selected in list(choices.items())[::-1]:
-            candidate = total + size
-            if candidate < len(rows) and candidate not in choices:
-                choices[candidate] = (*selected, index)
+        shifted = (reachable << size) & mask
+        newly_reachable = shifted & ~reachable
+        pending = newly_reachable
+        while pending:
+            bit = pending & -pending
+            total = bit.bit_length() - 1
+            previous = total - size
+            parent_total[total] = previous
+            parent_group[total] = index
+            selected_counts[total] = selected_counts[previous] + 1
+            pending ^= bit
+        reachable |= shifted
+
+    max_selected_groups = len(grouped) - int(min_remaining_groups)
     allowed_totals = [
-        total for total, selected in choices.items()
-        if total > 0 and len(grouped) - len(selected) >= int(min_remaining_groups)
+        total
+        for total in range(1, max_total + 1)
+        if ((reachable >> total) & 1)
+        and 0 < selected_counts[total] <= max_selected_groups
     ]
     if not allowed_totals:
         raise ValueError("所选不可拆分数据组件不足以划分训练、验证和试验数据")
@@ -331,7 +560,17 @@ def _select_grouped(
         allowed_totals,
         key=lambda total: (abs(total - target), total > target, total),
     )
-    selected_keys = {keys[index] for index in choices[selected_total]}
+
+    selected_indexes: set[int] = set()
+    cursor = selected_total
+    while cursor:
+        index = parent_group[cursor]
+        previous = parent_total[cursor]
+        if index < 0 or previous < 0 or previous >= cursor:
+            raise RuntimeError("split subset predecessor chain is invalid")
+        selected_indexes.add(index)
+        cursor = previous
+    selected_keys = {selectable_keys[index] for index in selected_indexes}
     selected = [
         row for row in rows
         if component_keys[str(row.get("id") or "")] in selected_keys
@@ -341,6 +580,281 @@ def _select_grouped(
         if component_keys[str(row.get("id") or "")] not in selected_keys
     ]
     return remaining, selected
+
+
+
+def _select_grouped_stratified(
+    rows: Sequence[Mapping[str, Any]],
+    component_keys: Mapping[str, str],
+    percent: float,
+    seed: int,
+    *,
+    min_remaining_groups: int = 1,
+    min_future_positive_groups: int = 1,
+    reserved_component_keys: Sequence[str] = (),
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Deterministic multilabel holdout at indivisible component granularity.
+
+    Keep at least one positive component per label for training, and during
+    test selection keep two where available for later train/validation.
+    Prefer multi-class (and confirmed-empty) coverage before matching image
+    quotas; never split a correlated component to improve percentages.
+    Work scales with groups * labels, not a subset-sum over all combinations.
+    """
+    negative_label = "\x00confirmed_empty"
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    label_images: dict[str, dict[str, int]] = {}
+    for row in rows:
+        key = component_keys[str(row.get("id") or "")]
+        grouped.setdefault(key, []).append(row)
+        labels = _row_label_codes(row)
+        if not labels and str(row.get("annotation_state") or "").strip().lower() == "confirmed_empty":
+            labels = {negative_label}
+        counts = label_images.setdefault(key, {})
+        for label in labels:
+            counts[label] = counts.get(label, 0) + 1
+    if len(grouped) <= int(min_remaining_groups):
+        raise ValueError("按不可拆分数据组件分组后组数不足，无法避免数据泄漏")
+
+    keys = sorted(grouped)
+    random.Random(int(seed)).shuffle(keys)
+    rank = {key: index for index, key in enumerate(keys)}
+    reserved = set(reserved_component_keys) & set(grouped)
+    sizes = {key: len(grouped[key]) for key in keys}
+    by_label: dict[str, list[str]] = {}
+    support: dict[str, int] = {}
+    total_label_images: dict[str, int] = {}
+    for key in keys:
+        for label, count in label_images.get(key, {}).items():
+            by_label.setdefault(label, []).append(key)
+            support[label] = support.get(label, 0) + 1
+            total_label_images[label] = total_label_images.get(label, 0) + count
+
+    # A confirmed-empty image is a negative example, NOT a detection class.
+    # Keep one negative source group for training when one exists; requiring
+    # two just because Test precedes Val can reserve every negative component
+    # and incorrectly declare otherwise feasible holdouts impossible.
+    # True positive labels retain their stronger Train/Val reservation.
+    keep = {
+        label: min(count, 1 if label == negative_label else int(min_future_positive_groups))
+        for label, count in support.items()
+    }
+    selected_keys: set[str] = set()
+    selected_image_count = 0
+    selected_label_images: dict[str, int] = {}
+    remaining_support = dict(support)
+    max_selected_groups = len(grouped) - int(min_remaining_groups)
+    target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
+
+    def eligible(key: str, *, fit: bool = False) -> bool:
+        if key in selected_keys or key in reserved or len(selected_keys) >= max_selected_groups:
+            return False
+        if selected_image_count + sizes[key] >= len(rows):
+            return False
+        if fit and selected_image_count + sizes[key] > target:
+            return False
+        return all(
+            remaining_support[label] > keep[label]
+            for label in label_images.get(key, {})
+        )
+
+    def take(key: str) -> None:
+        nonlocal selected_image_count
+        selected_keys.add(key)
+        selected_image_count += sizes[key]
+        for label, count in label_images.get(key, {}).items():
+            remaining_support[label] -= 1
+            selected_label_images[label] = selected_label_images.get(label, 0) + count
+
+    # Cover rarer classes first; one mixed-label component can cover several.
+    for label in sorted(support, key=lambda item: (support[item], item)):
+        if selected_label_images.get(label, 0) or selected_image_count >= target:
+            continue
+        candidates = (key for key in by_label[label] if eligible(key))
+        best = min(
+            candidates,
+            key=lambda key: (
+                max(0, selected_image_count + sizes[key] - target),
+                sizes[key],
+                -len(label_images[key]),
+                rank[key],
+            ),
+            default=None,
+        )
+        if best is not None:
+            take(best)
+
+    # Deficit-driven pass balances positive image counts, not only presence.
+    desired = {
+        label: max(1, round(count * float(percent) / 100))
+        for label, count in total_label_images.items()
+    }
+    positions = {label: 0 for label in by_label}
+    exhausted: set[str] = set()
+    while selected_image_count < target:
+        pending = [
+            label for label in by_label
+            if label not in exhausted
+            and selected_label_images.get(label, 0) < desired[label]
+        ]
+        if not pending:
+            break
+        label = max(
+            pending,
+            key=lambda item: (
+                (desired[item] - selected_label_images.get(item, 0)) / desired[item],
+                -support[item],
+                item,
+            ),
+        )
+        candidates = by_label[label]
+        chosen = None
+        while positions[label] < len(candidates):
+            key = candidates[positions[label]]
+            positions[label] += 1
+            if eligible(key, fit=True):
+                chosen = key
+                break
+        if chosen is None:
+            exhausted.add(label)
+        else:
+            take(chosen)
+
+    # Complete the requested image quota with unlabeled/other components.
+    # A single final closest-overshoot choice is optional; isolation wins.
+    if selected_image_count < target:
+        for key in keys:
+            if selected_image_count >= target:
+                break
+            if eligible(key, fit=True):
+                take(key)
+    if selected_image_count < target:
+        best = min(
+            (key for key in keys if eligible(key)),
+            key=lambda key: (
+                abs(selected_image_count + sizes[key] - target),
+                sizes[key],
+                rank[key],
+            ),
+            default=None,
+        )
+        if best is not None and abs(selected_image_count + sizes[best] - target) < target - selected_image_count:
+            take(best)
+
+    if not selected_keys:
+        raise ValueError(
+            "无法在保留训练类别正样本、来源关联组及剩余集合的前提下划分留出集；"
+            "请补充独立来源素材或调整数据划分比例"
+        )
+    return (
+        [row for row in rows if component_keys[str(row.get("id") or "")] not in selected_keys],
+        [row for row in rows if component_keys[str(row.get("id") or "")] in selected_keys],
+    )
+
+
+def _recover_feasible_grouped_holdouts(
+    rows: Sequence[Mapping[str, Any]],
+    component_keys: Mapping[str, str],
+    *,
+    test_percent: float,
+    validation_percent: float,
+    seed: int,
+    forbidden_test_components: set[str],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Find legal holdout anchors before attempting to fill requested quotas.
+
+    The stratified two-pass heuristic can reserve the only Test-eligible group
+    for Train even though a different Train cover exists. A feasible partition
+    always contains *some* Test and Val groups whose removal leaves a positive
+    group for every selected label. Find that pair without exponential search:
+    groups containing a unique label must stay Train, and groups sharing a label
+    supported by exactly two sources cannot both become holdouts.
+
+    Preserve one confirmed-empty group in Train when negatives exist. Never
+    relax known historical exposure, linked-source isolation or positive GT.
+    """
+    negative_label = "\x00confirmed_empty"
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    group_labels: dict[str, set[str]] = {}
+    for row in rows:
+        key = component_keys[str(row.get("id") or "")]
+        grouped.setdefault(key, []).append(row)
+        labels = _row_label_codes(row)
+        if not labels and str(row.get("annotation_state") or "").strip().lower() == "confirmed_empty":
+            labels = {negative_label}
+        group_labels.setdefault(key, set()).update(labels)
+
+    if len(grouped) < 3:
+        raise ValueError("不足三个独立来源组，无法形成互相隔离的训练、验证和试验集")
+    label_groups: dict[str, list[str]] = {}
+    for key, labels in group_labels.items():
+        for label in labels:
+            label_groups.setdefault(label, []).append(key)
+    keep_train: set[str] = set()
+    pair_conflicts: dict[str, set[str]] = {}
+    for owners in label_groups.values():
+        if len(owners) == 1:
+            keep_train.add(owners[0])
+        elif len(owners) == 2:
+            left, right = owners
+            pair_conflicts.setdefault(left, set()).add(right)
+            pair_conflicts.setdefault(right, set()).add(left)
+
+    keys = sorted(grouped)
+    random.Random(int(seed)).shuffle(keys)
+    rank = {key: index for index, key in enumerate(keys)}
+    sizes = {key: len(grouped[key]) for key in keys}
+    candidate_val = [key for key in keys if key not in keep_train]
+    candidate_test = [key for key in candidate_val if key not in forbidden_test_components]
+    desired_test = max(1, round(len(rows) * float(test_percent) / 100))
+    desired_val = max(1, round(len(rows) * float(validation_percent) / 100))
+    candidate_test.sort(key=lambda key: (abs(sizes[key] - desired_test), sizes[key], rank[key]))
+    candidate_val.sort(key=lambda key: (abs(sizes[key] - desired_val), sizes[key], rank[key]))
+
+    anchors: tuple[str, str] | None = None
+    for test_key in candidate_test:
+        forbidden_val = pair_conflicts.get(test_key, set()) | {test_key}
+        val_key = next((key for key in candidate_val if key not in forbidden_val), None)
+        if val_key is not None:
+            anchors = (test_key, val_key)
+            break
+    if anchors is None:
+        raise ValueError("已知历史保护及训练正/负样本来源约束下，无可同时成立的 Test、Val 来源组")
+
+    test_key, val_key = anchors
+    role_keys: dict[str, set[str]] = {"test": {test_key}, "validation": {val_key}}
+    remaining = set(keys) - {test_key, val_key}
+    remaining_support = {
+        label: sum(key in remaining for key in owners)
+        for label, owners in label_groups.items()
+    }
+    targets = {"test": desired_test, "validation": desired_val}
+    counts = {"test": sizes[test_key], "validation": sizes[val_key]}
+    # Filling is best-effort; retaining valid Train coverage is more important
+    # than achieving an exact percentage with indivisible camera/video groups.
+    for role in ("test", "validation"):
+        options = [key for key in keys if key in remaining and
+                   (role != "test" or key not in forbidden_test_components)]
+        options.sort(key=lambda key: (sizes[key], rank[key]))
+        for key in options:
+            if counts[role] >= targets[role] or len(remaining) <= 1:
+                break
+            if counts[role] + sizes[key] > targets[role]:
+                continue
+            if any(remaining_support[label] <= 1 for label in group_labels.get(key, ())):
+                continue
+            role_keys[role].add(key)
+            remaining.remove(key)
+            counts[role] += sizes[key]
+            for label in group_labels.get(key, ()):
+                remaining_support[label] -= 1
+
+    if not remaining or any(not count for count in remaining_support.values()):
+        raise RuntimeError("grouped holdout recovery violated Train coverage")
+    train_rows = [row for row in rows if component_keys[str(row.get("id") or "")] in remaining]
+    validation_rows = [row for row in rows if component_keys[str(row.get("id") or "")] in role_keys["validation"]]
+    test_rows = [row for row in rows if component_keys[str(row.get("id") or "")] in role_keys["test"]]
+    return train_rows, validation_rows, test_rows
 
 
 def _assert_no_leakage(role_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
@@ -362,7 +876,12 @@ def build_split_manifest(
     request: SplitRequest,
     *,
     seed: int,
+    required_train_labels: Sequence[str] = (),
+    split_strategy: str = "legacy_v1",
+    forbidden_test_image_ids: Sequence[str] = (),
 ) -> SplitManifest:
+    if split_strategy not in {"legacy_v1", "multilabel_grouped_v2"}:
+        raise ValueError("unknown training split strategy")
     by_id: dict[str, Mapping[str, Any]] = {}
     for row in images:
         image_id = str(row.get("id") or "").strip()
@@ -408,27 +927,103 @@ def build_split_manifest(
         )
 
     component_keys = _component_keys(canonical_rows)
+    required_labels = tuple(dict.fromkeys(
+        str(value).strip()
+        for value in required_train_labels
+        if str(value).strip()
+    ))
+    reserved_train_components = _reserve_required_train_components(
+        train_pool, component_keys, required_labels, int(seed),
+    )
+    history_test_components = {component_keys[item] for item in forbidden_test_image_ids if item in component_keys}
+    if request.mode == SplitMode.INDEPENDENT_TEST_SET and any(
+        component_keys[str(row['id'])] in history_test_components for row in independent_test_rows
+    ):
+        raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: parent model has seen selected Test materials')
     test_seed = int(seed)
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
 
+    selector = _select_grouped_stratified if split_strategy == "multilabel_grouped_v2" else _select_grouped
+    split_recovery_applied = False
+
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
         test_rows = independent_test_rows
-        train_rows, validation_rows = _select_grouped(
-            train_pool, component_keys, request.validation_percent, validation_seed
+        train_rows, validation_rows = selector(
+            train_pool,
+            component_keys,
+            request.validation_percent,
+            validation_seed,
+            reserved_component_keys=reserved_train_components,
         )
         test_source = "independent_materials"
     else:
-        after_test, test_rows = _select_grouped(
-            train_pool,
-            component_keys,
-            float(request.experiment_percent or 0),
-            test_seed,
-            min_remaining_groups=2,
-        )
-        train_rows, validation_rows = _select_grouped(
-            after_test, component_keys, request.validation_percent, validation_seed
-        )
+        validation_of_remaining = float(request.validation_percent) * 100.0 / (100.0 - float(request.experiment_percent))
+        # The greedy two-stage selector can reach a dead end even when another
+        # order of whole source components is feasible. Retry only failures,
+        # with deterministic bounded seeds and a final relaxed preference for
+        # Val class coverage. Never relax identity/source leakage or Train labels.
+        attempts = [(test_seed, validation_seed, 2)]
+        if split_strategy == "multilabel_grouped_v2":
+            attempts += [
+                (test_seed + offset * 104729, validation_seed + offset * 65537, future)
+                for future in (2, 1) for offset in (1, 2)
+            ]
+            attempts.append((test_seed, validation_seed, 1))
+        last_split_error = None
+        for try_test_seed, try_validation_seed, future_groups in attempts:
+            try:
+                after_test, test_rows = selector(
+                    train_pool,
+                    component_keys,
+                    float(request.experiment_percent or 0),
+                    try_test_seed,
+                    min_remaining_groups=2,
+                    **({"min_future_positive_groups": future_groups}
+                       if split_strategy == "multilabel_grouped_v2" else {}),
+                    reserved_component_keys=set(reserved_train_components) | history_test_components,
+                )
+                # Percentages use the complete pool; Val's target is rebased
+                # to the actual remaining pool after Test is chosen.
+                train_rows, validation_rows = selector(
+                    after_test,
+                    component_keys,
+                    validation_of_remaining,
+                    try_validation_seed,
+                    reserved_component_keys=reserved_train_components,
+                )
+                if not train_rows or not test_rows or not validation_rows:
+                    raise ValueError('训练、验证或试验集为空')
+                break
+            except ValueError as error:
+                last_split_error = error
+        else:
+            if split_strategy == "multilabel_grouped_v2":
+                try:
+                    train_rows, validation_rows, test_rows = _recover_feasible_grouped_holdouts(
+                        train_pool,
+                        component_keys,
+                        test_percent=float(request.experiment_percent or 0),
+                        validation_percent=float(request.validation_percent),
+                        seed=test_seed,
+                        forbidden_test_components=history_test_components,
+                    )
+                    # The initial greedy training reservation may have chosen
+                    # the only Test-eligible group; recompute it from the final
+                    # Train members so the manifest reports true reservations.
+                    reserved_train_components = _reserve_required_train_components(
+                        train_rows, component_keys, required_labels, int(seed),
+                    )
+                    split_recovery_applied = True
+                except ValueError as fallback_error:
+                    raise ValueError(
+                        'TRAINING_SPLIT_SEARCH_EXHAUSTED: 来源隔离和训练正样本约束下，'
+                        '确定性划分及来源组兜底均未找到可用 Train/Val/Test。'
+                        + f' {_split_failure_summary(train_pool, component_keys, required_labels, history_test_components)}'
+                        + f' 原因：{fallback_error}；原划分：{last_split_error}'
+                    ) from fallback_error
+            else:
+                raise ValueError(str(last_split_error)) from last_split_error
         test_source = "random_from_training_pool"
 
     roles = {"train": train_rows, "validation": validation_rows, "test": test_rows}
@@ -455,6 +1050,16 @@ def build_split_manifest(
         "validation_percent": request.validation_percent,
         "excluded_duplicate_ids": list(excluded_duplicate_ids),
         "duplicate_group_count": len(duplicate_groups),
+        **({"split_strategy": split_strategy} if split_strategy == "multilabel_grouped_v2" else {}),
+        **({"split_recovery_strategy": "source_pair_anchor_v1"} if split_recovery_applied else {}),
+        **({'forbidden_test_image_ids': sorted(set(forbidden_test_image_ids))} if forbidden_test_image_ids else {}),
+        **(
+            {
+                "required_train_labels": list(required_labels),
+                "reserved_train_component_count": len(reserved_train_components),
+            }
+            if required_labels else {}
+        ),
     }
     actual_ratios = {
         role: round(len(value) * 100 / total, 6) for role, value in ids.items()

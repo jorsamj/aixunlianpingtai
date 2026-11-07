@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
 
-import {installAlgorithmListRuntime} from '../../static/modules/algorithm-list-runtime.js';
+import {
+  algorithmCategoryColumns,
+  algorithmCategorySearch,
+  algorithmListSearchMatch,
+  algorithmVersionMap50,
+  installAlgorithmListRuntime,
+} from '../../static/modules/algorithm-list-runtime.js';
 
 function response(body) {
   return {
@@ -25,11 +33,9 @@ test('algorithm expand/collapse is local-only and never fetches the algorithm li
     jobs: [],
     alg428Expanded: {},
   };
-  let renders = 0;
   let requests = 0;
   globalThis.window = {
     fetch: async () => { requests += 1; return response({items: []}); },
-    renderAlg412: () => { renders += 1; },
   };
 
   const runtime = installAlgorithmListRuntime({
@@ -40,12 +46,10 @@ test('algorithm expand/collapse is local-only and never fetches the algorithm li
   assert.equal(window.toggleAlgorithm412('a1'), true);
   assert.equal(state.alg428Expanded.a1, true);
   assert.equal(requests, 0);
-  assert.equal(renders, 1);
 
   assert.equal(window.toggleAlgorithm428('a1'), false);
   assert.equal(state.alg428Expanded.a1, false);
   assert.equal(requests, 0);
-  assert.equal(renders, 2);
 
   runtime.destroy();
   cleanup();
@@ -60,7 +64,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
     alg428Expanded: {},
   };
   const urls = [];
-  let renders = 0;
   globalThis.window = {
     async fetch(url) {
       urls.push(url);
@@ -68,7 +71,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
       if (url.endsWith('/jobs')) return response([{id: 'j2', status: 'running'}]);
       throw new Error(`unexpected URL: ${url}`);
     },
-    renderAlg412: () => { renders += 1; },
   };
 
   const runtime = installAlgorithmListRuntime({
@@ -85,10 +87,72 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   assert.deepEqual(state.jobs.map(row => row.id), ['j2']);
   assert.equal(result.cached, false);
   assert.equal(result.stale, false);
-  assert.equal(renders, 1);
 
   runtime.destroy();
   cleanup();
+});
+
+test('algorithm cards update before slow job history completes', async () => {
+  const state = {page: '算法列表', project: {id: 'p1'}, algorithms: [{id: 'old'}], jobs: [{id: 'previous'}], alg428Expanded: {}};
+  let releaseJobs;
+  const slowJobs = new Promise(resolve => { releaseJobs = resolve; });
+  const seen = [];
+  globalThis.window = {fetch: async url => {
+    seen.push(url);
+    if (url.endsWith('/jobs')) { await slowJobs; return response([{id:'fresh-job'}]); }
+    return response({items:[{id:'new-algorithm',name:'先显示算法'}]});
+  }};
+  const runtime = installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  const pending = runtime.refresh({render:false});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.algorithms[0].id,'new-algorithm','catalog must paint without waiting for jobs');
+  assert.equal(state.jobs[0].id,'previous','job history must not be replaced before its response');
+  assert.equal(runtime.state().inflight,true);
+  releaseJobs();
+  await pending;
+  assert.equal(state.jobs[0].id,'fresh-job');
+  assert.equal(seen.length,2);
+  assert.ok(runtime.state().timing.algorithmMs >= 0);
+  assert.ok(runtime.state().timing.totalMs >= runtime.state().timing.algorithmMs);
+  runtime.destroy();cleanup();
+});
+
+test('common prewarm still runs after the jobs response triggers a second card paint', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  function cancelTrainingWarmup()');
+  const end = source.indexOf('  function algorithmMatches(', start);
+  assert.ok(start > 0 && end > start);
+  const scheduled = [];
+  let warmed = 0;
+  const project = {id: 'p1'};
+  const context = {
+    window: {setTimeout(callback) { scheduled.push(callback); return scheduled.length; }},
+    clearTimeout() {},
+    state: () => ({page: '算法列表'}),
+    projectId: () => project.id,
+    destroyed: false,
+    trainingWarmupHandle: null,
+    trainingWarmupGeneration: 0,
+    commonTrainingWarmupProjectId: '',
+    commonTrainingWarmupAt: 0,
+    commonTrainingWarmupPendingProjectId: '',
+    commonTrainingWarmupHandle: null,
+    COMMON_TRAINING_WARMUP_TTL_MS: 300000,
+    ALGORITHM_PAGE: '算法列表',
+    providerMeta: () => ({external: false}),
+    algorithmTrainability: () => ({ready: false}),
+    warmTrainingInputs() { warmed += 1; return Promise.resolve(); },
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  context.scheduleTrainingWarmup([]);
+  context.scheduleTrainingWarmup([]); // jobs response rerenders existing cards
+  assert.equal(scheduled.length, 1, 'prewarm must be coalesced while scheduled');
+  assert.equal(warmed, 0);
+  scheduled[0]();
+  assert.equal(warmed, 1, 'rerender must not invalidate an unsent prewarm');
+  context.scheduleTrainingWarmup([]);
+  assert.equal(scheduled.length, 1, 'warm data should not be redundantly queued');
 });
 
 test('concurrent focused refreshes share one request pair', async () => {
@@ -210,4 +274,261 @@ test('focused refresh uses raw fetch but discards results after navigation and a
 
   runtime.destroy();
   cleanup();
+});
+
+test('algorithm runtime exposes no DOM decorator layer', () => {
+  const state = {page: '算法列表', project: {id: 'p1'}, algorithms: [], jobs: [], alg428Expanded: {}};
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  assert.equal(runtime.registerDecorator, undefined);
+  assert.equal(runtime.runDecorators, undefined);
+  runtime.destroy();
+  cleanup();
+});
+
+
+test('algorithm runtime owns unified list filters and searches provider identifiers', () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    algorithms: [],
+    jobs: [],
+    alg428Expanded: {},
+  };
+  globalThis.window = {
+    fetch: async () => response({items: []}),
+    renderAlg412: () => {},
+  };
+  const runtime = installAlgorithmListRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+
+  assert.deepEqual(runtime.filterState(), {
+    query: '',
+    selectedCategoryIds: [],
+    source: 'all',
+    status: 'all',
+  });
+
+  const next = runtime.setFilters({
+    query: ' PROD-42 ',
+    selectedCategoryIds: ['root-a', 'root-a', '', 'child-a'],
+    source: 'external',
+    status: 'trainable',
+  }, {render: false});
+  assert.deepEqual(next, {
+    query: 'PROD-42',
+    selectedCategoryIds: ['root-a', 'child-a'],
+    source: 'external',
+    status: 'trainable',
+  });
+
+  assert.equal(runtime.matchesSearch({
+    name: '抽烟检测',
+    external_product_id: 'prod-42',
+  }), true);
+  assert.equal(algorithmListSearchMatch({algorithm_code: 'helmet-v2'}, 'HELMET'), true);
+  assert.equal(algorithmListSearchMatch({productCode: 'safe-prod'}, 'SAFE-PROD'), true);
+  assert.equal(algorithmListSearchMatch({name: '烟火检测'}, 'helmet'), false);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('category filtering uses only real external_category_id and separates draft from applied state', () => {
+  const state = {
+    page: '算法列表', project: {id: 'p1'}, jobs: [], alg428Expanded: {},
+    algorithms: [
+      {id: 'local', name: '本地车辆算法', source_type: 'LOCAL', industry: '车辆', versions: []},
+      {id: 'external-match', name: '外部算法', source_type: 'EXTERNAL', external_category_id: 'leaf', versions: []},
+      {id: 'external-other', name: '车辆相关外部算法', source_type: 'EXTERNAL', external_category_id: 'other', versions: []},
+    ],
+  };
+  const categories = [
+    {categoryId: 'root', categoryName: '车辆相关', parentId: ''},
+    {categoryId: 'leaf', categoryName: '机动车检测', parentId: 'root'},
+    {categoryId: 'other', categoryName: '人脸识别', parentId: ''},
+  ];
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.setExternalProvider({
+    snapshot: () => ({
+      categories,
+      externalMode: true,
+      categoryRows: [
+        {id: 'root', name: '车辆相关', parentId: '', ancestorIds: [], path: '车辆相关', hasChildren: true},
+        {id: 'leaf', name: '机动车检测', parentId: 'root', ancestorIds: ['root'], path: '车辆相关 / 机动车检测', hasChildren: false},
+        {id: 'other', name: '人脸识别', parentId: '', ancestorIds: [], path: '人脸识别', hasChildren: false},
+      ],
+    }),
+    matches: (algorithm, filters) => {
+      if (!filters.selectedCategoryIds.length) return true;
+      return filters.selectedCategoryIds.includes(String(algorithm.external_category_id || ''));
+    },
+  });
+
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('root');
+  runtime.confirmCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('leaf');
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
+  runtime.cancelCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('leaf');
+  runtime.confirmCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, ['leaf']);
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['external-match']);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('trainable filter matches the real training affordance for local and external algorithms', () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    jobs: [],
+    alg428Expanded: {},
+    algorithms: [
+      {id: 'local-yolo', name: '本地 YOLO', source_type: 'LOCAL', algorithm_type: 'yolo_ultralytics', versions: []},
+      {id: 'local-opencv', name: 'OpenCV', source_type: 'LOCAL', algorithm_type: 'opencv', versions: []},
+      {id: 'external-ready', name: '畅联可训练', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN', versions: []},
+      {id: 'external-blocked', name: '畅联不可训练', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN', versions: []},
+    ],
+  };
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.setExternalProvider({
+    snapshot: () => ({categories: [], categoryRows: [], externalMode: true}),
+    matches: () => true,
+    meta: algorithm => ({
+      external: String(algorithm.source_type || '').toUpperCase() === 'EXTERNAL',
+      sourceLabel: '测试',
+      readiness: {ready: algorithm.id !== 'external-blocked', message: ''},
+    }),
+  });
+  runtime.setFilters({status: 'trainable'}, {render: false});
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id).sort(), ['external-ready', 'local-yolo']);
+  runtime.destroy();
+  cleanup();
+});
+
+test('algorithm registry source keeps card-wide expansion and explicit trainable quick filter', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /class="algorithm-card-grid"/);
+  assert.match(source, /class="algorithm-card-overview"/);
+  assert.match(source, /class="algorithm-card-primary"/);
+  assert.match(source, /class="algorithm-card-side"/);
+  assert.match(source, /data-algorithm-card="1"/);
+  assert.match(source, /data-algorithm-trainable-only/);
+  assert.match(source, /仅看可训练/);
+  assert.match(source, /!event\.target\.closest\('button,a,input,select,textarea,label,details,summary'\)/);
+  assert.match(source, /scheduleTrainingWarmup\(rows\)/);
+  assert.match(source, /COMMON_TRAINING_WARMUP_TTL_MS = 5 \* 60 \* 1000/);
+  assert.match(source, /commonTrainingWarmupProjectId === currentProjectId/);
+});
+
+test('category presentation supports real arbitrary depth in three visible panes and full-path search', () => {
+  const rows = [
+    {id: 'root', name: '安全治理', parentId: '', depth: 0, ancestorIds: [], path: '安全治理', hasChildren: true},
+    {id: 'vehicle', name: '车辆', parentId: 'root', depth: 1, ancestorIds: ['root'], path: '安全治理 / 车辆', hasChildren: true},
+    {id: 'parking', name: '违停', parentId: 'vehicle', depth: 2, ancestorIds: ['root', 'vehicle'], path: '安全治理 / 车辆 / 违停', hasChildren: true},
+    {id: 'night', name: '夜间违停', parentId: 'parking', depth: 3, ancestorIds: ['root', 'vehicle', 'parking'], path: '安全治理 / 车辆 / 违停 / 夜间违停', hasChildren: false},
+  ];
+  const columns = algorithmCategoryColumns(rows, ['root', 'vehicle', 'parking']);
+  assert.equal(columns.length, 3);
+  assert.deepEqual(columns.map(column => column.parentId), ['root', 'vehicle', 'parking']);
+  assert.deepEqual(algorithmCategorySearch(rows, '夜间').map(row => row.path), ['安全治理 / 车辆 / 违停 / 夜间违停']);
+});
+
+
+test('algorithm list has exactly one canonical page and card renderer owner', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/function renderPage\(/g) || []).length, 1);
+  assert.equal((source.match(/<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">/g) || []).length, 1);
+  assert.equal((main.match(/registerPageOwner\('算法列表'/g) || []).length, 1);
+});
+
+test('current mAP50 never falls back to generic accuracy', () => {
+  assert.equal(algorithmVersionMap50({accuracy: 0.91}), null);
+  assert.ok(Math.abs(algorithmVersionMap50({map50: 0.926}) - 92.6) < 1e-9);
+  assert.equal(algorithmVersionMap50({metrics: {mAP50: 0.8}}), 80);
+});
+
+
+test('category picker rows are whole-row interactive for drill-down and leaf selection', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /function activateCategoryRow\(id\)/);
+  assert.match(source, /data-category-row="\$\{esc\(row\.id\)\}"/);
+  assert.match(source, /const categoryRow = event\.target\.closest\('\[data-category-row\]'\)/);
+  assert.match(source, /if \(categoryRow\) return activateCategoryRow\(categoryRow\.dataset\.categoryRow\)/);
+  assert.match(source, /viewState\.categoryPath = \[\.\.\.\(row\.ancestorIds \|\| \[\]\)/);
+  assert.match(source, /return toggleDraftCategory\(row\.id\)/);
+  assert.match(source, /event\.target === categoryRow && \['Enter', ' '\]\.includes\(event\.key\)/);
+});
+
+test('suspected deletion remains visible beside an existing running task and preserves training availability', () => {
+  const source=fs.readFileSync(new URL('../../static/modules/algorithm-list-runtime.js',import.meta.url),'utf8');
+  const start=source.indexOf('  function algorithmRowView('),end=source.indexOf('  function renderRows()',start);
+  const context={algorithm:{id:'a',name:'疑似算法',external_active:true,external_deletion_status:'SUSPECTED_DELETED',versions:[]},
+    currentVersion:()=>null,algorithmVersionMap50:()=>null,trainingCount:()=>0,providerMeta:()=>({external:true,sourceLabel:'新畅联',deletion:{state:'SUSPECTED_DELETED',label:'待核实'}}),algorithmTrainability:()=>({ready:true}),activeJob:()=>({status:'running'}),trainingStatusText:()=> '训练中',state:()=>({jobs:[],alg428Expanded:{}}),algorithmTypeText:()=>'',dateText:()=>'',versionRows:()=>'',esc:value=>String(value??'')};
+  const html=vm.runInNewContext(`${source.slice(start,end)};algorithmRowView(algorithm).html`,context);
+  assert.match(html,/data-external-deletion="SUSPECTED_DELETED"/);assert.match(html,/待核实/);assert.match(html,/训练中/);
+  assert.doesNotMatch(html,/data-algorithm-train="a"[^>]*disabled/);
+});
+
+test('leaving algorithm list aborts page-owned GETs and releases the inflight owner', async () => {
+  const state = {page:'算法列表',project:{id:'p1'},algorithms:[{id:'existing'}],jobs:[],alg428Expanded:{}};
+  const signals=[];
+  globalThis.window={fetch:(_url,{signal})=>{
+    signals.push(signal);
+    return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>{
+      const error=new Error('aborted');error.name='AbortError';reject(error);
+    },{once:true}));
+  }};
+  const runtime=installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try {
+    const request=runtime.refresh({render:true});
+    assert.equal(signals.length,2);
+    runtime.beforeNavigate('数据集');
+    state.page='数据集';
+    const result=await request;
+    assert.equal(result.stale,true);
+    assert.ok(signals.every(signal=>signal.aborted));
+    assert.deepEqual(state.algorithms.map(x=>x.id),['existing']);
+    assert.equal(runtime.state().inflight,false);
+  } finally {runtime.destroy();cleanup();}
+});
+
+test('shared algorithm GET consumers are not aborted by a page departure', async () => {
+  const state={page:'算法列表',project:{id:'p1'},algorithms:[],jobs:[],alg428Expanded:{}};
+  const waiting=[];const signals=[];
+  globalThis.window={fetch:(_url,{signal})=>new Promise(resolve=>{
+    signals.push(signal);waiting.push(resolve);
+  })};
+  const runtime=installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try{
+    const page=runtime.refresh({render:true});
+    const shared=runtime.refresh({render:false});
+    assert.equal(signals.length,2);
+    runtime.beforeNavigate('数据集');
+    state.page='数据集';
+    assert.ok(signals.every(signal=>!signal.aborted));
+    waiting[0](response({items:[{id:'new'}]}));
+    waiting[1](response([{id:'j1'}]));
+    const values=await Promise.all([page,shared]);
+    assert.equal(values[0].stale,false);
+    assert.deepEqual(state.algorithms.map(x=>x.id),['new']);
+    assert.equal(runtime.state().inflight,false);
+  }finally{runtime.destroy();cleanup();}
 });

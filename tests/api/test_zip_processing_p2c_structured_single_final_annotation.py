@@ -22,11 +22,12 @@ def _material_by_filename(app_module, project_id: str):
 
 
 def _count_annotation_upserts(monkeypatch):
-    calls = {"value": 0}
+    calls = {"value": 0, "rows": 0}
     original = AnnotationRepository.upsert_many
 
     def counted(self, *args, **kwargs):
         calls["value"] += 1
+        calls["rows"] += len(args[0])
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(AnnotationRepository, "upsert_many", counted)
@@ -39,7 +40,8 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
     import app as app_module
 
     project = client.post(
-        "/api/projects", json={"name": "p2c-coco", "labels": []}
+        "/api/projects",
+        json={"name": "p2c-coco", "labels": ["target", "unrelated"]},
     ).json()
     project_id = project["id"]
     app_module.ensure_default_datasets(project_id)
@@ -95,7 +97,16 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
     committed = False
     try:
         assert app_module._v18_import_coco(
-            project_id, root, "default", report
+            project_id,
+            root,
+            "default",
+            report,
+            label_mapping={"7": "target"},
+            import_context={
+                "import_batch_id": "p2c-coco",
+                "source_task_id": "p2c-coco",
+                "confirmed_at": "2026-09-30T00:00:00+00:00",
+            },
         ) is True
         app_module._v50_end_image_batch(save=True)
         committed = True
@@ -107,7 +118,7 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
     assert report["imported_images"] == image_count
     assert report["boxes"] == len(annotated_indexes)
     assert report["annotated_images"] == len(annotated_indexes)
-    assert upserts["value"] == image_count
+    assert upserts == {"value": 1, "rows": image_count}
 
     rows = _material_by_filename(app_module, project_id)
     repository = AnnotationRepository(app_module.project_dir(project_id))
@@ -117,6 +128,7 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
         record = rows[filename]
         annotation = repository.get(record["id"])
         assert annotation["version"] == 1
+        assert annotation["annotation_scope"] == ["target"]
         if index in annotated_indexes:
             assert annotation["annotation_state"] == "annotated"
             assert len(annotation["boxes"]) == 1
@@ -128,11 +140,14 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
             assert box["y2"] == 19.0
             assert record["box_count"] == 1
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
+            assert box["source"] == "imported"
         else:
             assert annotation["annotation_state"] == "confirmed_empty"
             assert annotation["boxes"] == []
             assert record["box_count"] == 0
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
 
 
 def _voc_xml(filename: str, annotated: bool) -> str:
@@ -158,7 +173,8 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
     import app as app_module
 
     project = client.post(
-        "/api/projects", json={"name": "p2c-voc", "labels": []}
+        "/api/projects",
+        json={"name": "p2c-voc", "labels": ["target", "unrelated"]},
     ).json()
     project_id = project["id"]
     app_module.ensure_default_datasets(project_id)
@@ -185,7 +201,16 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
     committed = False
     try:
         assert app_module._v18_import_voc(
-            project_id, root, "default", report
+            project_id,
+            root,
+            "default",
+            report,
+            label_mapping={"target": "target"},
+            import_context={
+                "import_batch_id": "p2c-voc",
+                "source_task_id": "p2c-voc",
+                "confirmed_at": "2026-09-30T00:00:00+00:00",
+            },
         ) is True
         app_module._v50_end_image_batch(save=True)
         committed = True
@@ -197,7 +222,7 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
     assert report["imported_images"] == image_count
     assert report["boxes"] == len(annotated_indexes)
     assert report["annotated_images"] == len(annotated_indexes)
-    assert upserts["value"] == image_count
+    assert upserts == {"value": 1, "rows": image_count}
 
     rows = _material_by_filename(app_module, project_id)
     repository = AnnotationRepository(app_module.project_dir(project_id))
@@ -207,6 +232,7 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
         record = rows[filename]
         annotation = repository.get(record["id"])
         assert annotation["version"] == 1
+        assert annotation["annotation_scope"] == ["target"]
         if index in annotated_indexes:
             assert annotation["annotation_state"] == "annotated"
             assert len(annotation["boxes"]) == 1
@@ -218,8 +244,11 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
             assert box["y2"] == 22.0
             assert record["box_count"] == 1
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
+            assert box["source"] == "imported"
         else:
             assert annotation["annotation_state"] == "confirmed_empty"
             assert annotation["boxes"] == []
             assert record["box_count"] == 0
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
