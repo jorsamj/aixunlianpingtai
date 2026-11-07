@@ -52,7 +52,7 @@ Git blob与app训练相关定义AST摘要记录在evidence/architecture-2026-11-
 ZIP：活跃v19扫描/提取及v36绕过统一限额；关闭的旧带标注路由HTTP409先拒绝，不重复开发。
 app.py/app.js体积、函数覆盖、DOM装饰、CSS、异常捕获和兼容API先只审计；没有故障证据不改。
 
-进度：P0-2本地验证完成、准备提交；P0-3/P0-4仅完成审计，尚未实施。
+进度：P0-2已推送31c897c335eff460f36cc340861c0beea12723f2，准确SHA全部26项Actions成功；P0-3本地修复与回归通过、待推送核验CI；P0-4仅审计，尚未实施。
 
 
 ## 用户确认的远程服务边界
@@ -138,3 +138,79 @@ UI_BUILD_VERSION只有内部PlatformCore元数据与dataset.uiBuild消费者，�
 唯一清楚复现的P1：450ms读取延迟、160ms切页，13次__PAGE_NAVIGATION_CANCELLED__经旧safe()及resource-discovery.refreshCache的catch在新页toast。
 两处已有取消识别helper可用于最小修正，但本轮按“其他架构先只审计”不改原导航/请求/资源Owner。
 分类为“有问题，当前证明为提示噪声，未证明数据损坏”；保留复现证据，建议独立小批修复。
+
+
+## P0-3：负样本池操作闭环的必要性八问及冻结合同
+
+1. 实际调用：卡片join-one直接写members，菜单joinSelected逐图读取GT且最多200；browseMaterials与移除走原write。write隐式继承最近算法筛选。
+2. 隔离复现：201张选择在任何请求前被拒；重复加入仍显示选择总数为新增；旧项目写完成后在新项目出现成功提示；单卡与菜单保护条件不同。
+3. 证据：原NegativePool Node11/11、Python15/15及Chrome4/4均未覆盖上述场景，迟到提示已用延迟实际调用复现；不是按文件规模推断。
+4. 原有保护：跨页Set、全筛选ID、分类缓存/Observer、原GT审阅与训练草稿入口正确，保留；普通池管理关联本来不认证训练资格，不得全局禁止带其他类别GT的成员。
+5. 最小修改：仍用原NegativePool.members事务和原runtime；新UI显式opt-in真实计数与原菜单的空GT预检，一次get_many放在原生命周期fence内；每批200顺序处理，复用原弹窗反馈，不新增任务/回执/存储。
+6. 不改：用户无法处理201张，重复/网络不确定时误认为新增成功，项目切换后的反馈不可信。
+7. 波及：原members仅新增严格boolean可选参数，默认旧字典/原子事务/正式GT/训练资格不变；新UI严格空GT入口与原菜单语义一致。上传/AI/旧Python调用不擅自采用新限制。
+8. 非代码办法：人工拆成200仍不能解决计数、上下文污染与GT预检竞争；用培训或说明不足以恢复结果可信度。
+
+合同：report_counts默认false时原响应完全一致；opt-in按真实历史池/算法作用域计算added/already_present或removed/already_absent。
+require_empty_gt默认false；仅普通add允许、最多200，在同一个已有fence内先批读正式GT再原_mutate，任何冲突整批未改。
+没有改变普通管理入池、负样本认证、训练准入、GT版本或正式保存。每个HTTP批次保持原子，前端跨批可部分完成。
+所有提交冻结项目、页面、算法、类别和ID；关窗/切项目后永久停止后续批，既有已提交结果保留。
+未知网络结果须标记待核验，显式幂等重试不声称恢复首次新增数；已确认成功批不重试。
+旧服务器未返回新统计时只显示已处理数量，不能用选择数量冒充新增。
+
+训练额外基线：原tests/api/test_training_request.py及tests/integration/test_training_task_worker.py共69通过（64.37s）。
+涵盖训练请求冻结、迭代/母模型选择、快照/划分、Worker准备传递和成功归档；隔离CPU测试替身，不是真实GPU训练。
+
+
+## 训练十项防回归矩阵（只验证，不整改训练）
+
+| 冻结项 | 现有可核对保护 |
+| --- | --- |
+| 首次训练配置 | test_training_label_contract.first_training_uses_only_user_selected_material_labels、precision/resource合同；原代码blob保持 |
+| 迭代训练配置 | iteration_inherits_previous_schema_and_appends_new_label、iteration_can_continue_with_inherited_labels_without_adding_new_labels |
+| 基础模型选择 | first_training_base_mode_stays_mother_model_reference、frozen_iteration_base_fails_closed_if_checkpoint_changes；API iteration_base_endpoint_ignores_failed_attempt |
+| 标签合同解析 | dense class IDs、inactive/merge、formal scope及product_training_submit_freezes_server_authoritative_label_contract |
+| Train/Val/Test | 原test_training_splits全文件；20k规模、来源不可拆、同图不能跨split、独立Test与随机模式 |
+| 训练历史隔离 | parent_exposed_component_cannot_enter_random_test、multilabel_recovery_still_blocks_when_history_exposes_every_test_source |
+| 正负样本准入 | unannotated_material_without_boxes_is_rejected、confirmed_empty_material_is_a_valid_negative_sample、uncommitted_gt_is_never_a_task_confirmable_negative |
+| 快照摘要 | test_snapshots确定性/dataset revision与不可变持久化；API frozen_selection_replay_survives_revision_change |
+| Worker参数传递 | 原preparation→TrainingHandler隔离集成两种selection_reference；资源计划预启动漂移拒绝及精度冻结 |
+| 完成后版本归属 | 同一集成断言algorithm-one、唯一SUCCEEDED版本、snapshot/revision/label/lineage匹配；API success_without_verified_model_is_not_archived |
+
+上述定位为函数名简写，可在tests/unit、tests/api、tests/integration对应文件查询；基线133通过/1 Linux专用跳过及69通过，集合有重叠，不加总。
+模型执行使用原隔离CPU替身；这证明既有合同回归，不代表训练数学质量或真实硬件验收。68文件blob与63app定义AST另提供源码不变证据。
+
+
+### P0-3 兼容接口与操作说明
+
+仍是POST /api/v61/projects/{project_id}/negative-pool/members：旧image_ids/action/algorithm_id/category_ids不变。
+新增可选report_counts:boolean=false、require_empty_gt:boolean=false，不接受字符串false或数字。无新表、迁移、Worker任务或Candidate回执。
+默认例：重复add仍返回原{"affected":1}；不把历史affected改成新增数，保护所有旧调用方。
+opt-in例：算法池add {"affected":2,"added":1,"already_present":1}；算法remove保留旧affected/already_absent/algorithm_id并增加removed。
+历史池remove仅opt-in增加真实removed/already_absent；分类设置和上传意向旧合同不变。
+strict限普通add且<=200，正式框冲突整个HTTP批次不变；原普通管理关联仍可带GT，正式训练资格由原流程另行判断。
+
+用户在原卡片/批选入口选目标算法并确认后，自动按200顺序提交；素材库挑选及上传后仍可用原历史池或显式算法范围。
+结果弹窗显示已处理、准确新增/已存在或移出/原已不在池、整批失败、待核验及未处理；只对失败/待核验显式重试。
+若响应丢失，服务端可能已经提交；后续核验不能还原首次新增数量，即使核验失败也继续标记原结果未知。
+停止仅停止后续批次，已经提交的变更保留。关窗后不自动后台运行；刷新后按当前池重新选择可安全幂等提交，普通管理批次不新建持久任务或第二套回执。
+已有审核、负样本确认、训练草稿、AI候选转移/撤销及其持久任务均不重建。
+
+
+### P0-3 实现与最终验证（42.24.559，准确提交CI另核）
+
+沿原三处源码完成：NegativePool.members、原路由、原NegativePoolRuntime；仅缓存键在main/index单调更新。
+默认合同保持；原lifecycle fence内一次批读GT、原Material事务计数，不改变正式GT、训练准入或Candidate回执。
+201张原图仅发两个members请求，不再逐图发GT GET；重复结果准确，单HTTP仍原子，跨批错误可恢复。
+旧接口/未知响应不伪造首次新增数；未知后400也不能证明首次未提交。部分移出立即只清理已确认成功ID。
+原弹窗captureOwner lease与局部上下文守卫保护关闭/切页/往返/新弹窗，上传已保存原图不会因后续取消删除。
+没有CSS或全站视觉改写；停止/完成按钮在本弹窗显式隐藏，避免原btn样式覆盖HTML hidden而允许误操作。
+
+先RED：10个Python失败及JS缺export已实际观察；仅工具输出保留，未保存原始磁盘日志，不事后伪造RED日志。
+最终相关Python93/93；正式GT/候选/审核76/76；完整Node1561/1561。
+新真实Chrome4/4（32.8s）：201与重复、失败批重试、提交成功丢回包、停止/离页、部分移除选中同步、迟到上传关窗往返。
+1920/1366/768无水平越界，Enter提交、768触屏停止、1366 reduced-motion；已人工查看三截图。
+现有Chrome目标负样本与素材工作台最终9/9通过（43.3s）；测试均隔离数据，不等于20万现场性能或真实生产验收。
+68冻结源码blob和63训练定义AST保持；用户预设账号密码未动。
+证据见evidence/architecture-2026-11-07/negative-pool；新Chrome加入原Frontend及Training Material Picker工作流，不新建CI中心。
+独立规范复核发现的迟到上传、未知显示0、未知后400误判均已修正并定向复核通过；根代码质量复核未发现剩余必须修改项。

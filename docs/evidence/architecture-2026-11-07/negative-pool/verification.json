@@ -1,0 +1,42 @@
+{
+  "baseline": "31c897c335eff460f36cc340861c0beea12723f2",
+  "baseline_ci": {
+    "success": 26,
+    "pending": 0,
+    "failure": 0
+  },
+  "new_chrome": {
+    "passed": 4,
+    "seconds": 32.8,
+    "viewports": [
+      1920,
+      1366,
+      768
+    ],
+    "reduced_motion": 1366,
+    "touch": 768,
+    "keyboard_submit": true,
+    "scope": "isolated original APIs; fault routes only inject failed/lost responses; no production"
+  },
+  "python_related": {
+    "passed": 93,
+    "seconds": 9.51
+  },
+  "gt_candidate_regression": {
+    "passed": 76,
+    "seconds": 21.72
+  },
+  "node_full": {
+    "passed": 1561,
+    "failure": 0,
+    "seconds": 25.064
+  },
+  "frozen_files": 68,
+  "frozen_app_definitions": 63,
+  "red_evidence": "10 Python failures and missing JS export were observed in tool output; no raw disk log was saved, not reconstructed",
+  "production_modified": false,
+  "existing_chrome_final": {
+    "passed": 9,
+    "seconds": 43.3
+  }
+}

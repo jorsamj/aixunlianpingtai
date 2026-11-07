@@ -508,6 +508,7 @@ jobs:
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
           tests/browser/material-library-flow.spec.mjs
+          tests/browser/negative-pool-members.spec.mjs
           tests/browser/material-presentation-poc.spec.mjs
           tests/browser/page-loading-performance.spec.mjs
           tests/browser/material-workflows.spec.mjs

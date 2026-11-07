@@ -4,6 +4,119 @@ from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import NegativePool
 
 
+def test_opt_in_member_counts_preserve_legacy_and_scope(tmp_path):
+    repo, pool = setup(tmp_path)
+    assert pool.members(['0']) == {'affected': 1}
+    assert pool.members(['0']) == {'affected': 1}
+    assert pool.members(['0', '1'], algorithm_id='a', report_counts=True) == {
+        'affected': 2, 'added': 2, 'already_present': 0}
+    assert pool.members(['0', '1'], algorithm_id='a', report_counts=True) == {
+        'affected': 2, 'added': 0, 'already_present': 2}
+    assert pool.members(['0'], algorithm_id='b', report_counts=True)['added'] == 1
+    assert pool.members(['0', '2'], action='remove', algorithm_id='a', report_counts=True) == {
+        'affected': 1, 'already_absent': 1, 'algorithm_id': 'a', 'removed': 1}
+    assert pool.members(['3'], action='remove', report_counts=True) == {
+        'affected': 1, 'removed': 0, 'already_absent': 1}
+
+
+@pytest.mark.parametrize('key', ['report_counts', 'require_empty_gt'])
+@pytest.mark.parametrize('value', ['false', 1, None, []])
+def test_member_options_require_boolean(tmp_path, key, value):
+    _, pool = setup(tmp_path)
+    with pytest.raises(ValueError, match='boolean'):
+        pool.members(['0'], **{key: value})
+
+
+def test_strict_members_batch_gt_check_preserves_legacy_gt(tmp_path, monkeypatch):
+    from platform_core.annotation_repository import AnnotationRepository
+    repo, pool = setup(tmp_path)
+    annotations = AnnotationRepository(tmp_path)
+    before = annotations.upsert('1', [{'id':'box','label':'person','x1':1,'y1':1,'x2':8,'y2':8}], annotation_state='annotated')
+    calls = []
+    original = AnnotationRepository.get_many
+    def read(self, ids):
+        calls.append(list(ids))
+        return original(self, ids)
+    monkeypatch.setattr(AnnotationRepository, 'get_many', read)
+    with pytest.raises(ValueError, match='1'):
+        pool.members(['0','1'], require_empty_gt=True, report_counts=True)
+    assert calls == [['0','1']]
+    assert pool.query()['total'] == 0
+    assert annotations.get('1') == before
+    assert pool.members(['1']) == {'affected': 1}
+    assert annotations.get('1') == before
+    calls.clear()
+    with pytest.raises(ValueError, match='200'):
+        pool.members([str(i) for i in range(201)], require_empty_gt=True)
+    assert calls == []
+    with pytest.raises(ValueError, match='add'):
+        pool.members(['0'], action='remove', require_empty_gt=True)
+
+
+def test_strict_members_keeps_lifecycle_fence_through_commit(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from platform_core.annotation_repository import AnnotationRepository
+    repo, pool = setup(tmp_path)
+    annotations = AnnotationRepository(tmp_path)
+    annotations.upsert('0', [], annotation_state='unannotated')
+    checked, writing, finished = threading.Event(), threading.Event(), threading.Event()
+    original = pool._mutate
+    def commit(operation, **kwargs):
+        checked.set()
+        assert writing.wait(5)
+        assert not finished.wait(.1), 'formal writer passed the GT/member lifecycle fence'
+        return original(operation, **kwargs)
+    monkeypatch.setattr(pool, '_mutate', commit)
+    def writer():
+        assert checked.wait(5)
+        writing.set()
+        AnnotationRepository(tmp_path).upsert('0', [{'id':'b','label':'person','x1':1,'y1':1,'x2':8,'y2':8}], annotation_state='annotated')
+        finished.set()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future = executor.submit(writer)
+        assert pool.members(['0'], require_empty_gt=True) == {'affected':1}
+        future.result(timeout=10)
+    assert finished.is_set()
+    assert pool.query()['total'] == 1
+
+
+def test_member_api_opt_ins_are_strict_and_default_stays_identical(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool_api import create_negative_pool_router
+    repo, pool = setup(tmp_path)
+    app = FastAPI()
+    app.include_router(create_negative_pool_router(lambda _:repo, lambda _:{}, lambda _,row:row))
+    with TestClient(app) as client:
+        url='/api/v61/projects/test/negative-pool/members'
+        assert client.post(url,json={'image_ids':['0']}).json() == {'affected':1}
+        assert client.post(url,json={'image_ids':['0'],'report_counts':True,'require_empty_gt':True}).json() == {'affected':1,'added':0,'already_present':1}
+        for key in ('report_counts','require_empty_gt'):
+            assert client.post(url,json={'image_ids':['0'],key:'false'}).status_code == 400
+
+
+def test_strict_200_uses_one_gt_batch_and_preserves_qualification(tmp_path, monkeypatch):
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.negative_pool import negative_pool_qualification
+    repo, pool = setup(tmp_path)
+    rows=[{'id':str(i),'filename':f'{i}.jpg','object_key':f'uploads/{i}.jpg','labels':[]} for i in range(200)]
+    repo.upsert_many(rows)
+    annotations=AnnotationRepository(tmp_path)
+    annotations.upsert('0',[],annotation_state='unannotated')
+    before=annotations.get('0')
+    qualification=negative_pool_qualification(repo,[repo.get('0')],['person'])
+    calls=[]
+    original=AnnotationRepository.get_many
+    def read(self, ids):
+        calls.append(len(ids));return original(self,ids)
+    monkeypatch.setattr(AnnotationRepository,'get_many',read)
+    assert pool.members([str(i) for i in range(200)],report_counts=True,require_empty_gt=True)['added']==200
+    assert calls==[200]
+    assert annotations.get('0')==before
+    assert negative_pool_qualification(repo,[repo.get('0')],['person'])==qualification
+
+
 def setup(tmp_path):
     repo=MaterialRepository(tmp_path)
     repo.upsert_many([{'id':str(i),'filename':f'photo{i}.jpg','object_key':f'uploads/{i}.jpg','labels':['person'] if i % 2 else [],'created_at':'2026-10-28T00:00:00+00:00'} for i in range(4)])

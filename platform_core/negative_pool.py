@@ -152,10 +152,14 @@ class NegativePool:
             return dict(db.execute('SELECT * FROM negative_pool_categories WHERE id=?', (identity,)).fetchone())
         return self._mutate(write)
 
-    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id=''):
+    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False):
+        if type(report_counts) is not bool or type(require_empty_gt) is not bool:
+            raise ValueError('report_counts/require_empty_gt must be boolean')
         ids, categories = self._ids(image_ids), self._ids(category_ids)
         if action not in ('add','remove','set') or (action == 'set' and not categories_only):
             raise ValueError('invalid action')
+        if require_empty_gt and (action != 'add' or categories_only or len(ids) > 200):
+            raise ValueError('require_empty_gt supports only member add with at most 200 images')
         def write(db):
             db.execute('CREATE TEMP TABLE pool_requested(id TEXT PRIMARY KEY)')
             db.executemany('INSERT INTO pool_requested VALUES (?)', ((v,) for v in ids))
@@ -171,12 +175,17 @@ class NegativePool:
             if not categories_only:
                 if action == 'remove' and algorithm_id:
                     removed = db.execute('DELETE FROM negative_pool_algorithm_members WHERE algorithm_id=? AND material_id IN (SELECT id FROM pool_requested)', (str(algorithm_id),)).rowcount
-                    return {'affected':removed, 'already_absent':len(ids)-removed, 'algorithm_id':str(algorithm_id)}
+                    return {'affected':removed, 'already_absent':len(ids)-removed, 'algorithm_id':str(algorithm_id), **({'removed':removed} if report_counts else {})}
                 if action == 'remove':
                     if db.execute('SELECT 1 FROM negative_pool_algorithm_members am JOIN pool_requested r ON r.id=am.material_id LIMIT 1').fetchone():
                         raise ValueError('algorithm memberships exist; remove within the target algorithm')
-                    db.execute('DELETE FROM negative_pool_members WHERE material_id IN (SELECT id FROM pool_requested)')
-                    return {'affected':len(ids)}
+                    removed = db.execute('DELETE FROM negative_pool_members WHERE material_id IN (SELECT id FROM pool_requested)').rowcount
+                    return {'affected':len(ids), **({'removed':removed, 'already_absent':len(ids)-removed} if report_counts else {})}
+                if report_counts:
+                    if algorithm_id:
+                        existing = db.execute('SELECT COUNT(*) FROM negative_pool_algorithm_members am JOIN pool_requested r ON r.id=am.material_id WHERE am.algorithm_id=?', (str(algorithm_id),)).fetchone()[0]
+                    else:
+                        existing = db.execute('SELECT COUNT(*) FROM negative_pool_members n JOIN pool_requested r ON r.id=n.material_id').fetchone()[0]
                 now = datetime.now(timezone.utc).isoformat()
                 db.executemany('INSERT OR IGNORE INTO negative_pool_members VALUES (?,?)', ((v,now) for v in ids))
                 if algorithm_id:
@@ -185,7 +194,17 @@ class NegativePool:
                 db.execute('DELETE FROM negative_pool_links WHERE material_id IN (SELECT id FROM pool_requested)')
             sql = 'DELETE FROM negative_pool_links WHERE material_id=? AND category_id=?' if action == 'remove' else 'INSERT OR IGNORE INTO negative_pool_links VALUES (?,?)'
             db.executemany(sql, ((v,c) for v in ids for c in categories))
-            return {'affected':len(ids)}
+            return {'affected':len(ids), **({'added':len(ids)-existing, 'already_present':existing} if report_counts and not categories_only else {})}
+        if require_empty_gt:
+            from .annotation_repository import AnnotationRepository
+            # The same reentrant lifecycle fence also protects formal GT writes.
+            # Read before Material's write transaction to avoid cross-DB lock order.
+            with material_annotation_lifecycle_fence(self.materials.project_path):
+                records = AnnotationRepository(self.materials.project_path).get_many(ids)
+                conflicts = [identity for identity in ids if records[identity].get('boxes')]
+                if conflicts:
+                    raise ValueError('素材 ' + '、'.join(conflicts[:10]) + ' 存在正式GT目标框；本批未更改，请先处理冲突')
+                return self._mutate(write)
         return self._mutate(write)
 
     def set_positive_upload_intent(self, image_ids, label_codes):

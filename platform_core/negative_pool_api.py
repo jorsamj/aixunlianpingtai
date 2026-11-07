@@ -109,7 +109,7 @@ def create_negative_pool_router(material_store, get_project, public_material, us
 
     @router.post('/members')
     def members(project_id: str, body: dict = Body(...)):
-        return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),algorithm_id=algorithm_scope(project_id,body.get('algorithm_id'))))
+        return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),algorithm_id=algorithm_scope(project_id,body.get('algorithm_id')),report_counts=body.get('report_counts',False),require_empty_gt=body.get('require_empty_gt',False)))
 
     @router.post('/upload-intent')
     def upload_intent(project_id: str, body: dict = Body(...)):

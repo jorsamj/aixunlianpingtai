@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {negativePoolQuery,installNegativePoolRuntime} from '../../static/modules/negative-pool-runtime.js';
+import {negativePoolQuery,installNegativePoolRuntime,runNegativePoolBatches} from '../../static/modules/negative-pool-runtime.js';
 
 test('pool query preserves complete category/label/date/status filters for server all-ID selection',()=>{
  const q=negativePoolQuery({query:'雨天 图片',category_id:['a','b'],label:['person','fire'],joined_days:'7',joined_from:'2026-10-01',joined_to:'2026-10-28',review_status:'unknown'},3);
@@ -109,4 +109,29 @@ test('pool review freezes current annotation version and source hash',async()=>{
  const rows=negativePoolReviewItems([{annotation:{image_id:'x',version:7},image:{id:'x',content_sha256:'a'.repeat(64)}}]);
  assert.deepEqual(rows,[{image_id:'x',expected_version:7,source_content_sha256:'a'.repeat(64)}]);
  assert.throws(()=>negativePoolReviewItems([{annotation:{version:0},image:{id:'x'}}]),/摘要/);
+});
+
+test('201 members run sequentially, retry only failed batch and retain original scope',async()=>{
+ const calls=[];let fail=true,active=0;
+ const request=async(ids)=>{assert.equal(active++,0);calls.push([...ids]);await new Promise(resolve=>setImmediate(resolve));active--;if(ids.length===1&&fail){const e=Error('missing');e.status=400;throw e}return {added:ids.length,already_present:0}};
+ const result=await runNegativePoolBatches({ids:Array.from({length:201},(_,i)=>String(i)),request});
+ assert.deepEqual(calls.map(x=>x.length),[200,1]);assert.equal(result.batches[1].status,'failed');
+ fail=false;await runNegativePoolBatches({result,request});assert.deepEqual(calls.map(x=>x.length),[200,1,1]);
+ assert.equal(result.batches[0].added,200);assert.equal(result.batches[1].added,1);
+});
+test('timeout retry does not invent original additions and old response has unknown counters',async()=>{
+ let calls=0;const result=await runNegativePoolBatches({ids:['a'],request:async()=>{calls++;throw Error('timeout')}});
+ assert.equal(result.batches[0].status,'unknown');
+ await runNegativePoolBatches({result,request:async()=>{throw Object.assign(Error('GT changed'),{httpStatus:400})}});
+ assert.equal(result.batches[0].status,'unknown','a later rejection cannot prove the first timed-out mutation did not commit');
+ await runNegativePoolBatches({result,request:async()=>({added:0,already_present:1})});
+ assert.equal(result.batches[0].status,'verified');assert.equal(result.batches[0].added,null);
+ const old=await runNegativePoolBatches({ids:['b'],request:async()=>({affected:1})});
+ assert.equal(old.batches[0].status,'succeeded');assert.equal(old.batches[0].added,null);
+});
+test('permanent cancellation stops future chunks and callbacks',async()=>{
+ let stopped=false,requests=0,updates=0;
+ const result=await runNegativePoolBatches({ids:Array.from({length:401},(_,i)=>String(i)),isCurrent:()=>!stopped,onProgress:()=>updates++,request:async()=>{requests++;stopped=true;return {added:200,already_present:0}}});
+ assert.equal(requests,1);assert.equal(result.cancelled,true);assert.equal(result.batches[1].status,'pending');
+ const before=updates;await runNegativePoolBatches({result,request:async()=>{throw Error('must not request')}});assert.equal(updates,before);
 });

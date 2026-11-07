@@ -32,6 +32,7 @@ on:
       - 'tests/unit/test_negative_pool.py'
       - 'tests/frontend/negative-pool-runtime.test.mjs'
       - 'tests/browser/target-negative-workflow.spec.mjs'
+      - 'tests/browser/negative-pool-members.spec.mjs'
       - 'static/modules/training-material-picker-runtime.js'
       - 'static/modules/training-material-summary-runtime.js'
       - 'static/modules/material-pagination-runtime.js'
@@ -226,6 +227,7 @@ jobs:
           tests/browser/training-material-picker-performance.spec.mjs
           tests/browser/training-page-material-summary.spec.mjs
           tests/browser/target-negative-workflow.spec.mjs
+          tests/browser/negative-pool-members.spec.mjs
       - name: Preserve isolated Chrome render evidence (not production)
         if: always()
         uses: actions/upload-artifact@v4
