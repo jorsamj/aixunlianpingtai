@@ -122,23 +122,39 @@ def test_fatal_provider_errors_are_not_retried_or_switched(tmp_path, monkeypatch
 
 
 def test_evidence_expiring_during_task_downgrades_next_dispatch(tmp_path, monkeypatch):
-    context, store = setup_context(tmp_path, monkeypatch, count=6, evidence_expires_at=time.time()+1)
-    lock, barrier = threading.Lock(), threading.Barrier(2)
-    active, later_maximum = 0, 0
+    from types import SimpleNamespace
+    from platform_core import annotation_inference
+
+    # Keep setup speed and the real Worker/SQLite lease clock out of the test.
+    # Only the inference evidence clock advances after BOTH first calls enter.
+    expiry = time.time() + 3600
+    clock = [expiry - 1]
+    monkeypatch.setattr(annotation_inference, 'time', SimpleNamespace(
+        time=lambda: clock[0], monotonic=time.monotonic, sleep=time.sleep))
+    context, store = setup_context(tmp_path, monkeypatch, count=6, evidence_expires_at=expiry)
+    lock = threading.Lock()
+    barrier = threading.Barrier(2, action=lambda: clock.__setitem__(0, expiry + 1))
+    active, initial_maximum, later_maximum = 0, 0, 0
     def annotate(_request, image):
-        nonlocal active, later_maximum
+        nonlocal active, initial_maximum, later_maximum
+        initial = int(image['id']) < 2
         with lock:
             active += 1
-            if int(image['id']) >= 2:
+            if initial:
+                initial_maximum = max(initial_maximum, active)
+            else:
                 later_maximum = max(later_maximum, active)
-        if int(image['id']) < 2:
-            barrier.wait(timeout=2)
-            time.sleep(1.1)
-        with lock:
-            active -= 1
-        return {'boxes': []}
+        try:
+            if initial:
+                barrier.wait(timeout=10)
+            return {'boxes': []}
+        finally:
+            with lock:
+                active -= 1
     assert run_ai_annotation(context, annotate=annotate).status is TaskStatus.AWAITING_CONFIRMATION
+    assert initial_maximum == 2
     assert later_maximum == 1
+    assert store.statistics()['empty'] == 6
     report = context.artifacts.read_json('task', 'generation.json')['execution']
     assert report['persisted_succeeded'] == report['persisted_empty'] == 6
 

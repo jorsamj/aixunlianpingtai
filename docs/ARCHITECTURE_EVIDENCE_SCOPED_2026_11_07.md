@@ -214,3 +214,23 @@ strict限普通add且<=200，正式框冲突整个HTTP批次不变；原普通�
 68冻结源码blob和63训练定义AST保持；用户预设账号密码未动。
 证据见evidence/architecture-2026-11-07/negative-pool；新Chrome加入原Frontend及Training Material Picker工作流，不新建CI中心。
 独立规范复核发现的迟到上传、未知显示0、未知后400误判均已修正并定向复核通过；根代码质量复核未发现剩余必须修改项。
+
+
+## 42.24.560：既有AI回归测试夹具的最小治理（不改生产执行器）
+
+559已正常快进推送04467ba2d70f2e38ab11e606f9d22ddcb3a91521；准确SHA AI Recovery push Linux 233通过1失败、Windows232通过2失败，API job通过。
+对应测试和生产AI/Worker源码与558/557的git blob相同，前版同合同通过；本次不能把559称CI全绿。
+
+必要性八问：
+1. 现状：spawn测试create后只claim一次；expiry测试在setup前给1秒真实有效期，首两call等待Barrier(2)。
+2. 实际失败：Linux/Windows抢占后lease=None导致子进程AttributeError，父Queue超时；Windows另报later_max3。
+3. 证据：原claim_next是两阶段候选快照，竞争者可抢先，正式scheduler允许None并下一轮poll；线程池最大2，所谓3来自屏障异常跳过active--，不能当实际并发3。
+4. 现有测试保护共享容量/实际调用释放及到期降串行，断言正确，但夹具错误假定一次claim总成功和setup<1秒。
+5. 最小修正：仅spawn创建一次后有界poll原claim_next；仅annotation_inference模块time绑定使用代理，首两实际call均进入Barrier后才推进expiry，计数finally归还。
+6. 不改：真实并发回归随机报错/超时，阻塞有效CI证据，重跑不能消除夹具前提错误。
+7. 波及：仅两个既有测试文件；不改任务Repo、Worker、推理策略/执行器、Provider、CandidateStore、GT或训练核心。
+8. 非代码：偶然重跑变绿仍保留竞态；增加sleep/放宽最大并发/跳过测试均不接受。
+
+所有容量/释放/恢复断言保留，额外明确initial_maximum==2与6条合法empty；局部clock不影响全局time、Worker租约或SQLite资源库，monotonic/sleep仍真实。
+定向16/16及原AI Recovery同一234项集合234/234通过（31.80s）；独立只读复核通过，准确560 Windows/Linux CI另核。
+这是测试可靠性修正，不声称修复了生产AI或Worker故障。ZIP实施仍待这一批CI验收。

@@ -27,6 +27,13 @@ def _spawn_permit_contender(path, name, ready, dispatch, release, results):
     """Top-level target is importable under Windows multiprocessing spawn."""
     repo = FencedTaskRepository(path)
     lease = claim(repo, name)
+    # The canonical two-phase claim may lose its candidate snapshot to another
+    # process. Like the Worker, poll again; create the task only once.
+    deadline = time.monotonic() + 10
+    while lease is None and time.monotonic() < deadline:
+        time.sleep(.01)
+        lease = repo.claim_next(name, [TaskKind.AI_ANNOTATION], [], lease_seconds=30)
+    assert lease is not None, 'contender did not acquire a task lease before dispatch'
     ready.put(name)
     if not dispatch.wait(20):
         raise RuntimeError('parent did not open dispatch gate')
