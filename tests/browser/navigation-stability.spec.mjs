@@ -1311,3 +1311,66 @@ test('clicking the already active sidebar item does not invoke navigation again'
 });
 
 
+
+test('retired navigation reads settle quietly while current HTTP failures stay visible', async ({page}) => {
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady && window.ResourceDiscoveryRuntime))).toBe(true);
+
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let resourceReads = 0;
+  const resourceRoute = async route => {
+    resourceReads++;
+    await held;
+    await route.fulfill({json: {items: []}});
+  };
+  let classicReads = 0;
+  await page.route('**/api/stability-feedback-probe', async route => {
+    classicReads++;
+    await held;
+    await route.fulfill({json: {stale: true}});
+  });
+  await page.route('**/api/local_models?*', resourceRoute);
+  try {
+    await page.evaluate(() => {
+      window.__navigationFeedback = [];
+      const toast = document.querySelector('#toast');
+      new MutationObserver(() => window.__navigationFeedback.push(toast.textContent))
+        .observe(toast, {childList: true});
+      window.__retiredCache = window.ResourceDiscoveryRuntime.refreshCache(true, {force: true});
+    });
+    await expect.poll(() => resourceReads).toBe(1);
+    await page.evaluate(() => {
+      window.__retiredClassic = safe(api('/api/stability-feedback-probe'));
+    });
+    await expect.poll(() => classicReads).toBe(1);
+    await page.evaluate(() => {
+      window.setPage('质量中心');
+      window.setPage('算法列表');
+    });
+    expect(await page.evaluate(() => Promise.all([window.__retiredClassic, window.__retiredCache]))).toEqual([null, null]);
+    expect(await page.evaluate(() => window.__navigationFeedback)).not.toContain('__PAGE_NAVIGATION_CANCELLED__');
+    expect(classicReads).toBe(1);
+    expect(resourceReads).toBe(1);
+  } finally {
+    release();
+  }
+  await page.unroute('**/api/local_models?*', resourceRoute);
+  await page.unroute('**/api/stability-feedback-probe');
+  await page.route('**/api/stability-feedback-probe', route => route.fulfill({
+    status: 503, json: {message: '隔离测试：服务暂不可用'},
+  }));
+  expect(await page.evaluate(() => safe(api('/api/stability-feedback-probe')))).toBeNull();
+  await expect(page.locator('#toast')).toContainText('隔离测试：服务暂不可用');
+
+  await page.evaluate(async () => {
+    const notify = window.toast;
+    try {
+      window.toast = document.querySelector('#toast');
+      await safe(Promise.reject(new Error('隔离测试：启动提示')));
+    } finally {
+      window.toast = notify;
+    }
+  });
+  await expect(page.locator('#toast')).toContainText('隔离测试：启动提示');
+});

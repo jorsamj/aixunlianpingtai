@@ -72,7 +72,14 @@ function settlePlainUploadResponse411(ticket,status,responseText){
 }
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const toast=t=>{const el=$('#toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(()=>el.classList.add('hidden'),2600)};
-async function safe(p){try{return await p}catch(e){toast(e.message||e);return null}}
+async function safe(p) {
+  try {
+    return await p;
+  } catch (error) {
+    (typeof window.toast === 'function' ? window.toast : toast)(error?.message || error);
+    return null;
+  }
+}
 const state={page:'算法列表',uiReady:false,projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
 function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase;
 function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html;if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);return root} window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});
@@ -482,7 +489,7 @@ window.refreshTrainingResourcePageV3=async function(){
 window.__resourceDiscoveryDependencies={
   request:(url,options)=>api(url,options),
   renderBase:()=>window.renderResourceBasePage?.(),
-  notify:message=>toast(message),
+  notify:message=>(typeof window.toast === 'function' ? window.toast : toast)(message),
   modal:(title,body,wide)=>modal(title,body,wide),
   getPage:()=>state.page,
   refresh:async()=>{const page=state.page;await window.refreshTrainingResourceTruthV3();if(state.page===page&&page==='训练资源')window.renderResources?.()}

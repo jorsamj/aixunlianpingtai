@@ -53,12 +53,20 @@ test('leaving the page permanently stops subsequent member chunks and late refre
 });
 });
 
-test('partial removal clears only committed selections; late upload cannot open a new member dialog',async({page,request})=>{
+test('partial removal clears only committed selections; late upload cannot open a new member dialog',async({page,request},info)=>{
+ await page.setViewportSize({width:1366,height:900});
  const f=await fixture(page,request);const base=`/api/v61/projects/${f.project.id}/negative-pool`;
  expect((await request.post(base+'/members',{data:{image_ids:f.ids,algorithm_id:f.algorithm.id}})).ok()).toBe(true);
  await page.evaluate(()=>window.NegativePoolRuntime.open());
  const filters=page.locator('[data-np-form=filters]');await filters.locator('[name=algorithm_id]').selectOption(f.algorithm.id);await filters.getByRole('button',{name:'筛选',exact:true}).click();
- await expect(page.locator('.negative-pool-card')).toHaveCount(48);await page.getByRole('button',{name:'全选当前筛选结果',exact:true}).click();await expect(page.locator('#negativePoolSelection')).toContainText('201');
+ await expect(page.locator('.negative-pool-card')).toHaveCount(48);
+ const card=page.locator('.negative-pool-card').first();
+ await card.getByText('来源与审核详情',{exact:true}).click();
+ await expect(card.locator('.negative-pool-qualification')).toHaveText('待确认');
+ await expect(card.locator('.negative-pool-detail')).toContainText('不代表本次目标已确认无目标');
+ await page.screenshot({path:info.outputPath('pool-qualification-1366.png')});
+ await expect(card.locator('.negative-pool-detail')).not.toContainText('资格：待确认');
+ await page.getByRole('button',{name:'全选当前筛选结果',exact:true}).click();await expect(page.locator('#negativePoolSelection')).toContainText('201');
  let failedIds=[];await page.route('**/negative-pool/members',route=>{const body=route.request().postDataJSON();if(body.action==='remove'&&body.image_ids.length===1){failedIds=body.image_ids;return route.fulfill({status:400,json:{detail:'isolated removal failure'}})}return route.continue()});
  await page.locator('.negative-pool-more summary').click();await page.getByRole('button',{name:'移出负样本池',exact:true}).click();const members=page.locator('#negativePoolMembers');await members.getByRole('button',{name:'确认',exact:true}).click();await expect(members).toContainText('已移出 200');await expect(members).toContainText('失败 1');await expect.poll(()=>page.evaluate(()=>window.NegativePoolRuntime.getSelected())).toEqual(failedIds);await expect(page.locator('#negativePoolSelection')).toContainText('已选 1 张');
  await members.getByRole('button',{name:'关闭',exact:true}).click();await page.unroute('**/negative-pool/members');
