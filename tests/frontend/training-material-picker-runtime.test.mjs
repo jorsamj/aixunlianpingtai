@@ -119,6 +119,17 @@ test('picker UI uses larger bounded preview cards rather than a dense thumbnail 
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
 });
 
+test('picker visual refinements stay scoped and respect motion and image geometry', () => {
+  assert.match(source, /\.modal-card:has\(\.train-v3-picker\.server-paged\)/);
+  assert.match(source, /@keyframes pickerDialogEnter/);
+  assert.match(source, /@media\(prefers-reduced-motion:reduce\)/);
+  assert.match(source, /\.train-v3-picker\.server-paged \.train-v3-card\.on\{/);
+  assert.match(source, /object-fit:contain/);
+  assert.doesNotMatch(source, /\.train-v3-picker\.server-paged \.train-v3-card img\{[^}]*object-fit:cover/);
+  assert.match(source, /onclick="confirmTrainMaterialPickerV3\(\)"/);
+  assert.match(source, /onclick="trainMaterialSelectV3\('select-page'\)"/);
+});
+
 test('picker delegates all numbered navigation and jump input to shared pagination', () => {
   assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
   assert.match(source, /onPageChange:/);
