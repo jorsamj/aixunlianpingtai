@@ -822,6 +822,11 @@ def _bulk_filtered_ids(
 ) -> tuple[list[str], int]:
     """Resolve a large filtered selection server-side with one HTTP request."""
     if labels or require_ground_truth or filters:
+        # Bulk selection needs the complete ID set only up to its fixed
+        # limit. A separate exact COUNT(*) scans the same large GT/history
+        # predicates before this bounded query, often doubling read cost.
+        # Fetch one sentinel row instead; the response still reports the
+        # exact count whenever the selection is within the existing limit.
         page = _gt_material_filter_page(
             repository,
             annotations,
@@ -831,13 +836,14 @@ def _bulk_filtered_ids(
             require_ground_truth=require_ground_truth,
             include_payload=False,
             filters=filters,
+            count_mode="deferred",
         )
-        total = max(0, int(page["total"]))
-        if total > MAX_SELECTION_SUMMARY_IDS:
+        if page["has_next"]:
             raise ValueError(
-                f"筛选结果共 {total} 张，超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+                f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
             )
-        return [str(value) for value in page["items"]], total
+        ids = [str(value) for value in page["items"]]
+        return ids, len(ids)
 
     # No GT predicate is needed for the unfiltered training pool. Keep the
     # canonical MaterialRepository cursor path instead of inventing a second
@@ -926,7 +932,7 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
 
 
 @stage("role_page")
-def _role_material_page(repository, annotations, contract, *, image_ids=None,
+def _role_material_page(repository, annotations, contract, *, image_ids=None, cursor=None,
                         query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True,
                         defer_role_counts=False, count_mode="exact"):
     if sample_role not in {"", "positive", "confirmed_negative", "pending_negative", "pending_review"}:
@@ -943,7 +949,8 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
     # callers that explicitly request it (including role-filtered pages).
     if defer_role_counts and not sample_role:
         page_data = _gt_material_filter_page(repository, annotations,
-            limit=limit, page=int(page), query=query, labels=labels,
+            limit=limit, page=None if cursor is not None else int(page),
+            cursor=cursor or None, query=query, labels=labels,
             sort_order=sort_order, filters=selected, include_payload=include_payload,
             count_mode=count_mode)
         rows = page_data["items"]
@@ -969,7 +976,7 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
         count("role_visible_rows", len(visible))
         return {"items":visible, "total":page_data["total"], "sample_role_counts":None,
                 "role_counts_complete":False, "effective_label_codes":list(contract["effective_label_codes"]),
-                "page":int(page), "page_size":int(limit), "limit":int(limit), "next_cursor":None,
+                "page":int(page), "page_size":int(limit), "limit":int(limit), "next_cursor":page_data["next_cursor"],
                 "has_next":page_data["has_next"],
                 "total_pages":(max(1, math.ceil(page_data["total"]/int(limit)))
                                if page_data["total"] is not None else None),
@@ -1890,20 +1897,30 @@ def training_material_picker_router(
             if selected_role and selected_role not in {'positive','confirmed_negative','pending_negative','pending_review'}:raise ValueError('invalid sample_role')
             contract=task_contract(project_id,body,repository) if selected_role else None
             def ids():
-                page_number=1
+                cursor=''
+                # The filtered-role pager restarts at source page 1 for each
+                # numbered page. A frozen selection needs one forward-only
+                # traversal; otherwise large role selections repeatedly scan
+                # the same earlier GT rows and can time out.
+                role_filters=dict(filters)
+                if selected_role in {'positive','confirmed_negative','pending_negative'}:
+                    role_filters['__role_target']={
+                        'labels':list(contract.get('effective_label_codes') or []),
+                        'negative':selected_role!='positive',
+                    }
                 while True:
                     if selected_role:
-                        result=_role_material_page(repository,annotations,contract,limit=1000,page=page_number,
+                        result=_role_material_page(repository,annotations,contract,limit=1000,cursor=cursor,
                             query=query,labels=labels,sort_order=str(body.get('sort_order') or 'newest'),
-                            filters=filters,count_mode='deferred',defer_role_counts=True)
+                            filters=role_filters,count_mode='deferred',defer_role_counts=True)
                         yield from (row['id'] for row in result['items'] if row['sample_role']==selected_role)
                     else:
-                        result=_gt_material_filter_page(repository,annotations,limit=1000,page=page_number,
+                        result=_gt_material_filter_page(repository,annotations,limit=1000,cursor=cursor or None,
                             query=query,labels=labels,sort_order=str(body.get('sort_order') or 'newest'),
                             filters=filters,count_mode='deferred')
                         yield from result['items']
-                    if not result['has_next']:break
-                    page_number+=1
+                    cursor=result['next_cursor']
+                    if not cursor:break
             # Role-filtered plans must not silently select outside the filter.
             receipt=freeze_selection(data_dir(),before,ids(),request_id=body.get('request_id'),
                 request_scope=json.dumps({k:v for k,v in body.items() if k!='request_id'},sort_keys=True))

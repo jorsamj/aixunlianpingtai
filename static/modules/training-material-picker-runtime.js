@@ -1236,12 +1236,17 @@ export function installTrainingMaterialPickerRuntime({
     if(!response.ok && picker?.role==='train'){
       const error=await response.clone().json().catch(()=>({}));
       if(String(error.detail || '').includes('超过单次选择上限')){
-        const requestKey=JSON.stringify({...taskPayload(),...filterPayload(),query:picker.query,labels:[...picker.labels],allAvailable});
+        // The bulk "all available" request intentionally drops active
+        // search/role/source filters. Keep the same scope when falling back
+        // to a server-frozen reference instead of silently freezing a subset.
+        const referenceScope=allAvailable ? taskPayload() : {...taskPayload(),...filterPayload()};
+        const requestKey=JSON.stringify({...referenceScope,query:allAvailable?'':picker.query,
+          labels:allAvailable?[]:[...picker.labels],sample_role:allAvailable?'':picker.sampleRole,allAvailable});
         if(picker.referenceRequest?.key!==requestKey)picker.referenceRequest={key:requestKey,id:window.crypto.randomUUID()};
         const plan=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-reference`,{
           signal,method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({...taskPayload(),...filterPayload(),request_id:picker.referenceRequest.id,query:allAvailable?'':picker.query,
-            labels:allAvailable?[]:[...picker.labels],sort_order:picker.sortOrder,sample_role:picker.sampleRole})});
+          body:JSON.stringify({...referenceScope,request_id:picker.referenceRequest.id,query:allAvailable?'':picker.query,
+            labels:allAvailable?[]:[...picker.labels],sort_order:picker.sortOrder,sample_role:allAvailable?'':picker.sampleRole})});
         return {reference:await readJson(plan,'大范围素材选择冻结失败')};
       }
     }

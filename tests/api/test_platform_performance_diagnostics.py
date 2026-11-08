@@ -3,6 +3,17 @@ import logging
 import re
 
 
+def test_training_creation_and_freeze_diagnostics_use_existing_opt_in_route_owner():
+    from platform_core.performance_diagnostics import _endpoint
+
+    assert _endpoint('/api/system/recommendation') == 'training.recommendation'
+    assert _endpoint('/api/training_options') == 'training.options'
+    assert _endpoint('/api/projects/p1/jobs') == 'training.jobs'
+    for name in ('bulk-selection', 'selection-reference', 'selection-membership'):
+        assert _endpoint(f'/api/v62/projects/p1/training-materials/{name}') == 'training.materials'
+    assert _endpoint('/api/v62/projects/p1/training-materials/unknown') is None
+
+
 def test_training_create_diagnostics_is_opt_in_and_never_logs_request_body(monkeypatch, caplog):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

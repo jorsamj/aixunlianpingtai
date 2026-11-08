@@ -577,6 +577,32 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert len(test_only.json()["items"]) == 230
 
 
+def test_bulk_filtered_ids_avoids_duplicate_exact_gt_count(tmp_path, monkeypatch):
+    client, repository = _client(tmp_path)
+    original = picker_module._gt_material_filter_page
+    count_modes = []
+
+    def record_page(*args, **kwargs):
+        count_modes.append(kwargs.get('count_mode'))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(picker_module, '_gt_material_filter_page', record_page)
+    annotations = AnnotationRepository(repository.project_path)
+    ids, total = picker_module._bulk_filtered_ids(
+        repository, annotations, labels=('smoke',), filters={'label_mode': 'any'})
+    assert total == len(ids) == 115
+    assert count_modes == ['deferred']
+
+
+def test_bulk_filtered_ids_still_rejects_results_over_original_cap(tmp_path, monkeypatch):
+    _, repository = _client(tmp_path)
+    monkeypatch.setattr(picker_module, '_gt_material_filter_page',
+                        lambda *_args, **_kwargs: {'items': ['m0000'], 'has_next': True})
+    with pytest.raises(ValueError, match='超过单次选择上限'):
+        picker_module._bulk_filtered_ids(repository, AnnotationRepository(repository.project_path),
+                                         filters={'label_mode': 'any'})
+
+
 @pytest.mark.parametrize("source", ["pool", "confirmation"])
 def test_training_picker_bulk_refuses_changed_negative_evidence(tmp_path, monkeypatch, source):
     _, repository = _client(tmp_path)
@@ -1381,3 +1407,65 @@ def test_large_filter_freezes_reference_without_returning_all_ids(tmp_path):
     assert forged.status_code==422
     repository.patch({ids[0]:{'filename':'changed.jpg'}})
     with pytest.raises(ValueError):validate_payload_references(data,'p1',{**payload,'train_selection_ref':reference,'train_image_ids':ids})
+
+
+def test_role_frozen_selection_uses_forward_cursor_and_preserves_role(tmp_path, monkeypatch):
+    import platform_core.training_label_tasks as label_tasks
+    from platform_core.training_selection_reference import read_selection, selection_context
+
+    _, repository = _client(tmp_path)
+    monkeypatch.setattr(label_tasks, 'resolve_training_label_contract',
+                        lambda *_args, **_kwargs: {'effective_label_codes': ['smoke']})
+    cursors = []
+
+    def bounded_role_page(_repository, _annotations, _contract, *, cursor=None,
+                          sample_role='', filters=None, **_kwargs):
+        assert sample_role == ''  # classify each forward page; never rescan the role index
+        assert filters['__role_target'] == {'labels': ['smoke'], 'negative': False}
+        cursors.append(cursor)
+        if not cursor:
+            return {'items': [{'id': 'm0000', 'sample_role': 'positive'},
+                              {'id': 'm0001', 'sample_role': 'pending_negative'}],
+                    'next_cursor': 'next-page'}
+        assert cursor == 'next-page'
+        return {'items': [{'id': 'm0002', 'sample_role': 'positive'}], 'next_cursor': None}
+
+    monkeypatch.setattr(picker_module, '_role_material_page', bounded_role_page)
+    router = training_material_picker_router(
+        lambda project_id: {'id': project_id}, lambda: tmp_path / 'data',
+        algorithm_provider=lambda _project, algorithm_id: {'id': algorithm_id},
+    )
+    endpoint = next(route.endpoint for route in router.routes
+                    if route.path.endswith('/training-materials/selection-reference'))
+    payload = {'algorithm_asset_id': 'a', 'role': 'train', 'history_policy': 'include_history',
+               'train_labels': ['smoke'], 'framework': 'ultralytics', 'sample_role': 'positive'}
+    receipt = endpoint('p1', payload)
+    assert receipt['count'] == 2
+    assert cursors == ['', 'next-page']
+    ids = read_selection(tmp_path / 'data', receipt['selection_ref'],
+                         selection_context(tmp_path / 'data', 'p1', payload))
+    assert ids == ['m0000', 'm0002']
+
+
+def test_forward_role_paging_matches_existing_exact_role_scope(tmp_path):
+    from platform_core.training_material_picker_api import _role_material_page
+
+    _, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    contract = {'effective_label_codes': ['smoke']}
+    expected = _role_material_page(repository, annotations, contract,
+                                   sample_role='positive', limit=500, include_payload=False)
+    cursor = ''
+    selected = []
+    for _ in range(20):
+        chunk = _role_material_page(repository, annotations, contract, cursor=cursor,
+                                    limit=23, sort_order='oldest',
+                                    filters={'__role_target': {'labels': ['smoke'], 'negative': False}},
+                                    defer_role_counts=True, count_mode='deferred')
+        selected.extend(row['id'] for row in chunk['items'] if row['sample_role'] == 'positive')
+        cursor = chunk['next_cursor']
+        if not cursor:
+            break
+    else:
+        pytest.fail('cursor traversal did not finish')
+    assert selected == [row['id'] for row in expected['items']]

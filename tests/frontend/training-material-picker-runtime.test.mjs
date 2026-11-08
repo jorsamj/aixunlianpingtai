@@ -168,6 +168,12 @@ test('large bulk selection has a single server owner', () => {
   assert.doesNotMatch(source, /do \{[\s\S]*\/training-materials\/ids/);
 });
 
+test('all-available frozen fallback does not inherit active picker filters or role', () => {
+  assert.match(source, /const referenceScope=allAvailable \? taskPayload\(\) : \{\.\.\.taskPayload\(\),\.\.\.filterPayload\(\)\}/);
+  assert.match(source, /sample_role:allAvailable\?'':picker\.sampleRole/);
+  assert.match(source, /JSON\.stringify\(\{\.\.\.referenceScope,request_id:/);
+});
+
 test('combined filters remain in one server query and cross-page selection uses that query', () => {
   const params = new URLSearchParams(buildTrainingMaterialQuery({
     page: 3, pageSize: 60, query: 'camera', labels: ['person', 'smoke'],

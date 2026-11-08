@@ -420,3 +420,35 @@ test('large frozen selection keeps browser POST compact without downloading all 
  expect(JSON.stringify(posted).length).toBeLessThan(5000);
  expect(JSON.stringify(freezeBody).length).toBeLessThan(5000);
 });
+
+test('large all-available fallback does not freeze only the active filtered subset',async({page})=>{
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
+ const pid=await page.evaluate(()=>state.project.id);
+ const base=`**/api/v62/projects/${pid}/training-materials`;
+ let frozenScope=null;
+ await page.route(base+'?**',route=>route.fulfill({json:{
+   items:Array.from({length:60},(_,i)=>material(i)),total:200000,page:1,page_size:60,
+   has_next:true,repository_revision:88,
+ }}));
+ await page.route(base+'/bulk-selection',route=>route.fulfill({
+   status:422,json:{detail:'筛选结果共200000张，超过单次选择上限50000张'},
+ }));
+ await page.route(base+'/selection-reference',route=>{
+   frozenScope=route.request().postDataJSON();
+   return route.fulfill({json:{selection_ref:'trainselection_0123456789ab4def89abcdef01234567',count:200000,role:'train'}});
+ });
+ await page.route(base+'/selection-membership',route=>route.fulfill({json:{items:[]}}));
+ await page.evaluate(()=>{window.TrainingDraftRuntime.update({algorithmId:'isolated-algorithm',newLabelCodes:['smoke']});window.openTrainMaterialPickerV3('train')});
+ await expect(page.locator('.train-v3-card')).toHaveCount(60);
+ await page.evaluate(()=>window.TrainingMaterialPickerRuntime.setFilter('sourceIds','temporary-only'));
+ await expect(page.locator('.train-v3-card')).toHaveCount(60);
+ await page.locator('.train-v3-more>summary').click();
+ await page.getByRole('button',{name:'全选全部可用素材',exact:true}).click();
+ await expect.poll(()=>frozenScope).not.toBeNull();
+ expect(frozenScope.sample_role).toBe('');
+ expect(frozenScope.query).toBe('');
+ expect(frozenScope.labels).toEqual([]);
+ expect(frozenScope.storage_source_ids).toBeUndefined();
+ expect(frozenScope.negative_pool_only).toBeUndefined();
+ await expect(page.locator('#trV3SelectedTotal')).toHaveText('200000');
+});
