@@ -130,8 +130,9 @@ jobs:
           grep -Fq 'THUMBNAIL_PRELOAD_MARGIN = 120' static/modules/training-material-picker-runtime.js
           grep -Fq 'repeat(4,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
           grep -Fq 'aspect-ratio:4/3' static/modules/training-material-picker-runtime.js
-          grep -Fq 'grid-auto-rows:minmax(210px,max-content)' static/modules/training-material-picker-runtime.js
-          grep -Fq 'overflow-y:auto!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'grid-auto-rows:max-content!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'overflow:auto!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'grid-template-columns:274px minmax(0,1fr)' static/modules/training-material-picker-runtime.js
           grep -Fq 'getBoundingClientRect()' static/modules/training-material-picker-runtime.js
           grep -Fq 'requestAnimationFrame' static/modules/training-material-picker-runtime.js
           grep -Fq "addEventListener('scroll', scheduleVisibleThumbnailWindow" static/modules/training-material-picker-runtime.js
@@ -233,6 +234,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: picker-browser-perf-${{ github.sha }}
-          path: ${{ runner.temp }}/picker-browser-perf/browser-picker-render.json
-          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/picker-browser-perf/browser-picker-render.json
+            docs/evidence/material-workbench-20261104/picker-two-column-*.png
+          if-no-files-found: ignore
           retention-days: 7

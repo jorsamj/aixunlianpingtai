@@ -126,7 +126,12 @@ test('picker visual refinements stay scoped and respect motion and image geometr
   assert.match(source, /class="train-v3-advanced-panel"/);
   assert.match(source, /\.train-v3-filters>#trV3ActiveFilters:empty/);
   assert.match(source, /class="train-v3-role-help"/);
-  assert.match(source, /\.train-v3-advanced-panel\{[\s\S]*?position:absolute/);
+  assert.match(source, /\.train-v3-advanced-panel\{[\s\S]*?position:static/);
+  assert.match(source, /grid-template-columns:274px minmax\(0,1fr\)/);
+  assert.match(source, /grid-column:1;grid-row:1;[\s\S]*?overflow-y:auto/);
+  assert.match(source, /class="train-v3-mobile-toggle"/);
+  assert.match(source, /<main class="train-v3-results"><div class="train-v3-view">[\s\S]*?<details class="train-v3-selected">/);
+  assert.match(source, /toggleFilterSidebar\(\)/);
   assert.match(source, /\.train-v3-picker\.server-paged \.train-v3-card\.on\{/);
   assert.match(source, /object-fit:contain/);
   assert.doesNotMatch(source, /\.train-v3-picker\.server-paged \.train-v3-card img\{[^}]*object-fit:cover/);
@@ -248,11 +253,12 @@ test('picker exposes a time ordering control with server paging and filter persi
   assert.match(liveSource, /function setSortOrder\(value\)/);
 });
 
-test('training candidate labels remain readable while filter chips scroll on one line', () => {
+test('training candidate labels remain readable while sidebar chips wrap within bounded scrolling', () => {
   assert.match(source, /train-v3-label-list/);
   assert.match(source, /\.train-v3-label-list\{white-space:normal;overflow:visible/);
-  assert.match(source, /#trV3Chips\{[\s\S]*?flex-wrap:nowrap/);
-  assert.match(source, /overflow-x:auto;overflow-y:hidden/);
+  assert.match(source, /#trV3Chips\{[\s\S]*?flex-wrap:wrap/);
+  assert.match(source, /max-height:202px/);
+  assert.match(source, /overflow-x:hidden;overflow-y:auto/);
 });
 
 test('task roles stay separate from original label filters', () => {

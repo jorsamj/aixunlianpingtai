@@ -198,22 +198,47 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.state?.().selected)).toBe(8);
   expect(requests.filter(value => value.includes('/training-materials/bulk-selection'))).toHaveLength(1);
 
-  for (const [width,height] of [[1440,900],[1024,768],[390,844]]) {
+  for (const [width,height] of [[1920,1080],[1366,768],[1024,768],[390,844]]) {
     await page.setViewportSize({width,height});
     await expect(page.getByRole('button',{name:'确认选择',exact:true})).toBeVisible();
     const layout=await page.evaluate(()=>{
       const grid=document.getElementById('trV3Grid');
+      const sidebar=document.querySelector('.train-v3-filters').getBoundingClientRect();
+      const browse=document.querySelector('.train-v3-results').getBoundingClientRect();
       const footer=document.querySelector('.train-v3-footer').getBoundingClientRect();
       const cards=[...grid.querySelectorAll('.train-v3-card')].map(c=>c.getBoundingClientRect());
       return {columns:getComputedStyle(grid).gridTemplateColumns.split(' ').length,
-        footerBottom:footer.bottom,overlap:cards.some((r,i)=>i>0 && r.top>cards[0].top && r.top<cards[0].bottom)};
+        sidebarRight:sidebar.right,browseLeft:browse.left,browseWidth:browse.width,
+        gridHeight:grid.clientHeight,footerBottom:footer.bottom,
+        overlap:cards.some((r,i)=>i>0 && r.top>cards[0].top && r.top<cards[0].bottom)};
     });
-    expect(layout.columns).toBe(width>1180?4:width>760?3:2);
+    expect(layout.columns).toBe(width>1180?4:width>960?3:2);
+    if(width>760){
+      expect(layout.browseLeft).toBeGreaterThanOrEqual(layout.sidebarRight - 1);
+      expect(layout.browseWidth).toBeGreaterThan(width * .55);
+    }
+    expect(layout.gridHeight).toBeGreaterThan(120);
     expect(layout.footerBottom).toBeLessThanOrEqual(height);
     expect(layout.overlap).toBe(false);
     mkdirSync('docs/evidence/material-workbench-20261104',{recursive:true});
-    await page.screenshot({path:`docs/evidence/material-workbench-20261104/picker-${width}.png`});
+    await page.screenshot({path:`docs/evidence/material-workbench-20261104/picker-two-column-${width}.png`});
   }
+  await page.setViewportSize({width:1366,height:768});
+  const beforeAdvanced=await page.locator('#trV3Grid').evaluate(element=>element.clientHeight);
+  await page.locator('.train-v3-advanced>summary').click();
+  await expect(page.locator('.train-v3-advanced-panel')).toBeVisible();
+  expect(await page.locator('#trV3Grid').evaluate(element=>element.clientHeight)).toBe(beforeAdvanced);
+  await page.locator('.train-v3-advanced>summary').click();
+  await page.locator('.train-v3-selected>summary').click();
+  await expect(page.locator('#trV3SelectedList')).toBeVisible();
+  await expect(page.locator('#trV3SelectedTotal')).toHaveText('8');
+  await page.locator('.train-v3-selected>summary').click();
+  await page.setViewportSize({width:390,height:844});
+  await page.locator('.train-v3-mobile-toggle').click();
+  await expect(page.locator('.train-v3-filters')).toHaveAttribute('open','');
+  await expect(page.locator('#trV3Chips')).toBeVisible();
+  await page.locator('.train-v3-mobile-toggle').click();
+  await expect(page.locator('.train-v3-filters')).not.toHaveAttribute('open','');
   await page.setViewportSize({width:1440,height:900});
   await page.locator('.train-v3-policy select').selectOption('include_history');
   await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().history_policy)).toBe('include_history');

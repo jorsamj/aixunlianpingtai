@@ -6980,7 +6980,18 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     if(openingRoot && document.querySelector('.train429-create')===openingRoot)showIterationBase414(aid);
     return state.iteration414[aid];
   };
-  window.showIterationBaseCore414=function(aid){const dynamic=[...document.querySelectorAll('.v424-modal-layer')].at(-1),layer=dynamic||document.querySelector('#modal:not(.hidden)'),body=layer?.querySelector('.modal-body');if(!body)return;let box=body.querySelector('.iteration414');if(!box){box=document.createElement('div');box.className='iteration414';body.prepend(box)}const p=iterationPresentation414(state.iteration414[aid]);box.innerHTML=`<span>迭代起点</span><b>${esc(p.title)}</b>${p.detail?`<em>${esc(p.detail)}</em>`:''}`};
+  window.showIterationBaseCore414=function(aid){
+    // The iteration badge belongs to the training form, not the topmost modal.
+    // A deferred base request may complete while the material picker is above it.
+    const root=document.querySelector('.train429-create');
+    if(!root||String(root.dataset.algorithmId)!==String(aid))return;
+    const body=root.closest('.modal-body');
+    if(!body)return;
+    let box=body.querySelector(':scope > .iteration414');
+    if(!box){box=document.createElement('div');box.className='iteration414';body.prepend(box)}
+    const p=iterationPresentation414(state.iteration414[aid]);
+    box.innerHTML=`<span>迭代起点</span><b>${esc(p.title)}</b>${p.detail?`<em>${esc(p.detail)}</em>`:''}`;
+  };
 
   // ---------- charted data quality ----------
   function radar414(scores){const entries=Object.entries(scores||{}).slice(0,8);if(!entries.length)return '<div class="empty">暂无质量维度</div>';const n=entries.length,c=150,r=104,pts=entries.map(([k,v],i)=>{const a=-Math.PI/2+i*Math.PI*2/n,rr=r*safeNum414(v)/100;return [c+Math.cos(a)*rr,c+Math.sin(a)*rr]}),ring=[25,50,75,100].map(p=>{const q=entries.map((_,i)=>{const a=-Math.PI/2+i*Math.PI*2/n,rr=r*p/100;return `${c+Math.cos(a)*rr},${c+Math.sin(a)*rr}`}).join(' ');return `<polygon points="${q}" fill="none" stroke="currentColor" opacity="${p===100?.2:.09}"/>`}).join(''),axes=entries.map((_,i)=>{const a=-Math.PI/2+i*Math.PI*2/n;return `<line x1="${c}" y1="${c}" x2="${c+Math.cos(a)*r}" y2="${c+Math.sin(a)*r}" stroke="currentColor" opacity=".12"/>`}).join(''),poly=pts.map(p=>p.join(',')).join(' '),labels=entries.map(([k,v],i)=>{const a=-Math.PI/2+i*Math.PI*2/n,x=c+Math.cos(a)*(r+27),y=c+Math.sin(a)*(r+27),anchor=Math.abs(Math.cos(a))<.2?'middle':Math.cos(a)>0?'start':'end';return `<text x="${x}" y="${y}" text-anchor="${anchor}" dominant-baseline="middle"><tspan>${esc(k)}</tspan><tspan x="${x}" dy="15" class="score">${safeNum414(v).toFixed(0)}</tspan></text>`}).join('');return `<svg class="quality414-radar" viewBox="0 0 300 300">${ring}${axes}<polygon points="${poly}" class="quality414-poly"/>${pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="4" class="quality414-dot"/>`).join('')}${labels}</svg>`}

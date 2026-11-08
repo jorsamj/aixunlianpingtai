@@ -46,6 +46,17 @@ test('hydration runtime depends on the canonical form owner explicitly', () => {
   assert.match(main, /openTrainingForm: window\.openTrainingCreateCanonical429/);
 });
 
+test('deferred iteration base paints only into the training-create dialog, not a newer picker', () => {
+  const start = app.indexOf('window.showIterationBaseCore414=function(aid)');
+  const end = app.indexOf('\n  // ---------- charted data quality ----------', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /document\.querySelector\('\.train429-create'\)/);
+  assert.match(owner, /root\.closest\('\.modal-body'\)/);
+  assert.match(owner, /String\(root\.dataset\.algorithmId\)!==String\(aid\)/);
+  assert.doesNotMatch(owner, /\.v424-modal-layer|\.at\(-1\)/);
+});
+
 test('external training preflight is owned by hydration instead of duplicated in app canonical owner', () => {
   const start = app.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
   const end = app.indexOf('\n  };', start);

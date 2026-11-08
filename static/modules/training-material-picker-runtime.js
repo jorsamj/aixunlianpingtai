@@ -156,10 +156,14 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-annotation-state.confirmed_empty{background:rgba(22,163,74,.88)}
       .train-v3-picker.server-paged .train-v3-annotation-state.unannotated{background:rgba(100,116,139,.88)}
       .train-v3-picker.server-paged .train-v3-card.blocked:after{
-        content:attr(data-block-reason);position:absolute;left:8px;top:8px;z-index:2;
+        content:'不可选';position:absolute;left:8px;top:8px;z-index:2;
         max-width:calc(100% - 48px);padding:4px 7px;border-radius:6px;
-        background:rgba(15,23,42,.84);color:#fff;font-size:12px;line-height:1.4;
+        background:rgba(15,23,42,.84);color:#fff;font-size:11px;line-height:1.4;
         overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+      }
+      .train-v3-picker.server-paged .train-v3-card.blocked:hover:after,
+      .train-v3-picker.server-paged .train-v3-card.blocked:focus-within:after{
+        content:attr(data-block-reason);font-size:12px;
       }
       .train-v3-picker.server-paged .train-v3-loading{pointer-events:none;opacity:.65}
       @keyframes trainPickerShimmer{to{background-position:-220% 0}}
@@ -211,61 +215,77 @@ export function installTrainingMaterialPickerRuntime({
       }
       .train-v3-picker.server-paged .train-v3-workspace{
         display:grid!important;
-        grid-template-columns:minmax(0,1fr) 270px!important;
-        grid-template-rows:auto minmax(0,1fr);
+        grid-template-columns:274px minmax(0,1fr)!important;
+        grid-template-rows:minmax(0,1fr);
         gap:0!important;min-height:0;flex:1;overflow:hidden;
       }
       .train-v3-picker.server-paged .train-v3-filters{
-        grid-column:1/-1;grid-row:1;
-        display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,220px) minmax(170px,220px);
-        column-gap:10px;row-gap:7px;align-items:end;
-        max-height:none;min-height:0;overflow:visible;
-        padding:8px 0 9px;margin:0;border:0;border-bottom:1px solid var(--picker-border);
-        font-size:12px;
+        grid-column:1;grid-row:1;
+        display:flex;flex-direction:column;align-items:stretch;gap:15px;
+        min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;
+        padding:17px 17px 22px 0;margin:0 17px 0 0;
+        border:0;border-right:1px solid var(--picker-border);
+        overscroll-behavior:contain;scrollbar-gutter:stable;font-size:13px;
       }
+      .train-v3-picker.server-paged .train-v3-sidebar-head{
+        display:flex;align-items:center;justify-content:space-between;gap:12px;
+        padding:0 0 12px;border-bottom:1px solid var(--picker-border);
+      }
+      .train-v3-picker.server-paged .train-v3-sidebar-head strong{
+        color:#223a56;font-size:15px;font-weight:700;
+      }
+      .train-v3-picker.server-paged .train-v3-sidebar-head .btn{
+        border:0;background:transparent;color:#416fd0;padding:3px 0;font-size:12px;
+      }
+      .train-v3-picker.server-paged .train-v3-mobile-toggle{display:none}
       .train-v3-picker.server-paged .train-v3-role-tools{
-        grid-column:1/-1;display:grid;position:relative;
-        grid-template-columns:minmax(0,1fr) minmax(185px,230px) auto;
-        align-items:center;gap:3px 12px;min-width:0;margin:0;padding:5px 10px;
-        border:1px solid #e8eef8;border-radius:8px;background:#f8faff;
+        display:flex;flex-direction:column;align-items:stretch;position:relative;
+        gap:8px;min-width:0;margin:0;padding:12px;
+        border:1px solid #e6eefb;border-radius:10px;background:#f7faff;
       }
       .train-v3-picker.server-paged .train-v3-role-tools b{
-        grid-column:1;grid-row:1;min-width:0;color:#365174;font-size:13px;
+        min-width:0;color:#365174;font-size:13px;line-height:1.45;
       }
       .train-v3-picker.server-paged .train-v3-role-tools #trV3RoleFilter{
-        grid-column:2;grid-row:1;height:34px;min-width:0;width:100%;font-size:12px;
+        height:37px;min-width:0;width:100%;font-size:13px;
       }
       .train-v3-picker.server-paged .train-v3-role-tools #trV3RoleCounts{
-        grid-column:1/-1;grid-row:2;overflow-wrap:anywhere;
+        overflow-wrap:anywhere;
       }
       .train-v3-picker.server-paged .train-v3-role-tools p{
         margin:0;color:#586d87;font-size:12px;line-height:1.35;
       }
       .train-v3-picker.server-paged .train-v3-role-help{
-        grid-column:3;grid-row:1;position:relative;color:#526b8b;font-size:12px;
+        position:relative;color:#526b8b;font-size:12px;
       }
       .train-v3-picker.server-paged .train-v3-role-help>summary{
-        padding:6px 8px;list-style:none;white-space:nowrap;cursor:pointer;
+        padding:0;list-style:none;cursor:pointer;color:#416fd0;
       }
       .train-v3-picker.server-paged .train-v3-role-help>summary::-webkit-details-marker{display:none}
       .train-v3-picker.server-paged .train-v3-role-help[open]>p{
-        position:absolute;right:0;top:100%;z-index:12;width:300px;max-width:70vw;
-        padding:12px;background:#fff;border:1px solid #dee7f2;border-radius:8px;
-        box-shadow:0 10px 25px rgba(25,46,78,.1);
+        position:static;width:auto;max-width:100%;margin:8px 0 0;
+        padding:8px 0 0;border-top:1px solid #dfe9f8;
       }
       .train-v3-picker.server-paged .train-v3-filter{
-        grid-column:1/-1;display:grid;
-        grid-template-columns:minmax(175px,1.5fr) 145px minmax(175px,1fr) 160px;
-        gap:8px 10px;align-items:center;min-width:0;
+        display:flex;flex-direction:column;align-items:stretch;
+        gap:13px;min-width:0;
       }
-      .train-v3-picker.server-paged .train-v3-filter>.input,
-      .train-v3-picker.server-paged .train-v3-filter>.select{
-        width:100%;min-width:0;height:36px;
+      .train-v3-picker.server-paged .train-v3-filter>label,
+      .train-v3-picker.server-paged .train-v3-label-group{
+        display:flex;flex-direction:column;align-items:stretch;gap:6px;
+        min-width:0;color:#536981;font-size:12px;font-weight:550;
+      }
+      .train-v3-picker.server-paged .train-v3-filter .input,
+      .train-v3-picker.server-paged .train-v3-filter .select{
+        width:100%;min-width:0;height:38px;
+      }
+      .train-v3-picker.server-paged .train-v3-label-group{
+        padding-top:13px;border-top:1px solid var(--picker-border);
       }
       .train-v3-picker.server-paged .input,
       .train-v3-picker.server-paged .select{
         border:1px solid #dce4ef;border-radius:8px;background:#fff;
-        color:#334861;font-size:12.5px;transition:border-color .16s ease,box-shadow .16s ease;
+        color:#334861;font-size:13px;transition:border-color .16s ease,box-shadow .16s ease;
       }
       .train-v3-picker.server-paged .input:focus,
       .train-v3-picker.server-paged .select:focus{
@@ -273,13 +293,13 @@ export function installTrainingMaterialPickerRuntime({
       }
       .train-v3-picker.server-paged #trV3Q{background:#fafbfd}
       .train-v3-picker.server-paged #trV3Chips{
-        grid-column:1/-1;display:flex;flex-wrap:nowrap;align-items:center;
-        min-height:30px;max-height:32px;gap:6px;padding:1px 0;
-        overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:#d5e0f0 transparent;
+        display:flex;flex-wrap:wrap;align-content:start;align-items:start;
+        min-height:32px;max-height:202px;gap:7px;padding:3px 2px 3px 0;
+        overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#d5e0f0 transparent;
       }
       .train-v3-picker.server-paged #trV3Chips .data426-chip{
-        flex:none;max-width:240px;min-height:27px;padding:3px 10px;
-        border:1px solid #e2e9f3;border-radius:6px;background:#f8fafd;
+        flex:0 1 auto;max-width:100%;min-height:30px;padding:4px 10px;
+        border:1px solid #e2e9f3;border-radius:7px;background:#f8fafd;
         color:#586c86;font-size:12px;font-weight:500;white-space:nowrap;
         text-overflow:ellipsis;overflow:hidden;
         transition:background .15s ease,border-color .15s ease,color .15s ease;
@@ -288,7 +308,7 @@ export function installTrainingMaterialPickerRuntime({
         border-color:#a9c5f7;background:#eff5ff;color:#245fce;
       }
       .train-v3-picker.server-paged .train-v3-filters>#trV3ActiveFilters{
-        grid-column:1/-1;display:flex;flex-wrap:wrap;gap:5px;
+        display:flex;flex-wrap:wrap;gap:6px;
         min-height:0;margin:0;padding:0;color:#526b88;font-size:12px;
       }
       .train-v3-picker.server-paged .train-v3-filters>#trV3ActiveFilters:empty{
@@ -296,21 +316,21 @@ export function installTrainingMaterialPickerRuntime({
       }
       .train-v3-picker.server-paged .train-v3-filters>label{
         display:grid;align-content:start;gap:3px;min-width:0;margin:0;
-        color:#526780;font-size:12px;
+        color:#526780;font-size:12px;font-weight:550;
       }
       .train-v3-picker.server-paged .train-v3-filters>label>.select{
         min-width:0;width:100%;height:34px;
       }
       .train-v3-picker.server-paged .train-v3-filters>label>.select[multiple]{
-        min-height:40px;max-height:48px;overflow:auto;
+        min-height:55px;max-height:95px;overflow:auto;
       }
       .train-v3-picker.server-paged .train-v3-advanced{
-        grid-column:3;position:relative;align-self:end;margin:0;min-width:0;z-index:10;
+        position:relative;align-self:stretch;margin:0;min-width:0;z-index:1;
       }
       .train-v3-picker.server-paged .train-v3-advanced>summary{
         display:flex;justify-content:space-between;align-items:center;
-        height:34px;padding:0 12px;list-style:none;cursor:pointer;
-        color:#526a86;font-size:12px;font-weight:550;
+        min-height:38px;padding:0 11px;list-style:none;cursor:pointer;
+        color:#365b97;font-size:13px;font-weight:600;
         border:1px solid #dce5f1;border-radius:8px;background:#fff;
         transition:border-color .16s ease,background .16s ease;
       }
@@ -324,12 +344,11 @@ export function installTrainingMaterialPickerRuntime({
         border-color:#bfd1f1;background:#f4f8ff;
       }
       .train-v3-picker.server-paged .train-v3-advanced-panel{
-        display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;
-        position:absolute;right:0;top:calc(100% + 7px);z-index:11;
-        width:min(720px,calc(100vw - 96px));max-height:min(45dvh,330px);
-        padding:16px;overflow:auto;overscroll-behavior:contain;
-        border:1px solid #dce6f3;border-radius:10px;background:#fff;
-        box-shadow:0 14px 36px rgba(24,45,79,.14);
+        display:flex;flex-direction:column;gap:12px;
+        position:static;width:100%;max-height:none;
+        margin-top:10px;padding:12px;overflow:visible;
+        border:1px solid #e2eaf5;border-radius:9px;background:#fbfcff;
+        box-shadow:none;
         animation:pickerFadeUp .16s ease both;
       }
       .train-v3-picker.server-paged .train-v3-advanced-panel>label{
@@ -341,17 +360,17 @@ export function installTrainingMaterialPickerRuntime({
         min-height:36px;width:100%;min-width:0;
       }
       .train-v3-picker.server-paged .train-v3-advanced-panel>.train-v3-history-note{
-        grid-column:1/-1;margin:0;color:#5e728b;font-size:12px;line-height:1.5;
+        margin:0;color:#5e728b;font-size:12px;line-height:1.5;
       }
       .train-v3-picker.server-paged .train-v3-advanced-panel>.btn{
-        grid-column:1/-1;justify-self:start;margin:0;
+        align-self:flex-start;margin:0;
       }
       .train-v3-picker.server-paged .train-v3-results{
-        grid-column:1;grid-row:2;
+        grid-column:2;grid-row:1;position:relative;
         display:grid!important;grid-template-columns:minmax(0,1fr) auto;
         grid-template-rows:auto auto minmax(0,1fr) auto;
         gap:0 10px;min-width:0;min-height:0;overflow:hidden;
-        padding:0 16px 0 0;background:#fff;
+        padding:0 0 0 2px;background:#fff;
       }
       .train-v3-picker.server-paged .train-v3-batch{
         grid-column:1;grid-row:1;display:flex;align-items:center;
@@ -359,7 +378,7 @@ export function installTrainingMaterialPickerRuntime({
       }
       .train-v3-picker.server-paged .train-v3-view{
         grid-column:2;grid-row:1;display:flex;align-items:center;
-        gap:6px;margin:0;padding:10px 0 7px;
+        justify-content:flex-end;gap:6px;margin:0;padding:10px 0 7px;
       }
       .train-v3-picker.server-paged .train-v3-batch .btn,
       .train-v3-picker.server-paged .train-v3-view .btn{
@@ -403,7 +422,7 @@ export function installTrainingMaterialPickerRuntime({
         grid-column:1/-1;grid-row:3;display:grid!important;
         grid-template-columns:repeat(4,minmax(0,1fr))!important;
         grid-auto-rows:max-content!important;align-content:start;align-items:start;
-        gap:12px;min-height:0!important;max-height:none!important;
+        gap:14px;min-height:0!important;max-height:none!important;
         overflow:auto!important;overscroll-behavior:contain;
         padding:3px 7px 10px 3px;
         scrollbar-gutter:stable;
@@ -505,25 +524,32 @@ export function installTrainingMaterialPickerRuntime({
         grid-column:1/-1;grid-row:4;min-height:0;padding:9px 0 7px;
       }
       .train-v3-picker.server-paged .train-v3-selected{
-        grid-column:2;grid-row:2;min-width:0;min-height:0;max-height:none;
-        overflow:auto;border-left:1px solid var(--picker-border);
-        padding:0 0 12px 16px;background:#fff;
+        position:relative;z-index:8;flex:none;min-width:0;min-height:0;
+        margin:0;padding:0;border:0;background:transparent;
       }
       .train-v3-picker.server-paged .train-v3-selected>summary{
-        position:sticky;top:0;z-index:2;display:flex;
-        align-items:center;justify-content:space-between;min-height:52px;
-        padding:10px 3px 9px 0;border-bottom:1px solid var(--picker-border);
-        background:#fff;color:#263d59;font-size:14px;font-weight:700;
+        display:flex;align-items:center;justify-content:space-between;gap:7px;
+        min-height:31px;padding:4px 9px;border:1px solid #cbdaf1;border-radius:7px;
+        background:#f5f8ff;color:#2859ba;font-size:12px;font-weight:650;
         list-style:none;cursor:pointer;
+        transition:background .16s ease,border-color .16s ease;
       }
       .train-v3-picker.server-paged .train-v3-selected>summary::-webkit-details-marker{display:none}
+      .train-v3-picker.server-paged .train-v3-selected>summary:hover,
+      .train-v3-picker.server-paged .train-v3-selected[open]>summary{
+        background:#ecf3ff;border-color:#a5c3f5;
+      }
       .train-v3-picker.server-paged #trV3SelectedTotal{
-        display:inline-grid;place-items:center;min-width:28px;height:27px;
-        margin-left:8px;padding:0 8px;border-radius:7px;
-        color:#2563df;background:#eef4ff;font-size:13px;font-weight:750;
+        display:inline-grid;place-items:center;min-width:23px;height:23px;
+        padding:0 6px;border-radius:6px;
+        color:#fff;background:#2b64df;font-size:12px;font-weight:700;
       }
       .train-v3-picker.server-paged .train-v3-selected>div{
-        min-height:0;padding:11px 0 0;
+        position:absolute;top:calc(100% + 8px);right:0;z-index:10;
+        width:min(345px,calc(100vw - 60px));max-height:min(62dvh,510px);
+        min-height:0;overflow:auto;overscroll-behavior:contain;
+        padding:16px;border:1px solid #dce5f2;border-radius:11px;
+        background:#fff;box-shadow:0 14px 35px rgba(20,43,80,.16);
         animation:pickerFadeUp .17s ease both;
       }
       .train-v3-picker.server-paged .train-v3-selected>div>.input{
@@ -551,7 +577,7 @@ export function installTrainingMaterialPickerRuntime({
         color:#5b7290;font-size:12px;line-height:1.5;
       }
       .train-v3-picker.server-paged #trV3SelectedList:empty:before{
-        content:'尚未选择素材';display:block;padding:18px 8px;
+        content:'尚未选择素材';display:block;padding:26px 8px;
         color:#657a95;font-size:12px;text-align:center;
       }
       .train-v3-picker.server-paged .train-v3-selected-row .btn:hover{
@@ -596,24 +622,24 @@ export function installTrainingMaterialPickerRuntime({
       }
       @media(max-width:1180px){
         .train-v3-picker.server-paged .train-v3-workspace{
-          grid-template-columns:minmax(0,1fr) 250px!important;
+          grid-template-columns:252px minmax(0,1fr)!important;
         }
         .train-v3-picker.server-paged .train-v3-grid{
           grid-template-columns:repeat(3,minmax(0,1fr))!important;
         }
-        .train-v3-picker.server-paged .train-v3-filters{
-          grid-template-columns:minmax(0,1fr) 200px 200px;
-        }
       }
       @media(max-width:960px){
-        .train-v3-picker.server-paged .train-v3-filter{
-          grid-template-columns:minmax(0,1.4fr) 130px minmax(0,1fr) 145px;
-        }
         .train-v3-picker.server-paged .train-v3-grid{
           grid-template-columns:repeat(2,minmax(0,1fr))!important;
         }
         .train-v3-picker.server-paged .train-v3-workspace{
-          grid-template-columns:minmax(0,1fr) 220px!important;
+          grid-template-columns:230px minmax(0,1fr)!important;
+        }
+        .train-v3-picker.server-paged .train-v3-filters{
+          margin-right:12px;padding-right:12px;
+        }
+        .train-v3-picker.server-paged .train-v3-batch{
+          gap:5px;
         }
       }
       @media(max-width:760px){
@@ -631,64 +657,62 @@ export function installTrainingMaterialPickerRuntime({
         .train-v3-picker.server-paged>header span{font-size:12px}
         .train-v3-picker.server-paged>header strong{font-size:12px;white-space:normal;text-align:right}
         .train-v3-picker.server-paged .train-v3-workspace{
-          display:flex!important;flex-direction:column!important;gap:0!important;
+          display:grid!important;grid-template-columns:minmax(0,1fr)!important;
+          grid-template-rows:auto minmax(0,1fr);gap:0!important;
         }
         .train-v3-picker.server-paged .train-v3-filters{
-          display:flex;flex-direction:column;gap:7px;
-          flex:none;max-height:135px;overflow:auto;
-          padding:8px 0;border:0;border-bottom:1px solid var(--picker-border);
-          overscroll-behavior:contain;
+          grid-column:1;grid-row:1;display:block;
+          flex:none;max-height:none;overflow:visible;
+          margin:0;padding:7px 0;border:0;border-bottom:1px solid var(--picker-border);
         }
-        .train-v3-picker.server-paged .train-v3-role-tools{
-          display:flex;flex:none;flex-wrap:wrap;gap:5px;margin:0;
+        .train-v3-picker.server-paged .train-v3-sidebar-head{
+          padding:0;border:0;
         }
-        .train-v3-picker.server-paged .train-v3-role-tools #trV3RoleFilter{
-          width:auto;flex:1;min-width:150px;
+        .train-v3-picker.server-paged .train-v3-sidebar-head .btn{display:none}
+        .train-v3-picker.server-paged .train-v3-filters:not([open])>:not(.train-v3-mobile-toggle){display:none}
+        .train-v3-picker.server-paged .train-v3-mobile-toggle{
+          display:flex;align-items:center;justify-content:space-between;
+          width:100%;padding:7px 2px;border:0;background:transparent;
+          color:#2b4a72;font-size:13px;font-weight:650;cursor:pointer;
         }
-        .train-v3-picker.server-paged .train-v3-filter{
-          display:grid;order:-1;flex:none;
-          grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;
+        .train-v3-picker.server-paged .train-v3-mobile-toggle:after{
+          content:'⌄';font-size:17px;transition:transform .16s ease;
         }
-        .train-v3-picker.server-paged #trV3Chips{grid-column:1/-1}
-        .train-v3-picker.server-paged .train-v3-filters>label{
-          display:grid;flex:none;width:100%;margin:0;
+        .train-v3-picker.server-paged .train-v3-filters[open] .train-v3-mobile-toggle:after{
+          transform:rotate(180deg);
         }
-        .train-v3-picker.server-paged .train-v3-advanced{
-          display:block;flex:none;width:100%;margin:0;
+        .train-v3-picker.server-paged .train-v3-filters[open]{
+          display:flex;gap:12px;max-height:45dvh;overflow-y:auto;
         }
-        .train-v3-picker.server-paged .train-v3-advanced-panel{
-          position:static;width:100%;max-height:none;overflow:visible;
-          grid-template-columns:repeat(2,minmax(0,1fr));
-          margin-top:7px;padding:10px;box-shadow:none;
+        .train-v3-picker.server-paged .train-v3-filters[open] .train-v3-sidebar-head{
+          display:flex;
         }
         .train-v3-picker.server-paged .train-v3-results{
-          display:grid!important;grid-template-columns:minmax(0,1fr) auto;
+          grid-column:1;grid-row:2;
+          display:grid!important;grid-template-columns:minmax(0,1fr);
+          grid-template-rows:auto auto auto minmax(0,1fr) auto;
           flex:1;min-height:0;padding:0;overflow:hidden;
         }
         .train-v3-picker.server-paged .train-v3-batch{
-          flex-wrap:wrap;overflow:visible;
-          max-width:100%;padding:7px 0;white-space:normal;
+          grid-column:1;grid-row:1;flex-wrap:wrap;overflow:visible;
+          max-width:100%;padding:7px 0 4px;white-space:normal;
         }
-        .train-v3-picker.server-paged .train-v3-view{padding:7px 0}
+        .train-v3-picker.server-paged .train-v3-view{
+          grid-column:1;grid-row:2;justify-content:flex-end;padding:4px 0;
+        }
         .train-v3-picker.server-paged .train-v3-policy{
-          min-height:38px;padding:0 0 6px;gap:5px;
+          grid-column:1;grid-row:3;min-height:38px;padding:0 0 6px;gap:5px;
         }
         .train-v3-picker.server-paged .train-v3-policy .select{
           height:32px;min-width:0;max-width:100%;
         }
         .train-v3-picker.server-paged .train-v3-grid{
+          grid-column:1;grid-row:4;
           grid-template-columns:repeat(2,minmax(0,1fr))!important;
           gap:10px;min-height:0!important;
         }
-        .train-v3-picker.server-paged .train-v3-selected{
-          flex:none;max-height:min(22dvh,140px);overflow:auto;padding:0;border:0;
-          border-top:1px solid var(--picker-border);
-        }
-        .train-v3-picker.server-paged .train-v3-selected>summary{
-          position:static;min-height:36px;padding:5px 0;
-        }
         .train-v3-picker.server-paged .train-v3-selected>div{
-          max-height:none;overflow:visible;padding:6px 0;
+          max-height:min(55dvh,430px);
         }
         .train-v3-picker.server-paged .train-v3-footer{
           min-height:56px;padding:8px 0;gap:8px;
@@ -697,6 +721,7 @@ export function installTrainingMaterialPickerRuntime({
           min-height:40px;padding:7px 13px;
         }
         .train-v3-picker.server-paged #trV3Pager{
+          grid-column:1;grid-row:5;
           max-height:76px;overflow:auto;
         }
         .train-v3-picker.server-paged #trV3Pager .platform-pagination{
@@ -707,14 +732,11 @@ export function installTrainingMaterialPickerRuntime({
         }
       }
       @media(max-width:420px){
-        .train-v3-picker.server-paged .train-v3-advanced-panel{
-          grid-template-columns:minmax(0,1fr);
-        }
         .train-v3-picker.server-paged .train-v3-grid{
           gap:8px;
         }
-        .train-v3-picker.server-paged .train-v3-selected{
-          max-height:min(24dvh,140px);
+        .train-v3-picker.server-paged .train-v3-selected>summary{
+          font-size:12px;padding:4px 6px;
         }
       }
       @media(prefers-reduced-motion:reduce){
@@ -801,21 +823,21 @@ export function installTrainingMaterialPickerRuntime({
       : '独立试验集必须具备正式 Ground Truth，未标注素材只展示但不可选择';
     return `<div class="train-v3-picker server-paged">
       <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
-      <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练目标：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="按本次训练目标筛选" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">最终创建时确认候选背景</option><option value="pending_review">标注或目标范围需核验</option></select><details class="train-v3-role-help"><summary>选材说明</summary><p>选择素材不需要逐张确认；最终创建时统一检查类别覆盖、GT 问题和候选背景。</p></details></section>` : ''}
-      <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><input class="input" placeholder="检索标签名称或编码" aria-label="检索标签" oninput="TrainingMaterialPickerRuntime.searchLabels(this.value)"><select class="select" aria-label="标签组合" onchange="TrainingMaterialPickerRuntime.setLabelMode(this.value)"><option value="any">包含任意标签</option><option value="all">同时包含全部标签</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
+      <div class="train-v3-workspace"><aside class="train-v3-filters"><button type="button" class="train-v3-mobile-toggle" aria-expanded="false" onclick="TrainingMaterialPickerRuntime.toggleFilterSidebar()">筛选与标签</button><div class="train-v3-sidebar-head"><strong>筛选条件</strong><button type="button" class="btn mini" onclick="TrainingMaterialPickerRuntime.clearFilters()">清空筛选</button></div>${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练目标：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="按本次训练目标筛选" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">最终创建时确认候选背景</option><option value="pending_review">标注或目标范围需核验</option></select><details class="train-v3-role-help"><summary>选材说明</summary><p>选择素材不需要逐张确认；最终创建时统一检查类别覆盖、GT 问题和候选背景。</p></details></section>` : ''}
+      <div class="train-v3-filter"><label>搜索素材<input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"></label><label>排序方式<select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select></label><div class="train-v3-label-group"><span>标签筛选</span><input class="input" placeholder="检索标签名称或编码" aria-label="检索标签" oninput="TrainingMaterialPickerRuntime.searchLabels(this.value)"><select class="select" aria-label="标签组合" onchange="TrainingMaterialPickerRuntime.setLabelMode(this.value)"><option value="any">包含任意标签</option><option value="all">同时包含全部标签</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div></div>
       <div id="trV3ActiveFilters" class="data426-chips" aria-live="polite"></div>
       ${role==='train'?`<label>素材范围<select class="select" data-filter-key="negativePoolOnly" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple data-filter-key="negativeCategoryIds" aria-label="负样本分类筛选" id="trV3NegativeCategories" onfocus="TrainingMaterialPickerRuntime.loadNegativeCategories()" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>点击后读取分类…</option></select></label>`:''}
       <details class="train-v3-advanced"><summary>更多筛选</summary><div class="train-v3-advanced-panel"><label>存储来源<select class="select" multiple id="trV3StorageSources" aria-label="存储来源" onfocus="TrainingMaterialPickerRuntime.loadStorageSources()" onchange="TrainingMaterialPickerRuntime.setFilter('sourceIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>点击读取存储来源…</option></select></label>
       <label>加入时间从<input type="date" class="input" data-filter-key="createdFrom" onchange="TrainingMaterialPickerRuntime.setFilter('createdFrom',this.value)"></label><label>至<input type="date" class="input" data-filter-key="createdTo" onchange="TrainingMaterialPickerRuntime.setFilter('createdTo',this.value)"></label>
       <label>正式标注<select class="select" data-filter-key="annotationState" onchange="TrainingMaterialPickerRuntime.setFilter('annotationState',this.value)"><option value="">全部状态</option><option value="annotated">已标注</option><option value="confirmed_empty">已确认无目标</option><option value="unannotated">未标注</option></select></label>
       <label>真实训练历史<select class="select" data-filter-key="usageState" onchange="TrainingMaterialPickerRuntime.setFilter('usageState',this.value)"><option value="">全部历史</option><option value="used">已使用</option><option value="possible">可能使用</option><option value="selected">仅选入</option><option value="eval_only">仅参与评测</option><option value="test_reserved">独立 Test 已保留</option><option value="unused">有据未使用</option><option value="unknown">未知</option></select></label>
-      <label>算法训练范围<select class="select" data-filter-key="historyScope" onchange="TrainingMaterialPickerRuntime.setFilter('historyScope',this.value)"><option value="">所有算法范围</option><option value="current_only">当前算法训练（含共同使用）</option><option value="other_only">仅其他算法训练（已知证据）</option></select></label><p class="train-v3-history-note">历史未完整回填时，“仅”表示当前已知证据；未知素材不能据此证明独立。</p><button class="btn mini" onclick="TrainingMaterialPickerRuntime.clearFilters()">清空筛选条件</button>
-      </div></details></aside><main class="train-v3-results"><div class="train-v3-view"><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('grid')">网格</button><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('list')">紧凑列表</button></div>
+      <label>算法训练范围<select class="select" data-filter-key="historyScope" onchange="TrainingMaterialPickerRuntime.setFilter('historyScope',this.value)"><option value="">所有算法范围</option><option value="current_only">当前算法训练（含共同使用）</option><option value="other_only">仅其他算法训练（已知证据）</option></select></label><p class="train-v3-history-note">历史未完整回填时，“仅”表示当前已知证据；未知素材不能据此证明独立。</p>
+      </div></details></aside><main class="train-v3-results"><div class="train-v3-view"><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('grid')">网格</button><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('list')">紧凑列表</button><details class="train-v3-selected"><summary>本次已选 <span id="trV3SelectedTotal">0</span></summary><div><input class="input" aria-label="搜索已选素材" placeholder="搜索已选名称或ID" oninput="TrainingMaterialPickerRuntime.searchSelected(this.value)"><p id="trV3SelectedSummary"></p><div id="trV3SelectedList"></div></div></details></div>
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><details class="train-v3-more"><summary class="btn mini">更多</summary><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><button class="btn mini" data-picker-action="invert-all" onclick="trainMaterialSelectV3('invert-all')">反选全部</button></details><button class="btn mini" data-picker-action="select-page" onclick="trainMaterialSelectV3('select-page')">全选本页</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <label class="train-v3-policy">训练素材使用策略 <select class="select" onchange="TrainingMaterialPickerRuntime.setHistoryPolicy(this.value)"><option value="new_for_algorithm" ${taskPayload().history_policy==='new_for_algorithm'?'selected':''}>仅使用未训练素材</option><option value="include_history" ${taskPayload().history_policy==='include_history'?'selected':''}>允许复用历史训练素材</option></select></label>
       <div id="trV3Grid" class="train-v3-grid"></div>
       <div id="trV3Pager" class="data426-pager"></div>
-      </main><details class="train-v3-selected" open><summary>本次已选 <span id="trV3SelectedTotal">0</span></summary><div><input class="input" aria-label="搜索已选素材" placeholder="搜索已选名称或ID" oninput="TrainingMaterialPickerRuntime.searchSelected(this.value)"><p id="trV3SelectedSummary"></p><div id="trV3SelectedList"></div></div></details></div><footer class="row end train-v3-footer"><button class="btn" onclick="TrainingMaterialPickerRuntime.close()">取消</button><button class="btn primary" data-picker-confirm onclick="confirmTrainMaterialPickerV3()">确认选择</button></footer>
+      </main></div><footer class="row end train-v3-footer"><button class="btn" onclick="TrainingMaterialPickerRuntime.close()">取消</button><button class="btn primary" data-picker-confirm onclick="confirmTrainMaterialPickerV3()">确认选择</button></footer>
     </div>`;
   }
 
@@ -1555,6 +1577,12 @@ export function installTrainingMaterialPickerRuntime({
     loadNegativeCategories,
     removeFilter,
     clearFilters,
+    toggleFilterSidebar() {
+      const sidebar=modalLayer?.querySelector('.train-v3-filters');
+      if(!sidebar)return;
+      const expanded=sidebar.toggleAttribute('open');
+      sidebar.querySelector('.train-v3-mobile-toggle')?.setAttribute('aria-expanded',String(expanded));
+    },
     setView(value) {if(picker){picker.view=value==='list'?'list':'grid';renderPage();}},
     close() {activeController?.abort();activePageKey=null;picker?.bulkController?.abort();picker?.historyControllers?.forEach(c=>c.abort());++requestSequence;cancelViewportFrame();clearTimeout(searchTimer);picker=null;window.closeModal?.();},
     loadPage,
