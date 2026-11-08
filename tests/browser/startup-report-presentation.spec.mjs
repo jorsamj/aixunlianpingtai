@@ -71,8 +71,8 @@ test('task completion invalidates both snapshot and recent algorithm owner count
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
   await expect.poll(()=>page.evaluate(()=>window.AlgorithmListRuntime.state().inflight)).toBe(false);
   let successes=1,requests=0;
-  await page.route('**/api/v12/projects/*/algorithms',route=>{requests++;return route.fulfill({json:{items:[{id:'count-algorithm',name:'成功次数验收',successful_training_count:successes,versions:[]}]}})});
-  await page.route('**/api/projects/*/jobs',route=>route.fulfill({json:[{id:'count-job',asset_algorithm_id:'count-algorithm',task_status:successes===1?'RUNNING':'SUCCEEDED',status:successes===1?'running':'done'}]}));
+  await page.route('**/api/v12/projects/*/algorithms**',route=>{requests++;return route.fulfill({json:{items:[{id:'count-algorithm',name:'成功次数验收',successful_training_count:successes,versions:[]}]}})});
+  await page.route('**/api/projects/*/jobs**',route=>route.fulfill({json:[{id:'count-job',asset_algorithm_id:'count-algorithm',task_status:successes===1?'RUNNING':'SUCCEEDED',status:successes===1?'running':'done'}]}));
   await page.evaluate(()=>window.AlgorithmListRuntime.refresh({render:true}));
   expect(await page.evaluate(()=>state.algorithms[0].successful_training_count)).toBe(1);
   successes=2;

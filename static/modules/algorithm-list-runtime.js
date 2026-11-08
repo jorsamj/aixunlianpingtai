@@ -749,7 +749,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       const startedAt = Date.now();
       // The algorithm catalog is the primary content. Job state is secondary:
       // slow training task history must not block the first algorithm paint.
-      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl, {signal: controller.signal});
+      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms?summary_only=true`, fetchImpl, {signal: controller.signal});
       const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs?summary_only=true`, fetchImpl, {signal: controller.signal})
         .then(body => ({body}), error => ({error}));
       const isStale = () => {

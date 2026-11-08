@@ -136,7 +136,9 @@ jobs:
           grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_REQUIRED' platform_core/external_algorithm_platform.py
           grep -Fq 'client.product_info(product_id)' platform_core/external_algorithm_platform.py
           grep -Fq 'test_training_preflight_rechecks_changlian_and_blocks_non_visual_change' tests/unit/test_external_algorithm_platform.py
-          grep -Fq 'test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_sync' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_training_preflight_reports_drift_without_full_sync_or_mutating_algorithms' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_training_preflight_allows_metadata_drift_and_added_visual_analysis_without_sync' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_training_preflight_fails_closed_if_one_of_existing_visual_analyses_is_revoked' tests/unit/test_external_algorithm_platform.py
           grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
           grep -q "installModelArtifactRuntime" static/main.mjs
           grep -Fq 'AUTO_SYNC_SCHEDULE_LOCAL_TIMES = ("08:00", "12:00", "15:00")' platform_core/external_algorithm_platform.py

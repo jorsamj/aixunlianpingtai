@@ -537,8 +537,8 @@ test('P0 cleanup UI restores suspected and failed operations, retries same ID an
   await expect(page.locator('.external-sync-operation').last()).toContainText('产品分页不完整');
   await page.evaluate(()=>window.closeModal());
   const asset={id:'a',name:'疑似算法',source_type:'EXTERNAL',provider_type:'CHANG_LIAN',external_active:true,external_deletion_status:'SUSPECTED_DELETED',external_deletion_reason:'列表缺少，待重新核实',external_master_data_digest:'digest',external_analyses:[{analysis_id:'analysis',analysis_type:'1',status:'1'}],versions:[]};
-  await page.route('**/api/v12/projects/*/algorithms',route=>json(route,{items:[asset]}));
-  await page.route('**/api/projects/*/jobs',route=>json(route,[{id:'existing-task',algorithm_id:'a',status:'running'}]));
+  await page.route('**/api/v12/projects/*/algorithms**',route=>json(route,{items:[asset]}));
+  await page.route('**/api/projects/*/jobs**',route=>json(route,[{id:'existing-task',algorithm_id:'a',status:'running'}]));
   await page.evaluate(async()=>{await window.setPage('算法列表');await window.AlgorithmListRuntime.refresh({render:true});});
   const card=page.locator('[data-algorithm-id="a"]');
   await expect(card.locator('[data-external-deletion="SUSPECTED_DELETED"]')).toContainText('待核实');

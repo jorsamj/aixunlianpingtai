@@ -4830,13 +4830,16 @@ def delete_dataset(project_id: str, dataset_id: str):
 
 
 def _system_recommendation_payload(cuda: Optional[bool] = None, gpu_name: str = "训练节点未确认"):
-    cpu = os.cpu_count() or 1
+    # Web-host resources have no authority over the Worker selected by the
+    # scheduler. Expose them only for the explicitly requested local probe.
+    cpu = (os.cpu_count() or 1) if cuda is not None else None
     ram_gb = None
-    try:
-        import psutil
-        ram_gb = round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 1)
-    except Exception:
-        ram_gb = 0
+    if cuda is not None:
+        try:
+            import psutil
+            ram_gb = round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 1)
+        except Exception:
+            ram_gb = 0
     gpu_name = str(gpu_name or "训练节点未确认")
     if cuda is None:
         # The Web process may be on a different host from the actual Worker.
@@ -4852,6 +4855,44 @@ def _system_recommendation_payload(cuda: Optional[bool] = None, gpu_name: str = 
     return {"ok": True, "cpu_count": cpu, "ram_gb": ram_gb, "cuda": cuda, "gpu": gpu_name,
             "recommendation_source": "web_runtime" if cuda is not None else "unverified_fallback",
             "worker_verified": False, "recommendation": rec}
+
+
+def _worker_gpu_recommendation(runtime: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Recommend only from online training Worker + fresh, visible GPU facts."""
+    workers = {
+        (str(worker.get("node_id") or ""), str(worker.get("worker_id") or ""))
+        for worker in runtime.get("workers", [])
+        if isinstance(worker, Mapping) and worker.get("online") is True
+        and "TRAINING" in (worker.get("task_kinds") or [])
+    }
+    visible = {
+        (str(item.get("node_id") or ""), str(item.get("gpu_uuid") or ""))
+        for item in runtime.get("worker_gpu_visibility", [])
+        if isinstance(item, Mapping)
+        and (str(item.get("node_id") or ""), str(item.get("worker_id") or "")) in workers
+    }
+    gpus = [
+        gpu for gpu in runtime.get("gpus", [])
+        if isinstance(gpu, Mapping) and gpu.get("metrics_fresh") is True
+        and gpu.get("telemetry_available") is True
+        and (str(gpu.get("node_id") or ""), str(gpu.get("gpu_uuid") or "")) in visible
+    ]
+    if not gpus:
+        return None
+    # Multiple eligible GPU nodes may exist: never bind a device index or a
+    # specific model size to one host before scheduling has selected it.
+    names = sorted({str(gpu.get("name") or gpu.get("gpu_name") or "GPU") for gpu in gpus})
+    result = _system_recommendation_payload()
+    result.update(
+        gpu="、".join(names), recommendation_source="worker_gpu_telemetry",
+        worker_verified=True, worker_gpu_count=len(gpus), online_training_workers=len(workers),
+        sampled_at=runtime.get("generated_at"),
+    )
+    result["recommendation"]["reason"] = (
+        "已核验在线训练 Worker 的近期 GPU 采样；设备仍由调度器选择，"
+        "batch、显存余量和训练资格以正式任务准入为准。"
+    )
+    return result
 
 
 class TrainingRobustnessPolicyReq(BaseModel):
@@ -4880,6 +4921,14 @@ def system_recommendation(probe_local_cuda: bool = False):
     # about the Worker selected for training. Local CUDA probing is diagnostic
     # opt-in, not part of opening the training creation form.
     if not probe_local_cuda:
+        try:
+            confirmed = _worker_gpu_recommendation(gpu_runtime_truth())
+            if confirmed is not None:
+                return confirmed
+        except Exception:
+            # The recommendation is advisory. A telemetry outage must not
+            # block creation or change the actual training admission owner.
+            pass
         return _system_recommendation_payload()
     cuda = False
     gpu_name = "未检测到可用 CUDA"
@@ -9215,6 +9264,11 @@ def add_job_to_index(project_id: str, job: Dict[str, Any]):
 @app.get("/api/projects/{project_id}/jobs")
 def list_jobs(project_id: str, summary_only: bool = False):
     get_project(project_id)
+    if summary_only:
+        # A card overview never needs to re-project every archived training
+        # task. This path reads the last durable index and overlays recent +
+        # live canonical task truth; the original full endpoint is unchanged.
+        return _v53_fast_jobs_summary(project_id)
     # GET is a live projection, never a scheduling or legacy archival trigger.
     # Old queues are maintained independently by the startup maintenance owner.
     rows = sync_jobs_index(project_id, read_only=True)
@@ -9901,10 +9955,17 @@ def algorithms_file(project_id: str) -> Path:
     return project_dir(project_id) / "algorithms.json"
 
 
-def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
+def list_algorithms_internal(project_id: str, *, summary_only: bool = False,
+                             algorithm_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fast, read-only algorithm projection. Existing report snapshots are reused."""
     get_project(project_id)
-    data = list_algorithm_assets(algorithms_file(project_id))
+    if algorithm_id is not None:
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        selected = AlgorithmSqlStore(algorithms_file(project_id)).read_one(str(algorithm_id))
+        data = [selected] if selected is not None else []
+    else:
+        data = (list_algorithm_assets(algorithms_file(project_id), summary_only=True)
+                if summary_only else list_algorithm_assets(algorithms_file(project_id)))
     changed = False
     for a in data:
         for k,v0 in {"versions":[],"industry":"","algorithm_type":"","created_at":now_iso()}.items():
@@ -9924,7 +9985,7 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
             # Expose ONLY a read-only diagnosis projection from their frozen
             # class metrics so the UI can flag older zero-TP safety classes.
             old_eval = v.get("evaluation")
-            if isinstance(old_eval, dict) and old_eval.get("status") == "succeeded":
+            if not summary_only and isinstance(old_eval, dict) and old_eval.get("status") == "succeeded":
                 from platform_core.training_evaluation import build_iteration_decision
                 prior_decision = v.get("iteration_decision") or {}
                 projection = build_iteration_decision(
@@ -12954,10 +13015,15 @@ def v12_delete_job(project_id: str, job_id: str):
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms")
-def v12_list_algorithms(project_id: str):
-    algos = list_algorithms_internal(project_id)
-    counts = _successful_training_counts(project_id)
-    algos = [{**algorithm, "successful_training_count": counts.get(str(algorithm.get("id") or ""), 0)} for algorithm in algos]
+def v12_list_algorithms(project_id: str, summary_only: bool = False):
+    algos = list_algorithms_internal(project_id, summary_only=summary_only)
+    # Exact lifetime success counts require the whole legacy + Durable job
+    # history, defeating the lightweight first-paint contract. Return unknown
+    # (never fabricate zero) in the compact view; full callers keep exact data.
+    counts = {} if summary_only else _successful_training_counts(project_id)
+    algos = [{**algorithm, "successful_training_count": (
+        None if summary_only else counts.get(str(algorithm.get("id") or ""), 0)
+    )} for algorithm in algos]
     return {"ok": True, "items": algos}
 
 
@@ -12974,7 +13040,7 @@ def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
 def v12_get_algorithm(project_id: str, algorithm_id: str):
     get_project(project_id)
     item = next(
-        (row for row in list_algorithms_internal(project_id) if str(row.get("id") or "") == str(algorithm_id)),
+        (row for row in list_algorithms_internal(project_id, algorithm_id=algorithm_id) if str(row.get("id") or "") == str(algorithm_id)),
         None,
     )
     if item is None:
@@ -27816,6 +27882,72 @@ def _v53_job_summary(source: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(data_summary, Mapping):
         row["data_summary"] = {key: value for key, value in data_summary.items() if key != "selected_ids"}
     return row
+
+
+def _v53_fast_jobs_summary(project_id: str) -> List[Dict[str, Any]]:
+    """Bounded job-card projection with live Durable status, no history scan.
+
+    Historical evidence remains in the existing index and full job/report APIs.
+    When a worker has updated a task since the last index write, the canonical
+    Durable status wins; no GET writes either store or dispatches a job.
+    """
+    snapshot = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    indexed = {
+        str(row.get("task_id") or row.get("id")): _v53_job_summary(row)
+        for row in snapshot if isinstance(row, Mapping) and (row.get("task_id") or row.get("id"))
+    } if isinstance(snapshot, list) else {}
+    try:
+        repository = shared_task_repository()
+        recent = repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=50)
+        durable = {task.task_id: task for task in recent.items}
+        cursor = None
+        while True:
+            page = repository.list(
+                project_id=project_id, kinds=(TaskKind.TRAINING,),
+                statuses=_TRAINING_STREAM_ACTIVE_STATUSES, limit=100, cursor=cursor,
+            )
+            durable.update((task.task_id, task) for task in page.items)
+            cursor = page.next_cursor
+            if not cursor:
+                break
+        for task_id, row in indexed.items():
+            if task_id in durable or not _training_job_is_active(row):
+                continue
+            persisted = repository.get(task_id)
+            if persisted is not None and persisted.project_id == project_id and persisted.kind is TaskKind.TRAINING:
+                durable[task_id] = persisted
+        status_map = {
+            TaskStatus.QUEUED: "queued", TaskStatus.RUNNING: "running",
+            TaskStatus.CANCEL_REQUESTED: "stopping",
+            TaskStatus.SUCCEEDED: "done", TaskStatus.PARTIAL_SUCCESS: "done",
+            TaskStatus.CANCELLED: "stopped", TaskStatus.FAILED: "failed",
+            TaskStatus.BLOCKED_BY_ENVIRONMENT: "failed",
+            TaskStatus.BLOCKED_BY_HARDWARE: "failed",
+        }
+        for task_id, task in durable.items():
+            row = indexed.get(task_id)
+            if row is None:
+                job_file = project_dir(project_id) / "jobs" / task_id / "job.json"
+                row = _v53_job_summary(read_json(job_file, {}))
+                if not row:
+                    payload = shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
+                    row = _v53_job_summary(payload) if isinstance(payload, Mapping) else {}
+                row = {**row, "id": task_id, "task_id": task_id}
+            public = task_to_public(task, repository)
+            legacy_status = status_map.get(task.status, str(row.get("status") or "queued"))
+            if public["status"] == "WAITING_RESOURCE":
+                legacy_status = "waiting"
+            elif public["status"] == "PAUSED":
+                legacy_status = "paused"
+            apply_training_task_truth(row, public, legacy_status=legacy_status)
+            row["updated_at"] = task.updated_at
+            row.setdefault("created_at", task.created_at)
+            indexed[task_id] = row
+    except Exception:
+        # Temporary Task DB unavailability must not mutate or discard the last
+        # known index; callers can explicitly retry for newer task truth.
+        pass
+    return [_v53_job_summary(row) for row in _training_job_index_rows(list(indexed.values()))]
 
 
 def _v53_live_jobs(project_id: str, *, history_context=None) -> List[Dict[str, Any]]:

@@ -30,6 +30,21 @@
 
 仅提交到 `feature/external-algorithm-publishing`；禁止合入 main、release、force push。此轮不自动部署到 A800 / 4070，不修改生产数据及后台任务。
 
+## 2026-11-08｜续修：列表 SQL 投影、任务摘要与训练 Worker 推荐
+
+本轮继续处理上述三个独立数据获取瓶颈，并修订两个已过时的 GitHub Actions 静态守卫（新畅联预检测试名、训练创建 preflight 参数签名）。
+
+1. **算法列表只取卡片必需数据**：`AlgorithmSqlStore.read_all(summary_only=True)` 沿用既有 SQLite Owner，用 `json_extract/json_object` 投影版本指标、状态、训练溯源与独立评测 ID/概览，避免将完整 `evaluation.error_samples` 与 `label_contract` 大 JSON 读到 Python、浏览器。`/api/v12/projects/{id}/algorithms?summary_only=true` 显式选择；既有默认完整返回保持不变。首页、算法清单、算法概览调用此投影；独立评测打开时才通过既有单算法详情接口读取完整证据。单算法详情已改为 SQL `read_one(id)`，不再为一个报告读取整个算法版本图。**不能将 `evaluation` 摘要当成完整评测结果。**精确的历史成功训练次数仍由完整接口计算；轻量列表对此字段返回 `null`，界面显示 `—` 而不伪造 `0`，待后续建立经核验的定向聚合查询后再恢复实时展示。
+2. **任务摘要避免每次全量历史投影**：`/api/projects/{id}/jobs?summary_only=true` 使用现有 `jobs/index.json`、最近 50 条 Durable 训练任务和所有活跃 Durable 任务，覆盖旧的运行状态；仅对索引内已活跃却不在查询范围内的任务按 ID 核实。保留活动任务、最多 50 条终态历史；不触碰任务状态、提交、归档或调度。原 `/jobs` 默认完整读取与报告接口不变。**摘要是有界近期视图，不是全量历史统计**；若持久索引尚未建立，历史卡片需要通过原维护流程补齐，不得把该接口当作全部历史记录。
+3. **Worker 证据与资源推荐**：默认推荐不取 Web 主机 CPU/内存，也不启动 `torch` 探针。从现有 Durable `gpu_runtime_truth` 读取在线 TRAINING Worker、Worker 对 GPU 的可见性及新鲜 GPU 遥测三重交集，仅交集非空时返回 `recommendation_source=worker_gpu_telemetry` 和 `worker_verified=true`。即便确认在线 GPU，也使用 `device=auto` 和保守参数，实际显存、设备及 batch 必须由正式准入决定。遥测不可用或不新鲜时退回 `unverified_fallback`，不凭历史设备推断可调度。独立的 `probe_local_cuda=true` 仍只代表 Web 诊断。
+4. **前后端不引入新 Owner**：无新增缓存、轮询、全量同步、生产数据变更；旧 GET 默认契约保留。新增 SQL 投影/后台真值/卡片前后端回归测试。
+
+### 续修测试及未完成的真实验收
+
+- 本地 Python `compileall`、Node `--check`、`git diff --check` 通过；定向前端 66/66 通过。排除无本地安装的 `@annotorious`、`@uppy` 和 ZIP 集成依赖用例后，可运行的前端测试 **1436/1436 通过**；直接运行不排除的全集因上述包未安装失败，不能视作代码回归失败或全集绿灯。
+- 新增后端 pytest 检查：SQLite 小投影对比完整证据；快速任务摘要尊重 Durable 状态且不重扫全历史；在线训练 Worker 的新鲜可见 GPU 才可被标记已核验。本执行容器缺失 `pytest`，**尚未实际执行后端测试，必须由 GitHub CI 验证**。
+- 未执行真实 A800/4070、Safari 与 20 万素材基准；不能声称 P95 或 GPU 准入已达标。需要核验首页与算法列表请求体积、冷/热 SQL 时间、任务摘要实时性、版本独立评测全功能（错误图/混淆矩阵/对比）、Safari 关闭/重开弹窗、远端 GPU 节点失联/恢复。
+
 ## 2026-11-08｜Word P0 训练预检误拦截与超时状态续修
 
 针对《畅联云训练素材与加载治理》验收中的单算法轻量核验及可恢复状态，继续沿用原 `ExternalAlgorithmPlatformService`、原前端训练创建 Hydration 和现有请求中心，未引入第二套同步、缓存或训练任务 Owner：

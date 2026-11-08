@@ -217,7 +217,7 @@ class AlgorithmSqlStore:
             conn.commit()
         return [dict(row, versions=[], versions_deferred=True) for row in rows], total, revision
 
-    def read_all(self) -> list[dict]:
+    def read_all(self, *, summary_only: bool = False) -> list[dict]:
         self.ensure_ready()
         with self._connect() as conn:
             algorithm_rows = conn.execute(
@@ -230,8 +230,36 @@ class AlgorithmSqlStore:
             # Prefetch child rows once for the project instead of issuing two
             # extra SELECTs per algorithm. This keeps the algorithm-list read
             # path O(1) in SQL round-trips as the catalog grows.
+            # The algorithm card view must not deserialize archived Test samples
+            # and label contracts (tens of MB per project) just to render names,
+            # metrics and version actions. SQLite extracts the small contract
+            # fields; full version evidence remains untouched for read_one().
+            version_columns = "versions.*" if not summary_only else """
+                versions.id, versions.algorithm_id, versions.version_name,
+                versions.version_no, versions.training_job_id, versions.framework,
+                versions.training_status, versions.stored_path, versions.model_name,
+                versions.artifact_verified, versions.trainable,
+                versions.external_analysis_id, versions.external_algo_version_id,
+                versions.external_publish_status, versions.created_at,
+                versions.finished_at, versions.sort_index,
+                json_object(
+                    'metrics', json_extract(versions.payload_json, '$.metrics'),
+                    'map50', json_extract(versions.payload_json, '$.map50'),
+                    'mAP50', json_extract(versions.payload_json, '$.mAP50'),
+                    'training_lineage', json_extract(versions.payload_json, '$.training_lineage'),
+                    'iteration_decision', json_extract(versions.payload_json, '$.iteration_decision'),
+                    'confirmed_iteration_action', json_extract(versions.payload_json, '$.confirmed_iteration_action'),
+                    'metric_credibility', json_extract(versions.payload_json, '$.metric_credibility'),
+                    'evaluation', CASE WHEN json_type(versions.payload_json, '$.evaluation')='object'
+                        THEN json_object(
+                            'status', json_extract(versions.payload_json, '$.evaluation.status'),
+                            'evaluation_id', json_extract(versions.payload_json, '$.evaluation.evaluation_id'),
+                            'metrics', json_extract(versions.payload_json, '$.evaluation.metrics'))
+                        ELSE NULL END
+                ) AS payload_json
+            """
             version_rows = conn.execute(
-                """SELECT versions.*
+                f"""SELECT {version_columns}
                    FROM algorithm_versions AS versions
                    JOIN algorithms AS algorithms
                      ON algorithms.id=versions.algorithm_id
@@ -286,6 +314,8 @@ class AlgorithmSqlStore:
                     item.setdefault("external_analysis_id", "")
                 versions = versions_by_algorithm.get(algorithm_id, [])
                 item["versions"] = [self._version_from_row(v) for v in versions]
+                if summary_only:
+                    item["versions_compact"] = True
                 analyses = analyses_by_algorithm.get(algorithm_id, [])
                 if analyses:
                     item["external_analyses"] = [self._analysis_from_row(a) for a in analyses]

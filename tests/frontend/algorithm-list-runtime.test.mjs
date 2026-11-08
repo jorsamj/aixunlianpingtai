@@ -81,7 +81,7 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
 
   assert.deepEqual(urls.sort(), [
     '/api/projects/project%201/jobs?summary_only=true',
-    '/api/v12/projects/project%201/algorithms',
+    '/api/v12/projects/project%201/algorithms?summary_only=true',
   ]);
   assert.deepEqual(state.algorithms.map(row => row.id), ['a2']);
   assert.deepEqual(state.jobs.map(row => row.id), ['j2']);

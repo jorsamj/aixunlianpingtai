@@ -3228,7 +3228,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(!state.project)return; const id=state.project.id; const quiet=p=>p.catch(()=>null);
     let [info,dsets,images,labels,algs,pending,testModels,modelCfg,prompts]=await Promise.all([
       quiet(api(`/api/projects/${id}`)),quiet(api(`/api/projects/${id}/datasets`)),quiet(api(`/api/projects/${id}/images`)),
-      quiet(api(`/api/v12/projects/${id}/labels`)),quiet(api(`/api/v12/projects/${id}/algorithms`)),quiet(api(`/api/v12/projects/${id}/publish/pending`)),quiet(api(`/api/v12/projects/${id}/test_models`)),quiet(api('/api/v35/model-configs')),quiet(api('/api/v35/prompt-templates'))
+      quiet(api(`/api/v12/projects/${id}/labels`)),quiet(api(`/api/v12/projects/${id}/algorithms?summary_only=true`)),quiet(api(`/api/v12/projects/${id}/publish/pending`)),quiet(api(`/api/v12/projects/${id}/test_models`)),quiet(api('/api/v35/model-configs')),quiet(api('/api/v35/prompt-templates'))
     ]);
     if(info){state.project=info.project;state.models=info.models||[]}
     state.datasets=dsets?.items||[];
@@ -4402,7 +4402,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       pairControls.querySelector('[data-eval-pair-open]')?.addEventListener('click',()=>window.openEvaluationSample429(aid,vid,Number(pairControls.querySelector('[data-eval-pair]').value),other));
     }catch(error){if(root.isConnected&&root.dataset.selectedVersion===other)root.textContent=error.message||'读取比较结果失败';}
   };
-  window.openVersionEvaluation429=function(aid,vid){
+  window.openVersionEvaluation429=async function(aid,vid){
+    const compact=(state.algorithms||[]).find(x=>String(x.id)===String(aid));
+    if(compact?.versions_compact){
+      const currentProject=pid();
+      try{
+        const response=await api(`/api/v12/projects/${encodeURIComponent(currentProject)}/algorithms/${encodeURIComponent(String(aid))}`);
+        if(pid()!==currentProject||!(state.algorithms||[]).includes(compact))return;
+        if(!response?.algorithm||String(response.algorithm.id)!==String(aid))throw new Error('算法详情身份不匹配');
+        Object.assign(compact,response.algorithm,{versions_compact:false});
+      }catch(error){return toast('独立评测详情读取失败：'+(error.message||error));}
+    }
     const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),v=(a?.versions||[]).find(x=>String(x.id)===String(vid)),e=v?.evaluation;
     if(!e)return toast('该历史版本没有独立评测记录');
     const identity=[pid(),aid,vid,e.evaluation_id||''].join(':');

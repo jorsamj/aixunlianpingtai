@@ -384,7 +384,7 @@ export function installOverviewTabsRuntime({
       await fetchOne('quality','/api/v42/projects/'+encodeURIComponent(id)+'/quality-overview');
     };
     if(tab==='algorithm')await Promise.all([
-      fetchOne('algorithms','/api/v12/projects/'+encodeURIComponent(id)+'/algorithms'),
+      fetchOne('algorithms','/api/v12/projects/'+encodeURIComponent(id)+'/algorithms?summary_only=true'),
       mergedQuality(),
     ]);
     if(tab==='compute')await Promise.all([

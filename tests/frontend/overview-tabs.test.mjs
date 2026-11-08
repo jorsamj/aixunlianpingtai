@@ -132,7 +132,7 @@ test('overview request identity fence rejects stale A → B → A response and f
     await new Promise(resolve=>setImmediate(resolve));
     assert.match(view.innerHTML,/新项目数据/);
     assert.doesNotMatch(view.innerHTML,/旧项目数据/);
-    assert.ok(third.some(x=>x.url==='/api/v12/projects/A/algorithms'));
+    assert.ok(third.some(x=>x.url==='/api/v12/projects/A/algorithms?summary_only=true'));
   }finally{globalThis.document=old}
 });
 

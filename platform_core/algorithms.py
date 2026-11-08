@@ -244,14 +244,14 @@ def choose_algorithm_iteration_base(
     return selected
 
 
-def list_algorithms(path: Path) -> list[dict]:
+def list_algorithms(path: Path, *, summary_only: bool = False) -> list[dict]:
     """Return algorithms in the legacy API shape, backed by SQL storage.
 
     The first read migrates an existing algorithms.json into algorithms.sqlite3
     without changing algorithm/version IDs. The JSON file is retained as a
     read-only migration source and backed up before SQL becomes authoritative.
     """
-    return AlgorithmSqlStore(Path(path)).read_all()
+    return AlgorithmSqlStore(Path(path)).read_all(summary_only=summary_only)
 
 
 def save_algorithms(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
