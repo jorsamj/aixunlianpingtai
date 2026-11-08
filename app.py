@@ -4829,7 +4829,7 @@ def delete_dataset(project_id: str, dataset_id: str):
     _require_material_delete_preview(project_id)
 
 
-def _system_recommendation_payload(cuda: bool = False, gpu_name: str = "未探测"):
+def _system_recommendation_payload(cuda: Optional[bool] = None, gpu_name: str = "训练节点未确认"):
     cpu = os.cpu_count() or 1
     ram_gb = None
     try:
@@ -4837,15 +4837,21 @@ def _system_recommendation_payload(cuda: bool = False, gpu_name: str = "未探�
         ram_gb = round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 1)
     except Exception:
         ram_gb = 0
-    cuda = bool(cuda)
-    gpu_name = str(gpu_name or "None")
-    if cuda:
+    gpu_name = str(gpu_name or "训练节点未确认")
+    if cuda is None:
+        # The Web process may be on a different host from the actual Worker.
+        # Do not silently prescribe CPU training from the Web host's devices.
+        rec = {"device":"auto", "model":"yolo11n.pt", "epochs":50, "imgsz":640, "batch":4,
+               "reason":"当前未指定训练节点；推荐值仅为保守起点，实际设备和资源由训练节点准入检查决定。"}
+    elif cuda:
         rec = {"device":"0", "model":"yolo11s.pt", "epochs":50, "imgsz":640, "batch":8, "reason":"检测到当前 Python 的 CUDA 可用，推荐使用 YOLO11s 进行首轮效果验证。"}
     elif ram_gb and ram_gb >= 24 and cpu >= 12:
         rec = {"device":"cpu", "model":"yolo11n.pt", "epochs":20, "imgsz":640, "batch":4, "reason":"当前未确认 CUDA 可用，但 CPU/内存较充足，推荐 YOLO11n + CPU 小批量训练。"}
     else:
         rec = {"device":"cpu", "model":"yolo11n.pt", "epochs":10, "imgsz":416, "batch":2, "reason":"当前未确认 CUDA 可用，推荐降低图片尺寸和 batch，先跑通流程。"}
-    return {"ok": True, "cpu_count": cpu, "ram_gb": ram_gb, "cuda": cuda, "gpu": gpu_name, "recommendation": rec}
+    return {"ok": True, "cpu_count": cpu, "ram_gb": ram_gb, "cuda": cuda, "gpu": gpu_name,
+            "recommendation_source": "web_runtime" if cuda is not None else "unverified_fallback",
+            "worker_verified": False, "recommendation": rec}
 
 
 class TrainingRobustnessPolicyReq(BaseModel):
@@ -4869,10 +4875,12 @@ def save_training_robustness_policy(payload: TrainingRobustnessPolicyReq):
 
 
 @app.get("/api/system/recommendation")
-def system_recommendation():
-    # Probe torch in a child process so a broken/slow Windows CUDA runtime can
-    # never freeze the API worker.  The platform remains usable after timeout
-    # and reports CUDA as unconfirmed instead of guessing.
+def system_recommendation(probe_local_cuda: bool = False):
+    # Routine reads are fast and neutral: a Web host's GPU is not evidence
+    # about the Worker selected for training. Local CUDA probing is diagnostic
+    # opt-in, not part of opening the training creation form.
+    if not probe_local_cuda:
+        return _system_recommendation_payload()
     cuda = False
     gpu_name = "未检测到可用 CUDA"
     try:
@@ -9205,14 +9213,16 @@ def add_job_to_index(project_id: str, job: Dict[str, Any]):
 
 
 @app.get("/api/projects/{project_id}/jobs")
-def list_jobs(project_id: str):
+def list_jobs(project_id: str, summary_only: bool = False):
     get_project(project_id)
     # GET is a live projection, never a scheduling or legacy archival trigger.
     # Old queues are maintained independently by the startup maintenance owner.
     rows = sync_jobs_index(project_id, read_only=True)
     if not isinstance(rows, list):
         rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
-    return rows
+    # Algorithm list and similar overview consumers only need display metadata.
+    # Preserve the complete default response for reports and legacy callers.
+    return [_v53_job_summary(row) for row in rows] if summary_only else rows
 
 
 

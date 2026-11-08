@@ -68,7 +68,7 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
     async fetch(url) {
       urls.push(url);
       if (url.includes('/algorithms')) return response({items: [{id: 'a2', name: '烟火检测', versions: []}]});
-      if (url.endsWith('/jobs')) return response([{id: 'j2', status: 'running'}]);
+      if (url.endsWith('/jobs?summary_only=true')) return response([{id: 'j2', status: 'running'}]);
       throw new Error(`unexpected URL: ${url}`);
     },
   };
@@ -80,7 +80,7 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   const result = await runtime.refresh();
 
   assert.deepEqual(urls.sort(), [
-    '/api/projects/project%201/jobs',
+    '/api/projects/project%201/jobs?summary_only=true',
     '/api/v12/projects/project%201/algorithms',
   ]);
   assert.deepEqual(state.algorithms.map(row => row.id), ['a2']);
@@ -99,7 +99,7 @@ test('algorithm cards update before slow job history completes', async () => {
   const seen = [];
   globalThis.window = {fetch: async url => {
     seen.push(url);
-    if (url.endsWith('/jobs')) { await slowJobs; return response([{id:'fresh-job'}]); }
+    if (url.endsWith('/jobs?summary_only=true')) { await slowJobs; return response([{id:'fresh-job'}]); }
     return response({items:[{id:'new-algorithm',name:'先显示算法'}]});
   }};
   const runtime = installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});

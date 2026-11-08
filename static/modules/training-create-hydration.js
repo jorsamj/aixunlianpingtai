@@ -198,10 +198,10 @@ export function installTrainingCreateHydrationRuntime({
       : Array.isArray(state.targets) && state.targets.length > 0 && state.rec != null;
     if (!force && !revalidateOptions && ready) return state;
 
-    await Promise.all([
-      hydrateOptions({force, requireTrainable, revalidate: revalidateOptions}),
-      hydrateRecommendation({force}),
-    ]);
+    // Recommendation is advisory; a slow/unavailable Web-side probe must not
+    // hold up the actual training resource readiness path.
+    void hydrateRecommendation({force}).catch(() => null);
+    await hydrateOptions({force, requireTrainable, revalidate: revalidateOptions});
     const result = getState?.() || state;
     if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
       throw new Error('没有发现可用的训练目标。请先到「训练资源」页面读取环境，确认本机或远程训练节点已就绪后重试。');

@@ -151,6 +151,36 @@ test('focused training resource hydration publishes options before recommendatio
   }
 });
 
+test('training resources become ready even if optional recommendation never resolves', async () => {
+  const originalWindow = globalThis.window;
+  const state = {targets: [], rec: null};
+  globalThis.window = {};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      openTrainingForm: () => 'opened',
+      request: async url => {
+        if (url.startsWith('/api/training_options')) {
+          return {targets: [{id: 'worker-a800', status: 'ready', algorithms: [{key:'yolo11n'}], base_models: []}]};
+        }
+        if (url === '/api/system/recommendation') return new Promise(() => {});
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+    const completed = await Promise.race([
+      runtime.hydrate().then(() => 'ready'),
+      new Promise(resolve => setTimeout(() => resolve('blocked'), 50)),
+    ]);
+    assert.equal(completed, 'ready', 'advisory recommendation cannot block training resources');
+    assert.equal(state.targets[0].id, 'worker-a800');
+    assert.equal(state.rec, null);
+    runtime.destroy();
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
 
 test('shared training truth requests carry their own signal so page navigation cannot suspend them', async () => {
   const originalWindow = globalThis.window;

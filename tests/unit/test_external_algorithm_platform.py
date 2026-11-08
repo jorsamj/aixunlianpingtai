@@ -25,6 +25,7 @@ from platform_core.external_algorithm_platform import (
     resolve_external_training_analysis,
 )
 from platform_core.algorithms import list_algorithms, save_algorithms
+from platform_core.algorithm_sql_store import AlgorithmSqlStore
 from platform_core.errors import PlatformError
 from platform_core.secrets import MemorySecretStore
 
@@ -1812,7 +1813,7 @@ def test_training_preflight_rechecks_changlian_and_blocks_non_visual_change(tmp_
     assert "analysisType=1" in blocked.value.solution
 
 
-def test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_sync(tmp_path: Path):
+def test_training_preflight_reports_drift_without_full_sync_or_mutating_algorithms(tmp_path: Path, monkeypatch):
     state = {"analysis_id": "a1"}
 
     class MutableVisualTrainingPreflightClient(FakeChangLianClient):
@@ -1851,20 +1852,23 @@ def test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_
     assert before["external_analysis_ids"] == ["a1"]
 
     state["analysis_id"] = "a2"
-    result = service.training_preflight(
-        project_id="preflight-drift",
-        algorithms_path=algorithms_path,
-        algorithm_id=before["id"],
-    )
+    monkeypatch.setattr(service, "sync", lambda **kwargs: pytest.fail("preflight must never trigger a full sync"))
+    before_revision = AlgorithmSqlStore(algorithms_path).revision()
+    with pytest.raises(PlatformError) as blocked:
+        service.training_preflight(
+            project_id="preflight-drift",
+            algorithms_path=algorithms_path,
+            algorithm_id=before["id"],
+        )
 
-    assert result["ready"] is True
-    assert result["source"] == "changlian"
-    assert result["refreshed"] is True
-    assert result["trainable_analysis_ids"] == ["a2"]
+    assert blocked.value.code == "EXTERNAL_ALGORITHM_SYNC_REQUIRED"
+    assert blocked.value.status_code == 409
+    assert "同步" in blocked.value.solution
+    assert AlgorithmSqlStore(algorithms_path).revision() == before_revision
     current = list_algorithms(algorithms_path)[0]
     assert current["id"] == before["id"]
-    assert current["external_analysis_ids"] == ["a2"]
-    assert current["external_analysis_id"] == "a2"
+    assert current["external_analysis_ids"] == ["a1"]
+    assert current["external_analysis_id"] == "a1"
 
 
 def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(tmp_path: Path):

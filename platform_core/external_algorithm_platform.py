@@ -2259,10 +2259,9 @@ class ExternalAlgorithmPlatformService:
         algorithm_id: str,
     ) -> Dict[str, Any]:
         algorithms_path = Path(algorithms_path)
-        algorithm = next(
-            (row for row in list_algorithms(algorithms_path) if str(row.get("id") or "") == str(algorithm_id)),
-            None,
-        )
+        # The training gate is scoped to a single product. Reading the entire
+        # algorithm/version graph here also decodes unrelated evaluation blobs.
+        algorithm = AlgorithmSqlStore(algorithms_path).read_one(str(algorithm_id))
         if algorithm is None:
             raise PlatformError(
                 "ALGORITHM_NOT_FOUND",
@@ -2382,30 +2381,27 @@ class ExternalAlgorithmPlatformService:
         remote_name = str(_value_from(product, "productName", "name", "algorithmName") or "").strip()
         remote_code = str(_value_from(product, "productCode", "code") or "").strip()
         remote_category_id = _category_id(product)
-        drifted = (
-            analysis_contract(local_summaries) != analysis_contract(remote_summaries)
-            or (remote_name and remote_name != str(algorithm.get("name") or "").strip())
-            or remote_code != str(algorithm.get("external_product_code") or "").strip()
-            or remote_category_id != str(algorithm.get("external_category_id") or "").strip()
-        )
-        if drifted:
-            self.sync(
-                project_id=project_id,
-                algorithms_path=algorithms_path,
-                sync_type="auto",
+        drift_fields = []
+        if analysis_contract(local_summaries) != analysis_contract(remote_summaries):
+            drift_fields.append("analyses")
+        if remote_name and remote_name != str(algorithm.get("name") or "").strip():
+            drift_fields.append("name")
+        if remote_code != str(algorithm.get("external_product_code") or "").strip():
+            drift_fields.append("code")
+        if remote_category_id != str(algorithm.get("external_category_id") or "").strip():
+            drift_fields.append("category")
+        # A preflight may read remote truth, but it must never mutate the
+        # platform mirror or consume a scheduled 08/12/15 auto-sync slot.
+        # A changed training contract is not safe to accept using stale local
+        # analysis IDs. Only the dedicated sync owner may refresh that state.
+        if set(drift_fields) & {"analyses", "code", "category"}:
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_SYNC_REQUIRED",
+                "新畅联算法信息已变化，请同步后再训练",
+                f"productId={product_id}; drift_fields={','.join(drift_fields)}",
+                "请在“平台对接”执行同步，确认当前算法及视觉分析方式后重试。训练预检不会自动同步全部算法。",
+                409,
             )
-            algorithm = next(
-                (row for row in list_algorithms(algorithms_path) if str(row.get("id") or "") == str(algorithm_id)),
-                None,
-            )
-            if algorithm is None or algorithm.get("external_active") is False:
-                raise PlatformError(
-                    "EXTERNAL_ALGORITHM_INACTIVE",
-                    "该算法已被删除或下架，不能创建训练任务",
-                    product_id,
-                    "请刷新算法列表后重新选择。",
-                    409,
-                )
 
         return {
             "ok": True,
@@ -2416,7 +2412,9 @@ class ExternalAlgorithmPlatformService:
             "trainable_analysis_ids": [_analysis_id(row) for row in visual],
             "analyses": remote_summaries,
             "algorithm": algorithm,
-            "refreshed": drifted,
+            "refreshed": False,
+            "drift_detected": bool(drift_fields),
+            "drift_fields": drift_fields,
         }
 
 
