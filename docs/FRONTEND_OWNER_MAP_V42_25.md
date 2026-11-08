@@ -1254,3 +1254,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 
 > **2026-10-31 / 42.24.451 AI 审核 Owner 小幅展示修正**：`annotationStageStatistics` 仅从已存在的 Task 投影验证并映射候选框/人工决策/历史 GT 记录，`taskRow` 只渲染；审核独立页仍由 `reviewAiLabel427`/Candidate/Annotorious 唯一 owner 管理。1366×768 CSS + 24 图 Playwright 点击/滚动回归不引入新 shell/状态。Node 1427/1427；Chrome/最终 CI 未核，生产未动。详情见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
 
+> **2026-11-08 算法列表筛选越界（候选）**：唯一 `AlgorithmListRuntime` 不变，筛选布局改用容器宽度、自适应换列与浮层内边界；品目当前可视列仍由该 Owner 控制。Node 1437/1437，通过后续 Chrome/CI/现场验收确认。详见 [专项](ALGORITHM_LIST_FILTER_OVERFLOW_2026_11_08.md)。
+

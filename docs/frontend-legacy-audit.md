@@ -1492,3 +1492,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 
 > **2026-10-31 / 42.24.451 AI 审核前端 Owner 边界**：只更新原 `static/app.js` 任务列表展示、唯一 `annotation-task-view.js` 统计投影、`styles.css` 短屏密度和同一 Playwright 用例；不新增 review renderer、分页或轮询 owner。当前候选结果与真实 GT owner 完全保留，Node 1427/1427，本批真实 Chrome/精确 SHA CI 待核。详见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)，不将历史 GT 日志冒充当前态。
 
+> **2026-11-08 算法列表筛选越界（候选）**：沿用 `AlgorithmListRuntime` 单一渲染 Owner，样式按内容容器宽度布局，分类弹层不再依赖固定 560px 最小宽度；手机显示当前分类列，无新增 classic override。Node 1437/1437，Chrome/准确 SHA CI/现场 UAT 待验。详见 [专项](ALGORITHM_LIST_FILTER_OVERFLOW_2026_11_08.md)。
+

@@ -11,6 +11,15 @@ import {
   installAlgorithmListRuntime,
 } from '../../static/modules/algorithm-list-runtime.js';
 
+test('algorithm filter CSS tracks actual page width and does not impose fixed popover minimums', () => {
+  const css = fs.readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.algorithm-filter-surface\{[^}]*container-type:inline-size/);
+  assert.match(css, /\.algorithm-list-page\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /@container\s*\(max-width:780px\)/);
+  assert.match(css, /@container\s*\(max-width:520px\)/);
+  assert.doesNotMatch(css, /\.algorithm-category-popover\{[^}]*min-width:560px/);
+});
+
 function response(body) {
   return {
     ok: true,
