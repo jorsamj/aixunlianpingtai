@@ -69,3 +69,12 @@ Python3.12.7；浏览器测试使用任务级npm缓存Node22.23.4，系统Node20
 - 未新增前端框架/请求中心/素材主库；未下载大模型、未训练Epoch、未部署或操作正式数据。原WIP工作区未修改。
 
 远端结果入口：https://github.com/jorsamj/aixunlianpingtai/actions 。必须以本次精确提交为准；CI通过不等于生产断网、GPU和真实OSS验收。
+
+## 2026-11-08｜数据集图库视觉与交互精简
+
+- **用户反馈**：数据集筛选区长时间占用首屏、标签密集，网格/列表切换粗糙，“选择本页/反选本页/清除选择”在图库底部导致远距离往返；整体留白、控件高度、正文字号与卡片层级不统一。
+- **UI 方案**：以 Ant Design 的 8px 栅格与 Arco Space 的组件间距为参考，素材库正文 14px、工具栏 40px、卡片间距 16px、区块内侧 24px、标签 Chip 32px，周边使用统一浅灰分割和克制投影；焦点可见、窄屏与减少动效偏好独立适配。
+- **操作顺序**：保留状态 Tab、名称/来源筛选；将 ZIP 批次、质量状态、日期范围和标签搜索/选择收进顶部“筛选”弹层，激活条件显示数量徽标；网格/列表以带图标的分段开关呈现并标识 `aria-pressed`；“选择本页 / 反选本页 / 清除选择”上移到图片区标题右侧，所有操作仍调用原 Owner。
+- **技术边界**：`renderDatasets424` 原壳层、`material-pagination-runtime.js` 服务器分页/过滤/状态、`selectAll412`/`invert412`/清除选择、已选操作与原图片/GT 模型保持不变。不修改 API、主存储、数据库、训练快照、素材真相或删除保护。没有创建第二套请求/缓存。筛选弹层关闭时不删除已选筛选条件。
+- **资源与测试**：改动 `static/app.js`、`static/material-workspace.css`、`static/modules/material-pagination-runtime.js`、`static/index.html`、`static/main.mjs`、`tests/frontend/material-workspace-ui.test.mjs` 和入口缓存合同。正式 `VERSION.txt` 不变，相关静态缓存键 `42.25.568`。新增图库壳层 DOM 顺序、筛选徽标和间距/键盘可见性契约测试；实际浏览器 Chrome、触摸 Safari 和生产 20 万素材性能仍需在有对应环境时验证，不将静态测试视为真实视觉验收。
+- **本地验证记录**：相关五套定向 Node 回归 27/27 通过（随后新增筛选徽标测试继续验证）；完整前端 Node 基线 1568 项，1562 通过、6 失败，全部来自当前环境缺少安装版 Annotorious/Uppy 依赖的 3 项离线资产验证和 3 项 Uppy Core 运行验证；没有发现数据集此次改动的新失败。依赖未就绪不得将全量验收宣称绿色。

@@ -434,6 +434,15 @@ export function installMaterialPaginationRuntime() {
     if (tabs[1]?.querySelector('b')) tabs[1].querySelector('b').textContent = info.statusCountsAvailable === false ? '—' : String(info.processedTotal || 0);
     const count = document.getElementById('data412Count');
     if (count) count.textContent = `${info.total || 0} 张`;
+    const filterCount = document.getElementById('materialFilterCount');
+    if (filterCount) {
+      const selectedLabels = state.data412Labels?.size || 0;
+      const selectedFields = ['materialBatchFilter61', 'materialQualityFilter61', 'materialCreatedFrom61', 'materialCreatedTo61']
+        .filter(key => String(state[key] || '').trim()).length;
+      const activeFilters = selectedLabels + selectedFields;
+      filterCount.textContent = String(activeFilters);
+      filterCount.hidden = activeFilters === 0;
+    }
     const selectedCount = document.getElementById('data412SelCount');
     if (selectedCount) selectedCount.textContent = `已选 ${(state.data412Selected || new Set()).size} 张`;
     const pager = document.getElementById('data412Pager');
