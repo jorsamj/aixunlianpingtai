@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectionPatch} from '../../static/modules/training-material-picker-runtime.js';
+import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectable, trainingMaterialSelectionPatch} from '../../static/modules/training-material-picker-runtime.js';
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -9,7 +9,8 @@ const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'ut
 
 test('ordinary material selection does not project an undefined training-target role as a review state',()=>{
   assert.match(source,/role === 'train' && hasTaskLabels/);
-  assert.match(source,/当前选择未确定训练目标/);
+  assert.match(source,/id="trV3RoleFilter"/);
+  assert.match(source,/value="pending_review">标注需核验/);
   assert.doesNotMatch(source,/审核待确认素材/);
 });
 
@@ -63,8 +64,20 @@ test('training picker never hydrates the legacy full image pool', () => {
 test('ordinary iteration picker defers full role statistics until explicitly filtered or submitted', () => {
   assert.match(source, /defer_role_counts:!picker\.sampleRole/);
   assert.match(source, /picker\.roleCounts = body\.sample_role_counts \|\| null/);
-  assert.match(source, /完整类别覆盖在最终创建时核验/);
   assert.match(source, /const hasTaskLabels=uniqueIds\(context\.train_labels\)\.length > 0 \|\| Boolean\(context\.base_version_id\)/);
+});
+
+test('training picker offers concise role filtering without duplicate targets or instructional paragraphs', () => {
+  assert.match(source, /<header><strong id="trV3PickerCount"/);
+  assert.match(source, /<label for="trV3RoleFilter">按训练目标筛选<\/label>/);
+  assert.match(source, /value="positive">含本次目标/);
+  assert.match(source, /value="confirmed_negative">已确认不含本次目标/);
+  assert.match(source, /value="pending_negative">候选背景素材/);
+  assert.doesNotMatch(source, /本次训练标签：/);
+  assert.doesNotMatch(source, /请先选择训练标签/);
+  assert.doesNotMatch(source, /本次训练目标：读取中/);
+  assert.doesNotMatch(source, /选材说明/);
+  assert.doesNotMatch(source, /当前选择未确定训练目标/);
 });
 
 test('legacy train button does not await an all-images response before showing the canonical picker', () => {
@@ -125,7 +138,7 @@ test('picker visual refinements stay scoped and respect motion and image geometr
   assert.match(source, /@media\(prefers-reduced-motion:reduce\)/);
   assert.match(source, /class="train-v3-advanced-panel"/);
   assert.match(source, /\.train-v3-filters>#trV3ActiveFilters:empty/);
-  assert.match(source, /class="train-v3-role-help"/);
+  assert.match(source, /class="train-v3-role-tools"/);
   assert.match(source, /\.train-v3-advanced-panel\{[\s\S]*?position:static/);
   assert.match(source, /grid-template-columns:274px minmax\(0,1fr\)/);
   assert.match(source, /grid-column:1;grid-row:1;[\s\S]*?overflow-y:auto/);
@@ -247,7 +260,9 @@ test('cleaned unannotated materials are selectable for train but fenced from ind
   assert.match(source, /missingTestTruth = picker\.role === 'test'/);
   assert.match(source, /role: picker\?\.role === 'robustness' \? 'train' : \(picker\?\.role \|\| 'train'\)/);
   assert.match(source, /试验集必须已标注/);
-  assert.match(source, /待标注素材会保留在任务中/);
+  const unannotated = {id:'cleaned-img-1',annotation_state:'unannotated',training_usage:{state:'unknown'}};
+  assert.equal(trainingMaterialSelectable(unannotated,'train'),true);
+  assert.equal(trainingMaterialSelectable(unannotated,'test'),false);
   assert.doesNotMatch(source, /blocked\.has\(id\) \|\| String\(row\.annotation_state \|\| ''\) === 'unannotated'/);
 });
 

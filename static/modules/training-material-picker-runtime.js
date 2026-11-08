@@ -200,18 +200,11 @@ export function installTrainingMaterialPickerRuntime({
         --picker-muted:#63748c;
       }
       .train-v3-picker.server-paged>header{
-        display:flex;align-items:center;justify-content:space-between;gap:16px;
-        flex:none;min-height:43px;padding:7px 0;border-bottom:1px solid var(--picker-border);
-      }
-      .train-v3-picker.server-paged>header b{
-        display:block;color:#344863;font-size:13px;font-weight:650;
-      }
-      .train-v3-picker.server-paged>header span{
-        display:block!important;max-width:730px;margin-top:3px;
-        color:var(--picker-muted);font-size:12px;line-height:1.35;
+        display:flex;align-items:center;justify-content:flex-end;
+        flex:none;min-height:32px;padding:5px 0;border-bottom:1px solid var(--picker-border);
       }
       .train-v3-picker.server-paged>header strong{
-        color:#2463dc;font-size:12px;font-weight:650;white-space:nowrap;
+        color:#526b8a;font-size:12px;font-weight:600;white-space:nowrap;
       }
       .train-v3-picker.server-paged .train-v3-workspace{
         display:grid!important;
@@ -239,32 +232,14 @@ export function installTrainingMaterialPickerRuntime({
       }
       .train-v3-picker.server-paged .train-v3-mobile-toggle{display:none}
       .train-v3-picker.server-paged .train-v3-role-tools{
-        display:flex;flex-direction:column;align-items:stretch;position:relative;
-        gap:8px;min-width:0;margin:0;padding:12px;
-        border:1px solid #e6eefb;border-radius:10px;background:#f7faff;
+        display:flex;flex-direction:column;align-items:stretch;
+        gap:6px;min-width:0;margin:0;padding:0;
       }
-      .train-v3-picker.server-paged .train-v3-role-tools b{
-        min-width:0;color:#365174;font-size:13px;line-height:1.45;
+      .train-v3-picker.server-paged .train-v3-role-tools>label{
+        color:#536981;font-size:12px;font-weight:550;
       }
       .train-v3-picker.server-paged .train-v3-role-tools #trV3RoleFilter{
-        height:37px;min-width:0;width:100%;font-size:13px;
-      }
-      .train-v3-picker.server-paged .train-v3-role-tools #trV3RoleCounts{
-        overflow-wrap:anywhere;
-      }
-      .train-v3-picker.server-paged .train-v3-role-tools p{
-        margin:0;color:#586d87;font-size:12px;line-height:1.35;
-      }
-      .train-v3-picker.server-paged .train-v3-role-help{
-        position:relative;color:#526b8b;font-size:12px;
-      }
-      .train-v3-picker.server-paged .train-v3-role-help>summary{
-        padding:0;list-style:none;cursor:pointer;color:#416fd0;
-      }
-      .train-v3-picker.server-paged .train-v3-role-help>summary::-webkit-details-marker{display:none}
-      .train-v3-picker.server-paged .train-v3-role-help[open]>p{
-        position:static;width:auto;max-width:100%;margin:8px 0 0;
-        padding:8px 0 0;border-top:1px solid #dfe9f8;
+        height:38px;min-width:0;width:100%;font-size:13px;
       }
       .train-v3-picker.server-paged .train-v3-filter{
         display:flex;flex-direction:column;align-items:stretch;
@@ -653,8 +628,7 @@ export function installTrainingMaterialPickerRuntime({
         .modal-card:has(.train-v3-picker.server-paged)>.modal-body{
           padding:0 14px!important;
         }
-        .train-v3-picker.server-paged>header{min-height:42px;padding:6px 0}
-        .train-v3-picker.server-paged>header span{font-size:12px}
+        .train-v3-picker.server-paged>header{min-height:30px;padding:4px 0}
         .train-v3-picker.server-paged>header strong{font-size:12px;white-space:normal;text-align:right}
         .train-v3-picker.server-paged .train-v3-workspace{
           display:grid!important;grid-template-columns:minmax(0,1fr)!important;
@@ -812,18 +786,14 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   function modalHtml(role) {
-    const title = role === 'robustness' ? '增强训练素材' : role === 'train' ? '训练候选素材' : '独立试验素材';
     const context = taskPayload();
     const hasTaskLabels = uniqueIds(context.train_labels).length > 0 || Boolean(context.base_version_id);
     const chips = (state().labels || []).slice(0,40).map(row => (
       `<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`
     )).join('');
-    const rule = role === 'robustness' ? '仅从当前训练素材中选择增强候选；实际训练角色将在提交时核验' : role === 'train'
-      ? '当前选择未确定训练目标时，先按正式标注状态选择素材；待标注素材会保留在任务中，但不会自动变成负样本'
-      : '独立试验集必须具备正式 Ground Truth，未标注素材只展示但不可选择';
     return `<div class="train-v3-picker server-paged">
-      <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
-      <div class="train-v3-workspace"><aside class="train-v3-filters"><button type="button" class="train-v3-mobile-toggle" aria-expanded="false" onclick="TrainingMaterialPickerRuntime.toggleFilterSidebar()">筛选与标签</button><div class="train-v3-sidebar-head"><strong>筛选条件</strong><button type="button" class="btn mini" onclick="TrainingMaterialPickerRuntime.clearFilters()">清空筛选</button></div>${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练目标：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="按本次训练目标筛选" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">最终创建时确认候选背景</option><option value="pending_review">标注或目标范围需核验</option></select><details class="train-v3-role-help"><summary>选材说明</summary><p>选择素材不需要逐张确认；最终创建时统一检查类别覆盖、GT 问题和候选背景。</p></details></section>` : ''}
+      <header><strong id="trV3PickerCount" aria-live="polite">正在读取素材…</strong></header>
+      <div class="train-v3-workspace"><aside class="train-v3-filters"><button type="button" class="train-v3-mobile-toggle" aria-expanded="false" onclick="TrainingMaterialPickerRuntime.toggleFilterSidebar()">筛选与标签</button><div class="train-v3-sidebar-head"><strong>筛选条件</strong><button type="button" class="btn mini" onclick="TrainingMaterialPickerRuntime.clearFilters()">清空筛选</button></div>${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><label for="trV3RoleFilter">按训练目标筛选</label><select id="trV3RoleFilter" class="select" aria-label="按训练目标筛选素材" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">候选背景素材</option><option value="pending_review">标注需核验</option></select></section>` : ''}
       <div class="train-v3-filter"><label>搜索素材<input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"></label><label>排序方式<select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select></label><div class="train-v3-label-group"><span>标签筛选</span><input class="input" placeholder="检索标签名称或编码" aria-label="检索标签" oninput="TrainingMaterialPickerRuntime.searchLabels(this.value)"><select class="select" aria-label="标签组合" onchange="TrainingMaterialPickerRuntime.setLabelMode(this.value)"><option value="any">包含任意标签</option><option value="all">同时包含全部标签</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div></div>
       <div id="trV3ActiveFilters" class="data426-chips" aria-live="polite"></div>
       ${role==='train'?`<label>素材范围<select class="select" data-filter-key="negativePoolOnly" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple data-filter-key="negativeCategoryIds" aria-label="负样本分类筛选" id="trV3NegativeCategories" onfocus="TrainingMaterialPickerRuntime.loadNegativeCategories()" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>点击后读取分类…</option></select></label>`:''}
@@ -942,14 +912,6 @@ export function installTrainingMaterialPickerRuntime({
   function updateCounts() {
     renderSelectedList();
     if (!picker) return;
-    const labelHost = document.getElementById('trV3TrainingLabels');
-    if (labelHost) labelHost.textContent = `本次训练标签：${(picker.effectiveLabels || []).join('、') || '请先选择训练标签'}`;
-    const roleCounts = document.getElementById('trV3RoleCounts');
-    if (roleCounts) {
-      const c=picker.roleCounts;
-      roleCounts.textContent = c ? `按当前训练目标 · 含目标 ${c.positive || 0} · 已确认无目标 ${c.confirmed_negative || 0} · 待确认无目标 ${c.pending_negative || 0} · 标注或范围需核验 ${c.pending_review || 0}`
-        : '优先展示本页素材；完整类别覆盖在最终创建时核验';
-    }
     const count = document.getElementById('trV3PickerCount');
     if(picker.reference){if(count)count.textContent=`服务器已冻结 ${picker.reference.count} 张`;return;}
     if (count) count.textContent = picker.total === null
