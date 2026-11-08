@@ -1448,7 +1448,7 @@ def test_role_frozen_selection_uses_forward_cursor_and_preserves_role(tmp_path, 
 
 
 def test_forward_role_paging_matches_existing_exact_role_scope(tmp_path):
-    from platform_core.training_material_picker_api import _role_material_page
+    from platform_core.training_material_picker_api import _role_material_page, _iter_forward_role_ids
 
     _, repository = _client(tmp_path)
     annotations = AnnotationRepository(repository.project_path)
@@ -1469,3 +1469,35 @@ def test_forward_role_paging_matches_existing_exact_role_scope(tmp_path):
     else:
         pytest.fail('cursor traversal did not finish')
     assert selected == [row['id'] for row in expected['items']]
+
+    # Verify the shared forward iterator against the original exact-role
+    # index for every role and both orders, including zero-match roles.
+    for order in ('oldest', 'newest'):
+        for role in ('positive', 'confirmed_negative', 'pending_negative', 'pending_review'):
+            original = _role_material_page(repository, annotations, contract,
+                                           sample_role=role, limit=260,
+                                           sort_order=order, include_payload=False)
+            forward = list(_iter_forward_role_ids(repository, annotations, contract,
+                sample_role=role, sort_order=order, page_size=23))
+            assert forward == [row['id'] for row in original['items']], (order, role)
+
+
+def test_bulk_role_selection_no_longer_builds_full_role_index(tmp_path, monkeypatch):
+    import platform_core.training_label_tasks as label_tasks
+
+    _, repository = _client(tmp_path)
+    monkeypatch.setattr(label_tasks, 'resolve_training_label_contract',
+                        lambda *_args, **_kwargs: {'effective_label_codes': ['smoke']})
+    monkeypatch.setattr(picker_module, '_cached_role_index',
+                        lambda *_args, **_kwargs: pytest.fail('bulk role selection built a full role index'))
+    router = training_material_picker_router(
+        lambda project_id: {'id': project_id}, lambda: tmp_path / 'data',
+        algorithm_provider=lambda _project, algorithm_id: {'id': algorithm_id},
+    )
+    endpoint = next(route.endpoint for route in router.routes
+                    if route.path.endswith('/training-materials/bulk-selection'))
+    body = endpoint('p1', {'algorithm_asset_id': 'a', 'role': 'train',
+                           'history_policy': 'include_history', 'train_labels': ['smoke'],
+                           'sample_role': 'positive'})
+    assert body['total'] == len(body['items']) == 115
+    assert body['items'] == [f'm{index:04d}' for index in range(0, 230, 2)]

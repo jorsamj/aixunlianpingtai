@@ -1035,6 +1035,35 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None, cu
             "negative_confirmation_revision":annotations.task_negative_confirmation_revision(), "negative_pool_revision":negative_pool_revision}
 
 
+def _iter_forward_role_ids(repository, annotations, contract, *, sample_role, query="", labels=(),
+                           filters=None, sort_order="oldest", page_size=1000):
+    """Yield one exact task-role selection without constructing a full-pool index."""
+    if sample_role not in {"positive", "confirmed_negative", "pending_negative", "pending_review"}:
+        raise ValueError("invalid sample_role")
+    selected = dict(filters or {})
+    if sample_role in {"positive", "confirmed_negative", "pending_negative"}:
+        selected["__role_target"] = {
+            "labels": list(contract.get("effective_label_codes") or []),
+            "negative": sample_role != "positive",
+        }
+    snapshot = (repository.current_revision(), annotations.current_revision())
+    cursor = ""
+    while True:
+        result = _role_material_page(repository, annotations, contract,
+            limit=page_size, cursor=cursor, sample_role="", query=query, labels=labels,
+            sort_order=sort_order, filters=selected, count_mode="deferred", defer_role_counts=True)
+        if (result["repository_revision"], result["annotation_revision"]) != snapshot:
+            raise ValueError("素材或正式标注已变化，请重新选择")
+        for row in result["items"]:
+            if row["sample_role"] == sample_role:
+                yield row["id"]
+        cursor = result["next_cursor"]
+        if not cursor:
+            break
+    if (repository.current_revision(), annotations.current_revision()) != snapshot:
+        raise ValueError("素材或正式标注已变化，请重新选择")
+
+
 def _thumbnail_identity(row: dict) -> str:
     content_hash = str(row.get("content_sha256") or "").strip().lower()
     if len(content_hash) == 64 and all(char in "0123456789abcdef" for char in content_hash):
@@ -1898,27 +1927,16 @@ def training_material_picker_router(
             contract=task_contract(project_id,body,repository) if selected_role else None
             def ids():
                 cursor=''
-                # The filtered-role pager restarts at source page 1 for each
-                # numbered page. A frozen selection needs one forward-only
-                # traversal; otherwise large role selections repeatedly scan
-                # the same earlier GT rows and can time out.
-                role_filters=dict(filters)
-                if selected_role in {'positive','confirmed_negative','pending_negative'}:
-                    role_filters['__role_target']={
-                        'labels':list(contract.get('effective_label_codes') or []),
-                        'negative':selected_role!='positive',
-                    }
+                if selected_role:
+                    yield from _iter_forward_role_ids(repository,annotations,contract,
+                        sample_role=selected_role,query=query,labels=labels,
+                        sort_order=str(body.get('sort_order') or 'newest'),filters=filters)
+                    return
                 while True:
-                    if selected_role:
-                        result=_role_material_page(repository,annotations,contract,limit=1000,cursor=cursor,
-                            query=query,labels=labels,sort_order=str(body.get('sort_order') or 'newest'),
-                            filters=role_filters,count_mode='deferred',defer_role_counts=True)
-                        yield from (row['id'] for row in result['items'] if row['sample_role']==selected_role)
-                    else:
-                        result=_gt_material_filter_page(repository,annotations,limit=1000,cursor=cursor or None,
-                            query=query,labels=labels,sort_order=str(body.get('sort_order') or 'newest'),
-                            filters=filters,count_mode='deferred')
-                        yield from result['items']
+                    result=_gt_material_filter_page(repository,annotations,limit=1000,cursor=cursor or None,
+                        query=query,labels=labels,sort_order=str(body.get('sort_order') or 'newest'),
+                        filters=filters,count_mode='deferred')
+                    yield from result['items']
                     cursor=result['next_cursor']
                     if not cursor:break
             # Role-filtered plans must not silently select outside the filter.
@@ -1956,16 +1974,22 @@ def training_material_picker_router(
             negative_pool_revision = NegativePool(repository).revision()
             if body.get("sample_role"):
                 contract = task_contract(project_id, body, repository)
-                role_page = _role_material_page(repository, annotations, contract, query=query, labels=labels,
-                    sample_role=str(body["sample_role"]), limit=MAX_SELECTION_SUMMARY_IDS, filters=body, include_payload=False)
-                if role_page["total"] > MAX_SELECTION_SUMMARY_IDS:
-                    raise ValueError(f"筛选结果共 {role_page['total']} 张，超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张")
+                # The old exact role index decoded every candidate GT even
+                # when the user only requested a bounded set of IDs. Use the
+                # same role classifier in forward pages and one cap sentinel.
+                selected_ids = []
+                for image_id in _iter_forward_role_ids(repository, annotations, contract,
+                        sample_role=str(body["sample_role"]), query=query, labels=labels,
+                        sort_order="oldest", filters=body):
+                    selected_ids.append(image_id)
+                    if len(selected_ids) > MAX_SELECTION_SUMMARY_IDS:
+                        raise ValueError(f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张")
                 if TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision() != usage['revision']:
                     raise ValueError("训练历史已更新，请重试批量选择")
                 if (annotations.task_negative_confirmation_revision() != negative_confirmation_revision
                         or NegativePool(repository).revision() != negative_pool_revision):
                     raise ValueError("负样本池或确认记录已更新，请重新解析批量选择")
-                return {"items": [row["id"] for row in role_page["items"]], "total": role_page["total"],
+                return {"items": selected_ids, "total": len(selected_ids),
                         "repository_revision": repository.current_revision(),
                         "annotation_revision": annotations.current_revision(), "usage_revision": usage['revision'],
                         "negative_confirmation_revision": negative_confirmation_revision,
