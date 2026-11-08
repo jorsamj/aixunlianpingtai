@@ -117,3 +117,15 @@ def test_recommendation_uses_only_fresh_gpu_visible_to_live_training_worker(monk
     fallback = api.system_recommendation()
     assert fallback["recommendation_source"] == "unverified_fallback"
     assert fallback["worker_verified"] is False
+
+
+def test_algorithm_card_summary_never_claims_exact_lifetime_count_from_window(monkeypatch):
+    monkeypatch.setattr(api, "list_algorithms_internal", lambda project_id, summary_only=False: [
+        {"id": "algorithm-1", "name": "行人检测", "versions": [], "versions_compact": summary_only}
+    ])
+    monkeypatch.setattr(api, "_successful_training_counts", lambda project_id: {"algorithm-1": 151})
+    compact = api.v12_list_algorithms("fixture", summary_only=True)
+    assert compact["items"][0]["successful_training_count"] is None
+    assert compact["items"][0]["versions_compact"] is True
+    full = api.v12_list_algorithms("fixture")
+    assert full["items"][0]["successful_training_count"] == 151

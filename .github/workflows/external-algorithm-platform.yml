@@ -27,6 +27,7 @@ on:
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_external_algorithm_auto_sync.py
       - tests/unit/test_algorithm_sql_store.py
+      - tests/api/test_data_fetch_targeted.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
       - tests/unit/storage/test_source_repository.py
@@ -71,6 +72,7 @@ on:
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_external_algorithm_auto_sync.py
       - tests/unit/test_algorithm_sql_store.py
+      - tests/api/test_data_fetch_targeted.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
       - tests/unit/storage/test_source_repository.py
@@ -111,6 +113,8 @@ jobs:
             tests/unit/test_integration_audit.py \
             tests/unit/test_changlian_audit_client.py \
             tests/unit/storage/test_source_repository.py
+      - name: Targeted data-fetch contracts
+        run: PYTHONPATH=. pytest -q tests/api/test_data_fetch_targeted.py
       - name: Frontend external-platform contracts
         run: |
           node --test \
