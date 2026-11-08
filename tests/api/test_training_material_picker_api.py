@@ -1417,6 +1417,8 @@ def test_role_frozen_selection_uses_forward_cursor_and_preserves_role(tmp_path, 
     monkeypatch.setattr(label_tasks, 'resolve_training_label_contract',
                         lambda *_args, **_kwargs: {'effective_label_codes': ['smoke']})
     cursors = []
+    revision_fields = {'repository_revision': repository.current_revision(),
+                       'annotation_revision': AnnotationRepository(repository.project_path).current_revision()}
 
     def bounded_role_page(_repository, _annotations, _contract, *, cursor=None,
                           sample_role='', filters=None, **_kwargs):
@@ -1426,9 +1428,10 @@ def test_role_frozen_selection_uses_forward_cursor_and_preserves_role(tmp_path, 
         if not cursor:
             return {'items': [{'id': 'm0000', 'sample_role': 'positive'},
                               {'id': 'm0001', 'sample_role': 'pending_negative'}],
-                    'next_cursor': 'next-page'}
+                    'next_cursor': 'next-page', **revision_fields}
         assert cursor == 'next-page'
-        return {'items': [{'id': 'm0002', 'sample_role': 'positive'}], 'next_cursor': None}
+        return {'items': [{'id': 'm0002', 'sample_role': 'positive'}], 'next_cursor': None,
+                **revision_fields}
 
     monkeypatch.setattr(picker_module, '_role_material_page', bounded_role_page)
     router = training_material_picker_router(
