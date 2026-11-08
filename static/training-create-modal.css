@@ -84,47 +84,7 @@
 @media(max-width:1000px){.training-create-modal-card .train-create-layout{grid-template-columns:minmax(0,1fr)}.training-create-modal-card .train-create-right{position:static}.training-create-modal-card .train-ui-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}}
 @media(max-width:620px){.training-create-modal-layer{padding:8px}.training-create-modal-layer .training-create-modal-card{height:calc(100dvh - 16px);max-height:calc(100dvh - 16px)}.training-create-modal-card .modal-head{padding:0 14px;min-height:54px}.training-create-modal-card .modal-title{font-size:18px}.training-create-modal-card .modal-body{padding:0 14px}.training-create-modal-card .train-ui-card,.training-create-modal-card .train428-panel{padding:12px}.training-workbench-steps button{font-size:12px;padding:9px 3px}.training-create-modal-card .training-label-contract-list{grid-template-columns:repeat(2,minmax(0,1fr))}.training-create-modal-card .form.two{grid-template-columns:1fr}.training-create-modal-card .train-v3-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.training-create-modal-card .train-v3-algorithm-line{flex-wrap:wrap}.training-create-modal-card .train-v3-priority{width:100%;flex-basis:100%}.training-create-modal-card .train-ui-summary{display:block}.training-create-modal-card .train428-footer{margin:0 -14px;padding:10px 14px;gap:6px}.training-create-modal-card .train428-footer .btn{min-width:0;min-height:40px;padding:8px 10px;font-size:13px}}
 
-/* Material workbench: native controls, shared platform colors, bounded labels. */
-.train-v3-picker .train-v3-policy{display:flex;align-items:center;gap:12px;padding:8px 0;color:var(--text,#1d2129);font-size:14px}
-.train-v3-picker .train-v3-policy .select{width:auto;min-width:220px}
-.train-v3-picker .train-v3-filters #trV3Chips{max-height:220px;overflow:auto;align-content:start}
-.train-v3-picker .train-v3-card{transition:border-color 140ms,background-color 140ms;border-radius:8px}
-.train-v3-picker .train-v3-card:hover,.train-v3-picker .train-v3-card:focus-within{border-color:var(--primary,#165dff)}
-.train-v3-picker .train-v3-card.blocked{opacity:1;background:var(--surface-muted,#f7f8fa)}
+/* The server-paged picker owns its scoped presentation in the runtime style.
+   Keep only these shared semantic states here to avoid competing overrides. */
 .train-v3-picker .train-v3-card input:disabled{cursor:not-allowed}
 .train-v3-picker .train-v3-history-blocked{color:var(--text-secondary,#4e5969);line-height:1.5}
-@media(max-width:768px){.train-v3-picker .train-v3-policy{flex-wrap:wrap}.train-v3-picker .train-v3-policy .select{min-width:0;width:100%}}
-@media(prefers-reduced-motion:reduce){.train-v3-picker .train-v3-card{transition:none}}
-
-/* Picker owns one viewport; scroll only results/filters, never hide its footer. */
-.modal-card:has(.train-v3-picker.server-paged){width:96vw!important;max-width:1600px!important;height:94dvh!important;max-height:94dvh!important;display:flex!important;flex-direction:column!important;overflow:hidden!important}
-.modal-card:has(.train-v3-picker.server-paged)>.modal-head{flex:none}
-.modal-card:has(.train-v3-picker.server-paged)>.modal-body{flex:1;min-height:0;overflow:hidden!important;display:flex;padding:16px}
-.train-v3-picker.server-paged{display:flex!important;flex-direction:column!important;gap:12px;width:100%;height:100%;min-height:0;overflow:hidden}
-.train-v3-picker.server-paged>header{flex:none}.train-v3-picker.server-paged>header span{display:none}
-.train-v3-picker.server-paged .train-v3-workspace{display:grid!important;grid-template-columns:210px minmax(0,1fr) 220px!important;flex:1;min-height:0;overflow:hidden;gap:20px}
-.train-v3-picker.server-paged .train-v3-filters{min-height:0;overflow:auto;padding-right:12px;border-right:1px solid #e5e6eb;font-size:13px}
-.train-v3-picker.server-paged .train-v3-filter{display:flex;flex-direction:column;gap:8px}
-.train-v3-picker.server-paged .train-v3-filter>*{width:100%;min-width:0}
-.train-v3-picker.server-paged .train-v3-results{display:flex!important;flex-direction:column;gap:8px;min-height:0;overflow:hidden}
-.train-v3-picker.server-paged .train-v3-grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;grid-auto-rows:max-content!important;align-content:start!important;gap:12px;flex:1;min-height:0!important;max-height:none!important;overflow:auto!important;padding:3px}
-.train-v3-picker.server-paged .train-v3-card{height:auto!important;min-height:0!important;max-height:none!important;overflow:hidden;display:block;align-self:start;padding-bottom:8px}
-.train-v3-picker.server-paged .train-v3-card b{font-size:13px}.train-v3-picker.server-paged .train-v3-card span{font-size:12px}
-.train-v3-picker.server-paged .train-v3-card>details{font-size:12px;padding:6px 9px;overflow-wrap:anywhere}.train-v3-picker.server-paged .train-v3-card>details summary{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.train-v3-picker.server-paged .train-v3-card>a{margin:4px 9px}
-.train-v3-picker.server-paged .train-v3-footer{flex:none!important;display:flex!important;justify-content:flex-end;align-items:center;gap:12px;padding-top:12px;border-top:1px solid #e5e6eb;background:white;position:relative!important}
-.train-v3-picker.server-paged .train-v3-more{position:relative}.train-v3-picker.server-paged .train-v3-more[open]{background:#f7f8fa;padding:4px;border:1px solid #e5e6eb;border-radius:6px}
-@media(max-width:1100px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}.train-v3-picker.server-paged .train-v3-workspace{grid-template-columns:190px minmax(0,1fr)!important}}
-@media(max-width:760px){.modal-card:has(.train-v3-picker.server-paged){width:98vw!important;height:96dvh!important;max-height:96dvh!important}.modal-card:has(.train-v3-picker.server-paged)>.modal-body{padding:8px}.train-v3-picker.server-paged .train-v3-workspace{display:flex!important;flex-direction:column!important;gap:8px}.train-v3-picker.server-paged .train-v3-filters{flex:none;max-height:150px;border:0;padding:0}.train-v3-picker.server-paged .train-v3-results{flex:1}.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}.train-v3-picker.server-paged .train-v3-policy{margin:0;padding:0}.train-v3-picker.server-paged .train-v3-policy .select{height:32px}.train-v3-picker.server-paged .train-v3-batch{gap:6px}}
-
-.train-v3-picker.server-paged .train-v3-selected{min-width:0;min-height:0;overflow:auto;border-left:1px solid #e5e6eb;padding-left:12px;font-size:13px}
-.train-v3-picker.server-paged .train-v3-selected>summary{font-weight:600;padding:8px 0;cursor:pointer}
-.train-v3-picker.server-paged .train-v3-selected-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #f1f2f5}
-.train-v3-picker.server-paged .train-v3-selected-row>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.train-v3-picker.server-paged .train-v3-selected-row button{flex:none}
-.train-v3-picker.server-paged .train-v3-selected p{font-size:12px;color:#64748b;line-height:1.6}
-.train-v3-picker.server-paged .train-v3-advanced{margin-top:12px}.train-v3-picker.server-paged .train-v3-advanced>summary{padding:8px 0;cursor:pointer;font-weight:600}
-@media(min-width:761px) and (max-width:1180px){.train-v3-picker.server-paged .train-v3-workspace{grid-template-columns:170px minmax(0,1fr) 170px!important}}
-@media(max-width:760px){.train-v3-picker.server-paged .train-v3-selected{flex:none;border:0;padding:0;max-height:100px}.train-v3-picker.server-paged .train-v3-selected>div{max-height:65px;overflow:auto}.train-v3-picker.server-paged .train-v3-selected>summary{padding:4px 0}}
-
-/* Narrow workbench keeps a useful picture viewport; optional controls scroll locally. */
-@media(max-width:760px){.train-v3-picker.server-paged .train-v3-filters{max-height:86px}.train-v3-picker.server-paged #trV3Pager{max-height:80px;overflow:auto;flex:none}.train-v3-picker.server-paged #trV3Pager .platform-pagination{padding:6px;margin:0;box-shadow:none}.train-v3-picker.server-paged #trV3Pager .platform-pagination__controls{gap:4px}.train-v3-picker.server-paged .train-v3-selected{max-height:90px}}

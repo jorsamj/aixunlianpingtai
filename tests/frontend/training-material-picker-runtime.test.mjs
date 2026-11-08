@@ -107,13 +107,13 @@ test('canonical picker confirmation preserves train and independent-test mutual 
   });
 });
 
-test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {
+test('picker UI keeps responsive contain-preview cards inside a bounded viewport', () => {
   assert.match(source, /repeat\(4,minmax\(0,1fr\)\)/);
-  assert.match(source, /grid-auto-rows:minmax\(210px,max-content\)/);
-  assert.match(source, /min-height:210px/);
+  assert.match(source, /grid-auto-rows:max-content!important/);
+  assert.match(source, /height:min\(calc\(100dvh - 48px\),880px\)!important/);
   assert.match(source, /aspect-ratio:4\/3!important/);
-  assert.match(fs.readFileSync(new URL('../../static/training-create-modal.css', import.meta.url),'utf8'), /height:94dvh!important/);
-  assert.match(source, /overflow-y:auto!important/);
+  assert.doesNotMatch(fs.readFileSync(new URL('../../static/training-create-modal.css', import.meta.url),'utf8'), /\.modal-card:has\(\.train-v3-picker\.server-paged\)/);
+  assert.match(source, /overflow:auto!important/);
   assert.match(source, /Array\.from\(\{length: 15\}/);
   assert.match(source, /pageCache\.size > CACHE_LIMIT/);
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
@@ -123,6 +123,10 @@ test('picker visual refinements stay scoped and respect motion and image geometr
   assert.match(source, /\.modal-card:has\(\.train-v3-picker\.server-paged\)/);
   assert.match(source, /@keyframes pickerDialogEnter/);
   assert.match(source, /@media\(prefers-reduced-motion:reduce\)/);
+  assert.match(source, /class="train-v3-advanced-panel"/);
+  assert.match(source, /\.train-v3-filters>#trV3ActiveFilters:empty/);
+  assert.match(source, /class="train-v3-role-help"/);
+  assert.match(source, /\.train-v3-advanced-panel\{[\s\S]*?position:absolute/);
   assert.match(source, /\.train-v3-picker\.server-paged \.train-v3-card\.on\{/);
   assert.match(source, /object-fit:contain/);
   assert.doesNotMatch(source, /\.train-v3-picker\.server-paged \.train-v3-card img\{[^}]*object-fit:cover/);
@@ -244,10 +248,11 @@ test('picker exposes a time ordering control with server paging and filter persi
   assert.match(liveSource, /function setSortOrder\(value\)/);
 });
 
-test('training candidate labels are fully readable and filter chips wrap', () => {
+test('training candidate labels remain readable while filter chips scroll on one line', () => {
   assert.match(source, /train-v3-label-list/);
   assert.match(source, /\.train-v3-label-list\{white-space:normal;overflow:visible/);
-  assert.match(source, /#trV3Chips\{grid-column:1 \/ -1;max-height:220px/);
+  assert.match(source, /#trV3Chips\{[\s\S]*?flex-wrap:nowrap/);
+  assert.match(source, /overflow-x:auto;overflow-y:hidden/);
 });
 
 test('task roles stay separate from original label filters', () => {
