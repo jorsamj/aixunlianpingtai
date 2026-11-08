@@ -101,7 +101,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi httpx requests filelock keyring cryptography psutil pyyaml pillow 'opencv-python-headless>=4.9.0,!=4.13.0.90'
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx requests filelock keyring cryptography psutil pyyaml pillow python-multipart 'opencv-python-headless>=4.9.0,!=4.13.0.90'
       - name: Backend external-platform contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
