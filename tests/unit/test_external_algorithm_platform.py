@@ -1871,6 +1871,104 @@ def test_training_preflight_reports_drift_without_full_sync_or_mutating_algorith
     assert current["external_analysis_id"] == "a1"
 
 
+def test_training_preflight_allows_metadata_drift_and_added_visual_analysis_without_sync(tmp_path: Path, monkeypatch):
+    state = {"name": "抽烟检测", "category": "c1", "code": "", "extra_visual": False}
+
+    class MetadataDriftClient(FakeChangLianClient):
+        def product_info(self, product_id):
+            return {"data": {
+                "productId": product_id, "productName": state["name"],
+                "categoryId": state["category"], "productCode": state["code"], "status": 1,
+            }}
+
+        def analyses(self, product_id):
+            rows = [{"analysisId": "a1", "analysisType": 1, "status": 1}]
+            if state["extra_visual"]:
+                rows.append({"analysisId": "a2", "analysisType": 1, "status": 1})
+            return {"data": rows}
+
+        def analysis_info(self, analysis_id):
+            return {"data": {
+                "analysisId": analysis_id, "productId": "p1", "analysisType": 1, "status": 1,
+            }}
+
+    service = _configured_external_service(tmp_path, MetadataDriftClient)
+    algorithms_path = tmp_path / "metadata-drift" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="metadata-drift", algorithms_path=algorithms_path)
+    original = list_algorithms(algorithms_path)[0]
+    revision = AlgorithmSqlStore(algorithms_path).revision()
+    state.update(name="抽烟检测（新）", category="c2", code="NEW-CODE", extra_visual=True)
+    monkeypatch.setattr(service, "sync", lambda **kwargs: pytest.fail("GET preflight must be read-only"))
+
+    result = service.training_preflight(
+        project_id="metadata-drift", algorithms_path=algorithms_path, algorithm_id=original["id"],
+    )
+
+    assert result["ready"] is True
+    assert result["refreshed"] is False
+    assert result["drift_detected"] is True
+    assert set(result["drift_fields"]) == {"name", "code", "category", "analyses"}
+    assert set(result["trainable_analysis_ids"]) == {"a1", "a2"}
+    assert result["algorithm"]["id"] == original["id"]
+    assert result["algorithm"]["external_analysis_ids"] == ["a1"]
+    assert AlgorithmSqlStore(algorithms_path).revision() == revision
+
+
+def test_training_preflight_fails_closed_if_one_of_existing_visual_analyses_is_revoked(tmp_path: Path):
+    state = {"a1_enabled": True}
+
+    class RevokedVisualClient(FakeChangLianClient):
+        def analyses(self, product_id):
+            return {"data": [
+                {"analysisId": "a1", "analysisType": 1, "status": int(state["a1_enabled"])},
+                {"analysisId": "a2", "analysisType": 1, "status": 1},
+            ]}
+
+        def analysis_info(self, analysis_id):
+            return {"data": {
+                "analysisId": analysis_id, "productId": "p1", "analysisType": 1,
+                "status": int(state["a1_enabled"]) if analysis_id == "a1" else 1,
+            }}
+
+    service = _configured_external_service(tmp_path, RevokedVisualClient)
+    algorithms_path = tmp_path / "revoked-visual" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="revoked-visual", algorithms_path=algorithms_path)
+    algorithm = list_algorithms(algorithms_path)[0]
+    assert set(algorithm["external_analysis_ids"]) == {"a1", "a2"}
+    state["a1_enabled"] = False
+
+    with pytest.raises(PlatformError) as blocked:
+        service.training_preflight(
+            project_id="revoked-visual", algorithms_path=algorithms_path, algorithm_id=algorithm["id"],
+        )
+    assert blocked.value.code == "EXTERNAL_ALGORITHM_SYNC_REQUIRED"
+
+
+def test_training_preflight_enforces_remote_time_budget_without_sync(tmp_path: Path, monkeypatch):
+    class SlowVisualClient(FakeChangLianClient):
+        def analyses(self, product_id):
+            time.sleep(0.025)
+            return super().analyses(product_id)
+
+    service = _configured_external_service(tmp_path, SlowVisualClient)
+    algorithms_path = tmp_path / "slow-visual" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="slow-visual", algorithms_path=algorithms_path)
+    algorithm = list_algorithms(algorithms_path)[0]
+    monkeypatch.setattr("platform_core.external_algorithm_platform.EXTERNAL_TRAINING_PREFLIGHT_BUDGET_SECONDS", 0.005)
+    with pytest.raises(PlatformError) as timeout:
+        service.training_preflight(
+            project_id="slow-visual", algorithms_path=algorithms_path, algorithm_id=algorithm["id"],
+        )
+    assert timeout.value.code == "EXTERNAL_TRAINING_PREFLIGHT_TIMEOUT"
+    assert timeout.value.status_code == 503
+
+
 def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(tmp_path: Path):
     state = {"product_status": 1}
 

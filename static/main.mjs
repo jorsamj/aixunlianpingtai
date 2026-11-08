@@ -20,7 +20,7 @@ import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.24.537';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63025';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
@@ -34,7 +34,7 @@ import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgo
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
 import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=42.25.532';
-import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=4226517';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=4226518';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
@@ -286,8 +286,9 @@ const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   request: api,
-  preflight: (algorithmId, {signal} = {}) => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api, signal}),
+  preflight: (algorithmId, {signal,force} = {}) => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api, signal,force}),
   preflightFresh: algorithmId => externalAlgorithmPlatformRuntime.trainingPreflightFresh(algorithmId),
+  preflightStatus: algorithmId => externalAlgorithmPlatformRuntime.trainingPreflightStatus(algorithmId),
   openTrainingForm: window.openTrainingCreateCanonical429,
   notify,
 });

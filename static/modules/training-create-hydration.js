@@ -39,8 +39,10 @@ export function installTrainingCreateHydrationRuntime({
     return response.json();
   },
   requestTimeoutMs = 30000,
+  preflightTimeoutMs = 9500,
   preflight,
   preflightFresh,
+  preflightStatus,
   openTrainingForm,
   openShell,
   isShellCurrent,
@@ -79,9 +81,9 @@ export function installTrainingCreateHydrationRuntime({
     box.setAttribute('aria-live','polite');
     const html=Object.entries(stageLabels).map(([key,title])=>{
       const value=stages[key]||{},status=value.status||'idle';
-      const label=({ready:'已就绪',loading:'正在读取',error:'读取失败',unavailable:'暂无可用资源',idle:'未检查'})[status]||status;
+      const label=({ready:'已就绪',warning:'可训练 · 信息有更新',loading:'正在读取',error:'读取失败',unavailable:'暂无可用资源',idle:'未检查'})[status]||status;
       const note=key==='recommendation'&&['loading','error'].includes(status)?'使用内置默认配置，尚未获取实时推荐':'';
-      return `<div data-training-input="${key}" data-status="${status}"><b>${title}</b><span>${escapeHtml(label)}</span>${note?`<small>${note}</small>`:''}${value.error?`<small>${escapeHtml(value.error)}</small>`:''}${['error','unavailable'].includes(status)?`<button type="button" class="btn mini" data-training-input-retry="${key}">重试</button>`:''}</div>`;
+      return `<div data-training-input="${key}" data-status="${status}"><b>${title}</b><span>${escapeHtml(label)}</span>${note?`<small>${note}</small>`:''}${value.warning?`<small>${escapeHtml(value.warning)}</small>`:''}${value.error?`<small>${escapeHtml(value.error)}</small>`:''}${['error','unavailable'].includes(status)?`<button type="button" class="btn mini" data-training-input-retry="${key}">重试</button>`:''}</div>`;
     }).join('');
     if(box.innerHTML!==html)box.innerHTML=html;
     if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',event=>{const key=event.target.closest('[data-training-input-retry]')?.dataset.trainingInputRetry;if(key)void retry(key);});}
@@ -249,17 +251,24 @@ export function installTrainingCreateHydrationRuntime({
   };
 
   const preflightInflight=new Map();
+  const preflightControllers=new Map();
+  const preflightPresentation=result=>{
+    const details=(typeof preflightStatus==='function'?preflightStatus(result?.algorithmId):null)||result?.value;
+    const drift=details?.drift_detected===true;
+    return {status:drift?'warning':'ready',warning:drift?'外部算法信息有更新，不影响现有视觉分析方式；可稍后同步。':''};
+  };
   async function hydratePreflight(aid,{force=false}={}){
     const project=String(projectId?.()||''),key=project+':'+aid;
     const algorithm=(getState?.()?.algorithms||[]).find(row=>String(row.id)===String(aid));
     const external=String(algorithm?.source_type||'').toUpperCase()==='EXTERNAL'&&['CHANG_LIAN','CHANGLIAN'].includes(String(algorithm?.provider_type||'').toUpperCase());
-    if(!external||!force&&preflightFresh?.(aid)===true){stage('preflight',{status:'ready',error:'',cacheHit:true});return null;}
+    if(!external||!force&&preflightFresh?.(aid)===true){stage('preflight',{...preflightPresentation({algorithmId:aid}),error:'',cacheHit:true});return null;}
     if(preflightInflight.has(key))return preflightInflight.get(key);
-    stage('preflight',{status:'loading',error:''});const started=clockNow();
-    const pending=withRequestDeadline(signal=>preflight(aid,{signal}),{timeoutMs:requestTimeoutMs,label:'算法状态核验'})
-      .then(result=>{if(String(projectId?.()||'')===project&&activeOpening?.aid===String(aid))stage('preflight',{status:'ready',durationMs:Math.round(clockNow()-started),error:''});return result;})
-      .catch(error=>{if(String(projectId?.()||'')===project&&activeOpening?.aid===String(aid))stage('preflight',{status:'error',durationMs:Math.round(clockNow()-started),error:String(error.message||error)});throw error;})
-      .finally(()=>preflightInflight.delete(key));preflightInflight.set(key,pending);return pending;
+    stage('preflight',{status:'loading',error:'',warning:''});const started=clockNow();
+    const controller=new AbortController();preflightControllers.set(key,controller);
+    const pending=withRequestDeadline(signal=>preflight(aid,{signal,force}),{timeoutMs:preflightTimeoutMs,label:'算法状态核验',signal:controller.signal})
+      .then(result=>{if(!destroyed&&String(projectId?.()||'')===project&&activeOpening?.aid===String(aid))stage('preflight',{...preflightPresentation({algorithmId:aid,value:result}),durationMs:Math.round(clockNow()-started),error:''});return result;})
+      .catch(error=>{if(!destroyed&&String(projectId?.()||'')===project&&activeOpening?.aid===String(aid)&&!controller.signal.aborted)stage('preflight',{status:'error',durationMs:Math.round(clockNow()-started),warning:'',error:String(error.message||error)});throw error;})
+      .finally(()=>{preflightInflight.delete(key);preflightControllers.delete(key);});preflightInflight.set(key,pending);return pending;
   }
   const start = async aid => {
     const token=++openEpoch,project=String(projectId?.()||''),started=clockNow();
@@ -295,6 +304,8 @@ export function installTrainingCreateHydrationRuntime({
       activeOpening=null;
       optionsController?.abort?.('runtime-destroyed');
       recommendationController?.abort?.('runtime-destroyed');
+      for(const controller of preflightControllers.values())controller.abort('runtime-destroyed');
+      preflightControllers.clear();
       optionsController = null;
       recommendationController = null;
       optionsInflight = null;

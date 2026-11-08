@@ -390,6 +390,55 @@ test('recent external preflight opens the canonical training form without a prep
   }
 });
 
+test('external metadata drift stays trainable and surfaces one compact sync advisory', async () => {
+  const originalWindow=globalThis.window;
+  const state={algorithms:[{id:'external-1',source_type:'EXTERNAL',provider_type:'CHANG_LIAN'}],targets:[],rec:null};
+  globalThis.window={};
+  try {
+    const runtime=installTrainingCreateHydrationRuntime({
+      getState:()=>state,projectId:()=> 'p',openTrainingForm:()=> 'opened',
+      request:async url=>url.startsWith('/api/training_options')?{targets:[]}:{recommendation_source:'unverified_fallback'},
+      preflight:async ()=>({drift_detected:true,drift_fields:['name','category']}),
+      preflightFresh:()=>false,
+    });
+    await runtime.start('external-1');
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(runtime.diagnostics().preflight.status,'warning');
+    assert.match(runtime.diagnostics().preflight.warning,/不影响现有视觉分析方式/);
+    assert.equal(runtime.diagnostics().preflight.error,'');
+    runtime.destroy();
+  } finally {globalThis.window=originalWindow;}
+});
+
+test('external preflight timeout terminates within its own budget and retry is not trapped by old work', async () => {
+  const originalWindow=globalThis.window;
+  const state={algorithms:[{id:'external-1',source_type:'EXTERNAL',provider_type:'CHANG_LIAN'}],targets:[],rec:null};
+  globalThis.window={};
+  let releaseFirst;
+  const first=new Promise(resolve=>{releaseFirst=resolve;});
+  let calls=0;
+  try {
+    const runtime=installTrainingCreateHydrationRuntime({
+      getState:()=>state,projectId:()=> 'p',openTrainingForm:()=> 'opened',
+      requestTimeoutMs:100,preflightTimeoutMs:20,
+      request:async url=>url.startsWith('/api/training_options')?{targets:[]}:{device:'auto'},
+      preflight:async()=>{calls++;return calls===1?first:{drift_detected:false};},
+      preflightFresh:()=>false,
+    });
+    await runtime.start('external-1');
+    await new Promise(resolve=>setTimeout(resolve,35));
+    assert.equal(runtime.diagnostics().preflight.status,'error');
+    assert.match(runtime.diagnostics().preflight.error,/超时/);
+    await runtime.prewarm('external-1');
+    assert.equal(calls,2);
+    assert.equal(runtime.diagnostics().preflight.status,'ready');
+    releaseFirst({drift_detected:true});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(runtime.diagnostics().preflight.status,'ready','late timed-out response must not change the displayed result');
+    runtime.destroy();
+  } finally {globalThis.window=originalWindow;}
+});
+
 
 test('preparation deadline settles never-resolving inputs and prevents late publication', async () => {
   const previous=globalThis.window;globalThis.window={};

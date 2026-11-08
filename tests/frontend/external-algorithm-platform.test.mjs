@@ -420,7 +420,9 @@ test('external training preflight exposes freshness without weakening the author
   assert.match(source, /function trainingPreflightFresh\(algorithmId, \{maxAgeMs = 30000\} = \{\}\)/);
   assert.match(source, /Boolean\(cached\?\.algorithm\) && age >= 0 && age < Math\.max\(0, Number\(maxAgeMs\) \|\| 0\)/);
   assert.match(source, /trainingPreflightFresh,/);
-  assert.match(source, /async function preflightTraining\(algorithmId, \{request, force = false, maxAgeMs = 30000, signal\} = \{\}\)/);
+  assert.match(source, /async function preflightTraining\(algorithmId, \{request, force = false, maxAgeMs = 30000, signal, timeoutMs = 8500\} = \{\}\)/);
+  assert.match(source, /if \(signal\?\.aborted \|\| destroyed \|\| currentProjectId\(\) !== pid\)/);
+  assert.match(source, /trainingPreflightStatus,/);
 });
 
 

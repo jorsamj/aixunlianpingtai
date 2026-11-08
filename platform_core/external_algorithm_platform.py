@@ -40,6 +40,8 @@ DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60
 AUTO_SYNC_TIMEZONE_NAME = "Asia/Shanghai"
 AUTO_SYNC_TIMEZONE = timezone(timedelta(hours=8), name=AUTO_SYNC_TIMEZONE_NAME)
 AUTO_SYNC_SCHEDULE_LOCAL_TIMES = ("08:00", "12:00", "15:00")
+# Time budget for one product's read-only provider training eligibility check.
+EXTERNAL_TRAINING_PREFLIGHT_BUDGET_SECONDS = 8.0
 
 CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
     {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"human_login"},
@@ -2303,9 +2305,39 @@ class ExternalAlgorithmPlatformService:
                 409,
             )
         client = self._client()
+        # The provider client belongs to this request. Bound every successive
+        # HTTP hop to the *remaining* budget; a large analysis list must not
+        # turn this single-algorithm read into an unbounded training gate.
+        deadline = time.monotonic() + EXTERNAL_TRAINING_PREFLIGHT_BUDGET_SECONDS
+
+        def checked_provider_call(call: Callable[[], Any]) -> Any:
+            def timeout_error() -> PlatformError:
+                return PlatformError(
+                    "EXTERNAL_TRAINING_PREFLIGHT_TIMEOUT",
+                    "外部算法状态核验超时",
+                    f"productId={product_id}",
+                    "请重试本算法状态核验；无需重新同步全部算法。",
+                    503,
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise timeout_error()
+            if isinstance(client, ChangLianClient):
+                client.timeout = max(0.05, min(client.timeout, remaining))
+            try:
+                result = call()
+            except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise timeout_error() from error
+                raise
+            if time.monotonic() > deadline:
+                raise timeout_error()
+            return result
+
         try:
             product_rows = _validated_external_items(
-                client.product_info(product_id),
+                checked_provider_call(lambda: client.product_info(product_id)),
                 id_resolver=_product_id,
                 error_code="EXTERNAL_PRODUCT_DETAIL_ID_MISSING",
                 entity_name=f"算法产品 {product_id} 详情",
@@ -2330,13 +2362,13 @@ class ExternalAlgorithmPlatformService:
                     409,
                 )
             summaries = _validated_external_items(
-                client.analyses(product_id),
+                checked_provider_call(lambda: client.analyses(product_id)),
                 id_resolver=_analysis_id,
                 error_code="EXTERNAL_ANALYSIS_ID_MISSING",
                 entity_name=f"算法产品 {product_id} 的分析方式",
             )
             details = [
-                _analysis_detail_truth(client, summary, product_id=product_id)
+                checked_provider_call(lambda summary=summary: _analysis_detail_truth(client, summary, product_id=product_id))
                 for summary in summaries
             ]
         except PlatformError:
@@ -2390,16 +2422,25 @@ class ExternalAlgorithmPlatformService:
             drift_fields.append("code")
         if remote_category_id != str(algorithm.get("external_category_id") or "").strip():
             drift_fields.append("category")
-        # A preflight may read remote truth, but it must never mutate the
-        # platform mirror or consume a scheduled 08/12/15 auto-sync slot.
-        # A changed training contract is not safe to accept using stale local
-        # analysis IDs. Only the dedicated sync owner may refresh that state.
-        if set(drift_fields) & {"analyses", "code", "category"}:
+        # Names, category/code and changes to unrelated analysis attributes
+        # do not revoke the existing visual-training entitlement. In contrast,
+        # any previously selectable visual ID which is now missing/disabled or
+        # non-visual must fail closed until the canonical sync owner refreshes
+        # the mirror. Never mutate the mirror or start global reconciliation
+        # during this read-only GET.
+        local_visual_ids = {
+            _analysis_id(row) for row in local_summaries
+            if _analysis_is_visual(row) and _analysis_is_enabled(row)
+        }
+        remote_visual_ids = {_analysis_id(row) for row in visual}
+        selected_id = str(algorithm.get("external_analysis_id") or "").strip()
+        revoked_ids = sorted(local_visual_ids - remote_visual_ids)
+        if not local_visual_ids or revoked_ids or (selected_id and selected_id not in remote_visual_ids):
             raise PlatformError(
                 "EXTERNAL_ALGORITHM_SYNC_REQUIRED",
-                "新畅联算法信息已变化，请同步后再训练",
-                f"productId={product_id}; drift_fields={','.join(drift_fields)}",
-                "请在“平台对接”执行同步，确认当前算法及视觉分析方式后重试。训练预检不会自动同步全部算法。",
+                "本算法可训练的视觉分析方式已变化，请同步后再训练",
+                f"productId={product_id}; revoked_ids={','.join(revoked_ids)}; selected_id={selected_id}",
+                "请在“平台对接”同步并确认训练分析方式；预检不会自动同步全部算法。",
                 409,
             )
 

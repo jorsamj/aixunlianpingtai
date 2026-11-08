@@ -716,7 +716,13 @@ export function installExternalAlgorithmPlatformRuntime({
     return Boolean(cached?.algorithm) && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0);
   }
 
-  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000, signal} = {}) {
+  function trainingPreflightStatus(algorithmId) {
+    const cached = trainingPreflightCache.get(`${currentProjectId()}:${String(algorithmId || '').trim()}`);
+    if (!cached?.algorithm || !trainingPreflightFresh(algorithmId)) return null;
+    return cached.preflightStatus || null;
+  }
+
+  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000, signal, timeoutMs = 8500} = {}) {
     const pid = currentProjectId();
     const id = String(algorithmId || '').trim();
     if (!pid || !id) throw new Error('当前训练算法或项目不可用');
@@ -726,15 +732,18 @@ export function installExternalAlgorithmPlatformRuntime({
     if (cached?.promise && !cached.signal?.aborted) return cached.promise;
     const requester = typeof request === 'function' ? request : (url, options) => requestJson(url, options);
     const promise = (async () => {
-      const body = await withRequestDeadline(requestSignal => requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`, {signal:requestSignal}), {signal,label:'算法状态核验'});
+      const body = await withRequestDeadline(requestSignal => requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`, {signal:requestSignal}), {signal,label:'算法状态核验',timeoutMs});
       const fresh = body?.algorithm;
       if (!body?.ready || !fresh) throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
-      if (destroyed || currentProjectId() !== pid) throw new Error('当前项目已切换，请重新打开训练窗口');
+      if (signal?.aborted || destroyed || currentProjectId() !== pid) throw Object.assign(new Error('本次算法状态核验已结束，请重新检查'), {name:'AbortError'});
       const rows = state().algorithms || [];
       const index = rows.findIndex(item => String(item?.id || '') === id);
       if (index >= 0) rows[index] = fresh;
       else state().algorithms = [fresh, ...rows];
-      trainingPreflightCache.set(key, {algorithm: fresh, loadedAt: Date.now()});
+      trainingPreflightCache.set(key, {algorithm: fresh, loadedAt: Date.now(),preflightStatus:{
+        drift_detected:body.drift_detected===true,
+        drift_fields:Array.isArray(body.drift_fields)?body.drift_fields:[],
+      }});
       return fresh;
     })();
     trainingPreflightCache.set(key, {promise, signal, loadedAt: Date.now()});
@@ -1641,6 +1650,7 @@ export function installExternalAlgorithmPlatformRuntime({
     selectedAnalysisId,
     trainingReadiness,
     trainingPreflightFresh,
+    trainingPreflightStatus,
     preflightTraining,
     decorateTrainingAnalysisSelector,
     config: () => config,
