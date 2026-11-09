@@ -5606,13 +5606,55 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  const RESTORABLE_PAGES413=new Set(['总览','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','标签管理','模型配置','部署资源','训练资源','组件检测','存储配置','平台对接','畅联云数据','服务节点']);
  window.PlatformCore=window.PlatformCore||{};
+ // A single, bounded last-painted view of the existing v53 bootstrap owner.
+ // Session scope avoids persistent business/credential copies on shared PCs.
+ // Never store model credentials, material rows or full training evidence.
+ const CORE_VIEW_KEY413='mc_v53_last_view_20261109';
+ const CORE_VIEW_MAX_AGE413=24*60*60*1000;
+ const CORE_VIEW_MAX_BYTES413=2*1024*1024;
+ const CORE_VIEW_BUILD413=()=>document.querySelector?.('script[src*="/static/app.js"]')?.getAttribute?.('src')||'';
+ const CORE_JOB_FIELDS413=['id','task_id','status','task_status','asset_algorithm_id','algorithm_asset_id','asset_algorithm_name','algorithm_name','task_name','run_name','auto_version_name','auto_version_id','queue_priority','priority_scheme','resource_key','resource_pool_label','resource_wait_reason','resource_queue_position','resource_queue_position_exact','queue_rank','priority_tiebreaker','created_at','updated_at','queued_at','started_at','finished_at','current_item','message','error','failure_stage','current_epoch','total_epochs','epochs','elapsed_seconds','eta_seconds','training_progress','training_display_progress','training_outcome','completion_reason','early_stopping_patience','early_stopping_reason','recovery','task_worker_id'];
+ function readCoreView413(){try{const saved=JSON.parse(sessionStorage.getItem(CORE_VIEW_KEY413)||'null');if(!saved||saved.build!==CORE_VIEW_BUILD413()||Date.now()-saved.savedAt>CORE_VIEW_MAX_AGE413||saved.savedAt>Date.now()+60000)return null;const snap=saved.snapshot;if(!snap?.project?.id||!Array.isArray(snap.projects)||!Array.isArray(snap.algorithms)||!Array.isArray(snap.labels))return null;return snap}catch(_){return null}}
+ function rememberCoreView413(){
+   try{
+     if(!state.uiReady||!state.project?.id)return;
+     const jobs=(state.jobs||[]).slice(0,1000).map(row=>Object.fromEntries(CORE_JOB_FIELDS413.filter(key=>Object.hasOwn(row,key)).map(key=>[key,row[key]])));
+     const snapshot={projects:state.projects||[],project:state.project,datasets:state.datasets||[],labels:state.labelGovernance414||[],material_summary:state.materialSummary61||{},annotation_summary:state.annotationSummary61||{},algorithms:state.algorithms||[],algorithm_revision:state.algorithmRevision||0,algorithms_total:state.algorithmsTotal||0,algorithms_deferred:!!state.algorithmsDeferred,jobs,jobs_deferred:!!state.jobsDeferred,jobs_generated_at:state.__jobsSnapshotGeneratedAt?new Date(state.__jobsSnapshotGeneratedAt).toISOString():'',model_configs_deferred:true,platform_version:state.versionInfo?.version||'',build_id:state.versionInfo?.build_id||'',generated_at:new Date().toISOString()};
+     let encoded=JSON.stringify({build:CORE_VIEW_BUILD413(),savedAt:Date.now(),snapshot});
+     if(encoded.length>CORE_VIEW_MAX_BYTES413){
+       // Do not leave an older apparently fresh view behind when the current
+       // 1100-version catalog exceeds browser storage. Basic cards still paint.
+       snapshot.algorithms=(state.algorithms||[]).map(row=>Object.fromEntries(['id','name','remark','industry','algorithm_type','current_version_id','source_type','master_data_readonly'].filter(key=>Object.hasOwn(row,key)).map(key=>[key,row[key]])));
+       snapshot.algorithms_deferred=true;snapshot.jobs=[];snapshot.jobs_deferred=true;
+       encoded=JSON.stringify({build:CORE_VIEW_BUILD413(),savedAt:Date.now(),snapshot});
+     }
+     if(encoded.length<=CORE_VIEW_MAX_BYTES413)sessionStorage.setItem(CORE_VIEW_KEY413,encoded);
+   }catch(_){/* Quota/privacy settings never block normal server loading. */}
+ }
+ window.PlatformCore.runtime=window.PlatformCore.runtime||{};
+ window.PlatformCore.runtime.rememberCoreView=rememberCoreView413;
  window.PlatformCore.navigation=window.PlatformCore.navigation||{};
  window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
  window.__v53BootstrapOwned=true;
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">核心数据就绪后即可操作，后台初始化状态以服务端回执为准。</div>${window.PlatformCore?.presentation?.loadingSkeleton?.('正在读取核心页面布局')||''}</div></div>`}
  function paintBoot(view,st,{allowCreate=false}={}){if(!view||state.uiReady||state.__startupCanonicalPainted)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){if(!allowCreate)return false;view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
  async function waitReady(signal){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){if(signal?.aborted)throw new Error('启动等待已结束');let r=null;try{r=await api('/api/v53/bootstrap/status',{signal})}catch(e){if(signal?.aborted||e?.httpStatus&&e.httpStatus!==503)throw e}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw Object.assign(new Error(r.message||'核心数据准备失败'),{code:r.error||'BOOTSTRAP_BUILD_FAILED'})}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;const bootstrapLabels=Array.isArray(s.labels)?s.labels:[];state.labelGovernance414=bootstrapLabels;state.labels=bootstrapLabels.filter(item=>item?.active!==false&&String(item?.status||'active')==='active');state.algorithms=s.algorithms||[];state.algorithmsDeferred=!!s.algorithms_deferred;state.algorithmsTotal=Number(s.algorithms_total??state.algorithms.length);state.jobs=s.jobs||[];state.jobsDeferred=!!s.jobs_deferred;state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.modelConfigsDeferred=!!s.model_configs_deferred;state.modelConfigsLoadError='';state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=s.algorithms_deferred?0:(Date.parse(s.generated_at||'')||Date.now());state.versionInfo={version:String(s.platform_version||'').trim()||'—',build_id:String(s.build_id||'').trim(),name:'算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(rawPage==='部署插件')restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ function apply(s){
+   // The server's revision is authoritative. A basic core response must not
+   // discard already-painted full cards/jobs when their identity is unchanged.
+   const sameProject=String(state.project?.id||'')===String(s.project?.id||'');
+   const sameAlgorithmRevision=sameProject&&Number(state.algorithmRevision||0)===Number(s.algorithm_revision||0);
+   if(s.algorithms_deferred&&sameAlgorithmRevision&&!state.algorithmsDeferred&&state.algorithms?.length){
+     s={...s,algorithms:state.algorithms,algorithms_deferred:false};
+   }
+   if(s.jobs_deferred&&sameProject&&!state.jobsDeferred&&state.jobs?.length){
+     s={...s,jobs:state.jobs,jobs_deferred:false,jobs_generated_at:state.__jobsSnapshotGeneratedAt?new Date(state.__jobsSnapshotGeneratedAt).toISOString():''};
+   }
+   state.algorithmRevision=Number(s.algorithm_revision||0);
+   state.__jobsSnapshotGeneratedAt=Date.parse(s.jobs_generated_at||'')||0;
+   state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;const bootstrapLabels=Array.isArray(s.labels)?s.labels:[];state.labelGovernance414=bootstrapLabels;state.labels=bootstrapLabels.filter(item=>item?.active!==false&&String(item?.status||'active')==='active');state.algorithms=s.algorithms||[];state.algorithmsDeferred=!!s.algorithms_deferred;state.algorithmsTotal=Number(s.algorithms_total??state.algorithms.length);state.jobs=s.jobs||[];state.jobsDeferred=!!s.jobs_deferred;state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.modelConfigsDeferred=!!s.model_configs_deferred;state.modelConfigsLoadError='';state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=s.algorithms_deferred?0:Date.now();state.versionInfo={version:String(s.platform_version||'').trim()||'—',build_id:String(s.build_id||'').trim(),name:'算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(rawPage==='部署插件')restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}
+   if(state.uiReady)rememberCoreView413();
+ }
  window.loadStartupSnapshot413=async function(force=false){
    window.__startupAttemptBeganAt413=Date.now();
    const sequence=(window.__v53SnapshotSequence||0)+1;window.__v53SnapshotSequence=sequence;
@@ -5657,8 +5699,30 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  };
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{
    try{
+     const previous=readCoreView413();
+     if(previous){
+       // A browser reload can paint the last trusted project view without
+       // waiting for the historical task/algorithm queries. Network truth is
+       // still checked in the background and all writes stay server-fenced.
+       apply(previous);
+       state.uiReady=true;
+       const renderBegan=performance.now();try{render()}catch(cause){state.uiReady=false;throw cause}
+       state.__startupCanonicalPainted=true;
+       window.__startupDiagnostics413={phase:'cached_interactive',renderMs:performance.now()-renderBegan};
+       if(typeof CustomEvent==='function')window.dispatchEvent(new CustomEvent('platform-core-ready'));
+       void window.loadStartupSnapshot413(false).then(()=>{
+         if(state.page==='算法列表'&&state.algorithmsDeferred){
+           void window.AlgorithmListRuntime?.refresh?.({render:true}).catch(error=>toast(error.message||error));
+         }
+         rememberCoreView413();
+       }).catch(error=>{
+         if(error?.code!=='STARTUP_SUPERSEDED')toast('正在显示上次列表；后台核验失败，可点击刷新重试。');
+       });
+       return;
+     }
      await window.loadStartupSnapshot413(false);
      const renderBegan=performance.now();state.uiReady=true;window.__startupDiagnostics413={...(window.__startupDiagnostics413||{}),phase:'rendering'};try{render()}catch(cause){throw Object.assign(new Error('核心数据已读取，但页面渲染失败，请重试。'),{code:'BOOTSTRAP_RENDER_FAILED',cause})}state.__startupCanonicalPainted=true;
+     rememberCoreView413();
      window.__startupDiagnostics413={...(window.__startupDiagnostics413||{}),phase:'interactive',renderMs:performance.now()-renderBegan};
      if(typeof CustomEvent==='function')window.dispatchEvent(new CustomEvent('platform-core-ready'));
    }catch(error){

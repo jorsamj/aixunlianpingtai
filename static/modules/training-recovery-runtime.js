@@ -1,5 +1,5 @@
 import {canonicalTaskProgressPercent, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js?v=422424';
-import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=422562';
+import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=42.25.571';
 import {trainingCharts, mountReportCharts, disposeReportViews} from './reports.js?v=20261022a';
 import {withRequestDeadline} from './api.js?v=20261021s';
 

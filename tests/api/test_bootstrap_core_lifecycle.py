@@ -53,6 +53,38 @@ def test_core_fresh_cache_never_reads_history_and_invalid_revision_is_not_return
     assert client.get('/api/v53/bootstrap/snapshot').status_code==503
 
 
+def test_algorithm_summary_reuses_same_revision_in_original_core_snapshot(client,seeded_project,monkeypatch):
+    project,_=seeded_project
+    cached=api._v53_build_snapshot(project,core_only=True)
+    monkeypatch.setattr(api,'_V53_BOOTSTRAP_SNAPSHOT',cached)
+    monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{'status':'ready'})
+    original=api.list_algorithms_internal
+    calls=[]
+    def counted(pid,**kwargs):
+        calls.append(kwargs)
+        return original(pid,**kwargs)
+    monkeypatch.setattr(api,'list_algorithms_internal',counted)
+    url=f'/api/v12/projects/{project}/algorithms?summary_only=true'
+    first=client.get(url)
+    second=client.get(url)
+    assert first.status_code==second.status_code==200
+    assert first.json()['items']==second.json()['items']
+    assert second.json()['cache_state']=='fresh'
+    assert len(calls)==1
+    assert api._V53_BOOTSTRAP_SNAPSHOT['algorithms_deferred'] is False
+    core=client.get('/api/v53/bootstrap/snapshot')
+    assert core.status_code==200
+    assert core.json()['algorithms_deferred'] is False
+    assert core.json()['algorithms']==first.json()['items']
+
+    # A revision change can never silently reuse the old version cards.
+    monkeypatch.setattr(api,'algorithm_store_revision',lambda path:cached['algorithm_revision']+1)
+    changed=client.get(url)
+    assert changed.status_code==200
+    assert len(calls)==2
+    assert 'cache_state' not in changed.json()
+
+
 def test_many_cold_requests_share_one_background_build(client,seeded_project,monkeypatch):
     import concurrent.futures,time
     project,_=seeded_project

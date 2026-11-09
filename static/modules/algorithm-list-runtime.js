@@ -763,6 +763,8 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       let s = state();
       if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
       s.algorithms = listFrom(algorithmBody);s.algorithmsDeferred=false;s.algorithmsTotal=s.algorithms.length;s.__coreSnapshotGeneratedAt=Date.now();
+      if (Number.isSafeInteger(Number(algorithmBody?.algorithm_revision))) s.algorithmRevision=Number(algorithmBody.algorithm_revision);
+      window.PlatformCore?.runtime?.rememberCoreView?.();
       refreshError = '';
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       const firstPaintMs = Date.now() - startedAt;

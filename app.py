@@ -13016,6 +13016,18 @@ def v12_delete_job(project_id: str, job_id: str):
 
 @app.get("/api/v12/projects/{project_id}/algorithms")
 def v12_list_algorithms(project_id: str, summary_only: bool = False):
+    global _V53_BOOTSTRAP_SNAPSHOT
+    if summary_only:
+        # Reuse the existing process-local bootstrap snapshot for the compact
+        # catalog. F5 should not deserialize every version again when the SQL
+        # revision is unchanged. Full-detail callers keep their original path.
+        get_project(project_id)
+        revision = algorithm_store_revision(algorithms_file(project_id))
+        cached = globals().get("_V53_BOOTSTRAP_SNAPSHOT") or {}
+        if (str((cached.get("project") or {}).get("id") or "") == str(project_id)
+                and not cached.get("algorithms_deferred", True)
+                and int(cached.get("algorithm_revision") or 0) == revision):
+            return {"ok": True, "items": cached["algorithms"], "algorithm_revision": revision, "cache_state": "fresh"}
     algos = list_algorithms_internal(project_id, summary_only=summary_only)
     # Exact lifetime success counts require the whole legacy + Durable job
     # history, defeating the lightweight first-paint contract. Return unknown
@@ -13024,7 +13036,19 @@ def v12_list_algorithms(project_id: str, summary_only: bool = False):
     algos = [{**algorithm, "successful_training_count": (
         None if summary_only else counts.get(str(algorithm.get("id") or ""), 0)
     )} for algorithm in algos]
-    return {"ok": True, "items": algos}
+    if summary_only and algorithm_store_revision(algorithms_file(project_id)) == revision:
+        # Publish only into the original v53 cache, with the same project and
+        # revision fence. A concurrent mutation must never revive old cards.
+        with _V53_BOOTSTRAP_LOCK:
+            existing = _V53_BOOTSTRAP_SNAPSHOT
+            if (str((existing.get("project") or {}).get("id") or "") == str(project_id)
+                    and int(existing.get("algorithm_revision") or 0) == revision
+                    and algorithm_store_revision(algorithms_file(project_id)) == revision):
+                _V53_BOOTSTRAP_SNAPSHOT = {
+                    **existing, "algorithms": algos, "algorithms_deferred": False,
+                    "algorithms_generated_at": now_iso(),
+                }
+    return {"ok": True, "items": algos, **({"algorithm_revision": revision} if summary_only else {})}
 
 
 @app.post("/api/v12/projects/{project_id}/algorithms")

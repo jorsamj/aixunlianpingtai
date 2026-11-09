@@ -19,7 +19,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.570';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.571';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
@@ -27,7 +27,7 @@ import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226510';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.567';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.532';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.532';

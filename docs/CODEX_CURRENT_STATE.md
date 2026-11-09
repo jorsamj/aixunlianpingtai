@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.561 整页刷新与数据读取 P0（准确 SHA CI 待核）**：浏览器 F5 的已核视图在同 tab 优先恢复并后台用原 v53 核验；紧凑算法版本由原 `_V53_BOOTSTRAP_SNAPSHOT` 随 SQL revision 复用；终态训练任务短期复用而活动任务保持实时，纯进度不使全算法重查。无新增缓存中心/Task Owner/DB schema，不改变正式 VERSION、训练准入、GT 或生产数据。首次历史冷读和真实 4070 P95 仍待现场核验。[需求、代码与测试](performance/2026-11-09-page-reload-snapshot-reuse.md)。
+
 > **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。
 
 > **2026-11-07 / 42.24.561 稳定性专项**。基线 fc386660 的 48 项 Actions 已核。classic 安全提示和资源通知接回既有取消过滤，负样本卡仅精简重复资格。原训练、素材上传、AI、GT、Worker 业务合同保持。ZIP sidecar 与 Windows 长路径保留实测风险，A800、4070、20 万素材清单待现场验收。详见 [专项记录](STABILITY_SCOPED_2026_11_07.md)，新 SHA 的 CI 独立核对。

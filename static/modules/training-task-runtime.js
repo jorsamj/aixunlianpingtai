@@ -3,6 +3,7 @@ import {canonicalTaskPhase, trainingDisplayStatus} from './task-runtime-truth.js
 const TRAINING_PAGE = '训练任务';
 const REFRESH_DEDUP_WINDOW_MS = 2500;
 const PAGE_ENTRY_REUSE_MS = 5000;
+const TERMINAL_LIST_REUSE_MS = 2 * 60 * 1000;
 
 const STAGE_LABELS = Object.freeze({
   queued: '排队等待',
@@ -384,13 +385,18 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     const startEpoch = Number(state().__navigationEpoch || 0);
     const refreshOptions = {render, force, source};
     const age = Date.now() - lastRefreshAt;
+    const visibleRows = state().jobs || [];
+    const terminalSnapshot = Array.isArray(visibleRows) && visibleRows.length > 0
+      && visibleRows.every(row => ['done', 'finished', 'completed', 'succeeded', 'success', 'failed', 'stopped', 'cancelled', 'canceled', 'blocked_by_environment', 'blocked_by_hardware'].includes(trainingDisplayStatus(row)));
+    const restoredAt = Number(state().__jobsSnapshotGeneratedAt || 0);
+    const snapshotAge = Date.now() - Math.max(lastRefreshAt, restoredAt);
     const crossSourceDuplicate = (source === 'manual' && lastRefreshSource === 'poll')
       || (source === 'poll' && lastRefreshSource === 'manual');
-    const pageEntryReuse = source === 'page-owner' && age <= PAGE_ENTRY_REUSE_MS;
+    const pageEntryReuse = source === 'page-owner' && snapshotAge >= 0 && snapshotAge <= (terminalSnapshot ? TERMINAL_LIST_REUSE_MS : PAGE_ENTRY_REUSE_MS);
     const interactionReuse = crossSourceDuplicate && age <= REFRESH_DEDUP_WINDOW_MS;
     if (!force
         && startPage === TRAINING_PAGE
-        && lastRefreshAt > 0
+        && Math.max(lastRefreshAt, restoredAt) > 0
         && age >= 0
         && (pageEntryReuse || interactionReuse)) {
       return finalizeViewRefresh(
@@ -410,11 +416,21 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       if (!isCurrent(startPage, startEpoch) || startPage !== TRAINING_PAGE) {
         return {stale: true, jobs: state().jobs || []};
       }
-      jobs = mergeTrainingJobRows(state().jobs, jobs);
+      const previousJobs = state().jobs || [];
+      jobs = mergeTrainingJobRows(previousJobs, jobs);
+      const previousStatuses = new Map(previousJobs.map(row=>[String(row?.task_id||row?.id||''),trainingDisplayStatus(row)]));
+      const terminalStatus = value=>['done','finished','completed','succeeded','success','failed','stopped','cancelled','canceled','blocked_by_environment','blocked_by_hardware'].includes(value);
+      const hasTerminalTransition=jobs.some(row=>{
+        const id=String(row?.task_id||row?.id||''),status=trainingDisplayStatus(row);
+        return id&&terminalStatus(status)&&previousStatuses.get(id)!==status;
+      });
       state().jobs = jobs;
-      // Success counts belong to the server's complete history aggregation.
-      // Returning to algorithms must revalidate after task truth was refreshed.
-      state().__coreSnapshotGeneratedAt = 0;
+      state().__jobsSnapshotGeneratedAt = Date.now();
+      window.PlatformCore?.runtime?.rememberCoreView?.();
+      // Progress-only GETs must not expire the version catalog on every poll.
+      // A newly terminal task can publish a version; that transition still
+      // forces the original algorithm owner to check its canonical SQL truth.
+      if(hasTerminalTransition)state().__coreSnapshotGeneratedAt=0;
       lastRefreshAt = Date.now();
       lastRefreshSource = String(source || 'direct');
       return finalizeViewRefresh({stale: false, jobs}, refreshOptions);

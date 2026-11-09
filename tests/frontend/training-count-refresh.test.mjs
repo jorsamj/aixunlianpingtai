@@ -11,3 +11,12 @@ test('fresh task history invalidates the snapshot so algorithm success aggregati
  assert.equal(state.jobs[0].task_status,'SUCCEEDED');
  runtime.destroy();delete globalThis.window;
 });
+
+test('unchanged running task progress does not force a new algorithm catalog query',async()=>{
+ const timestamp=Date.now();
+ const state={page:'训练任务',project:{id:'p'},jobs:[{id:'j',task_status:'RUNNING',current_epoch:1}],__coreSnapshotGeneratedAt:timestamp};
+ globalThis.window={fetch:async()=>({ok:true,json:async()=>[{id:'j',task_status:'RUNNING',current_epoch:2}]})};
+ const runtime=installTrainingTaskRuntime({getState:()=>state,projectId:()=>state.project.id});
+ try{await runtime.refresh({render:false});assert.equal(state.__coreSnapshotGeneratedAt,timestamp)}
+ finally{runtime.destroy();delete globalThis.window}
+});

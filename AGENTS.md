@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.561 F5 快照复用 P0（准确 SHA CI 待核）**：审计确认浏览器 reload 丢失已有视图、v53 core 固定版本延迟标志与算法列表重复紧凑 SQL、训练 GET 误使算法卡片全量失效。沿用 v53 服务端原快照与现有 AlgorithmList/TrainingTask Owner，SQL revision 相同复用版本摘要、浏览器同 tab 上次展示先画再后台核验、无活动任务 2 分钟终态复用、只有终态变化才失效算法版本；密钥/原图/正式 GT 不入会话快照，变 revision 必须回查。Python/Node 定向和全部回归、最终准确 SHA CI 及 4070 真实 P95 以交付记录为准。**未部署、未改生产、未加第二套缓存/任务系统，不改 VERSION.txt。**[专项证据](docs/performance/2026-11-09-page-reload-snapshot-reuse.md)。
+
 > **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](docs/WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。
 
 > **2026-11-07 / 42.24.561 稳定性专项**。基线 fc386660 的 48 项 Actions 已核。classic 安全提示和资源通知接回既有取消过滤，负样本卡仅精简重复资格。原训练、素材上传、AI、GT、Worker 业务合同保持。ZIP sidecar 与 Windows 长路径保留实测风险，A800、4070、20 万素材清单待现场验收。详见 [专项记录](docs/STABILITY_SCOPED_2026_11_07.md)，新 SHA 的 CI 独立核对。
