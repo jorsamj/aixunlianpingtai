@@ -13,8 +13,8 @@ function harness() {
   const document = {createElement: () => ({click() {}})};
   const URL = {createObjectURL: () => 'blob:export', revokeObjectURL() {}};
   class Blob {constructor(parts, options) {blobs.push({parts, options});}}
-  const code = source.slice(start, stop) + '\nreturn {aiFailureFields60,aiFailureEvidence60,aiFailureExport60};';
-  const helpers = new Function('esc','document','URL','Blob','setTimeout', code)(escape, document, URL, Blob, () => {});
+  const code = source.slice(start, stop) + '\nreturn {aiFailureFields60,aiFailureEvidence60,aiFailureExport60,aiFailureCard60,collectAiFailureRows60};';
+  const helpers = new Function('esc','document','URL','Blob','setTimeout','taskApi', code)(escape, document, URL, Blob, () => {}, id => '/api/tasks/' + id);
   return {...helpers, blobs};
 }
 
@@ -38,7 +38,8 @@ test('failed-image CSV and JSON retain model label and internal request trace sa
   const row = {image_id:'img-1',filename:'192207505.jpg',error_code:'MODEL_LABEL_NOT_ALLOWED',
     returned_label:'=HYPERLINK("bad")', allowed_labels:['person','tangzhe'],
     configured_queries:{person:'standing'}, request_trace_id:'trace-0001',
-    parser_source:'native_ref_box',response_summary:{raw_ref_count:1},http_status:200};
+    parser_source:'native_ref_box',response_summary:{raw_ref_count:1},http_status:200,
+    error_history:[{attempt:1,error_code:'MODEL_LABEL_NOT_ALLOWED',request_trace_id:'trace-old'}]};
   assert.ok(aiFailureFields60.includes('returned_label') && aiFailureFields60.includes('response_summary'));
   aiFailureExport60([row],'csv');
   const csv = blobs[0].parts[0];
@@ -46,10 +47,90 @@ test('failed-image CSV and JSON retain model label and internal request trace sa
   assert.match(csv,/trace-0001/);
   assert.match(csv,/'=HYPERLINK/); // CSV formula injection is inert.
   assert.match(csv,/native_ref_box/);
+  assert.match(csv,/trace-old/); // Historical evidence arrays stay structured, not [object Object].
+  assert.doesNotMatch(csv,/\[object Object\]/);
   aiFailureExport60([row],'json');
   const json = JSON.parse(blobs[1].parts[0]);
   assert.equal(json[0].returned_label, row.returned_label);
   assert.deepEqual(json[0].allowed_labels,['person','tangzhe']);
+});
+
+test('task failure cards prioritize useful diagnosis and safely collapse full technical evidence', () => {
+  const {aiFailureCard60} = harness();
+  const html = aiFailureCard60({image_id:'image/1',filename:'room.jpg',url:'/images/1',
+    status:'failed',http_status:200,error_code:'MODEL_LABEL_NOT_ALLOWED',error_stage:'response_parse',
+    error:'<script>unsafe</script>',returned_label:'person. tangzhe.',
+    allowed_labels:['person','tangzhe'],retry_suggestion:'核对标签映射后重试'});
+  assert.match(html, /class="ai60-failure-code"[^>]*>MODEL_LABEL_NOT_ALLOWED/);
+  assert.match(html, /查看技术诊断与历史记录/);
+  assert.match(html, /<details class="ai60-failure-diagnostics">/);
+  assert.match(html, /data-ai-retry-image="image%2F1"/);
+  assert.match(html, /&lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /模型实际返回标签/);
+});
+
+test('full failure export traverses every page and preserves all 238 distinct diagnostics', async () => {
+  const {collectAiFailureRows60,aiFailureExport60,blobs} = harness();
+  const sourceRows = Array.from({length:238},(_,index)=>({image_id:'image-'+index,
+    filename:'image-'+index+'.jpg',status:'failed',error_code:'MODEL_LABEL_NOT_ALLOWED',
+    request_trace_id:'trace-'+index,returned_label:'person. tangzhe.'}));
+  const cursors=[],progress=[];
+  const request = async (url,{signal}) => {
+    assert.equal(signal.aborted,false);
+    assert.match(url, /filter=failed/);
+    const cursor=Number(new URL(url,'https://example.test').searchParams.get('cursor'));
+    cursors.push(cursor);
+    return {items:sourceRows.slice(cursor,cursor+100),total:sourceRows.length,
+      review_revision:9,next_cursor:cursor+100<sourceRows.length?String(cursor+100):null};
+  };
+  const rows=await collectAiFailureRows60('task-1',{request,signal:new AbortController().signal,onProgress:(done,total)=>progress.push([done,total])});
+  assert.deepEqual(cursors,[0,100,200]);
+  assert.deepEqual(progress,[[100,238],[200,238],[238,238]]);
+  assert.equal(rows.length,238);
+  assert.ok(rows.every(row=>row.task_id==='task-1'));
+  aiFailureExport60(rows,'csv','annotation-errors-task-1-238');
+  const csv=blobs[0].parts[0];
+  assert.equal(csv.split('\r\n').length,239);
+  assert.match(csv,/trace-237/);
+  assert.match(csv,/trace-0/);
+});
+
+test('all-pages export rejects revised, missing or duplicated records without silently writing a partial file', async () => {
+  const {collectAiFailureRows60,blobs} = harness();
+  const first={items:[{image_id:'A',status:'failed'}],total:2,review_revision:2,next_cursor:'1'};
+  for(const second of [
+    {items:[{image_id:'B',status:'failed'}],total:2,review_revision:3,next_cursor:null},
+    {items:[{image_id:'A',status:'failed'}],total:2,review_revision:2,next_cursor:null},
+    {items:[],total:2,review_revision:2,next_cursor:null},
+  ]){
+    let calls=0;
+    await assert.rejects(collectAiFailureRows60('task-2',{request:async()=>++calls===1?first:second}),
+      /发生变化|重复或遗漏|未生成不完整文件/);
+  }
+  assert.equal(blobs.length,0);
+});
+
+test('network failure or explicit cancellation halts all-pages export', async () => {
+  const {collectAiFailureRows60,blobs} = harness();
+  const first={items:[{image_id:'A',status:'failed'}],total:2,review_revision:5,next_cursor:'1'};
+  let calls=0;
+  await assert.rejects(collectAiFailureRows60('task-3',{request:async()=>++calls===1?first:Promise.reject(new Error('network down'))}),/network down/);
+  const controller=new AbortController();calls=0;
+  await assert.rejects(collectAiFailureRows60('task-3',{request:async()=>{calls++;return first},
+    signal:controller.signal,onProgress:()=>controller.abort()}),error=>error.name==='AbortError');
+  assert.equal(calls,1);
+  assert.equal(blobs.length,0);
+});
+
+test('failure UI has a page-independent full export, backward paging and bounded list', () => {
+  assert.match(source,/data-ai-export-format="csv">导出全部问题 CSV/);
+  assert.match(source,/data-ai-export-format="json">导出全部 JSON/);
+  assert.match(source,/candidates\?limit=12&cursor=/);
+  assert.match(source,/candidates\?limit=100&cursor=/);
+  assert.match(source,/data-ai-failure-previous/);
+  assert.match(source,/data-ai-failure-next/);
+  assert.doesNotMatch(source,/导出本页错误/);
 });
 
 test('single-image retry closes its original modal before reopening the same polling owner', async () => {

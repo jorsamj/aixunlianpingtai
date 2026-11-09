@@ -8531,6 +8531,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   state.aiMaterialStatesRequest60=Number(state.aiMaterialStatesRequest60||0);
   let gtAuditRequest60=0;
   let aiDetailSession60=0;
+  let aiFailureExportAbort60=null;
+  let aiFailureDetailsRequest60=0;
   const taskApi=id=>`/api/v60/projects/${pid()}/annotation-tasks${id?`/${id}`:''}`;
   const taskView=task=>window.PlatformCore?.annotationTasks?.annotationTaskView(task)||{};
   const imageById=id=>(state.images||[]).find(image=>String(image.id)===String(id));
@@ -8570,7 +8572,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
 
   function progressShell(task){
-    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已处理 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>待处理 <b id="ai60Remaining">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><p id="ai60Execution" class="item-sub" aria-live="polite"></p><div id="ai60Error"></div><div id="ai60NativeConfig"></div><div id="ai60GtAudit"></div><div id="ai60Actions" class="row end"></div></div>`,true);
+    modal('AI自动标注任务',`<div class="ai60-progress ai-task-detail" data-task-id="${esc(task.id)}"><header class="ai-task-hero"><div><span class="ai-task-eyebrow">AI 标注 · 任务详情</span><h2>执行概况与异常处理</h2><p>任务 ID：<code>${esc(task.id)}</code></p></div><span class="ai-task-status" id="ai60Status" role="status">正在读取</span></header><section class="ai-task-overview" aria-label="任务执行概况"><div class="ai-task-progress-head"><span>实际处理进度</span><strong id="ai60Percent">0%</strong></div><div class="ai-task-progress-track"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="ai-task-metrics"><div><span>已处理 / 总计</span><strong id="ai60Counts">0 / 0</strong></div><div><span>失败图片</span><strong class="ai-task-metric-danger" id="ai60Failed">0</strong></div><div><span>待处理</span><strong id="ai60Remaining">0</strong></div><div><span>运行耗时</span><strong id="ai60Elapsed">-</strong></div></div><div class="ai-task-current"><span>当前处理</span><strong id="ai60Current">等待 Worker 领取任务</strong></div><p id="ai60Execution" class="ai-task-execution" aria-live="polite"></p></section><div id="ai60Error"></div><div class="ai-task-config" id="ai60NativeConfig"></div><div id="ai60GtAudit"></div><div id="ai60Actions" class="ai-task-main-actions"></div></div>`,true);
   }
 
   function aiNativeConfigDetail60(config){
@@ -8583,9 +8585,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const root=window.ModalContentRuntime?.activeLayer?.()?.querySelector?.(`.ai60-progress[data-task-id="${CSS.escape(String(task.id))}"]`);if(!root)return;
     const view=taskView(task),set=(id,value)=>{const node=root.querySelector(`#${id}`);if(node)node.textContent=value};
     set('ai60Status',view.statusText);set('ai60Percent',`${Number(view.percent||0).toFixed(1)}%`);set('ai60Counts',view.progressText);set('ai60Failed',view.failed);set('ai60Remaining',view.remaining);set('ai60Elapsed',elapsed(task));set('ai60Execution',view.executionText||'');
+    const status=root.querySelector('#ai60Status');if(status)status.dataset.tone=['FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(String(view.status||task.status||'').toUpperCase())?'error':Number(view.failed||0)>0?'warning':['SUCCEEDED','AWAITING_CONFIRMATION'].includes(String(view.status||task.status||'').toUpperCase())?'success':'progress';
     const bar=root.querySelector('#ai60Bar');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
     const current=imageById(task.current_item);set('ai60Current',current?.filename||task.current_item||view.runtimeText||'等待 Worker 处理');
-    const error=root.querySelector('#ai60Error');if(error)error.innerHTML=view.error?`<div class="error-box422"><b>失败原因</b><span>${esc(view.error)}</span></div>`:'';
+    const error=root.querySelector('#ai60Error');if(error)error.innerHTML=view.error?`<div class="ai-task-alert" role="alert"><strong>任务异常提示</strong><p>${esc(view.error)}</p><span>可在下方查看逐图原因并导出完整失败记录。</span></div>`:'';
     const native=root.querySelector('#ai60NativeConfig');if(native)native.innerHTML=aiNativeConfigDetail60(task.native_inference_config);
     const canAudit=Number(task.stage_statistics?.gt_committed||0)>0;
     const actions=root.querySelector('#ai60Actions');if(actions)actions.innerHTML=`${view.canCancel?`<button class="btn danger" onclick="cancelAiTask60('${task.id}')">取消任务</button>`:''}${view.canReview?`<button class="btn primary" onclick="reviewAiLabel427('${task.id}')">审核候选结果</button>`:''}${view.canRecoverReview?`<button class="btn primary" onclick="reviewRecoveredAiTask60('${task.id}')">审核已完成部分</button>`:''}${canAudit?`<button class="btn" onclick="openAiGtAudit60('${task.id}')">核验当前 GT</button>`:''}${view.canRetry?`<button class="btn" onclick="retryAiTask60('${task.id}')">补跑失败/未处理</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
@@ -8595,6 +8598,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function stopAiTaskDetail60({resumeList=true}={}){
     gtAuditRequest60++;
     aiDetailSession60++;
+    aiFailureDetailsRequest60++;
+    aiFailureExportAbort60?.abort();aiFailureExportAbort60=null;
     const key=String(state.ai60DetailPollKey||'');
     if(key)window.PollRegistryRuntime?.clear?.(key);
     state.ai60DetailPollKey='';
@@ -8653,7 +8658,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         onUpdate:task=>{if(!isCurrent()){const error=new Error('任务详情窗口已结束');error.name='AbortError';throw error}renderProgress(task)},
         onError:error=>{if(!isCurrent())return;const node=owner?.layer?.querySelector?.(`.ai60-progress[data-task-id="${CSS.escape(detailId)}"] #ai60Error`);if(node)node.innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`},
       });
-      if(isCurrent()&&state.ai60DetailPollKey===key){state.ai60DetailPollKey='';renderProgress(terminal);window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
+      if(isCurrent()&&state.ai60DetailPollKey===key){state.ai60DetailPollKey='';renderProgress(terminal);const panel=owner?.layer?.querySelector?.('[data-ai-failure-details]');if(panel?.dataset.cursor==='0'&&!aiFailureExportAbort60)void loadAiFailureDetails60(detailId,isCurrent);window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
     }catch(error){
       if(!isCurrent())return;
       if(error?.name!=='AbortError')toast(error.message||error);
@@ -8661,7 +8666,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
   };
   const aiFailureFields60=['task_id','image_id','filename','model','provider','backend_instance_id','request_trace_id','request_id','http_status','error_stage','error_code','returned_label','allowed_labels','configured_queries','label_match_status','parser_source','zero_box','response_summary','attempt_count','error','retry_suggestion','error_history'];
-  const aiFailureValue60=value=>Array.isArray(value)?value.join('、'):value&&typeof value==='object'?JSON.stringify(value):value??'';
+  const aiFailureValue60=value=>Array.isArray(value)?value.every(item=>item===null||['string','number','boolean'].includes(typeof item))?value.join('、'):JSON.stringify(value):value&&typeof value==='object'?JSON.stringify(value):value??'';
   function aiFailureEvidence60(item){
     const cells=[
       ['模型实际返回标签',item.returned_label],['允许的正式标签',aiFailureValue60(item.allowed_labels)],
@@ -8672,30 +8677,80 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       ['响应结构摘要',aiFailureValue60(item.response_summary)],
     ];
     const history=Array.isArray(item.error_history)?item.error_history:[];
-    return `<dl class="ai60-failure-evidence" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:12px 0">${cells.map(([name,value])=>`<div style="min-width:0"><dt class="item-sub">${esc(name)}</dt><dd style="margin:0;overflow-wrap:anywhere">${esc(value||'未记录')}</dd></div>`).join('')}</dl>${history.length?`<details><summary>此前 ${history.length} 次失败记录</summary>${history.map(row=>`<p class="item-sub">${esc(row.error_code||'未知错误')} · ${esc(row.returned_label||'标签未记录')} · ${esc(row.request_trace_id||'追踪号未记录')}</p>`).join('')}</details>`:''}`;
+    return `<dl class="ai60-failure-evidence">${cells.map(([name,value])=>`<div><dt>${esc(name)}</dt><dd>${esc(value||'未记录')}</dd></div>`).join('')}</dl>${history.length?`<div class="ai60-failure-history"><strong>此前 ${history.length} 次失败记录</strong>${history.map(row=>`<p>${esc(row.error_code||'未知错误')} · ${esc(row.returned_label||'标签未记录')} · ${esc(row.request_trace_id||'追踪号未记录')}</p>`).join('')}</div>`:''}`;
   }
-  function aiFailureExport60(items,format){
+  function aiFailureExport60(items,format,basename='annotation-errors'){
     const rows=(items||[]).map(item=>Object.fromEntries(aiFailureFields60.map(field=>[field,item[field]??null])));
     const quote=value=>{let s=String(value??'');if(/^[\s]*[=+@\-]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"'};
     const isCsv=format==='csv', content=isCsv?'\ufeff'+[aiFailureFields60.map(quote).join(','),...rows.map(row=>aiFailureFields60.map(field=>quote(aiFailureValue60(row[field]))).join(','))].join('\r\n'):JSON.stringify(rows,null,2);
     const link=document.createElement('a'),url=URL.createObjectURL(new Blob([content],{type:isCsv?'text/csv;charset=utf-8':'application/json'}));
-    link.href=url;link.download='annotation-errors.'+format;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    link.href=url;link.download=String(basename).replace(/[^a-zA-Z0-9_-]/g,'_')+'.'+format;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  async function loadAiFailureDetails60(id,isCurrent,cursor='0'){
+  async function collectAiFailureRows60(id,{request=api,signal,isCurrent=()=>true,onProgress=()=>{}}={}){
+    const rows=[],seen=new Set();let cursor='0',total=null,revision=null;
+    for(;;){
+      if(signal?.aborted||!isCurrent()){const error=new Error('已取消导出');error.name='AbortError';throw error}
+      const page=await request(`${taskApi(id)}/candidates?limit=100&cursor=${encodeURIComponent(cursor)}&filter=failed`,{signal});
+      if(signal?.aborted||!isCurrent()){const error=new Error('已取消导出');error.name='AbortError';throw error}
+      const pageTotal=Number(page.total),pageRevision=String(page.review_revision??'');
+      if(!Number.isSafeInteger(pageTotal)||pageTotal<0)throw new Error('失败记录总数异常，请稍后重试');
+      if(total===null){total=pageTotal;revision=pageRevision}
+      if(pageTotal!==total||pageRevision!==revision)throw new Error('导出过程中任务候选结果发生变化，已停止导出以避免缺漏，请重试');
+      const items=Array.isArray(page.items)?page.items:[];
+      for(const item of items){
+        const imageId=String(item?.image_id||'');
+        if(!imageId||seen.has(imageId)||String(item.status||'')!=='failed')throw new Error('失败图片分页返回异常，已停止导出以避免重复或遗漏');
+        seen.add(imageId);rows.push({...item,task_id:item.task_id||id});
+      }
+      if(rows.length>total)throw new Error('失败记录数量不一致，已停止导出');
+      onProgress(rows.length,total);
+      if(page.next_cursor==null)break;
+      const next=String(page.next_cursor);
+      if(!items.length||!/^\d+$/.test(next)||Number(next)<=Number(cursor))throw new Error('失败图片分页游标异常，已停止导出');
+      cursor=next;
+    }
+    if(rows.length!==total)throw new Error(`失败图片应有 ${total} 张，实际取得 ${rows.length} 张，未生成不完整文件`);
+    return rows;
+  }
+  function aiFailureCard60(item){
+    const stage=item.error_stage||'模型推理',code=item.error_code||'未分类错误',trace=item.request_trace_id||item.request_id||'未记录';
+    const src=String(item.url||''),safeSrc=/^(https?:\/\/|\/)/i.test(src)?src:'';
+    return `<article class="ai60-failure-card"><div class="ai60-failure-image">${safeSrc?`<img loading="lazy" alt="${esc(item.filename||'失败图片')}缩略图" src="${esc(safeSrc)}">`:'<span>暂无缩略图</span>'}</div><div class="ai60-failure-main"><div class="ai60-failure-heading"><strong title="${esc(item.filename||item.image_id)}">${esc(item.filename||item.image_id)}</strong><span class="ai60-failure-code">${esc(code)}</span></div><div class="ai60-failure-meta"><span>${esc(stage)}</span><span>HTTP ${esc(item.http_status??'未记录')}</span><span>尝试 ${Number(item.attempt_count||0)} 次</span></div><p class="ai60-failure-message">${esc(item.error||'尚无具体错误说明，请展开技术诊断查看原始证据。')}</p><p class="ai60-failure-advice"><b>处理建议</b>${esc(item.retry_suggestion||'核对模型返回及标签配置后，对此图差量重试。')}</p><div class="ai60-failure-footer"><details class="ai60-failure-diagnostics"><summary>查看技术诊断与历史记录</summary><p class="ai60-failure-trace">请求追踪：${esc(trace)}</p><p class="ai60-failure-trace"><b>完整错误：</b>${esc(item.error||'未记录')}</p>${aiFailureEvidence60(item)}</details><button type="button" class="btn small" data-ai-retry-image="${esc(encodeURIComponent(item.image_id||''))}">重试此图</button></div></div></article>`;
+  }
+  async function exportAllAiFailures60(id,format,isCurrent,panel){
+    if(aiFailureExportAbort60)return;
+    const controller=new AbortController();aiFailureExportAbort60=controller;
+    const buttons=panel.querySelectorAll('[data-ai-export-format]'),status=panel.querySelector('[data-ai-export-status]'),cancel=panel.querySelector('[data-ai-export-cancel]');
+    buttons.forEach(button=>button.disabled=true);if(cancel)cancel.hidden=false;
+    if(status)status.textContent='正在读取全部失败图片…';
+    try{
+      const rows=await collectAiFailureRows60(id,{signal:controller.signal,isCurrent,onProgress:(done,total)=>{if(status)status.textContent=`已读取 ${done} / ${total} 张失败图片…`}});
+      if(!rows.length)throw new Error('当前没有可导出的失败图片');
+      if(controller.signal.aborted||!isCurrent())return;
+      aiFailureExport60(rows,format,`annotation-errors-${id}-${rows.length}`);
+      if(status)status.textContent=`已生成完整 ${format.toUpperCase()}：共 ${rows.length} 张失败图片，包含全部历史错误证据。`;
+    }catch(error){if(isCurrent()&&status)status.textContent=error.name==='AbortError'?'已取消导出，未生成文件':`导出失败：${error.message||error}`}
+    finally{if(aiFailureExportAbort60===controller)aiFailureExportAbort60=null;if(isCurrent()){buttons.forEach(button=>button.disabled=false);if(cancel)cancel.hidden=true}}
+  }
+  async function loadAiFailureDetails60(id,isCurrent,cursor='0',previous=[]){
     if(typeof document==='undefined'||!isCurrent())return;
+    const requestId=++aiFailureDetailsRequest60;
     const root=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(id)}"]`);if(!root)return;
     let panel=root.querySelector('[data-ai-failure-details]');
-    if(!panel){panel=document.createElement('section');panel.dataset.aiFailureDetails='';panel.setAttribute('aria-label','逐图失败诊断');root.append(panel)}
+    if(!panel){panel=document.createElement('section');panel.dataset.aiFailureDetails='';panel.className='ai60-failure-section';panel.setAttribute('aria-label','逐图失败诊断');root.append(panel)}
+    panel.dataset.cursor=cursor;
+    panel.innerHTML='<div class="ai60-failure-loading" role="status">正在读取失败图片与诊断记录…</div>';
     try{
-      const result=await api(`${taskApi(id)}/candidates?limit=50&cursor=${encodeURIComponent(cursor)}&filter=failed`);
-      if(!isCurrent()||!panel.isConnected)return;
-      panel.innerHTML=`<h3>失败图片 · ${Number(result.total||0)} 张</h3>${result.task_error?`<p>${esc(result.task_error.stage||'任务阶段')}：${esc(result.task_error.message||'')}</p>`:''}${(result.items||[]).map(item=>`<article><img width="56" height="42" loading="lazy" alt="失败图片缩略图" src="${esc(item.url||'')}"><b>${esc(item.filename||item.image_id)}</b><small>尝试 ${Number(item.attempt_count||0)} 次 · 请求 ${esc(item.request_trace_id||item.request_id||'未记录')}</small><p>${esc(item.error_stage||'模型推理')} · ${esc(item.error_code||'')} · HTTP ${esc(item.http_status||'未记录')}</p><p>${esc(item.error||'未记录具体原因')}</p>${aiFailureEvidence60(item)}<p>${esc(item.retry_suggestion||'检查模型查询和标签映射后重试')}</p><button class="btn" onclick="retryAiFailureImage60('${esc(id)}','${encodeURIComponent(item.image_id)}')">重试此图</button></article>`).join('')}`;
-      for(const format of ['json','csv']){
-        const button=document.createElement('button');button.className='btn';button.textContent=`导出本页错误 ${format.toUpperCase()}`;
-        button.onclick=()=>aiFailureExport60(result.items,format);panel.append(button);
-      }
-      if(result.next_cursor){const next=document.createElement('button');next.className='btn';next.textContent='下一页失败图片';next.onclick=()=>loadAiFailureDetails60(id,isCurrent,result.next_cursor);panel.append(next)}
-    }catch(error){if(isCurrent()&&panel.isConnected)panel.textContent=`失败详情暂不可用：${error.message||error}`}
+      const result=await api(`${taskApi(id)}/candidates?limit=12&cursor=${encodeURIComponent(cursor)}&filter=failed`);
+      if(!isCurrent()||requestId!==aiFailureDetailsRequest60||!panel.isConnected)return;
+      const total=Number(result.total||0),items=result.items||[],start=Number(cursor)||0;
+      panel.innerHTML=`<header class="ai60-failure-header"><div><span class="ai-task-eyebrow">异常诊断</span><h3>失败图片 <em>${total}</em></h3><p>逐图查看原因，导出将覆盖<strong>全部失败记录</strong>，不限于当前页。</p></div>${total?`<div class="ai60-failure-export"><button type="button" class="btn primary" data-ai-export-format="csv">导出全部问题 CSV</button><button type="button" class="btn" data-ai-export-format="json">导出全部 JSON</button></div>`:''}</header><p class="ai60-export-status" data-ai-export-status aria-live="polite"></p><button type="button" class="btn small ai60-export-cancel" data-ai-export-cancel hidden>取消导出</button>${result.task_error?`<div class="ai-task-alert"><strong>${esc(result.task_error.stage||'任务阶段')}异常</strong><p>${esc(result.task_error.message||'')}</p></div>`:''}${total?`<div class="ai60-failure-pager-summary">第 ${start+1}–${start+items.length} 张，共 ${total} 张 · 每页 12 张</div><div class="ai60-failure-list">${items.map(item=>aiFailureCard60(item)).join('')}</div><nav class="ai60-failure-pager" aria-label="失败图片分页"><span>只展示当前页，完整诊断请使用上方导出</span><div>${previous.length?'<button type="button" class="btn small" data-ai-failure-previous>上一页</button>':''}${result.next_cursor?'<button type="button" class="btn small" data-ai-failure-next>下一页</button>':''}</div></nav>`:'<div class="ai60-failure-empty">当前没有逐图失败记录。零框成功的图片不会计入失败。</div>'}`;
+      panel.querySelectorAll('[data-ai-export-format]').forEach(button=>button.addEventListener('click',()=>void exportAllAiFailures60(id,button.dataset.aiExportFormat,isCurrent,panel)));
+      panel.querySelector('[data-ai-export-cancel]')?.addEventListener('click',()=>aiFailureExportAbort60?.abort());
+      panel.querySelectorAll('[data-ai-retry-image]').forEach(button=>button.addEventListener('click',()=>void window.retryAiFailureImage60(id,button.dataset.aiRetryImage)));
+      panel.querySelector('[data-ai-failure-next]')?.addEventListener('click',()=>void loadAiFailureDetails60(id,isCurrent,String(result.next_cursor),[...previous,cursor]));
+      panel.querySelector('[data-ai-failure-previous]')?.addEventListener('click',()=>void loadAiFailureDetails60(id,isCurrent,previous[previous.length-1],previous.slice(0,-1)));
+    }catch(error){if(isCurrent()&&requestId===aiFailureDetailsRequest60&&panel.isConnected){panel.innerHTML=`<div class="ai-task-alert" role="alert"><strong>失败图片暂时无法读取</strong><p>${esc(error.message||error)}</p><button class="btn small" type="button" data-ai-failure-reload>重新加载</button></div>`;panel.querySelector('[data-ai-failure-reload]')?.addEventListener('click',()=>void loadAiFailureDetails60(id,isCurrent,cursor,previous))}}
   }
   window.retryAiFailureImage60=async(id,encoded)=>{
     const owner=window.ModalContentRuntime?.captureOwner?.();
