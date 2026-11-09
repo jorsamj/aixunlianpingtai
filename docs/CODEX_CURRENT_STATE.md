@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.564 WeVisOne 类别归属（代码修复、现场待核）**：38 条 HTTP200 有框的合成标签问题按已确认的 Detection 端点逐正式标签调用，复用原 Worker/Provider/许可/RPM/Candidate/GT；单图原子合并、跨类高重叠拒绝、零框保持。任务详情从冻结 snapshot 派生脱敏原生请求配置；通用 Prompt 不改。不访问/修改 4070，详见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。
+
 > **2026-11-09 / 42.24.563 算法列表 mAP50 空值误显示 0% 修复**：`algorithmVersionMap50()` 对紧凑 SQL 版本字段 `map50:null`/`mAP50:null` 错把 `Number(null)` 当作真实 0，遮蔽其后训练/评测的实际指标。最小修复只跳过缺失/非法值，保留数值 0，训练指标优先、独立评测指标兜底；同步刷新模块资源键，未改训练指标计算或生产数据。见 [专项回归记录](MAP50_NULL_CATALOG_FIX_2026_11_09.md)。
 
 > **2026-11-09 / 42.24.562 WeVisOne 部分失败、无目标和诊断 P0**：沿原 `wevisone_vision`、冻结标签、`annotation_inference` 内部请求编号、CandidateStore/AI Worker 和原失败明细实现：先验真 `none` 再验标签，确定性 casefold/空白/句末标点兼容且冲突拒绝，未知有框仍失败；补实际返回标签、允许标签、查询描述、协议摘要、后端实例、内部请求追踪、CSV/JSON、差量重试历史。未取得27张失败原始回包，现场结果不作保证，不修改4070/GT。详见 [专项审计与交付](WEVISONE_PARTIAL_FAILURE_2026_11_09.md)，准确最终SHA/CI待核。

@@ -72,3 +72,52 @@ test('single-image retry closes its original modal before reopening the same pol
   await window.retryAiFailureImage60('task-1',encodeURIComponent('image/id'));
   assert.deepEqual(calls,['post:/tasks/task-1/retry','toast:已提交此图重试','close','show:task-1']);
 });
+
+test('WeVisOne create confirmation presents native detection, not the unused JSON prompt', () => {
+  const start = source.indexOf('  function renderAiCreateConfirmation429(');
+  const stop = source.indexOf('  function newAiCreateRequestId429(', start);
+  assert.ok(start > 0 && stop > start);
+  const root = {innerHTML: '', hidden: true, scrollIntoView() {}, insertAdjacentHTML() {}};
+  const document = {getElementById: id => id === 'ai429Confirmation' ? root : null};
+  const state = {modelConfigs: [{id: 'we-2b', name: '2B', model_name: 'wevisone-vl-2b',
+    provider_adapter: 'wevisone_vl', coordinate_space: 'pixel', coordinate_order: 'xyxy',
+    coordinate_origin: 'top_left', coordinate_image_space: 'original_input',
+    wevisone_label_queries: {person: 'A standing person', tangzhe: 'A lying person'}}],
+    promptTemplates: [], labels: [], ai429Create: {selectionSummary: {count: 2}}};
+  const window = {PlatformCore: {materials: {labelDisplay: code => code}}};
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const render = new Function('document','state','window','esc',source.slice(start,stop) + '\nreturn renderAiCreateConfirmation429;')(
+    document,state,window,esc);
+  const body = {model_config_id:'we-2b',labels_text:'person、tangzhe',image_ids:['1','2'],
+    task_name:'native task',threshold:0.45,overwrite:false,reference_image_ids:[],
+    prompt_override:'YOU MUST RETURN JSON',business_instruction:'SECRET GENERIC PROMPT'};
+  render(body);
+  assert.match(root.innerHTML,/本次实际推理配置/);
+  assert.match(root.innerHTML,/detection · 逐标签请求/);
+  assert.match(root.innerHTML,/A standing person/);
+  assert.match(root.innerHTML,/A lying person/);
+  assert.match(root.innerHTML,/original_input/);
+  assert.doesNotMatch(root.innerHTML,/YOU MUST RETURN JSON/);
+  assert.doesNotMatch(root.innerHTML,/data:image\/jpeg;base64/);
+  state.modelConfigs[0].provider_adapter = 'local_openai';
+  render(body);
+  assert.match(root.innerHTML,/查看本次完整提示词配置/);
+  assert.match(root.innerHTML,/YOU MUST RETURN JSON/);
+});
+
+test('task detail displays only the server-frozen native configuration', () => {
+  const start=source.indexOf('  function aiNativeConfigDetail60(');
+  const stop=source.indexOf('  function renderProgress(',start);
+  assert.ok(start>0&&stop>start);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const render = new Function('esc',source.slice(start,stop)+'\nreturn aiNativeConfigDetail60;')(esc);
+  const native={adapter:'wevisone_vl',model:'wevisone-vl-2b',task:'detection',request_mode:'per_label',
+    endpoint:'/v1/vision/detect',query_type:'list[str]',label_queries:{person:'A standing person',tangzhe:'A lying human'},
+    coordinate_space:'pixel',coordinate_order:'xyxy',coordinate_origin:'top_left',coordinate_image_space:'original_input'};
+  assert.match(render(native),/任务冻结/);
+  assert.match(render(native),/A lying human/);
+  assert.match(render(native),/逐标签请求/);
+  assert.doesNotMatch(render(native),/base64,/);
+  assert.equal(render(null),'');
+  assert.equal(render({...native,adapter:'local_openai'}),'');
+});

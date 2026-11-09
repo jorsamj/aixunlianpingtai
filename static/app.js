@@ -4792,13 +4792,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const draft=aiCreateCurrent429(),section=document.getElementById('ai429Prompt')?.closest('.ai-create-section');if(!draft||!section)return;
     const cfg=aiCreateDedicatedModel429(),dedicated=!!cfg;
     section.classList.toggle('ai-create-native',dedicated);
+    const heading=section.querySelector('header b'),subheading=section.querySelector('header span');
+    if(heading)heading.textContent=dedicated?'4. 本次实际推理配置':'4. 提示词';
+    if(subheading)subheading.textContent=dedicated?'原生 Detection 查询来自模型配置；通用 Prompt 不参与 WeVisOne 推理。':'模板是起点；当前任务可独立编辑，提交后冻结，不受模板后续修改影响。';
     let notice=section.querySelector('#ai429NativeQueryNotice');
     if(!notice){section.querySelector('header')?.insertAdjacentHTML('afterend','<div id="ai429NativeQueryNotice" class="ai-create-native-notice" role="status"></div>');notice=section.querySelector('#ai429NativeQueryNotice')}
     if(!notice)return;
     notice.hidden=!dedicated;
     if(!dedicated)return;
     const mapping=cfg.wevisone_label_queries||{},labels=[...(draft.labels||[])];
-    notice.innerHTML=`<b>WeVisOne 原生检测 · 实际发送的标签查询</b><p>该模型不读取通用聊天提示词。下列描述来自已保存的模型配置，在创建任务时冻结；请到「视觉模型管理 → 编辑配置」修改。</p><div class="ai-create-native-queries">${labels.length?labels.map(code=>`<div><strong>${esc(code)}</strong><span>${esc(mapping[code]||code)}</span>${mapping[code]?'':'<em>未配置专属描述</em>'}</div>`).join(''):'<small>先在步骤 3 选择标签，查看实际 query。</small>'}</div><small>这里展示的是发送给 /v1/vision/detect 的查询文本，不保证模型对姿态分类的准确率；候选框仍需人工复核。</small>`;
+    const split=labels.length>1&&labels.some(code=>String(mapping[code]||code).trim().toLowerCase().replace(/[.,;:!?。！？；：，]+$/,'')!==code.toLowerCase());
+    notice.innerHTML=`<b>WeVisOne · detection / ${split?'逐标签请求':'类别列表请求'}</b><p>模型 ${esc(cfg.model_name||'未配置')} · /v1/vision/detect · image=Data URI · query=list[str]。通用 JSON Prompt 不生效；任务创建时冻结下列查询，必要时请在视觉模型管理中修改。</p><div class="ai-create-native-queries">${labels.length?labels.map(code=>`<div><strong>${esc(code)}</strong><span>${esc(mapping[code]||code)}</span>${mapping[code]?'':'<em>使用正式标签 code</em>'}</div>`).join(''):'<small>先在步骤 3 选择标签，查看实际 query。</small>'}</div><small>坐标以保存的模型坐标协议为准；逐标签请求分别占用现有 RPM 许可，全部成功后才保存图片候选。这里不展示 Base64 或凭据。</small>`;
   }
   window.selectAiCreateModel429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.modelId=String(id||'');aiCreateRenderModels429();aiCreatePreviewInvalidate429();if(!draft.templateId)restoreAiPrompt429()};
   function aiCreateTemplateText429(){const draft=aiCreateCurrent429(),template=(state.promptTemplates||[]).find(row=>String(row.id)===String(draft?.templateId));if(template)return String(template.prompt||'');const model=(state.modelConfigs||[]).find(row=>String(row.id)===String(draft?.modelId));return String(model?.annotation_prompt_template||'你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。图片尺寸为 {{image_width}}x{{image_height}}。{{business_instruction}}必须只返回符合此结构的 JSON：{{output_schema}}')}
@@ -8566,7 +8570,13 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
 
   function progressShell(task){
-    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已处理 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>待处理 <b id="ai60Remaining">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><p id="ai60Execution" class="item-sub" aria-live="polite"></p><div id="ai60Error"></div><div id="ai60GtAudit"></div><div id="ai60Actions" class="row end"></div></div>`,true);
+    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已处理 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>待处理 <b id="ai60Remaining">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><p id="ai60Execution" class="item-sub" aria-live="polite"></p><div id="ai60Error"></div><div id="ai60NativeConfig"></div><div id="ai60GtAudit"></div><div id="ai60Actions" class="row end"></div></div>`,true);
+  }
+
+  function aiNativeConfigDetail60(config){
+    if(!config||config.adapter!=='wevisone_vl')return '';
+    const entries=Object.entries(config.label_queries||{});
+    return `<details class="ai-create-confirm-prompt"><summary>本次实际推理配置（任务冻结）</summary><div class="ai-create-native-queries"><div><strong>模型</strong><span>${esc(config.model)}</span></div><div><strong>任务 / 模式</strong><span>${esc(config.task)} · ${config.request_mode==='per_label'?'逐标签请求':'类别列表请求'}</span></div><div><strong>请求</strong><span>${esc(config.endpoint)} · query=${esc(config.query_type)} · image=Data URI</span></div>${entries.map(([code,query])=>`<div><strong>${esc(code)}</strong><span>${esc(query)}</span></div>`).join('')}<div><strong>坐标协议</strong><span>${esc([config.coordinate_space,config.coordinate_order,config.coordinate_origin,config.coordinate_image_space].join(' / '))}</span></div></div><small>通用 Prompt 未参与 WeVisOne 推理；不展示 Base64、Token 或密钥。</small></details>`;
   }
 
   function renderProgress(task){
@@ -8576,6 +8586,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const bar=root.querySelector('#ai60Bar');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
     const current=imageById(task.current_item);set('ai60Current',current?.filename||task.current_item||view.runtimeText||'等待 Worker 处理');
     const error=root.querySelector('#ai60Error');if(error)error.innerHTML=view.error?`<div class="error-box422"><b>失败原因</b><span>${esc(view.error)}</span></div>`:'';
+    const native=root.querySelector('#ai60NativeConfig');if(native)native.innerHTML=aiNativeConfigDetail60(task.native_inference_config);
     const canAudit=Number(task.stage_statistics?.gt_committed||0)>0;
     const actions=root.querySelector('#ai60Actions');if(actions)actions.innerHTML=`${view.canCancel?`<button class="btn danger" onclick="cancelAiTask60('${task.id}')">取消任务</button>`:''}${view.canReview?`<button class="btn primary" onclick="reviewAiLabel427('${task.id}')">审核候选结果</button>`:''}${view.canRecoverReview?`<button class="btn primary" onclick="reviewRecoveredAiTask60('${task.id}')">审核已完成部分</button>`:''}${canAudit?`<button class="btn" onclick="openAiGtAudit60('${task.id}')">核验当前 GT</button>`:''}${view.canRetry?`<button class="btn" onclick="retryAiTask60('${task.id}')">补跑失败/未处理</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
     if(state.page==='自动标注及清洗')renderAiTaskRows60(state.annotationTasks60||[]);
@@ -8713,11 +8724,15 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const model=(state.modelConfigs||[]).find(row=>String(row.id)===body.model_config_id)||{};
     const template=(state.promptTemplates||[]).find(row=>String(row.id)===body.prompt_template_id)||{};
     const labelNames=body.labels_text.split('、').map(code=>window.PlatformCore.materials.labelDisplay(code,state.labels));
+    const selectedCodes=body.labels_text.split('、'),native=(model.provider_adapter||model.provider_type)==='wevisone_vl';
+    const queries=model.wevisone_label_queries||{};
+    const perLabel=native&&selectedCodes.length>1&&selectedCodes.some(code=>String(queries[code]||code).trim().toLowerCase().replace(/[.,;:!?。！？；：，]+$/,'')!==code.toLowerCase());
+    const nativeDetails=native?`<dl class="ai-create-native-queries"><div><strong>推理任务</strong><span>detection · ${perLabel?'逐标签请求':'类别列表请求'}</span></div><div><strong>请求契约</strong><span>POST /v1/vision/detect · image=Data URI · query=list[str]</span></div><div><strong>模型 / 适配器</strong><span>${esc(model.model_name||'') } / wevisone_vl</span></div>${selectedCodes.map(code=>`<div><strong>${esc(code)}</strong><span>${esc(queries[code]||code)}</span></div>`).join('')}<div><strong>坐标协议</strong><span>${esc(model.coordinate_space||'pixel')} / ${esc(model.coordinate_order||'xyxy')} / ${esc(model.coordinate_origin||'top_left')} / ${esc(model.coordinate_image_space||'original_input')}</span></div></dl><small>通用 Prompt 与 JSON Schema 不参与推理。模型配置将在任务创建时由后端冻结；不展示图片及凭据。</small>`:'';
     const field=(title,value)=>`<div><span>${esc(title)}</span><strong>${esc(value)}</strong></div>`;
     const batchSelection=Boolean(body.source_batch_id);const selectedCount=Number(state.ai429Create?.selectionSummary?.count||body.image_ids.length);
     root.innerHTML=`<header><div><span class="ai-create-confirm-kicker">创建前最后核对</span><h3>本次 AI 标注任务概览</h3><p>以下为即将提交的实际选项，确认后才创建任务；正式标注仍须人工审核。</p></div><span class="ai-create-confirm-count">${batchSelection?'ZIP':selectedCount}<small>${batchSelection?'整批原图':'张素材'}</small></span></header>
       <div class="ai-create-confirm-grid">${field('任务名称',body.task_name)}${field('视觉模型',`${model.name||model.model_name||body.model_config_id} · ${model.provider_adapter||model.provider_type||'已配置'}`)}${field('目标标签',labelNames.join('、'))}${field('置信度阈值',`${Math.round(body.threshold*100)}%`)}${field('已有标注处理',body.overwrite?'审核后按现有覆盖合同处理相同标签':'保留已有标注，不主动覆盖')}${field('参考素材',`${body.reference_image_ids.length} 张（可选）`)}${field('提示词模板',body.prompt_template_id?`${template.name||body.prompt_template_id} · v${Number(template.version||1)}`:'模型默认模板')}${field('业务补充说明',body.business_instruction||'无')}</div>
-      <details class="ai-create-confirm-prompt"><summary>查看本次完整提示词配置</summary><pre>${esc(body.prompt_override||'未单独覆盖；使用所选模型及模板的冻结提示词')}</pre></details>
+      <details class="ai-create-confirm-prompt"><summary>${native?'本次实际推理配置':'查看本次完整提示词配置'}</summary>${native?nativeDetails:`<pre>${esc(body.prompt_override||'未单独覆盖；使用所选模型及模板的冻结提示词')}</pre>`}</details>
       <p class="ai-create-confirm-note">${batchSelection?'后台将按 ZIP 批次实际未标注图片冻结清单':'预计处理 '+selectedCount+' 张素材'}；真实模型调用次数可能因重试不同。创建后以任务回执及后端冻结配置为准。</p>`;
     if(state.ai429Create?.selectionSummary){const counts=state.ai429Create.selectionSummary.state_counts||{};root.insertAdjacentHTML('beforeend',`<p>未标注 ${Number(counts.unannotated||0)} · 已标注 ${Number(counts.annotated||0)} · 部分标注 ${Number(counts.partial||0)} · 已确认无目标 ${Number(counts.confirmed_empty||0)}</p>`)}
     root.hidden=false;

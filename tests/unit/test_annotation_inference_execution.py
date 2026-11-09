@@ -9,6 +9,7 @@ from platform_core.annotation_candidates import CandidateStore
 from platform_core.annotation_task_service import run_ai_annotation
 from platform_core.task_runtime import ArtifactStore, FencedTaskRepository, TaskKind, TaskRecord, WorkerContext, TaskStatus
 from platform_core.providers.base import ProviderRequestError
+from platform_core.annotation_inference import call_annotation_with_policy
 
 
 def setup_context(tmp_path, monkeypatch, concurrency=2, count=4, **policy_values):
@@ -26,6 +27,107 @@ def setup_context(tmp_path, monkeypatch, concurrency=2, count=4, **policy_values
     monkeypatch.setattr('platform_core.annotation_task_service.load_task_images', lambda *_: [
         {'id': i, 'width': 1280, 'height': 960, 'source_content_sha256': 'a' * 64} for i in ids])
     return context, CandidateStore(artifacts, task_id='task')
+
+
+def _wevisone_request():
+    return {'_provider_config': {'provider_adapter': 'wevisone_vl', 'model_name': 'wevisone-vl-2b',
+            'wevisone_label_queries': {'person': 'A standing human', 'tangzhe': 'A lying human'}},
+            'label_ids': {'person': 0, 'tangzhe': 1},
+            'label_catalog': [{'code': 'person', 'class_id': 0}, {'code': 'tangzhe', 'class_id': 1}],
+            'label_aliases': {'person': [], 'tangzhe': []}}
+
+
+def test_per_label_detection_uses_one_existing_permit_per_http_request(tmp_path, monkeypatch):
+    context, store = setup_context(tmp_path, monkeypatch, count=1)
+    request, calls, acquired = _wevisone_request(), [], []
+    original_acquire = context.repository.acquire_inference_permit
+    def acquire(**kwargs):
+        receipt = original_acquire(**kwargs)
+        if receipt.get('permit_id'):
+            acquired.append(kwargs['domain'])
+        return receipt
+    monkeypatch.setattr(context.repository, 'acquire_inference_permit', acquire)
+    def infer(one, image):
+        code = next(iter(one['label_ids']))
+        assert [row['code'] for row in one['label_catalog']] == [code]
+        calls.append(code)
+        x1 = 10 if code == 'person' else 100
+        return {'boxes': [{'label': code, 'x1': x1, 'y1': 10, 'x2': x1 + 30, 'y2': 60,
+                           'confidence': None}], 'raw_response_hash': code,
+                'diagnostics': {'wevisone': {'parser_source': 'structured_boxes'}}}
+    result = call_annotation_with_policy(context, request, {'id': '0'}, infer,
+                                         {'domain': 'test-account', 'concurrency': 2, 'requests_per_minute': 120})
+    assert calls == ['person', 'tangzhe']
+    assert acquired == ['test-account', 'test-account']
+    assert [box['label'] for box in result['boxes']] == ['person', 'tangzhe']
+    assert result['diagnostics']['execution']['subrequest_count'] == 2
+    assert result['diagnostics']['query_strategy'] == 'per_label'
+    assert not context.artifacts.artifact_path('task', 'candidates/manifest.json').is_file()
+
+
+def test_per_label_partial_failure_does_not_publish_first_label(tmp_path, monkeypatch):
+    context, store = setup_context(tmp_path, monkeypatch, count=1)
+    seen = []
+    def infer(one, image):
+        code = next(iter(one['label_ids']))
+        seen.append(code)
+        if code == 'tangzhe':
+            raise ProviderRequestError('invalid second result', code='MODEL_LABEL_NOT_ALLOWED')
+        return {'boxes': [{'label': code, 'x1': 10, 'y1': 10, 'x2': 50, 'y2': 50}]}
+    with pytest.raises(ProviderRequestError) as error:
+        call_annotation_with_policy(context, _wevisone_request(), {'id': '0'}, infer,
+                                    {'domain': 'test-account', 'concurrency': 1})
+    assert seen == ['person', 'tangzhe']
+    assert error.value.diagnostics['failed_label'] == 'tangzhe'
+    assert error.value.diagnostics['completed_label_count'] == 1
+    assert not context.artifacts.artifact_path('task', 'candidates/manifest.json').is_file()
+
+
+def test_per_label_overlap_is_ambiguous_but_distinct_and_zero_boxes_are_safe(tmp_path, monkeypatch):
+    context, store = setup_context(tmp_path, monkeypatch, count=1)
+    def conflicting(one, image):
+        return {'boxes': [{'label': next(iter(one['label_ids'])),
+                           'x1': 12, 'y1': 24, 'x2': 50, 'y2': 80}]}
+    with pytest.raises(ProviderRequestError) as error:
+        call_annotation_with_policy(context, _wevisone_request(), {'id': '0'}, conflicting,
+                                    {'domain': 'test-account', 'concurrency': 1})
+    assert error.value.code == 'MODEL_LABEL_AMBIGUOUS'
+    assert error.value.diagnostics['label_match_status'] == 'cross_label_overlap'
+    assert not context.artifacts.artifact_path('task', 'candidates/manifest.json').is_file()
+    result = call_annotation_with_policy(context, _wevisone_request(), {'id': '0'},
+                                         lambda *_args: {'boxes': []},
+                                         {'domain': 'test-account', 'concurrency': 1})
+    assert result['boxes'] == [] and len(result['diagnostics']['per_label_requests']) == 2
+
+
+def test_worker_persists_one_whole_image_only_and_preserves_prior_success(tmp_path, monkeypatch):
+    context, store = setup_context(tmp_path, monkeypatch, count=2, concurrency=1)
+    request = context.artifacts.read_json('task', 'request.json')
+    request.update(_wevisone_request())
+    request.pop('_provider_config')  # JSON freeze contains only the saved model snapshot.
+    request['labels'] = ['person', 'tangzhe']
+    request['model_config_snapshot'].update({
+        'provider_adapter': 'wevisone_vl', 'model_name': 'wevisone-vl-2b',
+        'wevisone_label_queries': {'person': 'A standing human', 'tangzhe': 'A lying human'},
+    })
+    context.artifacts.atomic_write_json('task', 'request.json', request)
+    seen = []
+    def annotate(one, image):
+        code = next(iter(one['label_ids']))
+        seen.append((image['id'], code))
+        if image['id'] == '1' and code == 'tangzhe':
+            raise ProviderRequestError('bad second query', code='MODEL_LABEL_NOT_ALLOWED')
+        return {'boxes': [{'label': code, 'x1': 10 if code == 'person' else 100,
+                           'y1': 20, 'x2': 40 if code == 'person' else 130,
+                           'y2': 70, 'confidence': None}]}
+    outcome = run_ai_annotation(context, annotate=annotate)
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION and outcome.generation_partial
+    assert store.get('0')['status'] == 'success'
+    assert [b['label'] for b in store.get('0')['boxes']] == ['person', 'tangzhe']
+    assert store.get('1')['status'] == 'failed' and store.get('1')['boxes'] == []
+    assert store.get('1')['error_code'] == 'MODEL_LABEL_NOT_ALLOWED'
+    assert seen == [('0','person'), ('0','tangzhe'), ('1','person'), ('1','tangzhe')]
+    assert store.statistics()['gt_committed'] == 0
 
 
 def test_bounded_parallel_results_persist_out_of_order_and_success_is_not_repeated(tmp_path, monkeypatch):

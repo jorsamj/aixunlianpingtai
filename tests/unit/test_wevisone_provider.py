@@ -12,7 +12,7 @@ from platform_core.auto_label import parse_candidate_response, provider_factory,
 from platform_core.annotation_task_service import annotate_one
 from platform_core.providers.base import ProviderRequestError
 from platform_core.providers.wevisone_vision import (
-    WeVisOneVisionProvider, _endpoint, normalize_detection, normalize_label_queries,
+    WeVisOneVisionProvider, _endpoint, normalize_detection, normalize_label_queries, effective_detection_config,
 )
 
 
@@ -97,6 +97,59 @@ def test_unknown_ref_with_actual_box_is_rejected_with_bounded_identity():
         "returned_label": "standing human", "label_match_status": "not_allowed",
         "parser_source": "native_ref_box", "allowed_labels": ["person", "tangzhe"], "zero_box": False,
     }
+
+
+def test_joined_detection_query_cannot_become_a_single_structured_class():
+    person = 'An upright human standing or walking on the floor, not lying in bed'
+    lying = 'A human lying or reclining on a bed, covered or uncovered by a blanket'
+    joined = person + '. ' + lying + '.'
+    response = '<ref>' + joined + '</ref><box><100><200><400><600></box>'
+    payload = {'coordinate_system': 'xyxy_pixel', 'boxes': [
+        {'label': joined, 'bbox_xyxy': [128, 192, 512, 576]},
+    ], 'response': response}
+    for sample in (payload, {'response': response}):
+        with pytest.raises(ProviderRequestError) as error:
+            normalize_detection(sample, width=1280, height=960, labels=['person', 'tangzhe'],
+                                label_aliases={'person': [person], 'tangzhe': [lying]})
+        assert error.value.code == 'MODEL_LABEL_NOT_ALLOWED'
+        assert error.value.diagnostics['label_match_status'] == 'not_allowed'
+
+
+def test_structured_box_class_cannot_hide_unknown_parseable_native_ref():
+    payload = {'coordinate_system': 'xyxy_pixel', 'boxes': [
+        {'label': 'person', 'bbox_xyxy': [10, 20, 40, 60]},
+    ], 'response': '<ref>person. tangzhe.</ref><box><100><100><400><500></box>'}
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection(payload, width=100, height=100, labels=['person', 'tangzhe'])
+    assert error.value.code == 'MODEL_LABEL_NOT_ALLOWED'
+
+
+def test_exact_one_query_can_restore_a_formal_class_without_guessing():
+    description = 'An upright human standing or walking on the floor, not lying in bed'
+    payload = {'coordinate_system': 'xyxy_pixel', 'width': 1280, 'height': 960,
+               'boxes': [{'label': description + '.', 'bbox_xyxy': [128, 192, 512, 576]}],
+               'response': '<ref>' + description + '.</ref><box><100><200><400><600></box>'}
+    boxes = normalize_detection(payload, width=1280, height=960, labels=['person'],
+                                label_aliases={'person': [description]})
+    assert [(b['label'], b['x1'], b['y1'], b['x2'], b['y2']) for b in boxes] == [
+        ('person', 128, 192, 512, 576)]
+
+
+def test_frozen_native_config_matches_description_mode_and_has_no_secrets():
+    config = {'model_name': 'wevisone-vl-2b', 'provider_adapter': 'wevisone_vl',
+              'wevisone_label_queries': {'person': 'A standing human', 'tangzhe': 'A lying human'},
+              'coordinate_space': 'pixel', 'coordinate_order': 'xyxy',
+              'coordinate_origin': 'top_left', 'coordinate_image_space': 'original_input',
+              'api_key': 'do-not-display', 'base_url': 'http://localhost:18000/v1'}
+    native = effective_detection_config(config, ['person', 'tangzhe'])
+    assert native['task'] == 'detection' and native['request_mode'] == 'per_label'
+    assert native['label_queries']['person'] == 'A standing human'
+    assert native['coordinate_space'] == 'pixel' and native['coordinate_image_space'] == 'original_input'
+    assert native['generic_prompt_applied'] is False
+    assert 'do-not-display' not in json.dumps(native)
+    assert effective_detection_config(config, ['person'])['request_mode'] == 'category_list'
+    assert effective_detection_config({'model_name': 'we', 'wevisone_label_queries': {}},
+                                      ['person', 'tangzhe'])['request_mode'] == 'category_list'
 
 
 @pytest.mark.parametrize("label", [" PERSON ", "person.", "Person。", "PeRsOn! "])

@@ -105,6 +105,27 @@ def normalize_label_queries(value: Mapping[str, str] | None) -> dict[str, str]:
     return cleaned
 
 
+def effective_detection_config(config: Mapping[str, Any], labels: Sequence[str]) -> dict[str, Any]:
+    """Public, credential-free view of the actual frozen native request contract."""
+    codes = list(dict.fromkeys(str(code) for code in labels))
+    queries = normalize_label_queries(config.get("wevisone_label_queries"))
+    selected = {code: queries.get(code, code) for code in codes}
+    if len({_label_key(value) for value in selected.values()}) != len(selected):
+        raise ValueError("WeVisOne 冻结标签查询存在歧义")
+    per_label = len(codes) > 1 and any(_label_key(selected[code]) != _label_key(code) for code in codes)
+    return {
+        "model": str(config.get("model_name") or ""), "adapter": "wevisone_vl",
+        "task": "detection", "request_mode": "per_label" if per_label else "category_list",
+        "endpoint": "/v1/vision/detect", "image": "data:image/<type>;base64,[omitted]",
+        "query_type": "list[str]", "label_queries": selected,
+        "coordinate_space": str(config.get("coordinate_space") or "pixel"),
+        "coordinate_order": str(config.get("coordinate_order") or "xyxy"),
+        "coordinate_origin": str(config.get("coordinate_origin") or "top_left"),
+        "coordinate_image_space": str(config.get("coordinate_image_space") or "original_input"),
+        "generic_prompt_applied": False,
+    }
+
+
 def _endpoint(base_url: str, operation: str) -> str:
     parts = urlsplit(str(base_url or "").strip())
     if (parts.scheme not in {"http", "https"} or not parts.hostname or
@@ -227,6 +248,11 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
             # positive structured boxes, bbox_xyxy stays authoritative even
             # when a model's free-form raw text is not parseable.
             matches = list(_REF_BOX.finditer(raw))
+            # A parseable native ref cannot contradict the frozen label
+            # whitelist just because the service also supplied pixel boxes.
+            # In particular, a joined two-query ref is NOT one valid class.
+            if matches and not _REF_BOX.sub("", raw).strip(" \r\n\t,;。"):
+                _native_boxes(raw, allowed_labels=allowed)
             if matches and not _REF_BOX.sub("", raw).strip(" \r\n\t,;。") and all(
                 match.group(2).strip().lower() in _EMPTY for match in matches
             ):

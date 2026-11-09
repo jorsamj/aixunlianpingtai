@@ -91,9 +91,10 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     provider = request["_provider"]
     config = request["_provider_config"]
     path = Path(str(image.get("path") or ""))
-    if not path.is_file():
+    frozen_image = request.get("_wevisone_prepared_image")
+    if frozen_image is None and not path.is_file():
         raise FileNotFoundError(f"annotation image file does not exist: {image.get('filename') or image.get('id')}")
-    image_bytes, geometry = prepare_annotation_image(path)
+    image_bytes, geometry = frozen_image if frozen_image is not None else prepare_annotation_image(path)
     width, height = geometry["submitted_width"], geometry["submitted_height"]
     geometry["stored_width"] = image.get("width")
     geometry["stored_height"] = image.get("height")
@@ -337,7 +338,7 @@ def run_ai_annotation(
             if previous_hash and current_hash and previous_hash != current_hash:
                 raise ValueError("AI_ANNOTATION_SOURCE_CHANGED: 原图片内容已改变，不能沿用旧候选结果")
 
-    from .annotation_inference import call_with_policy
+    from .annotation_inference import call_annotation_with_policy
     from .inference_policy import resolve_inference_policy
     from .task_runtime import ExecutionFencedError
     snapshot = runtime_request.get("model_config_snapshot") or {}
@@ -377,7 +378,7 @@ def run_ai_annotation(
                 from .hard_sample_mining import infer_with_frozen_yolo
                 generated = infer_with_frozen_yolo(runtime_request, image)
             else:
-                generated = call_with_policy(context, runtime_request, image, annotate, policy, stop=halt)
+                generated = call_annotation_with_policy(context, runtime_request, image, annotate, policy, stop=halt)
             boxes = list(generated.get("boxes") or [])
             item = {
                 "image_id": str(image["id"]), "filename": image.get("filename"),

@@ -25189,6 +25189,12 @@ def public_annotation_task(
     is_batch = task.kind is TaskKind.MATERIAL_BATCH and request.get("operation") == "AI_ANNOTATE"
     if is_batch:
         request = request.get("options") or {}
+    native_inference_config = None
+    if isinstance(request, dict):
+        frozen_model = request.get("model_config_snapshot") or {}
+        if isinstance(frozen_model, dict) and (frozen_model.get("provider_adapter") or frozen_model.get("provider_type")) == "wevisone_vl":
+            from platform_core.providers.wevisone_vision import effective_detection_config
+            native_inference_config = effective_detection_config(frozen_model, request.get("labels") or [])
     requested_total = len((request or {}).get("image_ids") or []) if isinstance(request, dict) else 0
     preview_count = int((request or {}).get("preview_count") or 0) if isinstance(request, dict) else 0
     if preview_count:
@@ -25235,6 +25241,7 @@ def public_annotation_task(
         "model_config_name": str((request or {}).get("model_config_name") or "") if isinstance(request, dict) else "",
         "model_provider": str((request or {}).get("model_provider") or "") if isinstance(request, dict) else "",
         "model_config_revision": str((request or {}).get("model_config_revision") or "") if isinstance(request, dict) else "",
+        "native_inference_config": native_inference_config,
         "total_count": total_count,
         "completed_count": min(total_count, completed_count) if total_count else completed_count,
         "remaining_count": max(0, total_count - completed_count),

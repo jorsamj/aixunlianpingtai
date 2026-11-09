@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.564 WeVisOne 原生协议专项**：仅收敛真实组合标签 P0，不展开技术债重构。逐类 detect 复用现有 RPM/许可和单图 Candidate 原子事务，未知类/跨类重叠拒绝，创建与冻结详情显示实际配置。独立 FastAPI 源码和现场验收未取得。详见 [需求/进度/证据](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。
+
 > **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。
 
 > **2026-11-07 / 42.24.561 稳定性专项**。基线 fc386660 的 48 项 Actions 已核。classic 安全提示和资源通知接回既有取消过滤，负样本卡仅精简重复资格。原训练、素材上传、AI、GT、Worker 业务合同保持。ZIP sidecar 与 Windows 长路径保留实测风险，A800、4070、20 万素材清单待现场验收。详见 [专项记录](STABILITY_SCOPED_2026_11_07.md)，新 SHA 的 CI 独立核对。

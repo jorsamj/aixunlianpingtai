@@ -27,7 +27,9 @@ test('AI creation previews native per-label queries and keeps generic prompting 
   assert.match(owner,/aiCreateDedicatedModel429/);
   assert.match(owner,/cfg\.wevisone_label_queries\|\|\{\}/);
   assert.match(owner,/syncAiNativeQueries429\(\)/);
-  assert.match(owner,/实际发送的标签查询/);
+  assert.match(owner,/WeVisOne · detection/);
+  assert.match(owner,/逐标签请求/);
+  assert.match(owner,/通用 JSON Prompt 不生效/);
   assert.match(styles,/\.ai-create-native>\.form,\.ai-create-native>\.field/);
   assert.match(source,/if\(aiCreateDedicatedModel429\(\)\)\{syncAiNativeQueries429\(\);return\}/);
 });

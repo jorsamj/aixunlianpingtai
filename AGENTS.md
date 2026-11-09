@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.564 WeVisOne 原生 Detection 标签归属 P0**：官方 Detection/Referring 已核对，保留现场已确认的 detect 端点；冻结长描述按正式标签分别推理，每次 HTTP 经原共享 permit/RPM，全部成功才单图合并，重叠类别拒绝。创建/任务详情展示真实原生配置，通用模型 Prompt 不变。38 条故障的 4070 实机验证和独立 FastAPI 源码仍待核，未部署/改生产。见 [专项记录](docs/WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。
+
 > **2026-11-09 / 42.24.562 WeVisOne-VL 部分失败 P0**：审计确认 `_native_boxes` 把未知描述的 `none` 在空框判断前误拒、冻结标签映射完全字符串一致、错误记录缺失返回标签和链路证据；复用原 Provider/Worker/Candidate/Task/GT Owner，修复严格零框解析、确定性文本规范化和冲突检测，补有界逐图证据、请求追踪、CSV/JSON 与失败重试历史；不猜标签、不把失败当成功、不覆盖审核或正式 GT。27 张真实失败尚无原始响应，只能做模拟协议与代码合同回归，现场差量复测待部署。应用版本更新至 42.24.562，具体测试和 CI 见 [专项记录](docs/WEVISONE_PARTIAL_FAILURE_2026_11_09.md)；不改 4070 服务/数据、不 merge/main/release/force push。
 
 > **2026-11-09 / 42.24.561 F5 快照复用 P0（准确 SHA CI 待核）**：审计确认浏览器 reload 丢失已有视图、v53 core 固定版本延迟标志与算法列表重复紧凑 SQL、训练 GET 误使算法卡片全量失效。沿用 v53 服务端原快照与现有 AlgorithmList/TrainingTask Owner，SQL revision 相同复用版本摘要、浏览器同 tab 上次展示先画再后台核验、无活动任务 2 分钟终态复用、只有终态变化才失效算法版本；密钥/原图/正式 GT 不入会话快照，变 revision 必须回查。Python/Node 定向和全部回归、最终准确 SHA CI 及 4070 真实 P95 以交付记录为准。**未部署、未改生产、未加第二套缓存/任务系统，不改 VERSION.txt。**[专项证据](docs/performance/2026-11-09-page-reload-snapshot-reuse.md)。
