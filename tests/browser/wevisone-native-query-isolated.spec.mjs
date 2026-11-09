@@ -23,6 +23,13 @@ test('WeVisOne native editor sends separate person and tangzhe descriptions with
   await expect(page.locator('#mcWevisoneQueries')).toBeHidden();
   await page.locator('#mcProviderAdapter').selectOption('wevisone_vl');
   await expect(page.locator('#mcWevisoneQueries')).toBeVisible();
+  // Native providers keep the same editable coordinate choices as generic
+  // providers; the backend/adapter validates them against the actual wire.
+  await expect(page.locator('.model-m4-advanced')).not.toHaveClass(/hidden/);
+  await page.locator('.model-m4-advanced > summary').click();
+  await page.locator('#mcCoordinateSpace').selectOption('normalized_01');
+  await page.locator('#mcCoordinateOrder').selectOption('yxyx');
+  await page.locator('#mcCoordinateOrigin').selectOption('bottom_left');
   await page.getByRole('button',{name:'填入宿舍示例'}).click();
   await expect(page.locator('[data-query-code]')).toHaveCount(2);
   await expect(page.locator('[data-query-text]').first()).toHaveValue(/standing or walking/);
@@ -34,6 +41,7 @@ test('WeVisOne native editor sends separate person and tangzhe descriptions with
   await page.getByRole('button',{name:'保存配置'}).click();
   await expect.poll(()=>page.evaluate(()=>window.savedBody?.wevisone_label_queries?.tangzhe)).toContain('lying or reclining');
   expect(await page.evaluate(()=>window.savedBody?.wevisone_label_queries?.person)).toContain('standing or walking');
+  expect(await page.evaluate(()=>[window.savedBody?.coordinate_space,window.savedBody?.coordinate_order,window.savedBody?.coordinate_origin])).toEqual(['normalized_01','yxyx','bottom_left']);
   await page.locator('#mcProviderAdapter').selectOption('local_openai');
   await expect(page.locator('#mcWevisoneQueries')).toBeHidden();
   await expect(page.locator('#mcAnnPrompt')).toBeVisible();

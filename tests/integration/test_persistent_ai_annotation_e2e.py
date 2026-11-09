@@ -212,6 +212,9 @@ def test_responses_connection_and_formal_task_share_real_adapter_and_gt_gate(cli
     assert row["status"] == ("success" if mode == "valid" else "failed")
     assert len(row["boxes"]) == (1 if mode == "valid" else 0)
     if mode != "valid":
+        assert completed["error"] and "主要错误" in completed["error"]
+        assert completed["generation_failure_codes"] and completed["failed_count"] == 1
+        assert row["error_code"] and row["error_stage"]
         rejected = client.post(f"/api/v60/projects/{pid}/annotation-tasks/{task_id}/decisions", json={"decisions":[{"image_id":image["id"], "accepted":True}], "commit":True})
         assert rejected.status_code in {400,409}
         assert client.get(f"/api/projects/{pid}/annotations/{image['id']}").json() == before

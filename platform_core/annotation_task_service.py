@@ -116,6 +116,13 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         template=str(request.get("prompt_template") or ""),
     )
     dedicated = str(config.get("provider_adapter") or config.get("provider_type") or "") == "wevisone_vl"
+    if dedicated:
+        # The WeVisOne adapter has already validated the declared wire contract
+        # and converted it to canonical original-image pixel XYXY. Applying
+        # the operator's *wire* settings again would double-scale/swap boxes.
+        diagnostics["native_wire_contract"] = dict(contract)
+        contract = {"coordinate_space": "pixel", "coordinate_order": "xyxy",
+                    "coordinate_origin": "top_left", "coordinate_image_space": "original_input"}
     provider_args = {"image_bytes": image_bytes, "prompt": prompt,
                      "output_schema": auto_label_core.CANDIDATE_OUTPUT_SCHEMA}
     if dedicated:
@@ -507,12 +514,14 @@ def run_ai_annotation(
 
 
     summary = sync_annotation_statistics(context.repository, context.task, store)
+    failure_codes = store.failure_codes(limit=5) if summary.get("failed") else []
     elapsed = max(.001, time.monotonic() - generation_started)
     ordered_latencies = sorted(latencies)
     def percentile(fraction):
         return ordered_latencies[min(len(ordered_latencies)-1, int((len(ordered_latencies)-1)*fraction))] if ordered_latencies else None
     context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
         "summary": summary,
+        "failure_codes": failure_codes,
         "generation_partial": bool(failed),
         "stopped_reason": stop_reason,
         "remaining": max(0, len(images) - summary["total"]),
@@ -529,7 +538,9 @@ def run_ai_annotation(
         return WorkerOutcome(TaskStatus.AWAITING_CONFIRMATION if succeeded else TaskStatus.BLOCKED_BY_ENVIRONMENT,
                              "candidates/manifest.json", stop_reason, True)
     if failed and not succeeded:
-        return WorkerOutcome(TaskStatus.FAILED, "candidates/manifest.json", "all images failed", True)
+        primary = failure_codes[0] if failure_codes else {"code": "UNKNOWN_FAILURE", "count": failed}
+        return WorkerOutcome(TaskStatus.FAILED, "candidates/manifest.json",
+                             f"全部 {failed} 张检测失败，主要错误：{primary['code']}（{primary['count']} 张）；请查看逐图诊断", True)
     return WorkerOutcome(
         TaskStatus.AWAITING_CONFIRMATION,
         "candidates/manifest.json",
@@ -1078,7 +1089,7 @@ class AnnotationHandler:
         if review is not None:
             return review
         outcome = run_ai_annotation(context, data_dir=self.data_dir)
-        return outcome.status, outcome.result_ref
+        return outcome.status, outcome.result_ref, outcome.error
 
     def recover(self, context):
         return self.run(context)

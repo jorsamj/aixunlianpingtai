@@ -91,15 +91,26 @@ def test_protocol_and_output_capability_roundtrip_preserves_secret(client, monke
     assert "sk-unit-test-only" not in json.dumps(listed)
 
 
-def test_wevisone_is_optional_and_technical_fields_are_server_owned(client):
+def test_wevisone_coordinate_settings_are_visible_editable_and_frozen(client):
     general = client.post("/api/v35/model-configs", json={"name": "Qwen", "provider_adapter": "local_openai", "base_url": "http://127.0.0.1:8000/v1", "model_name": "qwen35", "default_for_annotation": True}).json()
     special = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b", "coordinate_space": "normalized_1000", "coordinate_order": "yxyx", "structured_output": "prompt", "default_for_annotation": True}).json()
-    assert special["coordinate_space"] == "pixel" and special["coordinate_order"] == "xyxy"
+    assert special["coordinate_space"] == "normalized_1000" and special["coordinate_order"] == "yxyx"
+    assert special["api_protocol"] == "auto" and special["structured_output"] == "auto"
     assert special["capabilities"] == ["detect", "segment", "matting"]
     listed = client.get("/api/v35/model-configs").json()["items"]
     assert {"local_openai", "wevisone_vl"}.issubset({row.get("provider_adapter") for row in listed})
     assert sum(bool(row["default_for_annotation"]) for row in listed) == 1
     assert next(row for row in listed if row["id"] == general["id"])["default_for_annotation"] is False
+    changed_coordinates = client.put(f"/api/v35/model-configs/{special['id']}", json={
+        "name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000",
+        "model_name": "wevisone-vl-2b", "coordinate_space": "normalized_01",
+        "coordinate_order": "yxyx", "coordinate_origin": "bottom_left",
+        "coordinate_image_space": "original_input", "default_for_annotation": True,
+    })
+    assert changed_coordinates.status_code == 200, changed_coordinates.text
+    assert {key: changed_coordinates.json()[key] for key in (
+        "coordinate_space", "coordinate_order", "coordinate_origin",
+    )} == {"coordinate_space": "normalized_01", "coordinate_order": "yxyx", "coordinate_origin": "bottom_left"}
     changed = client.patch(f"/api/v35/model-configs/{special['id']}/availability", json={"enabled": False})
     assert changed.status_code == 200
     assert changed.json()["default_for_annotation"] is False

@@ -8,7 +8,8 @@ const styles = readFileSync(new URL('../../static/styles.css', import.meta.url),
 test('WeVisOne and generic OpenAI remain optional peers in the original model editor', () => {
   assert.match(source, /local_openai:'通用 · OpenAI 兼容'/);
   assert.match(source, /wevisone_vl:'WeVisOne · 专用视觉'/);
-  assert.match(source, /advanced\.classList\.toggle\('hidden',dedicated\)/);
+  assert.match(source, /advanced\.classList\.remove\('hidden'\)/);
+  assert.match(source, /coordinate_space:read\('mcCoordinateSpace'\)/);
   assert.match(source, /window\.verifyModelCoordinatesM4=async function/);
 });
 

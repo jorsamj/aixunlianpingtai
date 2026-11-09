@@ -286,9 +286,16 @@ class Scheduler:
                 assignment = self.gpu_resources.assignment(lease)
                 context.artifacts.atomic_write_json(lease.task.task_id, "assignment.json", assignment)
             recovered = lease.task.attempt > 1 or bool(context.load_checkpoint())
-            status, result_ref = (
-                handler.recover(context) if recovered else handler.run(context)
-            )
+            outcome = handler.recover(context) if recovered else handler.run(context)
+            # Most handlers return (status, result_ref). A handler that has a
+            # durable, sanitized failure reason may also return a third value.
+            # Preserve it instead of publishing a terminal FAILED task with
+            # error=NULL after every individual item failed.
+            if len(outcome) == 3:
+                status, result_ref, outcome_error = outcome
+            else:
+                status, result_ref = outcome
+                outcome_error = None
             current = context.assert_current_execution()
             if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
                 self._finish_cancel_if_safe(context, current)
@@ -298,7 +305,7 @@ class Scheduler:
                     TaskStatus.PARTIAL_SUCCESS,
                 }:
                     context.heartbeat(current_item="训练完成，结果已归档")
-                context.finish(status, result_ref)
+                context.finish(status, result_ref, error=outcome_error)
         except ExecutionFencedError:
             # Never let a stale generation publish FAILED/SUCCEEDED over the
             # execution that replaced it. Bound child processes are terminated

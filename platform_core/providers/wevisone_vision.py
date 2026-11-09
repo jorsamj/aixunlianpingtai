@@ -151,7 +151,8 @@ def _label_mapping(labels: Sequence[str], aliases: Mapping[str, Sequence[str]] |
 
 
 def normalize_detection(payload: Any, *, width: int, height: int, labels: list[str],
-                        label_aliases: Mapping[str, Sequence[str]] | None = None) -> list[dict[str, Any]]:
+                        label_aliases: Mapping[str, Sequence[str]] | None = None,
+                        expected_contract: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """Reject unknown wire contracts; never infer coordinate units from magnitude."""
     if not isinstance(payload, dict):
         raise ProviderRequestError("WeVisOne 检测响应不是 JSON 对象", code="MODEL_OUTPUT_PARSE_ERROR")
@@ -195,6 +196,14 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
         raise ProviderRequestError("WeVisOne 没有返回可识别的检测结果", code="MODEL_OUTPUT_PARSE_ERROR")
     if len(rows) > _MAX_DETECTIONS:
         raise ProviderRequestError("WeVisOne 单图目标数量超过 300", code="MODEL_OUTPUT_TOO_MANY_BOXES")
+    # The service's width/height describe the *submitted* image coordinate
+    # basis. A rescaled/cropped model image cannot be inverted without an
+    # explicit preprocessing transform. Never silently treat its pixels as
+    # original-image pixels.
+    for dimension, expected_size in (("width", width), ("height", height)):
+        if dimension in payload and (type(payload[dimension]) is not int or payload[dimension] != expected_size):
+            raise ProviderRequestError("WeVisOne 响应尺寸与提交原图不一致，缺少可验证的缩放/补边还原信息",
+                                       code="MODEL_COORDINATE_GEOMETRY_UNVERIFIED")
     converted = []
     for row in rows:
         if not isinstance(row, dict):
@@ -204,28 +213,74 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
             raise ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED", solution="请检查目标标签，或先在已有标签映射中确认对应关系。")
         label = allowed[label]
         coordinate_system = payload.get("coordinate_system")
-        if coordinate_system is not None and coordinate_system != "xyxy_pixel":
-            raise ProviderRequestError("WeVisOne 返回了非原图像素 XYXY 协议", code="MODEL_COORDINATE_SPACE_UNKNOWN")
-        coords = row.get("bbox_xyxy") if "bbox_xyxy" in row else (row.get("coordinates") or row.get("bbox") or row.get("box"))
+        declared = {
+            "xyxy_pixel": ("pixel", "xyxy"), "yxyx_pixel": ("pixel", "yxyx"),
+            "xyxy_normalized_01": ("normalized_01", "xyxy"),
+            "yxyx_normalized_01": ("normalized_01", "yxyx"),
+            "xyxy_normalized_1000": ("normalized_1000", "xyxy"),
+            "yxyx_normalized_1000": ("normalized_1000", "yxyx"),
+        }
+        if coordinate_system is not None and coordinate_system not in declared:
+            raise ProviderRequestError("WeVisOne 未知坐标协议声明", code="MODEL_COORDINATE_SPACE_UNKNOWN")
+        space = (declared[coordinate_system][0] if coordinate_system else
+                 str(row.get("space") or row.get("coordinate_space") or payload.get("coordinate_space") or ""))
+        order = (declared[coordinate_system][1] if coordinate_system else
+                 str(row.get("coordinate_order") or payload.get("coordinate_order") or "xyxy"))
+        origin = str(row.get("coordinate_origin") or payload.get("coordinate_origin") or "top_left")
+        image_space = str(payload.get("coordinate_image_space") or "original_input")
+        if space not in {"pixel", "normalized_01", "normalized_1000"} or order not in {"xyxy", "yxyx"} or origin not in {"top_left", "bottom_left"}:
+            raise ProviderRequestError("WeVisOne API 未明确声明受支持的坐标单位、顺序和原点", code="MODEL_COORDINATE_SPACE_UNKNOWN")
+        if image_space != "original_input":
+            raise ProviderRequestError("WeVisOne 服务处理图缺少坐标还原几何证据", code="MODEL_COORDINATE_GEOMETRY_UNVERIFIED")
+        # Native raw <ref>/<box> text always uses its own documented 0..1000
+        # contract; otherwise the declared structured wire contract must match
+        # the operator's saved expectation. No magnitude-based guessing.
+        raw_fallback = "boxes" not in payload and "detections" not in payload and "space" in row
+        if expected_contract and not raw_fallback:
+            actual = {"coordinate_space": space, "coordinate_order": order,
+                      "coordinate_origin": origin, "coordinate_image_space": image_space}
+            if any(str(expected_contract.get(key) or default) != value
+                   for key, default, value in (
+                       ("coordinate_space", "pixel", actual["coordinate_space"]),
+                       ("coordinate_order", "xyxy", actual["coordinate_order"]),
+                       ("coordinate_origin", "top_left", actual["coordinate_origin"]),
+                       ("coordinate_image_space", "original_input", actual["coordinate_image_space"]),
+                   )):
+                raise ProviderRequestError("WeVisOne 实际坐标协议与已保存配置不一致，请核对真实响应并重新验证配置",
+                                           code="MODEL_COORDINATE_CONTRACT_MISMATCH")
+        if "bbox_xyxy" in row:
+            if coordinate_system != "xyxy_pixel":
+                raise ProviderRequestError("WeVisOne bbox_xyxy 缺少 xyxy_pixel 坐标声明", code="MODEL_COORDINATE_SPACE_UNKNOWN")
+            coords = row["bbox_xyxy"]
+        elif "bbox_yxyx" in row:
+            if coordinate_system != "yxyx_pixel":
+                raise ProviderRequestError("WeVisOne bbox_yxyx 缺少 yxyx_pixel 坐标声明", code="MODEL_COORDINATE_SPACE_UNKNOWN")
+            coords = row["bbox_yxyx"]
+        elif "bbox_normalized" in row:
+            if space != "normalized_01":
+                raise ProviderRequestError("WeVisOne 归一化框缺少 normalized_01 声明", code="MODEL_COORDINATE_SPACE_UNKNOWN")
+            coords = row["bbox_normalized"]
+        else:
+            coords = row.get("coordinates") or row.get("bbox") or row.get("box")
         if coords is None and all(key in row for key in ("x1", "y1", "x2", "y2")):
             coords = [row[key] for key in ("x1", "y1", "x2", "y2")]
         if not isinstance(coords, (list, tuple)) or len(coords) != 4:
             raise ProviderRequestError("WeVisOne 目标框缺少 XYXY 坐标", code="MODEL_COORDINATE_INVALID")
-        space = "pixel" if coordinate_system == "xyxy_pixel" else str(row.get("space") or row.get("coordinate_space") or payload.get("coordinate_space") or "")
-        if "bbox_xyxy" in row and coordinate_system != "xyxy_pixel":
-            raise ProviderRequestError("WeVisOne bbox_xyxy 缺少 xyxy_pixel 坐标声明", code="MODEL_COORDINATE_SPACE_UNKNOWN")
-        if space not in {"pixel", "normalized_1000"}:
-            raise ProviderRequestError("WeVisOne API 未明确声明坐标单位", code="MODEL_COORDINATE_SPACE_UNKNOWN", solution="请使专用服务返回 coordinate_space=pixel 或 normalized_1000；不能依据数值猜测。")
         if any(isinstance(v, bool) or not isinstance(v, (float, int)) or not math.isfinite(v) for v in coords):
             raise ProviderRequestError("WeVisOne 坐标不是有限数字", code="MODEL_COORDINATE_INVALID")
         x1, y1, x2, y2 = map(float, coords)
-        if space == "normalized_1000":
-            if not all(0 <= v <= 1000 for v in (x1, y1, x2, y2)):
+        if order == "yxyx":
+            x1, y1, x2, y2 = y1, x1, y2, x2
+        if space in {"normalized_01", "normalized_1000"}:
+            divisor = 1 if space == "normalized_01" else 1000
+            if not all(0 <= v <= divisor for v in (x1, y1, x2, y2)):
                 raise ProviderRequestError("WeVisOne 归一化坐标越界", code="MODEL_COORDINATE_INVALID")
-            x1, x2 = x1 * width / 1000, x2 * width / 1000
-            y1, y2 = y1 * height / 1000, y2 * height / 1000
+            x1, x2 = x1 * width / divisor, x2 * width / divisor
+            y1, y2 = y1 * height / divisor, y2 * height / divisor
         if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
             raise ProviderRequestError("WeVisOne 像素坐标反向或超出原图", code="MODEL_COORDINATE_INVALID")
+        if origin == "bottom_left":
+            y1, y2 = height - y2, height - y1
         confidence = row.get("confidence")
         if confidence is not None and (isinstance(confidence, bool) or not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not 0 <= confidence <= 1):
             raise ProviderRequestError("WeVisOne 置信度无效", code="MODEL_OUTPUT_PARSE_ERROR")
@@ -239,13 +294,15 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
 
 class WeVisOneVisionProvider:
     def __init__(self, *, base_url: str, model: str, api_key: str = "", timeout: float = 180,
-                 session: Any = requests, label_queries: Mapping[str, str] | None = None):
+                 session: Any = requests, label_queries: Mapping[str, str] | None = None,
+                 coordinate_contract: Mapping[str, str] | None = None):
         self.model = str(model or "").strip()
         if not self.model:
             raise ValueError("WeVisOne 模型 ID 不能为空")
         self.base_url = base_url
         self.timeout, self.session, self.api_key = timeout, session, str(api_key or "")
         self.label_queries = normalize_label_queries(label_queries)
+        self.coordinate_contract = dict(coordinate_contract or {})
         self.detect_endpoint = _endpoint(base_url, "detect")
 
     def _headers(self) -> dict[str, str]:
@@ -329,7 +386,8 @@ class WeVisOneVisionProvider:
             if description:
                 aliases.setdefault(code, []).append(description)
         try:
-            boxes = normalize_detection(payload, width=width, height=height, labels=labels, label_aliases=aliases)
+            boxes = normalize_detection(payload, width=width, height=height, labels=labels,
+                                        label_aliases=aliases, expected_contract=self.coordinate_contract)
         except ProviderRequestError as error:
             for key, value in payload.get("_platform_response_metadata", {}).items():
                 setattr(error, key, value)

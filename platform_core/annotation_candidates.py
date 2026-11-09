@@ -703,6 +703,19 @@ class CandidateStore:
             summary["gt_committed"] = int(db.execute("SELECT COUNT(*) FROM commits").fetchone()[0])
         return summary
 
+    def failure_codes(self, *, limit: int = 5) -> list[dict[str, Any]]:
+        """Bounded failure-code histogram, no user/model response text."""
+        self._ready()
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT COALESCE(NULLIF(json_extract(item_json, '$.error_code'), ''),
+                           'UNKNOWN_FAILURE') AS code, COUNT(*) AS n
+                   FROM candidates WHERE status='failed'
+                   GROUP BY code ORDER BY n DESC, code LIMIT ?""",
+                (max(1, min(int(limit), 20)),),
+            ).fetchall()
+        return [{"code": str(row["code"])[:100], "count": int(row["n"])} for row in rows]
+
     def all_items(self):
         """Compatibility only; production consumers must use iter_items."""
         return list(self.iter_items())

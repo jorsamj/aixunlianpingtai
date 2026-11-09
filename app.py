@@ -18586,8 +18586,6 @@ def _v35_normalize_adapter(item: Dict[str, Any]) -> None:
         if not str(item.get("model_name") or "").strip():
             raise HTTPException(status_code=400, detail="WeVisOne 模型 ID 不能为空")
         item.update({"provider_adapter": kind, "provider_type": kind,
-                     "coordinate_space": "pixel", "coordinate_order": "xyxy",
-                     "coordinate_origin": "top_left", "coordinate_image_space": "original_input",
                      "output_protocol": "json_boxes", "api_protocol": "auto", "structured_output": "auto"})
     else:
         item.pop("wevisone_label_queries", None)
@@ -18938,6 +18936,11 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
         text = str(response.get("text") or "")
         try:
             contract = auto_label_core.coordinate_contract(runtime_cfg, legacy=True)
+            if dedicated:
+                # The native adapter validates the saved wire contract and
+                # always returns canonical input-image pixels to this parser.
+                contract = {"coordinate_space": "pixel", "coordinate_order": "xyxy",
+                            "coordinate_origin": "top_left", "coordinate_image_space": "original_input"}
             mapping = response.get("geometry") if contract.get("coordinate_image_space") == "processed_image" else None
             if contract.get("coordinate_image_space") == "processed_image" and not isinstance(mapping, dict):
                 raise ValueError("unknown provider preprocessing geometry")
@@ -25174,9 +25177,11 @@ def public_annotation_task(
         int((checkpoint or {}).get("processed" if is_batch else "next_index") or 0) if isinstance(checkpoint, dict) else 0,
         int(progress_summary.get("total") or 0),
     )
-    failed_count = max(
-        int((checkpoint or {}).get("failed") or 0) if isinstance(checkpoint, dict) else 0,
-        int(progress_summary.get("failed") or 0),
+    # A failed-only retry may reduce the failed population. The last checkpoint
+    # is not an upper bound once failed rows have been replaced by successes.
+    failed_count = (
+        int(progress_summary.get("failed") or 0) if isinstance(summary, dict) and "failed" in summary
+        else int((checkpoint or {}).get("failed") or 0) if isinstance(checkpoint, dict) else 0
     )
     return {
         "id": task.task_id,
@@ -25976,6 +25981,8 @@ def get_annotation_task(project_id: str, task_id: str):
         if isinstance(generation, dict):
             if generation.get("stopped_reason") and generation["stopped_reason"] != "CANCEL_REQUESTED":
                 result["generation_interruption_code"] = str(generation["stopped_reason"])[:100]
+            if isinstance(generation.get("failure_codes"), list):
+                result["generation_failure_codes"] = generation["failure_codes"][:5]
             if isinstance(generation.get("execution"), dict):
                 result["generation_execution"] = generation["execution"]
     return result

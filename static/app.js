@@ -1051,7 +1051,7 @@ window.installUsability417=function(){
     if(key)key.classList.toggle('hidden',kind==='ollama');
     for(const id of ['mcApiProtocol','mcStructuredOutput']){const field=document.getElementById(id);if(field)field.disabled=kind==='ollama'||dedicated}
     const advanced=document.querySelector('.model-m4-advanced'),prompt=document.getElementById('mcAnnPrompt')?.closest('.field'),helper=document.getElementById('mcProviderHelp'),form=document.querySelector('.model-m4 > .form');
-    if(advanced)advanced.classList.toggle('hidden',dedicated);
+    if(advanced)advanced.classList.remove('hidden');
     if(prompt)prompt.classList.toggle('hidden',dedicated);
     const querySection=document.getElementById('mcWevisoneQueries');
     if(form&&!querySection){
@@ -1059,7 +1059,7 @@ window.installUsability417=function(){
       form.insertAdjacentHTML('beforeend',`<section id="mcWevisoneQueries" class="field full model-m4-query-editor"><div class="row between"><div><b>标签定位描述</b><small>只对 WeVisOne 生效。每个标签使用自己的原生检测 query，结果仍映射回正式 code。</small></div><button class="btn mini" type="button" onclick="useWevisoneDormitoryM4()">填入宿舍示例</button></div><div class="model-m4-query-head"><span>正式标签 code</span><span>检测描述（推荐英文）</span></div><div id="mcWevisoneQueryRows">${Object.entries(queries).map(([code,description])=>wevisoneQueryRowM4(code,description)).join('')}</div><div class="row between"><button class="btn mini" type="button" onclick="addWevisoneQueryRowM4()">+ 添加描述</button><small>未配置的标签仍使用原标签名称；不要把 person 当成所有姿态的人。</small></div></section>`);
     }
     document.getElementById('mcWevisoneQueries')?.classList.toggle('hidden',!dedicated);
-    if(helper)helper.textContent=dedicated?'专用原生接口使用下方的标签定位描述；不接收通用聊天提示词。连接测试不代表检测准确。':kind==='volcengine_ark'?'填写已开通的模型 ID 或 Endpoint ID。':kind==='aliyun_qwen'?'填写所在地域的服务地址与模型 ID。':kind==='ollama'?'确认 Ollama 已启动并已加载视觉模型。':'支持 Chat Completions 或 Responses 兼容服务。';
+    if(helper)helper.textContent=dedicated?'专用接口使用下方标签定位描述；高级设置中的坐标参数须与模型真实响应一致。当前 2B 标准响应为原始像素 / XYXY / 左上。不接收通用聊天提示词。':kind==='volcengine_ark'?'填写已开通的模型 ID 或 Endpoint ID。':kind==='aliyun_qwen'?'填写所在地域的服务地址与模型 ID。':kind==='ollama'?'确认 Ollama 已启动并已加载视觉模型。':'支持 Chat Completions 或 Responses 兼容服务。';
     const modelLabel=document.getElementById('mcModel')?.closest('.field')?.querySelector('label'),urlLabel=url?.closest('.field')?.querySelector('label');if(modelLabel)modelLabel.textContent=dedicated?'模型 ID':'模型名称 / Endpoint ID';if(urlLabel)urlLabel.textContent=dedicated?'服务地址':'Base URL';
     if(document.getElementById('mcModel'))document.getElementById('mcModel').placeholder=dedicated?'例如 wevisone-vl-2b':'例如 qwen3.5-9b';
     const op=document.getElementById('mcVisionOperation');if(op)op.closest('.field')?.classList.toggle('hidden',!dedicated);
@@ -1077,7 +1077,7 @@ window.installUsability417=function(){
   function visionConfigurationChangedM4(cfg){
     if(!document.getElementById('mcProviderAdapter'))return false;
     const dedicated=(cfg.provider_adapter||cfg.provider_type)==='wevisone_vl';
-    const fields=dedicated?{mcModel:'model_name',mcUrl:'base_url',mcProviderAdapter:'provider_adapter'}:{mcModel:'model_name',mcUrl:'base_url',mcAnnPrompt:'annotation_prompt_template',mcCoordinateSpace:'coordinate_space',mcCoordinateOrder:'coordinate_order',mcProviderAdapter:'provider_adapter',mcApiProtocol:'api_protocol',mcStructuredOutput:'structured_output'};
+    const fields={mcModel:'model_name',mcUrl:'base_url',mcProviderAdapter:'provider_adapter',mcCoordinateSpace:'coordinate_space',mcCoordinateOrder:'coordinate_order',mcCoordinateOrigin:'coordinate_origin',mcCoordinateImageSpace:'coordinate_image_space',...(dedicated?{}:{mcAnnPrompt:'annotation_prompt_template',mcApiProtocol:'api_protocol',mcStructuredOutput:'structured_output'})};
     return Object.entries(fields).some(([dom,key])=>String(document.getElementById(dom)?.value||'')!==String(cfg[key]||({coordinate_space:'legacy_auto',coordinate_order:'xyxy',api_protocol:'auto',structured_output:'auto'}[key]||'')))
       ||(dedicated&&JSON.stringify(readWevisoneQueriesM4().value||{})!==JSON.stringify(cfg.wevisone_label_queries||{}))
       ||!!document.getElementById('mcApiKey')?.value
@@ -1125,16 +1125,16 @@ window.installUsability417=function(){
     const kind=read('mcProviderAdapter')||'local_openai',dedicated=kind==='wevisone_vl',name=read('mcName'),model=read('mcModel'),url=read('mcUrl')||providerDefaults[kind]||'';
     const enabled=!!document.getElementById('mcEnabled')?.checked,asDefault=!!document.getElementById('mcDefaultAnn')?.checked;
     if(!name||!model||!url)return toast('请填写配置名称、模型 ID 和服务地址');
-    if(!dedicated&&read('mcCoordinateSpace')==='legacy_auto')return toast('请先在高级设置中选择坐标范围');
+    if(read('mcCoordinateSpace')==='legacy_auto')return toast('请先在高级设置中选择坐标范围');
     if(!enabled&&asDefault)return toast('停用的模型不能设置为默认模型');
     const labelQueries=dedicated?readWevisoneQueriesM4():{value:{}};
     if(labelQueries.error)return toast(labelQueries.error);
     const body={name,provider_type:kind,provider_adapter:kind,model_kind:'vlm',model_name:model,
       base_url:url,detect_url:url,api_key:read('mcApiKey'),enabled,default_for_annotation:asDefault,
-      coordinate_origin:dedicated?'top_left':read('mcCoordinateOrigin')||'top_left',
-      coordinate_image_space:dedicated?'original_input':read('mcCoordinateImageSpace')||'original_input',
-      coordinate_space:dedicated?'pixel':read('mcCoordinateSpace')||'pixel',
-      coordinate_order:dedicated?'xyxy':read('mcCoordinateOrder')||'xyxy',
+      coordinate_origin:read('mcCoordinateOrigin')||'top_left',
+      coordinate_image_space:read('mcCoordinateImageSpace')||'original_input',
+      coordinate_space:read('mcCoordinateSpace')||'pixel',
+      coordinate_order:read('mcCoordinateOrder')||'xyxy',
       output_protocol:'json_boxes',coordinate_contract_version:1,
       api_protocol:dedicated?'auto':read('mcApiProtocol')||'auto',
       structured_output:dedicated?'auto':read('mcStructuredOutput')||'auto',

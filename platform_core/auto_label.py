@@ -50,6 +50,11 @@ def provider_factory(provider_config: Mapping[str, Any]):
             api_key=str(config.get("_api_key") or ""),
             model=str(config.get("model_name") or ""),
             label_queries=config.get("wevisone_label_queries") or {},
+            coordinate_contract={key: config.get(key, default) for key, default in (
+                ("coordinate_space", "pixel"), ("coordinate_order", "xyxy"),
+                ("coordinate_origin", "top_left"),
+                ("coordinate_image_space", "original_input"),
+            )},
         )
     if provider == "ollama":
         return OllamaVisionProvider(

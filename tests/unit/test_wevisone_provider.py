@@ -120,6 +120,81 @@ def test_reported_4070_detect_contract_pixel_xyxy_and_frozen_label_aliases():
     assert [b["confidence_status"] for b in boxes] == ["unavailable", "provided"]
 
 
+def test_exact_4070_480_response_reaches_worker_candidate_without_fabricated_score(tmp_path):
+    # Byte/field-equivalent to the incident sample (confidence/score absent).
+    payload = {"model": "wevisone-vl-2b", "width": 480, "height": 480,
+               "coordinate_system": "xyxy_pixel", "boxes": [
+                   {"label": "person", "bbox_xyxy": [230.88, 168.0, 250.08, 199.68],
+                    "bbox_normalized": [0.481, 0.35, 0.521, 0.416]},
+               ]}
+    cfg = {"id": "8d5cc70403d5", "provider_adapter": "wevisone_vl",
+           "base_url": "http://127.0.0.1:18003/v1", "model_name": "wevisone-vl-2b",
+           "coordinate_space": "pixel", "coordinate_order": "xyxy",
+           "coordinate_origin": "top_left", "coordinate_image_space": "original_input"}
+    provider = provider_factory(cfg)
+    provider.session = SimpleNamespace(post=lambda *_a, **_kw: SimpleNamespace(ok=True, json=lambda: payload))
+    image = tmp_path / "incident.png"
+    Image.new("RGB", (480, 480), "white").save(image)
+    request = {"_provider": provider, "_provider_config": cfg, "label_ids": {"person": 0},
+               "label_aliases": {"person": []}, "label_catalog": [{"code": "person", "class_id": 0}],
+               "threshold": 0.9}
+    result = annotate_one(request, {"id": "incident-1", "path": str(image), "width": 480, "height": 480})
+    assert len(result["boxes"]) == 1
+    box = result["boxes"][0]
+    assert (box["x1"], box["y1"], box["x2"], box["y2"]) == (230.88, 168.0, 250.08, 199.68)
+    assert box["confidence"] is None and box["confidence_status"] == "unavailable"
+    assert result["diagnostics"]["confidence_unavailable_count"] == 1
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"coordinate_system": "xyxy_pixel", "boxes": [
+        {"label": "person", "bbox_xyxy": [1, 2, 10, 20]},
+        {"label": "person", "bbox_xyxy": [30, 40, 70, 80]},
+    ]}, 2),
+    ({"coordinate_system": "xyxy_pixel", "boxes": []}, 0),
+    ({"coordinate_space": "normalized_01", "coordinate_order": "xyxy", "boxes": [
+        {"label": "person", "bbox_normalized": [0.1, 0.2, 0.5, 0.8]},
+    ]}, 1),
+])
+def test_structured_pixel_multiple_empty_and_normalized_01(payload, expected):
+    rows = normalize_detection(payload, width=480, height=480, labels=["person"])
+    assert len(rows) == expected
+    if "coordinate_space" in payload:
+        assert (rows[0]["x1"], rows[0]["y1"], rows[0]["x2"], rows[0]["y2"]) == (48, 96, 240, 384)
+
+
+def test_configurable_yxyx_bottom_left_converts_once_and_mismatches_fail_closed():
+    payload = {"coordinate_system": "yxyx_normalized_01", "coordinate_origin": "bottom_left",
+               "boxes": [{"label": "person", "coordinates": [0.2, 0.1, 0.8, 0.5]}]}
+    expected = {"coordinate_space": "normalized_01", "coordinate_order": "yxyx",
+                "coordinate_origin": "bottom_left", "coordinate_image_space": "original_input"}
+    rows = normalize_detection(payload, width=480, height=480, labels=["person"], expected_contract=expected)
+    assert (rows[0]["x1"], rows[0]["y1"], rows[0]["x2"], rows[0]["y2"]) == (48, 96, 240, 384)
+    with pytest.raises(ProviderRequestError) as mismatch:
+        normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [
+            {"label": "person", "bbox_xyxy": [10, 20, 30, 40]},
+        ]}, width=480, height=480, labels=["person"], expected_contract=expected)
+    assert mismatch.value.code == "MODEL_COORDINATE_CONTRACT_MISMATCH"
+
+
+@pytest.mark.parametrize("payload,code", [
+    ({"coordinate_system": "xyxy_pixel", "width": 320, "height": 480, "boxes": [
+        {"label": "person", "bbox_xyxy": [1, 2, 10, 20]},
+    ]}, "MODEL_COORDINATE_GEOMETRY_UNVERIFIED"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [
+        {"label": "person", "bbox_xyxy": [20, 30, 10, 50]},
+    ]}, "MODEL_COORDINATE_INVALID"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [
+        {"label": "unknown", "bbox_xyxy": [1, 2, 10, 20]},
+    ]}, "MODEL_LABEL_NOT_ALLOWED"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{}]}, "MODEL_LABEL_NOT_ALLOWED"),
+])
+def test_4070_invalid_geometry_and_labels_remain_per_image_errors(payload, code):
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection(payload, width=480, height=480, labels=["person"])
+    assert error.value.code == code
+
+
 @pytest.mark.parametrize("payload,code", [
     ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [0, 0, 1300, 500]}]}, "MODEL_COORDINATE_INVALID"),
     ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [20, 30, 10, 50]}]}, "MODEL_COORDINATE_INVALID"),

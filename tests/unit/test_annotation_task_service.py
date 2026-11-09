@@ -123,6 +123,37 @@ def test_worker_enters_review_with_partial_generation_summary(tmp_path, monkeypa
     assert context.repository.heartbeats[-1][2] == 70
 
 
+@pytest.mark.parametrize("mode,success,empty,failed,status", [
+    ("all_valid", 2, 0, 0, TaskStatus.AWAITING_CONFIRMATION),
+    ("one_empty", 1, 1, 0, TaskStatus.AWAITING_CONFIRMATION),
+    ("partial_failed", 1, 0, 1, TaskStatus.AWAITING_CONFIRMATION),
+    ("all_failed", 0, 0, 2, TaskStatus.FAILED),
+])
+def test_worker_batch_result_statistics_and_failure_codes(tmp_path, monkeypatch, mode, success, empty, failed, status):
+    from platform_core.providers.base import ProviderRequestError
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+
+    def infer(_request, image):
+        if mode == "all_failed" or (mode == "partial_failed" and image["id"] == "two"):
+            raise ProviderRequestError("invalid label", code="MODEL_LABEL_NOT_ALLOWED")
+        return {"boxes": [] if mode == "one_empty" and image["id"] == "two" else [{"label": "fire"}]}
+
+    outcome = run_ai_annotation(context, annotate=infer)
+    summary = CandidateStore(context.artifacts, task_id="ai-1").summary()
+    assert (summary["total"], summary["success"], summary["empty"], summary["failed"]) == (2, success, empty, failed)
+    assert outcome.status == status
+    generation = context.artifacts.read_json("ai-1", "generation.json")
+    if failed:
+        assert generation["failure_codes"] == [{"code": "MODEL_LABEL_NOT_ALLOWED", "count": failed}]
+        assert all(CandidateStore(context.artifacts, task_id="ai-1").get(id)["error_code"] == "MODEL_LABEL_NOT_ALLOWED"
+                   for id in (("one", "two") if mode == "all_failed" else ("two",)))
+    else:
+        assert generation["failure_codes"] == []
+    if mode == "all_failed":
+        assert "MODEL_LABEL_NOT_ALLOWED" in outcome.error
+
+
 def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path, monkeypatch):
     context = FakeContext(tmp_path)
     context._cancelled = True

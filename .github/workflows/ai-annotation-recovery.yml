@@ -23,6 +23,7 @@ on:
       - tests/integration/test_dual_instance_inference.py
       - platform_core/providers/**
       - platform_core/auto_label.py
+      - tests/unit/test_wevisone_provider.py
       - tests/unit/test_annotation_coordinate_contract.py
       - tests/unit/test_annotation_comparison.py
       - platform_core/annotation_comparison.py
@@ -71,6 +72,7 @@ on:
       - tests/integration/test_dual_instance_inference.py
       - platform_core/providers/**
       - platform_core/auto_label.py
+      - tests/unit/test_wevisone_provider.py
       - tests/unit/test_annotation_coordinate_contract.py
       - tests/unit/test_annotation_comparison.py
       - platform_core/annotation_comparison.py
@@ -144,6 +146,7 @@ jobs:
           tests/unit/test_provider_retry_metadata.py
           tests/unit/test_openai_vision_protocol.py
           tests/unit/test_annotation_coordinate_contract.py
+          tests/unit/test_wevisone_provider.py
           tests/unit/test_annotation_comparison.py
       - name: Annotation recovery frontend truth
         run: >-
