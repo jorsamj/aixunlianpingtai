@@ -819,8 +819,10 @@ def _bulk_filtered_ids(
     labels: tuple[str, ...] = (),
     require_ground_truth: bool = False,
     filters: dict | None = None,
+    max_ids: int = MAX_SELECTION_SUMMARY_IDS,
 ) -> tuple[list[str], int]:
     """Resolve a large filtered selection server-side with one HTTP request."""
+    max_ids = max(1, min(MAX_SELECTION_SUMMARY_IDS, int(max_ids)))
     if labels or require_ground_truth or filters:
         # Bulk selection needs the complete ID set only up to its fixed
         # limit. A separate exact COUNT(*) scans the same large GT/history
@@ -830,7 +832,7 @@ def _bulk_filtered_ids(
         page = _gt_material_filter_page(
             repository,
             annotations,
-            limit=MAX_SELECTION_SUMMARY_IDS,
+            limit=max_ids,
             query=query,
             labels=labels,
             require_ground_truth=require_ground_truth,
@@ -840,7 +842,7 @@ def _bulk_filtered_ids(
         )
         if page["has_next"]:
             raise ValueError(
-                f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+                f"筛选结果超过单次选择上限 {max_ids} 张"
             )
         ids = [str(value) for value in page["items"]]
         return ids, len(ids)
@@ -865,15 +867,15 @@ def _bulk_filtered_ids(
         )
         if first:
             total = max(0, int(page.total))
-            if total > MAX_SELECTION_SUMMARY_IDS:
+            if total > max_ids:
                 raise ValueError(
-                    f"筛选结果共 {total} 张，超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+                    f"筛选结果共 {total} 张，超过单次选择上限 {max_ids} 张"
                 )
             first = False
         ids.extend(str(value) for value in page.items)
-        if len(ids) > MAX_SELECTION_SUMMARY_IDS:
+        if len(ids) > max_ids:
             raise ValueError(
-                f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+                f"筛选结果超过单次选择上限 {max_ids} 张"
             )
         cursor = page.next_cursor
         if not cursor:
@@ -1955,7 +1957,7 @@ def training_material_picker_router(
         body = payload if isinstance(payload, dict) else {}
         try:
             if body.get("all_available"):
-                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy","label_mode"}}
+                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy","label_mode","prefer_reference_over"}}
             body, usage = _usage_filters(repository, {**body, "browse_only":False})
             labels = _normalize_labels(body.get("labels"))
             query = "" if bool(body.get("all_available")) else str(body.get("query") or "").strip()
@@ -1964,6 +1966,12 @@ def training_material_picker_router(
             role = str(body.get("role") or "train").strip().lower()
             if role not in {"train", "test"}:
                 raise ValueError("role must be train or test")
+            # Opt-in from the existing training picker only: cap the first ID
+            # probe so a 20k+ selection switches to the already-owned frozen
+            # reference instead of transferring and rendering 20k IDs in JS.
+            preferred = int(body.get("prefer_reference_over") or 0)
+            direct_limit = (max(1000, min(5000, preferred))
+                            if role == "train" and preferred > 0 else MAX_SELECTION_SUMMARY_IDS)
             annotations = annotation_repository_for_path(
                 str(repository.project_path)
             )
@@ -1982,8 +1990,8 @@ def training_material_picker_router(
                         sample_role=str(body["sample_role"]), query=query, labels=labels,
                         sort_order="oldest", filters=body):
                     selected_ids.append(image_id)
-                    if len(selected_ids) > MAX_SELECTION_SUMMARY_IDS:
-                        raise ValueError(f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张")
+                    if len(selected_ids) > direct_limit:
+                        raise ValueError(f"筛选结果超过单次选择上限 {direct_limit} 张")
                 if TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision() != usage['revision']:
                     raise ValueError("训练历史已更新，请重试批量选择")
                 if (annotations.task_negative_confirmation_revision() != negative_confirmation_revision
@@ -2002,6 +2010,7 @@ def training_material_picker_router(
                 labels=labels,
                 require_ground_truth=role == "test",
                 filters=body,
+                max_ids=direct_limit,
             )
             if TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision() != usage['revision']:
                 raise ValueError("训练历史已更新，请重试批量选择")

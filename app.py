@@ -8766,13 +8766,11 @@ def training_inherited_labels_preview(
     base_version_id: str = "",
 ):
     get_project(project_id)
-    algorithm = next(
-        (
-            row for row in list_algorithms_internal(project_id)
-            if str(row.get("id") or "") == str(algorithm_id or "")
-        ),
-        None,
-    )
+    # The preview belongs to a single algorithm; loading every algorithm's
+    # frozen versions/GT reports can block an otherwise tiny label request.
+    algorithm = next(iter(list_algorithms_internal(
+        project_id, algorithm_id=str(algorithm_id or ""), summary_only=True,
+    )), None)
     if algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     try:

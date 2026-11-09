@@ -1179,10 +1179,25 @@ export function installTrainingMaterialPickerRuntime({
       ...(picker?.role==='robustness'?{image_ids:picker.scopeIds}:{} )};
   }
 
-  async function resolveBulkSelection({allAvailable = false} = {}) {
+  async function resolveBulkSelection({allAvailable = false, preferReference = false} = {}) {
     const pid = projectId();
     if (!pid) throw new Error('当前项目不存在');
     return withRequestDeadline(async signal=>{
+    const freezeReference=async()=>{
+      // Reuse the existing frozen selection owner. Scope and request ID must
+      // be identical whether the server cap triggered the fallback or this
+      // dialog already knows the filtered count exceeds the fast-path cap.
+      const referenceScope=allAvailable ? taskPayload() : {...taskPayload(),...filterPayload()};
+      const requestKey=JSON.stringify({...referenceScope,query:allAvailable?'':picker.query,
+        labels:allAvailable?[]:[...picker.labels],sample_role:allAvailable?'':picker.sampleRole,allAvailable});
+      if(picker.referenceRequest?.key!==requestKey)picker.referenceRequest={key:requestKey,id:window.crypto.randomUUID()};
+      const plan=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-reference`,{
+        signal,method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({...referenceScope,request_id:picker.referenceRequest.id,query:allAvailable?'':picker.query,
+          labels:allAvailable?[]:[...picker.labels],sort_order:picker.sortOrder,sample_role:allAvailable?'':picker.sampleRole})});
+      return {reference:await readJson(plan,'大范围素材选择冻结失败')};
+    };
+    if(preferReference && Number.isSafeInteger(picker?.total) && picker.total>2000)return freezeReference();
     const response = await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/bulk-selection`, {
       signal,
       method: 'POST',
@@ -1190,6 +1205,7 @@ export function installTrainingMaterialPickerRuntime({
       body: JSON.stringify({
         ...taskPayload(), ...filterPayload(), sample_role: allAvailable ? '' : (picker?.sampleRole || ''),
         all_available: Boolean(allAvailable),
+        prefer_reference_over: preferReference ? 2000 : 0,
         query: allAvailable ? '' : (picker?.query || ''),
         labels: allAvailable ? [] : [...(picker?.labels || [])],
         role: picker?.role === 'robustness' ? 'train' : (picker?.role || 'train'),
@@ -1198,18 +1214,7 @@ export function installTrainingMaterialPickerRuntime({
     if(!response.ok && picker?.role==='train'){
       const error=await response.clone().json().catch(()=>({}));
       if(String(error.detail || '').includes('超过单次选择上限')){
-        // The bulk "all available" request intentionally drops active
-        // search/role/source filters. Keep the same scope when falling back
-        // to a server-frozen reference instead of silently freezing a subset.
-        const referenceScope=allAvailable ? taskPayload() : {...taskPayload(),...filterPayload()};
-        const requestKey=JSON.stringify({...referenceScope,query:allAvailable?'':picker.query,
-          labels:allAvailable?[]:[...picker.labels],sample_role:allAvailable?'':picker.sampleRole,allAvailable});
-        if(picker.referenceRequest?.key!==requestKey)picker.referenceRequest={key:requestKey,id:window.crypto.randomUUID()};
-        const plan=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-reference`,{
-          signal,method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({...referenceScope,request_id:picker.referenceRequest.id,query:allAvailable?'':picker.query,
-            labels:allAvailable?[]:[...picker.labels],sort_order:picker.sortOrder,sample_role:allAvailable?'':picker.sampleRole})});
-        return {reference:await readJson(plan,'大范围素材选择冻结失败')};
+        return freezeReference();
       }
     }
     const body = await readJson(response, '训练素材批量选择读取失败');
@@ -1240,7 +1245,10 @@ export function installTrainingMaterialPickerRuntime({
     const count = document.getElementById('trV3PickerCount');
     if (count) count.textContent = '正在解析批量选择…';
     try {
-      const result = await resolveBulkSelection({allAvailable: action === 'select-all' || action === 'invert-all'});
+      const result = await resolveBulkSelection({allAvailable: action === 'select-all' || action === 'invert-all',
+        // A frozen filter cannot safely union earlier ad-hoc page selections.
+        // Preserve those explicit IDs instead of silently dropping them.
+        preferReference: picker.role === 'train' && picker.selected.size === 0 && ['select-filtered','select-all'].includes(action)});
       if (picker !== activePicker || projectId() !== pid || signature()!==contextKey) return;
       if(result.reference){
         if(!['select-filtered','select-all'].includes(action))return notify('大范围冻结选择不支持反选，请使用全选当前筛选');

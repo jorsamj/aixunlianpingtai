@@ -14,7 +14,7 @@ import {messageFromApiError, withRequestDeadline, fetchWithUploadProgress} from 
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226509';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226568';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261102-lifecycle491';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
@@ -25,7 +25,7 @@ import {installChangLianDataBrowserRuntime} from './modules/changlian-data-brows
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226510';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.567';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.568';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.532';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';

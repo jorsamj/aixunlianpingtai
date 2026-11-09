@@ -61,6 +61,15 @@ test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /fetchpriority="\$\{priority\}"/);
 });
 
+test('large train selections opt into existing server-frozen references while small and Test selections remain explicit', () => {
+  assert.match(source, /prefer_reference_over: preferReference \? 2000 : 0/);
+  assert.match(source, /if\(preferReference && Number\.isSafeInteger\(picker\?\.total\) && picker\.total>2000\)return freezeReference\(\)/);
+  assert.match(source, /preferReference: picker\.role === 'train' && picker\.selected\.size === 0 && \['select-filtered','select-all'\]\.includes\(action\)/);
+  assert.match(source, /if\(result\.reference\)\{/);
+  assert.match(source, /picker\.reference=result\.reference/);
+  assert.match(source, /picker\.selected\.clear\(\)/);
+});
+
 test('ordinary iteration picker defers full role statistics until explicitly filtered or submitted', () => {
   assert.match(source, /defer_role_counts:!picker\.sampleRole/);
   assert.match(source, /picker\.roleCounts = body\.sample_role_counts \|\| null/);

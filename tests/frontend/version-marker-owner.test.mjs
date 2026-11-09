@@ -88,7 +88,7 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=42.25.567"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=42.25.568"), true);
   const runtime = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-material-picker-performance.spec.mjs', import.meta.url), 'utf8');
   assert.ok(runtime.includes("build: 'training-material-picker-runtime-422615'"));
@@ -110,7 +110,7 @@ test('training label contract source and browser guard match loaded cache build'
  const main=fs.readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
  const source=fs.readFileSync(new URL('../../static/modules/training-labels.js',import.meta.url),'utf8');
  const browser=fs.readFileSync(new URL('../browser/training-label-selector.spec.mjs',import.meta.url),'utf8');
- assert.ok(main.includes('training-labels.js?v=4226509'));
+ assert.ok(main.includes('training-labels.js?v=4226568'));
  assert.ok(source.includes("build: 'module-4226464'"));
  assert.ok(browser.includes(".toBe('module-4226464')"));
 });

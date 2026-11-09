@@ -577,6 +577,31 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert len(test_only.json()["items"]) == 230
 
 
+def test_training_picker_large_selection_opt_in_uses_existing_frozen_reference(tmp_path, monkeypatch):
+    _, repository = _client(tmp_path)
+    limits = []
+
+    def sentinel_page(*_args, **kwargs):
+        limits.append(kwargs['limit'])
+        return {'items':['m0000'], 'has_next':True}
+
+    monkeypatch.setattr(picker_module, '_gt_material_filter_page', sentinel_page)
+    router = training_material_picker_router(
+        lambda project_id: {'id':project_id}, lambda:tmp_path/'data')
+    endpoint = next(route.endpoint for route in router.routes
+                    if route.path.endswith('/training-materials/bulk-selection'))
+    with pytest.raises(HTTPException) as raised:
+        endpoint('p1', {'algorithm_asset_id':'a', 'role':'train',
+                        'prefer_reference_over':2000})
+    assert raised.value.status_code == 422
+    assert '超过单次选择上限 2000 张' in raised.value.detail
+    assert limits == [2000]
+    # Other callers, including independent Test, keep the original 50k limit.
+    with pytest.raises(HTTPException):
+        endpoint('p1', {'role':'test', 'prefer_reference_over':2000})
+    assert limits[-1] == picker_module.MAX_SELECTION_SUMMARY_IDS
+
+
 def test_bulk_filtered_ids_avoids_duplicate_exact_gt_count(tmp_path, monkeypatch):
     client, repository = _client(tmp_path)
     original = picker_module._gt_material_filter_page

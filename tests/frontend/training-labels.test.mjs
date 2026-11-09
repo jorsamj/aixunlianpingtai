@@ -16,6 +16,21 @@ const catalog = [
   {code: 'helmet', display_name: '安全帽'},
 ];
 
+test('iteration inherited labels query only the selected algorithm and keep the existing frozen-label owner', () => {
+  const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8');
+  const route = backend.slice(backend.indexOf('def training_inherited_labels_preview('), backend.indexOf('_TRAINING_TASK_ID_PATTERN ='));
+  assert.match(route, /list_algorithms_internal\(\s*project_id, algorithm_id=str\(algorithm_id or ""\), summary_only=True/);
+  assert.match(route, /inherited_training_label_preview\(/);
+  assert.doesNotMatch(route, /for row in list_algorithms_internal\(project_id\)/);
+});
+
+test('ready inherited labels render independently of a still-loading selected-material GT summary', () => {
+  const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  assert.match(source, /const inheritedReady = hasBaseVersion && previewCurrent && basePreview\.status === 'ready'/);
+  assert.match(source, /\$\{inheritedReady \? baseHtml : hasBaseVersion \?/);
+  assert.match(source, /正在读取训练标签…/);
+});
+
 test('available labels come only from selected material positive labels', () => {
   const materials = [
     {id: 'a', labels: ['fire', 'person']},

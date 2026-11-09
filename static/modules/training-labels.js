@@ -323,16 +323,22 @@ export function installTrainingLabelRuntime({
       panel.innerHTML = `<div class="training-label-contract-head"><div><b>训练标签</b><small>上一版本标签暂未读取成功。</small></div><span class="training-label-contract-count">需重试</span></div><div class="training-label-warning">${esc(basePreview.error)} <button class="btn mini" type="button" onclick="TrainingLabelRuntime.retryInheritance()">重新读取继承标签</button></div>`;
       return true;
     }
+    const inheritedReady = hasBaseVersion && previewCurrent && basePreview.status === 'ready';
+    const baseLabels = inheritedReady ? basePreview.labels : [];
+    const baseHtml = baseLabels.length
+      ? `<div class="training-label-base">
+          <div class="training-label-base-title"><b>上一版本继承</b><small>${esc(basePreview.versionName || '已验证版本')}</small></div>
+          <div class="training-label-base-list">${baseLabels.map(row => `<span class="training-label-base-chip" data-training-base-label="${esc(row.code)}"><i>✓</i><b>${esc(row.display_name || row.code)}</b><small>${esc(row.code)}</small></span>`).join('')}</div>
+        </div>` : '';
     if (availableCodes === null || (hasBaseVersion && (!previewCurrent || basePreview.status === 'loading' || basePreview.status === 'idle'))) {
       panelSignature='';labelRows=[];
       panel.innerHTML = `
         <div class="training-label-contract-head"><div><b>训练标签</b><small>正在准备本次训练的标签范围。</small></div><span class="training-label-contract-count">读取中</span></div>
-        ${hasBaseVersion ? '<div class="training-label-base"><div class="training-label-base-title"><b>上一版本继承</b><small>自动继承</small></div><div class="training-label-base-loading">正在读取继承标签</div></div>' : ''}
+        ${inheritedReady ? baseHtml : hasBaseVersion ? '<div class="training-label-base"><div class="training-label-base-title"><b>上一版本继承</b><small>自动继承</small></div><div class="training-label-base-loading">正在读取继承标签</div></div>' : ''}
         <div class="training-label-material"><div class="training-label-material-head"><b>本次训练标签</b><small>默认不选</small></div><div class="training-label-contract-list"><span class="training-label-empty">正在读取训练标签…</span></div></div>`;
       return true;
     }
 
-    const baseLabels = hasBaseVersion && previewCurrent && basePreview.status === 'ready' ? basePreview.labels : [];
     const baseCodes = new Set(baseLabels.map(row => row.code));
     const initial = resolveFor(state, ids, draftRequested, availableCodes);
     const materialSelectable = initial.selectable.filter(code => !baseCodes.has(code));
@@ -353,12 +359,6 @@ export function installTrainingLabelRuntime({
     panelSignature=signature;
     labelRows=finalMaterialSelectable.map(code=>({code,name:displayName(state,code),search:(displayName(state,code)+' '+code).toLowerCase()}));
 
-    const baseHtml = baseLabels.length
-      ? `<div class="training-label-base">
-          <div class="training-label-base-title"><b>上一版本继承</b><small>${esc(basePreview.versionName || '已验证版本')}</small></div>
-          <div class="training-label-base-list">${baseLabels.map(row => `<span class="training-label-base-chip" data-training-base-label="${esc(row.code)}"><i>✓</i><b>${esc(row.display_name || row.code)}</b><small>${esc(row.code)}</small></span>`).join('')}</div>
-        </div>`
-      : '';
     const materialHint = !ids.length ? '请先选择训练素材。' : !finalMaterialSelectable.length
       ? baseLabels.length
         ? '当前所选素材没有可新增的已标注目标标签；上一版本继承标签保持不变。'
