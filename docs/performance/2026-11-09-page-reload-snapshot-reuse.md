@@ -34,7 +34,7 @@
 
 ## 测试与遗留风险
 
-- 受控 Python API：`test_bootstrap_core_lifecycle` 已新增同 revision 复用、变 revision 失效回归；与 bootstrap 标签真值、任务状态、SQL 应用合同合计 **27/27 通过**。
+- 受控 Python API：`test_bootstrap_core_lifecycle` 已新增同 revision 复用、变 revision 失效回归；同时补跑 `test_data_fetch_targeted`。首轮 GitHub Actions 暴露了旧测试使用虚拟项目 ID 的兼容边界，已去掉紧凑缓存命中前多余的 `get_project` 磁盘预检（缓存未命中仍走原完整校验路径）。相关五组测试现 **32/32 通过**。
 - 受控 Node：新增模拟浏览器 F5 的“先展示、后等待服务器”及 revision 变化测试；补训练终态 TTL 与运行中进度失效边界。全部前端单元/合同集 **1576/1576 通过**；`node --check`、`python -m py_compile`、`git diff --check` 通过。
 - GitHub Actions、真实 Chrome 和真实 4070 20 万规模的冷/温 P50/P95：须以本批实际 commit SHA 的 CI 和现场独立核验结果为准，不能将合成测试冒充现场性能。
 - 服务端 `_V53_BOOTSTRAP_SNAPSHOT` 仍是单进程内存，Web 服务重启或多进程首次命中仍会有一次紧凑 SQL 建立成本；未引入额外磁盘快照系统。

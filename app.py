@@ -13021,7 +13021,6 @@ def v12_list_algorithms(project_id: str, summary_only: bool = False):
         # Reuse the existing process-local bootstrap snapshot for the compact
         # catalog. F5 should not deserialize every version again when the SQL
         # revision is unchanged. Full-detail callers keep their original path.
-        get_project(project_id)
         revision = algorithm_store_revision(algorithms_file(project_id))
         cached = globals().get("_V53_BOOTSTRAP_SNAPSHOT") or {}
         if (str((cached.get("project") or {}).get("id") or "") == str(project_id)
