@@ -85,8 +85,16 @@ function currentVersion(algorithm = {}) {
 }
 
 export function algorithmVersionMap50(version = {}) {
-  const metrics = version?.metrics || version?.evaluation?.metrics || {};
-  for (const value of [version?.map50, version?.mAP50, metrics?.map50, metrics?.mAP50, metrics?.['metrics/mAP50(B)']]) {
+  const metrics = version?.metrics || {};
+  const evaluation = version?.evaluation?.metrics || {};
+  for (const value of [version?.map50, version?.mAP50, metrics?.map50, metrics?.mAP50,
+    metrics?.['metrics/mAP50(B)'], evaluation?.map50, evaluation?.mAP50, evaluation?.['metrics/mAP50(B)']]) {
+    // Compact SQL projections include explicit JSON nulls for missing fields.
+    // Number(null), Number('') and Number(false) all equal zero, but none is
+    // a measured mAP50. A real numeric 0 remains a valid metric.
+    if (value == null || typeof value === 'boolean' ||
+        (typeof value === 'string' && !value.trim()) ||
+        (typeof value !== 'string' && typeof value !== 'number')) continue;
     const number = Number(value);
     if (Number.isFinite(number)) return number > 1 ? number : number * 100;
   }

@@ -473,6 +473,17 @@ test('current mAP50 never falls back to generic accuracy', () => {
   assert.equal(algorithmVersionMap50({metrics: {mAP50: 0.8}}), 80);
 });
 
+test('current mAP50 skips nullable SQL summary fields instead of displaying false zero', () => {
+  assert.ok(Math.abs(algorithmVersionMap50({map50:null,mAP50:null,
+    metrics:{'metrics/mAP50(B)':0.5851}})-58.51)<1e-9);
+  assert.ok(Math.abs(algorithmVersionMap50({map50:'  ',mAP50:null,
+    metrics:{mAP50:0.9268}})-92.68)<1e-9);
+  assert.equal(algorithmVersionMap50({map50:null,mAP50:null,metrics:{}}),null);
+  assert.equal(algorithmVersionMap50({map50:0,metrics:{mAP50:0.8}}),0);
+  assert.equal(algorithmVersionMap50({metrics:{},evaluation:{metrics:{'metrics/mAP50(B)':0.7}}}),70);
+  assert.equal(algorithmVersionMap50({map50:false,metrics:{mAP50:0.8}}),80);
+});
+
 
 test('category picker rows are whole-row interactive for drill-down and leaf selection', async () => {
   const {readFileSync} = await import('node:fs');
