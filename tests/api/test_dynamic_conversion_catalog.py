@@ -627,7 +627,13 @@ def test_local_bulk_probe_does_not_resurrect_concurrently_edited_resource(tmp_pa
 def test_version_history_paginates_its_full_legacy_scope_without_global_truncation(tmp_path,monkeypatch):
     import json
     monkeypatch.setattr(api,'get_project',lambda p:{'id':p})
-    monkeypatch.setattr(api,'list_algorithms_internal',lambda p:[{'id':'a','name':'algorithm','versions':[{'id':'old','model_name':'source.onnx'}]}])
+    calls=[]
+    def scoped_algorithm(project_id, *, algorithm_id=None, summary_only=False):
+        calls.append((project_id, algorithm_id, summary_only))
+        return [{'id':'a','name':'algorithm','versions':[{'id':'old','model_name':'source.onnx',
+            'stored_path':'/safe/source.onnx','size_mb':2.5,'model_metadata':{'class_count':2},
+            'evaluation':{'bulk':'x'*1024},'label_contract':{'bulk':'y'*1024}}]}]
+    monkeypatch.setattr(api,'list_algorithms_internal',scoped_algorithm)
     monkeypatch.setattr(api,'_version_deploy_conversion_defaults',lambda *a:{'input_size':640})
     monkeypatch.setattr(api,'deploy_root',lambda p:tmp_path/'deploy')
     for index in range(7):
@@ -637,6 +643,12 @@ def test_version_history_paginates_its_full_legacy_scope_without_global_truncati
             'execution_evidence':{'csc':{'applied':False,'device_observed':'unknown'}},'outputs':[]}))
     result=api.v423_version_deployments('p','a','old',page=2,page_size=2,csc='bt709_full')
     assert result['total']==5 and result['total_pages']==3 and len(result['items'])==2
+    assert calls==[('p','a',True)]
+    assert result['version']['stored_path']=='/safe/source.onnx'
+    assert result['version']['size_mb']==2.5
+    assert result['version']['model_metadata']['class_count']==2
+    assert result['version']['conversion_defaults']['input_size']==640
+    assert 'evaluation' not in result['version'] and 'label_contract' not in result['version']
     assert all(row['params']['csc']['preset']=='bt709_full' for row in result['items'])
     assert result['items'][0]['execution_evidence']['csc']['applied'] is False
     legacy=api.v423_version_deployments('p','a','old',csc='legacy_unknown')

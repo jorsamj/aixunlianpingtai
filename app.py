@@ -22552,7 +22552,10 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
     page: int=1, page_size: int=100, status: str='', target: str='', chip: str='',
     precision: str='', csc: str='', created_from: str='', created_to: str='', force: bool=False):
     get_project(project_id)
-    algo = next((a for a in list_algorithms_internal(project_id) if a.get('id') == algorithm_id), None)
+    # Conversion history is scoped to one algorithm. Hydrating the full project
+    # algorithm graph also deserializes unrelated versions and frozen evidence.
+    algo = next(iter(list_algorithms_internal(
+        project_id, algorithm_id=algorithm_id, summary_only=True)), None)
     if not algo:
         raise HTTPException(status_code=404, detail='算法不存在')
     version = next((v for v in (algo.get('versions') or []) if v.get('id') == version_id), None)
@@ -22597,7 +22600,13 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
             'message': job.get('message') or '', 'error': job.get('error') or ''
         })
     rows.sort(key=lambda x: x.get('created_at') or '', reverse=True)
-    visible_version = dict(version)
+    # Only source identity and conversion controls belong in this response.
+    # Full evaluation/label contracts can be megabytes and are unrelated to
+    # conversion history; the original version record remains unchanged.
+    visible_version = {key: version[key] for key in (
+        'id', 'version_no', 'version_name', 'model_name', 'stored_path',
+        'size_mb', 'status', 'framework', 'created_at', 'model_metadata',
+    ) if key in version}
     visible_version["conversion_defaults"] = _version_deploy_conversion_defaults(project_id, version)
     return {'ok': True, **{k:v for k,v in history.items() if k!='items'},
         'algorithm': {'id': algo.get('id'), 'name': algo.get('name')}, 'version': visible_version, 'items': rows}

@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.567 转换记录首次读取性能**：修复 v42 版本转换历史入口全量读取项目算法目录、返回整份大型版本评测/标签数据的问题；复用已有定向算法读取和历史分页投影，返回转换源信息及完整 `conversion_defaults`。转换执行/任务/Worker/产物/训练数据不变；本地模拟大字段通过，CI 与 4070 实机待验，未部署。详见 [专项记录](CONVERSION_HISTORY_LOADING_FAST_PATH_2026_11_09.md)。
+
 > **2026-11-09 / 42.24.566 母模型隔离校验 P0**：复用原母模型资产、SHA、v63 校验入口、FileLock 与资源页，补可选择现有 Python、bwrap fail-closed 下的 venv symlink 修复、轻量环境状态、分层错误、跨 Web 文件锁、超时/输出/CPU/虚拟内存限制和旧 CHECKING 超时投影。明确不新建正式独立校验环境或安装脚本；首次训练/节点安装/GT/其他模型均不变，未部署与修改生产数据；真实 Ubuntu bwrap、Ultralytics、模型实机验收及新 SHA CI 待核。详见 [专项记录](MOTHER_MODEL_SANDBOX_VERIFIER_P0_2026_11_09.md)。
 
 > **2026-11-09 / 42.24.565 AI 自动标注详情与全部错误导出**：原详情错误技术证据长卡片全部展开，且 CSV/JSON 实际只导出当前 `limit=50` 页。现沿用 v60 任务与 CandidateStore Owner，概况/异常分区、逐图证据折叠、12 张分页、全失败记录每批 100 张带 `review_revision`/总数/唯一 ID 完整性校验导出；历史数组对象在 CSV 保留 JSON，支持取消及关闭中止。Node 全量 1587/1587，未部署/未改生产；Chromium 可执行文件缺失，真实 UI 视觉核验和 4070 任务复测待完成。详见 [专项记录](AI_ANNOTATION_TASK_DETAIL_UX_2026_11_09.md)。
