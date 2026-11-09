@@ -110,6 +110,8 @@ from platform_core.mother_model_assets import (
     list_assets as _list_mother_model_assets,
     put_asset as _update_mother_model_asset,
     verify_checkpoint_in_sandbox as _verify_mother_model_checkpoint,
+    verifier_environment_status as _mother_model_verifier_environment,
+    public_asset_status as _public_mother_model_asset_status,
 )
 from platform_core.mother_model_inventory import project_node_inventory as _project_node_mother_models
 from platform_core.material_repository import (
@@ -7390,7 +7392,8 @@ async def upload_preinstalled_base_model(file: UploadFile = File(...)):
 @app.get("/api/v63/base-models/assets")
 def list_mother_model_assets():
     """Cached evidence only. GET must never import torch or scan Agent disks."""
-    return {"items": _list_mother_model_assets(DATA_DIR)}
+    return {"items": [_public_mother_model_asset_status(item) for item in _list_mother_model_assets(DATA_DIR)],
+            "verification_environment": _mother_model_verifier_environment()}
 
 
 @app.get("/api/v63/base-models/node-inventory")
@@ -7552,15 +7555,13 @@ def verify_mother_model_asset(asset_id: str):
     path = Path(str(asset.get("path") or ""))
     if not path.is_file() or path.stat().st_size != asset.get("size_bytes"):
         raise HTTPException(status_code=409, detail="母模型文件已丢失或大小变化，请重新上传")
-    task_key = (str(DATA_DIR.resolve()), asset_id)
-    if not hasattr(verify_mother_model_asset, "_active"):
-        verify_mother_model_asset._active = set()
-        verify_mother_model_asset._guard = threading.Lock()
-    with verify_mother_model_asset._guard:
-        if task_key in verify_mother_model_asset._active:
-            return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING", "deduplicated": True}
-        verify_mother_model_asset._active.add(task_key)
-    _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "CHECKING", "trainable": False, "validation_started_at": time.time()})
+    # The registry already uses FileLock. Keep the same asset owner and use a
+    # per-asset OS lock across Web workers, not a process-local _active set.
+    lock = FileLock(str(DATA_DIR / "models" / f".{asset_id}.verify.lock"), timeout=0, thread_local=False)
+    try:
+        lock.acquire(timeout=0)
+    except Timeout:
+        return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING", "deduplicated": True}
 
     def run_probe():
         try:
@@ -7573,10 +7574,14 @@ def verify_mother_model_asset(asset_id: str):
             logger.exception("Mother model sandbox probe failed for asset %s", asset_id)
             _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "FAILED", "trainable": False, "validation_error": "PT_PROBE_FAILED"})
         finally:
-            with verify_mother_model_asset._guard:
-                verify_mother_model_asset._active.discard(task_key)
+            lock.release()
 
-    threading.Thread(target=run_probe, name=f"mother-model-verify-{asset_id}", daemon=True).start()
+    try:
+        _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "CHECKING", "trainable": False, "validation_started_at": time.time()})
+        threading.Thread(target=run_probe, name=f"mother-model-verify-{asset_id}", daemon=True).start()
+    except Exception:
+        lock.release()
+        raise
     return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING"}
 
 

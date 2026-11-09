@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.566 母模型隔离校验 P0**：复用原母模型资产、SHA、v63 校验入口、FileLock 与资源页，补可选择现有 Python、bwrap fail-closed 下的 venv symlink 修复、轻量环境状态、分层错误、跨 Web 文件锁、超时/输出/CPU/虚拟内存限制和旧 CHECKING 超时投影。明确不新建正式独立校验环境或安装脚本；首次训练/节点安装/GT/其他模型均不变，未部署与修改生产数据；真实 Ubuntu bwrap、Ultralytics、模型实机验收及新 SHA CI 待核。详见 [专项记录](MOTHER_MODEL_SANDBOX_VERIFIER_P0_2026_11_09.md)。
+
 > **2026-11-09 / 42.24.565 AI 自动标注详情与全部错误导出**：原详情错误技术证据长卡片全部展开，且 CSV/JSON 实际只导出当前 `limit=50` 页。现沿用 v60 任务与 CandidateStore Owner，概况/异常分区、逐图证据折叠、12 张分页、全失败记录每批 100 张带 `review_revision`/总数/唯一 ID 完整性校验导出；历史数组对象在 CSV 保留 JSON，支持取消及关闭中止。Node 全量 1587/1587，未部署/未改生产；Chromium 可执行文件缺失，真实 UI 视觉核验和 4070 任务复测待完成。详见 [专项记录](AI_ANNOTATION_TASK_DETAIL_UX_2026_11_09.md)。
 
 > **2026-11-09 / 42.24.564 WeVisOne 类别归属（代码修复、现场待核）**：38 条 HTTP200 有框的合成标签问题按已确认的 Detection 端点逐正式标签调用，复用原 Worker/Provider/许可/RPM/Candidate/GT；单图原子合并、跨类高重叠拒绝、零框保持。任务详情从冻结 snapshot 派生脱敏原生请求配置；通用 Prompt 不改。不访问/修改 4070，详见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。

@@ -81,6 +81,8 @@ on:
       - 'tests/api/test_training_request.py'
       - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/api/test_mother_model_registry_isolated.py'
+      - 'platform_core/mother_model_assets.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
@@ -161,6 +163,8 @@ on:
       - 'tests/api/test_training_request.py'
       - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/api/test_mother_model_registry_isolated.py'
+      - 'platform_core/mother_model_assets.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
@@ -348,6 +352,7 @@ jobs:
           python -m py_compile
           app.py
           tests/api/test_mother_model_preinstall.py
+          tests/api/test_mother_model_registry_isolated.py
           platform_core/remote_training_transport.py
           platform_core/remote_training_tasks.py
           platform_core/training_selection_reference.py
@@ -361,6 +366,7 @@ jobs:
           tests/api/test_evaluation_diagnostic_image.py
           tests/api/test_hard_sample_mining_api.py
           tests/api/test_mother_model_preinstall.py
+          tests/api/test_mother_model_registry_isolated.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py
       - name: Permanent remote training preparation guards

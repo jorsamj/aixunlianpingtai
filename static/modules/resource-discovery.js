@@ -41,6 +41,25 @@ function dateText(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN');
 }
 
+const MOTHER_MODEL_VERIFY_ERRORS = {
+  PT_SANDBOX_NOT_CONFIGURED:'服务器缺少 Linux 隔离校验工具，请管理员配置 bwrap',
+  PT_VERIFY_PYTHON_NOT_CONFIGURED:'独立校验 Python 不存在或不可执行，请管理员检查运行环境',
+  PT_PYTHON_RUNTIME_NOT_ISOLATABLE:'当前 Python 位于隔离屏蔽目录，请配置受控的独立校验环境',
+  PT_SANDBOX_NOT_EXECUTABLE:'Linux 隔离命名空间无法启动，请管理员核查服务器权限',
+  PT_VERIFY_DEPENDENCY_MISSING:'隔离校验环境缺少 PyTorch/Ultralytics 依赖',
+  PT_VERIFY_TIMEOUT:'本次模型校验超时；文件已保留，可稍后重试',
+  PT_VERIFY_OUTPUT_LIMIT:'模型校验产生异常大量输出，已安全中止',
+  PT_VERIFY_INTERRUPTED:'上次校验因服务中断未完成，可重新校验，无需上传',
+  PT_MODEL_LOAD_FAILED:'模型在隔离环境中加载失败，请检查权重兼容性',
+  PT_TASK_NOT_DETECT:'当前母模型仅支持 YOLO 目标检测任务',
+  PT_SHA256_CHANGED:'模型文件内容已变化，需要重新上传'
+};
+
+function motherModelVerifyReason(code) {
+  const key=String(code||'');
+  return MOTHER_MODEL_VERIFY_ERRORS[key]||key||'暂无详细诊断';
+}
+
 function discoveryScopeLabel(task) {
   const scope = String(task.discovery_scope || '').trim().toLowerCase();
   if (scope === 'full') return '全机（仅本地文件系统）';
@@ -128,6 +147,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     officialModels: [],
     preparedModels: [],
     assetModels: [],
+    verificationEnvironment: {},
     nodeInventories: [],
     installations: [],
     models: [],
@@ -182,13 +202,17 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
 
   function motherModelManagement() {
     const rows=runtime.assetModels||[];
+    const verifier=runtime.verificationEnvironment||{};
+    const envConfigured=status(verifier.status)==='CONFIGURED';
+    const verifierNotice=`<div class="mother-model-verifier-status" role="status"><span class="pill ${envConfigured?'ok':'warn'}">${envConfigured?'校验运行环境已配置':'校验环境需配置'}</span><span>${envConfigured?'现有 Python 与隔离工具已定位，实际隔离能力将在安全校验时再次确认。':escapeHtml(motherModelVerifyReason(verifier.code||'PT_SANDBOX_NOT_CONFIGURED'))}</span></div>`;
     const nodes=(runtime.nodeInventories||[]).filter(node=>node.install_available===true);
     const installRows=runtime.installations||[];
     const items=rows.map(row=>{
       const ready=status(row.validation_status)==='VERIFIED'&&row.trainable===true;
       const names=Array.isArray(row.names)?row.names:[];
       const preview=names.slice(0,8).map((name,index)=>`<span><b>${index}</b> ${escapeHtml(name)}</span>`).join('');
-      const state=ready?'已验证 · 可训练':status(row.validation_status)==='CHECKING'?'正在隔离校验':status(row.validation_status)==='SANDBOX_UNAVAILABLE'?'校验环境不可用':status(row.validation_status)==='INVALID'?'模型校验失败':'等待校验';
+      const currentStatus=status(row.validation_status);
+      const state=ready?'已验证 · 可训练':currentStatus==='CHECKING'?'正在隔离校验':currentStatus==='SANDBOX_UNAVAILABLE'?'校验环境不可用':currentStatus==='INTERRUPTED'?'校验已中断':currentStatus==='FAILED'?'校验未完成':currentStatus==='INCOMPATIBLE'?'模型类型不兼容':currentStatus==='INVALID'?'模型校验失败':'等待校验';
       const installs=installRows.filter(item=>item.asset_id===row.asset_id);
       const installed=installs.filter(item=>item.installed);
       const pending=installs.find(item=>['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(status(item.status)));
@@ -196,7 +220,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       const select=nodes.map(node=>`<option value="${escapeHtml(node.node_id)}">${escapeHtml(node.display_name||node.node_id)}</option>`).join('');
       return `<article class="mother-model-row"><div class="mother-model-row-head"><div><strong>${escapeHtml(row.name)}</strong><small>${bytes(row.size_bytes)} · SHA256 ${escapeHtml(String(row.sha256||'').slice(0,16))}… · 管理端</small></div><span class="pill ${ready?'ok':'warn'}">${escapeHtml(state)}</span></div>
         <div class="mother-model-categories">${preview||'<span>原始类别尚未验证</span>'}${names.length>8?`<small>等 ${names.length} 类</small>`:''}</div>
-        <div class="mother-model-row-foot"><span>${escapeHtml(row.validation_error||`${row.framework||'未验证框架'} · ${row.task||'未验证任务类型'}`)}</span><button class="btn mini" ${status(row.validation_status)==='CHECKING'?'disabled':''} onclick="verifyResourceMotherModel('${escapeHtml(row.asset_id)}')">${ready?'重新验证':'安全校验'}</button></div>
+        <div class="mother-model-row-foot"><span>${escapeHtml(row.validation_error?motherModelVerifyReason(row.validation_error):`${row.framework||'未验证框架'} · ${row.task||'未验证任务类型'}`)}${row.validation_error?` <small>(${escapeHtml(row.validation_error)})</small>`:''}</span><button class="btn mini" ${currentStatus==='CHECKING'?'disabled':''} onclick="verifyResourceMotherModel('${escapeHtml(row.asset_id)}')">${ready?'重新验证':'安全校验'}</button></div>
         <div class="mother-model-install"><span>${installText}</span><div><select aria-label="安装目标服务器" ${!ready||!nodes.length?'disabled':''}>${select||'<option value="">无可安装的在线节点</option>'}</select><button class="btn mini primary" data-asset-id="${escapeHtml(row.asset_id)}" onclick="installResourceMotherModel(this)" ${!ready||!nodes.length?'disabled':''}>安装至节点</button>${pending?`<button class="btn mini" data-task-id="${escapeHtml(pending.task_id)}" onclick="cancelResourceMotherInstall(this)">取消当前安装</button>`:''}</div></div></article>`;
     }).join('');
     const remoteNodes=(runtime.nodeInventories||[]).map(node=>{
@@ -211,7 +235,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     const controllerDiscovery=localDiscovered.map(row=>`<div class="mother-model-node-file"><div><b>${escapeHtml(row.name||'')}</b><small title="${escapeHtml(row.path||'')}">${escapeHtml(row.path||'')}</small></div><span>${bytes(row.size_bytes)}</span><button class="btn mini" data-model-path="${escapeHtml(row.path||'')}" onclick="registerDiscoveredResourceModel(this)">登记</button></div>`).join('');
     return `<section class="mother-model-management" aria-label="母模型管理"><header class="mother-model-management-head"><div><span class="mother-model-kicker">模型资产</span><h2>母模型管理</h2><p>统一登记基础权重，核验原始类别后用于首次训练。模型文件与 Worker 节点副本分别管理。</p></div><div class="mother-model-actions"><input id="rdMotherManageFile" data-file426="1" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)"><button class="btn primary" onclick="document.getElementById('rdMotherManageFile')?.click()">上传 .pt 模型</button><button class="btn" onclick="refreshResourceDiscoveryCache()">刷新状态</button></div></header>
       <div class="mother-model-summary"><strong>${rows.length} <small>个已登记模型</small></strong><span>隔离检验不会在 Web 进程执行不可信 PyTorch 反序列化；不同哈希不会覆盖同名权重。</span></div>
-      <div class="mother-model-list">${items||'<div class="empty">尚无已登记的母模型。点击右上角上传已有 YOLO .pt；上传后先安全校验，再在算法首次训练选择。</div>'}</div>
+      ${verifierNotice}<div class="mother-model-list">${items||'<div class="empty">尚无已登记的母模型。点击右上角上传已有 YOLO .pt；上传后先安全校验，再在算法首次训练选择。</div>'}</div>
       <div class="mother-model-discovery"><b>管理端已发现</b><span>仅展示上次目录扫描缓存中的 .pt，手动登记后进入上述资产列表；检测不会自动上传。</span></div>
       <div class="mother-model-node-files">${controllerDiscovery||'<div class="empty">当前页暂无发现的 .pt。可在训练资源的本机模型区域扫描指定目录。</div>'}</div>
       <div class="mother-model-discovery"><b>节点模型发现</b><span>管理端可在“训练环境”使用已有目录检测。远程 Agent 仅后台扫描它被授权的模型目录，发现不代表安装或可训练。</span></div>
@@ -241,6 +265,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       request('/api/v63/base-models/installations').catch(() => ({items:[]}))
     ]);
     runtime.assetModels=assets?.items||[];
+    runtime.verificationEnvironment=assets?.verification_environment||{};
     runtime.nodeInventories=inventory?.items||[];
     runtime.installations=installs?.items||[];
     runtime.environments = [...(environment?.candidates || environment?.items || [])];
@@ -429,7 +454,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       let count=0;
       const poll=async()=>{
         if(getPage()!=='训练资源'||++count>40)return;
-        try{const response=await request('/api/v63/base-models/assets');runtime.assetModels=response?.items||[];renderCachePanel();const row=runtime.assetModels.find(item=>item.asset_id===key);if(row&&status(row.validation_status)!=='CHECKING')return notify(status(row.validation_status)==='VERIFIED'?'母模型校验通过，首次训练时可选':`校验未通过：${row.validation_error||row.validation_status}`)}catch(_){return}
+        try{const response=await request('/api/v63/base-models/assets');runtime.assetModels=response?.items||[];runtime.verificationEnvironment=response?.verification_environment||{};renderCachePanel();const row=runtime.assetModels.find(item=>item.asset_id===key);if(row&&status(row.validation_status)!=='CHECKING')return notify(status(row.validation_status)==='VERIFIED'?'母模型校验通过，首次训练时可选':`校验未通过：${motherModelVerifyReason(row.validation_error||row.validation_status)}`)}catch(_){return}
         registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
       };
       registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);

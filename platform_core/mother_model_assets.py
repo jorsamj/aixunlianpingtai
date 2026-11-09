@@ -10,6 +10,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import selectors
+import signal
 import shutil
 import subprocess
 import sys
@@ -17,6 +19,88 @@ import time
 import zipfile
 
 from filelock import FileLock
+
+
+_VERIFY_HIDDEN_ROOTS = ("/root", "/home", "/data", "/workspace", "/tmp", "/var", "/mnt", "/run")
+_VERIFY_OUTPUT_LIMIT = 128 * 1024
+_VERIFY_TIMEOUT_SECONDS = 60
+_VERIFY_STALE_SECONDS = 180
+
+
+def verifier_environment_status(*, python_executable: str | None = None) -> dict:
+    """Cheap configuration check only; never imports Torch or reads a PT.
+
+    CONFIGURED does not imply that Linux namespaces work. The actual sandbox
+    launch is verified by the explicit per-asset validation operation.
+    """
+    if sys.platform != "linux" or not shutil.which("bwrap"):
+        return {"status": "UNAVAILABLE", "code": "PT_SANDBOX_NOT_CONFIGURED"}
+    requested = python_executable or os.environ.get("MC_MOTHER_MODEL_VERIFY_PYTHON") or sys.executable
+    if not Path(requested).is_absolute():
+        return {"status": "UNAVAILABLE", "code": "PT_VERIFY_PYTHON_NOT_CONFIGURED"}
+    try:
+        executable = Path(os.path.abspath(requested))
+        resolved = executable.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return {"status": "UNAVAILABLE", "code": "PT_VERIFY_PYTHON_NOT_CONFIGURED"}
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        return {"status": "UNAVAILABLE", "code": "PT_VERIFY_PYTHON_NOT_CONFIGURED"}
+    if any(any(path == Path(root) or Path(root) in path.parents for root in _VERIFY_HIDDEN_ROOTS)
+           for path in (executable, resolved)):
+        return {"status": "UNAVAILABLE", "code": "PT_PYTHON_RUNTIME_NOT_ISOLATABLE"}
+    return {"status": "CONFIGURED", "code": "", "runtime": "configured_python" if os.environ.get("MC_MOTHER_MODEL_VERIFY_PYTHON") else "web_python"}
+
+
+def public_asset_status(row: dict, *, now: float | None = None) -> dict:
+    """Project an interrupted old CHECKING attempt without a write on GET."""
+    result = dict(row)
+    try:
+        started = float(result.get("validation_started_at") or 0)
+    except (TypeError, ValueError):
+        started = 0
+    if result.get("validation_status") == "CHECKING" and started and (time.time() if now is None else now) - started > _VERIFY_STALE_SECONDS:
+        result.update(validation_status="INTERRUPTED", validation_error="PT_VERIFY_INTERRUPTED", trainable=False)
+    return result
+
+
+def _run_bounded_probe(command: list[str], *, timeout: int = _VERIFY_TIMEOUT_SECONDS) -> tuple[int, str, str]:
+    """Drain child output without unbounded memory and terminate its process group."""
+    streams: dict[object, bytearray] = {}
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, env={}, start_new_session=True)
+    try:
+        with selectors.DefaultSelector() as watcher:
+            for stream in (proc.stdout, proc.stderr):
+                assert stream is not None
+                watcher.register(stream, selectors.EVENT_READ)
+                streams[stream] = bytearray()
+            deadline = time.monotonic() + timeout
+            while watcher.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in watcher.select(remaining):
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if not chunk:
+                        watcher.unregister(key.fileobj)
+                        continue
+                    if sum(len(part) for part in streams.values()) + len(chunk) > _VERIFY_OUTPUT_LIMIT:
+                        raise OverflowError("mother-model verifier exceeded bounded output")
+                    streams[key.fileobj].extend(chunk)
+            proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        return (proc.returncode,
+                bytes(streams[proc.stdout]).decode("utf-8", errors="replace"),
+                bytes(streams[proc.stderr]).decode("utf-8", errors="replace"))
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.wait()
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
 
 
 def registry_path(data_dir: Path) -> Path:
@@ -109,16 +193,21 @@ def verify_checkpoint_in_sandbox(path: Path, *, python_executable: str | None = 
     valid, reason = _check_torch_container(path)
     if not valid:
         return {"validation_status": "INVALID", "validation_error": reason, "trainable": False}
+    environment = verifier_environment_status(python_executable=python_executable)
+    if environment["status"] != "CONFIGURED":
+        return {"validation_status": "SANDBOX_UNAVAILABLE", "validation_error": environment["code"], "trainable": False}
     wrapper = shutil.which("bwrap")
-    if not wrapper or sys.platform != "linux":
-        return {"validation_status": "SANDBOX_UNAVAILABLE", "validation_error": "PT_SANDBOX_NOT_CONFIGURED", "trainable": False}
-    python = Path(python_executable or sys.executable).resolve()
-    # All parent directories are read-only. Hide users' data and writable
-    # runtime paths; expose exactly one checkpoint under an inert mount name.
-    if any(str(python).startswith(prefix) for prefix in ("/root/", "/home/", "/data/", "/workspace/")):
-        return {"validation_status": "SANDBOX_UNAVAILABLE", "validation_error": "PT_PYTHON_RUNTIME_NOT_ISOLATABLE", "trainable": False}
-    probe = '''import json,sys
-from ultralytics import YOLO
+    # Keep the venv/bin/python symlink path: resolving it to /usr/bin/python
+    # would silently discard the virtualenv's site-packages and pyvenv.cfg.
+    python = Path(os.path.abspath(python_executable or os.environ.get("MC_MOTHER_MODEL_VERIFY_PYTHON") or sys.executable))
+    probe = '''import json,sys,resource
+resource.setrlimit(resource.RLIMIT_CPU,(55,60))
+resource.setrlimit(resource.RLIMIT_AS,(16*1024**3,16*1024**3))
+try:
+ from ultralytics import YOLO
+except Exception:
+ print("MODEL_PROBE_ENV:PT_VERIFY_DEPENDENCY_MISSING")
+ sys.exit(44)
 model=YOLO(sys.argv[1])
 names=model.names or {}
 if isinstance(names,dict): names=[str(names[k]) for k in sorted(names,key=lambda k:int(k))]
@@ -138,14 +227,21 @@ print("MODEL_PROBE_JSON:"+json.dumps({"task":task,"names":names,"nc":len(names),
                "--setenv", "WANDB_MODE", "disabled", "--setenv", "OMP_NUM_THREADS", "1",
                str(python), "-I", "-c", probe, "/tmp/model.pt"]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=35, env={})
-    except (OSError, subprocess.TimeoutExpired):
+        returncode, stdout, stderr = _run_bounded_probe(command)
+    except subprocess.TimeoutExpired:
+        return {"validation_status": "FAILED", "validation_error": "PT_VERIFY_TIMEOUT", "trainable": False}
+    except OverflowError:
+        return {"validation_status": "FAILED", "validation_error": "PT_VERIFY_OUTPUT_LIMIT", "trainable": False}
+    except OSError:
         return {"validation_status": "SANDBOX_UNAVAILABLE", "validation_error": "PT_SANDBOX_NOT_EXECUTABLE", "trainable": False}
-    if completed.returncode:
-        error = "PT_SANDBOX_NOT_EXECUTABLE" if "namespace" in completed.stderr.lower() else "PT_MODEL_LOAD_FAILED"
+    if returncode:
+        if returncode == 44 and "MODEL_PROBE_ENV:PT_VERIFY_DEPENDENCY_MISSING" in stdout:
+            return {"validation_status": "SANDBOX_UNAVAILABLE", "validation_error": "PT_VERIFY_DEPENDENCY_MISSING", "trainable": False}
+        failure = stderr.lower()
+        error = "PT_SANDBOX_NOT_EXECUTABLE" if any(marker in failure for marker in ("namespace", "bwrap:", "operation not permitted")) else "PT_MODEL_LOAD_FAILED"
         return {"validation_status": "SANDBOX_UNAVAILABLE" if error.endswith("NOT_EXECUTABLE") else "INVALID",
                 "validation_error": error, "trainable": False}
-    lines = [line.removeprefix("MODEL_PROBE_JSON:") for line in completed.stdout.splitlines() if line.startswith("MODEL_PROBE_JSON:")]
+    lines = [line.removeprefix("MODEL_PROBE_JSON:") for line in stdout.splitlines() if line.startswith("MODEL_PROBE_JSON:")]
     try:
         meta = json.loads(lines[-1])
         names = meta["names"]

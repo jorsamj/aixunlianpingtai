@@ -17,6 +17,18 @@ test('training resources allow explicit trusted .pt preload into the existing du
   assert.match(backend,/os\.replace\(temp, path\)/);
 });
 
+test('mother-model verifier displays distinct environment, interrupted and model errors without extra modal owners', () => {
+  assert.match(resources,/verificationEnvironment=assets\?\.verification_environment/);
+  assert.match(resources,/PT_SANDBOX_NOT_CONFIGURED/);
+  assert.match(resources,/PT_VERIFY_DEPENDENCY_MISSING/);
+  assert.match(resources,/PT_VERIFY_INTERRUPTED/);
+  assert.match(resources,/校验运行环境已配置/);
+  assert.match(resources,/校验已中断/);
+  assert.match(backend,/_public_mother_model_asset_status\(item\)/);
+  assert.match(backend,/_mother_model_verifier_environment\(\)/);
+  assert.doesNotMatch(resources,/window\.openMotherModelVerifierModal\s*=/);
+});
+
 test('first train task selects an actually prepared model; iteration remains version-owned', () => {
   assert.match(app,/id="tr429MotherModel"/);
   assert.match(app,/selectTrainingMotherModel429/);
