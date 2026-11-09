@@ -8686,7 +8686,17 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       if(result.next_cursor){const next=document.createElement('button');next.className='btn';next.textContent='下一页失败图片';next.onclick=()=>loadAiFailureDetails60(id,isCurrent,result.next_cursor);panel.append(next)}
     }catch(error){if(isCurrent()&&panel.isConnected)panel.textContent=`失败详情暂不可用：${error.message||error}`}
   }
-  window.retryAiFailureImage60=async(id,encoded)=>{try{await api(`${taskApi(id)}/retry`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:[decodeURIComponent(encoded)]})});toast('已提交此图重试');await window.showAiTask60(id)}catch(error){toast(error.message||error)}};
+  window.retryAiFailureImage60=async(id,encoded)=>{
+    const owner=window.ModalContentRuntime?.captureOwner?.();
+    try{
+      await api(`${taskApi(id)}/retry`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:[decodeURIComponent(encoded)]})});
+      if(owner&&!owner.isCurrent())return;
+      toast('已提交此图重试');
+      if(owner?.layer)window.closeModalLayer424?.(owner.layer);
+      if(window.ModalContentRuntime?.activeLayer?.())return;
+      await window.showAiTask60(id);
+    }catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}
+  };
   window.showTaskProgress427=function showTaskProgressCanonical60(type,id){if(type==='label')return showAiTask60(id);if(type==='clean')return window.showCleanTaskProgress429?.(id);return window.showTaskProgressCore427?.(type,id)};
   window.cancelAiTask60=async id=>{const owner=window.ModalContentRuntime?.captureOwner?.();try{const task=await api(`${taskApi(id)}/cancel`,{method:'POST'});if(!owner||owner.isCurrent())renderProgress(task);return task}catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}};
   window.retryAiTask60=async id=>{const owner=window.ModalContentRuntime?.captureOwner?.();try{const task=await api(`${taskApi(id)}/retry`,{method:'POST'});if(owner&&!owner.isCurrent())return task;if(owner?.layer)window.closeModalLayer424?.(owner.layer);if(window.ModalContentRuntime?.activeLayer?.())return task;return showAiTask60(task.id)}catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}};

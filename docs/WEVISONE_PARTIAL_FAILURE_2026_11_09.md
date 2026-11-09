@@ -20,7 +20,7 @@
 - 仅规范化确定等价的字符串：首尾空白、末尾常见标点、Unicode `casefold()`。冻结正式标签仍独立于自然语言 query，归一化后的不同标签及别名冲突一律拒绝。**不使用包含匹配/语义猜测/硬编码泛人类同义词**。
 - 返回未知有效框时记录 `returned_label`、`allowed_labels`、`configured_queries`、`label_match_status`、`parser_source`、`zero_box` 和 `response_summary`；响应摘要仅含结构计数、声明的坐标系和图像尺寸，不存储模型原始文本、图片 base64、完整 HTTP 请求体或凭据。文本截断并做敏感字符过滤。
 - `annotation_inference` 已有同图内链路编号 `platform_request_id`，本批将其作为 `request_trace_id` 传入原 CandidateStore；第三方 request_id 不存在时仍保留空值，不伪造上游编号。API CandidateStore 现有逐图接口和原 CSV 导出页即可直接展示。
-- `annotation_task_service` 原 CandidateStore 写入路径新增有界 `error_history`（此前最多 5 条），重试成功时仍保留失败证据；原“只补跑 failed，保留 success/empty、人工草稿、审核及正式 GT”逻辑未改。界面“重试此图”成功受理后重新进入同一任务详情轮询，不必整页刷新。
+- `annotation_task_service` 原 CandidateStore 写入路径新增有界 `error_history`（此前最多 5 条），重试成功时仍保留失败证据；原“只补跑 failed，保留 success/empty、人工草稿、审核及正式 GT”逻辑未改。界面“重试此图”成功受理后沿用现有 ModalContentRuntime 所有权校验，关闭旧详情层后再进入同一任务详情轮询，避免弹窗嵌套，也不必整页刷新。
 - `static/app.js` 同一失败明细区展示实际标签、冻结查询、允许标签、实例、内部追踪、HTTP 与形状摘要；CSV/JSON 导出字段对齐且 CSV 防公式注入，不增加新页面或二级弹窗。
 
 ## 标签协议的保守结论
@@ -30,7 +30,7 @@
 ## 回归测试与验收状态
 
 - 模拟原生 ref/box、合法未知描述零框、结构化空框、未知标签有效框、矛盾的原生/结构化返回、格式/坐标错误、大小写/标点/空白、别名冲突、HTTP 200 非法 JSON、无上游 request ID、请求实例/诊断、原 CandidateStore 局部失败与差量重试、成功/人工草稿保护。
-- Python 受控 5 组（WeVisOne Provider、原 AI Task Service、CandidateStore、Provider 请求元信息、v60 Annotation Task Runtime）**248/248 通过**；Node 前端完整合同集 **1578/1578 通过**。另外扩大到 `tests/api/test_auto_label_candidates.py` 的探索运行得出 244 通过、1 失败（后续增加回归用例后总数已变化）：该失败测试仍期望已退役 v47 写接口返回 200，现正式返回 410，属于本批前已有的过期测试断言，本批**不恢复旧接口**。准确远端 CI 仍需单独核验。
+- Python 受控 5 组（WeVisOne Provider、原 AI Task Service、CandidateStore、Provider 请求元信息、v60 Annotation Task Runtime）**248/248 通过**；Node 前端完整合同集 **1579/1579 通过**（含重试弹窗单 Owner 回归）。另外扩大到 `tests/api/test_auto_label_candidates.py` 的探索运行得出 244 通过、1 失败（后续增加回归用例后总数已变化）：该失败测试仍期望已退役 v47 写接口返回 200，现正式返回 410，属于本批前已有的过期测试断言，本批**不恢复旧接口**。准确远端 CI 仍需单独核验。
 - 本轮无真实 4070 回放或图像，因此不能宣称 27 张现场图片均成功。需要部署后的独立受控差量重试实测：备份任务和候选快照、确认失败集合、只补跑失败图、核对已成功和已审候选、检查每图字段与统计、再人工审核；不直接入正式 GT/负样本池。
 
 ## 修改文件与 CI

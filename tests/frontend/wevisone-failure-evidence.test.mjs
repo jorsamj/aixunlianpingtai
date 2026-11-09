@@ -51,3 +51,24 @@ test('failed-image CSV and JSON retain model label and internal request trace sa
   assert.equal(json[0].returned_label, row.returned_label);
   assert.deepEqual(json[0].allowed_labels,['person','tangzhe']);
 });
+
+test('single-image retry closes its original modal before reopening the same polling owner', async () => {
+  const start = source.indexOf('  window.retryAiFailureImage60=async(');
+  const stop = source.indexOf('  window.showTaskProgress427=', start);
+  assert.ok(start > 0 && stop > start);
+  const calls = [];
+  let currentLayer = {id:'original-modal'};
+  const window = {
+    ModalContentRuntime: {captureOwner: () => ({layer:currentLayer, isCurrent:() => true}), activeLayer:() => currentLayer},
+    closeModalLayer424: layer => {assert.equal(layer,currentLayer);calls.push('close');currentLayer=null;},
+    showAiTask60: async id => {assert.equal(currentLayer,null);calls.push('show:'+id);},
+  };
+  const api = async (url, options) => {
+    calls.push('post:'+url);
+    assert.deepEqual(JSON.parse(options.body).image_ids,['image/id']);
+  };
+  new Function('window','api','taskApi','toast','decodeURIComponent',source.slice(start,stop))(
+    window,api,id=>'/tasks/'+id,message=>calls.push('toast:'+message),decodeURIComponent);
+  await window.retryAiFailureImage60('task-1',encodeURIComponent('image/id'));
+  assert.deepEqual(calls,['post:/tasks/task-1/retry','toast:已提交此图重试','close','show:task-1']);
+});
