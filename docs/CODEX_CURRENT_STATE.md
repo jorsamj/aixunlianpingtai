@@ -1,3 +1,5 @@
+> **2026-11-09 / 42.24.562 WeVisOne 部分失败、无目标和诊断 P0**：沿原 `wevisone_vision`、冻结标签、`annotation_inference` 内部请求编号、CandidateStore/AI Worker 和原失败明细实现：先验真 `none` 再验标签，确定性 casefold/空白/句末标点兼容且冲突拒绝，未知有框仍失败；补实际返回标签、允许标签、查询描述、协议摘要、后端实例、内部请求追踪、CSV/JSON、差量重试历史。未取得27张失败原始回包，现场结果不作保证，不修改4070/GT。详见 [专项审计与交付](WEVISONE_PARTIAL_FAILURE_2026_11_09.md)，准确最终SHA/CI待核。
+
 > **2026-11-09 / 42.24.561 整页刷新与数据读取 P0（准确 SHA CI 待核）**：浏览器 F5 的已核视图在同 tab 优先恢复并后台用原 v53 核验；紧凑算法版本由原 `_V53_BOOTSTRAP_SNAPSHOT` 随 SQL revision 复用；终态训练任务短期复用而活动任务保持实时，纯进度不使全算法重查。无新增缓存中心/Task Owner/DB schema，不改变正式 VERSION、训练准入、GT 或生产数据。首次历史冷读和真实 4070 P95 仍待现场核验。[需求、代码与测试](performance/2026-11-09-page-reload-snapshot-reuse.md)。
 
 > **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。

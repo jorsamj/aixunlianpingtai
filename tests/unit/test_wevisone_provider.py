@@ -69,7 +69,6 @@ def test_live_4070_empty_detection_ref_box_none_is_not_a_broken_box():
 @pytest.mark.parametrize("response,code", [
     ("<ref>fire</ref><box>maybe</box>", "MODEL_OUTPUT_PARSE_ERROR"),
     ("<ref>fire</ref><box>none</box> malformed", "MODEL_OUTPUT_PARSE_ERROR"),
-    ("<ref>smoke</ref><box>none</box>", "MODEL_LABEL_NOT_ALLOWED"),
     ("<ref>fire</ref><box><100><200><500><800></box>", "MODEL_OUTPUT_PARSE_ERROR"),
 ])
 def test_empty_structured_boxes_still_reject_invalid_or_mismatched_native_response(response, code):
@@ -77,6 +76,100 @@ def test_empty_structured_boxes_still_reject_invalid_or_mismatched_native_respon
         normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [], "response": response},
                             width=1280, height=960, labels=["fire"])
     assert error.value.code == code
+
+
+@pytest.mark.parametrize("response", [
+    "<ref>person</ref><box>none</box>",
+    "<ref>A person standing in the room</ref>\n<box>none</box>",
+    "<ref>unconfigured_description</ref><box>NONE</box>",
+])
+def test_unknown_descriptive_ref_with_explicit_none_is_empty_not_failed(response):
+    for payload in ({"response": response}, {"coordinate_system": "xyxy_pixel", "boxes": [], "response": response}):
+        assert normalize_detection(payload, width=480, height=480, labels=["person", "tangzhe"]) == []
+
+
+def test_unknown_ref_with_actual_box_is_rejected_with_bounded_identity():
+    with pytest.raises(ProviderRequestError) as failure:
+        normalize_detection({"response": "<ref>standing human</ref><box><100><200><300><400></box>"},
+                            width=480, height=480, labels=["person", "tangzhe"])
+    assert failure.value.code == "MODEL_LABEL_NOT_ALLOWED"
+    assert failure.value.diagnostics == {
+        "returned_label": "standing human", "label_match_status": "not_allowed",
+        "parser_source": "native_ref_box", "allowed_labels": ["person", "tangzhe"], "zero_box": False,
+    }
+
+
+@pytest.mark.parametrize("label", [" PERSON ", "person.", "Person。", "PeRsOn! "])
+def test_presentational_label_variants_are_deterministic_without_fuzzy_matching(label):
+    boxes = normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [
+        {"label": label, "bbox_xyxy": [10, 20, 30, 50]},
+    ]}, width=480, height=480, labels=["person"])
+    assert [box["label"] for box in boxes] == ["person"]
+
+
+def test_display_equivalent_alias_conflicts_fail_closed():
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection({"boxes": []}, width=480, height=480, labels=["person", "tangzhe"],
+                            label_aliases={"person": ["Standing human"], "tangzhe": [" standing HUMAN. "]})
+    assert error.value.code == "MODEL_LABEL_AMBIGUOUS"
+    with pytest.raises(ValueError, match="不能重复"):
+        normalize_label_queries({"person": "A person standing.", "tangzhe": "a person standing"})
+
+
+def test_uppercase_frozen_code_can_still_register_its_explicit_alias():
+    boxes = normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [
+        {"label": " Standing Human. ", "bbox_xyxy": [10, 20, 30, 50]},
+    ]}, width=480, height=480, labels=["Person"],
+        label_aliases={"Person": ["standing human"]})
+    assert [box["label"] for box in boxes] == ["Person"]
+
+
+def test_raw_structure_and_empty_structured_boxes_conflict_even_with_unknown_label():
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [],
+                            "response": "<ref>unknown_object</ref><box><100><100><300><300></box>"},
+                            width=480, height=480, labels=["person"])
+    assert error.value.code == "MODEL_OUTPUT_PARSE_ERROR"
+    assert error.value.diagnostics["label_match_status"] == "protocol_conflict"
+
+
+def test_missing_upstream_request_id_keeps_safe_label_and_wire_diagnostics():
+    provider = WeVisOneVisionProvider(
+        base_url="http://127.0.0.1:18002/wevis2/v1", model="wevisone-vl-2b",
+        label_queries={"person": "An upright human standing or walking on the floor, not lying in bed"},
+        session=SimpleNamespace(post=lambda *_a, **_kw: SimpleNamespace(
+            ok=True, status_code=200, headers={"x-backend-instance-id": "gpu0"},
+            json=lambda: {"coordinate_system": "xyxy_pixel", "width": 64, "height": 64,
+                          "boxes": [{"label": "standing human", "bbox_xyxy": [2, 3, 20, 30]}]},
+        )),
+    )
+    image = BytesIO();Image.new("RGB", (64, 64), "white").save(image, "PNG")
+    with pytest.raises(ProviderRequestError) as error:
+        provider.annotate(image_bytes=image.getvalue(), prompt="", output_schema={}, labels=["person"])
+    assert error.value.code == "MODEL_LABEL_NOT_ALLOWED"
+    assert error.value.status_code == 200
+    assert error.value.request_id == ""
+    assert error.value.diagnostics["returned_label"] == "standing human"
+    assert error.value.diagnostics["allowed_labels"] == ["person"]
+    assert error.value.diagnostics["response_summary"]["structured_box_count"] == 1
+    assert error.value.diagnostics["backend_instance_id"] == "gpu0"
+
+
+@pytest.mark.parametrize("response_value,source", [(None,"invalid_json"), ([],"invalid_json_shape")])
+def test_http_200_invalid_json_or_wrong_shape_has_bounded_parser_evidence(response_value, source):
+    def parse():
+        if response_value is None:
+            raise ValueError("invalid JSON")
+        return response_value
+    provider = WeVisOneVisionProvider(base_url="http://127.0.0.1:18000/v1", model="wevisone-vl-2b",
+                                     session=SimpleNamespace(post=lambda *_a, **_k: SimpleNamespace(
+                                         ok=True, status_code=200, headers={}, json=parse)))
+    image = BytesIO();Image.new("RGB", (64, 64), "white").save(image,"PNG")
+    with pytest.raises(ProviderRequestError) as failure:
+        provider.annotate(image_bytes=image.getvalue(),prompt="",output_schema={},labels=["person"])
+    assert failure.value.code == "MODEL_OUTPUT_PARSE_ERROR" and failure.value.status_code == 200
+    assert failure.value.diagnostics["parser_source"] == source
+    assert failure.value.diagnostics["response_summary"] == {"parser_source": source}
 
 
 def test_structured_positive_boxes_reject_raw_no_target_for_same_label():

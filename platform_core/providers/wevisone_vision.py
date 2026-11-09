@@ -31,6 +31,50 @@ _MAX_PREVIEW_INSTANCES = 32
 _PNG_FIELDS = {"mask": "mask_png", "foreground": "cutout_png"}
 _MIME_FORMATS = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
 _MAX_QUERY_LENGTH = 300
+_LABEL_TRAILING_PUNCTUATION = ".,;:!?。！？；：，"
+
+
+def _label_key(value: str) -> str:
+    """Only presentation-equivalent label changes; never guess semantics."""
+    return str(value).strip().rstrip(_LABEL_TRAILING_PUNCTUATION).strip().casefold()
+
+
+def _public_label(value: Any) -> str:
+    """Short diagnostic label, never a full free-form model response or secret."""
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "")).strip()
+    if re.search(r"(?i)data:image/|base64,|bearer\s|sk-[a-z0-9_-]{12,}|api[_-]?key\s*[:=]", text):
+        return "[REDACTED]"
+    return text[:160]
+
+
+def _response_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Protocol shape only; never persist raw model prose, images or bodies."""
+    raw = payload.get("response")
+    boxes = payload.get("boxes")
+    return {"parser_source": "structured_boxes" if isinstance(boxes, list) else "native_ref_box",
+            "structured_box_count": len(boxes) if isinstance(boxes, list) else None,
+            "raw_length": min(len(raw), 1_000_000) if isinstance(raw, str) else None,
+            "raw_ref_count": min(len(_REF_BOX.findall(raw)), 301) if isinstance(raw, str) else None,
+            "raw_empty_markers": min(sum(m.group(2).strip().lower() in _EMPTY for m in _REF_BOX.finditer(raw)), 301) if isinstance(raw, str) else None,
+            "coordinate_system": _public_label(payload.get("coordinate_system")),
+            "width": payload.get("width") if type(payload.get("width")) is int else None,
+            "height": payload.get("height") if type(payload.get("height")) is int else None}
+
+
+def _protocol_conflict(message: str) -> ProviderRequestError:
+    error = ProviderRequestError(message, code="MODEL_OUTPUT_PARSE_ERROR")
+    error.diagnostics = {"label_match_status": "protocol_conflict", "parser_source": "structured_and_native"}
+    return error
+
+
+def _label_failure(raw_label: str, *, allowed: Mapping[str, str], source: str,
+                   zero_box: bool | None = None) -> ProviderRequestError:
+    error = ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED",
+                                 solution="模型实际标签未匹配冻结标签或已配置别名；请查看返回标签及查询映射。")
+    error.diagnostics = {"returned_label": _public_label(raw_label), "label_match_status": "not_allowed",
+                         "parser_source": source, "allowed_labels": list(dict.fromkeys(allowed.values()))[:100],
+                         "zero_box": zero_box}
+    return error
 
 
 def normalize_label_queries(value: Mapping[str, str] | None) -> dict[str, str]:
@@ -51,11 +95,12 @@ def normalize_label_queries(value: Mapping[str, str] | None) -> dict[str, str]:
                 any(char in description for char in "\r\n\x00") or
                 re.search(r"<\|[^>]*\|>|</?c>|</?(?:ref|box)>", description, re.I)):
             raise ValueError("WeVisOne 定位描述不能为空、超过 300 字符或包含协议控制字符")
-        if description in descriptions or description in cleaned:
+        normalized_description = _label_key(description)
+        if not normalized_description or normalized_description in descriptions or normalized_description in {_label_key(code) for code in cleaned}:
             raise ValueError("WeVisOne 不同标签的定位描述不能重复或与其他标签 code 相同")
         cleaned[code] = description
-        descriptions.add(description)
-    if any(code in descriptions for code in cleaned):
+        descriptions.add(normalized_description)
+    if any(_label_key(code) in descriptions for code in cleaned):
         raise ValueError("WeVisOne 定位描述不能与其他标签 code 相同")
     return cleaned
 
@@ -97,21 +142,23 @@ def _native_boxes(raw: str, *, allowed_labels: Mapping[str, str] | None = None) 
         body = match.group(2).strip()
         if not label:
             raise ProviderRequestError("WeVisOne 原生目标框缺少标签", code="MODEL_OUTPUT_PARSE_ERROR")
-        if allowed_labels is not None and label not in allowed_labels:
-            raise ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED")
         # The live 4070 FastAPI returns boxes=[] with the raw model text
         # <ref>fire</ref><box>none</box> on an empty 128x128 sample.  This is
         # an explicit absence marker, not a four-coordinate detection.
         if body.lower() in _EMPTY:
-            empty_labels.add(label)
+            # An absent target has no class assignment. Its descriptive ref
+            # cannot invalidate an otherwise well-formed no-target response.
+            empty_labels.add(_label_key(label))
             continue
         groups = [part.strip() for part in body.split(",")]
         for part in groups:
             coords = _COORD.findall(part)
             if len(coords) != 4 or _COORD.sub("", part).strip():
                 raise ProviderRequestError("WeVisOne 原生目标框格式错误", code="MODEL_OUTPUT_PARSE_ERROR")
+            if allowed_labels is not None and _label_key(label) not in allowed_labels:
+                raise _label_failure(label, allowed=allowed_labels, source="native_ref_box", zero_box=False)
             boxes.append({"label": label, "coordinates": [int(c) for c in coords], "space": "normalized_1000"})
-            detected_labels.add(label)
+            detected_labels.add(_label_key(label))
     if empty_labels & detected_labels:
         raise ProviderRequestError("WeVisOne 同一标签同时声明有目标和无目标", code="MODEL_OUTPUT_PARSE_ERROR")
     return boxes
@@ -134,19 +181,23 @@ def _validate_image(image_bytes: bytes) -> tuple[int, int, str]:
 
 
 def _label_mapping(labels: Sequence[str], aliases: Mapping[str, Sequence[str]] | None) -> dict[str, str]:
-    allowed = {label: label for label in labels}
+    allowed: dict[str, str] = {}
+    def register(name: str, code: str) -> None:
+        key = _label_key(name)
+        if not key or (key in allowed and allowed[key] != code):
+            raise ProviderRequestError("WeVisOne 标签别名存在冲突或为空", code="MODEL_LABEL_AMBIGUOUS")
+        allowed[key] = code
+    for label in labels:
+        register(label, label)
     # Only the task's frozen aliases may map server labels to canonical codes.
     # Ambiguous aliases are rejected, not assigned to whichever label came first.
     for code, names in (aliases or {}).items():
-        if code not in allowed:
+        if _label_key(code) not in allowed:
             continue
         for alias in names:
-            alias = str(alias).strip()
-            if not alias:
+            if not str(alias).strip():
                 continue
-            if alias in allowed and allowed[alias] != code:
-                raise ProviderRequestError("WeVisOne 标签别名存在冲突", code="MODEL_LABEL_AMBIGUOUS")
-            allowed[alias] = code
+            register(str(alias), code)
     return allowed
 
 
@@ -171,7 +222,7 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
         if rows and isinstance(response_text, str):
             raw = response_text.strip()
             if raw.lower() in _EMPTY:
-                raise ProviderRequestError("WeVisOne 原始空目标响应与目标框矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
+                raise _protocol_conflict("WeVisOne 原始空目标响应与目标框矛盾")
             # Only inspect an explicitly empty native declaration here.  For
             # positive structured boxes, bbox_xyxy stays authoritative even
             # when a model's free-form raw text is not parseable.
@@ -179,11 +230,11 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
             if matches and not _REF_BOX.sub("", raw).strip(" \r\n\t,;。") and all(
                 match.group(2).strip().lower() in _EMPTY for match in matches
             ):
-                raise ProviderRequestError("WeVisOne 原始空目标响应与目标框矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
+                raise _protocol_conflict("WeVisOne 原始空目标响应与目标框矛盾")
         if not rows and response_text and response_text.strip().lower() not in _EMPTY:
             # Empty structured boxes must not hide raw detections or a parse failure.
-            if _native_boxes(response_text, allowed_labels=allowed):
-                raise ProviderRequestError("WeVisOne 原始响应与空框列表矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
+            if _native_boxes(response_text):
+                raise _protocol_conflict("WeVisOne 原始响应与空框列表矛盾")
     elif "detections" in payload and isinstance(payload["detections"], list):
         rows = payload["detections"]
     elif isinstance(response_text, str):
@@ -209,9 +260,9 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
         if not isinstance(row, dict):
             raise ProviderRequestError("WeVisOne 目标框必须为对象", code="MODEL_OUTPUT_PARSE_ERROR")
         label = str(row.get("label") or row.get("category") or row.get("name") or "").strip()
-        if label not in allowed:
-            raise ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED", solution="请检查目标标签，或先在已有标签映射中确认对应关系。")
-        label = allowed[label]
+        if _label_key(label) not in allowed:
+            raise _label_failure(label, allowed=allowed, source="structured_boxes" if "boxes" in payload else "native_ref_box")
+        label = allowed[_label_key(label)]
         coordinate_system = payload.get("coordinate_system")
         declared = {
             "xyxy_pixel": ("pixel", "xyxy"), "yxyx_pixel": ("pixel", "yxyx"),
@@ -320,7 +371,7 @@ class WeVisOneVisionProvider:
         if not labels or len(labels) > 100 or any(not isinstance(x, str) or not x.strip() for x in labels):
             raise ProviderRequestError("WeVisOne 需提供 1～100 个冻结目标标签", code="MODEL_LABEL_NOT_ALLOWED")
         queries = [self.label_queries.get(label, label) if operation == "detect" else label for label in labels]
-        if len(set(queries)) != len(queries):
+        if len({_label_key(query) for query in queries}) != len(queries):
             raise ProviderRequestError("WeVisOne 不同正式标签使用了相同的检测描述", code="MODEL_LABEL_AMBIGUOUS")
         data = {"image": f"data:{mime};base64," + base64.b64encode(image_bytes).decode("ascii"),
                 "query": queries}
@@ -347,9 +398,19 @@ class WeVisOneVisionProvider:
         try:
             payload = response.json()
         except ValueError:
-            raise ProviderRequestError("WeVisOne 接口未返回 JSON", code="MODEL_OUTPUT_PARSE_ERROR", **metadata) from None
+            error = ProviderRequestError("WeVisOne 接口未返回 JSON", code="MODEL_OUTPUT_PARSE_ERROR", **metadata)
+            error.stage = "response_parse"
+            error.diagnostics = {"provider": "wevisone_vl", "model": self.model,
+                                 "parser_source": "invalid_json", "label_match_status": "unavailable",
+                                 "response_summary": {"parser_source": "invalid_json"}}
+            raise error from None
         if not isinstance(payload, dict):
-            raise ProviderRequestError("WeVisOne 接口响应格式错误", code="MODEL_OUTPUT_PARSE_ERROR", **metadata)
+            error = ProviderRequestError("WeVisOne 接口响应格式错误", code="MODEL_OUTPUT_PARSE_ERROR", **metadata)
+            error.stage = "response_parse"
+            error.diagnostics = {"provider": "wevisone_vl", "model": self.model,
+                                 "parser_source": "invalid_json_shape", "label_match_status": "unavailable",
+                                 "response_summary": {"parser_source": "invalid_json_shape"}}
+            raise error
         payload = dict(payload)
         payload["_platform_response_metadata"] = response_metadata(response, payload, sensitive=(self.api_key, data["image"], data["image"].partition(",")[2]))
         return payload, round((time.perf_counter() - start) * 1000)
@@ -379,23 +440,37 @@ class WeVisOneVisionProvider:
         if not labels:
             raise ValueError("WeVisOne 专用检测需要本次任务明确允许的标签")
         width, height, _ = _validate_image(image_bytes)
-        payload, elapsed = self._request("detect", image_bytes=image_bytes, labels=labels, prompt=prompt)
         aliases = {code: list(names) for code, names in (label_aliases or {}).items()}
         for code in labels:
             description = self.label_queries.get(code)
             if description:
                 aliases.setdefault(code, []).append(description)
+        _label_mapping(labels, aliases)  # Fail before network I/O on ambiguous frozen bindings.
+        payload, elapsed = self._request("detect", image_bytes=image_bytes, labels=labels, prompt=prompt)
+        response_info = payload.get("_platform_response_metadata") or {}
+        evidence = {"provider": "wevisone_vl", "model": self.model,
+                    "allowed_labels": list(labels)[:32],
+                    "configured_queries": {code: _public_label(self.label_queries.get(code, code)) for code in labels[:32]},
+                    "parser_source": "structured_boxes" if "boxes" in payload else "native_ref_box",
+                    "response_summary": _response_summary(payload),
+                    "backend_instance_id": response_info.get("backend_instance_id") or "",
+                    "request_id": response_info.get("request_id") or ""}
         try:
             boxes = normalize_detection(payload, width=width, height=height, labels=labels,
                                         label_aliases=aliases, expected_contract=self.coordinate_contract)
         except ProviderRequestError as error:
-            for key, value in payload.get("_platform_response_metadata", {}).items():
+            error.diagnostics = {**evidence, **dict(getattr(error, "diagnostics", {}) or {})}
+            for key, value in response_info.items():
                 setattr(error, key, value)
-            error.status_code = 200
+            error.status_code = int(response_info.get("status_code") or 200)
             error.stage = "coordinate_validation" if "COORDINATE" in error.code else "response_parse"
             raise
         return {"text": json.dumps({"boxes": boxes}, ensure_ascii=False), "latency_ms": elapsed,
                 "provider": "wevisone_vl", "model": self.model, "api_protocol": "wevisone_native_v1",
+                "diagnostics": {"parser_source": evidence["parser_source"],
+                                "response_summary": evidence["response_summary"],
+                                "zero_box": not boxes,
+                                "label_match_status": "matched" if boxes else "no_targets"},
                 "native_descriptions_applied": bool(self.label_queries and any(code in self.label_queries for code in labels)),
                 **{k: v for k, v in payload.get("_platform_response_metadata", {}).items() if k != "server_error_code"}}
 

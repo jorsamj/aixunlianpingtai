@@ -142,6 +142,10 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     diagnostics.update({key: response[key] for key in (
         "request_id", "backend_instance_id", "actual_model", "status_code",
     ) if response.get(key) not in (None, "")})
+    if dedicated and isinstance(response.get("diagnostics"), dict):
+        # The provider's bounded, shape-only wire evidence is kept separate
+        # from the canonical geometry diagnostics. Never persist raw images.
+        diagnostics["wevisone"] = response["diagnostics"]
     try:
         parsed = auto_label_core.parse_candidate_response(
             text,
@@ -362,6 +366,12 @@ def run_ai_annotation(
     def produce_candidate(image, previous=None):
         image_started = time.monotonic()
         next_attempt=int((previous or {}).get("attempt_count") or 0)+1
+        prior_errors = list((previous or {}).get("error_history") or [])[-4:]
+        if previous and previous.get("status") == "failed":
+            prior_errors.append({key: previous.get(key) for key in (
+                "attempt_count", "error_code", "error_stage", "error", "http_status",
+                "request_id", "request_trace_id", "returned_label", "label_match_status",
+            ) if previous.get(key) not in (None, "")})
         try:
             if mining_mode and annotate is annotate_one:
                 from .hard_sample_mining import infer_with_frozen_yolo
@@ -380,6 +390,11 @@ def run_ai_annotation(
                     "gt_comparison", "root_cause_confirmed",
                 ) if generated.get(key) is not None and generated.get(key) != ""},
             }
+            if prior_errors:
+                item["error_history"] = prior_errors[-5:]
+            execution = (generated.get("diagnostics") or {}).get("execution") or {}
+            if execution.get("platform_request_id"):
+                item["request_trace_id"] = str(execution["platform_request_id"])[:128]
             failure_code = ""
         except (InterruptedError, ExecutionFencedError):
             raise
@@ -394,6 +409,13 @@ def run_ai_annotation(
                 "status": "failed", "boxes": [], "error": _public_error(error),
                 **_failure_evidence(error, attempt=next_attempt),
             }
+            frozen_model = runtime_request.get("model_config_snapshot") or runtime_request.get("_provider_config") or {}
+            if isinstance(frozen_model, dict):
+                item.setdefault("model", str(frozen_model.get("model_name") or "")[:160])
+                item.setdefault("provider", str(frozen_model.get("provider_adapter") or frozen_model.get("provider_type") or "")[:80])
+            item["task_id"] = str(context.task.task_id)
+            if prior_errors:
+                item["error_history"] = prior_errors[-5:]
             if isinstance(getattr(error, "diagnostics", None), dict):
                 item["diagnostics"] = error.diagnostics
             failure_code = str(getattr(error, "code", "") or type(error).__name__)
@@ -587,11 +609,31 @@ def _failure_evidence(error: Exception, *, attempt: int) -> dict[str, Any]:
     def safe(value):
         return _public_error(RuntimeError(str(value))) if value else ""
     status = getattr(error, "status_code", 0)
-    return {"error_code": code, "error_stage": safe(stage),
+    evidence = getattr(error, "diagnostics", {})
+    evidence = evidence if isinstance(evidence, dict) else {}
+    execution = evidence.get("execution") if isinstance(evidence.get("execution"), dict) else {}
+    result = {"error_code": code, "error_stage": safe(stage),
             "http_status": int(status) if isinstance(status, int) and 100 <= status <= 599 else None,
             "request_id": safe(getattr(error, "request_id", ""))[:128],
+            "request_trace_id": safe(execution.get("platform_request_id") or evidence.get("request_trace_id"))[:128],
+            "backend_instance_id": safe(getattr(error, "backend_instance_id", "") or evidence.get("backend_instance_id"))[:128],
             "retry_suggestion": safe(getattr(error, "solution", "检查图片来源和模型配置后重试失败图片。")),
             "attempt_count": max(1, int(attempt))}
+    for field in ("provider", "model", "returned_label", "label_match_status", "parser_source"):
+        if field in evidence:
+            result[field] = safe(evidence[field])[:160]
+    if "zero_box" in evidence:
+        result["zero_box"] = evidence["zero_box"] if isinstance(evidence["zero_box"], bool) else None
+    if isinstance(evidence.get("allowed_labels"), list):
+        result["allowed_labels"] = [safe(label)[:80] for label in evidence["allowed_labels"][:32]]
+    if isinstance(evidence.get("configured_queries"), dict):
+        result["configured_queries"] = {safe(code)[:80]: safe(query)[:160] for code, query in list(evidence["configured_queries"].items())[:32]}
+    if isinstance(evidence.get("response_summary"), dict):
+        # Shape-only, fixed fields. Never copy a raw response into a candidate.
+        result["response_summary"] = {field: evidence["response_summary"].get(field) for field in (
+            "parser_source", "structured_box_count", "raw_length", "raw_ref_count", "raw_empty_markers",
+            "coordinate_system", "width", "height") if field in evidence["response_summary"]}
+    return result
 
 
 def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:

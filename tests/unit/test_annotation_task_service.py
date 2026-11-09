@@ -263,8 +263,73 @@ def test_explicit_retry_reprocesses_only_failed_rows_and_preserves_successful_ca
     assert calls == ["one", "two", "two"]
     assert store.get("one") == original
     assert store.get("two")["status"] == "empty"
+    assert store.get("two")["error_history"][0]["error"] == "single image failed"
     assert store.statistics()["failed"] == 0
     assert store.statistics()["gt_committed"] == 0
+
+
+def test_wevisone_failed_image_keeps_real_label_shape_and_internal_trace_across_retry(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+
+    def fail_one(_req, image):
+        if image["id"] == "one":
+            return {"boxes": [{"label": "fire", "id": "preserved-box"}]}
+        error = ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED", status_code=200)
+        error.stage = "response_parse"
+        error.diagnostics = {"provider": "wevisone_vl", "model": "wevisone-vl-2b",
+                             "returned_label": "standing human", "allowed_labels": ["fire"],
+                             "configured_queries": {"fire": "A visible flame"},
+                             "label_match_status": "not_allowed", "parser_source": "structured_boxes",
+                             "zero_box": False, "response_summary": {"structured_box_count": 1},
+                             "backend_instance_id": "gpu0"}
+        raise error
+
+    assert run_ai_annotation(context, annotate=fail_one).status is TaskStatus.AWAITING_CONFIRMATION
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    good_before = store.get("one")
+    bad = store.get("two")
+    assert bad["http_status"] == 200 and bad["request_id"] == ""
+    assert len(bad["request_trace_id"]) == 32 and bad["returned_label"] == "standing human"
+    assert bad["allowed_labels"] == ["fire"] and bad["response_summary"] == {"structured_box_count": 1}
+    assert bad["backend_instance_id"] == "gpu0"
+    assert bad["diagnostics"]["execution"]["platform_request_id"] == bad["request_trace_id"]
+
+    context.task = replace(context.task, attempt=2)
+    context.repository.task = context.task
+    assert run_ai_annotation(context, annotate=lambda _req, _image: {"boxes": []}).status is TaskStatus.AWAITING_CONFIRMATION
+    assert store.get("one") == good_before
+    after = store.get("two")
+    assert after["status"] == "empty" and after["attempt_count"] == 2
+    assert after["error_history"][0]["returned_label"] == "standing human"
+    assert after["error_history"][0]["request_trace_id"] == bad["request_trace_id"]
+
+
+def test_second_failed_retry_retains_both_error_codes_and_never_replays_success(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    calls = []
+    def first(_req, image):
+        calls.append(image["id"])
+        if image["id"] == "two":
+            raise ProviderRequestError("unmapped", code="MODEL_LABEL_NOT_ALLOWED", status_code=200)
+        return {"boxes": [{"label": "fire"}]}
+    run_ai_annotation(context, annotate=first)
+    context.task = replace(context.task, attempt=2)
+    context.repository.task = context.task
+    def retry(_req, image):
+        calls.append("retry:" + image["id"])
+        raise ProviderRequestError("broken geometry", code="MODEL_COORDINATE_INVALID", status_code=200)
+    run_ai_annotation(context, annotate=retry)
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert calls == ["one", "two", "retry:two"]
+    failed = store.get("two")
+    assert failed["status"] == "failed" and failed["attempt_count"] == 2
+    assert failed["error_code"] == "MODEL_COORDINATE_INVALID"
+    assert [row["error_code"] for row in failed["error_history"]] == ["MODEL_LABEL_NOT_ALLOWED"]
+    assert store.get("one")["status"] == "success"
 
 
 def test_service_outage_stops_batch_without_discarding_completed_candidate(tmp_path, monkeypatch):
