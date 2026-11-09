@@ -134,7 +134,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   expect(projectId).toBeTruthy();
   const encoded = encodeURIComponent(projectId);
 
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`, async route => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -148,7 +148,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
       }]}),
     });
   });
-  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+  await page.route(`**/api/projects/${encoded}/jobs?summary_only=true`, async route => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -164,8 +164,8 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
 
   const algorithmRequests = apiRequests.filter(row => row.includes(`/api/v12/projects/${projectId}/algorithms`));
   const jobRequests = apiRequests.filter(row => row.includes(`/api/projects/${projectId}/jobs`));
-  expect(algorithmRequests).toEqual([`GET /api/v12/projects/${projectId}/algorithms`]);
-  expect(jobRequests).toEqual([`GET /api/projects/${projectId}/jobs`]);
+  expect(algorithmRequests).toEqual([`GET /api/v12/projects/${projectId}/algorithms?summary_only=true`]);
+  expect(jobRequests).toEqual([`GET /api/projects/${projectId}/jobs?summary_only=true`]);
   expect(apiRequests.some(row => row.includes('/bootstrap/snapshot'))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
@@ -232,7 +232,7 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-version-delete/versions/version-delete-1`, async route => {
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
   });
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`, async route => {
     if (route.request().method() !== 'GET') return route.continue();
     await route.fulfill({
       status: 200,
@@ -247,7 +247,7 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
       }]}),
     });
   });
-  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+  await page.route(`**/api/projects/${encoded}/jobs?summary_only=true`, async route => {
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify([])});
   });
 
@@ -285,8 +285,8 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await expect(page.locator('#alg412List')).not.toContainText('20260912100000');
 
   const deleteRequest = `DELETE /api/v12/projects/${projectId}/algorithms/algo-version-delete/versions/version-delete-1`;
-  const algorithmRequest = `GET /api/v12/projects/${projectId}/algorithms`;
-  const jobRequest = `GET /api/projects/${projectId}/jobs`;
+  const algorithmRequest = `GET /api/v12/projects/${projectId}/algorithms?summary_only=true`;
+  const jobRequest = `GET /api/projects/${projectId}/jobs?summary_only=true`;
   expect(requests.filter(row => row === deleteRequest)).toEqual([deleteRequest]);
   expect(requests.filter(row => row === algorithmRequest)).toEqual([algorithmRequest]);
   expect(requests.filter(row => row === jobRequest)).toEqual([jobRequest]);
@@ -515,13 +515,13 @@ test('algorithm version exposes persisted training lineage without job refetch',
     }],
   };
 
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`, async route => {
     await route.fulfill({
       status:200,contentType:'application/json',
       body:JSON.stringify({items:[lineageAlgorithm]}),
     });
   });
-  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+  await page.route(`**/api/projects/${encoded}/jobs?summary_only=true`, async route => {
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([])});
   });
   await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/supplement-data-candidates`, async route => {

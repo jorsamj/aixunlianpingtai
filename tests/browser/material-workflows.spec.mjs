@@ -557,6 +557,7 @@ test('material filters come from the label library and unchecked data exposes in
   await expect(page.locator('#materialBulk549').getByRole('button',{name:'AI预标注',exact:true})).toBeVisible();
   await expect(page.locator('#materialBulk549').getByRole('button',{name:'质量检查',exact:true})).toBeVisible();
   await page.getByRole('button', {name: /已处理/}).click();
+  await page.locator('details.material-filters549 > summary').click();
   const labelSearch=page.getByRole('textbox',{name:'搜索素材标签'});
   await labelSearch.fill('person');
   await expect(page.locator('.data426-chips [data-label-code="person"]')).toBeVisible();

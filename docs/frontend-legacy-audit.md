@@ -1494,3 +1494,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 
 > **2026-11-08 算法列表筛选越界（候选）**：沿用 `AlgorithmListRuntime` 单一渲染 Owner，样式按内容容器宽度布局，分类弹层不再依赖固定 560px 最小宽度；手机显示当前分类列，无新增 classic override。Node 1437/1437，Chrome/准确 SHA CI/现场 UAT 待验。详见 [专项](ALGORITHM_LIST_FILTER_OVERFLOW_2026_11_08.md)。
 
+> **2026-11-09｜E2E 旧夹具对齐，非 classic Owner 恢复**：5 项 Chrome CI 红灯中，算法列表查询已是 `?summary_only=true`，素材标签入口随新版筛选 `<details>` 折叠，训练 Picker 已删除重复标签计数节点。仅修改测试，绝不为旧选择器恢复 classic wrapper/旧 DOM 或额外全量 GET。详见 [专项](CI_CHROME_CONTRACT_ALIGNMENT_2026_11_09.md)；新 SHA CI 待核。
+

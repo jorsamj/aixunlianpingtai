@@ -1256,3 +1256,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 
 > **2026-11-08 算法列表筛选越界（候选）**：唯一 `AlgorithmListRuntime` 不变，筛选布局改用容器宽度、自适应换列与浮层内边界；品目当前可视列仍由该 Owner 控制。Node 1437/1437，通过后续 Chrome/CI/现场验收确认。详见 [专项](ALGORITHM_LIST_FILTER_OVERFLOW_2026_11_08.md)。
 
+> **2026-11-09｜Owner 不变的 Chrome 合同对齐**：`AlgorithmListRuntime` 正式摘要 GET、`TrainingSubmitRuntime` 创建后复用列表 Owner、`MaterialPaginationRuntime` 为折叠标签面板装饰搜索、`TrainingMaterialPickerRuntime` 按需角色筛选；旧 Playwright mock/选择器已定向更新，未增加任何页面、缓存、Task、GT Owner。精确新 SHA CI 待验。详见 [专项](CI_CHROME_CONTRACT_ALIGNMENT_2026_11_09.md)。
+

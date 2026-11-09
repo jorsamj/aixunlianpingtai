@@ -535,7 +535,9 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
     }] : [];
     await route.fulfill({response, json: snapshot});
   });
-  await page.route('**/api/projects/*/jobs', async route => {
+  await page.route('**/api/projects/*/jobs*', async route => {
+    if (new URL(route.request().url()).pathname !== `/api/projects/${project.id}/jobs`)
+      return route.continue();
     jobListReads += 1;
     await route.fulfill({
       status: 200,

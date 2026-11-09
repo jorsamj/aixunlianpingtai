@@ -344,7 +344,7 @@ test('versioned training locks the latest version and projects the current rando
     training_status: 'SUCCEEDED', artifact_verified: true, trainable: true,
     finished_at: '2026-10-08T08:00:00Z',
   };
-  await page.route(`**/api/v12/projects/${project.id}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${project.id}/algorithms?summary_only=true`, async route => {
     if (route.request().method() !== 'GET') return route.continue();
     const response = await route.fetch();
     expect(response.ok()).toBeTruthy();
