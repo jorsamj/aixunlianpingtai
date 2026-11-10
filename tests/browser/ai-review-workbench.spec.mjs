@@ -33,7 +33,7 @@ test('有歧义筛选及同位置批量保留一个标签，确认直接入库',
    {image_id:'clean',filename:'无歧义.jpg',url:img,width:1280,height:960,status:'success',boxes:[person]}
  ];
  const writes=[];
- await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-test/candidates**',async route=>{
+ await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-test/**',async route=>{
    const url=new URL(route.request().url()),method=route.request().method();
    if(method==='POST'&&url.pathname.endsWith('/decisions')){
      const payload=route.request().postDataJSON();writes.push(...payload.decisions);
@@ -78,7 +78,7 @@ test('歧义自动模式可填 IoU 阈值，优先置信度且无分数按顺序
    {image_id:'no-score',filename:'无分数.jpg',url:img,width:1280,height:960,status:'success',manual_review_required:true,boxes:[box('person',0,0,100,100),box('tangzhe',15,0,115,100)]}
  ];
  const writes=[];
- await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-auto/candidates**',route=>{
+ await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-auto/**',route=>{
    const url=new URL(route.request().url());
    if(route.request().method()==='POST'&&url.pathname.endsWith('/decisions')){
      const payload=route.request().postDataJSON();
