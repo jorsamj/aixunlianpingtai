@@ -9275,7 +9275,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const ownerPage=String(state.page||''),project=String(pid());
     const current=()=>state.ai60Review===review&&!review.closed&&String(state.page||'')===ownerPage&&String(pid())===project&&root.isConnected;
     try{
-      const [response,module]=await Promise.all([api(`${taskApi(review.id)}/candidates/${encodeURIComponent(id)}/diagnostics`),import('/static/modules/annotation-diagnostics.js?v=42.24.553')]);
+      const [response,module]=await Promise.all([api(`${taskApi(review.id)}/candidates/${encodeURIComponent(id)}/diagnostics`),import('/static/modules/annotation-diagnostics.js?v=42.24.571')]);
       if(!current())return;
       const image=imageById(id)||item;
       module.mountAnnotationDiagnostics(root,response.diagnostics||{status:response.status||'UNVERIFIED_CONTRACT'},{imageUrl:item.url||image.url||'',finalBoxes:response.diagnostics?.final_boxes||item.boxes||[]});
