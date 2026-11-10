@@ -369,7 +369,10 @@ test('1366x768 AI review keeps the scrollable candidates, editor, and real foote
   expect(await page.locator('.ai66-review-grid').evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
   await cards.last().locator('.ai-candidate-stage').click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'拒绝此图'}).click();
   await expect(cards.last()).toHaveClass(/rejected/);
-  await expect(page.locator('#ai60ApproveRemaining')).toBeInViewport();
+  await expect(page.locator('#ai60ApproveSelected')).toBeInViewport();
+  await page.locator('.ai-review-more summary').click();
+  await expect(page.locator('#ai60ApproveRemaining')).toBeVisible();
+  await page.locator('.ai-review-more summary').click();
   await page.screenshot({path:testInfo.outputPath('ai-review-1366x768-scrolled.png'),fullPage:false});
   await cards.first().locator('.ai-candidate-stage').click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'编辑候选框'}).click();
   await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
@@ -408,7 +411,7 @@ test('AI review timeout resolves the original operation receipt without a second
     return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'审核提交回执暂时不可用'})});
   });
   await page.evaluate(id=>window.reviewAiLabel427(id),taskId);
-  await page.locator('.ai-review-more summary').click();await page.getByRole('button',{name:'全部拒绝'}).click();
+  await page.locator('.ai-review-more summary').click();page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'全部拒绝'}).click();
   await expect(page.locator('#ai60ReviewReceiptLookup')).toBeVisible();
   expect(posts).toBe(1);
   await page.locator('#ai60ReviewReceiptLookup').click();

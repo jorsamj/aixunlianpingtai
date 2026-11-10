@@ -62,7 +62,7 @@ test('AI official candidate editing saves a review draft without GT writes and s
   await edit.getByRole('button',{name:'保存候选修改',exact:true}).click();await expect(edit.locator('#ai60EditStatus')).toContainText('已保存');await edit.getByRole('button',{name:'返回列表'}).click();await expect(edit).toHaveCount(0);
   expect(gtPosts).toBe(0);expect((await (await request.get(fx.url)).json()).boxes).toEqual([]);
   await expect(review.getByText('已人工修改',{exact:true})).toBeVisible();
-  await review.locator('.ai-review-more summary').click();await review.getByRole('button',{name:'采用已选择',exact:true}).click();await expect.poll(()=>!!decisionBody).toBe(true);
+  await review.locator('.ai-review-more summary').click();page.once('dialog',dialog=>dialog.accept());await review.getByRole('button',{name:'结束整批并拒绝其余未决候选',exact:true}).click();await expect.poll(()=>!!decisionBody).toBe(true);
   expect(decisionBody.commit).toBe(true);expect(decisionBody.reject_unmentioned).toBe(true);
   expect(decisionBody.decisions[0].image_id).toBe(fx.image.id);expect(decisionBody.decisions[0].accepted).toBe(true);
   expect(decisionBody.decisions[0].boxes).toHaveLength(2);expect(decisionBody.decisions[0].boxes[0].id).toBe('candidate-old');

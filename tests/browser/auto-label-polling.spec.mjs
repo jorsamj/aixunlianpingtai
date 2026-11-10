@@ -322,7 +322,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   candidateRace=true;
   await page.evaluate(() => { void window.aiReviewPage60(-1); });
-  await review.getByRole('button',{name:/审核剩余/}).click();
+  await review.locator('.ai-review-more summary').click();page.once('dialog',dialog=>dialog.accept());await review.getByRole('button',{name:/通过剩余全部/}).click();
   await expect.poll(()=>decisionsBody,{timeout:5000}).not.toBeNull();
   await expect(review).toBeHidden();
   await page.waitForTimeout(320);
