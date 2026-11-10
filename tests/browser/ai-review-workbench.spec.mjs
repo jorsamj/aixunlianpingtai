@@ -8,7 +8,7 @@ for(const width of [1920,1366,768])test(`审核工作台三栏与批选 ${width}
  await page.evaluate(()=>window.reviewAiLabel427('workbench-test'));await expect(page.locator('.ai66-candidate-card')).toHaveCount(6);
  await page.getByRole('button',{name:'切换列表'}).click();await expect(page.locator('#ai60ReviewGrid')).toHaveClass(/ai-review-list/);await page.getByRole('button',{name:'切换网格'}).click();const first=page.locator('.ai66-candidate-card').first();const identity=await first.evaluate(node=>{node.dataset.identity='stable';return node.dataset.identity});await first.locator('input[type=checkbox]').check();await expect(page.locator('#ai60SelectionCount')).toContainText('选中 1 张');expect(await first.getAttribute('data-identity')).toBe(identity);
  await first.locator('.ai-candidate-stage').click();if(width>768)await expect(page.locator('#ai60ReviewInspector')).toContainText('测试图片-0');
- await expect(page.locator('#ai60ApproveRemaining')).toHaveText('审核剩余 6 张');expect(await page.locator('.ai-review-page-shell').evaluate(node=>node.scrollWidth<=node.clientWidth+2)).toBe(true);
+ await expect(page.locator('#ai60ApproveRemaining')).toHaveText('通过剩余全部 6 张（整批结束）');expect(await page.locator('.ai-review-page-shell').evaluate(node=>node.scrollWidth<=node.clientWidth+2)).toBe(true);
  await first.locator('input[type=checkbox]').focus();await page.keyboard.press('Space');await expect(first.locator('input[type=checkbox]')).not.toBeChecked();await page.keyboard.press('Space');await expect(first.locator('input[type=checkbox]')).toBeChecked();if(width===768){await first.locator('input[type=checkbox]').tap();await expect(first.locator('input[type=checkbox]')).not.toBeChecked();await first.locator('input[type=checkbox]').tap();await expect(first.locator('input[type=checkbox]')).toBeChecked()}await page.emulateMedia({reducedMotion:'reduce'});await expect(first).toHaveCSS('transition-duration','0s');await page.screenshot({path:info.outputPath(`review-${width}.png`),fullPage:true});
 });
 test('两万候选任务只渲染当前页并记录交互基线',async({page},info)=>{
@@ -35,9 +35,11 @@ test('有歧义筛选及同位置批量保留一个标签，仅保存草稿',asy
  const writes=[];
  await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-test/candidates**',async route=>{
    const url=new URL(route.request().url()),method=route.request().method();
-   if(method==='PUT'&&url.pathname.endsWith('/draft')){
-     const payload=route.request().postDataJSON();writes.push(payload);
-     return route.fulfill({json:{revision:1,review_revision:2,item:{...items[0],boxes:payload.boxes,draft_revision:1},summary:{ambiguous:2,with_boxes:1}}});
+   if(method==='POST'&&url.pathname.endsWith('/drafts-batch')){
+     const payload=route.request().postDataJSON();writes.push(...payload.items);
+     return route.fulfill({json:{items:payload.items.map(row=>({image_id:row.image_id,ok:true,
+       revision:1,review_revision:2,item:{...items.find(item=>item.image_id===row.image_id),
+         boxes:row.boxes,draft_revision:1,draft:{auto_resolution:row.auto_resolution}}}))}});
    }
    const filtered=url.searchParams.get('filter')==='ambiguous'?items.slice(0,2)
      :url.searchParams.get('filter')==='clean_boxes'?items.slice(2):items;
@@ -54,7 +56,7 @@ test('有歧义筛选及同位置批量保留一个标签，仅保存草稿',asy
  await expect(page.locator('.ai66-candidate-card')).toHaveCount(2);
  await page.locator('#ai60AmbiguousKeep').selectOption('person');
  await page.getByRole('button',{name:'选择本页'}).click();
- await page.getByRole('button',{name:'预检本页勾选图片'}).click();
+ await page.getByRole('button',{name:'预检全部已选图片'}).click();
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 1 / 勾选 2 张');
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('跳过 1 张');
  page.once('dialog',dialog=>dialog.accept());
@@ -78,12 +80,15 @@ test('歧义自动模式可填 IoU 阈值，优先置信度且无分数不自动
  const writes=[];
  await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-auto/candidates**',route=>{
    const url=new URL(route.request().url());
-   if(route.request().method()==='PUT'&&url.pathname.endsWith('/draft')){
-     const body=route.request().postDataJSON(),id=decodeURIComponent(url.pathname.split('/').at(-2));
-     writes.push({id,body});
-     const index=items.findIndex(row=>row.image_id===id);
-     items[index]={...items[index],boxes:body.boxes,draft_revision:1,draft:{auto_resolution:true}};
-     return route.fulfill({json:{revision:1,review_revision:2,item:items[index],summary:{ambiguous:2}}});
+   if(route.request().method()==='POST'&&url.pathname.endsWith('/drafts-batch')){
+     const payload=route.request().postDataJSON(),results=[];
+     for(const body of payload.items){
+       const id=body.image_id,index=items.findIndex(row=>row.image_id===id);
+       writes.push({id,body});
+       items[index]={...items[index],boxes:body.boxes,draft_revision:1,draft:{auto_resolution:true}};
+       results.push({image_id:id,ok:true,revision:1,review_revision:2,item:items[index]});
+     }
+     return route.fulfill({json:{items:results}});
    }
    return route.fulfill({json:{total:2,review_revision:1,summary:{ambiguous:2},items}});
  });
@@ -91,11 +96,11 @@ test('歧义自动模式可填 IoU 阈值，优先置信度且无分数不自动
  await page.getByRole('button',{name:/有歧义/}).click();
  await page.locator('#ai60AmbiguousMode').selectOption('auto');
  await page.getByRole('button',{name:'选择本页'}).click();
- await page.getByRole('button',{name:'预检本页勾选图片'}).click();
+ await page.getByRole('button',{name:'预检全部已选图片'}).click();
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 1 / 勾选 2 张');
  await page.locator('#ai60AmbiguousThreshold').fill('0.70');
  await page.locator('#ai60AmbiguousThreshold').blur();
- await page.getByRole('button',{name:'预检本页勾选图片'}).click();
+ await page.getByRole('button',{name:'预检全部已选图片'}).click();
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 2 / 勾选 2 张');
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('1 组无可信置信度');
  page.once('dialog',dialog=>dialog.accept());
@@ -106,4 +111,103 @@ test('歧义自动模式可填 IoU 阈值，优先置信度且无分数不自动
  expect(writes.find(row=>row.id==='no-score').body.boxes.map(b=>b.label)).toEqual(['person']);
  await expect.poll(()=>page.evaluate(()=>!state.ai60Review.decisions.has('confident')&&!state.ai60Review.decisions.has('no-score'))).toBe(true);
  await expect(page.locator('.ai66-candidate-card').first()).toContainText('已自动消歧并保存草稿');
+});
+
+
+test('有歧义全选跨页冻结范围，预检与批量草稿覆盖所有筛选图片且勾选不重绘卡片',async({page})=>{
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
+ const img='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"/>');
+ const rows=Array.from({length:30},(_,i)=>({image_id:'amb-cross-'+i,filename:'歧义-'+i+'.jpg',
+   url:img,width:640,height:480,status:'success',manual_review_required:true,
+   boxes:[{label:'person',x1:20,y1:30,x2:100,y2:150},{label:'tangzhe',x1:20,y1:30,x2:100,y2:150}]}));
+ const writes=[],reads=[];
+ await page.route('**/api/v60/projects/*/annotation-tasks/cross-page-review/**',route=>{
+   const u=new URL(route.request().url()),path=u.pathname,method=route.request().method();
+   if(method==='POST'&&path.endsWith('/review-selection'))
+     return route.fulfill({json:{selection_id:'a'.repeat(32),count:30,total:30,filter:'ambiguous',review_revision:1}});
+   if(method==='GET'&&path.endsWith('/review-selection/'+'a'.repeat(32)+'/candidates')){
+     const cursor=Number(u.searchParams.get('cursor')||0);reads.push(cursor);
+     return route.fulfill({json:{items:rows.slice(cursor,cursor+20),total:30,filter:'ambiguous',
+       review_revision:1,next_cursor:cursor+20<30?String(cursor+20):null}});
+   }
+   if(method==='POST'&&path.endsWith('/candidates/drafts-batch')){
+     const batch=route.request().postDataJSON().items;writes.push(...batch);
+     return route.fulfill({json:{items:batch.map(row=>({image_id:row.image_id,ok:true,
+       revision:1,review_revision:1+writes.length,item:{...rows.find(x=>x.image_id===row.image_id),
+         boxes:row.boxes,draft_revision:1,draft:{auto_resolution:false}}}))}});
+   }
+   if(method==='GET'&&path.endsWith('/candidates')){
+     const offset=Number(u.searchParams.get('cursor')||0);
+     return route.fulfill({json:{items:rows.slice(offset,offset+24),total:30,
+       next_cursor:offset+24<30?String(offset+24):null,summary:{ambiguous:30,remaining_reviewable:30},
+       review_revision:1}});
+   }
+   return route.abort();
+ });
+ await page.evaluate(()=>{
+   state.labels=[...(state.labels||[]).filter(row=>!['person','tangzhe'].includes(row.code)),
+     ...['person','tangzhe'].map((code,class_id)=>({code,class_id,status:'active'}))];
+   return window.reviewAiLabel427('cross-page-review');
+ });
+ await page.getByRole('button',{name:/有歧义/}).click();
+ await expect(page.locator('.ai66-candidate-card')).toHaveCount(24);
+ const first=page.locator('.ai66-candidate-card').first();
+ await first.evaluate(node=>node.dataset.preserveIdentity='yes');
+ await first.locator('.ai-review-select').check();
+ await expect(first).toHaveAttribute('data-preserve-identity','yes');
+ await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+ await expect(page.locator('#ai60SelectionCount')).toContainText('选中 30 张');
+ await expect(first).toHaveAttribute('data-preserve-identity','yes');
+ await page.locator('#ai60AmbiguousKeep').selectOption('person');
+ await page.getByRole('button',{name:'预检全部已选图片'}).click();
+ await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 30 / 勾选 30 张');
+ expect(reads).toEqual([0,20]);
+ page.once('dialog',dialog=>dialog.accept());
+ await page.getByRole('button',{name:'确认处理并保存草稿'}).click();
+ await expect.poll(()=>writes.length).toBe(30);
+ expect(new Set(writes.map(row=>row.image_id)).size).toBe(30);
+ expect(writes.every(row=>row.boxes.length===1&&row.boxes[0].label==='person')).toBe(true);
+ await expect(page.locator('.ai-review-ambiguity-feedback')).toContainText('草稿已保存 30 张');
+});
+
+test('无歧义跨页选中通过只保存明确选择，不接受其他筛选结果且不提交GT',async({page})=>{
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
+ const img='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"/>');
+ const clean=Array.from({length:3},(_,i)=>({image_id:'clean-scoped-'+i,filename:'无歧义-'+i+'.jpg',
+   url:img,width:640,height:480,status:'success',manual_review_required:false,
+   boxes:[{label:'person',x1:10,y1:15,x2:100,y2:160}]}));
+ const ambiguous={image_id:'amb-not-selected',filename:'有歧义.jpg',url:img,width:640,height:480,
+   status:'success',manual_review_required:true,boxes:[{label:'person',x1:10,y1:10,x2:50,y2:50},
+     {label:'tangzhe',x1:10,y1:10,x2:50,y2:50}]};
+ const decisions=[];
+ await page.route('**/api/v60/projects/*/annotation-tasks/clean-scoped-review/**',route=>{
+   const u=new URL(route.request().url()),path=u.pathname,method=route.request().method();
+   if(method==='POST'&&path.endsWith('/review-selection'))
+     return route.fulfill({json:{selection_id:'b'.repeat(32),count:3,total:3,filter:'clean_boxes',review_revision:1}});
+   if(method==='GET'&&path.endsWith('/review-selection/'+'b'.repeat(32)+'/candidates'))
+     return route.fulfill({json:{items:clean,filter:'clean_boxes',review_revision:1,total:3,next_cursor:null}});
+   if(method==='POST'&&path.endsWith('/decisions')){
+     const body=route.request().postDataJSON();decisions.push(body);
+     return route.fulfill({json:{review_revision:2,summary:{remaining_reviewable:1},task:{status:'AWAITING_CONFIRMATION'}}});
+   }
+   if(method==='GET'&&path.endsWith('/candidates')){
+     const filter=u.searchParams.get('filter'),items=filter==='clean_boxes'?clean:[...clean,ambiguous];
+     return route.fulfill({json:{items,total:items.length,review_revision:decisions.length?2:1,
+       summary:{clean_boxes:3,ambiguous:1,remaining_reviewable:decisions.length?1:4}}});
+   }
+   return route.abort();
+ });
+ await page.evaluate(()=>window.reviewAiLabel427('clean-scoped-review'));
+ await page.getByRole('button',{name:/有框 · 无歧义/}).click();
+ await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+ await expect(page.locator('#ai60ApproveSelected')).toHaveText('通过已选 3 张');
+ page.once('dialog',dialog=>dialog.accept());
+ await page.locator('#ai60ApproveSelected').click();
+ await expect.poll(()=>decisions.length).toBe(1);
+ expect(decisions[0].decisions.map(row=>row.image_id)).toEqual(clean.map(row=>row.image_id));
+ expect(decisions[0].commit).toBe(false);
+ expect(decisions[0].accept_unmentioned).toBe(false);
+ expect(decisions[0].reject_unmentioned).toBe(false);
+ expect(decisions[0].decisions.some(row=>row.image_id===ambiguous.image_id)).toBe(false);
+ await expect(page.locator('#ai60SelectionStatus')).toContainText('未选中图片保持原状态');
 });

@@ -26278,6 +26278,45 @@ def save_annotation_review_draft(project_id: str, task_id: str, image_id: str, p
         return {**saved, 'item':store.get(image_id), 'review_revision':store.review_revision(), 'summary':{**store.summary(), **store.review_counts()}, 'label_summary':store.label_summary()}
 
 
+
+class AnnotationDraftBatchEntry(AnnotationDraftReq):
+    image_id: str
+
+
+class AnnotationDraftBatchReq(BaseModel):
+    items: List[AnnotationDraftBatchEntry] = Field(min_length=1, max_length=25)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/drafts-batch")
+def save_annotation_review_drafts_batch(
+    project_id: str, task_id: str, payload: AnnotationDraftBatchReq, request: Request,
+):
+    """Batch transport only: reuse the original one-image lock, source and CAS contract."""
+    _require_annotation_review_task(project_id, task_id)
+    image_ids = [str(row.image_id) for row in payload.items]
+    if len(set(image_ids)) != len(image_ids):
+        raise HTTPException(422, detail="同一次批量草稿不能包含重复图片")
+    results = []
+    for entry in payload.items:
+        try:
+            draft = AnnotationDraftReq(
+                boxes=entry.boxes, revision=entry.revision, request_id=entry.request_id,
+                source_content_sha256=entry.source_content_sha256,
+                auto_resolution=entry.auto_resolution,
+            )
+            saved = save_annotation_review_draft(project_id, task_id, entry.image_id, draft, request)
+            results.append({
+                "image_id": entry.image_id, "ok": True, "revision": saved["revision"],
+                "review_revision": saved["review_revision"], "item": saved["item"],
+            })
+        except HTTPException as error:
+            results.append({
+                "image_id": entry.image_id, "ok": False,
+                "error": error.detail, "status_code": error.status_code,
+            })
+    return {"items": results, "total": len(results), "saved": sum(row["ok"] for row in results)}
+
+
 class AnnotationSelectionReq(BaseModel):
     filter: str = 'all'
     review_revision: Optional[int] = None
@@ -26303,6 +26342,45 @@ def create_annotation_review_selection(project_id: str, task_id: str, payload: A
         artifacts.atomic_write_json(task_id, f'review/selections/{identity}.json', {
             'image_ids':ids, 'filter':payload.filter, 'revision':revision, 'actor':actor, 'created_at':now_iso()})
         return {'selection_id':identity, 'total':len(ids), 'count':len(ids), 'filter':payload.filter, 'review_revision':revision}
+
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection/{selection_id}/candidates")
+def get_annotation_review_selection_candidates(
+    project_id: str, task_id: str, selection_id: str, request: Request,
+    cursor: int = 0, limit: int = 100,
+):
+    """Bounded read of the already frozen selection; no second cache or GT write."""
+    _require_annotation_review_task(project_id, task_id)
+    if not re.fullmatch(r'[a-f0-9]{32}', selection_id):
+        raise HTTPException(422, detail='筛选快照编号无效')
+    if cursor < 0 or limit < 1 or limit > 200:
+        raise HTTPException(422, detail='筛选分页参数无效')
+    actor = _material_governance_actor(request, project_id)['actor_id']
+    artifacts = shared_task_artifacts()
+    selection = artifacts.read_json(task_id, f'review/selections/{selection_id}.json', default=None)
+    if not isinstance(selection, dict) or selection.get('actor') != actor:
+        raise HTTPException(404, detail='筛选快照不存在或无访问权限')
+    ids = selection.get('image_ids')
+    if not isinstance(ids, list) or len(ids) > 50000:
+        raise HTTPException(409, detail='筛选快照数据无效，请重新选择')
+    store = CandidateStore(artifacts, task_id=task_id)
+    revision = store.review_revision()
+    if selection.get('revision') != revision:
+        raise HTTPException(409, detail='审核数据已变化，请重新冻结筛选范围')
+    batch = ids[cursor:cursor + limit]
+    entries = store.get_many(batch)
+    if len(entries) != len(batch):
+        raise HTTPException(409, detail='部分候选图片已变化，请重新选择')
+    next_cursor = cursor + len(batch)
+    return {
+        'items': [
+            {key: value for key, value in entries[str(image_id)].items() if key != 'diagnostics'}
+            for image_id in batch
+        ],
+        'total': len(ids), 'next_cursor': str(next_cursor) if next_cursor < len(ids) else None,
+        'review_revision': revision, 'filter': selection.get('filter') or 'all',
+    }
 
 
 class AnnotationTransferReq(BaseModel):

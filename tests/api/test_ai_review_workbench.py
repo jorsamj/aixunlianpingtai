@@ -300,3 +300,97 @@ def test_legacy_json_transfer_receipt_is_archived_and_migrated_without_gt_change
     assert migrated['receipt_storage']=='candidate_sqlite_v1' and 'items' not in migrated
     assert store.artifacts.read_json(task,migrated['legacy_audit_ref'])['items']
     assert not host.read_annotation(project,image['id'])['boxes']
+
+
+def test_frozen_review_selection_pages_all_filtered_ids_and_rejects_stale_revision(client, review_task):
+    project, image, task, store, _ = review_task
+    material_store = host.material_store(project)
+    source = material_store.get(image['id'])
+    ids = [f'review-paged-{index:03}' for index in range(205)]
+    material_store.upsert_many([{**source, 'id':item_id, 'filename':item_id+'.jpg'} for item_id in ids])
+    store.initialize(labels=['fire'], total_images=len(ids))
+    store.append_items({'image_id':item_id, 'status':'success',
+                        'boxes':[{'label':'fire','x1':1,'y1':2,'x2':20,'y2':25}]}
+                       for item_id in ids)
+    base = f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    frozen_response = client.post(base+'/review-selection', json={
+        'filter':'clean_boxes', 'review_revision':store.review_revision()})
+    assert frozen_response.status_code == 200, frozen_response.text
+    frozen = frozen_response.json()
+    assert frozen['total'] == 205
+    url = base+'/review-selection/'+frozen['selection_id']+'/candidates'
+    first = client.get(url+'?cursor=0&limit=200')
+    assert first.status_code == 200, first.text
+    assert [row['image_id'] for row in first.json()['items']] == ids[:200]
+    assert first.json()['next_cursor'] == '200'
+    second = client.get(url+'?cursor=200&limit=200')
+    assert second.status_code == 200, second.text
+    assert [row['image_id'] for row in second.json()['items']] == ids[200:]
+    assert second.json()['next_cursor'] is None
+    assert client.get(url+'?limit=201').status_code == 422
+    store.save_draft(ids[0], [], expected_revision=0,
+                     actor='isolated-review', request_id='revision-bump-review')
+    assert client.get(url).status_code == 409
+
+
+def test_batch_candidate_drafts_use_original_cas_replay_and_leave_gt_untouched(client, review_task):
+    project, image, task, store, _ = review_task
+    materials = host.material_store(project)
+    source = materials.get(image['id'])
+    second_id = 'review-batch-second'
+    materials.upsert_many([{**source, 'id':second_id, 'filename':'second.jpg'}])
+    ids = [image['id'], second_id]
+    store.initialize(labels=['fire'], total_images=2)
+    store.append_items({'image_id':item_id, 'status':'success',
+                        'boxes':[{'label':'fire','x1':1,'y1':1,'x2':30,'y2':30}]}
+                       for item_id in ids)
+    baseline = {item_id:host.read_annotation(project,item_id) for item_id in ids}
+    url = f'/api/v60/projects/{project}/annotation-tasks/{task}/candidates/drafts-batch'
+    boxes = [{'label':'fire','x1':2,'y1':3,'x2':45,'y2':50}]
+    payload = {'items':[{'image_id':item_id, 'boxes':boxes, 'revision':0,
+                         'request_id':'draft-batch-'+str(index)} for index,item_id in enumerate(ids)]}
+    response = client.post(url,json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()['saved'] == 2
+    assert all(row['ok'] and row['revision'] == 1 for row in response.json()['items'])
+    replay = client.post(url,json=payload)
+    assert replay.status_code == 200, replay.text
+    assert [row['revision'] for row in replay.json()['items']] == [1,1]
+    assert all(store.get(item_id)['draft_revision'] == 1 for item_id in ids)
+    assert {item_id:host.read_annotation(project,item_id) for item_id in ids} == baseline
+    stale = client.post(url,json={'items':[{'image_id':ids[0], 'boxes':[],
+                                           'revision':0, 'request_id':'draft-batch-new'}]})
+    assert stale.status_code == 200, stale.text
+    assert stale.json()['saved'] == 0
+    assert stale.json()['items'][0]['status_code'] == 409
+    assert client.post(url,json={'items':[payload['items'][0],payload['items'][0]]}).status_code == 422
+
+
+def test_review_accept_selected_only_does_not_accept_other_clean_or_ambiguous_candidates(client, review_task):
+    project, image, task, store, repo = review_task
+    materials = host.material_store(project)
+    source = materials.get(image['id'])
+    ids = ['selected-clean-0','selected-clean-1','selected-clean-2','unselected-empty-3']
+    materials.upsert_many([{**source,'id':item_id,'filename':item_id+'.jpg'} for item_id in ids])
+    store.initialize(labels=['fire'], total_images=4)
+    store.append_items({'image_id':item_id,
+                        'status':'success' if index<3 else 'empty',
+                        'boxes':[{'label':'fire','x1':1,'y1':2,'x2':30,'y2':40}] if index<3 else []}
+                       for index,item_id in enumerate(ids))
+    baseline = {item_id:host.read_annotation(project,item_id) for item_id in ids}
+    base = f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    frozen = client.post(base+'/review-selection',json={
+        'filter':'clean_boxes','review_revision':store.review_revision()})
+    assert frozen.status_code == 200, frozen.text
+    assert frozen.json()['total'] == 3
+    accepted_ids = ids[:2]
+    approved = client.post(base+'/decisions',json={
+        'decisions':[{'image_id':item_id,'accepted':True} for item_id in accepted_ids],
+        'accept_unmentioned':False,'reject_unmentioned':False,'commit':False,
+        'request_id':'review-selected-only-001','review_revision':store.review_revision()})
+    assert approved.status_code == 200, approved.text
+    assert {item['image_id'] for item in store.iter_accepted_items()} == set(accepted_ids)
+    assert store.get(ids[2])['accepted'] is None
+    assert store.get(ids[3])['accepted'] is None
+    assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
+    assert {item_id:host.read_annotation(project,item_id) for item_id in ids} == baseline

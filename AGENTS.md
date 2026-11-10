@@ -1,3 +1,5 @@
+> **2026-11-10 / 42.24.577 AI审核范围与勾选稳定性专项（准确 SHA CI 待验）**：有歧义筛选的全选冻结快照改为真正跨页 200 张读取、按 IoU 阈值自动或手动保留并 25 张分批复用原草稿 CAS；无歧义选中的 N 张新增独立 `commit=false` 通过，未选中与其他筛选不触碰，整批结束按钮明确标记高风险；勾选不再重绘整张卡片列表。新增隔离 API/Chrome 回归，代码 JS 语法已验，准确 SHA CI、4070/A800 实机未验；不得冒充 GT 已提交。仅改原 AI 审核，不改生产/Worker，不 merge main/tag/release/force push。详见 [专项](docs/WEVISONE_OVERLAP_MANUAL_REVIEW_2026_11_10.md)。
+
 > **2026-11-10 / 42.24.576 M4 前端入口合同修复**：575 为恢复模型配置编辑错位而将 `openModelConfigM4` 改为 async，触发转换链路及前端四条同步入口源码守卫失败。576 保留 `window.openModelConfigM4=function(id='')`，仅缺失旧配置时后台按 ID 异步补读再回原入口，避免更改 M4 owner 合同；新 SHA CI/生产待验，未部署，见[专项](docs/CI_RED_WORKFLOW_REPAIR_2026_11_10.md)。
 
 > **2026-11-10 / 42.24.575 CI 两条历史红灯专项**：核对 572/573/574 准确 SHA，`Frontend Runtime Stabilization` 与 `Training Task Visibility` 在歧义审核提交前已失败；修正定向查询测试替身、训练冻结重置断言、资源缓存一致性/标签 import 旧断言、错误导出旧按钮测试及 Annotorious 尚未加载瞬态；模型配置编辑对 stale state 从既有 API 补读且禁止默认值误覆盖。仅修复现有合同及一处 UI 只读恢复，不改标注 GT/Worker/生产数据；准确新 SHA CI、4070 待核，未部署。见[专项](docs/CI_RED_WORKFLOW_REPAIR_2026_11_10.md)。不 merge/main/tag/release/force push。
