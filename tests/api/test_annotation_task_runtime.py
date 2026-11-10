@@ -610,6 +610,8 @@ def test_review_operation_receipt_identity_keeps_legacy_hash_and_fences_new_scop
     old_body = legacy.model_dump(mode="json", exclude={"request_id"})
     for item in old_body["decisions"]:
         item.pop("review_scope", None)
+    # Keep the digest of historical payloads stable when optional new fields default off.
+    old_body.pop("commit_selected", None)
     legacy_hash = hashlib.sha256(json.dumps(
         old_body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
