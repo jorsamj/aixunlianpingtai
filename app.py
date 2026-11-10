@@ -26563,7 +26563,7 @@ def get_annotation_candidate_diagnostics(project_id: str, task_id: str, image_id
     if not item:
         raise HTTPException(status_code=404, detail="候选图片不存在")
     diagnostics = item.get("diagnostics")
-    if diagnostics and time.time() - float(diagnostics.get("created_at_epoch") or 0) > 30 * 86400:
+    if diagnostics and diagnostics.get("created_at_epoch") and time.time() - float(diagnostics["created_at_epoch"]) > 30 * 86400:
         return {"image_id": image_id, "diagnostics": None, "status": "DIAGNOSTICS_EXPIRED"}
     return {"image_id": image_id, "diagnostics": diagnostics,
             "status": "available" if diagnostics else "UNVERIFIED_CONTRACT"}
@@ -26797,7 +26797,7 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
     except ValueError as error:
         raise HTTPException(
             status_code=400,
-            detail="审核范围包含不存在或生成失败的素材",
+            detail=str(error) if "跨标签" in str(error) else "审核范围包含不存在或生成失败的素材",
         ) from error
     reject_all_without_mapping = (
         bool(payload.reject_unmentioned)

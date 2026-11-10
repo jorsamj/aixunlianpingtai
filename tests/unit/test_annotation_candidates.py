@@ -109,6 +109,35 @@ def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
     assert store.statistics()["gt_committed"] == 1
 
 
+def test_cross_label_candidate_requires_corrected_human_draft_before_accept(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="overlap-review")
+    store.initialize(labels=["person", "tangzhe"], total_images=2)
+    person = {"label": "person", "x1": 10, "y1": 10, "x2": 70, "y2": 80}
+    lying = {**person, "label": "tangzhe"}
+    safe = {"label": "person", "x1": 100, "y1": 100, "x2": 130, "y2": 160}
+    store.append_items([
+        {"image_id": "conflict", "status": "success", "boxes": [person, lying, safe],
+         "manual_review_required": True, "review_conflicts": [{"labels": ["person", "tangzhe"], "iou": 1.0}]},
+        {"image_id": "clean", "status": "success", "boxes": [safe]},
+    ])
+    with pytest.raises(ValueError, match="人工消歧"):
+        store.apply_decisions([CandidateDecision("conflict", True)])
+    store.decide_unmentioned(True)
+    assert store.get("clean")["accepted"] is True
+    assert store.get("conflict")["accepted"] is None
+    with pytest.raises(ValueError, match="跨标签"):
+        store.save_draft("conflict", [person, lying, safe], expected_revision=0,
+                         actor="reviewer", request_id="invalid-draft")
+    saved = store.save_draft("conflict", [lying, safe], expected_revision=0,
+                             actor="reviewer", request_id="corrected-draft")
+    assert saved["revision"] == 1
+    store.apply_decisions([CandidateDecision("conflict", True)])
+    accepted = store.get("conflict")
+    assert accepted["accepted"] is True
+    assert [row["label"] for row in accepted["boxes"]] == ["tangzhe", "person"]
+    assert store.statistics()["gt_committed"] == 0
+
+
 def test_explicit_review_scope_is_durable_per_image_and_cleared_on_new_decision(tmp_path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="per-image-scope", page_size=1)
     store.initialize(labels=["fire", "smoke"], total_images=2)

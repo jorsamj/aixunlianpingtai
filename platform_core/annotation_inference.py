@@ -5,6 +5,7 @@ import time
 import uuid
 
 from .providers.base import ProviderRequestError
+from .annotation_candidates import cross_label_overlaps
 from .task_runtime.worker import ExecutionFencedError
 
 
@@ -130,22 +131,11 @@ def call_with_policy(context, request, image, call, policy, *, stop=None):
         _pause(context, delay, stop)
 
 
-def _box_iou(left, right):
-    x1, y1 = max(left['x1'], right['x1']), max(left['y1'], right['y1'])
-    x2, y2 = min(left['x2'], right['x2']), min(left['y2'], right['y2'])
-    overlap = max(0, x2 - x1) * max(0, y2 - y1)
-    if not overlap:
-        return 0.0
-    def area(box):
-        return (box['x2'] - box['x1']) * (box['y2'] - box['y1'])
-    return overlap / (area(left) + area(right) - overlap)
-
-
 def call_annotation_with_policy(context, request, image, call, policy, *, stop=None):
     """Count every WeVisOne native HTTP call against the existing shared lease/RPM.
 
-    Per-label results remain private until *all* labels succeed. CandidateStore
-    receives exactly one image-level success/empty result or one failure.
+    Per-label results remain private until *all* labels succeed. Overlapping
+    cross-label boxes are review-only candidates, never automatically GT.
     """
     config = request.get('_provider_config') or request.get('model_config_snapshot') or {}
     codes = list((request.get('label_ids') or {}).keys())
@@ -184,17 +174,7 @@ def call_annotation_with_policy(context, request, image, call, policy, *, stop=N
         results.append((code, result))
 
     boxes = [box for _, result in results for box in result.get('boxes', [])]
-    for index, left in enumerate(boxes):
-        for right in boxes[index + 1:]:
-            if left.get('label') != right.get('label') and _box_iou(left, right) > 0.5:
-                error = ProviderRequestError('WeVisOne 跨标签目标框显著重叠，无法安全判定类别', code='MODEL_LABEL_AMBIGUOUS')
-                error.diagnostics = {
-                    'query_strategy': 'per_label', 'label_match_status': 'cross_label_overlap',
-                    'conflicting_labels': sorted({str(left['label']), str(right['label'])}),
-                    'completed_label_count': len(results),
-                    'execution': {'platform_request_id': group_trace_id},
-                }
-                raise error
+    conflicts = cross_label_overlaps(boxes)
     first = results[0][1]
     merged = dict(first)
     merged['boxes'] = boxes
@@ -226,5 +206,15 @@ def call_annotation_with_policy(context, request, image, call, policy, *, stop=N
                                         for box in (result.get('diagnostics') or {}).get('converted_boxes', [])][:100],
                        counts=merged_counts,
                        confidence_unavailable_count=sum(box.get('confidence') is None for box in boxes))
+    if conflicts:
+        # Keep both possible classes visible ONLY in the candidate workbench.
+        # An explicit corrected draft is required before accepting the image.
+        merged['manual_review_required'] = True
+        merged['review_conflicts'] = conflicts
+        diagnostics.update(label_match_status='cross_label_overlap',
+                           review_required=True, conflict_pairs=conflicts,
+                           conflicting_labels=sorted({label for pair in conflicts for label in pair['labels']}))
+    else:
+        diagnostics['label_match_status'] = 'matched'
     merged['diagnostics'] = diagnostics
     return merged

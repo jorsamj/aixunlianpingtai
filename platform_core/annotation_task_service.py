@@ -387,6 +387,7 @@ def run_ai_annotation(
                 "status": "success" if boxes else "empty", "boxes": boxes, "attempt_count":next_attempt,
                 **{key: generated.get(key) for key in (
                     "raw_response_hash", "request_id", "latency_ms", "provider", "model", "diagnostics",
+                    "manual_review_required", "review_conflicts",
                     "hard_sample_signals", "hard_sample_priority", "ground_truth_compared",
                     "gt_comparison", "root_cause_confirmed",
                 ) if generated.get(key) is not None and generated.get(key) != ""},

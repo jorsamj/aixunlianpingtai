@@ -88,11 +88,14 @@ def test_per_label_overlap_is_ambiguous_but_distinct_and_zero_boxes_are_safe(tmp
     def conflicting(one, image):
         return {'boxes': [{'label': next(iter(one['label_ids'])),
                            'x1': 12, 'y1': 24, 'x2': 50, 'y2': 80}]}
-    with pytest.raises(ProviderRequestError) as error:
-        call_annotation_with_policy(context, _wevisone_request(), {'id': '0'}, conflicting,
-                                    {'domain': 'test-account', 'concurrency': 1})
-    assert error.value.code == 'MODEL_LABEL_AMBIGUOUS'
-    assert error.value.diagnostics['label_match_status'] == 'cross_label_overlap'
+    result = call_annotation_with_policy(context, _wevisone_request(), {'id': '0'}, conflicting,
+                                         {'domain': 'test-account', 'concurrency': 1})
+    assert result['manual_review_required'] is True
+    assert [box['label'] for box in result['boxes']] == ['person', 'tangzhe']
+    assert result['review_conflicts'][0]['iou'] == 1.0
+    assert result['diagnostics']['label_match_status'] == 'cross_label_overlap'
+    assert result['diagnostics']['execution']['subrequest_count'] == 2
+    assert len(result['diagnostics']['per_label_requests']) == 2
     assert not context.artifacts.artifact_path('task', 'candidates/manifest.json').is_file()
     result = call_annotation_with_policy(context, _wevisone_request(), {'id': '0'},
                                          lambda *_args: {'boxes': []},

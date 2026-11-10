@@ -22,3 +22,11 @@ test('diagnostics bound structured data, escape text and never expose arbitrary 
  assert.equal((html.match(/<tr><td>person/g)||[]).length,100);
  assert.ok(html.includes('需人工核查'));assert.ok(html.includes('准确率'));
 });
+test('WeVisOne overlapping labels show bounded traces and require explicit human review',()=>{
+ const html=renderAnnotationDiagnostics({review_required:true,label_match_status:'cross_label_overlap',
+  conflicting_labels:['person','tangzhe'],
+  conflict_pairs:[{labels:['person','tangzhe'],box_indices:[0,1],iou:1}],
+  per_label_requests:[{label:'person',request_id:'provider-1',trace_id:'trace-1',box_count:2}]});
+ for(const value of ['必须人工消歧','person / tangzhe','provider-1','trace-1','1 / 2','跨标签冲突'])assert.ok(html.includes(value));
+ assert.ok(!html.includes('请检查模型服务配置后重试'));
+});

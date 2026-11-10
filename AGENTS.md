@@ -1,3 +1,5 @@
+> **2026-11-10 / 42.24.571 WeVisOne 跨标签重叠人工消歧**：原 `MODEL_LABEL_AMBIGUOUS` 发生在全部标签 HTTP 完成后的本地框合并，直接令整图失败且丢掉其他有效候选。改在原 CandidateStore 保存所有候选为 `manual_review_required`，原三栏工作台人工删改重叠框后方可接受，未经消歧的批量接受跳过且绝不直接写 GT；逐标签 trace / IoU 有界诊断及历史诊断保留。Python 编译、Node 语法、隔离真实 SQLite 与诊断渲染测试通过；本容器缺完整 pytest 依赖，4070/浏览器及准确 CI 未核，未部署生产。见 [专项记录](docs/WEVISONE_OVERLAP_MANUAL_REVIEW_2026_11_10.md)。
+
 > **2026-11-10 / 42.24.570 官方母模型简化校验**：仅对 Ultralytics 官方 `assets:v8.4.0` 精确 SHA256+大小+安全容器结构匹配的 YOLO11n/s/m 自动赋予训练资格，保留 COCO80 原类别证据；未知、改名伪装或不同哈希 `.pt` 仍必须原 `bwrap` 隔离验证。上传复用 v63，训练弹窗已上传未就绪母模型可见但禁选，刷新原训练资源，不新建校验环境/请求中心；静态定向和模拟摘要校验通过，真实 4070/官方 PT/准确 CI 待核，不部署。见 [专项记录](docs/MOTHER_MODEL_OFFICIAL_SHA256_GATE_2026_11_10.md)。
 
 > **2026-11-10 / 42.24.569 训练报告性能与弹窗稳定性**：v44 单任务报告按现有 SQL `training_job_id` 索引定位版本 owner，定向读取关联算法，旧历史/歧义保留回退；报告 skeleton/正式内容固定同一滚动视口，四 Tab 单行横向滚动。前端定向29/29、Python 编译通过；本地缺 Python API 与完整 Node 依赖，4070/浏览器及最终 CI 未核，不部署、不动生产。见 [专项记录](docs/TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。

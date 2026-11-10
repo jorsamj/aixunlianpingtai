@@ -11,6 +11,41 @@ from typing import Any, Callable, Iterable
 from .task_runtime import ArtifactStore
 
 
+def cross_label_overlaps(boxes: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+    """Return bounded, reviewable evidence of ambiguous cross-label boxes.
+
+    A different class on the same physical target is not a safe automatic
+    training label. The caller must hold the image for a human decision.
+    """
+    conflicts = []
+    for index, left in enumerate(boxes):
+        for other_index in range(index + 1, len(boxes)):
+            right = boxes[other_index]
+            if str(left.get("label") or "") == str(right.get("label") or ""):
+                continue
+            try:
+                x1, y1 = max(float(left["x1"]), float(right["x1"])), max(float(left["y1"]), float(right["y1"]))
+                x2, y2 = min(float(left["x2"]), float(right["x2"])), min(float(left["y2"]), float(right["y2"]))
+                intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+                a = (float(left["x2"]) - float(left["x1"])) * (float(left["y2"]) - float(left["y1"]))
+                b = (float(right["x2"]) - float(right["x1"])) * (float(right["y2"]) - float(right["y1"]))
+                iou = intersection / (a + b - intersection) if a > 0 and b > 0 and intersection > 0 else 0.0
+            except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+                continue  # Existing provider and draft geometry validation handle invalid boxes.
+            if iou <= 0.5:
+                continue
+            conflicts.append({
+                "labels": [str(left.get("label") or "")[:80], str(right.get("label") or "")[:80]],
+                "box_indices": [index, other_index],
+                "iou": round(iou, 4),
+                "boxes": [{key: box.get(key) for key in ("label", "x1", "y1", "x2", "y2")}
+                          for box in (left, right)],
+            })
+            if len(conflicts) >= limit:
+                return conflicts
+    return conflicts
+
+
 @dataclass(frozen=True)
 class CandidateDecision:
     image_id: str
@@ -569,6 +604,11 @@ class CandidateStore:
                                 or db.execute("SELECT 1 FROM commits WHERE image_id=?", (image_id,)).fetchone()):
                             raise ValueError("candidate is unavailable for review")
                         item = dict(item)
+                        if decision.accepted and item.get("manual_review_required"):
+                            if not int(item.get("draft_revision") or 0) and decision.boxes is None:
+                                raise ValueError("跨标签重叠框尚未人工消歧，请先编辑并保存候选框")
+                            if cross_label_overlaps(decision.boxes if decision.boxes is not None else item.get("boxes") or []):
+                                raise ValueError("跨标签目标框仍显著重叠，请删除或修改冲突框后再采用")
                         item["accepted"] = bool(decision.accepted)
                         if decision.boxes is not None:
                             item["boxes"] = decision.boxes
@@ -598,8 +638,9 @@ class CandidateStore:
             db.executemany("INSERT OR IGNORE INTO excluded VALUES (?)", ((str(value),) for value in exclude))
             db.execute("UPDATE candidates SET accepted=? WHERE status IN ('success','empty') "
                        "AND accepted IS NULL AND review_state='active' "
+                       "AND (NOT ? OR COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0 OR draft_revision>0) "
                        "AND image_id NOT IN (SELECT image_id FROM commits) "
-                       "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted),))
+                       "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted), bool(accepted)))
             self._bump_revision(db)
 
     def remap_labels(self, mapping: dict[str, str], label_ids: dict[str, int]) -> None:
@@ -798,6 +839,9 @@ class CandidateStore:
                 raise ValueError('candidate unavailable for draft')
             if row['draft_revision'] != expected_revision:
                 raise ValueError('candidate draft revision conflict')
+            original = json.loads(row['item_json'])
+            if original.get('manual_review_required') and cross_label_overlaps(boxes):
+                raise ValueError('跨标签目标框仍显著重叠，请删除或修改冲突框再保存')
             result = dict(image_id=str(image_id),revision=int(expected_revision)+1,boxes=json.loads(encoded),saved_at=time.time(),actor=str(actor))
             db.execute('UPDATE candidates SET draft_revision=?,draft_json=?,boxes_count=? WHERE image_id=?',
                        (result['revision'],json.dumps(result,ensure_ascii=False),len(boxes),str(image_id)))
