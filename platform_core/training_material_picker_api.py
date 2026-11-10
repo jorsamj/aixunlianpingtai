@@ -2033,7 +2033,14 @@ def training_material_picker_router(
     @router.post("/selection-summary")
     def training_material_selection_summary(project_id: str, payload: dict):
         try:
-            image_ids = _normalize_selection_ids(payload.get("image_ids") if isinstance(payload, dict) else None)
+            reference = str(payload.get('train_selection_ref') or '').strip()
+            if reference:
+                if payload.get('image_ids'):
+                    raise ValueError('不能混用冻结选择引用与显式素材ID')
+                from .training_selection_reference import read_selection,selection_context
+                image_ids=read_selection(data_dir(),reference,selection_context(data_dir(),project_id,payload,'train'))
+            else:
+                image_ids = _normalize_selection_ids(payload.get("image_ids"))
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         repository = materials(project_id)
@@ -2057,7 +2064,8 @@ def training_material_picker_router(
                 summary.update(sample_role_counts=counts, effective_label_codes=roles["effective_label_codes"])
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
-        return {**summary, "repository_revision": repository.current_revision()}
+        return {**summary, "repository_revision": repository.current_revision(),
+                "selection_reference":bool(reference)}
 
     @router.post("/compatibility")
     @stage("training.compatibility")

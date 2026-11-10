@@ -1434,6 +1434,73 @@ def test_large_filter_freezes_reference_without_returning_all_ids(tmp_path):
     with pytest.raises(ValueError):validate_payload_references(data,'p1',{**payload,'train_selection_ref':reference,'train_image_ids':ids})
 
 
+def test_frozen_train_selection_summary_exposes_formal_labels_after_label_choice(tmp_path):
+    from platform_core.training_selection_reference import read_selection,selection_context
+    client,repository=_client(tmp_path)
+    endpoint='/api/v62/projects/p1/training-materials'
+    frozen_payload={'algorithm_asset_id':'algorithm-a','role':'train','history_policy':'include_history',
+        'framework':'ultralytics','base_version_id':'version-a','train_labels':[]}
+    frozen=client.post(endpoint+'/selection-reference',json=frozen_payload)
+    assert frozen.status_code==200,frozen.text
+    reference=frozen.json()['selection_ref']
+    assert frozen.json()['count']==260
+    chosen={**frozen_payload,'train_selection_ref':reference,'train_labels':['smoke'],
+            'image_ids':[],'summary_only':True}
+    summary=client.post(endpoint+'/selection-summary',json=chosen)
+    assert summary.status_code==200,summary.text
+    facts=summary.json()
+    assert facts['selection_reference'] is True
+    assert facts['requested_count']==260
+    assert facts['matched_count']==260
+    assert facts['positive_label_codes']==['person','smoke']
+    context=selection_context(repository.project_path.parent.parent,'p1',chosen)
+    assert len(read_selection(repository.project_path.parent.parent,reference,context))==260
+    mixed=client.post(endpoint+'/selection-summary',json={**chosen,'image_ids':['m0000']})
+    assert mixed.status_code==422
+    invalid=client.post(endpoint+'/selection-summary',json={**chosen,'algorithm_asset_id':'other'})
+    assert invalid.status_code==422
+
+
+def test_role_filtered_frozen_selection_remains_strictly_label_bound(tmp_path, monkeypatch):
+    from platform_core.training_selection_reference import freeze_selection,read_selection,selection_context
+    _,repository=_client(tmp_path)
+    payload={'algorithm_asset_id':'algorithm-a','history_policy':'include_history',
+             'framework':'ultralytics','role':'train','train_labels':['smoke'],
+             'sample_role':'positive'}
+    data=repository.project_path.parent.parent
+    context=selection_context(data,'p1',payload)
+    receipt=freeze_selection(data,context,['m0000'],request_scope='{"sample_role":"positive"}')
+    assert read_selection(data,receipt['selection_ref'],context)==['m0000']
+    with pytest.raises(ValueError):
+        read_selection(data,receipt['selection_ref'],
+                       selection_context(data,'p1',{**payload,'train_labels':['person']}))
+
+
+def test_legacy_frozen_context_is_not_silently_relaxed(tmp_path):
+    from platform_core.training_selection_reference import freeze_selection,read_selection,selection_context
+    _,repository=_client(tmp_path)
+    data=repository.project_path.parent.parent
+    payload={'algorithm_asset_id':'a','framework':'ultralytics','train_labels':['smoke']}
+    current=selection_context(data,'p1',payload)
+    old={key:value for key,value in current.items() if key not in ('legacy_contract','contract_schema')}
+    old['contract']=current['legacy_contract']
+    receipt=freeze_selection(data,old,['m0000'])
+    assert read_selection(data,receipt['selection_ref'],current)==['m0000']
+    with pytest.raises(ValueError):
+        read_selection(data,receipt['selection_ref'],
+                       selection_context(data,'p1',{**payload,'train_labels':['person']}))
+
+
+def test_non_training_manifest_context_remains_exact(tmp_path):
+    from platform_core.training_selection_reference import freeze_selection,read_selection
+    data=tmp_path/'data'
+    context={'project_id':'p1','purpose':'ai_annotation'}
+    receipt=freeze_selection(data,context,['m0000'])
+    assert read_selection(data,receipt['selection_ref'],context)==['m0000']
+    with pytest.raises(ValueError):
+        read_selection(data,receipt['selection_ref'],{'project_id':'p1','purpose':'other'})
+
+
 def test_role_frozen_selection_uses_forward_cursor_and_preserves_role(tmp_path, monkeypatch):
     import platform_core.training_label_tasks as label_tasks
     from platform_core.training_selection_reference import read_selection, selection_context

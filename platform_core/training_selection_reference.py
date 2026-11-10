@@ -156,7 +156,7 @@ def read_selection(data_dir,reference,context):
         if not row:raise ValueError('训练素材选择证据不完整')
         metadata=json.loads(row[0])
         if _expired(metadata):raise ValueError('冻结素材选择已过期，请重新选择')
-        if metadata['context']!=context:raise ValueError('算法、策略或素材证据已更新，请重新选择训练素材')
+        if not _same_selection_context(metadata,context):raise ValueError('算法、策略或素材证据已更新，请重新选择训练素材')
         expected=metadata.get('count')
         if isinstance(expected,bool) or not isinstance(expected,int) or not 0<expected<=MAX_FROZEN_SELECTION_IDS:raise ValueError('invalid selection size')
         if db.execute('SELECT COUNT(*) FROM selection').fetchone()[0]!=expected:raise ValueError('selection count mismatch')
@@ -184,13 +184,41 @@ def selection_context(data_dir,project_id,payload,role='train'):
     materials=MaterialRepository(Path(data_dir)/'projects'/str(project_id))
     annotations=AnnotationRepository(materials.project_path)
     contract={key:str(payload.get(key) or '') for key in ('base_version_id','framework')}
-    contract['train_labels']=sorted(set(payload.get('train_labels') or []))
+    legacy_contract={**contract,'train_labels':sorted(set(payload.get('train_labels') or []))}
     return {'project_id':str(project_id),'algorithm_id':str(payload.get('algorithm_asset_id') or ''),
         'role':role,'history_policy':str(payload.get('history_policy') or 'new_for_algorithm'),
         'revisions':[str(materials.current_revision()),str(annotations.current_revision()),
             str(TrainingMaterialUsage(Path(data_dir)/'task_runtime'/'tasks.sqlite3').read_revision()),
             str(NegativePool(materials).revision()),str(annotations.task_negative_confirmation_revision())],
-        'contract':hashlib.sha256(json.dumps(contract,sort_keys=True).encode()).hexdigest()}
+        'contract':hashlib.sha256(json.dumps(contract,sort_keys=True).encode()).hexdigest(),
+        # v2: ordinary fixed-ID selections must survive choosing task labels
+        # *after* the picker closes. Role-filtered selections remain label-bound.
+        'legacy_contract':hashlib.sha256(json.dumps(legacy_contract,sort_keys=True).encode()).hexdigest(),
+        'contract_schema':2}
+
+
+def _same_selection_context(metadata, current):
+    frozen=metadata.get('context') or {}
+    if 'contract_schema' not in current:
+        # AI annotation and other owners use their own exact context shape.
+        return frozen==current
+    if frozen.get('contract_schema')!=2:
+        # Existing manifests keep their original, strict label-bound contract.
+        legacy={key:value for key,value in current.items() if key not in ('contract_schema','legacy_contract')}
+        legacy['contract']=current.get('legacy_contract')
+        return frozen==legacy
+    scope=metadata.get('request_scope') or ''
+    if not scope:
+        role_filtered=False
+    else:
+        try:role_filtered=bool(json.loads(scope).get('sample_role'))
+        except (TypeError,ValueError,AttributeError):return False
+    if role_filtered:
+        return frozen==current
+    # For unfiltered/fixed-ID selections the immutable IDs, algorithm, base
+    # version, framework, policy and all five revisions stay exactly bound.
+    return {k:v for k,v in frozen.items() if k!='legacy_contract'}=={
+        k:v for k,v in current.items() if k!='legacy_contract'}
 
 
 def validate_payload_references(data_dir,project_id,payload):
@@ -211,5 +239,5 @@ def selection_membership(data_dir,reference,context,image_ids):
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)) as db:
         row=db.execute("SELECT value FROM meta WHERE key='training_selection'").fetchone()
         if row and _expired(json.loads(row[0])):raise ValueError('冻结素材选择已过期，请重新选择')
-        if not row or json.loads(row[0])['context']!=context:raise ValueError('选择证据已变化，请重新选择')
+        if not row or not _same_selection_context(json.loads(row[0]),context):raise ValueError('选择证据已变化，请重新选择')
         return [r[0] for r in db.execute('SELECT image_id FROM selection WHERE image_id IN (SELECT value FROM json_each(?))',(json.dumps(image_ids),))]

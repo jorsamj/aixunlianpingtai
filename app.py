@@ -8201,6 +8201,7 @@ class TrainReq(BaseModel):
     framework: str = "ultralytics"  # ultralytics / paddle
     algorithm: Optional[str] = "yolo11n_det"
     algorithm_asset_id: Optional[str] = ""
+    base_version_id: Optional[str] = ""
     model: str = "yolo11n.pt"
     epochs: int = 150
     imgsz: int = 640

@@ -90,12 +90,25 @@ test('request submits only explicit labels while server owns inherited and merge
     priority: 30,
   }));
   assert.equal(request.algorithm_asset_id, 'alg-1');
+  assert.equal(request.base_version_id, 'v1');
   assert.deepEqual(request.train_image_ids, ['a', 'b']);
   assert.deepEqual(request.train_labels, ['person']);
   assert.equal(request.batch, 16);
   assert.equal(request.workers, 4);
   assert.equal(request.cache, 'False');
   assert.equal(request.queue_priority, 30);
+});
+
+test('frozen 22015-image selection submits its reference, labels and base version without expanding browser IDs', () => {
+  const reference='trainselection_'+'a'.repeat(32);
+  const request=trainingDraftToRequest(createTrainingDraft({
+    algorithmId:'alg-1',baseVersionId:'version-1',materialIds:[],
+    trainSelectionRef:reference,trainSelectionCount:22015,newLabelCodes:['person'],
+  }),{framework:'ultralytics'});
+  assert.equal(request.train_selection_ref,reference);
+  assert.deepEqual(request.train_image_ids,[]);
+  assert.deepEqual(request.train_labels,['person']);
+  assert.equal(request.base_version_id,'version-1');
 });
 
 test('iteration may submit zero explicit new labels because server owns previous schema', () => {

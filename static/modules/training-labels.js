@@ -242,7 +242,8 @@ export function installTrainingLabelRuntime({
   };
 
   const availableCodesFor = (state, ids) => {
-    if (!ids.length) return [];
+    const frozen=Boolean(state?.trainingDraft?.trainSelectionRef && Number(state?.trainingDraft?.trainSelectionCount)>0);
+    if (!ids.length && !frozen) return [];
     // Never use local Material projection/visible-page labels as formal GT.
     if (!materialSummaryRuntime) return [];
     if (!materialSummaryRuntime.summaryReadyFor?.(ids)) {
@@ -311,7 +312,8 @@ export function installTrainingLabelRuntime({
       panelSignature='';labelRows=[];labelPage=1;filterQuery=String(document.getElementById('trainUiLabelSearch')?.value||'').trim().toLowerCase();
     }
 
-    const summaryError = ids.length && !materialSummaryRuntime?.summaryReadyFor?.(ids)
+    const hasSelection=Boolean(ids.length || (state?.trainingDraft?.trainSelectionRef && Number(state?.trainingDraft?.trainSelectionCount)>0));
+    const summaryError = hasSelection && !materialSummaryRuntime?.summaryReadyFor?.(ids)
       ? String(materialSummaryRuntime?.state?.()?.lastError || '') : '';
     if (summaryError) {
       panelSignature='';labelRows=[];
@@ -354,12 +356,12 @@ export function installTrainingLabelRuntime({
     // The visible rows and inherited labels determine the DOM. Selected image
     // IDs may hydrate in the background without changing those rows; rebuilding
     // checkboxes on that transition loses focus and interrupts rapid selection.
-    const signature=JSON.stringify([algorithmId,previewKey,baseLabels,finalMaterialSelectable.map(code=>[code,displayName(state,code)]),view.invalidAvailable,Boolean(ids.length)]);
+    const signature=JSON.stringify([algorithmId,previewKey,baseLabels,finalMaterialSelectable.map(code=>[code,displayName(state,code)]),view.invalidAvailable,hasSelection]);
     if(panelSignature===signature){updateCount(state);paintPage();return true}
     panelSignature=signature;
     labelRows=finalMaterialSelectable.map(code=>({code,name:displayName(state,code),search:(displayName(state,code)+' '+code).toLowerCase()}));
 
-    const materialHint = !ids.length ? '请先选择训练素材。' : !finalMaterialSelectable.length
+    const materialHint = !hasSelection ? '请先选择训练素材。' : !finalMaterialSelectable.length
       ? baseLabels.length
         ? '当前所选素材没有可新增的已标注目标标签；上一版本继承标签保持不变。'
         : '当前所选素材没有可新增的已标注目标标签，请选择或标注正样本。'

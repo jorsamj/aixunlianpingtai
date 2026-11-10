@@ -373,6 +373,37 @@ test('selected positive codes use formal evidence and ignore late response from 
   }finally{runtime.destroy();Object.assign(globalThis,previous)}
 });
 
+test('frozen selection reads real server GT summary, retains labels and defers compatibility',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const reference='trainselection_'+'a'.repeat(32),requests=[];
+  const draft={algorithmId:'alg',materialIds:[],trainSelectionRef:reference,trainSelectionCount:22015,
+    newLabelCodes:[],history_policy:'new_for_algorithm',baseVersionId:'v1'};
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),projectId:()=> 'p',
+    trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:async(_url,options)=>{requests.push(JSON.parse(options.body));return {ok:true,json:async()=>({
+      requested_count:22015,matched_count:22015,eligible_count:21000,pending_annotation_count:1015,
+      positive_label_codes:['person','smoke'],label_codes:['person','smoke'],repository_revision:8})}}});
+  try{
+    await runtime.refresh();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,1);
+    assert.equal(requests[0].train_selection_ref,reference);
+    assert.equal(requests[0].history_policy,'new_for_algorithm');
+    assert.equal(requests[0].base_version_id,'v1');
+    assert.deepEqual(requests[0].image_ids,[]);
+    assert.deepEqual(runtime.selectedLabelCodes(),['person','smoke']);
+    assert.equal(runtime.summaryFor().eligible_count,21000);
+    draft.newLabelCodes=['person'];
+    await runtime.refresh();
+    assert.equal(requests.length,1,'choosing labels must not rescan frozen 22k materials');
+    const check=await runtime.refreshCompatibility();
+    assert.equal(check.skipped,true);
+    assert.equal(check.compatible,false);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
+
 test('label-only summary refresh retains confirmed positive GT for the same material scope without weakening admission readiness',async()=>{
   const previous={window:globalThis.window,document:globalThis.document};
   let activeProject='project-a';

@@ -167,6 +167,8 @@ export function trainingCompatibilitySignature(draft = {}) {
   return JSON.stringify({
     algorithmId: String(draft?.algorithmId || ''),
     materialIds: uniqueIds(draft?.materialIds).sort(),
+    trainSelectionRef:String(draft?.trainSelectionRef || ''),
+    trainSelectionCount:Number(draft?.trainSelectionCount || 0),
     testMaterialIds: uniqueIds(draft?.testMaterialIds).sort(),
     splitMode: String(draft?.splitMode || 'random_test_from_training_pool'),
     labels: uniqueIds(draft?.newLabelCodes).sort(),
@@ -708,10 +710,15 @@ export function installTrainingMaterialSummaryRuntime({
     const draft=currentDraft();
     return {algorithm_asset_id:String(draft?.algorithmId||''),train_labels:uniqueIds(draft?.newLabelCodes),
       model:String(draft?.config?.model||'yolo11n.pt'),framework:String(draft?.config?.framework||'ultralytics'),
-      base_version_id:String(draft?.baseVersionId||''),train_selection_ref:String(draft?.trainSelectionRef || '')};
+      base_version_id:String(draft?.baseVersionId||''),history_policy:String(draft?.history_policy||'new_for_algorithm'),
+      train_selection_ref:String(draft?.trainSelectionRef || '')};
   }
   function summaryRequestSignature(ids) {
-    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),pickerDraftPayload()]);
+    const draft=pickerDraftPayload();
+    // summary_only is a formal-GT aggregate, independent of chosen task labels.
+    // Do not rescan 20k frozen IDs after every label checkbox change.
+    if(draft.train_selection_ref)delete draft.train_labels;
+    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),draft]);
   }
 
   // Formal positive GT codes are tied to the project and material selection,
@@ -721,7 +728,8 @@ export function installTrainingMaterialSummaryRuntime({
   let settledLabelScope = '';
   let settledPositiveCodes = null;
   function labelScope(ids) {
-    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids)]);
+    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),
+      String(currentDraft()?.trainSelectionRef || '')]);
   }
   function labelCodesFor(ids = currentIds()) {
     return settledPositiveCodes !== null && settledLabelScope === labelScope(ids)
@@ -748,8 +756,9 @@ export function installTrainingMaterialSummaryRuntime({
     const labelElement = document.getElementById('tr429Labels');
     if (labelElement) {
       const baseLabels = labels.map(labelDisplay).filter(Boolean).join('、') || '无标签';
-      const labelText = currentDraft()?.trainSelectionRef?'服务器冻结选择 · 提交后后台核验':!ids.length ? '—' : ready
-        ? `${baseLabels} · 正式标注 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
+      const frozen=Boolean(currentDraft()?.trainSelectionRef);
+      const labelText = !ids.length && !frozen ? '—' : ready
+        ? `${frozen?'服务器冻结 · ':''}${baseLabels} · 正式标注 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
         : lastError ? '标签读取失败 · 请重试' : '读取中…';
       setTextIfChanged(labelElement, labelText);
     }
@@ -777,7 +786,9 @@ export function installTrainingMaterialSummaryRuntime({
       const truth = compatibilityFor();
       const count = Number(truth.affected_image_count ?? truth.issue_count ?? 0);
       const sampleHtml=ready?renderTrainingSampleRoles(summary):'';
-      const nextHtml = sampleHtml + (truth.error
+      const nextHtml = sampleHtml + (truth.skipped && currentDraft()?.trainSelectionRef
+        ? '<span>训练输入检查</span><b>服务器冻结选择 · 任务提交后核验</b>'
+        : truth.error
         ? '<span>训练输入检查</span><b class="err">检查失败 · 可重试</b><button class="btn mini" type="button" data-training-compatibility-open>查看原因并重试</button>'
         : truth.loading || !truth.ready
         ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':window.TrainingSubmitRuntime?.admissionMode==='background'?'提交后后台核验；不通过则停止':'点击开始训练后检查'}</b>`
@@ -815,15 +826,7 @@ export function installTrainingMaterialSummaryRuntime({
       return null;
     }
 
-    if(currentDraft()?.trainSelectionRef){
-      ++requestSequence;activeController?.abort?.();activeController=null;pendingSignature=null;
-      currentSignature=signature;lastError='';
-      summary={requested_count:Number(currentDraft().trainSelectionCount||0),matched_count:null,
-        selectable_count:null,eligible_count:null,pending_annotation_count:null,selectable_total:null,
-        positive_label_codes:[],label_codes:[],sample_role_counts:null,selection_reference:true};
-      queueDecorate();return summary;
-    }
-    if (!normalizedIds.length) {
+    if (!normalizedIds.length && !currentDraft()?.trainSelectionRef) {
       // No selected GT exists yet. Keep a real zero-selection preview without
       // starting a global material count or the iteration submission contract.
       ++requestSequence;

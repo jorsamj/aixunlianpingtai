@@ -14,7 +14,7 @@ import {messageFromApiError, withRequestDeadline, fetchWithUploadProgress} from 
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226568';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=42.25.582';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261102-lifecycle491';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
@@ -26,11 +26,11 @@ import {installExternalAlgorithmPublishRuntime} from './modules/external-algorit
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226510';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.568';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.532';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.582';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
-import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.532';
+import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.582';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
 import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=42.25.532';

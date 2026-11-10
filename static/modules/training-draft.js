@@ -147,6 +147,7 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   const request = {
     ...parameters,
     algorithm_asset_id: normalized.algorithmId,
+    base_version_id: normalized.baseVersionId,
     training_mode: normalized.trainingMode,
     history_policy: normalized.history_policy,
     robustness_policy: normalized.robustness_policy,
