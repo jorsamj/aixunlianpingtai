@@ -390,6 +390,7 @@ class CandidateStore:
     def _decode(row):
         item = json.loads(row["item_json"])
         item["accepted"] = None if row["accepted"] is None else bool(row["accepted"])
+        item["gt_committed"] = bool(row["gt_committed"]) if "gt_committed" in row.keys() else False
         item.setdefault("original_boxes", item.get("boxes") or [])
         if "draft_revision" in row.keys():
             item["draft_revision"] = int(row["draft_revision"])
@@ -404,7 +405,10 @@ class CandidateStore:
     def get(self, image_id):
         self._ready()
         with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM candidates WHERE image_id=?", (str(image_id),)).fetchone()
+            row = db.execute(
+                "SELECT candidates.*, EXISTS(SELECT 1 FROM commits WHERE commits.image_id=candidates.image_id) AS gt_committed "
+                "FROM candidates WHERE image_id=?", (str(image_id),),
+            ).fetchone()
         return self._decode(row) if row else None
 
     def get_many(self, image_ids) -> dict[str, dict]:
@@ -417,7 +421,8 @@ class CandidateStore:
         placeholders = ",".join("?" for _ in ids)
         with closing(self._connect()) as db:
             rows = db.execute(
-                f"SELECT * FROM candidates WHERE image_id IN ({placeholders})",
+                f"SELECT candidates.*, EXISTS(SELECT 1 FROM commits WHERE commits.image_id=candidates.image_id) AS gt_committed "
+                f"FROM candidates WHERE image_id IN ({placeholders})",
                 ids,
             ).fetchall()
         return {str(row["image_id"]): self._decode(row) for row in rows}
@@ -431,8 +436,11 @@ class CandidateStore:
         with closing(self._connect()) as db:
             where = self._filter_sql(filter)
             total = db.execute(f"SELECT COUNT(*) FROM candidates WHERE {where}").fetchone()[0]
-            rows = db.execute(f"SELECT * FROM candidates WHERE {where} ORDER BY ordinal LIMIT ? OFFSET ?",
-                              (max(1, min(200, int(limit))), offset)).fetchall()
+            rows = db.execute(
+                "SELECT candidates.*, EXISTS(SELECT 1 FROM commits WHERE commits.image_id=candidates.image_id) AS gt_committed "
+                f"FROM candidates WHERE {where} ORDER BY ordinal LIMIT ? OFFSET ?",
+                (max(1, min(200, int(limit))), offset),
+            ).fetchall()
         following = offset + len(rows)
         return CandidatePage([self._decode(row) for row in rows], str(following) if following < total else None, total)
 
@@ -666,6 +674,7 @@ class CandidateStore:
                     rows = db.execute(
                         "SELECT * FROM candidates "
                         "WHERE status IN ('success','empty') AND ordinal>? AND review_state='active' AND (accepted IS NULL OR accepted=1) "
+                        "AND image_id NOT IN (SELECT image_id FROM commits) "
                         "ORDER BY ordinal LIMIT 200",
                         (after_ordinal,),
                     ).fetchall()
@@ -701,6 +710,60 @@ class CandidateStore:
                     after_ordinal = int(rows[-1]["ordinal"])
                     if len(rows) < 200:
                         break
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def remap_selected_labels(
+        self, image_ids: Iterable[str], mapping: dict[str, str], label_ids: dict[str, int],
+    ) -> None:
+        """Normalize only explicitly confirmed candidates, never other pending images."""
+        ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
+        if not ids or len(ids) > 100:
+            raise ValueError("selected formal review commit requires 1–100 unique images")
+        normalized = {str(source): str(target) for source, target in dict(mapping or {}).items()
+                      if str(source) and str(target)}
+        if set(normalized.values()) - set(label_ids):
+            raise ValueError("selected review mapping targets are unavailable")
+        self._ready()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                placeholders = ",".join("?" for _ in ids)
+                rows = db.execute(
+                    f"SELECT * FROM candidates WHERE image_id IN ({placeholders})", ids,
+                ).fetchall()
+                if len(rows) != len(ids):
+                    raise ValueError("selected review candidate no longer exists")
+                for row in rows:
+                    item = self._decode(row)
+                    if (item.get("accepted") is not True
+                            or item.get("status") not in {"success", "empty"}
+                            or item.get("review_state") != "active"
+                            or db.execute("SELECT 1 FROM commits WHERE image_id=?", (item["image_id"],)).fetchone()):
+                        raise ValueError("selected review candidate is no longer available")
+                    changed = False
+                    boxes = []
+                    for box in item.get("boxes") or []:
+                        current = dict(box)
+                        source = str(current.get("label") or "").strip()
+                        if not source or (source not in normalized and source not in label_ids):
+                            raise ValueError("selected candidate label is no longer active")
+                        target = normalized.get(source, source)
+                        target_id = int(label_ids[target])
+                        try:
+                            current_id = int(current.get("class_id"))
+                        except (TypeError, ValueError, OverflowError):
+                            current_id = None
+                        if source != target or current_id != target_id:
+                            current["label"] = target
+                            current["class_id"] = target_id
+                            changed = True
+                        boxes.append(current)
+                    if changed:
+                        item["boxes"] = boxes
+                        self._put(db, item, normalize=False)
                 db.commit()
             except Exception:
                 db.rollback()
@@ -773,7 +836,7 @@ class CandidateStore:
         active = "review_state='active'"
         options = {
             'all': '1=1', 'with_boxes': f"{active} AND status='success' AND boxes_count>0",
-            'clean_boxes': f"{active} AND status='success' AND boxes_count>0 AND COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0",
+            'clean_boxes': f"{active} AND status='success' AND boxes_count>0 AND COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0 AND image_id NOT IN (SELECT image_id FROM commits)",
             'ambiguous': f"{active} AND status='success' AND COALESCE(json_extract(item_json,'$.manual_review_required'),0)=1 AND image_id NOT IN (SELECT image_id FROM commits)",
             'empty': f"{active} AND status IN ('success','empty') AND boxes_count=0",
             'zero': f"{active} AND status IN ('success','empty') AND boxes_count=0",

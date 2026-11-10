@@ -732,7 +732,9 @@ def commit_candidate_decisions(
     frozen_annotation_versions: dict[str, int] | None = None,
     frozen_missing_review_scopes: dict[str, list[str]] | None = None,
     frozen_material_hashes: dict[str, str] | None = None,
+    selected_image_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
+    """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
     store._ready()
     if review_scope is None:
@@ -751,7 +753,13 @@ def commit_candidate_decisions(
         raise ValueError("AI annotation review scope is required before formal commit")
     applied_images, image_summaries = [], []
     applied_count = boxes_added = 0
-    accepted_total = max(0, int(store.summary().get("accepted") or 0))
+    selected_ids = None if selected_image_ids is None else list(dict.fromkeys(
+        str(image_id) for image_id in selected_image_ids if str(image_id)
+    ))
+    if selected_ids is not None and (not selected_ids or len(selected_ids) > 100):
+        raise ValueError("formal selected commit requires between 1 and 100 images")
+    accepted_total = (len(selected_ids) if selected_ids is not None
+                      else max(0, int(store.summary().get("accepted") or 0)))
     processed = 0
 
     def assert_not_cancelled() -> None:
@@ -987,13 +995,23 @@ def commit_candidate_decisions(
         if progress is not None:
             progress(processed, accepted_total, image_ids[-1])
 
-    batch: list[dict[str, Any]] = []
-    for item in store.iter_accepted_items(include_committed=True):
-        batch.append(item)
-        if len(batch) == 200:
-            apply_batch(batch)
-            batch = []
-    apply_batch(batch)
+    if selected_ids is not None:
+        selected_items = store.get_many(selected_ids)
+        if set(selected_items) != set(selected_ids) or any(
+                selected_items[image_id].get("accepted") is not True
+                or selected_items[image_id].get("status") not in {"success", "empty"}
+                or selected_items[image_id].get("review_state") != "active"
+                for image_id in selected_ids):
+            raise ValueError("selected candidates are unavailable or have not been approved")
+        apply_batch([selected_items[image_id] for image_id in selected_ids])
+    else:
+        batch: list[dict[str, Any]] = []
+        for item in store.iter_accepted_items(include_committed=True):
+            batch.append(item)
+            if len(batch) == 200:
+                apply_batch(batch)
+                batch = []
+        apply_batch(batch)
 
     result = {
         "applied_images": applied_count,
@@ -1005,7 +1023,10 @@ def commit_candidate_decisions(
         "image_summaries_truncated": applied_count > len(image_summaries),
         "commit_journal_ref": "candidates/items.sqlite3",
     }
-    store.artifacts.atomic_write_json(task_id, journal_ref, result)
+    # Partial, user-confirmed GT batches journal per image above. Never overwrite
+    # the terminal task's legacy commit/result.json with a partial projection.
+    if selected_ids is None:
+        store.artifacts.atomic_write_json(task_id, journal_ref, result)
     return result
 
 

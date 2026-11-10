@@ -394,3 +394,65 @@ def test_review_accept_selected_only_does_not_accept_other_clean_or_ambiguous_ca
     assert store.get(ids[3])['accepted'] is None
     assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
     assert {item_id:host.read_annotation(project,item_id) for item_id in ids} == baseline
+
+def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing_other_candidates(client, review_task):
+    """Explicit user-selected batches commit formal GT, not a mere accepted draft."""
+    project, image, task, store, repo = review_task
+    materials = host.material_store(project)
+    source = materials.get(image['id'])
+    source_hash = source['content_sha256']
+    ids = [image['id'], 'direct-ambiguous', 'direct-unselected']
+    materials.upsert_many([{**source, 'id':item_id, 'filename':item_id+'.jpg'} for item_id in ids[1:]])
+    store.initialize(labels=['fire','smoke'], total_images=3)
+    fire = {'label':'fire','x1':12,'y1':12,'x2':60,'y2':60}
+    smoke = {'label':'smoke','x1':12,'y1':12,'x2':60,'y2':60}
+    store.append_items([
+        {'image_id':ids[0], 'status':'success', 'boxes':[fire], 'source_content_sha256':source_hash},
+        {'image_id':ids[1], 'status':'success', 'boxes':[fire,smoke],
+         'manual_review_required':True, 'source_content_sha256':source_hash},
+        {'image_id':ids[2], 'status':'empty', 'boxes':[], 'source_content_sha256':source_hash},
+    ])
+    base = f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    rejected = client.post(base+'/decisions',json={
+        'decisions':[{'image_id':ids[0],'accepted':True}],
+        'reject_unmentioned':True,'accept_unmentioned':False,
+        'commit':True,'commit_selected':True,'request_id':'direct-gt-invalid-0001',
+        'review_revision':store.review_revision(),
+    })
+    assert rejected.status_code == 422, rejected.text
+    body = {
+        'decisions':[{'image_id':ids[0],'accepted':True}],
+        'reject_unmentioned':False,'accept_unmentioned':False,
+        'commit':True,'commit_selected':True,'request_id':'direct-gt-selected-0001',
+        'review_revision':store.review_revision(),
+    }
+    first = client.post(base+'/decisions',json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()['committed_selected'] is True
+    assert first.json()['applied_images'] == 1
+    assert host.read_annotation(project, ids[0])['boxes'][0]['label'] == 'fire'
+    assert host.read_annotation(project, ids[1])['boxes'] == []
+    assert host.read_annotation(project, ids[2])['boxes'] == []
+    assert set(store.get_commit_summaries(ids)) == {ids[0]}
+    assert store.get(ids[1])['accepted'] is None
+    assert store.get(ids[2])['accepted'] is None
+    assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
+
+    replay = client.post(base+'/decisions',json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()['idempotent'] is True
+
+    second = client.post(base+'/decisions',json={
+        'decisions':[{'image_id':ids[1],'accepted':True,'boxes':[fire]}],
+        'reject_unmentioned':False,'accept_unmentioned':False,
+        'commit':True,'commit_selected':True,'request_id':'direct-gt-selected-0002',
+        'review_revision':store.review_revision(),
+    })
+    assert second.status_code == 200, second.text
+    assert second.json()['committed_selected'] is True
+    assert len(host.read_annotation(project,ids[1])['boxes']) == 1
+    assert host.read_annotation(project,ids[1])['boxes'][0]['label'] == 'fire'
+    assert host.read_annotation(project,ids[2])['boxes'] == []
+    assert store.get(ids[2])['accepted'] is None
+    assert set(store.get_commit_summaries(ids)) == set(ids[:2])
+    assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION

@@ -25105,6 +25105,8 @@ class AnnotationDecisionReq(BaseModel):
     reject_unmentioned: bool = True
     accept_unmentioned: bool = False
     commit: bool = True
+    # Human-confirmed partial formal GT commit; all other task candidates remain pending.
+    commit_selected: bool = False
     label_mapping: Dict[str, str] = Field(default_factory=dict)
     # Optional durable review submission identity; legacy callers remain valid.
     request_id: str = ""
@@ -26710,6 +26712,9 @@ def _annotation_review_operation_identity(payload: AnnotationDecisionReq) -> str
     for decision in body.get("decisions") or []:
         if isinstance(decision, dict) and decision.get("review_scope") is None:
             decision.pop("review_scope", None)
+    # A false default must not invalidate operation identities from older builds.
+    if body.get("commit_selected") is False:
+        body.pop("commit_selected", None)
     canonical = json.dumps(
         body,
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -26792,6 +26797,12 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         for item in payload.decisions
     ]
     decided_ids = {item.image_id for item in decisions}
+    if payload.commit_selected:
+        if (not payload.commit or payload.accept_unmentioned or payload.reject_unmentioned
+                or not 1 <= len(decisions) <= 100
+                or len(decided_ids) != len(decisions)
+                or any(not decision.accepted for decision in decisions)):
+            raise HTTPException(status_code=422, detail="仅已选正式入库要求 1～100 张唯一且明确通过的候选，禁止更改未选择范围")
     if payload.reject_unmentioned and payload.accept_unmentioned:
         raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
 
@@ -26887,13 +26898,59 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
     )
     if not reject_all_without_mapping:
         try:
-            store.remap_labels(mapping, label_ids)
+            if payload.commit_selected:
+                store.remap_selected_labels(decided_ids, mapping, label_ids)
+            else:
+                store.remap_labels(mapping, label_ids)
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.accept_unmentioned:
         store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:
         store.decide_unmentioned(False, exclude=decided_ids)
+    if payload.commit_selected:
+        from platform_core.annotation_task_service import (
+            commit_candidate_decisions, _canonical_review_scope,
+        )
+        candidate_request = (
+            (frozen or {}).get("options") or {}
+            if task.kind is TaskKind.MATERIAL_BATCH else (frozen or {})
+        )
+        manifest = shared_task_artifacts().read_json(task_id, "candidates/manifest.json", default={})
+        scope_policy = str(candidate_request.get("review_scope_policy") or "task_uniform_legacy")
+        if scope_policy not in {"task_uniform_legacy", "per_image_required"}:
+            raise HTTPException(status_code=409, detail="冻结审核范围策略无效")
+        frozen_versions = candidate_request.get("per_image_annotation_versions") if scope_policy == "per_image_required" else None
+        frozen_scopes = candidate_request.get("per_image_missing_review_scopes") if scope_policy == "per_image_required" else None
+        frozen_hashes = candidate_request.get("per_image_source_hashes") if scope_policy == "per_image_required" else None
+        if scope_policy == "per_image_required" and not all(isinstance(value, dict) for value in (frozen_versions, frozen_scopes, frozen_hashes)):
+            raise HTTPException(status_code=409, detail="逐图补审冻结凭据不完整，不能直接入库")
+        try:
+            scope = _canonical_review_scope(
+                candidate_request.get("labels") or (manifest or {}).get("labels") or [],
+                mapping, label_ids,
+            )
+            committed = commit_candidate_decisions(
+                project_id, task_id, store,
+                overwrite=bool(candidate_request.get("overwrite")),
+                review_scope=scope,
+                require_per_image_scope=scope_policy == "per_image_required",
+                frozen_annotation_versions=frozen_versions,
+                frozen_missing_review_scopes=frozen_scopes,
+                frozen_material_hashes=frozen_hashes,
+                selected_image_ids=[decision.image_id for decision in decisions],
+            )
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=409, detail="已选正式 GT 提交失败，请核对素材与已入库审计："+str(error)) from error
+        summary = sync_annotation_statistics(shared_task_repository(), task, store)
+        return {
+            "ok": True, "committed_selected": True, "queued_for_commit": False,
+            "task": public_annotation_task(task, summary=summary),
+            "review": summary, "summary": {**summary, **store.review_counts()},
+            "review_revision": store.review_revision(),
+            "label_summary": store.label_summary(),
+            **committed,
+        }
     summary = sync_annotation_statistics(shared_task_repository(), task, store)
     if store.review_counts()["unreviewed_reviewable"] or not payload.commit:
         return {
