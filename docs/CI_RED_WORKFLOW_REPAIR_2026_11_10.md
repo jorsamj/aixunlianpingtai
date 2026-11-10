@@ -22,3 +22,7 @@
 - 静态 JS 语法已解析；完整 Python/Chrome 测试需以本提交的 GitHub Actions 为准。
 - 只有准确新 SHA 的失败 CI 完成复核并恢复绿色，才建议生成离线部署包并安排 4070 更新；若存在独立不稳定运行或环境失败，必须列出原因和影响后再做人工风险评估。
 - 不执行生产数据迁移、模型 Worker 改造、版本发布、合并 main、release、force push、4070/A800 现场部署。
+
+## 42.24.576｜保留 M4 入口既有同步合同
+
+42.24.575 的 GitHub Actions 发现新引入的源码契约失败：`Remote Conversion Runtime` 的 `agent-contract`（Linux/Windows）以及 `Frontend Runtime Stabilization` 的四个源码守卫都要求 `window.openModelConfigM4=function(id='')`。将原异步声明改回同步函数，并仅在未命中已保存配置时通过 Promise 异步补读，然后递归调用已有同步入口。保留单一模型弹窗所有权，不更改模型服务地址、训练链路或转换协议；准确 576 CI 待验，未部署。

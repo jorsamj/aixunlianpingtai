@@ -1116,18 +1116,20 @@ window.installUsability417=function(){
       if(out?.isConnected)out.textContent=`有效并发 ${result.policy.concurrency} · ${capacityEvidenceLabelM4(result.policy.evidence_status)}。${result.message}`;
     }catch(error){if(out?.isConnected)out.textContent=error.message||String(error)}finally{if(button?.isConnected)button.disabled=false}
   };
-  window.openModelConfigM4=async function(id=''){
+  window.openModelConfigM4=function(id=''){
     let c=(state.modelConfigs||[]).find(x=>String(x.id)===String(id));
-    // The model table can outlive a deferred snapshot refresh. Never open an
-    // existing record with blank defaults when its source row has disappeared.
+    // The model table can outlive a deferred snapshot refresh. Never edit
+    // missing data as a new blank config: reload the existing model by ID.
     if(id&&(!c||!(c.base_url||c.detect_url))){
-      try{
-        const latest=await window.PlatformCore.withRequestDeadline(signal=>api('/api/v35/model-configs',{signal}),{label:'读取视觉模型配置'});
-        if(state.page!=='模型配置')return;
-        if(Array.isArray(latest?.items))state.modelConfigs=latest.items;
-        c=(state.modelConfigs||[]).find(x=>String(x.id)===String(id));
-      }catch(error){toast('读取模型配置失败：'+(error.message||error));return}
-      if(!c||!(c.base_url||c.detect_url)){toast('找不到已保存的模型配置，请刷新列表');return}
+      void window.PlatformCore.withRequestDeadline(signal=>api('/api/v35/model-configs',{signal}),{label:'读取视觉模型配置'})
+        .then(latest=>{
+          if(state.page!=='模型配置')return;
+          if(Array.isArray(latest?.items))state.modelConfigs=latest.items;
+          const refreshed=(state.modelConfigs||[]).find(x=>String(x.id)===String(id));
+          if(!refreshed||!(refreshed.base_url||refreshed.detect_url)){toast('找不到已保存的模型配置，请刷新列表');return}
+          window.openModelConfigM4(id);
+        }).catch(error=>toast('读取模型配置失败：'+(error.message||error)));
+      return;
     }
     c=c||{};
     const kind=['cloud','local'].includes(c.provider_adapter||c.provider_type)?'local_openai':(c.provider_adapter||c.provider_type||'local_openai'),prompt=c.annotation_prompt_template||'你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。图片尺寸 {{image_width}}x{{image_height}}。{{business_instruction}} 只返回 JSON：{{output_schema}}';
