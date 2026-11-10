@@ -1,0 +1,665 @@
+/*
+ * AI auto-annotation review: immersive batch workspace (42.24.579).
+ * Deliberately scoped to the existing .ai-review-page-shell owner.
+ * The task route, selection snapshot, ambiguity rules and formal GT APIs
+ * continue to be owned by app.js / ai-review-route.js.
+ */
+
+.ai-review-page-shell {
+  position: fixed !important;
+  inset: 8px !important;
+  z-index: 120 !important; /* Below existing confirm modal (999) and toast. */
+  box-sizing: border-box;
+  display: flex !important;
+  flex-direction: column;
+  width: auto !important;
+  height: calc(100vh - 16px) !important;
+  height: calc(100dvh - 16px) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px !important;
+  background: #f6f8fb !important;
+  box-shadow: 0 18px 56px rgba(20, 43, 75, .16);
+}
+
+.ai-review-page-shell .ai-review-page-nav {
+  flex: 0 0 auto;
+  gap: 16px;
+  min-height: 54px;
+  padding: 7px 18px;
+  border-bottom: 1px solid #e5eaf1;
+  background: #fff;
+}
+
+.ai-review-page-shell .ai-review-page-nav > div { gap: 0; }
+.ai-review-page-shell .ai-review-page-nav strong {
+  font-size: 17px;
+  font-weight: 750;
+  letter-spacing: -.2px;
+  color: #1e344f;
+}
+.ai-review-page-shell .ai-review-page-nav > div span { display: none; }
+.ai-review-page-shell .ai-review-page-task {
+  margin-left: auto;
+  max-width: min(30vw, 300px);
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: #f3f6fa;
+  color: #62748b;
+  font-size: 12px;
+}
+.ai-review-page-shell .ai-review-page-nav > .btn {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #dce5f0;
+  background: #fff;
+  color: #3d536e;
+  font-weight: 650;
+}
+
+/* Replace the old left-filter / center-grid / permanently-open-right-panel
+ * template. This is a display override, not a second workbench. */
+.ai-review-page-shell > .ai66-review {
+  position: relative;
+  display: flex !important;
+  flex: 1 1 auto;
+  flex-direction: column !important;
+  grid-template-columns: none !important;
+  grid-template-rows: none !important;
+  min-height: 0;
+  height: auto !important;
+  overflow: hidden !important;
+  gap: 0 !important;
+  background: #f6f8fb;
+}
+
+.ai-review-page-shell .ai66-review-head {
+  display: flex !important;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 40px;
+  padding: 5px 18px;
+  border-bottom: 1px solid #edf0f5;
+  background: #fff;
+}
+.ai-review-page-shell .ai66-review-head > div:first-child {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+.ai-review-page-shell .ai66-review-head p,
+.ai-review-page-shell .ai66-review-head h3,
+.ai-review-page-shell .ai66-eyebrow,
+.ai-review-page-shell .ai66-review-kpis { display: none !important; }
+.ai-review-page-shell #ai60LayoutToggle {
+  min-height: 30px !important;
+  padding: 0 10px;
+  color: #46627f;
+  border-color: #e0e7f0;
+}
+.ai-review-page-shell .ai66-review-summary {
+  max-width: min(70%, 880px);
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 7px;
+  background: #f4f7fc;
+  color: #536a86;
+  font-size: 12px;
+}
+
+.ai-review-page-shell .ai66-review-tools {
+  display: flex !important;
+  flex: 0 0 auto;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between;
+  flex-wrap: nowrap !important;
+  gap: 14px;
+  min-height: 51px;
+  max-height: none !important;
+  padding: 7px 18px !important;
+  overflow: visible !important;
+  border-right: 0 !important;
+  border-bottom: 1px solid #e6ebf2;
+  background: #fff;
+}
+.ai-review-page-shell .ai66-review-filters {
+  display: flex !important;
+  flex: 1 1 auto;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 5px !important;
+  min-width: 0;
+  max-width: none;
+  padding: 2px;
+  overflow-x: visible;
+  border: 0;
+  background: transparent;
+  scrollbar-width: thin;
+}
+.ai-review-page-shell .ai66-review-filters button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px !important;
+  height: 34px;
+  padding: 0 13px !important;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #596f8b;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.ai-review-page-shell .ai66-review-filters button:hover {
+  background: #f1f5fa;
+  color: #245ea9;
+}
+.ai-review-page-shell .ai66-review-filters button.on {
+  border-color: #d5e4fb;
+  background: #eaf2ff;
+  color: #1555ac;
+  box-shadow: none;
+}
+.ai-review-page-shell .ai-filter-count { font-weight: 750; opacity: .85; }
+.ai-review-page-shell .ai-review-filter-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+.ai-review-page-shell .ai-review-filter-more > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: #647891;
+  font-size: 13px;
+  font-weight: 650;
+  list-style: none;
+}
+.ai-review-page-shell .ai-review-filter-more > summary::-webkit-details-marker { display: none; }
+.ai-review-page-shell .ai-review-filter-more > summary::after {
+  content: "⌄";
+  margin-left: 6px;
+}
+.ai-review-page-shell .ai-review-filter-more[open] {
+  z-index: 30;
+}
+.ai-review-page-shell .ai-review-filter-more:has(.on) > summary {
+  color: #1555ac;
+  background: #eaf2ff;
+}
+.ai-review-page-shell .ai-review-filter-menu {
+  display: none;
+  position: absolute;
+  z-index: 35;
+  top: calc(100% + 5px);
+  left: 0;
+  width: 190px;
+  padding: 6px;
+  border: 1px solid #dce5f0;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(24, 48, 82, .14);
+}
+.ai-review-page-shell .ai-review-filter-more[open] .ai-review-filter-menu {
+  display: grid;
+  gap: 3px;
+}
+.ai-review-page-shell .ai-review-filter-menu > button {
+  display: flex;
+  width: 100%;
+  border-radius: 6px;
+  background: #fff;
+  justify-content: space-between;
+}
+.ai-review-page-shell .ai-review-filter-menu > button:hover {
+  background: #edf5ff;
+}
+.ai-review-page-shell .ai66-review-tools > .row {
+  flex: 0 0 auto;
+  flex-wrap: nowrap !important;
+  gap: 7px;
+}
+.ai-review-page-shell .ai66-shortcuts { display: none !important; }
+.ai-review-page-shell .ai66-review-tools > .row .btn {
+  min-height: 34px;
+  padding: 0 11px;
+  white-space: nowrap;
+  border: 1px solid #dce6f2;
+  background: #fff;
+  color: #415b7a;
+}
+
+.ai-review-page-shell .ai66-label-tools {
+  flex: 0 0 auto;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  width: auto;
+  max-height: 180px;
+  min-height: 0;
+  margin: 0 !important;
+  padding: 0 18px;
+  overflow: auto;
+  border: 0;
+  border-bottom: 1px solid #e9edf3;
+  border-radius: 0;
+  background: #fff;
+}
+.ai-review-page-shell .ai66-label-tools > summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  color: #66809f;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ai-review-page-shell .ai66-label-tools[open] { padding-bottom: 12px; }
+
+/* A bounded image-only scroll region: image cards stay stable on selection. */
+.ai-review-page-shell #ai60ReviewGrid {
+  display: flex !important;
+  flex: 1 1 auto;
+  flex-direction: row;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-items: stretch;
+  gap: 0 !important;
+  min-height: 0;
+  min-width: 0;
+  max-height: none !important;
+  padding: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  background: #f6f8fb;
+}
+.ai-review-page-shell #ai60ReviewGrid > .ai-review-card-grid {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 18px 22px;
+}
+.ai-review-page-shell #ai60ReviewGrid.ai-review-list > .ai-review-card-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card {
+  position: relative;
+  min-width: 0;
+  border: 1px solid #dce4ee !important;
+  border-radius: 10px !important;
+  background: #fff;
+  box-shadow: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card:hover {
+  border-color: #abc7e8 !important;
+  box-shadow: 0 4px 14px rgba(28, 58, 94, .09);
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card:has(> .ai-review-select:checked) {
+  border-color: #3978ca !important;
+  box-shadow: inset 0 0 0 1px #3978ca;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card.accepted {
+  box-shadow: none;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card.accepted:has(> .ai-review-select:checked) {
+  box-shadow: inset 0 0 0 1px #3978ca;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai-review-select {
+  position: absolute;
+  z-index: 4;
+  left: 9px !important;
+  right: auto !important;
+  top: 9px !important;
+  width: 22px !important;
+  height: 22px !important;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2468ce;
+  background: white;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai-candidate-stage {
+  background: #1c2938;
+}
+/* Keep intrinsic aspect ratio. Cropping/letterboxing would shift bbox overlays. */
+.ai-review-page-shell #ai60ReviewGrid .ai-candidate-stage > img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: auto !important;
+  object-fit: fill !important;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai-candidate-stage > strong {
+  max-width: calc(100% - 46px);
+  padding: 4px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 5px;
+  background: rgba(16, 30, 47, .82);
+  font-size: 11px;
+  font-weight: 650;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-body {
+  min-height: 54px;
+  padding: 9px 11px;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-body b {
+  font-size: 12px;
+  color: #253e5c;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-body span {
+  font-size: 11px;
+  color: #73879b;
+}
+/* The detailed errors and hard-sample evidence remain in the image inspector. */
+.ai-review-page-shell #ai60ReviewGrid .ai66-hard-signals { display: none; }
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card > footer,
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card > .row { display: none; }
+.ai-review-page-shell #ai60ReviewGrid .ai66-review-empty,
+.ai-review-page-shell #ai60ReviewGrid .ai-create-loading,
+.ai-review-page-shell #ai60ReviewGrid .inline-error {
+  grid-column: 1 / -1;
+  padding: 24px;
+}
+
+/* Only the ambiguity filter gets a bounded, sticky side tool.
+ * The single-image inspector is an on-demand drawer, never a permanent column. */
+.ai-review-page-shell #ai60ReviewGrid > .ai-review-ambiguity-panel {
+  order: 2;
+  flex: 0 0 282px;
+  align-self: flex-start;
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  width: 282px;
+  max-height: calc(100% - 24px);
+  margin: 12px 14px 12px 0;
+  padding: 17px 16px;
+  overflow-y: auto;
+  border: 1px solid #dbe5f1;
+  border-radius: 10px;
+  background: #fff;
+}
+.ai-review-page-shell .ai-review-ambiguity-intro b {
+  color: #203d62;
+  font-size: 14px;
+}
+.ai-review-page-shell .ai-review-ambiguity-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.ai-review-page-shell .ai-review-ambiguity-controls label,
+.ai-review-page-shell .ai-review-ambiguity-controls .input,
+.ai-review-page-shell .ai-review-ambiguity-controls .btn {
+  width: 100% !important;
+  min-width: 0;
+}
+.ai-review-page-shell .ai-review-ambiguity-controls .btn { min-height: 38px; }
+.ai-review-page-shell .ai-review-ambiguity-preview .btn { width: 100%; }
+
+.ai-review-page-shell #ai60ReviewInspector {
+  display: none !important;
+  position: absolute !important;
+  z-index: 18;
+  inset: 0 0 0 auto !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  width: min(388px, 92%);
+  min-width: 0;
+  padding: 18px;
+  overflow-y: auto;
+  border: 0;
+  border-left: 1px solid #dce5f0;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: -8px 0 32px rgba(22, 46, 76, .16);
+}
+.ai-review-page-shell #ai60ReviewInspector.open { display: block !important; }
+.ai-review-page-shell #ai60ReviewInspector .ai-review-inspector-close {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 34px;
+  margin: 0 0 12px;
+}
+.ai-review-page-shell #ai60TransferPanel:not([hidden]) {
+  position: absolute;
+  z-index: 22;
+  inset: 0 0 0 auto;
+}
+.ai-review-page-shell #ai60TransferPanel[hidden] { display: none !important; }
+
+/* Footer consumes its own layout height, never covers the last image row. */
+.ai-review-page-shell .ai66-review-footer {
+  display: flex !important;
+  flex: 0 0 auto;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap !important;
+  gap: 7px 9px !important;
+  min-height: 61px;
+  max-height: min(158px, 30vh) !important;
+  margin: 0 !important;
+  padding: 9px 16px !important;
+  overflow: auto !important;
+  border: 0 !important;
+  border-top: 1px solid #dce5f0 !important;
+  border-radius: 0 !important;
+  background: #fff !important;
+  box-shadow: 0 -4px 18px rgba(35, 55, 84, .045) !important;
+  backdrop-filter: none;
+  scrollbar-width: thin;
+}
+.ai-review-page-shell .ai66-review-footer .btn {
+  min-height: 34px !important;
+  height: auto;
+  padding: 6px 11px;
+  border-radius: 8px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.ai-review-page-shell #ai60ReviewPager {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.ai-review-page-shell #ai60SelectionCount {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: #edf4ff;
+  color: #225ca7;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.ai-review-page-shell #ai60ApproveSelected {
+  min-height: 37px !important;
+  padding: 7px 16px;
+  background: #2267c2;
+  color: #fff;
+  font-weight: 750;
+}
+.ai-review-page-shell #ai60SelectionStatus:empty { display: none; }
+.ai-review-page-shell .ai66-review-footer > .row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-left: auto;
+}
+.ai-review-page-shell .ai-review-more > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  color: #60758f;
+  border: 1px solid #e0e7f0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 650;
+}
+.ai-review-page-shell .ai-review-more[open] {
+  position: relative !important;
+  display: flex !important;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  right: auto !important;
+  bottom: auto !important;
+  max-width: min(500px, calc(100vw - 30px));
+  padding: 5px !important;
+  border: 1px solid #dce5f0;
+  background: #fff;
+  box-shadow: none !important;
+}
+.ai-review-page-shell .ai-review-more[open] button {
+  white-space: normal;
+  text-align: left;
+}
+
+@media (max-width: 1366px) {
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+    gap: 10px;
+    padding: 12px;
+  }
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-ambiguity-panel {
+    flex-basis: 252px;
+    width: 252px;
+    margin-right: 10px;
+  }
+  .ai-review-page-shell .ai66-review-tools { gap: 8px; padding: 6px 12px !important; }
+  .ai-review-page-shell .ai66-review-footer { padding: 8px 12px !important; }
+}
+@media (max-width: 980px) {
+  .ai-review-page-shell .ai66-review-tools {
+    flex-wrap: wrap !important;
+    gap: 5px;
+  }
+  .ai-review-page-shell .ai66-review-filters {
+    flex-basis: 100%;
+    overflow-x: auto;
+  }
+  .ai-review-page-shell .ai-review-filter-menu {
+    position: static;
+    width: 180px;
+    box-shadow: none;
+    margin-top: 5px;
+  }
+  .ai-review-page-shell .ai66-review-tools > .row { width: 100%; justify-content: flex-end; }
+  .ai-review-page-shell .ai66-review-head { min-height: 36px; }
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-ambiguity-panel {
+    flex-basis: 226px;
+    width: 226px;
+    padding: 12px;
+  }
+}
+@media (max-width: 768px) {
+  .ai-review-page-shell {
+    inset: 3px !important;
+    height: calc(100dvh - 6px) !important;
+    border-radius: 7px !important;
+  }
+  .ai-review-page-shell .ai-review-page-nav {
+    min-height: 46px;
+    padding: 5px 10px;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+  .ai-review-page-shell .ai-review-page-nav strong { font-size: 14px; }
+  .ai-review-page-shell .ai-review-page-task { display: none; }
+  .ai-review-page-shell .ai-review-page-nav > .btn { min-height: 34px; padding: 0 9px; }
+  .ai-review-page-shell .ai66-review-head { padding: 4px 10px; }
+  .ai-review-page-shell .ai66-review-summary {
+    max-width: 62%;
+    font-size: 11px;
+  }
+  .ai-review-page-shell .ai66-review-tools {
+    display: flex !important;
+    max-height: none !important;
+    padding: 5px 8px !important;
+  }
+  .ai-review-page-shell .ai-review-filter-toggle { display: none !important; }
+  .ai-review-page-shell .ai66-review-filters button {
+    min-height: 34px !important;
+    padding: 0 10px !important;
+    font-size: 12px;
+  }
+  .ai-review-page-shell .ai66-label-tools { padding: 0 10px; }
+  .ai-review-page-shell #ai60ReviewGrid { flex-direction: column; }
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-card-grid {
+    order: 2;
+    width: 100%;
+    padding: 9px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+  }
+  .ai-review-page-shell #ai60ReviewGrid.ai-review-list > .ai-review-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-ambiguity-panel {
+    order: 1;
+    position: relative;
+    top: auto;
+    flex: 0 0 auto;
+    width: auto;
+    max-height: none;
+    margin: 9px 9px 0;
+  }
+  .ai-review-page-shell .ai-review-ambiguity-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end;
+  }
+  .ai-review-page-shell .ai66-review-footer {
+    gap: 6px !important;
+    max-height: min(174px, 29vh) !important;
+    padding: 7px 9px !important;
+  }
+  .ai-review-page-shell .ai66-review-footer > .row { margin-left: 0; }
+  .ai-review-page-shell #ai60ReviewPager { flex-basis: 100%; }
+  .ai-review-page-shell #ai60ReviewInspector { width: min(390px, 100%); }
+  .ai-review-page-shell #ai60ReviewGrid .ai-review-select {
+    width: 34px !important;
+    height: 34px !important;
+  }
+}
+@media (max-width: 480px) {
+  .ai-review-page-shell .ai-review-page-nav strong { font-size: 13px; }
+  .ai-review-page-shell .ai66-review-summary { max-width: 52%; }
+  .ai-review-page-shell #ai60ReviewGrid > .ai-review-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ai-review-page-shell .ai-review-ambiguity-controls { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-review-page-shell .ai66-candidate-card { transition: none !important; }
+}
