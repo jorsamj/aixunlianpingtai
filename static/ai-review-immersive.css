@@ -1,5 +1,5 @@
 /*
- * AI auto-annotation review: immersive batch workspace (42.24.579).
+ * AI auto-annotation review: immersive batch workspace (42.24.581).
  * Deliberately scoped to the existing .ai-review-page-shell owner.
  * The task route, selection snapshot, ambiguity rules and formal GT APIs
  * continue to be owned by app.js / ai-review-route.js.
@@ -437,6 +437,17 @@
   box-shadow: -8px 0 32px rgba(22, 46, 76, .16);
 }
 .ai-review-page-shell #ai60ReviewInspector.open { display: block !important; }
+.ai-review-page-shell .ai66-review.ai66-editing > #ai60ReviewGrid,
+.ai-review-page-shell .ai66-review.ai66-editing > #ai60ReviewInspector,
+.ai-review-page-shell .ai66-review.ai66-editing > #ai60TransferPanel {
+  /* Exclusive editor mode must win over the immersive grid/inspector IDs. */
+  display: none !important;
+}
+.ai-review-page-shell .ai66-review.ai66-editing > .ai66-edit {
+  display: flex !important;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 .ai-review-page-shell #ai60ReviewInspector .ai-review-inspector-close {
   display: inline-flex !important;
   align-items: center;
@@ -453,6 +464,8 @@
 /* Footer consumes its own layout height, never covers the last image row. */
 .ai-review-page-shell .ai66-review-footer {
   display: flex !important;
+  position: relative;
+  z-index: 19; /* Footer actions stay above the open image inspector (18). */
   flex: 0 0 auto;
   grid-column: auto !important;
   grid-row: auto !important;
