@@ -772,6 +772,8 @@ class CandidateStore:
         active = "review_state='active'"
         options = {
             'all': '1=1', 'with_boxes': f"{active} AND status='success' AND boxes_count>0",
+            'clean_boxes': f"{active} AND status='success' AND boxes_count>0 AND COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0",
+            'ambiguous': f"{active} AND status='success' AND COALESCE(json_extract(item_json,'$.manual_review_required'),0)=1 AND image_id NOT IN (SELECT image_id FROM commits)",
             'empty': f"{active} AND status IN ('success','empty') AND boxes_count=0",
             'zero': f"{active} AND status IN ('success','empty') AND boxes_count=0",
             'rejected': f"{active} AND accepted=0",
@@ -808,7 +810,7 @@ class CandidateStore:
         self._ready()
         with closing(self._connect()) as db:
             result = {key: int(db.execute(f'SELECT COUNT(*) FROM candidates WHERE {self._filter_sql(value)}').fetchone()[0])
-                      for key, value in [('total','all'),('with_boxes','with_boxes'),('zero','zero'),('failed','failed'),('edited','edited'),('transferred','transferred'),('blocked','blocked'),('remaining_reviewable','remaining'),('unreviewed_reviewable','unreviewed')]}
+                      for key, value in [('total','all'),('with_boxes','with_boxes'),('clean_boxes','clean_boxes'),('ambiguous','ambiguous'),('zero','zero'),('failed','failed'),('edited','edited'),('transferred','transferred'),('blocked','blocked'),('remaining_reviewable','remaining'),('unreviewed_reviewable','unreviewed')]}
             result['revision'] = int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
             return result
 

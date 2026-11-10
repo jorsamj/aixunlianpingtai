@@ -1944,3 +1944,19 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .mother-model-verifier-status{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;margin-bottom:15px;border:1px solid #dce7f3;background:#f7faff;border-radius:11px;color:#57708d;font-size:12px;line-height:1.6}
 .mother-model-verifier-status .pill{flex:none}.mother-model-row-foot>span{min-width:0;overflow-wrap:anywhere;line-height:1.6}
 .mother-model-row-foot>span small{color:#97a7ba;font-size:11px}
+
+/* Ambiguous review: one inline action surface, not a nested modal. */
+.ai-review-ambiguity-panel{grid-column:1/-1;display:grid;gap:12px;padding:16px 18px;border:1px solid #c6d7ef;border-radius:12px;background:linear-gradient(140deg,#f6f9ff,#fff);min-width:0}
+.ai-review-ambiguity-intro{display:flex;flex-direction:column;gap:4px}
+.ai-review-ambiguity-intro b{color:#244b83;font-size:14px}
+.ai-review-ambiguity-intro span,.ai-review-ambiguity-hint{color:#64748b;font-size:12px;line-height:1.55}
+.ai-review-ambiguity-controls{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.ai-review-ambiguity-controls label{color:#334155;font-size:12px;font-weight:650;display:flex;flex-direction:column;gap:6px}
+.ai-review-ambiguity-controls .input{width:min(260px,65vw);min-height:40px}
+.ai-review-ambiguity-controls .btn{min-height:40px}
+.ai-review-ambiguity-feedback{font-size:12px;line-height:1.6;color:#37516f;overflow-wrap:anywhere}
+.ai-review-ambiguity-preview{display:flex;flex-direction:column;align-items:flex-start;gap:7px}
+.ai-review-ambiguity-preview strong{font-size:12px}
+.ai-review-ambiguity-preview small{color:#9a601d}
+.ai-review-ambiguity-preview .btn{min-height:40px}
+@media(max-width:768px){.ai-review-ambiguity-panel{padding:12px}.ai-review-ambiguity-controls{align-items:stretch}.ai-review-ambiguity-controls label,.ai-review-ambiguity-controls .input{width:100%}}

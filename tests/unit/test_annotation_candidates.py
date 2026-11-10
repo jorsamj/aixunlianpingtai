@@ -109,6 +109,32 @@ def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
     assert store.statistics()["gt_committed"] == 1
 
 
+
+def test_review_filters_separate_clean_boxes_from_ambiguous_candidates(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="ambiguous-filter")
+    store.initialize(labels=["person", "tangzhe"], total_images=4)
+    a = {"label": "person", "x1": 10, "y1": 10, "x2": 70, "y2": 80}
+    b = {**a, "label": "tangzhe"}
+    store.append_items([
+        {"image_id": "conflict", "status": "success", "boxes": [a, b],
+         "manual_review_required": True},
+        {"image_id": "clean", "status": "success", "boxes": [a]},
+        {"image_id": "zero", "status": "empty", "boxes": []},
+        {"image_id": "failed", "status": "failed", "boxes": []},
+    ])
+    assert [row["image_id"] for row in store.read_page(cursor=None, filter="clean_boxes").items] == ["clean"]
+    assert [row["image_id"] for row in store.read_page(cursor=None, filter="ambiguous").items] == ["conflict"]
+    counts = store.review_counts()
+    assert counts["with_boxes"] == 2 and counts["clean_boxes"] == 1 and counts["ambiguous"] == 1 and counts["zero"] == 1
+    assert list(store.iter_selected_ids(filter="ambiguous")) == ["conflict"]
+    # A saved draft remains in the ambiguity review queue until a verified GT commit.
+    store.save_draft("conflict", [a], expected_revision=0, actor="reviewer", request_id="filter-draft")
+    assert store.review_counts()["ambiguous"] == 1
+    store.apply_decisions([CandidateDecision("conflict", True)])
+    store.record_commit_summaries([{"image_id": "conflict", "box_count": 1}])
+    assert store.review_counts()["ambiguous"] == 0
+
+
 def test_cross_label_candidate_requires_corrected_human_draft_before_accept(tmp_path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="overlap-review")
     store.initialize(labels=["person", "tangzhe"], total_images=2)

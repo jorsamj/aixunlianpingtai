@@ -9089,7 +9089,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       <div class="ai66-review-tools">
         <div class="ai66-review-filters">
           <button data-ai66-filter="all" class="on" onclick="setAiReviewFilter60('all')">全部</button>
-          <button data-ai66-filter="target" onclick="setAiReviewFilter60('target')">有框</button>
+          <button data-ai66-filter="target" onclick="setAiReviewFilter60('target')">有框 · 无歧义</button>
+          <button data-ai66-filter="ambiguous" onclick="setAiReviewFilter60('ambiguous')">有歧义</button>
           <button data-ai66-filter="empty" onclick="setAiReviewFilter60('empty')">0 框</button>
           <button data-ai66-filter="edited" onclick="setAiReviewFilter60('edited')">已修改</button>
           <details class="ai-review-filter-more"><summary>更多筛选</summary><button data-ai66-filter="rejected" onclick="setAiReviewFilter60('rejected')">已拒绝</button><button data-ai66-filter="low" onclick="setAiReviewFilter60('low')">低置信度</button><button data-ai66-filter="hard" onclick="setAiReviewFilter60('hard')">困难候选</button></details>
@@ -9194,11 +9195,145 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!changedBoxes)return toast('所选图片没有候选框；如需新增目标，请进入“编辑候选框”手工添加');
     renderReviewPage();toast(`已将 ${changedImages} 张图片的 ${changedBoxes} 个候选框统一为 ${label.display_name||label.code} · ${label.code}`);
   };
+
+  // Match the CandidateStore strict > .5 cross-label threshold.
+  function aiReviewBoxIou60(a,b){
+    if(!a||!b)return 0;
+    const ac=[a.x1,a.y1,a.x2,a.y2].map(Number),bc=[b.x1,b.y1,b.x2,b.y2].map(Number);
+    if(![...ac,...bc].every(Number.isFinite))return 0;
+    const aa=(ac[2]-ac[0])*(ac[3]-ac[1]),ba=(bc[2]-bc[0])*(bc[3]-bc[1]);
+    if(aa<=0||ba<=0)return 0;
+    const intersection=Math.max(0,Math.min(ac[2],bc[2])-Math.max(ac[0],bc[0]))
+      *Math.max(0,Math.min(ac[3],bc[3])-Math.max(ac[1],bc[1]));
+    return intersection>0?intersection/(aa+ba-intersection):0;
+  }
+  // Review-only resolution: no automatic label choice or unrelated box deletion.
+  function aiReviewOverlapGroups60(boxes){
+    if(!Array.isArray(boxes)||boxes.length>300)return [];
+    const parent=boxes.map((_,index)=>index),touched=new Set();
+    const root=index=>{while(parent[index]!==index){parent[index]=parent[parent[index]];index=parent[index]}return index};
+    for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++){
+      const a=boxes[i],b=boxes[j];
+      if(!a||!b||String(a.label||'')===String(b.label||''))continue;
+      if(aiReviewBoxIou60(a,b)<=0.5)continue;
+      parent[root(j)]=root(i);touched.add(i);touched.add(j);
+    }
+    const groups=new Map();
+    for(const index of touched){const key=root(index);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(index)}
+    return [...groups.values()];
+  }
+  function aiPlanKeepAmbiguousLabel60(item,label){
+    if(!item||item.status!=='success'||item.review_state&&item.review_state!=='active'||!item.manual_review_required)
+      return {reason:'不是可编辑的歧义候选'};
+    if(item.accepted===true)return {reason:'此图已采用，请先单图核对'};
+    const boxes=item.boxes||[],groups=aiReviewOverlapGroups60(boxes);
+    if(!groups.length)return {reason:'重叠冲突已经消除'};
+    const removed=new Set();
+    for(const indices of groups){
+      const matches=indices.filter(index=>String(boxes[index].label)===label);
+      if(matches.length!==1)return {reason:'冲突组中没有唯一的所选标签，请逐图人工审核'};
+      if(indices.some(index=>index!==matches[0]&&aiReviewBoxIou60(boxes[matches[0]],boxes[index])<=0.5))
+        return {reason:'相邻冲突并非同一位置，请逐图人工审核'};
+      for(const index of indices)if(index!==matches[0])removed.add(index);
+    }
+    const next=boxes.filter((_,index)=>!removed.has(index));
+    if(!removed.size||aiReviewOverlapGroups60(next).length)return {reason:'仍存在未解决的跨标签重叠'};
+    return {boxes:next,removed:removed.size,groups:groups.length,revision:Number(item.draft_revision||0)};
+  }
+  function aiAmbiguityPanel60(review){
+    if(review.filter!=='ambiguous')return '';
+    const catalog=new Map(aiReviewLabels60().map(label=>[String(label.code),label]));
+    const available=new Set();
+    for(const item of review.items)for(const indices of aiReviewOverlapGroups60(item.boxes||[]))
+      for(const index of indices){const code=String(item.boxes[index].label||'');if(catalog.has(code))available.add(code)}
+    const label=String(review.ambiguityLabel||''),preview=review.ambiguityPreview,report=review.ambiguityResult;
+    const options=[...available].sort().map(code=>{
+      const found=catalog.get(code),name=found.display_name||found.display_name_zh||code;
+      return '<option value="'+esc(code)+'" '+(label===code?'selected':'')+'>'+esc(name)+' · '+esc(code)+'</option>';
+    }).join('');
+    const disabled=review.ambiguitySaving||review.pageLoading||review.submitting||!!review.pendingRequest;
+    let feedback='<span class="ai-review-ambiguity-hint">只处理当前页的勾选图片；不会自动采用或写入正式 GT。</span>';
+    if(report)feedback='<span role="status">'+esc(report)+'</span>';
+    if(preview){
+      feedback='<div class="ai-review-ambiguity-preview"><strong>预检：可处理 '+preview.actions.length
+        +' / 勾选 '+preview.total+' 张，共移除 '+preview.actions.reduce((count,row)=>count+row.removed,0)
+        +' 个冲突框；跳过 '+preview.skipped.length+' 张</strong>'
+        +(preview.skipped.length?'<small>'+preview.skipped.slice(0,4).map(row=>esc(row.name+'：'+row.reason)).join('；')+(preview.skipped.length>4?'；其余详见逐图审核':'')+'</small>':'')
+        +(preview.actions.length?'<button type="button" class="btn primary" onclick="applyAiAmbiguity60()" '+(disabled?'disabled':'')+'>确认只保留所选标签（保存草稿）</button>':'')
+        +'</div>';
+    }
+    return '<section class="ai-review-ambiguity-panel" aria-label="重叠框批量消歧">'
+      +'<div class="ai-review-ambiguity-intro"><b>有歧义 · 同位置冲突框</b><span>先核对原图，再选择保留哪个标签；其他正常位置的框完全保留。</span></div>'
+      +'<div class="ai-review-ambiguity-controls"><label for="ai60AmbiguousKeep">需要保留的标签</label><select id="ai60AmbiguousKeep" class="input" onchange="setAiAmbiguityLabel60(this.value)" '+(disabled?'disabled':'')+'>'
+      +'<option value="">请选择标签</option>'+options+'</select><button type="button" class="btn" onclick="previewAiAmbiguity60()" '+(disabled?'disabled':'')+'>预检本页勾选图片</button></div>'
+      +'<div class="ai-review-ambiguity-feedback" aria-live="polite">'+feedback+'</div></section>';
+  }
+  window.setAiAmbiguityLabel60=value=>{
+    const review=state.ai60Review;if(!review||review.ambiguitySaving)return;
+    review.ambiguityLabel=String(value||'');review.ambiguityPreview=null;review.ambiguityResult='';
+    renderReviewPage();
+  };
+  window.previewAiAmbiguity60=()=>{
+    const review=state.ai60Review;
+    if(!review||review.ambiguitySaving||review.pageLoading||review.submitting||review.pendingRequest||review.decisionSaving)return;
+    if(review.selection)return toast('批量消歧限本页，请先清除“全部筛选结果”选择，再勾选本页图片');
+    if([...review.selected].some(id=>!review.seen.has(id)))return toast('已跨页选择图片；请清除选择，重新勾选当前页');
+    const chosen=String(review.ambiguityLabel||'');
+    if(!aiReviewLabels60().some(label=>String(label.code)===chosen))return toast('请先选择一个正式标签');
+    const picked=review.items.filter(item=>review.selected.has(String(item.image_id)));
+    if(!picked.length)return toast('请先勾选本页需要消歧的图片');
+    if(state.ai60Edit?.dirty)return toast('有未保存的单图编辑，请先完成编辑');
+    const actions=[],skipped=[];
+    for(const item of picked){
+      const plan=aiPlanKeepAmbiguousLabel60(item,chosen);
+      if(plan.reason){skipped.push({name:item.filename||String(item.image_id),reason:plan.reason});continue}
+      actions.push({imageId:String(item.image_id),name:item.filename||String(item.image_id),boxes:plan.boxes,
+        removed:plan.removed,revision:plan.revision,requestId:window.BrowserCapabilityRuntime.createClientId('draft-',20),
+        sourceHash:item.source_content_sha256||item.content_sha256||null});
+    }
+    review.ambiguityPreview={label:chosen,actions,skipped,total:picked.length,reviewRevision:review.reviewRevision};
+    review.ambiguityResult='';renderReviewPage();
+  };
+  window.applyAiAmbiguity60=async()=>{
+    const review=state.ai60Review,preview=review?.ambiguityPreview;
+    if(!review||!preview?.actions.length||review.ambiguitySaving||review.pageLoading||review.submitting||review.pendingRequest)return;
+    if(preview.reviewRevision!==review.reviewRevision)return toast('审核版本已变化，请刷新后重新预检');
+    if(!window.confirm('确认将 '+preview.actions.length+' 张图片中与「'+preview.label+'」同位置冲突的其他标签框移除？只保存人工草稿，不会自动采用或写入正式 GT。'))return;
+    review.ambiguitySaving=true;review.ambiguityResult='正在保存消歧草稿…';renderReviewPage();
+    let saved=0;const failed=[];
+    try{
+      for(const action of preview.actions){
+        const item=review.seen.get(action.imageId);
+        if(!item||Number(item.draft_revision||0)!==action.revision){failed.push(action.name+'：草稿版本已变化');continue}
+        try{
+          const result=await api(taskApi(review.id)+'/candidates/'+encodeURIComponent(action.imageId)+'/draft',{
+            method:'PUT',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({boxes:action.boxes,revision:action.revision,request_id:action.requestId,
+              ...(action.sourceHash?{source_content_sha256:action.sourceHash}:{})})
+          });
+          Object.assign(item,result.item||{boxes:action.boxes,draft_revision:result.revision});
+          review.edits.set(action.imageId,item.boxes||action.boxes);
+          review.decisions.set(action.imageId,false);
+          review.reviewRevision=result.review_revision??review.reviewRevision;
+          saved++;
+        }catch(error){failed.push(action.name+'：'+String(error.message||error).slice(0,100))}
+        review.ambiguityResult='已保存 '+saved+' / '+preview.actions.length+' 张'+(failed.length?'，失败 '+failed.length+' 张':'');
+        renderReviewPage();
+      }
+    }finally{
+      review.ambiguitySaving=false;review.ambiguityPreview=null;
+      review.ambiguityResult='草稿已保存 '+saved+' 张，失败 '+failed.length+' 张。'
+        +(failed.length?'失败图片：'+failed.slice(0,3).join('；')+'。请核对版本后重新预检。':'请逐图核对后点击采用。');
+      await loadReviewPage(review.offset);
+    }
+  };
+
   function reviewVisibleItems60(review){
     const filter=String(review?.filter||'all');
     return (review?.items||[]).filter(item=>{
       const id=String(item.image_id),accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),failed=item.status==='failed',empty=!failed&&!(item.boxes||[]).length;
-      if(filter==='target')return !failed&&!empty;
+      if(filter==='target')return !failed&&!empty&&!item.manual_review_required;
+      if(filter==='ambiguous')return !failed&&!!item.manual_review_required;
       if(filter==='empty')return empty;
       if(filter==='edited')return edited||!!item.draft_revision;
       if(filter==='transferred')return item.review_state==='transferred'||!!item.transferred;
@@ -9221,7 +9356,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张`;
     const set=(id,value)=>{const node=document.getElementById(id);if(node)node.textContent=String(value)};
     set('ai66Total',review.total);set('ai66Accepted',selected);set('ai66Rejected',rejected);set('ai66Boxes',boxes);set('ai66Empty',empty);set('ai66Failed',failed);set('ai66Edited',review.edits.size);
-    document.querySelectorAll('[data-ai66-filter]').forEach(button=>{button.classList.toggle('on',button.dataset.ai66Filter===String(review.filter||'all'));const key=({all:'total',target:'with_boxes',empty:'zero',failed:'failed',edited:'edited',transferred:'transferred'})[button.dataset.ai66Filter],value=review.summary?.[key];if(value!=null){let count=button.querySelector('.ai-filter-count');if(!count){count=document.createElement('span');count.className='ai-filter-count';count.setAttribute('aria-hidden','true');button.append(count)}count.textContent=String(value)}});
+    document.querySelectorAll('[data-ai66-filter]').forEach(button=>{button.classList.toggle('on',button.dataset.ai66Filter===String(review.filter||'all'));const key=({all:'total',target:'clean_boxes',ambiguous:'ambiguous',empty:'zero',failed:'failed',edited:'edited',transferred:'transferred'})[button.dataset.ai66Filter],value=review.summary?.[key];if(value!=null){let count=button.querySelector('.ai-filter-count');if(!count){count=document.createElement('span');count.className='ai-filter-count';count.setAttribute('aria-hidden','true');button.append(count)}count.textContent=String(value)}});
   }
   function patchAiDecisionCard60(id){
     const review=state.ai60Review;if(!review)return false;
@@ -9233,9 +9368,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     card.querySelector('[data-ai66-decision="reject"]')?.classList.toggle('danger',!accepted);
     return true;
   }
-  window.setAiReviewFilter60=filter=>{const review=state.ai60Review;if(!review)return;review.filter=String(filter||'all');return loadReviewPage(0)};
+  window.setAiReviewFilter60=filter=>{const review=state.ai60Review;if(!review||review.ambiguitySaving)return;review.filter=String(filter||'all');review.ambiguityPreview=null;review.ambiguityResult='';return loadReviewPage(0)};
   window.setAiDecision60=async(id,accepted)=>{
-    const review=state.ai60Review;if(!review||review.decisionSaving)return;
+    const review=state.ai60Review;if(!review||review.decisionSaving||review.ambiguitySaving)return;
     const key=String(id);review.decisionSaving=true;
     try{const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decisions:[{image_id:key,accepted:!!accepted}],reject_unmentioned:false,accept_unmentioned:false,commit:false})});if(state.ai60Review!==review||review.closed)return;review.decisions.set(key,!!accepted);review.summary=result.summary||result.review||review.summary;review.reviewRevision=result.review_revision??review.reviewRevision;renderReviewMetrics60(review);renderAiSelection60();patchAiDecisionCard60(key)}catch(error){toast(`决定未保存：${error.message||error}`)}finally{review.decisionSaving=false}
   };
@@ -9250,21 +9385,21 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     renderAiLabelMapping60();
     const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
     const hardSignalNames={low_confidence:'低置信度',small_target:'小目标',dense_targets:'密集目标',no_detection_unverified:'无检测·待核查',gt_disagreement_fp:'与正式标注不一致·疑似误检',gt_disagreement_fn:'与正式标注不一致·疑似漏检'};
-    if(grid)grid.innerHTML=review.pageLoading?'<div class="ai-create-loading">正在读取当前页候选图片…</div>':review.pageError?`<div class="inline-error ai66-review-empty"><span>${esc(review.pageError)}</span><button class="btn mini" onclick="retryAiReviewPage60()">重试</button></div>`:rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed'&&(!item.review_state||item.review_state==='active'),accepted=item.manual_review_required?review.decisions.get(id)===true:review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length,unresolved=!!item.manual_review_required&&!item.draft_revision;return `<article tabindex="0" aria-label="审核图片 ${esc(item.filename||image.filename||id)}" class="review427-card ai66-candidate-card ${item.status==='failed'?'failed':item.review_state==='transferred'?'transferred':''} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><input type="checkbox" class="ai-review-select" aria-label="选择 ${esc(item.filename||id)}" ${aiSelected60(review,item)?'checked':''} onchange="toggleAiSelection60('${encodeURIComponent(id)}',this.checked)"><div class="review427-img ai-candidate-stage" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="inspectAiCandidate60('${encodeURIComponent(id)}')"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.review_state==='transferred'?'已转入负样本池':item.review_state==='blocked'?'冲突待处理':item.review_state==='pending_transfer'?'转池待恢复':item.status==='failed'?'处理失败':unresolved?'跨标签重叠 · 待人工消歧':boxCount?`${boxCount} 个候选框`:(Array.isArray(item.hard_sample_signals)?'未检测到·待人工核查':'模型未检出 · 待人工确认')}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${item.manual_review_required?`<small class="ai66-hard-signals">${unresolved?'跨标签目标框重叠：请编辑并保留正确类别，保存后才能采用。':'已人工消歧并保存候选框，请核对后采用。'} 冲突 ${Number(item.review_conflicts?.length||0)} 组，原始诊断可追溯。</small>`:''}${Array.isArray(item.hard_sample_signals)?`<small class="ai66-hard-signals">${item.hard_sample_signals.map(code=>esc(hardSignalNames[code]||code)).join(' · ')||'本图暂无特殊困难信号'} · 优先级 ${Number(item.hard_sample_priority||0)} · 原因待确认</small>`:''}${edited?'<em>已人工修改</em>':''}</div><div class="row"><button class="btn mini" onclick="openAiDiagnostics60(this,'${encodeURIComponent(id)}')">标注诊断</button></div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" ${unresolved?'disabled title="请先编辑并保存冲突框"':''} onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">${item.manual_review_required?'人工消歧':'编辑候选框'}</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
+    if(grid)grid.innerHTML=aiAmbiguityPanel60(review)+(review.pageLoading?'<div class="ai-create-loading">正在读取当前页候选图片…</div>':review.pageError?`<div class="inline-error ai66-review-empty"><span>${esc(review.pageError)}</span><button class="btn mini" onclick="retryAiReviewPage60()">重试</button></div>`:rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed'&&(!item.review_state||item.review_state==='active'),accepted=item.manual_review_required?review.decisions.get(id)===true:review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length,unresolved=!!item.manual_review_required&&!item.draft_revision;return `<article tabindex="0" aria-label="审核图片 ${esc(item.filename||image.filename||id)}" class="review427-card ai66-candidate-card ${item.status==='failed'?'failed':item.review_state==='transferred'?'transferred':''} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><input type="checkbox" class="ai-review-select" aria-label="选择 ${esc(item.filename||id)}" ${aiSelected60(review,item)?'checked':''} onchange="toggleAiSelection60('${encodeURIComponent(id)}',this.checked)"><div class="review427-img ai-candidate-stage" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" onclick="inspectAiCandidate60('${encodeURIComponent(id)}')"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.review_state==='transferred'?'已转入负样本池':item.review_state==='blocked'?'冲突待处理':item.review_state==='pending_transfer'?'转池待恢复':item.status==='failed'?'处理失败':unresolved?'跨标签重叠 · 待人工消歧':boxCount?`${boxCount} 个候选框`:(Array.isArray(item.hard_sample_signals)?'未检测到·待人工核查':'模型未检出 · 待人工确认')}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${item.manual_review_required?`<small class="ai66-hard-signals">${unresolved?'跨标签目标框重叠：请编辑并保留正确类别，保存后才能采用。':'已人工消歧并保存候选框，请核对后采用。'} 冲突 ${Number(item.review_conflicts?.length||0)} 组，原始诊断可追溯。</small>`:''}${Array.isArray(item.hard_sample_signals)?`<small class="ai66-hard-signals">${item.hard_sample_signals.map(code=>esc(hardSignalNames[code]||code)).join(' · ')||'本图暂无特殊困难信号'} · 优先级 ${Number(item.hard_sample_priority||0)} · 原因待确认</small>`:''}${edited?'<em>已人工修改</em>':''}</div><div class="row"><button class="btn mini" onclick="openAiDiagnostics60(this,'${encodeURIComponent(id)}')">标注诊断</button></div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" ${unresolved?'disabled title="请先编辑并保存冲突框"':''} onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">${item.manual_review_required?'人工消歧':'编辑候选框'}</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>');
     if(review.taskError&&grid&&!rows.length){grid.textContent=`${review.taskError.stage||'任务阶段'}：${review.taskError.message||'任务尚未生成候选'}。可返回任务列表重试。`}
     const pager=document.getElementById('ai60ReviewPager');if(pager)window.PlatformCore?.pagination?.mountPagination?.(pager,{page:Math.floor(review.offset/review.limit)+1,pageSize:review.limit,total:review.total,totalPages:Math.max(1,Math.ceil(review.total/review.limit)),hasPrevious:review.offset>0,hasNext:review.offset+review.items.length<review.total},{label:'AI标注审核分页',onPageChange: page=>loadReviewPage((page-1)*review.limit)});
   }
   function renderAiSelection60(){const review=state.ai60Review;if(!review)return;const count=document.getElementById('ai60SelectionCount');if(count)count.textContent=`选中 ${review.selection?.total??review.selected?.size??0} 张${review.selection?'（全部筛选结果）':''}`;const approve=document.getElementById('ai60ApproveRemaining');if(approve){let recover=document.getElementById('ai60TransferRecover');try{if(localStorage.getItem(`ai-review-transfer:${pid()}:${review.id}`)&&!recover){recover=document.createElement('button');recover.id='ai60TransferRecover';recover.className='btn';recover.textContent='恢复转池操作';recover.onclick=()=>window.resumeAiTransfer60();approve.before(recover)}}catch{}const n=review.summary?.remaining_reviewable;approve.textContent=n==null?'审核剩余候选':`审核剩余 ${n} 张`;approve.disabled=n===0}}
   window.setAiReviewLayout60=()=>{const review=state.ai60Review,grid=document.getElementById('ai60ReviewGrid'),button=document.getElementById('ai60LayoutToggle');if(!review||!grid)return;review.listLayout=!review.listLayout;grid.classList.toggle('ai-review-list',review.listLayout);if(button){button.textContent=review.listLayout?'切换网格':'切换列表';button.setAttribute('aria-pressed',String(review.listLayout))}};
-  function aiSelected60(review,item){if(!review.selection)return review.selected.has(String(item.image_id));const f=review.selection.filter||'all',n=(item.boxes||[]).length,match=f==='all'||f==='with_boxes'&&n>0||f==='empty'&&n===0&&item.status!=='failed'||f==='failed'&&item.status==='failed'||f==='edited'&&item.draft_revision>0||f==='transferred'&&item.review_state==='transferred';return match&&!review.selection.excluded?.has(String(item.image_id))}
-  window.toggleAiSelection60=(encoded,checked)=>{const review=state.ai60Review;if(!review)return;const id=decodeURIComponent(encoded);if(review.selection){review.selection.excluded??=new Set();checked?review.selection.excluded.delete(id):review.selection.excluded.add(id);review.selection.total=review.selection.count-review.selection.excluded.size}else checked?review.selected.add(id):review.selected.delete(id);renderAiSelection60()};
-  window.selectAiPage60=checked=>{const review=state.ai60Review;if(!review)return;for(const item of review.items)window.toggleAiSelection60(encodeURIComponent(item.image_id),checked);document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=checked);renderAiSelection60()};
-  window.clearAiSelection60=()=>{const review=state.ai60Review;if(!review)return;review.selected.clear();review.selection=null;document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=false);renderAiSelection60()};
-  window.selectAiFiltered60=async()=>{const review=state.ai60Review;if(!review)return;try{const result=await api(`${taskApi(review.id)}/review-selection`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filter:review.filter==='target'?'with_boxes':review.filter,review_revision:review.reviewRevision})});if(state.ai60Review!==review||review.closed)return;review.selection={...result,excluded:new Set()};document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=true);renderAiSelection60()}catch(error){toast(error.message||error)}};
+  function aiSelected60(review,item){if(!review.selection)return review.selected.has(String(item.image_id));const f=review.selection.filter||'all',n=(item.boxes||[]).length,match=f==='all'||(f==='with_boxes'||f==='clean_boxes')&&n>0&&(f!=='clean_boxes'||!item.manual_review_required)||f==='ambiguous'&&!!item.manual_review_required||f==='empty'&&n===0&&item.status!=='failed'||f==='failed'&&item.status==='failed'||f==='edited'&&item.draft_revision>0||f==='transferred'&&item.review_state==='transferred';return match&&!review.selection.excluded?.has(String(item.image_id))}
+  window.toggleAiSelection60=(encoded,checked)=>{const review=state.ai60Review;if(!review||review.ambiguitySaving)return;const id=decodeURIComponent(encoded);if(review.selection){review.selection.excluded??=new Set();checked?review.selection.excluded.delete(id):review.selection.excluded.add(id);review.selection.total=review.selection.count-review.selection.excluded.size}else checked?review.selected.add(id):review.selected.delete(id);review.ambiguityPreview=null;renderAiSelection60();if(review.filter==='ambiguous')renderReviewPage()};
+  window.selectAiPage60=checked=>{const review=state.ai60Review;if(!review||review.ambiguitySaving)return;for(const item of review.items){const id=String(item.image_id);if(review.selection){review.selection.excluded??=new Set();checked?review.selection.excluded.delete(id):review.selection.excluded.add(id)}else checked?review.selected.add(id):review.selected.delete(id)}if(review.selection)review.selection.total=review.selection.count-review.selection.excluded.size;review.ambiguityPreview=null;document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=checked);renderAiSelection60();if(review.filter==='ambiguous')renderReviewPage()};
+  window.clearAiSelection60=()=>{const review=state.ai60Review;if(!review||review.ambiguitySaving)return;review.selected.clear();review.selection=null;review.ambiguityPreview=null;document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=false);renderAiSelection60();if(review.filter==='ambiguous')renderReviewPage()};
+  window.selectAiFiltered60=async()=>{const review=state.ai60Review;if(!review||review.ambiguitySaving)return;review.ambiguityPreview=null;try{const result=await api(`${taskApi(review.id)}/review-selection`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filter:review.filter==='target'?'clean_boxes':review.filter,review_revision:review.reviewRevision})});if(state.ai60Review!==review||review.closed)return;review.selection={...result,excluded:new Set()};document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=true);renderAiSelection60();if(review.filter==='ambiguous')renderReviewPage()}catch(error){toast(error.message||error)}};
   window.inspectAiCandidate60=encoded=>{const review=state.ai60Review,id=decodeURIComponent(encoded),item=review?.seen.get(id),root=document.getElementById('ai60ReviewInspector');if(!root||!item)return;root.innerHTML=`<h3>${esc(item.filename||id)}</h3><div class="ai-candidate-stage"><img src="${esc(item.url||'')}" alt="当前图片">${(item.boxes||[]).map(box=>candidateOverlay(box,item)).join('')}</div><p>${(item.boxes||[]).length} 个候选框 · 尚未最终确认</p><p>${esc(item.error||'候选修改与正式标注分离保存')}</p>${item.status!=='failed'&&(!item.review_state||item.review_state==='active')?`<button class="btn" onclick="editAiCandidate60('${esc(id)}')">编辑候选框</button>`:''}<button class="btn" onclick="openAiDiagnostics60(this,'${encodeURIComponent(id)}');this.closest('.ai-review-inspector')?.classList.remove('open')">查看诊断</button>`;root.dataset.imageId=id;if(item.review_operation_id&&item.review_state&&item.review_state!=='active')root.insertAdjacentHTML('beforeend',`<button class="btn" onclick="openAiTransferReceipt60('${encodeURIComponent(item.review_operation_id)}')">查看转出记录</button>`);root.classList.add('open');root.insertAdjacentHTML('afterbegin',`<button class="btn ai-review-inspector-close" onclick="this.parentElement.classList.remove('open')">收起图片详情</button>`);if(item.status!=='failed'&&(!item.review_state||item.review_state==='active'))root.insertAdjacentHTML('beforeend',`<button class="btn" onclick="setAiDecision60('${esc(id)}',true)">采用此图</button><button class="btn" onclick="setAiDecision60('${esc(id)}',false)">拒绝此图</button>`)};
   window.openAiTransferReceipt60=async(encoded,offset=0)=>{const review=state.ai60Review,root=document.getElementById('ai60TransferPanel');if(!review||!root)return;const requestId=decodeURIComponent(encoded),epoch=review.transferReceiptEpoch=(review.transferReceiptEpoch||0)+1;root.hidden=false;root.innerHTML='<p role="status">正在读取转出记录…</p>';try{const result=await api(`${taskApi(review.id)}/negative-transfer/${encodeURIComponent(requestId)}?offset=${offset}&limit=100`);if(state.ai60Review!==review||review.closed||epoch!==review.transferReceiptEpoch||root.hidden||!root.isConnected)return;const names={pending:'待处理',partial:'部分失败',completed:'已转出',undone:'已撤销',undo_pending:'撤销中',transferred:'已转出',failed:'失败'};root.innerHTML=`<h3>转出记录 · ${esc(names[result.status]||result.status)}</h3><p>范围 ${Number(result.total||0)} 张，已记录 ${Number(result.processed||0)} 张</p><p>${result.target?.confirm_absent?'已明确人工确认无目标范围':'仅暂存，未新增训练资格'}</p>${Object.values(result.items||{}).map(item=>`<article><b>${esc(item.filename||item.image_id)}</b><p>${esc(names[item.status]||item.status)}${item.error?' · '+esc(item.error):''}</p></article>`).join('')}<button class="btn" onclick="document.getElementById('ai60TransferPanel').hidden=true">关闭</button>${offset>0?`<button class="btn" onclick="openAiTransferReceipt60('${encodeURIComponent(requestId)}',${Math.max(0,offset-100)})">上一页</button>`:''}${result.next_cursor?`<button class="btn" onclick="openAiTransferReceipt60('${encodeURIComponent(requestId)}',${Number(result.next_cursor)})">下一页</button>`:''}${!result.target?.confirm_absent&&result.status!=='undone'?`<button class="btn" onclick="undoAiTransfer60('${esc(requestId)}',this)">撤销本次转出</button>`:''}`}catch(error){if(epoch===review.transferReceiptEpoch&&root.isConnected)root.textContent=error.message||String(error)}};
   window.resumeAiTransfer60=()=>{const review=state.ai60Review;if(!review)return;try{const saved=JSON.parse(localStorage.getItem(`ai-review-transfer:${pid()}:${review.id}`)||'null');if(!saved)return;review.transferPreview=saved;const root=document.getElementById('ai60TransferPanel');root.hidden=false;root.innerHTML='<h3>恢复转池操作</h3><div id="ai60TransferResult">将按原操作编号查询和补跑，成功项不会重复处理。</div><button class="btn" onclick="submitAiTransfer60(this)">核验并继续原操作</button>'}catch(error){toast(error.message||error)}};
-  window.openAiTransfer60=async()=>{const review=state.ai60Review,root=document.getElementById('ai60TransferPanel');if(!review||!root)return;review.transferPreview=null;const n=review.selection?.total??review.selected.size;if(!n)return toast('请先选择图片');root.hidden=false;root.innerHTML='<p>正在读取负样本分类…</p>';try{const result=await api(`/api/v61/projects/${encodeURIComponent(pid())}/negative-pool/categories`);if(state.ai60Review!==review||!root.isConnected)return;root.innerHTML=`<h3>转入负样本池</h3><p>已选择 ${n} 张。弃用本次 AI 候选框，原图与原始证据保留；正式 GT 冲突项会被阻断。</p><label>目标分类<select id="ai60TransferCategory" class="input">${(result.items||[]).map(row=>`<option value="${esc(row.id||row.category_id)}">${esc(row.name)}</option>`).join('')}</select></label><label>目标算法<select id="ai60TransferAlgorithm" class="input"><option value="">项目暂存（不确认训练资格）</option>${(state.algorithms||[]).map(row=>`<option value="${esc(row.id)}">${esc(row.name)}</option>`).join('')}</select></label><label><input id="ai60TransferAbsent" type="checkbox">人工确认本算法相关目标不存在；不勾选则仅暂存、不参与训练</label><div id="ai60TransferResult" role="status"></div><button class="btn" onclick="document.getElementById('ai60TransferPanel').hidden=true">取消</button><button class="btn" onclick="previewAiTransfer60(this)">预检影响范围</button>`}catch(error){root.textContent=error.message||String(error)}};
+  window.openAiTransfer60=async()=>{const review=state.ai60Review,root=document.getElementById('ai60TransferPanel');if(!review||!root||review.ambiguitySaving)return;review.transferPreview=null;const n=review.selection?.total??review.selected.size;if(!n)return toast('请先选择图片');root.hidden=false;root.innerHTML='<p>正在读取负样本分类…</p>';try{const result=await api(`/api/v61/projects/${encodeURIComponent(pid())}/negative-pool/categories`);if(state.ai60Review!==review||!root.isConnected)return;root.innerHTML=`<h3>转入负样本池</h3><p>已选择 ${n} 张。弃用本次 AI 候选框，原图与原始证据保留；正式 GT 冲突项会被阻断。</p><label>目标分类<select id="ai60TransferCategory" class="input">${(result.items||[]).map(row=>`<option value="${esc(row.id||row.category_id)}">${esc(row.name)}</option>`).join('')}</select></label><label>目标算法<select id="ai60TransferAlgorithm" class="input"><option value="">项目暂存（不确认训练资格）</option>${(state.algorithms||[]).map(row=>`<option value="${esc(row.id)}">${esc(row.name)}</option>`).join('')}</select></label><label><input id="ai60TransferAbsent" type="checkbox">人工确认本算法相关目标不存在；不勾选则仅暂存、不参与训练</label><div id="ai60TransferResult" role="status"></div><button class="btn" onclick="document.getElementById('ai60TransferPanel').hidden=true">取消</button><button class="btn" onclick="previewAiTransfer60(this)">预检影响范围</button>`}catch(error){root.textContent=error.message||String(error)}};
   function aiTransferPayload60(review){return {request_id:review.transferRequestId||(review.transferRequestId=window.BrowserCapabilityRuntime.createClientId('transfer-',20)),...(review.selection?{selection_id:review.selection.selection_id,excluded_image_ids:[...(review.selection.excluded||[])]}:{image_ids:[...review.selected]}),category_ids:[document.getElementById('ai60TransferCategory').value],algorithm_id:document.getElementById('ai60TransferAlgorithm').value.trim(),confirm_absent:document.getElementById('ai60TransferAbsent').checked,review_revision:review.reviewRevision}}
   window.previewAiTransfer60=async button=>{const review=state.ai60Review;if(!review)return;button.disabled=true;const node=document.getElementById('ai60TransferResult');try{const payload=aiTransferPayload60(review),result=await api(`${taskApi(review.id)}/negative-transfer-preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(state.ai60Review!==review||!node?.isConnected)return;review.transferPreview=payload;for(const input of document.querySelectorAll('#ai60TransferPanel input,#ai60TransferPanel select'))input.disabled=true;node.textContent=`共 ${result.total} 张：有框 ${result.with_boxes} 张，0 框 ${result.zero} 张，弃用 ${result.discarded_boxes} 个候选框；正式 GT 冲突 ${result.conflicts} 张，可转入 ${result.eligible} 张。`;button.textContent=`确认转入可用 ${result.eligible} 张`;button.onclick=()=>window.submitAiTransfer60(button)}catch(error){if(node)node.textContent=error.message||String(error)}finally{button.disabled=false}};
   window.undoAiTransfer60=async(requestId,button)=>{const review=state.ai60Review;if(!review)return;button.disabled=true;try{let result;do{result=await api(`${taskApi(review.id)}/negative-transfer/${encodeURIComponent(requestId)}/undo`,{method:'POST'});if(state.ai60Review!==review||review.closed)return}while(result.status==='pending');if(Array.isArray(result.label_summary))review.labelSummary=result.label_summary;await loadReviewPage(review.offset);button.textContent='已撤销转出'}catch(error){toast(error.message||error);button.disabled=false}};
@@ -9285,12 +9420,13 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     finally{if(button.isConnected)button.disabled=false}
   };
   async function loadReviewPage(offset){
-    const review=state.ai60Review;if(!review||review.closed)return false;
+    const review=state.ai60Review;if(!review||review.closed||review.ambiguitySaving)return false;
+    review.ambiguityPreview=null;
     const requestEpoch=++review.pageRequestEpoch,nextOffset=Math.max(0,offset);
     const current=()=>state.ai60Review===review&&!review.closed&&String(state.page||'')===String(review.ownerPage||'')&&review.pageRequestEpoch===requestEpoch;
     review.pageLoading=true;review.pageError='';renderReviewPage();
     try{
-      const response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}&filter=${encodeURIComponent(review.filter==='target'?'with_boxes':review.filter)}`);
+      const response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}&filter=${encodeURIComponent(review.filter==='target'?'clean_boxes':review.filter)}`);
       if(!current())return false;
       review.offset=nextOffset;review.total=response.total||0;review.summary=response.summary||{};review.reviewRevision=response.review_revision;review.taskError=response.task_error;review.task=response.task;
       review.items=(response.items||[]);for(const item of review.items){const id=String(item.image_id);if(item.review_state&&item.review_state!=='active'){review.edits.delete(id);review.decisions.delete(id)}else if(item.draft_revision)review.edits.set(id,item.boxes||[])}
@@ -9311,6 +9447,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
     const previous=state.ai60Review;
     if(previous&&!previous.closed){
+      if(previous.ambiguitySaving){toast('批量消歧正在保存，请等待结果');return false}
       if(String(previous.id)===String(id))return loadReviewPage(previous.offset);
       if(previous.submitting){toast('当前审核操作正在提交，请等待回执');return false}
       if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定切换审核任务吗？'))return false;
@@ -9328,7 +9465,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   // Navigation changes only the current draft decision; never auto-commits GT.
   document.addEventListener('keydown',event=>{
     const review=state.ai60Review,root=document.querySelector('.ai66-review');
-    if(!review||review.closed||review.submitting||review.pendingRequest||review.pageLoading||review.pageError||!root||state.ai60Edit||event.defaultPrevented||event.ctrlKey||event.metaKey||event.shiftKey||event.isComposing)return;
+    if(!review||review.closed||review.submitting||review.pendingRequest||review.pageLoading||review.pageError||review.ambiguitySaving||!root||state.ai60Edit||event.defaultPrevented||event.ctrlKey||event.metaKey||event.shiftKey||event.isComposing)return;
     if(!root.closest('.ai-review-page-shell')?.isConnected)return;
     const target=event.target;
     if(target?.closest?.('input,textarea,select,[contenteditable="true"],button'))return;
@@ -9361,7 +9498,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const review=state.ai60Review;
     // The verified receipt completes inside the submitting critical section.
     // Only that internal completion may leave while the external UI stays locked.
-    if(review?.submitting&&!afterCommit){toast('当前审核操作正在提交，请等待回执');return false}
+    if((review?.submitting&&!afterCommit)||review?.ambiguitySaving){toast('审核或批量消歧正在保存，请等待回执');return false}
     if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定离开审核工作台吗？'))return false;
     if(review){review.closed=true;review.pageRequestEpoch=Number(review.pageRequestEpoch||0)+1}
     destroyAiCandidateEditor60();state.ai60Edit=null;
@@ -9438,7 +9575,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const notice=document.getElementById('ai66EditConflictNotice');if(notice){notice.hidden=!item.manual_review_required;if(item.manual_review_required)notice.textContent='本图存在跨标签重叠框（例如 person / tangzhe），请核对原图，删除或调整错误的类别及框。冲突未消除前不能保存审核草稿，也不能写入正式标注。其他无冲突框会保留。'}
     const labelOptions=aiReviewLabels60().map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('');const newLabel=document.getElementById('ai66EditNewLabel');if(newLabel){newLabel.innerHTML=labelOptions;newLabel.value=edit.labelCode||''}const filter=document.querySelector('.ai66-edit [data-ai60-filter]');if(filter)filter.innerHTML='<option value="">全部类别</option>'+labelOptions;renderAiCandidateStage60();renderAiCandidateObjects60();bindAiCandidateEditor60();
   }
-  window.editAiCandidate60=id=>{const item=state.ai60Review?.seen.get(String(id));if(!item||item.status==='failed'||item.review_state&&item.review_state!=='active')return;if(state.ai60Edit?.id===String(id))return;if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定切换图片吗？'))return;destroyAiCandidateEditor60();const labels=aiReviewLabels60(),boxes=(item.boxes||[]).map(box=>({...box,id:box.id??window.BrowserCapabilityRuntime.createClientId('candidate-',20)}));state.ai60Edit={id:String(id),boxes,activeBox:boxes.length?0:null,labelCode:labels.find(label=>String(label.code)===String(boxes[0]?.label))?.code||labels[0]?.code||'',history:[],redo:[],dirty:false,closed:false};renderCandidateEditor60()};
+  window.editAiCandidate60=id=>{if(state.ai60Review?.ambiguitySaving)return toast('批量消歧保存中，请稍后编辑');const item=state.ai60Review?.seen.get(String(id));if(!item||item.status==='failed'||item.review_state&&item.review_state!=='active')return;if(state.ai60Edit?.id===String(id))return;if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定切换图片吗？'))return;destroyAiCandidateEditor60();const labels=aiReviewLabels60(),boxes=(item.boxes||[]).map(box=>({...box,id:box.id??window.BrowserCapabilityRuntime.createClientId('candidate-',20)}));state.ai60Edit={id:String(id),boxes,activeBox:boxes.length?0:null,labelCode:labels.find(label=>String(label.code)===String(boxes[0]?.label))?.code||labels[0]?.code||'',history:[],redo:[],dirty:false,closed:false};renderCandidateEditor60()};
   window.selectAiCandidateBox60=index=>{const edit=state.ai60Edit;if(!edit)return;if(edit.editor){edit.editor.select(edit.boxes[index]?.id);return}edit.activeBox=Number(index);renderAiCandidateObjects60()};
   window.chooseAiCandidateLabel60=code=>{const edit=state.ai60Edit,label=aiReviewLabels60().find(row=>String(row.code)===String(code));if(!edit||!label)return;edit.labelCode=label.code;const select=document.getElementById('ai66EditNewLabel');if(select)select.value=label.code;edit.editor?.sync({label})};
   window.updateAiCandidateBox60=(index,key,value)=>{const edit=state.ai60Edit,box=edit?.boxes[index];if(!box)return;const view=edit.editor?.snapshot();if(view&&(!view.visible||view.filteredCodes&&!view.filteredCodes.includes(String(box.label))))return;if(key==='label'){const label=aiReviewLabels60().find(item=>String(item.code)===String(value));if(!label)return;if(edit.editor){if(edit.editor.select(box.id))edit.editor.reclassSelected(label);return}const next=edit.boxes.map((row,at)=>at===index?{...row,label:label.code,class_id:label.class_id}:row);commitCandidateDraft60(edit,next,box.id)}else{if(!['x1','y1','x2','y2'].includes(key))return;if(String(value).trim()===''||!Number.isFinite(Number(value))){toast('候选框坐标必须是有效数字');renderAiCandidateObjects60();return}const next=edit.boxes.map((row,at)=>at===index?{...row,[key]:Number(value)}:row);commitCandidateDraft60(edit,next,box.id)}renderAiCandidateStage60();renderAiCandidateObjects60()};
@@ -9514,7 +9651,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     return receipt;
   }
   window.completeAiReview60=async mode=>{
-    const review=state.ai60Review;if(!review||review.closed||review.submitting||review.decisionSaving)return;
+    const review=state.ai60Review;if(!review||review.closed||review.submitting||review.decisionSaving||review.ambiguitySaving)return;
     const ownerPage=String(state.page||''),action=window.NavigationStability?.action?.(state.page);
     aiReviewSetSubmitting60(review,true);
     try{
