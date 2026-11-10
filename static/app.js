@@ -3141,7 +3141,7 @@ window.installUsability417=function(){
     }
     const jobId=String(id),project=String(pid()),sequence=++reportRequestSequence425;
     const skeleton=window.PlatformCore.presentation.loadingSkeleton('正在读取当前任务报告与冻结证据…');
-    const layer=modal('训练报告',`<div class="training-report-workspace quality-workspace" data-training-report-loading aria-busy="true">${skeleton}</div>`,true);
+    const layer=modal('训练报告',`<div class="training-report-workspace quality-workspace" data-training-report-dialog data-training-report-loading aria-busy="true">${skeleton}</div>`,true);
     const loading=layer?.querySelector('[data-training-report-loading]')||document.querySelector('[data-training-report-loading]');
     const current=()=>sequence===reportRequestSequence425&&String(pid())===project&&loading?.isConnected;
     const read=async()=>{

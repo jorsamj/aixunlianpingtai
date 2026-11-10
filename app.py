@@ -1298,7 +1298,7 @@ def enrich_job_runtime(
                 try:
                     algorithm = next(
                         (
-                            row for row in list_algorithms_internal(project_id)
+                            row for row in list_algorithms_internal(project_id, algorithm_id=algorithm_id)
                             if str(row.get("id") or "") == algorithm_id
                         ),
                         None,
@@ -23311,11 +23311,33 @@ def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', ve
     get_project(project_id);jf=project_dir(project_id)/'jobs'/job_id/'job.json'
     if not jf.exists(): raise HTTPException(status_code=404,detail='训练任务不存在')
     job=enrich_job_runtime(project_id,read_json(jf,{}),allow_version_archive=False);report=job.get('training_report') or {}
-    matches = [(algorithm, version) for algorithm in list_algorithms_internal(project_id)
+    # Prefer the existing SQL training-job index, then hydrate only its owning
+    # algorithms. Historical versions with no indexed identity still retain
+    # the original full-catalog fallback and its ambiguity safeguards.
+    if algorithm_id:
+        report_algorithms = list_algorithms_internal(project_id, algorithm_id=algorithm_id)
+        indexed_refs = []
+    else:
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        catalog = AlgorithmSqlStore(algorithms_file(project_id))
+        indexed_refs = catalog.training_version_refs(job_id) if catalog.db_path.is_file() else []
+        report_algorithms = (
+            [row for owner_id in sorted({owner_id for owner_id, _ in indexed_refs})
+             for row in list_algorithms_internal(project_id, algorithm_id=owner_id)]
+            if indexed_refs else list_algorithms_internal(project_id)
+        )
+    matches = [(algorithm, version) for algorithm in report_algorithms
                for version in algorithm.get('versions', [])
                if (not algorithm_id or str(algorithm.get('id')) == algorithm_id)
                and (not version_id or str(version.get('id')) == version_id)
                and str(version.get('job_id') or (version.get('training_lineage') or {}).get('task_id') or '') == job_id]
+    if not matches and indexed_refs:
+        # An indexed row whose JSON task identity is stale must not hide a
+        # genuine lineage-only match elsewhere in an older catalog.
+        matches = [(algorithm, version) for algorithm in list_algorithms_internal(project_id)
+                   for version in algorithm.get('versions', [])
+                   if (not version_id or str(version.get('id')) == version_id)
+                   and str(version.get('job_id') or (version.get('training_lineage') or {}).get('task_id') or '') == job_id]
     if (algorithm_id or version_id) and (not algorithm_id or not version_id or len(matches) != 1):
         raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 所选算法版本与训练任务不一致')
     if len(matches) > 1:

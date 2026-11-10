@@ -1,3 +1,5 @@
+> **2026-11-10 / 42.24.569 报告弹窗唯一 Owner**：原 `trainingReportCore425`、`ModalContentRuntime`/`closeModalCore424`、`static/modules/reports.js` 不变；只补报告身份标记及专属 CSS 稳定高度/滚动和四 Tab。保留原异步请求取消/失败重试，禁止添加第二套弹窗或报告缓存。见 [专项](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。
+
 > **2026-11-09 / 42.24.564 WeVisOne 配置展示 Owner**：原创建前 `syncAiNativeQueries429/renderAiCreateConfirmation429` 与任务详情 `renderProgress` 仍是唯一 Owner，显示 native Detection 与冻结 query/code/坐标，不新增嵌套弹窗、不暴露 Base64/Key。其他视觉模型 Prompt 不变。见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。
 
 > **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。

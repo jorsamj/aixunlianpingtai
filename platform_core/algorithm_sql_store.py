@@ -364,6 +364,25 @@ class AlgorithmSqlStore:
         with self._connect() as conn:
             return self._read_one_conn(conn, str(algorithm_id))
 
+    def training_version_refs(self, task_id: str) -> list[tuple[str, str]]:
+        """Find a training task's version owners without reading large JSON payloads.
+
+        The existing training_job_id index is the authoritative fast path.
+        Callers retain their legacy scan when an older record has no indexed
+        task identity (for example, a lineage-only historical version).
+        """
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """SELECT versions.algorithm_id, versions.id
+                   FROM algorithm_versions AS versions
+                   JOIN algorithms ON algorithms.id=versions.algorithm_id
+                   WHERE algorithms.project_id=? AND versions.training_job_id=?
+                   ORDER BY versions.algorithm_id, versions.id""",
+                (self.project_id, str(task_id)),
+            ).fetchall()
+        return [(str(row["algorithm_id"]), str(row["id"])) for row in rows]
+
     def exists(self, algorithm_id: str) -> bool:
         """Project-scoped identity check; no version/report payload hydration."""
         self.ensure_ready()

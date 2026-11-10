@@ -1,3 +1,5 @@
+> **2026-11-10 / 42.24.569 训练报告现有 Modal Owner 修复**：不新建 Modal/页面 owner；报告 loading/正式根共享稳定标记与 86dvh 单一滚动体，Tab 单行固定宽度并横向滚动，其他业务弹窗不改。Node 定向29/29，Chrome 实机未执行。见 [专项](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。
+
 > **2026-11-09 / 42.24.564 WeVisOne 实际推理配置**：仍由原 `syncAiNativeQueries429`、`renderAiCreateConfirmation429` 和 v60 `renderProgress` 单层展示原生 task、code/query、请求/坐标协议；任务详情用服务端冻结快照派生的无密钥配置。通用 JSON Prompt 行为不变。详见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。
 
 > **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。

@@ -146,7 +146,7 @@ def test_report_context_is_bound_to_selected_version_and_frozen_labels(monkeypat
     platform=_setup_report(monkeypatch,tmp_path)
     monkeypatch.setattr(platform,'DATA_DIR',tmp_path)
     version={'id':'v-person','job_id':'training-1','label_codes':['person'],'label_schema':[{'class_id':0,'code':'person','display_name':'行人'}],'training_lineage':{'task_id':'training-1','base':{'model':'yolo11n.pt'}}}
-    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path:[{'id':'a','name':'Person','versions':[version]}])
+    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path, *, algorithm_id=None:[{'id':'a','name':'Person','versions':[version]}])
     response=platform.v44_training_report('p','training-1',algorithm_id='a',version_id='v-person')
     assert response['report']['identity']=={'project_id':'p','algorithm_id':'a','algorithm_name':'Person','version_id':'v-person','job_id':'training-1'}
     assert response['report']['class_mapping']==[{'class_id':0,'code':'person','name':'行人'}]
@@ -160,7 +160,7 @@ def test_report_rejects_unrelated_selected_version_instead_of_reusing_old_task(m
     from fastapi import HTTPException
     platform=_setup_report(monkeypatch,tmp_path)
     monkeypatch.setattr(platform,'DATA_DIR',tmp_path)
-    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path:[{'id':'a','versions':[{'id':'v-other','job_id':'another-task'}]}])
+    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path, *, algorithm_id=None:[{'id':'a','versions':[{'id':'v-other','job_id':'another-task'}]}])
     with pytest.raises(HTTPException) as error:
         platform.v44_training_report('p','training-1',algorithm_id='a',version_id='v-other')
     assert error.value.status_code==409
@@ -170,7 +170,7 @@ def test_report_rejects_conflicting_version_lineage_task(monkeypatch,tmp_path):
     import pytest
     from fastapi import HTTPException
     platform=_setup_report(monkeypatch,tmp_path)
-    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path:[{'id':'a','versions':[{'id':'v','job_id':'training-1','training_lineage':{'task_id':'another-task'}}]}])
+    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path, *, algorithm_id=None:[{'id':'a','versions':[{'id':'v','job_id':'training-1','training_lineage':{'task_id':'another-task'}}]}])
     with pytest.raises(HTTPException) as error:
         platform.v44_training_report('p','training-1',algorithm_id='a',version_id='v')
     assert error.value.status_code==409
