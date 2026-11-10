@@ -12,6 +12,8 @@ test('沉浸式审核仅在原任务工作台内加载，原确认窗口层级�
   assert.ok(html.indexOf('ai-review-immersive.css') > html.indexOf('styles.css'));
   const appCacheKey = html.match(/src="\/static\/app\.js\?v=([^"]+)"/)?.[1];
   assert.match(appCacheKey, /^\d+(?:\.\d+)+$/, '主应用脚本缓存版本号必须为纯数字点分段');
+  assert.match(html, new RegExp('/static/main\\.mjs\\?v=' + appCacheKey.replaceAll('.', '\\.') + '"'));
+  assert.match(html, new RegExp('/static/styles\\.css\\?v=' + appCacheKey.replaceAll('.', '\\.') + '"'));
   assert.match(css, /\.ai-review-page-shell\s*\{[^}]*position:\s*fixed\s*!important/s);
   assert.match(css, /z-index:\s*120\s*!important/);
   assert.match(css, /#ai60ReviewInspector\.open\s*\{\s*display:\s*block\s*!important/);

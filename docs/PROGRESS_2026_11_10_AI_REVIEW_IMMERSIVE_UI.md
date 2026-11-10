@@ -22,3 +22,4 @@
 - 首个提交 `4c5bcc4` 触发的 Material Upload Chunking 与 Remote Material Import 合同测试指出：`static/index.html` 的 `app.js` 缓存键 `42.25.588-review579` 不符合仓库已有纯数字版本格式。属于本轮静态入口改动，引入的 CI 失败。
 - 仅把应用缓存键修为递增数字 `42.25.589`，不改上传模块业务和任何测试保护条件；审核定向测试额外锁定数字格式。
 - 在当前可获得的隔离前端文件集合中复验：原上传分块 14/14、原普通上传 request-id 4/4、原审核相关加新增测试 25/25 通过。正式远端 CI 仍以最新准确 SHA 结果为准。
+- 次轮 `48f2a92` 的 Frontend Runtime Stabilization 检查进一步指出：旧版既有 `version-marker-owner` 合同要求 `app.js`、`main.mjs` 与 `styles.css` 的入口缓存键相同。已同步把三者统一为 `42.25.589`，并增加一致性回归断言；只改变浏览器缓存引用，不修改后端/上传/训练逻辑。
