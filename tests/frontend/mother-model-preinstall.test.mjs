@@ -54,3 +54,12 @@ test('training resource rehydration delegates inherited base-model display to th
   assert.match(app, /window\.syncTrainingMotherModel429=syncMotherModel429/);
   assert.match(app, /select\.innerHTML='<option value="">从当前有效算法版本的 best\.pt 继续训练<\/option>'/);
 });
+
+test('unverified uploaded weights remain visible but disabled in first-training model picker', () => {
+  assert.match(app, /window\.visibleTrainingTargets429=visibleTargets429/);
+  assert.match(app, /m\.source==='preinstalled'/);
+  assert.match(app, /id="tr429MotherModelHint"/);
+  assert.match(app, /pending\.map\(m=>`<option[^`]*disabled>/);
+  assert.match(app, /motherModelReason429\(pending\[0\]\)/);
+  assert.match(resources, /官方可信 YOLO11n\/s\/m 权重按发布 SHA256 自动校验/);
+});

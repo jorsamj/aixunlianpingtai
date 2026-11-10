@@ -5018,7 +5018,14 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
 
   // ---------- training from processed, labeled pool; internal split is automatic ----------
-  function readyTargets429(){return(state.targets||[]).filter(t=>t.status==='ready')}
+  function visibleTargets429(targets){
+    const rows=Array.isArray(targets)?targets:[];
+    const ready=rows.filter(t=>t.status==='ready');
+    const awaitingModel=rows.filter(t=>t.status==='warning'&&(t.base_models||[]).some(m=>m.source==='preinstalled'&&String(m.model_status||'').toUpperCase()==='FOUND'));
+    return [...ready,...awaitingModel];
+  }
+  window.visibleTrainingTargets429=visibleTargets429;
+  function readyTargets429(){return visibleTargets429(state.targets)}
   function selectedTarget429(){return(state.targets||[]).find(x=>x.id===document.getElementById('tr429Target')?.value)}
   function selectedTrainAlg429(){const t=selectedTarget429(),k=document.getElementById('tr429Alg')?.value;return(t?.algorithms||[]).find(x=>x.key===k)}
   function pool429(){return(state.images||[]).filter(x=>processed429(x)&&x.annotated)}
@@ -5035,7 +5042,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
               <div class="field train-v3-priority"><label for="tr429Priority">任务优先级</label><input id="tr429Priority" class="input" type="number" min="1" max="999" step="1" value="50"></div>
             </div>
             <div class="train-v3-mother-row">
-              <div class="field"><label for="tr429MotherModel">基础模型</label><select id="tr429MotherModel" class="select" onchange="selectTrainingMotherModel429(this.value)"></select></div>
+              <div class="field"><label for="tr429MotherModel">基础模型</label><select id="tr429MotherModel" class="select" onchange="selectTrainingMotherModel429(this.value)"></select><small id="tr429MotherModelHint" class="item-sub"></small></div>
             </div>
             <div data-training-input-status aria-live="polite"></div>
             <label class="field"><span>历史素材使用策略</span><select id="trainHistoryPolicy" class="select" onchange="TrainingDraftRuntime.update({history_policy:this.value});refreshTrainingMaterialSelectionUiV3()"><option value="new_for_algorithm">仅本算法未使用的新素材（默认）</option><option value="include_history">允许复用本算法历史素材</option></select><small>按本算法可信历史使用证据筛选；未知状态保留原因。继承模型已见过的来源不能作为新的独立 Test。</small></label>
@@ -5105,20 +5112,37 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function preparedModels429(target){
     return (target?.base_models||[]).filter(m=>String(m?.model_status||'').toUpperCase()==='FOUND'&&m?.trainable!==false&&(/\.pt$/i.test(String(m.value||''))||/^asset:pt_[0-9a-f]{24}$/.test(String(m.value||''))));
   }
+  function motherModelReason429(model){
+    const status=String(model?.validation_status||'').toUpperCase();
+    const reason=String(model?.validation_error||'').trim();
+    const label={UNVERIFIED:'等待安全校验',CHECKING:'正在校验',INTERRUPTED:'校验已中断',SANDBOX_UNAVAILABLE:'隔离校验环境不可用',INVALID:'校验失败',INCOMPATIBLE:'模型类型不兼容',FAILED:'校验未完成'}[status]||'尚未获得训练资格';
+    return reason?`${label}（${reason}）`:label;
+  }
   function syncMotherModel429(){
     const select=document.getElementById('tr429MotherModel');
     if(!select)return;
-    const base=state.trainingDraftBase||{},models=preparedModels429(selectedTarget429()),config=cfg429();
+    const target=selectedTarget429(),base=state.trainingDraftBase||{},models=preparedModels429(target),config=cfg429();
+    const known=(target?.base_models||[]).filter(m=>String(m?.model_status||'').toUpperCase()==='FOUND'&&(/\.pt$/i.test(String(m?.value||''))||/^asset:pt_[0-9a-f]{24}$/.test(String(m?.value||''))));
+    const pending=known.filter(m=>!models.includes(m));
+    const hint=document.getElementById('tr429MotherModelHint');
     if(base.hasPrevious){
       select.disabled=true;select.innerHTML='<option value="">从当前有效算法版本的 best.pt 继续训练</option>';
+      if(hint)hint.textContent='已有训练成果会继承当前有效版本，无需重新选择母模型。';
       return;
     }
-    select.disabled=!models.length;
-    select.innerHTML=models.length?models.map(m=>`<option value="${esc(m.value)}" ${String(m.value)===String(config.model)?'selected':''}>${esc(m.label||m.name||m.value)} · 已就绪</option>`).join(''):'<option value="">没有预置母模型，请先到训练资源上传 .pt</option>';
+    // Keep registered but ineligible assets visible without making them selectable.
+    select.disabled=!known.length;
+    select.innerHTML=(models.length?'':'<option value="">暂无通过校验的母模型</option>')
+      +models.map(m=>`<option value="${esc(m.value)}" ${String(m.value)===String(config.model)?'selected':''}>${esc(m.label||m.name||m.value)} · 已就绪</option>`).join('')
+      +pending.map(m=>`<option value="${esc(m.value)}" disabled>${esc(m.label||m.name||m.value)} · ${esc(motherModelReason429(m))}</option>`).join('');
+    if(!known.length)select.innerHTML='<option value="">没有预置母模型，请先到训练资源上传 .pt</option>';
+    if(hint)hint.textContent=pending.length?`有 ${pending.length} 个已上传模型暂不可用：${motherModelReason429(pending[0])}。请到「训练资源 → 母模型管理」处理。`:models.length?'已通过校验的母模型可以直接用于首次训练。':'先到「训练资源」上传并校验 .pt 母模型。';
     if(models.length&&!models.some(m=>String(m.value)===String(config.model))){
       const first=String(models[0].value);
       select.value=first;
       window.TrainingDraftRuntime?.update?.({config:{...config,model:first}});
+    }else if(!models.length&&String(config.model||'')){
+      window.TrainingDraftRuntime?.update?.({config:{...config,model:''}});
     }
   }
   window.syncTrainingMotherModel429=syncMotherModel429;
@@ -7885,8 +7909,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.applyTrainingCreationResources=function(){
     const root=document.querySelector('.train429-create');if(!root||root.dataset.trainingProjectId!==String(pid())||root.dataset.algorithmId!==String(state.trainingDraft?.algorithmId||''))return false;
     const targetSelect=root.querySelector('#tr429Target'),algorithmSelect=root.querySelector('#tr429Alg');if(!targetSelect||!algorithmSelect)return false;
-    const targets=(state.targets||[]).filter(row=>row.status==='ready'),oldTarget=targetSelect.value,oldAlgorithm=algorithmSelect.value;
-    targetSelect.innerHTML=targets.map(row=>`<option value="${esc(row.id)}">${esc(row.name||row.id)}</option>`).join('')||'<option value="">正在准备训练资源</option>';
+    const targets=window.visibleTrainingTargets429?.(state.targets||[])||(state.targets||[]).filter(row=>row.status==='ready'),oldTarget=targetSelect.value,oldAlgorithm=algorithmSelect.value;
+    targetSelect.innerHTML=targets.map(row=>`<option value="${esc(row.id)}">${esc(row.name||row.id)}${row.status==='ready'?'':' · 母模型待校验'}</option>`).join('')||'<option value="">正在准备训练资源</option>';
     targetSelect.value=targets.some(row=>String(row.id)===oldTarget)?oldTarget:String(targets[0]?.id||'');
     const target=targets.find(row=>String(row.id)===targetSelect.value),algorithms=target?.algorithms||[];
     algorithmSelect.innerHTML=algorithms.map(row=>`<option value="${esc(row.key)}">${esc(row.name||row.key)}</option>`).join('')||'<option value="">等待训练算法</option>';

@@ -1,3 +1,5 @@
+> **2026-11-10 / 42.24.570 母模型可见性**：原 `resource-discovery.js` 单一管理页保持上传/校验反馈，原 `syncTrainingMotherModel429` 仍唯一绘制基础模型下拉；训练目标 warning 只为展示已上传母模型，不授予训练资格，失败项禁选，原 `training-submit.js` 校验与后端 SHA 阻断不变。无新弹窗/请求中心/缓存。见 [专项记录](MOTHER_MODEL_OFFICIAL_SHA256_GATE_2026_11_10.md)。
+
 > **2026-11-10 / 42.24.569 报告弹窗唯一 Owner**：原 `trainingReportCore425`、`ModalContentRuntime`/`closeModalCore424`、`static/modules/reports.js` 不变；只补报告身份标记及专属 CSS 稳定高度/滚动和四 Tab。保留原异步请求取消/失败重试，禁止添加第二套弹窗或报告缓存。见 [专项](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。
 
 > **2026-11-09 / 42.24.564 WeVisOne 配置展示 Owner**：原创建前 `syncAiNativeQueries429/renderAiCreateConfirmation429` 与任务详情 `renderProgress` 仍是唯一 Owner，显示 native Detection 与冻结 query/code/坐标，不新增嵌套弹窗、不暴露 Base64/Key。其他视觉模型 Prompt 不变。见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。

@@ -12,11 +12,30 @@ import zipfile
 from platform_core.mother_model_assets import (
     asset_selection, initial_asset, list_assets, put_asset,
     verify_checkpoint_in_sandbox, verifier_environment_status,
-    public_asset_status, _run_bounded_probe,
+    public_asset_status, _run_bounded_probe, verify_trusted_official_checkpoint,
 )
 
 
 class MotherModelRegistryTests(unittest.TestCase):
+    def test_official_approval_requires_exact_pinned_bytes_and_safe_zip(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "yolo11n.pt"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("archive/data.pkl", b"D" * 2048)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            official = {"yolo11n.pt": (path.stat().st_size, digest)}
+            with patch("platform_core.mother_model_assets._OFFICIAL_YOLO11_DETECT", official), \
+                 patch("platform_core.mother_model_assets.shutil.which", return_value=None):
+                passed = verify_trusted_official_checkpoint(path)
+                self.assertEqual(passed["validation_status"], "VERIFIED")
+                self.assertEqual(passed["verification_method"], "official_release_sha256")
+                self.assertEqual(passed["nc"], 80)
+                self.assertEqual(passed["names"][0], "person")
+                path.write_bytes(path.read_bytes() + b"tamper")
+                self.assertIsNone(verify_trusted_official_checkpoint(path))
+                path.write_bytes(b"not a torch checkpoint" * 200)
+                self.assertIsNone(verify_trusted_official_checkpoint(path))
+
     def test_fake_pt_is_recorded_but_never_selectable(self):
         with tempfile.TemporaryDirectory() as root:
             home = Path(root)

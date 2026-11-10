@@ -630,7 +630,10 @@ def resolve_training_label_contract(
                 "base_model_original_names": original,
                 "base_model_original_task": source.get("task"),
                 "base_model_class_relation": mapping,
-                "base_model_label_evidence": "sandbox_verified",
+                "base_model_label_evidence": (
+                    "official_release_sha256" if source.get("verification_method") == "official_release_sha256"
+                    else "sandbox_verified"
+                ),
             }
             if mapping == "different_class_meaning_or_order":
                 raise ValueError(

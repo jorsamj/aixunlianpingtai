@@ -56,7 +56,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
-import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=4226567';
+import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=4226570';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226491';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';

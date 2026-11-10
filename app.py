@@ -110,6 +110,7 @@ from platform_core.mother_model_assets import (
     list_assets as _list_mother_model_assets,
     put_asset as _update_mother_model_asset,
     verify_checkpoint_in_sandbox as _verify_mother_model_checkpoint,
+    verify_trusted_official_checkpoint as _verify_official_mother_model_checkpoint,
     verifier_environment_status as _mother_model_verifier_environment,
     public_asset_status as _public_mother_model_asset_status,
 )
@@ -6856,7 +6857,7 @@ def _ready_ultralytics_mother_model(project_id: str, requested: str) -> str:
         asset_id = reference[6:]
         verified = _verified_mother_model_asset(DATA_DIR, asset_id)
         if not verified:
-            raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_NOT_VERIFIED","message":"此母模型尚未通过隔离验证，或权重 SHA256 已变化；请到母模型管理执行校验"})
+            raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_NOT_VERIFIED","message":"此母模型尚未通过安全校验，或权重 SHA256 已变化；请到母模型管理执行校验"})
         return str(Path(verified["path"]).resolve())
     resolution = resolve_ultralytics_model(reference, project_id)
     candidate = resolution.path
@@ -6889,6 +6890,8 @@ def _prepared_mother_model_rows() -> List[Dict[str, Any]]:
             "value": f"asset:{model['asset_id']}" if model else str(path.resolve()),
             "asset_id": model.get("asset_id") if model else None,
             "validation_status": status,
+            "validation_error": model.get("validation_error") if model else "",
+            "verification_method": model.get("verification_method") if model else "",
             "names": model.get("names") if model else [],
             "nc": model.get("nc") if model else None,
             "task": model.get("task") if model else "unknown",
@@ -6896,7 +6899,7 @@ def _prepared_mother_model_rows() -> List[Dict[str, Any]]:
             "train_framework": "ultralytics", "source": "preinstalled",
             "model_status": "FOUND", "found": True, "downloadable": False,
             "size_bytes": path.stat().st_size, "trainable": bool(model.get("trainable")) if model else True,
-            "note": "已完成隔离验证" if status == "VERIFIED" else "待隔离验证，暂不可用于首次训练" if model else "历史预置权重；尚无结构化验证记录",
+            "note": ("官方发布权重 SHA256 已核对" if model.get("verification_method") == "official_release_sha256" else "已完成隔离验证") if status == "VERIFIED" else "待安全校验，暂不可用于首次训练" if model else "历史预置权重；尚无结构化验证记录",
         })
     return result
 
@@ -7379,6 +7382,16 @@ async def upload_preinstalled_base_model(file: UploadFile = File(...)):
                 os.replace(temp, path)
                 reused = False
         asset = _register_mother_model_asset(DATA_DIR, path, digest.hexdigest())
+        # Official, byte-for-byte pinned weights need no pickle load or sandbox.
+        # All unknown or repacked PT files retain the explicit sandbox gate.
+        official = _verify_official_mother_model_checkpoint(path)
+        if official:
+            asset = _update_mother_model_asset(DATA_DIR, {
+                "asset_id": asset["asset_id"], "name": filename,
+                "path": str(path.resolve()), "size_bytes": size,
+                "node_locations": [{"node_id": "controller", "state": "PRESENT", "sha256": digest.hexdigest()}],
+                **official, "verified_at": time.time(),
+            })
         return {"ok": True, "reused": reused, "name": filename, "path": str(path.resolve()),
                 "asset_id": asset["asset_id"], "validation_status": asset["validation_status"],
                 "size_bytes": size, "sha256": digest.hexdigest(), "model_status": "FOUND"}
@@ -7565,7 +7578,7 @@ def verify_mother_model_asset(asset_id: str):
 
     def run_probe():
         try:
-            result = _verify_mother_model_checkpoint(path)
+            result = _verify_official_mother_model_checkpoint(path) or _verify_mother_model_checkpoint(path)
             if path.is_file() and sha256_file(path) == asset["sha256"]:
                 _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, **result, "verified_at": time.time()})
             else:

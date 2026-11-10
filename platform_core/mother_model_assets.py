@@ -26,6 +26,29 @@ _VERIFY_OUTPUT_LIMIT = 128 * 1024
 _VERIFY_TIMEOUT_SECONDS = 60
 _VERIFY_STALE_SECONDS = 180
 
+# Exact SHA256 and byte counts published for the official Ultralytics assets
+# release v8.4.0. A filename alone must never authorize pickle deserialization.
+# https://github.com/ultralytics/assets/releases/tag/v8.4.0
+_OFFICIAL_YOLO11_DETECT = {
+    "yolo11n.pt": (5613764, "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"),
+    "yolo11s.pt": (19313732, "85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5"),
+    "yolo11m.pt": (40684120, "d5ffc1a674953a08e11a8d21e022781b1b23a19b730afc309290bd9fb5305b95"),
+}
+_COCO80_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
+    "toothbrush",
+)
+
 
 def verifier_environment_status(*, python_executable: str | None = None) -> dict:
     """Cheap configuration check only; never imports Torch or reads a PT.
@@ -182,6 +205,39 @@ def _check_torch_container(path: Path) -> tuple[bool, str]:
     except (OSError, ValueError, zipfile.BadZipFile):
         return False, "PT_ARCHIVE_CORRUPT"
     return True, ""
+
+
+def verify_trusted_official_checkpoint(path: Path) -> dict | None:
+    """Verify a pinned official release by bytes, without importing Torch.
+
+    Unknown or modified weights return None and must retain the existing
+    sandbox-only route. Never infer trust from a YOLO-looking filename.
+    """
+    expected = _OFFICIAL_YOLO11_DETECT.get(path.name.lower())
+    if not expected or path.is_symlink() or not path.is_file():
+        return None
+    expected_size, expected_sha = expected
+    if path.stat().st_size != expected_size:
+        return None
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha:
+            return None
+        structurally_valid, _ = _check_torch_container(path)
+        if not structurally_valid:
+            return None
+    except (OSError, ValueError):
+        return None
+    return {
+        "validation_status": "VERIFIED", "validation_error": "", "trainable": True,
+        "inference_compatible": True, "framework": "ultralytics", "task": "detect",
+        "names": list(_COCO80_NAMES), "nc": len(_COCO80_NAMES),
+        "architecture": "DetectionModel", "verification_method": "official_release_sha256",
+        "official_release": "ultralytics/assets:v8.4.0",
+    }
 
 
 def verify_checkpoint_in_sandbox(path: Path, *, python_executable: str | None = None) -> dict:

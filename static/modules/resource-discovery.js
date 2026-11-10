@@ -204,7 +204,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     const rows=runtime.assetModels||[];
     const verifier=runtime.verificationEnvironment||{};
     const envConfigured=status(verifier.status)==='CONFIGURED';
-    const verifierNotice=`<div class="mother-model-verifier-status" role="status"><span class="pill ${envConfigured?'ok':'warn'}">${envConfigured?'校验运行环境已配置':'校验环境需配置'}</span><span>${envConfigured?'现有 Python 与隔离工具已定位，实际隔离能力将在安全校验时再次确认。':escapeHtml(motherModelVerifyReason(verifier.code||'PT_SANDBOX_NOT_CONFIGURED'))}</span></div>`;
+    const verifierNotice=`<div class="mother-model-verifier-status" role="status"><span class="pill ${envConfigured?'ok':'warn'}">${envConfigured?'校验运行环境已配置':'自定义模型校验环境待配置'}</span><span>官方可信 YOLO11n/s/m 权重按发布 SHA256 自动校验；其他 .pt 仍须隔离校验。${envConfigured?'现有 Python 与隔离工具已定位。':escapeHtml(motherModelVerifyReason(verifier.code||'PT_SANDBOX_NOT_CONFIGURED'))}</span></div>`;
     const nodes=(runtime.nodeInventories||[]).filter(node=>node.install_available===true);
     const installRows=runtime.installations||[];
     const items=rows.map(row=>{
@@ -212,7 +212,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       const names=Array.isArray(row.names)?row.names:[];
       const preview=names.slice(0,8).map((name,index)=>`<span><b>${index}</b> ${escapeHtml(name)}</span>`).join('');
       const currentStatus=status(row.validation_status);
-      const state=ready?'已验证 · 可训练':currentStatus==='CHECKING'?'正在隔离校验':currentStatus==='SANDBOX_UNAVAILABLE'?'校验环境不可用':currentStatus==='INTERRUPTED'?'校验已中断':currentStatus==='FAILED'?'校验未完成':currentStatus==='INCOMPATIBLE'?'模型类型不兼容':currentStatus==='INVALID'?'模型校验失败':'等待校验';
+      const state=ready?(row.verification_method==='official_release_sha256'?'官方哈希已核对 · 可训练':'已验证 · 可训练'):currentStatus==='CHECKING'?'正在隔离校验':currentStatus==='SANDBOX_UNAVAILABLE'?'校验环境不可用':currentStatus==='INTERRUPTED'?'校验已中断':currentStatus==='FAILED'?'校验未完成':currentStatus==='INCOMPATIBLE'?'模型类型不兼容':currentStatus==='INVALID'?'模型校验失败':'等待校验';
       const installs=installRows.filter(item=>item.asset_id===row.asset_id);
       const installed=installs.filter(item=>item.installed);
       const pending=installs.find(item=>['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(status(item.status)));
@@ -431,7 +431,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       runtime.cacheLoadedAt = 0;
       await refreshCache(true, {force:true});
       await refreshApplication();
-      notify(`母模型 ${result.name} 已入库；请点击“安全校验”，通过后才能用于首次训练`);
+      notify(result.validation_status==='VERIFIED'?`母模型 ${result.name} 已匹配官方可信 SHA256，校验通过；首次训练可直接选择`:`母模型 ${result.name} 已入库；请点击“安全校验”，通过后才能用于首次训练`);
       return result;
     } catch (error) {
       notify(error?.message || '上传母模型失败');
@@ -454,7 +454,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       let count=0;
       const poll=async()=>{
         if(getPage()!=='训练资源'||++count>40)return;
-        try{const response=await request('/api/v63/base-models/assets');runtime.assetModels=response?.items||[];runtime.verificationEnvironment=response?.verification_environment||{};renderCachePanel();const row=runtime.assetModels.find(item=>item.asset_id===key);if(row&&status(row.validation_status)!=='CHECKING')return notify(status(row.validation_status)==='VERIFIED'?'母模型校验通过，首次训练时可选':`校验未通过：${motherModelVerifyReason(row.validation_error||row.validation_status)}`)}catch(_){return}
+        try{const response=await request('/api/v63/base-models/assets');runtime.assetModels=response?.items||[];runtime.verificationEnvironment=response?.verification_environment||{};renderCachePanel();const row=runtime.assetModels.find(item=>item.asset_id===key);if(row&&status(row.validation_status)!=='CHECKING'){if(status(row.validation_status)==='VERIFIED')await refreshApplication();return notify(status(row.validation_status)==='VERIFIED'?'母模型校验通过，首次训练时可选':`校验未通过：${motherModelVerifyReason(row.validation_error||row.validation_status)}`)}}catch(_){return}
         registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
       };
       registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
