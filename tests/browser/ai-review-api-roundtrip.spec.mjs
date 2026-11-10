@@ -33,6 +33,6 @@ test('真实API草稿刷新与转池撤销闭环（隔离候选，非模型实�
   await page.locator('#ai60TransferPanel').evaluate(node=>node.hidden=true);await page.locator('[data-ai66-filter="transferred"]').click();await expect(page.locator('.ai66-candidate-card')).toHaveCount(1);await page.locator('.ai-candidate-stage').first().click();await page.getByRole('button',{name:'查看转出记录',exact:true}).click();await expect(page.locator('#ai60TransferPanel')).toContainText('范围 1 张，已记录 1 张');await expect(page.locator('#ai60TransferPanel')).toContainText('isolated-review.jpg');
   await page.getByRole('button',{name:'撤销本次转出'}).click();await expect(page.locator('#ai60ApproveRemaining')).toHaveText('审核剩余 1 张');await page.locator('[data-ai66-filter="all"]').click();
   await page.screenshot({path:info.outputPath('real-api-review-transfer.png'),fullPage:true});
-  await page.evaluate(()=>window.showAiTask60('browser-review-failed'));await expect(page.locator('[data-ai-failure-details]')).toContainText('HTTP 422');const download=page.waitForEvent('download');await page.getByRole('button',{name:'导出本页错误 CSV'}).click();expect((await download).suggestedFilename()).toBe('annotation-errors.csv');
+  await page.evaluate(()=>window.showAiTask60('browser-review-failed'));await expect(page.locator('[data-ai-failure-details]')).toContainText('HTTP 422');const download=page.waitForEvent('download');await page.locator('[data-ai-export-format="csv"]').click();expect((await download).suggestedFilename()).toBe('annotation-errors.csv');
  }finally{child.kill();}
 });

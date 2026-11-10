@@ -72,7 +72,7 @@ async function drag(page,from,to) {
   if(from[0]===to[0]&&from[1]===to[1]){await page.mouse.click(a.x,a.y);return;}
   await page.mouse.move(a.x,a.y);await page.mouse.down();await page.mouse.move(b.x,b.y,{steps:8});await page.mouse.up();
 }
-const gt=page=>page.evaluate(()=>structuredClone(state.ann.boxes));
+const gt=page=>page.evaluate(()=>structuredClone(state.ann?.boxes||[]));
 const snapshot=page=>page.evaluate(()=>state.annotationEditor.snapshot());
 const annotationUrl=(fx,i=0)=>`/api/projects/${fx.project.id}/annotations/${fx.images[i].id}`;
 const boxes=(count=1)=>Array.from({length:count},(_,i)=>({id:`existing-${i}`,class_id:i%2,label:i%2?'vehicle':'person',
