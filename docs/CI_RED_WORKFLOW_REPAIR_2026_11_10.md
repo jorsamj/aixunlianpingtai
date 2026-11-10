@@ -26,3 +26,7 @@
 ## 42.24.576｜保留 M4 入口既有同步合同
 
 42.24.575 的 GitHub Actions 发现新引入的源码契约失败：`Remote Conversion Runtime` 的 `agent-contract`（Linux/Windows）以及 `Frontend Runtime Stabilization` 的四个源码守卫都要求 `window.openModelConfigM4=function(id='')`。将原异步声明改回同步函数，并仅在未命中已保存配置时通过 Promise 异步补读，然后递归调用已有同步入口。保留单一模型弹窗所有权，不更改模型服务地址、训练链路或转换协议；准确 576 CI 待验，未部署。
+
+## 42.24.576｜CSV 导出文件名回归断言补齐
+
+现有导出器的完整文件名合同为 `annotation-errors-<task-id>-<失败张数>.csv`，而历史浏览器断言仍要求已退役的固定名 `annotation-errors.csv`。仅更新隔离回归用例，以 `browser-review-failed` 任务的 1 张失败图为例，要求 `annotation-errors-browser-review-failed-1.csv`；保留完整行导出、下载事件、HTTP 422 验证，不改产品文件名及 API。此次属于同版本测试合同补齐，不再提高产品 VERSION。
