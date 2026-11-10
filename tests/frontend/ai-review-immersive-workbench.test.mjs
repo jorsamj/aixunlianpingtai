@@ -6,9 +6,11 @@ import vm from 'node:vm';
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../static/ai-review-immersive.css', import.meta.url), 'utf8');
+const version = readFileSync(new URL('../../VERSION.txt', import.meta.url), 'utf8').trim();
 
 test('沉浸式审核仅在原任务工作台内加载，原确认窗口层级仍高于它', () => {
-  assert.match(html, /ai-review-immersive\.css\?v=42\.24\.579/);
+  assert.match(html, new RegExp('ai-review-immersive\\.css\\?v=' + version.replaceAll('.', '\\.')),
+    '沉浸式审核样式缓存键必须与当前发布版本一致');
   assert.ok(html.indexOf('ai-review-immersive.css') > html.indexOf('styles.css'));
   const appCacheKey = html.match(/src="\/static\/app\.js\?v=([^"]+)"/)?.[1];
   assert.match(appCacheKey, /^\d+(?:\.\d+)+$/, '主应用脚本缓存版本号必须为纯数字点分段');
@@ -17,6 +19,8 @@ test('沉浸式审核仅在原任务工作台内加载，原确认窗口层级�
   assert.match(css, /\.ai-review-page-shell\s*\{[^}]*position:\s*fixed\s*!important/s);
   assert.match(css, /z-index:\s*120\s*!important/);
   assert.match(css, /#ai60ReviewInspector\.open\s*\{\s*display:\s*block\s*!important/);
+  assert.match(css, /\.ai66-review\.ai66-editing\s*>\s*#ai60ReviewInspector/);
+  assert.match(css, /\.ai66-review\.ai66-editing\s*>\s*#ai60ReviewGrid/);
   assert.match(css, /@media\s*\(max-width:\s*768px\)/);
   assert.match(app, /#ai60ReviewGrid/);
   assert.match(app, /ai-review-card-grid/);

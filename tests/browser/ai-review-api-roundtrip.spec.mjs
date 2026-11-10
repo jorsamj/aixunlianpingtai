@@ -30,7 +30,17 @@ test('真实API草稿刷新与转池撤销闭环（隔离候选，非模型实�
   const base=`${origin}/api/v60/projects/${project.id}/annotation-tasks/browser-review-real`;
   const persisted=await (await request.get(base+'/candidates')).json();expect(persisted.items[0].draft_revision).toBe(1);expect(persisted.items[0].boxes[0].x1).toBe(120);expect(persisted.items[0].original_boxes[0].x1).toBe(100);
   await page.locator('.ai-review-select').check();await page.getByRole('button',{name:'转入负样本池',exact:true}).click();await page.getByRole('button',{name:'预检影响范围'}).click();await expect(page.locator('#ai60TransferResult')).toContainText('弃用 1 个候选框');await page.getByRole('button',{name:'确认转入可用 1 张'}).click();await expect(page.locator('#ai60TransferResult')).toContainText('已转入 1 张');await expect(page.locator('#ai60ApproveRemaining')).toHaveText('通过剩余全部 0 张（整批结束）');
-  await page.locator('#ai60TransferPanel').evaluate(node=>node.hidden=true);await page.locator('[data-ai66-filter="transferred"]').click();await expect(page.locator('.ai66-candidate-card')).toHaveCount(1);await page.locator('.ai-candidate-stage').first().click();await page.getByRole('button',{name:'查看转出记录',exact:true}).click();await expect(page.locator('#ai60TransferPanel')).toContainText('范围 1 张，已记录 1 张');await expect(page.locator('#ai60TransferPanel')).toContainText('isolated-review.jpg');
+  await page.locator('#ai60TransferPanel').evaluate(node=>node.hidden=true);
+  // Transferred candidates are a low-frequency filter in the immersive workbench.
+  // Exercise the actual visible "更多筛选" entry instead of clicking a closed details child.
+  await page.locator('.ai-review-filter-more > summary').click();
+  await expect(page.locator('[data-ai66-filter="transferred"]')).toBeVisible();
+  await page.locator('[data-ai66-filter="transferred"]').click();
+  await expect(page.locator('.ai66-candidate-card')).toHaveCount(1);
+  await page.locator('.ai-candidate-stage').first().click();
+  await page.getByRole('button',{name:'查看转出记录',exact:true}).click();
+  await expect(page.locator('#ai60TransferPanel')).toContainText('范围 1 张，已记录 1 张');
+  await expect(page.locator('#ai60TransferPanel')).toContainText('isolated-review.jpg');
   await page.getByRole('button',{name:'撤销本次转出'}).click();await expect(page.locator('#ai60ApproveRemaining')).toHaveText('通过剩余全部 1 张（整批结束）');await page.locator('[data-ai66-filter="all"]').click();
   await page.screenshot({path:info.outputPath('real-api-review-transfer.png'),fullPage:true});
   await page.evaluate(()=>window.showAiTask60('browser-review-failed'));await expect(page.locator('[data-ai-failure-details]')).toContainText('HTTP 422');const download=page.waitForEvent('download');await page.locator('[data-ai-export-format="csv"]').click();expect((await download).suggestedFilename()).toBe('annotation-errors-browser-review-failed-1.csv');
