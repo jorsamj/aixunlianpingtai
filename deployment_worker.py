@@ -101,6 +101,68 @@ def shlex_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def classify_sophon_deploy_failure(error: Exception, *, reference_available: bool) -> ConversionError:
+    """Do not label every model_deploy failure a numerical disagreement.
+
+    TPU-MLIR can fail before its comparison step (unsupported op, compiler error,
+    timeout, etc.). The raw compiler output stays in convert.log; only an
+    explicit comparison failure is reported as a numerical mismatch.
+    """
+    if isinstance(error, subprocess.TimeoutExpired):
+        return ConversionError(
+            "SOPHON_DEPLOY_TIMEOUT", "算能 BMODEL 编译或验证超时，未发布产物",
+            solution="请查看转换日志确认超时阶段，检查模型复杂度和编译资源后再重试。",
+        )
+    detail = str(error).lower()
+    numeric_failure = (
+        "f32_blobs_compare" in detail
+        or "comparison mismatch" in detail
+        or "compare result is false" in detail
+        or "compare failed" in detail
+        or ("npz_tool" in detail and "compare" in detail
+            and any(flag in detail for flag in ("not pass", "failed", "mismatch", "error")))
+    )
+    if reference_available and numeric_failure:
+        return ConversionError(
+            "SOPHON_OFFLINE_REFERENCE_FAILED", "算能官方数值对照未通过，已拒绝发布 BMODEL",
+            solution="请查看 model_deploy 比较日志，定位不一致的输出及容差；不得直接跳过数值校验。",
+        )
+    return ConversionError(
+        "SOPHON_DEPLOY_FAILED", "算能 BMODEL 编译或验证命令执行失败，尚不能判定为数值不一致",
+        solution="请查看 model_deploy 原始日志的异常和退出码，检查算子、SDK 参数及运行资源。",
+    )
+
+
+RKNN_FAILURE_STAGES = {
+    "RKNN_CONFIG_FAILED": ("配置", "请核对目标芯片、输入通道顺序、Mean/Std 参数。"),
+    "RKNN_LOAD_ONNX_FAILED": ("加载 ONNX", "请查看不支持的算子、ONNX opset 和模型输入形状。"),
+    "RKNN_BUILD_FAILED": ("编译", "请查看 RKNN-Toolkit2 编译和量化日志，检查算子及校准数据。"),
+    "RKNN_EXPORT_FAILED": ("导出", "请检查输出路径、权限及磁盘空间。"),
+}
+
+
+def classify_rknn_conversion_failure(error: Exception) -> ConversionError:
+    """Translate the isolated RKNN interpreter's stable stage markers."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return ConversionError(
+            "RKNN_CONVERSION_TIMEOUT", "瑞芯微 RKNN 编译超时，未生成可用产物",
+            solution="请查看转换日志，核对模型复杂度、量化数据与转换节点资源。",
+        )
+    detail = str(error)
+    if RKNN_ONNX_DEPENDENCY_CODE in detail:
+        return ConversionError(
+            RKNN_ONNX_DEPENDENCY_CODE, "RKNN 转换环境 ONNX 依赖不兼容",
+            solution="请在配置的 RKNN Python 环境核对 ONNX 与 RKNN-Toolkit2 的官方兼容版本。",
+        )
+    for code, (stage, solution) in RKNN_FAILURE_STAGES.items():
+        if f"__RKNN_STAGE_ERROR__={code}" in detail:
+            return ConversionError(code, f"瑞芯微 RKNN {stage}阶段失败，尚不能判定为数值不一致", solution=solution)
+    return ConversionError(
+        "RKNN_CONVERSION_FAILED", "瑞芯微 RKNN 转换命令执行失败，尚不能判定为数值不一致",
+        solution="请查看 RKNN-Toolkit2 原始日志及退出码，检查转换环境与目标模型兼容性。",
+    )
+
+
 def safe_name(s: str) -> str:
     out = ''.join(c if c.isalnum() or c in '._-' else '_' for c in s)
     return out.strip('._') or 'model'
@@ -458,6 +520,10 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
     model.unlink(missing_ok=True)
     timeout = int(params.get("timeout") or 3600)
     reference_available = environment.get("offline_reference_available") is True
+    compare_all_requested = params.get("sophon_compare_all") is True
+    if compare_all_requested and not (reference_available and environment.get("offline_compare_all_available") is True):
+        raise ConversionError("SOPHON_COMPARE_ALL_UNAVAILABLE", "当前 SDK 不支持请求的全中间层数值诊断",
+                              solution="请检查 TPU-MLIR 工具能力，常规转换使用官方最终输出数值对照。")
     reference_input, reference_output = None, None
     transform_args = [
         "--model_name", name, "--model_def", str(onnx),
@@ -480,15 +546,14 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
         "--num_core", "1", "--model", str(model)]
     if reference_available:
         deploy_args.extend(["--test_input", str(reference_input), "--test_reference", str(reference_output)])
-        if environment.get("offline_compare_all_available") is True:
+        # Official output validation is the normal gate. Comparing all intermediate
+        # tensors is a diagnostic opt-in, not an implicit extra publishing gate.
+        if compare_all_requested:
             deploy_args.append("--compare_all")
     try:
         run_cmd(tool_argv(py, "model_deploy", tools["model_deploy"], *deploy_args), out_dir, log_file, timeout=timeout)
     except Exception as error:
-        if reference_available:
-            raise ConversionError("SOPHON_OFFLINE_REFERENCE_FAILED", "算能官方编译数值对照失败，已拒绝发布 BMODEL",
-                                  solution="请检查 model_deploy 原始日志中的层级差异、SDK 与 ONNX 精度配置。") from error
-        raise
+        raise classify_sophon_deploy_failure(error, reference_available=reference_available) from error
     file_record(model)
     info = run_cmd(tool_argv(py, "model_tool", tools["model_tool"], "--info", str(model)),
                    out_dir, log_file, timeout=min(timeout, 30))
@@ -510,7 +575,8 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
         "model_validation_reason": "官方 TPU-MLIR 用确定性合成张量完成编译数值对照；真实图片和中台部署前后处理仍须另验"
             if reference_available else "该 SDK 未同时提供 model_transform 和 model_deploy 参考数值对照参数；未执行官方数值比较",
         "offline_reference": {"protocol": "sophon_compiler_synthetic_v1", "input": file_record(reference_input),
-                              "reference": file_record(reference_output), "compare_all": bool(environment.get("offline_compare_all_available"))}
+                              "reference": file_record(reference_output), "compare_all": compare_all_requested,
+                              "comparison_scope": "all_intermediate" if compare_all_requested else "outputs_only"}
             if reference_available else None,
     })
     return model
@@ -582,14 +648,19 @@ def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
         dataset_txt.write_text('\n'.join(str(x.resolve()) for x in imgs), encoding='utf-8')
         append_log(log_file, f'RKNN INT8 校准图片：{len(imgs)} 张')
     out=out_dir/f'{safe_name(onnx.stem)}_{chip}_{"int8" if quant else "fp"}.rknn'
+    # Never accept a stale RKNN from a previous failed attempt.
+    out.unlink(missing_ok=True)
     mean=str(params.get('mean') or '0,0,0')
     std=str(params.get('rknn_std') or '255,255,255')
     runner=Path(__file__).resolve().parent/'rknn_convert_runner.py'
     if not runner.exists(): raise RuntimeError('缺少平台 RKNN 转换执行器 rknn_convert_runner.py')
     cmd=[py,str(runner),'--onnx',str(onnx),'--output',str(out),'--chip',chip,'--precision',precision,'--mean',mean,'--std',std]
     if dataset_txt: cmd += ['--dataset',str(dataset_txt)]
-    run_cmd(cmd, out_dir, log_file, timeout=int(params.get('timeout') or 3600))
-    if not out.exists(): raise RuntimeError('RKNN-Toolkit2 执行结束，但没有生成 .rknn 文件。')
+    try:
+        run_cmd(cmd, out_dir, log_file, timeout=int(params.get('timeout') or 3600))
+    except Exception as error:
+        raise classify_rknn_conversion_failure(error) from error
+    file_record(out)  # Includes nonempty artifact verification.
     return out
 
 def copy_artifact(src: Path, artifacts: Path):
@@ -773,6 +844,10 @@ def main():
             }
             evidence['deployment_contract_status'] = manifest['inference_contract']['status']
             evidence['source_pt_label_check'] = source_pt_label_check
+        elif target == 'rockchip':
+            # SDK build/export alone does not establish numerical or board parity.
+            evidence['compiler_numeric_status'] = 'unavailable'
+            evidence['compiler_numeric_scope'] = 'unverified'
         manifest['execution_evidence'] = evidence
         write_json(artifacts/'manifest.json', manifest)
         output_rows=[]

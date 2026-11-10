@@ -19,6 +19,18 @@ def parse_triplet(text, default):
         return default
 
 
+def checked_rknn_step(code, label, call, *, allow_none=False):
+    """Expose the failed official API stage without suppressing SDK tracebacks."""
+    try:
+        result = call()
+        if result != 0 and not (allow_none and result is None):
+            raise RuntimeError(f"{label} 失败: {result}")
+        return result
+    except Exception:
+        print(f"__RKNN_STAGE_ERROR__={code}", flush=True)
+        raise
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--onnx', required=True)
@@ -57,14 +69,13 @@ def main():
     mean=parse_triplet(args.mean,[0,0,0]); std=parse_triplet(args.std,[255,255,255])
     rknn=RKNN(verbose=bool(args.verbose))
     try:
-        ret=rknn.config(mean_values=[mean], std_values=[std], target_platform=str(args.chip).lower())
-        if ret not in (None,0): raise RuntimeError(f'rknn.config 失败: {ret}')
-        ret=rknn.load_onnx(model=str(onnx))
-        if ret!=0: raise RuntimeError(f'rknn.load_onnx 失败: {ret}')
-        ret=rknn.build(do_quantization=quant, dataset=dataset if quant else None)
-        if ret!=0: raise RuntimeError(f'rknn.build 失败: {ret}')
-        ret=rknn.export_rknn(str(out))
-        if ret!=0: raise RuntimeError(f'rknn.export_rknn 失败: {ret}')
+        checked_rknn_step('RKNN_CONFIG_FAILED', 'rknn.config',
+                          lambda: rknn.config(mean_values=[mean], std_values=[std], target_platform=str(args.chip).lower()),
+                          allow_none=True)
+        checked_rknn_step('RKNN_LOAD_ONNX_FAILED', 'rknn.load_onnx', lambda: rknn.load_onnx(model=str(onnx)))
+        checked_rknn_step('RKNN_BUILD_FAILED', 'rknn.build',
+                          lambda: rknn.build(do_quantization=quant, dataset=dataset if quant else None))
+        checked_rknn_step('RKNN_EXPORT_FAILED', 'rknn.export_rknn', lambda: rknn.export_rknn(str(out)))
         print(json.dumps({'ok':True,'output':str(out),'chip':args.chip,'precision':args.precision},ensure_ascii=False))
     finally:
         try:rknn.release()

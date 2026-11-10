@@ -196,10 +196,13 @@ def test_sophon_compiler_passes_official_reference_flags_when_sdk_supports_them(
         "input_width": 32, "precision": "fp16"}, None, tmp_path / "log", verified_toolchain=environment)
     assert result.is_file()
     assert "--test_input" in commands[0] and "--test_result" in commands[0]
-    assert "--test_input" in commands[1] and "--test_reference" in commands[1] and "--compare_all" in commands[1]
+    assert "--test_input" in commands[1] and "--test_reference" in commands[1]
+    assert "--compare_all" not in commands[1]  # SDK capability alone must not expand the publishing gate.
     receipt = json.loads((tmp_path / "sophon_validation.json").read_text(encoding="utf-8"))
     assert receipt["model_validation_status"] == "incomplete"
     assert receipt["compiler_numeric_status"] == "passed_synthetic_reference"
+    assert receipt["offline_reference"]["comparison_scope"] == "outputs_only"
+    assert receipt["offline_reference"]["compare_all"] is False
     assert len(receipt["offline_reference"]["input"]["sha256"]) == 64
 
 
@@ -231,6 +234,41 @@ def test_sophon_compiler_reference_failure_is_not_published(tmp_path, monkeypatc
             "input_width": 32, "precision": "fp16"}, None, tmp_path / "log", verified_toolchain=environment)
     assert raised.value.code == "SOPHON_OFFLINE_REFERENCE_FAILED"
     assert not list(tmp_path.glob("*.bmodel"))
+
+
+def test_sophon_comparison_diagnostic_opt_in_requires_sdk_support(tmp_path):
+    source = tmp_path / "input.onnx"
+    source.write_bytes(b"test")
+    environment = {"tools": {"model_transform": "x", "model_deploy": "y", "model_tool": "z"},
+                   "python_path": "python", "offline_reference_available": False,
+                   "offline_compare_all_available": False}
+    with pytest.raises(worker.ConversionError) as raised:
+        worker.build_sophon(source, tmp_path, {}, {"chip": "bm1688", "precision": "fp16",
+            "sophon_compare_all": True, "input_height": 32, "input_width": 32},
+            None, tmp_path / "log", verified_toolchain=environment)
+    assert raised.value.code == "SOPHON_COMPARE_ALL_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("message, code", [
+    ("CompilerError: unsupported operator ConvTranspose", "SOPHON_DEPLOY_FAILED"),
+    ("npz_tool.py compare: output not pass tolerance", "SOPHON_OFFLINE_REFERENCE_FAILED"),
+    ("compiler comparison mismatch", "SOPHON_OFFLINE_REFERENCE_FAILED"),
+])
+def test_sophon_deploy_error_classification_does_not_blame_numeric_unconditionally(message, code):
+    failure = worker.classify_sophon_deploy_failure(RuntimeError(message), reference_available=True)
+    assert failure.code == code
+
+
+def test_sophon_deploy_without_reference_does_not_claim_numeric_comparison():
+    failure = worker.classify_sophon_deploy_failure(RuntimeError("unsupported op"), reference_available=False)
+    assert failure.code == "SOPHON_DEPLOY_FAILED"
+
+
+def test_sophon_deploy_timeout_is_distinct_from_numeric_failure():
+    import subprocess
+    failure = worker.classify_sophon_deploy_failure(
+        subprocess.TimeoutExpired(["model_deploy.py"], 15), reference_available=True)
+    assert failure.code == "SOPHON_DEPLOY_TIMEOUT"
 
 
 def test_sophon_probe_existing_but_broken_tools_are_unavailable(tmp_path):
