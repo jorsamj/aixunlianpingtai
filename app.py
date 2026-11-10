@@ -26241,6 +26241,7 @@ class AnnotationDraftReq(BaseModel):
     revision: int = Field(ge=0)
     request_id: str
     source_content_sha256: Optional[str] = None
+    auto_resolution: bool = False
 
 
 @app.put("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/{image_id}/draft")
@@ -26271,7 +26272,7 @@ def save_annotation_review_draft(project_id: str, task_id: str, image_id: str, p
             boxes = normalize_boxes(stable_boxes, int(material.get('width') or item.get('width') or 0),
                                     int(material.get('height') or item.get('height') or 0), labels)
             saved = store.save_draft(image_id, boxes, expected_revision=payload.revision,
-                                     actor=actor, request_id=payload.request_id)
+                                     actor=actor, request_id=payload.request_id, automatic=payload.auto_resolution)
         except (ValueError, KeyError) as error:
             raise HTTPException(409 if 'revision' in str(error).lower() else 422, detail=str(error)) from error
         return {**saved, 'item':store.get(image_id), 'review_revision':store.review_revision(), 'summary':{**store.summary(), **store.review_counts()}, 'label_summary':store.label_summary()}

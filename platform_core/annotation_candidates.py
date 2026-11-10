@@ -639,8 +639,9 @@ class CandidateStore:
             db.execute("UPDATE candidates SET accepted=? WHERE status IN ('success','empty') "
                        "AND accepted IS NULL AND review_state='active' "
                        "AND (NOT ? OR COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0 OR draft_revision>0) "
+                       "AND (NOT ? OR COALESCE(json_extract(draft_json,'$.auto_resolution'),0)=0) "
                        "AND image_id NOT IN (SELECT image_id FROM commits) "
-                       "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted), bool(accepted)))
+                       "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted), bool(accepted), bool(accepted)))
             self._bump_revision(db)
 
     def remap_labels(self, mapping: dict[str, str], label_ids: dict[str, int]) -> None:
@@ -814,7 +815,7 @@ class CandidateStore:
             result['revision'] = int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
             return result
 
-    def save_draft(self, image_id, boxes, *, expected_revision, actor, request_id):
+    def save_draft(self, image_id, boxes, *, expected_revision, actor, request_id, automatic=False):
         """Persist a task-local review revision, never write formal annotations.
 
         Geometry, source hash and permission checks belong to the API holding
@@ -832,7 +833,8 @@ class CandidateStore:
             prior = db.execute("SELECT event_json FROM review_events WHERE image_id=? AND operation_id=? AND kind='draft'",(str(image_id),str(request_id))).fetchone()
             if prior:
                 event = json.loads(prior[0])
-                if event['digest'] != digest or event['actor'] != actor:
+                if (event['digest'] != digest or event['actor'] != actor
+                        or bool(event.get('automatic', False)) != bool(automatic)):
                     raise ValueError('request_id reused with different draft')
                 return event['result']
             row = db.execute('SELECT * FROM candidates WHERE image_id=?',(str(image_id),)).fetchone()
@@ -844,10 +846,10 @@ class CandidateStore:
             original = json.loads(row['item_json'])
             if original.get('manual_review_required') and cross_label_overlaps(boxes):
                 raise ValueError('跨标签目标框仍显著重叠，请删除或修改冲突框再保存')
-            result = dict(image_id=str(image_id),revision=int(expected_revision)+1,boxes=json.loads(encoded),saved_at=time.time(),actor=str(actor))
+            result = dict(image_id=str(image_id),revision=int(expected_revision)+1,boxes=json.loads(encoded),saved_at=time.time(),actor=str(actor),auto_resolution=bool(automatic))
             db.execute('UPDATE candidates SET draft_revision=?,draft_json=?,boxes_count=? WHERE image_id=?',
                        (result['revision'],json.dumps(result,ensure_ascii=False),len(boxes),str(image_id)))
-            db.execute("INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,'draft',?)",(str(image_id),str(request_id),json.dumps(dict(digest=digest,actor=actor,result=result),ensure_ascii=False)))
+            db.execute("INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,'draft',?)",(str(image_id),str(request_id),json.dumps(dict(digest=digest,actor=actor,automatic=bool(automatic),result=result),ensure_ascii=False)))
             self._bump_revision(db)
             return result
 

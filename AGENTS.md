@@ -1,3 +1,5 @@
+> **2026-11-10 / 42.24.574 AI自动/手动消歧与IoU阈值**：在有歧义筛选中加入IoU≥0.50～1.00可填阈值，自动按置信度优先、无分数按原候选顺序，或手动指定唯一标签；链式重叠/阈值外残留后台冲突跳过整图。原CandidateStore草稿CAS记录auto_resolution，审核剩余不能自动采用自动草稿，仍需逐图明确采用后才可能写GT；不改模型/Worker/生产。JS语法及算法隔离通过，完整Python/Chrome/准确SHA CI/4070待验，见[专项](docs/WEVISONE_OVERLAP_MANUAL_REVIEW_2026_11_10.md)。
+
 > **2026-11-10 / 42.24.573 AI审核有歧义筛选与批量消歧**：保留原 with_boxes 合同，新增无歧义有框 clean_boxes 与待消歧 ambiguous 独立筛选；现有三栏工作台当前页勾选、指定保留正式标签、预检 IoU>0.5 同位置冲突，链式/多目标/非唯一标签跳过，沿原单图 CAS 草稿逐图保存，不自动采用或写 GT。不改 Worker/任务/训练/原图、生产不动；JS 语法与安全算法隔离检查通过，Python/Chrome/准确 SHA CI/4070 待验。详见 [专项记录](docs/WEVISONE_OVERLAP_MANUAL_REVIEW_2026_11_10.md)。
 
 > **2026-11-10 / 42.24.572 训练大批量冻结选择未带入创建任务 P0**：修复超过 2,000 张全选在训练草稿中使用服务器冻结引用后，前端仍按空 `materialIds` 展示 0 张、标签为空的问题；原 selection-summary 接口直接按冻结引用读取正式 GT 正样本标签，训练创建/确认页正确展示冻结数量。标签选择后普通冻结引用保持有效，按样本角色过滤的引用仍绑定原标签；已有旧冻结清单保留旧严格合同。迭代提交补齐 `base_version_id`，新建弹窗重置旧引用，兼容性检查明确延后到任务准入，不冒充通过；不传 2 万个 ID 至浏览器，不改 GT/Worker。Node 定向回归及 Python 编译通过，Python API 依赖、真实 4070 和准确 SHA CI 需现场复核，未部署。见 [专项记录](docs/TRAIN_FROZEN_SELECTION_CONFIRM_P0_2026_11_10.md)。

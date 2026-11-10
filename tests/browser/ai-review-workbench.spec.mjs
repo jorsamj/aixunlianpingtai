@@ -58,9 +58,52 @@ test('有歧义筛选及同位置批量保留一个标签，仅保存草稿',asy
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 1 / 勾选 2 张');
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('跳过 1 张');
  page.once('dialog',dialog=>dialog.accept());
- await page.getByRole('button',{name:'确认只保留所选标签（保存草稿）'}).click();
+ await page.getByRole('button',{name:'确认处理并保存草稿'}).click();
  await expect.poll(()=>writes.length).toBe(1);
  expect(writes[0].revision).toBe(0);
  expect(writes[0].boxes.map(row=>row.label)).toEqual(['person','fire']);
  await expect(page.locator('.ai-review-ambiguity-feedback')).toContainText('草稿已保存 1 张');
+});
+
+
+test('歧义自动模式可填 IoU 阈值，优先置信度且无分数不自动采用',async({page})=>{
+ await page.setViewportSize({width:1366,height:1000});await page.goto('/');
+ await expect.poll(()=>page.evaluate(()=>typeof state!=='undefined'&&state.uiReady)).toBe(true);
+ const img='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="960"/>');
+ const box=(label,x1,y1,x2,y2,confidence)=>({label,x1,y1,x2,y2,...(confidence==null?{}:{confidence})});
+ const items=[
+   {image_id:'confident',filename:'有分数.jpg',url:img,width:1280,height:960,status:'success',manual_review_required:true,boxes:[box('person',0,0,100,100,.3),box('tangzhe',0,0,100,100,.9)]},
+   {image_id:'no-score',filename:'无分数.jpg',url:img,width:1280,height:960,status:'success',manual_review_required:true,boxes:[box('person',0,0,100,100),box('tangzhe',15,0,115,100)]}
+ ];
+ const writes=[];
+ await page.route('**/api/v60/projects/*/annotation-tasks/ambiguity-auto/candidates**',route=>{
+   const url=new URL(route.request().url());
+   if(route.request().method()==='PUT'&&url.pathname.endsWith('/draft')){
+     const body=route.request().postDataJSON(),id=decodeURIComponent(url.pathname.split('/').at(-2));
+     writes.push({id,body});
+     const index=items.findIndex(row=>row.image_id===id);
+     items[index]={...items[index],boxes:body.boxes,draft_revision:1,draft:{auto_resolution:true}};
+     return route.fulfill({json:{revision:1,review_revision:2,item:items[index],summary:{ambiguous:2}}});
+   }
+   return route.fulfill({json:{total:2,review_revision:1,summary:{ambiguous:2},items}});
+ });
+ await page.evaluate(()=>window.reviewAiLabel427('ambiguity-auto'));
+ await page.getByRole('button',{name:/有歧义/}).click();
+ await page.locator('#ai60AmbiguousMode').selectOption('auto');
+ await page.getByRole('button',{name:'选择本页'}).click();
+ await page.getByRole('button',{name:'预检本页勾选图片'}).click();
+ await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 1 / 勾选 2 张');
+ await page.locator('#ai60AmbiguousThreshold').fill('0.70');
+ await page.locator('#ai60AmbiguousThreshold').blur();
+ await page.getByRole('button',{name:'预检本页勾选图片'}).click();
+ await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 2 / 勾选 2 张');
+ await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('1 组无可信置信度');
+ page.once('dialog',dialog=>dialog.accept());
+ await page.getByRole('button',{name:'确认处理并保存草稿'}).click();
+ await expect.poll(()=>writes.length).toBe(2);
+ expect(writes.every(row=>row.body.auto_resolution===true)).toBe(true);
+ expect(writes.find(row=>row.id==='confident').body.boxes.map(b=>b.label)).toEqual(['tangzhe']);
+ expect(writes.find(row=>row.id==='no-score').body.boxes.map(b=>b.label)).toEqual(['person']);
+ await expect.poll(()=>page.evaluate(()=>!state.ai60Review.decisions.has('confident')&&!state.ai60Review.decisions.has('no-score'))).toBe(true);
+ await expect(page.locator('.ai66-candidate-card').first()).toContainText('已自动消歧并保存草稿');
 });

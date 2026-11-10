@@ -110,6 +110,36 @@ def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
 
 
 
+
+def test_automatic_ambiguity_draft_cannot_be_bulk_accepted_as_human_review(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="auto-overlap")
+    store.initialize(labels=["person", "tangzhe"], total_images=2)
+    a = {"label": "person", "x1": 10, "y1": 10, "x2": 70, "y2": 80}
+    b = {**a, "label": "tangzhe"}
+    store.append_items([
+        {"image_id": "auto", "status": "success", "boxes": [a, b], "manual_review_required": True},
+        {"image_id": "manual", "status": "success", "boxes": [a, b], "manual_review_required": True},
+    ])
+    first = store.save_draft("auto", [a], expected_revision=0, actor="reviewer",
+                             request_id="auto-request", automatic=True)
+    assert first["auto_resolution"] is True
+    assert store.save_draft("auto", [a], expected_revision=0, actor="reviewer",
+                            request_id="auto-request", automatic=True) == first
+    with pytest.raises(ValueError, match="request_id reused"):
+        store.save_draft("auto", [a], expected_revision=0, actor="reviewer",
+                         request_id="auto-request", automatic=False)
+    store.save_draft("manual", [b], expected_revision=0, actor="reviewer",
+                     request_id="manual-request")
+    store.decide_unmentioned(True)
+    assert store.get("auto")["accepted"] is None
+    assert store.get("auto")["draft"]["auto_resolution"] is True
+    assert store.get("manual")["accepted"] is True
+    assert store.review_counts()["unreviewed_reviewable"] == 1
+    store.apply_decisions([CandidateDecision("auto", True)])
+    assert store.get("auto")["accepted"] is True
+    assert store.statistics()["gt_committed"] == 0
+
+
 def test_review_filters_separate_clean_boxes_from_ambiguous_candidates(tmp_path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="ambiguous-filter")
     store.initialize(labels=["person", "tangzhe"], total_images=4)

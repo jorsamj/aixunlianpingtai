@@ -1960,3 +1960,8 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .ai-review-ambiguity-preview small{color:#9a601d}
 .ai-review-ambiguity-preview .btn{min-height:40px}
 @media(max-width:768px){.ai-review-ambiguity-panel{padding:12px}.ai-review-ambiguity-controls{align-items:stretch}.ai-review-ambiguity-controls label,.ai-review-ambiguity-controls .input{width:100%}}
+
+.ai-review-ambiguity-controls label[for="ai60AmbiguousMode"] .input{width:190px}
+.ai-review-ambiguity-controls label[for="ai60AmbiguousThreshold"] .input{width:128px;font-variant-numeric:tabular-nums}
+.ai-review-ambiguity-controls label[for="ai60AmbiguousKeep"] .input{width:220px}
+@media(max-width:768px){.ai-review-ambiguity-controls label[for="ai60AmbiguousMode"] .input,.ai-review-ambiguity-controls label[for="ai60AmbiguousThreshold"] .input,.ai-review-ambiguity-controls label[for="ai60AmbiguousKeep"] .input{width:100%}}
