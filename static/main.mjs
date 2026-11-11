@@ -24,7 +24,7 @@ import {installExternalAlgorithmPlatformRuntime} from './modules/external-algori
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261111-training-time';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226511';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.568';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.582';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
@@ -33,7 +33,7 @@ import {installTrainingProgressStream} from './modules/training-progress-stream.
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.582';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=20261111-training-time';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=42.25.592';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=4226518';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
