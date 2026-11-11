@@ -844,6 +844,7 @@ class CandidateStore:
             'low': f"{active} AND EXISTS (SELECT 1 FROM json_each(candidates.item_json,'$.boxes') b WHERE json_extract(b.value,'$.confidence')<0.6)",
             'hard': f"{active} AND COALESCE(json_array_length(json_extract(item_json,'$.hard_sample_signals')),0)>0",
             'failed': "status='failed'", 'edited': 'draft_revision>0',
+            'committed': "image_id IN (SELECT image_id FROM commits)",
             'transferred': "review_state='transferred'", 'blocked': "review_state='blocked'",
             'unreviewed': f"{active} AND status IN ('success','empty') AND accepted IS NULL AND image_id NOT IN (SELECT image_id FROM commits)",
             'remaining': f"{active} AND status IN ('success','empty') AND (accepted IS NULL OR accepted=1) AND image_id NOT IN (SELECT image_id FROM commits)",
@@ -859,7 +860,9 @@ class CandidateStore:
 
     def iter_selected_ids(self, filter='all'):
         self._ready()
-        where = self._filter_sql(filter)
+        # A frozen bulk selection is an action scope, never a read-only GT audit.
+        # Keep committed rows in list filters, but exclude them from all selection scopes.
+        where = f"({self._filter_sql(filter)}) AND image_id NOT IN (SELECT image_id FROM commits)"
         with closing(self._connect()) as db:
             ordinal = 0
             while True:
@@ -874,7 +877,7 @@ class CandidateStore:
         self._ready()
         with closing(self._connect()) as db:
             result = {key: int(db.execute(f'SELECT COUNT(*) FROM candidates WHERE {self._filter_sql(value)}').fetchone()[0])
-                      for key, value in [('total','all'),('with_boxes','with_boxes'),('clean_boxes','clean_boxes'),('ambiguous','ambiguous'),('zero','zero'),('failed','failed'),('edited','edited'),('transferred','transferred'),('blocked','blocked'),('remaining_reviewable','remaining'),('unreviewed_reviewable','unreviewed')]}
+                      for key, value in [('total','all'),('with_boxes','with_boxes'),('clean_boxes','clean_boxes'),('ambiguous','ambiguous'),('zero','zero'),('failed','failed'),('edited','edited'),('transferred','transferred'),('blocked','blocked'),('committed','committed'),('remaining_reviewable','remaining'),('unreviewed_reviewable','unreviewed')]}
             result['revision'] = int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
             return result
 

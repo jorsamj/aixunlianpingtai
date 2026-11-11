@@ -361,6 +361,30 @@
   min-height: 54px;
   padding: 9px 11px;
 }
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card.gt-committed {
+  border-color: #bfdccf !important;
+  background: #fbfefc;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card.gt-committed .ai-candidate-stage > strong {
+  background: rgba(23, 104, 70, .94);
+}
+.ai-review-page-shell #ai60ReviewGrid .ai66-candidate-card.gt-committed .ai-review-select:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+  accent-color: #208559;
+}
+.ai-review-page-shell #ai60ReviewGrid .ai-review-committed-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #e8f6ee;
+  color: #24754b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
 .ai-review-page-shell #ai60ReviewGrid .ai66-candidate-body b {
   font-size: 12px;
   color: #253e5c;

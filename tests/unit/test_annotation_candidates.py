@@ -111,6 +111,37 @@ def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
 
 
 
+def test_committed_gt_is_visible_for_audit_but_never_frozen_for_reapproval(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="gt-commit-scope")
+    store.initialize(labels=["fire"], total_images=4)
+    store.append_items([
+        {"image_id": "a", "status": "success", "boxes": [{"label": "fire"}]},
+        {"image_id": "b", "status": "empty", "boxes": []},
+        {"image_id": "c", "status": "empty", "boxes": []},
+        {"image_id": "d", "status": "success", "boxes": [{"label": "fire"}]},
+    ])
+    store.record_commit_summaries([
+        {"image_id": "a", "box_count": 1},
+        {"image_id": "b", "box_count": 0},
+    ])
+    all_page = store.read_page(cursor="0", limit=20, filter="all")
+    assert all_page.total == 4
+    assert {item["image_id"] for item in all_page.items if item["gt_committed"]} == {"a", "b"}
+    committed_page = store.read_page(cursor="0", limit=20, filter="committed")
+    assert committed_page.total == 2
+    assert {item["image_id"] for item in committed_page.items} == {"a", "b"}
+    assert store.review_counts()["committed"] == 2
+
+    # Read-only audit can show committed records; action scopes never select them.
+    assert list(store.iter_selected_ids(filter="all")) == ["c", "d"]
+    assert list(store.iter_selected_ids(filter="empty")) == ["c"]
+    assert list(store.iter_selected_ids(filter="committed")) == []
+    assert list(store.iter_selected_ids(filter="clean_boxes")) == ["d"]
+
+
+
+
+
 def test_automatic_ambiguity_draft_cannot_be_bulk_accepted_as_human_review(tmp_path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="auto-overlap")
     store.initialize(labels=["person", "tangzhe"], total_images=2)

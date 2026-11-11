@@ -38,6 +38,16 @@ test('最常用五项筛选可见，低频筛选进更多菜单但入口仍保�
   assert.match(shell, /class="ai-review-filter-more"/);
 });
 
+test('正式 GT 入库提供持久标识、只读筛选与不可重复选择范围', () => {
+  assert.match(app, /data-ai66-filter="committed"/);
+  assert.match(app, /gt-committed/);
+  assert.match(app, /已同意 · 正式入库/);
+  assert.match(app, /node\.checked=!!item&&!node\.disabled&&aiSelected60\(review,item\)/);
+  assert.match(app, /已同意并正式入库，不可重复提交/);
+  assert.match(css, /\.ai-review-committed-mark/);
+  assert.match(app, /review\.summary\?\.committed/);
+});
+
 test('勾选只清除过期预检反馈，不替换歧义面板或图片卡片', () => {
   const start = app.indexOf('  function invalidateAiSelectionPreview60(review){');
   const end = app.indexOf('  window.toggleAiSelection60=', start);
