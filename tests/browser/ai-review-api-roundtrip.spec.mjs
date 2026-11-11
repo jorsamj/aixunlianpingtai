@@ -41,7 +41,7 @@ test('真实API草稿刷新与转池撤销闭环（隔离候选，非模型实�
   await page.getByRole('button',{name:'查看转出记录',exact:true}).click();
   await expect(page.locator('#ai60TransferPanel')).toContainText('范围 1 张，已记录 1 张');
   await expect(page.locator('#ai60TransferPanel')).toContainText('isolated-review.jpg');
-  await page.getByRole('button',{name:'撤销本次转出'}).click();await expect(page.locator('#ai60ApproveRemaining')).toHaveText('通过剩余全部 1 张（整批结束）');await page.locator('[data-ai66-filter="all"]').click();
+  await page.getByRole('button',{name:'撤销本次转出'}).click();await expect(page.locator('#ai60ApproveRemaining')).toHaveText('通过剩余全部 1 张（整批结束）');await page.locator('#ai60TransferPanel').getByRole('button',{name:'关闭',exact:true}).click();await page.locator('[data-ai66-filter="all"]').click();
   await page.screenshot({path:info.outputPath('real-api-review-transfer.png'),fullPage:true});
   // The confirmed GT result is durable, visible, and cannot be selected again.
   page.on('dialog',dialog=>dialog.accept());
