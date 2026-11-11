@@ -1,3 +1,5 @@
+> **2026-11-11 / 42.24.587 前端 CI 缓存标识跟进**：初始 587 提交训练素材专项绿，但 Frontend Runtime 1604/1605，唯一失败为 AI 审核 CSS 引用仍旧 586；仅同步 index 缓存标识到 587，不改原测试校验/GT/Worker/生产，准确新 SHA CI 待核。见 [专项](docs/TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
+
 > **2026-11-11 / 42.24.587 训练未知总数跨页全选探测绕行 P0（准确新 SHA CI 待核）**：Chrome 的 `bulk-selection` 在 Initial connection 约 30.02 秒失败，不能等同服务端 SQL 耗时；代码确认 picker 延迟总数为 null 时先跑 2000 ID 探测再冻引用。仅对无既选项的 train 跨页全选直接复用 `selection-reference`，单页/已知小量、已有选项、独立 Test 不变；不改 GT/Worker/数据，真实 4070/20k 耗时待验。更新缓存与定向测试；未部署。见 [专项](docs/TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
 
 > **2026-11-10 / 42.24.578 AI审核选中即正式入库专项（准确 SHA CI 待验）**：用户在“有框·无歧义”或“有歧义”预检后明确选择并二次确认，即按 ≤100 / ≤25 张批次使用既有 AnnotationRepository 正式 GT 提交通道，不再仅保存草稿；仅本次明确选中的图片入库，不接受/拒绝未选中或其他筛选条件，任务保持 AWAITING_CONFIRMATION 以继续审核剩余素材。沿用 request_id 回执、源素材 SHA、正式 GT 版本 CAS、候选提交日志，禁止无效歧义框入库；每批服务端证明正式提交后显示“已入库”，未知回执停止重复提交。新增隔离 API 与浏览器回归；未部署 4070/A800，不 merge main/release/force push。详见 [专项](docs/WEVISONE_OVERLAP_MANUAL_REVIEW_2026_11_10.md)。

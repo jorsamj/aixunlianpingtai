@@ -19,3 +19,7 @@
 - 以上为隔离契约验证，**真实 4070/A800 连接建立时间、20k/30k 冻结耗时、服务端响应及训练提交尚未验证**；准确新 SHA GitHub Actions 需提交后再查。
 - 用户截图中的 30 秒 `Initial connection` 可能包含网络、反向代理、浏览器连接或 Web 进程接受连接的问题。若新版本仍失败，需要同一次请求的 Headers/错误码、`/api/health` 同时段响应、Web/代理日志及服务端阶段计时才能判定瓶颈；不能据此直接扩改 SQLite 或增加超时时间。
 - 本批只涉及原选择器 UI 调用与测试、缓存、文档；不更改 GT、MaterialRepository、Worker、数据库模式或生产数据，不部署 4070/A800，不 merge main/tag/release/force push。
+
+## 42.24.587 CI 精确补修（同版本）
+
+初始提交 `a2982c779487e729a34a092c2291db475974478a` 的 Training Material Picker 专项通过，但 Frontend Runtime 的 1605 个单测中 1 项失败：`ai-review-immersive-workbench.test.mjs` 既有严谨断言要求沉浸式审核 CSS 缓存参数与 `VERSION.txt` 一致，入口仍是旧 `42.24.586`。只将 `static/index.html` 的 `ai-review-immersive.css?v=` 同步到 `42.24.587`，保留原断言和所有业务代码。准确补修提交的 CI 需独立核验。
