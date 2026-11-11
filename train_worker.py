@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import shutil
 import sys
@@ -729,6 +730,39 @@ def publish_batch_progress(
     return percent
 
 
+def attach_training_time_cap(model, max_train_hours, *, budget=None, clock=None):
+    """Stop a YOLO run at a wall-clock cap without letting Ultralytics override Epochs.
+
+    Time is a safety ceiling. Ordinary completion remains controlled by the
+    requested Epoch count, early stopping, and the existing quality gate.
+    The same budget can be shared by a subsequent AI continuation run.
+    """
+    if max_train_hours is None:
+        return budget
+    hours = float(max_train_hours)
+    if not math.isfinite(hours) or hours < 0:
+        raise ValueError("maximum training time must be a finite non-negative number")
+    if hours == 0:  # Compatibility for historical jobs; new submissions reject zero.
+        return budget
+    clock = clock or time.monotonic
+    state = budget if budget is not None else {"started_at": None, "reached": False}
+    limit_seconds = hours * 3600.0
+
+    def on_batch_start(_trainer):
+        if state.get("started_at") is None:
+            state["started_at"] = clock()
+
+    def on_batch_end(trainer):
+        started_at = state.get("started_at")
+        if started_at is not None and clock() - started_at >= limit_seconds:
+            trainer.stop = True
+            state["reached"] = True
+
+    model.add_callback("on_train_batch_start", on_batch_start)
+    model.add_callback("on_train_batch_end", on_batch_end)
+    return state
+
+
 def attach_training_batch_progress(
     model, job_file, requested_total_epochs, *, min_interval=0.25,
     phase_start=20.0, phase_end=90.0, epoch_offset=0,
@@ -908,7 +942,7 @@ def decide_training_quality_gate(value, *, metric, stop_threshold, continue_thre
 
 def derive_training_completion_metadata(
     trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None,
-    max_train_hours=None, elapsed_hours=None,
+    max_train_hours=None, elapsed_hours=None, time_limit_triggered=False,
 ):
     """Return durable, user-facing completion truth without guessing from 100% progress."""
     requested = max(0, int(requested_epochs or 0))
@@ -947,7 +981,7 @@ def derive_training_completion_metadata(
         max_hours is not None
         and max_hours > 0
         and elapsed is not None
-        and elapsed >= max_hours * 0.95
+        and (bool(time_limit_triggered) or elapsed >= max_hours * 0.95)
         and requested > 0
         and completed < requested
     ):
@@ -1105,9 +1139,12 @@ def main():
             "gpu_policy": args.gpu_policy,
             "precision": runtime_precision,
             "resolved_precision": precision,
+            "max_train_hours": time_cap_hours,
+            "time_limit_policy": "epoch_primary_with_time_cap",
         }
 
     actual_model = resolve_training_model(args.model, pretrained)
+    time_cap_hours = float(args.time) if args.time is not None and float(args.time) > 0 else None
     train_args = {
         "data": args.data,
         "epochs": args.epochs,
@@ -1138,8 +1175,8 @@ def main():
         "degrees": args.degrees, "translate": args.translate, "scale": args.scale, "shear": args.shear,
         "perspective": args.perspective, "flipud": args.flipud, "fliplr": args.fliplr, "mixup": args.mixup,
     }
-    if args.time is not None:
-        train_args["time"] = float(args.time)
+    # Do not pass the time cap as Ultralytics' "time" argument: it overrides
+    # Epochs and makes the training ETA track the user-entered time limit.
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
@@ -1402,6 +1439,7 @@ def main():
             target.add_callback('on_val_end', lambda _validator: update_job(job_file, usage_validation_observed=True))
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
+        time_cap_state = attach_training_time_cap(model, time_cap_hours)
         training_start_monotonic = time.monotonic()
         try:
             evidence["effective_args"] = recorded_train_params(train_args)
@@ -1428,7 +1466,7 @@ def main():
                 ) from train_error
             raise
         first_run_dir=runs_dir/args.run_name
-        if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
+        if not (time_cap_state or {}).get("reached") and ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"
             resume_model=first_last if first_last.is_file() else first_best
             if resume_model.is_file():
@@ -1445,6 +1483,7 @@ def main():
                 cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
                 model=YOLO(str(resume_model))
                 attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
+                attach_training_time_cap(model, time_cap_hours, budget=time_cap_state)
                 with scoped_worker_amp_check(amp_decision):
                     train_result=model.train(**cont_args)
                 update_job(job_file, training_segment_finished_at=now_iso())
@@ -1589,8 +1628,11 @@ def main():
             completed_epochs=completed_epochs,
             gate_reason=gate_reason,
             ai_plan=ai_plan,
-            max_train_hours=args.time,
-            elapsed_hours=(time.monotonic()-training_start_monotonic)/3600.0,
+            max_train_hours=time_cap_hours,
+            elapsed_hours=(
+                time.monotonic() - ((time_cap_state or {}).get("started_at") or training_start_monotonic)
+            ) / 3600.0,
+            time_limit_triggered=bool((time_cap_state or {}).get("reached")),
         )
         training_report["completion"]={k:v for k,v in completion.items() if k != "completion_message"}
         update_job(

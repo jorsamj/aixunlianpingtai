@@ -78,6 +78,16 @@ export function trainingModePreset(mode, hasPrevious = false) {
   }
 }
 
+export function normalizeTrainingTimeLimit(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const hours = Number(value);
+  if (hours === 0) return null;
+  if (!Number.isFinite(hours) || hours < 0.1 || hours > 720) {
+    throw new Error('最长训练时长须为 0.1～720 小时；填写 0 或留空表示不限制');
+  }
+  return hours;
+}
+
 export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
   required(target?.id, '请选择可用训练资源');
@@ -106,7 +116,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     include_empty: false,
     patience: config.patience ?? 40,
     early_stopping_enabled: config.early_stopping_enabled === true,
-    time: config.time ?? null,
+    time: normalizeTrainingTimeLimit(config.time),
     precision: normalizeTrainingPrecision(config.precision),
     workers: integerParameter(draft.resource?.workers ?? config.workers, 0, 'Workers'),
     optimizer: config.optimizer || 'auto',

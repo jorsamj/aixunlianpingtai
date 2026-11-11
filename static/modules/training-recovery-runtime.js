@@ -328,7 +328,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     attemptElapsedText: formatTrainingDuration(job?.training_display_progress?.attempt_elapsed_seconds),
     firstStartedAt: job?.training_display_progress?.first_started_at || '未知',
     wallFinishedAt: job?.training_display_progress?.wall_finished_at || '未完成或证据缺失',
-    etaText: flags.success ? '-' : formatTrainingDuration(progressView.etaSeconds),
+    etaText: flags.success ? '-' : (progressView.etaSeconds == null && flags.active ? '正在估算' : formatTrainingDuration(progressView.etaSeconds)),
     metricLine: progressView.metricLine || observedMetricLine,
     bestEpoch: bestMap50?.epoch ?? null,
     bestMetricLine: bestMap50 ? `最佳 mAP50 ${(bestMap50.value * 100).toFixed(1)}%` : '',
@@ -390,7 +390,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     imgsz: actual.imgsz ?? job?.imgsz ?? requested.imgsz ?? null,
     optimizer: String(actual.optimizer || job?.optimizer || requested.optimizer || '').trim(),
     lr0: actual.lr0 ?? job?.lr0 ?? requested.lr0 ?? null,
-    timeLimit: actual.time ?? job?.time ?? requested.time ?? null,
+    timeLimit: actual.max_train_hours ?? job?.max_train_hours ?? actual.time ?? job?.time ?? requested.time ?? null,
     datasetCountsGenerated: ['train', 'training', 'train_images', 'validation', 'val', 'validation_images', 'test', 'test_images']
       .some((key) => Object.prototype.hasOwnProperty.call(counts, key) && counts[key] != null),
     robustnessSummary: job?.robustness_summary || job?.training_report?.robustness_summary || null,
@@ -535,7 +535,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
           <section class="training-recovery-summary ${esc(model.statusKind)}">
             <div><small>整体进度</small><b>${model.progressPercent.toFixed(0)}%</b><i><span style="transform:scaleX(${(model.progressPercent / 100).toFixed(4)})"></span></i></div>
             <div><small>${completed ? '训练进度 / 最佳指标' : 'Epoch / Batch'}</small><b>${esc(epochSummary)}</b><span>${esc(metricSummary)}</span></div>
-            <div><small>总历时 / 预计剩余</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
+            <div><small>总历时 / 预计剩余（按 Epoch）</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
             <div><small>实际设备</small><b>${esc(model.actualDevice || model.assignedDevice || model.requestedDevice || '-')}</b><span>${esc(model.gpuName || model.workerId || '-')}</span></div>
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
@@ -548,7 +548,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
               <div class="training-recovery-kv"><span>基础模型</span><b>${esc(model.model || '-')}</b></div>
               <div class="training-recovery-kv"><span>图片尺寸</span><b>${esc(model.imgsz ?? '-')}</b></div>
               <div class="training-recovery-kv"><span>Optimizer / lr0</span><b>${esc(`${model.optimizer || '-'} / ${model.lr0 ?? '-'}`)}</b></div>
-              <div class="training-recovery-kv"><span>最大训练时长</span><b>${esc(model.timeLimit ? `${model.timeLimit} h` : '不限')}</b></div>
+              <div class="training-recovery-kv"><span>最长训练时长（停止上限）</span><b>${esc(model.timeLimit ? `${model.timeLimit} h` : '不限')}</b></div>
               <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc('Batch ' + (model.requestedBatchText ?? '-') + ' · Workers ' + (model.requestedWorkersText ?? '-') + ' · Precision ' + (model.requestedPrecisionText ?? '-') + ' · Cache ' + (model.requestedCacheText ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>${model.resourceStrategy === 'manual' ? '资源核验' : '自动资源决议'}</span><b>${esc('Batch ' + (model.resolvedBatch ?? '-') + ' · Workers ' + (model.resolvedWorkers ?? '-') + ' · Precision ' + (model.resolvedPrecision || '-') + ' · Cache ' + (model.resolvedCache ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc('Batch ' + (model.runtimeBatch ?? '-') + ' · Workers ' + (model.runtimeWorkers ?? '-') + ' · Precision ' + (model.runtimePrecision || '-') + ' · Cache ' + (model.runtimeCache ?? '-'))}</b></div>

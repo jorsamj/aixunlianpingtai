@@ -8332,6 +8332,9 @@ def validate_train_request(payload: TrainReq):
     allowed_optimizers = {"auto", "sgd", "musgd", "adam", "adamax", "adamw", "nadam", "radam", "rmsprop"}
     if str(payload.optimizer or "auto").strip().lower() not in allowed_optimizers:
         raise HTTPException(status_code=400, detail="不支持的 optimizer。可选：auto / SGD / MuSGD / Adam / Adamax / AdamW / NAdam / RAdam / RMSProp")
+    # Historical UI submits 0 for "no limit"; normalize before validation and task freezing.
+    if payload.time == 0:
+        payload.time = None
     if payload.time is not None and not (0.1 <= float(payload.time) <= 720):
         raise HTTPException(status_code=400, detail="最大训练时长 time 必须在 0.1~720 小时之间")
     if str(payload.gpu_policy or "auto").strip().lower() == "shared":

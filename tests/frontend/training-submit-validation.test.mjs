@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 
 import {
   buildTrainingEngineParameters,
+  normalizeTrainingTimeLimit,
   formatTrainingValidationError,
   validateTrainingCreatedResponse,
 } from '../../static/modules/training-submit.js';
@@ -266,4 +267,41 @@ test('repository lookup distinguishes persisted execution outcomes from a fresh 
     assert.throws(()=>validateTrainingCreatedResponse(body,body.task.task_id,{projectId:'p',algorithmId:'a'}));
     assert.equal(validateTrainingCreatedResponse(body,body.task.task_id,{projectId:'p',algorithmId:'a',persistedLookup:true}).status,status);
   }
+});
+
+
+test('optional max training time accepts blank or zero as unlimited', () => {
+  assert.equal(normalizeTrainingTimeLimit(null), null);
+  assert.equal(normalizeTrainingTimeLimit(''), null);
+  assert.equal(normalizeTrainingTimeLimit('  '), null);
+  assert.equal(normalizeTrainingTimeLimit(0), null);
+  assert.equal(normalizeTrainingTimeLimit('0'), null);
+  assert.equal(normalizeTrainingTimeLimit(0.5), 0.5);
+  for (const value of [-1, 721, 'abc', Infinity]) {
+    assert.throws(() => normalizeTrainingTimeLimit(value), /最长训练时长/);
+  }
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('placeholder="不限" value="${c.time == null || Number(c.time) === 0 ?'));
+  assert.ok(!source.includes('value="${c.time??0}"'));
+  assert.ok(source.includes("input.id==='ts428Time'&&input.value.trim()===''?null"));
+});
+
+test('training submission keeps Epochs and optional time cap as separate values', () => {
+  const base = {
+    resource: {device: 'auto', batch: 8, workers: 0, strategy: 'manual'},
+    trainingMode: 'custom',
+    config: {epochs: 150, time: 2},
+  };
+  const target = {id: 'gpu', framework: 'ultralytics', type: 'local'};
+  const algorithm = {key: 'yolo11n_det', base_model: 'yolo11n.pt'};
+  assert.deepEqual(
+    (({epochs, time}) => ({epochs, time}))(
+      buildTrainingEngineParameters({draft: base, target, algorithm})
+    ),
+    {epochs: 150, time: 2},
+  );
+  assert.equal(
+    buildTrainingEngineParameters({draft: {...base, config: {epochs: 150, time: null}}, target, algorithm}).time,
+    null,
+  );
 });
