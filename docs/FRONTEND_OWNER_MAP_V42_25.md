@@ -1,3 +1,5 @@
+> **2026-11-11 / 42.24.587 Training Picker Owner**：`TrainingMaterialPickerRuntime` 在 train 无显式既选且未知总数跨页时直接调用原 `/selection-reference`；原 `TrainingDraftRuntime`/`TrainingLabelRuntime` 与服务器冻结清单仍为唯一选择/标签事实源，不建新 Owner；Test 和手工选择保留显式 ID。模块缓存已更新。见 [专项](TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
+
 > **2026-11-10 / 42.24.570 母模型可见性**：原 `resource-discovery.js` 单一管理页保持上传/校验反馈，原 `syncTrainingMotherModel429` 仍唯一绘制基础模型下拉；训练目标 warning 只为展示已上传母模型，不授予训练资格，失败项禁选，原 `training-submit.js` 校验与后端 SHA 阻断不变。无新弹窗/请求中心/缓存。见 [专项记录](MOTHER_MODEL_OFFICIAL_SHA256_GATE_2026_11_10.md)。
 
 > **2026-11-10 / 42.24.569 报告弹窗唯一 Owner**：原 `trainingReportCore425`、`ModalContentRuntime`/`closeModalCore424`、`static/modules/reports.js` 不变；只补报告身份标记及专属 CSS 稳定高度/滚动和四 Tab。保留原异步请求取消/失败重试，禁止添加第二套弹窗或报告缓存。见 [专项](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。

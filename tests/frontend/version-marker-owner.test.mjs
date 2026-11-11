@@ -91,11 +91,11 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=42.25.568"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=42.25.587"), true);
   const runtime = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-material-picker-performance.spec.mjs', import.meta.url), 'utf8');
-  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422615'"));
-  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422615')"));
+  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422616'"));
+  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422616')"));
 });
 
 test('recovery browser and CI guards match the exact loaded runtime build', () => {

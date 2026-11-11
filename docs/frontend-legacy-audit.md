@@ -1,3 +1,5 @@
+> **2026-11-11 / 42.24.587 train 批选未知总数快通路**：旧 `bulk-selection` 探测由 picker 未知 total 触发；只对跨页且未手选的 train 全选直接使用现有服务器冻结引用，不增加 legacy wrapper 或弹窗。正式 GT/训练状态 Owner 不变；连接阶段超时需现场证据。见 [专项](TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
+
 > **2026-11-10 / 42.24.569 训练报告现有 Modal Owner 修复**：不新建 Modal/页面 owner；报告 loading/正式根共享稳定标记与 86dvh 单一滚动体，Tab 单行固定宽度并横向滚动，其他业务弹窗不改。Node 定向29/29，Chrome 实机未执行。见 [专项](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。
 
 > **2026-11-09 / 42.24.564 WeVisOne 实际推理配置**：仍由原 `syncAiNativeQueries429`、`renderAiCreateConfirmation429` 和 v60 `renderProgress` 单层展示原生 task、code/query、请求/坐标协议；任务详情用服务端冻结快照派生的无密钥配置。通用 JSON Prompt 行为不变。详见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。

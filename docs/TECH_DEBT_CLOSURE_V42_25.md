@@ -1,3 +1,5 @@
+> **2026-11-11 / 42.24.587 实际选材性能阻断（非技术债重构）**：修复原训练选择器未知总数却先探测 2000 ID 的额外请求，跨页空选择直接走既有冻结 Owner；保留其他路径及 GT/Worker 准入。现场 30.02 秒连接等待不能归因 SQL，生产和准确 CI 待验。见 [专项](TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
+
 > **2026-11-10 / 42.24.569 单任务报告性能与滚动**：未恢复技术债清理；只在原 `v44_training_report`、AlgorithmSqlStore、Modal/Report UI Owner 上收敛索引查询与报告专属滚动布局。历史版本身份回退与 20 秒超时不变。前端定向29/29、Python 编译通过；实际 Python/Chrome/4070/CI 待验。见 [专项记录](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。
 
 > **2026-11-09 / 42.24.564 WeVisOne 原生协议专项**：仅收敛真实组合标签 P0，不展开技术债重构。逐类 detect 复用现有 RPM/许可和单图 Candidate 原子事务，未知类/跨类重叠拒绝，创建与冻结详情显示实际配置。独立 FastAPI 源码和现场验收未取得。详见 [需求/进度/证据](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。

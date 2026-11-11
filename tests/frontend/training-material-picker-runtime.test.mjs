@@ -63,11 +63,49 @@ test('training picker never hydrates the legacy full image pool', () => {
 
 test('large train selections opt into existing server-frozen references while small and Test selections remain explicit', () => {
   assert.match(source, /prefer_reference_over: preferReference \? 2000 : 0/);
-  assert.match(source, /if\(preferReference && Number\.isSafeInteger\(picker\?\.total\) && picker\.total>2000\)return freezeReference\(\)/);
+  assert.match(source, /Number\.isSafeInteger\(picker\?\.total\) && picker\.total>2000/);
+  assert.match(source, /picker\?\.total == null && \(picker\?\.hasNext === true \|\| picker\?\.page > 1\)/);
   assert.match(source, /preferReference: picker\.role === 'train' && picker\.selected\.size === 0 && \['select-filtered','select-all'\]\.includes\(action\)/);
   assert.match(source, /if\(result\.reference\)\{/);
   assert.match(source, /picker\.reference=result\.reference/);
   assert.match(source, /picker\.selected\.clear\(\)/);
+});
+
+test('unknown-total multi-page train bulk selection bypasses the 2000-ID probe', async () => {
+  const begin = source.indexOf('  async function resolveBulkSelection(');
+  const end = source.indexOf('\n  async function bulkAction(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const createResolver = new Function('projectId', 'picker', 'taskPayload', 'filterPayload',
+    'fetchImpl', 'withRequestDeadline', 'readJson', 'uniqueIds', 'window',
+    source.slice(begin, end) + '\nreturn resolveBulkSelection;');
+  for (const scenario of [
+    {name:'large unknown count', total:null, hasNext:true, page:1, prefer:true, path:'selection-reference'},
+    {name:'known large count', total:22015, hasNext:true, page:1, prefer:true, path:'selection-reference'},
+    {name:'small known count', total:50, hasNext:false, page:1, prefer:true, path:'bulk-selection'},
+    {name:'unknown single page', total:null, hasNext:false, page:1, prefer:true, path:'bulk-selection'},
+    {name:'existing explicit selection', total:null, hasNext:true, page:1, prefer:false, path:'bulk-selection'},
+  ]) {
+    const picker = {role:'train', total:scenario.total, hasNext:scenario.hasNext, page:scenario.page,
+      query:'', labels:new Set(), sampleRole:'', sortOrder:'newest', referenceRequest:null,
+      bulkController:{signal:{}}};
+    const requests = [];
+    const resolve = createResolver(() => 'project', picker, () => ({algorithm_asset_id:'algorithm'}),
+      () => ({role:'train'}),
+      async (url, options) => {
+        requests.push({url, body:JSON.parse(options.body)});
+        return {ok:true, json:async () => url.endsWith('/selection-reference')
+          ? {selection_ref:'trainselection_fixture', count:22015} : {items:['m1'], total:1}};
+      },
+      async operation => operation(undefined),
+      async response => response.json(),
+      values => [...new Set((values || []).map(String))],
+      {crypto:{randomUUID:() => '123e4567-e89b-42d3-a456-426614174000'}});
+    const result = await resolve({preferReference:scenario.prefer});
+    assert.equal(requests.length, 1, scenario.name);
+    assert.ok(requests[0].url.endsWith('/'+scenario.path), scenario.name);
+    if (scenario.path === 'selection-reference') assert.equal(result.reference?.count, 22015);
+    else assert.deepEqual(result.ids, ['m1']);
+  }
 });
 
 test('ordinary iteration picker defers full role statistics until explicitly filtered or submitted', () => {

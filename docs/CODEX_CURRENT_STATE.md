@@ -1,3 +1,5 @@
+> **2026-11-11 / 42.24.587 训练批量选择慢请求 P0**：首屏 `count_mode=deferred` 导致 total 未知，train 全选错误进入 `bulk-selection` 2000 ID 探测，超限后才使用已有服务器冻结引用。改为未知总数且明确跨页时直接冻引用；不修改 GT/Worker/独立 Test/手工合并合同。Chrome 30.02 秒 Initial connection 未有服务端证据，真实 4070 与准确 CI 仍待验证。见 [专项](TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
+
 > **2026-11-10 / 42.24.570 官方 YOLO11 母模型可信哈希快通道**：原 v63 上传/校验/资产和训练资格保留，仅对官方 release `v8.4.0` 实际文件的 SHA256、大小及 PyTorch ZIP 结构全部一致时自动 `VERIFIED`；未识别模型继续要求真实隔离校验，绝不以文件名放行。训练创建原基础模型下拉显示上传但尚未校验的禁用项及原因，复用已有训练资源刷新；来源标签证据区分 SHA 官方与 sandbox。前端/语法及合成容器哈希定向通过，真实 4070/完整 Python API/官方二进制与准确 CI 待验，未部署。见 [专项记录](MOTHER_MODEL_OFFICIAL_SHA256_GATE_2026_11_10.md)。
 
 > **2026-11-10 / 42.24.569 训练报告读取和 Tab/滚动**：沿用 v44 报告 API、原 SQL/Modal/Report Owner；索引定向定位任务版本，旧历史与歧义严格兼容；报告弹窗同高、滚动独立，Tab 单行不压缩。前端29/29、编译通过，Python API/完整 Node/浏览器/4070 实机/准确 CI 待核，不部署/改生产。见 [专项记录](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。

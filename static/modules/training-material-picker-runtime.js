@@ -1197,7 +1197,8 @@ export function installTrainingMaterialPickerRuntime({
           labels:allAvailable?[]:[...picker.labels],sort_order:picker.sortOrder,sample_role:allAvailable?'':picker.sampleRole})});
       return {reference:await readJson(plan,'大范围素材选择冻结失败')};
     };
-    if(preferReference && Number.isSafeInteger(picker?.total) && picker.total>2000)return freezeReference();
+    if(preferReference && ((Number.isSafeInteger(picker?.total) && picker.total>2000)
+      || (picker?.total == null && (picker?.hasNext === true || picker?.page > 1))))return freezeReference();
     const response = await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/bulk-selection`, {
       signal,
       method: 'POST',
@@ -1426,7 +1427,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422615',
+    build: 'training-material-picker-runtime-422616',
     open,
     searchSelected(value) {if(picker){picker.selectedQuery=String(value || '');renderSelectedList();}},
     removeSelected(id) {
