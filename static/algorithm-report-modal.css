@@ -1,0 +1,95 @@
+/* Algorithm-level report, 2026-11-12. Does not change report evidence or other modals. */
+.algorithm-report429{--ar-ink:#162235;--ar-muted:#64748b;--ar-border:#e4e9ef;--ar-bg:#f8fafc;color:var(--ar-ink);font-size:14px;line-height:1.55;min-width:0}
+.algorithm-report429 .alg-report-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:2px 0 20px;border-bottom:1px solid var(--ar-border)}
+.algorithm-report429 .alg-report-eyebrow{font-size:11px;letter-spacing:.07em;font-weight:650;color:#587299}
+.algorithm-report429 .alg-report-hero h2{font-size:24px;line-height:1.35;letter-spacing:-.45px;margin:5px 0 4px;font-weight:700}
+.algorithm-report429 .alg-report-hero p{color:var(--ar-muted);font-size:13px;margin:0}
+.algorithm-report429 .alg-report-hero-meta{flex:none;text-align:right}
+.algorithm-report429 .alg-report-hero-meta b{display:block;font-size:25px;line-height:1.1;font-variant-numeric:tabular-nums}
+.algorithm-report429 .alg-report-hero-meta small{display:block;color:var(--ar-muted);margin-top:6px}
+.algorithm-report429 .alg-report-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}
+.algorithm-report429 .alg-report-stat{border:1px solid var(--ar-border);border-radius:10px;background:#fff;padding:14px 15px;min-width:0}
+.algorithm-report429 .alg-report-stat span{display:block;color:var(--ar-muted);font-size:12px}
+.algorithm-report429 .alg-report-stat b{display:block;margin:6px 0 4px;font-size:25px;line-height:1.2;font-weight:680;font-variant-numeric:tabular-nums}
+.algorithm-report429 .alg-report-stat small{display:block;line-height:1.5;color:#8190a0;font-size:11px;overflow-wrap:anywhere}
+.algorithm-report429 .alg-report-tabs{display:flex;align-items:center;gap:18px;position:sticky;top:-1px;z-index:2;background:#fff;border-bottom:1px solid var(--ar-border);overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;margin-bottom:18px}
+.algorithm-report429 .alg-report-tabs [role=tab]{appearance:none;flex:none;border:0;background:transparent;border-bottom:2px solid transparent;font:600 14px/1.35 inherit;color:var(--ar-muted);padding:12px 3px;cursor:pointer;white-space:nowrap}
+.algorithm-report429 .alg-report-tabs [role=tab][aria-selected=true]{color:#1d4f91;border-color:#1d4f91}
+.algorithm-report429 .alg-report-tabs [role=tab]:focus-visible{outline:2px solid #2457c5;outline-offset:-3px}
+.algorithm-report429 .alg-report-pane[hidden]{display:none!important}
+.algorithm-report429 .alg-report-pane{min-height:240px}
+.algorithm-report429 .alg-report-section{border:1px solid var(--ar-border);background:#fff;border-radius:10px;padding:19px 20px;margin-bottom:16px;min-width:0}
+.algorithm-report429 .alg-report-section-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:15px}
+.algorithm-report429 h3{font-size:15px;font-weight:680;margin:0;color:var(--ar-ink)}
+.algorithm-report429 .alg-report-section-heading small{font-size:12px;color:var(--ar-muted)}
+.algorithm-report429 svg{display:block;width:100%;height:auto;max-height:250px;color:#2d5a91}
+.algorithm-report429 svg text{font:12px sans-serif;fill:#798699}
+.algorithm-report429 .alg-report-grid-line{stroke:#e5eaf0;stroke-dasharray:4 4;stroke-width:1}
+.algorithm-report429 .alg-report-line{fill:none;stroke:#2d5a91;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.algorithm-report429 .alg-report-dot{fill:#fff;stroke:#2d5a91;stroke-width:2}
+.algorithm-report429 .alg-report-footnote{font-size:12px;color:var(--ar-muted);line-height:1.65;margin:12px 0 0}
+.algorithm-report429 .alg-report-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.algorithm-report429 .alg-report-overview-grid article{border:1px solid var(--ar-border);border-radius:10px;padding:19px 20px;min-width:0}
+.algorithm-report429 dl{display:grid;grid-template-columns:minmax(110px,1fr) minmax(0,1.4fr);gap:9px 16px;margin:16px 0 0}
+.algorithm-report429 dt{font-size:12px;color:var(--ar-muted)}
+.algorithm-report429 dd{font-size:13px;font-weight:600;text-align:right;margin:0;overflow-wrap:anywhere}
+.algorithm-report429 .alg-report-notice{font-size:12px;color:#5c6f87;background:#f6f8fb;padding:10px 12px;border-radius:8px;line-height:1.7;margin:0 0 16px}
+.algorithm-report429 .alg-report-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.algorithm-report429 .alg-report-detail-grid>div{border:1px solid var(--ar-border);border-radius:9px;padding:14px;min-width:0}
+.algorithm-report429 .alg-report-detail-grid span{display:block;font-size:12px;color:var(--ar-muted);margin-bottom:6px}
+.algorithm-report429 .alg-report-detail-grid b{display:block;font-size:13px;font-weight:620}
+.algorithm-report429 .alg-report-break{overflow-wrap:anywhere}
+.algorithm-report429 .alg-report-current{display:inline-block;margin-left:8px;font-size:11px;color:#2457c5;font-weight:600}
+.algorithm-report429 .alg-report-labels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.algorithm-report429 .alg-report-labels>div{display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--ar-border);border-radius:7px}
+.algorithm-report429 .alg-report-table{font-size:13px;min-width:660px}
+.algorithm-report429 .alg-report-table thead th{color:var(--ar-muted);background:#f8fafc;font-weight:600}
+.algorithm-report429 .alg-report-table th,.algorithm-report429 .alg-report-table td{height:auto;padding:11px 12px;vertical-align:middle}
+.algorithm-report429 .alg-report-table tr:hover td{background:#fafcfe}
+.algorithm-report429 .alg-report-empty{background:var(--ar-bg);padding:40px 20px;border-radius:8px;color:var(--ar-muted);text-align:center}
+.alg-report-loading,.alg-report-load-error{padding:44px 25px;text-align:center;color:#64748b}
+.alg-report-loading h2,.alg-report-load-error b{font-size:20px;font-weight:650;color:#20344d}
+.alg-report-loading p,.alg-report-load-error p{font-size:13px;line-height:1.7}
+@media(max-width:850px){
+  .algorithm-report429 .alg-report-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .algorithm-report429 .alg-report-overview-grid{grid-template-columns:1fr}
+}
+@media(max-width:540px){
+  .algorithm-report429 .alg-report-hero h2{font-size:20px}
+  .algorithm-report429 .alg-report-stats{gap:8px}
+  .algorithm-report429 .alg-report-stat{padding:12px}
+  .algorithm-report429 .alg-report-stat b{font-size:20px}
+  .algorithm-report429 .alg-report-detail-grid{grid-template-columns:1fr}
+  .algorithm-report429 .alg-report-tabs{gap:13px}
+  .algorithm-report429 .alg-report-section{padding:14px}
+}
+/* Fix shared overflow ownership: one actual scrollport within each modal card. */
+.modal:not(.hidden)>.modal-card{
+  min-height:0;
+  max-height:calc(100dvh - 24px);
+  display:flex;
+  flex-direction:column;
+}
+.modal:not(.hidden)>.modal-card>.modal-head{flex:0 0 auto;min-height:54px}
+.modal:not(.hidden)>.modal-card>.modal-body{
+  min-height:0;
+  min-width:0;
+  flex:1 1 auto;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.modal:not(.hidden)>.modal-card.wide{height:min(90dvh,1020px)}
+.modal:not(.hidden):has([data-algorithm-report])>.modal-card,
+.modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card{
+  width:min(1180px,calc(100vw - 24px));
+  height:86dvh;
+  max-height:calc(100dvh - 24px);
+}
+.modal:not(.hidden):has([data-algorithm-report])>.modal-card>.modal-body,
+.modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card>.modal-body{background:#fff}
+@media(max-width:580px){
+  .modal:not(.hidden)>.modal-card.wide{height:calc(100dvh - 16px);max-height:calc(100dvh - 16px)}
+  .modal:not(.hidden):has([data-algorithm-report])>.modal-card,
+  .modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card{height:calc(100dvh - 16px)}
+}
