@@ -5,6 +5,56 @@
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   const targetNames = {onnx:'ONNX',sophon:'算能 BMODEL',rockchip:'瑞芯微 RKNN',ascend:'昇腾 OM',tensorrt:'TensorRT',paddle_inference:'Paddle'};
 
+  const UI_STATUS_PRESETS = [
+    ['全部',''],['执行中','running'],['已完成','done'],['失败','failed'],['等待资源','waiting_resource']
+  ];
+
+  function prepareStatusShortcuts(root, filters) {
+    if (root.querySelector('.conversion-ui-quick-filters')) return;
+    const select = [...filters.querySelectorAll('select')].find(el =>
+      /status/i.test(el.name || el.id || '') ||
+      [...el.options].some(option => option.value === 'waiting_resource')
+    );
+    if (!select) return; // The original server filter remains available.
+    const possible = new Set([...select.options].map(option => option.value));
+    const tabs = document.createElement('div');
+    tabs.className = 'conversion-ui-quick-filters';
+    tabs.setAttribute('role','group');
+    tabs.setAttribute('aria-label','按转换状态筛选');
+    for (const [label, value] of UI_STATUS_PRESETS) {
+      if (!possible.has(value)) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'conversion-ui-filter-button';
+      button.dataset.conversionUiStatus = value;
+      button.textContent = label;
+      button.setAttribute('aria-pressed', String(select.value === value));
+      button.addEventListener('click', () => {
+        if (!root.isConnected || select.value === value) return;
+        select.value = value;
+        sync();
+        // Reuse the canonical filter submit action, never client-filter a paged list.
+        const form = select.closest('form');
+        if (form && typeof form.requestSubmit === 'function') form.requestSubmit();
+        else {
+          const apply = [...filters.querySelectorAll('button')].find(el => /查询|筛选|应用/.test(el.textContent || ''));
+          if (apply) apply.click();
+          else select.dispatchEvent(new Event('change', {bubbles:true}));
+        }
+      });
+      tabs.append(button);
+    }
+    if (tabs.children.length < 2) return;
+    function sync() {
+      for (const button of tabs.querySelectorAll('button')) {
+        button.setAttribute('aria-pressed', String(select.value === button.dataset.conversionUiStatus));
+      }
+    }
+    select.addEventListener('change', sync);
+    root.querySelector('.conversion560-status-strip')?.after(tabs);
+    if (!tabs.isConnected) filters.before(tabs);
+  }
+
   function decorateHistory(root) {
     if (root.dataset.conversionWorkbenchReady === '1') return;
     root.dataset.conversionWorkbenchReady = '1';
@@ -16,7 +66,7 @@
       const bar = document.createElement('div');
       bar.className = 'conversion560-status-strip';
       bar.setAttribute('aria-label','转换任务概览');
-      bar.innerHTML = summaryValues.map(({label,value}) => `<span><strong>${escapeHtml(value)}</strong> ${escapeHtml(label.replace('筛选结果总数','当前筛选').replace('本页已产生产物','本页完成').replace('本页进行中','进行中'))}</span>`).join('');
+      bar.innerHTML = summaryValues.map(({label,value}) => `<span><strong>${escapeHtml(value)}</strong> ${escapeHtml(label.replace('筛选结果总数','当前筛选').replace('本页已产生产物','本页完成').replace('本页进行中','本页进行中'))}</span>`).join('');
       top.insertAdjacentElement('afterend',bar);
     }
     const filters = root.querySelector('.convert428-history-filters');
@@ -29,8 +79,11 @@
       filters.before(details);
       details.append(filters);
       // A previous active filter must stay visible when returning to the list.
-      details.open = [...new FormData(filters).values()].some(v => String(v).trim() !== '');
+      details.open = filters.matches('form')
+        ? [...new FormData(filters).values()].some(v => String(v).trim() !== '')
+        : [...filters.querySelectorAll('input,select')].some(el => String(el.value || '').trim() !== '');
     }
+    prepareStatusShortcuts(root, filters);
     const list = root.querySelector('.convert428-job-list');
     if (!list) return;
     list.classList.add('conversion560-list');
@@ -38,6 +91,38 @@
     heading.className = 'conversion560-columns';
     heading.innerHTML = '<span>转换目标</span><span>资源 / 配置</span><span>执行状态</span><span>操作</span>';
     list.before(heading);
+    const detailHeader = document.createElement('div');
+    detailHeader.className = 'conversion-ui-detail-header';
+    detailHeader.hidden = true;
+    detailHeader.innerHTML = '<button type="button" class="btn conversion-ui-back" data-conversion-ui-back>← 返回转换记录</button><div><strong data-conversion-ui-detail-title>转换详情</strong><small>执行概况、配置、产物与原始证据</small></div>';
+    list.before(detailHeader);
+    let lastScroll = 0;
+    const modalScroll = () => root.closest('.modal-body') || root.closest('[role="dialog"]') || root;
+    const closeDetail = () => {
+      root.classList.remove('conversion-ui-inspecting');
+      root.querySelector('.conversion-ui-inspected')?.classList.remove('conversion-ui-inspected');
+      detailHeader.hidden = true;
+      modalScroll().scrollTop = lastScroll;
+      root.querySelector('[data-conversion-ui-open]')?.focus({preventScroll:true});
+    };
+    root.addEventListener('click', event => {
+      if (event.target.closest('[data-conversion-ui-back]')) { closeDetail(); return; }
+      const trigger = event.target.closest('[data-conversion-ui-open]');
+      if (!trigger) return;
+      const job = trigger.closest('.convert428-job');
+      if (!job) return;
+      lastScroll = modalScroll().scrollTop;
+      root.querySelector('.conversion-ui-inspected')?.classList.remove('conversion-ui-inspected');
+      job.classList.add('conversion-ui-inspected');
+      root.classList.add('conversion-ui-inspecting');
+      detailHeader.querySelector('[data-conversion-ui-detail-title]').textContent =
+        job.querySelector('.convert428-job-title b')?.textContent?.trim() || '转换详情';
+      detailHeader.hidden = false;
+      const details = job.querySelector('.convert428-job-details');
+      if (details) details.open = true;
+      modalScroll().scrollTop = 0;
+      detailHeader.querySelector('[data-conversion-ui-back]').focus({preventScroll:true});
+    });
     for (const job of list.querySelectorAll(':scope > .convert428-job')) {
       job.classList.add('conversion560-job');
       const jobId=job.dataset.conversionJobId||'',record=window.versionConversionJob428?.(jobId);
@@ -51,6 +136,33 @@
           button.addEventListener('click',()=>window.openConversionNumeric560?.(root.dataset.versionConversionAid,root.dataset.versionConversionVid,jobId));
           actions.prepend(button);
         }
+      }
+      const actions = job.querySelector('.convert428-actions');
+      if (actions && !actions.querySelector('[data-conversion-ui-open]')) {
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'btn mini conversion-ui-open';
+        open.dataset.conversionUiOpen = '1';
+        open.textContent = '查看详情';
+        const originalActions = [...actions.children].filter(node => node.matches('button,a'));
+        const primary = originalActions.find(node => /下载/.test(node.textContent || '')) ||
+          originalActions.find(node => /查看日志|日志/.test(node.textContent || ''));
+        if (primary) primary.classList.add('conversion-ui-primary-action');
+        const secondary = originalActions.filter(node => node !== primary);
+        if (secondary.length) {
+          const more = document.createElement('details');
+          more.className = 'conversion-ui-more';
+          const summary = document.createElement('summary');
+          summary.textContent = '更多';
+          summary.setAttribute('aria-label','更多转换操作');
+          more.append(summary);
+          const panel = document.createElement('div');
+          panel.className = 'conversion-ui-more-list';
+          secondary.forEach(node => panel.append(node));
+          more.append(panel);
+          actions.append(more);
+        }
+        actions.prepend(open);
       }
       const details = job.querySelector('.convert428-job-details');
       if (details) {
@@ -79,7 +191,7 @@
     sidebar.innerHTML = `<div class="conversion560-aside-head"><span>本次转换概览</span><span class="conversion560-live-dot" aria-hidden="true"></span></div>
       <div class="conversion560-route"><div><small>源模型</small><strong id="conversion560Source">正在读取模型…</strong></div><span aria-hidden="true">↓</span><div><small>目标格式</small><strong id="conversion560Target">请选择转换目标</strong></div></div>
       <dl class="conversion560-aside-params"><div><dt>目标芯片</dt><dd id="conversion560Chip">—</dd></div><div><dt>输出精度</dt><dd id="conversion560Precision">—</dd></div><div><dt>输入尺寸</dt><dd id="conversion560Shape">—</dd></div><div><dt>转换资源</dt><dd id="conversion560Resource">待选择</dd></div></dl>
-      <div class="conversion560-verification"><span>数值一致性检查</span><small>转换完成后可在场景算法实测中核对真实图片。</small></div>`;
+      <div class="conversion560-verification"><span>后续验证</span><small>模型转换完成不等于数值或板端验证通过。可在质量中心使用真实图片验证。</small></div>`;
     for (const node of allChildren) main.append(node);
     form.append(main,sidebar);
     const sections = main.querySelectorAll(':scope > section');
@@ -155,14 +267,8 @@
       }
       form.conversion560Update?.();
     }
-    for(const root of document.querySelectorAll('.conversion560-history')){
-      const counters=root.querySelectorAll('.conversion560-status-strip strong'),rows=[...root.querySelectorAll('.conversion560-job')];
-      if(counters.length>=3){
-        const active=rows.filter(row=>['queued','waiting_resource','running','stopping','cancel_requested'].includes(row.dataset.conversionStatus)).length;
-        const completed=rows.filter(row=>['done','blocked_by_hardware'].includes(row.dataset.conversionStatus)).length;
-        for(const [node,value] of [[counters[1],active],[counters[2],completed]])if(node.textContent!==String(value))node.textContent=String(value);
-      }
-    }
+    // Backend counters are authoritative: do not replace server totals with the
+    // number of records visible on the current paged list.
   }
   let scheduled=false;
   const schedule=()=>{if(scheduled)return;scheduled=true;queueMicrotask(()=>{scheduled=false;decorate();});};
