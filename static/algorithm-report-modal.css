@@ -63,6 +63,14 @@
   .algorithm-report429 .alg-report-tabs{gap:13px}
   .algorithm-report429 .alg-report-section{padding:14px}
 }
+/* Safe alignment prevents a tall centered popup from becoming unreachable.
+   The overlay is a fallback scrollport; its card body remains primary. */
+.modal:not(.hidden){
+  align-items:safe center;
+  overflow-y:auto;
+  overflow-x:hidden;
+  overscroll-behavior:contain;
+}
 /* Fix shared overflow ownership: one actual scrollport within each modal card. */
 .modal:not(.hidden)>.modal-card{
   min-height:0;
