@@ -3075,6 +3075,18 @@ class ExternalAlgorithmPublishService:
                    'metadata': local.get('metadata') or current.get('metadata') or {}, 'frozen_tags': item['weight_metadata'].get('tags')}
             row['compute_platform_id']=current.get('compute_platform_id') or row.get('compute_platform_id')
             plan=self._artifact_review({**row,**current},version,[*local_assets,*stored])
+            # A remote Weight may exist under an old computePlatformId even
+            # when no local Weight owner ID was recovered. The attempted
+            # publish records an explicit migration refusal: surface that
+            # refusal as a review, not an apparently automatic-ready asset.
+            remap_error = str(current.get("last_error") or "")
+            if (remap_error.startswith("EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED")
+                    and str(current.get("sync_status") or "").upper() != "SYNCED"):
+                plan = {**plan, "review_required": True,
+                        "code": "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED",
+                        "reason": remap_error,
+                        "suggested_operation": "REVIEW_PLATFORM_MIGRATION",
+                        "automatic_write_allowed": False}
             row.update(review_required=plan["review_required"],recovery_plan=plan,
                        requested_artifact_id=plan["requested_artifact_id"],remote_identity_status="READ_BACK" if json.loads(str(current.get("remote_metadata_json") or "{}")).get("readback_confirmed") and current.get("active",1) else "HISTORICAL_RECEIPT" if current.get("active")==0 else "PENDING_READBACK",
                        included_in_delivery=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==row["artifact_id"],
@@ -3109,16 +3121,34 @@ class ExternalAlgorithmPublishService:
                     and observed.get('tags') != prepared['tags'] and row['metadata_sync_status'] not in {'UNKNOWN','CONFLICT'}):
                 row['metadata_sync_status'] = 'PENDING'
             weights.append(row)
+        current_original_hashes = {
+            str(row.get("sha256") or "") for row in classified
+            if _artifact_target_identity(row.get("target")) == "training" and row.get("sha256")
+        }
         for current in [*stored, *local_assets]:
             if any(row.get('artifact_id') == current.get('artifact_id') for row in weights):
                 continue
             plan=self._artifact_review(current,version,stored)
-            included=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==current["artifact_id"]
+            # Best/last can both exist in historical asset storage. Only the
+            # currently discovered frozen original is in this delivery slot.
+            # Keep older originals visible for audit but do not count them as
+            # blocking today's original Weight when the current one is present.
+            historical_original = (
+                _artifact_target_identity(current.get("target")) == "training"
+                and bool(current_original_hashes)
+                and str(current.get("sha256") or "") not in current_original_hashes
+            )
+            included=(not plan["requested_artifact_id"] or plan["requested_artifact_id"]==current["artifact_id"]) and not historical_original
+            historical=not included
             weights.append({**current, 'remote_registered': bool(current.get('external_weight_id')),
-                'included_in_delivery':included,'delivery_role':'UNVERIFIED' if included else 'HISTORICAL',
+                'included_in_delivery':included,'delivery_role':'HISTORICAL' if historical else 'UNVERIFIED',
                 'requested_artifact_id':plan['requested_artifact_id'],
                 'metadata_complete': False, 'metadata_sync_status': 'UNKNOWN',
-                'last_error': '已登记产物当前无法核验：源文件缺失或内容身份已改变，请管理员核对',
+                'last_error': (
+                    '历史原始权重不属于当前冻结的原始模型；记录保留，远端身份未在本次核验'
+                    if historical_original else
+                    '已登记产物当前无法核验：源文件缺失或内容身份已改变，请管理员核对'
+                ),
                 'review_required':included,'remote_identity_status':'PENDING_READBACK' if included else 'HISTORICAL_RECEIPT',
                 'recovery_plan':plan})
         transport = self._publish_transport_state()
