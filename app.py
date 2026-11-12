@@ -20904,7 +20904,7 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
                     if p.is_file(): zf.write(p,p.relative_to(cal_dir))
             files["calibration_zip"]=(cal_zip.name,cal_zip.open("rb"),"application/zip")
         job.update({"status":"running","stage":"上传到转换服务器","progress":5,"message":"正在上传源模型","updated_at":now_iso()});write_json(jf,job)
-        r=requests.post(base+"/api/deploy/convert",headers={"X-API-Key":key},files=files,data={"target":job.get("target"),"params_json":json.dumps(params,ensure_ascii=False)},timeout=600)
+        r=requests.post(base+"/api/deploy/convert",headers={"X-API-Key":key},files=files,data={"target":job.get("target"),"params_json":json.dumps(params,ensure_ascii=False),"source_trace_json":json.dumps(job.get("source_trace") or {},ensure_ascii=False)},timeout=600)
         for v in files.values():
             try:v[1].close()
             except:pass
@@ -20934,8 +20934,19 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
             with zipfile.ZipFile(zp,"r") as zf:_safe_extract_zip(zf,ad)
             outputs=[]
             for p in ad.rglob("*"):
-                if p.is_file():outputs.append({"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_mb":round(p.stat().st_size/1024/1024,3)})
-            cur.update(outputs=outputs,finished_at=now_iso(),message="远程转换完成，部署产物已拉回平台",progress=100);write_json(jf,cur)
+                if p.is_file():
+                    outputs.append({"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),
+                                    "size_mb":round(p.stat().st_size/1024/1024,3),
+                                    "size_bytes":p.stat().st_size,"sha256":sha256_file(p)})
+            # Local receipt has an explicit timezone and is not a fabricated
+            # remote-worker completion event.
+            received_at=datetime.now(timezone.utc).isoformat()
+            manifest_path=ad/"manifest.json"
+            cur.update(outputs=outputs,finished_at=received_at,conversion_finished_at=received_at,
+                       conversion_completion_source="local_artifact_receipt_utc",
+                       manifest_path=str(manifest_path) if manifest_path.is_file() else "",
+                       message="远程转换完成，部署产物已拉回平台",progress=100)
+            write_json(jf,cur)
             request_external_auto_publish_for_conversion_if_enabled(
                 data_dir=DATA_DIR, project_id=project_id, conversion_job=cur,
             )
