@@ -392,10 +392,11 @@ test('20k explicit selections do not repeatedly hydrate collapsed selected-detai
   const segment=source.slice(start,end);
   assert.ok(start>=0&&end>start);
   assert.match(segment,/selectedTotal\.textContent=String\(picker\.reference\?\.count \?\? picker\.selected\.size\)/);
-  assert.ok(segment.indexOf("if(!document.querySelector('.train-v3-selected')?.open)return;")>=0);
-  assert.ok(segment.indexOf('const records=new Map()')>segment.indexOf("if(!document.querySelector('.train-v3-selected')?.open)return;"));
-  assert.match(source,/ontoggle="TrainingMaterialPickerRuntime\.renderSelectedList\(\)"/);
-  assert.match(source,/\n    renderSelectedList,\n    searchSelected\(value\)/);
+  assert.match(segment,/const details=modalLayer\?\.querySelector\?\.\('.train-v3-selected'\) \|\| document\.querySelector\?\.\('.train-v3-selected'\)/);
+  assert.ok(segment.indexOf('if(!details?.open)return;')>=0);
+  assert.ok(segment.indexOf('const records=new Map()')>segment.indexOf('if(!details?.open)return;'));
+  assert.match(source,/<details class="train-v3-selected"><summary>/);
+  assert.match(source,/details\?\.addEventListener\?\.\('toggle',/);
 });
 
 test('page-wide selection reuses one blocked-ID set, including independent Test mode',()=>{
