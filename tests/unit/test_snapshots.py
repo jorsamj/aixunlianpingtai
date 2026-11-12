@@ -6,6 +6,8 @@ from platform_core.snapshots import (
     dataset_revision_document,
     ensure_dataset_revision,
     persist_dataset_revision,
+    persist_snapshot,
+    snapshot_content_matches_identity,
 )
 from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
 
@@ -541,3 +543,32 @@ def test_durable_split_snapshot_rejects_any_rescan_stale_gt():
     manifest = build_split_manifest(images, split, seed=17)
     with pytest.raises(ValueError, match="需要重新审核"):
         build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+
+
+def test_frozen_snapshot_project_persistence_is_immutable_and_idempotent(tmp_path):
+    import hashlib
+    import json
+
+    payload = {
+        "test_image_ids": ["test-one"],
+        "images": [{"image_id": "test-one", "content_sha256": "b" * 64}],
+        "label_schema": [{"code": "person", "class_id": 0}],
+    }
+    snapshot_id = hashlib.sha256(json.dumps(payload, sort_keys=True,
+        ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    snapshot = {"snapshot_id": snapshot_id, "created_at": "2026-11-12T00:00:00Z", **payload}
+    assert snapshot_content_matches_identity(snapshot, snapshot_id)
+
+    directory = tmp_path / "projects" / "project" / "snapshots"
+    path = persist_snapshot(directory, snapshot)
+    content_before = path.read_bytes()
+    again = persist_snapshot(directory, {**snapshot, "created_at": "2026-11-12T01:00:00Z"})
+    assert path == again
+    assert path.read_bytes() == content_before
+
+    changed = {**snapshot, "images": [
+        {"image_id": "test-one", "content_sha256": "c" * 64}]}
+    assert not snapshot_content_matches_identity(changed, snapshot_id)
+    with pytest.raises(ValueError, match="已存在但内容不一致"):
+        persist_snapshot(directory, changed)
+    assert path.read_bytes() == content_before
