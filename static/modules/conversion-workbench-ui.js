@@ -147,7 +147,8 @@
         open.dataset.conversionUiOpen = '1';
         open.textContent = '查看详情';
         const originalActions = [...actions.children].filter(node => node.matches('button,a'));
-        const primary = originalActions.find(node => /下载/.test(node.textContent || '')) ||
+        const primary = originalActions.find(node => /板端验证/.test(node.textContent || '')) ||
+          originalActions.find(node => /下载/.test(node.textContent || '')) ||
           originalActions.find(node => node.dataset.conversionNumeric === '1') ||
           originalActions.find(node => /查看日志|日志/.test(node.textContent || ''));
         if (primary) primary.classList.add('conversion-ui-primary-action');
