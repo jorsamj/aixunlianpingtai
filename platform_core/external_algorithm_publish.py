@@ -2562,10 +2562,29 @@ class ExternalAlgorithmPublishService:
         return payload
 
     def _weight_slot_rows(self, rows, artifact):
-        """Exclude only remote leaves positively bound to another business vendor."""
+        """Separate generic output formats even when chipCode is blank.
+
+        A PT training Weight and an ONNX Weight can legally share an empty
+        chipCode. Exclude only POSITIVELY foreign model extensions. Unknown
+        remote formats and explicitly recorded owner IDs remain candidates
+        and still require identity review; do not silently create duplicates.
+        """
         slot = self._delivery_key(artifact)
+        candidates = list(rows)
+        own_suffixes = _DELIVERABLE_SUFFIXES.get(str(artifact.get("target") or "").lower())
+        if own_suffixes:
+            known_suffixes = {".pt", ".pth", ".pdparams", ".safetensors", ".ckpt"}
+            for suffix_set in _DELIVERABLE_SUFFIXES.values():
+                known_suffixes.update(suffix_set)
+            foreign_suffixes = known_suffixes - own_suffixes
+            owner_id = str(artifact.get("external_weight_id") or "").strip()
+            candidates = [
+                row for row in candidates
+                if Path(str(row.get("fileName") or row.get("name") or "")).suffix.lower() not in foreign_suffixes
+                or (owner_id and self._remote_weight_id(row) == owner_id)
+            ]
         if "|vendor:" not in slot:
-            return list(rows)
+            return candidates
         vendor_id = slot.split("|vendor:", 1)[1].split("|chip:", 1)[0]
         mappings = self.repository.config().get("target_mappings") or {}
         state = self._stable_artifact_mapping(artifact) or {}
@@ -2581,7 +2600,7 @@ class ExternalAlgorithmPublishService:
             except PlatformError:
                 continue
             excluded.update(str(value) for value in (binding.get("chip_mappings") or {}).values())
-        return [row for row in rows if str(row.get("computePlatformId") or "") not in excluded or self._remote_weight_id(row) == str(artifact.get("external_weight_id") or "")]
+        return [row for row in candidates if str(row.get("computePlatformId") or "") not in excluded or self._remote_weight_id(row) == str(artifact.get("external_weight_id") or "")]
 
     def _recover_weight_from_rows(
         self,
@@ -3087,10 +3106,13 @@ class ExternalAlgorithmPublishService:
                         "reason": remap_error,
                         "suggested_operation": "REVIEW_PLATFORM_MIGRATION",
                         "automatic_write_allowed": False}
-            row.update(review_required=plan["review_required"],recovery_plan=plan,
+            included=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==row["artifact_id"]
+            # Preserve old errors in recovery_plan for audit, but a superseded
+            # conversion does not require another action on the current Weight.
+            row.update(review_required=bool(included and plan["review_required"]),recovery_plan=plan,
                        requested_artifact_id=plan["requested_artifact_id"],remote_identity_status="READ_BACK" if json.loads(str(current.get("remote_metadata_json") or "{}")).get("readback_confirmed") and current.get("active",1) else "HISTORICAL_RECEIPT" if current.get("active")==0 else "PENDING_READBACK",
-                       included_in_delivery=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==row["artifact_id"],
-                       delivery_role="HISTORICAL" if plan["requested_artifact_id"] and plan["requested_artifact_id"]!=row["artifact_id"] else "CONFIRMED_OWNER" if current.get("external_weight_id") else "AUTOMATIC_CURRENT" if plan["requested_artifact_id"]==row["artifact_id"] else "UNSELECTED" if plan["review_required"] else "SINGLE_CANDIDATE")
+                       included_in_delivery=included,
+                       delivery_role="HISTORICAL" if not included else "CONFIRMED_OWNER" if current.get("external_weight_id") else "AUTOMATIC_CURRENT" if plan["requested_artifact_id"]==row["artifact_id"] else "UNSELECTED" if plan["review_required"] else "SINGLE_CANDIDATE")
             row['remote_registered'] = bool(current.get('external_weight_id'))
             if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
                 row['metadata_sync_status'] = 'UNKNOWN'
