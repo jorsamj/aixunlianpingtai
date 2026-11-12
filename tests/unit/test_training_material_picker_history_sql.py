@@ -354,3 +354,55 @@ def test_unknown_coverage_cannot_qualify_any_unused_material_even_with_history(t
     assert len(calls) == 1
     assert facts["revision"] == usage.read_revision()
     assert "usage_image_ids" in selected
+
+
+def test_test_reserved_browse_is_token_indexed_and_equivalent_to_usage_projection(tmp_path, monkeypatch):
+    """Train Test reservations include identical SHA descendants, never other algorithms."""
+    from platform_core.task_runtime.repository import TaskRepository
+    from platform_core.training_material_picker_api import _picker_filter_sql, _attach_usage_exclusion
+    import platform_core.training_material_picker_api as api
+    import sqlite3
+    repo = MaterialRepository(tmp_path/'data'/'projects'/'rknn-history')
+    rows = [
+        {'id':'test-original', 'filename':'test.jpg', 'processing_status':'processed', 'content_sha256':'a'*64},
+        {'id':'same-hash', 'filename':'same.jpg', 'processing_status':'processed', 'content_sha256':'a'*64},
+        {'id':'train-only', 'filename':'train.jpg', 'processing_status':'processed', 'content_sha256':'b'*64},
+        {'id':'other-test', 'filename':'other.jpg', 'processing_status':'processed', 'content_sha256':'c'*64},
+    ]
+    repo.upsert_many(rows)
+    task_path=repo.project_path.parent.parent/'task_runtime'/'tasks.sqlite3'
+    TaskRepository(task_path)
+    usage=TrainingMaterialUsage(task_path)
+    for image_id, algorithm, role in (
+        ('test-original','a','test'),('train-only','a','train'),('other-test','b','test')):
+        row=repo.get(image_id)
+        task='task-'+image_id
+        usage.record_selected('rknn-history',algorithm,task,{'snapshot_id':task,
+            'images':[{'image_id':image_id,'role':role,'content_sha256':row['content_sha256']}]},
+            source_images=[row])
+        usage.record_execution(task,completed_epoch=role=='train',test_observed=role=='test')
+    _cached_usage_pool.cache_clear()
+    expected=_cached_usage_pool(str(repo.project_path),str(task_path),repo.current_revision(),
+        'a',usage.read_revision(),'train',True)
+    expected_ids={image_id for image_id,fact in expected['by_image_id'].items()
+                  if fact['state']=='test_reserved'}
+    assert expected_ids=={'test-original','same-hash'}
+    gt=AnnotationRepository(repo.project_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(api,'_cached_usage_pool',lambda *a: (_ for _ in ()).throw(
+            AssertionError('test_reserved browsing must not scan full material pool')))
+        filters,_=api._usage_filters(repo,{'algorithm_asset_id':'a','usage_state':'test_reserved',
+            'role':'train','browse_only':True})
+        assert filters['__usage_sql_exclusion']['scope_only']=='test_reserved'
+        result=api._gt_material_filter_page(repo,gt,filters=filters,include_payload=False,limit=60)
+        assert result['total']==len(expected_ids)
+        assert set(result['items'])==expected_ids
+        clauses,params=_picker_filter_sql(filters)
+        with sqlite3.connect(repo.path) as db:
+            _attach_usage_exclusion(db,filters)
+            plan=[row[3] for row in db.execute(
+                'EXPLAIN QUERY PLAN SELECT m.id FROM materials m WHERE '+ ' AND '.join(clauses),params)]
+        assert any('SEARCH t USING COVERING INDEX' in item for item in plan), plan
+    test_filters,_=api._usage_filters(repo,{'algorithm_asset_id':'a','usage_state':'test_reserved',
+        'role':'test','browse_only':True})
+    assert '__usage_sql_exclusion' not in test_filters

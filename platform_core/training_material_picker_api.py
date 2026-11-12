@@ -255,7 +255,9 @@ def _usage_filters(repository, filters):
                 'has_task_statuses': has_task_statuses,
             }
         return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
-    if ((scope and not state) or (state in {'used','possible'} and scope in {'','current_only'} and str(body.get('role') or 'train')=='train')) and browse_only and task_path.is_file():
+    sql_state_browse = (state in {'used','possible'} and scope in {'','current_only'}
+        or state == 'test_reserved' and not scope)
+    if ((scope and not state) or (sql_state_browse and str(body.get('role') or 'train')=='train')) and browse_only and task_path.is_file():
         # Scope browsing needs indexed relation existence, not every material's history.
         with closing(TrainingMaterialUsage(task_path)._connect()) as task_db:
             tables={row[0] for row in task_db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -432,6 +434,27 @@ def _picker_filter_sql(filters=None):
             active=(" OR EXISTS (SELECT 1 FROM usage_index.tasks active WHERE active.task_id=u.task_id AND active.status IN ('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION'))" if sql_exclusion.get('has_task_statuses') else '')
             clauses.append('NOT '+exposure("'test'",'u.evidence>0'+active))
             params.extend((sql_exclusion['project_id'],sql_exclusion['algorithm_id']))
+        elif sql_exclusion['scope_only']=='test_reserved':
+            # In a Train picker, exposed or live reserved Test identities take
+            # priority over other history states. Match the same derivative,
+            # hash and group tokens as the authoritative usage evaluator.
+            active = (
+                " OR EXISTS (SELECT 1 FROM usage_index.tasks active "
+                "WHERE active.task_id=u.task_id AND active.status IN "
+                "('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION'))"
+                if sql_exclusion.get('has_task_statuses') else ''
+            )
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(picker_relation_tokens(m.id,m.content_sha256,m.payload_json)) rel "
+                "CROSS JOIN usage_index.training_usage_tokens t "
+                "CROSS JOIN usage_index.training_material_usage u "
+                "WHERE t.project_id=? "
+                "AND t.token_kind=json_extract(rel.value,'$[0]') "
+                "AND t.token_value=json_extract(rel.value,'$[1]') "
+                "AND u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role "
+                "AND u.algorithm_id=? AND u.role='test' AND (u.evidence>0"+active+"))"
+            )
+            params.extend((sql_exclusion['project_id'], sql_exclusion['algorithm_id']))
         elif sql_exclusion['scope_only']=='current_only':
             clauses.append(scope_exists('='))
             params.extend((sql_exclusion['project_id'],sql_exclusion['algorithm_id']))
