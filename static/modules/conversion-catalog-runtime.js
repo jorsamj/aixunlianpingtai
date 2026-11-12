@@ -48,7 +48,7 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
       }
       paint(entity,result);
       const addChip=root.querySelector('[data-catalog-action="new"][data-entity="chips"]');if(addChip)addChip.disabled=!selected;
-      if(selectFirst)await load('chips');
+      if(selectFirst && selected)await load('chips');
     }catch(error){if(live(stamp)&&ticket===tickets[entity]&&error.name!=='AbortError')status(`读取失败：${error.message}，可点击刷新重试。`,true)}
   }
   function releaseDialog(){dialogAbort?.abort();dialogAbort=null;form=null}
@@ -144,7 +144,7 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
   }
   async function onClick(event){
     const button=event.target.closest('[data-catalog-action]');if(!button||button.disabled)return;
-    const menu=button.closest('.catalog-more');
+    const menu=button.closest?.('.catalog-more');
     if(menu)menu.open=false;
     const {catalogAction:action,entity,id}=button.dataset;
     if(action==='select'){opening=null;selected=id;slot('vendor-title').textContent=rows.vendors.find(v=>v.id===id)?.name||'';root.querySelectorAll('[data-catalog-vendor]').forEach(row=>row.classList.toggle('selected',row.dataset.catalogVendor===id));queries.chips={page:1};return load('chips')}

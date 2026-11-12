@@ -1,6 +1,6 @@
 import {canonicalTaskProgressPercent, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js?v=422424';
 import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=42.25.571';
-import {trainingCharts, mountReportCharts, disposeReportViews} from './reports.js?v=20261110a';
+import {trainingCharts, mountReportCharts, disposeReportViews} from './reports.js?v=42.25.594';
 import {withRequestDeadline} from './api.js?v=20261021s';
 
 const RECOVERY_ACTION_REVALIDATE = 'revalidate_checkpoint';

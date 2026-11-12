@@ -18,20 +18,26 @@ test('algorithm report displays actual empty report scopes and an explicit mixed
   await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
   await page.evaluate(project=>{state.project=project;},project);
   await page.evaluate(id=>window.algorithmReport429(id),algorithm.id);
-  await expect(page.locator('#modalBody')).toContainText('成功训练次数');
-  await expect(page.locator('#modalBody')).toContainText('完整记录 0 条');
+  await expect(page.locator('#modalBody')).toContainText('成功训练');
+  await expect(page.locator('#modalBody')).toContainText('训练尝试总数');
+  await page.getByRole('tab', {name:'训练记录'}).click();
+  await expect(page.locator('#modalBody')).toContainText('最近 0 / 0 条任务');
   await page.evaluate(()=>closeModal());
 
   // Explicit response fixture exercises mixed results without creating GPU jobs.
-  const fixture={...actual,summary:{...actual.summary,training_count:1,successful_count:1,attempt_count:23,total_duration_seconds:40,avg_duration_seconds:13,duration_record_count:3,duration_unknown_count:20},jobs_total:23,jobs_truncated:true,trend:[{job_id:'failed-fixture',status:'failed',map50:.2,images:3}]};
-  await page.route(`**${url}`,route=>route.fulfill({json:fixture}));
+  const fixture={...actual,summary:{...actual.summary,training_count:1,successful_count:1,attempt_count:23,total_duration_seconds:40,avg_duration_seconds:13,duration_record_count:3,duration_unknown_count:20},jobs_total:23,jobs_truncated:true,jobs:[{job_id:'failed-fixture',status:'failed',map50:.2,images:3}]};
+  await page.route(`**${url}*`,route=>route.fulfill({json:fixture}));
   await page.evaluate(id=>window.algorithmReport429(id),algorithm.id);
   const body=page.locator('#modalBody');
-  await expect(body).toContainText('训练任务数（含失败等状态，同任务重试不重复）');
+  await expect(body).toContainText('训练尝试总数');
   await expect(body).toContainText('23 次');
-  await expect(body).toContainText('所有训练任务平均耗时（含失败）');
-  await expect(body).toContainText('3 条有耗时记录计算，20 条耗时未知');
-  await expect(body).toContainText('完整记录 23 条；任务明细返回最近 20 条（已截断）');
-  await expect(body).not.toContainText('1 / 1 次');
+  await expect(body).toContainText('平均耗时（含失败）');
+  await expect(body).toContainText('13.0 秒');
+  await expect(body).toContainText('3 / 23');
+  await expect(body).toContainText('20 条');
+  await expect(body).not.toContainText('failed-fixture','job rows are lazy before tab navigation');
+  await page.getByRole('tab', {name:'训练记录'}).click();
+  await expect(body).toContainText('最近 1 / 23 条任务');
+  await expect(body).toContainText('完整记录请在训练任务页面检索');
   await expect(body.locator('tbody tr')).toHaveCount(1);
 });
