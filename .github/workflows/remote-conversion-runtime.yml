@@ -13,6 +13,7 @@ on:
       - 'platform_core/rknn_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
+      - 'platform_core/onnx_topology.py'
       - 'platform_core/conversion_csc.py'
       - 'platform_core/conversion_history.py'
       - 'platform_core/conversion_resource_detection.py'
@@ -39,6 +40,7 @@ on:
       - 'tests/unit/test_rknn_runtime.py'
       - 'tests/unit/test_service_nodes.py'
       - 'tests/unit/test_conversion.py'
+      - 'tests/unit/test_onnx_topology.py'
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/external_publish_request.py'
@@ -76,6 +78,7 @@ on:
       - 'platform_core/rknn_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
+      - 'platform_core/onnx_topology.py'
       - 'platform_core/conversion_csc.py'
       - 'platform_core/conversion_history.py'
       - 'platform_core/conversion_resource_detection.py'
@@ -102,6 +105,7 @@ on:
       - 'tests/unit/test_rknn_runtime.py'
       - 'tests/unit/test_service_nodes.py'
       - 'tests/unit/test_conversion.py'
+      - 'tests/unit/test_onnx_topology.py'
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/external_publish_request.py'
@@ -209,6 +213,8 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/external_publish_request.py
           platform_core/deployment/conversion_tasks.py
+          platform_core/onnx_topology.py
+          tests/unit/test_onnx_topology.py
           platform_core/deployment/numeric_consistency.py
           platform_core/node_agent_conversion_runtime.py
           tests/api/test_conversion_portable_contract.py
@@ -216,6 +222,7 @@ jobs:
           tests/api/test_deployment_artifact_visibility.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_onnx_topology.py
           tests/unit/test_conversion_numeric_consistency.py
           tests/api/test_conversion_numeric_validation.py
           tests/unit/test_model_artifacts.py
@@ -233,6 +240,7 @@ jobs:
           tests/api/test_deployment_artifact_visibility.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_onnx_topology.py
           tests/unit/test_conversion_numeric_consistency.py
           tests/api/test_conversion_numeric_validation.py
           tests/unit/test_model_artifacts.py

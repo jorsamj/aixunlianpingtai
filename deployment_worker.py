@@ -300,6 +300,7 @@ def paddle_inference_to_onnx(model_dir: Path, out_dir: Path, resource: Dict[str,
 
 def prepare_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], log_file: Path) -> Path:
     from platform_core.color_adapter import adapt_onnx_color_input
+    from platform_core.onnx_topology import repair_onnx_topology
 
     ext = source.suffix.lower()
     if ext in {'.pt', '.pth', '.onnx'}:
@@ -309,7 +310,11 @@ def prepare_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], params: 
         original = paddle_inference_to_onnx(inf, out_dir, resource, params, log_file)
     else:
         raise RuntimeError(f'当前源模型格式 {ext} 暂不能转换为 ONNX。')
-    converted, evidence = adapt_onnx_color_input(original, out_dir, params)
+    checked, topology_evidence = repair_onnx_topology(original, out_dir)
+    params['onnx_topology_evidence'] = topology_evidence
+    if topology_evidence['applied']:
+        append_log(log_file, f"ONNX 仅调整节点拓扑顺序：{topology_evidence['moved_nodes']} 个节点变更位置；原始导出文件保留。")
+    converted, evidence = adapt_onnx_color_input(checked, out_dir, params)
     params['color_adapter_evidence'] = evidence
     if evidence.get('applied'):
         append_log(log_file, '颜色适配生效：' + evidence['source_color_order'].upper()
@@ -354,19 +359,24 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
 
 
 def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Path, *, expected_precision: str | None = None) -> Dict[str, Any]:
+    stage = 'dependencies'
     try:
         import numpy as np
         import onnx
         import onnxruntime as ort
 
+        stage = 'read_onnx'
         model = onnx.load(str(onnx_path))
+        stage = 'checker'
         onnx.checker.check_model(model)
+        stage = 'contract'
         floating_types = {t.data_type for t in model.graph.initializer}
         floating_types.update(t.type.tensor_type.elem_type for t in model.graph.input)
         if expected_precision == 'fp16' and onnx.TensorProto.FLOAT16 not in floating_types:
             raise ValueError('ONNX requested precision FP16 was not applied by the exporter')
         if expected_precision == 'fp32' and floating_types.intersection({onnx.TensorProto.FLOAT16, onnx.TensorProto.BFLOAT16}):
             raise ValueError('ONNX requested precision FP32 differs from exported tensors')
+        stage = 'runtime_load'
         session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
         feeds = {}
         height, width = conversion_input_shape(params)
@@ -399,6 +409,7 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
                 else:
                     shape.append(1)
             feeds[input_meta.name] = np.zeros(shape, dtype=dtype)
+        stage = 'runtime_inference'
         outputs = session.run(None, feeds)
         result = {
             'checker': 'passed',
@@ -415,10 +426,16 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
         append_log(log_file, 'ONNX Checker 与 ONNX Runtime 空白输入推理验证通过。')
         return result
     except Exception as error:
+        code = {
+            'read_onnx': 'ONNX_GRAPH_TOPOLOGY_INVALID',
+            'checker': 'ONNX_GRAPH_TOPOLOGY_INVALID',
+            'runtime_load': 'ONNX_RUNTIME_LOAD_FAILED',
+            'runtime_inference': 'ONNX_RUNTIME_INFERENCE_FAILED',
+        }.get(stage, 'ONNX_VALIDATION_FAILED')
         raise ConversionError(
-            'ONNX_VALIDATION_FAILED',
-            f'ONNX 结构或 ONNX Runtime 推理验证失败：{error}',
-            solution='请检查导出 opset、动态输入和算子兼容性，并确认转换环境已安装 onnxruntime。',
+            code,
+            f'ONNX {stage} 阶段验证失败：{error}',
+            solution='检查原始导出图、FP16 精度、输入契约与 Runtime 算子支持；不得跳过验证。',
         ) from error
 
 
@@ -764,6 +781,8 @@ def main():
             'ascend': 'cann-atc',
             'rockchip': 'rknn-toolkit2',
         }
+        if onnx_validation and params.get('onnx_topology_evidence'):
+            params['onnx_topology_evidence']['runtime'] = 'passed'
         manifest = build_manifest(
             source=job.get('source_trace') or {
                 'source_id': job.get('source_id'),
@@ -805,6 +824,8 @@ def main():
             'input_color_order': params.get('input_color_order'),
             'source_color_order': params.get('source_color_order'),
             'color_adapter': params.get('color_adapter_evidence'),
+            'onnx_topology': params.get('onnx_topology_evidence'),
+            'pt_onnx_numeric_validation': 'not_performed',  # Checker/ORT synthetic inference is not PT parity.
             'csc': params.get('csc_contract'),
             'artifact_precision': None,  # No dtype inspection; compiler mode is not an artifact dtype.
             'onnx_export': 'reused_existing_onnx' if source.suffix.lower() == '.onnx' else 'exported',
