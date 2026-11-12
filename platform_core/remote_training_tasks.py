@@ -65,6 +65,7 @@ from .snapshots import (
     build_snapshot,
     dataset_revision_document,
     persist_dataset_revision,
+    persist_snapshot,
 )
 
 
@@ -1064,6 +1065,7 @@ class TrainingPrepareHandler:
             # TRAINING owner starts materialization under its execution lease.
             persist_dataset_revision(project / "dataset_revisions", snapshot)
             context.artifacts.atomic_write_json(training_task.task_id, "snapshot.json", snapshot)
+            persist_snapshot(project / "snapshots", snapshot)
             from .training_material_usage import record_context_snapshot
             context.run_owned(lambda: record_context_snapshot(context, training_task, payload, snapshot))
             context.artifacts.atomic_write_json(
@@ -1168,6 +1170,7 @@ class TrainingPrepareHandler:
             "snapshot.json",
             snapshot,
         )
+        persist_snapshot(project / "snapshots", snapshot)
         context.artifacts.atomic_write_json(
             training_task.task_id,
             "dataset-revision.json",
