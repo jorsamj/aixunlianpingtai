@@ -31,7 +31,7 @@ test('leaving ignores late server results and aborts owned listeners',async()=>{
 test('remount aborts previous page and one owner issues only one query for an empty catalog',async()=>{
  let calls=0;const h=harness(async()=>{calls++;return {revision:0,templates:[],items:[],total:0,page:1,page_size:10}});
  await h.runtime.mount(h.host);const previous=h.listeners.map(l=>l.signal);await h.runtime.mount(h.host);
- assert.equal(calls,2);assert.ok(previous.every(s=>s.aborted));assert.equal(h.listeners.filter(l=>!l.signal.aborted).length,2);
+ assert.equal(calls,2);assert.ok(previous.every(s=>s.aborted));assert.equal(h.listeners.filter(l=>!l.signal.aborted).length,3); // two click delegates and one submit delegate
  assert.match(h.slots.get('[data-slot="vendors"]').innerHTML,/暂无匹配记录/);
 });
 
