@@ -11571,6 +11571,9 @@ def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id
 
 _EVALUATION_SNAPSHOT_INDEX_CACHE = OrderedDict()
 _EVALUATION_SNAPSHOT_INDEX_LOCK = threading.Lock()
+# Serialize only the first expensive, cryptographic check of a legacy task
+# Snapshot. Concurrent gallery thumbnails otherwise all parse a 20MB JSON.
+_EVALUATION_TASK_SNAPSHOT_READ_LOCK = threading.Lock()
 _EVALUATION_SNAPSHOT_INDEX_LIMIT = 8
 
 
@@ -11581,7 +11584,44 @@ class _EvaluationSnapshotIndexError(ValueError):
         self.message = message
 
 
-def _evaluation_snapshot_identity_index(path: Path, snapshot_id: str):
+def _evaluation_snapshot_preview_path(project_id, version, evaluation, snapshot_id):
+    """Resolve missing legacy project Snapshot from its exact durable TRAINING task.
+
+    Read-only: never reconstruct from today's materials, write a project file,
+    or relax the downstream frozen Test/image-byte verification.
+    """
+    canonical = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
+    if canonical.is_file():
+        return canonical, False
+    if canonical.exists() or canonical.is_symlink():
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结快照路径不是有效文件')
+    lineage = version.get('training_lineage') or {}
+    ids = [
+        str(value).strip() for value in (
+            evaluation.get('task_id'), version.get('job_id'),
+            lineage.get('task_id') if isinstance(lineage, dict) else None,
+        ) if value
+    ]
+    if not ids:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '冻结快照文件不存在')
+    if len(set(ids)) != 1:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结评测与训练任务身份冲突')
+    if version.get('snapshot_id') and str(version['snapshot_id']).lower() != snapshot_id:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '算法版本冻结快照身份不一致')
+    task_id = ids[0]
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '历史任务身份不可验证')
+    task = shared_task_repository().get(task_id)
+    if task is None or str(task.project_id) != str(project_id) or task.kind is not TaskKind.TRAINING:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '未找到同项目的可信训练任务')
+    candidate = shared_task_artifacts().artifact_path(task_id, 'snapshot.json')
+    if (candidate.is_symlink() or candidate.parent.is_symlink()
+            or not candidate.is_file()):
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '训练任务原始冻结快照不存在')
+    return candidate, True
+
+
+def _evaluation_snapshot_identity_index(path: Path, snapshot_id: str, *, verify_digest=False):
     """Return one bounded, immutable identity projection for a frozen Snapshot.
 
     The cache owns only parsed Snapshot metadata. It never caches Material rows,
@@ -11593,15 +11633,20 @@ def _evaluation_snapshot_identity_index(path: Path, snapshot_id: str):
         stat = path.stat()
     except OSError as error:
         raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '冻结快照文件不存在') from error
-    key = (str(path.resolve()), snapshot_id, int(stat.st_mtime_ns), int(stat.st_size))
+    key = (str(path.resolve()), ('verified:' if verify_digest else '') + snapshot_id,
+           int(stat.st_mtime_ns), int(stat.st_size))
     with _EVALUATION_SNAPSHOT_INDEX_LOCK:
         cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
         if cached is not None:
             _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
             return cached
     snapshot = read_json(path, {})
-    if snapshot.get('snapshot_id') != snapshot_id:
+    if not isinstance(snapshot, dict) or snapshot.get('snapshot_id') != snapshot_id:
         raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结快照与评测身份不一致')
+    if verify_digest:
+        from platform_core.snapshots import snapshot_content_matches_identity
+        if not snapshot_content_matches_identity(snapshot, snapshot_id):
+            raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '训练任务冻结快照内容摘要校验失败')
     ids = snapshot.get('test_image_ids')
     if ids is None and isinstance(snapshot.get('ids'), dict):
         ids = snapshot['ids'].get('test')
@@ -11732,6 +11777,8 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
             'X-Evaluation-Image-Height': str(height),
             'X-Evaluation-Evidence-Source': evidence_source,
             'X-Evaluation-Original-SHA256': evidence_sha256,
+            'X-Evaluation-Snapshot-Source': (
+                'verified-task-artifact' if task_snapshot_fallback else 'project'),
         }
         if orientation not in (None, 1):
             # The scorer records Pillow's raw pixel grid. Strip orientation in
@@ -11792,11 +11839,15 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     snapshot_id = str(evaluation.get("snapshot_id") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
         reject('SNAPSHOT_MISSING', '历史评测缺少可验证的冻结快照')
-    path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
-    if not path.is_file():
-        reject('SNAPSHOT_MISSING', '冻结快照文件不存在')
     try:
-        snapshot_index = _evaluation_snapshot_identity_index(path, snapshot_id)
+        path, task_snapshot_fallback = _evaluation_snapshot_preview_path(
+            project_id, version, evaluation, snapshot_id)
+        if task_snapshot_fallback:
+            with _EVALUATION_TASK_SNAPSHOT_READ_LOCK:
+                snapshot_index = _evaluation_snapshot_identity_index(
+                    path, snapshot_id, verify_digest=True)
+        else:
+            snapshot_index = _evaluation_snapshot_identity_index(path, snapshot_id)
     except _EvaluationSnapshotIndexError as error:
         reject(error.code, error.message)
     test_ids = snapshot_index['test_ids']
