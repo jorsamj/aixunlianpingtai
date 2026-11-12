@@ -238,6 +238,7 @@ def test_algorithm_report_lightweight_avoids_mutable_history_annotation_scans(cl
     assert report['summary']['label_counts'] == {}
     assert report['summary']['label_counts_scope'] == 'not_computed_fast'
     assert report['jobs_total'] == 2
+    assert all(set(job) <= {'job_id','version','finished_at','map50','status','labels','images'} for job in report['jobs'])
     assert isinstance(report['version_quality'], list)
     assert report['version_quality_total'] == report['algorithm']['version_count']
     assert report['version_quality_truncated'] is False
