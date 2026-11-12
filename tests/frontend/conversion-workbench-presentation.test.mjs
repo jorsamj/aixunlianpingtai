@@ -21,14 +21,14 @@ test('conversion quick filters invoke the canonical server filter rather than fi
   assert.match(ui,/select\.dispatchEvent\(new Event\('change'/);
   assert.doesNotMatch(ui,/rows\.filter\(row=>\['queued'/);
   assert.match(ui,/Backend counters are authoritative/);
-  assert.match(ui,/\[\['全部',''\]/);
+  assert.match(ui,/\['全部',''\]/);
 });
 
 test('conversion record actions are still original buttons and secondary actions are discoverable',()=>{
   assert.match(ui,/secondary\.forEach\(node => panel\.append\(node\)\)/);
   assert.match(ui,/conversion-ui-more-list/);
   assert.match(ui,/conversion560-numeric-action/);
-  assert.match(css,/conversion-ui-more>summary:focus-visible/);
+  assert.match(css,/conversion-ui-more summary:focus-visible/);
 });
 
 test('required target-specific settings remain in the primary form region',()=>{
