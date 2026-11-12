@@ -2,6 +2,8 @@
 
 import io
 import json
+import hashlib
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 import zipfile
@@ -92,3 +94,18 @@ def test_blank_source_fails_before_upload(tmp_path, monkeypatch):
     assert job["status"] == "failed"
     assert "远程转换源模型不存在或不是有效文件" in job["error"]
     assert uploads == []
+
+
+
+def test_remote_receipt_uses_utc_and_freezes_real_output_identity(tmp_path, monkeypatch):
+    job, uploads = _probe_remote_upload(tmp_path, monkeypatch, {})
+    assert job["status"] == "done"
+    stamp = datetime.fromisoformat(job["conversion_finished_at"])
+    assert stamp.tzinfo is not None and stamp.utcoffset().total_seconds() == 0
+    assert job["finished_at"] == job["conversion_finished_at"]
+    assert job["conversion_completion_source"] == "local_artifact_receipt_utc"
+    output = next(row for row in job["outputs"] if row["name"] == "converted.onnx")
+    assert output["sha256"] == hashlib.sha256(b"fixture-result").hexdigest()
+    assert output["size_bytes"] == len(b"fixture-result")
+    assert output["rel"] == "artifacts/converted.onnx"
+    assert uploads == [{"source_model": b"fixture-model"}]

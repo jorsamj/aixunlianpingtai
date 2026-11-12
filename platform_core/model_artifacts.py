@@ -1622,6 +1622,7 @@ class ModelArtifactService:
                                 "requested_parameters": dict(job.get("requested_params") or {}),
                                 "conversion_parameters": dict(params),
                                 "finished_at":str(job.get("conversion_finished_at") or job.get("finished_at") or ""),
+                                "remote_job_id":str(job.get("remote_job_id") or ""),
                                 "conversion_output_sha256":str(output.get("sha256") or ""),
                                 "conversion_output_size":output.get("size_bytes"),
                                 "source_sha256": str((job.get("source_trace") or {}).get("sha256") or ""),
@@ -1629,7 +1630,12 @@ class ModelArtifactService:
                                 "conversion_status": str(job.get("conversion_status") or status),
                                 "runtime_verified": job.get("runtime_verified") is True,
                                 "hardware_verified": job.get("hardware_verified") is True,
-                                "manifest_path": str(job.get("manifest_path") or ""),
+                                # Remote legacy jobs extracted the manifest but
+                                # did not persist its absolute path.
+                                "manifest_path": str(job.get("manifest_path") or (
+                                    output_path.parent / "manifest.json"
+                                    if (output_path.parent / "manifest.json").is_file() else ""
+                                )),
                             },
                         ))
         seen: set[tuple[str, str, str]] = set()
@@ -1648,11 +1654,26 @@ class ModelArtifactService:
                 manifest = _json_load(Path(metadata["manifest_path"]), {})
                 outputs = [r for r in manifest.get("outputs",[]) if Path(str(r.get("name") or "")).name==path.name] if isinstance(manifest,dict) else []
                 source_sha = str(metadata.get("source_sha256") or "")
+                # The remote receiver pins the second ID before accepting the
+                # archive. Never accept a foreign manifest merely by file name.
+                accepted_job_ids = {job_id}
+                if metadata.get("remote_job_id"):
+                    accepted_job_ids.add(metadata["remote_job_id"])
+                manifest_job_id = str(manifest.get("job_id") or "")
                 matches = (len(outputs)==1 and outputs[0].get("sha256")==digest and outputs[0].get("size_bytes")==path.stat().st_size
-                           and manifest.get("job_id")==job_id and source_sha and (manifest.get("source") or {}).get("sha256")==source_sha)
+                           and bool(manifest_job_id) and manifest_job_id in accepted_job_ids
+                           and source_sha and (manifest.get("source") or {}).get("sha256")==source_sha)
                 if matches:
                     metadata["conversion_identity_verified"]=True
-                    metadata["finished_at"]=str(manifest.get("completed_at") or manifest.get("created_at") or metadata.get("finished_at") or "")
+                    # Conversion worker emits its manifest after producing
+                    # outputs; only its timezone-qualified timestamp is trusted.
+                    # Never guess a zone for legacy job times or file mtimes.
+                    completion=next((stamp for stamp in (
+                        manifest.get("completed_at"),manifest.get("created_at")
+                    ) if conversion_completion_rank({"finished_at":stamp or ""}) is not None),None)
+                    if completion:
+                        metadata["finished_at"]=str(completion)
+                        metadata["completion_evidence_source"]="bound_conversion_manifest"
                     onnx = manifest.get("onnx") or {}
                     shapes = onnx.get("input_shapes") or []
                     if target == "onnx" and isinstance(shapes,list) and len(shapes)==1 and isinstance(shapes[0],(list,tuple)) and len(shapes[0])==4:
