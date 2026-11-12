@@ -384,3 +384,26 @@ test('large picker initial selection is scope-bounded without per-image linear i
   assert.doesNotMatch(source,/uniqueIds\(draft\(\)\.materialIds\)\.includes\(id\)/);
   assert.doesNotMatch(source,/picker\.scopeIds\.includes\(id\)/);
 });
+
+
+test('20k explicit selections do not repeatedly hydrate collapsed selected-detail panel',()=>{
+  const start=source.indexOf('  function renderSelectedList()');
+  const end=source.indexOf('\n  function updateCounts()',start);
+  const segment=source.slice(start,end);
+  assert.ok(start>=0&&end>start);
+  assert.match(segment,/selectedTotal\.textContent=String\(picker\.reference\?\.count \?\? picker\.selected\.size\)/);
+  assert.ok(segment.indexOf("if(!document.querySelector('.train-v3-selected')?.open)return;")>=0);
+  assert.ok(segment.indexOf('const records=new Map()')>segment.indexOf("if(!document.querySelector('.train-v3-selected')?.open)return;"));
+  assert.match(source,/ontoggle="TrainingMaterialPickerRuntime\.renderSelectedList\(\)"/);
+  assert.match(source,/\n    renderSelectedList,\n    searchSelected\(value\)/);
+});
+
+test('page-wide selection reuses one blocked-ID set, including independent Test mode',()=>{
+  const start=source.indexOf("    if (action === 'select-page') {");
+  const end=source.indexOf("    if (action === 'clear-all')",start);
+  assert.ok(start>=0&&end>start);
+  const section=source.slice(start,end);
+  assert.match(section,/const blocked=blockedIds\(picker\.role\);/);
+  assert.match(section,/trainingMaterialSelectable\(row,picker\.role,blocked\)/);
+  assert.equal((section.match(/blockedIds\(/g)||[]).length,1);
+});

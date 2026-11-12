@@ -138,7 +138,8 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   if (normalized.splitMode === 'independent_test_set' && !normalized.testMaterialIds.length) {
     throw new Error('请选择独立试验素材');
   }
-  const overlap = normalized.testMaterialIds.filter(id => normalized.materialIds.includes(id));
+  const trainIdSet = normalized.testMaterialIds.length ? new Set(normalized.materialIds) : null;
+  const overlap = normalized.testMaterialIds.filter(id => trainIdSet.has(id));
   if (overlap.length) throw new Error('训练素材与独立试验素材不能重复');
   if (!Number.isInteger(normalized.priority) || normalized.priority < 1 || normalized.priority > 999) {
     throw new Error('任务优先级必须是 1~999 的整数');

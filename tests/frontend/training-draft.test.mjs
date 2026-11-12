@@ -200,3 +200,24 @@ test('iteration defaults inherit only selected valid version actual precision an
  assert.deepEqual(trainingInheritedDefaults({...algorithm,versions:[{...version,training_lineage:{parameters:{requested:{precision:'fp16',imgsz:640}}}}]}),{});
  assert.deepEqual(trainingInheritedDefaults({versions:[]}),{});
 });
+
+
+test('20k explicit train and independent Test selections validate overlap without quadratic membership scans', () => {
+  const materialIds=Array.from({length:20000},(_,i)=>'train-'+i);
+  const testMaterialIds=Array.from({length:20000},(_,i)=>'test-'+i);
+  const start=performance.now();
+  const request=trainingDraftToRequest(createTrainingDraft({
+    algorithmId:'alg-scale',baseVersionId:'version-scale',materialIds,testMaterialIds,
+    splitMode:'independent_test_set',
+  }));
+  const elapsedMs=performance.now()-start;
+  assert.equal(request.train_image_ids.length,20000);
+  assert.equal(request.test_image_ids.length,20000);
+  assert.deepEqual(request.train_image_ids.slice(0,2),['train-0','train-1']);
+  assert.deepEqual(request.test_image_ids.slice(-2),['test-19998','test-19999']);
+  assert.ok(elapsedMs<1500,'20k disjoint sets should validate without nested linear scans: '+elapsedMs.toFixed(1)+'ms');
+  assert.throws(()=>trainingDraftToRequest(createTrainingDraft({
+    algorithmId:'alg-scale',baseVersionId:'version-scale',materialIds,
+    testMaterialIds:[...testMaterialIds,'train-19999'],splitMode:'independent_test_set',
+  })),/不能重复/);
+});

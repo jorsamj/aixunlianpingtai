@@ -810,7 +810,7 @@ export function installTrainingMaterialPickerRuntime({
       <label>正式标注<select class="select" data-filter-key="annotationState" onchange="TrainingMaterialPickerRuntime.setFilter('annotationState',this.value)"><option value="">全部状态</option><option value="annotated">已标注</option><option value="confirmed_empty">已确认无目标</option><option value="unannotated">未标注</option></select></label>
       <label>真实训练历史<select class="select" data-filter-key="usageState" onchange="TrainingMaterialPickerRuntime.setFilter('usageState',this.value)"><option value="">全部历史</option><option value="used">已使用</option><option value="possible">可能使用</option><option value="selected">仅选入</option><option value="eval_only">仅参与评测</option><option value="test_reserved">独立 Test 已保留</option><option value="unused">有据未使用</option><option value="unknown">未知</option></select></label>
       <label>算法训练范围<select class="select" data-filter-key="historyScope" onchange="TrainingMaterialPickerRuntime.setFilter('historyScope',this.value)"><option value="">所有算法范围</option><option value="current_only">当前算法训练（含共同使用）</option><option value="other_only">仅其他算法训练（已知证据）</option></select></label><p class="train-v3-history-note">历史未完整回填时，“仅”表示当前已知证据；未知素材不能据此证明独立。</p>
-      </div></details></aside><main class="train-v3-results"><div class="train-v3-view"><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('grid')">网格</button><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('list')">紧凑列表</button><details class="train-v3-selected"><summary>本次已选 <span id="trV3SelectedTotal">0</span></summary><div><input class="input" aria-label="搜索已选素材" placeholder="搜索已选名称或ID" oninput="TrainingMaterialPickerRuntime.searchSelected(this.value)"><p id="trV3SelectedSummary"></p><div id="trV3SelectedList"></div></div></details></div>
+      </div></details></aside><main class="train-v3-results"><div class="train-v3-view"><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('grid')">网格</button><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('list')">紧凑列表</button><details class="train-v3-selected" ontoggle="TrainingMaterialPickerRuntime.renderSelectedList()"><summary>本次已选 <span id="trV3SelectedTotal">0</span></summary><div><input class="input" aria-label="搜索已选素材" placeholder="搜索已选名称或ID" oninput="TrainingMaterialPickerRuntime.searchSelected(this.value)"><p id="trV3SelectedSummary"></p><div id="trV3SelectedList"></div></div></details></div>
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><details class="train-v3-more"><summary class="btn mini">更多</summary><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><button class="btn mini" data-picker-action="invert-all" onclick="trainMaterialSelectV3('invert-all')">反选全部</button></details><button class="btn mini" data-picker-action="select-page" onclick="trainMaterialSelectV3('select-page')">全选本页</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <label class="train-v3-policy">训练素材使用策略 <select class="select" onchange="TrainingMaterialPickerRuntime.setHistoryPolicy(this.value)"><option value="new_for_algorithm" ${taskPayload().history_policy==='new_for_algorithm'?'selected':''}>仅使用未训练素材</option><option value="include_history" ${taskPayload().history_policy==='include_history'?'selected':''}>允许复用历史训练素材</option></select></label>
       <div id="trV3Grid" class="train-v3-grid"></div>
@@ -894,6 +894,11 @@ export function installTrainingMaterialPickerRuntime({
 
   function renderSelectedList() {
     if (!picker) return;
+    // The badge must stay live, but a collapsed detail panel must not scan
+    // 20k explicit selections on every checkbox/page update.
+    const selectedTotal=document.getElementById('trV3SelectedTotal');
+    if(selectedTotal)selectedTotal.textContent=String(picker.reference?.count ?? picker.selected.size);
+    if(!document.querySelector('.train-v3-selected')?.open)return;
     const records=new Map();
     for (const cached of pageCache.values()) for(const row of cached.items || []) records.set(String(row.id),row);
     for(const row of picker.items || [])records.set(String(row.id),row);
@@ -1240,7 +1245,8 @@ export function installTrainingMaterialPickerRuntime({
     if (picker.loading) return notify('当前筛选结果尚未加载完成，请稍后重试选择');
     if(picker.reference && !['select-filtered','select-all','clear-all'].includes(action)){picker.reference=null;picker.selected.clear();notify('已解除服务器冻结范围，改为显式选择');}
     if (action === 'select-page') {
-      picker.items.forEach(row=>{if(trainingMaterialSelectable(row,picker.role,blockedIds(picker.role)))picker.selected.add(String(row.id));});renderPage();return;
+      const blocked=blockedIds(picker.role);
+      picker.items.forEach(row=>{if(trainingMaterialSelectable(row,picker.role,blocked))picker.selected.add(String(row.id));});renderPage();return;
     }
     if (action === 'clear-all') {
       picker.reference=null;picker.selected.clear();
@@ -1448,6 +1454,7 @@ export function installTrainingMaterialPickerRuntime({
   const runtime = {
     build: 'training-material-picker-runtime-422616',
     open,
+    renderSelectedList,
     searchSelected(value) {if(picker){picker.selectedQuery=String(value || '');renderSelectedList();}},
     removeSelected(id) {
       if(!picker || picker.bulkPending || picker.reviewPending)return;
