@@ -140,10 +140,12 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
       if(!live(stamp))return;win.invalidateVersionConversionResources428?.();await load('chips');
       if(!live(stamp))return;
       const row=rows.chips.find(r=>r.id===id);if(row&&!doc.querySelector('[data-catalog-dialog]'))show('芯片转换能力',detailHtml({...row,capability:result.capability})+'<button class="btn" data-catalog-action="cancel">关闭</button>');
-    }catch(error){if(live(stamp))status(error.message,true)}finally{if(button.isConnected){button.disabled=false;button.textContent='检测转换能力'}}
+    }catch(error){if(live(stamp))status(error.message,true)}finally{if(button.isConnected){button.disabled=false;button.textContent='检测能力'}}
   }
   async function onClick(event){
     const button=event.target.closest('[data-catalog-action]');if(!button||button.disabled)return;
+    const menu=button.closest('.catalog-more');
+    if(menu)menu.open=false;
     const {catalogAction:action,entity,id}=button.dataset;
     if(action==='select'){opening=null;selected=id;slot('vendor-title').textContent=rows.vendors.find(v=>v.id===id)?.name||'';root.querySelectorAll('[data-catalog-vendor]').forEach(row=>row.classList.toggle('selected',row.dataset.catalogVendor===id));queries.chips={page:1};return load('chips')}
     if(action==='refresh'){status('');return load('vendors',{selectFirst:true})}
@@ -158,6 +160,9 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
     leave();root=host;project=getState().project?.id;life=new AbortController();selected='';queries.vendors={page:1};queries.chips={page:1};
     host.innerHTML=`<div class="panel-head"><div><div class="panel-title">厂商与芯片管理</div><div class="subline">按厂商管理芯片型号与转换能力</div></div><button class="btn" data-catalog-action="refresh">刷新字典</button></div><div class="panel-body"><p data-slot="notice" role="status"></p>${['vendors','chips'].map(entity=>`<section class="catalog-section"><div class="catalog-section-head"><h3>${entity==='vendors'?'厂商列表':'<span data-slot="vendor-title">请选择厂商</span> · 芯片型号'}</h3><button class="btn primary" data-catalog-action="new" data-entity="${entity}" ${entity==='chips'&&!selected?'disabled':''}>+ 新增${entity==='vendors'?'厂商':'芯片'}</button></div><form data-filter="${entity}" class="catalog-filters"><input class="input" type="search" name="${entity}-query" placeholder="搜索${entity==='vendors'?'厂商名称':'芯片型号'}" aria-label="搜索${entity==='vendors'?'厂商':'芯片'}">${entity==='vendors'?'<select class="select" name="vendors-template_id" aria-label="SDK 模板筛选"><option value="">全部 SDK 模板</option></select>':''}<select class="select" name="${entity}-enabled" aria-label="${entity}启停筛选"><option value="">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select><select class="select" name="${entity}-sort" aria-label="${entity}排序"><option value="name">名称升序</option><option value="name_desc">名称降序</option><option value="id">稳定 ID</option></select><button class="btn" type="submit">查询</button></form><div class="catalog-table-wrap"><table class="catalog-table"><thead><tr>${(entity==='vendors'?['厂商名称','SDK 模板','芯片 / 已启用','转换适配','状态','操作']:['芯片型号','SDK 目标','支持精度','资源 / SDK 版本','状态','操作']).map(title=>`<th>${title}</th>`).join('')}</tr></thead><tbody data-slot="${entity}"><tr><td colspan="6">加载中…</td></tr></tbody></table></div><div class="catalog-pager" data-slot="${entity}-pager"></div></section>`).join('')}</div>`;
     host.addEventListener('click',onClick,{signal:life.signal});
+    host.addEventListener('click',event=>{
+      if(!event.target.closest('.catalog-more'))host.querySelectorAll('.catalog-more[open]').forEach(menu=>{menu.open=false});
+    },{signal:life.signal});
     host.addEventListener('submit',event=>{const filter=event.target.closest('[data-filter]');if(!filter)return;event.preventDefault();const entity=filter.dataset.filter;queries[entity]={page:1};for(const [key,value]of new FormData(filter))queries[entity][key.slice(entity.length+1)]=value;void load(entity)},{signal:life.signal});
     return load('vendors',{selectFirst:true});
   }
