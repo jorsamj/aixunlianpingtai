@@ -98,8 +98,12 @@
     list.before(detailHeader);
     let lastScroll = 0;
     let lastTrigger = null;
+    let previousDetails = null;
+    let previousDetailsOpen = false;
     const modalScroll = () => root.closest('.modal-body') || root.closest('[role="dialog"]') || root;
     const closeDetail = () => {
+      if(previousDetails?.isConnected)previousDetails.open = previousDetailsOpen;
+      previousDetails = null;
       root.classList.remove('conversion-ui-inspecting');
       root.querySelector('.conversion-ui-inspected')?.classList.remove('conversion-ui-inspected');
       detailHeader.hidden = true;
@@ -107,6 +111,9 @@
       (lastTrigger?.isConnected ? lastTrigger : root.querySelector('[data-conversion-ui-open]'))?.focus({preventScroll:true});
     };
     root.addEventListener('click', event => {
+      const more = event.target.closest('.conversion-ui-more');
+      if(!more)root.querySelectorAll('.conversion-ui-more[open]').forEach(menu => {menu.open=false});
+      else if(event.target.closest('.conversion-ui-more-list button,.conversion-ui-more-list a'))more.open=false;
       if (event.target.closest('[data-conversion-ui-back]')) { closeDetail(); return; }
       const trigger = event.target.closest('[data-conversion-ui-open]');
       if (!trigger) return;
@@ -121,6 +128,8 @@
         job.querySelector('.convert428-job-title b')?.textContent?.trim() || '转换详情';
       detailHeader.hidden = false;
       const details = job.querySelector('.convert428-job-details');
+      previousDetails = details;
+      previousDetailsOpen = Boolean(details?.open);
       if (details) details.open = true;
       modalScroll().scrollTop = 0;
       detailHeader.querySelector('[data-conversion-ui-back]').focus({preventScroll:true});
