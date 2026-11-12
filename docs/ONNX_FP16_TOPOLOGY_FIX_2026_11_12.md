@@ -37,3 +37,7 @@ TensorRT、Sophon、Rockchip、Ascend 共享 ONNX 准备入口；本次仅改公
 ## 安全边界和进度
 
 代码修复提交只涉及长期分支 feature/external-algorithm-publishing，不触碰 A800 运行任务、数据库、GT、训练权重、生产服务和生产运行环境；绝不部署生产服务器。
+
+## CI 版本一致性补修
+
+首次提交的前端 1605 项测试有 1 项失败：正式 VERSION 为 42.24.588，但 AI 审核样式的缓存键仍是 42.24.587。仅同步 static/index.html 中既有 CSS 查询版本为 42.24.588；不修改审核样式、前端业务或 ONNX 逻辑。
