@@ -712,3 +712,119 @@ def test_report_thumbnail_rejects_changed_evaluation_or_image_identity(monkeypat
         platform.evaluation_diagnostic_image_v1('evaluation-project','algo','v1',image.name,**expected)
     assert error.value.status_code==409
     assert error.value.detail['code']=='EVALUATION_IDENTITY_CHANGED'
+
+
+def _setup_missing_project_snapshot_with_task_proof(monkeypatch, tmp_path):
+    """A real payload digest, unlike the synthetic legacy fixtures above."""
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+    platform, version, rows, root, original = _setup(monkeypatch, tmp_path)
+    project_snapshot = root / "snapshots" / ("a" * 64 + ".json")
+    snapshot = json.loads(project_snapshot.read_text(encoding="utf-8"))
+    payload = {key: value for key, value in snapshot.items()
+               if key not in ("snapshot_id", "created_at")}
+    snapshot_id = hashlib.sha256(json.dumps(payload, ensure_ascii=False,
+        sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    snapshot["snapshot_id"] = snapshot_id
+    task_id = "train_verified_legacy"
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = TaskRecord.new(task_id, "evaluation-project", TaskKind.TRAINING,
+                          "payload.json", "training:cpu")
+    repository.create(task)
+    artifacts = ArtifactStore(tmp_path / "task-artifacts")
+    artifacts.atomic_write_json(task_id, "snapshot.json", snapshot)
+    version["job_id"] = task_id
+    version["snapshot_id"] = snapshot_id
+    version["evaluation"].update(
+        task_id=task_id, snapshot_id=snapshot_id,
+        evaluation_id="e" * 64, model_sha256="f" * 64)
+    version["evaluation"]["error_samples"][0].update(
+        image_id="test-image", image_content_sha256=hashlib.sha256(original.read_bytes()).hexdigest(),
+        image_width=120, image_height=80)
+    monkeypatch.setattr(platform, "shared_task_repository", lambda: repository)
+    monkeypatch.setattr(platform, "shared_task_artifacts", lambda: artifacts)
+    project_snapshot.unlink()
+    project_snapshot.parent.rmdir()
+    return platform, version, root, original, artifacts, task_id, snapshot_id
+
+
+def test_legacy_project_snapshot_missing_uses_verified_task_artifact_readonly(monkeypatch, tmp_path):
+    platform, version, root, image, artifacts, task_id, digest = (
+        _setup_missing_project_snapshot_with_task_proof(monkeypatch, tmp_path))
+    sample = version["evaluation"]["error_samples"][0]
+    response = platform.evaluation_diagnostic_image_v1(
+        "evaluation-project", "algo", "v1", image.name,
+        expected_evaluation_id="e" * 64,
+        expected_image_id="test-image", expected_sha256=sample["image_content_sha256"])
+    assert Path(response.path) == image
+    assert response.headers["x-evaluation-snapshot-source"] == "verified-task-artifact"
+    assert not (root / "snapshots").exists(), "legacy fallback must never write production data"
+    for _ in range(4):
+        again = platform.evaluation_diagnostic_image_v1(
+            "evaluation-project", "algo", "v1", image.name)
+        assert Path(again.path) == image
+
+
+def test_legacy_snapshot_fallback_rejects_mutated_bytes(monkeypatch, tmp_path):
+    platform, version, root, image, artifacts, task_id, digest = (
+        _setup_missing_project_snapshot_with_task_proof(monkeypatch, tmp_path))
+    snapshot = artifacts.read_json(task_id, "snapshot.json")
+    snapshot["images"][0]["content_sha256"] = "d" * 64
+    artifacts.atomic_write_json(task_id, "snapshot.json", snapshot)
+    with pytest.raises(HTTPException) as error:
+        platform.evaluation_diagnostic_image_v1(
+            "evaluation-project", "algo", "v1", image.name)
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "SNAPSHOT_INCOMPLETE"
+    assert not (root / "snapshots").exists()
+
+
+def test_legacy_snapshot_fallback_rejects_conflicting_task_identity(monkeypatch, tmp_path):
+    platform, version, root, image, artifacts, task_id, digest = (
+        _setup_missing_project_snapshot_with_task_proof(monkeypatch, tmp_path))
+    version["job_id"] = "train_another_owner"
+    with pytest.raises(HTTPException) as error:
+        platform.evaluation_diagnostic_image_v1(
+            "evaluation-project", "algo", "v1", image.name)
+    assert error.value.detail["code"] == "SNAPSHOT_INCOMPLETE"
+    assert not (root / "snapshots").exists()
+
+
+def test_legacy_snapshot_fallback_rejects_missing_task_file(monkeypatch, tmp_path):
+    platform, version, root, image, artifacts, task_id, digest = (
+        _setup_missing_project_snapshot_with_task_proof(monkeypatch, tmp_path))
+    artifacts.artifact_path(task_id, "snapshot.json").unlink()
+    with pytest.raises(HTTPException) as error:
+        platform.evaluation_diagnostic_image_v1(
+            "evaluation-project", "algo", "v1", image.name)
+    assert error.value.detail["code"] == "SNAPSHOT_MISSING"
+    assert not (root / "snapshots").exists()
+
+
+def test_legacy_snapshot_fallback_prefers_verified_archived_evaluation_bytes(monkeypatch, tmp_path):
+    platform, version, root, original, artifacts, task_id, digest = (
+        _setup_missing_project_snapshot_with_task_proof(monkeypatch, tmp_path))
+    from PIL import Image
+    # Deliberately encode different image bytes: a legitimate normalized Test
+    # member is not interchangeable with the canonical original material.
+    ref = "dataset/images/test/test-image.jpg"
+    path = artifacts.artifact_path(task_id, "evidence/bundle/" + ref)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (120, 80), "green").save(path, format="JPEG")
+    evaluated_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    original_sha = hashlib.sha256(original.read_bytes()).hexdigest()
+    artifacts.atomic_write_json(task_id, "evidence/bundle/manifest.json", {
+        "snapshot_id": digest,
+        "splits": {"test": [{
+            "image_id": "test-image", "image_ref": ref,
+            "source_content_sha256": original_sha, "content_sha256": evaluated_sha,
+        }]},
+    })
+    version["evaluation"]["error_samples"][0]["image_content_sha256"] = evaluated_sha
+    response = platform.evaluation_diagnostic_image_v1(
+        "evaluation-project", "algo", "v1", original.name,
+        expected_evaluation_id="e" * 64,
+        expected_image_id="test-image", expected_sha256=evaluated_sha)
+    assert Path(response.path) == path
+    assert response.headers["x-evaluation-evidence-source"] == "bundle"
+    assert response.headers["x-evaluation-snapshot-source"] == "verified-task-artifact"
+    assert not (root / "snapshots").exists()
