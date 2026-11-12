@@ -526,6 +526,9 @@ def test_remote_training_prepare_handler_freezes_indices_and_activates_target(tm
     assert training["inputs"] == {"type": "frozen-manifest-v1", "input_freeze_id": payload["input_freeze_id"]}
     assert "bundle" not in training
     assert artifacts.artifact_path(target_id, "snapshot.json").is_file()
+    project_snapshot = data_dir / "projects" / project_id / "snapshots" / (training["snapshot_id"] + ".json")
+    assert project_snapshot.is_file()
+    assert json.loads(project_snapshot.read_text(encoding="utf-8")) == artifacts.read_json(target_id, "snapshot.json")
     assert artifacts.artifact_path(target_id, "dataset-revision.json").is_file()
     plan = artifacts.read_json(target_id, "input-plan/manifest.json")
     assert plan["snapshot_id"] == training["snapshot_id"]
