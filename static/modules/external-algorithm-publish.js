@@ -44,13 +44,21 @@ export function publicationWeightDetails(status={}) {
     const pending=row.remote_registered&&Array.isArray(row.prepared_tags)&&JSON.stringify(row.prepared_tags)!==JSON.stringify(row.confirmed_tags);
     const tagsFacts=`冻结类别：${escapeHtml(tagsText(row.frozen_tags))}<br>本地类别：${escapeHtml(tagsText(row.local_tags??meta.tags))}<br>准备提交：${escapeHtml(tagsText(row.prepared_tags))}<br>HTTP 请求记录：${escapeHtml(tagsText(row.request_tags))}（${escapeHtml(row.request_status||'无记录')}）<br>已确认提交：${escapeHtml(tagsText(row.confirmed_tags))}<br>${row.remote_tags_status==='READ_BACK'?`远端读回：${escapeHtml(tagsText(row.remote_tags))} ${escapeHtml(row.remote_tags_checked_at||'')}`:row.remote_tags_status==='NOT_RETURNED'?'远端未返回 tags（不能视为读回验证）':'远端 tags 未读回验证'}${pending?'<br>标签补齐待处理':''}`;
     const plan=row.recovery_plan||{};
-    const review=row.review_required?`<br>自动发布异常，请管理员核对：${escapeHtml(plan.reason||row.last_error||'远端身份未确认')}<br>建议 ${escapeHtml(plan.suggested_operation||'READ_ONLY_RECOVERY')}<br>目标分类 ${escapeHtml(plan.target_compute_platform_id||'未确认')}<br>原Weight ${escapeHtml(plan.old_weight_id||'未确认')}`:'';
+    const review=row.review_required&&row.included_in_delivery!==false?`<br>自动发布异常，请管理员核对：${escapeHtml(plan.reason||row.last_error||'远端身份未确认')}<br>建议 ${escapeHtml(plan.suggested_operation||'READ_ONLY_RECOVERY')}<br>目标分类 ${escapeHtml(plan.target_compute_platform_id||'未确认')}<br>原Weight ${escapeHtml(plan.old_weight_id||'未确认')}`:'';
     const role=({HISTORICAL:'历史成果',AUTOMATIC_CURRENT:'自动当前交付',CONFIRMED_OWNER:'当前交付',SINGLE_CANDIDATE:'自动交付候选'})[row.delivery_role]||row.delivery_role||'待核验';
     const readback=row.remote_identity_status==='READ_BACK'?'远端读回已确认':row.remote_identity_status==='HISTORICAL_RECEIPT'?'历史登记回执（已被当前成果取代）':'远端身份未读回验证';
     const facts=`Artifact ${escapeHtml(row.artifact_id||'未登记')}<br>Weight ${escapeHtml(row.external_weight_id||'未确认')}<br>OSS ${escapeHtml(row.storage_status||'未登记')}<br>登记状态 ${escapeHtml(row.sync_status||'PENDING')}<br>交付角色 ${escapeHtml(role)}<br>${readback}${review}`;
     const delivery=row.delivery_role==='HISTORICAL'?'历史成果':row.sync_status==='SYNCED'?'同步成功':row.remote_registered?'已登记 · 待确认':'尚未登记';
     return `<tr><td>${escapeHtml(row.file_name||row.target)}<br>${escapeHtml(row.compute_platform_id||'未配置')} / ${escapeHtml(row.remote_chip_code||row.mapped_chip_code||row.chip_code||'通用')}</td><td>${delivery}<br>${facts}<br>${escapeHtml(names[row.metadata_sync_status]||'待同步')}<br>${escapeHtml(row.metadata_note||'')}${meta.execution_evidence_note?`<br>${escapeHtml(meta.execution_evidence_note)}`:''}<br>${escapeHtml(row.last_error||'')}<br><details><summary>类别与同步证据</summary>${tagsFacts}</details></td><td>宽 ${escapeHtml(meta.image_width??'未记录')} / 高 ${escapeHtml(meta.image_height??'未记录')} · ${escapeHtml(meta.yolo_version||'YOLO型号未记录')}<br>${escapeHtml(row.size_bytes??'未知')} bytes<br><code style="overflow-wrap:anywhere">${escapeHtml(row.sha256||'SHA256未记录')}</code><br>类别：${escapeHtml(Array.isArray(meta.tags)?meta.tags.join(', '):'未记录')}</td></tr>`;
   }).join('')}</tbody></table></div><small>转换产物登记与目标硬件验证分别记录，登记成功不表示实机验证通过。</small></details>`;
+}
+
+export function publicationDeliveryRows(status={}) {
+  const all=Array.isArray(status.artifacts)?status.artifacts:Array.isArray(status.discovered)?status.discovered:[];
+  const current=all.filter(row=>row.included_in_delivery!==false && row.delivery_role!=='HISTORICAL');
+  const historical=all.filter(row=>row.included_in_delivery===false || row.delivery_role==='HISTORICAL');
+  return {current,historical,delivered:current.filter(row=>row.sync_status==='SYNCED').length,
+    reviewing:current.filter(row=>row.review_required).length};
 }
 
 export function publicationResultMessage(result={}) {
@@ -416,6 +424,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   }
 
   function deliveryRowStatus(row) {
+    if (row.included_in_delivery===false || row.delivery_role==='HISTORICAL') return {label:'历史成果', tone:''};
     if (row.review_required) return {label:'需人工核对', tone:'error'};
     if (row.sync_status === 'SYNCED') return {label:'已同步', tone:'ok'};
     if (row.remote_registered) return {label:'已登记 · 待核实', tone:'warn'};
@@ -425,9 +434,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
 
   function deliveryDialogBody(context) {
     const status = context.status;
-    const rows = status?.artifacts || status?.discovered || [];
-    const delivered = rows.filter(row => row.sync_status === 'SYNCED').length;
-    const reviewing = rows.filter(row => row.review_required).length;
+    const {current:rows,historical:historicalRows,delivered,reviewing}=publicationDeliveryRows(status || {});
     const versionPublished = String(status?.publication?.status || '').toUpperCase() === 'PUBLISHED';
     const partial = String(status?.weight_delivery_status || '').toUpperCase() === 'PARTIAL';
     const done = Boolean(status) && versionPublished && status.requires_sync === false && !partial;
@@ -457,11 +464,13 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
           return `<div class="external-delivery-item"><div class="external-delivery-item-main"><b title="${escapeHtml(name)}">${escapeHtml(name)}</b><small>${escapeHtml(target)} · ${escapeHtml(platform)}</small></div><span class="external-delivery-pill ${display.tone}">${display.label}</span></div>`;
         }).join('')
         : '<div class="external-delivery-item"><span class="muted-line">当前版本未发现可交付的权重</span></div>';
+    const history=historicalRows.length
+      ? `<details class="external-delivery-technical"><summary>历史转换成果 ${historicalRows.length} 份（不参与本次同步）</summary>${historicalRows.map(row=>`<div class="external-delivery-item"><div class="external-delivery-item-main"><b title="${escapeHtml(row.file_name||row.target||'历史模型')}">${escapeHtml(row.file_name||row.target||'历史模型')}</b><small>Artifact ${escapeHtml(row.artifact_id||'未登记')}</small></div><span class="external-delivery-pill">历史成果</span></div>`).join('')}</details>`:'';
     return `<div class="external-delivery-dialog">
       <header class="external-delivery-intro"><div><h3>${escapeHtml(context.algorithmName)}</h3><p>版本 ${escapeHtml(context.versionName)} · 目标平台：新畅联</p></div><span class="external-delivery-pill ${versionPublished ? 'ok' : 'warn'}">${versionPublished ? '版本已登记' : status ? '待登记' : '检查中'}</span></header>
       <div class="external-delivery-kpis"><div class="external-delivery-kpi"><span>版本交付</span><b>${versionPublished ? '已登记' : status ? '未完成' : '检查中'}</b></div><div class="external-delivery-kpi"><span>权重已同步</span><b>${status ? `${delivered} / ${rows.length}` : '—'}</b></div><div class="external-delivery-kpi"><span>待人工核对</span><b>${status ? reviewing : '—'}</b></div></div>
       ${banner}
-      <section class="external-delivery-list"><div class="external-delivery-list-head"><strong>本次版本的模型权重</strong><span>原始模型及已登记转换产物</span></div>${list}</section>
+      <section class="external-delivery-list"><div class="external-delivery-list-head"><strong>本次版本的模型权重</strong><span>仅显示本次需要同步的成果</span></div>${list}${history}</section>
       ${status ? `<details class="external-delivery-technical"><summary>技术回执与分类证据（高级详情）</summary>${publicationWeightDetails(status)}</details>` : ''}
       <footer class="external-delivery-footer"><span class="external-delivery-footnote">打开此窗口或刷新状态不会提交同步。只有点击“确认同步”才会向新畅联写入数据；登记成功不代表实机验证通过。</span><div class="row"><button class="btn" type="button" data-delivery-action="refresh" ${busy ? 'disabled' : ''}>${context.busy === 'checking' ? '查询中…' : context.uncertain ? '查询发布结果' : '刷新状态'}</button><button class="btn" type="button" data-delivery-action="close">关闭</button>${!done ? `<button class="btn primary" type="button" data-delivery-action="sync" ${canSync ? '' : 'disabled'}>${context.busy === 'publishing' ? '正在同步…' : '确认同步到新畅联'}</button>` : ''}</div></footer>
     </div>`;

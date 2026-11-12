@@ -10,6 +10,7 @@ import {
   publicationActionLabel,
   publicationPreflight,
   publicationWeightDetails,
+  publicationDeliveryRows,
   publicationResultMessage,
 } from '../../static/modules/external-algorithm-publish.js';
 
@@ -327,4 +328,25 @@ test('stable mapping normalization preserves dynamic vendors chips revision and 
   assert.equal(model.targetMappings['vendor:business-a'].local_vendor_id,'business-a');
   assert.equal(model.localCatalog.vendors[0].id,'business-a');assert.equal(model.localCatalog.chips[0].enabled,false);
   assert.equal(model.mappingRevision,4);assert.equal(model.localCatalog.revision,7);
+});
+
+
+test('superseded same-name ONNX is retained only under collapsed history',()=>{
+  const same='00_train_best_topology_sorted.onnx';
+  const status={artifacts:[
+    {artifact_id:'new',file_name:same,target:'onnx',delivery_role:'AUTOMATIC_CURRENT',included_in_delivery:true,
+      review_required:false,sync_status:'PENDING'},
+    {artifact_id:'old',file_name:same,target:'onnx',delivery_role:'HISTORICAL',included_in_delivery:false,
+      review_required:true,sync_status:'UNKNOWN',recovery_plan:{reason:'旧ONNX分类冲突'}},
+    {artifact_id:'best',file_name:'best.pt',target:'original',delivery_role:'CONFIRMED_OWNER',
+      included_in_delivery:true,review_required:false,sync_status:'SYNCED'},
+  ]};
+  const group=publicationDeliveryRows(status);
+  assert.deepEqual(group.current.map(r=>r.artifact_id),['new','best']);
+  assert.deepEqual(group.historical.map(r=>r.artifact_id),['old']);
+  assert.equal(group.delivered,1);
+  assert.equal(group.reviewing,0);
+  const details=publicationWeightDetails(status);
+  assert.match(details,/历史成果/);
+  assert.doesNotMatch(details,/自动发布异常，请管理员核对：旧ONNX分类冲突/);
 });
