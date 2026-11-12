@@ -28028,7 +28028,7 @@ def _v49_job_label_counts(project_id: str, job: Dict[str, Any]) -> Dict[str, int
 
 @app.get('/api/v49/projects/{project_id}/algorithms/{algorithm_id}/report')
 def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool = False):
-    algo = next((x for x in list_algorithms_internal(project_id) if x.get('id') == algorithm_id), None)
+    algo = next((x for x in list_algorithms_internal(project_id, algorithm_id=algorithm_id) if x.get('id') == algorithm_id), None)
     if not algo:
         raise HTTPException(status_code=404, detail='算法不存在')
     rows, repository, durable = _training_history_context(project_id)
@@ -28130,7 +28130,7 @@ def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool =
     success = _successful_training_counts(project_id).get(str(algorithm_id), 0)
     return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,
        'label_counts_scope': 'not_computed_fast' if lightweight else 'cumulative_training_boxes',
-       'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': val_by_version_id.get(str(current.get('id') or '')) if current else None}, 'trend':trend, 'jobs':jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,
+       'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': val_by_version_id.get(str(current.get('id') or '')) if current else None}, 'trend':trend, 'jobs':trend[-20:] if lightweight else jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,
             'jobs_truncated':len(jobs)>20,
             'version_quality':quality_rows,
             'version_quality_total':len(versions),
