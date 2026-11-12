@@ -249,6 +249,7 @@ def test_deferred_role_deep_page_uses_forward_cursor_not_repeated_offsets(tmp_pa
     repo.upsert_many([{
         'id': f'm{i:04d}', 'filename': f'{i:04d}.jpg',
         'processing_status': 'processed', 'created_at': '2026-11-01T00:00:00+00:00',
+        'content_sha256': f'{i+1:064x}',
     } for i in range(360)])
     annotations = AnnotationRepository(repo.project_path)
     contract = {'effective_label_codes': ['person']}
