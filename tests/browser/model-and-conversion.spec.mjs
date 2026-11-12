@@ -8,6 +8,12 @@ const uiCatalog={
   templates:[{id:'atlas-atc',adapter:'ascend'},{id:'rknn',adapter:'rockchip'},{id:'tpu-mlir',adapter:'sophon'}],
   chips:[['Ascend310P3','v-atlas'],['rk3568','v-rk'],['rk3576','v-rk'],['bm1684x','v-s'],['bm1688','v-s']].map(([id,vendor_id])=>({id,vendor_id,name:id.startsWith('bm')||id.startsWith('rk')?id.toUpperCase():id,sdk_code:id,enabled:true}))
 };
+// Secondary catalog actions are deliberately grouped under the same row's "更多" menu.
+async function clickCatalogSecondary(row,label) {
+  const more=row.locator('.catalog-more');
+  if (!(await more.evaluate(el=>el.open))) await more.locator('summary').click();
+  await row.getByRole('button',{name:label,exact:true}).click();
+}
 test.beforeEach(async({page})=>{
   await page.route('**/api/v39/deploy/catalog',route=>route.fulfill({json:uiCatalog}));
   await page.route('**/api/v39/projects/*/deploy/resolve',async route=>{
@@ -826,12 +832,12 @@ test('catalog CRUD preserves hidden identities, references, pending chips, and c
   const chipId=await chip.getAttribute('data-catalog-chip');expect(chipId).not.toBe(vendorId);expect(writes).toBe(2);
   await editor.getByRole('searchbox',{name:'搜索芯片',exact:true}).fill('Mystery');
   await editor.locator('[data-filter="chips"]').getByRole('button',{name:'查询',exact:true}).click();await expect(editor.locator('[data-catalog-chip]')).toHaveCount(1);
-  await chip.getByRole('button',{name:'停用',exact:true}).click();await expect(chip).toContainText('已停用');
+  await clickCatalogSecondary(chip,'停用');await expect(chip).toContainText('已停用');
   const after=await (await request.get('/api/v39/deploy/catalog')).json();
   for(const v of before.vendors)expect(after.vendors.find(x=>x.id===v.id)).toEqual(v);
   for(const c of before.chips)expect(after.chips.find(x=>x.id===c.id)).toEqual(c);
   expect(after.chips.find(x=>x.id===chipId)).toMatchObject({sdk_code:'',constraint_id:'',enabled:false});
-  await chip.getByRole('button',{name:'编辑',exact:true}).click();await expect(form.locator('details')).not.toHaveAttribute('open');
+  await clickCatalogSecondary(chip,'编辑');await expect(form.locator('details')).not.toHaveAttribute('open');
   await form.locator('summary').click();await expect(form.locator('[name="id"]')).toHaveAttribute('readonly','');for(const key of ['code','sdk_code'])await expect(form.locator(`[name="${key}"]`)).toBeEditable();
   await form.locator('[name="name"]').fill('Stale draft');
   const changed=await request.put('/api/v39/deploy/catalog',{data:{vendors:after.vendors.map(v=>v.id===vendorId?{...v,name:'另一用户已修改'}:v),chips:after.chips,expected_revision:after.revision}});expect(changed.ok()).toBeTruthy();
@@ -840,15 +846,15 @@ test('catalog CRUD preserves hidden identities, references, pending chips, and c
   const still=await (await request.get('/api/v39/deploy/catalog')).json();expect(still.chips.find(c=>c.id===chipId).name).toBe('Mystery 9000');expect(still.vendors.find(v=>v.id===vendorId).name).toBe('另一用户已修改');
   await form.getByRole('button',{name:'取消',exact:true}).click();await editor.getByRole('button',{name:'刷新字典',exact:true}).click();
   await expect(page.locator('.v424-modal-layer')).toHaveCount(0);
-  await chip.getByRole('button',{name:'启用',exact:true}).click();await expect(chip).toContainText('已启用');
+  await clickCatalogSecondary(chip,'启用');await expect(chip).toContainText('已启用');
   await page.reload();await expect(editor.locator('[data-catalog-vendor]')).not.toHaveCount(0);
   const vrow=editor.locator(`[data-catalog-vendor="${vendorId}"]`);await vrow.locator('.catalog-name').click();await expect(chip).toContainText('已启用');
-  await vrow.getByRole('button',{name:'编辑',exact:true}).click();await expect(form.locator('[name="template_id"]')).toBeDisabled();await form.locator('[name="name"]').fill('显示名称已修改');await form.getByRole('button',{name:'保存厂商',exact:true}).click();await expect(vrow).toContainText('显示名称已修改');
-  await vrow.getByRole('button',{name:'删除',exact:true}).click();await expect(form).toContainText('不能物理删除');await form.getByRole('button',{name:'取消',exact:true}).click();
+  await clickCatalogSecondary(vrow,'编辑');await expect(form.locator('[name="template_id"]')).toBeDisabled();await form.locator('[name="name"]').fill('显示名称已修改');await form.getByRole('button',{name:'保存厂商',exact:true}).click();await expect(vrow).toContainText('显示名称已修改');
+  await clickCatalogSecondary(vrow,'删除');await expect(form).toContainText('不能物理删除');await form.getByRole('button',{name:'取消',exact:true}).click();
   await page.setViewportSize({width:1100,height:850});await page.screenshot({path:testInfo.outputPath('catalog-crud-desktop.png'),fullPage:true});
   await page.setViewportSize({width:760,height:850});await page.screenshot({path:testInfo.outputPath('catalog-crud-narrow.png'),fullPage:true});
-  await chip.getByRole('button',{name:'删除',exact:true}).click();await form.getByRole('button',{name:'确认删除',exact:true}).click();await expect(chip).toHaveCount(0);
-  await vrow.getByRole('button',{name:'删除',exact:true}).click();await form.getByRole('button',{name:'确认删除',exact:true}).click();await expect(vrow).toHaveCount(0);
+  await clickCatalogSecondary(chip,'删除');await form.getByRole('button',{name:'确认删除',exact:true}).click();await expect(chip).toHaveCount(0);
+  await clickCatalogSecondary(vrow,'删除');await form.getByRole('button',{name:'确认删除',exact:true}).click();await expect(vrow).toHaveCount(0);
   const final=await (await request.get('/api/v39/deploy/catalog')).json();expect(final.chips.find(c=>c.id===chipId)).toBeUndefined();expect(final.vendors.find(v=>v.id===vendorId)).toBeUndefined();
   for(const c of before.chips)expect(final.chips.find(x=>x.id===c.id)).toEqual(c);
 });
@@ -911,13 +917,13 @@ test('catalog missing historical job permits ordinary editing while identity and
   const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/模型转换环境/}).click();
   await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
   const host=page.locator('#conversion-catalog-host'),row=host.locator(`[data-catalog-vendor="${id}"]`),form=page.locator('[data-catalog-dialog]');
-  await row.getByRole('button',{name:'编辑',exact:true}).click();await expect(form.locator('[name="name"]')).toBeEditable();await expect(form.locator('[name="template_id"]')).toBeDisabled();
+  await clickCatalogSecondary(row,'编辑');await expect(form.locator('[name="name"]')).toBeEditable();await expect(form.locator('[name="template_id"]')).toBeDisabled();
   await expect(form).toContainText('历史引用未核验');await expect(form).toContainText('普通编辑可用');await expect(form).toContainText('删除和改挂暂不可用');
   expect((await form.boundingBox()).width).toBeLessThan(900);
   await page.screenshot({path:testInfo.outputPath('catalog-missing-job-edit.png'),fullPage:false});
   await form.locator('[name="name"]').fill('00 Renamed despite missing job');await form.getByRole('button',{name:'保存厂商',exact:true}).click();await expect(form).toHaveCount(0);await expect(row).toContainText('00 Renamed despite missing job');
-  await row.getByRole('button',{name:'停用',exact:true}).click();await expect(row).toContainText('已停用');await row.getByRole('button',{name:'启用',exact:true}).click();await expect(row).toContainText('已启用');
-  await row.getByRole('button',{name:'删除',exact:true}).click();await expect(form).toContainText('历史引用未核验');await expect(form.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);await form.getByRole('button',{name:'取消',exact:true}).click();
+  await clickCatalogSecondary(row,'停用');await expect(row).toContainText('已停用');await clickCatalogSecondary(row,'启用');await expect(row).toContainText('已启用');
+  await clickCatalogSecondary(row,'删除');await expect(form).toContainText('历史引用未核验');await expect(form.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);await form.getByRole('button',{name:'取消',exact:true}).click();
   expect(writes.map(x=>x.action)).toEqual(['update','disable','enable']);expect(reads).toBe(4);
   await nav.getByRole('button',{name:/AI 辅助配置/}).click();await nav.getByRole('button',{name:/模型转换环境/}).click();await expect(row).toContainText('00 Renamed despite missing job');
   await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
