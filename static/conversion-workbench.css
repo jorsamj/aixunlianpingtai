@@ -386,7 +386,15 @@
 }
 #conversion-catalog-host .catalog-actions{display:flex;align-items:center;gap:6px;white-space:nowrap}
 #conversion-catalog-host .catalog-actions>.btn{min-height:30px}
-#conversion-catalog-host .catalog-more-menu{min-width:120px;right:0}
+/* Expand inside its table cell: table scroll containers must never clip actions. */
+#conversion-catalog-host .catalog-more-menu{
+  position:static;
+  min-width:120px;
+  max-width:180px;
+  margin-top:5px;
+  box-shadow:none;
+  right:auto;
+}
 @media(max-width:1120px){
   #conversion-catalog-host>.panel-body{grid-template-columns:1fr}
   #conversion-catalog-host .catalog-section:first-of-type .catalog-table th:nth-child(n),
