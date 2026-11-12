@@ -168,6 +168,55 @@ def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id,
     return combined
 
 
+
+
+def _indexed_usage_state_shortcut(task_path, project_id, algorithm_id, revision, state, scope):
+    """Resolve only provable empty history states; never infer complete coverage.
+
+    A healthy token index with no project records cannot match any material.
+    Also, 'unused' is impossible while coverage is unknown, even when there
+    are recorded candidates. All uncertain or legacy schemas retain the
+    authoritative full-pool query_filter fallback.
+    """
+    from .training_material_usage import TrainingMaterialUsage
+    if not task_path.is_file():
+        return None
+    usage = TrainingMaterialUsage(task_path)
+    with closing(usage._connect()) as db:
+        db.execute("BEGIN")
+        required = {"training_usage_tokens", "training_material_usage",
+                    "training_usage_coverage", "training_usage_meta", "training_usage_token_schema"}
+        found = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'training_%'")}
+        if not required.issubset(found):
+            return None
+        if not db.execute("SELECT 1 FROM training_usage_token_schema WHERE version=1").fetchone():
+            return None
+        row = db.execute("SELECT revision FROM training_usage_meta WHERE id=1").fetchone()
+        if row is None:
+            return None
+        if str(row[0]) != str(revision):
+            raise ValueError("训练历史已更新，请重试素材查询")
+        coverage = db.execute(
+            "SELECT complete FROM training_usage_coverage WHERE project_id=? AND algorithm_id=?",
+            (project_id, algorithm_id),
+        ).fetchone()
+        complete = bool(coverage and coverage[0])
+        if state == "unused" and not complete:
+            return ("none", "unknown")
+        if db.execute("SELECT 1 FROM training_usage_tokens WHERE project_id=? LIMIT 1",
+                      (project_id,)).fetchone():
+            return None
+        # A tokenless but nonempty usage projection could be corrupt; do not
+        # reinterpret its history as a safe unused selection.
+        if db.execute("SELECT 1 FROM training_material_usage WHERE project_id=? LIMIT 1",
+                      (project_id,)).fetchone():
+            return None
+        if scope:
+            return ("none", "complete" if complete else "unknown")
+        all_state = "unused" if complete else "unknown"
+        return ("all" if state == all_state else "none", all_state)
+
 @stage("training.usage_filters")
 def _usage_filters(repository, filters):
     from .training_material_usage import TrainingMaterialUsage
@@ -216,6 +265,21 @@ def _usage_filters(repository, filters):
                 'algorithm_id':algorithm_id,'role':str(body.get('role') or 'train'),
                 'revision':usage_revision,'scope_only':state or scope,'has_task_statuses':'tasks' in tables}
             return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
+    shortcut = _indexed_usage_state_shortcut(task_path, repository.project_path.name,
+        algorithm_id, usage_revision, state, scope)
+    if shortcut is not None:
+        resolution, coverage = shortcut
+        count("usage_state_index_shortcuts")
+        if resolution == "none":
+            body["usage_image_ids"] = []
+        else:
+            # The old full-pool path replaces caller-supplied usage IDs. When
+            # every processed row matches, omit the predicate rather than
+            # materializing a 200k-ID JSON array.
+            body.pop("usage_image_ids", None)
+        return body, {"revision": usage_revision, "coverage": coverage,
+            "by_image_id": {}, "excluded_image_ids": [], "unknown_image_ids": [],
+            "state_ids": {"unknown": [], "unused": []}}
     count("usage_pool_requests")
     facts = _cached_usage_pool(str(repository.project_path), str(task_path), repository.current_revision(),
         algorithm_id, usage_revision, str(body.get("role") or "train"), policy == "new_for_algorithm")

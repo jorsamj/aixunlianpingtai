@@ -274,3 +274,72 @@ def test_deferred_role_deep_page_uses_forward_cursor_not_repeated_offsets(tmp_pa
         assert observed_calls[0] == (1, None), observed_calls
         assert all(page is None and cursor for page, cursor in observed_calls[1:]), observed_calls
         assert len(set(cursor for _, cursor in observed_calls[1:])) == len(observed_calls) - 1
+
+
+def test_empty_indexed_history_shortcuts_do_not_scan_material_pool(tmp_path, monkeypatch):
+    """Unknown coverage is not proof of unused; empty project tokens need no 200k scan."""
+    from platform_core.task_runtime.repository import TaskRepository
+    import platform_core.training_material_picker_api as api
+    repo = MaterialRepository(tmp_path / "data" / "projects" / "empty-project-index")
+    repo.upsert_many([{"id": f"img-{i:04d}", "filename": f"{i:04d}.jpg",
+                      "processing_status": "processed"} for i in range(500)])
+    task_path = repo.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
+    TaskRepository(task_path)
+    usage = TrainingMaterialUsage(task_path)
+    usage.mark_coverage("empty-project-index", "alg", complete=False)
+    gt = AnnotationRepository(repo.project_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(api, "_cached_usage_pool", lambda *a: (_ for _ in ()).throw(
+            AssertionError("empty history must not hydrate the entire material pool")))
+        for state, total in (("unknown", 500), ("unused", 0), ("selected", 0),
+                             ("eval_only", 0), ("test_reserved", 0)):
+            filters, facts = api._usage_filters(repo, {
+                "algorithm_asset_id": "alg", "usage_state": state, "browse_only": True})
+            page = api._gt_material_filter_page(repo, gt, filters=filters, limit=60)
+            assert page["total"] == total, state
+            assert facts["coverage"] == "unknown"
+        scoped, _ = api._usage_filters(repo, {
+            "algorithm_asset_id": "alg", "history_scope": "other_only", "browse_only": True})
+        assert api._gt_material_filter_page(repo, gt, filters=scoped, limit=60)["total"] == 0
+    usage.mark_coverage("empty-project-index", "alg", complete=True)
+    with monkeypatch.context() as patch:
+        patch.setattr(api, "_cached_usage_pool", lambda *a: (_ for _ in ()).throw(
+            AssertionError("complete empty history must not hydrate the material pool")))
+        for state, total in (("unused", 500), ("unknown", 0), ("selected", 0)):
+            filters, facts = api._usage_filters(repo, {
+                "algorithm_asset_id": "alg", "usage_state": state, "browse_only": True})
+            assert api._gt_material_filter_page(repo, gt, filters=filters, limit=60)["total"] == total
+            assert facts["coverage"] == "complete"
+
+
+def test_unknown_coverage_cannot_qualify_any_unused_material_even_with_history(tmp_path, monkeypatch):
+    """A recorded training exposure does not change the meaning of unknown coverage."""
+    from platform_core.task_runtime.repository import TaskRepository
+    import platform_core.training_material_picker_api as api
+    repo = MaterialRepository(tmp_path / "data" / "projects" / "incomplete-history")
+    repo.upsert_many([{"id": "x", "filename": "x.jpg",
+                      "content_sha256": "a" * 64, "processing_status": "processed"},
+                      {"id": "y", "filename": "y.jpg",
+                      "content_sha256": "b" * 64, "processing_status": "processed"}])
+    task_path = repo.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
+    TaskRepository(task_path)
+    usage = TrainingMaterialUsage(task_path)
+    row = repo.get("x")
+    usage.record_selected("incomplete-history", "alg", "task-x",
+        {"snapshot_id": "task-x", "images": [{"image_id": "x", "role": "train",
+                                           "content_sha256": row["content_sha256"]}]},
+        source_images=[row])
+    usage.record_execution("task-x", completed_epoch=True)
+    gt = AnnotationRepository(repo.project_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(api, "_cached_usage_pool", lambda *a: (_ for _ in ()).throw(
+            AssertionError("unused remains impossible under incomplete coverage")))
+        filters, facts = api._usage_filters(repo, {
+            "algorithm_asset_id": "alg", "usage_state": "unused", "browse_only": True})
+        assert api._gt_material_filter_page(repo, gt, filters=filters, limit=60)["total"] == 0
+        assert facts["coverage"] == "unknown"
+    # Other states with recorded tokens still use the existing evidence evaluator.
+    selected, facts = api._usage_filters(repo, {
+        "algorithm_asset_id": "alg", "usage_state": "used", "browse_only": False})
+    assert selected["usage_image_ids"] == ["x"]
+    assert facts["by_image_id"]["x"]["state"] == "used"
