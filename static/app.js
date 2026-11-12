@@ -4061,7 +4061,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const body=layer?.querySelector('.modal-body')||document.getElementById('modalBody');
     try{
       // The fast projection never rescans mutable annotations for every old task.
-      const report=await api(`/api/v49/projects/${encodeURIComponent(project)}/algorithms/${encodeURIComponent(id)}/report?lightweight=true`);
+      const deadline=typeof AbortSignal.timeout==='function'?{signal:AbortSignal.timeout(20000)}:{};
+      const report=await api(`/api/v49/projects/${encodeURIComponent(project)}/algorithms/${encodeURIComponent(id)}/report?lightweight=true`,deadline);
       if((owner&&!owner.isCurrent())||!body?.isConnected)return;
       const presenter=window.PlatformCore?.reports;
       if(!presenter?.algorithmReportHtml||!presenter?.mountAlgorithmReport)throw new Error('综合报告模块未就绪');
@@ -4074,7 +4075,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }catch(error){
       if((owner&&!owner.isCurrent())||!body?.isConnected)return;
       window.ModalContentRuntime.replace(body,
-        `<div class="alg-report-load-error"><b>综合报告暂时无法读取</b><p>${esc(error?.message||'请检查当前网络与报告服务')}</p><button type="button" class="btn" onclick="closeModal()">关闭</button></div>`);
+        `<div class="alg-report-load-error" role="alert"><b>综合报告暂时无法读取</b><p>${esc(error?.name==='TimeoutError'?'读取超过20秒，请检查报告接口性能后重试':error?.message||'请检查当前网络与报告服务')}</p><button type="button" class="btn" onclick="closeModal()">关闭</button></div>`);
     }
   };
 
