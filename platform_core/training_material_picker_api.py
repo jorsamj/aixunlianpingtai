@@ -994,11 +994,14 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None, cu
         target_start=(int(page)-1)*int(limit)
         matches=[]
         seen=0
-        source_page=1
+        source_cursor=None
         snapshot=(repository.current_revision(),annotations.current_revision())
         while len(matches)<=int(limit):
+            # Keep the same authoritative role classification, but advance by
+            # the last material identity. Repeated OFFSET page=N queries scan
+            # prior candidate pages again on every deeper role-filtered page.
             chunk=_role_material_page(repository,annotations,contract,query=query,labels=labels,
-                page=source_page,limit=min(MAX_PAGE_SIZE,120),sort_order=sort_order,filters=selected,
+                cursor=source_cursor,limit=min(MAX_PAGE_SIZE,120),sort_order=sort_order,filters=selected,
                 defer_role_counts=True,count_mode='deferred',include_payload=True)
             if (chunk['repository_revision'],chunk['annotation_revision'])!=snapshot:
                 raise ValueError('素材或标注已更新，请重试')
@@ -1007,8 +1010,8 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None, cu
                 if seen>=target_start: matches.append(row)
                 seen+=1
                 if len(matches)>int(limit): break
-            if len(matches)>int(limit) or not chunk['has_next']: break
-            source_page+=1
+            source_cursor=chunk['next_cursor']
+            if len(matches)>int(limit) or not source_cursor: break
         return {**chunk,'items':matches[:int(limit)],'total':None,'total_pages':None,
                 'page':int(page),'page_size':int(limit),'limit':int(limit),
                 'has_next':len(matches)>int(limit),'sample_role_counts':None,'role_counts_complete':False}

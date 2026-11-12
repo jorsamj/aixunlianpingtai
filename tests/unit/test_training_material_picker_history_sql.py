@@ -240,3 +240,36 @@ def test_no_match_positive_role_skips_python_projection(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks,'training_material_role',lambda *a: (_ for _ in ()).throw(AssertionError('no target must not classify entire pool')))
     result=_role_material_page(repo,gt,{'effective_label_codes':['person']},sample_role='positive',limit=10,count_mode='deferred')
     assert result['items']==[] and result['has_next'] is False
+
+
+def test_deferred_role_deep_page_uses_forward_cursor_not_repeated_offsets(tmp_path, monkeypatch):
+    """Page 27 must keep the exact role contract without re-reading earlier offsets."""
+    import platform_core.training_material_picker_api as api
+    repo = MaterialRepository(tmp_path / 'data' / 'projects' / 'deep-role')
+    repo.upsert_many([{
+        'id': f'm{i:04d}', 'filename': f'{i:04d}.jpg',
+        'processing_status': 'processed', 'created_at': '2026-11-01T00:00:00+00:00',
+    } for i in range(360)])
+    annotations = AnnotationRepository(repo.project_path)
+    contract = {'effective_label_codes': ['person']}
+    original_page = api._gt_material_filter_page
+    for order in ('oldest', 'newest'):
+        expected = api._role_material_page(repo, annotations, contract,
+            sample_role='pending_negative', page=27, limit=10,
+            sort_order=order, include_payload=False, count_mode='exact')
+        observed_calls = []
+        def track_gt_page(*args, **kwargs):
+            observed_calls.append((kwargs.get('page'), kwargs.get('cursor')))
+            return original_page(*args, **kwargs)
+        with monkeypatch.context() as patch:
+            patch.setattr(api, '_gt_material_filter_page', track_gt_page)
+            actual = api._role_material_page(repo, annotations, contract,
+                sample_role='pending_negative', page=27, limit=10,
+                sort_order=order, include_payload=True, count_mode='deferred')
+        assert [row['id'] for row in actual['items']] == [row['id'] for row in expected['items']]
+        assert len(actual['items']) == 10
+        assert actual['has_next'] is True
+        assert len(observed_calls) >= 3, observed_calls
+        assert observed_calls[0] == (1, None), observed_calls
+        assert all(page is None and cursor for page, cursor in observed_calls[1:]), observed_calls
+        assert len(set(cursor for _, cursor in observed_calls[1:])) == len(observed_calls) - 1
