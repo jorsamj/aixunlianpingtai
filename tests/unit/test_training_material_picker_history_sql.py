@@ -340,6 +340,7 @@ def test_unknown_coverage_cannot_qualify_any_unused_material_even_with_history(t
         assert facts["coverage"] == "unknown"
     # Other states with recorded tokens still use the existing evidence evaluator.
     selected, facts = api._usage_filters(repo, {
-        "algorithm_asset_id": "alg", "usage_state": "used", "browse_only": False})
+        "algorithm_asset_id": "alg", "usage_state": "used",
+        "history_policy": "include_history", "browse_only": False})
     assert selected["usage_image_ids"] == ["x"]
     assert facts["by_image_id"]["x"]["state"] == "used"
