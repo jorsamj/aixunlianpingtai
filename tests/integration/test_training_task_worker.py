@@ -292,6 +292,9 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     result = artifacts.read_json("task-one", task.result_ref)
     assert result["counts"] == {"train": 4, "validation": 1, "test": 2, "total": 7}
     snapshot = artifacts.read_json("task-one", "snapshot.json")
+    project_snapshot = project / "snapshots" / (snapshot["snapshot_id"] + ".json")
+    assert project_snapshot.is_file()
+    assert json.loads(project_snapshot.read_text(encoding="utf-8")) == snapshot
     assert "image-7" not in set(snapshot["ids"]["train"] + snapshot["ids"]["validation"] + snapshot["ids"]["test"])
     assert result["base_selection_reason"] == "mother_model"
     assert result["verified_models"][0]["size_bytes"] > 0
@@ -345,7 +348,7 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     lifecycle = TrainingWorkspaceLifecycle(data_dir, repository, artifacts)
     protected = [*project.glob("uploads/*"), *external_root.glob("incoming/*"),
                  *project.glob("annotations/*"), archived_model,
-                 artifacts.artifact_path("task-one", "snapshot.json")]
+                 artifacts.artifact_path("task-one", "snapshot.json"), project_snapshot]
     before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected}
     assert lifecycle.inspect(project_id, "task-one")["eligible"] is True
     cleaned = lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")
