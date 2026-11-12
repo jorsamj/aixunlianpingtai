@@ -219,3 +219,25 @@ def test_algorithm_report_includes_archived_durable_tasks_and_declares_recent_wi
     assert report['jobs_total'] == 23 and report['jobs_limit'] == 20 and report['jobs_truncated'] is True
     assert len(report['jobs']) == 20 and len(report['trend']) == 23
     assert next(row for row in report['trend'] if row['job_id'] == identity)['status'] == 'FAILED'
+
+
+def test_algorithm_report_lightweight_avoids_mutable_history_annotation_scans(client, monkeypatch):
+    project = client.post('/api/projects', json={'name': 'report-fast-preview', 'labels': []}).json()['id']
+    algorithm = client.post(f'/api/v12/projects/{project}/algorithms', json={'name': 'fast-one'}).json()['algorithm']['id']
+    _job(project, 'one', asset_algorithm_id=algorithm, status='done', elapsed_seconds=8)
+    _job(project, 'two', asset_algorithm_id=algorithm, status='failed', elapsed_seconds=12)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('lightweight report scanned historical mutable annotations')
+
+    monkeypatch.setattr(platform, '_v49_job_label_counts', forbidden)
+    response = client.get(f'/api/v49/projects/{project}/algorithms/{algorithm}/report?lightweight=true')
+    assert response.status_code == 200
+    report = response.json()
+    assert report['summary']['attempt_count'] == 2
+    assert report['summary']['label_counts'] == {}
+    assert report['summary']['label_counts_scope'] == 'not_computed_fast'
+    assert report['jobs_total'] == 2
+    assert isinstance(report['version_quality'], list)
+    assert report['version_quality_total'] == report['algorithm']['version_count']
+    assert report['version_quality_truncated'] is False
