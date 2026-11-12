@@ -604,7 +604,7 @@ export function mountAlgorithmReport(root,payload,{onJob}={}){
       button.tabIndex=selected?0:-1;
     });
     root.querySelectorAll("[data-algorithm-report-pane]").forEach(pane=>{pane.hidden=pane.dataset.algorithmReportPane!==name});
-    root.closest(".modal-body")?.scrollTo({top:0,behavior:"instant"});
+    root.closest(".modal-body")?.scrollTo({top:0,behavior:"auto"});
   });
   root.addEventListener("keydown",event=>{
     const tab=event.target.closest("[data-algorithm-report-tab]");
