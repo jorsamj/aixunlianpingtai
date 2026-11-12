@@ -408,3 +408,14 @@ test('page-wide selection reuses one blocked-ID set, including independent Test 
   assert.match(section,/trainingMaterialSelectable\(row,picker\.role,blocked\)/);
   assert.equal((section.match(/blockedIds\(/g)||[]).length,1);
 });
+
+
+test('confirming a page does not rebuild 20k blocked IDs per selected row',()=>{
+  const begin=source.indexOf('  window.confirmTrainMaterialPickerV3 = function confirmPicker() {');
+  const end=source.indexOf('\n  const runtime = {',begin);
+  assert.ok(begin>=0&&end>begin);
+  const confirm=source.slice(begin,end);
+  assert.match(confirm,/const blocked=blockedIds\(picker\.role\);/);
+  assert.match(confirm,/trainingMaterialSelectable\(row,picker\.role,blocked\)/);
+  assert.equal((confirm.match(/blockedIds\(/g)||[]).length,1);
+});

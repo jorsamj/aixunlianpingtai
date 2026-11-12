@@ -1432,7 +1432,8 @@ export function installTrainingMaterialPickerRuntime({
   window.trainMaterialPageV3 = page;
   window.confirmTrainMaterialPickerV3 = function confirmPicker() {
     if (!picker || picker.loading || picker.bulkPending || picker.reviewPending) return false;
-    if (picker.items.some(row=>picker.selected.has(String(row.id)) && !trainingMaterialSelectable(row,picker.role,blockedIds(picker.role)))) {
+    const blocked=blockedIds(picker.role);
+    if (picker.items.some(row=>picker.selected.has(String(row.id)) && !trainingMaterialSelectable(row,picker.role,blocked))) {
       notify('已选素材中包含当前策略不可用项，请取消这些选择或调整使用策略');return false;
     }
     const current = draft();
