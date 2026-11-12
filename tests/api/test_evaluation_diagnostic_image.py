@@ -806,7 +806,7 @@ def test_legacy_snapshot_fallback_prefers_verified_archived_evaluation_bytes(mon
     from PIL import Image
     # Deliberately encode different image bytes: a legitimate normalized Test
     # member is not interchangeable with the canonical original material.
-    ref = "dataset/images/test/test-image.jpg"
+    ref = "dataset/images/test/" + original.name
     path = artifacts.artifact_path(task_id, "evidence/bundle/" + ref)
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (120, 80), "green").save(path, format="JPEG")
