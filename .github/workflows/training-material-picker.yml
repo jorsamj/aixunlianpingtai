@@ -16,6 +16,7 @@ on:
       - 'platform_core/training_material_picker_api.py'
       - 'platform_core/training_selection_reference.py'
       - 'tests/unit/test_training_selection_reference.py'
+      - 'tests/unit/test_training_material_picker_history_sql.py'
       - 'static/modules/training-draft.js'
       - 'static/modules/training-draft-runtime.js'
       - 'static/modules/training-submit.js'
