@@ -23,7 +23,7 @@ import logging
 from urllib.parse import quote
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple

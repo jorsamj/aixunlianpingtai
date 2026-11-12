@@ -1634,7 +1634,8 @@ class ModelArtifactService:
                                 # did not persist its absolute path.
                                 "manifest_path": str(job.get("manifest_path") or (
                                     output_path.parent / "manifest.json"
-                                    if (output_path.parent / "manifest.json").is_file() else ""
+                                    if job.get("remote_job_id")
+                                    and (output_path.parent / "manifest.json").is_file() else ""
                                 )),
                             },
                         ))
