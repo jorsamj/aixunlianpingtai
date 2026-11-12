@@ -3,9 +3,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {installTrainingTaskRuntime, mergeTrainingJobRows} from '../../static/modules/training-task-runtime.js';
+import {trainingProgressView} from '../../static/modules/training-task-runtime.js';
 import {filterTrainingTaskJobs, trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
+
+test('unknown canonical wall time never falls back to a resumed process duration', () => {
+  assert.equal(trainingProgressView({training_display_progress: {wall_elapsed_seconds: null},
+    training_progress: {elapsed_seconds: 16380}, elapsed_seconds: 16380}).elapsedSeconds, null);
+  assert.equal(trainingProgressView({training_display_progress: {wall_elapsed_seconds: 21600},
+    training_progress: {elapsed_seconds: 10800}}).elapsedSeconds, 21600);
+  assert.equal(trainingProgressView({status: 'paused', training_display_progress: {eta_seconds: null},
+    training_progress: {eta_seconds: 300}, eta_seconds: 300}).etaSeconds, null);
+});
 
 function response(body) {
   return {
@@ -773,6 +783,32 @@ test('page-owner refresh reuses a recent training snapshot and revalidates after
   runtime.destroy();
   Date.now = originalNow;
   cleanup();
+});
+
+test('F5 reuses a recent terminal-only job view but still honors manual refresh and live tasks', async () => {
+  const originalNow=Date.now;
+  let now=500_000,requests=0;
+  Date.now=()=>now;
+  const state={page:'训练任务',project:{id:'p1'},jobs:[{id:'old',status:'done'}],jobsDeferred:false,__navigationEpoch:1,__jobsSnapshotGeneratedAt:now-60_000};
+  globalThis.window={async fetch(){requests++;return response([{id:'old',status:'done'}]);}};
+  const runtime=installTrainingTaskRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try{
+    const cached=await runtime.refresh({source:'page-owner'});
+    assert.equal(cached.reused,true);
+    assert.equal(requests,0);
+    await runtime.refresh({source:'manual'});
+    assert.equal(requests,1,'manual refresh must reach the canonical server');
+    now+=120_001;
+    await runtime.refresh({source:'page-owner'});
+    assert.equal(requests,2,'expired terminal cache must revalidate');
+    state.jobs=[{id:'active',status:'running'}];
+    state.__jobsSnapshotGeneratedAt=now-10_000;
+    now+=6000;
+    await runtime.refresh({source:'page-owner'});
+    assert.equal(requests,3,'active jobs are never held by the terminal-only TTL');
+  }finally{
+    runtime.destroy();Date.now=originalNow;cleanup();
+  }
 });
 
 test('training API error formatter keeps structured backend diagnostics', () => {

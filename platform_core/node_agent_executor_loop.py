@@ -28,6 +28,7 @@ SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({
     "deployment-test",
     "deployment-test.rknn",
     "material-import",
+    "model-upload",
     "training",
 })
 SUPPORTED_AGENT_TASK_KINDS = frozenset({
@@ -35,6 +36,7 @@ SUPPORTED_AGENT_TASK_KINDS = frozenset({
     "MATERIAL_BATCH",
     "MATERIAL_IMPORT",
     "MODEL_CONVERSION",
+    "MODEL_INSTALL",
     "TRAINING",
 })
 _CAPABILITY_BY_TASK_KIND = {
@@ -42,6 +44,7 @@ _CAPABILITY_BY_TASK_KIND = {
     "MATERIAL_BATCH": "cleaning",
     "MATERIAL_IMPORT": "material-import",
     "MODEL_CONVERSION": "conversion",
+    "MODEL_INSTALL": "model-upload",
     "TRAINING": "training",
 }
 
@@ -113,6 +116,8 @@ class NodeAgentExecutorLoop:
         for capability in self.capabilities:
             kind = kind_by_capability.get(str(capability))
             runner = self.runners.get(kind) if kind else None
+            if runner is None and capability == "model-upload":
+                continue
             if runner is not None and getattr(runner, "ready", True) is False:
                 continue
             effective.append(str(capability))

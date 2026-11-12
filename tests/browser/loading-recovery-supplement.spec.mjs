@@ -8,17 +8,20 @@ async function boot(page,request){
 }
 
 for(const flow of ['clean','convert','publish','annotation'])for(const outcome of ['pending','rejected'])test(`${flow} ${outcome} mutation has recoverable feedback and safe retry`,async({page,request})=>{
- const project=await boot(page,request);let posts=0,reads=0;
+ const project=await boot(page,request);let posts=0,reads=0,conversionRequestId='';const verifiedConversionIds=[];
  const path=flow==='clean'?`/api/v47/projects/${project}/clean-tasks`:flow==='convert'?`/api/v39/projects/${project}/deploy/jobs`:flow==='annotation'?`/api/projects/${project}/annotations/loading-image`:`/api/v64/external-publish/projects/${project}/algorithms/loading-a/versions/loading-v`;
  await page.route(`**${path}${flow==='publish'?'**':''}`,async route=>{
-   if(route.request().method()==='POST'){posts++;if(outcome==='rejected')return route.fulfill({status:422,json:{message:'验收夹具参数错误'}});return;}
+   if(route.request().method()==='POST'){posts++;if(flow==='convert')conversionRequestId=route.request().postDataJSON()?.request_id||'';if(outcome==='rejected')return route.fulfill({status:422,json:{message:'验收夹具参数错误'}});return;}
    reads++;
    const body=flow==='annotation'?{image:{id:'loading-image',content_sha256:'a'.repeat(64)},annotation:{version:1,boxes:[{id:'b',class_id:0,label:'car',x1:1,y1:1,x2:20,y2:20}]}}:flow==='publish'?{ok:true,algorithm:{id:'loading-a',external_product_id:'p'},version:{id:'loading-v'},publication:null,discovered:[{publish_mapping_status:'mapped',target:'original',file_name:'best.pt'}],mapped_artifact_count:1,blocked_artifact_count:0,transport_ready:true,identity_ready:true,publish_ready:true,conversion_active:false}: {items:[]};
    await route.fulfill({json:body});
  });
  if(flow==='convert'){
-   await page.route('**/api/v39/deploy/resources',route=>route.fulfill({json:{items:[{id:'loading-resource',status:'ready',targets:['onnx']}]}}));
-   await page.route('**/api/v42/projects/*/algorithms/loading-a/versions/loading-v/deployments',route=>{reads++;return route.fulfill({json:{algorithm:{id:'loading-a'},version:{id:'loading-v'},items:[]}})});
+   await page.route('**/api/v39/deploy/resources?detect_missing=false',route=>route.fulfill({json:{items:[{id:'loading-resource',status:'ready',targets:['onnx']}]}}));
+   await page.route('**/api/v42/projects/*/algorithms/loading-a/versions/loading-v/deployments*',route=>{reads++;return route.fulfill({json:{algorithm:{id:'loading-a'},version:{id:'loading-v'},items:[]}})});
+   // Conversion reconciliation is addressed by its persisted idempotency key,
+   // not by re-reading the collection URL used for POST creation.
+   await page.route(`**${path}/by-request/*`,route=>{reads++;verifiedConversionIds.push(decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop()));return route.fulfill({json:{found:false,pending:true}})});
  }
  await page.clock.install();
  await page.evaluate(({flow})=>{
@@ -38,6 +41,29 @@ for(const flow of ['clean','convert','publish','annotation'])for(const outcome o
    window.invokeSupplementLoading=invoke;host.querySelector('button').onclick=()=>{window.supplementLoadingPromise=invoke()};
  },{flow});
  const button=page.locator('#supplement-loading-fixture button').first();await button.click();
+ if(flow==='publish'){
+   const dialog=page.locator('[data-external-delivery-dialog]');
+   await expect(dialog).toBeVisible();
+   const sync=dialog.locator('[data-delivery-action="sync"]');
+   await expect(sync).toBeEnabled();
+   expect(posts).toBe(0); // Opening the current delivery dialog is read-only.
+   await sync.click();await expect.poll(()=>posts).toBe(1);
+   if(outcome==='rejected'){
+     await expect(dialog).toContainText('验收夹具参数错误');
+     await expect(sync).toBeEnabled();await sync.click();
+     await expect.poll(()=>posts).toBe(2);return;
+   }
+   await expect(sync).toBeDisabled();
+   await page.evaluate(()=>window.invokeSupplementLoading());
+   expect(posts).toBe(1);
+   await page.clock.fastForward(30001);
+   await expect(dialog).toContainText('发布结果待确认');
+   await expect(sync).toBeDisabled();
+   const beforeReads=reads;
+   await dialog.locator('[data-delivery-action="refresh"]').click();
+   await expect.poll(()=>reads).toBeGreaterThan(beforeReads);
+   expect(posts).toBe(1);return;
+ }
  await expect.poll(()=>posts).toBe(1);
  if(outcome==='rejected'){
    await expect(button).not.toHaveAttribute('aria-busy','true');
@@ -52,6 +78,11 @@ for(const flow of ['clean','convert','publish','annotation'])for(const outcome o
  expect(posts).toBe(1);
  // Second click queries state only. Annotation validates the unchanged CAS version.
  await page.evaluate(()=>{window.supplementRetryPromise=window.invokeSupplementLoading()});
- await expect.poll(()=>reads).toBeGreaterThan(0);expect(posts).toBe(1);
+ if(flow==='convert'){
+   await expect.poll(()=>verifiedConversionIds.length).toBeGreaterThan(0);
+   expect(conversionRequestId).toMatch(/^conv_/);
+   expect(verifiedConversionIds).toContain(conversionRequestId);
+ }else await expect.poll(()=>reads).toBeGreaterThan(0);
+ expect(posts).toBe(1);
  if(flow==='annotation')await expect(page.locator('#annSaveState')).toContainText('版本已核验');
 });

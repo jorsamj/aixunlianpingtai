@@ -5,6 +5,80 @@ from PIL import Image
 import platform_core.training_evaluation as evaluation
 
 
+def test_p2_trust_valid_frozen_binding_passes_but_image_count_drift_does_not():
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    snapshot = {**_benchmark_snapshot(), 'snapshot_id': '1' * 64, 'dataset_revision_id': '3' * 64}
+    scope = evaluation.build_evaluation_benchmark_scope(snapshot, _benchmark_manifest())
+    truth = evaluation.build_evaluation_truth({'status': 'succeeded', 'image_count': 1,
+        'protocol': {'mode': 'blind', 'matching_iou': .5}}, task_id='training-task',
+        snapshot_id='1' * 64, dataset_revision_id='3' * 64, model_sha256='2' * 64,
+        finished_at='2026-10-23T00:00:00Z', benchmark_scope=scope)
+    def status(value):
+        return analyze_evaluation_trust(value, snapshot, {'task_id': 'training-task'},
+            verified_model={'model_sha256': '2' * 64})['checks'][0]['status']
+    assert status(truth) == 'passed'
+    assert status({**truth, 'image_count': 2}) == 'insufficient_evidence'
+
+
+def test_p2_deep_comparison_uses_exact_frozen_samples_and_never_guesses_absent_correctness():
+    from copy import deepcopy
+    from platform_core.evaluation_analysis import compare_sample_outcomes
+    scope = {key: 'a' * 64 for key in ('scope_id', 'content_digest', 'ground_truth_digest',
+             'label_schema_digest', 'evaluation_input_digest')}
+    scope['binding_level'] = 'bundle_verified'
+    def sample(image_id, errors):
+        return {'image_id': image_id, 'image': image_id + '.jpg', 'image_content_sha256': 'b' * 64,
+                'ground_truth_digest': 'c' * 64, 'image_width': 100, 'image_height': 80,
+                'tp_count': 1 - errors, 'fp_count': errors, 'fn_count': errors}
+    before = {'status': 'succeeded', 'evaluation_id': 'd' * 64, 'evaluation_protocol_id': 'e' * 64,
+              'benchmark_scope': scope, 'image_count': 5,
+              'sample_outcomes': [sample(str(i), error) for i, error in enumerate([1, 0, 1, 0, 1])]}
+    after = deepcopy(before)
+    after['sample_outcomes'] = [sample(str(i), error) for i, error in enumerate([0, 1, 1, 0])]
+    result = compare_sample_outcomes(before, after)
+    assert result['comparable'] is True
+    assert result['sample_counts'] == {'improved': 1, 'regressed': 1, 'persistent_error': 1, 'persistent_correct': 1, 'unknown': 1}
+    assert result['sample_cohort_complete'] is False
+    after['sample_outcomes'][0]['ground_truth_digest'] = 'f' * 64
+    assert compare_sample_outcomes(before, after)['sample_counts']['unknown'] == 2
+    after['benchmark_scope'] = {**scope, 'scope_id': 'f' * 64}
+    rejected = compare_sample_outcomes(before, after)
+    assert rejected['comparable'] is False and rejected['samples'] == []
+
+
+def test_p2_trust_checks_frozen_sha_leaks_without_changing_truth():
+    from copy import deepcopy
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    snapshot = {'snapshot_id': 'a' * 64, 'schema_version': 3,
+        'ids': {'train': ['train'], 'validation': ['val'], 'test': ['test']},
+        'label_schema': [{'class_id': 0, 'code': 'fire'}],
+        'images': [{'image_id': image_id, 'role': role, 'content_sha256': 'b' * 64,
+                    'annotation_hash': digest * 64, 'annotation_state': 'annotated',
+                    'labels': ['fire'], 'group_id': 'event-1'}
+                   for image_id, role, digest in [('train', 'train', 'c'), ('val', 'validation', 'c'), ('test', 'test', 'd')]]}
+    original = deepcopy(snapshot)
+    result = analyze_evaluation_trust({}, snapshot, {})
+    checks = {row['code']: row for row in result['checks']}
+    assert checks['cross_split_sha256']['status'] == 'risk'
+    assert checks['same_sha_different_gt']['status'] == 'risk'
+    assert checks['source_isolation']['status'] == 'risk'
+    assert checks['identity']['status'] == 'insufficient_evidence'
+    assert checks['near_duplicate']['status'] == 'not_checked'
+    assert checks['video_time']['status'] == 'insufficient_evidence'
+    assert 'score' not in result and snapshot == original
+
+
+def test_p2_trust_missing_metadata_and_uncovered_classes_never_pass():
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    result = analyze_evaluation_trust({}, {}, {})
+    assert not any(row['status'] == 'passed' for row in result['checks'])
+    snapshot = {'images': [{'image_id': 'one', 'role': 'test', 'annotation_state': 'unannotated'}],
+                'label_schema': [{'class_id': 0, 'code': 'fire'}, {'class_id': 1, 'code': 'smoke'}]}
+    result = analyze_evaluation_trust({}, snapshot, {})
+    assert next(row for row in result['checks'] if row['code'] == 'ground_truth')['status'] == 'risk'
+    assert all(row['status'] == 'not_covered' for row in result['coverage'])
+
+
 def test_blind_evaluation_finishes_all_predictions_before_reading_hidden_ground_truth(tmp_path: Path, monkeypatch):
     images = tmp_path / "images"
     ground_truth = tmp_path / "hidden"
@@ -921,3 +995,32 @@ def test_strict_bundle_bound_test_evidence_survives_credibility_and_does_not_fak
 
     # Historical snapshot versions never impersonate a materialized Test.
     assert evaluation.build_evaluation_benchmark_scope({"schema_version": 2}) == {}
+
+def test_all_sample_outcomes_and_formal_matching_evidence(tmp_path):
+    from copy import deepcopy
+    images, gt = tmp_path / 'images', tmp_path / 'gt'
+    images.mkdir(); gt.mkdir()
+    for name in ('correct', 'error', 'empty'):
+        Image.new('RGB', (100, 100), 'white').save(images / (name + '.jpg'))
+        (gt / (name + '.txt')).write_text('' if name == 'empty' else '0 0.5 0.5 0.4 0.4\n')
+    def predict(path):
+        if path.stem == 'empty':
+            return []
+        return [{'class_id': 0, 'confidence': .9, 'box': [30, 30, 70, 70]}] if path.stem == 'correct' else [
+            {'class_id': 1, 'confidence': .9, 'box': [30, 30, 70, 70]}]
+    raw = evaluation.evaluate_blind_detection(images, gt, predict, names={0: 'a', 1: 'b'})
+    outcomes = {row['image_id']: row for row in raw['sample_outcomes']}
+    assert len(outcomes) == 3
+    assert [(outcomes[key]['tp_count'], outcomes[key]['fp_count'], outcomes[key]['fn_count'])
+            for key in ('correct', 'error', 'empty')] == [(1, 0, 0), (0, 1, 1), (0, 0, 0)]
+    evidence = {row['image_id']: row for row in raw['sample_evidence']}
+    box = evidence['correct']['pred_boxes'][0]
+    assert (box['prediction_index'], box['target_index'], box['matched_iou']) == (0, 0, 1.0)
+    assert evidence['error']['pred_boxes'][0]['diagnostic_tags'] == ['wrong_class']
+    before = deepcopy(raw)
+    frozen = evaluation.build_evaluation_truth(raw, task_id='sample-evidence')
+    assert frozen['sample_outcomes'] == raw['sample_outcomes']
+    assert frozen['sample_evidence'] == raw['sample_evidence']
+    assert raw == before
+    legacy = evaluation.build_evaluation_truth({'status': 'succeeded'}, task_id='legacy')
+    assert 'sample_outcomes' not in legacy and 'sample_evidence' not in legacy

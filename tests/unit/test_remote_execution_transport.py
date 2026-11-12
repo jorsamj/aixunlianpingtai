@@ -704,12 +704,15 @@ def test_model_conversion_result_uses_generation_scoped_immutable_output(tmp_pat
     assert "url" not in str(result).lower()
 
 
+@pytest.mark.parametrize('with_csc',[False,True])
 def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_ui(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, with_csc
 ):
     transport, provider, _model, _digest, contract = _portable_conversion_contract(
         tmp_path, monkeypatch
     )
+    if with_csc:
+        contract['conversion']['params']['csc']={'preset':'bt709_full','input_format':'NV12','deployment_contract_acknowledged':True}
     task = SimpleNamespace(
         task_id="convert-1",
         kind=TaskKind.MODEL_CONVERSION,
@@ -760,18 +763,25 @@ def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_
     assert job["result_ref"] == "remote-results/3/result.json"
     assert job["source_trace"]["algorithm_id"] == "a1"
     assert job["source_trace"]["version_id"] == "v1"
-    assert {row["rel"] for row in job["outputs"]} == {
-        "artifacts/model.onnx",
-        "artifacts/manifest.json",
-    }
+    expected_outputs={'artifacts/model.onnx','artifacts/manifest.json'}
+    if with_csc:
+        expected_outputs |= {'artifacts/csc_deployment_contract.json','artifacts/csc_deployment_reference.zip'}
+        assert job['execution_evidence']['csc']['applied'] is False
+        assert job['execution_evidence']['csc']['device_observed']=='unknown'
+        assert (job_dir/'artifacts/csc_deployment_reference.zip').is_file()
+    assert {row['rel'] for row in job['outputs']} == expected_outputs
 
 
+@pytest.mark.parametrize('with_csc',[False,True])
 def test_model_conversion_commit_rolls_back_new_local_file_before_job_commit(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, with_csc
 ):
     transport, provider, _model, _digest, contract = _portable_conversion_contract(
         tmp_path, monkeypatch
     )
+    if with_csc:
+        contract['conversion']['params']['csc']={'preset':'bt709_full','input_format':'NV12','deployment_contract_acknowledged':True}
+    source_before=_model.read_bytes()
     task = SimpleNamespace(
         task_id="convert-rollback",
         kind=TaskKind.MODEL_CONVERSION,
@@ -817,6 +827,11 @@ def test_model_conversion_commit_rolls_back_new_local_file_before_job_commit(
     assert not (job_dir / "artifacts" / "model.onnx").exists()
     assert not (job_dir / "artifacts" / "manifest.json").exists()
     assert json.loads(job_file.read_text(encoding="utf-8"))["status"] == "queued"
+
+    assert _model.read_bytes()==source_before
+    if with_csc:
+        assert not list((job_dir/'artifacts').glob('csc_*'))
+        assert not (job_dir/'artifacts/CSC_DEPLOYMENT_README.md').exists()
 
 
 def test_model_conversion_commit_rejects_conflicting_existing_local_artifact(
@@ -1165,6 +1180,39 @@ def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
     return task, payload, bundle_bytes, bundle_sha
 
 
+def test_schema3_result_rejects_wrong_origin_freeze_before_commit(tmp_path):
+    transport = service(tmp_path, FakeProvider())
+    task, payload, _, _ = _remote_training_fixture()
+    training = {"schema_version": 3, "inputs": {"input_freeze_id": "a" * 64}}
+    with pytest.raises(RemoteExecutionTransportError, match="freeze"):
+        transport._training_dataset_result_evidence(task, payload, training,
+                                                   {"input_freeze_id": "b" * 64})
+
+
+def test_schema3_diagnostic_image_is_retained_in_task_evidence(tmp_path):
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    transport = service(tmp_path, FakeProvider(), task_artifacts=artifacts)
+    task, _payload, _, _ = _remote_training_fixture()
+    ref = "dataset/images/test/test-one.jpg"
+    data = b"actual evaluated pixels"
+    digest = hashlib.sha256(data).hexdigest()
+    stage = tmp_path / "verified"
+    source = stage / "evidence/bundle" / ref
+    source.parent.mkdir(parents=True)
+    source.write_bytes(data)
+    manifest = {"splits": {"test": [{"image_id": "test-one", "image_ref": ref,
+        "content_sha256": digest, "size_bytes": len(data)}]}}
+    result = {"training_report": {"test_result": {"error_samples": [{
+        "image": "test-one.jpg", "image_id": "test-one"}]}}, "diagnostic_images": [{
+        "image_id": "test-one", "image_ref": ref, "ref": "evidence/bundle/" + ref,
+        "sha256": digest, "size_bytes": len(data)}]}
+    transport._retain_training_diagnostic_images(task, result, manifest, stage)
+    assert artifacts.artifact_path(task.task_id, "evidence/bundle/" + ref).read_bytes() == data
+    source.write_bytes(b"tampered")
+    with pytest.raises(RemoteExecutionTransportError, match="diagnostic"):
+        transport._retain_training_diagnostic_images(task, result, manifest, stage)
+
+
 def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment_device(tmp_path):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
@@ -1206,6 +1254,32 @@ def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment
     assert "url" not in str(payload)
 
 
+
+def test_indexed_training_payload_does_not_sign_or_stage_dataset_before_execution(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    task, payload, _data, _digest = _remote_training_fixture()
+    training = payload["remote_execution"]["training"]
+    training.update(schema_version=3, inputs={"type": "frozen-manifest-v1", "input_freeze_id": "a" * 64})
+    training.pop("bundle")
+    payload["input_freeze_id"] = "a" * 64
+    model = b"preprovisioned-model"
+    digest = hashlib.sha256(model).hexdigest()
+    provider.objects["models/base.pt"] = {"data": model, "sha256": digest, "content_type": "application/octet-stream"}
+    training["model"] = {"type": "object", "storage_source_id": "remote-models", "object_key": "models/base.pt",
+                         "file_name": "base.pt", "size_bytes": len(model), "sha256": digest}
+    resolved = transport.resolve_execution_payload(task, payload,
+        {"resolved_execution_config": {"selected_device": "cuda:1"}})
+    assert resolved["inputs"] == training["inputs"]
+    assert "bundle" not in resolved
+    assert [key for key, _ in provider.download_signatures] == ["models/base.pt"]
+    assert not provider.uploads
+    training["model"] = {"type": "official", "reference": "yolo11n.pt"}
+    with pytest.raises(RemoteExecutionTransportError) as captured:
+        transport.resolve_execution_payload(task, payload,
+            {"resolved_execution_config": {"selected_device": "cuda:1"}})
+    assert captured.value.code == "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED"
+
 def test_remote_training_bundle_requires_server_visible_sha_before_signing(tmp_path):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
@@ -1237,6 +1311,17 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         task_artifacts=artifacts,
     )
     task, payload, bundle_bytes, bundle_sha = _remote_training_fixture()
+    # The artifact-commit test uses a synthetic Task. Supply a deterministic
+    # authoritative usage index so a formally scored result cannot bypass the
+    # new mandatory history gate just because this fixture has no Task DB.
+    payload['remote_execution']['training']['history_admission'] = {
+        'revision': '1', 'parent_task_ids': [], 'model_ancestry': []}
+    transport.task_repository = object()
+    monkeypatch.setattr('platform_core.training_material_usage.TrainingMaterialUsage',
+        lambda _repo: SimpleNamespace(
+            record_execution=lambda *args, **kwargs: None,
+            query_filter=lambda *args, **kwargs: {'coverage': 'complete', 'revision': '1',
+                'excluded_image_ids': [], 'by_image_id': {'test-1': {'state': 'unused'}}}))
     payload["remote_execution"]["training"]["params"].update({
         "resource_strategy": "auto",
         "resource_profile": "performance",
@@ -2488,3 +2573,14 @@ def test_portable_onnx_does_not_drop_explicit_export_precision(precision):
 def test_portable_existing_onnx_does_not_claim_export_options_were_applied():
     params=RemoteExecutionTransportService._portable_conversion_params("onnx",{"onnx_source_reused":True,"precision":"fp16","opset":17,"input_size":800})
     assert params=={"onnx_source_reused":True}
+
+
+def test_portable_csc_and_color_contract_are_preserved_without_claiming_device_application():
+    params={'onnx_source_reused':True,'input_color_order':'bgr','source_color_order':'rgb',
+        'csc':{'preset':'bt709_full','input_format':'I420','deployment_contract_acknowledged':True}}
+    resolved=RemoteExecutionTransportService._portable_conversion_params('onnx',params)
+    assert resolved['csc']==params['csc'] and resolved['input_color_order']=='bgr'
+    assert resolved['csc_contract']['output_color_order']=='BGR' and resolved['csc_contract']['applied'] is False
+    assert resolved['csc_contract']['board_verification']=='NOT VERIFIED'
+    with pytest.raises(RemoteExecutionTransportError):
+        RemoteExecutionTransportService._portable_conversion_params('onnx',{**params,'csc':{**params['csc'],'require_embedded':True}})

@@ -5,8 +5,8 @@ function rawFetch() {
   return scoped?.__pageRequestScopeOriginal || scoped;
 }
 
-async function fetchJson(url, fetchImpl = rawFetch()) {
-  const response = await fetchImpl(url, {headers: {'Accept': 'application/json'}});
+async function fetchJson(url, fetchImpl = rawFetch(), {signal} = {}) {
+  const response = await fetchImpl(url, {headers: {'Accept': 'application/json'}, ...(signal ? {signal} : {})});
   if (!response.ok) {
     const raw = await response.text();
     let body = {};
@@ -85,8 +85,16 @@ function currentVersion(algorithm = {}) {
 }
 
 export function algorithmVersionMap50(version = {}) {
-  const metrics = version?.metrics || version?.evaluation?.metrics || {};
-  for (const value of [version?.map50, version?.mAP50, metrics?.map50, metrics?.mAP50, metrics?.['metrics/mAP50(B)']]) {
+  const metrics = version?.metrics || {};
+  const evaluation = version?.evaluation?.metrics || {};
+  for (const value of [version?.map50, version?.mAP50, metrics?.map50, metrics?.mAP50,
+    metrics?.['metrics/mAP50(B)'], evaluation?.map50, evaluation?.mAP50, evaluation?.['metrics/mAP50(B)']]) {
+    // Compact SQL projections include explicit JSON nulls for missing fields.
+    // Number(null), Number('') and Number(false) all equal zero, but none is
+    // a measured mAP50. A real numeric 0 remains a valid metric.
+    if (value == null || typeof value === 'boolean' ||
+        (typeof value === 'string' && !value.trim()) ||
+        (typeof value !== 'string' && typeof value !== 'number')) continue;
     const number = Number(value);
     if (Number.isFinite(number)) return number > 1 ? number : number * 100;
   }
@@ -123,6 +131,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   const doc = typeof document !== 'undefined' ? document : null;
   let destroyed = false;
   let inflight = null;
+  let inflightController = null;
+  let inflightPageOwned = false;
+  let inflightShared = false;
   let lastRefreshAt = 0;
   let refreshError = '';
   let lastRefreshTiming = null;
@@ -368,7 +379,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     if (filters.industry !== 'all' && String(algorithm?.industry || '') !== filters.industry) return false;
     if (filters.type !== 'all' && String(algorithm?.algorithm_type || '') !== filters.type) return false;
     const meta = providerMeta(algorithm);
-    const trainability = algorithmTrainability(algorithm);
+    const trainability = algorithm.versions_deferred ? {ready:false,message:'算法详情正在读取，请稍候或刷新'} : algorithmTrainability(algorithm);
     if (externalProvider?.matches) {
       const providerMatch = externalProvider.matches(algorithm, {
         source: filters.source,
@@ -418,7 +429,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     return `<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">
       <header class="algorithm-list-hero">
         <div><span class="algorithm-list-eyebrow">ALGORITHM REGISTRY</span><h2>算法列表</h2><p>以算法为单位查看训练状态、当前版本和核心指标；点击卡片空白区域即可展开版本。</p></div>
-        <div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建算法</button></div>
+        <div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建本地算法</button></div>
       </header>
       <section class="entity-query-surface algorithm-filter-surface">
         <div class="algorithm-filter-primary">
@@ -436,13 +447,15 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
         <div class="entity-applied-filters" data-algorithm-applied hidden></div>
       </section>
       <div class="algorithm-list-meta"><div class="entity-sortbar"><button data-algorithm-sort="comprehensive" class="on">综合排序</button><button data-algorithm-sort="updated">最近更新</button><button data-algorithm-sort="training">训练次数</button><button data-algorithm-sort="metric">mAP50</button></div><span data-algorithm-result-count></span></div>
-      <div class="entity-region-error" data-algorithm-error hidden></div>
+      <div data-algorithm-core-deferred role="status" hidden></div><div class="entity-region-error" data-algorithm-error hidden></div>
       <section class="algorithm-card-surface"><div id="alg412List" class="algorithm-card-grid"></div><footer class="entity-pagination algorithm-card-pagination" data-algorithm-pagination></footer></section>
     </section>`;
   }
 
   function ensureAlgorithmShell() {
-    if (destroyed || String(state().page || '') !== ALGORITHM_PAGE || !doc) return null;
+    // Bootstrap owns #view until its snapshot has committed and routed the
+    // first real page. External configuration reads may finish beforehand.
+    if (destroyed || state().uiReady === false || String(state().page || '') !== ALGORITHM_PAGE || !doc) return null;
     let root = doc.querySelector?.('[data-algorithm-list-owner="AlgorithmListRuntime"]');
     if (root) return root;
     const host = doc.getElementById?.('view');
@@ -506,23 +519,23 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const item = row => `<div class="algorithm-category-item ${active.has(String(row.id)) ? 'active' : ''}" data-category-id="${esc(row.id)}" data-category-row="${esc(row.id)}" role="button" tabindex="0" aria-label="${row.hasChildren ? '展开' : '选择'} ${esc(row.name)}"><span class="algorithm-category-item-main">${row.hasChildren ? '<span class="algorithm-category-node-dot" aria-hidden="true">·</span>' : `<input type="checkbox" data-category-check="${esc(row.id)}" aria-label="选择 ${esc(row.name)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}>`}<span>${esc(row.name)}</span></span>${row.hasChildren ? '<button type="button" data-category-drill aria-label="查看下级">›</button>' : ''}</div>`;
     const body = viewState.categoryQuery
       ? `<div class="algorithm-category-search-results">${search.map(row => `<div class="algorithm-category-search-row ${viewState.draftCategoryIds.has(String(row.id)) ? 'selected' : ''}" data-category-id="${esc(row.id)}" data-category-row="${esc(row.id)}" role="button" tabindex="0" aria-label="${row.hasChildren ? '展开' : '选择'} ${esc(row.name)}">${row.hasChildren ? '<span class="algorithm-category-node-dot" aria-hidden="true">·</span>' : `<input type="checkbox" data-category-check="${esc(row.id)}" aria-label="选择 ${esc(row.name)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}>`}<span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span>${row.hasChildren ? '<button type="button" data-category-drill aria-label="查看下级">›</button>' : ''}</div>`).join('') || '<div class="entity-empty compact">未找到匹配品目</div>'}</div>`
-      : `<div class="algorithm-category-columns">${columns.map(column => `<div class="algorithm-category-column">${column.rows.map(item).join('') || '<div class="algorithm-category-column-empty">请选择上级品目</div>'}</div>`).join('')}</div>`;
+      : `<div class="algorithm-category-columns">${columns.map((column, index) => `<div class="algorithm-category-column ${index === Math.min(viewState.categoryPath.length, 2) ? 'is-current' : ''}">${column.rows.map(item).join('') || '<div class="algorithm-category-column-empty">请选择上级品目</div>'}</div>`).join('')}</div>`;
     const selected = [...viewState.draftCategoryIds].map(categoryById).filter(Boolean);
     popover.innerHTML = `<header><b>选择品目</b><button data-category-close>×</button></header><label class="algorithm-category-search"><span>⌕</span><input type="search" value="${esc(viewState.categoryQuery)}" placeholder="搜索品目名称或路径" data-category-search></label>${recent.length ? `<div class="algorithm-category-recent"><span>最近使用：</span>${recent.map(row => `<button data-category-recent="${esc(row.id)}">${esc(row.name)}</button>`).join('')}</div>` : ''}${body}<footer><div><b>已选择 ${selected.length} 项</b><span>${selected.slice(0, 2).map(row => `<em>${esc(row.name)}</em>`).join('')}${selected.length > 2 ? `<em>+${selected.length - 2}</em>` : ''}</span></div><div><button class="btn" data-category-clear>清空</button><button class="btn primary" data-category-confirm>确定</button></div></footer>`;
     return true;
   }
 
   function versionRowsHtml(algorithm) {
+    if(algorithm.versions_deferred)return '<div class="entity-empty compact">版本详情尚未读取，请等待当前刷新或重试。</div>';
     const versions = Array.isArray(algorithm?.versions) ? algorithm.versions : [];
     if (!versions.length) return '<div class="entity-empty compact">暂无版本，点击“训练”开始第一次迭代</div>';
     return versions.map(version => {
       const metric = algorithmVersionMap50(version);
       const current = String(algorithm.current_version_id || '') === String(version.id || '');
       const external = String(algorithm.source_type || '').toUpperCase() === 'EXTERNAL' && String(algorithm.provider_type || '').toUpperCase() === 'CHANG_LIAN';
-      const published = String(version.external_publish_status || '').toLowerCase() === 'published';
       const downloadable = Boolean(String(version.stored_path || '').trim());
       const pid = encodeURIComponent(String(projectId?.() || ''));
-      return `<div class="alg428-version-row"><div><b>${esc(version.version_name || '-')} ${current ? '<em>当前版本</em>' : ''}</b><span>${dateText(version.finished_at || version.created_at)}</span></div><div><span>mAP50</span><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="openVersionReport429('${esc(algorithm.id)}','${esc(version.id)}')">训练报告</button>${version.training_lineage ? `<button class="btn mini" onclick="openVersionLineage429('${esc(algorithm.id)}','${esc(version.id)}')">训练溯源</button>` : ''}${version.evaluation ? `<button class="btn mini" onclick="openVersionEvaluation429('${esc(algorithm.id)}','${esc(version.id)}')">独立评测</button>` : ''}<button class="btn mini" onclick="openVersionConvert428('${esc(algorithm.id)}','${esc(version.id)}')">转换</button>${downloadable ? `<a class="btn mini" href="/api/v12/projects/${pid}/algorithms/${encodeURIComponent(String(algorithm.id || ''))}/versions/${encodeURIComponent(String(version.id || ''))}/download">下载模型</a>` : ''}${external ? `<button class="btn mini" data-external-publish-action="${esc(algorithm.id)}:${esc(version.id)}" onclick="window.AlgorithmListRuntime.publishVersion('${esc(algorithm.id)}','${esc(version.id)}',this)" >${published ? '已发布' : '发布'}</button>` : ''}${current ? '' : `<button class="btn mini" onclick="openVersionRollback('${esc(algorithm.id)}','${esc(version.id)}')">回退</button>`}</div></div>`;
+      return `<div class="alg428-version-row"><div><b>${esc(version.version_name || '-')} ${current ? '<em>当前版本</em>' : ''}</b><span>${dateText(version.finished_at || version.created_at)}</span></div><div><span>mAP50</span><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="openVersionReport429('${esc(algorithm.id)}','${esc(version.id)}')">训练报告</button>${version.training_lineage ? `<button class="btn mini" onclick="openVersionLineage429('${esc(algorithm.id)}','${esc(version.id)}')">训练溯源</button>` : ''}${version.evaluation ? `<button class="btn mini" onclick="openVersionEvaluation429('${esc(algorithm.id)}','${esc(version.id)}')">独立评测</button>` : ''}<button class="btn mini" onclick="openVersionConvert428('${esc(algorithm.id)}','${esc(version.id)}')">转换</button>${downloadable ? `<a class="btn mini" href="/api/v12/projects/${pid}/algorithms/${encodeURIComponent(String(algorithm.id || ''))}/versions/${encodeURIComponent(String(version.id || ''))}/download">下载模型</a>` : ''}${external ? `<button class="btn mini" data-external-publish-action="${esc(algorithm.id)}:${esc(version.id)}" ${algorithm.external_deletion_status && algorithm.external_deletion_status !== 'NORMAL' ? 'disabled title="外部算法状态待核实或正在清理，新发布暂缓"' : ''} onclick="window.AlgorithmListRuntime.publishVersion('${esc(algorithm.id)}','${esc(version.id)}',this)"  title="查看新畅联模型交付状态或手动同步">新畅联交付</button>` : ''}${current ? '' : `<button class="btn mini" onclick="openVersionRollback('${esc(algorithm.id)}','${esc(version.id)}')">回退</button>`}</div></div>`;
     }).join('');
   }
 
@@ -531,11 +544,12 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const metric = algorithmVersionMap50(version);
     const count = trainingCount(algorithm.id) ?? '—';
     const meta = providerMeta(algorithm);
-    const trainability = algorithmTrainability(algorithm);
+    const trainability = algorithm.versions_deferred ? {ready:false,message:'算法详情正在读取，请稍候或刷新'} : algorithmTrainability(algorithm);
     const run = activeJob(algorithm.id, state().jobs || []);
+    const deletion = meta.deletion || {state:algorithm.external_deletion_status || 'NORMAL',label:'状态待核实'};
     const status = run
       ? String(run.status_text || trainingStatusText(run.status))
-      : algorithm.external_active === false ? '已下架'
+      : algorithm.versions_deferred ? '详情读取中' : algorithm.external_active === false ? '已下架'
         : !trainability.ready ? '不可训练'
           : version ? '已训练' : '可训练';
     const statusClass = run ? 'running' : !trainability.ready ? 'warning' : version ? 'success' : 'neutral';
@@ -549,7 +563,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
           <section class="algorithm-card-primary">
             <header class="algorithm-card-head">
               <span class="algorithm-avatar algorithm-card-avatar">${esc(String(algorithm.name || '算').slice(0, 1))}</span>
-              <div class="algorithm-card-title"><div><h3 title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</h3><span class="entity-status ${statusClass}" title="${esc(trainability.message || meta.readiness?.message || '')}">${esc(status)}</span></div><div class="algorithm-card-tags">${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}</div></div>
+              <div class="algorithm-card-title"><div><h3 title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</h3><span class="entity-status ${statusClass}" title="${esc(trainability.message || meta.readiness?.message || '')}">${esc(status)}</span>${deletion.state !== 'NORMAL' ? `<span class="entity-status warning" data-external-deletion="${esc(deletion.state)}">${esc(deletion.label)}</span>` : ''}</div><div class="algorithm-card-tags">${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}</div></div>
               <span class="algorithm-card-chevron" aria-hidden="true">⌄</span>
             </header>
             <p class="algorithm-card-description" title="${esc(remark)}">${esc(remark)}</p>
@@ -625,6 +639,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const root = ensureAlgorithmShell();
     if (!root) return false;
     renderControls(root);
+    const deferred=root.querySelector('[data-algorithm-core-deferred]');if(deferred){deferred.hidden=!state().algorithmsDeferred;deferred.textContent=refreshError?'算法详情暂未读取，请点击刷新重试。':`基础列表已就绪，共 ${Number(state().algorithmsTotal||0)} 个算法；完整版本和训练统计正在读取。`}
     const error = root.querySelector('[data-algorithm-error]');
     if (error) { error.hidden = !refreshError; error.textContent = refreshError; }
     renderRows();
@@ -722,7 +737,10 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (render) renderPage();
       return {algorithms: state().algorithms || [], jobs: state().jobs || [], cached: true};
     }
-    if (inflight) return inflight;
+    if (inflight) {
+      if (!render) inflightShared = true;
+      return inflight;
+    }
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
@@ -730,17 +748,21 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const fetchImpl = rawFetch();
     if (typeof fetchImpl !== 'function') throw new Error('浏览器请求能力不可用');
 
-    inflight = (async () => {
+    const controller = new AbortController();
+    inflightController = controller;
+    inflightPageOwned = Boolean(render && String(state().page || '') === ALGORITHM_PAGE);
+    inflightShared = !inflightPageOwned;
+    const task = (async () => {
       const encoded = encodeURIComponent(pid);
       const startedAt = Date.now();
       // The algorithm catalog is the primary content. Job state is secondary:
       // slow training task history must not block the first algorithm paint.
-      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl);
-      const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl)
+      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms?summary_only=true`, fetchImpl, {signal: controller.signal});
+      const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs?summary_only=true`, fetchImpl, {signal: controller.signal})
         .then(body => ({body}), error => ({error}));
       const isStale = () => {
         const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
-        return destroyed
+        return destroyed || controller.signal.aborted
           || (navigationGeneration != null && latestGeneration != null && latestGeneration !== navigationGeneration)
           || String(projectId?.() || '') !== String(pid);
       };
@@ -748,7 +770,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       const algorithmMs = Date.now() - startedAt;
       let s = state();
       if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
-      s.algorithms = listFrom(algorithmBody);
+      s.algorithms = listFrom(algorithmBody);s.algorithmsDeferred=false;s.algorithmsTotal=s.algorithms.length;s.__coreSnapshotGeneratedAt=Date.now();
+      if (Number.isSafeInteger(Number(algorithmBody?.algorithm_revision))) s.algorithmRevision=Number(algorithmBody.algorithm_revision);
+      window.PlatformCore?.runtime?.rememberCoreView?.();
       refreshError = '';
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       const firstPaintMs = Date.now() - startedAt;
@@ -757,20 +781,36 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
       lastRefreshTiming = {algorithmMs, firstPaintMs, totalMs: Date.now() - startedAt, projectId: String(pid)};
       if (result.error) throw result.error;
-      s.jobs = listFrom(result.body);
+      s.jobs = listFrom(result.body);s.jobsDeferred=false;
       lastRefreshAt = Date.now();
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
     })();
-
+    inflight = task;
     try {
-      return await inflight;
+      return await task;
     } catch (error) {
+      if (controller.signal.aborted) return {algorithms: state().algorithms || [], jobs: state().jobs || [], stale: true};
       refreshError = String(error?.message || error || '算法列表刷新失败');
       if (render && String(state().page || '') === ALGORITHM_PAGE) renderPage();
       throw error;
     } finally {
+      if (inflight === task) {
+        inflight = null;
+        inflightController = null;
+        inflightPageOwned = false;
+        inflightShared = false;
+      }
+    }
+  }
+  function beforeNavigate(nextPage) {
+    if (String(nextPage || '') === ALGORITHM_PAGE || String(state().page || '') !== ALGORITHM_PAGE) return;
+    if (inflight && inflightPageOwned && !inflightShared) {
+      // A page-only GET no longer has a consumer; keep server tasks untouched.
+      inflightController?.abort();
       inflight = null;
+      inflightController = null;
+      inflightPageOwned = false;
     }
   }
 
@@ -797,6 +837,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     build: 'algorithm-list-runtime-422565',
     toggle,
     refresh,
+    beforeNavigate,
     render: renderPage,
     renderCards: renderPage,
     renderRows,
@@ -822,6 +863,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     },
     destroy() {
       destroyed = true;
+      inflightController?.abort();
+      inflightController = null;
+      inflight = null;
       cancelTrainingWarmup();
       if (commonTrainingWarmupHandle != null) {
         if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(commonTrainingWarmupHandle);

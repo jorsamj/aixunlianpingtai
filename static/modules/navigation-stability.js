@@ -1,3 +1,5 @@
+import {ADVANCED_MENUS} from './advanced-navigation.js?v=20261024';
+
 export class NavigationEpochGuard {
   constructor(initialPage = '') {
     this.epoch = 0;
@@ -21,6 +23,8 @@ export class NavigationEpochGuard {
 
 export function normalizeNavigationPage(page) {
   const requested = String(page || '');
+  const advanced = ADVANCED_MENUS.find(menu => menu.title === requested);
+  if (advanced) return advanced.page;
   if (requested === '工作台') return '总览';
   if (requested === '自动标注') return '自动标注及清洗';
   if (requested === '测试发布' || requested === '检测台') return '质量中心';
@@ -73,6 +77,7 @@ export function installNavigationStability({
   pollRegistry,
   persistNavigationState,
   waitForNavigationReady,
+  canNavigate,
   beforeInvokeNavigation,
   performNavigation,
   knownPages,
@@ -126,6 +131,7 @@ export function installNavigationStability({
   if (hasClassicPredecessor || hasNamedNavigationOwner) {
     window.setPage = function stableSetPage(page, ...args) {
       const requested = normalizeNavigationPage(page);
+      if (canNavigate?.(requested) === false) return false;
       requestScope?.navigate?.(requested);
       pending.clear();
       const navigationEpoch = guard.navigate(requested);
@@ -173,7 +179,9 @@ export function installNavigationStability({
 
       if (readiness && typeof readiness.then === 'function') {
         return Promise.resolve(readiness).then(
-          () => invokeNavigationOwner(),
+          // A second click can supersede this navigation while startup is
+          // pending. The first request must not replay after the await.
+          ready => ready === false || destroyed || guard.epoch !== navigationEpoch ? false : invokeNavigationOwner(),
           error => {
             finalizeNavigation(requested, navigationEpoch);
             throw error;

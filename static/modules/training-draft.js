@@ -83,6 +83,8 @@ export function createTrainingDraft(values = {}) {
     algorithmId: String(values.algorithmId || '').trim(),
     baseVersionId: String(values.baseVersionId || '').trim(),
     materialIds,
+    trainSelectionRef:String(values.trainSelectionRef || ''),
+    trainSelectionCount:Math.max(0,Number(values.trainSelectionCount || 0)),
     testMaterialIds,
     ...(values.duplicateReview ? {duplicateReview: {
       ...(values.duplicateReview.review_kind==='EXPLICIT_SELECTION_ADJUSTMENT'?{review_kind:'EXPLICIT_SELECTION_ADJUSTMENT'}:{}),
@@ -99,6 +101,8 @@ export function createTrainingDraft(values = {}) {
     validationPercent: numberOr(values.validationPercent, 20),
     newLabelCodes: unique(values.newLabelCodes),
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
+    history_policy: String(values.history_policy || 'new_for_algorithm'),
+    robustness_policy: JSON.parse(JSON.stringify(values.robustness_policy || {mode:'inherit'})),
     resource: {
       strategy: automaticMode ? 'auto' : String(values.resource?.strategy || 'manual'),
       profile: automaticMode ? 'performance' : String(values.resource?.profile || 'performance'),
@@ -117,7 +121,7 @@ export function createTrainingDraft(values = {}) {
 export function trainingDraftToRequest(draft, parameters = {}) {
   const normalized = createTrainingDraft(draft);
   if (!normalized.algorithmId) throw new Error('请选择训练算法');
-  if (!normalized.materialIds.length) throw new Error('请选择训练素材');
+  if (!normalized.materialIds.length && !normalized.trainSelectionRef) throw new Error('请选择训练素材');
   if (!normalized.baseVersionId && !normalized.newLabelCodes.length) {
     throw new Error('首次训练至少选择一个训练标签');
   }
@@ -143,9 +147,13 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   const request = {
     ...parameters,
     algorithm_asset_id: normalized.algorithmId,
+    base_version_id: normalized.baseVersionId,
     training_mode: normalized.trainingMode,
+    history_policy: normalized.history_policy,
+    robustness_policy: normalized.robustness_policy,
     split_mode: normalized.splitMode,
-    train_image_ids: normalized.materialIds,
+    train_image_ids: normalized.trainSelectionRef ? [] : normalized.materialIds,
+    ...(normalized.trainSelectionRef?{train_selection_ref:normalized.trainSelectionRef}:{}),
     test_image_ids: normalized.testMaterialIds,
     experiment_percent: normalized.experimentPercent,
     validation_percent: normalized.validationPercent,

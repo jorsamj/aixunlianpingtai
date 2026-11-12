@@ -25,9 +25,13 @@ def test_bootstrap_algorithm_cache_is_revision_guarded_and_does_not_rebuild_ever
     assert 'payload["algorithms"] = algorithms' in source
 
     overlay_start = source.index("def _v53_snapshot_with_live_jobs(")
-    build_start = source.index("def _v53_build_snapshot(", overlay_start)
+    build_start = source.index('@performance_stage("bootstrap.revision")', overlay_start)
     overlay = source[overlay_start:build_start]
-    assert "_v53_build_snapshot(" not in overlay
+    # Converting a lean cache to an explicitly requested full compatibility read
+    # is allowed; a full cached snapshot still refreshes only changed algorithms.
+    assert 'if payload.get("core_only"):' in overlay
+    full_overlay = overlay[overlay.index('    cached_revision ='):]
+    assert "_v53_build_snapshot(" not in full_overlay
     assert "list_algorithms_internal(project_id)" not in overlay
     assert "_v53_algorithms_with_revision(project_id)" in overlay
     assert "stable_revision == publish_revision" in overlay

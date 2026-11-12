@@ -1410,3 +1410,5 @@ Node Agent heartbeat ONLINE
 6. best/last 模型通过统一 `ModelArtifactService` / object storage 回传并验证。
 7. 只有 server-confirmed 模型资产完成后才允许训练任务 finalization。
 
+> **2026-11-03 母模型专项范围提示**：本轮增加控制端 `asset_id + sha256` 模型资产记录、单层母模型管理界面及训练前的验证挡板；Agent 现有 `model-upload` 能力名不代表具备实际模型安装执行器。**远程目录发现、白名单安装、SHA 安装回执、断线恢复和指定节点调度约束仍未实现**，不能将控制端上传或训练任务临时权重运输冒称 Worker 永久安装。接续要求见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`。
+

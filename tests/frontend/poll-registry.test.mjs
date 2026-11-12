@@ -662,3 +662,35 @@ test('timeout clear callback fires when navigation releases a managed owner', ()
     globalThis.clearTimeout = originalClearTimeout;
   }
 });
+
+test('hidden source page pauses and visible resync starts exactly one interval', async () => {
+  const old={document:globalThis.document,window:globalThis.window,
+    setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,
+    setInterval:globalThis.setInterval,clearInterval:globalThis.clearInterval};
+  let seq=0,calls=0;
+  const active=new Map(),listeners=new Map(),state={page:'素材接入',project:{id:'p'}};
+  globalThis.document={visibilityState:'visible',addEventListener:(e,fn)=>listeners.set(e,fn),
+    removeEventListener:e=>listeners.delete(e)};
+  globalThis.window={refreshSources422:async()=>{calls++;}};
+  globalThis.setInterval=globalThis.setTimeout=(fn,delay)=>{const id=++seq;active.set(id,{fn,delay});return id;};
+  globalThis.clearInterval=globalThis.clearTimeout=id=>active.delete(id);
+  let runtime;
+  try {
+    runtime=installPollRegistry({getState:()=>state});
+    assert.equal(runtime.snapshot().filter(row=>row.key==='sources').length,1);
+    globalThis.document.visibilityState='hidden';
+    listeners.get('visibilitychange')();
+    assert.equal(active.size,0);
+    assert.equal(runtime.replaceSourceTimer(),null);
+    globalThis.document.visibilityState='visible';
+    listeners.get('visibilitychange')();
+    await new Promise(resolve=>old.setTimeout(resolve,0));
+    assert.equal(calls,1);
+    assert.equal(active.size,1);
+  } finally {
+    runtime?.destroy();
+    for(const [name,value] of Object.entries(old)) {
+      if(value===undefined)delete globalThis[name];else globalThis[name]=value;
+    }
+  }
+});

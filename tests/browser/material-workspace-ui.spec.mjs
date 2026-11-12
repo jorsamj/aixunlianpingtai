@@ -12,7 +12,12 @@ async function openFixture(page){
  await page.route('**/api/v61/projects/*/materials**',route=>{const u=new URL(route.request().url());if(u.pathname.endsWith('/ids'))return route.fallback();const status=u.searchParams.get('processing_status'),limit=Number(u.searchParams.get('limit')||u.searchParams.get('page_size')||48);const query=u.searchParams.get('query')||'';const items=status==='unprocessed'?[]:rows.filter(row=>!query||row.filename.includes(query));return route.fulfill({contentType:'application/json',body:JSON.stringify({items:limit===1?items.slice(0,1):items,total:items.length,page:1,page_size:48,next_cursor:null})});});
  await page.goto('/');await expect.poll(()=>page.evaluate(()=>!!window.MaterialPaginationRuntime61)).toBe(true);
  await page.evaluate(codes=>{state.labels=codes.map((code,class_id)=>({code,class_id,display_name:['人员','车辆','烟雾','安全帽','明火','人群'][class_id],color:'#4477aa',status:'active'}));state.data412Tab='processed';state.materialQuery61='';state.materialAnnotated61='all';state.materialSourceFilter61='all';window.setPage('数据集')},labelCodes);
- await expect(page.locator('.data412-card')).toHaveCount(12);await expect(page.locator('.data412-card').first()).toContainText('交通现场');await expect(page.locator('.data426-chips')).toContainText('person');
+ await expect(page.locator('.data412-card')).toHaveCount(12);await expect(page.locator('.data412-card').first()).toContainText('交通现场');
+ // Chinese display names are user-facing; the canonical code remains the filter identity.
+ const personChip=page.locator('.data426-chips button').filter({hasText:'人员'});
+ await expect(personChip).toHaveCount(1);
+ if(baseline) await expect(personChip).toHaveAttribute('onclick',"toggleLabel412('person')");
+ else await expect(personChip).toHaveAttribute('data-label-code','person');
 }
 for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]])test(`material workspace ${width}x${height} display and original actions`,async({page},testInfo)=>{
  await page.setViewportSize({width,height});await openFixture(page);await page.screenshot({path:testInfo.outputPath(`material-${baseline?'before':'after'}-${width}x${height}-grid.png`),fullPage:true});if(baseline)return;
@@ -22,5 +27,13 @@ for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]])test(`
  await page.getByRole('button',{name:'列表',exact:true}).click();await expect(page.locator('#data412Grid')).toHaveAttribute('data-material-view','list');expect(await page.evaluate(()=>window.__matNode===document.querySelector('.data412-card')&&state.data412Selected.has('mat-ui-0'))).toBe(true);expect(await page.evaluate(()=>window.MaterialPaginationRuntime61.state().requestSerial)).toBe(serial);
  await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-list.png`),fullPage:true});
  const failed=page.locator('[data-material-id="mat-ui-2"]');await expect(failed.locator('.material-image-issue')).toBeVisible();expect(await failed.locator('.material-media-plane').evaluate(node=>getComputedStyle(node).visibility)).toBe('hidden');for(const box of await failed.locator('.data412-box').all())expect(await box.evaluate(node=>getComputedStyle(node).visibility)).toBe('hidden');page.__matRetry=true;await failed.getByRole('button',{name:'重新加载'}).click();await expect(failed.locator('.material-media412')).toHaveAttribute('data-image-state','ready');
- await first.getByRole('button',{name:'详情',exact:true}).click();const detail=page.locator('.material-detail412');await expect(detail).toBeVisible();await expect(detail.getByRole('button',{name:'编辑标注'})).toBeVisible();expect(await detail.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-detail.png`),fullPage:true});
+ await first.locator('.data426-title').click();const detail=page.locator('.material-preview');await expect(detail).toBeVisible();await expect(detail.getByRole('button',{name:'编辑标注'})).toBeVisible();expect(await detail.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-detail.png`),fullPage:true});
+});
+
+
+test('negative-pool action stays in compact more menu and retires on navigation', async({page})=>{
+ await page.setViewportSize({width:1366,height:768});await openFixture(page);
+ const card=page.locator('[data-material-id="mat-ui-0"]');await expect(card.locator('[data-np="join-one"]')).not.toBeVisible();
+ await card.getByRole('button',{name:/更多操作/}).click();await expect(page.getByRole('menuitem',{name:'加入负样本池',exact:true})).toBeVisible();await page.getByRole('menuitem',{name:'加入负样本池',exact:true}).click();await expect(page.getByText('所选素材转入负样本池',{exact:true})).toBeVisible();
+ await page.keyboard.press('Escape');await expect(page.getByRole('menu')).toHaveCount(0);await page.evaluate(()=>window.setPage('算法列表'));await expect(page.getByRole('menu')).toHaveCount(0);
 });

@@ -6,7 +6,7 @@ test('core navigation and create algorithm action respond without console errors
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await page.getByRole('button', {name: /算法列表/}).click();
-  await page.getByRole('button', {name: /新建算法|创建算法/}).click();
+  await page.getByRole('button', {name: /新建(?:本地)?算法|创建算法/}).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByText('算法名称')).toBeVisible();
   expect(errors).toEqual([]);
@@ -20,6 +20,8 @@ test('mobile navigation closes its drawer before main-page actions', async ({pag
   await page.getByRole('button', {name: /数据集/}).click();
   await expect(page.locator('#sidebar')).not.toHaveClass(/mobile-open/);
   await expect(page.locator('#sideBackdrop')).not.toHaveClass(/show/);
-  await page.getByRole('button', {name: '批量操作'}).click();
-  await expect(page.getByRole('button', {name: '取消批量'})).toBeVisible();
+  await page.getByRole('button', {name: '更多操作',exact:true}).click();
+  await expect(page.getByRole('menuitem', {name:'清空项目素材库',exact:true})).toBeVisible();
+  await page.keyboard.press('Escape');await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'更多操作',exact:true})).toBeFocused();
 });

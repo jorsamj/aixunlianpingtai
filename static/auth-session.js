@@ -32,7 +32,8 @@
   }
 
   function applyIdentity(body) {
-    const name = String(body.user?.username || '畅联云用户');
+    const local = body.provider === 'local';
+    const name = String(body.user?.username || '当前用户');
     const target = document.getElementById('authUsername');
     const life = document.getElementById('authSessionLife');
     const identity = document.getElementById('authIdentity');
@@ -43,11 +44,11 @@
       const localExpiry = formatExpiry(body.expires_at);
       const upstreamExpiry = formatExpiry(body.upstream_token_expires_at);
       const upstreamSource = String(body.upstream_token_expiry_source || 'undocumented');
-      const upstreamLine = upstreamExpiry
+      const upstreamLine = local ? '' : upstreamExpiry
         ? `畅联云 Token：${upstreamExpiry}（${upstreamSource}）`
         : '畅联云 Token：登录接口未公开有效期';
       identity.title = [
-        `畅联云账号：${name}`,
+        `${local ? '本地账号' : '畅联云账号'}：${name}`,
         localExpiry ? `本平台会话：${localExpiry}` : '',
         upstreamLine,
       ].filter(Boolean).join('\n');

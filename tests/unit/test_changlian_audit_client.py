@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from platform_core.external_algorithm_platform import ChangLianClient, ChangLianEndpoints
 from platform_core.integration_audit import IntegrationAuditRepository
 
@@ -114,11 +116,12 @@ class ProductListSuccessSession(FakeSession):
             assert "Access-Token" not in kwargs["headers"]
             assert kwargs.get("params") == {"productType": "3", "status": "1"}
             return FakeResponse({
-                "code": 0,
+                "code": getattr(self, "product_success_code", 0),
                 "msg": "操作成功",
                 "data": [{
                     "productId": 101,
                     "productType": 3,
+                    "status": 1,
                     "productName": "抽烟检测",
                     "productCode": "smoking",
                 }],
@@ -127,24 +130,27 @@ class ProductListSuccessSession(FakeSession):
         return super().request(method, url, **kwargs)
 
 
-def test_changlian_product_list_uses_official_path_and_bearer_header(tmp_path: Path):
+@pytest.mark.parametrize("success_code", [0, 200])
+def test_changlian_product_list_uses_official_path_and_bearer_header(tmp_path: Path, success_code):
     audit = IntegrationAuditRepository(tmp_path)
+    session = ProductListSuccessSession()
+    session.product_success_code = success_code
     client = ChangLianClient(
         base_url="https://changlian.example",
         access_key="ak-sensitive",
         access_secret="secret-sensitive",
         endpoints=ChangLianEndpoints(),
-        session=ProductListSuccessSession(),
+        session=session,
         audit_callback=audit.record,
     )
 
     result = client.products()
 
-    assert result["code"] == 0
+    assert result["code"] == success_code
     assert result["data"][0]["productId"] == 101
     row = next(item for item in audit.list(limit=10) if item["operation"] == "product_list")
     assert row["status"] == "SUCCESS"
-    assert row["business_code"] == "0"
+    assert row["business_code"] == str(success_code)
     assert row["endpoint"] == "/internal/algorithm/product-ai/listAll"
     assert row["request"]["headers"]["Authorization"] == "***"
     assert "Access-Token" not in row["request"]["headers"]

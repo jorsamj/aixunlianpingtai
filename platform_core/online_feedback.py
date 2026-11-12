@@ -139,6 +139,8 @@ def validate_prediction_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         result["external_source"] = external_source
     if external_sample_id:
         result["external_sample_id"] = external_sample_id
+    if source_channel == "hard_sample_review":
+        result["prediction_evidence_status"] = "unavailable_review_boxes_mutable"
     return result
 
 
@@ -184,6 +186,8 @@ def build_supplement_candidate(
     material = dict(material or {})
     annotation = dict(annotation or {})
     reasons: list[str] = []
+    if str(public.get("source", {}).get("source_channel") or "") == "evaluation":
+        reasons.append("FROZEN_EVALUATION_TEST")
     if not material_id or str(material.get("id") or "") != material_id:
         reasons.append("MATERIAL_MISSING")
     input_sha = _sha(public.get("input_sha256"), "input_sha256")

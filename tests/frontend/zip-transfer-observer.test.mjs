@@ -51,7 +51,11 @@ test('legacy browser transfer stays authoritative when durable polling lags ackn
   const h=harness({durableJobs:()=>server});
   try{
     const upload=h.runtime.upload({files:[file('source.zip')],value:'',externalView:true});
-    await tick();await tick();
+    // Content fingerprinting is asynchronous; two event-loop turns do not
+    // establish that the real session and its chunk requests exist on CI.
+    const deadline=Date.now()+2000;
+    while(h.pending.length===0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,5));
+    assert.ok(h.pending.length>0,'the original uploader must dispatch a real chunk before progress is injected');
     for(const xhr of h.pending)xhr.upload.onprogress?.({lengthComputable:true,loaded:Math.max(1,xhr.size-1),total:xhr.size});
     const before=h.rows.get('zip:source.zip').progress;
     assert.ok(before>30);

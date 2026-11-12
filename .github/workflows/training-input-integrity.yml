@@ -9,6 +9,12 @@ on:
       - app.py
       - platform_core/training_tasks.py
       - platform_core/training_splits.py
+      - platform_core/training_robustness.py
+      - platform_core/training_material_usage.py
+      - platform_core/training_usage_maintenance.py
+      - tools/rebuild_training_material_usage.py
+      - tests/unit/test_training_robustness.py
+      - tests/unit/test_training_material_usage.py
       - platform_core/material_batches.py
       - platform_core/training_compatibility.py
       - platform_core/training_material_picker_api.py
@@ -38,6 +44,12 @@ on:
       - app.py
       - platform_core/training_tasks.py
       - platform_core/training_splits.py
+      - platform_core/training_robustness.py
+      - platform_core/training_material_usage.py
+      - platform_core/training_usage_maintenance.py
+      - tools/rebuild_training_material_usage.py
+      - tests/unit/test_training_robustness.py
+      - tests/unit/test_training_material_usage.py
       - platform_core/material_batches.py
       - platform_core/training_compatibility.py
       - platform_core/training_material_picker_api.py
@@ -82,7 +94,7 @@ jobs:
       - name: Install focused integrity dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest pillow pyyaml filelock requests psutil keyring cryptography
+          pytest pillow pyyaml filelock requests psutil keyring cryptography numpy
       - name: Compile training input integrity chain
         run: >-
           python -m py_compile
@@ -106,6 +118,11 @@ jobs:
           tests/unit/test_training_stratification_v2.py
           tests/unit/test_training_annotation_admission.py
           tests/unit/test_training_metric_credibility.py
+      - name: Focused CSC and indexed consumption evidence contracts
+        run: >-
+          python -m pytest --confcutdir=tests/unit -q
+          tests/unit/test_training_robustness.py
+          tests/unit/test_training_material_usage.py
       - name: Existing JPEG and cache isolation guards
         run: >-
           python -m pytest --confcutdir=tests/unit -q
@@ -118,6 +135,7 @@ jobs:
           tests/unit/test_negative_sample_contract.py
           tests/unit/test_snapshots.py
           tests/unit/test_portable_dataset.py
+          tests/unit/test_reviewed_negative_projection.py
       - name: Mixed JPEG to cache to task restore integration chain
         run: >-
           python -m pytest --confcutdir=tests/integration -q
@@ -125,11 +143,15 @@ jobs:
       - name: Permanent task-filtered negative guards
         shell: bash
         run: |
-          grep -Fq 'negative_origin"] = "redacted_unselected_labels"' platform_core/training_label_tasks.py
+          grep -Fq '"reviewed_task_negative" if policy == base.TRAINING_PROJECTION_POLICY_V3 else "redacted_unselected_labels"' platform_core/training_label_tasks.py
           grep -Fq 'TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"' platform_core/training_tasks.py
           grep -Fq 'TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"' platform_core/training_tasks.py
-          grep -Fq 'training_projection_policy"] = base.TRAINING_PROJECTION_POLICY' platform_core/training_label_tasks.py
-          grep -Fq 'policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}' platform_core/training_tasks.py
+          grep -Fq 'policy = str(contract.get("training_projection_policy") or base.TRAINING_PROJECTION_POLICY)' platform_core/training_label_tasks.py
+          grep -Fq 'policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY, TRAINING_PROJECTION_POLICY_V3}' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_PROJECTION_POLICY_V3 = "reviewed_negative_original_v3_preserve_selected"' platform_core/training_tasks.py
+          grep -Fq 'test_unreviewed_person_pending' tests/unit/test_reviewed_negative_projection.py
+          grep -Fq 'test_v3_mixed_preserves_selected_pixels' tests/unit/test_reviewed_negative_projection.py
+          grep -Fq 'test_reviewed_person_generates_empty_vest_yolo_and_original_image' tests/unit/test_reviewed_negative_projection.py
           grep -Fq 'def _apply_training_projection(' platform_core/training_tasks.py
           grep -Fq 'excluded_object_redaction' platform_core/training_tasks.py
           grep -Fq 'test_redaction_v2_preserves_selected_positive_pixels_inside_excluded_box' tests/unit/test_training_label_contract.py

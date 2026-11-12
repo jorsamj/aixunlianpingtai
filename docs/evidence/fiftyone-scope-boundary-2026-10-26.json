@@ -1,0 +1,22 @@
+{
+  "scope": "metadata-only admission safety, not actual image/engine throughput",
+  "cases": [
+    {
+      "material_metadata_count": 10000,
+      "scope_rejected_before_id_loading": true,
+      "original_database_unchanged": true,
+      "elapsed_seconds": 0.02781,
+      "rss_end_minus_start_bytes": 16384,
+      "engine_started": false
+    },
+    {
+      "material_metadata_count": 100000,
+      "scope_rejected_before_id_loading": true,
+      "original_database_unchanged": true,
+      "elapsed_seconds": 0.01627,
+      "rss_end_minus_start_bytes": -503808,
+      "engine_started": false
+    }
+  ],
+  "owned_temporary_root_cleaned": true
+}

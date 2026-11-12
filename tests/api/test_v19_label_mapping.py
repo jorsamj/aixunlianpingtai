@@ -5,6 +5,7 @@ import zipfile
 
 import app as app_module
 from PIL import Image
+from platform_core.negative_pool import NegativePool
 
 
 def _jpg_bytes():
@@ -32,6 +33,16 @@ def _wait_job(client, project_id, job_id, timeout=10):
             return body
         time.sleep(0.05)
     raise AssertionError("ZIP import did not finish")
+
+
+def _negative_upload_kind(client, project_id):
+    """A classless ZIP still requires an explicit pool category before import."""
+    created = client.post(
+        f"/api/v61/projects/{project_id}/negative-pool/categories",
+        json={"name": "空背景素材"},
+    )
+    assert created.status_code == 200, created.text
+    return {"sample_type": "negative", "negative_category_ids": [created.json()["id"]]}
 
 
 def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
@@ -65,11 +76,13 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
             "selected_paths": [],
             "label_mapping": {"0": "helmet", "1": "helmet"},
             "create_labels": [],
+            "sample_type": "positive", "intended_label_codes": ["helmet"],
         },
     )
     assert started.status_code == 200, started.text
     final = _wait_job(client, project["id"], job["id"])
     assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+    assert final["report"]["upload_classification_status"] == "applied"
     assert final["report"]["label_mapping"] == {"0": "helmet", "1": "helmet"}
     assert final["report"]["label_box_counts"] == {"helmet": 2}
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
@@ -90,6 +103,8 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
 
     review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review").json()
     assert len(review["image_ids"]) == 2
+    assert all(app_module.material_store(project['id']).get(image_id)['upload_intended_label_codes'] == ['helmet']
+               for image_id in review['image_ids'])
     for image_id in review["image_ids"]:
         boxes = client.get(f"/api/projects/{project['id']}/annotations/{image_id}").json()["boxes"]
         assert len(boxes) == 1
@@ -134,7 +149,7 @@ def test_v19_failed_retry_cannot_change_frozen_label_mapping(client):
 
     started = client.post(
         f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
-        json={"label_mapping": {"0": "helmet"}},
+        json={"label_mapping": {"0": "helmet"}, "sample_type": "positive", "intended_label_codes": ["helmet"]},
     )
     assert started.status_code == 200, started.text
     failed = _wait_job(client, project["id"], job["id"])
@@ -200,6 +215,7 @@ def test_v19_explicit_canonical_label_creation_then_mapping_is_supported(client)
         json={
             "label_mapping": {"0": "helmet_new", "1": "helmet_new"},
             "create_labels": [],
+            "sample_type": "positive", "intended_label_codes": ["helmet_new"],
         },
     )
     assert started.status_code == 200, started.text
@@ -254,7 +270,7 @@ def test_v19_structured_import_uses_only_confirmed_mapping_scope(client):
 
     started = client.post(
         f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
-        json={"label_mapping": {"0": "smoke", "1": "fire"}},
+        json={"label_mapping": {"0": "smoke", "1": "fire"}, "sample_type": "positive", "intended_label_codes": ["smoke", "fire"]},
     )
     assert started.status_code == 200, started.text
     final = _wait_job(client, project["id"], job["id"])
@@ -269,16 +285,17 @@ def test_v19_structured_import_uses_only_confirmed_mapping_scope(client):
         for image_id in review["image_ids"]
     ]
     assert {row["annotation_state"] for row in annotations} == {
-        "annotated", "confirmed_empty"
+        "annotated", "unannotated"
     }
     for annotation in annotations:
-        assert annotation["annotation_scope"] == ["fire", "smoke"]
         assert "helmet" not in annotation["annotation_scope"]
 
     positive = next(row for row in annotations if row["annotation_state"] == "annotated")
     assert {box["label"] for box in positive["boxes"]} == {"smoke"}
-    empty = next(row for row in annotations if row["annotation_state"] == "confirmed_empty")
+    assert positive["annotation_scope"] == ["fire", "smoke"]
+    empty = next(row for row in annotations if row["annotation_state"] == "unannotated")
     assert empty["boxes"] == []
+    assert empty["annotation_scope"] == []
 
 
 def test_v19_plain_image_zip_stays_unannotated_and_does_not_create_label(client):
@@ -295,13 +312,17 @@ def test_v19_plain_image_zip_stays_unannotated_and_does_not_create_label(client)
     assert job["label_confirmation_required"] is False
     assert job["external_classes"] == []
 
+    selection = _negative_upload_kind(client, project['id'])
     started = client.post(
         f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
-        json={},
+        json=selection,
     )
     assert started.status_code == 200, started.text
     final = _wait_job(client, project["id"], job["id"])
     assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+    assert final["report"]["upload_classification_status"] == "applied"
+    assert NegativePool(app_module.material_store(project['id'])).query(
+        category_ids=selection['negative_category_ids'])['total'] == 1
 
     review = client.get(
         f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review"
@@ -325,6 +346,50 @@ def _empty_yolo_without_schema_zip():
         archive.writestr("images/train/empty.jpg", _jpg_bytes())
         archive.writestr("labels/train/empty.txt", "")
     return payload.getvalue()
+
+
+def _empty_yolo_with_schema_zip():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("data.yaml", "names:\n  0: fire\n  1: smoke\n")
+        archive.writestr("images/train/a.jpg", _jpg_bytes())
+        archive.writestr("images/train/b.jpg", _jpg_bytes())
+        archive.writestr("labels/train/a.txt", "")
+        archive.writestr("labels/train/b.txt", "\n  \n")
+    return payload.getvalue()
+
+
+def test_v19_all_empty_yolo_with_schema_defaults_to_raw_no_gt(client):
+    project = client.post("/api/projects", json={"name": "zip-raw-schema", "labels": []}).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("empty-with-names.zip", _empty_yolo_with_schema_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["scan_kind"] == "RAW_UNANNOTATED"
+    assert job["label_confirmation_required"] is False
+    assert job["external_classes"] == []
+    assert {row["name"] for row in job["external_class_hints"]} == {"fire", "smoke"}
+
+    # No positive label or negative category is necessary to store raw images.
+    started = client.post(f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start", json={})
+    assert started.status_code == 200, started.text
+    final = _wait_job(client, project["id"], job["id"])
+    assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+    assert final["report"]["imported_images"] == 2
+    assert final["report"]["boxes"] == 0
+    assert final["report"].get("upload_classification_status") != "applied"
+    # Browser progress omits large image-id arrays; the paged review owner is
+    # the stable contract for post-import image lookup.
+    review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review")
+    assert review.status_code == 200, review.text
+    image_ids = review.json()["image_ids"]
+    for image_id in image_ids:
+        annotation = client.get(f"/api/projects/{project['id']}/annotations/{image_id}").json()
+        assert annotation["annotation_state"] == "unannotated"
+        assert annotation["annotation_scope"] == []
+    assert client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"] == []
 
 
 def _empty_voc_without_schema_zip():
@@ -353,6 +418,43 @@ def _empty_coco_without_schema_zip():
     return payload.getvalue()
 
 
+def test_v19_partial_coco_manifest_keeps_unreferenced_raw_image(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-coco-with-raw", "labels": [{"code": "fire", "display_name": "明火"}],
+    }).json()
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("images/labeled.jpg", _jpg_bytes())
+        archive.writestr("images/raw.jpg", _jpg_bytes())
+        archive.writestr("annotations/instances.json", json.dumps({
+            "images": [{"id": 1, "file_name": "images/labeled.jpg", "width": 80, "height": 60}],
+            "categories": [{"id": 1, "name": "external_fire"}],
+            "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 20, 20]}],
+        }))
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("coco-mixed.zip", payload.getvalue(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["label_confirmation_required"] is True
+    started = client.post(f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start", json={
+        "label_mapping": {"1": "fire"}, "sample_type": "positive", "intended_label_codes": ["fire"],
+    })
+    assert started.status_code == 200, started.text
+    done = _wait_job(client, project["id"], job["id"])
+    assert done["status"] == "done", json.dumps(done, ensure_ascii=False)
+    assert done["report"]["imported_images"] == 2
+    assert done["report"]["boxes"] == 1
+    review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review")
+    assert review.status_code == 200, review.text
+    states = {
+        client.get(f"/api/projects/{project['id']}/annotations/{image_id}").json()["annotation_state"]
+        for image_id in review.json()["image_ids"]
+    }
+    assert states == {"annotated", "unannotated"}
+
+
 def test_v19_empty_structured_sidecar_without_confirmed_schema_stays_unannotated(client):
     cases = [
         ("empty-yolo.zip", _empty_yolo_without_schema_zip()),
@@ -375,7 +477,7 @@ def test_v19_empty_structured_sidecar_without_confirmed_schema_stays_unannotated
 
         started = client.post(
             f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
-            json={},
+            json=_negative_upload_kind(client, project['id']),
         )
         assert started.status_code == 200, started.text
         final = _wait_job(client, project["id"], job["id"])
@@ -437,7 +539,7 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
     )
     started = client.post(
         f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
-        json={"label_mapping": {"0": "helmet", "1": "helmet"}},
+        json={"label_mapping": {"0": "helmet", "1": "helmet"}, "sample_type": "positive", "intended_label_codes": ["helmet"]},
     )
     assert started.status_code == 200, started.text
     final = _wait_job(client, project["id"], job["id"])

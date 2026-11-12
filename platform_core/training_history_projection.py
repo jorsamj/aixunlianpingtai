@@ -5,6 +5,7 @@ overlay current durable task truth on every read. A restart rebuilds the cache.
 """
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Mapping
@@ -20,22 +21,27 @@ class TrainingHistoryProjection:
         with self._lock:
             previous = self._files.get(key, {})
             current = {}
-            for child in jobs_dir.iterdir() if jobs_dir.exists() else ():
-                if not child.is_dir():
-                    continue
-                path = child / 'job.json'
-                try:
-                    stat = path.stat()
-                except FileNotFoundError:
-                    continue
-                signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-                old = previous.get(str(path))
-                if old is not None and old[0] == signature:
-                    value = old[1]
-                else:
-                    value = loader(path)
-                if isinstance(value, dict) and value:
-                    current[str(path)] = (signature, value)
+            if jobs_dir.exists():
+                # DirEntry.is_dir uses filesystem type information when present.
+                # Keep each job's original stat signature; avoid allocating a
+                # Path per unchanged row and construct one only for the loader.
+                with os.scandir(jobs_dir) as children:
+                    for child in children:
+                        if not child.is_dir():
+                            continue
+                        path = os.path.join(child.path, 'job.json')
+                        try:
+                            stat = os.stat(path)
+                        except FileNotFoundError:
+                            continue
+                        signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+                        old = previous.get(path)
+                        if old is not None and old[0] == signature:
+                            value = old[1]
+                        else:
+                            value = loader(Path(path))
+                        if isinstance(value, dict) and value:
+                            current[path] = (signature, value)
             self._files[key] = current
             return [dict(value) for _signature, value in current.values()]
 

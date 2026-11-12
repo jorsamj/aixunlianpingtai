@@ -33,6 +33,59 @@ from platform_core.task_runtime.process_control import (
 )
 
 
+def test_remote_training_reuses_verified_agent_installed_mother_model(tmp_path):
+    content = b"trusted-mother-model" * 100
+    digest = hashlib.sha256(content).hexdigest()
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / f"managed-{digest}.pt").write_bytes(content)
+    runner = object.__new__(AgentTrainingRunner)
+    runner.mother_model_install_dir = installed
+    runner._assert_active = lambda monitor: None
+    runner._heartbeat = lambda *args, **kwargs: None
+    runner._download = lambda *args, **kwargs: pytest.fail("matching cached model downloaded again")
+    model = {"type": "object", "download": {
+        "file_name": "uploaded-best.pt", "sha256": digest, "size_bytes": len(content),
+    }}
+    result = Path(runner._model_argument({"model": model}, tmp_path / "work", object()))
+    assert result.read_bytes() == content
+    assert result.parent == tmp_path / "work" / "input" / "model"
+    # The training input is independent of the managed cache after materialization.
+    (installed / f"managed-{digest}.pt").unlink()
+    assert result.read_bytes() == content
+
+
+@pytest.mark.parametrize("cache_state", ["corrupt", "missing", "symlink"])
+def test_remote_training_falls_back_to_verified_object_when_cache_invalid(tmp_path, cache_state):
+    content = b"valid-weight-contents" * 100
+    digest = hashlib.sha256(content).hexdigest()
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    candidate = installed / f"managed-{digest}.pt"
+    if cache_state == "corrupt":
+        candidate.write_bytes(b"!" * len(content))
+    elif cache_state == "symlink":
+        try:
+            candidate.symlink_to(tmp_path / "elsewhere.pt")
+        except OSError as error:
+            pytest.skip(f"symlink creation is unavailable on this runner: {error}")
+    runner = object.__new__(AgentTrainingRunner)
+    runner.mother_model_install_dir = installed
+    runner._assert_active = lambda monitor: None
+    downloads = []
+
+    def fallback(contract, destination, monitor):
+        downloads.append(contract)
+        return destination
+
+    runner._download = fallback
+    contract = {"file_name": "best.pt", "sha256": digest, "size_bytes": len(content)}
+    result = runner._model_argument({"model": {"type": "object", "download": contract}},
+                                    tmp_path / "work", object())
+    assert Path(result) == tmp_path / "work" / "input" / "model" / "best.pt"
+    assert downloads == [contract]
+
+
 class FakeResponse:
     def __init__(self, status_code=200, data=b""):
         self.status_code = int(status_code)
@@ -479,6 +532,7 @@ def write_fake_train_worker(
     *,
     sleep_seconds=0.0,
     test_result_status="passed",
+    first_batch_ack=None,
 ):
     runtime_root.mkdir(parents=True, exist_ok=True)
     script = runtime_root / "train_worker.py"
@@ -562,7 +616,15 @@ job.update({{
 }})
 job_file.write_text(json.dumps(job), encoding="utf-8")
 print("fake training started", flush=True)
-time.sleep({float(sleep_seconds)!r})
+first_batch_ack = {str(first_batch_ack) if first_batch_ack is not None else None!r}
+if first_batch_ack is not None:
+    deadline = time.monotonic() + 15.0
+    while not Path(first_batch_ack).is_file():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("first_batch heartbeat was not acknowledged")
+        time.sleep(0.05)
+else:
+    time.sleep({float(sleep_seconds)!r})
 
 models = project / "models"
 models.mkdir(parents=True, exist_ok=True)
@@ -608,12 +670,14 @@ def build_runner(
     sleep_seconds=0.0,
     test_result_status="passed",
     resource_resolver=None,
+    first_batch_ack=None,
 ):
     runtime_root = tmp_path / "runtime"
     write_fake_train_worker(
         runtime_root,
         sleep_seconds=sleep_seconds,
         test_result_status=test_result_status,
+        first_batch_ack=first_batch_ack,
     )
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
     if resource_resolver is None:
@@ -662,16 +726,35 @@ def build_runner(
     return runner, runtime_root, workdirs
 
 
-def test_real_subprocess_remote_training_success(tmp_path):
+def test_real_subprocess_remote_training_success(tmp_path, monkeypatch):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(transfer)
+    first_batch_ack = tmp_path / "first-batch-heartbeat.marker"
+    heartbeat = client.heartbeat
+
+    def acknowledge_first_batch(lease, **kwargs):
+        response = heartbeat(lease, **kwargs)
+        if kwargs.get("stage") == "first_batch":
+            first_batch_ack.write_text("acknowledged", encoding="utf-8")
+        return response
+
+    monkeypatch.setattr(client, "heartbeat", acknowledge_first_batch)
     runner, runtime_root, workdirs = build_runner(
         tmp_path,
         client,
         transfer,
-        sleep_seconds=1.2,
+        first_batch_ack=first_batch_ack,
     )
+
+    cleanup = runner._cleanup_training_workdir
+    def checked_cleanup(lease, **kwargs):
+        assert kwargs["committed"] is True
+        assert client.model_confirm_calls == 1
+        assert client.finish_calls[-1]["status"] == "SUCCEEDED"
+        assert kwargs.get("model_evidence") == client.model_prepare_calls[-1]
+        return cleanup(lease, **kwargs)
+    monkeypatch.setattr(runner, "_cleanup_training_workdir", checked_cleanup)
 
     outcome = runner.run(current)
 
@@ -1040,12 +1123,18 @@ def test_training_cleanup_failure_preserves_identity_and_never_publishes_termina
             workdirs.cleanup(current)
 
 
+@pytest.mark.parametrize("checkpoint", [False, True])
 def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_work(
-    tmp_path,
+    tmp_path, checkpoint,
 ):
     current, downloads = training_lease(tmp_path)
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
-    workdirs.prepare(current)
+    recovered = workdirs.prepare(current)
+    (recovered / "input").mkdir()
+    (recovered / "input/pixels").write_bytes(b"temporary")
+    if checkpoint:
+        (recovered / "project").mkdir()
+        (recovered / "project/last.pt").write_bytes(b"last-checkpoint")
     launched = launch_process(
         [
             sys.executable,
@@ -1076,6 +1165,9 @@ def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_
         assert runner.recovery_error == ""
         assert workdirs.list_process_identities() == []
         launched.process.wait(timeout=5)
+        assert (recovered / "input").exists() == checkpoint
+        if checkpoint:
+            assert (recovered / "project/last.pt").read_bytes() == b"last-checkpoint"
     finally:
         if launched.process.poll() is None:
             ProcessController().terminate_tree(
@@ -1250,6 +1342,44 @@ def test_agent_failure_source_prefers_worker_job_error_over_secondary_message():
     assert tail_read > message_read
     assert "runtime_log.read_text(" not in source
 
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_failed_agent_cleanup_preserves_recovery_and_audits_only_owned_input(tmp_path, checkpoint):
+    lease, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    runner, _, workdirs = build_runner(tmp_path, FakeControlClient(transfer), transfer)
+    workdir = workdirs.prepare(lease)
+    (workdir / "input").mkdir()
+    (workdir / "input/source").write_bytes(b"temporary pixels")
+    evidence = workdir / "project/runs/train/weights"
+    evidence.mkdir(parents=True)
+    (evidence.parent / "results.csv").write_text("epoch,loss\n1,0.5\n")
+    if checkpoint:
+        (evidence / "last.pt").write_bytes(b"recoverable checkpoint")
+    runner._cleanup_training_workdir(lease, trainer_started=True, committed=False)
+    assert (workdir / "request.json").exists()
+    assert (evidence.parent / "results.csv").exists()
+    receipt = json.loads((workdir / "workspace-cleanup.json").read_text(encoding="utf-8"))
+    if checkpoint:
+        assert (evidence / "last.pt").read_bytes() == b"recoverable checkpoint"
+        assert (workdir / "input/source").exists()
+        assert receipt["blockers"] == ["RECOVERY_DEPENDENCY"]
+    else:
+        assert not (workdir / "input").exists()
+        assert receipt["status"] == "deleted"
+        runner._cleanup_training_workdir(lease, trainer_started=True, committed=False)
+        assert (evidence.parent / "results.csv").exists()
+
+
+def test_agent_cleanup_unreadable_directory_does_not_mask_committed_result(tmp_path, monkeypatch):
+    lease, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    runner, _, workdirs = build_runner(tmp_path, FakeControlClient(transfer), transfer)
+    def unreadable(_lease):
+        raise PermissionError("unreadable")
+    monkeypatch.setattr(workdirs, "path_for", unreadable)
+    runner._cleanup_training_workdir(lease, trainer_started=True, committed=True)
+
+
 def test_agent_training_log_tail_reader_is_bounded(tmp_path):
     path = tmp_path / "large-runtime.log"
     early = "EARLY-RUNTIME-MARKER"
@@ -1265,3 +1395,121 @@ def test_agent_training_log_tail_reader_is_bounded(tmp_path):
     assert tail.endswith(latest)
     assert early not in tail
 
+
+
+@pytest.mark.parametrize("bad_source", [None, "size", "sha"])
+def test_indexed_training_claim_materializes_frozen_gt_with_one_source_buffer(tmp_path, bad_source):
+    from dataclasses import replace
+    from PIL import Image
+    from platform_core.training_tasks import freeze_training_inputs
+    from platform_core.training_splits import SplitRequest, SplitMode
+    from platform_core.annotation_repository import AnnotationRepository
+    project = tmp_path / "frozen-project"
+    (project / "uploads").mkdir(parents=True)
+    (project / "annotations").mkdir()
+    (project / "meta.json").write_text(json.dumps({"id": "frozen-project", "labels": ["fire"],
+        "label_meta": [{"code": "fire", "class_id": 0}]}), encoding="utf-8")
+    rows, sources = [], {}
+    for index in range(5):
+        image_id = f"input-{index}"
+        image = project / "uploads" / (image_id + ".jpg")
+        Image.new("RGB", (64, 64), (index * 30, 10, 10)).save(image)
+        sources[image_id] = image.read_bytes()
+        rows.append({"id": image_id, "stored_name": image.name, "dataset_id": "pool", "group_id": image_id,
+            "width": 64, "height": 64, "size_bytes": image.stat().st_size,
+            "content_sha256": hashlib.sha256(sources[image_id]).hexdigest(), "annotated": True})
+        (project / "annotations" / (image_id + ".json")).write_text(json.dumps({"image_id": image_id,
+            "boxes": [{"label": "fire", "class_id": 0, "x1": 4, "y1": 4, "x2": 32, "y2": 32}]}), encoding="utf-8")
+    (project / "images.json").write_text(json.dumps(rows), encoding="utf-8")
+    frozen = freeze_training_inputs(project, SplitRequest(mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=tuple(row["id"] for row in rows[:4]), test_image_ids=(rows[4]["id"],),
+        validation_percent=25), seed=7)
+    # Subsequent formal GT changes must not affect this execution's labels.
+    AnnotationRepository(project).upsert("input-0", [], "unannotated")
+    current, _ = training_lease(tmp_path)
+    payload = dict(current.payload)
+    payload.pop("bundle")
+    payload.update(snapshot_id=frozen["snapshot_id"], dataset_revision_id=frozen["dataset_revision_id"],
+        counts={"train": 3, "validation": 1, "test": 1, "total": 5},
+        dataset_bytes=sum(len(value) for value in sources.values()),
+        inputs={"type": "frozen-manifest-v1", "input_freeze_id": frozen["input_freeze_id"]})
+    current = replace(current, payload=payload)
+    model_url = "https://storage.example.test/preprovisioned-base"
+    model_bytes = b"already-provisioned-model"
+    payload["model"] = {"type": "object", "download": {"method": "GET", "url": model_url,
+        "file_name": "base.pt", "size_bytes": len(model_bytes),
+        "sha256": hashlib.sha256(model_bytes).hexdigest()}}
+    transfer = FakeTransferSession({model_url: model_bytes})
+    client = FakeControlClient(transfer)
+    reads = []
+    import copy
+    from platform_core.training_tasks import _training_input_freeze_digest
+    transported = copy.deepcopy(frozen)
+    transported["source_input_freeze_id"] = frozen["input_freeze_id"]
+    transported["input_freeze_id"] = _training_input_freeze_digest(transported)
+    client.training_inputs_manifest = lambda lease: {"freeze": transported, "supplement_candidate_set": None}
+    runner, runtime_root, workdirs = build_runner(tmp_path, client, transfer)
+    def open_source(lease, image_id):
+        assert lease is current
+        workdir = workdirs.path_for(lease)
+        # Previous inputs have already entered their final dataset path before
+        # requesting the next source; never stage an entire second source set.
+        assert len(list((workdir / "input/bundle/dataset/images").rglob("*.jpg"))) == len(reads)
+        reads.append(image_id)
+        data = sources[image_id]
+        return FakeResponse(200, b"corrupt" if bad_source == "size" else b"0" * len(data) if bad_source == "sha" else data)
+    client.open_training_source = open_source
+    outcome = runner.run(current)
+    if bad_source:
+        assert outcome.status == "FAILED"
+        assert "size" in outcome.error or "sha256" in outcome.error
+        assert not (runtime_root / "worker-args.json").exists()
+        assert not client.model_prepare_calls
+    else:
+        assert outcome.status == "SUCCEEDED", outcome.error
+        assert set(reads) == set(sources)
+        assert [call["url"] for call in transfer.get_calls] == [model_url]
+        args = json.loads((runtime_root / "worker-args.json").read_text(encoding="utf-8"))
+        assert Path(args["model"]) == (workdirs.root / "executions" / current.task_id
+                                       / str(current.generation) / "input/model/base.pt")
+        with zipfile.ZipFile(io.BytesIO(transfer.put_calls[-1]["body"])) as archive:
+            result = json.loads(archive.read("manifest.json"))
+            assert result["input_freeze_id"] == frozen["input_freeze_id"]
+            assert result["dataset_revision_id"] == frozen["dataset_revision_id"]
+            assert sum(len(rows) for rows in result["dataset_manifest"]["splits"].values()) == 5
+    assert not (workdirs.root / "executions" / current.task_id / str(current.generation)).exists()
+
+
+@pytest.mark.parametrize("checkpoint_case", ["unarchived_epoch", "archived_duplicates", "evidence_size_mismatch"])
+def test_committed_agent_cleanup_preserves_unarchived_checkpoints_but_releases_inputs(tmp_path, checkpoint_case):
+    lease, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    runner, _, workdirs = build_runner(tmp_path, FakeControlClient(transfer), transfer)
+    workdir = workdirs.prepare(lease)
+    (workdir / "input").mkdir()
+    (workdir / "input/base.pt").write_bytes(b"temporary model input")
+    weights = workdir / "project/runs/final/weights"
+    weights.mkdir(parents=True)
+    archived = b"confirmed official best model"
+    (weights / "best.pt").write_bytes(archived)
+    models = workdir / "project/models"
+    models.mkdir()
+    (models / "best-copy.pt").write_bytes(archived)
+    evidence = [{"role": "best", "sha256": hashlib.sha256(archived).hexdigest(),
+                 "size_bytes": len(archived)}]
+    if checkpoint_case == "unarchived_epoch":
+        (weights / "epoch20.pt").write_bytes(b"not archived periodic checkpoint")
+    if checkpoint_case == "evidence_size_mismatch":
+        evidence[0]["size_bytes"] += 1
+    runner._cleanup_training_workdir(lease, trainer_started=True, committed=True, model_evidence=evidence)
+    if checkpoint_case == "archived_duplicates":
+        assert not workdir.exists()
+    else:
+        assert not (workdir / "input").exists()
+        assert (weights / "best.pt").read_bytes() == archived
+        if checkpoint_case == "unarchived_epoch":
+            assert (weights / "epoch20.pt").read_bytes() == b"not archived periodic checkpoint"
+        receipt = json.loads((workdir / "workspace-cleanup.json").read_text(encoding="utf-8"))
+        assert receipt["scope"] == "agent_input_only"
+        assert receipt["blockers"] == ["UNARCHIVED_CHECKPOINT"]
+        assert receipt["retained_checkpoint_refs"]

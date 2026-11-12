@@ -468,12 +468,20 @@ class GPUResourceManager:
         return (0 <= age <= self.config.sample_max_age_seconds and
                 evidence.get("cpu_bottleneck") is False and evidence.get("io_bottleneck") is False)
 
+    def prepare_admission(self, task):
+        if task["kind"] != "TRAINING" or str(task["resource_key"]).startswith("training:remote:"):
+            return None
+        try:
+            return self.artifacts.read_json(task["task_id"], task["payload_ref"], default={})
+        except (OSError, TypeError, ValueError, AttributeError):
+            return None
+
     def admit(self, database, task, worker_id, token, expires_at, now):
         """Return (allowed, wait_reason), inserting reservation inside caller's transaction."""
         if task["kind"] != "TRAINING" or str(task["resource_key"]).startswith("training:remote:"):
             return True, None
         try:
-            payload = self.artifacts.read_json(task["task_id"], task["payload_ref"], default={})
+            payload = task["_gpu_payload"] if "_gpu_payload_prepared" in task.keys() else self.artifacts.read_json(task["task_id"], task["payload_ref"], default={})
             device = normalize_training_device(payload.get("requested_device", payload.get("device")))
         except (OSError, TypeError, ValueError, AttributeError):
             return False, "GPU_REQUEST_INVALID: training payload or device is invalid"

@@ -114,6 +114,13 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
     target = str(kind or "").strip().lower()
     values = dict(params or {})
     precision = str(values.get("precision") or "fp16").strip().lower()
+    # Explicit opt-in: never reinterpret historical conversion jobs as RGB.
+    from .color_adapter import color_contract
+    color = color_contract(values)
+    if color:
+        if target == "paddle_inference" and color["source_color_order"] != color["input_color_order"]:
+            raise ValueError("Paddle Inference直出不经过ONNX，暂不支持变更输入颜色")
+        values.update(color)
     if target in {"rockchip", "rknn"}:
         chip = str(values.get("chip") or "").strip().lower()
         import re
@@ -152,11 +159,16 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
             raise ValueError("Sophon export requires opset=12 and simplify=false")
         height, width = conversion_input_shape(values)
         preprocessing = dict(values.get("preprocessing") or {})
-        for field,expected in (("pad_value",114),("channel_format","nchw"),("nms","external"),("fuse_preprocess",False)):
+        for field,expected in (("pad_value",114),("channel_format","nchw"),("nms","external"),("fuse_preprocess",False),
+                               ("resize_interpolation","opencv_linear")):
             if field in preprocessing and (type(preprocessing[field]) is not type(expected) or preprocessing[field]!=expected):
                 raise ValueError(f"Sophon {field}与当前Adapter支持的预处理/后处理合同不一致")
         if preprocessing.get("owner", "caller") != "caller":
             raise ValueError("Sophon首期预处理由caller执行，不重复融合到ONNX或BMODEL")
+        # A changed input color is an ONNX graph adaptation, not a mere label.
+        # Keep runtime-facing pixel_format synchronized with the selected contract.
+        if color:
+            preprocessing["pixel_format"] = color["input_color_order"]
         pixel = str(preprocessing.get("pixel_format", values.get("pixel_format", "rgb"))).lower()
         if pixel not in {"rgb", "bgr"}:
             raise ValueError("Sophon pixel_format必须为rgb或bgr")
@@ -173,8 +185,12 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
         letterbox = preprocessing.get("letterbox", values.get("keep_aspect_ratio", True))
         if type(letterbox) is not bool:
             raise ValueError("Sophon letterbox必须为布尔值")
+        letterbox_mode = "fixed_shape_center" if letterbox else "stretch"
+        if preprocessing.get("letterbox_mode", letterbox_mode) != letterbox_mode:
+            raise ValueError("Sophon LetterBox 模式与缩放策略不一致")
         preprocessing.update(owner="caller", pixel_format=pixel, letterbox=letterbox,
-                             pad_value=114, channel_format="nchw", nms="external", fuse_preprocess=False)
+                             pad_value=114, channel_format="nchw", nms="external", fuse_preprocess=False,
+                             resize_interpolation="opencv_linear", letterbox_mode=letterbox_mode)
         values.update(kind="sophon", chip=chip, precision=precision, batch=1, num_core=1,
                       dynamic=False, input_height=height, input_width=width, preprocessing=preprocessing,
                       opset=12, simplify=False)
@@ -207,6 +223,14 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
         values.update(input_height=height,input_width=width)
     if require_calibration and precision == "int8" and not str(values.get("calibration_snapshot") or "").strip():
         raise ValueError("INT8 转换必须关联不可变 calibration_snapshot")
+    if "csc" in values:
+        from .conversion_csc import resolve_csc_params
+        resolved_csc = resolve_csc_params(values, str(values.get('kind') or target),
+            input_color_order=values.get('input_color_order') or (values.get('preprocessing') or {}).get('pixel_format') or 'rgb')
+        values['csc'] = resolved_csc['requested']
+        values['csc_contract'] = resolved_csc
+    else:
+        values.pop('csc_contract', None)  # An untrusted derived field cannot stand alone.
     return values
 
 

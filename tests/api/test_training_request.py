@@ -87,6 +87,8 @@ def _freeze_admitted_training(app_module, task_id: str):
     context = SimpleNamespace(
         artifacts=app_module.shared_task_artifacts(),
         repository=app_module.shared_task_repository(),
+        # This helper executes only the pre-execution contract, without a Worker lease.
+        run_owned=lambda operation: operation(),
     )
     frozen_payload = handler._freeze_request_contract(context, target, payload)
     app_module.shared_task_artifacts().atomic_write_json(
@@ -94,6 +96,39 @@ def _freeze_admitted_training(app_module, task_id: str):
     )
     handler._publish_prepared_job(target, frozen_payload)
     return frozen_payload
+
+
+def _seed_verified_parent_training_evidence(client, app_module, project_id, algorithm_id,
+                                           version_id, snapshot_id):
+    """Create a real parent Task/Snapshot so a continuation has provable lineage.
+
+    An invented version with no Task-origin evidence must not be allowed to
+    certify new random Test images under the permanent isolation policy.
+    """
+    from dataclasses import replace
+    from platform_core.task_runtime import TaskKind, TaskRecord, TaskStatus
+    from platform_core.training_material_usage import TrainingMaterialUsage
+
+    parent_image = _upload_training_ready(
+        client, project_id, f'parent-{version_id}.jpg', (13, 89, 173),
+    )
+    parent_id = f'verified-parent-{version_id}'
+    parent = replace(TaskRecord.new(parent_id, project_id, TaskKind.TRAINING,
+                                    'payload.json', 'cpu'), status=TaskStatus.SUCCEEDED)
+    app_module.shared_task_repository().create(parent, artifacts=app_module.shared_task_artifacts())
+    original = app_module.material_store(project_id).get(parent_image['id'])
+    app_module.shared_task_artifacts().atomic_write_json(parent_id, 'snapshot.json', {
+        'snapshot_id': snapshot_id, 'images': [{
+            'image_id': parent_image['id'], 'role': 'train',
+            'content_sha256': original['content_sha256'],
+        }],
+    })
+    # This isolated test database has exactly the seeded lineage, so the
+    # maintenance coverage certificate can be complete without guessing.
+    TrainingMaterialUsage(app_module.shared_task_repository()).mark_coverage(
+        project_id, algorithm_id, complete=True,
+    )
+    return parent_id
 
 
 def test_training_target_contract_rejects_invalid_metric_threshold_and_interval():
@@ -209,6 +244,228 @@ def test_training_start_rejects_partial_review_scope_before_task_creation(
     assert detail["items"][0]["missing_label_codes"] == ["smoke"]
     after = len(repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
     assert after == before
+
+
+def test_background_admission_creates_durable_unclaimable_task_without_synchronous_gt_scan(
+    client, seeded_project, monkeypatch,
+):
+    import app as app_module
+    from platform_core.task_runtime import TaskKind, TaskStatus
+
+    project_id, first = seeded_project
+    second = _upload_training_ready(client, project_id, "fast-accept.jpg", (30, 45, 62))
+    _mark_training_ready(client, project_id, first)
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "后台准入隔离算法", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    monkeypatch.setattr(app_module, "evaluate_training_compatibility", lambda *_a, **_kw:
+        pytest.fail("background admission must not scan GT on the HTTP thread"))
+    task_id = "train_" + "f" * 24
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json={
+        "task_id": task_id, "admission_mode": "background",
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [first["id"], second["id"]],
+        "train_labels": ["fire"], "device": "cpu",
+    })
+    assert response.status_code == 202, response.text
+    assert response.json()["training_input_state"] == "PREPARING"
+    parent = app_module.shared_task_repository().get(task_id)
+    assert parent.status is TaskStatus.QUEUED
+    assert parent.kind is TaskKind.TRAINING
+    assert parent.required_capabilities == ("training.input.ready",)
+    assert app_module.shared_task_repository().get(f"trainprep_{task_id}").kind is TaskKind.TRAINING_PREPARE
+    assert not app_module.shared_task_artifacts().artifact_path(task_id, "input-freeze.json").exists()
+    replay = client.post(f"/api/v12/projects/{project_id}/train/start", json={
+        "task_id": task_id, "admission_mode": "background",
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [first["id"], second["id"]],
+        "train_labels": ["fire"], "device": "cpu",
+    })
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["idempotent"] is True
+
+
+def test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_verified(
+    client, seeded_project, monkeypatch,
+):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.training_label_tasks import task_negative_context
+
+    project_id, seed = seeded_project
+    first = _mark_training_ready(client, project_id, seed)
+    others = [
+        _upload_training_ready(client, project_id, f"background-confirm-{i}.jpg", color)
+        for i, color in enumerate([(27, 43, 61), (72, 93, 115), (119, 143, 167), (188, 162, 139)])
+    ]
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "后台人工范围回执", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    before = client.get(f"/api/projects/{project_id}/annotations/{first['id']}").json()["annotation"]
+    monkeypatch.setattr(app_module, "evaluate_training_compatibility", lambda *_a, **_kw:
+        pytest.fail("opt-in background confirmation must never run a full GT scan on HTTP"))
+    request = {
+        "task_id": app_module._new_training_task_id(),
+        "admission_mode": "background", "review_all_training_backgrounds": True,
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [first["id"], *(row["id"] for row in others)],
+        "test_image_ids": [], "train_labels": ["fire", "smoke"],
+        "history_policy": "new_for_algorithm", "device": "cpu",
+        "experiment_percent": 20, "validation_percent": 20,
+    }
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 202, response.text
+    saved = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    consent = saved["training_background_confirmation"]
+    assert consent["task_id"] == request["task_id"]
+    assert consent["actor_id"]
+    assert consent["train_image_ids"] == request["train_image_ids"]
+    assert consent["schema_version"] == 2
+    assert re.fullmatch(r"[0-9a-f]{64}", consent["selected_input_fingerprint"])
+    replay = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert replay.status_code == 202 and replay.json()["idempotent"] is True
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == saved
+
+    prepared = _freeze_admitted_training(app_module, request["task_id"])
+    receipt_scope = task_negative_context(prepared["label_contract"])
+    receipts = AnnotationRepository(app_module.project_dir(project_id)).task_negative_receipts(
+        receipt_scope, request["train_image_ids"],
+    )
+    assert receipts, "partial-label positive samples must receive task-scoped, user-attributed receipts"
+    assert all(item["actor"]["task_id"] == request["task_id"] for item in receipts)
+    after = client.get(f"/api/projects/{project_id}/annotations/{first['id']}").json()["annotation"]
+    assert after == before, "scope confirmations may not rewrite formal GT"
+
+
+def test_background_scope_confirmation_ignores_unrelated_project_revisions(client, seeded_project):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+
+    project_id, first = seeded_project
+    _mark_training_ready(client, project_id, first)
+    others = [
+        _upload_training_ready(client, project_id, f"background-stale-{i}.jpg", color)
+        for i, color in enumerate([(36, 57, 76), (87, 104, 121), (131, 157, 177), (181, 199, 214)])
+    ]
+    algorithm = client.post(f"/api/v12/projects/{project_id}/algorithms", json={
+        "name": "异步回执过期阻断", "algorithm_type": "yolo_ultralytics",
+    }).json()["algorithm"]
+    request = {
+        "task_id": app_module._new_training_task_id(),
+        "admission_mode": "background", "review_all_training_backgrounds": True,
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [first["id"], *(row["id"] for row in others)],
+        "train_labels": ["fire", "smoke"],
+        "history_policy": "new_for_algorithm", "device": "cpu",
+        "experiment_percent": 20, "validation_percent": 20,
+    }
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 202, response.text
+    # An unrelated material upload must not invalidate the selected-row consent.
+    _upload_training_ready(client, project_id, "background-new-material.jpg", (19, 203, 108))
+    frozen = _freeze_admitted_training(app_module, request["task_id"])
+    assert frozen["label_contract"].get("task_negative_confirmations")
+    cancelled = client.post(
+        f"/api/v62/projects/{project_id}/tasks/{request['task_id']}/cancel",
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert app_module.shared_task_repository().get(request["task_id"]).status.value == "CANCELLED"
+    assert app_module.shared_task_repository().get(
+        f"trainprep_{request['task_id']}",
+    ).status.value == "CANCELLED"
+
+
+@pytest.mark.parametrize("changed_truth", ["material", "annotation"])
+def test_background_scope_confirmation_rejects_changed_selected_truth_without_receipts(
+    client, seeded_project, changed_truth,
+):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.remote_training_tasks import RemoteTrainingPreparationError
+
+    project_id, first = seeded_project
+    _mark_training_ready(client, project_id, first)
+    others = [
+        _upload_training_ready(client, project_id, f"selected-stale-{i}.jpg", color)
+        for i, color in enumerate([(36, 57, 76), (87, 104, 121), (131, 157, 177), (181, 199, 214)])
+    ]
+    algorithm = client.post(f"/api/v12/projects/{project_id}/algorithms", json={
+        "name": "所选素材变化阻断", "algorithm_type": "yolo_ultralytics",
+    }).json()["algorithm"]
+    request = {
+        "task_id": app_module._new_training_task_id(),
+        "admission_mode": "background", "review_all_training_backgrounds": True,
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [first["id"], *(row["id"] for row in others)],
+        "train_labels": ["fire", "smoke"], "history_policy": "new_for_algorithm",
+        "device": "cpu", "experiment_percent": 20, "validation_percent": 20,
+    }
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 202, response.text
+    if changed_truth == "material":
+        app_module.material_store(project_id).patch({first["id"]: {"processing_status": "pending"}})
+    else:
+        current = client.get(f"/api/projects/{project_id}/annotations/{first['id']}").json()
+        changed = client.post(f"/api/projects/{project_id}/annotations/{first['id']}", json={
+            "boxes": [{"class_id": 0, "label": "fire", "x1": 11, "y1": 11, "x2": 81, "y2": 81}],
+            "expected_version": current["annotation"]["version"],
+            "source_content_sha256": current["image"]["content_sha256"],
+            "reviewed_label_codes": ["fire"],
+        })
+        assert changed.status_code == 200, changed.text
+    with pytest.raises(RemoteTrainingPreparationError, match="TRAINING_BACKGROUND_CONFIRMATION_STALE"):
+        _freeze_admitted_training(app_module, request["task_id"])
+    repository = AnnotationRepository(app_module.project_dir(project_id))
+    with repository._connect() as db:
+        exists = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_negative_confirmations'").fetchone()
+        assert not exists or db.execute("SELECT COUNT(*) FROM task_negative_confirmations").fetchone()[0] == 0
+
+
+def test_background_scope_confirmation_cannot_override_unprocessed_missing_ground_truth(client, seeded_project):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.remote_training_tasks import RemoteTrainingPreparationError
+
+    project_id, seed = seeded_project
+    _mark_training_ready(client, project_id, seed)
+    ready = [
+        _upload_training_ready(client, project_id, f"unsafe-ready-{i}.jpg", color)
+        for i, color in enumerate([(29, 51, 71), (91, 107, 123), (155, 177, 199)])
+    ]
+    # This upload has not been cleaned or formally reviewed. A user-wide
+    # checkbox is never a substitute for the base data processing requirement.
+    raw = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("unsafe-unknown.jpg", _image_bytes((223, 197, 173)), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    algorithm = client.post(f"/api/v12/projects/{project_id}/algorithms", json={
+        "name": "后台缺失 GT 必须阻断", "algorithm_type": "yolo_ultralytics",
+    }).json()["algorithm"]
+    task_id = app_module._new_training_task_id()
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json={
+        "task_id": task_id,
+        "admission_mode": "background", "review_all_training_backgrounds": True,
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [seed["id"], *(row["id"] for row in ready), raw["id"]],
+        "train_labels": ["fire"], "history_policy": "new_for_algorithm",
+        "experiment_percent": 20, "validation_percent": 20, "device": "cpu",
+    })
+    assert response.status_code == 202, response.text
+    with pytest.raises(RemoteTrainingPreparationError, match="TRAINING_BACKGROUND_CONFIRMATION_UNSAFE"):
+        _freeze_admitted_training(app_module, task_id)
+    repository = AnnotationRepository(app_module.project_dir(project_id))
+    with repository._connect() as db:
+        exists = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_negative_confirmations'").fetchone()
+        assert not exists or db.execute("SELECT COUNT(*) FROM task_negative_confirmations").fetchone()[0] == 0
 
 
 def test_training_start_checks_server_resolved_benchmark_scope_before_task_creation(
@@ -630,7 +887,11 @@ def test_product_training_submit_freezes_server_authoritative_label_contract(
         json={**base_request, "train_labels": ["smoke"]},
     )
     assert bypass.status_code == 409
-    assert "不在已选素材" in bypass.text
+    # The task-local confirmation flow reports an unresolved scope *before*
+    # strict class-evidence validation. An unconfirmed direct submit must
+    # remain blocked, not silently create a smoke-only first training task.
+    assert bypass.json()["code"] == "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+    assert "审核范围" in bypass.json()["message"]
 
     accepted = client.post(
         f"/api/v12/projects/{project_id}/train/start",
@@ -1098,14 +1359,17 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
     ).json()["algorithm"]
     base_model = app_module.project_dir(project_id) / "v-current-base.pt"
     base_model.write_bytes(b"verified-iteration-base")
+    parent_task_id = _seed_verified_parent_training_evidence(
+        client, app_module, project_id, algorithm['id'], 'v-current', 'snapshot-v-current',
+    )
+    parent_version = _iteration_version(
+        "v-current", decision_id="a" * 64, evaluation_id="b" * 64,
+        stored_path=base_model,
+    )
+    parent_version['training_job_id'] = parent_task_id
     attach_version(
         app_module.algorithms_file(project_id), algorithm["id"],
-        _iteration_version(
-            "v-current",
-            decision_id="a" * 64,
-            evaluation_id="b" * 64,
-            stored_path=base_model,
-        ),
+        parent_version,
     )
     confirm = client.post(
         f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
@@ -1210,12 +1474,18 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     target = next(row for row in algorithms if row["id"] == algorithm["id"])
     base_model = app_module.project_dir(project_id) / "feedback-base.pt"
     base_model.write_bytes(b"verified-feedback-base")
+    parent_snapshot_id = 'd' * 64
+    parent_task_id = _seed_verified_parent_training_evidence(
+        client, app_module, project_id, algorithm['id'], version_id, parent_snapshot_id,
+    )
     target["current_version_id"] = version_id
     target["versions"] = [{
         "id": version_id,
         "version_name": "20260919000100",
         "training_status": "SUCCEEDED",
         "artifact_verified": True,
+        "training_job_id": parent_task_id,
+        "snapshot_id": parent_snapshot_id,
         "trainable": True,
         "framework": "ultralytics",
         "stored_path": str(base_model),
@@ -1721,6 +1991,7 @@ def test_duplicate_original_gt_conflict_is_rejected_before_task_or_payload_creat
     assert response.status_code == 409, response.text
     detail = json.loads(response.json()["detail"])
     assert detail["code"] == ("CONTENT_HASH_LEAKAGE" if cross_role else "DUPLICATE_ANNOTATION_CONFLICT")
+    assert response.json()["code"] == detail["code"]
     assert {item["image_id"] for item in detail["items"] if item["issue_type"] in {
         "content_hash_leakage", "duplicate_annotation_conflict"}} == {a, b}
     assert platform.shared_task_repository().get(payload["task_id"]) is None
@@ -1900,3 +2171,92 @@ def test_training_parent_insert_crash_recovers_missing_job_and_prepare_child(
     assert job_path.is_file()
     assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}").status is TaskStatus.QUEUED
     assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == frozen
+
+
+def test_training_create_lock_timeout_has_uncertain_machine_code(client, seeded_project, monkeypatch):
+    import app as platform
+    from filelock import Timeout
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    class BusyLock:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): raise Timeout('isolated-create-lock')
+        def __exit__(self,*args): pass
+    monkeypatch.setattr(platform,'FileLock',BusyLock)
+    response=client.post(f'/api/v12/projects/{project_id}/train/start',json=payload)
+    assert response.status_code==409
+    assert response.json()['code']=='TRAINING_CREATE_IN_PROGRESS'
+    assert platform.shared_task_repository().get(payload['task_id']) is None
+
+
+def test_training_missing_mother_model_returns_stable_code_without_task(client, seeded_project):
+    import app as platform
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    payload['model']='definitely-unprepared-training-model.pt'
+    response=client.post(f'/api/v12/projects/{project_id}/train/start',json=payload)
+    assert response.status_code==409,response.text
+    assert response.json()['code']=='TRAINING_MOTHER_MODEL_UNAVAILABLE'
+    assert platform.shared_task_repository().get(payload['task_id']) is None
+
+
+def test_robustness_global_policy_api_cas_and_validation(client):
+    import app as platform
+    request=platform.TrainReq(robustness_policy={'mode':'enabled','source':'global','global_revision':'forged'})
+    assert request.robustness_policy=={'mode':'enabled'}
+    current=client.get('/api/v62/training/robustness-policy').json()
+    assert current['revision']=='0' and current['policy']['enabled'] is False
+    body={'mode':'enabled','selection':{'mode':'count','count':1},'copies':2,'presets':['bt709_limited'],'seed':42}
+    saved=client.put('/api/v62/training/robustness-policy',json={'policy':body,'expected_revision':'0'})
+    assert saved.status_code==200, saved.text
+    assert saved.json()['policy']['enabled'] is True
+    assert client.put('/api/v62/training/robustness-policy',json={'policy':body,'expected_revision':'0'}).status_code==409
+    assert client.put('/api/v62/training/robustness-policy',json={'policy':{**body,'copies':4},'expected_revision':saved.json()['revision']}).status_code==422
+
+
+def test_training_task_freezes_global_robustness_before_queue_and_replay(client,seeded_project):
+    import app as platform
+    from platform_core.training_robustness import read_global_policy,save_global_policy
+    project_id,first=seeded_project
+    images=[_mark_training_ready(client,project_id,first),
+            _upload_training_ready(client,project_id,'robust-two.jpg',(31,47,63)),
+            _upload_training_ready(client,project_id,'robust-three.jpg',(79,97,113))]
+    algorithm=client.post(f'/api/v12/projects/{project_id}/algorithms',json={'name':'robust-freeze','algorithm_type':'yolo_ultralytics'}).json()['algorithm']
+    original=read_global_policy(platform.DATA_DIR)
+    enabled=save_global_policy(platform.DATA_DIR,{'mode':'enabled','selection':{'mode':'ratio','ratio':100},'copies':1,'presets':['bt601_limited'],'seed':17},original['revision'])
+    request={'task_id':platform._new_training_task_id(),'framework':'ultralytics','algorithm_asset_id':algorithm['id'],'model':'yolo11n.pt',
+      'split_mode':'random_test_from_training_pool','train_image_ids':[row['id'] for row in images],'test_image_ids':[],
+      'experiment_percent':20,'validation_percent':20,'train_labels':['fire'],'history_policy':'new_for_algorithm','robustness_policy':{'mode':'inherit'}}
+    try:
+        response=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+        assert response.status_code==202,response.text
+        task=response.json()['task'];task_id=task.get('id') or task['task_id']
+        payload=platform.shared_task_artifacts().read_json(task_id,'payload.json')
+        assert payload['robustness_policy']['global_revision']==enabled['revision']
+        assert payload['robustness_policy']['enabled'] is True
+        save_global_policy(platform.DATA_DIR,{'mode':'disabled'},enabled['revision'])
+        replay=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+        assert replay.status_code==202,replay.text
+        frozen_payload=_freeze_admitted_training(platform,task_id)
+        frozen=platform.shared_task_artifacts().read_json(task_id,'input-freeze.json')
+        assert frozen['robustness_policy']['enabled'] is True
+        assert frozen['robustness_policy']['global_revision']==enabled['revision']
+        assert frozen_payload['history_admission']['policy']=='new_for_algorithm'
+    finally:
+        now=read_global_policy(platform.DATA_DIR)
+        save_global_policy(platform.DATA_DIR,original['policy'],now['revision'])
+
+
+def test_frozen_selection_replay_survives_revision_change(client,seeded_project):
+    import app as platform
+    from platform_core.training_selection_reference import freeze_selection,selection_context
+    project_id,payload=_training_create_replay_fixture(client,seeded_project)
+    parsed=platform.TrainReq(**payload)
+    context=selection_context(platform.DATA_DIR,project_id,parsed.model_dump())
+    reference=freeze_selection(platform.DATA_DIR,context,payload['train_image_ids'])
+    request={**payload,'train_image_ids':[],'train_selection_ref':reference['selection_ref']}
+    first=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+    assert first.status_code==202,first.text
+    platform.material_store(project_id).patch({payload['train_image_ids'][0]:{'filename':'changed-after-create.jpg'}})
+    replay=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+    assert replay.status_code==202 and replay.json()['idempotent'] is True,replay.text
+    changed=client.post(f'/api/v12/projects/{project_id}/train/start',json={**request,'epochs':3})
+    assert changed.status_code==409,changed.text

@@ -132,7 +132,7 @@ def test_audit_classification_is_shared_read_only_plan_truth_not_hidden_duplicat
     assert all(materials.get(image_id) for image_id in ids)
 
 
-def test_2531_historical_references_allow_discard_while_keep_one_requires_gt_decision(client, seeded_project, tmp_path, monkeypatch):
+def test_2531_historical_references_allow_stable_automatic_keeper_without_erasing_snapshots(client, seeded_project, tmp_path, monkeypatch):
     pid, materials, ids, repository, artifacts, scheduler, selection, base = _conflict(client, seeded_project, tmp_path, monkeypatch, count=2531)
     snapshots=materials.project_path/'snapshots';snapshots.mkdir(exist_ok=True)
     (snapshots/'isolated-frozen-test.json').write_text(json.dumps({'test_image_ids':ids}),encoding='utf-8')
@@ -146,11 +146,13 @@ def test_2531_historical_references_allow_discard_while_keep_one_requires_gt_dec
     assert summary.json()['protection_reason_counts']=={}
     assert json.loads((snapshots/'isolated-frozen-test.json').read_text(encoding='utf-8')) == {'test_image_ids':ids}
     plan=client.post(base+'/dedup-plans',json={'scope':'SAFE_ALL'}).json()
-    assert plan['protected_item_count']==0 and plan['delete_count']==0
+    assert plan['protected_item_count']==0 and plan['delete_count']==2530
     assert plan['historical_reference_count']==2531
-    assert plan['retained_count']==2531
+    assert plan['retained_count']==1
     assert len(plan['preview_items'])==20
-    assert plan['manual_required_count']==2531
+    assert plan['manual_required_count']==0
+    assert plan['auto_conflict_keeper_groups']==1
+    assert plan['preview_groups'][0]['keeper_image_id'] in ids
     assert client.get(base+'/groups').json()['total_images']==2531
     assert materials.summary()['total']==2531
 

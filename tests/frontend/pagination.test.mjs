@@ -33,6 +33,17 @@ test('pagination normalizes zero and clamps display metadata', () => {
   });
 });
 
+test('unknown totals use bounded next-page navigation without pretending the pool has zero rows', () => {
+  const state = normalizePagination({page: 3, pageSize: 20, total: null, hasNext: true});
+  assert.equal(state.total, null);
+  assert.equal(state.page, 3);
+  assert.equal(state.totalPages, 4);
+  assert.equal(state.hasNext, true);
+  const html = renderPagination({page: 3, pageSize: 20, total: null, hasNext: true});
+  assert.match(html, /总数按需统计/);
+  assert.doesNotMatch(html, /共 0 条/);
+});
+
 
 test('pagination tokens keep endpoints and use ellipsis for large ranges', () => {
   assert.deepEqual(paginationTokens(1, 2), [1, 2]);

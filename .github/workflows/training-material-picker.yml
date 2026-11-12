@@ -7,15 +7,42 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/performance_diagnostics.py'
+      - 'platform_core/training_history_projection.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'tests/api/test_platform_performance_diagnostics.py'
+      - 'tests/performance/test_platform_hot_paths.py'
+      - 'tests/performance/test_training_picker_workbench_scale.py'
       - 'platform_core/training_material_picker_api.py'
+      - 'platform_core/training_selection_reference.py'
+      - 'tests/unit/test_training_selection_reference.py'
+      - 'static/modules/training-draft.js'
+      - 'static/modules/training-draft-runtime.js'
+      - 'static/modules/training-submit.js'
+      - 'static/training-create-modal.css'
+      - 'platform_core/training_scope_review_plans.py'
+      - 'platform_core/training_compatibility.py'
       - 'platform_core/annotation_repository.py'
       - 'platform_core/training_recovery_api.py'
       - 'platform_core/material_repository.py'
+      - 'platform_core/negative_pool.py'
+      - 'platform_core/negative_pool_api.py'
+      - 'static/modules/negative-pool-runtime.js'
+      - 'static/modules/negative-pool.css'
+      - 'tests/unit/test_negative_pool.py'
+      - 'tests/frontend/negative-pool-runtime.test.mjs'
+      - 'tests/browser/target-negative-workflow.spec.mjs'
+      - 'tests/browser/negative-pool-members.spec.mjs'
       - 'static/modules/training-material-picker-runtime.js'
       - 'static/modules/training-material-summary-runtime.js'
       - 'static/modules/material-pagination-runtime.js'
       - 'static/modules/training-labels.js'
       - 'static/main.mjs'
+      - 'tests/api/test_training_negative_review.py'
+      - 'tests/performance/test_training_compatibility_paging.py'
+      - 'tests/unit/test_annotation_negative_review_evidence.py'
+      - 'tests/unit/test_reviewed_negative_projection.py'
+      - 'tests/frontend/training-material-picker-negative-review.test.mjs'
       - 'tests/api/test_training_material_picker_api.py'
       - 'tests/api/test_training_material_selection_summary_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -45,13 +72,45 @@ jobs:
           fastapi httpx uvicorn python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest
       - name: Compile picker backend
-        run: python -m py_compile platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_recovery_api.py
+        run: python -m py_compile platform_core/training_selection_reference.py platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_scope_review_plans.py platform_core/training_compatibility.py platform_core/training_recovery_api.py
       - name: Backend paging thumbnail and summary contracts
         run: >-
           python -m pytest -q
+          tests/api/test_training_negative_review.py
+          tests/performance/test_training_compatibility_paging.py
+          tests/unit/test_annotation_negative_review_evidence.py
+          tests/unit/test_reviewed_negative_projection.py
+          tests/unit/test_negative_pool.py
+          tests/unit/test_training_selection_reference.py
+          tests/unit/test_training_material_picker_history_sql.py
           tests/api/test_training_material_picker_api.py
           tests/api/test_training_material_selection_summary_api.py
           tests/api/test_runtime_router_app_mount.py
+          tests/api/test_platform_performance_diagnostics.py
+      - name: Isolated picker timing evidence (not production)
+        env:
+          MC_PERF_AUDIT_OUTPUT: ${{ runner.temp }}/picker-perf-report
+        run: >-
+          python -m pytest -q -s
+          tests/performance/test_platform_hot_paths.py
+          'tests/performance/test_training_picker_workbench_scale.py::test_picker_role_index_microbenchmark[1000]'
+          'tests/performance/test_training_picker_workbench_scale.py::test_picker_role_index_microbenchmark[10000]'
+      - name: Measure isolated workbench SQLite scale (not production)
+        env:
+          RUN_WORKBENCH_SCALE: '1'
+          WORKBENCH_SCALE_REPORT: ${{ runner.temp }}/workbench-metadata.json
+        run: >-
+          python -m pytest -q -s
+          tests/performance/test_material_workbench_200k.py
+          tests/performance/test_picker_history_filters_scale.py
+      - name: Preserve isolated performance evidence (not production)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picker-perf-${{ github.sha }}
+          path: ${{ runner.temp }}/picker-perf-report
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Frontend syntax and contracts
         run: >-
           node --check static/modules/training-material-picker-runtime.js &&
@@ -59,18 +118,21 @@ jobs:
           node --check static/modules/training-labels.js &&
           node --check static/main.mjs &&
           node --test
+          tests/frontend/training-material-picker-negative-review.test.mjs
+          tests/frontend/negative-pool-runtime.test.mjs
           tests/frontend/training-material-picker-runtime.test.mjs
           tests/frontend/training-material-summary-runtime.test.mjs
           tests/frontend/training-labels.test.mjs
       - name: Permanent picker guards
         run: |
           grep -Fq 'DEFAULT_PAGE_SIZE = 60' static/modules/training-material-picker-runtime.js
-          grep -Fq 'THUMBNAIL_EAGER_COUNT = 15' static/modules/training-material-picker-runtime.js
+          grep -Fq 'THUMBNAIL_EAGER_COUNT = 10' static/modules/training-material-picker-runtime.js
           grep -Fq 'THUMBNAIL_PRELOAD_MARGIN = 120' static/modules/training-material-picker-runtime.js
-          grep -Fq 'repeat(5,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
+          grep -Fq 'repeat(4,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
           grep -Fq 'aspect-ratio:4/3' static/modules/training-material-picker-runtime.js
-          grep -Fq 'height:clamp(420px,60vh,620px)' static/modules/training-material-picker-runtime.js
-          grep -Fq 'overflow-y:auto!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'grid-auto-rows:max-content!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'overflow:auto!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'grid-template-columns:274px minmax(0,1fr)' static/modules/training-material-picker-runtime.js
           grep -Fq 'getBoundingClientRect()' static/modules/training-material-picker-runtime.js
           grep -Fq 'requestAnimationFrame' static/modules/training-material-picker-runtime.js
           grep -Fq "addEventListener('scroll', scheduleVisibleThumbnailWindow" static/modules/training-material-picker-runtime.js
@@ -78,7 +140,7 @@ jobs:
           grep -Fq '/training-materials/bulk-selection' static/modules/training-material-picker-runtime.js
           grep -Fq "bulkSelectionOwner: 'server'" static/modules/training-material-picker-runtime.js
           grep -Fq 'trainingMaterialSelectionPatch' static/modules/training-material-picker-runtime.js
-          grep -Fq 'trainingDraftRuntime.update(patch)' static/modules/training-material-picker-runtime.js
+          grep -Fq "trainingDraftRuntime.update({...patch,trainSelectionRef:'',trainSelectionCount:0})" static/modules/training-material-picker-runtime.js
           grep -Fq 'window.refreshTrainingMaterialSelectionUiV3?.()' static/modules/training-material-picker-runtime.js
           grep -Fq 'window.refreshTrainingMaterialSelectionUiV3=renderSplit' static/app.js
           if grep -Fq 'legacyConfirm' static/modules/training-material-picker-runtime.js; then
@@ -159,7 +221,21 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome paged training material truth
+        env:
+          MC_PERF_AUDIT_OUTPUT: ${{ runner.temp }}/picker-browser-perf
         run: >-
           npx playwright test
           tests/browser/training-material-picker-performance.spec.mjs
           tests/browser/training-page-material-summary.spec.mjs
+          tests/browser/target-negative-workflow.spec.mjs
+          tests/browser/negative-pool-members.spec.mjs
+      - name: Preserve isolated Chrome render evidence (not production)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picker-browser-perf-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/picker-browser-perf/browser-picker-render.json
+            docs/evidence/material-workbench-20261104/picker-two-column-*.png
+          if-no-files-found: ignore
+          retention-days: 7

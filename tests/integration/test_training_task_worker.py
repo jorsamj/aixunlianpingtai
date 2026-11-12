@@ -1,18 +1,21 @@
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
+import pytest
 
 from platform_core.algorithms import list_algorithms
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.storage import StorageSourceRepository
-from platform_core.remote_training_tasks import TrainingPrepareHandler
+from platform_core.remote_training_tasks import TrainingPrepareHandler, RemoteTrainingPreparationError
 import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
 
 
-def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize('selection_reference',[False,True])
+def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path: Path, monkeypatch, selection_reference):
     data_dir = tmp_path / "data"
     project_id = "project-one"
     project = data_dir / "projects" / project_id
@@ -111,6 +114,11 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
             "optimizer_state_resumed": False,
         },
     }
+    if selection_reference:
+        from platform_core.training_selection_reference import freeze_selection,selection_context
+        context=selection_context(data_dir,project_id,payload)
+        receipt=freeze_selection(data_dir,context,payload['train_image_ids'])
+        payload['train_selection_ref']=receipt['selection_ref']
     artifacts.atomic_write_json("task-one", "payload.json", payload)
     repository.create(
         TaskRecord.new(
@@ -243,6 +251,28 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert (artifacts.artifact_path("task-one", "snapshot.json")).is_file()
     assert (artifacts.artifact_path("task-one", "resolved-resources.json")).is_file()
 
+    # A claimable queued task freezes indices, not a complete image/YOLO copy.
+    assert not artifacts.artifact_path("task-one", "work/bundle").exists()
+    assert not artifacts.artifact_path("task-one", "remote-training/training-bundle.zip").exists()
+
+    # Recovery after READY must validate the deferred documents without requiring
+    # image copies or recreating a bundle before the execution Worker starts.
+    recovered = prepare_handler._validate_ready_publication(
+        SimpleNamespace(artifacts=artifacts, task=SimpleNamespace(task_id="trainprep_task-one")),
+        prepared, prepared_payload,
+    )
+    assert recovered["snapshot_id"] == artifacts.read_json("task-one", "snapshot.json")["snapshot_id"]
+    plan = artifacts.read_json("task-one", "input-plan/manifest.json")
+    for changed in ({"snapshot_id": "wrong"}, {"counts": {}}, {"materialization_state": "READY"}):
+        artifacts.atomic_write_json("task-one", "input-plan/manifest.json", {**plan, **changed})
+        with pytest.raises(RemoteTrainingPreparationError, match="incomplete or inconsistent"):
+            prepare_handler._validate_ready_publication(
+                SimpleNamespace(artifacts=artifacts, task=SimpleNamespace(task_id="trainprep_task-one")),
+                prepared, prepared_payload,
+            )
+    artifacts.atomic_write_json("task-one", "input-plan/manifest.json", plan)
+    assert not artifacts.artifact_path("task-one", "work/bundle").exists()
+
     handler = TrainingHandler(data_dir, process_runner=fake_runner)
     scheduler = Scheduler(
         repository,
@@ -310,6 +340,22 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert result["training_lineage"] == versions[0]["training_lineage"]
     assert result["evaluation"] == versions[0]["evaluation"]
     assert result["iteration_decision"] == versions[0]["iteration_decision"]
+
+    from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle
+    lifecycle = TrainingWorkspaceLifecycle(data_dir, repository, artifacts)
+    protected = [*project.glob("uploads/*"), *external_root.glob("incoming/*"),
+                 *project.glob("annotations/*"), archived_model,
+                 artifacts.artifact_path("task-one", "snapshot.json")]
+    before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected}
+    assert lifecycle.inspect(project_id, "task-one")["eligible"] is True
+    cleaned = lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")
+    assert cleaned["status"] == "deleted"
+    assert not artifacts.artifact_path("task-one", "work/bundle").exists()
+    assert artifacts.read_json("task-one", "evidence/bundle/manifest.json") == bundle_manifest
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected} == before
+    assert repository.get("task-one").status is TaskStatus.SUCCEEDED
+    assert lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")["status"] == "already_clean"
+
 
 def test_training_model_archive_hashes_during_copy():
     import inspect

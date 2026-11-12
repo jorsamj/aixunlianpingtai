@@ -6,6 +6,7 @@ import {
   resolveClientTrainingLabels,
   selectedMaterialLabelCodes,
   selectedTrainingMaterialIds,
+  selectionForState,
 } from '../../static/modules/training-labels.js';
 
 const catalog = [
@@ -14,6 +15,21 @@ const catalog = [
   {code: 'person', display_name: '人员'},
   {code: 'helmet', display_name: '安全帽'},
 ];
+
+test('iteration inherited labels query only the selected algorithm and keep the existing frozen-label owner', () => {
+  const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8');
+  const route = backend.slice(backend.indexOf('def training_inherited_labels_preview('), backend.indexOf('_TRAINING_TASK_ID_PATTERN ='));
+  assert.match(route, /list_algorithms_internal\(\s*project_id, algorithm_id=str\(algorithm_id or ""\), summary_only=True/);
+  assert.match(route, /inherited_training_label_preview\(/);
+  assert.doesNotMatch(route, /for row in list_algorithms_internal\(project_id\)/);
+});
+
+test('ready inherited labels render independently of a still-loading selected-material GT summary', () => {
+  const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  assert.match(source, /const inheritedReady = hasBaseVersion && previewCurrent && basePreview\.status === 'ready'/);
+  assert.match(source, /\$\{inheritedReady \? baseHtml : hasBaseVersion \?/);
+  assert.match(source, /正在读取训练标签…/);
+});
 
 test('available labels come only from selected material positive labels', () => {
   const materials = [
@@ -40,7 +56,14 @@ test('training material ids come only from canonical draft', () => {
   assert.deepEqual(selectedTrainingMaterialIds(state), ['canonical-1', 'canonical-2']);
 });
 
-test('client label picker only filters current active material labels and explicit choices', () => {
+test('session-scoped new-label choices persist with supported positives, then reset for a new version',()=>{
+  const state={trainingLabelAlgorithmId:'["p","algorithm","base-v1"]',trainingDraft:{newLabelCodes:['helmet','smoke']}};
+  assert.deepEqual(selectionForState(state,state.trainingLabelAlgorithmId,['helmet']),['helmet']);
+  assert.deepEqual(selectionForState(state,'["p","algorithm","base-v2"]',['helmet','smoke']),[]);
+  assert.equal(state.trainingLabelAlgorithmId,'["p","algorithm","base-v2"]');
+});
+
+test('client task choices exclude retired project labels', () => {
   const labelCatalog = [
     {code: 'fire', display_name: '明火', active: true, status: 'active'},
     {code: 'smoke', display_name: '烟雾', active: true, status: 'active'},
@@ -59,9 +82,31 @@ test('client label picker only filters current active material labels and explic
   assert.equal('effectivePreview' in view, false);
 });
 
+test('only selected formal positive evidence creates new first-training choices', () => {
+  const availableCodes = ['person', 'helmet', 'smoke']; // Server summary across selected pages.
+  const view = resolveClientTrainingLabels({
+    materials: [{id:'page-1', labels:['person']}],
+    selectedIds:['page-1','page-9','page-15','confirmed-empty'],
+    labelCatalog:[{code:'person'},{code:'helmet'},{code:'smoke'},{code:'fire'},{code:'phone'},{code:'car'}],
+    availableCodes,
+    requestedCodes:['person','smoke','fire','car'],
+  });
+  assert.deepEqual(view.selectable,['person','helmet','smoke']);
+  assert.deepEqual(view.requested,['person','smoke']);
+});
+
+test('no selected positive GT means no new classes, and inactive or unmapped labels cannot be chosen',()=>{
+  const view=resolveClientTrainingLabels({materials:[],selectedIds:['negative'],
+    availableCodes:['retired','unknown_2'],labelCatalog:[{code:'fire'},{code:'retired',active:false},{code:'unknown_2'}],
+    requestedCodes:['fire','retired','unknown_2']});
+  assert.deepEqual(view.selectable,[]);
+  assert.deepEqual(view.requested,[]);
+  assert.deepEqual(view.invalidAvailable,['retired','unknown_2']);
+});
+
 test('first render never auto-selects material labels for the user', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
-  assert.match(source, /state\.trainingLabelAlgorithmId = algorithmId;\r?\n\s*return \[\];/);
+  assert.match(source, /state\.trainingLabelAlgorithmId = sessionKey;\r?\n\s*return \[\];/);
   assert.equal(source.includes('return unique(selectable);'), false);
 });
 
@@ -86,8 +131,18 @@ test('training label UI shows only server-resolved canonical inheritance without
   assert.match(source, /\/training-labels\/inherited\?algorithm_id=/);
   assert.match(source, /上一版本继承/);
   assert.match(source, /data-training-base-label/);
-  assert.match(source, /当前素材标签已由上一版本继承，无需重复选择/);
+  assert.match(source, /上一版本继承标签保持不变/);
+  assert.match(source, /本次可新增标签/);
   assert.equal(source.includes('inherited_from_codes'), false);
+});
+
+test('switching selected algorithm or base version invalidates temporary new-label choices',()=>{
+  const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url),'utf8');
+  assert.match(source,/sessionKey = JSON\.stringify\(\[String\(projectId\?\.\(\)/);
+  assert.match(source,/state\?\.trainingDraft\?\.baseVersionId/);
+  assert.match(source,/if \(sessionChanged\) \{/);
+  assert.match(source,/syncDraftLabels\(state, \[\]\)/);
+  assert.match(source,/已取消不再受所选素材正样本支持的新增标签/);
 });
 
 test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', () => {
@@ -104,7 +159,11 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
   assert.match(source, /queueMicrotask/);
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422569'/);
+  assert.match(source, /build: 'module-4226464'/);
+  assert.match(source, /timeoutMs: 20000, signal: controller.signal, label: '继承标签读取'/);
+  assert.match(source, /TrainingLabelRuntime\.retryInheritance\(\)/);
+  assert.match(source, /TrainingLabelRuntime\.retrySelectedSummary\(\)/);
+  assert.match(source, /!materialSummaryRuntime\?\.summaryReadyFor\?\.\(ids\)/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
@@ -125,3 +184,19 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
   assert.equal(taskSource.includes('openTrain425()'), false);
   assert.equal(taskSource.includes('▶ 开始训练'), false);
 });
+
+test('cross-label target without a selected positive is not an allowed new class',()=>{
+ const view=resolveClientTrainingLabels({materials:[{id:'p',labels:['person']}],selectedIds:['p'],labelCatalog:[{code:'vest'},{code:'person'}],requestedCodes:['vest']});
+ assert.deepEqual(view.available,['person']);assert.deepEqual(view.requested,[]);assert.deepEqual(view.selectable,['person']);
+});
+
+ test('first cross-label target is unavailable until positive evidence exists',()=>{
+ const args={materials:[{id:'p',labels:['person']}],selectedIds:['p'],labelCatalog:[{code:'vest'},{code:'person'},{code:'retired',active:false}],requestedCodes:[]};
+ const initial=resolveClientTrainingLabels(args);
+ assert.deepEqual(initial.selectable,['person']);
+ assert.deepEqual(initial.available,['person']);
+ assert.deepEqual(initial.requested,[]);
+ const chosen=resolveClientTrainingLabels({...args,requestedCodes:['vest']});
+ assert.deepEqual(chosen.requested,[]);
+ assert.deepEqual(chosen.available,['person']);
+ });

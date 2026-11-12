@@ -1,3 +1,333 @@
+> **2026-11-11 / 42.24.587 训练批量选择慢请求 P0**：首屏 `count_mode=deferred` 导致 total 未知，train 全选错误进入 `bulk-selection` 2000 ID 探测，超限后才使用已有服务器冻结引用。改为未知总数且明确跨页时直接冻引用；不修改 GT/Worker/独立 Test/手工合并合同。Chrome 30.02 秒 Initial connection 未有服务端证据，真实 4070 与准确 CI 仍待验证。见 [专项](TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。
+
+> **2026-11-10 / 42.24.570 官方 YOLO11 母模型可信哈希快通道**：原 v63 上传/校验/资产和训练资格保留，仅对官方 release `v8.4.0` 实际文件的 SHA256、大小及 PyTorch ZIP 结构全部一致时自动 `VERIFIED`；未识别模型继续要求真实隔离校验，绝不以文件名放行。训练创建原基础模型下拉显示上传但尚未校验的禁用项及原因，复用已有训练资源刷新；来源标签证据区分 SHA 官方与 sandbox。前端/语法及合成容器哈希定向通过，真实 4070/完整 Python API/官方二进制与准确 CI 待验，未部署。见 [专项记录](MOTHER_MODEL_OFFICIAL_SHA256_GATE_2026_11_10.md)。
+
+> **2026-11-10 / 42.24.569 训练报告读取和 Tab/滚动**：沿用 v44 报告 API、原 SQL/Modal/Report Owner；索引定向定位任务版本，旧历史与歧义严格兼容；报告弹窗同高、滚动独立，Tab 单行不压缩。前端29/29、编译通过，Python API/完整 Node/浏览器/4070 实机/准确 CI 待核，不部署/改生产。见 [专项记录](TRAINING_REPORT_MODAL_PERFORMANCE_2026_11_10.md)。
+
+> **2026-11-09 / 42.24.568 批量选材与继承标签预览性能**：继承标签由全项目算法读取改定向单算法，继承 schema 仍由原合同计算；训练大范围全选由返回成千上万 ID 的浏览器集合改复用现有服务器冻结引用（`prefer_reference_over=2000`），小选择/独立 Test 不变。继承标签已返回时先展示，新增 GT 标签等待不再假装继承还在读取。原冻结、训练输入、负样本审批与 Test 防交叉保持；本地针对性测试与现场待验见 [专项记录](TRAIN_PICKER_BULK_AND_INHERIT_LOAD_2026_11_09.md)。未部署/改生产。
+
+> **2026-11-09 / 42.24.567 转换记录首次读取性能**：修复 v42 版本转换历史入口全量读取项目算法目录、返回整份大型版本评测/标签数据的问题；复用已有定向算法读取和历史分页投影，返回转换源信息及完整 `conversion_defaults`。转换执行/任务/Worker/产物/训练数据不变；本地模拟大字段通过，CI 与 4070 实机待验，未部署。详见 [专项记录](CONVERSION_HISTORY_LOADING_FAST_PATH_2026_11_09.md)。
+
+> **2026-11-09 / 42.24.566 母模型隔离校验 P0**：复用原母模型资产、SHA、v63 校验入口、FileLock 与资源页，补可选择现有 Python、bwrap fail-closed 下的 venv symlink 修复、轻量环境状态、分层错误、跨 Web 文件锁、超时/输出/CPU/虚拟内存限制和旧 CHECKING 超时投影。明确不新建正式独立校验环境或安装脚本；首次训练/节点安装/GT/其他模型均不变，未部署与修改生产数据；真实 Ubuntu bwrap、Ultralytics、模型实机验收及新 SHA CI 待核。详见 [专项记录](MOTHER_MODEL_SANDBOX_VERIFIER_P0_2026_11_09.md)。
+
+> **2026-11-09 / 42.24.565 AI 自动标注详情与全部错误导出**：原详情错误技术证据长卡片全部展开，且 CSV/JSON 实际只导出当前 `limit=50` 页。现沿用 v60 任务与 CandidateStore Owner，概况/异常分区、逐图证据折叠、12 张分页、全失败记录每批 100 张带 `review_revision`/总数/唯一 ID 完整性校验导出；历史数组对象在 CSV 保留 JSON，支持取消及关闭中止。Node 全量 1587/1587，未部署/未改生产；Chromium 可执行文件缺失，真实 UI 视觉核验和 4070 任务复测待完成。详见 [专项记录](AI_ANNOTATION_TASK_DETAIL_UX_2026_11_09.md)。
+
+> **2026-11-09 / 42.24.564 WeVisOne 类别归属（代码修复、现场待核）**：38 条 HTTP200 有框的合成标签问题按已确认的 Detection 端点逐正式标签调用，复用原 Worker/Provider/许可/RPM/Candidate/GT；单图原子合并、跨类高重叠拒绝、零框保持。任务详情从冻结 snapshot 派生脱敏原生请求配置；通用 Prompt 不改。不访问/修改 4070，详见 [专项](WEVISONE_NATIVE_DETECTION_LABEL_ROUTING_2026_11_09.md)。
+
+> **2026-11-09 / 42.24.563 算法列表 mAP50 空值误显示 0% 修复**：`algorithmVersionMap50()` 对紧凑 SQL 版本字段 `map50:null`/`mAP50:null` 错把 `Number(null)` 当作真实 0，遮蔽其后训练/评测的实际指标。最小修复只跳过缺失/非法值，保留数值 0，训练指标优先、独立评测指标兜底；同步刷新模块资源键，未改训练指标计算或生产数据。见 [专项回归记录](MAP50_NULL_CATALOG_FIX_2026_11_09.md)。
+
+> **2026-11-09 / 42.24.562 WeVisOne 部分失败、无目标和诊断 P0**：沿原 `wevisone_vision`、冻结标签、`annotation_inference` 内部请求编号、CandidateStore/AI Worker 和原失败明细实现：先验真 `none` 再验标签，确定性 casefold/空白/句末标点兼容且冲突拒绝，未知有框仍失败；补实际返回标签、允许标签、查询描述、协议摘要、后端实例、内部请求追踪、CSV/JSON、差量重试历史。未取得27张失败原始回包，现场结果不作保证，不修改4070/GT。详见 [专项审计与交付](WEVISONE_PARTIAL_FAILURE_2026_11_09.md)，准确最终SHA/CI待核。
+
+> **2026-11-09 / 42.24.561 整页刷新与数据读取 P0（准确 SHA CI 待核）**：浏览器 F5 的已核视图在同 tab 优先恢复并后台用原 v53 核验；紧凑算法版本由原 `_V53_BOOTSTRAP_SNAPSHOT` 随 SQL revision 复用；终态训练任务短期复用而活动任务保持实时，纯进度不使全算法重查。无新增缓存中心/Task Owner/DB schema，不改变正式 VERSION、训练准入、GT 或生产数据。首次历史冷读和真实 4070 P95 仍待现场核验。[需求、代码与测试](performance/2026-11-09-page-reload-snapshot-reuse.md)。
+
+> **2026-11-09 / 42.24.561 WeVisOne HTTP200→失败诊断与坐标设置专项**：现场42.24.543的24/24失败尚缺历史逐图错误码，不能把HTTP200视为有效候选；代码确认旧`AnnotationHandler`丢失任务级失败原因、WeVisOne高级坐标设置被前后端强锁、专用Provider后存在坐标二次应用风险。本轮沿用原Provider/AI Worker/Candidate/Task/人工GT Owner，只恢复坐标设置、校验实际协议、禁止重复缩放，传递任务失败原因、展示失败码汇总；不伪造confidence或GT，不重复成功候选，实机及准确SHA CI待单独核验。详见专项文档。 [详细记录](WEVISONE_ANNOTATION_200_TO_FAILED_2026_11_09.md)。
+
+> **2026-11-07 / 42.24.561 稳定性专项**。基线 fc386660 的 48 项 Actions 已核。classic 安全提示和资源通知接回既有取消过滤，负样本卡仅精简重复资格。原训练、素材上传、AI、GT、Worker 业务合同保持。ZIP sidecar 与 Windows 长路径保留实测风险，A800、4070、20 万素材清单待现场验收。详见 [专项记录](STABILITY_SCOPED_2026_11_07.md)，新 SHA 的 CI 独立核对。
+
+> **2026-11-07 / 42.24.561 证据限定整改第三批（活跃ZIP）**：复用原统一MC_ZIP_*预检，仅app三ZIP定义与9行公开包装；旧helper分块边界/磁盘/取消、CRC后close+replace，选择保留ALL sidecar并修./与//；SCAN有界节流。原安全引擎44定义/训练68文件与63定义保持。ZIP综合215通过1跳过、训练202通过1跳过、Node1561、真实Chrome16通过；19新安全用例先RED后GREEN。远程8020按用户决定不改；大sidecar内存/单文件解析取消保留。详见docs/ARCHITECTURE_EVIDENCE_SCOPED_2026_11_07.md，准确561 CI另核，560仅字体下载分片重试中；不部署、不改生产/账号/GT。
+
+> **2026-11-07 / 42.24.560 AI回归夹具治理（仅测试）**：559/04467ba2准确AI Recovery暴露既有跨进程单次claim和1秒expiry夹具竞态，Linux233/1、Windows232/2；未改生产源码。保留全部安全断言，仅有界poll原claim、局部clock在双请求进入后到期、finally计数，并强化初始2/后续1/6空目标。原234项集合全过、独立复核通过；准确560 CI待核，不把559称全绿。详见证据限定整改文档；ZIP未实施，训练/GT/Worker/账号/生产不动。
+
+> **2026-11-07 / 42.24.559 证据限定整改第二批（负样本池）**：558/31c897c准确26项Actions全成功后实施；原NegativePool与runtime支持显式真实计数、同fence空GT批查、200顺序批、失败/未知核验及部分移出清选；原modal lease保护迟到上传/切页。默认响应/GT/训练资格/Worker不变，无新存储或任务。相关Python93、GT候选76、Node1561、新Chrome4通过（三视口/键盘/触屏/reduced-motion）；68冻结文件/63训练定义保持。详见docs/ARCHITECTURE_EVIDENCE_SCOPED_2026_11_07.md，559准确SHA CI须另核；ZIP尚未实施，生产未动。
+
+> **2026-11-07 / 42.24.558 证据限定整改第一批（算法查询）**：557准确CI22/22，原训练/账号/AI/转换/发布冻结；仅原AlgorithmSqlStore新增定向exists、负池范围校验/单目标读取去掉两次整图。48MiB合成评测下JSON96MiB→31B，P50 931→34ms，响应摘要不变。算法/外部映射发布428、Node1558、Chrome4通过；默认Windows长临时目录9失败原基线可复现，短路径同集合全过，未改发布逻辑。远程8020按用户决定仅记风险。15页45视图只读普查；其他架构建议保留。详见docs/ARCHITECTURE_EVIDENCE_SCOPED_2026_11_07.md，准确新SHA CI待核，P0-3/4尚未实施，生产未动。
+
+> **2026-11-07 / 42.24.557 过期共享配额身份保留**：可信配置指纹匹配时，容量到期降串行但保留跨地址共享scope，避免新旧任务分裂限额；RED复现后修复，策略/许可/执行/冻结38项通过。复用原任务库，不部署、不改4070/A800；最终SHA与准确CI独立核对，详见双实例专项。
+
+> **2026-11-07 / 42.24.556 取消指标显示语义**：555准确SHA的AI恢复及Release Regression已通过；保留取消指标而不误投影为模型连续故障，原任务详情/执行回归12/12通过。完整功能与最终CI见双实例安全推理专项/交付消息；生产、4070/A800均未动。
+
+> **2026-11-07 / 42.24.555 Linux可选身份探测与Schema验收修正**：准确553 CI发现本轮引入的Headless Keyring准备阻断（8项）和两条Schema3旧断言；捕获可选探测不可用并保守串行、运行时鉴权保持严格，更新Schema4并验证旧任务/候选统计完整迁移。详见双实例安全推理专项；准确新SHA CI须核，生产未动。
+
+> **2026-11-07 / 42.24.554 解析失败证据收口**：553已正常快进推送c1d9b866，新SHA的CI独立核验。补齐WeVisOne/Ollama的HTTP200畸形响应请求/实例标识与解析错误分类，保留合法空检出；Provider129/129。并发/租约/Candidate/GT主链不变。详见双实例安全推理专项；未部署、未访问4070/A800/生产。
+
+> **2026-11-07 / 42.24.553 安全推理并发 P0**：从552/34a287e（准确CI41success）隔离接续；原配置冻结可信容量、默认1，原TaskRepository同库层级许可/RPM/冷却，主线程CandidateStore单写入、乱序恢复/取消迟到栅栏，不新建调度/审核/GT链。双独立HTTP实例证明并发2及串行1，提供只读现场探测工具；中文配置证据、逐图追踪及任务执行指标沿用原入口。详情与准确测试/限制见 `docs/WEVISONE_DUAL_GPU_INFERENCE_P0_2026_11_07.md`；新SHA CI必须另核，4070/A800/生产未访问、未部署。
+
+> **2026-11-07 / 42.24.552 项目维护入口收口**：551准确CI40success/1failure，最后一例暴露新版项目清空入口遗漏。全局更多操作委托原clearProjectMaterials61与PROJECT预检/项目名确认/冻结链；无新删除Owner、未执行生产删除。浏览器保留38图/GT/部分失败/精确范围安全断言，另验菜单委托。详见素材ZIP专项，准确新SHA CI需独立核验。
+
+> **2026-11-07 / 42.24.551 原素材工具入口回归**：549前端两个分片因缺失全局审计入口及旧批量/整理选择器反复超时而取消，非外部噪声。恢复原页头row宿主，让原decorator装载重复异常/智能审计；测试改走常驻勾选、固定人工栏及ZIP四动作，GT/范围/恢复断言不变。详见素材ZIP专项，准确新SHA CI独立核验，生产未动。
+
+> **2026-11-07 / 42.24.550 素材专项CI入口修正**：549准确CI的Material Upload Chunking旧测试精确匹配“上传”，本轮按钮为“上传素材”；只改选择器，原五文件/失败项/回执/GT断言保留。原前端CI加入新vendor校验，产品业务合同同549。详见素材ZIP专项；新SHA CI独立核对，生产未动。
+
+> **2026-11-06 / 42.24.549 素材库、图片详情与ZIP解耦**：基线548专项视为既有能力，仅复用审核/草稿/转池/恢复。素材库默认全部、原图直接标注、独立质量筛选、跨页普通选择与原批量链；原图ZIP正常报告、可信来源批次；Panzoom/Floating UI/Lucide本地锁版组件及原详情呈现。无GT/训练准入放宽、无生产操作。详见 `docs/MATERIAL_LIBRARY_ZIP_2026_11_06.md`；准确新SHA CI独立核验。
+
+> **2026-11-06 / 42.24.548 大批回执与安全撤销**：547准确SHA CI 47/47成功。逐图转池回执迁入现有CandidateStore同库，分页读取，原JSON回执归档兼容；每批元数据写入有界。跨批外部池变化阻断撤销；候选恢复与回执同事务，池恢复沿用原同库幂等回执。新增SQL索引、崩溃恢复及240张跨批验证，生产未动。详见审核专项。
+
+> **2026-11-06 / 42.24.547 大批转池故障恢复收口**：546准确SHA CI 41/41成功；补测发现首批200全部失败会饥饿后页，现先完整尝试冻结范围再返回partial、仅显式重试失败项；完成回执重放不再重置撤销修订。新增240张全失败推进/恢复及外部池修改后禁止静默撤销的RED/GREEN测试。详见审核专项，新SHA CI独立核验；生产未动。
+
+> **2026-11-06 / 42.24.546 审核计数与勾选语义收口**：页头仅显示当前筛选分页真值，移除把默认采用数写成已选择的旧文案；只有真正勾选的图片显示选中边框，采用与转池选择分离。草稿/GT/任务/转池数据合同不变。参见审核专项，新SHA CI需独立核验，生产未动。
+
+> **2026-11-06 / 42.24.545 难样本历史预览回归修复**：cc672d4a 的 Remote Training Runtime API 暴露原已审核难样本预览需要读取已提交候选，而人工剩余集合已排除这些项。仅该只读历史入口显式 include_committed=True，审核/转池排除不放宽；详见审核专项。精确新SHA CI待核，生产未动。
+
+> **2026-11-06 / 42.24.544 AI审核工作台**：服务器草稿CAS、原候选证据、批量转池/恢复/撤销及后端剩余范围、失败逐图详情、三栏中文界面和原编辑器。独立克隆保护原WIP；本地测试和准确SHA CI记录见 `docs/AI_REVIEW_WORKBENCH_2026_11_06.md`（docs内去掉docs/前缀）。真实4070/生产性能及部署未验证，生产未动；不merge main/release/force push。
+
+> **2026-11-06 / 42.24.540 AI 自动标注故障恢复（候选）**：在 539 上保留原 WeVisOne 与通用适配，按原 Task ID 差量补跑失败/未处理项，已有成功/empty 候选不重复推理；取消、失败、服务阻塞任务可以把已完成候选恢复至原人工审核页面，未确认不得写正式 GT；连续服务异常熔断、审核锁与历史 GT 保护、独立回归测试。**CI/真实 Chrome/4070 大批量故障验收未取得证据之前不称已验收**。详见 `AI_ANNOTATION_TASK_RECOVERY_P0_2026_11_06.md`；生产未操作、不 merge/release/force-push。
+
+> **2026-11-06 / 42.24.539 4070 WeVisOne 专用 FastAPI 合同勘误（准确远端 CI 待验）**：在已推送的 538 `1ee43b80676bafe3d9edc74711e87a8f58673b96` 上收敛专用请求 `image=data:image/...;base64,...` + 冻结 `query`；检测读取 `coordinate_system=xyxy_pixel` 和 `bbox_xyxy`、只转换原图坐标一次；原冻结标签别名可控映射，拒绝无效/越界/异常/过多框；缺失置信度维持 null，分割/抠图适配多实例 PNG 只读预览，原候选审核后才入正式 GT。代码/据用户描述复刻协议回归通过，但**没有**取得真实 4070 FastAPI `app.py` 或实机返回；Chrome 扩展无法连接、云端 Chrome 无法打开本地服务，1920/1366/768 未做真实视觉验收，禁止宣称完整 P0。原通用模型、任务 Owner、正式 GT、生产不变。详见 `WEVISONE_VISION_ADAPTER_P0_2026_11_06.md`。
+
+> **2026-11-06 / 42.24.538 WeVisOne 可选专用视觉适配器 P0（代码实现，实机/Chrome UAT 未验）**：从干净远端 `42.24.537 / 611e35d05ade6f93d9eb82e1b19f01f336d0358d` 开发，原 Provider Factory 新增显式 `wevisone_vl`，原模型配置/Keyring/标注 Worker/Candidate/人工审核/正式 GT 链路保留。专用检测 ref/box、显式单位坐标转换、空目标、缺失置信度、只读分割抠图、同窗模型配置与状态显示已编码；通用 Provider 严格 Schema 未放宽。开发约束及 UAT 阻断详见 [专项记录](WEVISONE_VISION_ADAPTER_P0_2026_11_06.md)。4070 专用服务实际 app.py 未取得、Chrome 浏览器下载失败、新 SHA CI 未验，不得称现场完成或部署。未修改生产数据，不 merge main/tag/release/force push。
+
+> **2026-11-05 / 42.24.537 启动快照 P0**：在另一AI交付弹窗19b0659d之上整合；默认核心snapshot移除历史/版本报告/模型凭据阻塞，冷构建后台单飞，热缓存按revision失效；20秒截止不变，重试/取消/旧响应及模型页按需加载修复。Node1540、Chrome16、API去重42项通过；合成217130素材/110算法/1100版本/1000任务，冷核心280ms、热25次P95 40ms，非生产。准确新SHA Actions待核，未部署，现场26秒分项/真实训练并发待现场验证。详见[启动专项本日记录](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)。
+
+> **2026-11-05 / 42.24.535 ZIP压缩补充**：原zipfile导入增加统一方法预检、中文方法/数量/重压缩提示，保留安全限制及原回滚。定向ZIP14、回滚5、试跑/几何Chrome2通过；故障原包方法与535准确CI待验。见 [ZIP安全专项](ZIP_IMPORT_RECORD_SAFETY_2026_10_26.md) 本日章节；AI534代码39512a3已快进发布。
+
+> **2026-11-05 / 42.24.534 AI标注续批候选**：原试跑临时基准/差异、自动EXIF与动态像素尺寸、坐标原点/已知几何逆变换、混合状态/部分scope视图、服务端冻结选择与状态摘要已编码并定向验证；真实模型/20万性能未验，远端发布与准确CI待核。唯一明细见 [AI专项](AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md)。
+
+> **2026-11-05 CI纠偏**：f053e1f5准确Actions日志中的凭据隔离、资源缓存键及旧界面测试合同正在收口；仅测试夹具/入口缓存一致性，不改正式GT/模型能力。新SHA全部CI完成前不称交付通过。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md。
+
+> **2026-11-05｜多视觉模型标注 P0**：原共享解析器增加显式坐标合同与冻结版本，原模型管理增加同页样本验证/人工确认，原审核页增加按需单图诊断；不修改正式 GT。确定性平台证据与真实模型识别验收分开记录，正式 VERSION 保持42.24.532。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md；真实 Gemma/Qwen、Ollama/vLLM、A800/4070 现场验收尚未执行。
+
+> **2026-11-04｜素材审计默认保留与重复扫描（定向修复，增量待办）**：用户明确决定同 SHA 不同正式 GT 默认由系统确定性保留一份，无需逐组人工选择；原冻结预览+确认、人工覆盖、保留 GT 的证据和不删除原始字节不变。新增 `AUTO_DETERMINISTIC_CONFLICT`、自动保留组数及 UI 提示；0 条实际删除的失败/取消任务不会误使前端审计过期。Node 定向 36/36、JS/Python 语法通过，Python API/Worker CI 与生产未验。**成功删除后仍需重新扫描全项目、20 万张逐图解码的问题尚未修复**；差量修订证据和安全增量投影作为 P0 独立推进。详见 `docs/MATERIAL_INTEGRITY_AUTO_KEEPER_AND_INCREMENTAL_AUDIT_2026_11_04.md`。不部署、不碰生产数据。
+
+> **2026-11-04｜旧算法基础模型空白专项（开发中，准确新 SHA CI 待验）**：现有 `applyTrainingCreationResources` 曾在有效版本只读选项 value 为空时恢复旧训练草稿 `.pt` 值，引发浏览器 `selectedIndex=-1`、显示空白。已统一调用旧有 `syncMotherModel429` 唯一渲染 Owner，并补老版本/残留 `.pt`/异步刷新 Chrome 回归与 Node 契约。定向 Node 78/78、JS 语法通过；本机浏览器与最新提交 CI 尚未验，生产服务/数据不动。细节及验收状态见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`。
+
+> **2026-11-04｜母模型专项准确最新状态**：原图 ZIP、跨节点 `MODEL_INSTALL`、SHA 安装回执、单层 UI、远程 Worker 优先复用同哈希母模型及缓存回退已推送长期分支。最后代码提交 `f1f7e75f4158a7b92d806aa2b489e387b4272486` 的 **20/20 GitHub Actions 全部 success**，含新增安装 Runner Windows/Linux 合同、远程训练与路由测试。尚无真实 A800/4070 Ultralytics GPU 首训、有效 PT 沙箱解码、浏览器多视口与 10k 素材/P95 性能数据；不能称整个 P0 或生产验收完成。完整台账见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md` 与 UAT；生产不动。
+
+> **最新 2026-11-03｜42.24.509 训练选材 P0 修复候选**：当前分支从 508 `8bf1e009` 接续；详情、隔离测试与未验证边界见本文末尾509记录及性能专项台账，尚未部署。
+
+> **2026-11-02 / 42.24.494 原启动进度 Chrome 测试改为真实启动 Owner**：492 精确 SHA `64012ad9cc26ef4c69816ab0ab9e60a7e6c617d0` 浏览器 CI shard2 为110通过/1失败。失败原因可在日志确认：原 `navigation-readiness` 用例先把业务页置于 `uiReady=true`，再通过人工重进 `loadStartupSnapshot413` 要求 Boot 重建；这正是491已阻止的旧启动抢占页面。494 在不改业务代码下，让原 10→60→100% Boot 同节点断言发生在首次启动，并新增已就绪业务页重进时原草稿输入与页面不受3秒计时器覆盖；独立 Chrome 5/5 通过，原 CI 列表继续覆盖。准确494 GitHub CI 待独立核验，生产/DB不动。
+
+> **2026-11-02 / 42.24.493 生命周期浏览器回归 CI 入列**：精确 492 GitHub `64012ad9cc26ef4c69816ab0ab9e60a7e6c617d0` 的 `Frontend Runtime Stabilization/frontend` 已通过，Node1487/1487；但新增的 `tests/browser/frontend-lifecycle-races.spec.mjs` 6 个真实 Chrome 竞态用例仅本地35/35联合通过，原 workflow 的 3-shard 浏览器矩阵未列出。493 在既有矩阵新增该文件，并在 Node 契约测试要求 CI 收录；无产品 JS、服务器或数据库调整。CI 浏览器及准确 493 SHA 待独立核查。
+
+> **2026-11-02 / 42.24.492 CI 前端启动守卫对齐**：491 精确远端 `d0d8457afe7155a84b4bc7f322313d4ed9a93023` 的 `Frontend Runtime Stabilization/frontend` 仍检查旧 `return window.__v53InitPromise;`，误报新版 fail-closed 等待合同缺失；492 仅调整原 workflow 对新 Promise/`ready === false` 的准确源守卫并补 Node 契约测试，不改变已通过隔离 Chrome35/35 的业务 JS，绝不撤销核心加载失败保护。另曾发生 1 条既存后端 Linux 进程暂停时序测试失败（578过1败），已重跑失败作业，不作为前端回归。准确新 SHA CI 待推送后复核；不部署或变更正式数据。详见原前端综合治理文档 492 段。
+
+> **2026-11-02 / 42.24.491 前端生命周期 P0 接续**：起点远端/本地 `bbf9505e10f11d391dacaa725f9844bdf7e66247`、VERSION490、工作区干净，唯一长期开发分支不变。现行 Boot Timer、失败后路由续行、刷新旧响应、清洗/AI详情与轮询误关、同项目总览A→B→A 在真实代码确认归属缺口；491 复用原 NavigationStability/PageRequestScope/ModalContentRuntime/PollRegistry，增加 Boot Owner、刷新页面/项目/导航代次与新旧 Modal 实例 Lease，保留服务端已受理 POST 事实。相关真实 Promise 延迟 Node 回归和 Chrome 延迟/多视口用例见 `docs/FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md` 顶部。未部署/修改生产、正式数据或模型，真实浏览器及准确新 SHA CI 仍以最终实测为准。
+
+> **2026-11-02 / 42.24.490 开发中：转换显式资源检测 POST 截止**。唯一开发分支前版 489 `516ff3955c075dcbfa682542e78754dcf122df89`，488 已准确 GitHub Actions 49/49 success；生产 485 不动。原 `refreshVersionConversionResources428(true)` 显式 SDK 检测未经过 30秒请求截止，网络挂起会持续 Loading；490 仅让这一原入口复用 `conversionRead428`／`withRequestDeadline` 的现有超时及取消，保持真实 SDK/Agent 探测由服务器处理、原 Config CAS/检测复用与最终提交验证不变。专项 Node31/31，完整 Node/新SHA Actions待验。489 过期资源可重新选择检测、488 单版本SQL定向与多厂商状态仍有效；未部署，不能将 CI 视为生产 SDK/设备/P95 证据。唯一详情见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部。
+
+> **前版 2026-11-02 / 42.24.489 过期转换资源的原弹窗重检**。488 `eb84b27f` 专项 Remote Conversion Runtime 4/4 包含真实 Chrome；489 修正过期/待检/失败资源不可选，允许显式检测，只有有效 ready 可以正式提交，旧选择保留，完整Node1471/1471；准确 489 SHA CI 接续时尚在进行，生产未动。
+
+> **前版 2026-11-02 / 42.24.488 多厂商转换能力与性能**。487 `377e95b3319eca0f350f8d014843a084f98f1a00` 39/39 Actions success；488 完成单版本 SQL、逐资源真实状态/过期 fail-closed、跨 Web 资源检测去重及 JSON CAS/原子保存、resolve/catalog opt-in 计时，Python271/1隔离挂起、完整Node1470。准确488专项CI 4/4成功，完整其余 Actions 待核。无真实 SDK/Agent/生产数据操作，生产 P95 仍待现场证据。
+
+> **2026-11-02 / 42.24.487 前版已验收**：486 `feb5f825` 精确 CI 38/38。487 新增跨页冻结人工补审、持久进度和恢复、逐图正式GT安全校验、失败分页与原训练草稿返回。487 准确 SHA CI 39/39 success、真实 Chrome 9/9；生产21k与P0性能未验。
+
+> **2026-11-02 / 42.24.486 人工缺失类别本页批量补审（本地 GREEN，准确新 SHA CI 待验）**：485 `fda473dd` 已核精确 GitHub Actions **23/23 success**、其中 AI Annotation Recovery Push/PR 双绿。486 新 `POST /training-materials/review-scopes` 每批 1–50，必须来自已有正式 GT 的 `partial_review_scope`，后端逐图计算实际缺失类别、双 revision、GT 版本和素材 SHA，复用原可信 actor、`_review_training_negative`→`save_annotation` CAS/正式 GT 审计，已有框不动，异质缺失类别不会相互污染。原 Summary 训练兼容性问题页新增「人工补审本页 · 最多50张」，当前页明确勾选、二次本人声明、部分成功与失败明细、草稿保留和重新预检；全选筛选/全部问题不会被假装已支持。增 Python API/正式 GT 集成及 Node/Chrome 合同；Picker Python 36、集成5、完整 Node1466 通过。本机 Playwright 新用例已收集但 Chromium 下载损坏，Chrome/486 精确 SHA CI **NOT VERIFIED**。跨页、全量/持久批次续审与恢复、混合 AI 工作流、生产性能仍待后续。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，无生产操作。
+
+> **2026-11-01 / 42.24.484 严格历史 GT 补审任务创建冻结（新 SHA CI 待核）**：原分支 483 `c269d8d820de95b70f24f2ae5da978511d09bff6` 精确 GitHub Actions47/47、Node1465、Chrome317、Picker Python95/Perf9/Chrome7；无其他新增提交。484 只补原 API/Worker/GT Owner 的 opt-in 严格创建契约：任务 request_id/素材和正式 GT 修订号强制，`training_material_scope_issue` 按 500 张有界读取实际正式 GT，为每图冻结**缺失** code、原素材 SHA、GT 版本；既有普通 v60 AI 任务和旧回执哈希不变。候选 GET 只回本页缺失 scope，审核决议不得超冻结类别，且重新核验 GT/素材来源；Worker 推理前比较原 SHA、正式 GT 写前验证冻结版本+来源可用性并保持原版本 CAS。1,200 张虚构素材三批冻结/两张异质 GT/版本变化/来源漂移测试已补。新 SHA CI 和 Chrome 未完成前不认定验收。严格后端仍无训练窗口批量 UI、人工逐图身份证据/时间、页级续审、返回草稿；正式生产 GT、真实21k与30s浏览器 Stalled 均未验证。**ISOLATED TEST — NOT PRODUCTION VERIFIED**；不部署、不改生产 GT、任务、数据库、模型、GPU 或 OSS。细节见性能台账484节。
+
+> **2026-11-01 / 42.24.483 逐图审核范围持久化与正式 GT 闸门（准确新 SHA CI 待验）**：唯一分支起点 482 `bf1b37cc3bfb7858c69d11c24d079f886c310d04`，原准确 Actions37/37、Node1465、Chrome317、Picker Backend95/Perf9/Chrome7；远端本地一致且干净。483 在原 CandidateStore item 中持久每图可选 `review_scope`，原 v60 API 校验其仅为本任务规范标签，冻结 `per_image_required` 策略禁未审核分页隐式接受/拒绝或空范围；原 GT commit 使用精确逐图范围扩 annotation_scope、控制 overwrite、拒未核候选框，保留 SHA/CAS/批次和旧任务/回执语义，每图 commit journal 标记审查范围来源。新增回归最初 RED 7，候选框越界单测 RED 1，修复后 Python 4 文件 **116/116** 通过含 21,163 虚构 ID Indexed SQLite 范围与 50/13 分页。新 SHA CI/Chrome 需独立验；尚未做批量创建 UI、冻结跨页任务选择、逐图身份/时间审核、分页提交/回草稿。生产 21k 和 30s Stalled 不明，**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署、不修改生产数据。详见专项台账 483 节。
+
+> **2026-11-01 / 42.24.482 Chrome 显示合同测试修正（准确新 SHA CI 待验）**：唯一原分支 481 `dfe8abfaef18d3314aea6a5eb0d13c36753a4313` 已触发 CI，482 开始时未完成。481 新增 Chrome 用例错误要求诊断卡包含内部 image_id，而原 `issueHtml` 只显示 filename/逐图缺失类别；482 在原显式运行文件将可见内容断言改为 `fire.jpg`/`smoke.jpg`，并等待真实 Bootstrap project/summary network owner 就绪才开始隔离 UI 操作。同步 VERSION482 和缓存破坏标记，不动后台 GT、训练、任务语义。原 481 本地 Python42/42、素材治理56/56、Node1465/1465 仅为本地隔离合同；482 新 SHA 全量 CI/真实 Chrome 需重新核验。批量逐图审核和回训练草稿未做，生产 21k/30s Stalled 未验证。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。台账 482 节。
+
+> 481 的真实 CI 红灯已核：[`Training Material Picker` run 41299523203](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41299523203) Chrome **1 failed / 6 passed**，断言预期 `has-fire`，而真实卡片只显示 `fire.jpg`、`缺失：smoke`，属于测试不符合 DOM 合同；Picker Python95/95、性能9/9 通过。482 保留业务断言，仅改为实际可见文件名并等待 Bootstrap 就绪；新 SHA CI 独立核对。
+
+> **2026-11-01 / 42.24.481 逐图缺失类别筛选与修订号绑定跨页选择（准确新 SHA CI 待验）**：唯一开发分支准确起点 480 `429d3dd553761403f3008258f8fec30aff541b19`、版本480、干净；480 Actions26/26、Node1464、Chrome317、Picker Backend92/性能9/Chrome6。`training_compatibility.py` 原逐图 `missing_label_codes` 新增同源大小写敏感 code 过滤，原 Picker 兼容性 POST、Summary 诊断弹窗、跨页服务器冻结选择、原删前预览统一 `missing_label_code`；变更筛选自动重置旧选择，正式 GT、任务和准入真值不动。原 Python 分页/真实 ASGI、Node、Chrome 显式测试文件新增隔离合同和 21,163 虚构素材范围验证。**尚未**做可持久逐图审核 scope/人员证据/批次恢复/回原训练草稿；既有 v60 全任务审核标签与“全部接受”不能当每图类别证明，AI 未检出不等于已审核。481 新 SHA CI 独立核验；生产 21k、30s Stalled 未验。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。详见性能台账 481 节。
+
+> **2026-11-01 / 42.24.480 历史正样本补审 scope-only 正式 GT 漏提交（准确新 SHA CI 待验）**：起点远端/本地 `1e4350550348a02621482f2b2bca9a55e4a134fb` / 479，原 SHA Actions 39/39 success、Node1464、Chrome317。`annotation_task_service.py::commit_candidate_decisions` 在历史人工框已存在、人工确认 AI 空候选、新审核类别、非覆盖模式时，误跳过正式 GT 写入；隔离单测先 RED 1 fail/1 pass，原 Owner 只增加**已持久化 scope 缺失且明确人工接受的新类别**引起的批写。GREEN Python 53/53（含真实临时 API/GT 版本与历史框保留）、Node1464/1464；21,163 虚构 ID 分批/末页边界测试已纳入原 CI 显式列表，Chrome/新 CI 待验。跨 21k 的持久补审创建入口、逐图类别审核/人员证据、返回训练草稿仍未开发，不能直接把现有全任务统一 AI review_scope 视为每张图人工审过；生产用户 21k、真实卡顿仍需取证。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。详见唯一台账 480 节.
+
+> **2026-11-01 / 42.24.479 训练创建无凭证重复预检精准修复（准确新 SHA CI 待验）**：起点远端/本地同一 `964d5d0`、VERSION478、干净；原首次 `partial_review_scope` 阻塞遇负样本预览 `pending_review` 时，未生成凭证仍重复正式兼容性 POST。原 Submit/Summary Node 两文件 RED 60/61、19/20，原 Owner 明确 `{accepted,receiptIssued}`，无凭证直接显示首次核验的阻塞，新凭证保留强制复检，GREEN 61/61、20/20；锁文件安装依赖后隔离环境完整前端 **1464/1464** 通过（初次缺依赖和沙箱 Uppy EPERM 已逐项记录），原显式 Chrome 文件新增场景已被 Playwright 发现、本机缺 FastAPI/Chrome 尚未执行。新SHA Actions 待验。生产 21k GT 批量补审、真实30s Stalled/首页慢仍未解决。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。详见 `docs/performance/2026-10-29-p0-followup.md` 479 节。
+
+> **2026-11-01 / 42.24.476 负样本分类诊断开关白名单窄修复（准确 CI 待核）**：475 `06e6e0f1d26d466d522ab7b00b8fd0ac3e2f8407` 的 Picker `contracts` 性能测试实际 1 fail/8 pass：空池分类HTTP200无X-Request-ID，诊断 `PerformanceDiagnosticsMiddleware._ENDPOINTS` 原未覆盖该合法读路径；不意味着SQL慢。476仅给该精确GET补诊断端点名，在原测试验证其不会匹配其它负样本写路径；原0/1000/10000合成关联各首+20温请求和服务计时强断言照旧。默认关闭、不记录SQL/正文/真实ID。完整新SHA验收待核，**ISOLATED TEST — NOT PRODUCTION VERIFIED**。
+
+> **2026-11-01 / 42.24.475 负样本分类打开请求隔离测量（准确 CI 待核）**：474 远端 `34a4c8ad4178b628fe14564316fc2f2b1a8eaf71` 已核准22/22 Actions、Node1461/1461、Chrome316/316，Picker Backend87/Perf8/Chrome6。浏览器模拟60卡/15张192px BMP 首次绘制228.3ms、20温P50 138.35ms/P95 153.4ms，不是生产。Picker `open` 并行额外GET负样本分类；原 `NegativePool.categories` 单SQL含分类关联 COUNT、已有(category_id,material_id)索引，是否生产慢未知。475仅扩原隔离性能文件，构造0/1000/10000虚构关联真实ASGI接口首+20温样本与Server-Timing，不碰业务代码/正式数据。缩略图缓存未命中的 `StorageManager.materialize` 默认可能写回缺失源摘要，需要隔离复验。**ISOLATED TEST — NOT PRODUCTION VERIFIED**；475正确SHA/CI尚待核。
+
+> **2026-10-31 / 42.24.474 Picker 192px 图片绘制与浏览器长任务隔离取证（准确 CI 待核）**：473 远端 `29855f5439be45f9ff9e6aff9c3455e2fb7e3641` 已验 22/22 Actions、Node1461/1461、Chrome316/316；兼容性 ASGI 首次19.257ms/20温 P50 4.398ms/P95 4.699ms，非生产。原 Picker Chrome 用 1×1 伪图，仅验证缩略图请求数量。474 只在原 `training-material-picker-performance.spec.mjs` 新增192×192 合成 BMP/60卡首屏15图解码双RAF＋LongTask，首次+20复开，服务端图片与 WAN 均 mock；原 CI 显式测试文件和匿名7天 artifact 继续。无业务改动，Chrome/完整准确新 SHA 待验；**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署/改 GT/Worker/OSS/生产 DB。
+
+> **2026-10-31 / 42.24.473 兼容性按需预检隔离取证（准确 CI 待验）**：最新准确 472 `094b9888214a35e538780d9fb9c0ed012ee63345` 已验 GitHub Actions 23/23、Node 1461/1461、Chrome 316/316。新一轮只读调用链核验训练首次打开无需自动 compatibility/negative-preview，普通选择摘要按签名去重，提交前强制准入不被放宽；缓存页 revision 检查与角色筛选显式触发冷索引不同。仅向原 `test_platform_hot_paths.py` 加入 60 张合成已标注素材的成功 compatibility POST 首次＋20 温样本、Server-Timing 和缓存 hit/miss；真实服务端延迟/CI 尚待新 SHA，生产 Network/HAR/长任务未授权亦未测。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无 GT/Task/Worker/资源/部署修改。
+
+> **2026-11-01 / 42.24.472 历史文件投影扫描最小性能改动（准确 CI 待核）**：471 精确 `5e415a5eaf7740c393e9b3b100e12ef2706a8a7b` 已核 22/22 Actions success、Node 1461/1461、Chrome 316/316；真实临时项目的 Bootstrap 首次快照缺失 220/1000 历史分别 42.237/149.017ms，10k 虚构历史文件 4 并发批中位 502.676ms。472 只在原 `TrainingHistoryProjection.read` 将目录枚举换为 os.scandir/os.stat 并只在文件签名变化时构造 loader Path；mtime_ns/size/ino、读锁、字典副本和 Task/GT 真值不变，补 unit 新建/非 job/删除回归。同临时文件夹具交替 20 次温样本纯投影 P50 162.702→64.766ms，**不等于生产或完整 Bootstrap 加速**。准确 472 CI 待核，ISOLATED TEST — NOT PRODUCTION VERIFIED。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-11-01 / 42.24.471 P0 完整首次 Bootstrap 与历史并发取证（准确 CI 待核）**：470 `47de319e766630e2ede576396f13f7d798ed893a` 已核 GitHub Actions 22/22 success、Node 1461/1461、Chrome 316/316，220/1000 条虚构历史的缓存 Bootstrap 首次 73.884/369.402ms、20 温 P50 17.064/57.126ms；返回数据均是 50 条。471 在原性能测试添加临时真实项目/素材/Annotation/算法/Task 仓储的快照缺失构建与 20 次缓存命中，历史文件投影新增 4 并发×5 批次测量。这是隔离夹具，不启动正式服务/Worker、不读取生产数据，不证明生产根因；CI 待新 SHA，**ISOLATED TEST — NOT PRODUCTION VERIFIED**。细节见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-11-01 / 42.24.470 新增 Bootstrap 测试严格遵守 50 条展示合同（准确 CI 待核）**：469 远端 `247527a79b35294d3d43abf9a1a3b76c1cdba818` 的 Picker contracts 1 failed / 6 passed，Chrome Picker 成功；失败仅来自新测试把完整历史数误当展示条数。原 Bootstrap 只返回 50 个任务，而历史读取仍遍历全部，本批修改的仅是测试断言。469 文件投影隔离 1000→10000 个虚构 `job.json`，20 次温缓存 P50 17.894→188.759ms，P95 19.198→243.762ms；非生产、未分离 OS 缓存/磁盘/并发/SQLite。本版新 SHA 全 CI 待核；业务代码及正式 Task/GT 不动。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-11-01 / 42.24.469 Bootstrap 历史读取测量补盲（准确 CI 待核）**：468 精确远端 `bc47c3442775cc7a9c4d66df69e722b0ee406418` 已核 22/22 Actions success；Node 1461/1461、Chrome 316/316。缓存 Bootstrap 仍扫描训练历史 Task 和 `job.json` 签名，这只是只读代码证据。现于既有性能测试添加 220/1000 历史任务的真实缓存快照路由首请求+20 温请求，以及 1000/10000 文件的历史投影增长测试。仅临时虚构任务／目录；无业务 API/GT/数据库 schema 修改，非进程冷启动或真实网络、磁盘、生产 P95。**ISOLATED TEST — NOT PRODUCTION VERIFIED**；本版 GitHub CI／测速结果待准确新 SHA 核对。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-11-01 / 42.24.468 仅补隔离入口证据（待 CI）**：已核 467 精确 SHA `41f99eb99ac8a9be10a6b32e8931ae0e7da17232` 的 GitHub Actions 22/22 success。审计指出默认 picker 使用 `defer_role_counts:true`，而 467 的 63.436ms 冷请求测的是完整角色索引；旧 `picker_http_percentiles` 的所谓 first_call 已在前三次请求后预热。本批只补默认/指定角色的真实 ASGI 成功路径、negative-preview 60 合成素材成功路径，以及 CI 显式 1000/10000 张角色规模测试；业务、正式 GT、任务 API 不改。新 SHA CI 与生产 HAR/Bootstrap/浏览器长任务性能均待核；ISOLATED TEST — NOT PRODUCTION VERIFIED。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.467 隔离性能分位数证据化**：466 `bacb072a65778bc5e9ab9e3c77042535aad7b7f9` 的 GitHub Actions **21/21 success**，Frontend Node 1461/1461、Chrome **316/316**；Chrome 日志确认新增 `external-training-observer.spec.mjs` 真实执行。467 复用现有 1000 行素材隔离 TestClient 测试，对训练素材 role-page/page/revision/selection-summary 与素材 status-counts 首次调用和 20 次温缓存请求记录 in-process P50/P95、响应字节及 opt-in Server-Timing，并在 Training Material Picker CI 打印和上传限时 7 天的匿名化报告。不可将此推断为生产性能，真实 HAR/网络/身份/并发与生产 P50/P95 NOT VERIFIED；本版不修改业务或正式数据。467 准确 SHA CI 待验收。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.466 浏览器用例准入补丁**：465 精确 SHA `0781b81472d36013ac06535f0453d98206de43e5` 已核 GitHub Actions 40/40 success、Frontend Node 1461/1461、原 Chrome 三分片 315/315；但 `frontend-runtime-stabilization.yml` 使用显式测试路径清单，新增 `external-training-observer.spec.mjs` 尚未被纳入，不能声称 465 已跑新增 Chrome 用例。466 仅把该真实浏览器 DOM 监听回归纳入原分片，保留 465 已完成的监听器幂等修复、原有 opt-in 性能诊断扩展、业务与正式 GT/POST 不动。466 GitHub CI/Chrome、新增用例执行数待精确 SHA 验收；生产 HAR、P50/P95 NOT VERIFIED。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.465 开发中**：在 42.24.464 精确 37/37 Actions success、Frontend Node 1460/1460、Chrome 315/315 的已验收基线上，定位外部算法训练弹窗的 `MutationObserver → prepend(警告) → MutationObserver` 无界 DOM 反馈循环；修复为单一可更新警告，并在转就绪/切回本地算法时清理。性能诊断白名单覆盖训练素材选择汇总/修订/兼容性/负样本预览和素材状态统计，增加固定名阶段计时，仍需 `MC_PERFORMANCE_DIAGNOSTICS=1` 开启，默认无日志/响应改动。新增原函数 Node、Chrome DOM 集成与 Python 指标隔离回归；465 完整 CI、Chrome、HAR 与 P50/P95 待新 SHA 验收。生产及正式数据不动。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.464 Chrome 千标签稳定性追修**：准确 463 GitHub `0a4e13bfe0ed31a6ac9812ce9abbc18b1818de14` 的 Chrome (2) **100/101 通过、1 失败**，另两分片通过；训练标签复选框因草稿标签变更触发新的训练角色摘要读取，在服务端等待阶段被“读取中”整体替换。464 原位修复 TrainingMaterialSummaryRuntime 正式 GT 标签证据的项目/素材作用域缓存，独立于严格的完整草稿提交就绪检查；显式 GT invalidate 清理。训练 LabelRuntime 保留同作用域已确认正样本列表，避免重复拆装当前 DOM；build/缓存 marker 更新。新增动态 Node 回归；本地前端 **1460/1460 通过**；464 GitHub CI/Chrome 待新 SHA 验收，生产 P50/P95 仍 NOT VERIFIED。生产环境及正式任务、GT、数据存储未改。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.463 P0 读取结算与跨页 UI 隔离复验**：462 `7d705ed68b7a8114258046b64321f8d1d66b4816` GitHub 41 项 Actions 40 绿/1 红，Frontend Runtime Node 1445/1447，红项为两个独立模型目录跨页面完成测试。此次保留单一 PageRequestScope，在原 `api()` 完整响应体读取阶段补导航取消结算；质量中心 `refreshQuality411` 用原 NavigationStability.action 栅栏隔离旧成功、取消错误与缓存；不同模型目录项目级合法完成、同目录乱序不可覆盖；PageExtras 部分失败不再缓存五分钟；素材状态统计修订失效的旧 awaiter 不得覆盖新数量。新增动态 Node 回归及 Chrome 两个场景，完整前端本地 **1459/1459 通过**（正常锁定依赖/获准子进程权限）。Chrome 本地缺测试服务器 Python 依赖与浏览器，准确 463 GitHub Node/Chrome/Actions 尚待新 SHA 验收；真实生产 HAR/P50/P95/跨身份缓存仍 NOT VERIFIED。没有生产部署或 GT/Worker/OSS/DB 修改。原唯一专项见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.462 旧页面附加数据 A→B→A 归属保护**：461 `59553469491d09aada6a47afd02c875fc51cf633` 修复 transport 忽略 AbortSignal 的取消结算并加 10 次导航 Chrome 回归，本版进一步修复 `app.js::extras412` 只检查项目 ID 而允许同项目旧页面成功响应写入及迟到错误 Toast。现在共享 state 写入/错误提示还需匹配页面、项目及导航代次。新增两条 Node 隔离回归，更新 app.js 缓存版本；准确 462 SHA 的 CI、真实生产 P50/P95 仍待独立验收。不部署、不改正式数据。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.461 页面取消 transport 不响应的永久 pending 边界**：460 完整 SHA `e032445d0332f15cbb8fa1026968c98a93dde5e4` 已确认准确 **37/37 GitHub Actions 全绿**。本批复现原 transport 忽略 AbortSignal 时 page-scoped GET 永远 pending；在既有 PageRequestScope 增加导航 retirement Promise 竞争，finally 清理 listener；保留 Request 自带 signal、正式 POST、bootstrap 例外。隔离 10 次 A↔B 迭代 10/10 cancel、finally 10/10、监听器 0 遗留，并新增 Node+真实 Chrome 测试，461 本身 CI 待精确 SHA 核验。生产 P50/P95 未实测，无生产数据/部署操作。见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.460 原生 Request.signal 归属 P0**：459 `8f9a5f3c` 的资源版本断言已提交，准确 CI 仍核验中。本批更正 `PageRequestScope` 对 `new Request(url,{signal})` 的自动覆盖行为，显式保留调用方 signal；普通 GET 页面 Abort 与 POST 持久任务语义不变，新增两条 Node 测试；更新模块及入口缓存键。准确 460 SHA 的完整 CI/真实生产数据/性能尚待核。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.459 静态资源版本断言修复**：458 `7831405198eb136366304ee78433b70020026e3a` 的 37 个工作流 36 成功，Frontend Runtime Stabilization 的 Chrome 三分片均绿，Node 1438/1440；两个失败来自旧资源标记 422614/422620，主入口已加载 422615/422621。本轮仅更新相应测试断言和文档，无业务运行时改动、无生产部署；准确 459 SHA CI 待核。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.458 全站请求生命周期 457 回归修复（CI 待核）**：457 `70abc307` Actions 37/38 成功，Frontend Runtime Stabilization 失败：4 项旧单测合同及 1 项 Chrome 训练素材选择器加载／批量选择按钮态。修复测试对项目和页面代次缓存、状态统计新签名及缓存版本标记的准确断言；原 `TrainingMaterialPickerRuntime` 新增繁忙态按钮同步，并在页面加载中禁止确认。源代码隔离运行检查通过，正式数据与生产服务未触碰，458 准确新 CI 待验收。详情 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.457 全站页面读取消与性能治理（CI 待精确 SHA 核验）**：从 456 `e946993010876494699b136e09023eb60ed45388` 接续。原 PageRequestScope 取消 Promise 永久挂起、PageExtras Inflight 释放、隐藏轮询、模型转换同签名单飞及负样本池缓存已在 453–456 提交。本批针对算法列表独占 GET 取消且共享读取保留、素材分页旧页 Abort/状态统计 3 秒缓存加变更修订防陈旧，修正 456 前端静态守卫与入口格式不一致；新增回归。隔离运行通过，但新 CI / 真实生产 P95 未验收；无生产数据、后端及部署操作。完整说明见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-31 / 42.24.451 AI 审核统计与短屏操作（本地绿、CI 待核）**：从 450 `ce6eb5d5` 接续，原 `annotationStageStatistics` 校验 `boxes` 并展示候选框/采用/拒绝、明确 GT 仅为历史提交记录，未知仍为待核算；1366×768 桌面短屏收紧头部并保持独立候选滚动与底栏。原 Chrome 用例追加 24 图滚动、拒绝、编辑、按钮可视操作。Node 正常权限 **1427/1427**；本地无真实 Chrome/FastAPI/pytest，需对精确推送 SHA 查 Actions/截图。唯一详情见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；生产当前态 GT/真实 OSS 与大库 P95/SQLite v2→v3 备份迁移回滚仍未验。未部署、不动生产数据。
+
+> **2026-10-30 / 42.24.442 审核回执防跨操作误认（CI 待核）**：441 `d5d3ac10` 已核准确 **49/49 Actions 全部成功**，AI 后端、原前端与三组真实 Chrome 均绿。二次审查发现 A 失败后 B 用新 `request_id` 成功时，A 的 pending 查询不能因任务终态变化而错误标成成功。现在原 `review/result.json`/`review/confirmation.json` 有可选的对应操作 ID，GET 恢复必须精确匹配同 ID，原无 ID 客户端无影响；前端也比对 GET 回执 ID 后才处理，Chrome 模拟用真实路径 ID。新增同任务多编号错归属、确认提交 ACK 丢失恢复两个 API 用例，隔离 FastAPI 39/39、完整 Node 1419/1419；442 自身 Chrome/精确 SHA CI 待验。沿用唯一 AI 专项文档；不部署不改生产 GT。
+
+> **2026-10-30 / 42.24.441 AI 审核操作幂等与断线回执（精确 SHA CI 待核）**：基线 440 `3aa8301a`，AI Annotation Recovery/真实 Chrome 均已绿；通用 Release Regression 的 Linux 进程暂停状态即时断言首轮失败 `test_suspend_resume_and_terminate_real_process_tree`、单 Job 重跑又在 `test_unified_cancel_terminates_exact_bound_process_even_when_paused` 失败，准确 SHA 结果 **48/49 Actions 成功、1 失败**，不可称全绿。此次原 v60 `/decisions` 可选稳定 `request_id`：与原任务 `review.lock` 一起持久记录操作 identity/receipt，完成后同 ID 不再次改候选/提交 GT，配置冲突 409；GET `/decisions/by-request/{id}` 查询并对已转移原 Task 状态做安全结果恢复，不确定仅返回 pending 不再次执行。前端同任务 localStorage 保存待核编号、禁并发、超时按原编号查询、持续未知只显示「查询审核结果」，正式 GT 仍依照原 Task/Worker；旧无 ID 调用方兼容。新增 FastAPI/Node/Playwright 验证，本地后端 37/37、完整 Node 1419/1419；441 自身真实 Chrome、生产外部调用/P95 未验证，不部署、不改生产数据。任务名称/模型的全历史搜索、跨候选审核入库聚合、独立路由工作台仍未完成。唯一专项目录见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
+> **2026-10-30 / 42.24.440 AI 任务全历史状态筛选（准确 SHA CI 待验）**：439 `3442fd23` 精确 49/49 Actions 最终成功（Windows 远程训练独立时序失败作业重试后通过），真实 Chrome/AI API 通过。本批在原 v60 AI TaskRepository 的 `statuses` 内筛选，再交给原 cursor/limit 分页，避免「先取当前页再按状态过滤」漏掉较早任务；前端状态改变重置分页/主动取消旧 GET/隔离旧结果，复用原 taskView 中文状态及原列表刷新，不新增 Task/GT/索引 Owner。**任务名称/模型仅当前已取页搜索**，跨历史全文索引与审核入库各状态聚合仍是未完成 P0。定向回归已验，完整 Node/Chrome/精确 SHA CI 和真实 OSS P95 待验，未部署生产。记录见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
+> **2026-10-30 / 42.24.439 AI 创建防重回执及 438 Chrome 回归修复（准确 SHA CI 待验）**：438 `7254db9c` 上继续在原 v60 TaskRepository 中增**可选**创建 `request_id` 的跨进程同 ID 串行创建和确定任务 ID（不新增数据表或队列）；相同输入返回原 Task 回执，输入变化 409，新增 `by-request/{id}` 查回执。原生 JS 在确认快照生成稳定 ID，POST 网络错误按原 ID 查询；失败重试沿用同 ID。438 **真实 Chrome 的 4 个创建用例失败**：新增 hydration/reference/preview 代次计数器 `undefined`，自增变成 `NaN` 导致有效请求结果被丢弃；439 初始化每个计数器为 0，增加静态合同。传统无 ID API、模型冻结/GT/Worker 行为不变；FastAPI 32/32、完整 Node 1416/1416 本地已通过（新增回归后需复跑），精确 SHA Chrome/CI 与生产外部模型待验证。P0 的审核提交幂等、跨历史任务搜索、独立路由、OSS P95 均未完成。详见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；未部署生产。
+
+> **2026-10-30 / 42.24.438 AI 创建请求取消与失效隔离（本批 SHA CI 待验）**：437 `be405299` 的真实 Chrome 报告原确认页已展开、但 POST 503 后按钮持续 disabled；根因是提交闭包 `current()` 再次调用另一闭包私有 `aiCreateIsCurrent429`，438 改为当前草稿 + 原 DOM 连接 + 项目 ID 身份栅栏并加静态合同。原 `ai429Create` 关窗/筛选改动此前只有 epoch 防回写，没有主素材/参考素材/跨页 ID/模型配置请求的主动 AbortSignal；此次在原 modal close hook 和唯一草稿中取消五类旧请求、搜索/提示词计时器，关窗释放草稿；主素材请求保留同条件去重，参考页/配置重试使用代次隔离，批量解析无半成品选择。原 GT/创建 POST/Worker 不受影响；客户端 abort 不等于后端 SQL/OSS 已终止。需精确 SHA Chrome/真实 P95 核验，其他全历史任务筛选/状态聚合/审核幂等/独立页面仍未完成。唯一专项见 [AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
+> **2026-10-30 / 42.24.437 AI 标注 Chrome 真实失败修复及截图证据保留（CI 待验）**：436 `a818e1d8` 精确 41 个 Actions 中 40 成功，`browser-navigation (1)` 105/106，新增确认面板失败；真实根因是提交闭包误用创建闭包私有的 `aiCreateLabelName429`，现复用原公开 `PlatformCore.materials.labelDisplay` 并增 Node 防回归、独立 app.js 缓存键。再给 Playwright 增加 3 个桌面视口的核对前/后截图，原浏览器 CI 保存 UI 截图和失败 trace 为 30 天 artifact。无 API/GT/生产数据变更；437 精确 SHA Chrome/产物待验，不能冒充 P95 或整项视觉验收。详见 [唯一 AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
+> **2026-10-30 / 42.24.436 AI 创建最终确认续批（本批准确 SHA CI 待验）**：从 HEAD `2470ef2a`／VERSION 435 接手，仅在原 `ai429Create` 内实现核对真实有效配置→用户二次确认→原 POST，配置变化确认失效、提交门禁、旧对话框返回栅栏、空阈值校验；新版 CSS/JS 资源键与回归已补。完整 Node 在正常隔离环境 **1415/1415 通过**（沙箱初始 Uppy 临时符号链接测试权限限制）；本地隔离 FastAPI 可启动，但 Chrome 缺失且下载 0 MiB ZIP，真实浏览器/最终 SHA CI 待验。后端跨历史任务搜索与统计、独立路由、服务端请求幂等、OSS/模型性能及生产 HAR/P95 **均未完成**。准确范围、证据与接续顺序见 [唯一 AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；未部署/改生产 GT。
+
+> **2026-10-30 / 42.24.434 AI 自动标注真实单图试跑**：433 的代码提交 `80502b0d` 精确 22/22 GitHub Actions、真实 Chrome 307/307 已验。本批在原 v60 AI annotation API/Worker 适配器上增量增加单素材显式真实试跑，输出不会创建 Task/Candidate 或覆盖 GT；创建区同层选图、错误重试与结果变更失效。详细测试与遗留见 [唯一 AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；本批最终 SHA CI、真实远程模型和 OSS 性能未验，未部署。
+
+> **2026-10-30 / 42.24.429**：428 基线 `b13d8705` 已核准确 38/38 GitHub Actions 全绿；413/415/416/425/427 的 P0 Owner 已存在。此次原 TrainingSubmit 迟到成功/核验结果不再提示到替换的训练弹窗，原持久任务/GT/幂等不动；生产 A800 磁盘、请求 P50/P95、角色精确冷索引、ZIP 恢复、多类别 Worker 与副本清理均未现场验证。见 [唯一 P0 进度](performance/2026-10-29-p0-followup.md)，429 自身 SHA CI 待推送核验，未部署。
+
+> **2026-10-29 / 42.24.418 素材选择器 CI 合同测试纠正**：`a694ee4d`／417 在 Training Material Picker/contracts 再次因路由 introspection `StopIteration` 失败（81/82 后端通过，Chrome Job 通过），因此 417 不是通过版本。418 移除该失败用例对 `.routes` 内部结构的依赖，调用已有同路由公共 HTTP 合同并断言迭代空选材的真实统计、免角色扫描；本地 HTTP Portal 存在超时等待故未宣称该用例本地通过，准确新 SHA CI 待验，生产和运行时代码未动。详见 `performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 / 42.24.417 素材选择器 CI 单测纠正**：`52c3ecf7`／42.24.416 经 GitHub 完整只读检查为 **29/30 Actions 通过**；唯一红项 Training Material Picker/contracts 中 1/82 后端用例因 `TestClient.app.routes` 路由枚举 `StopIteration`，real Chrome 已通过。417 定向让测试从原始 FastAPI app `.routes` 找真实 endpoint，不变更运行时代码、GT/训练提交合同或数据库。新 SHA CI/生产待验，详见 `performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 / 42.24.416 迭代角色页 P0**：原 `/role-page` 在继承版本的只读角色合同内逐页完整 SHA256 `best.pt`；本批仅角色预览和选材意图显式省略哈希，最终提交/Worker 冻结照常真实 SHA256。原诊断增加角色/历史/页使用关系分段；12k/50k 候选与现场 22.87s 根因仍待实测。准确 CI/生产未验，未部署。详见 [唯一台账](performance/2026-10-29-p0-followup.md)。
+
+> **2026-10-29 / 42.24.415 P0 合同纠正**：CI 证实 414 空摘要 `eligible_total=null` 违反既有真实全池总数合同，已回滚；只保留 413 前端零选材免请求、后端空态不进入训练提交角色校验。修正 `_IncludedRouter` 测试枚举。精确新 SHA CI 与 A800 仍待核，未部署。详见 [唯一台账](performance/2026-10-29-p0-followup.md)。
+
+> **42.24.414 历史红项（415 已回滚）**：曾试图直接让 API 空摘要跳过整池统计并把总数置为 `null`；旧合同不允许，不能视为已交付优化。
+
+> **最新 P0 接续（2026-10-29 / 42.24.413，本地已验证、CI/生产待验）**：`training_options` 已从旧服务器请求期串行健康检测、Paddle configs/weights rglob、项目训练历史 `job.json` 扫描转为有界快照/轻量索引；迭代 `selection-summary` 的 `image_ids=[]` 合法，前端零选材本地空态。旧服务器检测缺失/过期显示未知、需显式检测；旧 Paddle 配置需手动重新启用形成新快照。Python 137/137、Node 1404/1404，现场 26.5s 分段、`role-page`、P50/P95 尚未取证。详见 [P0 续批台账](performance/2026-10-29-p0-followup.md)；最终 SHA/CI 必须独立核验，未部署。
+
+> **最新接续（2026-10-29 / 42.24.412）**：训练素材状态及新增标签正样本证据修复，业务/测试提交 `86c83c30fd2056f61dd58fb79772bc1f3cc86cbc` 已通过精确 SHA GitHub **21/21 套件、57/57 Job、浏览器导航 107/107**；纯文档补记提交自己的 CI 需再核，仍未部署生产。详情见本文末尾及 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。以下 42.24.411 小节是上一批历史。
+
+## 2026-10-29｜性能诊断与万级素材/GT 隔离验收（42.24.411，代码 SHA CI 全绿）
+
+唯一长期开发分支 `feature/external-algorithm-publishing`。起点远端 HEAD `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`、干净工作区；精确基线 GitHub Actions **24/24**、Checks **65/65** 均成功。目标版本 `42.24.411`，最终提交及其 CI 必须在推送后另验；未部署生产。
+
+代码提交 `5ddc516499b99c80b6fe980b64a6d84c860aa466` 已通过 GitHub 精确 SHA 检查套件 **25/25**、Job Checks **68/68**，Chrome/Windows 均 success；Blob 与完整 Tree 校验一致。此后更新进度文档的纯文档提交 SHA/CI 需单独确认，不借代码提交绿色；当前 HEAD 以 `git rev-parse HEAD` 为准。生产现场仍未验收。
+
+- **P0-01 已开发待验证**：在原 opt-in `MC_PERFORMANCE_DIAGNOSTICS=1` 增补现有 Repository SQLite execute/fetch/transaction 计时、外部畅联鉴权等待与真实 HTTP、缓存 SHA 文件读取，以及 v63 安全路由类别。原 API body、Token singleflight、正式 GT/训练资格不变；SQL/项目/URL/凭证不记日志，未知锁等待仍为 `null`。本机首次新增诊断测试 RED（原模块无 `connect_sqlite`），GREEN 及 API 合同通过；浏览器/生产真实 P95 未验。
+- **P0-02 已开发待验证**：隔离 12k Material+GT 全标签/角色/深页/统计次数与 EXPLAIN 新回归通过，50k 冷/热角色及 6k 两类 SQL 性能对照完成。对 `%LIKE%` 的延迟取页未见稳定提速，故不改 SQL、不加索引/FTS/迁移，不破坏原材料/GT/任务真值。
+- **测试**：相关 Python **208/208**，原 FastAPI 性能 API **3/3**，完整 Node **1396/1396**；本机 Chromium 不可用，但代码 SHA 的真实 Chrome CI 已通过；文档补记提交须再验。`AGENTS.md` 长期规范没有变化，因此按文档管理规则不堆日志。
+- **剩余 P0**：P0-03 浏览器代理/网络服务端同 ID 采样（待开发）、P0-04 旧训练跨 Worker 与归档现场验收（已开发待验证）、P0-05 算能等芯片真实 SDK 耗时与 UNKNOWN（已开发待验证）。P1：工作副本候选清理、普通历史 Train/Val/Test 原图溯源均待生产只读取证，禁止删除、重建或伪造。
+- **下一轮**：先核准确新 HEAD 与 Actions/Checks；读取唯一主进度 `docs/performance/2026-10-29-p0-followup.md` 顶部；按 P0-03→04→05 继续，生产 HAR、SQLite 冷/热 P95、真实 SDK 均未验证，不能凭合成数据宣布可部署或根因确定。不合并 main/Tag/Release、不 force push、不自行部署。
+
+## 2026-10-29｜P0 新畅联 API 鉴权网络往返消除（42.24.410 / LOCAL GREEN、CI 待核）
+
+基线远端 `1d027803`／42.24.409；原 v63 路由持有一个 `ExternalAlgorithmPlatformService`，但每次业务请求仍创建一个全新 `ChangLianClient`，每个客户端在首个业务 GET 前独立签名并申请 Token。新增仅进程内/服务内、已保存凭证生效的单飞缓存，作用域为 URL、Key/Secret、两个鉴权端点的 SHA256；不共享 HTTP Session、不持久化 Token，不缓存草稿配置。配置变更、显式退出、HTTP 401 清缓存，不自动重试写请求。8 个同时 GET 原产生 8+8 次认证，当前仅 1+1，业务 GET 仍为 8；无生产耗时推断。受影响 Python 137/137、完整 Node 1396/1396 通过；发版、准确 SHA GitHub CI 和真实远端延迟仍须核验。真实 `%LIKE%` 查询 4 万行对照没有显著改善，保留原 SQL。A–F 详见 [P0 性能续批](performance/2026-10-29-p0-followup.md)。不部署生产、不改数据库、不合并 main、不强推。
+
+## 2026-10-29｜P0 负样本池并发筛选修订保护（42.24.409，LOCAL GREEN / CI 待核）
+
+接续 `3fdc5f33`／42.24.408，已独立核实 23/23 Actions、61/61 Checks 成功。原 GT 选择器和训练角色页在先计算负样本池成员、再读取正式素材页期间允许跨请求池修改，返回结果可能混用旧候选名单与新修订号。本批在原版本快照/现有 revision 读点增加精确比较，不一致明确拒绝并提示重试；没有新增数据表、任务、调度或外部操作，原池成员资格和正式 GT 判定不变。新增两个先失败后通过的并发保护测试；受影响 Python 35/35 与完整 Node 1396/1396 通过。准确新 SHA 的 CI 和真实生产性能仍须核验，未部署生产。专项详见 [P0 性能记录](performance/2026-10-29-p0-followup.md)。
+
+## 2026-10-29｜P0 GT 翻页快照元信息收敛（42.24.408，LOCAL GREEN / CI 待核）
+
+接续 `95e52d32`／42.24.407，修复正式 GT 翻页读取后跨新连接获取负样本确认数和池修订号的问题。现在从原 Material + `annotation_gt` 同一个 `BEGIN` 快照读取，避免额外打开两个 SQLite 连接，以及并发写入时将旧页与新修订号混合；兼容无可选历史表的旧项目。对原正负样本资格、筛选、标注、训练任务、数据库 schema 均无更改。原路径新增一条先失败后通过的保护性回归，受影响 Python 33/33、完整 Node 1396/1396 通过。远端最终 CI 仍待准确 SHA；真实生产 HAR/SQL/网络耗时未采样，不宣称全部 P0 现场验收完成，不部署生产。专项 A–F 见 [P0 性能记录](performance/2026-10-29-p0-followup.md)。
+
+## 2026-10-29｜P0 正式 GT 计数与性能诊断完善（42.24.407，LOCAL GREEN / CI 待核）
+
+`f45e8934`／`42.24.406` 已 25/25 GitHub Actions、65/65 Checks 全绿，未部署。接续 [专项 A–F](performance/2026-10-29-p0-followup.md)：GT 选择器的重复 `COUNT(*)` 以素材/正式标注两个独立 revision、两份 SQLite 文件身份和精准筛选哈希缓存，128 项有界；新增 RED→GREEN 覆盖跨页复用、GT 编辑和素材状态变更两次失效。保持原 AnnotationRepository 的真值、负样本、标签、排序和训练角色。默认关闭的性能诊断现在显示素材列表/计数与显式资源检测的独立耗时，不记录资源身份、SQL、API Key，也不主动触发 SDK/远端探测。本轮本地 Python 与 Node 结果、最终 SHA CI 以专项最新记录和实际核验为准；生产 HAR/远端耗时/真实规模仍须现场只读验收，禁止生产自动部署/数据修改。
+
+## 2026-10-29｜P0 素材深分页与筛选计数（42.24.406，LOCAL GREEN / SHA CI 待核）
+
+延续 [P0 任务记录](performance/2026-10-29-p0-followup.md)。本批只调整 `MaterialRepository` 和正式 GT 选择器的分页 SQL：在无 payload 过滤条件时先用窄索引翻页，再只对当前页补取 JSON；`LIKE '%...%'`、JSON 过滤仍保留原查询计划，所有排序、页码、cursor、total、角色及负样本业务语义不变。筛选总数按 SQLite DB 身份及 revision 做 128 项有界跨请求缓存；第二 Repository 模拟其他 Worker 提交后缓存失效。旧清洗确认测试新增针对原有效范围校验的 mock，生产的证据校验保持不变。6000 条合成样本的深页旧/新约 0.18/0.09–0.10 ms，仅用于证明路径效果，绝不代表生产数据。定向回归和最终 CI 以本轮实际命令/准确 SHA 为准；网络 Stalled、畅联云/芯片外部检测、正式 GT 大库及线上 P95 尚待只读取证；不部署、不触碰正式数据。
+
+## 2026-10-29｜P0 训练只读热路径与素材用量索引（隔离测试通过／最终 SHA CI 待验）
+
+基线 `e777983c845934af0a4e8694b3d3ba53c1b9a080`／VERSION `42.24.404`；本批版本 `42.24.405`。延续 [P0 性能专项](performance/2026-10-29-p0-followup.md) A–F 跟踪：GET `/jobs`、项目详情、训练报告和 v53 启动快照不再启动旧训练/写历史索引/触发版本归档；旧队列仍由独立启动维护线程按项目及跨进程文件锁继续恢复，旧版本归档仍保留原 CAS 并串行化。原有 Task/Durable Owner 和正式模型/素材数据不变。训练素材使用 token 通过原 SQLite 复合主键批量精确定位、先去重窄 ID 再读原记录，项目隔离与重复身份不变；无新表、无索引迁移。隔离 Python 189/189（后补保护 9/9）、完整 Node 1396/1396；高密度样本旧/新 30.33/0.42 ms 是本地中位数，非生产承诺。首次 `cd04e635` 的 Release Regression 发现旧报告测试夹具不接受新增只读参数（373 通过、7 失败），已保持生产合同，仅纠偏夹具并单文件 10/10 通过；修正后最终 SHA 的 CI 仍待核验。生产 HAR、旧队列真实现场未验；未部署、未碰生产数据、不宣称所有 P0 关闭。
+
+## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
+
+[唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。
+
+## 2026-10-29｜全平台性能第一阶段审计与两链轻量修复（代码及隔离CI已验收）
+
+[唯一专项](docs/PLATFORM_PERFORMANCE_AUDIT_2026_10_28.md)记录220历史/1000素材真实隔离计时。原/jobs仅all-Durable同请求复用、终态N+1消除，legacy后读/活动fresh get保留；素材usage重复revision连接移除，冷角色全局计算保留且不宣称整体提速。默认关闭纯ASGI标量诊断/Request ID；VERSION399，定向Python、Node22与Chrome1通过，未全仓/生产/GPU操作。其他登录/算法/素材/设备/转换/上传仅审计与排序，下一步须用户确认；5944/模板/其他工作树保留，代码4cd4e3e47c3a1e65910345bb3924b2ec2ad55985准确47/47 Actions、130/130 Checks成功；文档自身HEAD的CI独立核验。
+
+## 2026-10-28｜模型版本转换模块优化（代码及隔离CI已验收）
+
+[唯一专项](docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md)记录原Owner渐进加载/单资源300秒观察与检测、20条服务端历史分页与只更新活动任务、CSC四矩阵及外部参考ZIP。VERSION398；真实微型ONNX/参考CLI、远程合同与提交回滚、定向Node41及Chrome通过；受控旧1380ms/新36–79ms不代表生产。CSC未安装设备、applied=false/板端NOT VERIFIED；不部署/生产操作，5944/模板与其他工作树保留。代码f2af4af35e45b86920bbddcc63aa13df816d178b准确41/41 Actions、115/115 Checks成功；文档自身提交Checks独立核验，勿借旧绿。
+
+## 2026-10-28｜目标负样本、池管理与真实YOLO导出（代码及隔离CI已验收）
+
+[唯一专项](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部记录目标/素材版本绑定确认、原GT不变、Prepare实际空标签及正样本门槛、池关联与独立管理分类、原Picker/三步提交及按需CSC预览。VERSION397；真实导出、必要Python/Node及Chrome相关场景分批通过；最终代码92203c8c准确21/21 Actions、57/57 Checks成功，旧失败及修正留痕。本次文档自身HEAD另核CI，不借旧绿。无生产/GPU操作；旧V1–V3、原Task/Draft/GT/Storage保留，5944及其他工作树/WIP不动。未验证NAS/OSS/真实模型效果，勿将池成员当所有算法的已确认负样本。
+
+## 2026-10-28｜三步训练工作台、可信素材历史与四预设CSC（代码及隔离CI已验收）
+
+[唯一专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)顶部记录正式表单先开/独立加载、稳定分页标签、原Picker筛选恢复、Task库可重建使用投影与祖先/同源隔离、train-only四CSC及原报告实际数量。VERSION396；业务e1ed27bf准确39/39 Actions、109/109 Checks成功，Node1386/1386、原Chrome303/303通过；截图/四金值/隔离性能及失败修正见专项。本次纯文档HEAD自身CI另核，不借旧绿。原Task/Draft/Submit/GT/Storage及fencing不重建；5944、a741075c WIP/模板及其他工作树保留。无生产操作/真实GPU；NAS/OSS/摄像头/模型效果NOT VERIFIED。接续先核对专项及准确HEAD，勿重复建设。
+
+## 2026-10-28｜上传与场景进度UI/高级Tab定点修复（代码及隔离CI已验收）
+
+[唯一专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录隐藏输入重复美化、原队列预览/URL释放、scenario唯一批次进度及四组下划线Tab。VERSION395；定向Node120及Chrome7种场景通过，原业务Owner/路由/后台合同保留。代码ed19d9f1准确22/22 Actions、58/58 Checks，Node1381/Chrome302通过；本次纯文档HEAD自身CI另核，不借旧绿。生产推理/母模型大文件未验，不部署。原a741075c/退役WIP/5944与其他工作树全部保留。
+
+## 2026-10-27｜场景检测创建恢复（代码及隔离CI已验收）
+
+[唯一专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录原Task异步准备/幂等身份/暂存原图恢复、lease与模型引用保护、真实阶段及稳定原图预览。VERSION393；代码28fbea92准确35/35 Actions、97/97 Checks成功，Node1377/1377、Chrome301/301；旧失败与修正留痕。文档提交自身HEAD另核CI，不借旧绿。生产OSS/GPU/性能NOT VERIFIED，不部署；5944/其他WIP保留。本机工具断连后仅文档经远端安全快进提交，接续先fetch保护本地状态，从专项与原Owner继续。
+
+## 2026-10-27｜训练SQLite锁、Lease与跨恢复计时（代码及隔离验收完成）
+
+[唯一专项](TRAINING_SQLITE_LEASE_TIMING_2026_10_27.md)记录有限忙重试/确认期限、原fencing/GPU保护、短事务及登记前启动校验；原job执行片段/三时间/UTC/最终Worker与列表详情同步。VERSION392，d37400c6准确47/47 Actions、128/128 Checks成功，Node1357/Chrome301通过；末次ETA未知保护及文档自身HEAD交付前另核，不借旧绿。实际生产锁持有者、原任务首末/累计/Worker及真实GPU未核准；不部署/改生产，原ZIP/WIP/5944/模板保留。接续仅按专项的定向只读证据计划，不重复建设Owner或回填推测时间。
+
+## 2026-10-26｜ZIP任务记录安全P0（代码及隔离CI已验收）
+
+[唯一专项](ZIP_IMPORT_RECORD_SAFETY_2026_10_26.md)记录根因、RED/GREEN与接续。原停止栅栏保护活动删除/提交/迟到写入，终态轻量证据归档与临时清理分离；原ZIP/任务中心UNKNOWN、退避及跨标签页恢复，持久写错/死前驱有诊断。VERSION391，必要Python44及窄修复2、Node101、Chrome5不同场景通过，独立审查问题已闭合；业务代码f181a9e0准确22/22 Actions、59/59 Checks成功，Node1355/1355、原Chrome298/298；本次纯文档及新增Chrome接线自身HEAD交付前另核，不借旧绿。生产两任务入库及事故原因未知；不生产操作、不重建Owner，原WIP/5944/两份模板测试保留。
+
+## 2026-10-26｜FiftyOne可选智能分析（代码及隔离CI已验收）
+
+[唯一专项](FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)顶部为接续：VERSION390，代码fd850e62准确23/23 Actions、58/58 Checks成功；三个原区域/原Task与GT Owner/默认关闭、真实Brain、只读复核及原保存已接通。旧CI失败及修复留痕。超过2000张完整分析未实现；生产许可、Linux/NAS/OSS/真实模型与生产性能NOT VERIFIED，早期PoC删除被自动审批拒绝保留。原WIP/5944/两份模板测试保留，不生产操作。本次纯文档HEAD自身CI另核。
+
+## 2026-10-26｜ZIP旧数据零损坏补验（隔离及专项CI已通过）
+
+[唯一专项新增14条矩阵](ZIP_IMPORT_METADATA_PERFORMANCE_2026_10_26.md)。基线4ff26779/VERSION389；历史71f真实schema5 DDL及SQLite备份，全业务表/原图/GT/Snapshot/任务与模型引用、缺dataset default及旧claim、升级中断/恢复2场景通过；相关13/13，补验57052f30准确22/22 Actions、56/56 Checks成功。文档摘要换行说明修正自身HEAD另核。仅测试/夹具/CI/文档，无业务代码或版本变更；索引5→6必要性、首次锁风险与备份回退已明示，未生产部署/迁移。最终提交自身CI未通过不得建议上线，旧绿色不替代；原WIP/5944/模板保留。
+
+## 2026-10-26｜ZIP导入素材索引性能（代码及隔离CI已验收）
+
+唯一需求/设计/性能/失败及接续：[ZIP性能专项](ZIP_IMPORT_METADATA_PERFORMANCE_2026_10_26.md)。VERSION389，代码69451cbb准确48/48 Actions、129/129 Checks及Linux真实HTTP10k成功；本地A–D原逐图全量1001/10001→0，D1855.60→321.15秒，Windows完整HTTP10k445.52秒。schema6稀疏索引/原锁及恢复保留、只读兼容5/6；CRT EACCES读冲突有界恢复，无虚假0。文档自身最终HEAD另核CI；生产、大图及NAS/OSS/S3未验，不部署/改生产；原标注WIP/5944/模板测试保留。
+
+## 2026-10-26｜文件访问与外部同步删除P0（代码及隔离CI已验收）
+
+唯一需求/设计/进度/验收：[P0安全专项](P0_FILE_ACCESS_EXTERNAL_SYNC_SAFETY_2026_10_26.md)。基线60dd80d8/VERSION387，远端一致；先受控文件及旧地址兼容，再同步完整性/确认/原任务安全清理和UI。P001与P002已实现并经独立复核，VERSION388，代码da4de467准确22/22 Actions、59/59 Checks、Node1342/1342与Chrome291/291成功；Linux文件安全50/50无跳过，登录Chrome2/2。文档自身最终HEAD另核CI；产品删除权威契约未取得，自动确认默认关闭，版本remove不是产品删除证据；不部署、不轮换生产密钥/删生产数据，原标注WIP/5944/模板测试与其他工作树保留。
+
+## 2026-10-25｜训练创建Loading与异常恢复（代码及隔离CI已验收）
+
+唯一需求/根因/测试/接续：[训练创建专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)顶部。原submit全过程try/finally、独立最终DOM恢复、VERIFYING/稳定UNKNOWN及原ID查询、准备请求截止/旧项目和Modal隔离、后端业务码透传与锁竞争核验；VERSION387。原标注工作区4个未推提交与WIP、5944及两份模板测试全部保留，隔离修复不混入；本地Python11、最后受影响Node95、Chrome56不同场景通过；审查补齐409/5xx正文中断防重及外部核验超时重试，最终代码382c1b95准确26/26 Actions、68/68 Checks成功，409损坏JSON最小安全修正已验收；文档最终HEAD另核。不部署、不改生产数据或启动训练。
+
+## 2026-10-24｜高级功能四入口整合（代码及隔离CI已验收）
+
+唯一映射/设计/进度/截图：[前端治理记录顶部](frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，无后端/数据库改动；导航取消reason沿原PageRequestScope隔离。VERSION386/cache434；f95e221f准确CI23/23 Actions、60/60 Checks成功，Node1331/1331、Chrome267/267通过，旧失败及关闭证据见记录。文档自身最终HEAD另核Checks。5944与两份模板测试保留；不部署、不改生产数据，真实GPU/NAS/OSS/对接生产环境NOT VERIFIED。
+
+## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
+
+唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。
+
+## 2026-10-24｜ZIP自动标签确认与重复窗口治理（代码及隔离CI已验收）
+
+唯一记录：[Uppy专项顶部](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原Runtime统一自动确认/主动关闭抑制/成功立即关所属内容，旧列表不倒退；Uppy/旧入口同Owner，原选择层交接及复用节点保护，多ZIP独立顺序，完成后整理窗口改手动。VERSION384；代码/测试610878cd准确CI23/23 Actions、60/60 Checks成功，Chrome264/264、Node1328/1328；ZIP相同业务代码52939779的独立Chrome41/41。历史失败和最小Python9/Node/Chrome证据见专项，文档自身最终HEAD交付前另核Checks。5944及两份模板测试保留，无后端/GT合同变更或生产操作。
+
+## 2026-10-24｜创建训练弹窗滚动修复（代码及隔离CI已验收）
+
+唯一记录：[训练创建专项顶部](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原CSS收敛高度/单一layout滚动、标签自然展开、footer真实占位；无JS或后端/参数/调度变更，important减少15。五视口真实wheel5/5、原标签提交Chrome1/1及Node27/27通过；VERSION383，CSS cache4226355，代码f5ba6192准确CI 36/36 Actions、99/99 Checks通过，文档最终HEAD自身另核Checks。5944及两份模板测试保留，未部署/未启动训练。
+
+## 2026-10-24｜普通图片上传同一需求复核
+
+[唯一专项](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)顶部已记录当前b1b32a44/VERSION382复核：既有本地Uppy/原multipart/本批确认/clean-ready-pending/标注与恢复直接复用，无业务代码变更。新Python31、Node25、真实Chrome五图/部分失败2项通过；原每批一次清洗限制保留，不冒充多轮追加已实现。代码SHA21/21 Actions、55/55 Checks通过；本次文档新HEAD另核CI。5944及两份未跟踪模板测试保留，无生产操作。
+
+## 2026-10-24｜P1跨标签负样本与首次训练（代码及隔离CI已验收）
+
+唯一需求/进度：[训练质量专项P1](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)。任务标签与原始标签分离，正/已确认负/待审核共享后端合同；人工有限批审保留原框、CAS/源SHA与事务审计；新V3纯负保留像素/空YOLO、混合与历史V2保护不变。VERSION382，必要Python/Node与Chrome四个独立场景通过；代码cd8cde89准确CI 23/23 Actions、60/60 Checks成功，最终文档HEAD自身另核Checks，详见专项回执；不自动确认/丢弃/训练，不生产操作。5944及两份未跟踪模板测试保留。
+
+## 2026-10-23｜普通图片Uppy与本次上传处理（代码及隔离CI已验收）
+
+唯一进度：[Uppy专项普通图片节](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原multipart64张/128MB顺序Owner、UploadBatchStore及唯一任务中心复用；本地中文Uppy、48条本批确认页、真实失败/待核验、刷新恢复、原清洗/标注已接通，ready不写GT。Python31、必要Node及Chrome五图/部分失败/65分批/ZIP冒烟通过；VERSION381，修正646aeb0a实际22/22 Actions、58/58 Checks、Chrome250/250与Node1322/1322通过；本次文档自身HEAD另核Checks。每批仅一个原清洗任务限制保留；生产未验证/未部署/未写入，5944及两份模板测试保留。
+
+## 2026-10-23｜旧素材全面检查体验修复
+
+[唯一专项](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)顶部为接续依据。一次开始顺序50条、真实汇总及25条明细分页、暂停/刷新/失败恢复已实现；原迁移单独确认，检查不改正式数据。VERSION380，Python15/Chrome3/版本9通过，代码6f663e1c实际38/38 Actions、102/102 Checks通过；本次文档新HEAD另核。原图仅逐条检查时点，库外原位改写/无版本GT不冒充全库原子证明；5944及两份模板测试保留，未生产操作。
+
+## 2026-10-23｜P2模型深度评测（代码及隔离CI已验收，生产未验证）
+
+唯一需求/进度/限制：[场景评测专项P2](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。A1只读冻结信任、A2正式匹配证据和有界框、B同基准逐图变化、C原反馈/已审核候选/训练草稿衔接已提交；VERSION42.24.379。原场景Chrome28、Node82及必要Python分批通过，未跑全仓；dHash/连续帧/审核版本缺历史证据保持未检查或未知，框证据上限200图/每层120。5944和两份未跟踪模板测试保留，不部署/不生产写入/不自动训练。代码9280实际21/21 Actions、55/55 Checks通过，Node1311/1311、Chrome248/248；本次文档自身SHA交付前另核CI，不借旧绿；不重建存储、GT、Task或Candidate Owner。
+
+## 2026-10-23｜存储生命周期第二阶段：代码及隔离CI已验收
+
+唯一进度：[生命周期专项](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)顶部S2矩阵/17项回答/最终回执。VERSION42.24.378，代码42339bd4da00d5f0ea082f2fd16791564bdb990a实际23/23 Actions、62/62 Checks、Node1305/1305及Chrome244/244通过。排队仅索引、lease后本地/远程物化、原Scheduler安全回收、失败详情/历史只读、临时元数据工具、缩略图及真实存储口径已验收；成功未知Checkpoint保留，只释放input。原图物理GC仅受控local离线，NAS/OSS/在线不开放，真实生产量/外部存储/GPU未验。5944及两份未提交模板测试保留，无生产操作。本次文档自身HEAD必须另查准确CI，不借旧绿。下一步按专项生产前只读计划和独立授权接续，勿重建Owner或扩大模板。
+
+以下为历史其他专项入口，存储旧阶段结论以最新唯一专项为准。
+
+## 2026-10-22｜训练模式、创建流程与评测可信度（审计进行中）
+
+唯一综合进度：[训练模式专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)顶部2026-10-22节。基线3cc331f2/VERSION377已fetch且干净；先审计服务端预设/参数快照、阶段val与独立Test、按需准入，再P1创建及管理、CDE增量和P2。已发现旧尺寸优先及预设隐式阈值停止，尚未修复/新测试/CI；原场景/素材/标注Owner复用。禁止生产部署/数据/权重/GT写入/真实GPU，其他工作树保持。
+
 ## 2026-10-22｜场景评估、素材与标注UI（代码及隔离CI已验收）
 
 唯一需求/进度/问题/截图：[本轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。P0分别提交1f606d30/13c70368/b8d04f04；正式训练资格贯穿原Worker/Agent、双模式内联框证据、素材同Owner网格/列表、标注唯一审核/正式色/居中已实现。P1复用原ECharts与严格同基准比较；VERSION42.24.377，最终代码42bf33b2实际23/23 Actions、60/60 Checks、Chrome239/239；本地Node1297/Python213通过，广泛352曾339通过13失败后逐项fresh通过，未宣称重跑全绿。本次文档/旧fixture补提自身完整SHA须再核CI，最终回执与限制见唯一专项。未生产部署/数据/权重写入/GPU；从唯一专项接续，禁止重复建Owner，生产真实精度与许可仍需独立核验。
@@ -3081,3 +3411,29 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
 - Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
 - VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
+## 2026-10-29｜训练素材状态及可新增标签范围修复（42.24.412，CI 待核）
+
+唯一长期开发分支 `feature/external-algorithm-publishing`；本轮从已确认远端 `95ebbe5a3afa82aa88a8b5d0c6e8a8ee9bbcda49` / `42.24.411` 继续，目标 VERSION `42.24.412`，准确新提交 SHA、是否推送及全部 CI 应在提交后核实，**未部署生产**。唯一权威需求、RED/GREEN、根因、代码、风险和本轮验收状态见 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原 `selection-summary` 现独立返回仅选中素材有效正式 GT 正样本的 `positive_label_codes`；新增标签不再来自全项目字典，选材变化撤销无证据勾选；上一版本继承排序和 class_id 原合同不变；普通 Picker 不再以笼统待审核代替标注状态，按目标确认负样本与正式 preflight 仍安全保留。12k 隔离素材回归已新增；Node/Python、浏览器准确 SHA 最终状态需按提交证据更新。后续按原 [P0 性能记录](performance/2026-10-29-p0-followup.md) 继续真实 HAR、跨 Worker、芯片探测现场验收；不得因本次 UI 修复宣称生产 P95 已验。
+> **2026-10-30 / 42.24.430**：429 `a3cee98c` 完整 Actions 38 成功/1 失败，Chrome 唯一 `refresh-error` 是成功关窗后后台列表刷新失败被新归属保护误抑制；430 仅允许原 DOM 根与任务 ID 未变时提示，仍隔离替换训练弹窗。Node 59/59，本次新 SHA CI 待核；唯一台账 [P0 进度](performance/2026-10-29-p0-followup.md)，未部署。
+> **2026-10-30 / 42.24.443 AI 标注全历史任务搜索（精确 SHA CI 待核）**：基线 442 `2696b6e0`／49/49 Actions 全绿。原任务列表只搜索当前 50 条，本批在唯一 `TaskRepository.tasks` 增可迁移的搜索元数据和原请求冻结时同步写，旧任务按项目锁在后台有界分批只读回填；未完整之前 202 显示索引进度、损坏 503 显式重试，不以部分数据报空；服务端 `q + status + cursor` 在 SQL 中先过滤再分页。原生 JS 防抖、Abort 与索引状态防串页，新增 unit/API/Node/Chrome 回归。未部署、未接触生产任务或 GT，GitHub 精确 SHA CI、生产 P95/OSS 实测和阶段统计/独立路由审核 P0 仍待完成。详见 [专项任务与回归](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+## 2026-10-30｜42.24.444 AI 审核键盘操作增量
+基线 443 `6ec1f217`；候选卡片支持可见焦点、左右选图、A/R 采用或拒绝草稿、Alt+左右翻页；不通过快捷键提交 GT，加载/输入/编辑/审核结果未知时禁用。Node 182 个文件在沙箱 181 通过，Uppy 子进程 EPERM 的单文件提升权限后 3/3 通过。真实 Chrome/OSS/P95 未验；原 AI 专项 P0 仍未完成。
+## 2026-10-30｜42.24.445 AI 标注任务阶段统计（本批 CI/生产待核）
+原 CandidateStore 候选与已提交 GT journal 为唯一统计源；TaskRepository v3 加法投影用于一次查询当前页，旧任务有界后台回填且未知不显示为 0。生成、人工审核、正式 GT 提交后更新投影，原生 JS 展示候选图、已审/待审、GT 提交记录；外部同步/当前 GT 未覆盖不在该计数中。后端 97 项、追加 4 项通过，完整前端 Node 在允许子进程环境 1421/1421 通过。真实 Chrome/OSS/P95/生产迁移未验。生产部署前要求任务 DB 一致性备份和 v2→v3 回滚演练。详见原 AI 专项文档。
+> **2026-10-30 / 42.24.446 AI 审核主内容区独立工作台（本批 CI/生产待核）**：基线 445 `50252845`，沿用原 `reviewAiLabel427`、Candidate/GT owner、Annotorious 3.9.5（BSD-3-Clause）及原审核 Request ID/持久 Worker。审核在自动标注页的主内容区展示，不再通过全屏模态框进入；可同页完成候选框编辑、逐图决策、标签映射、持久提交和返回。切任务清理旧编辑实例并取消旧页显示，未保存修改需确认，提交中禁止离开；可见的旧全局汇总区在审核期间隐藏。前端完整 Node **1421/1421 通过**；本地缺 Chrome/浏览器测试服务依赖，真实 Chrome 和精确 SHA CI 待验；独立 URL 深链接与原生浏览器后退尚未接入。真实生产 OSS/远程模型与大规模性能、生产任务 DB 迁移及回滚均未执行。唯一详细记录见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+> **2026-10-30 / 42.24.447 AI 审核 URL 路由与 446 CI 红项（本批 CI 待核）**：446 精确 SHA `7eb9dd3e` 当前可查询 20 Actions 中 19 成功/1 失败，失败的 Label Normalization Contract 是静态 source guard 误用 `annotation-task-view.js?v=422002` 旧版本，后端及前端合同步骤均已通过。本批改守卫为模块 import 前缀，补 Node 防旧版本断言复发。原 AI 审核主区增加 `#ai-review/<task_id>` 地址，前进/后退/刷新由原 `reviewAiLabel427` 重新读取；只有地址状态的新小模块，Candidate/Worker/GT owner 不变。原导航可选 `canNavigate` 先查未保存/提交中保护，再移动请求及页面 epoch。新 Node/Chrome 用例覆盖路由恢复与三视口，精确本批 CI 待核；生产 DB 迁移、OSS/外部模型及大库 P95 仍未验证，不部署。详情见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+> **2026-10-31 / 42.24.448 准确 CI 故障纠正（新 SHA CI 待核）**：447 精确 SHA `95dabdba` 共 **42 Actions 41 成功/1 失败**，Frontend Runtime Stabilization 的 2 个 Chrome 分片共 4 项失败（审核成功退出、画框、跨页编辑、训练千标签 DOM 失焦）。448 改原审核内部回执提交完成后受保护退出；独立主区 Annotorious 仅受真正可见模态层阻挡；训练标签后台 hydration 保留原列表节点、按可见语义局部重绘。回归新增 Node 动态 stub；原 Chrome 失败用例不删不改，需最终精确 SHA 核完整 42 条 workflow 和截图。提升权限后的完整 Node **1426/1426 通过**；生产 SQLite v2→v3 备份迁移演练、真实 OSS/远端模型、大库 P95 与生产部署均未完成。详见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+> **2026-10-31 / 42.24.449 CI 视觉截图补证（准确 SHA CI 待核）**：448 精确 SHA `60e8cdca` 已从 GitHub API 核对 **42/42 全绿**、Chrome 三分片全通过。下载并看过 448 的 18 张截图，发现审核 fixture 原为 1×1 GIF、主画布 54700% 放大、Chrome Ubuntu 无中文字形；只能算交互自动化通过，不能宣称视觉完整验收。449 只在原浏览器测试换成 640×480 场景 SVG/两候选框并断言真实尺寸、就绪、缩放上限；原 Chrome workflow 测试机添加 Noto CJK 字体。无业务代码、生产 DB/GT/OSS/训练 Worker 变更；449 精确 SHA Chrome/全量 CI 和新截图待核。生产 SQLite v2→v3 迁移回滚、外部模型/OSS/大库 P95 仍未做。详见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+> **2026-10-31 / 42.24.450 审核可视区域/测试徽标修正（准确 SHA CI 待核）**：449 精确 SHA `bc337e01` 21/21 Actions 已完成，20 success、1 failure，唯一 Chrome (3) 的质量评测用例被测试固定角标遮挡真实按钮（1 failed/94 passed），Chrome (1)/(2) 及前端绿。449 新截图已实际检查，中文 Noto 字体和 640×480/98% 编辑器正常，但“标签映射与批量统一”默认展开挤压了候选图。450 在原 AI review Owner 中改成已匹配默认收起、来源标签未匹配首次自动展开，保留用户自行开关；两处仅测试用的非生产徽标设置不拦截鼠标事件。现有 Chrome 验收会同时测标签已匹配与待映射的开关，业务 Task/GT/模型/OSS 和数据库不变，`VERSION=42.24.450`。需严格重跑 450 最终 SHA；生产 P95/真实 OSS/迁移仍待验证。
+> **2026-10-31 / 42.24.452 GT 当前态只读分页审计（准确 SHA CI 待核）**：451 `18bebfd3` 已核 GitHub Actions 43/43 success（Chrome 3/3）。本批通过原 CandidateStore journal `image_id` 键集游标 + 唯一 AnnotationRepository 批读新增手动 GT 核验接口；单次最多 100、UI 50，任务列表/进度轮询不隐式扫描。原批提交 Worker 以后会记录 GT 正式修订版本/摘要到既有 journal，旧任务不足的 GT 修订证据不伪造；源任务/候选 ID 同时匹配当前 GT 框，区分完整/部分/消失；旧负样本一律按证据是否足够展示“无法确认”。Node/Python 语法绿、Node 1428/1428、隔离 Python 后端 unit/API 84/84，最终精确 SHA CI 待核。未碰生产素材/GT/OSS/DB，未部署/迁移。详见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+> **2026-11-01 / 42.24.477 P0 首屏链路审计与缩略图只读副作用修复（CI 待核）**：从准确远端 476 `33b41bced172ad7a644e000b9ca931020a989491` / 22/22 Actions、Node1461、Chrome316、Picker 后端88/性能9/Chrome6 继续。已审 `v53_bootstrap_snapshot`→训练历史/成功次数/实时 Job 和训练创建/Picker 首次请求链，均保留原 Owner 与正式 GT/Task 语义；分类 SQL 真实 `EXPLAIN` 命中原关联索引，纯内存 1k/10k/50k 合成关系温 P50 0.758/7.255/41.285ms，不是生产 ASGI。另新增隔离真实缩略图 GET 回归先 RED：缺摘要历史素材连续 GET 产生两份 JPEG；原 GET 默认调用 `materialize` 补写 Material，导致缓存键漂移。原 `training_material_picker_api.py` 缩略图调用仅加 `read_only=True`，测试覆盖修订/元数据/源哈希不变与缓存复用。本地 Picker 后端合同 89/89、隔离性能 9/9、Picker Node 5/5；准确新 SHA CI 待核。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，未部署/修改正式数据/Worker/GPU/OSS。唯一详细台账 `docs/performance/2026-10-29-p0-followup.md` 顶部。
+> **2026-11-01 / 42.24.478 P0 训练缩略图实际耗时分段（新 SHA CI 待核）**：477 准确 `16a1f07a` 23/23 Actions success，Node1461、Chrome316、Picker后端89/性能9/Chrome6 已核。本批继续 Bootstrap 历史每次快照重叠成本审计，未获生产瓶颈证明；在原 `performance_diagnostics.py` 确认 v62 Picker thumbnail GET 诊断漏范围（真实合成 HTTP200 无 X-Request-ID 的 RED），仅新增精确抽样 GET；在原 `training_material_picker_api.py` 量锁等待、materialize、render、冷/温命中。4 个并行合成 GET + 人工 250ms 延迟仅一个物化，实测部分锁等待超 50ms；不能冒充 OSS 或生产30sStalled。原性能诊断测试补冷/温、关开关、抽样、无输入记录、四并发用例。全量本地/新SHA CI待核；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。详见 `docs/performance/2026-10-29-p0-followup.md` 顶部。
+> **2026-11-02 / 42.24.485 AI 恢复工作流测试环境隔离修复（新 SHA CI 待核）**：484 远端 `d4bb6012d4b31f3b3b9e9b4a843abf3ad338a64a` 完整 Actions **45/47 success、2 failure**，失败均 `AI Annotation Recovery` push/PR，在 Ubuntu+Windows 精简 CI 的新增源码不可用单测误导入 `app.py`，缺 FastAPI（每个失败 Job 104 passed/1 failed）；API、训练创建、Picker、前端工作流成功。485 仅把该单测的依赖注入换为同文件既有的 `sys.modules["app"]` 临时模块，保留“来源不可用必须阻止 GT 提交”的原强断言，不改业务或 CI 依赖；独立 Python 3.12 + 原 CI 精简依赖 **105/105 通过**。新 SHA 的完整 CI 不得继承 484；人工补审全部/批量/逐张业务需求仍需单独实现并有不可绕过的 GT/素材/训练准入闸门。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署/改正式素材、GT、任务。
+> **2026-11-02 / 42.24.487 跨页人工 GT scope 审核计划（本地 GREEN / 新 SHA CI 待验）**：原版本486 `feb5f8254aadeed485251b02475a7f491e5eaa74` 准确 GitHub Actions **38/38 全绿**。487 用原兼容性结果在服务端冻结用户明确选定的一张/多张/跨页/当前筛选/全部问题清单，最多50000张；同一原 Summary 诊断页加入人工作业声明、20张/批分步执行、暂停、刷新恢复、按页查看全部失败和其他异常；持久化项目内最小计划和逐图结果，不创建新 Worker，不改原训练草稿。只有正式 GT 有效的 `partial_review_scope` 才会经可信 reviewer、源 SHA、GT版本、精确缺失 code 验证并调用原 `save_annotation`，崩溃后利用原审计证据安全对账；其他异常保持阻塞。新 Python Picker+GT46/46、Node1467/1467；真实 Chrome 用例已纳入 Picker CI，准确新 SHA CI 待验。仅隔离测试，未部署，生产21k素材/OSS/30s Stalled/A800仍未知。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。
+> **2026-11-02 / 42.24.495 转换资源 SDK 检测 P0 接续**：唯一开发分支基线 `c94cf17c7e9f1a9204141f0f5f23d673d08725a6` / VERSION494；当前 SDK 证据已从 5分钟机械过期改为配置修订/本地指纹/七天复核，单资源跨进程持久检测 run ID、10分钟租约/进程死亡感知、无 SDK 重扫的正式创建、远程鉴权轻量 ping 与前端有界状态恢复。原转换和性能 Owner、提交幂等、动态厂商字典、正式任务/权重不变。真实生产工具链/远程 Agent/板端及本 SHA CI 仍待验，准确测试与风险见原 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部；生产最后已知485，本轮不部署。只在原分支继续，不 merge/tag/release/force push。
+> **2026-11-03 / 42.24.509｜20万素材训练创建 P0：首屏计数/标签/可选 Benchmark 按需治理（本地实现，生产未验证）**：唯一分支 `feature/external-algorithm-publishing`，起点干净的 508 `8bf1e009a571aaeaf4f0962e2dbf7126d87c32bc`。原选材第一页即执行过滤后精确 COUNT，原选材开窗对有母版本的普通浏览做训练角色解析且并发加载负样本分类，原所选标签摘要 `summary_only` 仍计算全池总数，原 Benchmark 每次开窗自动验证；在20万素材规模下均有放大读取和等待的风险。509在既有 Owner 内实现 opt-in `count_mode=deferred`（第一页仅LIMIT+1、总数未知可翻页），正常选材开窗不执行角色索引/负样本分类，分类及 Benchmark 显式按需，选中素材标签摘要只计算选中 GT，继承标签20秒有界并可重试，错误不再永久显示读取中；准确 GT、历史排除、默认精确 API、Worker 准入和独立 Test 不放宽。前端 110/110 重点测试及除四项缺失供应商包外的 Node 1476/1476 通过；原完整 Node 运行会因缺少 `@uppy/core`、`@annotorious/annotorious` 失败，Python 无 FastAPI/pytest，新增服务端回归未执行（只完成 `py_compile`）；Chrome/200k 真实性能/30秒 Initial connection 现场网络证据/正式创建闭环/准确新SHA GitHub CI 均 **NOT VERIFIED**。本轮无生产写入、部署或服务重启。详见 `docs/performance/2026-10-29-p0-followup.md` 顶部 509 节。
+> **2026-11-03｜P0 原图 ZIP + 母模型资产专项（增量开发、尚未整项验收）**：基线长期分支 `5e708bc4`；新增 `scan_kind` 空 sidecar 原图保护、COCO/VOC 补入未引用原图、ZIP 批次直接 AI/人工、母模型 SHA 资产登记/安全隔离验证入口、首次训练源标签合同及高级母模型单层 Tab。**跨 Agent 发现/永久安装/模型校验持久任务、真实 4070/A800 首训、浏览器/性能和完整 Python CI 均未验收**。详情：`docs/REQUIREMENTS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`、`docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`、`docs/UAT_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`；生产不动。旧记录保留为历史。
+> **2026-11-04｜42.24.516 可信删除差量复核（准确新 SHA CI 待验）**：从 d73bf28f 长期分支干净基线接续，纠正自动 GT keeper 新旧 Python 回归断言、结构化 COCO/VOC 已映射空框的正式负样本 scope 回归。在原 MaterialBatch Audit Owner 内增加 `VERIFIED_UNCHANGED`/`VERIFIED_RETIREMENT_DELTA`，用双 revision、冻结删除 Task、原 Material 退休记录、GT 持久行数量、SHA/标签 Schema 全量核对才复制不可变旧审计并复核受影响组；无关变化严格回退原 Full Audit。UI 改“继续治理 · 复核变更”并显示复用证据。隔离测试/准确最终 GitHub CI、生产20万与OSS计时以本次最终回执为准；**未部署、不动生产数据，不 merge/tag/release/force push**。专项台账 `docs/MATERIAL_INTEGRITY_AUTO_KEEPER_AND_INCREMENTAL_AUDIT_2026_11_04.md`。
+> **2026-11-04｜训练资源空选项与冲突图片物理回收 42.24.517（本地候选）**：统一资源 Hydration Owner 不再缓存空/警告资源为 ready，创建提交缺失 target 自动重新读取并精确阻断；页面 Extras 旧结果不覆盖弹窗。物理原图采用原离线受控 GC 的 Task ID 批量预览/精准确认/逐张安全回收；在线删除继续退休正式 GT/素材索引，永不随意删除保留项共享原图。前端和离线 CLI 定向测试及准确 GitHub CI 以本轮回执为准，生产未变。需求、代码、边界和验收计划见 `docs/TRAINING_CREATE_RESOURCE_RECOVERY_AND_IMAGE_RECLAMATION_2026_11_04.md`。
+> **2026-11-08 算法列表筛选越界（候选）**：`AlgorithmListRuntime` 持续为唯一列表 Owner；筛选容器查询、品目浮层边界及当前可见分类列已定向更新。前端 1437/1437；Chrome 8 宽度回归待真实执行，准确 SHA CI/现场 UAT 未验证。参见 [专项记录](ALGORITHM_LIST_FILTER_OVERFLOW_2026_11_08.md)。
+> **2026-11-09｜5 项 Chrome 工作流失败定向修复（候选）**：准确起点 `60db6cb8467a8e78e6c2678b896d1e2ddbf24add`，39 项 Actions 为 34 success/5 failure。复核源码后对齐算法/任务摘要 GET 浏览器夹具、素材筛选折叠入口和选材真实角色 DOM，保留强断言，无正式运行时逻辑变动；Node 1572/1572，准确新 SHA CI、4070/A800 现场验证待验。参见 [专项](CI_CHROME_CONTRACT_ALIGNMENT_2026_11_09.md)。

@@ -46,6 +46,17 @@ test('hydration runtime depends on the canonical form owner explicitly', () => {
   assert.match(main, /openTrainingForm: window\.openTrainingCreateCanonical429/);
 });
 
+test('deferred iteration base paints only into the training-create dialog, not a newer picker', () => {
+  const start = app.indexOf('window.showIterationBaseCore414=function(aid)');
+  const end = app.indexOf('\n  // ---------- charted data quality ----------', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /document\.querySelector\('\.train429-create'\)/);
+  assert.match(owner, /root\.closest\('\.modal-body'\)/);
+  assert.match(owner, /String\(root\.dataset\.algorithmId\)!==String\(aid\)/);
+  assert.doesNotMatch(owner, /\.v424-modal-layer|\.at\(-1\)/);
+});
+
 test('external training preflight is owned by hydration instead of duplicated in app canonical owner', () => {
   const start = app.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
   const end = app.indexOf('\n  };', start);
@@ -69,7 +80,7 @@ test('training create canonical owner uses deterministic repaint points instead 
   const dialogEnd = app.indexOf('\n  window.openTrainingCreateDialog423=', dialogStart);
   assert.ok(dialogStart >= 0 && dialogEnd > dialogStart);
   const dialogOwner = app.slice(dialogStart, dialogEnd);
-  assert.match(dialogOwner, /trainTarget429\(\)\};/);
+  assert.match(dialogOwner, /applyTrainingCreationResources\?\.\(\)/);
   assert.doesNotMatch(dialogOwner, /setTimeout\(trainTarget429/);
 
   const iterationStart = app.indexOf('window.loadTrainingIterationBase414=async function(aid)');
@@ -103,6 +114,8 @@ test('training create canonical owner uses deterministic repaint points instead 
   assert.match(app.slice(benchmarkStart, benchmarkEnd), /if\(paint\)renderSplit\(\)/);
 
   assert.match(openOwner, /applyDevices\(cachedDevices,\{persist:false,paint:false\}\)/);
-  assert.match(openOwner, /loadTrainingBenchmarkReuseV1\(algorithmId,\{paint:false\}\)/);
+  assert.doesNotMatch(openOwner, /loadTrainingBenchmarkReuseV1\(algorithmId,\{paint:false\}\)/);
+  assert.match(openOwner, /state\.trainingBenchmarkReuse=\{algorithm_id:algorithmId,available:false,idle:true,loading:false/);
+  assert.match(app, /window\.checkTrainingBenchmarkReuseV1=\(\)=>/);
   assert.equal((openOwner.match(/renderSplit\(\);/g) || []).length, 1);
 });

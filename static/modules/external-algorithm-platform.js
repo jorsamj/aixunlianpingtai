@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 const PAGE = '平台对接';
 const API_ROOT = '/api/v63/external-algorithm-platform';
 const PLATFORM_CONFIG_SNAPSHOT_KEY = 'cl_external_platform_config_snapshot_v1';
@@ -9,13 +11,17 @@ function rawFetch() {
 }
 
 async function requestJson(url, options = {}, fetchImpl = rawFetch()) {
+  return withRequestDeadline(async signal => {
   const response = await fetchImpl(url, {
     headers: {'Accept': 'application/json', ...(options.headers || {})},
-    ...options,
+    ...options, signal,
   });
   const text = await response.text();
   let body = {};
-  try { body = text ? JSON.parse(text) : {}; } catch (_) { body = {detail: text}; }
+  try { body = JSON.parse(text); } catch (cause) {
+    if(response.ok) throw Object.assign(new Error('平台响应 JSON 解析失败，请重新查询状态。', {cause}), {name:'ParseError',code:'INVALID_JSON_RESPONSE',httpStatus:response.status});
+    body = {detail:text};
+  }
   if (!response.ok) {
     const message = body.message || body.detail || `请求失败（HTTP ${response.status}）`;
     const solution = body.solution ? `\n建议：${body.solution}` : '';
@@ -27,6 +33,7 @@ async function requestJson(url, options = {}, fetchImpl = rawFetch()) {
     throw error;
   }
   return body;
+  }, {signal: options.signal, label: '平台请求'});
 }
 
 export function isExternalAlgorithm(algorithm) {
@@ -338,6 +345,25 @@ function syncCountsText(item) {
   return `品目 ${counts.categories || 0} · 算法 ${counts.products || 0} · 分析方式 ${counts.analyses || 0} · 算力环境 ${counts.compute_platforms || 0}`;
 }
 
+export function externalDeletionPresentation(value = {}) {
+  const state = String(value.external_deletion_status || value.state || 'NORMAL');
+  const known = {
+    NORMAL: ['正常', 'neutral', false],
+    SUSPECTED_DELETED: ['待核实', 'warn', false],
+    CONFIRMED_DELETED: ['已确认删除', 'warn', false],
+    CLEANUP_PENDING: ['等待安全清理', 'info', true],
+    CLEANUP_RUNNING: ['安全清理中', 'info', true],
+    CLEANUP_FAILED: ['清理失败', 'err', false],
+    CLEANUP_COMPLETED: ['清理已完成', 'ok', false],
+  };
+  const [label,tone,busy] = known[state] || ['状态待核实','warn',false];
+  return {state,label,tone,busy};
+}
+
+function countText(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? String(value) : '—';
+}
+
 export function externalSyncOperationActive(operation) {
   return ['queued', 'running'].includes(String(operation?.status || ''));
 }
@@ -350,7 +376,7 @@ export function externalSyncOperationPhaseText(value) {
     fetch_compute_platforms: '读取算力环境',
     fetch_analysis_index: '读取分析方式索引',
     fetch_analyses: '核验产品分析详情',
-    purge_removed_algorithms: '清理远端已删除算法',
+    purge_removed_algorithms: '核实远端删除候选',
     cache_commit: '提交主数据缓存',
     algorithm_mirror_commit: '提交本地算法镜像',
     completed: '同步完成',
@@ -362,12 +388,10 @@ export function externalSyncOperationHtml(operation) {
   if (!operation) return '<div class="subline">当前没有正在执行的同步任务</div>';
   const active = externalSyncOperationActive(operation);
   const status = String(operation.status || '');
-  const total = Number(operation.total_products);
-  const processed = Number(operation.processed_products || 0);
-  const productProgress = Number.isFinite(total) && total >= 0
-    ? `${processed} / ${total}`
-    : `${processed} / 待读取`;
-  const requestDuration = Number(operation.last_request_duration_ms);
+  const processed = countText(operation.processed_products);
+  const total = countText(operation.total_products);
+  const productProgress = `${processed} / ${total === '—' ? '待读取' : total}`;
+  const requestDuration = operation.last_request_duration_ms;
   const requestText = Number.isFinite(requestDuration) && requestDuration >= 0
     ? `${requestDuration} ms`
     : '-';
@@ -376,6 +400,7 @@ export function externalSyncOperationHtml(operation) {
     per_product: '按产品读取',
     per_product_fallback: 'listAll 异常，已按产品回退',
   }[String(operation.analysis_list_source || '')] || '-');
+  const counts = operation.counts || {};
   const errorText = status === 'failed'
     ? `<div class="alert warn" style="margin-top:10px"><b>${escapeHtml(operation.error || '同步失败')}</b><span>${escapeHtml(operation.detail || '')}</span></div>`
     : '';
@@ -385,12 +410,45 @@ export function externalSyncOperationHtml(operation) {
       <div><span>开始时间</span><b>${escapeHtml(timeText(operation.started_at))}</b></div>
       <div><span>当前阶段</span><b>${escapeHtml(externalSyncOperationPhaseText(operation.current_phase))}</b></div>
       <div><span>产品进度</span><b>${escapeHtml(productProgress)}</b></div>
-      <div><span>最近请求耗时</span><b>${escapeHtml(requestText)}</b></div>
-      <div><span>分析列表</span><b>${escapeHtml(analysisListSource)}</b></div>
-      <div><span>成功 / 错误</span><b>${Number(operation.success_count || 0)} / ${Number(operation.error_count || 0)}</b></div>
+
+      <div><span>成功 / 错误</span><b>${countText(operation.success_count)} / ${countText(operation.error_count)}</b></div>
+      <div><span>待核实</span><b>${countText(counts.suspected_deleted)}</b></div>
+      <div><span>待清理</span><b>${countText(counts.cleanup_pending)}</b></div>
+      <div><span>清理失败</span><b>${countText(counts.cleanup_failed)}</b></div>
     </div>
     ${errorText}
+    <details><summary>技术详情</summary><div class="external-sync-kpis"><div><span>最近请求耗时</span><b>${escapeHtml(requestText)}</b></div><div><span>分析列表</span><b>${escapeHtml(analysisListSource)}</b></div></div></details>
   </div>`;
+}
+
+function deletionExplanation(state) {
+  return ({
+    SUSPECTED_DELETED:'已有任务继续；新发布暂缓。请重新核实远端产品是否已删除。',
+    CONFIRMED_DELETED:'已确认远端产品删除；新发布暂缓，等待原后台任务安全清理。',
+    CLEANUP_PENDING:'已确认远端产品删除；新发布暂缓，等待原后台任务安全清理。',
+    CLEANUP_RUNNING:'新发布暂缓；关联任务正在请求安全停止，等待终态后清理专属成果。',
+    CLEANUP_FAILED:'新发布暂缓；尚未清理的成果和恢复副本保留，可安全重试原任务。',
+    CLEANUP_COMPLETED:'业务记录与专属对象已清理，恢复副本保留。',
+  }[state] || '当前状态请以服务端核验结果为准。');
+}
+
+function cleanupPhaseText(value) {
+  return ({verification_required:'等待重新核实',confirmed:'已确认删除',queued:'等待安全清理',waiting_for_tasks:'等待已有任务结束',failed:'清理失败',completed:'清理完成',versions:'清理版本记录',publications:'清理发布记录'}[String(value || '')] || (/^(object|source|task):/.test(String(value)) ? '逐项安全清理' : String(value || '—')));
+}
+
+export function externalCleanupOperationHtml(operation = {}) {
+  const presentation = externalDeletionPresentation(operation);
+  const id = String(operation.operation_id || operation.id || '');
+  const counts = operation.counts || {};
+  return `<section class="external-cleanup-detail"><p><span class="pill ${presentation.tone}">${escapeHtml(presentation.label)}</span></p>
+    <p>${escapeHtml(deletionExplanation(presentation.state))}</p>
+    <dl class="report429-dl"><dt>算法</dt><dd>${escapeHtml(operation.algorithm_name || operation.name || operation.algorithm_id || '—')}</dd>
+    <dt>当前阶段</dt><dd>${escapeHtml(cleanupPhaseText(operation.phase))}</dd><dt>已处理 / 总数</dt><dd>${countText(counts.processed)} / ${countText(counts.total)}</dd>
+    <dt>当前处理项</dt><dd>${escapeHtml(operation.current_item || '—')}</dd><dt>更新时间</dt><dd>${escapeHtml(timeText(operation.updated_at))}</dd></dl>
+    ${operation.error ? `<div class="alert err">${escapeHtml(typeof operation.error === 'object' ? JSON.stringify(operation.error) : operation.error)}</div>` : ''}
+    <details><summary>核验依据与技术详情</summary><pre>${escapeHtml(JSON.stringify({evidence:operation.evidence || {}, counts, task_id:operation.task_id || '', operation_id:id}, null, 2))}</pre></details>
+    <div class="external-cleanup-actions">${presentation.state === 'SUSPECTED_DELETED' ? '<button class="btn" data-cleanup-recheck>重新核实</button>' : ''}
+    ${presentation.state === 'CLEANUP_FAILED' ? `<button class="btn" data-cleanup-retry="${escapeHtml(id)}">安全重试</button>` : ''}</div><div data-cleanup-action-result role="status"></div></section>`;
 }
 
 export function installExternalAlgorithmPlatformRuntime({
@@ -398,6 +456,7 @@ export function installExternalAlgorithmPlatformRuntime({
   projectId,
   notify,
   algorithmListRuntime,
+  modal,
 } = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__externalAlgorithmPlatformRuntimeInstalled) return window.ExternalAlgorithmPlatformRuntime;
@@ -408,6 +467,20 @@ export function installExternalAlgorithmPlatformRuntime({
   let syncOperation = null;
   let syncPollGeneration = 0;
   let syncPollPromise = null;
+  let syncSubmitting = false;
+  let syncReadError = '';
+  let cleanupPage = {items: [], total: 0, offset: 0, limit: 25, has_more: false};
+  let cleanupReadError = '';
+  let cleanupSummary = {};
+  let cleanupEpoch = 0;
+  let cleanupBusy = false;
+  let modalEpoch = 0;
+  let scopedProjectId = '';
+  let projectScopeGeneration = 0;
+  let syncOperationReadOrdinal = 0;
+  let submissionEpoch = 0;
+
+
   let pageLoadedAt = 0;
 
   function persistConfigSnapshot() {
@@ -460,6 +533,18 @@ export function installExternalAlgorithmPlatformRuntime({
     return String(projectId?.() || '');
   }
 
+  function ensureProjectScope() {
+    const pid = currentProjectId();
+    if(scopedProjectId === pid) return;
+    scopedProjectId = pid;
+    projectScopeGeneration += 1; syncOperationReadOrdinal += 1;
+    syncPollGeneration += 1; cleanupEpoch += 1; modalEpoch += 1; submissionEpoch += 1;
+    syncPollPromise = null; syncSubmitting = false; cleanupBusy = false;
+    syncOperation = null; syncReadError = ''; cleanupReadError = ''; cleanupSummary = {};
+    cleanupPage = {items:[],total:0,offset:0,limit:25,has_more:false};
+    readiness = null; pageLoadedAt = 0;
+  }
+
   async function loadConfig({silent = false} = {}) {
     try {
       const body = await requestJson(`${API_ROOT}/config`);
@@ -485,19 +570,92 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function loadSyncOperation({silent = false} = {}) {
+    ensureProjectScope();
     const pid = currentProjectId();
-    if (!pid) {
-      syncOperation = null;
-      return null;
-    }
+    const scopeGeneration = projectScopeGeneration, ordinal = ++syncOperationReadOrdinal;
+    const current = () => !destroyed && pid === currentProjectId() && scopeGeneration === projectScopeGeneration && ordinal === syncOperationReadOrdinal;
+    if (!pid) { syncOperation = null; return null; }
     try {
       const body = await requestJson(`${API_ROOT}/sync-operation?project_id=${encodeURIComponent(pid)}`);
-      syncOperation = body?.operation || null;
+      if (!current()) return syncOperation;
+      cleanupSummary = body.cleanup_summary || body.operation?.cleanup_summary || {};
+      syncOperation = body?.operation ? {...body.operation,cleanup_summary:cleanupSummary} : null;
+      syncReadError = '';
       return syncOperation;
     } catch (error) {
+      if (!current()) return syncOperation;
+      syncReadError = `暂无法读取同步状态：${error?.message || error}`;
       if (!silent) notify?.(error?.message || error);
       throw error;
     }
+  }
+
+  async function loadCleanupOperations({offset} = {}) {
+    ensureProjectScope();
+    offset = offset ?? cleanupPage.offset;
+    const pid = currentProjectId(), epoch = ++cleanupEpoch;
+    if (!pid) return cleanupPage;
+    cleanupBusy = true;
+    try {
+      const body = await requestJson(`${API_ROOT}/cleanup-operations?project_id=${encodeURIComponent(pid)}&limit=25&offset=${Math.max(0, offset)}`);
+      if (destroyed || pid !== currentProjectId() || epoch !== cleanupEpoch) return cleanupPage;
+      cleanupPage = {...body,items:(Array.isArray(body.items) ? body.items : []).slice(0,25),offset:Number(body.offset || 0),total:Number(body.total || 0)};
+      cleanupReadError = '';
+    } catch (error) {
+      if (pid === currentProjectId() && epoch === cleanupEpoch) cleanupReadError = `暂无法读取清理状态：${error?.message || error}`;
+    } finally { if (epoch === cleanupEpoch) cleanupBusy = false; }
+    return cleanupPage;
+  }
+
+  function cleanupActive() { return Number(cleanupSummary.CLEANUP_PENDING || 0) > 0 || Number(cleanupSummary.CLEANUP_RUNNING || 0) > 0 || cleanupPage.items.some(row => externalDeletionPresentation(row).busy); }
+
+  function cleanupHtml() {
+    const summary = cleanupSummary;
+    return `<section class="panel" data-platform-tab-panel="sync"><div class="panel-head"><div><div class="panel-title">外部算法核实与安全清理</div><div class="subline">疑似删除先核实；清理状态与原后台任务一致。</div></div></div><div class="panel-body" aria-busy="${cleanupBusy}">
+      <div class="external-cleanup-summary">${['SUSPECTED_DELETED','CLEANUP_PENDING','CLEANUP_RUNNING','CLEANUP_FAILED','CLEANUP_COMPLETED'].map(state => `<span>${externalDeletionPresentation({state}).label} <b>${countText(summary[state])}</b></span>`).join('')}</div>
+      ${cleanupReadError ? `<div class="alert warn" role="status">${escapeHtml(cleanupReadError)}</div>` : ''}
+      <div class="table-wrap"><table class="table"><thead><tr><th>算法</th><th>状态</th><th>阶段</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${cleanupPage.items.map(row => `<tr><td>${escapeHtml(row.algorithm_name || row.name || row.algorithm_id)}</td><td>${externalDeletionPresentation(row).label}</td><td>${escapeHtml(cleanupPhaseText(row.phase))}</td><td>${escapeHtml(timeText(row.updated_at))}</td><td><button class="btn mini" data-cleanup-detail="${escapeHtml(row.operation_id || row.id)}">详情</button></td></tr>`).join('') || '<tr><td colspan="5">暂无核实或清理记录</td></tr>'}</tbody></table></div>
+      <div class="external-cleanup-actions"><button class="btn mini" data-cleanup-page="${Math.max(0,cleanupPage.offset-25)}" ${cleanupPage.offset === 0 || cleanupBusy ? 'disabled' : ''}>上一页</button><span>${cleanupPage.offset+1}–${cleanupPage.offset+cleanupPage.items.length} / ${cleanupPage.total}</span><button class="btn mini" data-cleanup-page="${cleanupPage.offset+25}" ${!cleanupPage.has_more || cleanupBusy ? 'disabled' : ''}>下一页</button><button class="btn mini" data-cleanup-refresh>刷新状态</button></div></div></section>`;
+  }
+
+  async function showCleanupDetail(id) {
+    ensureProjectScope();
+    if (!modal || !id) return;
+    const pid = currentProjectId(), epoch = ++modalEpoch;
+
+    modal('外部算法核实与安全清理', '<div data-cleanup-modal-root aria-busy="true">正在读取…</div>', true);
+    const root = [...document.querySelectorAll('[data-cleanup-modal-root]')].at(-1);
+    const current = () => {
+      const layers = [...document.querySelectorAll('.v424-modal-layer')];
+      return !destroyed && epoch === modalEpoch && pid === currentProjectId() && root?.isConnected && !root.closest('.hidden') && (!layers.length || root.closest('.v424-modal-layer') === layers.at(-1));
+    };
+    try {
+      const body = await requestJson(`${API_ROOT}/cleanup-operations/${encodeURIComponent(id)}?project_id=${encodeURIComponent(pid)}`);
+      if (!current()) return;
+      root.innerHTML = externalCleanupOperationHtml(body.operation || {});
+      bindCleanupActions(root, body.operation || {}, current);
+    } catch(error) { if(current()) root.textContent = `暂无法读取详情：${error?.message || error}`; }
+    finally { if(current()) root.setAttribute('aria-busy','false'); }
+  }
+
+  function bindCleanupActions(root, operation, current) {
+    for (const button of root.querySelectorAll('[data-cleanup-retry], [data-cleanup-recheck]')) button.onclick = async () => {
+      if (button.disabled || !current()) return;
+      button.disabled = true; root.setAttribute('aria-busy','true');
+      const output = root.querySelector('[data-cleanup-action-result]');
+      try {
+        if (button.hasAttribute('data-cleanup-retry')) {
+          if (operation.state !== 'CLEANUP_FAILED') return;
+          const pid = currentProjectId();
+          const result = await requestJson(`${API_ROOT}/cleanup-operations/${encodeURIComponent(operation.operation_id || operation.id)}/retry?project_id=${encodeURIComponent(pid)}`, {method:'POST'});
+          if (!current()) return;
+          if(result.operation) { root.innerHTML = externalCleanupOperationHtml(result.operation); bindCleanupActions(root,result.operation,current); }
+        } else { await syncNow(); if (!current()) return; output.textContent = '已重新核实，请刷新状态查看结果。'; }
+        await loadCleanupOperations();
+        if (current()) { void render({reload:false}); void ensureSyncOperationPolling(); }
+      } catch(error) { if(current()) root.querySelector('[data-cleanup-action-result]').textContent = error?.message || String(error); }
+      finally { if(current()) {button.disabled=false;root.setAttribute('aria-busy','false');} }
+    };
   }
 
   async function loadCache({silent = false} = {}) {
@@ -518,10 +676,11 @@ export function installExternalAlgorithmPlatformRuntime({
       return null;
     }
     try {
-      readiness = await requestJson(`${API_ROOT}/readiness?project_id=${encodeURIComponent(pid)}`);
+      const body = await requestJson(`${API_ROOT}/readiness?project_id=${encodeURIComponent(pid)}`);
+      if(!destroyed && pid === currentProjectId()) readiness = body;
       return readiness;
     } catch (error) {
-      readiness = null;
+      if(pid === currentProjectId()) readiness = null;
       if (!silent) notify?.(error?.message || error);
       throw error;
     }
@@ -557,30 +716,42 @@ export function installExternalAlgorithmPlatformRuntime({
     return Boolean(cached?.algorithm) && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0);
   }
 
-  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000} = {}) {
+  function trainingPreflightStatus(algorithmId) {
+    const cached = trainingPreflightCache.get(`${currentProjectId()}:${String(algorithmId || '').trim()}`);
+    if (!cached?.algorithm || !trainingPreflightFresh(algorithmId)) return null;
+    return cached.preflightStatus || null;
+  }
+
+  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000, signal, timeoutMs = 8500} = {}) {
     const pid = currentProjectId();
     const id = String(algorithmId || '').trim();
     if (!pid || !id) throw new Error('当前训练算法或项目不可用');
     const key = `${pid}:${id}`;
     const cached = trainingPreflightCache.get(key);
     if (!force && cached?.algorithm && Date.now() - cached.loadedAt < maxAgeMs) return cached.algorithm;
-    if (cached?.promise) return cached.promise;
-    const requester = typeof request === 'function' ? request : url => requestJson(url);
+    if (cached?.promise && !cached.signal?.aborted) return cached.promise;
+    const requester = typeof request === 'function' ? request : (url, options) => requestJson(url, options);
     const promise = (async () => {
-      const body = await requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`);
+      const body = await withRequestDeadline(requestSignal => requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`, {signal:requestSignal}), {signal,label:'算法状态核验',timeoutMs});
       const fresh = body?.algorithm;
       if (!body?.ready || !fresh) throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
-      if (currentProjectId() !== pid) throw new Error('当前项目已切换，请重新打开训练窗口');
+      if (signal?.aborted || destroyed || currentProjectId() !== pid) throw Object.assign(new Error('本次算法状态核验已结束，请重新检查'), {name:'AbortError'});
       const rows = state().algorithms || [];
       const index = rows.findIndex(item => String(item?.id || '') === id);
       if (index >= 0) rows[index] = fresh;
       else state().algorithms = [fresh, ...rows];
-      trainingPreflightCache.set(key, {algorithm: fresh, loadedAt: Date.now()});
+      trainingPreflightCache.set(key, {algorithm: fresh, loadedAt: Date.now(),preflightStatus:{
+        drift_detected:body.drift_detected===true,
+        drift_fields:Array.isArray(body.drift_fields)?body.drift_fields:[],
+      }});
       return fresh;
     })();
-    trainingPreflightCache.set(key, {promise, loadedAt: Date.now()});
+    trainingPreflightCache.set(key, {promise, signal, loadedAt: Date.now()});
     try { return await promise; }
-    catch (error) { trainingPreflightCache.delete(key); throw error; }
+    catch (error) {
+      if (trainingPreflightCache.get(key)?.promise === promise) trainingPreflightCache.delete(key);
+      throw error;
+    }
   }
 
   function decorateAlgorithmDetail(algorithm) {
@@ -588,20 +759,23 @@ export function installExternalAlgorithmPlatformRuntime({
     const detail = document.querySelector('#modalBody .alg428-detail');
     if (!detail || detail.querySelector('[data-external-algorithm-detail]')) return;
     const mapping = externalAlgorithmMapping(algorithm);
+    const deletion = externalDeletionPresentation(algorithm);
     const trainingState = externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
     const panel = document.createElement('section');
     panel.dataset.externalAlgorithmDetail = '1';
-    panel.innerHTML = `<div class="alg428-version-head"><b>外部平台映射</b><span>${escapeHtml(mapping.source)}</span></div>
+    panel.innerHTML = `${deletion.state !== 'NORMAL' ? `<div class="alert warn">${deletion.label}：${escapeHtml(deletionExplanation(deletion.state))}${escapeHtml(algorithm.external_deletion_reason || '')}<button class="btn mini" data-algorithm-cleanup-detail>核实与清理详情</button></div>` : ''}<div class="alg428-version-head"><b>外部平台映射</b><span>${escapeHtml(mapping.source)}</span></div>
       <dl class="report429-dl">
         <dt>来源平台</dt><dd>${escapeHtml(mapping.source)}</dd>
         <dt>Product ID</dt><dd>${escapeHtml(mapping.productId || '-')}</dd>
         <dt>Category ID</dt><dd>${escapeHtml(mapping.categoryId || '-')}</dd>
         <dt>Analysis ID</dt><dd>${escapeHtml(mapping.analysisIds.join('、') || '-')}</dd>
         <dt>分析方式</dt><dd>${escapeHtml(mapping.analysisNames.join('、') || '-')}</dd>
-        <dt>同步状态</dt><dd>${trainingState.status === 'inactive' ? '已下架' : trainingState.status === 'stale' ? '待同步' : '正常'}</dd>
+        <dt>同步状态</dt><dd>${deletion.state !== 'NORMAL' ? deletion.label : trainingState.status === 'inactive' ? '已下架' : trainingState.status === 'stale' ? '待同步' : '正常'}</dd>
         <dt>最近同步</dt><dd>${escapeHtml(timeText(mapping.syncedAt))}</dd>
       </dl>`;
     detail.insertBefore(panel, detail.children[1] || null);
+    const cleanupButton = panel.querySelector('[data-algorithm-cleanup-detail]');
+    if(cleanupButton) cleanupButton.onclick = () => void showCleanupDetail(algorithm.external_cleanup_operation_id || `suspect:${algorithm.id}`);
     if (!trainingState.ready) {
       for (const button of detail.querySelectorAll('button')) {
         if (/开始训练/.test(String(button.textContent || ''))) {
@@ -631,6 +805,7 @@ export function installExternalAlgorithmPlatformRuntime({
     meta: algorithm => ({
       external: isExternalAlgorithm(algorithm),
       sourceLabel: algorithmSourceLabel(algorithm),
+      deletion: externalDeletionPresentation(algorithm),
       readiness: externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest()),
     }),
     sync: () => syncNow(),
@@ -647,12 +822,29 @@ export function installExternalAlgorithmPlatformRuntime({
 
   function decorateTrainingAnalysisSelector() {
     const form = document.querySelector('.train429-create');
-    if (!form || form.querySelector('[data-external-analysis-selector]')) return;
+    if (!form) return;
     const algorithmId = String(state().trainingDraft?.algorithmId || '');
     const algorithm = (state().algorithms || []).find(row => String(row.id) === algorithmId);
-    if (!isExternalAlgorithm(algorithm)) return;
+    const existingWarning = form.querySelector('[data-external-training-blocked]');
+    const existingSelector = form.querySelector('[data-external-analysis-selector]');
+    if (!isExternalAlgorithm(algorithm)) {
+      if (existingWarning || existingSelector) {
+        existingWarning?.remove();
+        existingSelector?.remove();
+        window.TrainingSubmitRuntime?.updateReadiness?.();
+      }
+      return;
+    }
     const trainingState = externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
     if (!trainingState.ready) {
+      existingSelector?.remove();
+      if (existingWarning) {
+        if (existingWarning.dataset.externalTrainingBlocked !== trainingState.reason)
+          existingWarning.dataset.externalTrainingBlocked = trainingState.reason || 'external-blocked';
+        if (existingWarning.textContent !== trainingState.message)
+          existingWarning.textContent = trainingState.message;
+        return;
+      }
       const panel = document.createElement('div');
       panel.className = 'alert warn';
       panel.dataset.externalTrainingBlocked = trainingState.reason || 'external-blocked';
@@ -661,6 +853,11 @@ export function installExternalAlgorithmPlatformRuntime({
       window.TrainingSubmitRuntime?.updateReadiness?.();
       return;
     }
+    if (existingWarning) {
+      existingWarning.remove();
+      window.TrainingSubmitRuntime?.updateReadiness?.();
+    }
+    if (existingSelector) return;
     const options = externalAnalysisOptions(algorithm);
     state().externalAnalysisSelection = state().externalAnalysisSelection || {};
     if (options.length <= 1) {
@@ -723,7 +920,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const syncSucceeded = last?.status === 'success';
     const operationActive = externalSyncOperationActive(syncOperation);
     const configSaved = Boolean(c.updatedAt);
-    const sourceStatus = external ? '新畅联管理' : '本平台管理';
+    const sourceStatus = external ? '外部平台对接' : '独立部署';
     const connectionStatus = connectionTest?.ok === true
       ? '连接正常'
       : connectionTest ? '连接异常' : savedConnectionReady ? '待测试' : '待配置';
@@ -740,14 +937,25 @@ export function installExternalAlgorithmPlatformRuntime({
             <div>
               <div class="external-platform-eyebrow">EXTERNAL PLATFORM INTEGRATION</div>
               <h2>平台对接</h2>
-              <p>连接、同步、厂商映射和版本权重发布统一在这里管理。配置保存成功后会自动锁定并持续使用；常用操作前置，接口细节与诊断信息收进独立切页。</p>
+              <p>统一管理外部平台的连接、算法同步和成果发布。独立部署时无需连接外部平台。</p>
             </div>
           </div>
           <div class="external-platform-actions">
-            <button class="btn" id="externalPlatformTest">测试连接</button>
+            <button class="btn" id="externalPlatformTest" ${external ? '' : 'disabled'}>测试连接</button>
             ${configActionsHtml}
             <button class="btn green" id="externalPlatformSync" ${savedConnectionReady && !operationActive ? '' : 'disabled'} title="${operationActive ? '当前已有同步任务正在执行' : savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">${operationActive ? '正在同步…' : '↻ 立即同步'}</button>
           </div>
+        </div>
+        <div class="external-platform-master-mode ${external ? 'is-external' : 'is-local'}">
+          <div class="external-platform-master-copy">
+            <span class="external-platform-master-caption">运行模式 · 总开关</span>
+            <strong>${external ? '外部平台对接模式' : '独立部署模式'}</strong>
+            <p>${external ? '已允许后台与外部平台通信：按计划同步主数据，并自动发布训练和转换成果。' : '已关闭外部平台通信：停止自动同步、自动发布及对接接口请求。原有地址和凭据安全保留，重新开启即可继续使用。'}</p>
+          </div>
+          <button type="button" class="external-platform-master-toggle" id="externalPlatformMasterSwitch" role="switch" aria-label="外部平台对接总开关" aria-checked="${external}" title="${external ? '关闭外部对接，切换为独立部署' : '开启外部平台对接'}">
+            <span class="external-platform-master-track"><span class="external-platform-master-thumb"></span></span>
+            <span>${external ? '已开启' : '已关闭'}</span>
+          </button>
         </div>
         <div class="external-platform-status external-platform-status-v2">
           <span><i class="external-status-dot ${configSaved ? 'ok' : 'warn'}"></i><b>配置</b><em>${escapeHtml(savedStatus)}</em></span>
@@ -769,7 +977,7 @@ export function installExternalAlgorithmPlatformRuntime({
       <section class="external-platform-overview" data-platform-tab-panel="overview">
         <div class="external-overview-grid">
           <article class="external-overview-card external-overview-card-primary">
-            <div class="external-overview-card-head"><span class="external-overview-icon">↔</span><span class="pill ${savedConnectionReady ? 'ok' : 'warn'}">${savedConnectionReady ? '已连接' : '待配置'}</span></div>
+            <div class="external-overview-card-head"><span class="external-overview-icon">↔</span><span class="pill ${external ? savedConnectionReady ? 'ok' : 'warn' : 'ok'}">${external ? savedConnectionReady ? '已配置' : '待配置' : '本地运行'}</span></div>
             <b>平台连接</b>
             <strong>${escapeHtml(sourceStatus)}</strong>
             <small>${escapeHtml(c.baseUrl || '尚未配置 API 服务地址')}</small>
@@ -807,13 +1015,6 @@ export function installExternalAlgorithmPlatformRuntime({
         <div class="panel-body">
           <div class="external-config-layout">
             <div class="form two external-config-form">
-              <div class="field full">
-                <label>算法数据来源</label>
-                <div class="external-source-choice">
-                  <label class="field check"><input type="radio" name="externalMode" value="local" ${external ? '' : 'checked'} ${formDisabled}> 本平台管理</label>
-                  <label class="field check"><input type="radio" name="externalMode" value="external" ${external ? 'checked' : ''} ${formDisabled}> 外部平台</label>
-                </div>
-              </div>
               <div class="field"><label>外部平台</label><select id="externalProvider" class="select" ${formDisabled}><option value="changlian">新畅联</option></select></div>
               <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com" ${formDisabled}></div>
               <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialDisabled} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
@@ -823,14 +1024,14 @@ export function installExternalAlgorithmPlatformRuntime({
             <aside class="external-config-aside">
               <div><span>连接方式</span><b>${escapeHtml(sourceStatus)}</b></div>
               <div><span>凭据状态</span><b>${escapeHtml(credential.configured ? '已安全保存' : '未配置')}</b></div>
-              <div><span>自动同步</span><b>08:00 / 12:00 / 15:00</b></div>
-              <div><span>训练成果发布</span><b>后台自动执行</b></div>
+              <div><span>自动同步</span><b>${external ? '08:00 / 12:00 / 15:00' : '已停用'}</b></div>
+              <div><span>训练成果发布</span><b>${external ? '后台自动执行' : '已停用'}</b></div>
             </aside>
           </div>
           <details data-external-sync-settings="1" class="external-sync-details">
             <summary>同步策略说明</summary>
             <div class="external-sync-policy">
-              <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据。</span></div>
+              <div class="alert soft"><b>${external ? '自动同步已启用' : '自动同步已暂停'}</b><span>${external ? '新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据。' : '独立部署模式不主动连接外部平台；开启顶部总开关后恢复对接。'}</span></div>
               <div class="subline" style="margin-top:8px">训练成功、转换完成后的版本与权重同步由后台自动执行，不需要人工重复点击。</div>
             </div>
           </details>
@@ -840,7 +1041,7 @@ export function installExternalAlgorithmPlatformRuntime({
       <section class="panel" data-platform-tab-panel="connection">
         <div class="panel-head">
           <div><div class="panel-title">连接测试</div><div class="subline">${connectionHelpText}</div></div>
-          <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics">运行联调诊断</button></details>
+          <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics" ${external ? '' : 'disabled'}>运行联调诊断</button></details>
         </div>
         <div class="panel-body" id="externalConnectionResult">${connectionTestHtml()}</div>
       </section>
@@ -848,7 +1049,7 @@ export function installExternalAlgorithmPlatformRuntime({
       <section class="panel" data-platform-tab-panel="sync">
         <div class="panel-head"><div><div class="panel-title">数据同步</div><div class="subline">“立即同步”只执行 新畅联 → 本平台 的算法品目、算法产品、分析方式和算力环境同步。</div></div></div>
         <div class="panel-body">
-          <div id="externalSyncOperation">${externalSyncOperationHtml(syncOperation)}</div>
+          <div id="externalSyncOperation">${syncOperationPanelHtml()}</div><button class="btn mini" data-sync-refresh aria-busy="false">查询同步状态</button>
           <div class="external-sync-kpis" style="margin-top:12px">
             <div><span>最近同步</span><b>${escapeHtml(timeText(last?.finished_at || last?.started_at))}</b></div>
             <div><span>状态</span><b>${escapeHtml(syncStatusText(last?.status))}</b></div>
@@ -862,6 +1063,7 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
       </section>
 
+      ${cleanupHtml()}
       ${diagnosticsHtml()}
       ${masterDataPreviewHtml()}
       ${apiContractHtml()}
@@ -971,12 +1173,12 @@ export function installExternalAlgorithmPlatformRuntime({
       <td>${escapeHtml(timeText(item.finished_at || item.started_at))}</td>
       <td>${item.sync_type === 'manual' ? '手动' : '自动'}</td>
       <td><span class="pill ${item.status === 'success' ? 'ok' : item.status === 'failed' ? 'err' : 'warn'}">${escapeHtml(syncStatusText(item.status))}</span></td>
-      <td>${escapeHtml(syncCountsText(item) || item.error || '-')}</td>
+      <td>${escapeHtml(syncCountsText(item) || item.error || '-')} <button class="btn mini" data-sync-history-detail="${history.indexOf(item)}">详情</button></td>
     </tr>`).join('');
   }
 
   function collectForm() {
-    const mode = document.querySelector('input[name="externalMode"]:checked')?.value || 'local';
+    const mode = externalMode() ? 'external' : 'local';
     return {
       mode,
       provider: document.getElementById('externalProvider')?.value || 'changlian',
@@ -1007,6 +1209,34 @@ export function installExternalAlgorithmPlatformRuntime({
     return config;
   }
 
+  async function setIntegrationMode() {
+    const button = document.getElementById('externalPlatformMasterSwitch');
+    if (!button || button.disabled) return false;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    const nextMode = externalMode() ? 'local' : 'external';
+    try {
+      const body = await requestJson(`${API_ROOT}/mode`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: nextMode}),
+      });
+      config = normalizeExternalPlatformConfig(body);
+      state().externalAlgorithmPlatformConfig = config;
+      persistConfigSnapshot();
+      connectionTest = null;
+      configEditing = false;
+      notify?.(nextMode === 'local' ? '已切换为独立部署，外部平台同步与发布已暂停' : '外部平台对接已开启，请检查连接配置');
+      await render({reload: false, refreshConfigPanel: true});
+      return true;
+    } catch (error) {
+      notify?.(error?.message || '切换运行模式失败，请重试');
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+      return false;
+    }
+  }
+
   async function beginConfigEdit() {
     if (!(externalMode() && config?.baseUrl && config?.credentials?.configured === true)) return false;
     configEditing = true;
@@ -1023,6 +1253,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function testConnection() {
+    if (!externalMode()) throw new Error('独立部署模式下已禁止外部连接测试，请先开启平台对接总开关');
     const payload = collectForm();
     const button = document.getElementById('externalPlatformTest');
     if (button) { button.disabled = true; button.textContent = '正在测试…'; }
@@ -1053,6 +1284,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function runDiagnostics() {
+    if (!externalMode()) throw new Error('独立部署模式下已禁止外部联调，请先开启平台对接总开关');
     const payload = String(state().page || '') === PAGE ? collectForm() : null;
     const button = document.getElementById('externalPlatformDiagnostics');
     if (button) { button.disabled = true; button.textContent = '正在诊断…'; }
@@ -1070,15 +1302,18 @@ export function installExternalAlgorithmPlatformRuntime({
     }
   }
 
-  function paintSyncOperation() {
-    const root = document.getElementById('externalSyncOperation');
-    if (root) root.innerHTML = externalSyncOperationHtml(syncOperation);
-    const active = externalSyncOperationActive(syncOperation);
+  function syncOperationPanelHtml() {
+    return `${syncReadError ? `<div class="alert warn" role="status">${escapeHtml(syncReadError)}</div>` : ''}${externalSyncOperationHtml(syncOperation)}`;
+  }
+
+  function paintSyncButtons() {
+    const active = syncSubmitting || externalSyncOperationActive(syncOperation);
     for (const button of [
-      document.getElementById('externalPlatformSync'),
+      document.querySelector('#externalPlatformSync'),
       ...document.querySelectorAll('[data-algorithm-sync]'),
     ].filter(Boolean)) {
-      button.disabled = active;
+      button.disabled = active || !externalMode();
+      button.setAttribute('aria-busy',String(syncSubmitting));
       button.textContent = active
         ? '正在同步…'
         : (button.id === 'externalPlatformSync' ? '↻ 立即同步' : '↻ 同步畅联云');
@@ -1086,28 +1321,38 @@ export function installExternalAlgorithmPlatformRuntime({
     }
   }
 
+  function paintSyncOperation() {
+    const root = document.getElementById('externalSyncOperation');
+    if (root) root.innerHTML = syncOperationPanelHtml();
+    paintSyncButtons();
+  }
+
   async function waitForSyncOperation(operationId, generation) {
     const expectedProject = currentProjectId();
     for (;;) {
       if (destroyed || generation !== syncPollGeneration || currentProjectId() !== expectedProject) return syncOperation;
-      if (!externalSyncOperationActive(syncOperation)) return syncOperation;
+      if (!externalSyncOperationActive(syncOperation) && !cleanupActive()) return syncOperation;
       await new Promise(resolve => setTimeout(resolve, 800));
       if (destroyed || generation !== syncPollGeneration || currentProjectId() !== expectedProject) return syncOperation;
-      await loadSyncOperation({silent: true});
-      if (operationId && syncOperation && String(syncOperation.operation_id || syncOperation.id || '') !== String(operationId)) {
+      try { await Promise.all([loadSyncOperation({silent: true}),loadCleanupOperations()]); } catch (_) { paintSyncOperation(); return syncOperation; }
+      if (cleanupReadError) return syncOperation;
+      if (operationId && !cleanupActive() && syncOperation && String(syncOperation.operation_id || syncOperation.id || '') !== String(operationId)) {
         return syncOperation;
       }
       paintSyncOperation();
+      if (String(state().page || '') === PAGE) await render({reload:false});
     }
   }
 
   function ensureSyncOperationPolling() {
-    if (!externalSyncOperationActive(syncOperation)) return null;
+    if (!externalSyncOperationActive(syncOperation) && !cleanupActive()) return null;
     if (syncPollPromise) return syncPollPromise;
     const operationId = String(syncOperation?.operation_id || syncOperation?.id || '');
     const generation = ++syncPollGeneration;
-    syncPollPromise = waitForSyncOperation(operationId, generation)
+    const expectedProject = currentProjectId();
+    const pending = waitForSyncOperation(operationId, generation)
       .then(async operation => {
+        if (destroyed || generation !== syncPollGeneration || expectedProject !== currentProjectId()) return operation;
         syncOperation = operation;
         if (operation?.status === 'success') {
           await Promise.all([
@@ -1116,6 +1361,7 @@ export function installExternalAlgorithmPlatformRuntime({
             loadCache({silent: true}),
             loadReadiness({silent: true}),
           ]);
+          if(destroyed || generation !== syncPollGeneration || expectedProject !== currentProjectId()) return operation;
           await algorithmListRuntime?.refresh?.({render: String(state().page || '') === '算法列表'});
         } else if (operation?.status === 'failed') {
           await loadHistory({silent: true});
@@ -1123,30 +1369,53 @@ export function installExternalAlgorithmPlatformRuntime({
         if (String(state().page || '') === PAGE) await render({reload: false});
         return operation;
       })
+      .catch(error => {
+        if(!destroyed && generation === syncPollGeneration && expectedProject === currentProjectId()) syncReadError = `暂无法读取同步状态：${error?.message || error}`;
+        return syncOperation;
+      })
       .finally(() => {
-        syncPollPromise = null;
+        if(syncPollPromise === pending) syncPollPromise = null;
         paintSyncOperation();
       });
-    return syncPollPromise;
+    syncPollPromise = pending;
+    return pending;
   }
 
   async function syncNow() {
+    ensureProjectScope();
+    if (syncSubmitting || externalSyncOperationActive(syncOperation)) return syncOperation;
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
-    if (!config) await loadConfig({silent: true});
-    if (!externalMode()) return notify?.('请先切换为外部平台并保存配置');
-    if (!config?.baseUrl || config?.credentials?.configured !== true) {
-      return notify?.('请先保存 API 地址、AccessKey 和 AccessSecret，再执行同步');
-    }
-
+    const epoch = ++submissionEpoch, scopeGeneration = projectScopeGeneration;
+    const current = () => !destroyed && epoch === submissionEpoch && scopeGeneration === projectScopeGeneration && pid === currentProjectId();
+    syncOperationReadOrdinal += 1;
+    syncSubmitting = true;
     try {
-      const body = await requestJson(`${API_ROOT}/sync?project_id=${encodeURIComponent(pid)}`, {method: 'POST'});
-      syncOperation = body?.operation || body?.sync || null;
       paintSyncOperation();
-      if (externalSyncOperationActive(syncOperation)) {
-        syncOperation = await ensureSyncOperationPolling();
+      if (!config) await loadConfig({silent: true});
+      if (!externalMode()) return notify?.('请先切换为外部平台并保存配置');
+      if (!config?.baseUrl || config?.credentials?.configured !== true) {
+        return notify?.('请先保存 API 地址、AccessKey 和 AccessSecret，再执行同步');
       }
 
+      if(!current()) return syncOperation;
+      const body = await requestJson(`${API_ROOT}/sync?project_id=${encodeURIComponent(pid)}`, {method: 'POST'});
+      if (!current()) return body;
+      syncOperationReadOrdinal += 1;
+      syncReadError = '';
+      syncOperation = body?.operation || body?.sync || null;
+      if (body.cleanup_summary) cleanupSummary = body.cleanup_summary;
+      if (syncOperation && body.cleanup_summary) syncOperation = {...syncOperation,cleanup_summary:body.cleanup_summary};
+      await loadCleanupOperations();
+      if(!current()) return body;
+      paintSyncOperation();
+      if (externalSyncOperationActive(syncOperation)) {
+        const completed = await ensureSyncOperationPolling();
+        if(destroyed || epoch !== submissionEpoch || pid !== currentProjectId()) return body;
+        syncOperation = completed;
+      }
+
+      if (destroyed || epoch !== submissionEpoch || pid !== currentProjectId()) return body;
       if (syncOperation?.status === 'success') {
         const counts = syncOperation?.counts || {};
         notify?.(`同步完成：算法新增 ${counts.added || 0}，更新 ${counts.updated || 0}`);
@@ -1155,12 +1424,41 @@ export function installExternalAlgorithmPlatformRuntime({
       }
       if (String(state().page || '') === PAGE) await render({reload: false});
       return {...body, operation: syncOperation};
+    } catch(error) {
+      if(!current()) return syncOperation;
+      syncReadError = `同步请求失败：${error?.message || error}；保留已有缓存，请查询状态。`;
+      throw error;
     } finally {
-      paintSyncOperation();
+      if(epoch === submissionEpoch && pid === currentProjectId()) {
+        syncSubmitting = false;
+        paintSyncButtons();
+        paintSyncOperation();
+        if (String(state().page || '') === PAGE) await render({reload:false});
+      }
     }
   }
 
   function bindPage() {
+    paintSyncOperation();
+    for (const button of document.querySelectorAll('[data-sync-refresh]')) button.onclick = async () => {
+      if(button.disabled) return;
+      button.disabled=true; button.setAttribute('aria-busy','true');
+      try { await loadSyncOperation({silent:true}); await loadCleanupOperations(); }
+      catch(_) {} finally {button.disabled=false;button.setAttribute('aria-busy','false');}
+      paintSyncOperation(); await render({reload:false}); void ensureSyncOperationPolling();
+    };
+    for (const button of document.querySelectorAll('[data-cleanup-detail]')) button.onclick = () => void showCleanupDetail(button.dataset.cleanupDetail);
+    for (const button of document.querySelectorAll('[data-cleanup-page], [data-cleanup-refresh]')) button.onclick = async () => {
+      if(cleanupBusy) return;
+      button.disabled=true;
+      await loadCleanupOperations({offset:Number(button.dataset.cleanupPage ?? cleanupPage.offset)});
+      await render({reload:false}); void ensureSyncOperationPolling();
+    };
+    for (const button of document.querySelectorAll('[data-sync-history-detail]')) button.onclick = () => {
+      const item=history[Number(button.dataset.syncHistoryDetail)];
+      if(item) modal?.('同步记录详情', externalSyncOperationHtml(item), true);
+    };
+
     const root = document.querySelector('[data-external-platform-page="1"]');
     for (const tabButton of document.querySelectorAll('[data-external-platform-tab]')) {
       tabButton.onclick = () => {
@@ -1176,6 +1474,7 @@ export function installExternalAlgorithmPlatformRuntime({
       };
     }
     const saveButton = document.getElementById('externalPlatformSave');
+    const modeButton = document.getElementById('externalPlatformMasterSwitch');
     const editButton = document.getElementById('externalPlatformEdit');
     const cancelEditButton = document.getElementById('externalPlatformCancelEdit');
     const testButton = document.getElementById('externalPlatformTest');
@@ -1184,6 +1483,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const secretToggle = document.getElementById('externalSecretToggle');
     const secretInput = document.getElementById('externalAccessSecret');
     if (saveButton) saveButton.onclick = () => void save().then(() => render({reload: false})).catch(error => notify?.(error?.message || error));
+    if (modeButton) modeButton.onclick = () => void setIntegrationMode();
     if (editButton) editButton.onclick = () => void beginConfigEdit().catch(error => notify?.(error?.message || error));
     if (cancelEditButton) cancelEditButton.onclick = () => void cancelConfigEdit().catch(error => notify?.(error?.message || error));
     if (testButton) testButton.onclick = () => void testConnection().catch(error => notify?.(error?.message || error));
@@ -1204,7 +1504,7 @@ export function installExternalAlgorithmPlatformRuntime({
       if (saveButton) saveButton.dataset.dirty = '1';
     };
     for (const input of document.querySelectorAll(
-      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, [data-external-endpoint]'
+      '#externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, [data-external-endpoint]'
     )) {
       if (input.dataset.externalDirtyBound === '1') continue;
       input.dataset.externalDirtyBound = '1';
@@ -1268,6 +1568,8 @@ export function installExternalAlgorithmPlatformRuntime({
 
   async function render({reload = true, force = false, refreshConfigPanel = false} = {}) {
     if (destroyed || String(state().page || '') !== PAGE) return false;
+    ensureProjectScope();
+    const expectedProject = currentProjectId();
     const view = document.getElementById('view');
     if (!view) return false;
     if (reload) configEditing = false;
@@ -1294,7 +1596,9 @@ export function installExternalAlgorithmPlatformRuntime({
         loadSyncOperation({silent: true}),
         loadCache({silent: true}),
         loadReadiness({silent: true}),
+        loadCleanupOperations(),
       ]);
+      if (destroyed || expectedProject !== currentProjectId() || String(state().page || '') !== PAGE) return false;
       config = nextConfig;
       history = nextHistory;
       syncOperation = nextOperation;
@@ -1302,7 +1606,7 @@ export function installExternalAlgorithmPlatformRuntime({
       readiness = nextReadiness;
       pageLoadedAt = Date.now();
       const painted = paintCachedPage();
-      if (externalSyncOperationActive(syncOperation)) void ensureSyncOperationPolling();
+      if (externalSyncOperationActive(syncOperation) || cleanupActive()) void ensureSyncOperationPolling();
       return painted;
     } catch (error) {
       if (!hasSnapshot && String(state().page || '') === PAGE) {
@@ -1313,6 +1617,7 @@ export function installExternalAlgorithmPlatformRuntime({
       return hasSnapshot;
     } finally {
       loading = false;
+      if(!destroyed && expectedProject !== currentProjectId() && String(state().page || '') === PAGE) void render({reload:true});
     }
   }
 
@@ -1320,16 +1625,18 @@ export function installExternalAlgorithmPlatformRuntime({
   trainingAnalysisObserver = new MutationObserver(() => decorateTrainingAnalysisSelector());
   trainingAnalysisObserver.observe(document.body, {childList: true, subtree: true});
   void Promise.all([loadConfig({silent: true}), loadCache({silent: true})]).then(() => {
-    if (String(state().page || '') === '算法列表') algorithmListRuntime?.render?.();
+    if (state().uiReady === true && String(state().page || '') === '算法列表') algorithmListRuntime?.render?.();
     decorateTrainingAnalysisSelector();
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63018',
+    build: 'external-algorithm-platform-63019',
     page: PAGE,
     loadConfig,
     loadHistory,
     loadSyncOperation,
+    loadCleanupOperations,
+    showCleanupDetail,
     loadCache,
     loadReadiness,
     render,
@@ -1343,12 +1650,14 @@ export function installExternalAlgorithmPlatformRuntime({
     selectedAnalysisId,
     trainingReadiness,
     trainingPreflightFresh,
+    trainingPreflightStatus,
     preflightTraining,
     decorateTrainingAnalysisSelector,
     config: () => config,
     destroy() {
       destroyed = true;
       syncPollGeneration += 1;
+      cleanupEpoch += 1; modalEpoch += 1;
       trainingAnalysisObserver?.disconnect();
       detachAlgorithmListProvider?.();
       trainingPreflightCache.clear();

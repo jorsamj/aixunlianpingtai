@@ -309,8 +309,9 @@ test('filtered anomaly selection, protected preview, aspect ratios and mobile re
   await page.goto('/');await page.getByRole('button',{name:/数据集/}).click();await page.getByRole('button',{name:'重复与异常素材'}).click();
   await page.getByRole('button',{name:'全选当前页',exact:true}).click();
   await expect(page.locator('#materialIntegrityGroupSelected47')).toContainText('已选 1 组');
+  await page.locator('.material-integrity47-more > summary').click();
   await page.getByRole('button',{name:'取消全选'}).click();
-  await expect(page.getByRole('checkbox')).not.toBeChecked();
+  await expect(page.locator('#materialIntegrityGroupList47').getByRole('checkbox')).not.toBeChecked();
   await page.locator('#materialIntegrityFilter47').selectOption('INVALID_IMAGE');
   await page.getByRole('button',{name:'全选当前筛选结果'}).click();
   await expect(page.locator('#materialIntegrityGroupSelected47')).toContainText('10000 张');
@@ -372,7 +373,13 @@ test('global duplicate governance previews, confirms, reports progress, and inva
       result: {scanned_images: 15, affected_images: 8, issue_groups: 3, scan_failures: 0},
     }, governance_task: null, deletion_task: null}),
   }));
-  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?limit=25`, route => route.fulfill({
+  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?**`, route => {
+    // The initial list now asks for pending issues; match query ordering without
+    // allowing the fixture to intercept a different page or silently hit the API.
+    const query=new URL(route.request().url()).searchParams;
+    expect(query.get('limit')).toBe('25');
+    expect(query.get('review_status')).toBe('pending');
+    return route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -384,7 +391,8 @@ test('global duplicate governance previews, confirms, reports progress, and inva
       }],
       next_cursor: null,
     }),
-  }));
+    });
+  });
   await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/dedup-plans`, async route => {
     planPayload = route.request().postDataJSON();
     await route.fulfill({
@@ -493,7 +501,9 @@ test('global duplicate governance previews, confirms, reports progress, and inva
   await expect(page.locator('#toast')).toContainText('批量去重：处理中');
   await expect(page.locator('#toast')).toContainText('完成组 0/1');
   await expect.poll(() => polls, {timeout: 5_000}).toBeGreaterThan(1);
-  await expect(page.locator('#toast')).toContainText('旧审计已失效');
+  // The final success toast may supersede the earlier invalidation toast.
+  // The durable audit-stale marker must remain visible after task completion.
+  await expect(page.locator('.integrity-stale-note')).toContainText('旧审计已失效');
 });
 
 test('latest Full Audit remains discoverable after 60 later batch tasks', async ({page,request}) => {
@@ -581,4 +591,48 @@ test('cross-project audit staleness and GT paged evidence remain scoped to the v
   await expect(evidence).not.toContainText('PAGE_ONE_GT');
   await expect(page.locator('#materialIntegrityItems47 > article')).toHaveCount(2);
   await expect(page.locator('#materialIntegrityItems47')).toContainText('second-1.png');
+});
+
+
+test('audit return restores original list DOM ten times without full scans',async({page,request},testInfo)=>{
+ const project=await createProject(request),auditId='return-context-audit';let latestReads=0,scans=0,skipped=false,reviewRevision=0;
+ await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:url.toString()})});
+ await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/latest`,route=>{latestReads++;return route.fulfill({json:{task:{task_id:auditId,operation:'AUDIT_MATERIAL_INTEGRITY',status:'SUCCEEDED',result:{scanned_images:200000,affected_images:50,issue_groups:50}}}})});
+ await page.route(`**/material-integrity/audits/${auditId}/groups?**`,route=>route.fulfill({json:{items:Array.from({length:25},(_,i)=>({group_key:'INVALID_IMAGE:'+i,issue_type:'INVALID_IMAGE',image_count:1,review:{status:i===0&&skipped?'skipped':'pending',reason:i===0&&skipped?'USER_DEFERRED':'',revision:i===0?reviewRevision:0}})).filter(row=>!new URL(route.request().url()).searchParams.get('review_status')||row.review.status===new URL(route.request().url()).searchParams.get('review_status')),total_images:50,next_cursor:'next',stale:false}}));
+ await page.route(`**/material-integrity/audits/${auditId}/dedup-plans`,route=>route.fulfill({status:201,json:{plan_id:'return-plan',selected_count:1,delete_count:0,skip_reasons:{ANOMALOUS_MATERIAL:1},skipped_groups:1}}));
+ await page.route(`**/material-integrity/audits/${auditId}/governance-summary`,route=>route.fulfill({json:{available:true,pending_image_count:50,historical_retained_count:0,safe_delete_count:25,manual_required_count:0,unverifiable_count:0,actually_deleted_count:0,failed_count:0}}));
+ await page.route(`**/material-integrity/audits/${auditId}/reviews`,route=>{const body=route.request().postDataJSON();skipped=body.status==='skipped';reviewRevision++;return route.fulfill({json:{revision:reviewRevision}})});
+ page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/material-integrity/audits'))scans++});
+ await page.goto('/');await page.getByRole('button',{name:/数据集/}).click();await page.getByRole('button',{name:'重复与异常素材',exact:true}).click();
+ await expect(page.locator('#materialIntegrityGroupList47 article')).toHaveCount(25);
+ await page.evaluate(()=>{window.__auditListNode=document.getElementById('materialIntegrityGroupList47');});
+ const times=[];
+ for(let i=0;i<10;i++){
+  await page.locator('#materialIntegrityGroupList47 input').first().check();
+  await page.getByRole('button',{name:'预览所选组',exact:true}).click();
+  await expect(page.locator('.material-integrity47-skips')).toContainText('素材同时存在异常');
+  const start=Date.now();await page.getByRole('button',{name:'返回选择 · 保留勾选',exact:true}).click();
+  await expect(page.locator('#materialIntegrityGroupList47 input').first()).toBeChecked();times.push(Date.now()-start);
+  expect(await page.evaluate(()=>window.__auditListNode===document.getElementById('materialIntegrityGroupList47'))).toBeTruthy();
+ }
+ await page.locator('#materialIntegrityReviewFilter47').selectOption('');
+ await page.locator('.material-integrity47-more > summary').click();
+ await page.getByRole('button',{name:'跳过所选',exact:true}).click();
+ await expect(page.locator('#materialIntegrityGroupList47')).toContainText('已跳过（稍后处理）');
+ await page.locator('#materialIntegrityReviewFilter47').selectOption('skipped');
+ await expect(page.locator('#materialIntegrityGroupList47 article')).toHaveCount(1);
+ await page.getByRole('button',{name:'恢复所选待处理',exact:true}).click();
+ await expect(page.locator('#materialIntegrityGroupList47 article')).toHaveCount(0);
+ await page.locator('#materialIntegrityReviewFilter47').selectOption('');
+ await expect(page.locator('#materialIntegrityGroupList47 article')).toHaveCount(25);
+ expect(latestReads).toBe(1);expect(scans).toBe(0);
+ await page.locator('.material-integrity47-more > summary').click();
+ const evidence=path.resolve('docs/artifacts/audit-workbench-20261104');fs.mkdirSync(evidence,{recursive:true});
+ fs.writeFileSync(path.join(evidence,'return-timings.json'),JSON.stringify({environment:'isolated Chrome on Windows; 25 rendered issue groups; mocked 200k summary, NOT 200k indexed benchmark',samples_ms:times,p50_ms:[...times].sort((a,b)=>a-b)[4],p95_ms:[...times].sort((a,b)=>a-b)[9],latest_reads:latestReads,audit_scan_posts:scans},null,2));
+ await testInfo.attach('return-times-ms',{body:JSON.stringify(times),contentType:'application/json'});
+ for(const [width,height] of [[1440,900],[1280,800],[768,1024],[390,844]]){
+  await page.setViewportSize({width,height});
+  await expect(page.locator('#materialIntegrityGroupList47')).toBeVisible();
+  await page.screenshot({path:path.join(evidence,`audit-restored-${width}.png`),fullPage:true});
+ }
 });

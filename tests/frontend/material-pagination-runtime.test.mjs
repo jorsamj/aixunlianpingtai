@@ -5,7 +5,26 @@ import fs from 'node:fs';
 import {
   buildMaterialQuery,
   requiresFullMaterialPool,
+  materialRowsByCardIdentity,
+  materialLabelCandidates,
 } from '../../static/modules/material-pagination-runtime.js';
+
+test('material decorations bind stable IDs across reordered cards and never guess by position', () => {
+  const rows = [{id:'a',storage_source_id:'oss-a'}, {id:'b',storage_source_id:'local-b'}];
+  const cards = [{dataset:{materialId:'b'}}, {dataset:{materialId:'a'}}, {dataset:{materialId:'retired'}}];
+  assert.deepEqual(materialRowsByCardIdentity(cards,rows).map(row=>row?.storage_source_id), ['local-b','oss-a',undefined]);
+});
+
+test('gallery label search bounds DOM candidates and searches names and codes without changing selection', () => {
+  const labels=Array.from({length:1000},(_,i)=>({code:`label-${i}`,display_name:`标签 ${i}`}));
+  const selected=new Set(['label-999']);
+  assert.equal(materialLabelCandidates(labels,selected,'').length,40);
+  assert.equal(materialLabelCandidates(labels,selected,'')[0].code,'label-999');
+  assert.equal(materialLabelCandidates(labels,selected,'标签 999')[0].code,'label-999');
+  assert.equal(materialLabelCandidates(labels,selected,'label-999')[0].code,'label-999');
+  assert.equal(materialLabelCandidates([...labels,'label-999'],selected,'标签 999')[0].name,'标签 999');
+  assert.deepEqual([...selected],['label-999']);
+});
 
 
 test('material paging query keeps filters on the server', () => {
@@ -112,6 +131,28 @@ test('identical material page loads are single-flight instead of issuing duplica
   assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedPage, transport\.pageSize \|\| 48\]\)/);
 });
 
+test('dataset tab and dashboard counters share a nonblocking, single-flight summary request', () => {
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(runtime, /async function fetchStatusCounts61\(\{force = false\} = \{\}\)/);
+  assert.match(runtime, /STATUS_COUNTS_REUSE_MS = 3000/);
+  assert.match(runtime, /statusCountsRevision\+\+/);
+  assert.match(runtime, /revision !== statusCountsRevision/);
+  assert.match(runtime, /MATERIAL_STATUS_COUNTS_RETIRED/);
+  assert.match(runtime, /\/materials\/status-counts\?/);
+  assert.match(runtime, /statusCountsFlight && statusCountsFlightKey === key/);
+  assert.match(runtime, /const totalsPromise = fetchStatusCounts61\(\)\.catch\(error => \(\{error\}\)\)/);
+  assert.match(runtime, /const counts = await fetchStatusCounts61\(\)/);
+  assert.match(runtime, /info\.statusCountsAvailable = false/);
+  assert.match(runtime, /if \(info\.statusCountsScope !== countsScope\) info\.statusCountsAvailable = false/);
+  assert.match(runtime, /info\.statusCountsScope = countsScope/);
+  assert.match(runtime, /info\.statusCountsAvailable === false \? '—'/);
+  assert.doesNotMatch(runtime, /fetchStatusTotal61/);
+  const summary = runtime.slice(runtime.indexOf('  async function refreshSummary61()'), runtime.indexOf('  function decorateSummary61()'));
+  assert.doesNotMatch(summary, /\/materials\?/);
+  assert.match(summary, /total: Number\(counts\.total/);
+  assert.match(summary, /annotated: Number\(counts\.annotated/);
+});
+
 test('explicit full material hydration is lazy, cached and single-flight', () => {
   const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
   assert.match(runtime, /const FULL_MATERIAL_REVISIT_REUSE_MS = 10 \* 1000/);
@@ -121,7 +162,8 @@ test('explicit full material hydration is lazy, cached and single-flight', () =>
   assert.match(runtime, /if \(!force && snapshot\?\.fresh\) return snapshot\.items\.slice\(\)/);
   assert.match(runtime, /const rows = await loadFullPool61\(\)/);
   assert.match(runtime, /ensureFullPool: ensureFullPool61/);
-  assert.match(runtime, /invalidateFullPool61\(\);\r?\n    const result = await loadMaterialPage61/);
+  const reload=runtime.slice(runtime.indexOf('window.reloadMaterialPage61 = async'),runtime.indexOf('const baseMarkReady'));
+  assert.match(reload, /invalidateFullPool61\(\);[\s\S]*pageLoadFlightKey = '';[\s\S]*const result = await loadMaterialPage61/);
 });
 
 
@@ -194,4 +236,19 @@ test('partial remap shows failed counts, reason, and existing Full Audit recover
   assert.match(review,/setPage\('标签管理'\);startLabelIntegrityAudit414\(\)/);
   const success=app.slice(app.indexOf('  async function refreshLabelSchemaAfterRemap414('),app.indexOf('  window.pollImportRemap414='));
   assert.equal((success.match(/if\(failed\)showLabelRemapReview414\(task,source,target\)/g)||[]).length,3);
+});
+
+test('paged material reads are cancelled on changed filters and navigation, with summary TTL separation', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.match(source,/let pageLoadAbort = null/);
+  assert.match(source,/function retireMaterialPage61\(\)/);
+  assert.match(source,/pageLoadAbort\?\.abort\(\)/);
+  assert.match(source,/fetchMaterialPage61\(requestedPage, controller\.signal\)/);
+  assert.match(source,/controller\.signal\.aborted \|\| serial !== requestSerial/);
+  assert.match(source,/if \(leavingDataset\) \{[\s\S]*retireMaterialPage61\(\)/);
+  assert.match(source,/STATUS_COUNTS_REUSE_MS = 3000/);
+  assert.match(source,/statusCountsCache\?\.key === key/);
+  assert.match(source,/statusCountsCache = null/);
+  assert.match(main,/algorithmListRuntime\?\.beforeNavigate\?\.\(page\)/);
 });

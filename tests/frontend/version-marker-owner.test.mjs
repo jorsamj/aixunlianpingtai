@@ -49,22 +49,36 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
-  assert.equal(index.includes('/static/styles.css?v=42.25.423'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.423'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.423'), true);
-  assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=422540'), true);
+  const appCache=index.match(/\/static\/app\.js\?v=(\d+(?:\.\d+)*)/);
+  const mainCache=index.match(/\/static\/main\.mjs\?v=(\d+(?:\.\d+)*)/);
+  assert.ok(appCache&&mainCache);
+  assert.equal(appCache[1],mainCache[1]);
+  assert.equal(index.match(/\/static\/styles\.css\?v=(\d+(?:\.\d+)*)/)?.[1],appCache[1]);
+  assert.ok(appCache[1].localeCompare('42.25.514',undefined,{numeric:true})>=0,
+    '入口 bundle 缓存版本不能回退；前端功能变更时允许单调前进');
+  assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=20261024-layout'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-create-hydration\.js\?v=\d+/);
-  assert.equal(main.includes("./modules/training-submit.js?v=422605"), true);
+  const submitCache=main.match(/\.\/modules\/training-submit\.js\?v=(\d+(?:\.\d+)*)/);
+  assert.ok(submitCache, "训练提交模块必须具备数字缓存版本");
+  assert.ok(submitCache[1].localeCompare("42.25.592",undefined,{numeric:true})>=0,
+    "训练提交模块的缓存版本不能回退");
   assert.equal(main.includes("./modules/auto-label-poll-runtime.js?v=422503"), true);
   assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js'), false);
-  assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=4226385"), true);
-  assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422611"), true);
-  assert.equal(main.includes("./modules/material-batches.js?v=422410"), true);
-  assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226366'), true);
+  assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=4226386"), true);
+  assert.equal(main.includes("./modules/material-pagination-runtime.js?v=42.25.568"), true);
+  assert.equal(main.includes("./modules/material-batches.js?v=422411"), true);
+  assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226549'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
   assert.equal(index.includes('<span id="versionBadge" class="version-badge">v—</span>'), true);
+});
+
+test('label-normalization source guard checks the annotation module import without a stale build pin', () => {
+  const workflow = fs.readFileSync(new URL('../../.github/workflows/label-normalization-contract.yml', import.meta.url), 'utf8');
+  assert.match(main, /annotation-task-view\.js\?v=\d+/);
+  assert.ok(workflow.includes("'annotation-task-view.js?v='"));
+  assert.doesNotMatch(workflow, /'annotation-task-view\.js\?v=\d+'/);
 });
 
 test('formal platform version is not re-embedded into visible static chrome', () => {
@@ -77,20 +91,33 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422611"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=42.25.587"), true);
   const runtime = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-material-picker-performance.spec.mjs', import.meta.url), 'utf8');
-  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422507'"));
-  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422507')"));
+  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422616'"));
+  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422616')"));
 });
 
 test('recovery browser and CI guards match the exact loaded runtime build', () => {
-  const build = 'training-recovery-runtime-4226390';
+  const build = 'training-recovery-runtime-4226510';
   const runtime = fs.readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-recovery.spec.mjs', import.meta.url), 'utf8');
   const workflow = fs.readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml', import.meta.url), 'utf8');
-  assert.ok(main.includes('./modules/training-recovery-runtime.js?v=20261022a'));
+  const recoveryCache=main.match(/\.\/modules\/training-recovery-runtime\.js\?v=(\d+)/);
+  assert.ok(recoveryCache && Number(recoveryCache[1]) >= 4226511,
+    "训练恢复模块缓存版本不能回退");
+  assert.ok(workflow.includes(`training-recovery-runtime.js?v=${recoveryCache[1]}`),
+    "训练恢复 CI 守卫应跟随真实缓存版本");
   assert.ok(runtime.includes(`build: '${build}'`));
   assert.ok(browser.includes(`.toBe('${build}')`));
   assert.ok(workflow.includes(`grep -Fq "build: '${build}'" static/modules/training-recovery-runtime.js`));
+});
+
+test('training label contract source and browser guard match loaded cache build',()=>{
+ const main=fs.readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
+ const source=fs.readFileSync(new URL('../../static/modules/training-labels.js',import.meta.url),'utf8');
+ const browser=fs.readFileSync(new URL('../browser/training-label-selector.spec.mjs',import.meta.url),'utf8');
+ assert.match(main, /training-labels\.js\?v=\d+(?:\.\d+)*/);
+ assert.ok(source.includes("build: 'module-4226464'"));
+ assert.ok(browser.includes(".toBe('module-4226464')"));
 });

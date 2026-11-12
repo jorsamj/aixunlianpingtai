@@ -1,0 +1,20 @@
+{
+  "scope": "One isolated full uvicorn process launch through HTTP core ready; synthetic metadata, explicit test build/access; disk caches not forced cold; no real trainer or production",
+  "process_launch_to_first_status_ms": 2069.398999999976,
+  "process_launch_to_core_ready_ms": 2069.398999999976,
+  "maintenance_at_core_ready": "ready",
+  "first_ready_snapshot_http_ms": 24.51080000901129,
+  "snapshot_bytes": 27337,
+  "snapshot_http_status": 200,
+  "server_timing": "bootstrap;dur=18.99, serialize;dur=0.08, revision;dur=18.89, total;dur=20.745, sql.execute;dur=6.700, sql.fetch;dur=0.019, bootstrap.revision;dur=18.882, bootstrap.serialize;dur=0.070",
+  "materials": 217130,
+  "algorithms": 110,
+  "probes": [
+    {
+      "elapsed_ms": 2069.398999999976,
+      "status": "ready",
+      "maintenance": "ready"
+    }
+  ],
+  "excluded_attempts": "Initial normal-auth launches returned401 and cannot measure core ready; corrected explicit test build in disposable temp data."
+}

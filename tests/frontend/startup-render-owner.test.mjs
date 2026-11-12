@@ -93,7 +93,9 @@ test('startup progress patches one stable boot card instead of rebuilding the wh
   assert.ok(start >= 0 && end > start);
   const block = app.slice(start, end);
 
-  assert.match(block, /function paintBoot\(view,st\)/);
+  assert.match(block, /function paintBoot\(view,st,\{allowCreate=false\}=\{\}\)/);
+  assert.match(block, /if\(!allowCreate\)return false/);
+  assert.match(block, /state\.uiReady\|\|state\.__startupCanonicalPainted/);
   assert.match(block, /data-boot-card="1"/);
   assert.match(block, /data-boot-progress-bar/);
   assert.match(block, /bar\.style\.transform=/);
@@ -105,9 +107,11 @@ test('startup progress patches one stable boot card instead of rebuilding the wh
 
 
 test('canonical startup adopts the already-running page extras request instead of issuing a duplicate refresh', () => {
-  assert.match(main, /function adoptPageExtrasInflight\(page, promise\)/);
-  assert.match(main, /pageExtrasInflight\.set\(cacheKey, task\)/);
-  assert.match(main, /pageExtrasLoadedAt\.set\(cacheKey, Date\.now\(\)\)/);
+  assert.match(main, /function adoptPageExtrasInflight\(page,promise\)/);
+  assert.match(main, /pageExtrasInflight\.set\(o\.inflightKey,task\)/);
+  assert.match(main, /pageExtrasLoadedAt\.set\(o\.cacheKey,Date\.now\(\)\)/);
+  assert.match(main, /const cacheKey=JSON\.stringify\(\[projectId,page\]\)/);
+  assert.match(main, /inflightKey:JSON\.stringify\(\[cacheKey,generation\]\)/);
   const start = main.indexOf('const canonicalStartupPromise = window.__clInit?.();');
   const end = main.indexOf('document.documentElement.dataset.uiBuild', start);
   assert.ok(start >= 0 && end > start);
@@ -119,11 +123,12 @@ test('canonical startup adopts the already-running page extras request instead o
 
 
 test('normal startup does not repaint the canonical page after app bootstrap already painted it', () => {
-  assert.match(app, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
+  assert.match(app, /state\.uiReady=true;[\s\S]*?try\{render\(\)\}[\s\S]*?state\.__startupCanonicalPainted=true/);
   const start = main.indexOf('const canonicalStartupPromise = window.__clInit?.();');
   const end = main.indexOf('document.documentElement.dataset.uiBuild', start);
   assert.ok(start >= 0 && end > start);
   const block = main.slice(start, end);
   assert.match(block, /if \(!state\.__startupCanonicalPainted && navigationStabilityRuntime\.hasPageOwner\(startupPage\)\)/);
   assert.match(block, /source: 'startup-owner'/);
+  assert.match(block, /if \(state\.uiReady !== true \|\| !state\.__startupCanonicalPainted\) return;/);
 });

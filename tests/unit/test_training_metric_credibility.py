@@ -11,6 +11,7 @@ from platform_core.training_evaluation import (
     build_iteration_decision,
     build_evaluation_truth,
     build_training_metric_credibility,
+    compare_evaluations,
 )
 
 
@@ -117,6 +118,31 @@ def test_high_val_and_test_with_bounded_independent_evidence_is_not_field_accura
     assert result["production_accuracy_verified"] is False
     assert result["independent_test_binding_level"] == "bundle_verified"
     assert result["val_minus_test_map50"] == .01
+
+
+def test_assumed_unseen_history_is_visible_even_when_metrics_are_not_high():
+    evaluated = _test_result(.60)
+    evaluated['historical_independence'] = 'assumed_unseen'
+    result = build_training_metric_credibility(
+        _report(.61), evaluated, input_quality=_input_quality(),
+    )
+    assert result['historical_independence'] == 'assumed_unseen'
+    assert result['status'] == 'review_required'
+    assert 'test_historical_independence_assumed' in result['reason_codes']
+    assert result['independent_test_binding_level'] == 'bundle_verified'
+    assert result['production_accuracy_verified'] is False
+
+
+def test_assumed_unseen_never_becomes_strict_same_benchmark_comparison():
+    baseline = {'status': 'succeeded', 'evaluation_id': 'a' * 64,
+                'evaluation_protocol_id': 'b' * 64,
+                'benchmark_scope': {'binding_level': 'bundle_verified',
+                                    **{key: 'c' * 64 for key in ('scope_id', 'content_digest',
+                                       'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest')}}}
+    assumed = {**baseline, 'historical_independence': 'assumed_unseen'}
+    verdict = compare_evaluations(baseline, assumed)
+    assert verdict['comparable'] is False
+    assert 'benchmark_historical_independence_unverified' in verdict['reason_codes']
 
 
 def test_high_map_unmeasured_test_classes_and_unknown_video_provenance():

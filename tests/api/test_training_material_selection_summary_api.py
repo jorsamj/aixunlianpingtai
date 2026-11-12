@@ -107,6 +107,18 @@ def test_selection_summary_aggregates_selected_ids_without_returning_material_ro
     assert "items" not in body
 
 
+def test_summary_only_avoids_submitting_role_and_negative_plan(tmp_path):
+    client = _client(tmp_path)
+    response = client.post(
+        "/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids": ["s00001", "s00002"], "algorithm_asset_id": "does-not-exist",
+              "base_version_id": "old-version", "summary_only": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["requested_count"] == 2
+    assert "sample_role_counts" not in response.json()
+
+
 def test_selection_summary_empty_selection_still_returns_available_training_total(tmp_path):
     client = _client(tmp_path)
     response = client.post(

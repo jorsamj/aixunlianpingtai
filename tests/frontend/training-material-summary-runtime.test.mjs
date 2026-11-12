@@ -8,9 +8,107 @@ import {
   trainingCompatibilitySignature,
   trainingMaterialSelectionSignature,
   updateTrainingGovernanceSelection,
+  planTrainingScopeReviewPage,
+  planTrainingScopeReviewSelection,
   renderGtConflictEvidence,
+  renderTrainingSampleConfirmation,
+  renderTrainingSampleRoles,
   removeResolvedTrainingMaterials,
 } from '../../static/modules/training-material-summary-runtime.js';
+
+test('multiclass final confirmation reports partial positives separately from task backgrounds and GT blockers',()=>{
+  const html=renderTrainingSampleConfirmation({effective_label_codes:['person','head'],
+    pending_count:1,counts:{positive:3,confirmed_negative:0,pending_negative:1,pending_review:1},
+    coverage:{selected_count:5,eligible_count:4,full_coverage_count:1,partial_coverage_count:2,
+      zero_target_count:1,classes:[{code:'person',image_count:2,box_count:2},{code:'head',image_count:2,box_count:2}],
+      partial_preview:[{image_id:'only-person',image_url:'/person.png',label_box_counts:{person:1}},
+        {image_id:'only<head>',image_url:'/head.png',label_box_counts:{head:2}}],
+      problems:[{image_id:'bad<id>',issue_type:'missing_annotation',missing_label_codes:['head']}]},
+    pending_preview:[{image_id:'bg1',image_url:'/private/background.png'}]});
+  assert.match(html,/部分类别覆盖 · 仍是正样本/);
+  assert.match(html,/请确认画面没有本次训练目标/);
+  assert.match(html,/逐页预览全部负样本/);
+  assert.match(html,/正式 GT 或素材问题，不能靠普通确认放行/);
+  assert.match(html,/head.*2 张/);
+  assert.match(html,/查看部分覆盖正样本/);
+  assert.match(html,/person 1 框/);
+  assert.match(html,/head 2 框/);
+  assert.match(html,/已确认 0 · 待确认 1/);
+  assert.ok(!html.includes('only<head>'),'untrusted partial material IDs must be escaped');
+  assert.ok(!html.includes('bad<id>'),'untrusted material IDs must be escaped');
+  assert.match(html,/返回调整/);
+  assert.match(html,/确认并创建/);
+  assert.ok(!html.includes('每张素材必须有全部类别'));
+});
+
+test('task scope confirmation preserves partial positives and exposes paged negative previews',()=>{
+  const html=renderTrainingSampleConfirmation({effective_label_codes:['fire','smoke'],
+    pending_count:45,pending_scope_count:3,preview_offset:20,preview_size:20,
+    counts:{positive:3,pending_negative:45,confirmed_negative:0,pending_review:0},
+    coverage:{selected_count:48,eligible_count:48,partial_coverage_count:3,zero_target_count:45,
+      partial_preview:[{image_id:'fire-only',image_url:'/fire.png',label_box_counts:{fire:1}}]},
+    pending_preview:[{image_id:'blue-only',image_url:'/blue.png'}]});
+  assert.match(html,/3 张部分标签正样本需要确认/);
+  assert.match(html,/已有有效目标框会保留为正样本/);
+  assert.match(html,/第 2 \/ 3 页/);
+  assert.match(html,/data-negative-preview-prev/);
+  assert.match(html,/data-negative-preview-next/);
+  assert.match(html,/blue-only/);
+});
+
+test('pending GT review returns an explicit no-receipt result and never requests negative confirmation',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const current={algorithmId:'alg',materialIds:['a','b'],newLabelCodes:['person'],config:{model:'yolo11n.pt'}};
+  const requests=[];
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({
+    getState:()=>({trainingDraft:current}),projectId:()=> 'project-1',
+    trainingDraftRuntime:{materialIds:()=>[],current:()=>current},
+    fetchImpl:async url=>{
+      requests.push(url);
+      if(!url.endsWith('/negative-preview'))throw new Error('no confirmation should be written for unreviewed GT');
+      return {ok:true,json:async()=>({pending_count:0,counts:{positive:1,pending_review:1}})};
+    },
+  });
+  try {
+    const result=await runtime.confirmPendingNegatives({draft:current});
+    assert.deepEqual(result,{accepted:true,receiptIssued:false});
+    assert.equal(requests.length,1);
+    assert.match(requests[0],/negative-preview$/);
+  }finally{
+    runtime.destroy();
+    globalThis.window=previous.window;
+    globalThis.document=previous.document;
+  }
+});
+
+test('missing-label filter is sent to canonical compatibility POST with server paging',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const draft={algorithmId:'alg',materialIds:['a','b'],newLabelCodes:['fire','smoke'],config:{model:'model.pt'}};
+  const requests=[];
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({
+    getState:()=>({trainingDraft:draft}),projectId:()=> 'project-1',
+    trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:async(url,options)=>{
+      requests.push({url,body:JSON.parse(options.body)});
+      return {ok:true,json:async()=>({compatible:false,issue_count:1,
+        material_revision:4,annotation_revision:6,effective_label_codes:['fire','smoke'],
+        page:3,page_size:50,items:[{image_id:'a',missing_label_codes:['smoke']}]})};
+    },
+  });
+  try{
+    const result=await runtime.refreshCompatibility({force:true,missingLabelCode:'smoke',page:3,pageSize:50});
+    assert.equal(result.items[0].missing_label_codes[0],'smoke');
+    const preflight=requests.filter(row=>row.url.includes('/training-materials/compatibility'));
+    assert.equal(preflight.length,1);
+    assert.equal(preflight[0].body.missing_label_code,'smoke');
+    assert.equal(preflight[0].body.page,3);
+    assert.equal(preflight[0].body.page_size,50);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
 
 test('shared GT evidence distinguishes unknown cause and null metrics without trusting HTML', () => {
@@ -39,11 +137,68 @@ test('governance selection retains cross-page choices and all-filtered exclusion
   assert.equal(updateTrainingGovernanceSelection(selected, {mode:'read', key:'project/filter/new-rev', total:2376}).count, 0);
 });
 
+test('human GT scope batch is per-image, bounded and never silently accepts other problems',()=>{
+  const sha='a'.repeat(64);
+  const selection={image_ids:['person-only','head-only','unannotated']};
+  const rows=[
+    {image_id:'person-only',issue_type:'partial_review_scope',annotation_version:4,
+      content_sha256:sha,missing_label_codes:['head']},
+    {image_id:'head-only',issue_type:'partial_review_scope',annotation_version:7,
+      content_sha256:sha,missing_label_codes:['person','helmet']},
+    {image_id:'unannotated',issue_type:'missing_annotation',annotation_version:0,
+      content_sha256:sha,missing_label_codes:['person','head']},
+  ];
+  const plan=planTrainingScopeReviewPage(selection,rows);
+  assert.equal(plan.total,3);
+  assert.deepEqual(plan.items,[
+    {image_id:'person-only',reviewed_label_codes:['head'],expected_version:4,source_content_sha256:sha},
+    {image_id:'head-only',reviewed_label_codes:['person','helmet'],expected_version:7,source_content_sha256:sha},
+  ]);
+  assert.deepEqual(plan.blocked,[{image_id:'unannotated',issue_type:'missing_annotation'}]);
+  assert.throws(()=>planTrainingScopeReviewPage({all_filtered:true,image_ids:[]},rows),/冻结服务端审核范围/);
+  assert.throws(()=>planTrainingScopeReviewPage({image_ids:['person-only','not-on-page']},rows),/其他页面/);
+  assert.throws(()=>planTrainingScopeReviewPage({image_ids:Array.from({length:51},(_,i)=>String(i))},rows),/50 张/);
+  assert.deepEqual(planTrainingScopeReviewPage({image_ids:['person-only']},[
+    {...rows[0],annotation_version:4,content_sha256:'forged'},
+  ]).blocked,[{image_id:'person-only',issue_type:'partial_review_scope'}]);
+});
+
+test('durable formal review selects cross-page, filtered or all issues without client-side hydration',()=>{
+  const filters={query:'camera',issueType:'partial_review_scope',missingLabelCode:'head'};
+  const selection=planTrainingScopeReviewSelection({all_filtered:true,excluded_image_ids:['bad','bad']},filters);
+  assert.deepEqual(selection,{all_filtered:true,all_issues:false,image_ids:[],excluded_image_ids:['bad'],
+    query:'camera',issue_type:'partial_review_scope',missing_label_code:'head'});
+  assert.deepEqual(planTrainingScopeReviewSelection({image_ids:['page1','page7','page1']} ).image_ids,
+    ['page1','page7']);
+  assert.equal(planTrainingScopeReviewSelection({all_issues:true}).all_issues,true);
+  assert.throws(()=>planTrainingScopeReviewSelection({image_ids:[]}),/请先勾选/);
+  assert.throws(()=>planTrainingScopeReviewSelection({previous_execution_task_id:'deleted',image_ids:['a']}),/删除任务/);
+  assert.throws(()=>planTrainingScopeReviewSelection({all_filtered:true,all_issues:true}),/不能同时/);
+  assert.throws(()=>planTrainingScopeReviewSelection({image_ids:['a'],excluded_image_ids:['b']}),/排除项/);
+  assert.throws(()=>planTrainingScopeReviewSelection({image_ids:Array.from({length:50001},(_,i)=>String(i))}),/50000 张/);
+});
+
 test('selection signature is stable and duplicate independent', () => {
   assert.equal(
     trainingMaterialSelectionSignature(['b', 'a', 'b']),
     trainingMaterialSelectionSignature(['a', 'b']),
   );
+});
+
+test('empty iteration preview is local and does not start submission-only role validation', async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const draft={algorithmId:'algorithm',baseVersionId:'v1',materialIds:[],newLabelCodes:[]};
+  let fetches=0;
+  globalThis.window={};globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),projectId:()=> 'p',
+    trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},fetchImpl:async()=>{fetches++;throw new Error('must not query empty selection')}});
+  try{
+    const result=await runtime.refresh([]);
+    assert.equal(result.requested_count,0);
+    assert.deepEqual(result.positive_label_codes,[]);
+    assert.equal(runtime.summaryReadyFor([]),true);
+    assert.equal(fetches,0);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
 });
 
 test('all issues selection is distinct from current filtered selection across pages',()=>{
@@ -140,11 +295,12 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   assert.match(summaryRuntime, /fullPoolHydration: false/);
   assert.match(summaryRuntime, /selectable_total/);
   assert.match(summaryRuntime, /pending_annotation_count/);
-  assert.match(summaryRuntime, /可直接训练/);
+  assert.match(summaryRuntime, /正式标注/);
+  assert.doesNotMatch(summaryRuntime, /可直接训练/);
   assert.match(summaryRuntime, /待标注/);
   assert.match(labelsRuntime, /materialSummaryRuntime\.summaryReadyFor/);
   assert.match(labelsRuntime, /materialSummaryRuntime\?\.invalidate\?\.\(\)/);
-  assert.match(labelsRuntime, /正在读取素材标签/);
+  assert.match(labelsRuntime, /正在读取训练标签/);
   assert.match(summaryRuntime, /function invalidate\(\)/);
   assert.match(summaryRuntime, /currentSignature = null/);
   assert.match(summaryRuntime, /summary = null/);
@@ -180,4 +336,106 @@ test('pending selection summary and stalled compatibility body both release load
     fetchImpl:async url=>url.endsWith('selection-summary')?new Promise(()=>{}):{ok:true,json:()=>new Promise(()=>{})}});
   try{await runtime.refreshCompatibility({force:true});await new Promise(resolve=>setTimeout(resolve,45));assert.equal(runtime.state().loading,false);assert.equal(runtime.compatibilityFor().loading,false);assert.match(messages.join(' '),/超时/)}
   finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
+
+test('sample role summary distinguishes task labels and warns without dropping negatives',()=>{
+ const html=renderTrainingSampleRoles({effective_label_codes:['vest'],sample_role_counts:{positive:500,confirmed_negative:3000,pending_negative:200,pending_review:2}});
+ assert.match(html,/vest/);assert.match(html,/正样本 500/);assert.match(html,/已确认负样本 3000/);assert.match(html,/待确认负样本 200/);assert.match(html,/2 张素材需修复/);assert.match(html,/比例/);
+ assert.equal(renderTrainingSampleRoles({label_codes:['person']}),'');
+});
+
+test('selected positive codes use formal evidence and ignore late response from previous selection', async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const requests=[];
+  const draft={algorithmId:'algorithm',materialIds:['page-a'],newLabelCodes:[]};
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),
+    projectId:()=> 'p',trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:(_url,options)=>new Promise(resolve=>requests.push({resolve,body:JSON.parse(options.body)}))});
+  const response=(codes,labelCodes=codes)=>({ok:true,json:async()=>({requested_count:1,
+    label_codes:labelCodes,positive_label_codes:codes,repository_revision:1})});
+  try{
+    const old=runtime.refresh(['page-a']);
+    await new Promise(resolve=>setImmediate(resolve));
+    draft.materialIds=['page-b'];
+    const fresh=runtime.refresh(['page-b']);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,2);
+    assert.equal(requests[0].body.summary_only,true);
+    assert.equal(requests[1].body.summary_only,true);
+    requests[1].resolve(response(['smoke'],['smoke','scope-only']));
+    await fresh;
+    requests[0].resolve(response(['fire']));
+    await old;
+    assert.deepEqual(runtime.selectedLabelCodes(['page-b']),['smoke']);
+    assert.deepEqual(runtime.selectedLabelCodes(['page-a']),[]);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
+
+test('frozen selection reads real server GT summary, retains labels and defers compatibility',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const reference='trainselection_'+'a'.repeat(32),requests=[];
+  const draft={algorithmId:'alg',materialIds:[],trainSelectionRef:reference,trainSelectionCount:22015,
+    newLabelCodes:[],history_policy:'new_for_algorithm',baseVersionId:'v1'};
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),projectId:()=> 'p',
+    trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:async(_url,options)=>{requests.push(JSON.parse(options.body));return {ok:true,json:async()=>({
+      requested_count:22015,matched_count:22015,eligible_count:21000,pending_annotation_count:1015,
+      positive_label_codes:['person','smoke'],label_codes:['person','smoke'],repository_revision:8})}}});
+  try{
+    await runtime.refresh();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,1);
+    assert.equal(requests[0].train_selection_ref,reference);
+    assert.equal(requests[0].history_policy,'new_for_algorithm');
+    assert.equal(requests[0].base_version_id,'v1');
+    assert.deepEqual(requests[0].image_ids,[]);
+    assert.deepEqual(runtime.selectedLabelCodes(),['person','smoke']);
+    assert.equal(runtime.summaryFor().eligible_count,21000);
+    draft.newLabelCodes=['person'];
+    await runtime.refresh();
+    assert.equal(requests.length,1,'choosing labels must not rescan frozen 22k materials');
+    const check=await runtime.refreshCompatibility();
+    assert.equal(check.skipped,true);
+    assert.equal(check.compatible,false);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
+
+test('label-only summary refresh retains confirmed positive GT for the same material scope without weakening admission readiness',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  let activeProject='project-a';
+  const draft={algorithmId:'algorithm',materialIds:['material-a'],newLabelCodes:[]},requests=[];
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),
+    projectId:()=>activeProject,trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:(_url,options)=>new Promise(resolve=>requests.push({resolve,body:JSON.parse(options.body)}))});
+  const response=(codes)=>({ok:true,json:async()=>({requested_count:1,positive_label_codes:codes,repository_revision:1})});
+  try{
+    await new Promise(resolve=>setImmediate(resolve));
+    requests[0].resolve(response(['smoke','fire']));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(runtime.labelCodesFor(['material-a']),['smoke','fire']);
+    assert.equal(runtime.summaryReadyFor(['material-a']),true);
+
+    draft.newLabelCodes=['smoke'];
+    const rechecking=runtime.refresh(['material-a']);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(runtime.summaryReadyFor(['material-a']),false,'task-role summary must be refreshed for the changed draft');
+    assert.deepEqual(runtime.labelCodesFor(['material-a']),['smoke','fire'],'positive GT remains usable while the task-role read is pending');
+    assert.equal(runtime.labelCodesFor(['material-b']),null,'different selected material must not reuse GT');
+    activeProject='project-b';
+    assert.equal(runtime.labelCodesFor(['material-a']),null,'project switch must not reuse GT');
+    activeProject='project-a';
+
+    requests[1].resolve(response(['smoke','fire','new-label']));
+    await rechecking;
+    assert.deepEqual(runtime.labelCodesFor(['material-a']),['smoke','fire','new-label']);
+    runtime.invalidate();
+    assert.equal(runtime.labelCodesFor(['material-a']),null,'formal GT mutation invalidates the cached positive evidence');
+    await new Promise(resolve=>setImmediate(resolve));
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
 });

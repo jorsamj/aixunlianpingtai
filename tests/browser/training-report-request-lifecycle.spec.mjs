@@ -14,6 +14,30 @@ function report(project,version='version-a'){
 const open=page=>page.evaluate(()=>{void window.trainingReportCore425('report-job',{algorithmId:'algorithm-a',versionId:'version-a'})});
 const dialog=page=>page.getByRole('dialog',{name:'训练报告',exact:true}).last();
 
+test('report tabs keep one row and dialog scrolls after switching and reopening',async({page,request})=>{
+ const project=await setup(page,request);
+ await page.route('**/api/v44/projects/*/jobs/report-job/report**',route=>route.fulfill({json:report(project)}));
+ for(const viewport of [{width:1366,height:768},{width:390,height:844}]){
+  await page.setViewportSize(viewport);
+  await open(page);
+  await expect(dialog(page).locator('[data-report-job="report-job"]')).toBeVisible();
+  const card=dialog(page).locator('.modal-card'),body=dialog(page).locator('.modal-body');
+  const initialHeight=await card.evaluate(node=>node.getBoundingClientRect().height);
+  for(const tab of ['curves','errors','provenance','overview']){
+   await dialog(page).locator(`[data-report-tab="${tab}"]`).click();
+   const size=await card.evaluate(node=>node.getBoundingClientRect().height);
+   expect(Math.abs(size-initialHeight)).toBeLessThan(2);
+   const positions=await dialog(page).locator('[data-report-tab]').evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
+   expect(new Set(positions).size).toBe(1);
+   expect(await body.evaluate(node=>node.scrollHeight>node.clientHeight)).toBe(true);
+  }
+  await body.evaluate(node=>{node.scrollTop=150});
+  expect(await body.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
+  await page.evaluate(()=>window.closeModalCore424());
+  await expect(dialog(page)).toHaveCount(0);
+ }
+});
+
 test('report opens immediately, slow response keeps close usable and true historical evidence renders',async({page,request})=>{
  const project=await setup(page,request);let release,started=false;
  const gate=new Promise(resolve=>release=resolve);

@@ -113,13 +113,23 @@ class WorkerInstanceLease:
     expires_at: str
     renew_hooks: list[Callable[[], None]] = field(default_factory=list, repr=False)
 
+    def __post_init__(self):
+        from .sqlite_busy import confirmed_deadline
+        self._confirmed_deadline = confirmed_deadline(self.expires_at)
+
     def add_renew_hook(self, hook: Callable[[], None]) -> None:
         if not callable(hook):
             raise TypeError("worker renew hook must be callable")
         self.renew_hooks.append(hook)
 
     def renew(self) -> None:
-        self.expires_at = self.service.renew(self.instance_key, self.owner_token, self.lease_seconds)
+        from .sqlite_busy import confirmed_deadline, run_with_busy_retry
+        expires_at = run_with_busy_retry(
+            lambda: self.service.renew(self.instance_key, self.owner_token, self.lease_seconds),
+            deadline=self._confirmed_deadline - .25,
+        )
+        self.expires_at = expires_at
+        self._confirmed_deadline = max(self._confirmed_deadline, confirmed_deadline(expires_at))
         # Observability hooks piggyback the one existing Worker heartbeat. They
         # are best-effort and may never turn a healthy Worker lease into a task
         # outage merely because cache-status reporting failed.
@@ -278,8 +288,8 @@ class WorkerInstanceService:
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             changed = database.execute(
-                "UPDATE worker_instances SET heartbeat_at=?, expires_at=? WHERE instance_key=? AND owner_token=?",
-                (now_text, expires_at, str(instance_key), str(owner_token)),
+                "UPDATE worker_instances SET heartbeat_at=?, expires_at=? WHERE instance_key=? AND owner_token=? AND expires_at>?",
+                (now_text, expires_at, str(instance_key), str(owner_token), now_text),
             ).rowcount
             if changed != 1:
                 database.rollback()

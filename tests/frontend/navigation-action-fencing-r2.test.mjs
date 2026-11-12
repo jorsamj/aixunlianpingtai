@@ -25,7 +25,9 @@ test('final M4 model save and connection test fence stale modal effects', () => 
   assert.ok(save.indexOf('closeModal()') > save.indexOf('action&&!action.isCurrent()'), 'saveVisionModelM4 must not close a new-page modal after navigation');
 
   const probe = liveOwner('window.testModelConfigM4=async function(id)', 3500);
-  assertFenceBefore(probe, "modal('模型连接与标注解析测试'", 'testModelConfigV35');
+  assertFenceBefore(probe, 'const count=', 'testModelConfigV35');
+  assert.match(probe, /inline\.modelTestGeneration===generation/, 'the active model dialog must own test results');
+  assert.doesNotMatch(probe, /modal\('模型连接与标注解析测试'/, 'connection tests should remain inline in the configuration window');
 });
 
 test('final clean confirmation alias owner fences stale completion and stays local-state only', () => {
@@ -44,8 +46,14 @@ test('v60 review completion is the final AI commit owner and fences stale UI eff
   assert.match(taskApi, /annotation-tasks/, 'v60 taskApi must keep the durable annotation-task endpoint');
 
   const owner = liveOwner('window.completeAiReview60=async mode=>', 4200);
-  assertFenceBefore(owner, 'applyTaskResult(result)', 'completeAiReview60');
-  assert.ok(owner.indexOf('window.closeAiReview60?.()') > owner.indexOf('action&&!action.isCurrent()'), 'completeAiReview60 must not close a new-page review after navigation');
+  const finisher = app.slice(app.lastIndexOf('async function finishAiReview60('), app.lastIndexOf('async function aiReviewLookupReceipt60('));
+  assert.match(owner, /NavigationStability\?\.action\?\.\(state\.page\)/, 'review submission must capture the navigation action');
+  assert.ok(finisher.indexOf('action&&!action.isCurrent()')>=0, 'shared review receipt handler must fence stale state');
+  assert.ok(finisher.indexOf('applyTaskResult(result)') > finisher.indexOf('action&&!action.isCurrent()'), 'review completion must fence stale task patching');
+  assert.ok(finisher.indexOf('window.closeAiReview60?.({afterCommit:true})') > finisher.indexOf('action&&!action.isCurrent()'), 'verified review completion may leave the submitting section, but must not close a newer review');
+  const closer = app.slice(app.lastIndexOf('window.closeAiReview60='), app.lastIndexOf('window.reviewPageSelect60='));
+  assert.match(closer, /review\?\.submitting&&!afterCommit/, 'ordinary navigation must remain blocked until a receipt is verified');
+  assert.match(owner, /finishAiReview60\(review,result,mode,ownerPage,action\)/);
   assert.match(owner, /taskApi\(review\.id\)\}\/decisions/, 'v60 review completion must commit through the durable task decisions endpoint');
   assert.match(owner, /commit:true/, 'v60 review completion must preserve explicit commit semantics');
   assert.match(app, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\);/, 'legacy confirmAiLabel427 must remain only as a v60 compatibility alias');

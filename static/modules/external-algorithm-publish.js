@@ -44,13 +44,21 @@ export function publicationWeightDetails(status={}) {
     const pending=row.remote_registered&&Array.isArray(row.prepared_tags)&&JSON.stringify(row.prepared_tags)!==JSON.stringify(row.confirmed_tags);
     const tagsFacts=`冻结类别：${escapeHtml(tagsText(row.frozen_tags))}<br>本地类别：${escapeHtml(tagsText(row.local_tags??meta.tags))}<br>准备提交：${escapeHtml(tagsText(row.prepared_tags))}<br>HTTP 请求记录：${escapeHtml(tagsText(row.request_tags))}（${escapeHtml(row.request_status||'无记录')}）<br>已确认提交：${escapeHtml(tagsText(row.confirmed_tags))}<br>${row.remote_tags_status==='READ_BACK'?`远端读回：${escapeHtml(tagsText(row.remote_tags))} ${escapeHtml(row.remote_tags_checked_at||'')}`:row.remote_tags_status==='NOT_RETURNED'?'远端未返回 tags（不能视为读回验证）':'远端 tags 未读回验证'}${pending?'<br>标签补齐待处理':''}`;
     const plan=row.recovery_plan||{};
-    const review=row.review_required?`<br>自动发布异常，请管理员核对：${escapeHtml(plan.reason||row.last_error||'远端身份未确认')}<br>建议 ${escapeHtml(plan.suggested_operation||'READ_ONLY_RECOVERY')}<br>目标分类 ${escapeHtml(plan.target_compute_platform_id||'未确认')}<br>原Weight ${escapeHtml(plan.old_weight_id||'未确认')}`:'';
+    const review=row.review_required&&row.included_in_delivery!==false?`<br>自动发布异常，请管理员核对：${escapeHtml(plan.reason||row.last_error||'远端身份未确认')}<br>建议 ${escapeHtml(plan.suggested_operation||'READ_ONLY_RECOVERY')}<br>目标分类 ${escapeHtml(plan.target_compute_platform_id||'未确认')}<br>原Weight ${escapeHtml(plan.old_weight_id||'未确认')}`:'';
     const role=({HISTORICAL:'历史成果',AUTOMATIC_CURRENT:'自动当前交付',CONFIRMED_OWNER:'当前交付',SINGLE_CANDIDATE:'自动交付候选'})[row.delivery_role]||row.delivery_role||'待核验';
     const readback=row.remote_identity_status==='READ_BACK'?'远端读回已确认':row.remote_identity_status==='HISTORICAL_RECEIPT'?'历史登记回执（已被当前成果取代）':'远端身份未读回验证';
     const facts=`Artifact ${escapeHtml(row.artifact_id||'未登记')}<br>Weight ${escapeHtml(row.external_weight_id||'未确认')}<br>OSS ${escapeHtml(row.storage_status||'未登记')}<br>登记状态 ${escapeHtml(row.sync_status||'PENDING')}<br>交付角色 ${escapeHtml(role)}<br>${readback}${review}`;
     const delivery=row.delivery_role==='HISTORICAL'?'历史成果':row.sync_status==='SYNCED'?'同步成功':row.remote_registered?'已登记 · 待确认':'尚未登记';
     return `<tr><td>${escapeHtml(row.file_name||row.target)}<br>${escapeHtml(row.compute_platform_id||'未配置')} / ${escapeHtml(row.remote_chip_code||row.mapped_chip_code||row.chip_code||'通用')}</td><td>${delivery}<br>${facts}<br>${escapeHtml(names[row.metadata_sync_status]||'待同步')}<br>${escapeHtml(row.metadata_note||'')}${meta.execution_evidence_note?`<br>${escapeHtml(meta.execution_evidence_note)}`:''}<br>${escapeHtml(row.last_error||'')}<br><details><summary>类别与同步证据</summary>${tagsFacts}</details></td><td>宽 ${escapeHtml(meta.image_width??'未记录')} / 高 ${escapeHtml(meta.image_height??'未记录')} · ${escapeHtml(meta.yolo_version||'YOLO型号未记录')}<br>${escapeHtml(row.size_bytes??'未知')} bytes<br><code style="overflow-wrap:anywhere">${escapeHtml(row.sha256||'SHA256未记录')}</code><br>类别：${escapeHtml(Array.isArray(meta.tags)?meta.tags.join(', '):'未记录')}</td></tr>`;
   }).join('')}</tbody></table></div><small>转换产物登记与目标硬件验证分别记录，登记成功不表示实机验证通过。</small></details>`;
+}
+
+export function publicationDeliveryRows(status={}) {
+  const all=Array.isArray(status.artifacts)?status.artifacts:Array.isArray(status.discovered)?status.discovered:[];
+  const current=all.filter(row=>row.included_in_delivery!==false && row.delivery_role!=='HISTORICAL');
+  const historical=all.filter(row=>row.included_in_delivery===false || row.delivery_role==='HISTORICAL');
+  return {current,historical,delivered:current.filter(row=>row.sync_status==='SYNCED').length,
+    reviewing:current.filter(row=>row.review_required).length};
 }
 
 export function publicationResultMessage(result={}) {
@@ -362,65 +370,206 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   }
 
   const publicationRequests = new Map();
-  async function publishVersion(algorithmId, versionId, button) {
+  let activeDeliveryDialog = null;
+
+  function installDeliveryDialogStyles() {
+    if (document.getElementById('external-delivery-dialog-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'external-delivery-dialog-styles';
+    style.textContent = `
+      .external-delivery-dialog{display:grid;gap:16px;max-width:100%;min-width:0;color:#17233d}
+      .external-delivery-intro{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+      .external-delivery-intro h3{font-size:20px;line-height:1.4;margin:0 0 5px;font-weight:750}
+      .external-delivery-intro p{margin:0;color:#64748b;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+      .external-delivery-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+      .external-delivery-kpi{padding:14px 16px;border:1px solid #e5eaf2;border-radius:13px;background:#f8fafc;min-width:0}
+      .external-delivery-kpi span{display:block;color:#64748b;font-size:12px;margin-bottom:7px}
+      .external-delivery-kpi b{display:block;font-size:18px;line-height:1.4;overflow-wrap:anywhere}
+      .external-delivery-banner{padding:12px 14px;border:1px solid #dbe7fc;border-radius:12px;background:#f4f8ff;font-size:13px;line-height:1.65}
+      .external-delivery-banner b{display:block;margin-bottom:3px}
+      .external-delivery-banner.warn{border-color:#f6d7a4;background:#fffbf1}
+      .external-delivery-banner.ok{border-color:#bce6d0;background:#f2fbf7}
+      .external-delivery-banner.error{border-color:#fecaca;background:#fff5f5}
+      .external-delivery-list{border:1px solid #e5eaf2;border-radius:13px;overflow:hidden}
+      .external-delivery-list-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;background:#f8fafc}
+      .external-delivery-list-head strong{font-size:14px}
+      .external-delivery-list-head span{color:#64748b;font-size:12px}
+      .external-delivery-item{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 14px;border-top:1px solid #eef2f7}
+      .external-delivery-item-main{min-width:0;flex:1}
+      .external-delivery-item-main b{display:block;max-width:100%;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .external-delivery-item-main small{display:block;margin-top:4px;color:#64748b;font-size:11px}
+      .external-delivery-pill{font-size:12px;padding:4px 10px;border-radius:100px;white-space:nowrap;background:#eef2f7;color:#475569}
+      .external-delivery-pill.ok{background:#dcfce7;color:#166534}
+      .external-delivery-pill.warn{background:#fff0ce;color:#92400e}
+      .external-delivery-pill.error{background:#fee2e2;color:#991b1b}
+      .external-delivery-technical{border:1px solid #e5eaf2;border-radius:11px;padding:11px 13px}
+      .external-delivery-technical>summary{cursor:pointer;font-size:13px;font-weight:600;color:#475569}
+      .external-delivery-technical>[data-weight-publication-details]{margin-top:12px;max-width:100%;overflow:auto}
+      .external-delivery-technical .table{min-width:700px}
+      .external-delivery-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:13px;border-top:1px solid #e5eaf2}
+      .external-delivery-footer .row{flex-wrap:wrap;justify-content:flex-end}
+      .external-delivery-footnote{font-size:12px;color:#64748b;line-height:1.5;max-width:55%}
+      @media(max-width:760px){.external-delivery-kpis{grid-template-columns:1fr}.external-delivery-intro{flex-direction:column}.external-delivery-footer{flex-direction:column;align-items:stretch}.external-delivery-footnote{max-width:none}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function deliveryEndpoint(context) {
+    return `${API_ROOT}/projects/${encodeURIComponent(context.projectId)}/algorithms/${encodeURIComponent(context.algorithmId)}/versions/${encodeURIComponent(context.versionId)}`;
+  }
+
+  function deliveryIsCurrent(context) {
+    return Boolean(context?.root?.isConnected) && currentProjectId() === context.projectId
+      && String(state().page || '') === '算法列表';
+  }
+
+  function deliveryRowStatus(row) {
+    if (row.included_in_delivery===false || row.delivery_role==='HISTORICAL') return {label:'历史成果', tone:''};
+    if (row.review_required) return {label:'需人工核对', tone:'error'};
+    if (row.sync_status === 'SYNCED') return {label:'已同步', tone:'ok'};
+    if (row.remote_registered) return {label:'已登记 · 待核实', tone:'warn'};
+    if (row.publish_mapping_status === 'blocked') return {label:'待配置映射', tone:'warn'};
+    return {label:'待同步', tone:''};
+  }
+
+  function deliveryDialogBody(context) {
+    const status = context.status;
+    const {current:rows,historical:historicalRows,delivered,reviewing}=publicationDeliveryRows(status || {});
+    const versionPublished = String(status?.publication?.status || '').toUpperCase() === 'PUBLISHED';
+    const partial = String(status?.weight_delivery_status || '').toUpperCase() === 'PARTIAL';
+    const done = Boolean(status) && versionPublished && status.requires_sync === false && !partial;
+    const preflight = status ? publicationPreflight(status) : {ready:false,message:''};
+    const canSync = Boolean(status && !context.busy && !context.uncertain && !context.awaitingReadback
+      && status.requires_sync !== false && preflight.ready);
+    const busy = Boolean(context.busy);
+    const banner = context.awaitingReadback
+      ? '<section class="external-delivery-banner warn"><b>同步请求已完成，等待状态确认</b>请刷新状态确认最终权重结果；在获得最新读回前不能重复提交。</section>'
+      : context.error
+      ? `<section class="external-delivery-banner error" role="alert"><b>操作未完成</b>${escapeHtml(context.error)}</section>`
+      : context.uncertain
+        ? '<section class="external-delivery-banner warn"><b>上次提交结果尚未确认</b>请先查询远端状态，不会自动再次提交，避免重复创建版本或权重。</section>'
+        : !status
+          ? '<section class="external-delivery-banner">正在检查当前版本的外部交付状态…</section>'
+          : done
+            ? '<section class="external-delivery-banner ok"><b>交付已完成</b>当前已登记版本及已配置权重均无需再次同步。</section>'
+            : `<section class="external-delivery-banner ${reviewing || !preflight.ready || partial ? 'warn' : ''}"><b>${versionPublished ? '版本已登记，权重交付待处理' : '尚未完成外部交付'}</b>${escapeHtml(reviewing ? `其中 ${reviewing} 份权重需要管理员核对；` : '')}${escapeHtml(preflight.message || '请核对交付范围后确认同步。')}</section>`;
+    const list = !status
+      ? '<div class="external-delivery-item"><span class="muted-line">正在读取权重清单…</span></div>'
+      : rows.length
+        ? rows.map(row => {
+          const display = deliveryRowStatus(row);
+          const name = String(row.file_name || row.target || '模型权重');
+          const target = row.target === 'original' || row.target === 'training' ? '原始模型' : String(row.target || '转换产物');
+          const platform = String(row.compute_platform_id || row.mapped_chip_code || row.chip_code || '通用');
+          return `<div class="external-delivery-item"><div class="external-delivery-item-main"><b title="${escapeHtml(name)}">${escapeHtml(name)}</b><small>${escapeHtml(target)} · ${escapeHtml(platform)}</small></div><span class="external-delivery-pill ${display.tone}">${display.label}</span></div>`;
+        }).join('')
+        : '<div class="external-delivery-item"><span class="muted-line">当前版本未发现可交付的权重</span></div>';
+    const history=historicalRows.length
+      ? `<details class="external-delivery-technical"><summary>历史转换成果 ${historicalRows.length} 份（不参与本次同步）</summary>${historicalRows.map(row=>`<div class="external-delivery-item"><div class="external-delivery-item-main"><b title="${escapeHtml(row.file_name||row.target||'历史模型')}">${escapeHtml(row.file_name||row.target||'历史模型')}</b><small>Artifact ${escapeHtml(row.artifact_id||'未登记')}</small></div><span class="external-delivery-pill">历史成果</span></div>`).join('')}</details>`:'';
+    return `<div class="external-delivery-dialog">
+      <header class="external-delivery-intro"><div><h3>${escapeHtml(context.algorithmName)}</h3><p>版本 ${escapeHtml(context.versionName)} · 目标平台：新畅联</p></div><span class="external-delivery-pill ${versionPublished ? 'ok' : 'warn'}">${versionPublished ? '版本已登记' : status ? '待登记' : '检查中'}</span></header>
+      <div class="external-delivery-kpis"><div class="external-delivery-kpi"><span>版本交付</span><b>${versionPublished ? '已登记' : status ? '未完成' : '检查中'}</b></div><div class="external-delivery-kpi"><span>权重已同步</span><b>${status ? `${delivered} / ${rows.length}` : '—'}</b></div><div class="external-delivery-kpi"><span>待人工核对</span><b>${status ? reviewing : '—'}</b></div></div>
+      ${banner}
+      <section class="external-delivery-list"><div class="external-delivery-list-head"><strong>本次版本的模型权重</strong><span>仅显示本次需要同步的成果</span></div>${list}${history}</section>
+      ${status ? `<details class="external-delivery-technical"><summary>技术回执与分类证据（高级详情）</summary>${publicationWeightDetails(status)}</details>` : ''}
+      <footer class="external-delivery-footer"><span class="external-delivery-footnote">打开此窗口或刷新状态不会提交同步。只有点击“确认同步”才会向新畅联写入数据；登记成功不代表实机验证通过。</span><div class="row"><button class="btn" type="button" data-delivery-action="refresh" ${busy ? 'disabled' : ''}>${context.busy === 'checking' ? '查询中…' : context.uncertain ? '查询发布结果' : '刷新状态'}</button><button class="btn" type="button" data-delivery-action="close">关闭</button>${!done ? `<button class="btn primary" type="button" data-delivery-action="sync" ${canSync ? '' : 'disabled'}>${context.busy === 'publishing' ? '正在同步…' : '确认同步到新畅联'}</button>` : ''}</div></footer>
+    </div>`;
+  }
+
+  function paintDeliveryDialog(context) {
+    if (deliveryIsCurrent(context)) context.root.innerHTML = deliveryDialogBody(context);
+  }
+
+  async function readDeliveryStatus(context) {
+    if (!deliveryIsCurrent(context) || context.busy) return;
+    context.busy = 'checking';
+    context.error = '';
+    paintDeliveryDialog(context);
+    try {
+      const status = await requestJson(deliveryEndpoint(context));
+      if (!deliveryIsCurrent(context)) return;
+      context.status = status;
+      context.awaitingReadback = false;
+      if (context.uncertain && status.publication?.status === 'PUBLISHED' && status.requires_sync === false) {
+        context.uncertain = false;
+        publicationRequests.delete(context.key);
+      }
+    } catch (error) {
+      if (deliveryIsCurrent(context)) context.error = String(error?.message || error);
+    } finally {
+      context.busy = '';
+      paintDeliveryDialog(context);
+    }
+  }
+
+  async function executeDeliverySync(context) {
+    if (!deliveryIsCurrent(context) || context.busy || context.uncertain || publicationRequests.get(context.key) === 'pending') return;
+    if (!context.status || context.status.requires_sync === false || !publicationPreflight(context.status).ready) return;
+    publicationRequests.set(context.key, 'pending');
+    context.busy = 'publishing';
+    context.error = '';
+    paintDeliveryDialog(context);
+    let requestConfirmed = false;
+    try {
+      const result = await requestJson(deliveryEndpoint(context) + '/publish', {method:'POST'});
+      requestConfirmed = true;
+      context.uncertain = false;
+      context.awaitingReadback = true;
+      context.message = publicationResultMessage(result);
+      notify?.(context.message);
+      await algorithmListRuntime?.refresh?.({render: String(state().page || '') === '算法列表'});
+      context.busy = '';
+      await readDeliveryStatus(context);
+    } catch (error) {
+      context.uncertain = !requestConfirmed && !(Number(error?.httpStatus) >= 400 && Number(error?.httpStatus) < 500);
+      if (deliveryIsCurrent(context)) {
+        context.error = context.uncertain
+          ? `发布结果待确认，请先查询状态；系统不会自动再次提交。 ${String(error?.message || error)}`
+          : String(error?.message || error);
+      }
+      if (context.uncertain) publicationRequests.set(context.key, 'uncertain');
+    } finally {
+      if (!context.uncertain) publicationRequests.delete(context.key);
+      context.busy = '';
+      paintDeliveryDialog(context);
+    }
+  }
+
+  async function publishVersion(algorithmId, versionId) {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
     const key = `${pid}:${algorithmId}:${versionId}`;
-    if(publicationRequests.get(key)==='pending')return;
-    const queryOnly=publicationRequests.get(key)==='uncertain';
-    publicationRequests.set(key,'pending');
-    let postStarted=false, postConfirmed=false, outcomeUncertain=queryOnly;
-    if (button) { button.disabled = true; button.setAttribute('aria-busy','true'); button.textContent = queryOnly?'正在查询发布结果…':'正在检查…'; }
-    const current=()=>currentProjectId()===pid&&String(state().page||'')==='算法列表';
-    const showStatus=status=>{
-      if(!current())return;
-      const owner=[...document.querySelectorAll('[data-external-publish-action]')]
-        .find(node=>node.dataset.externalPublishAction===`${algorithmId}:${versionId}`)||button;
-      const row=owner?.isConnected?owner.closest('.alg428-version-row'):null;
-      if(!row)return;
-      row.querySelector('[data-weight-publication-details]')?.remove();
-      row.insertAdjacentHTML('beforeend',publicationWeightDetails(status));
+    if (activeDeliveryDialog?.key === key && deliveryIsCurrent(activeDeliveryDialog)) {
+      activeDeliveryDialog.layer?.querySelector('button')?.focus?.();
+      return;
+    }
+    const {algorithm, version} = versionFromIds(algorithmId, versionId);
+    installDeliveryDialogStyles();
+    const context = {
+      key, projectId:pid, algorithmId, versionId,
+      algorithmName:String(algorithm?.name || '算法模型'),
+      versionName:String(version?.version_name || versionId),
+      status:null, busy:'', error:'', awaitingReadback:false,
+      uncertain:publicationRequests.get(key) === 'uncertain',
     };
-    try {
-      const status = await requestJson(
-        `${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`
-      );
-      if(!current())return;
-      showStatus(status);
-      if(status.publication?.status==='PUBLISHED'&&status.requires_sync===false){outcomeUncertain=false;return;}
-      if(queryOnly){notify?.('上次发布结果仍待确认，请核对发布状态；本次仅查询，没有再次提交。');return;}
-      const preflight = publicationPreflight(status);
-      if (!preflight.ready) {
-        notify?.(preflight.message);
+    if (typeof window.modal !== 'function') return notify?.('当前弹窗组件不可用，请刷新后重试');
+    context.layer = window.modal('新畅联模型交付', '<div data-external-delivery-dialog="1"></div>', true);
+    context.root = context.layer?.querySelector('[data-external-delivery-dialog]')
+      || document.querySelector('[data-external-delivery-dialog]');
+    if (!context.root) return notify?.('交付窗口创建失败，请重试');
+    activeDeliveryDialog = context;
+    context.root.addEventListener('click', event => {
+      const action = event.target.closest('[data-delivery-action]')?.dataset.deliveryAction;
+      if (!action) return;
+      if (action === 'close') {
+        window.closeModalLayer424?.(context.layer);
         return;
       }
-      notify?.(preflight.message);
-      if (button) button.textContent = '正在同步…';
-      postStarted=true;
-      const result=await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/publish`, {method: 'POST'});
-      if(!current())return;
-      postConfirmed=true;
-      notify?.(publicationResultMessage(result));
-      await algorithmListRuntime?.refresh?.({render: true});
-      if(!current())return;
-      showStatus(await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`));
-    } catch (error) {
-      outcomeUncertain=outcomeUncertain||(postStarted&&!postConfirmed&&!(Number(error.httpStatus)>=400&&Number(error.httpStatus)<500));
-      if(!current())return;
-      notify?.(outcomeUncertain?'发布结果待确认，请点击查询发布结果；不会自动再次发布。 '+(error?.message||error):(error?.message || error));
-      await algorithmListRuntime?.refresh?.({render: true});
-      if(current()){
-        try{showStatus(await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`));}catch(_){/* original error remains visible */}
-      }
-    } finally {
-      if(outcomeUncertain)publicationRequests.set(key,'uncertain');else publicationRequests.delete(key);
-      if (button?.isConnected) {
-        button.removeAttribute('aria-busy');
-        const {version} = versionFromIds(algorithmId, versionId);
-        button.disabled = false;
-        button.textContent = outcomeUncertain?'查询发布结果':publicationActionLabel(version || {});
-      }
-    }
+      if (action === 'refresh') void readDeliveryStatus(context);
+      if (action === 'sync') void executeDeliverySync(context);
+    });
+    paintDeliveryDialog(context);
+    void readDeliveryStatus(context);
   }
 
   function schedulePlatformPage() {

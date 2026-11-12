@@ -5,6 +5,20 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
+test('AI review keyboard navigation is draft-only and guarded while committing or editing', () => {
+  const start = source.indexOf('// Navigation changes only the current draft decision; never auto-commits GT.');
+  const end = source.indexOf('window.closeAiReview60=', start);
+  assert.ok(start > 0 && end > start);
+  const shortcuts = source.slice(start, end);
+  assert.match(shortcuts, /review\.submitting\|\|review\.pendingRequest\|\|review\.pageLoading/);
+  assert.match(shortcuts, /state\.ai60Edit/);
+  assert.match(shortcuts, /input,textarea,select/);
+  assert.match(shortcuts, /loadReviewPage\(review\.offset\+direction\*review\.limit\)/);
+  assert.match(shortcuts, /window\.setAiDecision60\(id,key==='a'\)/);
+  assert.doesNotMatch(shortcuts, /completeAiReview60\(/);
+  assert.match(source, /快捷键：← → 选择图片/);
+});
+
 test('final AI annotation owner uses durable v60 candidate review flow', () => {
   const legacyV33 = source.lastIndexOf('/api/v33/projects/${pid()}/prelabel-tasks');
   const legacyV35 = source.lastIndexOf('/api/v35/projects/${pid()}/prelabel-tasks');
@@ -101,7 +115,7 @@ test('retired v47 AI review clients are absent from the production frontend', ()
     'v427AiConfirm',
   ]) assert.equal(source.includes(token), false, token);
   assert.match(source, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
-  assert.match(source, /window\.reviewAiLabel427=async function\(id\)/);
+  assert.match(source, /window\.reviewAiLabel427=async function\(id(?:,|\))/);
   assert.match(source, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\)/);
 });
 
@@ -125,9 +139,84 @@ test('AI task creation never resolves display names or aliases into canonical la
   assert.doesNotMatch(source, /function normalizedLabelText\(/);
 });
 
+test('AI create requires an effective-configuration review before its only durable POST', () => {
+  assert.match(source, /id="ai429Confirmation"/);
+  assert.match(source, /function renderAiCreateConfirmation429\(body\)/);
+  const confirmationStart = source.lastIndexOf('function renderAiCreateConfirmation429(body)');
+  const confirmationEnd = source.indexOf('\n  window.submitAiLabel429=async function(ids=[])', confirmationStart);
+  const confirmation = source.slice(confirmationStart, confirmationEnd);
+  assert.match(confirmation, /window\.PlatformCore\.materials\.labelDisplay/);
+  assert.doesNotMatch(confirmation, /aiCreateLabelName429/);
+  assert.match(source, /function aiCreateInvalidateConfirmation429\(\)/);
+  const start = source.lastIndexOf('window.submitAiLabel429=async function(ids=[])');
+  const end = source.indexOf('\n\n  function taskRow', start);
+  const submit = source.slice(start, end);
+  assert.match(submit, /const snapshot=JSON\.stringify\(body\)/);
+  assert.match(submit, /if\(draft\.confirmationSnapshot!==snapshot\)/);
+  assert.match(submit, /renderAiCreateConfirmation429\(body\)/);
+  assert.ok(submit.indexOf('renderAiCreateConfirmation429(body)') < submit.indexOf('const task=await api(taskApi(),'));
+  assert.match(submit, /catch\(error\)\{draft\.confirmationSnapshot='';return toast\('本次配置概览渲染失败/);
+  assert.match(submit, /if\(draft\.submitting\|\|draft\.summaryLoading\)return false/);
+  assert.match(submit, /draft\.submitting=true/);
+  assert.match(submit, /if\(!current\(\)\)return true/);
+  assert.match(submit, /ownerRoot=document\.querySelector/);
+  assert.match(submit, /ownerRoot\?\.isConnected/);
+  assert.doesNotMatch(submit, /aiCreateIsCurrent429|aiCreateLabelName429/);
+  assert.match(submit, /draft\.createRequestId=newAiCreateRequestId429\(\)/);
+  assert.match(submit, /body\.request_id=draft\.createRequestId/);
+  assert.match(submit, /by-request\/\$\{encodeURIComponent\(body\.request_id\)\}/);
+});
+
+test('AI create initializes every asynchronous request counter before incrementing it', () => {
+  const creationStart = source.indexOf('window.createAiLabelCore429=function(opts={})');
+  const creationEnd = source.indexOf('\n\n  // ---------- training from processed', creationStart);
+  const create = source.slice(creationStart, creationEnd);
+  for (const counter of ['materialRequestEpoch', 'referenceRequestEpoch', 'bulkEpoch', 'hydrationEpoch', 'previewEpoch']) {
+    assert.match(create, new RegExp(`${counter}:0`));
+    assert.match(source, new RegExp(`\\+\\+draft\\.${counter}`));
+  }
+});
+
+test('AI task status and full-history name/model/id search are filtered by durable API before paging', () => {
+  const listStart = source.indexOf('function renderAiTaskRows60(tasks)');
+  const listEnd = source.indexOf('\n  window.renderOps427=function()', listStart);
+  const list = source.slice(listStart, listEnd);
+  assert.match(list, /if\(status\)params\.set\('status',status\)/);
+  assert.match(list, /if\(query\)params\.set\('q',query\)/);
+  assert.match(list, /if\(response\.indexing\)/);
+  assert.match(list, /setTimeout\(run,300\)/);
+  assert.match(list, /clearTimeout\(state\.ai60TaskIndexTimer\)/);
+  assert.doesNotMatch(list, /\.filter\(task=>!query/);
+  assert.match(list, /state\.ai60TaskCursors=\[''\];state\.ai60TaskPageIndex=0/);
+  assert.match(list, /state\.ai60TaskController\?\.abort\?\.\(\)/);
+  assert.match(list, /state\.ai60TaskRequestEpoch===sequence/);
+  assert.doesNotMatch(list, /String\(task\.status\|\|''\)\.toUpperCase\(\)===filter/);
+});
+
+test('AI create owns cancellation of obsolete fetches and timers in the existing modal lifecycle', () => {
+  assert.match(source, /window\.beforeCloseAiCreate429\?\.\(layer\)/);
+  const start=source.indexOf('function disposeAiCreateRequests429(draft)');
+  const end=source.indexOf('function aiCreateLabelName429',start);
+  const dispose=source.slice(start,end);
+  assert.ok(start>0&&end>start);
+  for(const name of ['materialController','referenceController','bulkController','hydrationController','previewController']){
+    assert.match(dispose,new RegExp(name));
+  }
+  assert.match(dispose,/state\.ai429Create=null/);
+  const material=source.slice(source.indexOf('window.loadAiCreateMaterials429=function'),source.indexOf('window.searchAiCreateMaterials429=function'));
+  assert.match(material,/draft\.materialController\?\.abort\(\)/);
+  assert.match(material,/signal:controller\.signal/);
+  const references=source.slice(source.indexOf('window.loadAiCreateReferences429=async function'),source.indexOf('window.aiCreateReferenceOpened429'));
+  assert.match(references,/draft\.referenceController\?\.abort\(\)/);
+  assert.match(references,/signal:controller\.signal/);
+  const hydration=source.slice(source.indexOf('window.hydrateAiCreate429=async function'),source.indexOf('window.createAiLabelCore429'));
+  assert.match(hydration,/draft\.hydrationController\?\.abort\(\)/);
+  assert.match(hydration,/signal:controller\.signal/);
+});
+
 
 test('AI review commit temporarily owns polling without racing the task list poller', () => {
-  const start = source.lastIndexOf('window.completeAiReview60=async mode=>');
+  const start = source.lastIndexOf('async function finishAiReview60(');
   const end = source.indexOf('// Retired UI entrypoints remain only as compatibility aliases.', start);
   assert.ok(start > 0 && end > start);
   const block = source.slice(start, end);
@@ -137,6 +226,22 @@ test('AI review commit temporarily owns polling without racing the task list pol
   assert.match(block, /AutoLabelPollRuntime\?\.activate/);
   assert.match(block, /pauseListPoll&&state\.page===ownerPage/);
   assert.doesNotMatch(block, /createTaskPoller/);
+});
+
+test('AI review submission uses durable operation receipts and never blindly repeats an unknown POST', () => {
+  const start = source.lastIndexOf('function aiReviewPendingKey60(');
+  const end = source.indexOf('// Retired UI entrypoints remain only as compatibility aliases.', start);
+  const block = source.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.match(block, /ai-review-operation:/);
+  assert.match(block, /localStorage\.setItem/);
+  assert.match(block, /review\.submitting/);
+  assert.match(block, /body=\{decisions,.*request_id:newAiCreateRequestId429\(\)/);
+  assert.match(block, /decisions\/by-request\/\$\{encodeURIComponent\(pending\.request_id\)\}/);
+  assert.match(block, /receipt\?\.request_id!==pending\.request_id/);
+  assert.match(block, /receipt\?\.status==='completed'/);
+  assert.match(block, /勿再次提交/);
+  assert.match(source, /id="ai60ReviewReceiptLookup"/);
 });
 
 test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
@@ -152,7 +257,7 @@ test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
   assert.match(block, /AutoLabelPollRuntime\?\.activate/);
   assert.doesNotMatch(block, /createTaskPoller/);
   assert.doesNotMatch(source, /state\.ai60Pollers/);
-  assert.match(source, /beforeCloseAiTask60\?\.\(top\)/);
+  assert.match(source, /beforeCloseAiTask60\?\.\(layer\)/);
   assert.match(source, /ai60Bar" style="transform:scaleX\(0\)/);
   assert.doesNotMatch(block, /bar\.style\.width=.*view\.percent/);
   const rowStart = source.indexOf('function taskRow(task)', end);

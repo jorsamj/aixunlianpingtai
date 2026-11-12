@@ -10,6 +10,7 @@ import {
   publicationActionLabel,
   publicationPreflight,
   publicationWeightDetails,
+  publicationDeliveryRows,
   publicationResultMessage,
 } from '../../static/modules/external-algorithm-publish.js';
 
@@ -219,16 +220,22 @@ test('manual publish fetches read-only status before write request', () => {
     new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
     'utf8',
   );
-  const start = source.indexOf('async function publishVersion(');
-  const end = source.indexOf('function schedulePlatformPage()', start);
-  assert.ok(start >= 0 && end > start);
-  const block = source.slice(start, end);
-  const statusRead = block.indexOf('const status = await requestJson(');
-  const preflight = block.indexOf('publicationPreflight(status)');
-  const publishWrite = block.indexOf("/publish\`, {method: 'POST'}");
-  assert.ok(statusRead >= 0);
-  assert.ok(preflight > statusRead);
-  assert.ok(publishWrite > preflight);
+  const statusStart = source.indexOf('async function readDeliveryStatus(');
+  const syncStart = source.indexOf('async function executeDeliverySync(');
+  const dialogStart = source.indexOf('async function publishVersion(');
+  const end = source.indexOf('function schedulePlatformPage()', dialogStart);
+  assert.ok(statusStart >= 0 && syncStart > statusStart && dialogStart > syncStart && end > dialogStart);
+  const readBlock = source.slice(statusStart, syncStart);
+  const syncBlock = source.slice(syncStart, dialogStart);
+  const dialogBlock = source.slice(dialogStart, end);
+  assert.ok(readBlock.includes('await requestJson(deliveryEndpoint(context))'));
+  assert.ok(!readBlock.includes("method:'POST'"));
+  assert.ok(syncBlock.includes('publicationPreflight(context.status)'));
+  assert.ok(syncBlock.includes("deliveryEndpoint(context) + '/publish'"));
+  assert.ok(syncBlock.includes("method:'POST'"));
+  assert.ok(dialogBlock.includes('void readDeliveryStatus(context)'));
+  assert.ok(dialogBlock.includes("if (action === 'sync') void executeDeliverySync(context)"));
+  assert.ok(!dialogBlock.includes("method:'POST'"));
   assert.doesNotMatch(source, /function decorateVersionRows\(/);
   assert.doesNotMatch(source, /registerDecorator/);
 });
@@ -321,4 +328,25 @@ test('stable mapping normalization preserves dynamic vendors chips revision and 
   assert.equal(model.targetMappings['vendor:business-a'].local_vendor_id,'business-a');
   assert.equal(model.localCatalog.vendors[0].id,'business-a');assert.equal(model.localCatalog.chips[0].enabled,false);
   assert.equal(model.mappingRevision,4);assert.equal(model.localCatalog.revision,7);
+});
+
+
+test('superseded same-name ONNX is retained only under collapsed history',()=>{
+  const same='00_train_best_topology_sorted.onnx';
+  const status={artifacts:[
+    {artifact_id:'new',file_name:same,target:'onnx',delivery_role:'AUTOMATIC_CURRENT',included_in_delivery:true,
+      review_required:false,sync_status:'PENDING'},
+    {artifact_id:'old',file_name:same,target:'onnx',delivery_role:'HISTORICAL',included_in_delivery:false,
+      review_required:true,sync_status:'UNKNOWN',recovery_plan:{reason:'旧ONNX分类冲突'}},
+    {artifact_id:'best',file_name:'best.pt',target:'original',delivery_role:'CONFIRMED_OWNER',
+      included_in_delivery:true,review_required:false,sync_status:'SYNCED'},
+  ]};
+  const group=publicationDeliveryRows(status);
+  assert.deepEqual(group.current.map(r=>r.artifact_id),['new','best']);
+  assert.deepEqual(group.historical.map(r=>r.artifact_id),['old']);
+  assert.equal(group.delivered,1);
+  assert.equal(group.reviewing,0);
+  const details=publicationWeightDetails(status);
+  assert.match(details,/历史成果/);
+  assert.doesNotMatch(details,/自动发布异常，请管理员核对：旧ONNX分类冲突/);
 });

@@ -356,7 +356,7 @@ test('service node owner commits its own shell without flashing another business
   });
 
   await expect(openService()).resolves.toEqual({
-    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+    page: '服务节点', title: '算力与节点', serviceShell: true, wrongBusinessPage: false,
   });
   await expect(page.locator('[data-service-node-page]')).toBeVisible();
 
@@ -366,7 +366,7 @@ test('service node owner commits its own shell without flashing another business
   await expect(page.locator('#title')).toHaveText('数据集');
 
   await expect(openService()).resolves.toEqual({
-    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+    page: '服务节点', title: '算力与节点', serviceShell: true, wrongBusinessPage: false,
   });
   expect(pageErrors).toEqual([]);
 });
@@ -419,7 +419,7 @@ test('storage configuration route is rendered by the final storage owner', async
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
   await page.evaluate(() => window.setPage('存储配置'));
-  await expect(page.locator('#title')).toContainText('存储配置');
+  await expect(page.locator('#title')).toContainText('存储管理');
   await expect(page.locator('.storage61-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#storage61Rows')).toBeVisible();
 
@@ -451,7 +451,7 @@ test('formal version marker stays stable across final render owners and delayed 
 
   for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '模型配置', '存储配置']) {
     await page.evaluate(next => window.setPage(next), route);
-    await expect(page.locator('#title')).toContainText(route);
+    await expect(page.locator('#title')).toContainText(({'模型配置':'AI 辅助配置','存储配置':'存储管理'})[route] || route);
     await expectFormalVersion();
   }
 
@@ -476,10 +476,12 @@ test('quality-center detection keeps multi-image and folder pickers after page r
   await expect(page.locator('#benchFolder64')).toHaveAttribute('webkitdirectory', '');
   const detectionShell = page.locator('[data-quality-detection-shell="1"]');
   await expect(detectionShell.getByRole('tab', {name:'准确性评测', exact:true})).toHaveAttribute('aria-selected','true');
-  await expect(detectionShell.getByRole('button', {name:'选择场景图片', exact:true})).toBeHidden();
+  await expect(detectionShell.getByRole('button', {name:'选择图片', exact:true})).toBeHidden();
   await detectionShell.getByRole('tab', {name:'快速图片检测', exact:true}).click();
-  await expect(detectionShell.getByRole('button', {name: '选择场景图片', exact: true})).toBeVisible();
+  await expect(detectionShell.getByRole('button', {name: '选择图片', exact: true})).toBeVisible();
   await expect(detectionShell.getByRole('button', {name: '选择文件夹', exact: true})).toBeVisible();
+  await expect(detectionShell.locator('.filepicker426-btn')).toHaveCount(0);
+  await expect(detectionShell.getByRole('button',{name:'选择图片',exact:true})).toHaveCount(1);
 
   expect(pageErrors).toEqual([]);
 });
@@ -548,7 +550,7 @@ test('modal table wrapping and first-field focus survive normalization ownership
   expect(pageErrors).toEqual([]);
 });
 
-test('ZIP import completion surfaces review action and auto-opens review', async ({page}) => {
+test('ZIP import completion preserves optional manual annotation without reopening a window', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -561,7 +563,7 @@ test('ZIP import completion surfaces review action and auto-opens review', async
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => {
     window.__zipReviewOpened = null;
-    window.showImportReview412 = jobId => { window.__zipReviewOpened = jobId; };
+    window.openImportManualAnnotation429 = jobId => { window.__zipReviewOpened = jobId; };
   });
 
   await page.evaluate(async () => { await window.openDataUpload426(); });
@@ -578,13 +580,19 @@ test('ZIP import completion surfaces review action and auto-opens review', async
     bound: Boolean(state.import411?.__reviewBound),
     opened: window.__zipReviewOpened,
     hasButton: Boolean(document.querySelector('.review412-btn')),
-    persistedButton: String(state.import411?.resultHtml || '').includes('review412-btn'),
+    persistedButton: String(state.import411?.resultHtml || '').includes('zip-next-actions'),
   })), {timeout: 10_000}).toEqual({
     bound: true,
-    opened: 'zip-browser-1',
-    hasButton: true,
+    opened: null,
+    hasButton: false,
     persistedButton: true,
   });
+  await page.waitForTimeout(350); // Detect the retired 280ms automatic review callback.
+  expect(await page.evaluate(()=>window.__zipReviewOpened)).toBeNull();
+  await page.evaluate(()=>window.ZipImportRuntime.openTask('zip-browser-1'));
+  await expect(page.locator('.zip-next-action')).toHaveCount(4);
+  await page.getByRole('button',{name:'人工标注',exact:false}).click();
+  expect(await page.evaluate(()=>window.__zipReviewOpened)).toBe('zip-browser-1');
 
   expect(pageErrors).toEqual([]);
 });
@@ -651,9 +659,15 @@ test('ZIP import completion uses scoped label and material refresh', async ({pag
   });
   await expect.poll(async () => page.evaluate(() => state.import411?.stage || ''), {timeout: 10_000}).toBe('导入完成');
   await expect.poll(async () => page.evaluate(() => state.import411?.jobId || '')).toBe('zip-r20g-scoped');
-  await expect.poll(async () => page.evaluate(() => window.__zipReviewOpenedR20g)).toBe('zip-r20g-scoped');
+  await expect.poll(()=>page.evaluate(()=>Boolean(state.import411?.__reviewBound))).toBe(true);
+  await page.waitForTimeout(350);
+  expect(await page.evaluate(()=>window.__zipReviewOpenedR20g)).toBeNull();
   await expect(page.locator('#data412Grid')).toContainText('zip-r20g.jpg', {timeout: 10_000});
   page.off('request', onRequest);
+  await page.evaluate(()=>window.ZipImportRuntime.openTask('zip-r20g-scoped'));
+  await expect(page.locator('.review412-btn')).toHaveCount(0);
+  await page.getByRole('button',{name:'质量检查（可选）',exact:false}).click();
+  expect(await page.evaluate(()=>window.__zipReviewOpenedR20g)).toBe('zip-r20g-scoped');
 
   const owned = requests.filter(row => !row.includes('/api/v19/projects/') || !row.endsWith('/import/jobs'));
   expect(owned.some(row => row === 'GET ' + row.slice(4) && row.includes('/api/v12/projects/') && row.endsWith('/labels'))).toBe(true);
@@ -708,7 +722,7 @@ test('server storage import confirmation avoids broad related refresh', async ({
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
   await page.evaluate(() => window.setPage('存储配置'));
-  await expect(page.locator('#title')).toContainText('存储配置');
+  await expect(page.locator('#title')).toContainText('存储管理');
   await page.evaluate(async () => { await window.openStorageImport61(); });
   await expect(page.locator('#si61ImportShell')).toBeVisible();
   await page.evaluate(() => {
@@ -812,7 +826,7 @@ test('training server connection keeps existing form and payload behavior', asyn
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('训练资源'));
-  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.locator('#title')).toContainText('算力与节点');
   await expect(page.locator('#quickServerUrl')).toBeVisible({timeout: 10_000});
 
   let submittedBody = null;
@@ -920,7 +934,7 @@ test('paddle environment activation keeps manual and quick-detect behavior', asy
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('训练资源'));
-  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.locator('#title')).toContainText('算力与节点');
 
   const projectId = await page.evaluate(() => state.project?.id || '');
   const actionRequests = [];
@@ -1014,7 +1028,7 @@ test('model config delete keeps model configuration page consistent', async ({pa
     state.promptTemplates = [];
     render();
   });
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('#view')).toContainText('R20e 模型配置');
 
   const actionRequests = [];
@@ -1053,6 +1067,7 @@ test('prompt template save appears immediately in model configuration', async ({
     state.modelConfigs = [];
     state.promptTemplates = [];
     render();
+    window.PlatformCore.navigation.selectAdvancedSection('prompts');
     window.openPromptTemplateModalV35();
   });
   await page.locator('#ptName').fill('R20e 新提示词');
@@ -1101,6 +1116,7 @@ test('prompt template delete disappears immediately in model configuration', asy
     render();
   });
   await expect(page.locator('#view')).toContainText('R20e 旧提示词');
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'提示词模板',exact:true}).click();
   const row = page.locator('tr').filter({hasText: 'R20e 旧提示词'});
   const actionRequests = [];
   page.on('request', request => {
@@ -1236,7 +1252,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
     }, target);
 
     await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(target);
-    await expect(page.locator('#title')).toHaveText(target);
+    await expect(page.locator('#title')).toHaveText(({'模型配置':'AI 辅助配置','部署资源':'模型转换环境','组件检测':'算力与节点','服务节点':'算力与节点'})[target] || target);
     const fallback = page.locator('#view [data-unknown-page]');
     await expect(fallback, `formal page ${target} must have a concrete renderer owner`).toHaveCount(0);
     await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
@@ -1254,7 +1270,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
       if (result && typeof result.then === 'function') await result;
     }, legacy);
     await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(canonical);
-    await expect(page.locator('#title')).toHaveText(canonical);
+    await expect(page.locator('#title')).toHaveText(canonical==='模型配置'?'AI 辅助配置':canonical);
   }
 
   expect(pageErrors).toEqual([]);
@@ -1295,3 +1311,66 @@ test('clicking the already active sidebar item does not invoke navigation again'
 });
 
 
+
+test('retired navigation reads settle quietly while current HTTP failures stay visible', async ({page}) => {
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady && window.ResourceDiscoveryRuntime))).toBe(true);
+
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let resourceReads = 0;
+  const resourceRoute = async route => {
+    resourceReads++;
+    await held;
+    await route.fulfill({json: {items: []}});
+  };
+  let classicReads = 0;
+  await page.route('**/api/stability-feedback-probe', async route => {
+    classicReads++;
+    await held;
+    await route.fulfill({json: {stale: true}});
+  });
+  await page.route('**/api/local_models?*', resourceRoute);
+  try {
+    await page.evaluate(() => {
+      window.__navigationFeedback = [];
+      const toast = document.querySelector('#toast');
+      new MutationObserver(() => window.__navigationFeedback.push(toast.textContent))
+        .observe(toast, {childList: true});
+      window.__retiredCache = window.ResourceDiscoveryRuntime.refreshCache(true, {force: true});
+    });
+    await expect.poll(() => resourceReads).toBe(1);
+    await page.evaluate(() => {
+      window.__retiredClassic = safe(api('/api/stability-feedback-probe'));
+    });
+    await expect.poll(() => classicReads).toBe(1);
+    await page.evaluate(() => {
+      window.setPage('质量中心');
+      window.setPage('算法列表');
+    });
+    expect(await page.evaluate(() => Promise.all([window.__retiredClassic, window.__retiredCache]))).toEqual([null, null]);
+    expect(await page.evaluate(() => window.__navigationFeedback)).not.toContain('__PAGE_NAVIGATION_CANCELLED__');
+    expect(classicReads).toBe(1);
+    expect(resourceReads).toBe(1);
+  } finally {
+    release();
+  }
+  await page.unroute('**/api/local_models?*', resourceRoute);
+  await page.unroute('**/api/stability-feedback-probe');
+  await page.route('**/api/stability-feedback-probe', route => route.fulfill({
+    status: 503, json: {message: '隔离测试：服务暂不可用'},
+  }));
+  expect(await page.evaluate(() => safe(api('/api/stability-feedback-probe')))).toBeNull();
+  await expect(page.locator('#toast')).toContainText('隔离测试：服务暂不可用');
+
+  await page.evaluate(async () => {
+    const notify = window.toast;
+    try {
+      window.toast = document.querySelector('#toast');
+      await safe(Promise.reject(new Error('隔离测试：启动提示')));
+    } finally {
+      window.toast = notify;
+    }
+  });
+  await expect(page.locator('#toast')).toContainText('隔离测试：启动提示');
+});

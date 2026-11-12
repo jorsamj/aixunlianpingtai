@@ -825,5 +825,7 @@ def prepare_remote_rescan_review(
 
 def worker_registration(data_dir: Path):
     from platform_core.task_runtime import TaskKind
-    return {'handlers': {TaskKind.MATERIAL_IMPORT: StorageRescanHandler(data_dir)},
-            'capabilities': {'storage.import', 'storage.rescan'}}
+    from platform_core.external_algorithm_cleanup import ExternalAlgorithmCleanupHandler
+    return {'handlers': {TaskKind.MATERIAL_IMPORT: StorageRescanHandler(data_dir),
+                         TaskKind.EXTERNAL_ALGORITHM_CLEANUP: ExternalAlgorithmCleanupHandler(data_dir)},
+            'capabilities': {'storage.import', 'storage.rescan', 'external.cleanup'}}

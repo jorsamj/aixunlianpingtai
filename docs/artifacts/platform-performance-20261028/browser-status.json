@@ -1,0 +1,10 @@
+{
+  "environment": "isolated browser test boot project; NOT production",
+  "status": 200,
+  "response_bytes": 2,
+  "rows": 0,
+  "headers_observed_ms": 34.20000000298023,
+  "total_ms": 34.5,
+  "request_id": "dfc133e3a2dd476998efcc3e5fb34b86",
+  "server_timing": "total;dur=29.893, training_history;dur=6.894, legacy_queue;dur=6.915, training_index;dur=20.795"
+}

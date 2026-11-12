@@ -9,6 +9,8 @@ on:
     paths:
       - app.py
       - platform_core/algorithm_sql_store.py
+      - platform_core/negative_pool_api.py
+      - tests/performance/test_negative_pool_algorithm_queries.py
       - platform_core/training_lineage.py
       - platform_core/training_evaluation.py
       - platform_core/iteration_actions.py
@@ -50,7 +52,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 requests filelock keyring pillow psutil
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 requests filelock keyring pillow psutil pyyaml
       - name: Syntax checks
         run: |
           python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/training_lineage.py platform_core/training_evaluation.py platform_core/iteration_actions.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
@@ -59,6 +61,10 @@ jobs:
           node --check static/modules/training-submit.js
       - name: SQL migration and row CRUD contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+      - name: Negative pool query contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_negative_pool.py
+      - name: Synthetic heavy-report read bounds
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/performance tests/performance/test_negative_pool_algorithm_queries.py
       - name: External platform contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_platform.py
       - name: External publish contracts

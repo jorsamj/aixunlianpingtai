@@ -3,6 +3,7 @@ import {withRequestDeadline} from './api.js';
 const ACTIVE_STATUSES = new Set(['WAITING_UPLOAD','UPLOADING','PAUSED','MERGING','VALIDATING','SELECTING','QUEUED','WAITING','WAITING_RESOURCE','RUNNING','SCANNING','EXTRACTING','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING','FINALIZING']);
 const TERMINAL_STATUSES = new Set(['DONE','SUCCEEDED','COMPLETED','FINISHED','FAILED','CANCELLED','CANCELED','INTERRUPTED']);
 const STORAGE_PREFIX = 'mc_upload_task_center_v1:';
+const HIDDEN_PREFIX = 'mc_upload_task_hidden_v1:';
 const POLL_MS = 1200;
 const MAX_ROWS = 100;
 
@@ -25,12 +26,17 @@ function formatBytes(value) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-function statusPresentation(status) {
+export const isUploadTaskRecordMissing = row => upper(row?.status)==='UNKNOWN' && ['RECORD_MISSING','RECORD_MISSING_CONFIRMED'].includes(row?.verificationReason);
+
+function statusPresentation(status, verificationReason = '') {
   const key = upper(status);
   if (['DONE','SUCCEEDED','COMPLETED','FINISHED'].includes(key)) return {label:'已完成', cls:'ok'};
   if (['FAILED','INTERRUPTED'].includes(key)) return {label:'失败', cls:'bad'};
   if (['CANCELLED','CANCELED'].includes(key)) return {label:'已取消', cls:'muted'};
   if (key === 'PAUSED') return {label:'已暂停', cls:'warn'};
+  if (key === 'UNKNOWN') return verificationReason==='RECORD_MISSING_CONFIRMED'
+    ? {label:'记录已失效', cls:'muted'} : verificationReason==='RECORD_MISSING'
+      ? {label:'记录待核验', cls:'warn'} : {label:'状态无法确认', cls:'warn'};
   if (key === 'WAITING_UPLOAD') return {label:'排队中', cls:'warn'};
   if (['QUEUED','WAITING','WAITING_RESOURCE','SELECTING'].includes(key)) return {label:'等待中', cls:'warn'};
   return {label:'进行中', cls:'run'};
@@ -61,10 +67,11 @@ export function stableUploadTaskOrder(tasks = []) {
 /** Never hide active work merely because terminal history reached its bound. */
 export function retainUploadTaskRows(tasks = [], maximum = MAX_ROWS) {
   const ordered = stableUploadTaskOrder(Array.isArray(tasks) ? tasks : []);
-  const active = ordered.filter(isUploadTaskActive);
+  const protectedRow = row=>isUploadTaskActive(row)||upper(row.status)==='UNKNOWN';
+  const active = ordered.filter(protectedRow);
   const limit = Math.max(1, Number(maximum) || MAX_ROWS);
   if (active.length >= limit) return active;
-  const terminal = ordered.filter(task => !isUploadTaskActive(task)).slice(0, limit - active.length);
+  const terminal = ordered.filter(task => !protectedRow(task)).slice(0, limit - active.length);
   const retained = new Set([...active, ...terminal].map(task => String(task.id || '')));
   return ordered.filter(task => retained.has(String(task.id || '')));
 }
@@ -123,6 +130,21 @@ export function normalizeDurableUploadTask(task, row) {
     updatedAt:task?.updated_at || nowIso(),
     resumeRequired:false,
     browserTransfer:false,
+    progressKnown: true,
+    verificationReason:'', nextVerifyAt:0,
+  });
+}
+
+export function unverifiedUploadTask(row, error = null) {
+  const missing = Number(error?.status) === 404;
+  return mergeUploadTask(row, {
+    status:'UNKNOWN', stage:'状态无法确认', progressKnown:false,
+    verificationReason:missing?'RECORD_MISSING':error?'UNAVAILABLE':'VERIFYING',
+    detail:missing?'服务器未找到该任务记录；已暂停自动轮询，可手动核验或移除显示。最后进度不能代表实时状态。'
+      :error?`服务器状态暂时无法核验：${error.message || error}。最后记录不代表实时进度。`:'正在核验服务器任务状态；最后记录不代表实时进度。',
+    updatedAt:row.updatedAt,
+    nextVerifyAt:error?(missing?Number.MAX_SAFE_INTEGER:Date.now()+15000):0,
+    browserTransfer:false, resumeRequired:false,
   });
 }
 
@@ -149,10 +171,12 @@ export function recoverUploadTaskAfterRefresh(row = {}) {
   if (row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl) {
     return mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'});
   }
+  if (row.kind === 'zip' && !row.localOnly && isUploadTaskActive(row)) return unverifiedUploadTask(row);
   return row;
 }
 
 function taskActionMarkup(row) {
+  if (isUploadTaskRecordMissing(row)) return `${row.verificationReason==='RECORD_MISSING'?'<button type="button" class="utc-action" data-utc-action="verify">重新核验</button>':''}<button type="button" class="utc-action" data-utc-action="dismiss">移除展示记录</button>`;
   if (String(row.kind || '') === 'browser-upload') return '<button type="button" class="utc-action" data-utc-action="details">查看详情</button>';
   if (String(row.kind || '') !== 'zip') return '';
   const status = upper(row.status);
@@ -167,16 +191,16 @@ function taskActionMarkup(row) {
 }
 
 export function renderUploadTaskCenterRow(row = {}) {
-  const presentation = statusPresentation(row.status);
+  const presentation = statusPresentation(row.status, row.verificationReason);
   const progress = clamp(row.progress);
   const scale = progress / 100;
   const detail = row.detail
     ? `<div class="utc-detail" title="${esc(row.detail)}">${esc(row.detail)}</div>`
     : '';
-  const reopenable=String(row.kind||'')==='zip'&&!row.localOnly;
+  const reopenable=String(row.kind||'')==='zip'&&!row.localOnly&&!isUploadTaskRecordMissing(row);
   const size=Number(row.fileSize)>0?formatBytes(row.fileSize):'';
   const queue=Number(row.queuePosition)>0?`排队第 ${Number(row.queuePosition)} 位`:'';
-  const leftMeta=[row.progressKnown === false ? '等待服务器进度' : `${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
+  const leftMeta=[upper(row.status)==='UNKNOWN'?`最后记录 ${progress}% · 任务 ${row.id}`:row.progressKnown === false ? '等待服务器进度' : `${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
   const actions=taskActionMarkup(row);
   return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" data-utc-local="${row.localOnly?'1':'0'}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)});opacity:${row.progressKnown === false ? 0 : 1}"></i></div><div class="utc-meta"><span>${esc(leftMeta)}</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}${actions?`<div class="utc-actions">${actions}</div>`:''}</div>`;
 }
@@ -321,7 +345,9 @@ async function responseJson(response) {
   const text = await response.text();
   let body = {};
   try { body = JSON.parse(text); } catch (_) { body = {detail:text}; }
-  throw new Error(String(body?.message || body?.detail || `HTTP ${response.status}`));
+  const error = new Error(String(body?.message || body?.detail || `HTTP ${response.status}`));
+  error.status=response.status;
+  throw error;
 }
 
 export function installUploadTaskCenter({getState, projectId, notify, fetchImpl = globalThis.fetch, pollRegistry, ownerPages} = {}) {
@@ -336,6 +362,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   let destroyed = false;
   const pendingActions = new Map();
   let clearPending = false;
+  let dismissedIds = new Set();
   const registry = pollRegistry || window.PollRegistryRuntime;
   const POLL_KEY = 'upload-task-center';
   const fallbackOwners = [
@@ -347,6 +374,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
 
   const pid = () => String(projectId?.() || getState?.()?.project?.id || '');
   const storageKey = project => `${STORAGE_PREFIX}${project}`;
+  const hiddenKey = project => `${HIDDEN_PREFIX}${project}`;
 
   function ensureStyle() {
     if (document.getElementById('uploadTaskCenterStyles')) return;
@@ -391,7 +419,10 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     persistTimer = 0;
     if (!project) return;
     const persistedRows = retainUploadTaskRows(rows).map(row => { const value = {...row}; delete value.pollOwner; return value; });
-    try { localStorage.setItem(storageKey(project), JSON.stringify(persistedRows)); } catch (_) {}
+    try {
+      localStorage.setItem(storageKey(project), JSON.stringify(persistedRows));
+      localStorage.setItem(hiddenKey(project), JSON.stringify([...dismissedIds].slice(-500)));
+    } catch (_) {}
   }
 
   function publish(critical = false) {
@@ -412,10 +443,13 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
 
   function load(project) {
     rows = [];
+    dismissedIds = new Set();
     if (!project) return;
     try {
+      const hidden=JSON.parse(localStorage.getItem(hiddenKey(project))||'[]');
+      if(Array.isArray(hidden))dismissedIds=new Set(hidden.filter(value=>typeof value==='string').slice(-500));
       const parsed = JSON.parse(localStorage.getItem(storageKey(project)) || '[]');
-      if (Array.isArray(parsed)) rows = retainUploadTaskRows(parsed.map(row => mergeUploadTask({}, row)));
+      if (Array.isArray(parsed)) rows = retainUploadTaskRows(parsed.map(row => mergeUploadTask({}, row)).filter(row=>!dismissedIds.has(row.id)));
     } catch (_) { rows = []; }
     rows = rows.map(recoverUploadTaskAfterRefresh);
     rows = stableUploadTaskOrder(rows);
@@ -426,7 +460,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     if (shell) return shell;
 
     root.innerHTML = `<div class="utc-shell">
-      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle aria-expanded="false"><div><strong data-utc-title>上传任务 0 个</strong><span data-utc-summary role="status" aria-live="polite"></span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear disabled>清空已结束</button><div class="utc-count" data-utc-count>0</div></div></div>
+      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle aria-expanded="false"><div><strong data-utc-title>上传任务 0 个</strong><span data-utc-summary role="status" aria-live="polite"></span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear-invalid disabled>清空失效</button><button class="utc-clear" type="button" data-utc-clear disabled>清空已结束</button><div class="utc-count" data-utc-count>0</div></div></div>
       <div class="utc-body" data-utc-body style="display:none"></div>
     </div>`;
     shell = root.querySelector?.('.utc-shell');
@@ -437,6 +471,10 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     root.querySelector?.('[data-utc-clear]')?.addEventListener('click', event => {
       event.stopPropagation();
       void clearCompleted();
+    });
+    root.querySelector?.('[data-utc-clear-invalid]')?.addEventListener('click', event => {
+      event.stopPropagation();
+      clearInvalid();
     });
     const openTask = event => {
       const button = event.target?.closest?.('[data-utc-action]');
@@ -467,6 +505,18 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     for (const sibling of button?.closest('.utc-actions')?.querySelectorAll('button') || []) sibling.disabled=true;
     if (button) { button.disabled = true; button.setAttribute('aria-busy','true'); button.textContent = '正在处理'; }
     try {
+      if (name === 'dismiss') {
+        dismissInvalid(task.id);
+        return;
+      }
+      if (name === 'verify') {
+        if (task.kind === 'zip' && window.ZipImportRuntime?.reconcile) await window.ZipImportRuntime.reconcile('manual-reverify');
+        else {
+          const verified = await refreshDurable(task, true);
+          if (pid()===operation.project && rows.includes(task)) upsert(verified);
+        }
+        return;
+      }
       if (name === 'details') {
         window.modal?.('图片任务详情', `<div class="utc-upload-details" data-utc-detail-id="${esc(task.id)}" data-utc-project="${esc(pid())}"><b>${esc(task.title)}</b><p data-utc-detail-stage>${esc(task.stage || statusPresentation(task.status).label)}</p><p data-utc-detail-message>${esc(task.detail)}</p><p data-utc-detail-progress>当前阶段进度：${clamp(task.progress)}%</p><small>任务 ID：${esc(task.id)}。网络传输完成不代表服务器入库完成；关闭本窗不会停止上传。</small></div>`, true);
         return;
@@ -533,6 +583,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const title = root.querySelector?.('[data-utc-title]');
     const count = root.querySelector?.('[data-utc-count]');
     const clear = root.querySelector?.('[data-utc-clear]');
+    const clearInvalidButton = root.querySelector?.('[data-utc-clear-invalid]');
     const toggle = root.querySelector?.('[data-utc-toggle]');
     const body = root.querySelector?.('[data-utc-body]');
     const processing = Math.max(0, stats.active - stats.uploading - stats.queued);
@@ -543,6 +594,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`;
     if (count) count.textContent = String(active.length || rows.length);
     if (clear) clear.disabled = clearPending || terminalCount <= 0;
+    if (clearInvalidButton) clearInvalidButton.disabled = clearPending || !rows.some(isUploadTaskRecordMissing);
     if (toggle) toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     if (body) {
       body.style.display = expanded ? '' : 'none';
@@ -570,35 +622,40 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const clearButton = document.querySelector('#uploadTaskCenter [data-utc-clear]');
     if (clearButton) { clearButton.disabled=true; clearButton.setAttribute('aria-busy','true'); }
     try {
-    const before = rows.length;
-    const project = pid();
-    if (project && hasTerminalZipUploadTasks(rows)) {
-      try {
-        await withRequestDeadline(signal => fetchImpl(
-          `/api/v19/projects/${encodeURIComponent(project)}/import/jobs`,
-          {method:'DELETE', credentials:'same-origin', signal},
-        ).then(responseJson), {timeoutMs:30000, label:'清空上传记录'});
-        if (destroyed || project !== pid()) return rows;
-        window.ZipImportRuntime?.forgetTerminal?.();
-      } catch (error) {
-        notify?.(`清空导入记录失败：${error?.message || error}`);
-        return rows;
-      }
-    }
-    rows = clearCompletedUploadTasks(rows);
-    persist();
-    render();
-    arm();
-    const cleared = Math.max(0, before - rows.length);
-    if (cleared) notify?.(`已清空 ${cleared} 条已结束任务`);
-    return rows;
+      const removed = rows.filter(row=>TERMINAL_STATUSES.has(upper(row.status)));
+      for (const row of removed) dismissedIds.add(row.id);
+      rows = rows.filter(row=>!TERMINAL_STATUSES.has(upper(row.status)));
+      persist();render();arm();
+      if (removed.length) notify?.(`已清空 ${removed.length} 条已结束任务（仅移除展示记录）`);
+      return rows;
     } finally { clearPending=false; clearButton?.removeAttribute('aria-busy'); render(); }
   }
+
+  function clearInvalid(ids = null) {
+    if (destroyed) return 0;
+    const allowed=ids===null?null:new Set(ids.map(String));
+    const removed=rows.filter(row=>isUploadTaskRecordMissing(row)&&(!allowed||allowed.has(row.id)));
+    if(!removed.length)return 0;
+    for(const row of removed)dismissedIds.add(row.id);
+    rows=rows.filter(row=>!removed.includes(row));
+    window.ZipImportRuntime?.forgetInvalid?.(removed.filter(row=>row.kind==='zip').map(row=>row.id));
+    persist();render();arm();
+    notify?.(`已移除 ${removed.length} 条失效展示记录；未删除服务器审计或素材`);
+    return removed.length;
+  }
+
+  function dismissInvalid(id) { return clearInvalid([id]); }
 
   function upsert(task) {
     if (destroyed) return null;
     const id = String(task?.id || '');
     if (!id) throw new Error('upload task id is required');
+    if (dismissedIds.has(id)) {
+      // Never resurrect dismissed history during background reconciliation.
+      // A genuinely reactivated task with the same ID must remain visible.
+      if (!isUploadTaskActive(task)) return null;
+      dismissedIds.delete(id);
+    }
     const index = rows.findIndex(row => row.id === id);
     const previous = index >= 0 ? rows[index] : null;
     const incoming = mergeUploadTask(previous || {}, task);
@@ -637,13 +694,13 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     render();
   }
 
-  async function refreshDurable(row) {
-    if (!row?.serverUrl || row?.pollOwner || !isUploadTaskActive(row)) return row;
+  async function refreshDurable(row, force = false) {
+    if (!row?.serverUrl || (row?.pollOwner && !force) || (!isUploadTaskActive(row) && upper(row.status)!=='UNKNOWN') || (!force && (isUploadTaskRecordMissing(row) || Number(row.nextVerifyAt)>Date.now()))) return row;
     try {
       const body = await responseJson(await fetchImpl(row.serverUrl, {credentials:'same-origin'}));
       return normalizeDurableUploadTask(body, row);
     } catch (error) {
-      return mergeUploadTask(row, {detail:`状态刷新失败：${error?.message || error}`});
+      return unverifiedUploadTask(row, error);
     }
   }
 
@@ -653,7 +710,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     if (project !== lastProjectId) {
       switchProject();
     }
-    const active = rows.filter(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
+    const active = rows.filter(row => (isUploadTaskActive(row) || upper(row.status)==='UNKNOWN') && !isUploadTaskRecordMissing(row) && Number(row.nextVerifyAt||0)<=Date.now() && row.serverUrl && !row.pollOwner);
     if (active.length) {
       const updates = await Promise.all(active.map(refreshDurable));
       if (destroyed || project !== pid() || project !== lastProjectId) return;
@@ -671,9 +728,11 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   function arm() {
     if (destroyed) return null;
     registry?.clear?.(POLL_KEY);
-    const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
+    const candidates=rows.filter(row=>(isUploadTaskActive(row)||upper(row.status)==='UNKNOWN')&&!isUploadTaskRecordMissing(row)&&row.serverUrl&&!row.pollOwner);
+    const needsPoll = candidates.length>0;
     if (!needsPoll || document.visibilityState === 'hidden' || !registry?.startTimeout) return null;
-    return registry?.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), POLL_MS);
+    const delay=Math.max(POLL_MS,Math.min(...candidates.map(row=>Math.max(0,Number(row.nextVerifyAt||0)-Date.now()))));
+    return registry?.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), delay);
   }
 
   function switchProject() {
@@ -707,6 +766,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     rekey,
     remove,
     clearCompleted,
+    clearInvalid,
     list:() => rows.map(row => ({...row})),
     refresh:() => poll(),
     switchProject,

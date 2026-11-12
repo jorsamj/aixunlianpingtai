@@ -1,4 +1,5 @@
 import {test, expect} from '@playwright/test';
+import {selectZipPositiveSample} from './helpers/uppy-zip.mjs';
 
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
@@ -63,6 +64,16 @@ function storedZip(entries) {
   return Buffer.concat([...locals, centralData, end]);
 }
 
+// These scenarios exercise the annotated ZIP mapping/confirmation contract.
+// A data.yaml alone is only a class hint: since RAW_UNANNOTATED governance,
+// without nonempty YOLO label files it must NOT become formal GT.
+function annotatedZip(entries) {
+  const annotations = entries.filter(([name]) => /^images\/train\/[^/]+\.(?:jpg|png|jpeg)$/i.test(name))
+    .map(([name]) => [name.replace(/^images\//, 'labels/').replace(/\.[^.]+$/, '.txt'),
+      Buffer.from('0 0.5 0.5 0.4 0.4\n')]);
+  return storedZip([...entries, ...annotations]);
+}
+
 async function createProject(request, labels = []) {
   const response = await request.post('/api/projects', {data: {name: `ZIP恢复-${Date.now()}`, labels}});
   expect(response.ok()).toBeTruthy();
@@ -70,7 +81,7 @@ async function createProject(request, labels = []) {
 }
 
 async function createSelectingZipJob(request, projectId, {className = 'object', fileName = 'refresh-recovery.zip'} = {}) {
-  const zip = storedZip([
+  const zip = annotatedZip([
     ['images/train/sample.jpg', Buffer.from('not-decoded-during-scan')],
     ['data.yaml', Buffer.from(`train: images/train\nnames: [${className}]\n`)],
   ]);
@@ -82,6 +93,30 @@ async function createSelectingZipJob(request, projectId, {className = 'object', 
   expect(body.status).toBe('selecting');
   return body;
 }
+
+test('raw ZIP without external classes can optionally choose a sample kind without a page exception', async ({page, request}) => {
+  const project = await createProject(request, [{code:'object',display_name:'对象'}]);
+  const response = await request.post(`/api/v19/projects/${project.id}/datasets/default/import/jobs`, {
+    multipart: {file: {name:'no-class.zip',mimeType:'application/zip',buffer:storedZip([
+      ['images/train/no-class.jpg', Buffer.from('scan-only-image')],
+    ])}},
+  });
+  expect(response.ok()).toBeTruthy();
+  const job = await response.json();
+  expect(job.scan_kind).toBe('RAW_UNANNOTATED');
+  expect(job.sample_classification_required).toBe(false);
+  await selectIsolatedTestProject(page,project.id);
+  const errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady&&window.ZipImportRuntime))).toBe(true);
+  await page.evaluate(id=>window.ZipImportRuntime.openTask(id),job.id);
+  // Raw originals do not require a fabricated class mapping/GT decision;
+  // they enter the existing unclassified import and can be labelled later.
+  await expect(page.locator(`.zip-label-confirm[data-review-key="${job.id}"]`)).toHaveCount(0);
+  await expect(page.getByRole('dialog',{name:'ZIP 数据导入'})).toBeVisible();
+  expect(errors).toEqual([]);
+});
 
 test('exact English source label reuses existing canonical code without recreating it', async ({page, request}) => {
   await page.setViewportSize({width: 1366, height: 768});
@@ -121,8 +156,10 @@ test('exact English source label reuses existing canonical code without recreati
   const target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('object');
   await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
-  const confirmButton = importDialog.getByRole('button',{name:'确认标签并导入'});
+  await selectZipPositiveSample(importDialog);
+  const confirmButton = importDialog.locator('[data-zip-confirm-button]');
   await expect(confirmButton).toBeEnabled();
+  await confirmButton.scrollIntoViewIfNeeded();
   await expect(confirmButton).toBeInViewport();
   const confirmBox = await confirmButton.boundingBox();
   expect(confirmBox).not.toBeNull();
@@ -137,7 +174,7 @@ test('exact English source label reuses existing canonical code without recreati
     res.request().method() === 'POST' &&
     new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
   );
-  await importDialog.getByRole('button', {name: '确认标签并导入'}).click();
+  await confirmButton.click();
   const startRequest = await startRequestPromise;
   const startResponse = await startResponsePromise;
   expect(startResponse.ok()).toBeTruthy();
@@ -147,7 +184,7 @@ test('exact English source label reuses existing canonical code without recreati
 });
 
 test('single-step original label mapping creates formal labels only at final import confirmation', async ({page, request}) => {
-  const project = await createProject(request);
+  const project = await createProject(request,[{code:'object',display_name:'对象'}]);
   const job = await createSelectingZipJob(request, project.id, {className: 'helmet', fileName: 'one-step-helmet.zip'});
   expect(job.label_confirmation_required).toBeTruthy();
   await selectIsolatedTestProject(page, project.id);
@@ -174,6 +211,7 @@ test('single-step original label mapping creates formal labels only at final imp
   await importDialog.getByRole('button',{name:'一键使用原始标签'}).click();
   await expect(target).toHaveValue('helmet');
   await expect(importDialog.locator('.zip-label-pending')).toContainText('helmet');
+  await selectZipPositiveSample(importDialog);
   await expect(importDialog.getByRole('button',{name:'创建标签并导入'})).toBeEnabled();
   await expect(taskCenter).toHaveCSS('z-index','900');
   expect(labelPosts).toHaveLength(0);
@@ -221,7 +259,7 @@ test('two selected ZIP archives upload their multipart data concurrently while l
     }
     await route.continue();
   });
-  const makeArchive=label=>storedZip([
+  const makeArchive=label=>annotatedZip([
     ['images/train/'+label+'.jpg',Buffer.from('sample-image-content')],
     ['data.yaml',Buffer.from('train: images/train\nnames: ['+label+']\n')],
   ]);
@@ -279,7 +317,7 @@ for (const fileCount of [3,5,10]) test(`${fileCount} selected ZIP archives are a
     await route.continue();
   });
   const filenames=Array.from({length:fileCount},(_,index)=>`visible-${fileCount}-${index+1}.zip`);
-  const archive=index=>storedZip([
+  const archive=index=>annotatedZip([
     [`images/train/sample-${index}.jpg`,Buffer.from(`sample-${fileCount}-${index}`)],
     ['data.yaml',Buffer.from(`train: images/train\nnames: [label_${index}]\n`)],
   ]);
@@ -331,7 +369,7 @@ test('cancelling one active browser transfer releases its slot without affecting
     if(url.pathname.includes('/projects/'+project.id+'/')){partUrls.push(url.pathname);await gate}
     await route.continue();
   });
-  const makeArchive=index=>storedZip([
+  const makeArchive=index=>annotatedZip([
     [`images/train/cancel-active-${index}.jpg`,Buffer.from(`cancel-active-${index}`)],
     ['data.yaml',Buffer.from(`train: images/train\nnames: [cancel_active_${index}]\n`)],
   ]);
@@ -385,7 +423,7 @@ test('one ZIP session failure stays visible and the next queued file still uploa
   });
   await page.goto('/');
   await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
-  const zip=index=>storedZip([
+  const zip=index=>annotatedZip([
     [`images/train/failure-${index}.jpg`,Buffer.from(`failure-${index}`)],
     ['data.yaml',Buffer.from(`train: images/train\nnames: [failure_${index}]\n`)],
   ]);
@@ -425,7 +463,7 @@ test('a second file selection joins the same two-slot FIFO without dropping eith
     if(url.pathname.includes('/projects/'+project.id+'/')){partUrls.push(url.pathname);await gate}
     await route.continue();
   });
-  const makeArchive=index=>storedZip([
+  const makeArchive=index=>annotatedZip([
     [`images/train/batch-${index}.jpg`,Buffer.from(`batch-${index}`)],
     ['data.yaml',Buffer.from(`train: images/train\nnames: [batch_${index}]\n`)],
   ]);
@@ -462,7 +500,7 @@ test('exact duplicate ZIP is rejected per file while same-name different content
   await selectIsolatedTestProject(page,project.id);
   await page.goto('/');
   await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
-  const archive=label=>storedZip([
+  const archive=label=>annotatedZip([
     ['images/train/sample.jpg',Buffer.from(`sample-${label}`)],
     ['data.yaml',Buffer.from(`train: images/train\nnames: [${label}]\n`)],
   ]);
@@ -525,7 +563,7 @@ test('three ZIPs finish upload and independently await human label confirmation'
     if(req.method()==='POST'&&new URL(req.url()).pathname.includes('/projects/'+project.id+'/import/jobs/')&&
        new URL(req.url()).pathname.endsWith('/start'))startRequests.push(req);
   });
-  const zip=label=>storedZip([
+  const zip=label=>annotatedZip([
     ['images/train/'+label+'.jpg',Buffer.from('scan-only-image')],
     ['data.yaml',Buffer.from('train: images/train\nnames: ['+label+']\n')],
   ]);
@@ -564,8 +602,14 @@ test('three ZIPs finish upload and independently await human label confirmation'
 
 test('late ZIP inventory response cannot cross a project switch',async({page})=>{
   await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime && state.uiReady))).toBe(true);
   const result=await page.evaluate(async()=>{
+    await window.__v53InitPromise;
     window.ZipImportRuntime?.destroy?.();
+    // This isolated runtime uses synthetic projects. Its cache must use the
+    // same project fixture, not active jobs from the real page's selected project.
+    const originalTaskCenter=window.UploadTaskCenterRuntime;
+    window.UploadTaskCenterRuntime={list:()=>[],upsert:()=>{}};
     const {installZipImportRuntime}=await import('/static/modules/zip-import-runtime.js?v=project-fence-test');
     const state={project:{id:'project-a'},labels:[],page:'数据集'};
     let releaseProjectA;
@@ -589,6 +633,7 @@ test('late ZIP inventory response cannot cross a project switch',async({page})=>
     }
     const ids=runtime.snapshot().jobs.map(job=>job.id);
     runtime.destroy();
+    window.UploadTaskCenterRuntime=originalTaskCenter;
     return {ids,requests};
   });
   expect(result.ids).toEqual(['job-b']);

@@ -1,3 +1,35 @@
+> **2026-11-04 / 42.24.531 平台对接总开关及内网安全接续**：保留既有 `mode=local/external` 单一权威配置，在平台对接页增加可直达切换的开关；关闭时新畅联 provider HTTP、连接测试/诊断、Worker 自动同步/发布和待派发外部清理均受服务端模式保护。保留旧 URL 与安全存储凭据。同步收敛 CORS wildcard+Cookie、本地换密旧 session 与失败记录上限，并纠正 530 两项 Chrome 回归。前端定向30/30、源码编译通过，完整 Python/Chrome/新 SHA CI 和目标断网仍未验，生产不动。详见 [总开关专项](INTRANET_MODE_MASTER_SWITCH_2026_11_04.md)。
+
+> **2026-11-04 / 42.24.530 内网本地化开发接续**：基于远端 529 `ad63fd3666c0f78c2d80abb6f191c731f5560320`，新增默认本地登录 `jiangjs/123456`（可用环境变量改密）、畅联云登录显式可选、首页/登录“算法训练”中性品牌、同一算法 SQL/API 的独立本地创建（external 模式也允许 LOCAL 新建，外部同步算法保留只读）。前端本地已执行 **1498/1498**（排除 4 个缺 Uppy/Annotorious 包的测试文件），Python 编译/纯离线凭据验证通过；本机缺 FastAPI、pytest、filelock，Python 和真实浏览器须 GitHub CI/目标机验。完整需求、改动、风险和内网验收清单见 [内网本地化专项](INTRANET_LOCAL_AUTH_AND_ALGORITHM_CREATION_2026_11_04.md)。不部署、不改正式数据、不 merge/release/force push。
+
+> **2026-10-30 / 42.24.429 P0 接续**：当前基线 428／`b13d8705`（精确 Actions 38/38 绿色），既有训练资源 GET/空选材/迭代 SHA/默认第一页/ZIP 管理均不重建。TrainingSubmit 迟到成功提示归属已最小修复并加 RED→GREEN；生产版本、磁盘、A800 资源拒绝及真实 P50/P95 均未验，禁止以本机毫秒数据替代。唯一进度 [P0 续批台账](performance/2026-10-29-p0-followup.md)，不部署/清理，429 最终 CI 待核。
+
+> **2026-10-29 / 42.24.416 P0 性能接续**：迭代素材 `role-page` 的角色合同原重复对 `best.pt` 做全文件 SHA256；只读角色/选材意图改为不算 digest，但仍核有效版本与标签，最终训练冻结照常完整 SHA。增补原性能诊断分段，现有使用池/角色索引仍待生产计时，未部署。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 / 42.24.415 P0 修正**：414 后端空摘要提前返回 `null` 整池数破坏旧 API 合同，CI `contracts` 红项已查明并回滚；原接口继续真实总数，前端 413 空选择免请求保持。`_IncludedRouter` 测试兼容修正，不改正式 GT/提交。415 SHA CI/生产待核，未部署。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **最新 P0 性能接续（2026-10-29 / 42.24.413）**：以 `03b53089`／42.24.412 为干净基线，训练资源 GET 的旧服务器串行远端探测/Paddle 递归扫描/历史模型扫描已最小收敛；空选材 `selection-summary` 及前端合法化，正式训练 GT 准入不动。Python 137/137、Node 1404/1404，CI/生产尚待核；详情见 [P0 唯一进度台账](performance/2026-10-29-p0-followup.md)，不部署、迁移或清理。
+
+> **最新接续（2026-10-29 / 42.24.412）**：训练素材状态与标签证据修复，业务/测试提交 `86c83c30fd2056f61dd58fb79772bc1f3cc86cbc` 已通过精确 SHA GitHub **21/21 套件、57/57 Job、浏览器导航 107/107**，但生产现场仍待验证；本次文档补记提交自己的 CI 必须单独核实。唯一进度见本文末及 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。下面的 42.24.411 是历史基线。
+
+## 2026-10-29｜性能治理接续：42.24.411 代码 SHA CI 全绿，现场待验
+
+项目：畅联云算法训练平台（FastAPI/Python、JavaScript、SQLite、MaterialRepository、AnnotationRepository、TaskRepository/Worker、外部畅联 API、Storage/Cache）。唯一分支 `feature/external-algorithm-publishing`；起点 `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`，起点 24/24 Actions + 65/65 Checks 已成功。该 SHA 是**起点**，本批现为 VERSION `42.24.411`，代码提交 CI 已核验、后续文档补记提交 CI 独立核验；无生产部署。
+
+代码远端提交 **`5ddc516499b99c80b6fe980b64a6d84c860aa466`**；GitHub Checks 公开页面精确 SHA 检查套件 **25/25**、Job **68/68** success，包含真实 Chrome/Windows；15 文件 Blob 与完整 Tree 逐一一致。后续纯文档补记提交自己的 CI 须另验，不能以代码 CI 替代。正式生产性能与设备取证未完成。
+
+**本批**：P0-01 原 `performance_diagnostics.py` 补 SQLite 查询真实 execute/fetch/transaction 耗时、畅联签名/Token 与业务 HTTP 分项、缓存 SHA 文件读取分项、v63 路由分类；只在环境开关启用时运行，未知锁等待继续 `null`，不记敏感 URL/SQL/凭证，原 API body 不变。P0-02 新增 12k 条 Material/正式 GT 多标签、负样本角色、深 OFFSET、GT 跨页 Count 缓存和 EXPLAIN 隔离证据；5 万角色索引冷/热样本与 6k 两类 SQL 对照。关键词 `%LIKE%` 无稳定更优候选，**未修改 SQL、FTS、schema**。相关 Python 208/208、完整 FastAPI 3/3、Node 1396/1396；本机 Chrome 不可用，代码 SHA 的浏览器 CI 已通过。
+
+**必须保留**：一个业务 final Owner/一份 canonical truth；原 Image ID、正式 GT、负样本/训练角色、Train/Val/Test 隔离、跨页全选、Token 作用域与 401 不重放 POST、任务幂等及 UNKNOWN、Worker/资源 fencing、存储安全及材料 revision。诊断是原模块的可关闭观测，不得变成第二套 Tracing；局部 SQL 计时不等于独立锁等待或浏览器 Stalled。
+
+**权威需求状态**：`docs/performance/2026-10-29-p0-followup.md` 顶部 P0-01～05/P1-01～02，包含背景、根因、代码、测试和现场门槛；旧条目是历史证据，不要重复开发。P0-01/02 当前 **已开发待验证**（缺真实大库与网络生产证据，非 CI 阻塞）；P0-03 **待开发**（脱敏 HAR 与 request_id/代理/直连/Server-Timing 同步）；P0-04/05 **已开发待验证**（旧多 Worker、Sophon 等外部设备）；P1 生产文件/原图溯源待安全现场取证。
+
+**下一步**：确认远端未被其他会话更新；完成新 SHA Actions/Checks；获得用户授权的只读现场证据再分析 P0-03/04/05；严禁真实训练、转换、发布、部署、生产数据删除/迁移、高并发压测、合并 main/Tag/Release/force push。未见生产 P50/P95、锁持有者、真实设备 SDK 耗时，不得虚构结论。此处只做接续摘要，逐项进度只在主文档维护。
+
+## 2026-10-29｜P0 新畅联重复鉴权远端往返治理（42.24.410，本地已验证／CI 待核）
+
+接续 `1d027803`／42.24.409。业务请求独立创建的 `ChangLianClient` 原会每次签名、申请 Token，本批在原服务内为已保存的配置加有界作用域的进程内单飞 Token；不共享 HTTP Session、草稿配置或业务结果。8 并发从 8+8 次认证降到 1+1，保留 8 次业务查询；401 不自动重放 POST，退出与配置变更失效。相关 Python 137/137、Node 1396/1396 通过；发布与自动同步更广回归、准确 SHA CI、实际网络 P95 待最终验收。关键词 `%LIKE%` 强制改 SQL 无稳定收益，未修改。唯一专项 [P0 性能记录](performance/2026-10-29-p0-followup.md)。未登录/部署/改写生产，不 merge main/tag/release/force push。
+
 ## 2026-10-22｜场景评估、素材与标注UI（代码及隔离CI已验收）
 
 唯一需求/进度/问题/截图：[本轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。P0分别提交1f606d30/13c70368/b8d04f04；正式训练资格贯穿原Worker/Agent、双模式内联框证据、素材同Owner网格/列表、标注唯一审核/正式色/居中已实现。P1复用原ECharts与严格同基准比较；VERSION42.24.377，最终代码42bf33b2实际23/23 Actions、60/60 Checks、Chrome239/239；本地Node1297/Python213通过，广泛352曾339通过13失败后逐项fresh通过，未宣称重跑全绿。本次文档/旧fixture补提自身完整SHA须再核CI，最终回执与限制见唯一专项。未生产部署/数据/权重写入/GPU；从唯一专项接续，禁止重复建Owner，生产真实精度与许可仍需独立核验。
@@ -3077,3 +3109,7 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
 - Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
 - VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
+## 2026-10-29｜训练标签正样本证据与素材状态接续（42.24.412，CI 待核）
+
+当前唯一长期分支 `feature/external-algorithm-publishing`，本次起点 `95ebbe5a3afa82aa88a8b5d0c6e8a8ee9bbcda49` / VERSION `42.24.411`；目标 `42.24.412`，新提交和 CI 必须独立核验，未部署生产/训练/模型转换、未改正式 GT 或 DB。**专项单一权威进度**见 [训练工作台与新标签需求](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。后续会话先核真实 HEAD/VERSION/工作区与准确 SHA CI，避免覆盖并行开发；从原 `training_material_picker_api.py` 的已选正式 GT `positive_label_codes`、原 `TrainingMaterialSummaryRuntime`、原 `training-labels.js` 和原 Picker 接续。不可从全项目 activeCatalog 产生新增类别，不得凭 `annotation_scope` 或负样本造正样本；保留上一版本标签顺序/class_id/合并治理及后台训练准入、目标范围与负样本确认。普通选材仅客观标注事实，明确目标才按正负样本角色筛选；没有额外的人工作业链。隔离 12k 性能测量不是生产 P95，浏览器 HAR、真实历史 GT 与准入仍待现场只读验收。旧性能 P0 仍参考 [原治理进度](performance/2026-10-29-p0-followup.md)，不要重复改造。`AGENTS.md` 长期约束未变，不加入逐批日志。
+> **2026-10-30 / 42.24.430**：429 SHA `a3cee98c` CI 38/39，唯一 Chrome refresh-error 提示归属断言失败；430 只修“旧创建原根关闭后保留列表失败提示，新弹窗不受旧提示污染”，Node 59/59。仅代码/文档，未部署/清理/A800 现场验收；P0 真相及待办见 [进度台账](performance/2026-10-29-p0-followup.md)，430 CI 待核。

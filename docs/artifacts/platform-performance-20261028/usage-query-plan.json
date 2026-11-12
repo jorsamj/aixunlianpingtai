@@ -1,0 +1,15 @@
+{
+  "environment": "isolated existing schema; empty usage relations; not production cost",
+  "tokens": {
+    "1": [
+      "SEARCH t USING COVERING INDEX sqlite_autoindex_training_usage_tokens_1 (project_id=? AND token_kind=? AND token_value=?)",
+      "SEARCH u USING INDEX sqlite_autoindex_training_material_usage_1 (task_id=? AND image_id=? AND role=?)",
+      "USE TEMP B-TREE FOR DISTINCT"
+    ],
+    "200": [
+      "SEARCH t USING COVERING INDEX sqlite_autoindex_training_usage_tokens_1 (project_id=?)",
+      "SEARCH u USING INDEX sqlite_autoindex_training_material_usage_1 (task_id=? AND image_id=? AND role=?)",
+      "USE TEMP B-TREE FOR DISTINCT"
+    ]
+  }
+}

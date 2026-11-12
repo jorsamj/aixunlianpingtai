@@ -1,3 +1,35 @@
+## 2026-11-02｜42.24.491 前端页面、弹窗与后台异步归属 P0 接续
+
+> **42.24.494 旧 Chrome 进度测试与新 Boot 所有权对齐（2026-11-02）**：492 精确 GitHub CI `Frontend Runtime Stabilization` 三片 Chrome 有一片 **110/111 通过、1 失败**；真实失败日志指向既有 `navigation-readiness.spec.mjs:95`，它先进入 `uiReady=true` 的标签管理业务页，再重跑启动快照，却要求原启动卡重新覆盖 `#view`。这是违反 P0“已进入业务页面不得回退加载页”的旧测试，而不是证据表明后台 503 时初次加载的进度不能更新。494 把同一卡/同进度条 10%→60%→100% 验证挪至真实首屏 503→status→snapshot 恢复时序；额外测试就绪后重入请求悬挂超过3秒，再完成请求，用户草稿和标题仍在、Boot 永不重现。隔离真实 Chrome 5/5 通过；生产数据与业务 JS 未动。正式全套 Chrome 和准确494 Actions 仍须独立核验。
+
+> **42.24.493 原有浏览器矩阵回归入列（2026-11-02）**：精确 492 SHA `64012ad9cc26ef4c69816ab0ab9e60a7e6c617d0` 已验证 `Frontend Runtime Stabilization/frontend` 通过；继续审计发现原工作流 3-shard Chrome 文件清单未纳入本批新增 `tests/browser/frontend-lifecycle-races.spec.mjs`，尽管隔离本地 Chrome35/35 包含了全部 6 个新场景。493 把该文件加入原有矩阵，并让 `cache-first-page-loading` 测试约束其存在，保证 5秒启动延迟、多视口、500失败、A→B→A 刷新和迟到弹窗在 CI 真实浏览器持续回归。没有新增 CI 工作流，也没有改业务 JS、后端、生产数据；本轮新 SHA 的完整 Actions 与 3 shard 执行结果需独立核验。
+
+> **42.24.492 CI 守卫合同接续（2026-11-02）**：准确 491 提交 `d0d8457afe7155a84b4bc7f322313d4ed9a93023` 的 `Frontend Runtime Stabilization/frontend` 在本地 Node1486/1486、Chrome35/35 均通过后，由 `.github/workflows/frontend-runtime-stabilization.yml` 的历史硬编码字符串检查报错：只接受已退役的 `return window.__v53InitPromise;`，拒绝新增的 `Promise.resolve(...).then(() => state.uiReady === true)` fail-closed 语义。492 **仅更正原 CI 静态守卫**，同时要求 `NavigationStability` 读到 `ready === false` 不执行路由；补 `cache-first-page-loading` 中的新合同断言，不削弱首次启动失败保护、不修改业务 JS/缓存、数据库、服务端、正式资产或任务。原 `v42.25 Release Regression` 另曾因独立 Linux 进程 STATUS_STOPPED 的异步时序断言 578 过 1 失败，已按原工作流重跑失败作业；这不是本批前端变更。准确 492 Actions 须推送后单独核实，不以 491 结果冒充。
+
+**代码基线**：仅 `feature/external-algorithm-publishing`，开发前本地及 GitHub 远端 HEAD 均为 `bbf9505e10f11d391dacaa725f9844bdf7e66247`，VERSION `42.24.490`，工作区原本干净。已知生产仍为 `42.24.485`；本批不操作生产数据库、正式素材/GT、任务/权重、外部同步及部署。保留原生 JS、既有 `NavigationStability`、`PageRequestScope`、`PollRegistry`、`ModalContentRuntime`、原路由/ModalStack，无数据库迁移。
+
+### 本批代码审计结果与实施
+
+| 场景及代码入口 | 原状态/证据 | 491 修复与边界 | 验收状态 |
+|---|---|---|---|
+| 首次启动 `app.js::paintBoot`／`main.mjs::canonicalStartupPromise` | **静态确认**：3s/10s 回调在 Boot 卡缺失时能把已存在业务页覆盖；`__clInit` 吞掉失败后 `main.mjs` 仍继续尝试启动业务页。外部平台预取结果可在 `uiReady` 前让算法 Runtime 覆盖 `#view` | `uiReady=false` 显式初始；只有首次 Boot 创建可以写主视图，晚到状态仅补原有卡；失败不启动页面 Owner；算法列表预取仅在核心就绪后渲染；等待启动的导航只允许最后一个执行 | Node 时序已覆盖；隔离 Chrome 三视口 5s 延迟和核心 500 失败已通过；生产现场待证 |
+| 顶部刷新 `app.js::renderTopCanonical413`、`loadCore412`、`refreshCurrentPage413` | **静态确认**：`await` 后无条件 `render()`，核心快照异步写全局状态；A→B→A 相同页面字符串不足辨别旧请求 | 请求时冻结页面/项目/导航代次及最新刷新序号；核心响应过期不提交，旧刷新不读 B 的 extras、不重绘/不 Toast；导航切换释放刷新按钮，晚到的旧 finally 不修改新按钮 | Node 真异步 Promise + Chrome 原全局刷新 Owner 验证通过；生产慢连接待证 |
+| `showCleanTaskProgress429`／`cleanDetailCore429` | **静态确认**：详情 GET 后可直接开窗，用户后来关窗/开 B 不能阻止迟到 A | 扩展原 `ModalContentRuntime` 的 ModalStack 开启意图/实例 Lease；清洗详情 GET 完成再核验项目、页面、代次与模态顶层；进度只读其所属顶层实例 | Node 真异步 GET + Chrome 延迟后换 B 验证通过；其它所有历史弹窗未逐一真实验收 |
+| `armCleanProgressPoll429`、`retryCleanTask429`、`showAiTask60`、`retryAiTask60` | **静态确认**：轮询发前检查但发后不复查；`closeModal()` 关闭当时最上层，任务重试 POST 成功也无条件关窗、开窗 | 发后重新校验 Modal Lease；只通过 `closeModalLayer424(ownedLayer)` 处理原层；AI 详情轮询与同 task_id 重开隔离 session，已废弃等待者终止；POST 仍由服务端决定任务事实，前端过期时只丢弃 UI 副作用 | Node 真异步轮询/POST 已覆盖；硬件/生产异步任务待实测 |
+| `overview-tabs.js::loadTab` | **可触发时序风险**：原仅 cache 引用/项目 ID 栅栏；同项目 A→B→A 可以复用旧 `loading[key]`，由旧返回重绘新页面 | 加原 `NavigationStability.action` 的导航代次、在途请求代次，旧 A 不能重用或重绘新 A；同项目内其它页面仍保留已有缓存 | Node 同项目 A→B→A 真异步已覆盖 |
+| `openDeployLog`、`showImportReview412` | **横向静态确认**：转换日志/素材导入审核的异步 GET 完成后直接开 Modal，可能在用户打开 B 后意外恢复旧对话框 | 对现行入口使用同一 Modal Lease、冻结导入审核项目 ID 并在提交 UI 状态前重检；日志失败仅向当前所有者反馈 | 转换日志真实函数的延迟回执 Node 已覆盖；导入审核 Chrome 既有回归通过 |
+| 全局 MutationObserver、其它训练/转换/部署和导入 Owner | 原代码在对应模块已存在 PageRequestScope／局部 Owner／PollRegistry 防护，外部训练选择器的全局 `MutationObserver` 有 DOM 幂等检测及 `destroy().disconnect()`；**不能仅凭全局观察断言实际高耗时** | 本批不进行无证据重写；留为真实 Chrome Profiler、全站模态矩阵、POST 后续动作和网络耗时补验项 | 尚未完成全站动态浏览器与生产性能验收 |
+
+设计选择：Modal Lease 只扩展原 `ModalContentRuntime`，不引入新 Modal Manager；导航、刷新与总览仍消费原导航代次。关闭 UI 不取消服务器已受理的 POST，清理轮询 Timer 不能代替校验已经发出的响应。旧弹窗内容/focus/草稿在归属变化时不触碰。没有变更服务端 API/数据库/OSS/Worker 业务语义。
+
+**测试与交付**：新增 `tests/frontend/lifecycle-async-races.test.mjs` 11 个运行真实片段/受控 Promise 顺序的用例，扩展导航和总览现有运行时序测试、启动与版本入口契约；完整本地 Node **1486/1486 通过**、零失败；新增 `tests/browser/frontend-lifecycle-races.spec.mjs` 6 个 Chrome 场景（5s Bootstrap/3视口、核心500失败、刷新期间导航、任务详情迟到），与原 NavigationStability 及 OverviewTabs 合计 **35/35 Chrome 通过**、零失败（最终稳定代码，隔离 `127.0.0.1:8011`；约 1.7 分钟）。测试前发现算法列表的全局按钮由已有专属 `onRefreshCapture` 拦截，因此最终选 **模型配置**作为权威全局刷新真实入口；没有为测试删除业务拦截。没有后端修改，因此无需 Python 改动测试。未测量新旧 P95、生产首屏闪烁率、主线程时间、正式任务或连接耗时；没有证据宣告性能达标。
+
+**回滚/上线**：如线上出现导航未就绪、弹窗意外丢失或角色错判，撤回本批静态资源与 `VERSION.txt` 到 490 后重新构建缓存即可；无迁移/清理步骤。上线前必须用隔离环境 Chrome、真实任务详情、跨页面刷新、代理慢连接及不同设备视口完成验收，确认保留已有训练、转换、部署/OSS 与恢复功能。版本、准确 SHA/Actions 与最终测试回执以本节后续验收补录为准，不能借用 490 CI。
+
+---
+
+2026-10-29平台性能第一阶段审计与两链轻量修复以[本轮唯一专项](PLATFORM_PERFORMANCE_AUDIT_2026_10_28.md)为准。原Bootstrap/UI/GPU既有能力保留；其他模块仅审计，下一阶段须用户确认。
+
 > 2026-10-21后续训练准入诊断/草稿恢复/删除复检UI由[生命周期一体治理专项第十节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)维护；本文件保留综合前端原验收，不重复记录GOV进度。
 
 # 页面启动、训练报告与训练任务交互综合治理（2026-10-21）
@@ -238,3 +270,72 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 本次补提只保存验收回执、专项状态与入口，运行代码和VERSION371保持。文档提交自身的SHA由本文件Git History定位，CI由该提交附加Checks持久记录；必须等自身检查全部成功才完成文档交付，不把bbb4950d结果替代文档提交检查。文件不内嵌自身哈希以避免哈希循环。
 
 正文五项补充任务的限定验收已完成：矩阵包含明确未覆盖/未知恢复限制，成功口径证据与报告名称一致，生产只读方案仅整理未执行。生产12.08秒未实测关闭，生产未访问/部署/修改。下一步按用户确认单独实施Annotorious v3，须创建其唯一专项、先隔离PoC，再正式切入口；本专项的标注保存安全修正应继承，不得被新内核覆盖。GT清空/待标注的新业务合同归Annotorious专项审计与验收，不提前写为此处已支持。
+
+
+## 2026-11-05｜42.24.537 启动快照 P0（本地验证完成，准确 SHA CI 待核）
+
+基线远端ade2ff2966532cef2ec065a5c1aa89bef54309c0 / 42.24.535，本地隔离工作区树6190c290与远端一致、无未提交修改。现场补充：ready/100%，217130素材、110算法，后台预加载26秒；仅此项现场事实已取得，ready后的TTFB/响应大小/解析与服务端调用栈尚无现场证据，Formatting不是后端故障证据。
+
+计划：先用定向测试复现核心历史依赖、冷缓存同步构建及force并发；在原snapshot增加精简核心模式（默认），原完整兼容模式显式core=false，不新增缓存/请求中心。原AlgorithmSqlStore增加有界基础列投影，训练历史/成功数/版本报表/模型凭据配置在原页面Owner按需加载。原启动缓存按项目/算法/素材/标注revision确认鲜度；未就绪快速503，不从请求线程构建；原Worker跨进程文件锁串行构建，恢复任务按原操作移出核心前置依赖。
+
+前端继续20秒截止，补应用级请求代次/取消结算、重试成功后原页面Owner恢复、下载/解析/渲染诊断，不用扩超时掩盖性能。冷启动核心可用时间与ready热快照P50/P95分别记录；合成217130投影+110算法仅作本地规模验证，现场真实业务数据另验，不能混写。
+
+当前RED证据：新增3项Python初版全部失败，验证上述3处源码缺口；必要改动后3项通过。旧请求忽略abort的Node反例已加入，修复后取消能结算且迟到响应不写state。完整定向/Chrome/性能与精确SHA CI待执行。禁止生产数据操作、部署、main merge、release及force push。
+
+
+### 已确认根因与本轮修复
+
+现场 26 秒说明旧启动工作量超过固定 20 秒截止，但现场各阶段耗时未取得，不能将全部 26 秒归于某个 SQL 或浏览器 Formatting。代码审计与定向反例确认：旧热 snapshot 仍调用训练历史/成功数/live jobs（含索引同步），算法 hydration 可能读取版本报告/评测投影，冷请求与启动线程可重复同步构建，force 可启动重复线程；前端失败 Promise 与首次 `.then` 使重试成功后 extras owner 缺失，忽略 abort 的旧 fetch 未保证结算。以上属于已修复平台问题。
+
+- 复用原 bootstrap 缓存与 Worker。默认 `core=true` 仅基础算法列、项目/数据集/标签、素材/标注摘要；AlgorithmSqlStore 同事务返回 revision/总数/至多500基础行，110算法完整返回。版本、成功数、历史任务、模型配置在原页面 Owner 按需读取。显式 `core=false` 保留完整兼容读取。
+- 每次热请求核对原项目、数据集摘要及算法/素材/标注 revision；不新建统计真相。缓存失效快速503 `BOOTSTRAP_PENDING`，后台构建，ready才发布完整快照。原进程锁防重，原目录 FileLock 串行不同Web进程构建；各进程仍有原本独立内存缓存，不声称跨进程只构建一次。
+- 删除恢复/清洗恢复保持原操作，仅移出核心首屏前置，在核心线程结束后执行；原状态新增 `readiness_scope=core` 和独立 maintenance_status。核心ready不等于所有维护任务完成，也不声称缩短了每项恢复工作本身。
+- 保持20秒截止；应用级 sequence、主动 abort、无法响应abort的Promise结算、旧响应禁止apply、导航代次保护；失败有中文恢复操作与错误码。原初始化Promise/event复用唯一extras后续入口，重试成功恢复页面数据读取，重复重试合并。
+- 模型配置由原模型页extras读取 `items`，12秒局部截止、局部错误与重试、保存结果指纹保护；总览/算法页明确“按需读取”，不把尚未读的任务/训练成功数/版本冒充0。
+- 原api增加等待响应头/读体/解析/渲染阶段；Server-Timing分列bootstrap/revision/serialize，X-Response-Bytes记录字节，沿原诊断middleware关联X-Request-ID及X-Client-Operation-ID。网络错误与固定截止可分类，但浏览器fetch不能仅凭异常证明TCP连接耗时；用ResourceTiming DNS/connect/TTFB/download及服务端日志定位。未知锁等待不伪装成已量化证据。
+
+### 分项性能验收与定向回归
+
+| 范围 | 样本与结果 | 边界 |
+| --- | --- | --- |
+| 冷核心构建 | 217130合成SQLite素材元数据、110算法、1100版本、1000任务JSON；1次280.29ms | 本地Windows/Python3.12.7，应用内bootstrap缓存冷；磁盘缓存未强制清空，不含import/完整启动/后台恢复；不是冷启动P95 |
+| ready热snapshot | 同一规模，25次最小FastAPI TestClient HTTP，P50 24.80ms，P95 40.06ms；27253 bytes | 不含生产代理/鉴权/网络；1000任务文件哈希前后不变；1条running仅状态夹具，无真实训练进程 |
+| Chrome连续10次刷新 | 真实Chrome/隔离小后端，snapshot实际HTTP未Mock，每次1次snapshot；首屏可交互P95 1388ms，snapshot TTFB P95 126.7ms；约2033 bytes，JSON解析0.1–0.2ms | status路由返回后台running夹具，核心snapshot不受其阻塞；不能与20万规模处理器数据拼接成生产首屏结果 |
+| 并发/恢复/视口 | Chrome 1920×1080、1024×768、390×844三独立上下文并发；5秒慢响应、真实20秒截止及迟到响应、坏JSON后重试、模型接口503局部重试、A→B→A | 同机浏览器上下文，不等同于多物理设备、多Web进程或生产网络 |
+
+原始数据：[合成规模分项](evidence/bootstrap-2026-11-05-synthetic.json)、[Chrome十次读取](evidence/bootstrap-2026-11-05-chrome.json)。定向Python原四文件41/41通过，随后新增数据集改名失效反例先RED（200旧缓存）、修后core文件9/9通过；去重总覆盖42项，非累计50项。前端Node最终1540/1540通过（Windows需PowerShell展开glob，`npm test`原通配命令在Windows未展开，不算通过）；真实Chrome三文件16/16通过。已有相关full-mode测试显式core=false；更新按需加载后的旧fixture，保持其A→B→A和缓存断言。新增core测试已加入原v42.25 Release Regression工作流；未新增第二启动流程/ZIP流程。
+
+本轮无schema迁移、无GT/Task/训练协议修改；running状态文件及1000历史文件字节保持仅证明读取边界。真实训练并发/GPU、现场OSS、生产Web多进程锁等待、代理网络、217130现场首次完整进程启动及ready热P95：**未执行，待现场验证**。现场26秒的真实分项与数据库锁证据也待采集，不将本地280ms替换现场值。
+
+### 并行提交整合、版本与交付
+
+远端先快进取得另一AI的 `e8e4bee39099cd97c71e0cc3b2402d09c15e8960` 与 `19b0659dfd2b691db5ecea721364cdde224af643`。仅将本轮启动提交重放在19b之上，main.mjs模块导入冲突保留双方有效修改，algorithm-list中的“新畅联交付”及显式确认弹窗逻辑完整保留。该功能属于另一AI，非本轮重复实现。VERSION由536递增至537；入口缓存统一42.25.537，算法列表模块42.24.537，交付模块保持42.24.536。没有reset --hard、强推或覆盖其他工作区未提交工作。
+
+本次代码SHA由本节Git History定位；普通推送唯一长期分支 `feature/external-algorithm-publishing`，准确HEAD及其Actions完成后再记录结论，不借用19b或旧535绿色结果。
+
+### 生产安全部署与现场验收建议（仅建议，未部署）
+
+1. 先备份当前程序、配置及数据库并核对运行中训练由独立Worker/Agent持有的实例/lease/成果目录；确认Web重启不会终止训练后，才安排仅Web服务更新。不得全杀Python、重启训练Worker、清任务或恢复旧DB覆盖现场新结果。
+2. 保留当前data-dir/OSS配置，不清缓存目录或素材/标注/成果来制造“冷启动”；本轮无schema迁移。若Web与训练共进程，先安排可控窗口，不能声称重启天然安全。
+3. 暂时启用既有 `MC_PERFORMANCE_DIAGNOSTICS=1`，采集同一X-Request-ID/客户端operationId的Server-Timing与SQL阶段；浏览器保存 `window.__startupDiagnostics413`、ResourceTiming及响应字节。排查连接/DNS/TTFB、数据库busy、服务端构建、下载/JSON/渲染分别计时，不收集凭据或全量业务响应。
+4. 在真实217130/110环境分别测一次Web完整冷启动到core ready及maintenance结束，再测ready后至少25次热snapshot P50/P95与10次首屏；目标热P95≤2秒、正常首屏P95≤3秒。另测训练正在执行、桌面/平板/窄屏并发刷新、失败重试、页面切换；比较训练进度与成果持续增长，不能只看状态running。
+5. 若回退，仅回退程序版本与对应静态入口并按现有升级守卫处理；不得回滚现场数据库或终止训练。记录本轮SHA、机器资源、Web进程数、存储延迟、各阶段结果及未满足目标，完成现场独立签收。
+
+
+### 推送后准确日志纠偏与完整进程冷启动补验
+
+主体推送SHA `a51f733f75458fb6dfdbf21dcadf78618042865e` 的SQL工作流准确日志127273123140确认旧源码守卫误把“精简缓存显式转换为完整core=false读取”当作已有完整缓存每次全量重建；仅收紧原测试定位范围并保留完整缓存禁止重建的断言，SQL store/应用合同30/30通过。Frontend job127273127881在Node执行前被原grep守卫挡住：它固定要求旧单行 `if (!result?.stale) pollRegistry...`，当前同一条件块新增jobsDeferred=false；按新完整条件块更新grep，旧响应仍不得更新任务状态或轮询。两项不是生产运行失败，但必须在后续准确SHA重验，不能把主体已完成的其他工作流借作最终绿色。
+
+独立代码审查覆盖核心快照/失效/Worker/恢复、取消/重试/按需模型配置及发布逻辑保留，未发现阻断正确性问题；审查没有独立重跑测试，不能当额外测试数量。
+
+补充实际子进程启动：在同一合成217130/110/1100版本/1000历史目录，启动完整uvicorn进程并经HTTP读取status，1次从启动到观察core ready **2069.40ms**，当时maintenance也ready；首次ready snapshot HTTP **24.51ms / 27337 bytes**（启用原性能middleware，含total/SQL阶段）。磁盘缓存未强制冷却，test build仅对临时目录启用测试访问，不是真实鉴权/生产启动P95。首次正常鉴权尝试为401，未测到ready，不计成功；修正隔离测试build配置后才取得本结果。原始[完整进程单次记录](evidence/bootstrap-2026-11-05-process-cold.json)。子进程只指向本轮临时夹具且已停止，不曾启动或终止生产Web/Worker/训练。
+
+
+后续交接合同纠偏：原主体Chrome shard1为110通过/2失败，均在 `loading-recovery-supplement` 的旧发布流程用例（pending/rejected）：仍期待点击版本动作即POST，而另一AI已改为独立交付弹窗GET预检+确认提交。本轮仅适配这两条测试，打开后明确断言POST=0，确认才POST；4xx允许再次确认，超时禁用重复提交并经刷新查询结果，重复打开不增POST。真实Chrome两例2/2通过，不改交付产品代码、不重复实施发布专项。主体其余Chrome分片通过；最终仍以包含fixture补正的准确SHA为准。先前Linux暂停进程时序失败仅定向重跑该失败job，原Release Regression最新attempt已success，不改进程控制实现/测试。
+
+Git传输两次连接失败后，以GitHub连接器创建与本地**完全相同tree**的补正commit `bf67db3a0e0def4cb16535d06e1a302400aa4823`，expected_sha=a51f733f、force=false快进原分支；随后核验远端commit对象与tree并同步本地隔离HEAD，未丢弃未提交文件。该SHA前端Node/守卫已通过；Chrome完整工作流仍在运行，不提前认定全绿。下一个仅测试/记录提交继续核验自身Checks。
+
+
+模型协议懒加载夹具纠偏：`0c33f1b89ac480e7b67815bcaea1ce2c8edc5f32` 的Frontend Node/守卫与Chrome shard1/3通过；shard2为113通过/1失败，仅 `model-api-protocol` 刷新后直接调用编辑函数，未等原模型页面按需读取，误将默认URL当成保存丢失。改为点击包含已保存配置名称的真实表格行“编辑”按钮（等待真实行出现）；保留实际POST/PUT、刷新、协议auto/responses、structured_output、endpoint及空凭据全部业务断言。本地真实Chrome原用例1/1通过，不修改模型产品逻辑，不延长业务截止。至此本地相关Chrome独立用例并集19（16+发布2+协议1），不把复测次数相加。其余model专用用例已检查：真实坐标页原已等模型读取，隔离坐标页显式提供模型state。
+
+交付状态按本节Git History对应的**最终准确SHA Checks**与最终交付回执确认；上面所有“待验/失败”均是当时准确检查的历史记录，不能删除留痕，也不能据此冒称最终全绿。生产现场独立验收始终待执行。

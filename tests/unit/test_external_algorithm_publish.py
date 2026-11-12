@@ -356,6 +356,8 @@ class FakeChangLianSyncClient:
             "code": 200,
             "data": [{
                 "productId": "product-live-1",
+                "productType": 3,
+                "status": 1,
                 "productName": "抽烟检测",
                 "categoryId": "category-smoking",
             }],
@@ -4727,3 +4729,196 @@ def test_stable_mapping_http_contract_revision_and_browser_projection(tmp_path,m
         conflict=client.put('/api/v64/external-publish/config',json=payload)
         assert conflict.status_code==409 and conflict.json()['code']=='EXTERNAL_MAPPING_REVISION_CONFLICT'
         assert client.get('/api/v64/external-publish/config').json()['config']['target_mappings']==saved.json()['config']['target_mappings']
+
+
+@pytest.mark.parametrize('state',['SUSPECTED_DELETED','CONFIRMED_DELETED','CLEANUP_PENDING','CLEANUP_RUNNING','CLEANUP_FAILED','CLEANUP_COMPLETED'])
+def test_external_publication_blocks_only_the_algorithm_pending_deletion_verification(tmp_path,state):
+    service=object.__new__(ExternalAlgorithmPublishService)
+    service.data_dir=tmp_path
+    algorithm={'id':'a1','source_type':'EXTERNAL','provider_type':'CHANG_LIAN','external_active':True,'external_deletion_status':state}
+    with pytest.raises(PlatformError) as error:
+        service._assert_current_external_identity(algorithm,{'id':'v1'})
+    assert error.value.code=='EXTERNAL_PRODUCT_DELETION_UNVERIFIED'
+
+
+
+def test_remote_onnx_utc_receipt_is_not_publishable_without_bound_manifest(tmp_path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
+    candidate = {
+        "artifact_id": "remote-only-receipt", "target": "onnx", "chip_code": "",
+        "sha256": "b" * 64, "conversion_job_id": "local-received",
+        "metadata": {
+            "finished_at": "2026-11-12T06:15:49+00:00",
+            "remote_job_id": "remote-received",
+            "conversion_identity_verified": False,
+        },
+    }
+    choices = service._automatic_delivery_choices({}, [candidate])
+    assert choices["onnx:"]["code"] == "EXTERNAL_WEIGHT_CONVERSION_IDENTITY_UNCONFIRMED"
+    assert "artifact_id" not in choices["onnx:"]
+
+
+
+def test_historical_last_pt_is_retained_but_not_current_delivery_blocker(tmp_path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    best = _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert first["publication"]["status"] == "PUBLISHED"
+    previous_creates = FakePublishingClient.weight_creates
+
+    last = best.with_name("last.pt")
+    last.write_bytes(b"older-last-checkpoint")
+    service.model_assets.repository.upsert({
+        "artifact_id": "historical-last",
+        "project_id": "p1", "algorithm_id": "a1", "version_id": "v1",
+        "artifact_kind": "original", "target": "original",
+        "chip_code": "", "conversion_job_id": "",
+        "file_name": "last.pt", "source_path": str(last),
+        "sha256": hashlib.sha256(last.read_bytes()).hexdigest(),
+        "size_bytes": last.stat().st_size, "metadata": {},
+    })
+    status = service.publication_status("p1", "a1", "v1")
+    history = next(row for row in status["artifacts"] if row["artifact_id"] == "historical-last")
+    assert history["delivery_role"] == "HISTORICAL"
+    assert history["included_in_delivery"] is False
+    assert history["review_required"] is False
+    assert "历史原始权重" in history["last_error"]
+    current = next(row for row in status["artifacts"] if row["file_name"] == "best.pt")
+    assert current["sync_status"] == "SYNCED"
+    assert status["weight_delivery_status"] == "PUBLISHED"
+    assert FakePublishingClient.weight_creates == previous_creates
+
+
+def test_pending_onnx_platform_remap_error_is_visible_in_delivery_review(tmp_path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    service.save_config(ExternalPublishConfigPayload(
+        target_mappings={"onnx": TargetMapping(compute_platform_id="cp-onnx")}
+    ))
+    original = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert original["publication"]["status"] == "PUBLISHED"
+    _timed_conversion(
+        tmp_path, job_id="onnx-remap", target="onnx", chip="",
+        content=b"onnx-remap-fixture", completed="2026-11-12T08:01:13+00:00",
+    )
+    assets = service.model_assets.register_version_metadata("p1", "a1", "v1")
+    asset = next(row for row in assets if row["target"] == "onnx")
+    mapping = service._artifact_mapping_state(asset)["mapping"]
+    service.repository.ensure_artifact_publication(
+        original["publication"]["publication_key"], asset, mapping
+    )
+    service.repository.patch_artifact_publication(
+        asset["artifact_id"],
+        sync_status="PENDING",
+        last_error="EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED: 已有Weight算力分类发生变化",
+    )
+
+    status = service.publication_status("p1", "a1", "v1")
+    pending = next(row for row in status["artifacts"] if row["artifact_id"] == asset["artifact_id"])
+    assert pending["delivery_role"] == "AUTOMATIC_CURRENT"
+    assert pending["review_required"] is True
+    assert pending["recovery_plan"]["code"] == "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED"
+    assert pending["recovery_plan"]["suggested_operation"] == "REVIEW_PLATFORM_MIGRATION"
+    assert pending["recovery_plan"]["automatic_write_allowed"] is False
+    assert status["weight_delivery_status"] == "PARTIAL"
+    assert FakePublishingClient.weight_creates == 1
+
+
+def test_onnx_and_original_blank_chip_code_have_distinct_remote_weight_slots(tmp_path):
+    FakePublishingClient.reset()
+    memory=MemorySecretStore()
+    _configure_external(tmp_path,memory)
+    _seed_external_algorithm(tmp_path)
+    service=_service(tmp_path,memory)
+    service.save_config(ExternalPublishConfigPayload(target_mappings={
+        "original":TargetMapping(compute_platform_id="cp-rk",chip_code=""),
+        "onnx":TargetMapping(compute_platform_id="cp-onnx",chip_code=""),
+    }))
+    first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert first["publication"]["status"]=="PUBLISHED"
+    assert FakePublishingClient.weight_creates==1
+    original=next(r for r in FakePublishingClient.weights if r["fileName"]=="best.pt")
+    assert not original.get("chipCode")
+
+    _timed_conversion(tmp_path,job_id="onnx-v1",target="onnx",chip="",
+                      completed="2026-11-12T06:15:49Z",content=b"first-onnx")
+    second=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert second["publication"]["status"]=="PUBLISHED",second.get("conversion_failures")
+    assert FakePublishingClient.weight_creates==2
+    assert FakePublishingClient.weight_edits==0
+    created=next(r for r in FakePublishingClient.weights if r["fileName"].endswith(".onnx"))
+    assert created["computePlatformId"]=="cp-onnx"
+    assert created["weightId"]!=original["weightId"]
+
+    _timed_conversion(tmp_path,job_id="onnx-v2",target="onnx",chip="",
+                      completed="2026-11-12T08:01:13Z",content=b"second-onnx")
+    third=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert third["publication"]["status"]=="PUBLISHED",third.get("conversion_failures")
+    assert FakePublishingClient.weight_creates==2
+    assert FakePublishingClient.weight_edits==1
+    status=service.publication_status("p1","a1","v1")
+    winner=next(r for r in status["artifacts"] if r["target"]=="onnx" and r["delivery_role"]!="HISTORICAL")
+    assert winner["sync_status"]=="SYNCED"
+    assert winner["remote_identity_status"]=="READ_BACK"
+
+
+def test_real_onnx_platform_migration_stays_blocked_without_readback_approval(tmp_path):
+    FakePublishingClient.reset()
+    memory=MemorySecretStore()
+    _configure_external(tmp_path,memory)
+    _seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="onnx-old",target="onnx",chip="",
+                      completed="2026-11-12T06:15:49Z",content=b"old-onnx")
+    service=_service(tmp_path,memory)
+    service.save_config(ExternalPublishConfigPayload(target_mappings={
+        "original":TargetMapping(compute_platform_id="cp-rk",chip_code=""),
+        "onnx":TargetMapping(compute_platform_id="cp-rk",chip_code=""),
+    }))
+    first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert first["publication"]["status"]=="PUBLISHED"
+    assert FakePublishingClient.weight_creates==2
+    service.save_config(ExternalPublishConfigPayload(target_mappings={
+        "original":TargetMapping(compute_platform_id="cp-rk",chip_code=""),
+        "onnx":TargetMapping(compute_platform_id="cp-onnx",chip_code=""),
+    }))
+    _timed_conversion(tmp_path,job_id="onnx-new",target="onnx",chip="",
+                      completed="2026-11-12T08:01:13Z",content=b"new-onnx")
+    again=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert again["publication"]["status"]=="PARTIAL"
+    assert any("算力分类发生变化" in error for error in again["conversion_failures"])
+    assert FakePublishingClient.weight_creates==2
+    assert FakePublishingClient.weight_edits==0
+
+
+def test_historical_onnx_review_not_a_current_delivery_blocker(tmp_path):
+    FakePublishingClient.reset()
+    memory=MemorySecretStore()
+    _configure_external(tmp_path,memory)
+    _seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="onnx-old",target="onnx",chip="",
+                      completed="2026-11-12T06:15:49Z",content=b"old-onnx")
+    service=_service(tmp_path,memory)
+    service.save_config(ExternalPublishConfigPayload(target_mappings={
+        "original":TargetMapping(compute_platform_id="cp-rk",chip_code=""),
+        "onnx":TargetMapping(compute_platform_id="cp-onnx",chip_code=""),
+    }))
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PUBLISHED"
+    old=next(r for r in service._publication_artifacts(result["publication"]["publication_key"]) if r["target"]=="onnx")
+    service.repository.patch_artifact_publication(old["artifact_id"],sync_status="UNKNOWN",
+        last_error="EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED: historic")
+    _timed_conversion(tmp_path,job_id="onnx-new",target="onnx",chip="",
+                      completed="2026-11-12T08:01:13Z",content=b"new-onnx")
+    status=service.publication_status("p1","a1","v1")
+    history=next(r for r in status["artifacts"] if r["artifact_id"]==old["artifact_id"])
+    assert history["included_in_delivery"] is False
+    assert history["delivery_role"]=="HISTORICAL"
+    assert history["review_required"] is False

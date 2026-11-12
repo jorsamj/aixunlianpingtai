@@ -51,15 +51,36 @@ def test_quality_gate_reason_has_priority_over_patience_inference():
 
 
 
-def test_target_mode_pushes_generic_patience_beyond_requested_epochs():
-    assert effective_training_patience(20, 100, 0.90) == 101
-    assert effective_training_patience(200, 100, 0.90) == 200
+def test_target_mode_disables_generic_patience():
+    assert effective_training_patience(20, 100, 0.90) == 0
+    assert effective_training_patience(200, 100, 0.90) == 0
 
 
 def test_patience_is_opt_in_even_without_a_quality_target():
-    assert effective_training_patience(20, 100, 0.0) == 101
+    assert effective_training_patience(20, 100, 0.0) == 0
     assert effective_training_patience(20, 100, 0.0, early_stopping_enabled=True) == 20
     assert effective_training_patience(40, 150, 0.90, early_stopping_enabled=True) == 40
+
+
+def test_disabled_patience_survives_time_based_epoch_extension():
+    import ast
+    import importlib.util
+    from pathlib import Path
+
+    # Exercise the installed official stopper without importing the GPU runtime.
+    package = Path(importlib.util.find_spec('ultralytics').origin).parent
+    module = ast.parse((package / 'utils/torch_utils.py').read_text(encoding='utf-8'))
+    stopper_class = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == 'EarlyStopping')
+    namespace = {'LOGGER': SimpleNamespace(info=lambda *args, **kwargs: None),
+                 'colorstr': lambda value: value}
+    exec(compile(ast.Module(body=[stopper_class], type_ignores=[]), '<official EarlyStopping>', 'exec'), namespace)
+    disabled = namespace['EarlyStopping'](patience=effective_training_patience(40, 2, 0))
+    assert disabled(1, .9) is False
+    assert disabled(41, .8) is False
+    assert disabled(100, .7) is False
+    enabled = namespace['EarlyStopping'](patience=effective_training_patience(40, 2, 0, early_stopping_enabled=True))
+    assert enabled(1, .9) is False
+    assert enabled(41, .8) is True
 
 
 def test_below_target_never_stops_training_even_below_reference_line():
@@ -102,7 +123,7 @@ def test_stage_gate_uses_validation_split_not_final_test_split(tmp_path):
     data_yaml = tmp_path / "data.yaml"
     data_yaml.write_text("path: .\ntrain: images/train\nval: images/val\ntest: images/test\n", encoding="utf-8")
 
-    trainer = SimpleNamespace(metrics={"metrics/mAP50(B)": 0.5})
+    trainer = SimpleNamespace(metrics={"metrics/mAP50(B)": 0.5}, data={"val": str(val_dir)})
     args = SimpleNamespace(
         data=str(data_yaml),
         val_max_samples=0,

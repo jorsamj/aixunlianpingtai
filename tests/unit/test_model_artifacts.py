@@ -1813,3 +1813,90 @@ def test_same_file_cannot_overwrite_stable_local_business_identity(tmp_path):
         service.repository.upsert({**item,'metadata':{**item['metadata'],'local_vendor_id':'vendor-b','local_chip_id':'chip-b'}})
     assert service.repository.get(first['artifact_id'])==first
     assert len(service.repository.list(project_id='p1'))==1
+
+
+
+@pytest.mark.parametrize("mismatch", ["", "remote_job_id", "source_sha", "output_sha"])
+def test_legacy_remote_onnx_manifest_recovers_only_bound_utc_evidence(tmp_path, monkeypatch, mismatch):
+    service = _service(tmp_path)
+    version = _metadata_model(tmp_path)
+    source_sha = hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    job_dir = _project_dir(tmp_path, "p1") / "deployment/jobs/legacy-local"
+    artifacts = job_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    old_path = artifacts / "old.onnx"
+    old_path.write_bytes(b"legacy-onnx")
+    old_sha = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    manifest = {
+        "job_id": "legacy-remote",
+        "created_at": "2026-11-12T06:06:44+00:00",
+        "source": {"sha256": source_sha},
+        "outputs": [{"name": "old.onnx", "sha256": old_sha, "size_bytes": old_path.stat().st_size}],
+    }
+    if mismatch == "remote_job_id":
+        manifest["job_id"] = "other-remote-id"
+    if mismatch == "source_sha":
+        manifest["source"]["sha256"] = "0" * 64
+    if mismatch == "output_sha":
+        manifest["outputs"][0]["sha256"] = "0" * 64
+    (artifacts / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    legacy = {
+        "id": "legacy-local", "remote_job_id": "legacy-remote",
+        "status": "done", "target": "onnx", "source_trace": {"sha256": source_sha},
+        "finished_at": "2026-11-12 14:06:47",
+        "outputs": [{"path": str(old_path), "size_mb": 0.0}],
+    }
+    new_dir = _project_dir(tmp_path, "p1") / "deployment/jobs/new-local/artifacts"
+    new_dir.mkdir(parents=True)
+    new_path = new_dir / "new.onnx"
+    new_path.write_bytes(b"new-onnx")
+    new_sha = hashlib.sha256(new_path.read_bytes()).hexdigest()
+    newer = {
+        "id": "new-local", "status": "done", "target": "onnx",
+        "source_trace": {"sha256": source_sha},
+        "finished_at": "2026-11-12T06:15:49+00:00",
+        "outputs": [{"path": str(new_path), "sha256": new_sha,
+                     "size_bytes": new_path.stat().st_size}],
+    }
+    monkeypatch.setattr(service, "_conversion_jobs", lambda *args: [legacy, newer])
+    discovered = service.discover_version_artifacts("p1", {"id": "a1"}, version)
+    by_name = {row["file_name"]: row for row in discovered if row["target"] == "onnx"}
+    old = by_name["old.onnx"]["metadata"]
+    new = by_name["new.onnx"]["metadata"]
+    assert new["finished_at"] == "2026-11-12T06:15:49+00:00"
+    assert new["conversion_identity_verified"] is True
+    if mismatch == "":
+        assert old["conversion_identity_verified"] is True
+        assert old["finished_at"] == manifest["created_at"]
+        assert old["completion_evidence_source"] == "bound_conversion_manifest"
+        from platform_core.model_artifacts import conversion_completion_rank
+        assert conversion_completion_rank(new, "new-local", new_sha) > conversion_completion_rank(old, "legacy-local", old_sha)
+    else:
+        assert old["conversion_identity_verified"] is False
+        assert old["finished_at"] == "2026-11-12 14:06:47"
+        assert "不匹配" in old["manifest_metadata_error"]
+
+
+
+def test_remote_utc_receipt_and_self_hash_without_manifest_cannot_prove_conversion(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    version = _metadata_model(tmp_path)
+    output = tmp_path / "remote-no-manifest.onnx"
+    output.write_bytes(b"model-without-bound-manifest")
+    source_sha = hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    job = {
+        "id": "local-received", "remote_job_id": "remote-received",
+        "target": "onnx", "status": "done",
+        "source_trace": {"sha256": source_sha},
+        "conversion_finished_at": "2026-11-12T06:15:49+00:00",
+        "outputs": [{
+            "path": str(output),
+            "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+            "size_bytes": output.stat().st_size,
+        }],
+    }
+    monkeypatch.setattr(service, "_conversion_jobs", lambda *args: [job])
+    item = next(row for row in service.discover_version_artifacts("p1", {"id": "a1"}, version) if row["target"] == "onnx")
+    assert item["metadata"]["finished_at"] == "2026-11-12T06:15:49+00:00"
+    assert item["metadata"]["remote_job_id"] == "remote-received"
+    assert item["metadata"]["conversion_identity_verified"] is False

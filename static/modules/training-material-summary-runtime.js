@@ -19,6 +19,44 @@ export function updateTrainingGovernanceSelection(previous, {mode='read', key, t
     count:mode==='read'&&value.previous_execution_task_id ? value.count : all||issues ? Math.max(0,(issues?allTotal:total)-excluded.size) : selected.size};
 }
 
+export function planTrainingScopeReviewPage(selection, rows) {
+  if(selection?.all_filtered || selection?.all_issues || selection?.previous_execution_task_id)
+    throw new Error('跨页全部确认需要先冻结服务端审核范围；当前请勾选本页素材');
+  const ids=uniqueIds(selection?.image_ids);
+  if(!ids.length)throw new Error('请先勾选本页需要人工补审的素材');
+  if(ids.length>50)throw new Error('每批最多审核 50 张，请减少本次勾选数量');
+  const byId=new Map((rows||[]).map(row=>[String(row.image_id),row]));
+  if(ids.some(id=>!byId.has(id)))throw new Error('选择中包含其他页面的素材，请先返回该页审核');
+  const items=[],blocked=[];
+  for(const imageId of ids){
+    const row=byId.get(imageId);
+    const codes=uniqueIds(row.missing_label_codes);
+    if(row.issue_type!=='partial_review_scope'||!codes.length||
+       !Number.isInteger(row.annotation_version)||row.annotation_version<0||
+       !/^[0-9a-f]{64}$/i.test(String(row.content_sha256||''))){
+      blocked.push({image_id:imageId,issue_type:row.issue_type});continue;
+    }
+    items.push({image_id:imageId,reviewed_label_codes:codes,
+      expected_version:row.annotation_version,
+      source_content_sha256:String(row.content_sha256).toLowerCase()});
+  }
+  return {items,blocked,total:ids.length};
+}
+
+export function planTrainingScopeReviewSelection(selection, filters={}) {
+  if(selection?.previous_execution_task_id)
+    throw new Error('删除任务遗留选择不能用于正式 GT 人工补审，请重新勾选');
+  const ids=uniqueIds(selection?.image_ids),excluded=uniqueIds(selection?.excluded_image_ids);
+  const all=selection?.all_filtered===true,issues=selection?.all_issues===true;
+  if(all&&issues)throw new Error('人工补审选择不能同时是全部问题和全部筛选结果');
+  if(!all&&!issues&&!ids.length)throw new Error('请先勾选要人工补审的素材');
+  if(!all&&!issues&&excluded.length)throw new Error('逐张勾选不能携带全部选择的排除项');
+  if(ids.length>50000||excluded.length>50000)throw new Error('单次冻结审核清单不能超过 50000 张');
+  return {all_filtered:all,all_issues:issues,image_ids:ids,excluded_image_ids:excluded,
+    query:String(filters.query||''),issue_type:String(filters.issueType||''),
+    missing_label_code:String(filters.missingLabelCode||'')};
+}
+
 export function removeResolvedTrainingMaterials(runtime,draft,imageIds,diagnosis=null){
   const removed=new Set(uniqueIds(imageIds));
   const duplicateReview=diagnosis?{
@@ -44,6 +82,50 @@ function htmlEscape(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[char]);
+}
+
+export function renderTrainingSampleRoles(summary) {
+  const counts=summary?.sample_role_counts,labels=uniqueIds(summary?.effective_label_codes);
+  if(!counts||!labels.length)return '';
+  const n=key=>Math.max(0,Number(counts[key])||0);
+  return `<div data-training-sample-roles><span>本次训练标签 ${htmlEscape(labels.join('、'))}</span><b>正样本 ${n('positive')} · 已确认负样本 ${n('confirmed_negative')} · 待确认负样本 ${n('pending_negative')}</b>${n('pending_review')?`<small>另有 ${n('pending_review')} 张素材需修复标注或来源问题。</small>`:''}${n('pending_negative')?'<small>仅在最终创建时确认这些图片不含本次目标；原标注不会修改。</small>':''}${n('confirmed_negative')>n('positive')*3?'<small>负样本比例较高，请结合独立评测判断；不会自动减少所选素材。</small>':''}</div>`;
+}
+
+const SAMPLE_ISSUE_NAMES=Object.freeze({
+  missing_annotation:'尚无正式 GT',partial_review_scope:'本次目标审核范围不完整',
+  invalid_annotation:'正式标注异常',annotation_needs_review:'素材或 GT 需要重新审核',
+  invalid_ground_truth:'正式 GT 不可用',
+});
+
+function negativePreviewFigures(rows=[]) {
+  return rows.map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="候选背景素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('');
+}
+
+export function renderTrainingSampleConfirmation(preview={}) {
+  const coverage=preview.coverage||{},c=preview.counts||{},labels=uniqueIds(preview.effective_label_codes);
+  const number=value=>Math.max(0,Number(value)||0);
+  const classes=(coverage.classes||[]).map(item=>`<li><b>${htmlEscape(item.code)}</b><strong>${number(item.image_count)} 张</strong><span>${number(item.box_count)} 个正式框</span></li>`).join('');
+  const problems=(coverage.problems||[]).map(row=>`<li><b>${htmlEscape(row.image_id)}</b><span>${htmlEscape(SAMPLE_ISSUE_NAMES[row.issue_type]||row.issue_type)}${(row.missing_label_codes||[]).length?` · 待审核 ${htmlEscape(row.missing_label_codes.join('、'))}`:''}</span></li>`).join('');
+  const samples=negativePreviewFigures(preview.pending_preview);
+  const previewOffset=number(preview.preview_offset),previewSize=number(preview.preview_size)||20;
+  const nextPreview=previewOffset+previewSize<number(preview.pending_count);
+  const partialSamples=(coverage.partial_preview||[]).map(row=>{
+    const counts=Object.entries(row.label_box_counts||{}).filter(([code,count])=>labels.includes(code)&&number(count)>0)
+      .map(([code,count])=>`${htmlEscape(code)} ${number(count)} 框`).join(' · ');
+    return `<figure><img src="${htmlEscape(row.image_url||'')}" alt="部分覆盖正样本 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption><b>${htmlEscape(row.image_id)}</b><span>${counts}</span></figcaption></figure>`;
+  }).join('');
+  return `<section class="training-sample-confirm" data-training-negative-confirmation>
+    <div class="training-sample-hero"><span>本次训练 · ${htmlEscape(labels.join('、'))}</span><div class="training-sample-main-count"><strong>${number(coverage.selected_count)}</strong><span>张选中素材</span></div><b>${number(coverage.eligible_count)} 张通过 GT 基础检查</b></div>
+    <div class="training-sample-stat-grid"><article><strong>${number(coverage.full_coverage_count)}</strong><span>全部类别覆盖</span></article><article><strong>${number(coverage.partial_coverage_count)}</strong><span>部分类别覆盖 · 仍是正样本</span></article><article><strong>${number(coverage.zero_target_count)}</strong><span>本次目标零覆盖</span><small>已确认 ${number(c.confirmed_negative)} · 待确认 ${number(c.pending_negative)}</small></article></div>
+    <h3>各类别的正式标注</h3><ul class="training-sample-classes">${classes}</ul>
+    ${number(coverage.partial_coverage_count)?'<p class="training-sample-note">部分覆盖的图片保留其已有的合法目标框，不会被改成整图负样本。</p>':''}
+    ${partialSamples?`<details class="training-sample-partials"><summary>查看部分覆盖正样本（最多 8 张）</summary><div class="training-negative-previews">${partialSamples}</div></details>`:''}
+    ${number(preview.pending_count)?`<section class="training-sample-alert"><b>${number(preview.pending_count)} 张候选负样本需要人工确认</b><p>请确认画面没有本次训练目标；仅记录当前训练任务的确认，不修改原始图片或任何标签。已标注的其他类别仍归原标签所有。</p><details open><summary>逐页预览全部负样本</summary><div class="training-negative-previews" data-negative-preview-list>${samples}</div><div class="row between"><span data-negative-preview-page>第 ${Math.floor(previewOffset/previewSize)+1} / ${Math.ceil(number(preview.pending_count)/previewSize)} 页</span><div class="row"><button type="button" class="btn mini" data-negative-preview-prev ${previewOffset===0?'disabled':''}>上一页</button><button type="button" class="btn mini" data-negative-preview-next ${nextPreview?'':'disabled'}>下一页</button></div></div></details></section>`:''}
+    ${number(preview.pending_scope_count)?`<section class="training-sample-alert"><b>${number(preview.pending_scope_count)} 张部分标签正样本需要确认</b><p>已有有效目标框会保留为正样本；请确认画面内不存在本次其他未标出的目标。该确认仅对当前任务生效。</p></section>`:''}
+    ${!number(c.positive)&&preview.base_training_mode==='previous_weights_init'?'<section class="training-sample-alert"><b>已有模型 · 纯负样本继续训练</b><p>本轮不含正样本，只适合抑制误报；本批验证集无法有效评估召回率与 mAP，请使用独立正样本试验集核对模型效果。</p></section>':''}
+    ${number(c.pending_review)?`<section class="training-sample-blockers"><b>${number(c.pending_review)} 张存在正式 GT 或素材问题，不能靠普通确认放行</b><ul>${problems}</ul></section>`:''}
+    <div class="row end training-sample-actions"><button type="button" class="btn" data-negative-return>返回调整</button><button type="button" class="btn primary" data-negative-confirm>确认并创建</button></div>
+  </section>`;
 }
 
 export const GT_CONFLICT_NAMES = Object.freeze({
@@ -85,6 +167,8 @@ export function trainingCompatibilitySignature(draft = {}) {
   return JSON.stringify({
     algorithmId: String(draft?.algorithmId || ''),
     materialIds: uniqueIds(draft?.materialIds).sort(),
+    trainSelectionRef:String(draft?.trainSelectionRef || ''),
+    trainSelectionCount:Number(draft?.trainSelectionCount || 0),
     testMaterialIds: uniqueIds(draft?.testMaterialIds).sort(),
     splitMode: String(draft?.splitMode || 'random_test_from_training_pool'),
     labels: uniqueIds(draft?.newLabelCodes).sort(),
@@ -156,6 +240,8 @@ export function installTrainingMaterialSummaryRuntime({
 
   const state = () => getState() || {};
   let destroyed = false;
+  let negativeCheck = null;
+  let negativeDialog = null;
   let requestSequence = 0;
   let compatibilitySequence = 0;
   let activeController = null;
@@ -174,6 +260,7 @@ export function installTrainingMaterialSummaryRuntime({
   let compatibilityController = null;
   let compatibilityQuery = '';
   let compatibilityIssueType = '';
+  let compatibilityMissingLabelCode = '';
   let compatibilityPage = 1;
   let compatibilityPageSize = 50;
   let comparison = null;
@@ -184,6 +271,11 @@ export function installTrainingMaterialSummaryRuntime({
   let governanceDecisions = {};
   let governanceDecisionRevision = '';
   let governanceRetainedTask = null;
+  let scopeReviewPlan = null;
+  let scopeReviewSaved = null;
+  let scopeReviewResults = null;
+  let scopeReviewRunning = false;
+  let scopeReviewStop = false;
   const deletionSessions=new Map();
   const topOwns=anchor=>!!anchor?.isConnected&&!anchor.closest('.hidden')&&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)?.contains(anchor);
 
@@ -229,7 +321,8 @@ export function installTrainingMaterialSummaryRuntime({
       const resolved=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/compatibility`,{
         method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({...compatibilityPayload(draft),selection_action:'RESOLVE_SELECTION',
           expected_material_revision:context.truth.material_revision,expected_annotation_revision:context.truth.annotation_revision,
-          selection:{...selected,query:compatibilityQuery,issue_type:compatibilityIssueType}})}),'训练问题选择解析失败'),{timeoutMs:30000,label:'核验排除范围'});
+          selection:{...selected,query:compatibilityQuery,issue_type:compatibilityIssueType,
+            missing_label_code:compatibilityMissingLabelCode}})}),'训练问题选择解析失败'),{timeoutMs:30000,label:'核验排除范围'});
       if(destroyed||String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature||!topOwns(anchor))return false;
       const ids=uniqueIds(resolved.matching_image_ids);
       if(!ids.length)return notify('当前选择没有可排除的问题素材，请重新检查');
@@ -242,10 +335,144 @@ export function installTrainingMaterialSummaryRuntime({
     finally{controls.forEach(button=>{if(button.isConnected)button.disabled=false})}
   }
 
+  const reviewPlanStorageKey = pid=>`training-scope-review-plan:${pid}`;
+  function readSavedScopePlan(pid,signature){
+    try{
+      const value=JSON.parse(window.localStorage.getItem(reviewPlanStorageKey(pid))||'null');
+      return value?.projectId===pid&&value?.signature===signature&&/^[0-9a-f]{32}$/.test(value.taskId)
+        ? value : null;
+    }catch(_error){return null}
+  }
+  function saveScopePlan(pid,signature,taskId){
+    scopeReviewSaved={projectId:pid,signature,taskId};
+    try{window.localStorage.setItem(reviewPlanStorageKey(pid),JSON.stringify(scopeReviewSaved))}catch(_error){
+      notify('本浏览器无法保存审核任务入口；请记录任务编号，以免关闭页面后无法继续');
+    }
+  }
+  function clearSavedScopePlan(pid){
+    scopeReviewSaved=null;scopeReviewPlan=null;scopeReviewResults=null;
+    try{window.localStorage.removeItem(reviewPlanStorageKey(pid))}catch(_error){}
+  }
+  function scopePlanMarkup(){
+    const saved=scopeReviewSaved;
+    if(!saved)return '';
+    const plan=scopeReviewPlan?.task_id===saved.taskId?scopeReviewPlan:null;
+    if(!plan)return `<section class="training-scope-plan" data-scope-plan><b>发现此前冻结的人工补审任务</b><p>任务 ${htmlEscape(saved.taskId.slice(0,12))} · 可查询进度并继续未处理部分，原训练草稿保持不变。</p><button class="btn primary" data-scope-restore>查看并恢复任务</button><div data-scope-progress role="status"></div></section>`;
+    const pending=Number(plan.pending||0),blocked=Number(plan.blocked||0),failed=Number(plan.failed||0),succeeded=Number(plan.succeeded||0);
+    const problems=(plan.problems||[]).map(item=>`<li>${htmlEscape(item.image_id)} · ${htmlEscape(item.message||item.status)}</li>`).join('');
+    const results=scopeReviewResults?.taskId===plan.task_id?scopeReviewResults:null;
+    const resultList=results?`<div class="training-scope-results"><ul>${results.items.map(item=>`<li><b>${htmlEscape(item.image_id)}</b> · ${htmlEscape(item.message||item.status)}</li>`).join('')}</ul>${results.next_cursor!==null?'<button class="btn" data-scope-results>加载更多问题</button>':'<small>已显示全部问题记录</small>'}</div>`:'';
+    return `<section class="training-scope-plan" data-scope-plan><div class="row between"><b>已冻结人工审核清单 · ${Number(plan.selected_count||0)} 张</b><code>${htmlEscape(plan.task_id.slice(0,12))}</code></div><p>待补审 <strong>${pending}</strong> · 已成功 ${succeeded} · 失败 ${failed} · 需单张处理 ${blocked}。审核类别：${htmlEscape((plan.effective_label_codes||[]).join('、'))}</p>${(blocked||failed)?`${!results&&problems?`<details><summary>查看问题示例（最多15项）</summary><ul>${problems}</ul></details>`:''}${resultList||'<button class="btn" data-scope-results>查看全部失败及需逐张处理项</button>'}`:''}${pending?`<label class="training-scope-consent"><input type="checkbox" data-scope-consent>本人已实际核对本清单待补审图片，确认对应类别无漏标，并承担本次人工审核责任。此操作会写入正式 GT 审核证据，不能用 AI 未检出代替人工核对。</label><div class="row"><button class="btn primary" data-scope-run ${scopeReviewRunning?'disabled':''}>确认并${succeeded?'继续':'开始'}分批补审</button><button class="btn" data-scope-stop ${scopeReviewRunning?'':'disabled'}>当前批次后暂停</button></div>`:'<p class="training-scope-complete">冻结清单已处理完毕。失败和其他类型问题不会放行，创建训练前仍须重新预检。</p>'}<div data-scope-progress role="status">${scopeReviewRunning?'正在逐批核验正式 GT…':''}</div></section>`;
+  }
+  function updateScopePlanView(){
+    const root=document.querySelector('[data-training-compatibility-dialog]');
+    const host=root?.querySelector('[data-scope-plan-host]');
+    if(!host)return;
+    host.innerHTML=scopePlanMarkup();
+    host.querySelector('[data-scope-restore]')?.addEventListener('click',()=>restoreScopePlan());
+    host.querySelector('[data-scope-run]')?.addEventListener('click',()=>runScopePlan());
+    host.querySelector('[data-scope-results]')?.addEventListener('click',()=>loadScopePlanResults());
+    host.querySelector('[data-scope-stop]')?.addEventListener('click',()=>{
+      scopeReviewStop=true;
+      const progress=host.querySelector('[data-scope-progress]');
+      if(progress)progress.textContent='已请求暂停，当前最多 20 张处理结束后停止';
+    });
+  }
+  async function loadScopePlanResults(){
+    const saved=scopeReviewSaved,plan=scopeReviewPlan;if(!saved||!plan)return;
+    const current=scopeReviewResults?.taskId===saved.taskId?scopeReviewResults:null;
+    if(current&&current.next_cursor===null)return;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    try{
+      const cursor=current?.next_cursor||'0';
+      const page=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(saved.projectId)}/training-materials/review-scope-plans/${encodeURIComponent(saved.taskId)}/results?state=problems&cursor=${encodeURIComponent(cursor)}&limit=50`,
+        {signal}),'审核问题明细读取失败'),{timeoutMs:requestTimeoutMs,label:'读取人工补审问题'});
+      if(destroyed||!topOwns(anchor)||String(projectId()||'')!==saved.projectId
+          ||trainingCompatibilitySignature(currentDraft())!==saved.signature)return;
+      scopeReviewResults={taskId:saved.taskId,items:[...(current?.items||[]),...(page.items||[])],
+        next_cursor:page.next_cursor??null};updateScopePlanView();
+    }catch(error){notify(error.message||String(error))}
+  }
+  async function restoreScopePlan(){
+    const saved=scopeReviewSaved;if(!saved)return;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    try{
+      const plan=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(saved.projectId)}/training-materials/review-scope-plans/${encodeURIComponent(saved.taskId)}`,
+        {signal}),'审核任务进度读取失败'),{timeoutMs:requestTimeoutMs,label:'恢复人工补审'});
+      if(destroyed||!topOwns(anchor)||String(projectId()||'')!==saved.projectId
+          ||trainingCompatibilitySignature(currentDraft())!==saved.signature)return;
+      if(scopeReviewPlan?.task_id!==plan.task_id)scopeReviewResults=null;
+      scopeReviewPlan=plan;updateScopePlanView();
+    }catch(error){
+      if(String(error.message||'').includes('not found'))clearSavedScopePlan(saved.projectId);
+      notify(error.message||String(error));updateScopePlanView();
+    }
+  }
+  async function createScopePlan(){
+    if(historicalDiagnosis||!governanceContext||scopeReviewRunning)return false;
+    const context=governanceContext;
+    if(!governanceSelection?.count){notify('请先选择需要人工确认的训练问题素材');return false}
+    let selection;
+    try{selection=planTrainingScopeReviewSelection(governanceSelection,{query:compatibilityQuery,
+      issueType:compatibilityIssueType,missingLabelCode:compatibilityMissingLabelCode})}
+    catch(error){notify(error.message);return false}
+    const pid=String(projectId()||''),draft=currentDraft(),signature=trainingCompatibilitySignature(draft);
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    const button=anchor?.querySelector('[data-governance-plan]');if(button)button.disabled=true;
+    try{
+      const plan=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-scope-plans`,{
+          method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            ...compatibilityPayload(draft),selection,
+            expected_material_revision:context.truth.material_revision,
+            expected_annotation_revision:context.truth.annotation_revision,
+          }),
+        }),'冻结人工审核范围失败'),{timeoutMs:requestTimeoutMs,label:'冻结人工补审清单'});
+      if(destroyed||!topOwns(anchor)||String(projectId()||'')!==pid
+          ||trainingCompatibilitySignature(currentDraft())!==signature)return false;
+      scopeReviewPlan=plan;scopeReviewResults=null;saveScopePlan(pid,signature,plan.task_id);updateScopePlanView();
+      notify(`已冻结 ${plan.selected_count} 张训练问题素材：可补审 ${plan.pending} 张，其他问题 ${plan.blocked} 张；请核对后确认执行`);
+      return true;
+    }catch(error){notify(error.message||String(error));return false}
+    finally{if(button?.isConnected)button.disabled=false}
+  }
+  async function runScopePlan(){
+    const saved=scopeReviewSaved,plan=scopeReviewPlan;
+    if(!saved||!plan?.pending||scopeReviewRunning)return;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    if(!anchor?.querySelector('[data-scope-consent]')?.checked){notify('请先勾选本人已实际核对本清单的确认声明');return}
+    scopeReviewRunning=true;scopeReviewStop=false;updateScopePlanView();
+    const pid=saved.projectId,signature=saved.signature;
+    try{
+      while(!scopeReviewStop&&scopeReviewPlan?.pending&&String(projectId()||'')===pid
+          &&trainingCompatibilitySignature(currentDraft())===signature&&topOwns(anchor)){
+        const next=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+          `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-scope-plans/${encodeURIComponent(saved.taskId)}/execute`,{
+            method:'POST',signal,headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({confirmed:true,max_items:20}),
+          }),'人工补审批次执行失败'),{timeoutMs:requestTimeoutMs,label:'人工补审批次'});
+        if(next.pending>=scopeReviewPlan.pending&&next.step_processed)throw new Error('补审任务进度未前进，请重新查询任务状态');
+        scopeReviewPlan=next;scopeReviewResults=null;
+        if(!next.step_processed)break;
+        updateScopePlanView();
+      }
+      if(!scopeReviewPlan?.pending&&String(projectId()||'')===pid&&trainingCompatibilitySignature(currentDraft())===signature){
+        invalidate();await refresh(currentIds(),{force:true});
+        const next=await refreshCompatibility({force:true,query:compatibilityQuery,
+          issueType:compatibilityIssueType,missingLabelCode:compatibilityMissingLabelCode});
+        if(next&&anchor.isConnected&&topOwns(anchor))openCompatibilityIssues();
+        notify(`人工补审完成：成功 ${scopeReviewPlan.succeeded} 张，失败 ${scopeReviewPlan.failed} 张，其他问题 ${scopeReviewPlan.blocked} 张。训练准入仍须重新检查。`);
+      }else if(scopeReviewStop)notify('人工补审已暂停，进度已保存，可以稍后继续');
+    }catch(error){notify(`${error.message||String(error)}；已保存的任务可以重新查询和继续`)}
+    finally{scopeReviewRunning=false;scopeReviewStop=false;updateScopePlanView()}
+  }
+
   function governanceTools(truth, source='draft') {
     const decisionRevision=JSON.stringify([projectId(),truth.material_revision,truth.annotation_revision]);
     if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
-    const key=JSON.stringify([projectId(),source,compatibilityQuery,compatibilityIssueType,
+    const key=JSON.stringify([projectId(),source,compatibilityQuery,compatibilityIssueType,compatibilityMissingLabelCode,
       truth.material_revision,truth.annotation_revision,source==='draft'?trainingCompatibilitySignature(currentDraft()):'']);
     governanceContext={key,total:Number(truth.filtered_affected_image_count??truth.governance_eligible_count??0),allTotal:Number(truth.affected_image_count||0),rows:truth.items||[],truth,source};
     governanceSelection=updateTrainingGovernanceSelection(governanceSelection,governanceContext);
@@ -254,7 +481,13 @@ export function installTrainingMaterialSummaryRuntime({
         count:governanceRetainedTask.count,previous_execution_task_id:governanceRetainedTask.task_id};
       governanceRetainedTask=null;
     }
-    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>排除只调整当前训练草稿；删除会移除当前素材及 GT。整组删除无需保留项；历史证据保留，活动或共享图片物理字节延后保留。范围由服务端冻结并复验。</p><div data-governance-error role="alert" hidden></div></section>`;
+    if(source==='draft'){
+      const pid=String(projectId()||''),signature=trainingCompatibilitySignature(currentDraft());
+      if(scopeReviewSaved?.projectId!==pid||scopeReviewSaved?.signature!==signature)
+        scopeReviewSaved=readSavedScopePlan(pid,signature);
+      if(scopeReviewPlan?.task_id!==scopeReviewSaved?.taskId)scopeReviewPlan=null;
+    }
+    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn primary" data-governance-plan>人工补审 · 单张/批量/全部</button><button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>先选择一张、多张（可跨页）或全部待处理素材，再生成冻结审核清单。只有明确核对、具有合法正式 GT 且仅缺少审核类别的图片才能补审；其他问题需单张处理。补审结果会逐批保存，随时可暂停或恢复。本操作不排除素材，也不跳过训练最终准入检查。</p>${source==='draft'?`<div data-scope-plan-host>${scopePlanMarkup()}</div>`:''}<div data-governance-error role="alert" hidden></div></section>`;
   }
 
   function refreshGovernanceChecks() {
@@ -278,8 +511,9 @@ export function installTrainingMaterialSummaryRuntime({
     const sequence=diagnosticSequence,draftSignature=trainingCompatibilitySignature(currentDraft());
     const deletionContext=captureDeletionContext();
     const dialog=document.querySelector('[data-training-compatibility-dialog]')?.closest('[role="dialog"]');
-    const filters={query:compatibilityQuery,issueType:compatibilityIssueType};
+    const filters={query:compatibilityQuery,issueType:compatibilityIssueType,missingLabelCode:compatibilityMissingLabelCode};
     const body={...selected, query:compatibilityQuery,issue_type:compatibilityIssueType,
+      missing_label_code:compatibilityMissingLabelCode,
       expected_material_revision:context.truth.material_revision,
       expected_annotation_revision:context.truth.annotation_revision,manual_decisions:governanceDecisions,
       delete_mode:document.querySelector('[data-governance-delete-mode]')?.value||'DISCARD',
@@ -375,6 +609,7 @@ export function installTrainingMaterialSummaryRuntime({
       train_image_ids: uniqueIds(draft?.materialIds),
       test_image_ids: uniqueIds(draft?.testMaterialIds),
       train_labels: uniqueIds(draft?.newLabelCodes),
+      base_version_id: String(draft?.baseVersionId || ''),
       model: String(draft?.config?.model || 'yolo11n.pt'),
       framework: String(draft?.config?.framework || 'ultralytics'),
       experiment_percent: draft?.experimentPercent ?? 20,
@@ -384,6 +619,74 @@ export function installTrainingMaterialSummaryRuntime({
       limit: 50,
       ...overrides,
     };
+  }
+
+  function beforeModalClose(layer) {
+    if(negativeDialog?.node&&layer?.contains?.(negativeDialog.node))negativeDialog.finish(false,false);
+    if(negativeCheck?.root&&layer?.contains?.(negativeCheck.root))negativeCheck.controller.abort();
+  }
+  async function confirmPendingNegatives({draft=currentDraft(),root,isCurrent=()=>true}={}) {
+    // An insufficient selection cannot start training; the existing admission
+    // owner must report its materials/label blockers together.
+    const noReceipt={accepted:true,receiptIssued:false};
+    if(uniqueIds(draft?.materialIds).length<2)return noReceipt;
+    if(negativeCheck)throw new Error('负样本确认正在处理，请勿重复提交');
+    const controller=new AbortController(),pid=String(projectId()||''),payload=compatibilityPayload(draft);
+    const current=()=>!destroyed&&!controller.signal.aborted&&String(projectId()||'')===pid&&isCurrent();
+    negativeCheck={root,controller};
+    const post=(action,body)=>withRequestDeadline(async signal=>readJson(await fetchImpl(
+      `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/${action}`,{method:'POST',signal,
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),'负样本核验失败'),
+      {timeoutMs:requestTimeoutMs,signal:controller.signal,label:'负样本核验'});
+    try {
+      const preview=await post('negative-preview',payload);
+      if(!current())return false;
+      // Invalid/stale GT must use the existing diagnosis, never an absence assertion.
+      if(Number(preview.counts?.pending_review))return noReceipt;
+      if(!Number(preview.counts?.positive)&&Object.values(preview.counts||{}).some(Number)
+        &&preview.base_training_mode!=='previous_weights_init')throw new Error('首次训练必须包含所选目标的有效正样本；纯负样本仅支持已有模型继续训练。');
+      const requiresConfirmation=Number(preview.pending_count)>0||Number(preview.pending_scope_count)>0||Number(preview.coverage?.partial_coverage_count)>0;
+      if(!requiresConfirmation)return noReceipt;
+      if(typeof window.modal!=='function')throw new Error('负样本确认窗口不可用，请刷新后重试');
+      const accepted=await new Promise(resolve=>{
+        const layer=window.modal('确认本次训练样本',renderTrainingSampleConfirmation(preview),true);
+        const node=layer?.querySelector?.('[data-training-negative-confirmation]')||document.querySelector('[data-training-negative-confirmation]');
+        if(!node){resolve(false);return;}
+        const previousPage=node.querySelector('[data-negative-preview-prev]');
+        const nextPage=node.querySelector('[data-negative-preview-next]');
+        let previewOffset=Number(preview.preview_offset)||0,previewBusy=false;
+        const browse=async direction=>{
+          if(previewBusy||!current())return;
+          const target=Math.max(0,previewOffset+direction*20);
+          if(target>=Number(preview.pending_count)||target===previewOffset)return;
+          previewBusy=true;previousPage.disabled=true;nextPage.disabled=true;
+          try{
+            const next=await post('negative-preview',{...payload,preview_offset:target});
+            if(!current()||!node.isConnected)return;
+            if(next.proof_digest!==preview.proof_digest)throw new Error('素材或标注已变化，请返回重新确认');
+            previewOffset=target;
+            node.querySelector('[data-negative-preview-list]').innerHTML=negativePreviewFigures(next.pending_preview);
+            node.querySelector('[data-negative-preview-page]').textContent=`第 ${Math.floor(target/20)+1} / ${Math.ceil(Number(preview.pending_count)/20)} 页`;
+          }catch(error){if(node.isConnected)notify(error.message||String(error))}
+          finally{previewBusy=false;if(node.isConnected){previousPage.disabled=previewOffset===0;nextPage.disabled=previewOffset+20>=Number(preview.pending_count)}}
+        };
+        if(previousPage&&nextPage){previousPage.onclick=()=>void browse(-1);nextPage.onclick=()=>void browse(1)}
+        let settled=false;
+        const finish=(value,close=true)=>{if(settled)return;settled=true;negativeDialog=null;controller.signal.removeEventListener('abort',abort);if(close)window.closeModalLayer424?.(layer);resolve(value)};
+        const abort=()=>finish(false);negativeDialog={node,finish};controller.signal.addEventListener('abort',abort,{once:true});
+        node.querySelector('[data-negative-return]').onclick=()=>finish(false);
+        node.querySelector('[data-negative-confirm]').onclick=()=>finish(true);
+      });
+      if(!accepted||!current())return false;
+      // A review receipt and the eventual task must refer to exactly the same
+      // selection, inherited version and GT snapshot. No receipt is created for
+      // partial positive coverage alone, but the backend still checks the proof.
+      const confirmation=await post('confirm-negatives',{...payload,confirmed:true,proof_digest:preview.proof_digest});
+      if(!current())return false;
+      const receiptIssued=Number(confirmation.confirmed_count)>0;
+      if(receiptIssued){invalidate();await refresh(currentIds(),{force:true});}
+      return {accepted:current(),receiptIssued};
+    }finally{negativeDialog?.finish(false);negativeCheck=null;}
   }
 
   function compatibilityFor(draft = currentDraft()) {
@@ -403,8 +706,38 @@ export function installTrainingMaterialSummaryRuntime({
     return String(row?.display_name || row?.display_name_zh || row?.name || code || '');
   }
 
+  function pickerDraftPayload() {
+    const draft=currentDraft();
+    return {algorithm_asset_id:String(draft?.algorithmId||''),train_labels:uniqueIds(draft?.newLabelCodes),
+      model:String(draft?.config?.model||'yolo11n.pt'),framework:String(draft?.config?.framework||'ultralytics'),
+      base_version_id:String(draft?.baseVersionId||''),history_policy:String(draft?.history_policy||'new_for_algorithm'),
+      train_selection_ref:String(draft?.trainSelectionRef || '')};
+  }
+  function summaryRequestSignature(ids) {
+    const draft=pickerDraftPayload();
+    // summary_only is a formal-GT aggregate, independent of chosen task labels.
+    // Do not rescan 20k frozen IDs after every label checkbox change.
+    if(draft.train_selection_ref)delete draft.train_labels;
+    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),draft]);
+  }
+
+  // Formal positive GT codes are tied to the project and material selection,
+  // not the draft label choices. Preserve settled evidence while a label-only
+  // edit refreshes task-role counts. Submission readiness retains the full
+  // request signature above, and explicit GT invalidation clears this cache.
+  let settledLabelScope = '';
+  let settledPositiveCodes = null;
+  function labelScope(ids) {
+    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),
+      String(currentDraft()?.trainSelectionRef || '')]);
+  }
+  function labelCodesFor(ids = currentIds()) {
+    return settledPositiveCodes !== null && settledLabelScope === labelScope(ids)
+      ? [...settledPositiveCodes] : null;
+  }
+
   function summaryReadyFor(ids = currentIds()) {
-    return currentSignature === trainingMaterialSelectionSignature(ids) && Boolean(summary) && !pendingSignature;
+    return currentSignature === summaryRequestSignature(ids) && Boolean(summary) && !pendingSignature;
   }
 
   function summaryFor(ids = currentIds()) {
@@ -412,7 +745,7 @@ export function installTrainingMaterialSummaryRuntime({
   }
 
   function selectedLabelCodes(ids = currentIds()) {
-    return uniqueIds(summaryFor(ids)?.label_codes || []);
+    return uniqueIds(summaryFor(ids)?.positive_label_codes || []);
   }
 
   function decorateTrainingCreateUi() {
@@ -423,9 +756,10 @@ export function installTrainingMaterialSummaryRuntime({
     const labelElement = document.getElementById('tr429Labels');
     if (labelElement) {
       const baseLabels = labels.map(labelDisplay).filter(Boolean).join('、') || '无标签';
-      const labelText = !ids.length ? '—' : ready
-        ? `${baseLabels} · 可直接训练 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
-        : '读取中…';
+      const frozen=Boolean(currentDraft()?.trainSelectionRef);
+      const labelText = !ids.length && !frozen ? '—' : ready
+        ? `${frozen?'服务器冻结 · ':''}${baseLabels} · 正式标注 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
+        : lastError ? '标签读取失败 · 请重试' : '读取中…';
       setTextIfChanged(labelElement, labelText);
     }
 
@@ -434,14 +768,14 @@ export function installTrainingMaterialSummaryRuntime({
       const title = card.querySelector('span');
       const value = card.querySelector('b');
       if (title?.textContent?.trim() === '可选素材' && value) {
-        const totalText = summary ? String(Math.max(0, Number(summary.selectable_total || 0))) : '…';
+        const totalText = summary?.selectable_total == null ? '—' : String(Math.max(0, Number(summary.selectable_total || 0)));
         setTextIfChanged(value, totalText);
         if (value.dataset.serverTruth !== 'training-material-summary') {
           value.dataset.serverTruth = 'training-material-summary';
         }
       }
     }
-    const host = document.querySelector?.('.train429-data-summary');
+    const host = document.querySelector?.('.train429-data-summary') || document.querySelector?.('.train429-create .train-v3-summary')?.parentElement;
     if (host) {
       let row = host.querySelector?.('[data-training-compatibility-summary]');
       if (!row) {
@@ -451,13 +785,16 @@ export function installTrainingMaterialSummaryRuntime({
       }
       const truth = compatibilityFor();
       const count = Number(truth.affected_image_count ?? truth.issue_count ?? 0);
-      const nextHtml = truth.error
+      const sampleHtml=ready?renderTrainingSampleRoles(summary):'';
+      const nextHtml = sampleHtml + (truth.skipped && currentDraft()?.trainSelectionRef
+        ? '<span>训练输入检查</span><b>服务器冻结选择 · 任务提交后核验</b>'
+        : truth.error
         ? '<span>训练输入检查</span><b class="err">检查失败 · 可重试</b><button class="btn mini" type="button" data-training-compatibility-open>查看原因并重试</button>'
         : truth.loading || !truth.ready
-        ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':'点击开始训练后检查'}</b>`
+        ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':window.TrainingSubmitRuntime?.admissionMode==='background'?'提交后后台核验；不通过则停止':'点击开始训练后检查'}</b>`
         : count
           ? `<span>训练输入检查</span><b class="warn">${count} 张需处理</b><button class="btn mini" type="button" data-training-compatibility-open>查看并处理冲突</button>`
-          : '<span>标签适配</span><b>已通过</b>';
+          : '<span>标签适配</span><b>已通过</b>');
       if(row.dataset.compatibilityRenderKey!==nextHtml){row.dataset.compatibilityRenderKey=nextHtml;row.innerHTML=nextHtml;row.querySelector?.('[data-training-compatibility-open]')?.addEventListener?.('click', () => openCompatibilityIssues());}
     }
   }
@@ -474,7 +811,7 @@ export function installTrainingMaterialSummaryRuntime({
 
   async function refresh(ids = currentIds(), {force = false} = {}) {
     const normalizedIds = uniqueIds(ids);
-    const signature = trainingMaterialSelectionSignature(normalizedIds);
+    const signature = summaryRequestSignature(normalizedIds);
     if (!force && currentSignature === signature && summary) {
       queueDecorate();
       return summary;
@@ -487,6 +824,27 @@ export function installTrainingMaterialSummaryRuntime({
       summary = null;
       queueDecorate();
       return null;
+    }
+
+    if (!normalizedIds.length && !currentDraft()?.trainSelectionRef) {
+      // No selected GT exists yet. Keep a real zero-selection preview without
+      // starting a global material count or the iteration submission contract.
+      ++requestSequence;
+      activeController?.abort?.();
+      activeController = null;
+      pendingSignature = null;
+      currentSignature = signature;
+      lastError = '';
+      summary = {requested_count:0,matched_count:0,selectable_count:0,
+        eligible_count:0,pending_annotation_count:0,selectable_total:null,
+        eligible_total:null,pending_annotation_total:null,box_count:0,size_bytes:0,
+        label_codes:[],positive_label_codes:[],effective_label_codes:[],
+        sample_role_counts:null,label_counts:{},repository_revision:null};
+      settledLabelScope = labelScope(normalizedIds);
+      settledPositiveCodes = [];
+      queueDecorate();
+      window.TrainingLabelRuntime?.queueRefresh?.();
+      return summary;
     }
 
     const sequence = ++requestSequence;
@@ -502,7 +860,10 @@ export function installTrainingMaterialSummaryRuntime({
           method: 'POST',
           signal,
           headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
-          body: JSON.stringify({image_ids: normalizedIds}),
+          // The summary powers selected counts and label suggestions. Expensive
+          // task-role/negative scans belong to the on-demand role page or
+          // final worker admission, never this high-frequency picker summary.
+          body: JSON.stringify({...pickerDraftPayload(),image_ids: normalizedIds,summary_only:true}),
         },
       ),'训练素材摘要读取失败'),{timeoutMs:requestTimeoutMs,label:'训练素材摘要',signal:activeController.signal});
       if (destroyed || sequence !== requestSequence || String(projectId()||'')!==pid) return null;
@@ -514,15 +875,20 @@ export function installTrainingMaterialSummaryRuntime({
         selectable_count: Math.max(0, Number(body.selectable_count || 0)),
         eligible_count: Math.max(0, Number(body.eligible_count || 0)),
         pending_annotation_count: Math.max(0, Number(body.pending_annotation_count || 0)),
-        selectable_total: Math.max(0, Number(body.selectable_total || 0)),
-        eligible_total: Math.max(0, Number(body.eligible_total || 0)),
-        pending_annotation_total: Math.max(0, Number(body.pending_annotation_total || 0)),
+        selectable_total: body.selectable_total == null ? null : Math.max(0, Number(body.selectable_total)),
+        eligible_total: body.eligible_total == null ? null : Math.max(0, Number(body.eligible_total)),
+        pending_annotation_total: body.pending_annotation_total == null ? null : Math.max(0, Number(body.pending_annotation_total)),
         box_count: Math.max(0, Number(body.box_count || 0)),
         size_bytes: Math.max(0, Number(body.size_bytes || 0)),
         label_codes: uniqueIds(body.label_codes),
+        positive_label_codes: uniqueIds(body.positive_label_codes),
+        effective_label_codes: uniqueIds(body.effective_label_codes),
+        sample_role_counts: body.sample_role_counts || null,
         label_counts: body.label_counts && typeof body.label_counts === 'object' ? {...body.label_counts} : {},
         repository_revision: body.repository_revision ?? null,
       };
+      settledLabelScope = labelScope(normalizedIds);
+      settledPositiveCodes = [...summary.positive_label_codes];
       queueDecorate();
       window.TrainingLabelRuntime?.queueRefresh?.();
       return summary;
@@ -531,12 +897,14 @@ export function installTrainingMaterialSummaryRuntime({
       pendingSignature = null;
       lastError = String(error?.message || error || '训练素材摘要读取失败');
       queueDecorate();
+      window.TrainingLabelRuntime?.queueRefresh?.();
       notify(lastError);
       return null;
     }
   }
 
-  async function refreshCompatibility({force = false, payload = null, signal: externalSignal = null, query = '', issueType = '', page = 1, pageSize = 50} = {}) {
+  async function refreshCompatibility({force = false, payload = null, signal: externalSignal = null,
+    query = '', issueType = '', missingLabelCode = '', page = 1, pageSize = 50} = {}) {
     const draft = currentDraft();
     const signature = trainingCompatibilitySignature(draft || {});
     if (!draft?.algorithmId || !uniqueIds(draft?.materialIds).length) {
@@ -565,6 +933,7 @@ export function installTrainingMaterialSummaryRuntime({
       Object.assign(requestBody, {
         query,
         issue_type: issueType,
+        missing_label_code: missingLabelCode,
         page,
         page_size: pageSize,
       });
@@ -588,6 +957,7 @@ export function installTrainingMaterialSummaryRuntime({
       };
       compatibilityQuery = String(query || '');
       compatibilityIssueType = String(issueType || '');
+      compatibilityMissingLabelCode = String(missingLabelCode || '');
       compatibilityPage = Math.max(1, Number(body.page || page || 1));
       compatibilityPageSize = Math.max(1, Math.min(100, Number(body.page_size || pageSize || 50)));
       queueDecorate();
@@ -628,9 +998,11 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     if (!truth.ready) return void refreshCompatibility({force: true});
     const rows = truth.items || [];
     const issueTypes = Object.keys(truth.issue_counts || {});
+    const missingLabelOptions = uniqueIds(truth.effective_label_codes || []).map(code =>
+      `<option value="${htmlEscape(code)}" ${code===compatibilityMissingLabelCode?'selected':''}>${htmlEscape(code)}</option>`).join('');
     const offset = Math.max(0, (compatibilityPage - 1) * compatibilityPageSize);
     const tools=governanceTools(truth);
-    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${Number(truth.affected_image_count||0)} 张素材 · ${truth.issue_count} 条训练问题</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(ISSUE_NAMES[type]||type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选 ${Number(truth.filtered_affected_image_count||0)} 张 · ${Number(truth.filtered_count||0)} 条问题 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
+    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${Number(truth.affected_image_count||0)} 张素材 · ${truth.issue_count} 条训练问题</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(ISSUE_NAMES[type]||type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><select id="trainingCompatibilityMissingLabel" class="select" aria-label="按缺失审核类别筛选"><option value="">全部缺失类别</option>${missingLabelOptions}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选 ${Number(truth.filtered_affected_image_count||0)} 张 · ${Number(truth.filtered_count||0)} 条问题 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
     showDiagnosticDialog(Number(truth.duplicate_conflict_group_count||truth.duplicate_group_count||0)?'训练素材冲突诊断':'训练标签适配问题', `<div data-training-compatibility-dialog>${html}<div class="row end"><button class="btn" data-training-recheck>重新预检</button>${currentDraft()?.duplicateReview?'<button class="btn" data-training-undo-exclusions>撤销本次排除并重新检查</button>':''}<button class="btn" onclick="closeModal()">返回训练配置 · 保留草稿</button></div></div>`);
     bindDiagnosticActions();
     window.PlatformCore?.pagination?.mountPagination?.(
@@ -699,7 +1071,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       if(historicalDiagnosis)return openTaskDiagnosis(historicalDiagnosis.task_id);
       const controls=[...root.querySelectorAll('[data-governance-check],[data-governance-mode],[data-governance-preview],[data-conflict-delete],[data-training-recheck]')];
       const disabled=controls.map(control=>control.disabled);controls.forEach(control=>control.disabled=true);root.setAttribute('aria-busy','true');
-      const result=await refreshCompatibility({force:true,query:compatibilityQuery,issueType:compatibilityIssueType});
+      const result=await refreshCompatibility({force:true,query:compatibilityQuery,issueType:compatibilityIssueType,
+        missingLabelCode:compatibilityMissingLabelCode});
       if(result&&topOwns(root))openCompatibilityIssues();
       else if(root.isConnected){controls.forEach((control,index)=>control.disabled=disabled[index]);root.removeAttribute('aria-busy');}
     });
@@ -728,6 +1101,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       refreshGovernanceChecks();
     });
     root.querySelector('[data-governance-preview]')?.addEventListener('click',()=>previewGovernance());
+    root.querySelector('[data-governance-plan]')?.addEventListener('click',()=>createScopePlan());
+    updateScopePlanView();
     root.querySelector('[data-governance-exclude]')?.addEventListener('click',()=>excludeSelectedFromDraft());
     root.querySelectorAll('[data-conflict-review]').forEach(button=>{
       if(!comparison)return;
@@ -755,7 +1130,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   async function openDuplicateComparison(hash, page=1) {
     const pid=String(projectId()||'');
-    const origin=comparison?.origin||{query:compatibilityQuery,issueType:compatibilityIssueType,page:compatibilityPage,pageSize:compatibilityPageSize};
+    const origin=comparison?.origin||{query:compatibilityQuery,issueType:compatibilityIssueType,
+      missingLabelCode:compatibilityMissingLabelCode,page:compatibilityPage,pageSize:compatibilityPageSize};
     const sequence=++diagnosticSequence,sourceTask=historicalDiagnosis?.task_id;
     const draftSignature=trainingCompatibilitySignature(currentDraft());
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
@@ -789,7 +1165,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   async function openTaskDiagnosis(taskId,page=1) {
     const pid=String(projectId()||'');
-    if(historicalDiagnosis?.task_id!==taskId){compatibilityQuery='';compatibilityIssueType='';}
+    if(historicalDiagnosis?.task_id!==taskId){compatibilityQuery='';compatibilityIssueType='';compatibilityMissingLabelCode='';}
     const sequence=++diagnosticSequence;
     showDiagnosticDialog('训练输入冲突诊断','<div data-training-compatibility-dialog role="status">正在读取持久任务证据和当前正式标注…</div>');
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
@@ -814,6 +1190,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       force: true,
       query: compatibilityQuery,
       issueType: compatibilityIssueType,
+      missingLabelCode: compatibilityMissingLabelCode,
       page,
       pageSize: compatibilityPageSize,
     });
@@ -824,6 +1201,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   function applyIssueFilters() {
     compatibilityQuery = String(document.getElementById('trainingCompatibilityQuery')?.value || '').trim();
     compatibilityIssueType = String(document.getElementById('trainingCompatibilityType')?.value || '').trim();
+    compatibilityMissingLabelCode = String(document.getElementById('trainingCompatibilityMissingLabel')?.value || '').trim();
     return loadIssuePage(1);
   }
 
@@ -871,6 +1249,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     currentSignature = null;
     pendingSignature = null;
     summary = null;
+    settledLabelScope = '';
+    settledPositiveCodes = null;
     lastError = '';
     invalidateCompatibility();
     queueDecorate();
@@ -879,7 +1259,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   function syncSelection() {
     const ids = currentIds();
-    const signature = trainingMaterialSelectionSignature(ids);
+    const signature = summaryRequestSignature(ids);
     if (signature !== currentSignature && signature !== pendingSignature) void refresh(ids);
     else queueDecorate();
     const draft = currentDraft();
@@ -897,9 +1277,11 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-422606',
+    build: 'training-material-summary-runtime-4226482',
     refresh,
     refreshCompatibility,
+    confirmPendingNegatives,
+    beforeModalClose,
     invalidateCompatibility,
     compatibilityFor,
     openCompatibilityIssues,
@@ -921,9 +1303,11 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     onMaterialBatchCompleted,
     invalidate,
     summaryReadyFor,
+    labelCodesFor,
     summaryFor,
     selectedLabelCodes,
     decorateTrainingCreateUi,
+    pickerDraftPayload,
     state() {
       return {
         signature: currentSignature,
@@ -940,6 +1324,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       };
     },
     destroy() {
+      negativeCheck?.controller.abort();
       destroyed = true;
       deletionSessions.clear();
       activeController?.abort?.();

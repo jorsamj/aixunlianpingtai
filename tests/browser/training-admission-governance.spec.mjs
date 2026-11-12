@@ -30,6 +30,9 @@ function bmp(index){
   const w=16,h=16,b=Buffer.alloc(54+w*h*3,index+30);b.fill(0,0,54);b.write('BM');b.writeUInt32LE(b.length,2);b.writeUInt32LE(54,10);b.writeUInt32LE(40,14);b.writeInt32LE(w,18);b.writeInt32LE(h,22);b.writeUInt16LE(1,26);b.writeUInt16LE(24,28);return b;
 }
 async function fixture(page,request,{hold=false}={}){
+  // These tests explicitly cover synchronous foreground GT diagnostics;
+  // production's default is the separate background-admission route.
+  await page.addInitScript(()=>{window.MC_TRAIN_ADMISSION_MODE='synchronous'});
   const project=await(await request.post('/api/projects',{data:{name:`准入治理-${Date.now()}-${Math.random()}`,labels:[{code:'smoke',display_name:'香烟'}]}})).json();
   const asset=await(await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'香烟准入治理隔离算法',industry:'测试',algorithm_type:'yolo_ultralytics'}})).json();
   const images=[];
@@ -39,16 +42,24 @@ async function fixture(page,request,{hold=false}={}){
     if(i>=38){const ann=await request.post(`/api/projects/${project.id}/annotations/${image.id}`,{data:{boxes:[{id:`good-${i}`,class_id:0,label:'smoke',x1:1,y1:1,x2:8,y2:8}],annotation_state:'annotated',reviewed_label_codes:['smoke'],expected_version:image.annotation_version,source_content_sha256:image.content_sha256}});expect(ann.ok()).toBeTruthy();}
   }
   const ready=await request.post(`/api/v52/projects/${project.id}/images/mark-ready`,{data:{image_ids:images.map(x=>x.id)}});expect(ready.ok()).toBeTruthy();
+  // Empty GT is now explicitly confirmable as a task negative. This governance
+  // fixture must represent genuinely stale review evidence, not mere emptiness.
+  const roots=fs.readdirSync(os.tmpdir()).filter(name=>name.startsWith('xjalgo-browser-')).map(name=>path.join(os.tmpdir(),name)).filter(root=>fs.existsSync(path.join(root,'projects',project.id)));
+  expect(roots).toHaveLength(1);
+  execFileSync('python',['-c',`import app
+app.material_store(${JSON.stringify(project.id)}).patch({image_id:{'annotation_needs_review':True,'annotation_review_reason':'SOURCE_CONTENT_CHANGED'} for image_id in ${JSON.stringify(images.slice(0,38).map(x=>x.id))}})
+`],{encoding:'utf8',env:{...process.env,MC_TRAIN_DATA_DIR:roots[0],MC_PLATFORM_VERSION:'browser-test'}});
+
   await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:String(url)});});
   let release;const gate=new Promise(resolve=>{release=resolve});
   await page.route(`**/api/v62/projects/${project.id}/training-materials/compatibility`,async route=>{await gate;await route.continue();});
-  await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'gov-cpu',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}}));
+  await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'gov-cpu',status:'ready',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}}));
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
   await page.evaluate(({id,ids})=>window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,testMaterialIds:[],newLabelCodes:[],config:{model:'yolo11n.pt'}}),{id:asset.algorithm.id,ids:images.map(x=>x.id)});
   await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.summaryReadyFor())).toBe(true);
   await page.evaluate(({id,ids})=>{
     window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,testMaterialIds:[],newLabelCodes:[],config:{model:'yolo11n.pt'}});
-    state.targets=[{id:'gov-cpu',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}];
+    state.targets=[{id:'gov-cpu',status:'ready',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}];
     window.modal('创建训练任务',`<div class="train429-create"><input id="tr429TaskId" value="train_aaaaaaaaaaaaaaaaaaaa"><select id="tr429Target"><option value="gov-cpu">隔离调度资源</option></select><select id="tr429Alg"><option value="yolo_detect">测试引擎</option></select><div class="train429-data-summary"></div><div class="train428-footer"><button class="btn primary" onclick="void window.submitTrain429()">开始训练</button></div></div>`,true);
     window.TrainingSubmitRuntime.updateReadiness();
   },{id:asset.algorithm.id,ids:images.map(x=>x.id)});
@@ -63,7 +74,7 @@ test('38 real incompatible materials diagnose only after start and preserve the 
   const diagnostic=page.getByRole('dialog',{name:'训练暂不可开始',exact:true});
   await expect(diagnostic).toBeVisible();
   await expect(diagnostic).toContainText('38 张');
-  await expect(diagnostic).toContainText('缺少正式标注');
+  await expect(diagnostic).toContainText('38 张标注与当前图片不一致');
   const training=page.getByRole('dialog',{name:'创建训练任务',exact:true});await expect(training).toBeVisible();
   expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(40);
   await diagnostic.getByRole('button',{name:'返回训练配置',exact:true}).click();
@@ -124,7 +135,15 @@ test('project clear requires its exact name and a frozen impact confirmation bef
   const dialogs=[];page.on('dialog',async dialog=>{dialogs.push(dialog.message());await dialog.accept(dialog.type()==='prompt'?fx.project.name:undefined)});
   const task=await page.evaluate(()=>window.runMaterialBatch62('DELETE_INDEX',{scope:'PROJECT'}));
   expect(task.task_id).toBeTruthy();expect(dialogs).toHaveLength(2);expect(dialogs[0]).toContain(fx.project.name);expect(dialogs[1]).toContain('整个项目');expect(dialogs[1]).toContain('释放空间 0 字节');
+  // Worker completion precedes the browser's scheduled poll and paged results
+  // fetch. Observe both real responses before asserting the draft projection.
+  const taskPath=`/api/v62/projects/${fx.project.id}/material-batches/${task.task_id}`;
+  const terminalResponse=page.waitForResponse(async response=>
+    new URL(response.url()).pathname===taskPath&&response.ok()&&(await response.json()).status==='SUCCEEDED');
+  const resultsResponse=page.waitForResponse(response=>
+    new URL(response.url()).pathname===`${taskPath}/results`&&response.ok());
   runWorker(fx.project.id,task.task_id);
+  await Promise.all([terminalResponse,resultsResponse]);
   await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(0);
   expect((await(await request.post(`/api/v62/projects/${fx.project.id}/training-materials/selection-summary`,{data:{image_ids:fx.images.map(x=>x.id)}})).json()).matched_count).toBe(0);
   await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('.train428-footer .btn.primary')).toBeEnabled();
@@ -158,8 +177,10 @@ test('the normal dataset bulk toolbar exposes project clear without any administ
   await page.getByRole('dialog',{name:'训练暂不可开始',exact:true}).getByRole('button',{name:'返回训练配置',exact:true}).click();
   await page.getByRole('dialog',{name:'创建训练任务',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();
   await page.getByRole('button',{name:/数据集/}).click();
-  await page.getByRole('button',{name:'批量操作',exact:true}).click();
-  await expect(page.getByRole('button',{name:'清空项目素材库',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'更多操作',exact:true}).click();
+  const action=page.getByRole('menuitem',{name:'清空项目素材库',exact:true});await expect(action).toBeVisible();
+  await page.evaluate(()=>{window.__projectClearCall=null;window.runMaterialBatch62=(operation,options)=>{window.__projectClearCall={operation,options}}});
+  await action.click();expect(await page.evaluate(()=>window.__projectClearCall)).toEqual({operation:'DELETE_INDEX',options:{scope:'PROJECT'}});
 });
 
 test('a late accepted deletion never attaches its result to a replacement training draft',async({page,request})=>{

@@ -1,6 +1,8 @@
 """Primary annotation storage; legacy JSON is read only until an explicit update."""
 from __future__ import annotations
 
+from .performance_diagnostics import connect_sqlite, observe_connection
+
 import hashlib
 import json
 import sqlite3
@@ -119,6 +121,18 @@ class AnnotationLabelStateError(ValueError):
 
 
 class AnnotationRepository:
+    @classmethod
+    def open_readonly(cls, project_path: str | Path):
+        """Inspect existing canonical GT without creating or upgrading a registry."""
+        owner = cls.__new__(cls)
+        owner.project_path = Path(project_path)
+        owner.path = owner.project_path / "annotations.sqlite3"
+        owner._read_only = True
+        with closing(owner._connect()) as database:
+            if int(database.execute("PRAGMA user_version").fetchone()[0]) != _SCHEMA_VERSION:
+                raise ValueError("unsupported read-only annotation schema")
+        return owner
+
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
@@ -126,10 +140,14 @@ class AnnotationRepository:
         self._initialize()
 
     def _connect(self):
-        db = sqlite3.connect(self.path, timeout=30)
+        if getattr(self, "_read_only", False):
+            db = connect_sqlite(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+            db.row_factory = sqlite3.Row
+            return observe_connection(db)
+        db = connect_sqlite(self.path, timeout=30)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA busy_timeout=30000")
-        return db
+        return observe_connection(db)
 
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():
@@ -1145,10 +1163,17 @@ class AnnotationRepository:
             material_expectations = {}
             for row in rows:
                 image_id = self._id(row['image_id'])
+                scope = row.get('annotation_scope')
+                if row.get('review_evidence') and '*' in _normalize_scope(scope):
+                    # A new scoped human review must not perpetuate an unknown
+                    # historical wildcard as proof for every future task label.
+                    scope = sorted((set(_normalize_scope(scope)) - {'*'})
+                                   | set(_normalize_scope(row['review_evidence'].get('reviewed_label_codes')))
+                                   | {str(box.get('label') or box.get('code') or '') for box in row.get('boxes') or []})
                 prepared = self._content_payload(
                     row.get('boxes') or [],
                     row.get('annotation_state'),
-                    row.get('annotation_scope'),
+                    scope,
                 )
                 self._assert_active_annotation_payload(
                     prepared['boxes'], prepared['annotation_scope'],
@@ -1181,7 +1206,11 @@ class AnnotationRepository:
                 with closing(self._connect()) as db:
                     db.execute('BEGIN IMMEDIATE')
                     try:
+                        has_review_audit = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_negative_reviews'").fetchone())
                         for row, image_id, prepared in prepared_rows:
+                            current = (db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
+                                       if has_review_audit or row.get('expected_version') is not None else None)
+                            actual_version = int(current['version']) if current is not None else 0
                             expected_version = row.get('expected_version')
                             if expected_version is not None:
                                 expected_version = int(expected_version)
@@ -1189,17 +1218,31 @@ class AnnotationRepository:
                                     raise ValueError(
                                         'expected annotation version must be >= 0'
                                     )
-                                current = db.execute(
-                                    "SELECT version FROM annotations WHERE image_id=?",
-                                    (image_id,),
-                                ).fetchone()
-                                actual_version = (
-                                    int(current['version']) if current is not None else 0
-                                )
                                 if actual_version != expected_version:
                                     raise AnnotationConflictError(
                                         image_id, expected_version, actual_version
                                     )
+                            # A batch absence review proves this exact GT revision.
+                            # A later box edit must not silently carry that proof forward.
+                            admitted_material = admitted.get(image_id) or {}
+                            prior_source = str(admitted_material.get('annotation_source_content_sha256') or '')
+                            current_source = str(admitted_material.get('content_sha256') or '')
+                            source_changed = (admitted_material.get('annotation_review_reason') == 'SOURCE_CONTENT_CHANGED'
+                                              or bool(prior_source and current_source and prior_source != current_source))
+                            if current is not None and (current['boxes_json'] != prepared['boxes_payload'] or source_changed):
+                                if has_review_audit:
+                                    events = db.execute('SELECT reviewed_scope_json FROM annotation_negative_reviews WHERE image_id=? AND annotation_version<=?',
+                                                        (image_id, actual_version)).fetchall()
+                                    prior_absence = {code for event in events for code in json.loads(event[0])}
+                                    checked = set(_normalize_scope(row.get('reviewed_label_codes')))
+                                    present = {str(box.get('label') or box.get('code') or '') for box in prepared['boxes']}
+                                    revoked = prior_absence - checked - present
+                                    scope = set(json.loads(prepared['scope_payload']))
+                                    if revoked or ('*' in scope and events):
+                                        if '*' in scope:
+                                            scope = (scope - {'*'}) | present | checked
+                                        scope = sorted(scope - revoked)
+                                        prepared = self._content_payload(prepared['boxes'],prepared['annotation_state'],scope)
                             now = datetime.now(timezone.utc).isoformat()
                             db.execute(
                                 """INSERT INTO annotations
@@ -1234,6 +1277,23 @@ class AnnotationRepository:
                                 )
                             decoded = self._decode_persisted_row(persisted)
                             persisted_rows.append(decoded)
+                            evidence = row.get('review_evidence')
+                            if evidence:
+                                actor = str(evidence.get('actor_id') or '').strip()
+                                labels = _normalize_scope(evidence.get('reviewed_label_codes'))
+                                if not actor or not labels or '*' in labels or expected_version is None:
+                                    raise ValueError('review evidence requires actor, concrete labels and expected version')
+                                db.execute("""CREATE TABLE IF NOT EXISTS annotation_negative_reviews (
+                                    image_id TEXT NOT NULL, source_version INTEGER NOT NULL,
+                                    actor_id TEXT NOT NULL, reviewed_scope_json TEXT NOT NULL,
+                                    source_content_sha256 TEXT NOT NULL, annotation_version INTEGER NOT NULL,
+                                    annotation_digest TEXT NOT NULL, reviewed_at TEXT NOT NULL,
+                                    PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
+                                has_review_audit = True
+                                db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
+                                    (image_id, expected_version, actor, json.dumps(labels),
+                                     str(evidence.get('source_content_sha256') or ''), decoded['version'],
+                                     decoded['content_digest'], now))
                             material = admitted.get(image_id) or {}
                             projection = annotation_summary(
                                 decoded['boxes'], decoded['annotation_state'],
@@ -1277,7 +1337,7 @@ class AnnotationRepository:
     def upsert(
         self, image_id, boxes, annotation_state=None, annotation_scope=None,
         *, project_material: bool = True, expected_version=None,
-        source_content_sha256=None, annotation_origin=None,
+        source_content_sha256=None, annotation_origin=None, review_evidence=None, reviewed_label_codes=None,
     ):
         persisted = self.upsert_many([{
             'image_id': image_id,
@@ -1287,10 +1347,68 @@ class AnnotationRepository:
             'expected_version': expected_version,
             'source_content_sha256': source_content_sha256,
             'annotation_origin': annotation_origin,
+            'review_evidence': review_evidence,
+            'reviewed_label_codes': reviewed_label_codes,
         }], project_material=project_material, return_rows=True)
         if not persisted:
             raise RuntimeError("annotation upsert did not return a persisted row")
         return persisted[0]
+
+    def task_negative_confirmation_revision(self):
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_negative_confirmations'").fetchone():
+                return 0
+            return int(db.execute('SELECT COUNT(*) FROM task_negative_confirmations').fetchone()[0])
+
+    def task_negative_receipts(self, context_key, image_ids=None):
+        """Read additive task evidence without migrating or changing formal GT."""
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_negative_confirmations'").fetchone():
+                return []
+            ids = list(dict.fromkeys(str(i) for i in image_ids or []))
+            result = []
+            for offset in range(0, max(1, len(ids)), 500):
+                chunk = ids[offset:offset+500]
+                query = 'SELECT evidence_json FROM task_negative_confirmations WHERE context_key=?'
+                params = [context_key]
+                if chunk:
+                    query += " AND json_extract(evidence_json,'$.image_id') IN (" + ','.join('?' for _ in chunk) + ')'
+                    params.extend(chunk)
+                result.extend(json.loads(row[0]) for row in db.execute(query, params))
+            return result
+
+    def confirm_task_negatives(self, context_key, evidences, actor):
+        with closing(self._connect()) as db:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("CREATE TABLE IF NOT EXISTS task_negative_confirmations (receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)")
+                db.execute("CREATE INDEX IF NOT EXISTS task_negative_context_idx ON task_negative_confirmations(context_key)")
+                current_by_id = {}
+                ids = [self._id(e['image_id']) for e in evidences]
+                for offset in range(0, len(ids), 500):
+                    chunk = ids[offset:offset+500]
+                    current_by_id.update({str(r['image_id']): r for r in db.execute(
+                        'SELECT * FROM annotations WHERE image_id IN (' + ','.join('?' for _ in chunk) + ')', chunk)})
+                for evidence in evidences:
+                    image_id = self._id(evidence['image_id'])
+                    current = current_by_id.get(image_id)
+                    record = self._decode_persisted_row(current) if current else self._legacy_record(image_id)
+                    if (int(record.get('version') or 0) != evidence['annotation_version'] or
+                            str(record.get('content_digest') or '') != evidence['annotation_hash']):
+                        raise ValueError('标注已变化，请重新检查并确认')
+                    value = dict(evidence, actor=actor, confirmed_at=datetime.now(timezone.utc).isoformat())
+                    db.execute('INSERT OR IGNORE INTO task_negative_confirmations VALUES(?,?,?)',
+                               (evidence['receipt_id'], context_key, json.dumps(value, ensure_ascii=False, sort_keys=True)))
+        return [e['receipt_id'] for e in evidences]
+
+    def negative_review_evidence(self, image_id, source_version, actor_id, labels, source_hash):
+        """Audit lookup only; current GT remains the training authority."""
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_negative_reviews'").fetchone():
+                return None
+            row = db.execute('SELECT * FROM annotation_negative_reviews WHERE image_id=? AND source_version=? AND actor_id=? AND reviewed_scope_json=? AND source_content_sha256=?',
+                (self._id(image_id),int(source_version),str(actor_id),json.dumps(_normalize_scope(labels)),str(source_hash))).fetchone()
+            return dict(row) if row else None
 
     def exists(self, image_id) -> bool:
         image_id = self._id(image_id)

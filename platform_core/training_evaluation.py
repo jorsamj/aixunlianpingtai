@@ -293,6 +293,7 @@ def evaluate_blind_detection(
         "macro_average_class_count": len(scored),
     }
     error_samples: list[dict[str, Any]] = []
+    all_samples = []
     operating_predictions = [
         row for row in predictions if float(row["confidence"]) >= float(operating_conf)
     ]
@@ -334,6 +335,7 @@ def evaluate_blind_detection(
         # IoU-first pairing can disagree with _match_flags and hide true errors.
         matched_predictions: set[int] = set()
         matched_targets: set[int] = set()
+        match_pairs = {}
         for prediction_index in sorted(
             range(len(image_predictions)),
             key=lambda index: -float(image_predictions[index]["confidence"]),
@@ -351,54 +353,75 @@ def evaluate_blind_detection(
             if best_target >= 0:
                 matched_predictions.add(prediction_index)
                 matched_targets.add(best_target)
+                match_pairs[prediction_index] = (best_target, round(best_overlap, 6))
         fp = [row for index, row in enumerate(image_predictions) if index not in matched_predictions]
         fn = [row for index, row in enumerate(image_targets) if index not in matched_targets]
-        if fp or fn:
-            width, height = dimensions[image_name]
-            error_samples.append({
-                "image": image_name,
-                "image_id": image_path.stem,
-                "image_width": width,
-                "image_height": height,
-                "fp_count": len(fp),
-                "fn_count": len(fn),
-                "fp_labels": sorted({_label_name(names, int(row["class_id"])) for row in fp}),
-                "fn_labels": sorted({_label_name(names, int(row["class_id"])) for row in fn}),
-                # Keep lightweight per-image evidence until severity ranking.
-                # Only the top 200 images need costly box serialization.
-                "_matched_predictions": sorted(matched_predictions),
-                "_matched_targets": sorted(matched_targets),
-            })
-    # The old first-200 traversal hid later, more serious failures and reported
-    # a false total. Keep all counts, persist only a bounded severity-ranked view.
-    error_sample_count = len(error_samples)
-    error_samples.sort(key=lambda row: (-row["fn_count"], -row["fp_count"], row["image"]))
-    error_samples = error_samples[:200]
-    def evidence_box(row: Mapping[str, Any], matched: bool, kind: str) -> dict[str, Any]:
-        return {
-            "class_id": int(row["class_id"]),
-            "label": _label_name(names, int(row["class_id"])),
-            "box": [round(float(value), 3) for value in row["box"]],
-            "matched": bool(matched),
-            "kind": kind,
-            **({"confidence": round(float(row["confidence"]), 6)} if kind == "prediction" else {}),
-        }
-    for sample in error_samples:
-        name = sample["image"]
+        width, height = dimensions[image_name]
         digest = hashlib.sha256()
-        with (image_root / name).open('rb') as image_file:
+        with image_path.open('rb') as image_file:
             for chunk in iter(lambda: image_file.read(1024 * 1024), b''):
                 digest.update(chunk)
-        sample['image_content_sha256'] = digest.hexdigest()
-        pred = predictions_by_image.get(name, [])
-        truth = targets_by_image.get(name, [])
-        matched_pred = set(sample.pop("_matched_predictions"))
-        matched_gt = set(sample.pop("_matched_targets"))
-        sample["pred_boxes"] = [evidence_box(row, index in matched_pred, "prediction")
-                                for index, row in enumerate(pred[:120])]
-        sample["gt_boxes"] = [evidence_box(row, index in matched_gt, "ground_truth")
-                              for index, row in enumerate(truth[:120])]
-        sample["boxes_truncated"] = len(pred) > 120 or len(truth) > 120
+        gt_digest = hashlib.sha256(json.dumps(
+            sorted([[int(row['class_id']), *[float(v) for v in row['box']]]
+                    for row in image_targets]), separators=(',', ':'), allow_nan=False,
+        ).encode('utf-8')).hexdigest()
+        sample = {
+            'image': image_name, 'image_id': image_path.stem,
+            'image_content_sha256': digest.hexdigest(), 'ground_truth_digest': gt_digest,
+            'image_width': width, 'image_height': height,
+            'tp_count': len(matched_predictions), 'fp_count': len(fp), 'fn_count': len(fn),
+            'fp_labels': sorted({_label_name(names, int(row['class_id'])) for row in fp}),
+            'fn_labels': sorted({_label_name(names, int(row['class_id'])) for row in fn}),
+            '_pairs': match_pairs,
+        }
+        all_samples.append(sample)
+        if fp or fn:
+            error_samples.append(sample)
+    error_sample_count = len(error_samples)
+    error_samples.sort(key=lambda row: (-row['fn_count'], -row['fp_count'], row['image']))
+    error_samples = error_samples[:200]
+    selected = error_samples + [row for row in all_samples if not row['fp_count'] and not row['fn_count']][:200-len(error_samples)]
+    sample_evidence = []
+    for sample in selected:
+        pred = predictions_by_image.get(sample['image'], [])
+        truth = targets_by_image.get(sample['image'], [])
+        pairs = sample['_pairs']
+        reverse = {target: (prediction, overlap) for prediction, (target, overlap) in pairs.items()}
+        def evidence_box(row, index, kind):
+            pair = pairs.get(index) if kind == 'prediction' else reverse.get(index)
+            tags = []
+            if kind == 'prediction' and pair is None:
+                for target_index, target in enumerate(truth):
+                    overlap = _iou(row['box'], target['box'])
+                    same = int(row['class_id']) == int(target['class_id'])
+                    if overlap >= .5:
+                        tags.append('duplicate' if same and target_index in reverse else 'wrong_class' if not same else '')
+                    elif same and overlap > 0:
+                        tags.append('localization')
+            return {
+                'class_id': int(row['class_id']), 'label': _label_name(names, int(row['class_id'])),
+                'box': [round(float(value), 3) for value in row['box']],
+                'kind': kind, 'matched': pair is not None,
+                'prediction_index': index if kind == 'prediction' else pair[0] if pair else None,
+                'target_index': index if kind == 'ground_truth' else pair[0] if pair else None,
+                'matched_iou': pair[1] if pair else None,
+                'diagnostic_tags': sorted(set(tag for tag in tags if tag)),
+                **({'confidence': round(float(row['confidence']), 6)} if kind == 'prediction' else {}),
+            }
+        evidence = {key: value for key, value in sample.items() if not key.startswith('_')}
+        evidence['pred_boxes'] = [evidence_box(row, index, 'prediction') for index, row in enumerate(pred[:120])]
+        evidence['gt_boxes'] = [evidence_box(row, index, 'ground_truth') for index, row in enumerate(truth[:120])]
+        evidence['boxes_truncated'] = len(pred) > 120 or len(truth) > 120
+        evidence['evidence_complete'] = not evidence['boxes_truncated']
+        evidence['diagnostic_tags'] = sorted({tag for box in evidence['pred_boxes'] for tag in box['diagnostic_tags']})
+        sample_evidence.append(evidence)
+    evidence_by_name = {row['image']: row for row in sample_evidence}
+    sample_outcomes = []
+    for sample in all_samples:
+        sample.pop('_pairs')
+        sample['evidence_complete'] = evidence_by_name.get(sample['image'], {}).get('evidence_complete', False)
+        sample_outcomes.append(dict(sample))
+    error_samples = [evidence_by_name[row['image']] for row in error_samples]
 
     weak_label_threshold = 0.75
     confidence_curves = []
@@ -435,6 +458,8 @@ def evaluate_blind_detection(
         "weak_labels": weak_labels[:100],
         "error_samples": error_samples,
         "error_sample_count": error_sample_count,
+        "sample_outcomes": sample_outcomes,
+        "sample_evidence": sample_evidence,
         "confusion_matrix": {
             'protocol': 'confidence_first_class_agnostic_iou_0.5',
             'operating_conf': float(operating_conf),
@@ -647,6 +672,103 @@ def build_evaluation_benchmark_scope(
     return {**identity, "scope_id": scope_id}
 
 
+def _normalize_sample_evidence(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate optional complete outcome index and bounded visual evidence without inference."""
+    if 'sample_outcomes' not in raw and 'sample_evidence' not in raw:
+        return {}
+    def count(value, field):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError('sample evidence requires nonnegative integer ' + field)
+        return value
+    outcomes = raw.get('sample_outcomes')
+    evidence = raw.get('sample_evidence', [])
+    if not isinstance(outcomes, list) or len(outcomes) != count(raw.get('image_count'), 'image_count'):
+        raise ValueError('sample_outcomes must cover image_count')
+    if not isinstance(evidence, list) or len(evidence) > 200:
+        raise ValueError('sample_evidence exceeds bound')
+    normalized = []
+    by_identity = {}
+    image_ids = set()
+    for row in outcomes:
+        if not isinstance(row, Mapping):
+            raise ValueError('invalid sample outcome')
+        image, image_id = str(row.get('image') or ''), str(row.get('image_id') or '')
+        if not image or Path(image).name != image or not image_id or image in by_identity or image_id in image_ids:
+            raise ValueError('sample image identity is missing or ambiguous')
+        entry = {'image': image, 'image_id': image_id}
+        for key in ('image_content_sha256', 'ground_truth_digest'):
+            entry[key] = _sha256_identity(row.get(key), key)
+            if not entry[key]:
+                raise ValueError('sample identity digest is missing')
+        for key in ('image_width', 'image_height', 'tp_count', 'fp_count', 'fn_count'):
+            entry[key] = count(row.get(key), key)
+        if not entry['image_width'] or not entry['image_height']:
+            raise ValueError('sample dimensions must be positive')
+        for key in ('fp_labels', 'fn_labels'):
+            entry[key] = [str(value)[:1000] for value in row.get(key, [])][:100]
+        entry['evidence_complete'] = row.get('evidence_complete') is True
+        normalized.append(entry)
+        by_identity[image] = entry
+        image_ids.add(image_id)
+    clean_evidence, seen = [], set()
+    for row in evidence:
+        if not isinstance(row, Mapping) or row.get('image') not in by_identity or row['image'] in seen:
+            raise ValueError('sample evidence identity is unknown or duplicated')
+        base = by_identity[row['image']]
+        for key in ('image_id', 'image_content_sha256', 'ground_truth_digest', 'image_width', 'image_height', 'tp_count', 'fp_count', 'fn_count'):
+            if row.get(key) != base[key]:
+                raise ValueError('sample evidence does not match outcome ' + key)
+        entry = dict(base)
+        truncated = row.get('boxes_truncated') is True
+        entry['boxes_truncated'] = truncated
+        entry['evidence_complete'] = row.get('evidence_complete') is True and not truncated
+        if entry['evidence_complete'] != base['evidence_complete']:
+            raise ValueError('sample completeness does not match outcome')
+        for key, kind, total in (('pred_boxes', 'prediction', base['tp_count'] + base['fp_count']),
+                                 ('gt_boxes', 'ground_truth', base['tp_count'] + base['fn_count'])):
+            boxes = row.get(key)
+            if not isinstance(boxes, list) or len(boxes) > min(120, total):
+                raise ValueError('sample box evidence count exceeds outcome')
+            if entry['evidence_complete'] and len(boxes) != total:
+                raise ValueError('complete sample evidence is missing boxes')
+            clean, indices = [], set()
+            for box in boxes:
+                if not isinstance(box, Mapping):
+                    raise ValueError('invalid sample box')
+                coords = box.get('box')
+                if not isinstance(coords, (list, tuple)) or len(coords) != 4 or not all(math.isfinite(float(v)) for v in coords):
+                    raise ValueError('invalid sample box coordinates')
+                item = {'class_id': count(box.get('class_id'), 'class_id'), 'label': str(box.get('label') or '')[:1000],
+                        'box': [round(float(v), 3) for v in coords], 'kind': kind,
+                        'matched': box.get('matched') if isinstance(box.get('matched'), bool) else None}
+                for index_key, limit in (('prediction_index', base['tp_count'] + base['fp_count']), ('target_index', base['tp_count'] + base['fn_count'])):
+                    value = box.get(index_key)
+                    item[index_key] = count(value, index_key) if value is not None else None
+                    if value is not None and value >= limit:
+                        raise ValueError('sample box reference out of range')
+                own = item['prediction_index' if kind == 'prediction' else 'target_index']
+                if own is None or own in indices:
+                    raise ValueError('sample box reference missing or duplicated')
+                indices.add(own)
+                overlap = box.get('matched_iou')
+                if overlap is not None and (not math.isfinite(float(overlap)) or not 0 <= float(overlap) <= 1):
+                    raise ValueError('invalid matched IoU')
+                item['matched_iou'] = round(float(overlap), 6) if overlap is not None else None
+                if item['matched'] is True and (None in (item['prediction_index'], item['target_index'], overlap) or overlap < .5):
+                    raise ValueError('matched sample box requires formal match references')
+                item['diagnostic_tags'] = sorted(set(tag for tag in box.get('diagnostic_tags', []) if tag in ('duplicate', 'wrong_class', 'localization', 'low_confidence')))
+                if kind == 'prediction':
+                    item['confidence'] = round(min(1., max(0., _finite(box.get('confidence')))), 6)
+                clean.append(item)
+            entry[key] = clean
+        entry['diagnostic_tags'] = sorted({tag for box in entry['pred_boxes'] for tag in box['diagnostic_tags']})
+        clean_evidence.append(entry)
+        seen.add(row['image'])
+    if any(row['evidence_complete'] and row['image'] not in seen for row in normalized):
+        raise ValueError('complete outcome has no box evidence')
+    return {'sample_outcomes': normalized, 'sample_evidence': clean_evidence}
+
+
 def build_evaluation_truth(
     result: Mapping[str, Any] | None,
     *,
@@ -656,6 +778,7 @@ def build_evaluation_truth(
     model_sha256: Any = "",
     finished_at: Any = "",
     benchmark_scope: Mapping[str, Any] | None = None,
+    historical_independence: str | None = None,
 ) -> dict[str, Any]:
     """Normalize one post-training blind-test result into version-owned truth."""
     raw = dict(result) if isinstance(result, Mapping) else {}
@@ -751,7 +874,7 @@ def build_evaluation_truth(
                     "class_id": int(item.get("class_id") or 0),
                     "label": str(item.get("label") or "")[:100],
                     "box": [round(x, 3) for x in numbers],
-                    "matched": item.get("matched") is True,
+                    "matched": item.get("matched") if isinstance(item.get("matched"), bool) else None,
                     "kind": kind,
                 }
                 if kind == "prediction":
@@ -863,6 +986,11 @@ def build_evaluation_truth(
         "evaluation_protocol_id": evaluation_protocol_id,
         **({"benchmark_scope": scope} if scope else {}),
     }
+    if historical_independence is not None:
+        if historical_independence not in {'verified_independent', 'assumed_unseen', 'known_exposed', 'unavailable'}:
+            raise ValueError('evaluation historical independence is invalid')
+        identity['historical_independence'] = historical_independence
+    identity.update(_normalize_sample_evidence(raw))
     # Optional vNext evidence. Old reports remain honest missing-data states.
     matrix = raw.get('confusion_matrix')
     if isinstance(matrix, Mapping) and matrix.get('protocol') == 'confidence_first_class_agnostic_iou_0.5':
@@ -949,6 +1077,7 @@ def build_training_metric_credibility(
         and benchmark.get("binding_level") in {"snapshot_truth", "bundle_verified"}
         else "unavailable"
     )
+    historical_independence = str(test.get('historical_independence') or 'unavailable')
     is_high_val = val_map is not None and val_map >= 0.95
     gap = (
         round(val_map - test_map, 6)
@@ -963,6 +1092,9 @@ def build_training_metric_credibility(
             reasons.append(reason)
         if action not in actions:
             actions.append(action)
+
+    if test_status == 'succeeded' and historical_independence == 'assumed_unseen':
+        flag('test_historical_independence_assumed', 'review_training_history_coverage')
 
     if is_high_val:
         if test_status != "succeeded":
@@ -1043,7 +1175,7 @@ def build_training_metric_credibility(
     # leakage or model accuracy. Even complete held-out evidence does not
     # verify business event precision or out-of-distribution generalization.
     status = (
-        "review_required" if is_high_val and reasons
+        "review_required" if reasons and (is_high_val or historical_independence == 'assumed_unseen')
         else "held_out_evidence_present" if is_high_val
         else "val_metric_unavailable" if val_map is None
         else "not_high_val_trigger"
@@ -1061,6 +1193,7 @@ def build_training_metric_credibility(
         # One server-owned, persisted evidence level for every report UI.
         # The browser never infers a binding from a high Test mAP score.
         "independent_test_binding_level": binding_level,
+        "historical_independence": historical_independence,
         "test_image_count": count(test.get("image_count")),
         "high_val_threshold": 0.95,
         "val_test_gap_review_threshold": 0.10,
@@ -1280,6 +1413,9 @@ def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> di
             reasons.append('benchmark_scope_mismatch')
     if source_scope.get('binding_level') != 'bundle_verified' or new_scope.get('binding_level') != 'bundle_verified':
         reasons.append('benchmark_input_binding_missing')
+    if any(value.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}
+           for value in (source, new)):
+        reasons.append('benchmark_historical_independence_unverified')
     if not source.get('evaluation_protocol_id') or source.get('evaluation_protocol_id') != new.get('evaluation_protocol_id'):
         reasons.append('evaluation_protocol_mismatch')
     if reasons:
@@ -1407,6 +1543,9 @@ def build_feedback_adoption_outcome(
             )
         ):
             comparison_reasons.append("benchmark_input_binding_missing")
+        if any(value.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}
+               for value in (source, new)):
+            comparison_reasons.append('benchmark_historical_independence_unverified')
         if not source_protocol_id or not new_protocol_id:
             comparison_reasons.append("evaluation_protocol_missing")
         elif source_protocol_id != new_protocol_id:

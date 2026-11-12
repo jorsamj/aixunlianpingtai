@@ -101,6 +101,68 @@ def shlex_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def classify_sophon_deploy_failure(error: Exception, *, reference_available: bool) -> ConversionError:
+    """Do not label every model_deploy failure a numerical disagreement.
+
+    TPU-MLIR can fail before its comparison step (unsupported op, compiler error,
+    timeout, etc.). The raw compiler output stays in convert.log; only an
+    explicit comparison failure is reported as a numerical mismatch.
+    """
+    if isinstance(error, subprocess.TimeoutExpired):
+        return ConversionError(
+            "SOPHON_DEPLOY_TIMEOUT", "算能 BMODEL 编译或验证超时，未发布产物",
+            solution="请查看转换日志确认超时阶段，检查模型复杂度和编译资源后再重试。",
+        )
+    detail = str(error).lower()
+    numeric_failure = (
+        "f32_blobs_compare" in detail
+        or "comparison mismatch" in detail
+        or "compare result is false" in detail
+        or "compare failed" in detail
+        or ("npz_tool" in detail and "compare" in detail
+            and any(flag in detail for flag in ("not pass", "failed", "mismatch", "error")))
+    )
+    if reference_available and numeric_failure:
+        return ConversionError(
+            "SOPHON_OFFLINE_REFERENCE_FAILED", "算能官方数值对照未通过，已拒绝发布 BMODEL",
+            solution="请查看 model_deploy 比较日志，定位不一致的输出及容差；不得直接跳过数值校验。",
+        )
+    return ConversionError(
+        "SOPHON_DEPLOY_FAILED", "算能 BMODEL 编译或验证命令执行失败，尚不能判定为数值不一致",
+        solution="请查看 model_deploy 原始日志的异常和退出码，检查算子、SDK 参数及运行资源。",
+    )
+
+
+RKNN_FAILURE_STAGES = {
+    "RKNN_CONFIG_FAILED": ("配置", "请核对目标芯片、输入通道顺序、Mean/Std 参数。"),
+    "RKNN_LOAD_ONNX_FAILED": ("加载 ONNX", "请查看不支持的算子、ONNX opset 和模型输入形状。"),
+    "RKNN_BUILD_FAILED": ("编译", "请查看 RKNN-Toolkit2 编译和量化日志，检查算子及校准数据。"),
+    "RKNN_EXPORT_FAILED": ("导出", "请检查输出路径、权限及磁盘空间。"),
+}
+
+
+def classify_rknn_conversion_failure(error: Exception) -> ConversionError:
+    """Translate the isolated RKNN interpreter's stable stage markers."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return ConversionError(
+            "RKNN_CONVERSION_TIMEOUT", "瑞芯微 RKNN 编译超时，未生成可用产物",
+            solution="请查看转换日志，核对模型复杂度、量化数据与转换节点资源。",
+        )
+    detail = str(error)
+    if RKNN_ONNX_DEPENDENCY_CODE in detail:
+        return ConversionError(
+            RKNN_ONNX_DEPENDENCY_CODE, "RKNN 转换环境 ONNX 依赖不兼容",
+            solution="请在配置的 RKNN Python 环境核对 ONNX 与 RKNN-Toolkit2 的官方兼容版本。",
+        )
+    for code, (stage, solution) in RKNN_FAILURE_STAGES.items():
+        if f"__RKNN_STAGE_ERROR__={code}" in detail:
+            return ConversionError(code, f"瑞芯微 RKNN {stage}阶段失败，尚不能判定为数值不一致", solution=solution)
+    return ConversionError(
+        "RKNN_CONVERSION_FAILED", "瑞芯微 RKNN 转换命令执行失败，尚不能判定为数值不一致",
+        solution="请查看 RKNN-Toolkit2 原始日志及退出码，检查转换环境与目标模型兼容性。",
+    )
+
+
 def safe_name(s: str) -> str:
     out = ''.join(c if c.isalnum() or c in '._-' else '_' for c in s)
     return out.strip('._') or 'model'
@@ -131,20 +193,50 @@ def export_pt_to_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], par
     simplify = bool(params.get('simplify', False))
     batch = max(1, int(params.get('batch') or 1))
     half = params.get('kind') == 'onnx' and params.get('precision') == 'fp16'
+    # A resumed attempt must not inherit class names from an older exporter.
+    (out_dir / 'pt_export_class_names.json').unlink(missing_ok=True)
+    candidates_before = {
+        candidate.resolve(): (candidate.stat().st_mtime_ns, candidate.stat().st_size)
+        for candidate in source.parent.glob(source.stem + '*.onnx') if candidate.is_file()
+    }
     script = (
-        "import sys; from pathlib import Path; from ultralytics import YOLO; "
+        "import sys,json; from pathlib import Path; from ultralytics import YOLO; "
         "p=Path(sys.argv[1]).resolve(strict=True); m=YOLO(str(p)); "
-        f"print(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half}))"
+        "print('__CONVERSION_PT_NAMES__='+json.dumps(m.names,ensure_ascii=False)); "
+        f"print('__CONVERSION_ONNX_PATH__='+str(Path(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half})).resolve()))"
     )
-    run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
-    candidates = [source.with_suffix('.onnx')]
-    candidates += sorted(source.parent.glob(source.stem + '*.onnx'), key=lambda x: x.stat().st_mtime, reverse=True)
-    exported = next((p for p in candidates if p.exists()), None)
-    if not exported:
-        raise RuntimeError('Ultralytics 命令执行结束，但没有找到导出的 .onnx 文件。')
+    stdout = run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
+    name_lines = [line.split('__CONVERSION_PT_NAMES__=', 1)[1].strip()
+                  for line in (stdout or '').splitlines() if '__CONVERSION_PT_NAMES__=' in line]
+    if name_lines:
+        try:
+            names = json.loads(name_lines[-1])
+            if not isinstance(names, (dict, list)):
+                raise ValueError('invalid class names')
+            write_json(out_dir / 'pt_export_class_names.json', names)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError('Ultralytics 导出器返回的类别身份无法解析') from error
+    markers = [line.split('__CONVERSION_ONNX_PATH__=', 1)[1].strip()
+               for line in (stdout or '').splitlines() if '__CONVERSION_ONNX_PATH__=' in line]
+    if markers:
+        exported = Path(markers[-1]).resolve()
+        if (exported.suffix.lower() != '.onnx' or exported.parent != source.parent.resolve()
+                or not exported.name.startswith(source.stem) or not exported.is_file()):
+            raise RuntimeError('Ultralytics 返回的本次 ONNX 产物路径与冻结源模型不匹配')
+        if (exported.stat().st_mtime_ns, exported.stat().st_size) == candidates_before.get(exported):
+            raise RuntimeError('本次 ONNX 导出未更新已有同名产物，拒绝冒用旧文件')
+    else:
+        # Some isolated/mocked exporters cannot return a path. Their fallback
+        # must still prove a fresh artifact; never silently reuse a stale file.
+        changed = [path.resolve() for path in source.parent.glob(source.stem + '*.onnx')
+                   if path.is_file() and (path.stat().st_mtime_ns, path.stat().st_size)
+                   != candidates_before.get(path.resolve())]
+        if len(changed) != 1:
+            raise RuntimeError('无法唯一确认本次导出的 ONNX；拒绝复用旧产物')
+        exported = changed[0]
     dst = out_dir / f'{safe_name(source.stem)}.onnx'
     shutil.copy2(exported, dst)
-    append_log(log_file, f'ONNX 已生成：{dst}')
+    append_log(log_file, f'ONNX 已生成：{dst}；SHA256={sha256_file(dst)}')
     return dst
 
 
@@ -207,13 +299,27 @@ def paddle_inference_to_onnx(model_dir: Path, out_dir: Path, resource: Dict[str,
 
 
 def prepare_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], log_file: Path) -> Path:
+    from platform_core.color_adapter import adapt_onnx_color_input
+    from platform_core.onnx_topology import repair_onnx_topology
+
     ext = source.suffix.lower()
     if ext in {'.pt', '.pth', '.onnx'}:
-        return export_pt_to_onnx(source, out_dir, resource, params, log_file)
-    if ext in {'.pdparams', '.pdmodel', '.pdiparams'}:
+        original = export_pt_to_onnx(source, out_dir, resource, params, log_file)
+    elif ext in {'.pdparams', '.pdmodel', '.pdiparams'}:
         inf = export_paddle_inference(source, out_dir, resource, params, log_file)
-        return paddle_inference_to_onnx(inf, out_dir, resource, params, log_file)
-    raise RuntimeError(f'当前源模型格式 {ext} 暂不能转换为 ONNX。')
+        original = paddle_inference_to_onnx(inf, out_dir, resource, params, log_file)
+    else:
+        raise RuntimeError(f'当前源模型格式 {ext} 暂不能转换为 ONNX。')
+    checked, topology_evidence = repair_onnx_topology(original, out_dir)
+    params['onnx_topology_evidence'] = topology_evidence
+    if topology_evidence['applied']:
+        append_log(log_file, f"ONNX 仅调整节点拓扑顺序：{topology_evidence['moved_nodes']} 个节点变更位置；原始导出文件保留。")
+    converted, evidence = adapt_onnx_color_input(checked, out_dir, params)
+    params['color_adapter_evidence'] = evidence
+    if evidence.get('applied'):
+        append_log(log_file, '颜色适配生效：' + evidence['source_color_order'].upper()
+                   + ' → ' + evidence['input_color_order'].upper() + '；ONNX Runtime数值等价验证通过。')
+    return converted
 
 
 def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[str, Any]):
@@ -253,19 +359,24 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
 
 
 def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Path, *, expected_precision: str | None = None) -> Dict[str, Any]:
+    stage = 'dependencies'
     try:
         import numpy as np
         import onnx
         import onnxruntime as ort
 
+        stage = 'read_onnx'
         model = onnx.load(str(onnx_path))
+        stage = 'checker'
         onnx.checker.check_model(model)
+        stage = 'contract'
         floating_types = {t.data_type for t in model.graph.initializer}
         floating_types.update(t.type.tensor_type.elem_type for t in model.graph.input)
         if expected_precision == 'fp16' and onnx.TensorProto.FLOAT16 not in floating_types:
             raise ValueError('ONNX requested precision FP16 was not applied by the exporter')
         if expected_precision == 'fp32' and floating_types.intersection({onnx.TensorProto.FLOAT16, onnx.TensorProto.BFLOAT16}):
             raise ValueError('ONNX requested precision FP32 differs from exported tensors')
+        stage = 'runtime_load'
         session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
         feeds = {}
         height, width = conversion_input_shape(params)
@@ -298,6 +409,7 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
                 else:
                     shape.append(1)
             feeds[input_meta.name] = np.zeros(shape, dtype=dtype)
+        stage = 'runtime_inference'
         outputs = session.run(None, feeds)
         result = {
             'checker': 'passed',
@@ -314,10 +426,16 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
         append_log(log_file, 'ONNX Checker 与 ONNX Runtime 空白输入推理验证通过。')
         return result
     except Exception as error:
+        code = {
+            'read_onnx': 'ONNX_GRAPH_TOPOLOGY_INVALID',
+            'checker': 'ONNX_GRAPH_TOPOLOGY_INVALID',
+            'runtime_load': 'ONNX_RUNTIME_LOAD_FAILED',
+            'runtime_inference': 'ONNX_RUNTIME_INFERENCE_FAILED',
+        }.get(stage, 'ONNX_VALIDATION_FAILED')
         raise ConversionError(
-            'ONNX_VALIDATION_FAILED',
-            f'ONNX 结构或 ONNX Runtime 推理验证失败：{error}',
-            solution='请检查导出 opset、动态输入和算子兼容性，并确认转换环境已安装 onnxruntime。',
+            code,
+            f'ONNX {stage} 阶段验证失败：{error}',
+            solution='检查原始导出图、FP16 精度、输入契约与 Runtime 算子支持；不得跳过验证。',
         ) from error
 
 
@@ -361,12 +479,55 @@ def find_tpu_tools(resource: Dict[str, Any]):
     return tools["model_transform"], tools["model_deploy"], tools["run_calibration"]
 
 
+def _sophon_offline_reference_input(onnx: Path, out_dir: Path, height: int, width: int) -> Path:
+    """Deterministic synthetic compiler probe, explicitly NOT a field-image test."""
+    if height * width > 4_194_304:
+        raise ConversionError("SOPHON_REFERENCE_INPUT_TOO_LARGE", "离线参照输入超过安全像素上限",
+                              solution="请缩小输入尺寸或使用转换后真实图片数值验证。")
+    import numpy as np
+    import onnxruntime as ort
+    session = ort.InferenceSession(str(onnx), providers=["CPUExecutionProvider"])
+    inputs = session.get_inputs()
+    if len(inputs) != 1 or list(inputs[0].shape) != [1, 3, height, width]:
+        raise ConversionError("SOPHON_REFERENCE_INPUT_SHAPE", "官方数值对照需要唯一固定形状 NCHW 输入",
+                              solution="请检查 ONNX 与转换输入尺寸、batch 是否一致。")
+    if inputs[0].type not in {"tensor(float)", "tensor(float16)"}:
+        raise ConversionError("SOPHON_REFERENCE_INPUT_DTYPE", "官方对照尚不支持该 ONNX 输入精度",
+                              solution="请使用单输入 FP32/FP16 ONNX，或检查预处理合同。")
+    x = np.linspace(0, 1, width, dtype=np.float32)[None, :]
+    y = np.linspace(0, 1, height, dtype=np.float32)[:, None]
+    sample = np.stack((np.broadcast_to(x, (height, width)),
+                       np.broadcast_to(y, (height, width)), (x + y) / 2), axis=0)[None]
+    dtype = np.float16 if inputs[0].type == "tensor(float16)" else np.float32
+    path = out_dir / "sophon_synthetic_input_v1.npz"
+    np.savez(path, **{inputs[0].name: sample.astype(dtype)})
+    return path
+
+
+def verify_sophon_pt_class_identity(source_trace: dict, observed_names, *, is_pt: bool) -> str:
+    """A frozen version's label claim is not yet proof of PT checkpoint order."""
+    label_binding = source_trace.get('label_binding') or {}
+    if not is_pt or label_binding.get('status') != 'verified':
+        return 'unavailable'
+    if isinstance(observed_names, dict):
+        observed = [observed_names.get(str(i), observed_names.get(i)) for i in range(len(observed_names))]
+    elif isinstance(observed_names, list):
+        observed = observed_names
+    else:
+        return 'unavailable'
+    codes = source_trace.get('label_codes') or []
+    if not codes or [str(value) for value in observed] != codes:
+        raise ConversionError('MODEL_CLASS_IDENTITY_MISMATCH', 'PT 类别名称/顺序与冻结版本映射不一致',
+            solution='请检查版本 label_schema 与 PT 内 names，不能仅依赖类别数量或历史默认映射。')
+    return 'matched'
+
+
 def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path, *, verified_toolchain: Dict[str, Any] | None = None) -> Path:
     params = validate_target("sophon", params)
     environment = verified_toolchain if verified_toolchain is not None else require_sophon_toolchain(resource, chip=params["chip"], precision=params["precision"])
     tools, py = environment["tools"], environment["python_path"]
     height, width = conversion_input_shape(params)
-    # The ONNX tensor is already RGB/NCHW normalized by its caller. Do not fuse
+    # Caller supplies normalized NCHW in the selected input_color_order. Do not fuse
     # mean/scale/letterbox again. The exact caller contract travels in manifest.
     name = safe_name(str(params.get("model_name") or onnx.stem))
     mlir = out_dir / f"{name}.mlir"
@@ -375,17 +536,41 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
     mlir.unlink(missing_ok=True)
     model.unlink(missing_ok=True)
     timeout = int(params.get("timeout") or 3600)
-    run_cmd(tool_argv(py, "model_transform", tools["model_transform"],
+    reference_available = environment.get("offline_reference_available") is True
+    compare_all_requested = params.get("sophon_compare_all") is True
+    if compare_all_requested and not (reference_available and environment.get("offline_compare_all_available") is True):
+        raise ConversionError("SOPHON_COMPARE_ALL_UNAVAILABLE", "当前 SDK 不支持请求的全中间层数值诊断",
+                              solution="请检查 TPU-MLIR 工具能力，常规转换使用官方最终输出数值对照。")
+    reference_input, reference_output = None, None
+    transform_args = [
         "--model_name", name, "--model_def", str(onnx),
-        "--input_shapes", f"[[1,3,{height},{width}]]", "--mlir", str(mlir)), out_dir, log_file, timeout=timeout)
+        "--input_shapes", f"[[1,3,{height},{width}]]", "--mlir", str(mlir)]
+    if reference_available:
+        reference_input = _sophon_offline_reference_input(onnx, out_dir, height, width)
+        reference_output = out_dir / "sophon_mlir_reference_v1.npz"
+        reference_output.unlink(missing_ok=True)
+        transform_args.extend(["--test_input", str(reference_input), "--test_result", str(reference_output)])
+    run_cmd(tool_argv(py, "model_transform", tools["model_transform"], *transform_args), out_dir, log_file, timeout=timeout)
     file_record(mlir)
+    if reference_available:
+        file_record(reference_output)
     chip_option = environment.get("chip_option") or "--chip"
     if chip_option not in {"--chip", "--processor"}:
         raise ValueError("TPU-MLIR目标选项未经Adapter映射")
     sdk_precision = {"fp16":"F16", "fp32":"F32"}[params["precision"]]
-    run_cmd(tool_argv(py, "model_deploy", tools["model_deploy"],
+    deploy_args = [
         "--mlir", str(mlir), "--quantize", sdk_precision, chip_option, params["chip"],
-        "--num_core", "1", "--model", str(model)), out_dir, log_file, timeout=timeout)
+        "--num_core", "1", "--model", str(model)]
+    if reference_available:
+        deploy_args.extend(["--test_input", str(reference_input), "--test_reference", str(reference_output)])
+        # Official output validation is the normal gate. Comparing all intermediate
+        # tensors is a diagnostic opt-in, not an implicit extra publishing gate.
+        if compare_all_requested:
+            deploy_args.append("--compare_all")
+    try:
+        run_cmd(tool_argv(py, "model_deploy", tools["model_deploy"], *deploy_args), out_dir, log_file, timeout=timeout)
+    except Exception as error:
+        raise classify_sophon_deploy_failure(error, reference_available=reference_available) from error
     file_record(model)
     info = run_cmd(tool_argv(py, "model_tool", tools["model_tool"], "--info", str(model)),
                    out_dir, log_file, timeout=min(timeout, 30))
@@ -399,7 +584,17 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
         "toolchain": environment, "inspection": info[-8000:], "artifact": file_record(model),
         "preprocessing": params["preprocessing"],
         "precision": params["precision"], "input_shape": [1,3,height,width],
-        "model_validation_status": "incomplete", "model_validation_reason": "芯片结构已确认；尚未完成编译产物输入输出与数值对照验证",
+        # Preserve the historical structural/hardware status contract. Compiler
+        # numerical verification is independent and must never be inferred from
+        # model_tool --info or ordinary successful compilation.
+        "model_validation_status": "incomplete",
+        "compiler_numeric_status": "passed_synthetic_reference" if reference_available else "unavailable",
+        "model_validation_reason": "官方 TPU-MLIR 用确定性合成张量完成编译数值对照；真实图片和中台部署前后处理仍须另验"
+            if reference_available else "该 SDK 未同时提供 model_transform 和 model_deploy 参考数值对照参数；未执行官方数值比较",
+        "offline_reference": {"protocol": "sophon_compiler_synthetic_v1", "input": file_record(reference_input),
+                              "reference": file_record(reference_output), "compare_all": compare_all_requested,
+                              "comparison_scope": "all_intermediate" if compare_all_requested else "outputs_only"}
+            if reference_available else None,
     })
     return model
 
@@ -470,14 +665,19 @@ def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
         dataset_txt.write_text('\n'.join(str(x.resolve()) for x in imgs), encoding='utf-8')
         append_log(log_file, f'RKNN INT8 校准图片：{len(imgs)} 张')
     out=out_dir/f'{safe_name(onnx.stem)}_{chip}_{"int8" if quant else "fp"}.rknn'
+    # Never accept a stale RKNN from a previous failed attempt.
+    out.unlink(missing_ok=True)
     mean=str(params.get('mean') or '0,0,0')
     std=str(params.get('rknn_std') or '255,255,255')
     runner=Path(__file__).resolve().parent/'rknn_convert_runner.py'
     if not runner.exists(): raise RuntimeError('缺少平台 RKNN 转换执行器 rknn_convert_runner.py')
     cmd=[py,str(runner),'--onnx',str(onnx),'--output',str(out),'--chip',chip,'--precision',precision,'--mean',mean,'--std',std]
     if dataset_txt: cmd += ['--dataset',str(dataset_txt)]
-    run_cmd(cmd, out_dir, log_file, timeout=int(params.get('timeout') or 3600))
-    if not out.exists(): raise RuntimeError('RKNN-Toolkit2 执行结束，但没有生成 .rknn 文件。')
+    try:
+        run_cmd(cmd, out_dir, log_file, timeout=int(params.get('timeout') or 3600))
+    except Exception as error:
+        raise classify_rknn_conversion_failure(error) from error
+    file_record(out)  # Includes nonempty artifact verification.
     return out
 
 def copy_artifact(src: Path, artifacts: Path):
@@ -522,6 +722,7 @@ def main():
         toolchain = preflight_vendor_tool(target, resource, params) or {}
         outputs = []
         onnx_validation = {}
+        source_pt_label_check = 'unavailable'
         if target == 'onnx':
             update(job_file, progress=18, stage='导出 ONNX', message='正在生成通用 ONNX')
             onnx = prepare_onnx(source, work, resource, params, log_file)
@@ -542,6 +743,9 @@ def main():
             update(job_file, progress=10, stage='准备 ONNX', message='正在生成 TPU-MLIR 输入模型')
             onnx = prepare_onnx(source, work, resource, params, log_file)
             onnx_validation = validate_onnx_runtime(onnx, params, log_file)
+            observed_names = read_json(work / 'pt_export_class_names.json', None)
+            source_pt_label_check = verify_sophon_pt_class_identity(job.get('source_trace') or {}, observed_names,
+                is_pt=source.suffix.lower() in {'.pt', '.pth'})
             update(job_file, progress=45 if str(params.get('precision')).lower()!='int8' else 30, stage='TPU-MLIR 编译', message='正在生成 BMODEL')
             bmodel = build_sophon(onnx, work, resource, params, calibration_dir, log_file, verified_toolchain=toolchain)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(bmodel, artifacts)])
@@ -561,6 +765,10 @@ def main():
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(rknn, artifacts)])
         else:
             raise RuntimeError(f'不支持的转换目标：{target}')
+        if (params.get('csc_contract') or {}).get('capability')=='contract_only':
+            from platform_core.conversion_csc import write_csc_deployment_bundle
+            write_csc_deployment_bundle(artifacts, params['csc_contract'], include_reference_sources=False)
+            outputs.extend(artifacts/name for name in ('csc_deployment_contract.json','csc_deployment_reference.zip'))
         onnx_output = next((p for p in outputs if p.is_file() and p.suffix.lower() == '.onnx'), None)
         output_records = [file_record(p, relative_to=artifacts) for p in outputs if p.is_file()]
         for directory in [p for p in outputs if p.is_dir()]:
@@ -573,6 +781,8 @@ def main():
             'ascend': 'cann-atc',
             'rockchip': 'rknn-toolkit2',
         }
+        if onnx_validation and params.get('onnx_topology_evidence'):
+            params['onnx_topology_evidence']['runtime'] = 'passed'
         manifest = build_manifest(
             source=job.get('source_trace') or {
                 'source_id': job.get('source_id'),
@@ -611,6 +821,12 @@ def main():
             'source_training_precision': params.get('source_training_precision'),
             'resolved_precision': params.get('precision'),
             'compiler_precision': compiler_precision,
+            'input_color_order': params.get('input_color_order'),
+            'source_color_order': params.get('source_color_order'),
+            'color_adapter': params.get('color_adapter_evidence'),
+            'onnx_topology': params.get('onnx_topology_evidence'),
+            'pt_onnx_numeric_validation': 'not_performed',  # Checker/ORT synthetic inference is not PT parity.
+            'csc': params.get('csc_contract'),
             'artifact_precision': None,  # No dtype inspection; compiler mode is not an artifact dtype.
             'onnx_export': 'reused_existing_onnx' if source.suffix.lower() == '.onnx' else 'exported',
             'onnx_export_parameters_applied': source.suffix.lower() != '.onnx',
@@ -621,11 +837,43 @@ def main():
             'onnx_floating_tensor_types': onnx_validation.get('floating_tensor_types') or [],
             'onnx_opset_imports': onnx_validation.get('opset_imports') or {},
         }
+        if target == 'sophon':
+            evidence['compiler_numeric_status'] = (manifest.get('sophon_validation') or {}).get('compiler_numeric_status', 'unavailable')
+            evidence['compiler_numeric_scope'] = 'synthetic_only' if evidence['compiler_numeric_status'] == 'passed_synthetic_reference' else 'unverified'
+            source_binding = (manifest.get('source') or {}).get('label_binding') or {}
+            labels = (manifest.get('source') or {}).get('label_codes') or []
+            binding_status = source_binding.get('status') if isinstance(source_binding, dict) else 'unknown'
+            label_ready = binding_status == 'verified' and source_pt_label_check == 'matched' and isinstance(labels, list) and bool(labels)
+            # One existing manifest owns the portable caller contract. A compiler
+            # cannot certify that an independent VMS has actually honored it.
+            manifest['inference_contract'] = {
+                'schema_version': 1,
+                'model_sha256': next((row['sha256'] for row in output_records if row['name'].endswith('.bmodel')), ''),
+                'source_model_sha256': str((manifest.get('source') or {}).get('sha256') or ''),
+                'input': dict(params.get('preprocessing') or {}),
+                'input_shape': [1, 3, *conversion_input_shape(params)],
+                'output_names': onnx_validation.get('output_names') or [],
+                'output_count': onnx_validation.get('output_count'),
+                'output_decoder': 'unverified_external',
+                'postprocessing': {'owner': 'caller', 'nms': 'external', 'confidence_threshold': None,
+                                   'nms_iou_threshold': None, 'coordinates': 'unverified'},
+                'class_mapping': [{'class_id': i, 'code': code} for i, code in enumerate(labels)] if label_ready else [],
+                'class_mapping_sha256': source_binding.get('mapping_sha256', '') if label_ready else '',
+                'class_mapping_status': 'verified_pt_and_version' if label_ready else 'incomplete',
+                'caller_acknowledged': False,
+                'status': 'requires_caller_ack' if label_ready else 'incomplete',
+            }
+            evidence['deployment_contract_status'] = manifest['inference_contract']['status']
+            evidence['source_pt_label_check'] = source_pt_label_check
+        elif target == 'rockchip':
+            # SDK build/export alone does not establish numerical or board parity.
+            evidence['compiler_numeric_status'] = 'unavailable'
+            evidence['compiler_numeric_scope'] = 'unverified'
         manifest['execution_evidence'] = evidence
         write_json(artifacts/'manifest.json', manifest)
         output_rows=[]
         for p in artifacts.rglob('*'):
-            if p.is_file():
+            if p.is_file() and p.suffix.lower() not in {'.py','.md'}:
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
         runtime_verified = target == 'onnx'
         update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, execution_evidence=evidence, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))

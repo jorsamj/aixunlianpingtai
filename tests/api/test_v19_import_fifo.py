@@ -83,5 +83,5 @@ def test_project_formal_import_lock_is_a_filesystem_lock(client):
     # Distinct FileLock objects must refer to the SAME project-local
     # filesystem lock. Cross-project files are independent.
     path = mod.v19_import_jobs_dir(project) / '.formal-import.lock'
-    assert str(path).endswith('/import_jobs/.formal-import.lock') or str(path).endswith('\\\\import_jobs\\\\.formal-import.lock')
+    assert path.as_posix().endswith('/import_jobs/.formal-import.lock')
     assert FileLock(str(path), timeout=1).lock_file == str(path)

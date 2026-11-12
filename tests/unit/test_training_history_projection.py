@@ -24,6 +24,24 @@ def test_incremental_history_reads_only_changed_files_and_returns_copies(tmp_pat
     assert projection.read(tmp_path, read) == []
 
 
+def test_history_scan_discovers_new_jobs_and_skips_non_job_entries(tmp_path):
+    (tmp_path/'readme.txt').write_text('not a job',encoding='utf-8')
+    (tmp_path/'empty').mkdir()
+    reads=[]
+    def load(path):
+        reads.append(path)
+        return json.loads(path.read_text(encoding='utf-8'))
+    projection=TrainingHistoryProjection()
+    assert projection.read(tmp_path,load)==[]
+    directory=tmp_path/'new-job';directory.mkdir()
+    job=directory/'job.json';job.write_text('{"id":"new-job"}',encoding='utf-8')
+    assert projection.read(tmp_path,load)==[{'id':'new-job'}]
+    assert projection.read(tmp_path,load)==[{'id':'new-job'}]
+    assert reads==[job], 'unchanged history JSON must use the original signature cache'
+    job.unlink()
+    assert projection.read(tmp_path,load)==[]
+
+
 def test_counts_require_success_evidence_and_canonical_identity():
     rows = [
         {'id': 'ok', 'asset_algorithm_id': 'a', 'status': 'done', 'artifact_verified': True},

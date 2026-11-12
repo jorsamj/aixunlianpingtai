@@ -11,6 +11,7 @@ on:
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/node_agent_cleaning_runtime.py'
@@ -31,6 +32,7 @@ on:
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_agent_model_install_runtime.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_node_agent_cleaning_runtime.py'
@@ -54,6 +56,7 @@ on:
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/node_agent_cleaning_runtime.py'
@@ -74,6 +77,7 @@ on:
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_agent_model_install_runtime.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_node_agent_cleaning_runtime.py'
@@ -111,6 +115,7 @@ jobs:
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_deployment_runtime.py
           platform_core/node_agent_training_runtime.py
+          platform_core/node_agent_model_install_runtime.py
           platform_core/node_agent_conversion_runtime.py
           platform_core/node_agent_material_runtime.py
           platform_core/node_agent_cleaning_runtime.py
@@ -131,6 +136,7 @@ jobs:
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_agent_model_install_runtime.py
           tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_node_agent_cleaning_runtime.py
@@ -149,6 +155,7 @@ jobs:
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_agent_model_install_runtime.py
           tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_node_agent_cleaning_runtime.py

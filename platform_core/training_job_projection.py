@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Mapping, MutableMapping
+from .training_timing import timing_view
 
 
 _DISPLAY_REVISION_LOCK = threading.Lock()
@@ -183,6 +184,7 @@ def build_training_display_progress(
         for value in (current_epoch, current_batch, elapsed_seconds, eta_seconds, throughput)
     ) or bool(training_progress)
     updated_at = _latest_timestamp(runtime.get("updated_at"), telemetry.get("updated_at"))
+    timing = timing_view({**job, **telemetry}, runtime)
     return {
         "revision": int(revision if revision is not None else _next_display_revision()),
         "updated_at": updated_at or None,
@@ -196,7 +198,9 @@ def build_training_display_progress(
         "total_epochs": total_epochs,
         "current_batch": current_batch,
         "total_batches": total_batches,
-        "elapsed_seconds": elapsed_seconds,
+        **timing,
+        "current_process_elapsed_seconds": elapsed_seconds,
+        "elapsed_seconds": timing["wall_elapsed_seconds"],
         "eta_seconds": eta_seconds,
         "throughput": throughput,
         "message": message or None,
@@ -221,6 +225,7 @@ def apply_training_display_progress(
     job["phase_progress"] = display["phase_progress"]
     job["telemetry_source"] = display["telemetry_source"]
     job["elapsed_seconds"] = display["elapsed_seconds"]
+    job["task_worker_id"] = job.get("task_worker_id") or display.get("last_training_worker_id") or job.get("verified_last_worker_id")
     job["eta_seconds"] = display["eta_seconds"]
     if display["current_epoch"] is not None:
         job["current_epoch"] = display["current_epoch"]
@@ -256,7 +261,7 @@ def apply_training_task_truth(
         resource_pool_key=public_runtime.get("resource_pool_key"),
         resource_pool_label=str(public_runtime.get("resource_pool_label") or "训练资源"),
         resource_wait_reason=public_runtime.get("resource_wait_reason"),
-        task_worker_id=public_runtime.get("worker_id"),
+        task_worker_id=public_runtime.get("worker_id") or timing_view(job, public_runtime).get("last_training_worker_id") or job.get("verified_last_worker_id"),
         task_lease_expires_at=public_runtime.get("lease_expires_at"),
     )
     return job

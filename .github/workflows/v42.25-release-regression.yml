@@ -45,6 +45,7 @@ on:
       - tests/unit/test_material_reference_reasons.py
       - tests/api/test_material_integrity.py
       - tests/api/test_training_conflict_governance.py
+      - tests/api/test_bootstrap_core_lifecycle.py
       - tests/api/test_runtime_router_app_mount.py
       - platform_core/upgrade_guard.py
       - platform_core/video_tasks.py
@@ -139,6 +140,8 @@ jobs:
           python -m pip install --disable-pip-version-check
           pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install pinned trainer source for official stopper contract
+        run: python -m pip install --disable-pip-version-check --no-deps "ultralytics==8.4.127"
       - name: Validate release contract test paths
         run: |
           missing=0
@@ -157,6 +160,7 @@ jobs:
           tests/api/test_material_integrity.py
           tests/api/test_training_conflict_governance.py
           tests/unit/test_material_reference_reasons.py
+          tests/api/test_bootstrap_core_lifecycle.py
           tests/api/test_runtime_router_app_mount.py
           tests/api/test_deployment_test_runtime.py
           tests/api/test_training_terminal_runtime.py

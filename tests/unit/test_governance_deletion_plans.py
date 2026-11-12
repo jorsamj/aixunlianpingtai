@@ -259,3 +259,40 @@ def test_delete_crash_recovery_never_restores_old_gt_over_changed_identity(tmp_p
     assert materials.get('i0000') is not None
     assert annotations.get('i0000') == before
     assert annotations.delete_backup_count(f"material_delete_{task.task_id[:32]}_{hashlib.sha256(b'i0000').hexdigest()[:24]}") == 1
+
+
+def test_history_index_reuses_scan_until_source_changes(tmp_path, monkeypatch):
+    materials, repository, artifacts = runtime(tmp_path)
+    calls = []
+    def scan(*args, **kwargs):
+        calls.append(1)
+        return {'i0000':[{'reason':'IMMUTABLE_SNAPSHOT','source':'fixture','protected':True}]}
+    monkeypatch.setattr(batches, '_scan_historical_material_references', scan)
+    first = batches._historical_material_references(
+        'p', materials.project_path, repository, artifacts, with_reasons=True,
+        reference_image_ids=['i0000'])
+    second = batches._historical_material_references(
+        'p', materials.project_path, repository, artifacts, with_reasons=True,
+        reference_image_ids=['i0000'])
+    assert first == second and len(calls) == 1
+    snapshot = materials.project_path / 'snapshots' / 'new.json'
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text('{"train_image_ids":["i0001"]}', encoding='utf-8')
+    batches._historical_material_references(
+        'p', materials.project_path, repository, artifacts, with_reasons=True,
+        reference_image_ids=['i0000'])
+    assert len(calls) == 2
+
+
+def test_delete_preview_rejects_material_change_while_history_is_scanned(tmp_path, monkeypatch):
+    materials, repository, artifacts = runtime(tmp_path)
+    def alter(*args, **kwargs):
+        materials.upsert_many([{'id':'changed','filename':'changed.jpg',
+            'object_key':'uploads/changed.jpg','content_sha256':'9'*64,'size_bytes':9}])
+        return {}
+    monkeypatch.setattr(batches, '_historical_material_references', alter)
+    payload = {'operation':'DELETE_INDEX','selection_spec':{
+        'scope':'SELECTED','image_ids':['i0001']},'options':{}}
+    with pytest.raises(BatchRequestError, match='变化'):
+        estimate_batch('p', materials, payload, repository=repository,
+                       artifacts=artifacts, actor={'actor_id':'u'})

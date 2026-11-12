@@ -1,6 +1,15 @@
 import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
+async function revealPickerAction(picker,name) {
+  const button=picker.getByRole('button',{name,exact:true,includeHidden:true});
+  const disclosure=button.locator('xpath=ancestor::details[1]');
+  if(await disclosure.count() && !await disclosure.first().evaluate(node=>node.open)) {
+    await disclosure.first().locator(':scope > summary').click();
+  }
+  return button;
+}
+
 async function waitForCanonicalApp(page) {
   await expect.poll(
     () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
@@ -107,6 +116,7 @@ async function routeReadyTrainingRuntime(page, defaultSize=640) {
 
 
 async function expandTrainingAdvanced(trainingDialog) {
+  await trainingDialog.locator('button[data-training-step="1"]').click();
   const split = trainingDialog.locator('details.train-create-split-details');
   if (await split.count() && !(await split.evaluate(element => element.open))) {
     await split.locator(':scope > summary').click();
@@ -114,21 +124,21 @@ async function expandTrainingAdvanced(trainingDialog) {
 }
 
 async function openTrainingSettings(page, trainingDialog) {
-  // Expert controls only exist after explicitly selecting custom mode.
+  await trainingDialog.locator('button[data-training-step="2"]').click();
   await trainingDialog.locator('[data-mode="custom"]').click();
-  await expect(trainingDialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed', 'true');
-  const button = trainingDialog.getByRole('button', {name: '配置更多专业参数'});
-  await expect(button).toBeVisible();
-  await button.click();
-  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await expect(trainingDialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed','true');
+  const settings=trainingDialog.locator('#trainWorkbenchParameters');
   await expect(settings).toBeVisible();
+  await expect(settings.locator('.training-parameter-group')).toHaveCount(7);
+  await expect(page.getByRole('dialog',{name:'训练配置设置'})).toHaveCount(0);
   return settings;
 }
 
 async function selectAllTrainingMaterials(page, trainingDialog) {
+  await trainingDialog.locator('button[data-training-step="1"]').click();
   await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  const selectAll = picker.getByRole('button', {name: '全选全部可用素材'});
+  const selectAll = await revealPickerAction(picker,'全选全部可用素材');
   await expect(selectAll).toBeEnabled();
   await selectAll.click();
   await expect(picker.locator('#trV3PickerCount')).toContainText(/已选 [1-9]\d* 张/);
@@ -164,11 +174,11 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(trainingDialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
   await expect(trainingDialog.locator('#trainUiLabelSlot')).toBeVisible();
   const settingsDialog = await openTrainingSettings(page, trainingDialog);
-  const advanced = settingsDialog.locator('details.advanced427-box');
+  const advanced = settingsDialog.locator('details').filter({has:page.locator('#ts428Lrf')});
   await expect(advanced).not.toHaveAttribute('open', '');
   await advanced.locator(':scope > summary').click();
-  await expect(settingsDialog.getByText('最终学习率 lrf')).toBeVisible();
-  await settingsDialog.getByRole('button', {name: '取消'}).click();
+  await expect(settingsDialog.locator('#ts428Lrf')).toBeVisible();
+  await trainingDialog.locator('button[data-training-step="1"]').click();
   await selectAllTrainingMaterials(page, trainingDialog);
   await trainingDialog.getByRole('button', {name: '数据质量', exact: true}).click();
 
@@ -186,6 +196,9 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 });
 
 test('training submit sends the selected candidate pool and configured experiment percentage', async ({page, request}) => {
+  // Exercise the explicitly supported legacy synchronous confirmation contract;
+  // the default creation UI now uses a single-stage background-admission consent.
+  await page.addInitScript(() => {window.MC_TRAIN_ADMISSION_MODE='synchronous'});
   const {project} = await seedTrainingProject(request);
   await routeReadyTrainingRuntime(page);
   let submitted;
@@ -220,15 +233,21 @@ test('training submit sends the selected candidate pool and configured experimen
   await fireLabel.check();
   await expandTrainingAdvanced(dialog);
   await dialog.locator('#tr429Priority').fill('0');
+  await dialog.locator('button[data-training-step="3"]').click();
   await dialog.locator('.train428-footer .btn.primary').click();
+  const negativeConfirmation=page.getByRole('dialog',{name:'确认本次训练样本',exact:true});
+  await expect(negativeConfirmation).toContainText('2 张候选负样本需要人工确认');
+  expect(submitted).toBeUndefined();
+  await negativeConfirmation.getByRole('button',{name:'确认并创建',exact:true}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
+  await dialog.locator('button[data-training-step="1"]').click();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
   const settings = await openTrainingSettings(page, dialog);
-  await settings.locator('details.advanced427-box').first().locator(':scope > summary').click();
+  await settings.locator('details').filter({has:page.locator('#ts428SingleCls')}).locator(':scope > summary').click();
   await settings.locator('#ts428SingleCls').check();
-  await settings.getByRole('button', {name: '应用配置'}).click();
+  await expect(settings.locator('#ts428SingleCls')).toBeChecked();
   await expect(dialog).toBeVisible();
   const postSubmitRequests = [];
   const capturePostSubmit = request => {
@@ -236,6 +255,7 @@ test('training submit sends the selected candidate pool and configured experimen
     if (url.pathname.startsWith('/api/')) postSubmitRequests.push(`${request.method()} ${url.pathname}${url.search}`);
   };
   page.on('request', capturePostSubmit);
+  await dialog.locator('button[data-training-step="3"]').click();
   await dialog.locator('.train428-footer .btn.primary').click();
   await expect.poll(() => submitted).toBeTruthy();
   await expect.poll(async () => page.evaluate(() =>
@@ -288,20 +308,20 @@ test('training material selection does not depend on dataset groups and supports
     card.querySelector('img') === window.__trainingPickerFirstImage
   ))).toBe(true);
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 1 张');
-  await picker.getByRole('button', {name: '全部不选'}).click();
+  await (await revealPickerAction(picker,'全部不选')).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 0 张');
   await picker.getByRole('button', {name: '明火'}).click();
   const selectFiltered = picker.locator('.train-v3-batch button[onclick*="select-filtered"]');
   await expect(selectFiltered).toBeVisible();
   await selectFiltered.click();
-  await expect(picker.locator('#trV3PickerCount')).toContainText('筛选结果 1 张 · 已选 1 张');
-  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText('本页 1 张 · 总数按需统计 · 已选 1 张');
+  await (await revealPickerAction(picker,'全选全部可用素材')).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 3 张');
-  await picker.getByRole('button', {name: '全部不选'}).click();
+  await (await revealPickerAction(picker,'全部不选')).click();
   await picker.getByRole('button', {name: '确认选择'}).click();
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
+  await expect(dialog.locator('.train-ui-submit')).toBeEnabled();
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
@@ -324,7 +344,7 @@ test('versioned training locks the latest version and projects the current rando
     training_status: 'SUCCEEDED', artifact_verified: true, trainable: true,
     finished_at: '2026-10-08T08:00:00Z',
   };
-  await page.route(`**/api/v12/projects/${project.id}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${project.id}/algorithms?summary_only=true`, async route => {
     if (route.request().method() !== 'GET') return route.continue();
     const response = await route.fetch();
     expect(response.ok()).toBeTruthy();
@@ -370,12 +390,27 @@ test('versioned training locks the latest version and projects the current rando
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(dialog);
   await expect(dialog.locator('#trainBaseModeLabelV3')).toContainText('继承当前有效模型版本');
-  await expect(dialog.locator('#tr429MotherModel')).toBeDisabled();
+  const motherModel = dialog.locator('#tr429MotherModel');
+  await expect(motherModel).toBeDisabled();
+  await expect(motherModel).toHaveText('从当前有效算法版本的 best.pt 继续训练');
+  await expect(motherModel).toHaveValue('');
+  expect(await motherModel.evaluate(select => select.selectedIndex)).toBe(0);
+  // The historical draft can still carry its original pretrained name. A
+  // late resource refresh must not use it to deselect the inherited best.pt.
+  await page.evaluate(() => {
+    window.TrainingDraftRuntime.update({config: {model: 'yolo11n.pt'}});
+    window.applyTrainingCreationResources();
+  });
+  await expect(motherModel).toHaveText('从当前有效算法版本的 best.pt 继续训练');
+  await expect(motherModel).toHaveValue('');
+  expect(await motherModel.evaluate(select => select.selectedIndex)).toBe(0);
+  await dialog.locator('button[data-training-step="2"]').click();
   await expect(dialog.locator('#trainModeBriefV3')).toContainText('80 Epoch');
   await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');
   const settings = await openTrainingSettings(page, dialog);
-  await expect(settings.locator('#ts428Model')).toBeDisabled();
-  await expect(settings.locator('#ts428Model option:checked')).toHaveText('v3 · latest-best.pt');
+  await expect(settings.locator('#ts428Model')).toHaveCount(0);
+  await expect(dialog.locator('#tr429MotherModel')).toBeDisabled();
+  expect(await page.evaluate(()=>state.trainingDraft.baseVersionId)).toBe(latestVersion.id);
 });
 
 test('training queue displays numeric priorities and orders each resource by priority then FIFO', async ({page, request}) => {
@@ -483,6 +518,7 @@ test('training precision remains visible and canonical across all four modes',as
   await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'创建训练任务'}),precision=dialog.locator('#trV3ManualPrecision');
   await expect(dialog).toBeVisible();await returnToTrainingConfiguration(page);
+  await dialog.locator('button[data-training-step="2"]').click();
   await expect(precision).toBeVisible();await expect(precision).toHaveValue('auto');
   await precision.selectOption('fp32');
   for(const mode of ['quick','complex','custom','full']){
@@ -504,6 +540,7 @@ test('iteration inherits actual precision and size while mode switches preserve 
  await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'创建训练任务'});
  await expect(dialog).toBeVisible();await returnToTrainingConfiguration(page);
+ await dialog.locator('button[data-training-step="2"]').click();
  await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');
  expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);
  for(const mode of ['quick','complex','custom','full']){await dialog.locator(`[data-mode="${mode}"]`).click();expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32')}
@@ -518,5 +555,5 @@ test('first training still adopts actual algorithm default when no inherited siz
  await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
  await expect(page.getByRole('dialog',{name:'创建训练任务'})).toBeVisible();
  await returnToTrainingConfiguration(page);
- expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(1280);
+ await expect.poll(()=>page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(1280);
 });

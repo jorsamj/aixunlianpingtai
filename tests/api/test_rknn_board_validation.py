@@ -315,7 +315,7 @@ def test_rknn_hardware_acceptance_report_refuses_unverified_job(client, seeded_p
 
 def test_version_deployment_projection_preserves_rknn_hardware_truth(monkeypatch):
     monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-projection"})
-    monkeypatch.setattr(app_module, "list_algorithms_internal", lambda _project_id: [{
+    monkeypatch.setattr(app_module, "list_algorithms_internal", lambda _project_id, **_kwargs: [{
         "id": "algorithm-projection",
         "name": "RKNN Projection",
         "versions": [{
@@ -324,7 +324,7 @@ def test_version_deployment_projection_preserves_rknn_hardware_truth(monkeypatch
             "stored_path": "/models/best.pt",
         }],
     }])
-    monkeypatch.setattr(app_module, "v39_list_deploy_jobs", lambda _project_id: {"items": [{
+    monkeypatch.setattr(app_module, "_conversion_history_page", lambda _project_id, **_query: {"items": [{
         "id": "job-projection",
         "source_id": "version::algorithm-projection::version-projection",
         "source_name": "best.pt",

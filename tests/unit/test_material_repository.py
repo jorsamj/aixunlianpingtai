@@ -4,6 +4,7 @@ import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+import pytest
 
 import platform_core.material_repository as material_repository_module
 from platform_core.material_repository import MaterialRepository
@@ -24,6 +25,49 @@ def material(image_id: str, *, source: str = "default_local", labels=(), status=
         "box_count": len(labels),
         "created_at": f"2026-09-07T00:00:{int(image_id[-1], 16):02d}+00:00",
     }
+
+
+def test_material_summary_badges_share_one_revision_keyed_aggregation(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([
+        material("m-0", source="default_local", status="pending_decision", labels=["fire"]),
+        material("m-1", source="remote-a", status="cleaning"),
+        material("m-2", source="remote-a", status="processed", labels=["smoke"]),
+        material("m-3", source="remote-b", status="unprocessed"),
+        material("m-4", source="remote-b", status="processed"),
+    ])
+    aggregation_sql = []
+    original_connect = repository._connect
+
+    def tracked_connect():
+        connection = original_connect()
+        connection.set_trace_callback(
+            lambda sql: aggregation_sql.append(sql) if "AS unprocessed" in sql else None
+        )
+        return connection
+
+    monkeypatch.setattr(repository, "_connect", tracked_connect)
+    global_counts = repository.processing_status_counts()
+    assert {key: global_counts[key] for key in ("total", "annotated", "boxes", "unprocessed", "processed")} == {
+        "total": 5, "annotated": 2, "boxes": 2, "unprocessed": 3, "processed": 2,
+    }
+    assert repository.summary() == {
+        key: global_counts[key] for key in ("total", "annotated", "boxes", "revision")
+    }
+    assert len(aggregation_sql) == 1  # warm F5 summary reuses the same cached projection
+
+    remote = repository.processing_status_counts(["remote-a"])
+    assert (remote["unprocessed"], remote["processed"]) == (1, 1)
+    assert (remote["total"], remote["annotated"]) == (5, 2)  # dashboard is global
+    assert repository.processing_status_counts(["remote-a", "remote-a"]) == remote
+    assert len(aggregation_sql) == 2  # same normalized source filter hits cache
+
+    # Another repository instance imitates another worker committing a material.
+    MaterialRepository(tmp_path).patch({"m-1": {"processing_status": "processed"}})
+    updated = repository.processing_status_counts(["remote-a"])
+    assert updated["revision"] > remote["revision"]
+    assert (updated["unprocessed"], updated["processed"]) == (0, 2)
+    assert len(aggregation_sql) == 3
 
 
 def test_ready_material_repository_bypasses_init_lock(tmp_path, monkeypatch):
@@ -302,6 +346,36 @@ def test_compatibility_mutate_only_rewrites_changed_rows(tmp_path, monkeypatch):
     assert repository.mutate(change_one) == "image-1"
     assert written == ["image-1"]
     assert repository.get("image-2")["processing_status"] == "processed"
+
+
+def test_mutate_ids_reads_only_requested_materials_and_preserves_identity(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([material(f"image-{index:04x}") for index in range(1200)])
+    original_payload = MaterialRepository._row_payload
+    decoded = []
+
+    def tracked_payload(row):
+        decoded.append(str(row["id"]))
+        return original_payload(row)
+
+    monkeypatch.setattr(MaterialRepository, "_row_payload", staticmethod(tracked_payload))
+    revision = repository.current_revision()
+    target = "image-02af"
+    assert repository.mutate_ids([target, target], lambda rows: rows[0].update(
+        processing_status="cleaning") or len(rows)) == 1
+    assert decoded == [target]
+    monkeypatch.setattr(MaterialRepository, "_row_payload", staticmethod(original_payload))
+    assert repository.current_revision() == revision + 1
+    assert repository.get(target)["processing_status"] == "cleaning"
+    assert repository.get("image-0001")["processing_status"] == "processed"
+
+    revision = repository.current_revision()
+    assert repository.mutate_ids([], lambda rows: len(rows)) == 0
+    assert repository.current_revision() == revision
+    with pytest.raises(ValueError, match="身份"):
+        repository.mutate_ids([target], lambda rows: rows[0].update(id="elsewhere"))
+    assert repository.get(target)["id"] == target
+    assert repository.current_revision() == revision
 
 
 def test_find_existing_content_hashes_streams_normalized_single_pass_batches(tmp_path, monkeypatch):
@@ -642,3 +716,16 @@ def test_content_sha256_lookup_queries_use_their_partial_indexes(tmp_path):
         for row in exact_plan
     )
     assert any("ix_materials_content_sha256_normalized" in row["detail"] for row in normalized_plan)
+
+def test_partial_is_a_virtual_scope_filter_and_uses_same_id_predicate(tmp_path):
+    repository=MaterialRepository(tmp_path)
+    repository.upsert_many([
+        {**material('m-1',labels=['person']),'annotated':True,'annotation_state':'annotated','annotation_scope':['person']},
+        {**material('m-2',labels=['person']),'annotated':True,'annotation_state':'annotated','annotation_scope':['person','tangzhe']},
+        {**material('m-3',labels=['person']),'annotated':True,'annotation_state':'annotated','annotation_scope':['*']},
+        {**material('m-4'),'annotation_state':'confirmed_empty','annotation_scope':['person']},
+    ])
+    filters={'annotation_state':'partial','partial_labels':['person','tangzhe']}
+    assert [row['id'] for row in repository.list_page(**filters).items]==['m-1']
+    assert repository.iter_filtered_ids(filters).items==['m-1']
+    assert repository.get_many(['m-1'])[0]['annotation_state']=='annotated'

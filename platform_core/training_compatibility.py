@@ -147,7 +147,8 @@ def _issue_for_row(
                 "missing_label_codes": required,
             }
         else:
-            issue = training_material_scope_issue(row, contract)
+            from .training_label_tasks import training_material_role
+            issue = training_material_role(row, contract)["scope_issue"]
     if issue is None:
         return None
     dataset_id = str(row.get("dataset_id") or "")
@@ -178,7 +179,13 @@ def evaluate_training_compatibility(
     if duplicates.issues:
         return replace(duplicates, duplicate_review=review,
             label_contract={"effective_label_codes": list(payload.get("train_labels") or [])})
-    selection = resolve_training_selection(project_path, split)
+    # Selection intent needs the target labels, not a checkpoint byte digest.
+    # The final verified contract below still hashes the selected best.pt once.
+    intent_contract = resolve_training_label_contract(
+        data_dir, project_path, payload, algorithm,
+        require_positive_evidence=False, include_base_weight_digest=False,
+    )
+    selection = resolve_training_selection(project_path, split, label_contract=intent_contract, preview_only=True)
     effective = selection.effective_split
     contract_payload = {
         **dict(payload),
@@ -186,8 +193,13 @@ def evaluate_training_compatibility(
         "test_image_ids": list(effective.test_image_ids),
         "selected_image_ids": list(effective.train_image_ids),
     }
+    # A preflight must report the target-scope gaps so the user can enter the
+    # final task-local confirmation. Requiring per-class positive evidence here
+    # would fail *before* that dialog can issue immutable receipts. The final
+    # train/start owner still resolves a strict, hashed contract before freeze.
     contract = resolve_training_label_contract(
         data_dir, project_path, contract_payload, algorithm,
+        require_positive_evidence=False, include_base_weight_digest=False,
     )
     return replace(evaluate_selection_compatibility(project_path, selection, contract), duplicate_review=review)
 
@@ -340,6 +352,7 @@ def _evaluate_training_compatibility_projection_cached(
     algorithm_json: str,
     material_revision: int,
     annotation_revision: int,
+    task_negative_confirmation_revision: int,
     label_schema_digest: str,
     dataset_digest: str,
 ) -> TrainingCompatibilityResult:
@@ -347,11 +360,11 @@ def _evaluate_training_compatibility_projection_cached(
 
     Revision and file digests are intentionally part of the key even though
     the evaluator reads the repositories itself.  They make cached values
-    impossible to reuse after canonical Material, Annotation, label-schema or
-    dataset display metadata changes.  Final training admission never calls
-    this helper.
+    impossible to reuse after canonical Material, Annotation, task-level
+    negative receipt, label-schema or dataset display metadata changes.
+    Final training admission never calls this helper.
     """
-    del material_revision, annotation_revision, label_schema_digest, dataset_digest
+    del material_revision, annotation_revision, task_negative_confirmation_revision, label_schema_digest, dataset_digest
     return evaluate_training_compatibility(
         Path(data_dir),
         Path(project),
@@ -382,6 +395,7 @@ def evaluate_training_compatibility_projection(
         _canonical_json(algorithm),
         int(materials.current_revision()),
         int(annotations.current_revision()),
+        int(annotations.task_negative_confirmation_revision()),
         _file_digest(project_path / "meta.json"),
         _file_digest(project_path / "datasets.json"),
     )
@@ -620,6 +634,25 @@ def diagnose_annotation_conflict(rows, label_ids=None, import_confirmations=None
         'requires_human_review': True, 'automatic_gt_write_allowed': False}
 
 
+def training_compatibility_issue_matches(
+    item: Mapping[str, Any], *, query: str = "", issue_type: str = "", missing_label_code: str = "",
+) -> bool:
+    """One read-only issue predicate for paging and revision-fenced selections.
+
+    Label codes are canonical and case sensitive. In particular, an issue for
+    only `person` must never enter a batch supplemental review for `head`.
+    """
+    needle = str(query or "").strip().casefold()
+    kind = str(issue_type or "").strip()
+    code = str(missing_label_code or "").strip()
+    return (
+        (not kind or str(item.get("issue_type") or "") == kind)
+        and (not code or code in (item.get("missing_label_codes") or ()))
+        and (not needle or any(needle in str(item.get(key) or "").casefold()
+            for key in ("image_id", "filename", "content_sha256", "duplicate_group_id")))
+    )
+
+
 def resolve_training_compatibility_selection(result: TrainingCompatibilityResult, payload) -> dict[str, Any]:
     """Resolve exact issue identities for draft exclusion or a deletion preview.
 
@@ -639,13 +672,13 @@ def resolve_training_compatibility_selection(result: TrainingCompatibilityResult
             raise ValueError('TRAINING_SELECTION_INVALID: 素材身份列表无效')
     query = str(selection.get('query') or '').strip().casefold()
     issue_type = str(selection.get('issue_type') or '').strip()
-    if len(query) > 256:
+    missing_label_code = str(selection.get('missing_label_code') or '').strip()
+    if len(query) > 256 or len(issue_type) > 128 or len(missing_label_code) > 128:
         raise ValueError('TRAINING_SELECTION_INVALID: 筛选文本过长')
     all_ids = {str(item['image_id']) for item in result.issues}
     filtered = {str(item['image_id']) for item in result.issues
-        if (not issue_type or item.get('issue_type') == issue_type)
-        and (not query or any(query in str(item.get(key) or '').casefold()
-            for key in ('image_id','filename','content_sha256','duplicate_group_id')))}
+        if training_compatibility_issue_matches(item, query=query, issue_type=issue_type,
+            missing_label_code=missing_label_code)}
     candidates = all_ids if selection.get('all_issues') is True else filtered
     if not set(selected).issubset(candidates) or not set(excluded).issubset(candidates):
         raise ValueError('TRAINING_SELECTION_CHANGED: 所选素材不属于本次真实问题范围')
@@ -662,6 +695,7 @@ def compatibility_page(
     *,
     query: str = "",
     issue_type: str = "",
+    missing_label_code: str = "",
     cursor: str = "",
     limit: int = 50,
     page: int | None = None,
@@ -669,16 +703,13 @@ def compatibility_page(
 ) -> dict[str, Any]:
     normalized_query = str(query or "").strip().casefold()
     normalized_type = str(issue_type or "").strip()
+    normalized_missing = str(missing_label_code or "").strip()
+    if len(normalized_query) > 256 or len(normalized_type) > 128 or len(normalized_missing) > 128:
+        raise ValueError("compatibility filter is too long")
     filtered = [
         item for item in result.issues
-        if (not normalized_type or item["issue_type"] == normalized_type)
-        and (
-            not normalized_query
-            or normalized_query in str(item.get("image_id") or "").casefold()
-            or normalized_query in str(item.get("filename") or "").casefold()
-            or normalized_query in str(item.get("content_sha256") or "").casefold()
-            or normalized_query in str(item.get("duplicate_group_id") or "").casefold()
-        )
+        if training_compatibility_issue_matches(item, query=normalized_query,
+            issue_type=normalized_type, missing_label_code=normalized_missing)
     ]
     bounded = int(page_size if page_size is not None else limit)
     if not 1 <= bounded <= 100:

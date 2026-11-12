@@ -14,6 +14,10 @@ on:
       - 'platform_core/annotations.py'
       - 'tests/unit/test_annotations.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/storage/zip_import.py'
+      - 'tests/unit/storage/test_zip_import.py'
+      - 'tests/api/test_v19_zip_safety_limits.py'
+      - 'tests/api/test_zip_processing_p1.py'
       - 'static/index.html'
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
@@ -47,7 +51,9 @@ on:
       - 'tests/frontend/upload-task-center.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/import-dock-style.test.mjs'
+      - 'tests/browser/zip-import-material-flow.spec.mjs'
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
+      - 'tests/browser/zip-label-presentation.spec.mjs'
       - 'tests/browser/material-upload-chunking.spec.mjs'
       - 'tests/api/test_v19_job_atomic_persistence.py'
       - 'tests/api/test_v19_import_scalability.py'
@@ -86,7 +92,8 @@ jobs:
           node --check static/modules/storage-import-progress.js &&
           node --check static/app.js &&
           node --check static/zip-import-bootstrap.mjs &&
-          node --check tests/browser/zip-import-refresh-recovery.spec.mjs
+          node --check tests/browser/zip-import-refresh-recovery.spec.mjs &&
+          node --check tests/browser/zip-import-material-flow.spec.mjs
       - name: Upload, refresh, queue and progress contracts
         run: >-
           node --test
@@ -111,7 +118,9 @@ jobs:
           grep -Fq 'overallZipProgress' static/modules/zip-import-runtime.js
           grep -Fq "queue_position" static/modules/zip-import-runtime.js
           grep -Fq "PollRegistryRuntime.startTimeout('zip-import-runtime'" static/modules/zip-import-runtime.js
-          grep -Fq 'window.doUploadZip426=input=>uploadBatch(input)' static/modules/zip-import-runtime.js
+          # The public entrypoint must surface errors instead of discarding a
+          # rejected upload-batch promise (the previous exact grep went stale).
+          grep -Fq 'window.doUploadZip426=input=>uploadBatch(input).catch(reportUploadBatchError)' static/modules/zip-import-runtime.js
           grep -Fq 'zipImportRuntime = runtime' static/zip-import-bootstrap.mjs
           grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
           grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
@@ -134,21 +143,24 @@ jobs:
           import re
 
           for filename, pattern, minimum in (
-              ('static/index.html', r'/static/zip-import-bootstrap\.mjs\?v=(\d+)', 4226359),
-              ('static/zip-import-bootstrap.mjs', r'zip-import-runtime\.js\?v=(\d+)', 4226359),
-              ('static/main.mjs', r'upload-task-center\.js\?v=(\d+)', 66009),
+              ('static/index.html', r'/static/zip-import-bootstrap\.mjs\?v=(\d+)', (4226359,)),
+              ('static/zip-import-bootstrap.mjs', r'zip-import-runtime\.js\?v=(\d+(?:\.\d+)*)', (42,25,532)),
+              ('static/main.mjs', r'upload-task-center\.js\?v=(\d+)', (66009,)),
           ):
               match = re.search(pattern, Path(filename).read_text(encoding='utf-8'))
-              if not match or int(match.group(1)) < minimum:
+              if not match or tuple(map(int, match.group(1).split("."))) < minimum:
                   raise SystemExit(f'{filename}: missing or outdated cache revision (minimum {minimum})')
           PY
           grep -Eq 'main\.mjs\?v=42\.25\.[0-9]+' static/index.html
-          grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
+          # The task-center clear button is display-only. Actual server ZIP
+          # deletion remains an explicit separate action in classic app.js.
+          if grep -Fq "method:'DELETE'" static/modules/upload-task-center.js; then echo 'task-center clear must not delete server evidence' >&2; exit 1; fi
+          grep -Fq 'for (const row of removed) dismissedIds.add(row.id)' static/modules/upload-task-center.js
           grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
-          grep -Fq '已清空 ${cleared} 条已结束任务' static/modules/upload-task-center.js
+          grep -Fq '已清空 ${removed.length} 条已结束任务（仅移除展示记录）' static/modules/upload-task-center.js
           grep -Fq 'task center labels terminal cleanup as clear ended, not clear completed' tests/frontend/upload-task-center.test.mjs
-          grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.()' static/modules/upload-task-center.js
-          grep -Fq 'function forgetTerminal()' static/modules/zip-import-runtime.js
+          if grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.(' static/modules/upload-task-center.js; then echo 'display-only clear must not erase ZIP history' >&2; exit 1; fi
+          grep -Fq 'function forgetTerminal(ids=null)' static/modules/zip-import-runtime.js
           grep -Fq 'knownJobs.delete(id)' static/modules/zip-import-runtime.js
           grep -Fq 'DEFAULT_TTL_SECONDS = 24 * 60 * 60' platform_core/zip_multipart.py
           grep -Fq 'cleanup_expired_if_due' platform_core/zip_multipart.py
@@ -189,6 +201,8 @@ jobs:
           python -m pip install --disable-pip-version-check
           pytest fastapi httpx python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography filelock boto3 oss2
+      - name: Material library filters and raw ZIP report contracts
+        run: python -m pytest -q tests/unit/test_zip_report_semantics.py tests/unit/test_material_library_filters.py tests/api/test_material_library_filters_api.py
       - name: Secret store and multipart storage contracts
         run: >-
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
@@ -207,6 +221,12 @@ jobs:
           tests/api/test_v19_multipart_background_finalize.py
           tests/api/test_zip_class_samples_v19.py
           tests/api/test_v19_import_failure_rollback.py
+          tests/api/test_v19_zip_safety_limits.py
+          tests/api/test_zip_processing_p1.py
+      - name: ZIP compression capability preflight
+        run: >-
+          python -m pytest -q tests/unit/storage/test_zip_import.py
+          -k "compression or existing_zip_codecs or declared_archive or unsafe or corrupt"
       - name: Backend syntax and wiring guards
         shell: bash
         run: |
@@ -240,4 +260,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
-        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs
+        run: npx playwright test tests/browser/zip-import-material-flow.spec.mjs tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/zip-label-presentation.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs

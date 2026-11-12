@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import shutil
 import sys
@@ -20,7 +21,8 @@ from platform_core.training_precision import (
 
 
 def now_iso():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    from datetime import timezone
+    return datetime.now(timezone.utc).isoformat()
 
 
 def read_json(path: Path, default):
@@ -52,10 +54,8 @@ def write_json(path: Path, data):
 
 
 def update_job(job_file: Path, **kwargs):
-    job = read_json(job_file, {})
-    job.update(kwargs)
-    job["updated_at"] = now_iso()
-    write_json(job_file, job)
+    from platform_core.training_timing import update_job as update_training_job
+    return update_training_job(job_file, kwargs, writer=write_json)
 
 
 def publish_startup_stage(job_file: Path, stage: str, message: str, progress_percent: float, **extra):
@@ -260,7 +260,64 @@ def _iou_xyxy(a, b):
     aa=max(0.0,a[2]-a[0])*max(0.0,a[3]-a[1]); bb=max(0.0,b[2]-b[0])*max(0.0,b[3]-b[1])
     return inter/max(1e-9,aa+bb-inter)
 
-def analyze_detection_errors(model, data_yaml, device='cpu', max_images=200, iou_threshold=0.5, conf=0.25):
+def _select_validation_error_images(img_dir, lab_dir, max_images=200):
+    """Stable label-stratified sample; never use lexicographic first-N Val files.
+
+    Label presence and empty annotations are the only known strata here. Camera,
+    lighting and time provenance cannot be inferred from arbitrary filenames.
+    """
+    import hashlib
+    files = [path for path in img_dir.iterdir() if path.is_file() and path.suffix.lower()
+             in {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}]
+    limit = min(len(files), max(0, int(max_images or 200)))
+    strata = {}
+    for path in files:
+        label_path = lab_dir / (path.stem + '.txt')
+        labels = set()
+        try:
+            if label_path.is_file():
+                for line in label_path.read_text(encoding='utf-8').splitlines():
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        labels.add(str(int(float(parts[0]))))
+        except (OSError, ValueError, OverflowError):
+            labels.add('__invalid_label__')
+        if not labels:
+            labels.add('__empty_label__')
+        for label in labels:
+            strata.setdefault(label, []).append(path)
+    def priority(path):
+        return hashlib.sha256(path.name.encode('utf-8')).digest()
+    for members in strata.values():
+        members.sort(key=priority)
+    # Rare class/empty-label buckets go first, followed by balanced sampling.
+    order = sorted(strata, key=lambda label: (len(strata[label]), label))
+    selected, seen = [], set()
+    offsets = {label: 0 for label in order}
+    while len(selected) < limit:
+        progressed = False
+        for label in order:
+            members = strata[label]
+            while offsets[label] < len(members) and members[offsets[label]] in seen:
+                offsets[label] += 1
+            if offsets[label] >= len(members):
+                continue
+            member = members[offsets[label]]
+            offsets[label] += 1
+            seen.add(member)
+            selected.append(member)
+            progressed = True
+            if len(selected) == limit:
+                break
+        if not progressed:
+            break
+    return selected, {"split": "val", "method": "label_stratified_sha256_v1",
+                      "population_images": len(files), "sampled_images": len(selected),
+                      "strata_population": {label: len(rows) for label, rows in sorted(strata.items())},
+                      "note": "仅用于训练完成后的 Val 抽样误差诊断，不能替代冻结独立 Test；未对摄像头/时段/光照做无证据分层"}
+
+
+def analyze_detection_errors(model, data_yaml, device='cpu', max_images=200, iou_threshold=0.5, conf=0.25, sampling_info=None):
     """Compare predictions against YOLO ground truth on validation images.
     Returns sample-level FP/FN details; no VLM/LLM judgement is used.
     """
@@ -268,7 +325,9 @@ def analyze_detection_errors(model, data_yaml, device='cpu', max_images=200, iou
     img_dir=root/'images'/'val'; lab_dir=root/'labels'/'val'
     if not img_dir.exists(): return []
     names=getattr(model,'names',{}) or {}
-    files=[x for x in sorted(img_dir.iterdir()) if x.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.webp'}][:max(0,int(max_images or 200))]
+    files, sample_evidence = _select_validation_error_images(img_dir, lab_dir, max_images)
+    if isinstance(sampling_info, dict):
+        sampling_info.update(sample_evidence)
     errors=[]
     for image_path in files:
         try:
@@ -410,12 +469,11 @@ def _ai_eval_contact_sheet(data_yaml, count, seed, epoch, work_dir):
     """
     from PIL import Image, ImageOps, ImageDraw
     import random
-    val_dir=Path(data_yaml).resolve().parent/"images"/"val"
-    files=[x for x in sorted(val_dir.glob("*")) if x.is_file()]
+    _, _, files, _ = _stage_validation_source(data_yaml)
     if not files:
         raise RuntimeError("试验集没有可供AI介入分析的图片")
     n=max(1,min(int(count or 1),len(files),24))
-    rng=random.Random(int(seed or 0)+int(epoch)*1009)
+    rng=random.Random(int(seed or 0))
     chosen=rng.sample(files,n) if len(files)>n else files[:]
     cols=min(4,max(1,n)); rows=(n+cols-1)//cols; tw,th=240,180
     sheet=Image.new("RGB",(cols*tw,rows*(th+22)),"white")
@@ -453,50 +511,174 @@ def _run_ai_intervention(cfg, trainer, args, epoch, project_dir):
     return {"epoch":epoch,"action":action,"reason":str(dec.get("reason") or "AI未提供原因"),"target_labels":targets,"extra_epochs":extra,"model_name":cfg.get("name") or cfg.get("model_name") or "AI模型","summary":summary,"raw":dec}
 
 
-def stage_gate_random_eval(trainer, args, epoch):
-    """Evaluate the current checkpoint on a fresh deterministic random sample of the trial/val split.
-    val_max_samples=0 means all trial data. Sampling changes by epoch but is reproducible for the same seed+epoch.
-    Falls back to the normal trainer validation metrics if the extra evaluation cannot run.
-    """
-    import random, yaml
-    root=Path(args.data).resolve().parent
-    val_dir=root/'images'/'val'
-    files=[x for x in sorted(val_dir.iterdir()) if x.is_file() and x.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.webp'}] if val_dir.exists() else []
+def _stage_split_files(root, source, *, optional=False):
+    """Resolve local YAML split directories/lists without escaping the frozen bundle."""
+    extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff', '.dng', '.mpo', '.pfm', '.heic'}
+    if source is None:
+        return []
+    entries = source if isinstance(source, list) else [source]
+    files = []
+    for entry in entries:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError('验证来源格式无效')
+        path = Path(entry)
+        path = (path if path.is_absolute() else root / path).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError('验证来源超出冻结数据目录')
+        if not path.exists() and optional:
+            continue
+        if path.is_dir():
+            candidates = sorted(x for x in path.rglob('*') if x.is_file() and x.suffix.lower() in extensions)
+        elif path.is_file() and path.suffix.lower() == '.txt':
+            candidates = []
+            for line in path.read_text(encoding='utf-8-sig').splitlines():
+                if not line.strip():
+                    continue
+                item = Path(line.strip())
+                # Ultralytics resolves ./ relative to the manifest, other entries
+                # against the process cwd; reject ambiguous relative spellings.
+                if not item.is_absolute() and not line.strip().startswith('./'):
+                    raise ValueError('验证清单相对路径必须使用 ./')
+                candidates.append(item if item.is_absolute() else path.parent / item)
+        else:
+            raise ValueError('验证来源不存在或不是目录/清单')
+        for candidate in candidates:
+            candidate = candidate.resolve()
+            if not candidate.is_relative_to(root) or not candidate.is_file() or candidate.suffix.lower() not in extensions:
+                raise ValueError('验证清单图片无效或超出冻结数据目录')
+            files.append(candidate)
+    return sorted(set(files))
+
+
+def _stage_validation_source(data_yaml, cache=None):
+    import hashlib
+    import yaml
+
+    data = Path(data_yaml).resolve()
+    raw = data.read_bytes()
+    spec = yaml.safe_load(raw) or {}
+    if not isinstance(spec, dict):
+        raise ValueError('验证数据配置无效')
+    base = Path(spec.get('path') or '.')
+    root = (base if base.is_absolute() else data.parent / base).resolve()
+    files = _stage_split_files(root, spec.get('val', 'images/val'))
     if not files:
-        return dict(getattr(trainer,'metrics',{}) or {}), [], 'normal_validation', '试验集为空，使用训练器当前验证指标'
-    limit=max(0,int(args.val_max_samples or 0))
-    if limit<=0 or limit>=len(files):
-        return dict(getattr(trainer,'metrics',{}) or {}), [x.name for x in files], 'all', ''
-    rng=random.Random(int(args.seed or 0)+int(epoch)*104729)
-    chosen=rng.sample(files,min(limit,len(files)))
-    try:
-        # Save the current epoch checkpoint, then run a standalone validation only on this sample.
-        try: trainer.save_model()
-        except Exception: pass
-        last=Path(str(getattr(trainer,'last','') or ''))
-        if not last.is_file(): last=Path(str(getattr(trainer,'save_dir','')))/'weights'/'last.pt'
-        if not last.is_file():
-            return dict(getattr(trainer,'metrics',{}) or {}), [x.name for x in chosen], 'random_fallback', '当前轮次检查点尚未写出，使用训练器当前验证指标'
-        work=Path(args.project_dir)/'jobs'/args.job_id/'stage_gate'
-        work.mkdir(parents=True,exist_ok=True)
-        txt=work/f'epoch_{epoch}_val.txt'
-        txt.write_text('\n'.join(str(x.resolve()).replace('\\','/') for x in chosen),encoding='utf-8')
-        base=yaml.safe_load(Path(args.data).read_text(encoding='utf-8')) or {}
-        base['path']=str(root).replace('\\','/')
-        base['val']=str(txt.resolve()).replace('\\','/')
-        temp=work/f'epoch_{epoch}_data.yaml';temp.write_text(yaml.safe_dump(base,allow_unicode=True,sort_keys=False),encoding='utf-8')
-        from ultralytics import YOLO
-        gate_model=YOLO(str(last))
-        mm=gate_model.val(data=str(temp),split='val',imgsz=int(args.imgsz),device=args.device,verbose=False)
-        metrics=dict(getattr(mm,'results_dict',{}) or {})
+        raise ValueError('冻结验证集为空')
+    forbidden = set()
+    for split in ('train', 'test'):
+        forbidden.update(_stage_split_files(root, spec.get(split, f'images/{split}'), optional=True))
+    if set(files) & forbidden:
+        raise ValueError('验证集与训练集/独立Test路径冲突')
+    for path in files:
+        if any(part.lower() in {'train', 'training', 'test', 'testing'} for part in path.relative_to(root).parts[:-1]):
+            raise ValueError('训练/独立Test目录不能作为阶段验证来源')
+    def digest(path):
+        with path.open('rb') as stream:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+    all_files = sorted(set(files) | forbidden)
+    fingerprint = ((str(data), hashlib.sha256(raw).hexdigest()), tuple(
+        (str(path), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size)
+        for path in all_files for stat in (path.stat(),)
+    ))
+    if cache is not None and cache.get('fingerprint') == fingerprint:
+        return root, spec, files, cache['identity']
+    digests = {path: digest(path) for path in all_files}
+    identities = tuple((str(path), digests[path]) for path in files)
+    if {sha for _, sha in identities} & {digests[path] for path in forbidden}:
+        raise ValueError('验证集与训练集/独立Test图片SHA冲突')
+    after = tuple(
+        (str(path), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size)
+        for path in all_files for stat in (path.stat(),)
+    )
+    if after != fingerprint[1] or data.read_bytes() != raw:
+        raise ValueError('验证来源在身份核验期间发生变化')
+    identity = (str(data), hashlib.sha256(raw).hexdigest(), identities,
+                tuple((str(path), digests[path]) for path in sorted(forbidden)))
+    if cache is not None:
+        cache.update(fingerprint=fingerprint, identity=identity)
+    return root, spec, files, identity
+
+
+def _stage_measured_metrics(metrics):
+    import math
+
+    measured = {}
+    for key, value in (metrics or {}).items():
         try:
-            del gate_model
-            import torch
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
-        except Exception: pass
-        return metrics,[x.name for x in chosen],'random',''
-    except Exception as e:
-        return dict(getattr(trainer,'metrics',{}) or {}),[x.name for x in chosen],'random_fallback',str(e)
+            numeric = float(value)
+            if math.isfinite(numeric):
+                measured[key] = numeric
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return measured
+
+
+def stage_gate_random_eval(trainer, args, epoch):
+    """Evaluate a fixed validation subset; never turn unproven sources into stop evidence."""
+    import random
+    import yaml
+
+    try:
+        cache = getattr(trainer, '_stage_validation_cache', None)
+        if cache is None:
+            cache = {}
+            trainer._stage_validation_cache = cache
+        root, spec, files, identity = _stage_validation_source(args.data, cache)
+        frozen = getattr(trainer, '_stage_validation_identity', None)
+        if frozen is not None and frozen != identity:
+            raise ValueError('冻结验证集身份/内容发生变化')
+        trainer._stage_validation_identity = identity
+    except Exception as error:
+        return {}, [], 'invalid_source', str(error)
+
+    names = [path.name for path in files]
+    if len(set(names)) != len(names):
+        names = [path.relative_to(root).as_posix() for path in files]
+    def normal_validation(mode, note):
+        # Trainer metrics can only stand for its actual full validation loader.
+        try:
+            runtime = getattr(trainer, 'data', {}) or {}
+            runtime_files = _stage_split_files(root, runtime.get('val'))
+            validator_args = getattr(getattr(trainer, 'validator', None), 'args', None)
+            if runtime_files != files or getattr(validator_args, 'split', 'val') != 'val':
+                raise ValueError('训练器验证来源无法与冻结val对应')
+            if getattr(getattr(trainer, 'args', None), 'val', True) is False:
+                raise ValueError('训练器当前轮次未启用验证')
+            return _stage_measured_metrics(getattr(trainer, 'metrics', {})), names, mode, note
+        except Exception as error:
+            return {}, [], 'invalid_source', str(error)
+
+    limit = max(0, int(args.val_max_samples or 0))
+    if limit <= 0 or limit >= len(files):
+        return normal_validation('all', '')
+    chosen = random.Random(int(args.seed or 0)).sample(files, limit)
+    try:
+        save_model = getattr(trainer, 'save_model', None)
+        if callable(save_model):
+            save_model()
+        last = Path(str(getattr(trainer, 'last', '') or ''))
+        if not last.is_file():
+            last = Path(str(getattr(trainer, 'save_dir', ''))) / 'weights' / 'last.pt'
+        if not last.is_file():
+            raise ValueError('当前轮次检查点尚未写出')
+        work = Path(args.project_dir) / 'jobs' / args.job_id / 'stage_gate'
+        work.mkdir(parents=True, exist_ok=True)
+        txt = work / f'epoch_{epoch}_val.txt'
+        txt.write_text('\n'.join(x.as_posix() for x in chosen), encoding='utf-8')
+        base = dict(spec)
+        base['path'] = root.as_posix()
+        base['val'] = txt.resolve().as_posix()
+        temp = work / f'epoch_{epoch}_data.yaml'
+        temp.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        from ultralytics import YOLO
+        gate_model = YOLO(str(last))
+        result = gate_model.val(data=str(temp), split='val', imgsz=int(args.imgsz), device=args.device, verbose=False)
+        metrics = _stage_measured_metrics(getattr(result, 'results_dict', {}))
+        del gate_model
+        sampled = [names[files.index(path)] for path in chosen]
+        return metrics, sampled, 'random', ''
+    except Exception as error:
+        return normal_validation('normal_validation', f'子集评估失败，实际使用完整验证集：{error}')
 
 
 def _training_phase_percent(completed_epochs, total_epochs, *, phase_start=20.0, phase_end=90.0):
@@ -546,6 +728,39 @@ def publish_batch_progress(
         message=f"训练中 · {current_item}",
     )
     return percent
+
+
+def attach_training_time_cap(model, max_train_hours, *, budget=None, clock=None):
+    """Stop a YOLO run at a wall-clock cap without letting Ultralytics override Epochs.
+
+    Time is a safety ceiling. Ordinary completion remains controlled by the
+    requested Epoch count, early stopping, and the existing quality gate.
+    The same budget can be shared by a subsequent AI continuation run.
+    """
+    if max_train_hours is None:
+        return budget
+    hours = float(max_train_hours)
+    if not math.isfinite(hours) or hours < 0:
+        raise ValueError("maximum training time must be a finite non-negative number")
+    if hours == 0:  # Compatibility for historical jobs; new submissions reject zero.
+        return budget
+    clock = clock or time.monotonic
+    state = budget if budget is not None else {"started_at": None, "reached": False}
+    limit_seconds = hours * 3600.0
+
+    def on_batch_start(_trainer):
+        if state.get("started_at") is None:
+            state["started_at"] = clock()
+
+    def on_batch_end(trainer):
+        started_at = state.get("started_at")
+        if started_at is not None and clock() - started_at >= limit_seconds:
+            trainer.stop = True
+            state["reached"] = True
+
+    model.add_callback("on_train_batch_start", on_batch_start)
+    model.add_callback("on_train_batch_end", on_batch_end)
+    return state
 
 
 def attach_training_batch_progress(
@@ -677,19 +892,11 @@ def effective_training_patience(requested_patience, requested_epochs, stop_thres
         requested = max(0, int(requested_patience or 0))
     except (TypeError, ValueError, OverflowError):
         requested = 0
-    try:
-        epochs = max(1, int(requested_epochs or 1))
-    except (TypeError, ValueError, OverflowError):
-        epochs = 1
-    try:
-        target = float(stop_threshold or 0)
-    except (TypeError, ValueError, OverflowError):
-        target = 0.0
     if early_stopping_enabled:
         return max(1, requested)
-    # Preserve the selected training horizon (except for an explicitly configured
-    # quality-target gate) instead of silently stopping at patience=100.
-    return max(requested, epochs + 1)
+    # Ultralytics patience=0 means infinity. A finite epochs+1 sentinel can
+    # silently stop time-based runs after the trainer extends its epoch horizon.
+    return 0
 
 
 def decide_training_quality_gate(value, *, metric, stop_threshold, continue_threshold=0.0):
@@ -735,7 +942,7 @@ def decide_training_quality_gate(value, *, metric, stop_threshold, continue_thre
 
 def derive_training_completion_metadata(
     trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None,
-    max_train_hours=None, elapsed_hours=None,
+    max_train_hours=None, elapsed_hours=None, time_limit_triggered=False,
 ):
     """Return durable, user-facing completion truth without guessing from 100% progress."""
     requested = max(0, int(requested_epochs or 0))
@@ -774,7 +981,7 @@ def derive_training_completion_metadata(
         max_hours is not None
         and max_hours > 0
         and elapsed is not None
-        and elapsed >= max_hours * 0.95
+        and (bool(time_limit_triggered) or elapsed >= max_hours * 0.95)
         and requested > 0
         and completed < requested
     ):
@@ -835,6 +1042,8 @@ def derive_training_completion_metadata(
 
 
 def main():
+    from platform_core.task_runtime.process_start_gate import wait_for_execution_binding
+    wait_for_execution_binding()
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)
@@ -930,9 +1139,12 @@ def main():
             "gpu_policy": args.gpu_policy,
             "precision": runtime_precision,
             "resolved_precision": precision,
+            "max_train_hours": time_cap_hours,
+            "time_limit_policy": "epoch_primary_with_time_cap",
         }
 
     actual_model = resolve_training_model(args.model, pretrained)
+    time_cap_hours = float(args.time) if args.time is not None and float(args.time) > 0 else None
     train_args = {
         "data": args.data,
         "epochs": args.epochs,
@@ -963,8 +1175,8 @@ def main():
         "degrees": args.degrees, "translate": args.translate, "scale": args.scale, "shear": args.shear,
         "perspective": args.perspective, "flipud": args.flipud, "fliplr": args.fliplr, "mixup": args.mixup,
     }
-    if args.time is not None:
-        train_args["time"] = float(args.time)
+    # Do not pass the time cap as Ultralytics' "time" argument: it overrides
+    # Epochs and makes the training ETA track the user-entered time limit.
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
@@ -1120,6 +1332,7 @@ def main():
         def on_fit_epoch_end(trainer):
             nonlocal gate_reason, ai_plan, ai_rounds
             progress = publish_epoch_progress(job_file, telemetry, trainer, int(args.epochs))
+            update_job(job_file, usage_completed_epoch=True)
             epoch = int(progress.get("epoch") or (int(getattr(trainer,"epoch",0))+1))
             if ai_enabled and epoch in ai_epochs and ai_rounds < max(1,int(args.ai_max_rounds or 1)) and ai_cfg:
                 try:
@@ -1167,6 +1380,7 @@ def main():
                 publish_startup_stage(job_file, "initializing_dataloader", "初始化训练数据加载器", 27)
 
             def verify_runtime(trainer):
+                update_job(job_file, training_segment_started_at=now_iso())
                 runtime_resources = telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
@@ -1222,8 +1436,10 @@ def main():
             target.add_callback("on_train_start", verify_runtime)
             target.add_callback("on_train_batch_start", first_batch)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
+            target.add_callback('on_val_end', lambda _validator: update_job(job_file, usage_validation_observed=True))
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
+        time_cap_state = attach_training_time_cap(model, time_cap_hours)
         training_start_monotonic = time.monotonic()
         try:
             evidence["effective_args"] = recorded_train_params(train_args)
@@ -1234,6 +1450,7 @@ def main():
             )
             with scoped_worker_amp_check(amp_decision):
                 train_result = model.train(**train_args)
+            update_job(job_file, training_segment_finished_at=now_iso())
         except Exception as train_error:
             is_oom = (
                 isinstance(train_error, torch.cuda.OutOfMemoryError)
@@ -1249,7 +1466,7 @@ def main():
                 ) from train_error
             raise
         first_run_dir=runs_dir/args.run_name
-        if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
+        if not (time_cap_state or {}).get("reached") and ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"
             resume_model=first_last if first_last.is_file() else first_best
             if resume_model.is_file():
@@ -1266,8 +1483,10 @@ def main():
                 cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
                 model=YOLO(str(resume_model))
                 attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
+                attach_training_time_cap(model, time_cap_hours, budget=time_cap_state)
                 with scoped_worker_amp_check(amp_decision):
                     train_result=model.train(**cont_args)
+                update_job(job_file, training_segment_finished_at=now_iso())
                 phase["finished_at"]=now_iso()
                 update_job(job_file,ai_continuation=phase,progress_percent=95.0,current_epoch=cumulative_total_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item="AI追加训练完成，正在校验模型产物",message="AI追加训练完成，正在校验模型产物")
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))
@@ -1313,7 +1532,10 @@ def main():
                     dataset_root=dataset_root.resolve()
                 test_images_dir=dataset_root/"images"/"test"
                 hidden_ground_truth_dir=dataset_root.parent/"evaluation"/"ground_truth"/"test"
+                from platform_core.training_material_usage import assert_frozen_formal_test
                 current_job=read_json(job_file,{})
+                assert_frozen_formal_test(project_dir, args.job_id,
+                    str(current_job.get('snapshot_id') or ''))
                 update_job(
                     job_file,
                     progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),
@@ -1321,7 +1543,16 @@ def main():
                     message="训练完成，正在对无标注试验图片执行盲测",
                 )
 
+                test_inference_started=False
+
                 def blind_predict(image_path):
+                    nonlocal test_inference_started
+                    if not test_inference_started:
+                        # Persist before first blind inference. A failed or
+                        # cancelled partial Test must not lose its exposure
+                        # merely because final metrics were never produced.
+                        update_job(job_file, usage_test_observed=True)
+                        test_inference_started=True
                     results=best_model.predict(
                         source=str(image_path),
                         imgsz=int(args.imgsz),
@@ -1376,7 +1607,9 @@ def main():
             training_report["test_result"]={"status":"failed","metrics":{},"error":"验证阶段失败，未执行最终试验集评估："+str(ve)}
         try:
             analysis_limit=int(args.val_max_samples) if int(args.val_max_samples or 0)>0 else 200
-            training_report["error_samples"]=analyze_detection_errors(best_model,args.data,args.device,max_images=min(500,analysis_limit))
+            sampling_info = {}
+            training_report["error_samples"]=analyze_detection_errors(best_model,args.data,args.device,max_images=min(500,analysis_limit),sampling_info=sampling_info)
+            training_report["error_analysis_sampling"] = sampling_info
             training_report["error_sample_count"]=len([x for x in training_report["error_samples"] if not x.get("analysis_error")])
         except Exception as ae:
             training_report["error_analysis_error"]=str(ae)
@@ -1395,8 +1628,11 @@ def main():
             completed_epochs=completed_epochs,
             gate_reason=gate_reason,
             ai_plan=ai_plan,
-            max_train_hours=args.time,
-            elapsed_hours=(time.monotonic()-training_start_monotonic)/3600.0,
+            max_train_hours=time_cap_hours,
+            elapsed_hours=(
+                time.monotonic() - ((time_cap_state or {}).get("started_at") or training_start_monotonic)
+            ) / 3600.0,
+            time_limit_triggered=bool((time_cap_state or {}).get("reached")),
         )
         training_report["completion"]={k:v for k,v in completion.items() if k != "completion_message"}
         update_job(

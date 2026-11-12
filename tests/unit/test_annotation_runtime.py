@@ -5,6 +5,18 @@ import pytest
 import platform_core.annotation_runtime as annotation_runtime
 
 
+def test_headless_optional_account_probe_does_not_block_freezing_legacy_reference(monkeypatch):
+    class UnavailableStore:
+        def get(self, _reference):
+            raise annotation_runtime.SecretStoreUnavailable('isolated unavailable keyring')
+    monkeypatch.setattr(annotation_runtime, 'KeyringSecretStore', UnavailableStore)
+    frozen, revision = annotation_runtime.freeze_model_config(_model())
+    assert frozen['secret_ref'] == _model()['secret_ref']
+    assert frozen['inference_execution_policy']['concurrency'] == 1
+    assert 'inference_account_identity' not in frozen
+    assert revision
+
+
 def _write_project(tmp_path):
     project_dir = tmp_path / "projects" / "p1"
     project_dir.mkdir(parents=True)
@@ -18,6 +30,20 @@ def _write_project(tmp_path):
     )
     (tmp_path / "prompt_library.json").write_text("[]", encoding="utf-8")
     return project_dir
+
+
+def test_changed_credential_cannot_reuse_frozen_account_capacity(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    monkeypatch.setenv('INFERENCE_TEST_CREDENTIAL', 'isolated-credential-one')
+    model = {**_model(), 'secret_ref': 'env:INFERENCE_TEST_CREDENTIAL'}
+    frozen = annotation_runtime.prepare_request(
+        tmp_path, 'p1', {'image_ids': ['one'], 'labels': ['fire'], 'model_config_id': 'model-1'},
+        runtime=False, model_configs=[model])
+    assert 'isolated-credential-one' not in json.dumps(frozen)
+    monkeypatch.setenv('INFERENCE_TEST_CREDENTIAL', 'isolated-credential-two')
+    monkeypatch.setattr(annotation_runtime, 'provider_factory', lambda _cfg: pytest.fail('changed account must not dispatch'))
+    with pytest.raises(ValueError, match='AI_MODEL_CREDENTIAL_CHANGED'):
+        annotation_runtime.prepare_request(tmp_path, 'p1', frozen, runtime=True)
 
 
 def _model(model_name="vision-v1", detect_url="http://vision-v1.local/v1"):
@@ -64,6 +90,16 @@ def test_submit_freezes_safe_model_snapshot_and_revision(tmp_path):
     assert frozen["model_config_snapshot"]["headers_json"] == {"X-Trace": "keep"}
     assert "api_key" not in frozen["model_config_snapshot"]
     assert "_api_key" not in frozen["model_config_snapshot"]
+
+
+def test_disabled_model_is_not_selected_for_new_task_but_does_not_change_existing_snapshot(tmp_path):
+    _write_project(tmp_path)
+    disabled = {**_model(), "enabled": False, "default_for_annotation": True}
+    available = {**_model("vision-v2"), "id": "model-2", "enabled": True}
+    with pytest.raises(ValueError, match="AI_MODEL_DISABLED"):
+        annotation_runtime.prepare_request(tmp_path, "p1", {"image_ids": ["one"], "labels": ["fire"], "model_config_id": "model-1"}, runtime=False, model_configs=[disabled, available])
+    selected = annotation_runtime.prepare_request(tmp_path, "p1", {"image_ids": ["one"], "labels": ["fire"]}, runtime=False, model_configs=[disabled, available])
+    assert selected["model_config_id"] == "model-2"
 
 
 def test_runtime_uses_frozen_model_snapshot_even_after_live_config_changes(tmp_path, monkeypatch):

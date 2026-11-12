@@ -60,3 +60,22 @@ test('responses from a previous project cannot replace either model catalogue',a
   assert.equal(runtime.state.testModels,genericRows);
   assert.equal(runtime.state.scenarioTestModels,scenarioRows);
 });
+
+test('an older read of the same catalogue cannot commit after a newer read on another visit',async()=>{
+  const runtime=owner();
+  const old=runtime.load('质量中心');
+  runtime.state.page='部署测试';
+  const generic=runtime.load('部署测试');
+  runtime.state.page='质量中心';
+  const current=runtime.load('质量中心');
+  const newest=[{id:'new-scenario',scenario_eligible:true}];
+  runtime.pending.filter(row=>row.url.includes('model_scope=scenario'))[1].resolve({items:newest});
+  runtime.finishOther();
+  await current;
+  runtime.pending.filter(row=>row.url.includes('model_scope=scenario'))[0].resolve({items:[{id:'old-scenario'}]});
+  await old;
+  assert.equal(runtime.state.scenarioTestModels,newest);
+  runtime.finish('generic',[{id:'generic-current'}]);
+  await generic;
+  assert.equal(runtime.state.scenarioTestModels,newest);
+});

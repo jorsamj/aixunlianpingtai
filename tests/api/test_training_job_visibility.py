@@ -37,7 +37,7 @@ def test_training_job_historical_algorithm_id_resolves_current_name(tmp_path, mo
     monkeypatch.setattr(
         app_module,
         "list_algorithms_internal",
-        lambda _project_id: [{"id": "algorithm-1", "name": "当前算法名称"}],
+        lambda _project_id, *, algorithm_id=None: [{"id": "algorithm-1", "name": "当前算法名称"}],
     )
 
     job = app_module.enrich_job_runtime("project-1", {
@@ -54,7 +54,7 @@ def test_training_job_deleted_algorithm_uses_safe_display_name(tmp_path, monkeyp
 
     repository = _empty_task_repository(tmp_path)
     monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
-    monkeypatch.setattr(app_module, "list_algorithms_internal", lambda _project_id: [])
+    monkeypatch.setattr(app_module, "list_algorithms_internal", lambda _project_id, *, algorithm_id=None: [])
 
     job = app_module.enrich_job_runtime("project-1", {
         "id": "training-deleted-algorithm",
@@ -73,7 +73,7 @@ def test_training_job_missing_historical_project_does_not_break_projection(tmp_p
     monkeypatch.setattr(
         app_module,
         "list_algorithms_internal",
-        lambda _project_id: (_ for _ in ()).throw(
+        lambda _project_id, *, algorithm_id=None: (_ for _ in ()).throw(
             app_module.HTTPException(status_code=404, detail="项目不存在")
         ),
     )

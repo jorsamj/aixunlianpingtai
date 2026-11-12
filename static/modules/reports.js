@@ -35,6 +35,7 @@ export function trainingCharts(history = [], samples = []) {
 }
 
 const metricCredibilityReasons = Object.freeze({
+  test_historical_independence_assumed: 'Test 历史使用记录不完整，按业务规则准入；不能认证为严格独立 Benchmark',
   independent_test_unavailable: '独立 Test 未完成，只有验证集结果',
   independent_test_metric_or_samples_missing: '独立 Test 缺少有效指标或实际样本数',
   validation_test_map50_gap_at_least_10pp: '验证集与独立 Test 的 mAP50 差距达到 10 个百分点',
@@ -90,13 +91,19 @@ export function metricCredibilityHtml(value) {
     snapshot_truth: '仅冻结 Test 来源',
     unavailable: '缺少绑定证明'
   })[value.independent_test_binding_level] || '未记录';
+  const historicalIndependence = ({
+    verified_independent: '历史独立性已核验',
+    assumed_unseen: '历史未知，按未训练准入（非严格认证）',
+    known_exposed: '已发现训练暴露，不可视为独立 Test',
+    unavailable: '历史独立性证据未记录'
+  })[value.historical_independence] || '历史独立性证据未记录';
   const reasons = Array.isArray(value.reason_codes) ? value.reason_codes : [];
   const issues = reasons.slice(0, 25).map(code => `<li>${escapeText(metricCredibilityReasons[String(code)] || String(code))}</li>`).join('');
   const val = percent(value.validation_map50);
   const tst = percent(value.independent_test_map50);
   return `<section class="report429-card" data-metric-credibility="${escapeText(value.status || 'unknown')}">
-    <header><b>模型高分可信度</b><span>${escapeText(status)}</span></header>
-    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div><div><span>独立 Test 输入绑定</span><b>${escapeText(bindingLevel)}</b></div></div>
+    <header><b>训练与评测可信度</b><span>${escapeText(status)}</span></header>
+    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div><div><span>独立 Test 输入绑定</span><b>${escapeText(bindingLevel)}</b></div><div><span>Test 历史独立性</span><b>${escapeText(historicalIndependence)}</b></div></div>
     ${issues ? `<p>待核实的证据（并非数据泄漏已被证实）：</p><ul>${issues}</ul>` : '<p>当前未触发已定义的高分复核项，但仍不代表生产场景已经验收。</p>'}
     <p class="item-sub">mAP 是目标检测指标，不是事件告警准确率；本诊断不判断造假，也不替代现场业务验收。</p>
   </section>`;
@@ -452,7 +459,7 @@ export function trainingReportHtml({job={},report={}}={}) {
   const count=report.data_summary?.counts||report.dataset_counts||{};
   const samples=(errors.items||[]).slice(0,12);
   const previewUrl=row=>`/api/v12/projects/${encodeURIComponent(id.project_id)}/algorithms/${encodeURIComponent(id.algorithm_id)}/versions/${encodeURIComponent(id.version_id)}/evaluation/images/${encodeURIComponent(row.image)}?${new URLSearchParams({expected_evaluation_id:errors.evaluation_id||'',expected_image_id:row.image_id||'',expected_sha256:row.image_content_sha256||''})}`;
-  return `<div class="report429 quality-workspace training-report-workspace" data-report-job="${escapeText(id.job_id||job.id||'')}" data-report-version="${escapeText(id.version_id||'')}">
+  return `<div class="report429 quality-workspace training-report-workspace" data-training-report-dialog data-report-job="${escapeText(id.job_id||job.id||'')}" data-report-version="${escapeText(id.version_id||'')}">
     <header class="quality-workspace-head"><div><span>TRAINING REPORT · ${escapeText(report.status||job.status||'状态未记录')}</span><h2>${escapeText(id.algorithm_name||'训练报告')} <small>${escapeText(report.version_name||id.version_id||'版本未记录')}</small></h2><p>任务 ${escapeText(id.job_id||'未记录')} · 模型 ${escapeText(report.model_architecture||'架构未记录')}</p></div><div class="report-primary-actions"><button class="btn primary" data-report-copy>复制 ChatGPT 分析材料</button><button class="btn" data-report-evaluation>查看独立评测</button></div></header>
     <div class="quality-metrics report-primary-metrics">${reportMetricCard('Validation Precision',metric('precision','metrics/precision(B)'))}${reportMetricCard('Validation Recall',metric('recall','metrics/recall(B)'))}${reportMetricCard('Val mAP50',metric('map50','metrics/mAP50(B)'))}${reportMetricCard('Val mAP50-95',metric('map5095','metrics/mAP50-95(B)'))}${kv('实际完成 / 请求Epoch',`${report.completed_epochs??'未记录'} / ${report.requested_train_params?.epochs??'未记录'}`)}${kv('真实最佳Checkpoint Epoch',report.best_epoch)}</div>
     <div class="report-status-row"><span>模型成果：${report.artifact_verified?'已验证归档':'验证未记录'}</span><span>独立 Test：${evaluation.status==='succeeded'?'已完成':'未完成或未记录'}</span><span>业务验收：未记录</span><span>结束原因：${escapeText(report.completion_reason||'未记录')}</span></div>

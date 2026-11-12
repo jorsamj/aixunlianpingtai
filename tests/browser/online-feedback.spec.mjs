@@ -413,7 +413,7 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
     source:{algorithm_id:'algo-supp',version_id:'ver-supp',decision_id:'e'.repeat(64),evaluation_id:'a'.repeat(64)},
     data_draft:{weak_labels:['smoke'],problem_samples:[],dataset_revision_id:'',snapshot_id:'snapshot-old'},
   };
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`,async route=>{
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`,async route=>{
     if(route.request().method()!=='GET')return route.continue();
     await route.fulfill({
       status:200,contentType:'application/json',

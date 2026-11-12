@@ -17,7 +17,7 @@ test('late Uppy view mount cannot replace a newer Modal view handle',async()=>{
 
 
 test('a late entry module cannot reopen a closed chooser or a foreign project',async()=>{
-  const source=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8').replace(/^import .*;\s*$/m,'').replace("import('./modules/uppy-zip-view.js?v=4226365')",'loadView()');
+  const source=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8').replace(/^import .*;\s*$/m,'').replace("import('./modules/uppy-zip-view.js?v=4226366')",'loadView()');
   for(const change of ['closed','project']){
     let resolve,opened=0;const input={isConnected:true},state={project:{id:'p'}},window={};
     const document={getElementById:()=>input};

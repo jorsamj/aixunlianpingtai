@@ -1,5 +1,62 @@
 import {test, expect} from '@playwright/test';
 
+test('algorithm list filters and category picker remain inside the viewport at sidebar and mobile widths', async ({page}) => {
+  await page.setViewportSize({width: 1366, height: 900});
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('算法列表'));
+  const root = page.locator('[data-algorithm-list-owner="AlgorithmListRuntime"]');
+  await expect(root.locator('.algorithm-filter-surface')).toBeVisible();
+
+  await page.evaluate(() => window.AlgorithmListRuntime.setExternalProvider({
+    snapshot: () => ({externalMode: true, categoryRows: [
+      {id: 'responsive-root', name: '公共安全', parentId: '', ancestorIds: [], path: '公共安全', hasChildren: true},
+      {id: 'responsive-leaf', name: '人员检测', parentId: 'responsive-root', ancestorIds: ['responsive-root'], path: '公共安全 / 人员检测', hasChildren: false},
+    ]}),
+    matches: () => true,
+  }));
+
+  for (const width of [1920, 1366, 1100, 1024, 900, 768, 600, 390]) {
+    await page.setViewportSize({width, height: 900});
+    await root.locator('[data-category-picker-toggle]').click();
+    const picker = root.locator('[data-category-popover]');
+    await expect(picker).toBeVisible();
+
+    const layout = await root.evaluate(node => {
+      const bounds = selector => {
+        const element = node.querySelector(selector);
+        const rect = element.getBoundingClientRect();
+        return {left: rect.left, right: rect.right, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth};
+      };
+      return {
+        viewportWidth: window.innerWidth,
+        surface: bounds('.algorithm-filter-surface'),
+        primary: bounds('.algorithm-filter-primary'),
+        secondary: bounds('.algorithm-filter-secondary'),
+        picker: bounds('[data-category-popover]'),
+        visibleColumns: [...node.querySelectorAll('.algorithm-category-column')]
+          .filter(element => getComputedStyle(element).display !== 'none').length,
+      };
+    });
+    for (const [name, box] of Object.entries(layout)) {
+      if (!['surface', 'primary', 'secondary', 'picker'].includes(name)) continue;
+      expect(box.left, `${width}px ${name} left edge`).toBeGreaterThanOrEqual(-1);
+      expect(box.right, `${width}px ${name} right edge`).toBeLessThanOrEqual(layout.viewportWidth + 1);
+      expect(box.scrollWidth, `${width}px ${name} internal overflow`).toBeLessThanOrEqual(box.clientWidth + 2);
+    }
+    if (width <= 520) expect(layout.visibleColumns).toBe(1);
+
+    if (width === 390) {
+      await picker.locator('[data-category-row="responsive-root"]').click();
+      await expect(picker.locator('[data-category-row="responsive-leaf"]')).toBeVisible();
+      await picker.locator('[data-category-row="responsive-leaf"]').click();
+      await expect(picker.locator('[data-category-check="responsive-leaf"]')).toBeChecked();
+    }
+    await picker.locator('[data-category-close]').click();
+    await expect(picker).toBeHidden();
+  }
+});
+
 test('algorithm cards expand locally and focused refresh avoids full bootstrap reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -77,7 +134,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   expect(projectId).toBeTruthy();
   const encoded = encodeURIComponent(projectId);
 
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`, async route => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -91,7 +148,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
       }]}),
     });
   });
-  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+  await page.route(`**/api/projects/${encoded}/jobs?summary_only=true`, async route => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -107,8 +164,8 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
 
   const algorithmRequests = apiRequests.filter(row => row.includes(`/api/v12/projects/${projectId}/algorithms`));
   const jobRequests = apiRequests.filter(row => row.includes(`/api/projects/${projectId}/jobs`));
-  expect(algorithmRequests).toEqual([`GET /api/v12/projects/${projectId}/algorithms`]);
-  expect(jobRequests).toEqual([`GET /api/projects/${projectId}/jobs`]);
+  expect(algorithmRequests).toEqual([`GET /api/v12/projects/${projectId}/algorithms?summary_only=true`]);
+  expect(jobRequests).toEqual([`GET /api/projects/${projectId}/jobs?summary_only=true`]);
   expect(apiRequests.some(row => row.includes('/bootstrap/snapshot'))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
@@ -175,7 +232,7 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-version-delete/versions/version-delete-1`, async route => {
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
   });
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`, async route => {
     if (route.request().method() !== 'GET') return route.continue();
     await route.fulfill({
       status: 200,
@@ -190,7 +247,7 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
       }]}),
     });
   });
-  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+  await page.route(`**/api/projects/${encoded}/jobs?summary_only=true`, async route => {
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify([])});
   });
 
@@ -228,8 +285,8 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await expect(page.locator('#alg412List')).not.toContainText('20260912100000');
 
   const deleteRequest = `DELETE /api/v12/projects/${projectId}/algorithms/algo-version-delete/versions/version-delete-1`;
-  const algorithmRequest = `GET /api/v12/projects/${projectId}/algorithms`;
-  const jobRequest = `GET /api/projects/${projectId}/jobs`;
+  const algorithmRequest = `GET /api/v12/projects/${projectId}/algorithms?summary_only=true`;
+  const jobRequest = `GET /api/projects/${projectId}/jobs?summary_only=true`;
   expect(requests.filter(row => row === deleteRequest)).toEqual([deleteRequest]);
   expect(requests.filter(row => row === algorithmRequest)).toEqual([algorithmRequest]);
   expect(requests.filter(row => row === jobRequest)).toEqual([jobRequest]);
@@ -458,13 +515,13 @@ test('algorithm version exposes persisted training lineage without job refetch',
     }],
   };
 
-  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+  await page.route(`**/api/v12/projects/${encoded}/algorithms?summary_only=true`, async route => {
     await route.fulfill({
       status:200,contentType:'application/json',
       body:JSON.stringify({items:[lineageAlgorithm]}),
     });
   });
-  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+  await page.route(`**/api/projects/${encoded}/jobs?summary_only=true`, async route => {
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([])});
   });
   await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/supplement-data-candidates`, async route => {

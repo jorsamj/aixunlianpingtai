@@ -337,7 +337,7 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
       {id:'previous',version_name:'V1',evaluation},
       {id:'current',version_name:'V2',job_id:'quality-visual',evaluation}]}];
     window.openVersionEvaluation429('quality-visual-a','current');
-    document.body.insertAdjacentHTML('beforeend','<div id="acceptance-fixture-badge" style="position:fixed;right:12px;bottom:12px;z-index:10000;padding:7px 11px;border-radius:8px;background:#7c2d12;color:white;font:700 12px system-ui">验收夹具 · 非生产数据</div>');
+    document.body.insertAdjacentHTML('beforeend','<div id="acceptance-fixture-badge" style="position:fixed;right:12px;bottom:12px;z-index:10000;pointer-events:none;padding:7px 11px;border-radius:8px;background:#7c2d12;color:white;font:700 12px system-ui">验收夹具 · 非生产数据</div>');
   });
   const dialog=page.getByRole('dialog',{name:'独立评测'});
   await dialog.getByRole('button',{name:'场景算法实测'}).click();

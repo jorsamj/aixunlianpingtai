@@ -147,3 +147,43 @@ def test_formal_gt_requires_complete_label_scope_before_claiming_comparison(monk
     assert complete["gt_comparison"]["false_negative"] == 1
     assert "gt_disagreement_fn" in complete["signals"]
     assert complete["root_cause_confirmed"] is False
+
+
+def reviewed_inputs():
+    return dict(task_id="task-1", request={"mode":"hard_sample_yolo", "image_ids":["i1"],
+        "source_hashes":{"i1":"b"*64}, "mining_algorithm_id":"a1", "mining_version_id":"v1",
+        "mining_model_sha256":"a"*64}, candidate={"image_id":"i1", "accepted":True, "status":"success",
+        "boxes":[{"label":"smoke", "x1":1,"y1":1,"x2":20,"y2":20,"confidence":.9}]},
+        material={"id":"i1", "content_sha256":"b"*64,"width":100,"height":80},
+        annotation={"annotation_state":"annotated","content_digest":"c"*64,
+            "annotation_origin":"ai_confirmed","boxes":[{"label":"smoke"}]},
+        commit_summary={"image_id":"i1","box_count":1,"labels":["smoke"],
+            "annotation_state":"annotated","annotation_origin":"ai_confirmed"})
+
+
+def test_reviewed_mining_evidence_is_stable_and_never_treats_review_boxes_as_predictions():
+    from platform_core.hard_sample_mining import reviewed_mining_feedback_evidence
+    args=reviewed_inputs()
+    first=reviewed_mining_feedback_evidence(**args)
+    assert first == reviewed_mining_feedback_evidence(**args)
+    assert first["evidence"]["detections"] == []
+    assert first["evidence"]["source_channel"] == "hard_sample_review"
+    assert first["evidence"]["input_file"] == ""
+    assert first["evidence"]["prediction_id"].startswith("hmreview_")
+    assert len(first["candidate_digest"]) == 64
+    args["annotation"]["content_digest"]="d"*64
+    assert first["candidate_digest"] != reviewed_mining_feedback_evidence(**args)["candidate_digest"]
+
+
+@pytest.mark.parametrize("field,patch", [
+    ("candidate",{"accepted":False}), ("candidate",{"status":"failed"}),
+    ("material",{"content_sha256":"d"*64}),
+    ("annotation",{"annotation_state":"unannotated"}),
+    ("annotation",{"content_digest":""}),
+    ("commit_summary",{"box_count":2}), ("commit_summary",{"image_id":"other"}),
+])
+def test_reviewed_mining_evidence_rejects_unreviewed_changed_or_unjournaled_truth(field,patch):
+    from platform_core.hard_sample_mining import reviewed_mining_feedback_evidence
+    args=reviewed_inputs(); args[field].update(patch)
+    with pytest.raises(ValueError):
+        reviewed_mining_feedback_evidence(**args)

@@ -23,6 +23,26 @@ def image(image_id, dataset, content_hash, group, source="upload"):
     }
 
 
+def test_parent_exposed_component_cannot_enter_random_test():
+    rows = [image(str(index), 'source', f'h{index}', f'g{index}') for index in range(20)]
+    rows[1]['group_id'] = rows[0]['group_id']
+    request = SplitRequest(mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(str(index) for index in range(20)), experiment_percent=25, validation_percent=20)
+    for seed in range(6):
+        manifest = build_split_manifest(rows, request, seed=seed, forbidden_test_image_ids=['0'])
+        assert not {'0', '1'} & set(manifest.ids['test'])
+
+
+@pytest.mark.parametrize('parent_field', ['source_root_id', 'derived_from_image_id'])
+def test_original_id_and_derivative_share_identity_namespace(parent_field):
+    rows = [image(str(index), 'source', f'h{index}', f'g{index}') for index in range(8)]
+    rows[-1][parent_field] = '0'
+    request = SplitRequest(mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=tuple(str(index) for index in range(7)), test_image_ids=('7',), validation_percent=20)
+    with pytest.raises((ValueError, RuntimeError)):
+        build_split_manifest(rows, request, seed=3)
+
+
 def test_mode_a_uses_exact_independent_test_images_and_derives_validation_from_selected_training_images():
     rows = [image(str(index), "train-ds", f"h{index}", f"g{index}") for index in range(10)]
     rows.append(image("test", "test-ds", "ht", "gt"))
@@ -113,6 +133,112 @@ def test_required_train_label_cannot_be_satisfied_only_by_independent_test_data(
             seed=7,
             required_train_labels=("smoke",),
         )
+
+
+def test_multilabel_fire_smoke_two_sources_each_and_negative_sources_can_split():
+    """Regression: v2 used to reserve every group and reject this legal split."""
+    rows = [image(f'fire-{i}', 'source', f'fire-sha-{i}', f'fire-group-{i}') for i in range(2)]
+    for i in range(2):
+        row = image(f'smoke-{i}', 'source', f'smoke-sha-{i}', f'smoke-group-{i}')
+        row['boxes'] = [{'label': 'smoke'}]
+        rows.append(row)
+    for i in range(2):
+        row = image(f'negative-{i}', 'source', f'negative-sha-{i}', f'negative-group-{i}')
+        row.update(annotation_state='confirmed_empty', boxes=[])
+        rows.append(row)
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20, validation_percent=20)
+    manifest = build_split_manifest(rows, request, seed=7, split_strategy='multilabel_grouped_v2',
+                                    required_train_labels=('fire', 'smoke'))
+    assert all(manifest.ids[role] for role in ('train', 'validation', 'test'))
+    assert any(row['id'] in manifest.ids['train'] and row['boxes'] == [{'label': 'fire'}] for row in rows)
+    assert any(row['id'] in manifest.ids['train'] and row['boxes'] == [{'label': 'smoke'}] for row in rows)
+    assert build_split_manifest(rows, request, seed=7, split_strategy='multilabel_grouped_v2',
+                                required_train_labels=('fire', 'smoke')).ids == manifest.ids
+    assert len(set(manifest.groups.values())) == len(manifest.groups)
+
+
+def test_multilabel_never_breaks_one_indivisible_source_to_force_holdout():
+    rows = [image(str(i), 'source', f'sha-{i}', 'one-video-source') for i in range(6)]
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20, validation_percent=20)
+    with pytest.raises(ValueError, match='组数不足|TRAINING_SPLIT_SEARCH_EXHAUSTED'):
+        build_split_manifest(rows, request, seed=3, split_strategy='multilabel_grouped_v2',
+                             required_train_labels=('fire',))
+
+
+def test_multilabel_recovers_when_only_test_eligible_group_is_a_multilabel_train_candidate():
+    """Regression: previous six retries rejected a feasible fire/smoke split."""
+    labels = ('fire', 'smoke', 'negative', 'fire smoke', 'negative')
+    rows = []
+    for index, labels_for_group in enumerate(labels):
+        row = image(str(index), 'source', f'sha-{index}', f'video-{index}')
+        row['boxes'] = ([] if labels_for_group == 'negative' else
+                        [{'label': label} for label in labels_for_group.split()])
+        if labels_for_group == 'negative':
+            row['annotation_state'] = 'confirmed_empty'
+        rows.append(row)
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20,
+                           validation_percent=20)
+
+    def split():
+        return build_split_manifest(
+            rows, request, seed=1, split_strategy='multilabel_grouped_v2',
+            required_train_labels=('fire', 'smoke'),
+            forbidden_test_image_ids=('0', '1', '2', '4'),
+        )
+
+    manifest = split()
+    assert manifest.ids['test'] == ('3',)
+    assert manifest.requested['split_recovery_strategy'] == 'source_pair_anchor_v1'
+    assert manifest.counts == {'train': 3, 'validation': 1, 'test': 1, 'total': 5}
+    assert any(row['id'] in manifest.ids['train'] and
+               any(box['label'] == 'fire' for box in row['boxes']) for row in rows)
+    assert any(row['id'] in manifest.ids['train'] and
+               any(box['label'] == 'smoke' for box in row['boxes']) for row in rows)
+    assert any(row['id'] in manifest.ids['train'] and row['annotation_state'] == 'confirmed_empty'
+               for row in rows)
+    assert manifest.requested['reserved_train_component_count'] >= 1
+    assert split().ids == manifest.ids
+
+
+def test_multilabel_recovery_still_blocks_when_history_exposes_every_test_source():
+    rows = [image(str(index), 'source', f'sha-{index}', f'video-{index}')
+            for index in range(5)]
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20,
+                           validation_percent=20)
+    with pytest.raises(ValueError, match='TRAINING_SPLIT_SEARCH_EXHAUSTED'):
+        build_split_manifest(rows, request, seed=1,
+                             split_strategy='multilabel_grouped_v2',
+                             required_train_labels=('fire',),
+                             forbidden_test_image_ids=tuple(row['id'] for row in rows))
+
+
+def test_multilabel_recovery_keeps_multi_image_video_component_in_one_test_role():
+    rows = [image(str(index), 'source', f'sha-{index}', f'video-{index}')
+            for index in range(5)]
+    rows[1]['boxes'] = [{'label': 'smoke'}]
+    rows[3]['boxes'] = [{'label': 'fire'}, {'label': 'smoke'}]
+    for index in (2, 4):
+        rows[index]['annotation_state'] = 'confirmed_empty'
+        rows[index]['boxes'] = []
+    sibling = image('3-child', 'source', 'sha-3-child', 'video-3')
+    sibling['boxes'] = [{'label': 'fire'}, {'label': 'smoke'}]
+    rows.append(sibling)
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20,
+                           validation_percent=20)
+    manifest = build_split_manifest(
+        rows, request, seed=1, split_strategy='multilabel_grouped_v2',
+        required_train_labels=('fire', 'smoke'),
+        forbidden_test_image_ids=('0', '1', '2', '4'),
+    )
+    assert set(manifest.ids['test']) == {'3', '3-child'}
+    assert manifest.groups['3'] == manifest.groups['3-child']
+    assert not set(manifest.ids['test']) & {'0', '1', '2', '4'}
+    assert len(manifest.ids['train']) > 0 and len(manifest.ids['validation']) > 0
 
 
 def test_large_random_split_keeps_exact_component_counts_at_20k_scale():

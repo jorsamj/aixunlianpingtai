@@ -1485,7 +1485,9 @@ class ExternalAlgorithmPublishService:
             meta=winner.get("model_metadata") or winner.get("metadata") or {}
             stored=self.model_assets.repository.get(winner["artifact_id"]) or {}
             known=stored.get("storage_status")=="UPLOADED" and stored.get("conversion_job_id")==winner.get("conversion_job_id") and stored.get("sha256")==winner["sha256"]
-            if meta.get("manifest_metadata_error") or (not meta.get("conversion_identity_verified") and not known):
+            if (meta.get("manifest_metadata_error")
+                    or (meta.get("remote_job_id") and not meta.get("conversion_identity_verified"))
+                    or (not meta.get("conversion_identity_verified") and not known)):
                 choices[key]={"error":"当前成果缺少与任务匹配的Manifest或输出SHA/大小证据","code":"EXTERNAL_WEIGHT_CONVERSION_IDENTITY_UNCONFIRMED"}
                 continue
             selection={"artifact_id":winner["artifact_id"],"sha256":winner["sha256"],"conversion_job_id":winner.get("conversion_job_id"),
@@ -1773,13 +1775,23 @@ class ExternalAlgorithmPublishService:
             )
         ref = str(config.get("credential_ref") or EXTERNAL_PLATFORM_DEFAULT_CONFIG["credential_ref"])
         credentials = SecretCredentialStore(self.external_secret_store_factory()).get(ref) or {}
-        return self.client_factory(
+        client = self.client_factory(
             base_url=str(config.get("base_url") or ""),
             access_key=str(credentials.get("access_key_id") or ""),
             access_secret=str(credentials.get("access_secret") or ""),
             endpoints=ChangLianEndpoints.from_mapping(config.get("endpoints")),
             audit_callback=self.audit.record,
         )
+        if isinstance(client, ChangLianClient):
+            client._external_enabled_check = self._assert_external_enabled
+        return client
+
+    def _assert_external_enabled(self) -> None:
+        if str(self.external_repository.config().get("mode") or "local") != "external":
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_NOT_ACTIVE", "已切换独立部署模式", "外部平台总开关处于关闭状态。",
+                "如需恢复远端发布，请先在“平台对接”开启总开关。", 409,
+            )
 
     def _provider(self, project_id: str, source_id: str):
         source = self.storage_sources_factory().get(source_id)
@@ -1817,6 +1829,12 @@ class ExternalAlgorithmPublishService:
         algorithm: Mapping[str, Any],
         version: Mapping[str, Any],
     ) -> None:
+        deletion_state = str(algorithm.get("external_deletion_status") or "NORMAL")
+        if deletion_state != "NORMAL":
+            raise PlatformError(
+                "EXTERNAL_PRODUCT_DELETION_UNVERIFIED", "该算法远端身份待核实，暂缓新发布",
+                deletion_state, "请在同步详情重新核实；已有训练和转换任务继续保留。", 409,
+            )
         if algorithm.get("external_active") is False:
             raise PlatformError(
                 "EXTERNAL_ALGORITHM_INACTIVE",
@@ -2544,10 +2562,29 @@ class ExternalAlgorithmPublishService:
         return payload
 
     def _weight_slot_rows(self, rows, artifact):
-        """Exclude only remote leaves positively bound to another business vendor."""
+        """Separate generic output formats even when chipCode is blank.
+
+        A PT training Weight and an ONNX Weight can legally share an empty
+        chipCode. Exclude only POSITIVELY foreign model extensions. Unknown
+        remote formats and explicitly recorded owner IDs remain candidates
+        and still require identity review; do not silently create duplicates.
+        """
         slot = self._delivery_key(artifact)
+        candidates = list(rows)
+        own_suffixes = _DELIVERABLE_SUFFIXES.get(str(artifact.get("target") or "").lower())
+        if own_suffixes:
+            known_suffixes = {".pt", ".pth", ".pdparams", ".safetensors", ".ckpt"}
+            for suffix_set in _DELIVERABLE_SUFFIXES.values():
+                known_suffixes.update(suffix_set)
+            foreign_suffixes = known_suffixes - own_suffixes
+            owner_id = str(artifact.get("external_weight_id") or "").strip()
+            candidates = [
+                row for row in candidates
+                if Path(str(row.get("fileName") or row.get("name") or "")).suffix.lower() not in foreign_suffixes
+                or (owner_id and self._remote_weight_id(row) == owner_id)
+            ]
         if "|vendor:" not in slot:
-            return list(rows)
+            return candidates
         vendor_id = slot.split("|vendor:", 1)[1].split("|chip:", 1)[0]
         mappings = self.repository.config().get("target_mappings") or {}
         state = self._stable_artifact_mapping(artifact) or {}
@@ -2563,7 +2600,7 @@ class ExternalAlgorithmPublishService:
             except PlatformError:
                 continue
             excluded.update(str(value) for value in (binding.get("chip_mappings") or {}).values())
-        return [row for row in rows if str(row.get("computePlatformId") or "") not in excluded or self._remote_weight_id(row) == str(artifact.get("external_weight_id") or "")]
+        return [row for row in candidates if str(row.get("computePlatformId") or "") not in excluded or self._remote_weight_id(row) == str(artifact.get("external_weight_id") or "")]
 
     def _recover_weight_from_rows(
         self,
@@ -3057,10 +3094,25 @@ class ExternalAlgorithmPublishService:
                    'metadata': local.get('metadata') or current.get('metadata') or {}, 'frozen_tags': item['weight_metadata'].get('tags')}
             row['compute_platform_id']=current.get('compute_platform_id') or row.get('compute_platform_id')
             plan=self._artifact_review({**row,**current},version,[*local_assets,*stored])
-            row.update(review_required=plan["review_required"],recovery_plan=plan,
+            # A remote Weight may exist under an old computePlatformId even
+            # when no local Weight owner ID was recovered. The attempted
+            # publish records an explicit migration refusal: surface that
+            # refusal as a review, not an apparently automatic-ready asset.
+            remap_error = str(current.get("last_error") or "")
+            if (remap_error.startswith("EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED")
+                    and str(current.get("sync_status") or "").upper() != "SYNCED"):
+                plan = {**plan, "review_required": True,
+                        "code": "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED",
+                        "reason": remap_error,
+                        "suggested_operation": "REVIEW_PLATFORM_MIGRATION",
+                        "automatic_write_allowed": False}
+            included=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==row["artifact_id"]
+            # Preserve old errors in recovery_plan for audit, but a superseded
+            # conversion does not require another action on the current Weight.
+            row.update(review_required=bool(included and plan["review_required"]),recovery_plan=plan,
                        requested_artifact_id=plan["requested_artifact_id"],remote_identity_status="READ_BACK" if json.loads(str(current.get("remote_metadata_json") or "{}")).get("readback_confirmed") and current.get("active",1) else "HISTORICAL_RECEIPT" if current.get("active")==0 else "PENDING_READBACK",
-                       included_in_delivery=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==row["artifact_id"],
-                       delivery_role="HISTORICAL" if plan["requested_artifact_id"] and plan["requested_artifact_id"]!=row["artifact_id"] else "CONFIRMED_OWNER" if current.get("external_weight_id") else "AUTOMATIC_CURRENT" if plan["requested_artifact_id"]==row["artifact_id"] else "UNSELECTED" if plan["review_required"] else "SINGLE_CANDIDATE")
+                       included_in_delivery=included,
+                       delivery_role="HISTORICAL" if not included else "CONFIRMED_OWNER" if current.get("external_weight_id") else "AUTOMATIC_CURRENT" if plan["requested_artifact_id"]==row["artifact_id"] else "UNSELECTED" if plan["review_required"] else "SINGLE_CANDIDATE")
             row['remote_registered'] = bool(current.get('external_weight_id'))
             if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
                 row['metadata_sync_status'] = 'UNKNOWN'
@@ -3091,16 +3143,34 @@ class ExternalAlgorithmPublishService:
                     and observed.get('tags') != prepared['tags'] and row['metadata_sync_status'] not in {'UNKNOWN','CONFLICT'}):
                 row['metadata_sync_status'] = 'PENDING'
             weights.append(row)
+        current_original_hashes = {
+            str(row.get("sha256") or "") for row in classified
+            if _artifact_target_identity(row.get("target")) == "training" and row.get("sha256")
+        }
         for current in [*stored, *local_assets]:
             if any(row.get('artifact_id') == current.get('artifact_id') for row in weights):
                 continue
             plan=self._artifact_review(current,version,stored)
-            included=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==current["artifact_id"]
+            # Best/last can both exist in historical asset storage. Only the
+            # currently discovered frozen original is in this delivery slot.
+            # Keep older originals visible for audit but do not count them as
+            # blocking today's original Weight when the current one is present.
+            historical_original = (
+                _artifact_target_identity(current.get("target")) == "training"
+                and bool(current_original_hashes)
+                and str(current.get("sha256") or "") not in current_original_hashes
+            )
+            included=(not plan["requested_artifact_id"] or plan["requested_artifact_id"]==current["artifact_id"]) and not historical_original
+            historical=not included
             weights.append({**current, 'remote_registered': bool(current.get('external_weight_id')),
-                'included_in_delivery':included,'delivery_role':'UNVERIFIED' if included else 'HISTORICAL',
+                'included_in_delivery':included,'delivery_role':'HISTORICAL' if historical else 'UNVERIFIED',
                 'requested_artifact_id':plan['requested_artifact_id'],
                 'metadata_complete': False, 'metadata_sync_status': 'UNKNOWN',
-                'last_error': '已登记产物当前无法核验：源文件缺失或内容身份已改变，请管理员核对',
+                'last_error': (
+                    '历史原始权重不属于当前冻结的原始模型；记录保留，远端身份未在本次核验'
+                    if historical_original else
+                    '已登记产物当前无法核验：源文件缺失或内容身份已改变，请管理员核对'
+                ),
                 'review_required':included,'remote_identity_status':'PENDING_READBACK' if included else 'HISTORICAL_RECEIPT',
                 'recovery_plan':plan})
         transport = self._publish_transport_state()
@@ -3158,6 +3228,7 @@ class ExternalAlgorithmPublishService:
             )
 
     def _publish_under_version_fence(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
+        self._assert_external_enabled()
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
         self._assert_current_external_identity(algorithm, version)
         if (
@@ -3274,6 +3345,7 @@ class ExternalAlgorithmPublishService:
             *,
             config_blocking: bool,
         ) -> Dict[str, Any]:
+            self._assert_external_enabled()
             try:
                 stored = self._upload_artifact(item, algorithm, version)
                 provider_mapping = self.repository.ensure_artifact_publication(

@@ -10,6 +10,146 @@ from PIL import Image
 from fastapi import HTTPException
 
 
+def test_outcome_only_error_preview_survives_workspace_cleanup(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
+    from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle, mark_training_workspace
+    platform, version, rows, root, original = _setup(monkeypatch, tmp_path)
+    artifacts = ArtifactStore(tmp_path / "task-artifacts")
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = replace(TaskRecord.new("evidence-task", "evaluation-project", TaskKind.TRAINING,
+                                 "payload.json", "training:cpu"),
+                   status=TaskStatus.FAILED, attempt=1, finished_at="2026-10-29T00:00:00+00:00")
+    repository.create(task)
+    snapshot = json.loads((root / 'snapshots' / ('a' * 64 + '.json')).read_text(encoding='utf-8'))
+    snapshot['snapshot_id'] = 'a' * 64
+    artifacts.atomic_write_json(task.task_id, 'snapshot.json', snapshot)
+    artifacts.atomic_write_json(task.task_id, 'payload.json', {'target': 'local', 'input_freeze_id': 'freeze'})
+    mark_training_workspace(artifacts, task, snapshot, 'freeze')
+    image_ref = 'dataset/images/test/test-image.jpg'
+    image = artifacts.artifact_path(task.task_id, 'work/bundle/' + image_ref)
+    image.parent.mkdir(parents=True)
+    Image.new('RGB', (120, 80), 'green').save(image)
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    artifacts.atomic_write_json(task.task_id, 'work/bundle/manifest.json', {
+        'snapshot_id': 'a' * 64, 'splits': {'test': [{'image_id': 'test-image', 'image_ref': image_ref,
+        'source_content_sha256': rows[0]['content_sha256'], 'content_sha256': digest}]}})
+    evaluation = version['evaluation']
+    evaluation.update(task_id=task.task_id, error_samples=[], sample_outcomes=[{
+        'image_id': 'test-image', 'image': 'test-image.jpg', 'image_content_sha256': digest, 'fn_count': 1}])
+    artifacts.atomic_write_json(task.task_id, 'result.json', {'training_report': {'test_result': evaluation}})
+    monkeypatch.setattr(platform, 'shared_task_artifacts', lambda: artifacts)
+    before = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    expected = Path(before.path).read_bytes()
+    service = TrainingWorkspaceLifecycle(tmp_path, repository, artifacts)
+    assert service.cleanup('evaluation-project', task.task_id, actor='test')['status'] == 'deleted'
+    after = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    assert Path(after.path).read_bytes() == expected
+    assert 'evidence' in Path(after.path).parts
+    assert original.exists()
+
+
+def test_p2_frozen_evaluation_review_is_only_opinion_and_idempotent(monkeypatch, tmp_path):
+    from platform_core.online_feedback import OnlineFeedbackRepository
+    platform, version, _, root, image = _setup(monkeypatch, tmp_path)
+    evaluation = version['evaluation']
+    evaluation.update(evaluation_id='e' * 64, task_id='training-v1', model_sha256='f' * 64)
+    sample = evaluation['error_samples'][0]
+    sample.update(image_id='test-image', image_content_sha256='d' * 64, image_width=120, image_height=80)
+    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *args: (version, {'model_sha256': 'f' * 64, 'training_task_id': 'training-v1'}))
+    repository = OnlineFeedbackRepository(root)
+    monkeypatch.setattr(platform, '_online_feedback_repository', lambda _: repository)
+    before = image.read_bytes()
+    request = platform.EvaluationReviewReq(expected_evaluation_id='e' * 64, image_id='test-image', observation='gt_error')
+    first = platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request)
+    second = platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request)
+    assert first['feedback']['id'] == second['feedback']['id'] and second['idempotent'] is True
+    assert first['feedback']['source']['source_channel'] == 'evaluation'
+    assert first['feedback']['result']['formal_gt_changed'] is False
+    assert first['feedback']['result']['frozen_test_protected'] is True
+    assert first['feedback']['material_id'] == ''
+    assert image.read_bytes() == before and not (root / 'annotations.sqlite3').exists()
+    with pytest.raises(HTTPException) as stale:
+        platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request.model_copy(update={'expected_evaluation_id': 'a' * 64}))
+    assert stale.value.status_code == 409
+
+
+def test_p2_trust_api_uses_original_model_qualification_and_readonly_snapshot(monkeypatch, tmp_path):
+    platform, version, _, root, _ = _setup(monkeypatch, tmp_path)
+    import platform_core.scenario_models as models
+    calls = []
+    def verify(project_id, project, algorithm, actual_version, *args, **kwargs):
+        calls.append((project_id, algorithm['id'], actual_version['id']))
+        return {'model_sha256': 'f' * 64}
+    monkeypatch.setattr(models, 'resolve_scenario_model', verify)
+    before = {str(path): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+    result = platform.evaluation_trust_analysis('evaluation-project', 'algo', 'v1')
+    assert calls == [('evaluation-project', 'algo', 'v1')]
+    assert result['analysis']['read_only'] is True
+    assert next(row for row in result['analysis']['checks'] if row['code'] == 'identity')['status'] == 'insufficient_evidence'
+    assert before == {str(path): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+    with pytest.raises(HTTPException) as invalid:
+        platform.evaluation_trust_analysis('evaluation-project', 'algo', 'v1', limit=51)
+    assert invalid.value.status_code == 422
+    monkeypatch.setattr(models, 'resolve_scenario_model', lambda *a, **k: (_ for _ in ()).throw(models.ScenarioModelUnavailable('invalid model')))
+    with pytest.raises(HTTPException) as denied:
+        platform.evaluation_trust_analysis('evaluation-project', 'algo', 'v1')
+    assert denied.value.status_code == 409
+
+
+def test_p2_sample_pages_distinguish_missing_evidence_and_never_rescore(monkeypatch, tmp_path):
+    platform, version, _, _, _ = _setup(monkeypatch, tmp_path)
+    version['evaluation'].update(evaluation_id='e' * 64, image_count=3,
+        sample_outcomes=[{'image': f'{i}.jpg', 'image_id': str(i), 'image_content_sha256': 'f' * 64,
+                          'tp_count': 1 if i == 0 else 0, 'fp_count': 0, 'fn_count': 1 if i else 0}
+                         for i in range(3)])
+    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *args: (version, {}))
+    page = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1', issue='fn', limit=1)
+    assert page['total'] == 2 and len(page['items']) == 1
+    assert page['items'][0]['box_evidence_available'] is False
+    assert 'pred_boxes' not in page['items'][0]
+    assert page['evaluation_id'] == 'e' * 64
+    version['evaluation']['sample_evidence'] = [{**version['evaluation']['sample_outcomes'][0],
+        'gt_boxes': [], 'pred_boxes': [{'class_id': 0, 'confidence': .3, 'matched': True}], 'evidence_complete': False}]
+    low = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1', issue='low_confidence')
+    assert low['total'] == 1 and low['filter_scope'] == 'retained_box_evidence_only'
+    assert low['filter_evidence_complete'] is False
+    version['evaluation'].pop('sample_outcomes')
+    legacy = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1')
+    assert legacy['cohort_complete'] is False
+    assert legacy['total'] == 1
+    public = platform.advanced_evaluation_report('evaluation-project', 'algo', 'v1')
+    assert 'sample_outcomes' not in public['algorithm']['versions'][0]['evaluation']
+
+
+def test_p2_deep_comparison_revalidates_both_models_and_rejects_benchmark_drift(monkeypatch, tmp_path):
+    platform, _, _, _, _ = _setup(monkeypatch, tmp_path)
+    scope = {key: 'a' * 64 for key in ('scope_id', 'content_digest', 'ground_truth_digest',
+             'label_schema_digest', 'evaluation_input_digest')}
+    scope['binding_level'] = 'bundle_verified'
+    versions = {name: {'id': name, 'evaluation': {'status': 'succeeded', 'evaluation_id': 'b' * 64,
+        'evaluation_protocol_id': 'c' * 64, 'benchmark_scope': dict(scope), 'model_sha256': 'd' * 64,
+        'task_id': name}} for name in ('v1', 'v2')}
+    calls = []
+    def context(project_id, algorithm_id, version_id):
+        calls.append(version_id)
+        return versions[version_id], {'model_sha256': 'd' * 64, 'training_task_id': version_id}
+    monkeypatch.setattr(platform, '_advanced_evaluation_context', context)
+    monkeypatch.setattr(platform, '_advanced_trust_evidence', lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'passed'}]})
+    result = platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
+    assert calls == ['v2', 'v1'] and result['comparison']['comparable'] is True
+    assert result['comparison']['sample_cohort_complete'] is False
+    versions['v1']['evaluation']['benchmark_scope']['ground_truth_digest'] = 'e' * 64
+    result = platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
+    assert result['comparison']['comparable'] is False and result['comparison']['metrics'] == {}
+    monkeypatch.setattr(platform, '_advanced_trust_evidence', lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'insufficient_evidence'}]})
+    assert platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')['comparison']['reason_codes'] == ['benchmark_trust_not_verified']
+    versions['v1']['evaluation']['task_id'] = 'wrong'
+    with pytest.raises(HTTPException) as denied:
+        platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
+    assert denied.value.status_code == 409
+
+
 def _setup(monkeypatch, tmp_path: Path):
     import app as platform
     project_id = "evaluation-project"
@@ -229,9 +369,10 @@ def test_actual_response_bytes_must_match_frozen_hash(monkeypatch, tmp_path):
     assert captured.value.detail['code'] == 'IMAGE_HASH_MISMATCH'
 
 
-def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_substituted(monkeypatch, tmp_path):
+@pytest.mark.parametrize("bundle_ref", ["work/bundle", "evidence/bundle"])
+def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_substituted(monkeypatch, tmp_path, bundle_ref):
     platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
-    bundle = tmp_path / "artifacts" / "work" / "bundle"
+    bundle = tmp_path / "artifacts" / bundle_ref
     normalized = bundle / "dataset" / "images" / "test" / "test-image.jpg"
     normalized.parent.mkdir(parents=True)
     Image.new("RGB", (120, 80), "green").save(normalized)
@@ -243,7 +384,7 @@ def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_sub
         "image_id":"test-image","image_ref":"dataset/images/test/test-image.jpg",
         "source_content_sha256":rows[0]["content_sha256"],"content_sha256":evaluated_hash}]}}
     (bundle / "manifest.json").write_text(json.dumps(manifest),encoding="utf-8")
-    monkeypatch.setattr(platform,"shared_task_artifacts",lambda:SimpleNamespace(artifact_path=lambda *_:bundle))
+    monkeypatch.setattr(platform,"shared_task_artifacts",lambda:SimpleNamespace(artifact_path=lambda _task,ref:tmp_path / "artifacts" / ref))
     response=platform.evaluation_diagnostic_image_v1("evaluation-project","algo","v1","test-image.jpg")
     assert Path(response.path) == normalized
     assert Path(response.path).read_bytes() != image.read_bytes()

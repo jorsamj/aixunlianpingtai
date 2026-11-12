@@ -1,10 +1,15 @@
-name: ChangLian Login Auth
+name: Local and ChangLian Login Auth
 
 on:
   pull_request:
     paths:
       - app.py
       - platform_core/changlian_login_auth.py
+      - platform_core/local_login_auth.py
+      - platform_core/algorithms.py
+      - platform_core/business_files.py
+      - tests/unit/test_business_files.py
+      - tests/api/test_controlled_business_files.py
       - static/index.html
       - static/login.html
       - static/login.js
@@ -14,6 +19,9 @@ on:
       - playwright.auth.config.mjs
       - tests/browser/changlian-login-auth.spec.mjs
       - tests/unit/test_changlian_login_auth.py
+      - tests/unit/test_local_login_auth.py
+      - tests/unit/test_intranet_algorithm_creation.py
+      - tests/frontend/intranet-mode-contract.test.mjs
       - tests/frontend/changlian-login-ui.test.mjs
       - .github/workflows/changlian-login-auth.yml
   push:
@@ -22,6 +30,11 @@ on:
     paths:
       - app.py
       - platform_core/changlian_login_auth.py
+      - platform_core/local_login_auth.py
+      - platform_core/algorithms.py
+      - platform_core/business_files.py
+      - tests/unit/test_business_files.py
+      - tests/api/test_controlled_business_files.py
       - static/index.html
       - static/login.html
       - static/login.js
@@ -31,6 +44,9 @@ on:
       - playwright.auth.config.mjs
       - tests/browser/changlian-login-auth.spec.mjs
       - tests/unit/test_changlian_login_auth.py
+      - tests/unit/test_local_login_auth.py
+      - tests/unit/test_intranet_algorithm_creation.py
+      - tests/frontend/intranet-mode-contract.test.mjs
       - tests/frontend/changlian-login-ui.test.mjs
       - .github/workflows/changlian-login-auth.yml
 
@@ -48,12 +64,12 @@ jobs:
       - name: Install focused Python dependencies
         run: python -m pip install --disable-pip-version-check pytest requests
       - name: Backend login contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_changlian_login_auth.py
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_changlian_login_auth.py tests/unit/test_local_login_auth.py
       - name: Frontend login contracts
-        run: node --test tests/frontend/changlian-login-ui.test.mjs
+        run: node --test tests/frontend/changlian-login-ui.test.mjs tests/frontend/intranet-mode-contract.test.mjs
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/changlian_login_auth.py
+          python -m py_compile app.py platform_core/changlian_login_auth.py platform_core/local_login_auth.py
           node --check static/login.js
           node --check static/auth-session.js
           grep -Fq 'DEFAULT_CHANGLIAN_LOGIN_BASE_URL = "http://vip.24hlink.cn/prod-api"' platform_core/changlian_login_auth.py
@@ -63,7 +79,8 @@ jobs:
           grep -Fq 'httponly=True' app.py
           grep -Fq 'auth_guard_decision' app.py
           grep -Fq 'def _auth_test_bypass_enabled()' app.py
-          grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' app.py
+          grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' platform_core/changlian_login_auth.py
+          grep -Fq 'isolated_test_access_enabled(DATA_DIR)' app.py
           grep -Fq '"upstream_token_expiry_source": "test_bypass"' app.py
           grep -Fq '_MACHINE_NODE_EXECUTOR_PREFIX' platform_core/changlian_login_auth.py
           grep -Fq '_MACHINE_HEARTBEAT_RE' platform_core/changlian_login_auth.py
@@ -88,13 +105,16 @@ jobs:
           python -m pip install --disable-pip-version-check
           fastapi uvicorn python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
-          boto3 oss2 cryptography pydantic
+          boto3 oss2 cryptography pydantic pytest httpx
+      - name: Controlled business-file security contracts
+        run: python -m pytest -q tests/unit/test_business_files.py tests/api/test_controlled_business_files.py tests/unit/test_intranet_algorithm_creation.py
       - name: Install frontend dependencies
         run: npm ci
       - name: Real browser login persistence
         run: npx playwright test --config=playwright.auth.config.mjs
       - name: Browser auth permanent guards
         run: |
-          grep -Fq "refresh keeps the ChangLian login session" tests/browser/changlian-login-auth.spec.mjs
+          grep -Fq "refresh keeps optional ChangLian login session" tests/browser/changlian-login-auth.spec.mjs
+          grep -Fq "default local login works offline" tests/browser/changlian-login-auth.spec.mjs
           grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' tools/test_auth_server.py
           grep -Fq 'MC_CHANGLIAN_LOGIN_BASE_URL' tools/test_auth_server.py

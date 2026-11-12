@@ -53,7 +53,9 @@ test('accept-all still sends explicitly edited candidate boxes to the authoritat
   const end = source.indexOf('window.confirmAiLabel427=', start);
   const complete = source.slice(start, end);
   assert.match(complete, /mode==='accept'/);
-  assert.match(complete, /\[\.\.\.review\.edits\]\.map\(\(\[image_id,boxes\]\)=>\(\{image_id,accepted:true,boxes\}\)\)/);
+  assert.match(complete, /review\.edits\.get\(image_id\)/);
+  assert.match(complete, /review\.decisions/);
+  assert.match(complete, /review_revision:review\.reviewRevision/);
   assert.match(complete, /commit:true,label_mapping/);
   assert.match(complete, /\/decisions/);
 });
@@ -64,23 +66,33 @@ test('AI mapping renderer skips rebuild when labels and mapping signature are un
   assert.match(source, /datalist\.dataset\.signature!==signature/);
 });
 
+test('review prioritizes candidate pictures while opening unresolved label mapping only on first load', () => {
+  const source = reviewBlock();
+  assert.match(source, /<details class="ai66-label-tools">/, 'the optional mapping tools must not consume the initial review viewport');
+  assert.match(source, /mappingTools\.open=unmapped>0/, 'unresolved source labels must still be shown for correction');
+  assert.match(source, /!review\.pageLoading&&!review\.mappingPanelInitialized/, 'pagination must not override a human-opened or human-closed panel');
+  assert.match(source, /mappingPanelInitialized:false/, 'each independent review task needs its own one-time initial mapping decision');
+});
+
 
 test('AI review is a dedicated human-review workbench with explicit per-image accept and reject', () => {
   const source = reviewBlock();
   assert.match(source, /AI标注审核工作台/);
-  assert.match(source, /ai-review-workbench-modal/);
+  assert.match(source, /ai-review-page-shell/);
+  assert.match(source, /返回任务列表/);
+  assert.doesNotMatch(source.slice(source.indexOf('function ensureReviewShell()'), source.indexOf('function aiReviewLabels60()')), /modal\('AI标注审核工作台/);
   assert.match(source, /data-ai66-filter="empty"/);
   assert.match(source, /window\.setAiDecision60/);
   assert.match(source, />采用<\/button>/);
   assert.match(source, />拒绝<\/button>/);
-  assert.match(source, /AI判断无目标/);
+  assert.match(source, /模型未检出 · 待人工确认/);
   assert.match(source, /已人工修改/);
 });
 
 test('AI review confirmation follows durable commit to terminal and invalidates material truth', () => {
   const source = reviewBlock();
-  const start = source.indexOf('window.completeAiReview60=async mode=>');
-  const end = source.indexOf('window.confirmAiLabel427=', start);
+  const start = source.indexOf('async function finishAiReview60(');
+  const end = source.indexOf('async function aiReviewLookupReceipt60(', start);
   const complete = source.slice(start, end);
   assert.match(complete, /waitForTaskTerminal/);
   assert.match(complete, /ai-review-commit:/);
@@ -143,11 +155,12 @@ test('single AI review decisions patch one card instead of rebuilding the page',
   assert.match(source, /data-ai66-decision="accept"/);
   assert.doesNotMatch(source, /window\.toggleAiDecision60=/);
 
-  const start = source.indexOf('window.setAiDecision60=(id,accepted)=>');
+  const start = source.indexOf('window.setAiDecision60=async(id,accepted)=>');
   const end = source.indexOf('function renderReviewPage()', start);
   const decision = source.slice(start, end);
-  assert.match(decision, /if\(String\(review\.filter\|\|'all'\)==='rejected'\)return renderReviewPage\(\)/);
-  assert.match(decision, /renderReviewMetrics60\(review\);patchAiDecisionCard60\(key\)/);
+  assert.match(decision, /commit:false/);
+  assert.match(decision, /await api/);
+  assert.match(decision, /renderReviewMetrics60\(review\);renderAiSelection60\(\);patchAiDecisionCard60\(key\)/);
   assert.doesNotMatch(decision, /grid\.innerHTML/);
 });
 

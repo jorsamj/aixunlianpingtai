@@ -4,13 +4,14 @@ import hashlib
 import json
 import shutil
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from filelock import FileLock
 
 from .errors import PlatformError
+from .performance_diagnostics import connect_sqlite
 
 
 SCHEMA_VERSION = 4
@@ -41,7 +42,7 @@ class AlgorithmSqlStore:
         self.project_dir.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn = connect_sqlite(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         # Ordinary connections never negotiate persistent journal state. Set
         # the wait policy first so concurrent writers rely on SQLite's own
@@ -143,7 +144,80 @@ class AlgorithmSqlStore:
                         conn.rollback()
                     raise
 
-    def read_all(self) -> list[dict]:
+    def has_verified_training_version_readonly(self, task_id: str, snapshot_id: str, models) -> bool:
+        """Attest an already initialized version without migrating legacy data."""
+        return bool(self.verified_training_version_identity_readonly(task_id, snapshot_id, models))
+
+    @staticmethod
+    def _model_contract(models):
+        return {(str(item.get("ref") or ""), str(item.get("sha256") or ""),
+                 item.get("size_bytes")) for item in models if isinstance(item, Mapping)}
+
+    def _verified_training_version_ids(self, conn, task_id, snapshot_id, models):
+        if not self._initialization_complete(conn):
+            return ()
+        rows = conn.execute(
+            """SELECT versions.* FROM algorithm_versions AS versions
+               JOIN algorithms ON algorithms.id=versions.algorithm_id
+               WHERE algorithms.project_id=? AND versions.training_job_id=?
+               AND versions.artifact_verified=1
+               AND versions.training_status IN ('SUCCEEDED','PARTIAL_SUCCESS')""",
+            (self.project_id, str(task_id)),
+        ).fetchall()
+        expected = self._model_contract(models)
+        matched = []
+        for row in rows:
+            version = self._version_from_row(row)
+            committed = self._model_contract(version.get("verified_models", []))
+            if expected and version.get("snapshot_id") == snapshot_id and committed == expected:
+                matched.append(str(row["id"]))
+        return tuple(sorted(matched))
+
+    def verified_training_version_identity_readonly(self, task_id: str, snapshot_id: str, models):
+        """Return only this task's verified version IDs, never project WAL metadata."""
+        if not self.db_path.is_file():
+            return ()
+        try:
+            with closing(sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                return self._verified_training_version_ids(conn, task_id, snapshot_id, models)
+        except sqlite3.Error:
+            return ()
+
+    @contextmanager
+    def verified_training_version_guard(self, task_id, snapshot_id, models, expected_ids):
+        """Fence a short final detach against concurrent version writes.
+
+        The task DB guard must be acquired first. This second DB write gate is
+        intentionally held only across the final check and atomic rename; the
+        long archive and model hashing happen before either write gate.
+        """
+        if not self.db_path.is_file() or not expected_ids:
+            raise RuntimeError("MODEL_VERSION_CHANGED")
+        with closing(self._connect()) as conn:
+            conn.execute("PRAGMA busy_timeout=500")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._verified_training_version_ids(conn, task_id, snapshot_id, models) != tuple(expected_ids):
+                    raise RuntimeError("MODEL_VERSION_CHANGED")
+                yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def bootstrap_summary(self, limit=500):
+        """Bounded basic columns, never hydrate version/report payloads at boot."""
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN")
+            revision = int(self._meta(conn, "algorithm_revision") or 0)
+            total = conn.execute("SELECT COUNT(*) FROM algorithms WHERE project_id=?", (self.project_id,)).fetchone()[0]
+            rows = conn.execute("SELECT id,name,remark,industry,algorithm_type,current_version_id,created_at,updated_at,source_type,master_data_readonly FROM algorithms WHERE project_id=? ORDER BY sort_index,created_at DESC,id LIMIT ?", (self.project_id,max(1,min(500,int(limit))))).fetchall()
+            conn.commit()
+        return [dict(row, versions=[], versions_deferred=True) for row in rows], total, revision
+
+    def read_all(self, *, summary_only: bool = False) -> list[dict]:
         self.ensure_ready()
         with self._connect() as conn:
             algorithm_rows = conn.execute(
@@ -156,8 +230,36 @@ class AlgorithmSqlStore:
             # Prefetch child rows once for the project instead of issuing two
             # extra SELECTs per algorithm. This keeps the algorithm-list read
             # path O(1) in SQL round-trips as the catalog grows.
+            # The algorithm card view must not deserialize archived Test samples
+            # and label contracts (tens of MB per project) just to render names,
+            # metrics and version actions. SQLite extracts the small contract
+            # fields; full version evidence remains untouched for read_one().
+            version_columns = "versions.*" if not summary_only else """
+                versions.id, versions.algorithm_id, versions.version_name,
+                versions.version_no, versions.training_job_id, versions.framework,
+                versions.training_status, versions.stored_path, versions.model_name,
+                versions.artifact_verified, versions.trainable,
+                versions.external_analysis_id, versions.external_algo_version_id,
+                versions.external_publish_status, versions.created_at,
+                versions.finished_at, versions.sort_index,
+                json_object(
+                    'metrics', json_extract(versions.payload_json, '$.metrics'),
+                    'map50', json_extract(versions.payload_json, '$.map50'),
+                    'mAP50', json_extract(versions.payload_json, '$.mAP50'),
+                    'training_lineage', json_extract(versions.payload_json, '$.training_lineage'),
+                    'iteration_decision', json_extract(versions.payload_json, '$.iteration_decision'),
+                    'confirmed_iteration_action', json_extract(versions.payload_json, '$.confirmed_iteration_action'),
+                    'metric_credibility', json_extract(versions.payload_json, '$.metric_credibility'),
+                    'evaluation', CASE WHEN json_type(versions.payload_json, '$.evaluation')='object'
+                        THEN json_object(
+                            'status', json_extract(versions.payload_json, '$.evaluation.status'),
+                            'evaluation_id', json_extract(versions.payload_json, '$.evaluation.evaluation_id'),
+                            'metrics', json_extract(versions.payload_json, '$.evaluation.metrics'))
+                        ELSE NULL END
+                ) AS payload_json
+            """
             version_rows = conn.execute(
-                """SELECT versions.*
+                f"""SELECT {version_columns}
                    FROM algorithm_versions AS versions
                    JOIN algorithms AS algorithms
                      ON algorithms.id=versions.algorithm_id
@@ -212,6 +314,8 @@ class AlgorithmSqlStore:
                     item.setdefault("external_analysis_id", "")
                 versions = versions_by_algorithm.get(algorithm_id, [])
                 item["versions"] = [self._version_from_row(v) for v in versions]
+                if summary_only:
+                    item["versions_compact"] = True
                 analyses = analyses_by_algorithm.get(algorithm_id, [])
                 if analyses:
                     item["external_analyses"] = [self._analysis_from_row(a) for a in analyses]
@@ -259,6 +363,34 @@ class AlgorithmSqlStore:
         self.ensure_ready()
         with self._connect() as conn:
             return self._read_one_conn(conn, str(algorithm_id))
+
+    def training_version_refs(self, task_id: str) -> list[tuple[str, str]]:
+        """Find a training task's version owners without reading large JSON payloads.
+
+        The existing training_job_id index is the authoritative fast path.
+        Callers retain their legacy scan when an older record has no indexed
+        task identity (for example, a lineage-only historical version).
+        """
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """SELECT versions.algorithm_id, versions.id
+                   FROM algorithm_versions AS versions
+                   JOIN algorithms ON algorithms.id=versions.algorithm_id
+                   WHERE algorithms.project_id=? AND versions.training_job_id=?
+                   ORDER BY versions.algorithm_id, versions.id""",
+                (self.project_id, str(task_id)),
+            ).fetchall()
+        return [(str(row["algorithm_id"]), str(row["id"])) for row in rows]
+
+    def exists(self, algorithm_id: str) -> bool:
+        """Project-scoped identity check; no version/report payload hydration."""
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM algorithms WHERE project_id=? AND id=? LIMIT 1",
+                (self.project_id, str(algorithm_id)),
+            ).fetchone() is not None
 
     def create_algorithm(self, item: Mapping[str, Any]) -> dict:
         self.ensure_ready()
@@ -665,6 +797,8 @@ class AlgorithmSqlStore:
                 added = updated = unchanged = deleted = 0
                 for product_id, master_raw in incoming.items():
                     master = dict(master_raw)
+                    master.update(external_deletion_status="NORMAL", external_deletion_since="",
+                                  external_deletion_reason="", external_cleanup_operation_id="")
                     algorithm_id = existing.get(str(product_id))
                     if not algorithm_id:
                         item = {
@@ -684,6 +818,14 @@ class AlgorithmSqlStore:
                     current = self._read_one_conn(conn, algorithm_id)
                     if current is None:
                         continue
+                    # A provider observation cannot revoke a confirmed cleanup
+                    # generation. Only an explicit recovery procedure may do so.
+                    if current.get("external_delete_pending") is True:
+                        unchanged += 1
+                        continue
+                    if current.get("external_deletion_status") == "SUSPECTED_DELETED":
+                        master["external_deletion_history"] = [*(current.get("external_deletion_history") or []),
+                            {"state": "NORMAL", "observed_at": synced_at, "source": "product_reappeared"}]
                     # Observation metadata and local derivative/version state do
                     # not constitute an external master-data graph change.
                     # In particular, external_last_synced_at advances on every
@@ -746,21 +888,29 @@ class AlgorithmSqlStore:
                         )
                         unchanged += 1
                 incoming_ids = {str(key) for key in incoming}
+                suspected = 0
+                new_suspicions = 0
                 for row in rows:
                     pid = str(row["external_product_id"] or "")
                     if pid in incoming_ids:
                         continue
-                    # A provider row that is absent from the complete (unfiltered)
-                    # remote product set is deleted locally rather than converted
-                    # into a synthetic "inactive" tombstone. Cross-store task /
-                    # artifact cleanup is owned by ExternalAlgorithmPlatformService
-                    # before this metadata transaction runs.
-                    changed = conn.execute(
-                        "DELETE FROM algorithms WHERE project_id=? AND id=?",
-                        (self.project_id, str(row["id"])),
-                    ).rowcount
-                    deleted += int(changed or 0)
-                if added or updated or deleted:
+                    current = self._read_one_conn(conn, str(row["id"]))
+                    if current is None or current.get("external_delete_pending") is True:
+                        continue
+                    if current.get("external_deletion_status") != "SUSPECTED_DELETED":
+                        new_suspicions += 1
+                        current.update(external_deletion_status="SUSPECTED_DELETED",
+                                       external_deletion_since=synced_at,
+                                       external_deletion_reason="本次产品列表未包含该产品；缺少权威删除证据，保留全部成果")
+                        current["external_deletion_history"] = [*(current.get("external_deletion_history") or []),
+                            {"state": "SUSPECTED_DELETED", "observed_at": synced_at, "source": "product_list_observation",
+                             "authoritative": False}]
+                    # Fresh observation metadata is durable without changing the
+                    # business graph/revision or repeating the suspicion event.
+                    current["external_deletion_checked_at"] = synced_at
+                    self._update_algorithm_conn(conn, current)
+                    suspected += 1
+                if added or updated or deleted or new_suspicions:
                     self._bump_revision(conn)
                 conn.commit()
             except Exception:
@@ -770,6 +920,7 @@ class AlgorithmSqlStore:
             "added": added,
             "updated": updated,
             "unchanged": unchanged,
+            "suspected_deleted": suspected,
             "deleted": deleted,
             # Compatibility field for older UI/history readers. Missing remote
             # products are no longer represented as inactive tombstones.

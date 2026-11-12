@@ -49,19 +49,26 @@ def test_production_app_mounts_runtime_router_exactly_once():
     keywords = {item.arg: item.value for item in router_call.keywords if item.arg}
     assert set(keywords) == {
         "project_path_provider",
+        "workspace_actor_provider",
         "agent_execution_payload_resolver",
         "agent_result_upload_preparer",
         "agent_result_upload_confirmer",
         "agent_result_commit_handler",
         "agent_training_model_upload_preparer",
         "agent_training_model_upload_confirmer",
+        "agent_training_inputs_provider",
         "agent_material_scan_page_provider",
         "agent_material_scan_read_provider",
         "agent_clean_selection_page_provider",
         "agent_clean_selection_read_provider",
+        "agent_model_install_asset_provider",
     }
     assert isinstance(keywords["project_path_provider"], ast.Name)
     assert keywords["project_path_provider"].id == "project_dir"
+    assert isinstance(keywords["workspace_actor_provider"], ast.Name)
+    assert keywords["workspace_actor_provider"].id == "_material_governance_actor"
+    assert isinstance(keywords["agent_training_inputs_provider"], ast.Name)
+    assert keywords["agent_training_inputs_provider"].id == "_agent_training_inputs"
     # Checking only app.py misses an earlier nested mount which shadows it.
     material_source = (ROOT / "platform_core" / "material_batches.py").read_text(encoding="utf-8")
     assert "training_recovery_router" not in material_source
@@ -91,6 +98,13 @@ def test_production_app_mounts_runtime_router_exactly_once():
     assert keywords["agent_clean_selection_page_provider"].id == "_agent_clean_selection_page"
     assert isinstance(keywords["agent_clean_selection_read_provider"], ast.Name)
     assert keywords["agent_clean_selection_read_provider"].id == "_agent_clean_selection_read"
+    # The installer must obtain an already verified asset through the
+    # controller's canonical registry, not a second path-based upload handler.
+    provider = keywords["agent_model_install_asset_provider"]
+    assert isinstance(provider, ast.Lambda)
+    assert isinstance(provider.body, ast.Call)
+    assert isinstance(provider.body.func, ast.Name)
+    assert provider.body.func.id == "_verified_mother_model_asset"
 
 
 def test_v63_subrouters_keep_single_composition_owner():
@@ -163,7 +177,10 @@ def test_production_app_mounts_training_picker_exactly_once_at_project_owner():
     assert len(mounts) == 1
     call = mounts[0]
     assert len(call.args) == 2
-    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "get_project"
+    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "_authorize_business_file_project"
+    gate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_authorize_business_file_project")
+    calls = {node.func.id for node in ast.walk(gate) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    assert {"get_project", "list_projects"} <= calls
     assert isinstance(call.args[1], ast.Lambda)
     assert isinstance(call.args[1].body, ast.Name)
     assert call.args[1].body.id == "DATA_DIR"
@@ -172,7 +189,14 @@ def test_production_app_mounts_training_picker_exactly_once_at_project_owner():
         "project_path_provider",
         "algorithm_provider",
         "compatibility_payload_provider",
+        "review_negative_provider",
+        "actor_provider",
     }
+    assert isinstance(keywords['review_negative_provider'],ast.Name)
+    assert keywords['review_negative_provider'].id == '_review_training_negative'
+    assert isinstance(keywords['actor_provider'],ast.Name)
+    assert keywords['actor_provider'].id == '_material_governance_actor'
+
     assert isinstance(keywords["project_path_provider"], ast.Name)
     assert keywords["project_path_provider"].id == "project_dir"
     assert isinstance(keywords["algorithm_provider"], ast.Lambda)

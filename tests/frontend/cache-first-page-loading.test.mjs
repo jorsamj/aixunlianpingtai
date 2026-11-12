@@ -16,7 +16,7 @@ function block(start, end) {
 test('ordinary core loading uses cached snapshot and explicit refresh owns refresh=true', () => {
   const core = block('window.loadCore412=async function', 'async function pollAnnotationIndex412');
   assert.match(core, /window\.loadCore412=async function\(\{authoritative=false\}=\{\}\)/);
-  assert.match(core, /snapshot\$\{authoritative\?'\?refresh=true':''\}/);
+  assert.match(core, /snapshot\?core=false\$\{authoritative\?'&refresh=true':''\}/);
   assert.doesNotMatch(core, /preferred_project_id/);
   assert.doesNotMatch(core, /snapshot\?refresh=true/);
   assert.match(source, /loadCore412\(\{authoritative:true\}\)/);
@@ -27,7 +27,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   const startup = block('window.__clInit=function()', 'const TOP_CRUMB413=Object.freeze');
   assert.doesNotMatch(startup, /await window\.refreshCurrentPage413/);
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
-  assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
+  assert.match(startup, /state\.uiReady=true;[\s\S]*?try\{render\(\)\}[\s\S]*?state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   assert.match(html, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
 });
@@ -37,8 +37,8 @@ test('training resource background extras patch only resource cards', () => {
   const end = main.indexOf('\nwindow.PlatformCore.runtime.refreshPageExtras', start);
   assert.ok(start >= 0 && end > start);
   const refresh = main.slice(start, end);
-  assert.match(refresh, /page === '训练资源' && window\.patchTrainingResourceCardsV3\?\.\(\)/);
-  assert.match(refresh, /page === '模型配置' && window\.patchModelPromptTemplatesV35\?\.\(\)/);
+  assert.match(refresh, /page\s*===\s*'训练资源'\s*&&\s*window\.patchTrainingResourceCardsV3\?\.\(\)/);
+  assert.match(refresh, /page\s*===\s*'模型配置'\s*&&\s*window\.patchModelPromptTemplatesV35\?\.\(\)/);
   assert.match(source, /window\.patchTrainingResourceCardsV3=function\(\)/);
   assert.match(source, /window\.patchModelPromptTemplatesV35=function\(\)/);
   const patchStart = source.indexOf('window.patchTrainingResourceCardsV3=function()');
@@ -48,11 +48,11 @@ test('training resource background extras patch only resource cards', () => {
   assert.doesNotMatch(patch, /#view|renderResources\(/);
 });
 
-test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
+test('extras keep jobs focused and load model configs only on their own page', () => {
   const extras = block('async function extras412', 'window.loadPageExtras413=extras412');
   assert.doesNotMatch(extras, /\/jobs/);
-  assert.doesNotMatch(extras, /modelConfigs|model-configs/);
-  assert.match(extras, /if\(page==='模型配置'\)load\('promptTemplates','\/api\/v35\/prompt-templates','items'\)/);
+  assert.match(extras, /if\(page==='模型配置'\)\{load\('modelConfigs','\/api\/v35\/model-configs','items'\);/);
+  assert.match(extras, /load\('promptTemplates','\/api\/v35\/prompt-templates','items'\)/);
 });
 
 
@@ -207,9 +207,17 @@ test('normal navigation is synchronous once startup data is ready', () => {
   const end = main.indexOf('\n  beforeInvokeNavigation:', start);
   assert.ok(start >= 0 && end > start);
   const readiness = main.slice(start, end);
-  assert.match(readiness, /if \(!state\.uiReady && window\.__v53InitPromise\) return window\.__v53InitPromise/);
+  assert.match(readiness, /if \(!state\.uiReady && window\.__v53InitPromise\) return Promise\.resolve\(window\.__v53InitPromise\)\.then\(\(\) => state\.uiReady === true\)/);
   assert.match(readiness, /return null/);
   assert.doesNotMatch(readiness, /async|await/);
+});
+
+test('CI readiness source guard matches the live fail-closed startup and navigation contract', () => {
+  const workflow = fs.readFileSync(new URL('../../.github/workflows/frontend-runtime-stabilization.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /Promise\.resolve\(window\.__v53InitPromise\)\.then\(\(\) => state\.uiReady === true\)/);
+  assert.match(workflow, /ready => ready === false \|\| destroyed \|\| guard\.epoch !== navigationEpoch/);
+  assert.doesNotMatch(workflow, /return window\.__v53InitPromise;/);
+  assert.match(workflow, /tests\/browser\/frontend-lifecycle-races\.spec\.mjs/, 'CI must execute real Chrome delayed-core and stale-modal races');
 });
 
 
@@ -229,7 +237,7 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
   assert.ok(start >= 0 && end > start);
   const chrome = main.slice(start, end);
   assert.match(chrome, /querySelectorAll\('\.nav-btn'\)/);
-  assert.match(chrome, /classList\.toggle\('active', label === currentPage\)/);
+  assert.match(chrome, /classList\.toggle\('active', label === \(advancedPageInfo\(currentPage\)\?\.title \|\| currentPage\)\)/);
   assert.doesNotMatch(chrome, /nav-project/);
   assert.doesNotMatch(source, /class="nav-project"/);
   assert.match(chrome, /if \(!nav \|\| !buttons\.length\)/);
@@ -238,14 +246,20 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
 
 
 test('version conversion reuses cached history and dedupes focused background reads', () => {
-  const start = source.indexOf('async function deploymentHistory428(aid,vid,force=false)');
+  const start = source.indexOf('async function deploymentHistory428(aid,vid,force=false,query={page:1,page_size:20},signal,serverForce=false)');
   const end = source.indexOf('\n  async function deployResources428(force=false)', start);
   assert.ok(start >= 0 && end > start);
   const history = source.slice(start, end);
   assert.match(history, /if\(!force\)\{const c=readCache428\(k\);if\(c\)return c\}/);
   assert.match(history, /conversionHistoryInflight428\.has\(inflightKey\)/);
-  assert.match(history, /\/api\/v42\/projects\/\$\{pid\(\)\}\/algorithms\/\$\{aid\}\/versions\/\$\{vid\}\/deployments/);
+  assert.match(history, /\/api\/v42\/projects\/\$\{project\}\/algorithms\/\$\{aid\}\/versions\/\$\{vid\}\/deployments\?\$\{params\}/);
   assert.match(history, /writeCache428\(k,r\)/);
+  assert.match(history, /cacheKey428\('verdeploy',aid,vid,String\(new URLSearchParams\(query\)\)\)/);
+  assert.match(history, /params=new URLSearchParams\(\{\.\.\.query,force:String\(serverForce\)\}\)/);
+  assert.match(history, /if\(!signal&&conversionHistoryInflight428\.has\(inflightKey\)\)/);
+  assert.match(history, /withRequestDeadline\(deadlineSignal=>api/);
+  assert.match(history, /signal:deadlineSignal/);
+  assert.match(history, /label:'转换记录读取',signal/);
   assert.doesNotMatch(history, /\/deploy\/artifacts/);
 });
 
@@ -260,11 +274,15 @@ test('page extras have their own freshness and quality extras only run on the de
   assert.doesNotMatch(refresh, /page === '部署转换'/);
   assert.doesNotMatch(refresh, /PAGE_EXTRAS_OWNERS = new Set\([^\n]*'训练任务'/);
   assert.match(refresh, /page !== '质量中心' \|\| state\.qualityCenterTab411 === 'detect'/);
-  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(cacheKey\) \|\| 0\)/);
-  assert.match(refresh,/const cacheKey=page==='质量中心'/);
-  assert.match(refresh,/state\.project\?\.id/);
+  assert.match(refresh, /const projectId=String\(state\.project\?\.id \|\| ''\)/);
+  assert.match(refresh, /const cacheKey=JSON\.stringify\(\[projectId,page\]\)/);
+  assert.match(refresh, /inflightKey:JSON\.stringify\(\[cacheKey,generation\]\)/);
+  assert.match(refresh, /pageExtrasLoadedAt\.get\(o\.cacheKey\)/);
+  assert.match(refresh, /pageExtrasInflight\.get\(o\.inflightKey\)/);
+  assert.match(refresh, /pageExtrasOwnerCurrent\(o\)/);
   assert.doesNotMatch(refresh, /__coreSnapshotGeneratedAt|snapshotLoadedAt/);
-  assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
+  assert.match(refresh, /!force&&pageExtrasLoadedAt\.has\(o\.cacheKey\)&&age>=0&&age<PAGE_EXTRAS_CACHE_TTL_MS/);
+  assert.match(refresh, /pageExtrasInflight\.get\(o\.inflightKey\)===task/);
   assert.match(refresh, /window\.PlatformCore\.runtime\.refreshPageExtras = refreshPageExtrasInBackground/);
 });
 
@@ -292,4 +310,47 @@ test('dataset card renderer patches by material id instead of replacing the full
   assert.match(renderer, /node\.replaceWith\(next\)/);
   assert.match(renderer, /if\(!keep\.has\(key\)\)node\.remove\(\)/);
   assert.doesNotMatch(renderer, /g\.innerHTML=rows\.map\(card412\)/);
+});
+
+test('legacy page extras A→B→A ignores old success and keeps the current page result', async()=>{
+  const script=block('async function extras412(pageOverride){','window.loadPageExtras413=extras412;');
+  let generation=2;
+  const state={page:'模型配置',project:{id:'p1'},promptTemplates:[{id:'initial'}]};
+  const calls=[],notifications=[];
+  const api=url=>url.endsWith('/model-configs')?Promise.resolve({items:[]}):new Promise((resolve,reject)=>calls.push({url,resolve,reject}));
+  const win={PageRequestScopeRuntime:{stats:()=>({generation})}};
+  const extras=new Function('state','api','toast','window',script+'\nreturn extras412;')(
+    state,api,error=>notifications.push(error),win);
+  const stale=extras();
+  state.page='数据集';generation++;
+  state.page='模型配置';generation++;
+  const current=extras();
+  calls[0].resolve({items:[{id:'stale'}]});
+  await stale;
+  assert.deepEqual(state.promptTemplates,[{id:'initial'}]);
+  calls[1].resolve({items:[{id:'current'}]});
+  await current;
+  assert.deepEqual(state.promptTemplates,[{id:'current'}]);
+  assert.deepEqual(notifications,[]);
+});
+
+test('legacy page extras suppresses old-page failures and never crosses project ownership',async()=>{
+  const script=block('async function extras412(pageOverride){','window.loadPageExtras413=extras412;');
+  let generation=2;
+  const state={page:'模型配置',project:{id:'p1'},promptTemplates:[{id:'initial'}]};
+  const calls=[],notifications=[];
+  const extras=new Function('state','api','toast','window',script+'\nreturn extras412;')(
+    state,url=>url.endsWith('/model-configs')?Promise.resolve({items:[]}):new Promise((resolve,reject)=>calls.push({resolve,reject,url})),
+    error=>notifications.push(error),{PageRequestScopeRuntime:{stats:()=>({generation})}});
+  const old=extras();
+  state.page='数据集';generation++;
+  state.project={id:'p2'};state.page='模型配置';generation++;
+  calls[0].reject(new Error('stale network failure'));
+  await old;
+  assert.deepEqual(notifications,[]);
+  assert.deepEqual(state.promptTemplates,[{id:'initial'}]);
+  const current=extras();
+  calls[1].reject(new Error('current network failure'));
+  await current;
+  assert.deepEqual(notifications,['current network failure']);
 });

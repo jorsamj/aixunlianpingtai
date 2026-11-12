@@ -75,11 +75,17 @@ class FakeTransferSession:
 
 
 class FakeControlClient:
-    def __init__(self, transfer=None, *, cancel_at_heartbeat=None, fence_at_heartbeat=None):
+    def __init__(
+        self, transfer=None, *, cancel_at_heartbeat=None, fence_at_heartbeat=None,
+        cancel_after_start_marker=None, fence_after_start_marker=None,
+    ):
         self.transfer = transfer
         self.cancel_at_heartbeat = cancel_at_heartbeat
         self.fence_at_heartbeat = fence_at_heartbeat
+        self.cancel_after_start_marker = cancel_after_start_marker
+        self.fence_after_start_marker = fence_after_start_marker
         self.heartbeat_calls = 0
+        self.phases = []
         self.logs = []
         self.prepare_calls = []
         self.confirm_calls = []
@@ -88,15 +94,19 @@ class FakeControlClient:
 
     def heartbeat(self, _lease, **kwargs):
         self.heartbeat_calls += 1
-        if self.fence_at_heartbeat and self.heartbeat_calls >= self.fence_at_heartbeat:
+        self.phases.append(kwargs.get("stage"))
+        if ((self.fence_at_heartbeat and self.heartbeat_calls >= self.fence_at_heartbeat)
+                or (self.fence_after_start_marker is not None
+                    and self.fence_after_start_marker.is_file())):
             raise NodeExecutorHTTPError(
                 "EXECUTION_FENCED",
                 "generation lost",
                 status_code=409,
             )
         cancelled = bool(
-            self.cancel_at_heartbeat
-            and self.heartbeat_calls >= self.cancel_at_heartbeat
+            (self.cancel_at_heartbeat and self.heartbeat_calls >= self.cancel_at_heartbeat)
+            or (self.cancel_after_start_marker is not None
+                and self.cancel_after_start_marker.is_file())
         )
         return {
             "cancel_requested": cancelled,
@@ -379,9 +389,13 @@ def test_lost_put_response_recovers_through_idempotent_prepare(tmp_path):
 def test_central_cancellation_terminates_real_local_process_tree(tmp_path):
     current, downloads = lease()
     transfer = FakeTransferSession(downloads)
-    # Explicit milestone beats are 1..3; the first background beat while the
-    # process is sleeping becomes beat 4 and requests cancellation.
-    client = FakeControlClient(transfer, cancel_at_heartbeat=4)
+    # Windows can emit the first background heartbeat before the spawned
+    # interpreter executes its first line. Cancel only after the child really
+    # started, so this test proves process-tree termination rather than the
+    # separate (and valid) pre-start cancellation path.
+    client = FakeControlClient(
+        transfer, cancel_after_start_marker=tmp_path / "runtime" / "started.marker",
+    )
     runner, runtime_root, workdirs = build_runner(
         tmp_path,
         client,
@@ -404,7 +418,9 @@ def test_central_cancellation_terminates_real_local_process_tree(tmp_path):
 def test_execution_fence_terminates_real_process_without_terminal_mutation(tmp_path):
     current, downloads = lease()
     transfer = FakeTransferSession(downloads)
-    client = FakeControlClient(transfer, fence_at_heartbeat=4)
+    client = FakeControlClient(
+        transfer, fence_after_start_marker=tmp_path / "runtime" / "started.marker",
+    )
     runner, runtime_root, workdirs = build_runner(
         tmp_path,
         client,
@@ -591,3 +607,17 @@ def test_rknn_board_runtime_rejects_chip_mismatch_before_process(tmp_path):
     assert outcome.status == "FAILED"
     assert "matching this task" in outcome.error
     assert client.prepare_calls == []
+
+
+def test_agent_reads_real_runtime_phase_without_control_plane_database(tmp_path):
+    current, downloads = lease()
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, _ = build_runner(tmp_path, client, transfer, sleep_seconds=.2)
+    script = runtime_root / "predict_ultralytics_runner.py"
+    text = script.read_text(encoding="utf-8").replace("time.sleep(0.2)",
+        "import os; Path(os.environ['CHANGLIAN_DEPLOYMENT_PROGRESS']).write_text(json.dumps({'phase':'INFERENCING'}), encoding='utf-8'); time.sleep(.2)")
+    script.write_text(text, encoding="utf-8")
+    outcome = runner.run(current)
+    assert outcome.status == "SUCCEEDED"
+    assert "REMOTE_INFERENCING" in client.phases

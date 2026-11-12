@@ -18,15 +18,15 @@ function harness(extra={}){
   const item={image_id:'i',filename:'i.png',width:100,height:100,url:'i.png',boxes:[original]};
   const state={ai60Review:{id:'review',seen:new Map([['i',item]]),edits:new Map(),decisions:new Map(),ownerPage:'ops'},page:'ops',labels:[{code:'person',class_id:1}]};
   let ids=0,closed=0;const errors=[];
-  const context={state,document:{querySelector:()=>({}),getElementById:()=>null,querySelectorAll:()=>[]},window:{BrowserCapabilityRuntime:{createClientId:()=>`new-${++ids}`}},imageById:()=>item,aiReviewLabels60:()=>state.labels,esc:String,toast:error=>errors.push(error),modal:()=>{},closeModal:()=>closed++,renderReviewPage:()=>{},AbortController,Set,Map,JSON,Number,String,Promise};
+  const context={state,document:{querySelector:()=>({}),getElementById:()=>null,querySelectorAll:()=>[]},window:{BrowserCapabilityRuntime:{createClientId:()=>`new-${++ids}`}},imageById:()=>item,aiReviewLabels60:()=>state.labels,esc:String,toast:error=>errors.push(error),modal:()=>{},closeModal:()=>closed++,api:async()=>({revision:1,saved_at:'now'}),taskApi:()=>'/task',renderAiSelection60:()=>{},renderReviewPage:()=>{},AbortController,Set,Map,JSON,Number,String,Promise};
   Object.assign(context,extra);context.window.window=context.window;vm.runInNewContext(block,context);
   return {state,window:context.window,item,original,errors,get closed(){return closed;}};
 }
-test('candidate opening assigns missing IDs once, preserves metadata and never changes review until explicit save',()=>{
+test('candidate opening assigns missing IDs once, preserves metadata and never changes review until explicit server save',async()=>{
   const h=harness();h.window.editAiCandidate60('i');const edit=h.state.ai60Edit;
   assert.equal(edit.boxes[0].id,'new-1');assert.equal(h.original.id,undefined);assert.equal(h.state.ai60Review.edits.size,0);
   h.window.updateAiCandidateBox60(0,'x1','12');assert.equal(edit.boxes[0].x1,12);assert.equal(h.item.boxes[0].x1,10);
-  h.window.saveAiCandidateEdit60();assert.equal(h.state.ai60Review.edits.get('i')[0].source_task_id,'ai-task');assert.equal(h.state.ai60Review.edits.get('i')[0].id,'new-1');assert.equal(h.state.ai60Review.edits.get('i')[0].source,'ai_candidate_reviewed');assert.equal(h.closed,1);
+  await h.window.saveAiCandidateEdit60();assert.equal(h.state.ai60Review.edits.get('i')[0].source_task_id,'ai-task');assert.equal(h.state.ai60Review.edits.get('i')[0].id,'new-1');assert.equal(h.state.ai60Review.edits.get('i')[0].source,'ai_candidate_reviewed');assert.equal(h.closed,0,'saving candidate changes must not close the review workspace');assert.equal(h.state.ai60Edit.dirty,false);assert.equal(h.item.draft_revision,1);
 });
 test('candidate coordinates reject out of image and invalid rectangles without mutating draft',()=>{
   const h=harness();h.window.editAiCandidate60('i');const edit=h.state.ai60Edit;
@@ -43,6 +43,22 @@ test('candidate cancellation fences late factory completion and discards draft c
   h.window.updateAiCandidateBox60(0,'x1','12');h.window.destroyAiCandidateEditor60();
   resolveFactory({destroy:()=>destroyed++});await pending;
   assert.equal(destroyed,1);assert.equal(h.state.ai60Review.edits.size,0);assert.equal(h.item.boxes[0].x1,10);assert.equal(edit.closed,true);
+});
+test('main-area review editor ignores the hidden legacy modal but respects a real overlay',async()=>{
+  let isActive;
+  const root={isConnected:true,querySelectorAll:()=>[],querySelector:()=>null};
+  const image={complete:true,naturalWidth:100,naturalHeight:100,getAttribute:()=> 'i.png',setAttribute:()=>{}};
+  const modal={isConnected:true,hidden:false,classList:{contains:()=>true},getClientRects:()=>[],contains:()=>false};
+  const document={querySelector:()=>root,getElementById:id=>id==='ai60EditImg'?image:id==='ai60EditViewport'||id==='ai60EditStage'?{}:id==='modal'?modal:null,querySelectorAll:()=>[modal]};
+  const h=harness({document,pid:()=> 'p'});
+  h.window.PlatformCore={createAnnotoriousEditor:options=>{isActive=options.isActive;return new Promise(()=>{})}};
+  h.window.editAiCandidate60('i');
+  await Promise.resolve();
+  assert.equal(typeof isActive,'function');
+  assert.equal(isActive(),true,'hidden #modal cannot disable independent review canvas');
+  modal.classList.contains=()=>false;modal.getClientRects=()=>[{}];
+  assert.equal(isActive(),false,'visible overlay prevents editing the page behind it');
+  h.window.destroyAiCandidateEditor60();
 });
 test('candidate draft has one history and undo/redo never write reviewed decisions',()=>{
   const h=harness();h.window.editAiCandidate60('i');h.window.updateAiCandidateBox60(0,'x1','12');h.window.updateAiCandidateBox60(0,'x1','14');

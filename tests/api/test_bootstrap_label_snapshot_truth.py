@@ -36,7 +36,7 @@ def test_project_label_mutation_refreshes_ready_bootstrap_snapshot(client, monke
 
     response = client.get(
         "/api/v53/bootstrap/snapshot",
-        params={"preferred_project_id": project_id},
+        params={"core":False,"preferred_project_id": project_id},
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -88,7 +88,7 @@ def test_algorithm_mutation_invalidates_only_bootstrap_algorithm_overlay(client,
 
     response = client.get(
         "/api/v53/bootstrap/snapshot",
-        params={"preferred_project_id": project_id},
+        params={"core":False,"preferred_project_id": project_id},
     )
     assert response.status_code == 200, response.text
     body = response.json()

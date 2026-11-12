@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,14 +60,54 @@ def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str
     return rows
 
 
+def prepare_annotation_image(path):
+    """Read actual raster dimensions; submit EXIF-corrected pixels without disk writes."""
+    import io
+    from PIL import Image, ImageOps
+    content = Path(path).read_bytes()
+    with Image.open(io.BytesIO(content)) as source:
+        width, height = source.size
+        orientation = int(source.getexif().get(274, 1))
+        if orientation not in range(1, 9):
+            raise ValueError("DISPLAY_TRANSFORM_ERROR: invalid EXIF orientation")
+        canonical = ImageOps.exif_transpose(source)
+        submitted_width, submitted_height = canonical.size
+        if orientation != 1:
+            buffer = io.BytesIO()
+            canonical.convert("RGB").save(buffer, format="PNG")
+            content = buffer.getvalue()
+    return content, {"original_width": submitted_width, "original_height": submitted_height,
+        "encoded_width": width, "encoded_height": height, "exif_orientation": orientation,
+        "submitted_width": submitted_width, "submitted_height": submitted_height,
+        "inference_width": submitted_width, "inference_height": submitted_height,
+        "submitted_sha256": hashlib.sha256(content).hexdigest(),
+        "model_internal_geometry": "unknown_provider_managed",
+        "mapping": "exif_transposed_original_pixels" if orientation != 1 else "identity_original_bytes"}
+
+
 def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, Any]:
     from .annotation_runtime import build_annotation_prompt
 
     provider = request["_provider"]
     config = request["_provider_config"]
     path = Path(str(image.get("path") or ""))
-    if not path.is_file():
+    frozen_image = request.get("_wevisone_prepared_image")
+    if frozen_image is None and not path.is_file():
         raise FileNotFoundError(f"annotation image file does not exist: {image.get('filename') or image.get('id')}")
+    image_bytes, geometry = frozen_image if frozen_image is not None else prepare_annotation_image(path)
+    width, height = geometry["submitted_width"], geometry["submitted_height"]
+    geometry["stored_width"] = image.get("width")
+    geometry["stored_height"] = image.get("height")
+    geometry["stored_size_matches"] = (width, height) == (image.get("width"), image.get("height"))
+    # The decoded image is authoritative; never infer pixels from DPI or stale metadata.
+    image["width"], image["height"] = width, height
+    contract = auto_label_core.coordinate_contract(config, legacy=True)
+    diagnostics = {
+        "contract": contract, "created_at_epoch": time.time(),
+        "status": "UNVERIFIED_CONTRACT" if (config.get("coordinate_validation") or {}).get("status") not in {"verified", "sample_validated"} else "configured",
+        "geometry": geometry, "model_config_revision": request.get("model_config_revision", ""),
+        "prompt_version": request.get("effective_prompt_revision", ""),
+    }
     prompt = build_annotation_prompt(
         config,
         request["label_catalog"],
@@ -73,24 +116,69 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         business_instruction=str(request.get("business_instruction") or ""),
         template=str(request.get("prompt_template") or ""),
     )
-    response = provider.annotate(
-        image_bytes=path.read_bytes(),
-        prompt=prompt,
-        output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
-    )
+    dedicated = str(config.get("provider_adapter") or config.get("provider_type") or "") == "wevisone_vl"
+    if dedicated:
+        # The WeVisOne adapter has already validated the declared wire contract
+        # and converted it to canonical original-image pixel XYXY. Applying
+        # the operator's *wire* settings again would double-scale/swap boxes.
+        diagnostics["native_wire_contract"] = dict(contract)
+        contract = {"coordinate_space": "pixel", "coordinate_order": "xyxy",
+                    "coordinate_origin": "top_left", "coordinate_image_space": "original_input"}
+    provider_args = {"image_bytes": image_bytes, "prompt": prompt,
+                     "output_schema": auto_label_core.CANDIDATE_OUTPUT_SCHEMA}
+    if dedicated:
+        provider_args["labels"] = list(request["label_ids"])
+        provider_args["label_aliases"] = request["label_aliases"]
+    response = provider.annotate(**provider_args)
+    mapping = None
+    if contract.get("coordinate_image_space") == "processed_image":
+        mapping = response.get("geometry")
+        if not isinstance(mapping, dict):
+            raise ValueError("UNVERIFIED_CONTRACT: provider preprocessing geometry is unknown")
+        diagnostics["geometry"]["provider_preprocessing"] = mapping
     text = str(response.get("text") or "")
-    parsed = auto_label_core.parse_candidate_response(
-        text,
-        width=int(image["width"]),
-        height=int(image["height"]),
-        label_ids=request["label_ids"],
-        label_aliases=request["label_aliases"],
-    )
+    diagnostics.update({"model": str(config.get("model_name") or ""),
+                        "provider": str(config.get("provider_adapter") or config.get("provider_type") or ""),
+                        "latency_ms": int(response.get("latency_ms") or 0)})
+    diagnostics.update({key: response[key] for key in (
+        "request_id", "backend_instance_id", "actual_model", "status_code",
+    ) if response.get(key) not in (None, "")})
+    if dedicated and isinstance(response.get("diagnostics"), dict):
+        # The provider's bounded, shape-only wire evidence is kept separate
+        # from the canonical geometry diagnostics. Never persist raw images.
+        diagnostics["wevisone"] = response["diagnostics"]
+    try:
+        parsed = auto_label_core.parse_candidate_response(
+            text,
+            width=int(image["width"]),
+            height=int(image["height"]),
+            label_ids=request["label_ids"],
+            label_aliases=request["label_aliases"],
+            coordinate_space=contract["coordinate_space"],
+            coordinate_order=contract["coordinate_order"],
+            diagnostics=diagnostics,
+            coordinate_origin=contract.get("coordinate_origin", "top_left"),
+            geometry=mapping,
+            allow_missing_confidence=dedicated,
+        )
+    except ValueError as error:
+        diagnostics["status"] = "COORDINATE_CONVERSION_ERROR" if "COORDINATE_CONVERSION_ERROR:" in str(error) else "STRUCTURED_OUTPUT_ERROR"
+        diagnostics["first_failure_only"] = True
+        diagnostics["counts"] = {"raw": diagnostics.get("raw_candidate_count", 0), "invalid": None,
+                                 "threshold_filtered": 0, "nms_filtered": 0, "final": 0}
+        error.diagnostics = diagnostics
+        raise
     threshold = float(request.get("threshold") if request.get("threshold") is not None else 0.45)
-    boxes = auto_label_core.nms_candidates(
-        [box for box in parsed if float(box.get("confidence") or 0) >= threshold],
-        iou_threshold=0.5,
-    )
+    # Dedicated providers without a calibrated score are reviewable candidates,
+    # not synthetic 0% predictions. Human confirmation remains mandatory.
+    eligible = [b for b in parsed if b.get("confidence") is None or float(b["confidence"]) >= threshold]
+    boxes = auto_label_core.nms_candidates(eligible, iou_threshold=0.5)
+    retained = len(eligible)
+    diagnostics["confidence_unavailable_count"] = sum(box.get("confidence") is None for box in boxes)
+    diagnostics["converted_boxes"] = parsed[:100]
+    diagnostics["final_boxes"] = [dict(box) for box in boxes[:100]]
+    diagnostics["counts"] = {"raw": len(parsed), "invalid": 0, "threshold_filtered": len(parsed) - retained,
+                             "nms_filtered": retained - len(boxes), "final": len(boxes)}
     for box in boxes:
         box.update({
             "id": str(box.get("id") or uuid.uuid4().hex[:12]),
@@ -101,6 +189,7 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         })
     return {
         "boxes": boxes,
+        "diagnostics": diagnostics,
         "raw_response_hash": auto_label_core.raw_response_hash(text),
         "request_id": str(response.get("request_id") or ""),
         "latency_ms": int(response.get("latency_ms") or 0),
@@ -115,6 +204,15 @@ def _assert_generation_commit(context) -> None:
     # commits so a stale/late Worker cannot publish model output.
     if context.cancel_requested():
         raise InterruptedError("AI annotation task cancelled before candidate commit")
+
+
+def sync_annotation_statistics(repository, task, store: CandidateStore) -> dict[str, int]:
+    """Refresh a task-list projection from the authoritative per-task SQLite store."""
+    counts = store.statistics()
+    projection = getattr(repository, "set_annotation_statistics", None)
+    if task.kind is TaskKind.AI_ANNOTATION and callable(projection):
+        projection(task.task_id, counts)
+    return counts
 
 
 def run_ai_annotation(
@@ -162,6 +260,19 @@ def run_ai_annotation(
             data_dir=data_dir,
         )
     images = load_task_images(context.task.project_id, runtime_request.get("image_ids") or [])
+    if request.get("review_scope_policy") == "per_image_required":
+        expected_hashes = request.get("per_image_source_hashes")
+        expected_scopes = request.get("per_image_missing_review_scopes")
+        expected_versions = request.get("per_image_annotation_versions")
+        if (not isinstance(expected_hashes, dict) or not isinstance(expected_scopes, dict)
+                or not isinstance(expected_versions, dict)
+                or set(expected_hashes) != set(expected_scopes) or set(expected_hashes) != set(expected_versions)
+                or set(expected_hashes) != {str(image["id"]) for image in images}):
+            raise ValueError("AI_SUPPLEMENT_FROZEN_SELECTION_MISSING")
+        for image in images:
+            image_id = str(image["id"])
+            if str(image.get("source_content_sha256") or "").strip().lower() != expected_hashes[image_id]:
+                raise ValueError("AI_SUPPLEMENT_MATERIAL_CHANGED: refuse inference on changed source")
     preview_count = max(0, int(runtime_request.get("preview_count") or 0))
     if preview_count:
         images = images[:preview_count]
@@ -184,7 +295,12 @@ def run_ai_annotation(
         if "labels" in manifest and [str(value) for value in manifest.get("labels") or []] != labels:
             raise ValueError("annotation candidate manifest does not match immutable task labels")
 
-    durable = store.generation_prefix(str(image["id"]) for image in images)
+    if context.cancel_requested():
+        return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+    durable = store.generation_state(
+        (str(image["id"]) for image in images),
+        commit_guard=lambda: _assert_generation_commit(context),
+    )
     checkpoint = dict(context.load_checkpoint() or {})
     start = int(durable["next_index"])
     succeeded = int(durable["succeeded"])
@@ -208,80 +324,247 @@ def run_ai_annotation(
             current_item=str(images[start - 1].get("id") or ""),
         )
 
-    with store.write_session(
-        commit_guard=lambda: _assert_generation_commit(context),
-    ) as append_candidate:
-        for index in range(start, len(images)):
+    retry_selection = context.artifacts.read_json(context.task.task_id, 'generation/retry-selection.json', default={})
+    retry_ids = retry_selection.get('image_ids') if isinstance(retry_selection,dict) else None
+    retry_ids = set(map(str,retry_ids)) if isinstance(retry_ids,list) else None
+    image_by_id = {str(image["id"]): image for image in images}
+    if context.task.attempt > 1:
+        # The original task is the candidate owner across retries and lease
+        # recovery. A changed material is not allowed to reuse saved geometry.
+        for saved in store.iter_items():
+            previous_hash = str(saved.get("source_content_sha256") or "").lower()
+            current = image_by_id[str(saved["image_id"])]
+            current_hash = str(current.get("source_content_sha256") or current.get("content_sha256") or "").lower()
+            if previous_hash and current_hash and previous_hash != current_hash:
+                raise ValueError("AI_ANNOTATION_SOURCE_CHANGED: 原图片内容已改变，不能沿用旧候选结果")
+
+    from .annotation_inference import call_annotation_with_policy
+    from .inference_policy import resolve_inference_policy
+    from .task_runtime import ExecutionFencedError
+    snapshot = runtime_request.get("model_config_snapshot") or {}
+    frozen_policy = snapshot.get("inference_execution_policy") if isinstance(snapshot, dict) else None
+    if isinstance(frozen_policy, dict) and frozen_policy.get("version") == 1:
+        policy = dict(frozen_policy)
+        if snapshot.get("secret_ref") and not snapshot.get("inference_account_identity"):
+            # A headless preparation may freeze a reference before its key is
+            # available. Once executable, share its real account's base quota
+            # without upgrading this historical/unknown-capacity task.
+            runtime_identity = runtime_request.get("_provider_config") or snapshot
+            policy.update(concurrency=1, max_attempts=1,
+                          domain=resolve_inference_policy(runtime_identity)["domain"])
+        if policy.get("evidence_expires_at") and float(policy["evidence_expires_at"]) <= time.time():
+            policy.update(concurrency=1, evidence_status="expired")
+    else:
+        policy = resolve_inference_policy(runtime_request.get("_provider_config") or snapshot or {})
+        policy.update(concurrency=1, max_attempts=1, evidence_status="legacy")
+    if mining_mode or not callable(getattr(context.repository, "acquire_inference_permit", None)):
+        policy.update(concurrency=1, max_attempts=1)
+    concurrency = max(1, min(8, int(policy.get("concurrency") or 1)))
+    halt = threading.Event()
+    generation_started = time.monotonic()
+    latencies, execution_retries, gateway_errors = [], 0, 0
+
+    def produce_candidate(image, previous=None):
+        image_started = time.monotonic()
+        next_attempt=int((previous or {}).get("attempt_count") or 0)+1
+        prior_errors = list((previous or {}).get("error_history") or [])[-4:]
+        if previous and previous.get("status") == "failed":
+            prior_errors.append({key: previous.get(key) for key in (
+                "attempt_count", "error_code", "error_stage", "error", "http_status",
+                "request_id", "request_trace_id", "returned_label", "label_match_status",
+            ) if previous.get(key) not in (None, "")})
+        try:
+            if mining_mode and annotate is annotate_one:
+                from .hard_sample_mining import infer_with_frozen_yolo
+                generated = infer_with_frozen_yolo(runtime_request, image)
+            else:
+                generated = call_annotation_with_policy(context, runtime_request, image, annotate, policy, stop=halt)
+            boxes = list(generated.get("boxes") or [])
+            item = {
+                "image_id": str(image["id"]), "filename": image.get("filename"),
+                "url": image.get("url"), "width": image.get("width"), "height": image.get("height"),
+                "source_content_sha256": str(image.get("source_content_sha256") or image.get("content_sha256") or "").strip().lower(),
+                "status": "success" if boxes else "empty", "boxes": boxes, "attempt_count":next_attempt,
+                **{key: generated.get(key) for key in (
+                    "raw_response_hash", "request_id", "latency_ms", "provider", "model", "diagnostics",
+                    "manual_review_required", "review_conflicts",
+                    "hard_sample_signals", "hard_sample_priority", "ground_truth_compared",
+                    "gt_comparison", "root_cause_confirmed",
+                ) if generated.get(key) is not None and generated.get(key) != ""},
+            }
+            if prior_errors:
+                item["error_history"] = prior_errors[-5:]
+            execution = (generated.get("diagnostics") or {}).get("execution") or {}
+            if execution.get("platform_request_id"):
+                item["request_trace_id"] = str(execution["platform_request_id"])[:128]
+            failure_code = ""
+        except (InterruptedError, ExecutionFencedError):
+            raise
+        except PermissionError as error:
+            # Capacity acquisition checks the same persisted execution fence.
+            raise ExecutionFencedError("inference dispatch is fenced") from error
+        except Exception as error:
+            item = {
+                "image_id": str(image.get("id") or ""), "filename": image.get("filename"),
+                "url": image.get("url"), "width": image.get("width"), "height": image.get("height"),
+                "source_content_sha256": str(image.get("source_content_sha256") or image.get("content_sha256") or "").strip().lower(),
+                "status": "failed", "boxes": [], "error": _public_error(error),
+                **_failure_evidence(error, attempt=next_attempt),
+            }
+            frozen_model = runtime_request.get("model_config_snapshot") or runtime_request.get("_provider_config") or {}
+            if isinstance(frozen_model, dict):
+                item.setdefault("model", str(frozen_model.get("model_name") or "")[:160])
+                item.setdefault("provider", str(frozen_model.get("provider_adapter") or frozen_model.get("provider_type") or "")[:80])
+            item["task_id"] = str(context.task.task_id)
+            if prior_errors:
+                item["error_history"] = prior_errors[-5:]
+            if isinstance(getattr(error, "diagnostics", None), dict):
+                item["diagnostics"] = error.diagnostics
+            failure_code = str(getattr(error, "code", "") or type(error).__name__)
+        diagnostics = item.setdefault("diagnostics", {})
+        execution = diagnostics.setdefault("execution", {})
+        execution.setdefault("elapsed_ms", round((time.monotonic() - image_started) * 1000))
+        execution.setdefault("attempts", 1)
+        if request.get("review_scope_policy") == "per_image_required":
+            item["review_scope_policy"] = "per_image_required"
+            item["missing_review_scope"] = list(expected_scopes[str(image["id"])])
+        return item, failure_code
+
+    service_faults = {
+        "MODEL_SERVICE_UNREACHABLE", "MODEL_REQUEST_TIMEOUT", "MODEL_NOT_LOADED",
+        "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_SERVICE_ERROR",
+        "MODEL_OUTPUT_PARSE_ERROR", "MODEL_OUTPUT_FAILED", "MODEL_PROTOCOL_REQUIRED",
+        "MODEL_RATE_LIMITED", "MODEL_QUOTA_EXCEEDED", "MODEL_PERMISSION_DENIED",
+        "MODEL_REQUEST_CONTRACT_INVALID", "ConnectionError", "TimeoutError",
+    }
+    hard_faults = {"MODEL_NOT_LOADED", "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_PROTOCOL_REQUIRED",
+                   "MODEL_PERMISSION_DENIED", "MODEL_QUOTA_EXCEEDED", "MODEL_REQUEST_CONTRACT_INVALID"}
+    consecutive_faults = 0
+    stop_reason = ""
+    # Candidate SQLite owns recovery truth even when responses complete out of order.
+    # Only this coordinator writes candidates/checkpoints; pool threads do I/O only.
+    retry_work = []
+    if context.task.attempt > 1:
+        retry_work = ((image_by_id[str(row["image_id"])], row) for row in store.iter_items()
+                      if row.get("status") == "failed" and
+                      (retry_ids is None or str(row["image_id"]) in retry_ids))
+    present = durable["done_ids"] | durable["failed_ids"]
+    new_work = ((image, None) for image in images if str(image["id"]) not in present
+                and (retry_ids is None or str(image["id"]) in retry_ids))
+    from itertools import chain
+    work = iter(chain(retry_work, new_work))
+    pending = {}
+    pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="annotation-inference")
+    persisted = set(present)
+    completed = len(persisted)
+    checkpoint_index = start
+    try:
+        with store.write_session(commit_guard=lambda: _assert_generation_commit(context)) as append_candidate:
+            while True:
+                if context.cancel_requested():
+                    halt.set()
+                    sync_annotation_statistics(context.repository, context.task, store)
+                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                while not stop_reason and len(pending) < concurrency:
+                    try:
+                        image, previous = next(work)
+                    except StopIteration:
+                        break
+                    context.assert_current_execution()
+                    pending[pool.submit(produce_candidate, image, previous)] = (image, previous)
+                if not pending:
+                    break
+                done, _ = wait(pending, timeout=.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    image, previous = pending.pop(future)
+                    try:
+                        item, code = future.result()
+                    except InterruptedError:
+                        if context.cancel_requested():
+                            return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                        if stop_reason:
+                            continue
+                        raise
+                    if context.cancel_requested():
+                        halt.set()
+                        return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                    append_candidate([item])
+                    was_failed = previous is not None
+                    if item["status"] == "failed":
+                        failed += int(not was_failed)
+                    else:
+                        succeeded += 1
+                        failed -= int(was_failed)
+                    persisted.add(str(image["id"]))
+                    completed = len(persisted)
+                    while checkpoint_index < len(images) and str(images[checkpoint_index]["id"]) in persisted:
+                        checkpoint_index += 1
+                    context.save_checkpoint({"next_index": checkpoint_index, "succeeded": succeeded,
+                                             "failed": failed, "source": "candidate_store"})
+                    context.heartbeat(progress=int(completed / max(1, len(images)) * 70),
+                                      stage="AI_ANNOTATION", current_item=str(image["id"]))
+                    execution = (item.get("diagnostics") or {}).get("execution") or {}
+                    if execution.get("elapsed_ms") is not None:
+                        latencies.append(float(execution["elapsed_ms"]))
+                    execution_retries += max(0, int(execution.get("attempts") or 1) - 1)
+                    gateway_errors += int(item.get("http_status") in {500,502,503,504})
+                    if completed % 100 == 0:
+                        sync_annotation_statistics(context.repository, context.task, store)
+                    consecutive_faults = consecutive_faults + 1 if code in service_faults else 0
+                    if code in hard_faults or consecutive_faults >= 3:
+                        stop_reason = code or "MODEL_SERVICE_ERROR"
+                        # Stop new dispatch/retries; already running valid responses
+                        # are still drained through the same fenced writer.
+                        halt.set()
+    finally:
+        halt.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        try:
             if context.cancel_requested():
-                return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-            image = images[index]
-            try:
-                if mining_mode and annotate is annotate_one:
-                    from .hard_sample_mining import infer_with_frozen_yolo
-                    generated = infer_with_frozen_yolo(runtime_request, image)
-                else:
-                    generated = annotate(runtime_request, image)
-                boxes = list(generated.get("boxes") or [])
-                item = {
-                    "image_id": str(image["id"]),
-                    "filename": image.get("filename"),
-                    "url": image.get("url"),
-                    "width": image.get("width"),
-                    "height": image.get("height"),
-                    "source_content_sha256": str(
-                        image.get("source_content_sha256") or image.get("content_sha256") or ""
-                    ).strip().lower(),
-                    "status": "success" if boxes else "empty",
-                    "boxes": boxes,
-                    **{key: generated.get(key) for key in (
-                        "raw_response_hash", "request_id", "latency_ms", "provider", "model",
-                        "hard_sample_signals", "hard_sample_priority",
-                        "ground_truth_compared", "gt_comparison", "root_cause_confirmed",
-                    ) if generated.get(key) is not None and generated.get(key) != ""},
-                }
-                next_succeeded = succeeded + 1
-                next_failed = failed
-            except Exception as error:
-                item = {
-                    "image_id": str(image.get("id") or ""),
-                    "filename": image.get("filename"),
-                    "url": image.get("url"),
-                    "width": image.get("width"),
-                    "height": image.get("height"),
-                    "status": "failed",
-                    "boxes": [],
-                    "error": _public_error(error),
-                }
-                next_succeeded = succeeded
-                next_failed = failed + 1
-
-            # A provider call can outlive the lease/cancellation decision. Never
-            # publish its result without re-checking current execution ownership.
-            if context.cancel_requested():
-                return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-            append_candidate([item])
-            succeeded = next_succeeded
-            failed = next_failed
-            context.save_checkpoint({
-                "next_index": index + 1,
-                "succeeded": succeeded,
-                "failed": failed,
-                "source": "candidate_store",
-            })
-            context.heartbeat(
-                progress=int((index + 1) / max(1, len(images)) * 70),
-                stage="AI_ANNOTATION",
-                current_item=str(image.get("id") or ""),
-            )
+                cancelled_summary = sync_annotation_statistics(context.repository, context.task, store)
+                context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
+                    "summary": cancelled_summary, "generation_partial": True,
+                    "stopped_reason": "CANCEL_REQUESTED",
+                    "remaining": max(0, len(images) - cancelled_summary["total"]),
+                    "execution": {"concurrency": concurrency,
+                        "wall_seconds": round(time.monotonic() - generation_started, 3),
+                        "processed_this_execution": len(latencies), "in_flight_at_stop": len(pending),
+                        "retries": execution_retries, "gateway_errors": gateway_errors,
+                        "capacity_evidence": policy.get("evidence_status", "unknown")},
+                })
+        except ExecutionFencedError:
+            # Lease recovery owns all subsequent publication, including metrics.
+            pass
 
 
-    summary = store.summary()
+    summary = sync_annotation_statistics(context.repository, context.task, store)
+    failure_codes = store.failure_codes(limit=5) if summary.get("failed") else []
+    elapsed = max(.001, time.monotonic() - generation_started)
+    ordered_latencies = sorted(latencies)
+    def percentile(fraction):
+        return ordered_latencies[min(len(ordered_latencies)-1, int((len(ordered_latencies)-1)*fraction))] if ordered_latencies else None
     context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
         "summary": summary,
+        "failure_codes": failure_codes,
         "generation_partial": bool(failed),
+        "stopped_reason": stop_reason,
+        "remaining": max(0, len(images) - summary["total"]),
+        "execution": {"concurrency": concurrency, "capacity_evidence": policy.get("evidence_status", "unknown"),
+            "wall_seconds": round(elapsed, 3), "processed_this_execution": len(latencies),
+            "mean_ms": round(sum(latencies)/len(latencies), 2) if latencies else None,
+            "p50_ms": percentile(.5), "p95_ms": percentile(.95),
+            "images_per_second": round(len(latencies)/elapsed, 3),
+            "retries": execution_retries, "gateway_errors": gateway_errors,
+            "persisted_succeeded": summary.get("success", 0) + summary.get("empty", 0),
+            "persisted_failed": summary.get("failed", 0), "persisted_empty": summary.get("empty", 0)},
     })
+    if stop_reason:
+        return WorkerOutcome(TaskStatus.AWAITING_CONFIRMATION if succeeded else TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                             "candidates/manifest.json", stop_reason, True)
     if failed and not succeeded:
-        return WorkerOutcome(TaskStatus.FAILED, "candidates/manifest.json", "all images failed", True)
+        primary = failure_codes[0] if failure_codes else {"code": "UNKNOWN_FAILURE", "count": failed}
+        return WorkerOutcome(TaskStatus.FAILED, "candidates/manifest.json",
+                             f"全部 {failed} 张检测失败，主要错误：{primary['code']}（{primary['count']} 张）；请查看逐图诊断", True)
     return WorkerOutcome(
         TaskStatus.AWAITING_CONFIRMATION,
         "candidates/manifest.json",
@@ -315,6 +598,44 @@ def _public_error(error: Exception) -> str:
     for pattern in patterns:
         text = re.sub(pattern, lambda match: match.group(1) + "[REDACTED]" if match.lastindex else "[REDACTED]", text)
     return text[:1000] or type(error).__name__
+
+
+def _failure_evidence(error: Exception, *, attempt: int) -> dict[str, Any]:
+    """Bounded, sanitized per-image recovery evidence, never a raw response."""
+    code = str(getattr(error, "code", "") or type(error).__name__)[:100]
+    stage = getattr(error, "stage", "")
+    if not stage:
+        stage = ("coordinate_validation" if "COORDINATE" in code else
+                 "response_parse" if "OUTPUT" in code or "PARSE" in code else
+                 "source_read" if isinstance(error, (FileNotFoundError, OSError)) else "model_request")
+    def safe(value):
+        return _public_error(RuntimeError(str(value))) if value else ""
+    status = getattr(error, "status_code", 0)
+    evidence = getattr(error, "diagnostics", {})
+    evidence = evidence if isinstance(evidence, dict) else {}
+    execution = evidence.get("execution") if isinstance(evidence.get("execution"), dict) else {}
+    result = {"error_code": code, "error_stage": safe(stage),
+            "http_status": int(status) if isinstance(status, int) and 100 <= status <= 599 else None,
+            "request_id": safe(getattr(error, "request_id", ""))[:128],
+            "request_trace_id": safe(execution.get("platform_request_id") or evidence.get("request_trace_id"))[:128],
+            "backend_instance_id": safe(getattr(error, "backend_instance_id", "") or evidence.get("backend_instance_id"))[:128],
+            "retry_suggestion": safe(getattr(error, "solution", "检查图片来源和模型配置后重试失败图片。")),
+            "attempt_count": max(1, int(attempt))}
+    for field in ("provider", "model", "returned_label", "label_match_status", "parser_source"):
+        if field in evidence:
+            result[field] = safe(evidence[field])[:160]
+    if "zero_box" in evidence:
+        result["zero_box"] = evidence["zero_box"] if isinstance(evidence["zero_box"], bool) else None
+    if isinstance(evidence.get("allowed_labels"), list):
+        result["allowed_labels"] = [safe(label)[:80] for label in evidence["allowed_labels"][:32]]
+    if isinstance(evidence.get("configured_queries"), dict):
+        result["configured_queries"] = {safe(code)[:80]: safe(query)[:160] for code, query in list(evidence["configured_queries"].items())[:32]}
+    if isinstance(evidence.get("response_summary"), dict):
+        # Shape-only, fixed fields. Never copy a raw response into a candidate.
+        result["response_summary"] = {field: evidence["response_summary"].get(field) for field in (
+            "parser_source", "structured_box_count", "raw_length", "raw_ref_count", "raw_empty_markers",
+            "coordinate_system", "width", "height") if field in evidence["response_summary"]}
+    return result
 
 
 def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:
@@ -407,7 +728,13 @@ def commit_candidate_decisions(
     progress: Callable[[int, int, str], Any] | None = None,
     cancelled: Callable[[], bool] | None = None,
     review_scope: Iterable[str] | None = None,
+    require_per_image_scope: bool = False,
+    frozen_annotation_versions: dict[str, int] | None = None,
+    frozen_missing_review_scopes: dict[str, list[str]] | None = None,
+    frozen_material_hashes: dict[str, str] | None = None,
+    selected_image_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
+    """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
     store._ready()
     if review_scope is None:
@@ -426,7 +753,13 @@ def commit_candidate_decisions(
         raise ValueError("AI annotation review scope is required before formal commit")
     applied_images, image_summaries = [], []
     applied_count = boxes_added = 0
-    accepted_total = max(0, int(store.summary().get("accepted") or 0))
+    selected_ids = None if selected_image_ids is None else list(dict.fromkeys(
+        str(image_id) for image_id in selected_image_ids if str(image_id)
+    ))
+    if selected_ids is not None and (not selected_ids or len(selected_ids) > 100):
+        raise ValueError("formal selected commit requires between 1 and 100 images")
+    accepted_total = (len(selected_ids) if selected_ids is not None
+                      else max(0, int(store.summary().get("accepted") or 0)))
     processed = 0
 
     def assert_not_cancelled() -> None:
@@ -454,6 +787,19 @@ def commit_candidate_decisions(
             # Fail closed for pre-fix candidate rows with no trustworthy source
             # hash, deleted materials, and storage rescan H1 -> H2.
             current_hashes = read_candidate_material_hashes(project_id, pending_ids)
+            if frozen_material_hashes is not None:
+                from app import material_store
+                current_materials = {
+                    str(row.get("id") or ""): row
+                    for row in material_store(project_id).get_many(pending_ids)
+                }
+                for image_id in pending_ids:
+                    material = current_materials.get(image_id) or {}
+                    if (current_hashes.get(image_id) != frozen_material_hashes.get(image_id)
+                            or material.get("source_available") is False
+                            or material.get("_dataset_delete_claim")
+                            or material.get("_material_batch_delete_claim")):
+                        raise ValueError("AI_SUPPLEMENT_MATERIAL_CHANGED: source identity or availability changed")
             for item in items:
                 image_id = str(item["image_id"])
                 if image_id in committed:
@@ -481,14 +827,46 @@ def commit_candidate_decisions(
             image_id = str(item["image_id"])
             if image_id in committed:
                 continue
+            explicit_scope = item.get("review_scope")
+            if explicit_scope is None:
+                if require_per_image_scope:
+                    raise ValueError("AI per-image review scope is missing; refuse formal GT write")
+                image_scope = set(review_scope_codes)
+                scope_source = "task_uniform_legacy"
+            else:
+                if (not isinstance(explicit_scope, list) or not explicit_scope
+                        or len(explicit_scope) > 128
+                        or any(not isinstance(code, str) or not code.strip()
+                               or code != code.strip() for code in explicit_scope)
+                        or len(set(explicit_scope)) != len(explicit_scope)
+                        or not set(explicit_scope).issubset(review_scope_codes)):
+                    raise ValueError("AI per-image review scope is outside the task label contract")
+                image_scope = set(explicit_scope)
+                scope_source = "explicit_per_image"
+                candidate_labels = {
+                    str(box.get("label") or box.get("code") or "").strip()
+                    for box in (item.get("boxes") or [])
+                }
+                if not candidate_labels.issubset(image_scope):
+                    raise ValueError("AI candidate boxes are outside the explicit per-image review scope")
+            if frozen_missing_review_scopes is not None:
+                expected_scope = frozen_missing_review_scopes.get(image_id)
+                if not isinstance(expected_scope, list) or not image_scope.issubset(set(expected_scope)):
+                    raise ValueError("AI candidate review exceeded frozen per-image missing labels")
             previous_row = previous_by_id.get(image_id) or {}
             previous = list(previous_row.get("boxes") or [])
             expected_version = int(previous_row.get("version") or 0)
-            previous_scope = {
+            if frozen_annotation_versions is not None:
+                frozen_version = frozen_annotation_versions.get(image_id)
+                if not isinstance(frozen_version, int) or expected_version != frozen_version:
+                    raise ValueError("AI_SUPPLEMENT_GT_CHANGED: formal GT changed after task creation")
+                expected_version = frozen_version
+            recorded_scope = {
                 str(value).strip()
                 for value in (previous_row.get("annotation_scope") or [])
                 if str(value).strip()
             }
+            previous_scope = set(recorded_scope)
             previous_scope.update(
                 str(box.get("label") or box.get("code") or "").strip()
                 for box in previous
@@ -498,7 +876,7 @@ def commit_candidate_decisions(
                 annotation_scope = ["*"]
             else:
                 annotation_scope = sorted(
-                    previous_scope | set(review_scope_codes)
+                    previous_scope | image_scope
                 )
             existing = {
                 (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
@@ -517,7 +895,7 @@ def commit_candidate_decisions(
                 })
             overwrite_changed = False
             if overwrite:
-                reviewed_labels = set(review_scope_codes)
+                reviewed_labels = image_scope
                 previous_count = len(previous)
                 previous = [
                     box for box in previous
@@ -543,7 +921,16 @@ def commit_candidate_decisions(
             # formal GT commit and CandidateStore journaling. AnnotationRepository
             # will keep the same content digest, while MaterialRepository projection
             # is repaired in the same batch helper.
-            if incoming or not final_boxes or task_boxes_present or overwrite_changed:
+            # An accepted, human-reviewed empty AI candidate may extend the
+            # review scope of a historical positive GT without adding boxes.
+            # Persist that explicit scope change; otherwise the task is
+            # journaled as committed while the training admission still fails.
+            # Do not trigger a write merely because an old box label was
+            # synthesized into previous_scope -- only the reviewed codes do.
+            scope_reviewed_now = "*" not in recorded_scope and bool(
+                image_scope - recorded_scope
+            )
+            if incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now:
                 to_write.append({
                     "image_id": image_id,
                     "boxes": final_boxes,
@@ -562,13 +949,32 @@ def commit_candidate_decisions(
                 "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
                 "annotation_state": annotation_state,
                 "annotation_origin": annotation_origin,
+                "review_scope": sorted(image_scope),
+                "review_scope_source": scope_source,
             }
             to_journal.append(summary)
             batch_summaries[image_id] = summary
 
         assert_not_cancelled()
+        written_by_id: dict[str, dict[str, Any]] = {}
         if to_write:
-            write_formal_annotations(project_id, to_write)
+            written_by_id = {
+                str(row.get("image_id") or ""): row
+                for row in (write_formal_annotations(project_id, to_write) or [])
+            }
+        # Future journal rows can prove an unchanged formal GT revision. Older
+        # journals deliberately stay unknown when no durable revision evidence
+        # exists; do not invent it during a later read-only audit.
+        written_ids = {str(row["image_id"]) for row in to_write}
+        for summary in to_journal:
+            image_id = str(summary["image_id"])
+            summary["gt_write_performed"] = image_id in written_ids
+            saved = written_by_id.get(image_id)
+            if saved and int(saved.get("version") or 0) > 0:
+                digest = str(saved.get("content_digest") or "")
+                if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+                    summary["gt_snapshot_version"] = int(saved["version"])
+                    summary["gt_snapshot_digest"] = digest
         # Formal GT and CandidateStore are intentionally separate durable owners.
         # Once a bounded formal batch is durable, its journal is mandatory catch-up:
         # do not observe a newly-arrived user cancellation between these two commits.
@@ -581,18 +987,31 @@ def commit_candidate_decisions(
         for image_id in image_ids:
             summary = batch_summaries.get(image_id)
             if summary is not None and len(image_summaries) < 100:
-                image_summaries.append(summary)
+                image_summaries.append({
+                    key: summary.get(key)
+                    for key in ("image_id", "box_count", "labels", "annotation_state", "annotation_origin")
+                })
         processed += len(image_ids)
         if progress is not None:
             progress(processed, accepted_total, image_ids[-1])
 
-    batch: list[dict[str, Any]] = []
-    for item in store.iter_accepted_items():
-        batch.append(item)
-        if len(batch) == 200:
-            apply_batch(batch)
-            batch = []
-    apply_batch(batch)
+    if selected_ids is not None:
+        selected_items = store.get_many(selected_ids)
+        if set(selected_items) != set(selected_ids) or any(
+                selected_items[image_id].get("accepted") is not True
+                or selected_items[image_id].get("status") not in {"success", "empty"}
+                or selected_items[image_id].get("review_state") != "active"
+                for image_id in selected_ids):
+            raise ValueError("selected candidates are unavailable or have not been approved")
+        apply_batch([selected_items[image_id] for image_id in selected_ids])
+    else:
+        batch: list[dict[str, Any]] = []
+        for item in store.iter_accepted_items(include_committed=True):
+            batch.append(item)
+            if len(batch) == 200:
+                apply_batch(batch)
+                batch = []
+        apply_batch(batch)
 
     result = {
         "applied_images": applied_count,
@@ -604,7 +1023,10 @@ def commit_candidate_decisions(
         "image_summaries_truncated": applied_count > len(image_summaries),
         "commit_journal_ref": "candidates/items.sqlite3",
     }
-    store.artifacts.atomic_write_json(task_id, journal_ref, result)
+    # Partial, user-confirmed GT batches journal per image above. Never overwrite
+    # the terminal task's legacy commit/result.json with a partial projection.
+    if selected_ids is None:
+        store.artifacts.atomic_write_json(task_id, journal_ref, result)
     return result
 
 
@@ -619,6 +1041,18 @@ def commit_confirmed_review(context):
     )
     if context.task.kind is TaskKind.MATERIAL_BATCH:
         request = (request or {}).get("options") or {}
+    scope_policy = str((request or {}).get("review_scope_policy") or "task_uniform_legacy")
+    if scope_policy not in {"task_uniform_legacy", "per_image_required"}:
+        raise RuntimeError("confirmed annotation review scope policy is invalid")
+    frozen_versions = (request or {}).get("per_image_annotation_versions") if scope_policy == "per_image_required" else None
+    frozen_missing_scopes = (request or {}).get("per_image_missing_review_scopes") if scope_policy == "per_image_required" else None
+    frozen_material_hashes = (request or {}).get("per_image_source_hashes") if scope_policy == "per_image_required" else None
+    if scope_policy == "per_image_required" and (
+            not isinstance(frozen_versions, dict) or not isinstance(frozen_missing_scopes, dict)
+            or not isinstance(frozen_material_hashes, dict)
+            or set(frozen_versions) != set(frozen_missing_scopes)
+            or set(frozen_versions) != set(frozen_material_hashes)):
+        raise RuntimeError("AI supplemental review frozen GT identity is missing")
     store = CandidateStore(context.artifacts, task_id=context.task.task_id)
     if (request or {}).get("mode") == "hard_sample_yolo":
         from app import project_dir, material_store
@@ -681,7 +1115,12 @@ def commit_confirmed_review(context):
         progress=update_progress,
         cancelled=context.cancel_requested,
         review_scope=review_scope,
+        require_per_image_scope=scope_policy == "per_image_required",
+        frozen_annotation_versions=frozen_versions,
+        frozen_missing_review_scopes=frozen_missing_scopes,
+        frozen_material_hashes=frozen_material_hashes,
     )
+    sync_annotation_statistics(context.repository, context.task, store)
     if mapping:
         try:
             from app import remember_project_label_aliases
@@ -715,7 +1154,7 @@ class AnnotationHandler:
         if review is not None:
             return review
         outcome = run_ai_annotation(context, data_dir=self.data_dir)
-        return outcome.status, outcome.result_ref
+        return outcome.status, outcome.result_ref, outcome.error
 
     def recover(self, context):
         return self.run(context)

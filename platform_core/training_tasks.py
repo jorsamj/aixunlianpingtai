@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from platform_core.task_runtime.process_start_gate import execution_environment
+
 import errno
 import hashlib
 import json
@@ -57,8 +59,11 @@ TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
 TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"
 TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"
+TRAINING_PROJECTION_POLICY_V3 = "reviewed_negative_original_v3_preserve_selected"
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
+TRAINING_PROJECTION_POLICY_V4 = "target_confirmation_original_v4"
+
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
 _JPEG_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".jfif"}
 _JPEG_NORMALIZATION_LOCK = threading.Lock()
@@ -497,14 +502,32 @@ def _apply_training_projection(
         dict(box) for box in (row.get("training_excluded_boxes") or [])
         if isinstance(box, Mapping)
     ]
-    if not excluded or role == "test":
+    policy = str(row.get("training_projection_policy") or "")
+    if policy == TRAINING_PROJECTION_POLICY_V4:
+        if len(str(row.get("training_projection_digest") or "")) != 64:
+            raise ValueError("training projection digest is missing or invalid")
+        identity.update(training_projection_policy=policy, training_projection_digest=row["training_projection_digest"], redacted_object_count=0)
+        return identity
+    if role == "test" or (not excluded and policy != TRAINING_PROJECTION_POLICY_V3):
         return identity
     policy = str(row.get("training_projection_policy") or "")
-    if policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}:
+    if policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY, TRAINING_PROJECTION_POLICY_V3}:
         raise ValueError("excluded training objects require a supported redaction policy")
     projection_digest = str(row.get("training_projection_digest") or "").strip().lower()
     if len(projection_digest) != 64:
         raise ValueError("training projection digest is missing or invalid")
+
+    if policy == TRAINING_PROJECTION_POLICY_V3 and not row.get("boxes"):
+        if row.get("annotation_state") != "confirmed_empty" or not row.get("annotation_scope"):
+            raise ValueError("reviewed negative projection requires scoped formal empty truth")
+        identity.update(training_projection_policy=policy,
+                        training_projection_digest=projection_digest, redacted_object_count=0)
+        return identity
+
+    if not excluded:
+        identity.update(training_projection_policy=policy,
+                        training_projection_digest=projection_digest, redacted_object_count=0)
+        return identity
 
     def pixel_bounds(
         box: Mapping[str, Any], width: int, height: int,
@@ -541,7 +564,7 @@ def _apply_training_projection(
                 raise ValueError(
                     f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=empty_dimensions"
                 )
-            original = canvas.copy() if policy == TRAINING_PROJECTION_POLICY else None
+            original = canvas.copy() if policy in {TRAINING_PROJECTION_POLICY, TRAINING_PROJECTION_POLICY_V3} else None
             median = tuple(int(value) for value in ImageStat.Stat(canvas).median[:3])
             draw = ImageDraw.Draw(canvas)
             redacted = 0
@@ -602,6 +625,7 @@ def materialize_portable_dataset(
     materialize: Callable[[Mapping[str, Any]], str | Path],
     *,
     safety_reserve_bytes: int | None = None,
+    defer_source_reads: bool = False,
     progress: Callable[[int, int, Mapping[str, Any]], None] | None = None,
 ) -> Path:
     work, root = _prepare_bundle_root(task_root)
@@ -635,9 +659,16 @@ def materialize_portable_dataset(
             expected_hash = str(locked.get("content_sha256") or "")
             if not expected_hash:
                 raise ValueError(f"snapshot image has no content SHA256: {image_id}")
-            source_path = Path(materialize(row)).resolve()
-            if not source_path.is_file() or source_path.stat().st_size <= 0:
-                raise FileNotFoundError(f"training image does not exist: {source_path.name}")
+            if defer_source_reads:
+                source_path = None
+                size_bytes = int(row.get("size_bytes") or 0)
+                if size_bytes <= 0:
+                    raise ValueError(f"frozen image size is unavailable: {image_id}")
+            else:
+                source_path = Path(materialize(row)).resolve()
+                if not source_path.is_file() or source_path.stat().st_size <= 0:
+                    raise FileNotFoundError(f"training image does not exist: {source_path.name}")
+                size_bytes = source_path.stat().st_size
             planned.append(
                 {
                     "role": role,
@@ -646,7 +677,7 @@ def materialize_portable_dataset(
                     "stored_name": stored_name,
                     "expected_hash": expected_hash,
                     "source_path": source_path,
-                    "size_bytes": source_path.stat().st_size,
+                    "size_bytes": size_bytes,
                 }
             )
 
@@ -665,8 +696,10 @@ def materialize_portable_dataset(
         row = item["row"]
         stored_name = str(item["stored_name"])
         expected_hash = str(item["expected_hash"])
-        source_path = Path(item["source_path"])
         size_bytes = int(item["size_bytes"])
+        source_path = (Path(materialize(row)).resolve() if defer_source_reads else Path(item["source_path"]))
+        if defer_source_reads and (not source_path.is_file() or source_path.stat().st_size != size_bytes):
+            raise ValueError(f"frozen image size changed: {image_id}")
         image_ref = f"dataset/images/{role}/{stored_name}"
         label_ref = (
             f"evaluation/ground_truth/test/{Path(stored_name).stem}.txt"
@@ -720,6 +753,10 @@ def materialize_portable_dataset(
         )
         if progress is not None:
             progress(completed, total_items, item)
+    from .training_robustness import augment_bundle
+    derived = augment_bundle(root, snapshot, splits, snapshot.get('robustness_policy'), progress,
+                             safety_reserve_bytes=reserve_bytes)
+    training_total_size_bytes += sum(item['size_bytes'] for item in derived)
     # Independent test images stay portable, but their hidden answers are deliberately
     # absent from the Ultralytics training YAML. Final evaluation is image-only inference
     # followed by a separate scorer that opens evaluation/ground_truth/test afterwards.
@@ -757,6 +794,8 @@ def materialize_portable_dataset(
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": training_total_size_bytes,
         "splits": splits,
+        **({'robustness_policy': snapshot['robustness_policy'],
+            'robustness_derived_count': len(derived)} if snapshot.get('robustness_policy') else {}),
         "construction_verification": {
             "image_integrity": "source_sha256_verified_then_training_input_normalized",
             "training_input_policy": TRAINING_INPUT_POLICY,
@@ -1113,6 +1152,8 @@ def _processed_training_candidate(row: Mapping[str, Any]) -> bool:
 def resolve_training_selection(
     project: Path,
     split_request: SplitRequest,
+    *, label_contract: Mapping[str, Any] | None = None,
+    preview_only: bool = False,
 ) -> TrainingSelectionResolution:
     """Separate user-selectable cleaned material from formal supervised truth.
 
@@ -1135,7 +1176,11 @@ def resolve_training_selection(
         row = by_id[str(image_id)]
         boxes = list(row.get("boxes") or [])
         state = str(row.get("annotation_state") or "unannotated")
-        if is_training_ground_truth(state, boxes):
+        from .training_label_tasks import training_material_role, task_negative_confirmable
+        task_confirmed = bool(label_contract and label_contract.get("training_projection_policy") == TRAINING_PROJECTION_POLICY_V4
+            and training_material_role(row, label_contract)["role"] == "confirmed_negative")
+        task_confirmable_preview = bool(preview_only and label_contract and task_negative_confirmable(row, label_contract))
+        if is_training_ground_truth(state, boxes) or task_confirmed or task_confirmable_preview:
             effective_train.append(str(image_id))
         elif state == "unannotated" and not boxes and _processed_training_candidate(row):
             pending_annotation.append(str(image_id))
@@ -1202,6 +1247,8 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "path",
     "source_type",
     "source_ref",
+    "source_root_id",
+    "derived_from_image_id",
     "video_task_id",
     "group_id",
     "source_group_id",
@@ -1218,10 +1265,13 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "storage_source_id",
     "storage_type",
     "object_key",
+    "etag",
     "source_available",
     "annotation_needs_review",
     "annotation_review_reason",
     "annotation_source_content_sha256",
+    "strict_target_negative_scope",
+    "task_negative_confirmation",
     "negative_origin",
     "source_annotation_state",
     "source_annotation_hash",
@@ -1284,6 +1334,16 @@ def _requested_new_training_labels(
     ))
 
 
+def _required_positive_training_labels(label_contract, images):
+    """Explicitly acknowledged absent classes do not force an impossible split."""
+    requested = _requested_new_training_labels(label_contract)
+    if not (label_contract or {}).get("task_negative_confirmations"):
+        return requested
+    present = {str(box.get("label") or box.get("code") or "").strip()
+        for row in images for box in row.get("boxes") or []}
+    return tuple(code for code in requested if code in present)
+
+
 def _training_split_quality(
     images: Sequence[Mapping[str, Any]],
     manifest: Any,
@@ -1308,9 +1368,17 @@ def _training_split_quality(
                 box_total += 1
         role_box_counts[role] = box_total
         role_label_counts[role] = dict(sorted(counts.items()))
-    if role_box_counts["train"] <= 0:
+    negative_only_iteration = bool(
+        label_contract and label_contract.get("base_training_mode") == "previous_weights_init"
+        and label_contract.get("base_version_id")
+        and role_box_counts["train"] <= 0
+    )
+    if negative_only_iteration and _requested_new_training_labels(label_contract):
+        raise ValueError("纯负样本继续训练只能使用已有模型继承的标签，不允许在没有正样本时新增目标类别")
+    if role_box_counts["train"] <= 0 and not negative_only_iteration:
         raise ValueError("训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型")
-    if role_box_counts["validation"] <= 0:
+    acknowledged_scope = bool((label_contract or {}).get("task_negative_confirmations"))
+    if role_box_counts["validation"] <= 0 and not (negative_only_iteration or acknowledged_scope):
         raise ValueError("验证集没有任何正样本标注框，无法得到有意义的检测指标；请增加正样本或调整划分")
     active_codes = [
         str(item.get("code") or "").strip()
@@ -1334,7 +1402,7 @@ def _training_split_quality(
         code for code in requested_new
         if role_label_counts["train"].get(code, 0) <= 0
     ]
-    if missing_requested_new:
+    if missing_requested_new and not acknowledged_scope:
         raise ValueError(
             "本次新增训练标签在训练集没有正样本: "
             + ", ".join(missing_requested_new[:20])
@@ -1349,6 +1417,12 @@ def _training_split_quality(
         if role_label_counts["validation"].get(code, 0) <= 0
     ]
     warnings = []
+    if missing_requested_new:
+        warnings.append("本次部分新增训练标签在训练集中没有正样本，模型无法从本批素材学习这些目标: " + ", ".join(missing_requested_new[:20]))
+    if role_box_counts["validation"] <= 0:
+        warnings.append("本次验证集没有正样本，无法计算有意义的检测召回率或 mAP；请使用独立正样本试验集验收")
+    if negative_only_iteration:
+        warnings.append("已有模型纯负样本继续训练：本轮没有正样本，检测召回率与各类别 mAP 不具备有效评估依据；请使用独立正样本试验集评估模型退化风险")
     if missing_train:
         warnings.append(
             "启用标签在训练集缺少正样本: " + ", ".join(missing_train[:20])
@@ -1657,8 +1731,14 @@ def _training_source_projection_admission(
             ]) if code
         ]
     )
+    source_audit_rows = original
+    if (label_contract or {}).get("training_projection_policy") == TRAINING_PROJECTION_POLICY_V4:
+        from .training_label_tasks import training_material_role
+        source_audit_rows = [dict(row, annotation_state="confirmed_empty")
+            if not row.get("boxes") and training_material_role(row, label_contract)["role"] == "confirmed_negative"
+            else row for row in original]
     source_audit = _training_annotation_admission(
-        original, source_schema, strict_catalog=declared_catalog,
+        source_audit_rows, source_schema, strict_catalog=declared_catalog,
     )
     effective_codes = (label_contract or {}).get("effective_label_codes") or ()
     if effective_codes:
@@ -1675,11 +1755,11 @@ def _training_source_projection_admission(
     protected = (
         "id", "content_sha256", "size_bytes", "width", "height",
         "annotation_state", "annotation_scope", "boxes", "annotated",
-        "negative_origin", "source_annotation_state", "source_annotation_hash",
+        "task_negative_confirmation", "negative_origin", "source_annotation_state", "source_annotation_hash",
         "source_labels", "training_excluded_boxes",
         "training_projection_policy", "training_projection_digest",
     )
-    projected_negatives = excluded_objects = 0
+    projected_negatives = reviewed_original_negatives = excluded_objects = 0
     for expected_row, actual_row in zip(expected, projected):
         image_id = str(expected_row.get("id") or "")
         for key in protected:
@@ -1691,6 +1771,8 @@ def _training_source_projection_admission(
         excluded_objects += len(actual_row.get("training_excluded_boxes") or [])
         if str(actual_row.get("negative_origin") or "") == "redacted_unselected_labels":
             projected_negatives += 1
+        elif str(actual_row.get("negative_origin") or "") == "reviewed_task_negative":
+            reviewed_original_negatives += 1
 
     return {
         "schema_version": 1,
@@ -1700,6 +1782,7 @@ def _training_source_projection_admission(
             "verified_images": len(projected),
             "excluded_source_object_count": excluded_objects,
             "redacted_task_negative_image_count": projected_negatives,
+            "reviewed_original_negative_image_count": reviewed_original_negatives,
             "status": "verified_against_fenced_original_gt",
             "original_source_retained_in_freeze": False,
         },
@@ -1717,6 +1800,8 @@ def freeze_training_inputs(
     label_schema_override: Sequence[Mapping[str, Any]] | None = None,
     label_contract: Mapping[str, Any] | None = None,
     duplicate_review: Mapping[str, Any] | None = None,
+    robustness_policy: Mapping[str, Any] | None = None,
+    history_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze formal DB truth at submit time without reading/copying source bytes."""
     if selection_resolution is None:
@@ -1737,6 +1822,12 @@ def freeze_training_inputs(
         validate_duplicate_review(project, {"duplicate_review": duplicate_review}, split_request)
     effective_split = resolution.effective_split
     source_images = [dict(row) for row in resolution.effective_images]
+    derivative_parent_ids = {str(row[key]) for row in source_images
+        for key in ('source_root_id', 'derived_from_image_id') if row.get(key)}
+    if derivative_parent_ids:
+        existing_parent_ids = {str(row['id']) for row in MaterialRepository(project).get_many(derivative_parent_ids)}
+        if derivative_parent_ids - existing_parent_ids:
+            raise ValueError('TRAINING_DERIVATIVE_PARENT_UNKNOWN: derivative parent is missing from this project; independent split cannot be certified')
     # Original formal GT must be checked before task-label projection can hide
     # an out-of-scope category, empty-state, or coordinate disagreement.
     assert_training_duplicate_safety(
@@ -1779,8 +1870,9 @@ def freeze_training_inputs(
         images,
         effective_split,
         seed=int(seed),
-        required_train_labels=_requested_new_training_labels(label_contract),
+        required_train_labels=_required_positive_training_labels(label_contract, images),
         split_strategy="multilabel_grouped_v2",
+        forbidden_test_image_ids=(history_admission or {}).get('forbidden_test_image_ids', ()),
     )
     input_quality = _training_split_quality(
         images, manifest, label_schema, label_contract=label_contract,
@@ -1789,11 +1881,16 @@ def freeze_training_inputs(
     input_quality["annotation_admission"] = annotation_admission
     input_quality["source_ground_truth_admission"] = source_projection["source_ground_truth_admission"]
     input_quality["projection_consistency"] = source_projection["projection_consistency"]
+    from .training_robustness import resolve_policy, select_train_ids
+    frozen_robustness = resolve_policy(project.parent.parent, robustness_policy) if robustness_policy is not None else None
+    if frozen_robustness and frozen_robustness['enabled']:
+        select_train_ids(manifest.ids['train'], frozen_robustness)
     snapshot = build_snapshot(
         images,
         manifest,
         label_schema,
         supplement_candidate_set=supplement_candidate_set,
+        robustness_policy=frozen_robustness,
     )
     split_truth = {
         "mode": effective_split.mode.value,
@@ -1813,6 +1910,8 @@ def freeze_training_inputs(
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
         "input_quality": input_quality,
         "selection": resolution.truth(),
+        **({'robustness_policy': frozen_robustness} if frozen_robustness is not None else {}),
+        **({'history_admission': dict(history_admission)} if history_admission else {}),
         "material_revision": resolution.material_revision,
         "annotation_revision": resolution.annotation_revision,
         "original_ground_truth": [{"image_id": str(row.get("id") or ""),
@@ -1896,11 +1995,12 @@ def resolve_training_input_freeze(
         images,
         split_request,
         seed=int(seed),
-        required_train_labels=_requested_new_training_labels(
-            frozen_contract if isinstance(frozen_contract, Mapping) else None
+        required_train_labels=_required_positive_training_labels(
+            frozen_contract if isinstance(frozen_contract, Mapping) else None, images
         ),
         # Pre-v2 freezes carry no marker: replay the historical split exactly.
         split_strategy=str(value.get("split_strategy") or "legacy_v1"),
+        forbidden_test_image_ids=(value.get('history_admission') or {}).get('forbidden_test_image_ids', ()),
     )
     frozen_quality = value.get("input_quality") if isinstance(value.get("input_quality"), Mapping) else {}
     input_quality = _training_split_quality(
@@ -1942,6 +2042,7 @@ def resolve_training_input_freeze(
         manifest,
         label_schema,
         supplement_candidate_set=supplement_candidate_set,
+        robustness_policy=value.get('robustness_policy'),
     )
     if str(snapshot.get("snapshot_id") or "") != str(value.get("snapshot_id") or ""):
         raise ValueError("training input freeze snapshot identity mismatch")
@@ -2206,15 +2307,16 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             launched = launch_process(
                 argv,
                 cwd=root,
-                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, **execution_environment(context), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
+            context.bind_process(launched.identity)
             controller = ProcessController()
             next_metrics = 0.0
             completion_seen_at = None
+            usage_evidence_level = 0
             while launched.process.poll() is None:
                 if context.cancel_requested():
                     try:
@@ -2224,9 +2326,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                         # process tree cannot be proven stopped. Keep managing
                         # the cancellation and retry instead of publishing a
                         # false CANCELLED terminal state.
-                        context.repository.heartbeat(
-                            context.task.task_id,
-                            context.lease.lease_token,
+                        context.heartbeat(
                             stage="cancelling",
                             current_item=f"waiting for verified process cleanup: {error}",
                         )
@@ -2241,9 +2341,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     expected_models_root=expected_models_root,
                 ) is None:
                     completion_seen_at = completion_seen_at or time.monotonic()
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=95,
                         stage="finalizing",
                         current_item="verified training complete; finalizing",
@@ -2257,9 +2355,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                         except PermissionError as error:
                             # A verified model is not permission to release a
                             # GPU that an unverified process may still use.
-                            context.repository.heartbeat(
-                                context.task.task_id,
-                                context.lease.lease_token,
+                            context.heartbeat(
                                 progress=95,
                                 stage="finalizing",
                                 current_item=f"waiting for verified process cleanup: {error}",
@@ -2270,11 +2366,9 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     time.sleep(0.1)
                     continue
                 completion_seen_at = None
-                current_task = context.repository.get(context.task.task_id)
+                current_task = context.assert_current_execution()
                 if current_task is not None and current_task.stage == "paused":
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         stage="paused",
                     )
                     time.sleep(0.25)
@@ -2283,16 +2377,26 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
                     # Feed scheduler evidence with ownership fencing; never infer unknown CPU/IO pressure.
                     from .gpu_resources import update_reservation_evidence
-                    update_reservation_evidence(context.repository, context.lease, metrics)
+                    context.run_owned(lambda: update_reservation_evidence(context.repository, context.lease, metrics))
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
                 training_started = bool(
                     job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
                 )
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                from .training_material_usage import TrainingMaterialUsage, usage_owner
+                observed_usage_level = ((2 if job.get('usage_completed_epoch') is True else (1 if job.get('training_started') else 0))
+                    + (4 if job.get('usage_validation_observed') is True else 0)
+                    + (8 if job.get('usage_test_observed') is True else 0))
+                if observed_usage_level > usage_evidence_level:
+                    context.run_owned(lambda: TrainingMaterialUsage(context.repository).record_execution(
+                        context.task.task_id, first_batch=True,
+                        completed_epoch=job.get('usage_completed_epoch') is True,
+                        validation_observed=job.get('usage_validation_observed') is True,
+                        test_observed=job.get('usage_test_observed') is True,
+                        generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
+                    usage_evidence_level = observed_usage_level
+                context.heartbeat(
                     progress=max(20, min(95, progress)),
                     stage="training" if training_started else "trainer_startup",
                     current_item=current,
@@ -2528,6 +2632,14 @@ class TrainingHandler:
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
         dataset_revision_id = str(snapshot.get("dataset_revision_id") or "")
+        from .training_material_usage import record_context_snapshot, usage_owner
+        usage_index = record_context_snapshot(context, context.task, payload, snapshot)
+        context.run_owned(lambda: usage_index.record_execution(context.task.task_id,
+            first_batch=job.get('training_started') is True,
+            completed_epoch=job.get('usage_completed_epoch') is True,
+            validation_observed=job.get('usage_validation_observed') is True,
+            test_observed=job.get('usage_test_observed') is True,
+            generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
         if not dataset_revision_id:
             raise RuntimeError("completed training is missing its durable dataset revision")
         completion_error = _training_completion_error(
@@ -2551,6 +2663,25 @@ class TrainingHandler:
         benchmark_scope = build_evaluation_benchmark_scope(
             snapshot, _json(manifest_path, {}),
         )
+        # Only a verified completed blind Test constitutes a permanent Test
+        # reserve. Selected-only failed/cancelled tasks release their pending
+        # reservation when their original Task becomes terminal.
+        blind_result = ((job.get('training_report') or {}).get('test_result') or {})
+        historical_independence = None
+        if str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
+            if not benchmark_scope or benchmark_scope.get('binding_level') != 'bundle_verified':
+                raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal scoring requires verified frozen Test bundle')
+            from .training_material_usage import assert_formal_test_independence, require_formal_history_admission
+            admission = require_formal_history_admission(payload.get('history_admission'))
+            independence_evidence = assert_formal_test_independence(usage_index, snapshot, context.task.project_id,
+                str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or ''),
+                parent_task_ids=admission.get('parent_task_ids') or (),
+                benchmark_reuse=bool(payload.get('benchmark_reuse')), admission=admission)
+            historical_independence = independence_evidence['historical_independence']
+        if benchmark_scope and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
+            context.run_owned(lambda: usage_index.record_execution(
+                context.task.task_id, test_observed=True,
+                generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
@@ -2746,6 +2877,7 @@ class TrainingHandler:
         model_size_bytes = int(primary_evidence["size_bytes"])
         completion = _training_completion_metadata(job, payload)
         training_lineage = build_training_lineage(
+            robustness_policy=snapshot.get('robustness_policy'),
             task_id=context.task.task_id,
             snapshot_id=snapshot_id,
             dataset_revision_id=dataset_revision_id,
@@ -2754,6 +2886,7 @@ class TrainingHandler:
             base_version_name=job.get("base_version_name"),
             base_model=job.get("model") or payload.get("model"),
             base_selection_reason=job.get("base_selection_reason"),
+            model_ancestry=(payload.get('history_admission') or {}).get('model_ancestry'),
             execution={
                 "mode": str(payload.get("target") or "local"),
                 "worker_id": context.lease.worker_id,
@@ -2785,6 +2918,7 @@ class TrainingHandler:
             model_sha256=model_sha256,
             finished_at=finished_at,
             benchmark_scope=benchmark_scope,
+            historical_independence=historical_independence,
         )
         metric_credibility = build_training_metric_credibility(
             training_report,
@@ -2981,9 +3115,7 @@ class TrainingHandler:
                 f"TRAINING_DEVICE_ASSIGNMENT_MISMATCH: requested={requested_device}; assigned={assigned_device}"
             )
         python_executable = _training_python(self.data_dir)
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        context.heartbeat(
             progress=1,
             stage="device_admission",
             current_item="验证训练设备分配",
@@ -3007,9 +3139,7 @@ class TrainingHandler:
         project = self.data_dir / "projects" / context.task.project_id
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        context.heartbeat(
             progress=2,
             stage="preparing_materials",
             current_item="读取本次训练素材",
@@ -3115,9 +3245,7 @@ class TrainingHandler:
                 materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
                 if index == 1 or index == total_materials or index % material_progress_step == 0:
                     progress = 2 + (6 * index / max(1, total_materials))
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=progress,
                         stage="preparing_materials",
                         current_item=f"校验训练素材 {index}/{total_materials}",
@@ -3129,6 +3257,8 @@ class TrainingHandler:
         revision = dataset_revision_document(snapshot)
         persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
+        from .training_material_usage import record_context_snapshot
+        context.run_owned(lambda: record_context_snapshot(context, context.task, payload, snapshot))
         context.artifacts.atomic_write_json(
             context.task.task_id,
             "dataset-revision.json",
@@ -3141,6 +3271,14 @@ class TrainingHandler:
         })
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
+
+        if prepared_bundle is None:
+            # The assigned TRAINING execution owns these new derived files.
+            # Old prebuilt/historical bundles are never silently adopted for GC.
+            from .training_workspace_lifecycle import mark_training_workspace
+            mark_training_workspace(
+                context.artifacts, context.task, snapshot, payload.get("input_freeze_id"),
+            )
 
         bundle_progress_step = max(1, len(images) // 100) if images else 1
 
@@ -3157,9 +3295,7 @@ class TrainingHandler:
                 },
             )
         elif cache_entry is not None:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=10,
                 stage="materializing",
                 current_item=f"复用已验证训练数据 0/{len(images)}",
@@ -3168,9 +3304,7 @@ class TrainingHandler:
             def cache_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
                 if completed != 1 and completed != total and completed % bundle_progress_step != 0:
                     return
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=10 + (8 * completed / max(1, total)),
                     stage="materializing",
                     current_item=f"复用已验证训练数据 {completed}/{total}",
@@ -3192,9 +3326,7 @@ class TrainingHandler:
                 },
             )
         else:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=10,
                 stage="materializing",
                 current_item=f"准备训练数据 0/{len(images)}",
@@ -3203,12 +3335,10 @@ class TrainingHandler:
             def bundle_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
                 if completed != 1 and completed != total and completed % bundle_progress_step != 0:
                     return
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
-                    progress=10 + (8 * completed / max(1, total)),
-                    stage="materializing",
-                    current_item=f"准备训练数据 {completed}/{total}",
+                context.heartbeat(
+                    progress=(18 + 2 * completed / max(1, total)) if _item.get('augmentation') else 10 + (8 * completed / max(1, total)),
+                    stage="augmenting" if _item.get('augmentation') else "materializing",
+                    current_item=("生成跨设备增强图片 " if _item.get('augmentation') else "准备训练数据 ")+f"{completed}/{total}",
                 )
 
             bundle = materialize_portable_dataset(
@@ -3316,6 +3446,7 @@ class TrainingHandler:
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"
+        from .training_robustness import augmentation_summary
         job = {
             "id": context.task.task_id,
             "task_id": context.task.task_id,
@@ -3349,6 +3480,7 @@ class TrainingHandler:
             "actual_device": None,
             "device_validation": device_evidence,
             "current_item": "启动训练进程",
+            "robustness_summary": augmentation_summary(_json(bundle / "manifest.json", {})),
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
@@ -3369,6 +3501,12 @@ class TrainingHandler:
                 "split_seed": int(seed),
             },
         }
+        from .training_timing import begin_attempt
+        previous_job = _json(job_file, {})
+        for timing_key in ("first_started_at", "training_attempts"):
+            if timing_key in previous_job:
+                job[timing_key] = previous_job[timing_key]
+        begin_attempt(job, context.task.attempt, context.lease.worker_id, context.task.updated_at)
         atomic_write_json(job_file, job)
         if context.cancel_requested():
             raise InterruptedError("training cancelled before trainer launch")
@@ -3384,9 +3522,7 @@ class TrainingHandler:
             model,
             python_executable=python_executable,
         )
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        context.heartbeat(
             progress=20,
             stage="starting_trainer",
             current_item="启动训练进程",

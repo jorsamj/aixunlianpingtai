@@ -10,6 +10,15 @@ function isolatedPython(projectId, source) {
   return execFileSync('python',['-c',source],{encoding:'utf8',env:{...process.env,MC_TRAIN_DATA_DIR:roots[0],MC_PLATFORM_VERSION:'browser-test',YOLO_CONFIG_DIR:path.join(roots[0],'ultralytics'),INTEGRITY_TEST_PROJECT:projectId}}).trim();
 }
 
+async function revealGtBulkReview(page) {
+  const root=page.locator('.modal:not(.hidden) .material-integrity47');
+  const disclosure=root.locator('.material-integrity47-more');
+  await expect(disclosure.locator(':scope > summary')).toBeVisible();
+  if(!await disclosure.evaluate(node=>node.open))await disclosure.locator(':scope > summary').click();
+  const action=root.locator('[data-gt-bulk-review]');
+  await expect(action).toBeVisible();return action;
+}
+
 async function fixture(request) {
   const response=await request.post('/api/projects',{data:{name:`训练重复闭环-${Date.now()}`,labels:[{code:'person',display_name:'人员'},{code:'vehicle',display_name:'车辆'}]}});
   expect(response.ok()).toBeTruthy();const project=await response.json();
@@ -52,6 +61,10 @@ print(json.dumps({'ids':ids,'sha':first['content_sha256'],'oldTask':task,'histor
 }
 
 async function openDraft(page,f) {
+  // These tests intentionally diagnose hard GT conflicts before creation.
+  // Keep that explicit synchronous admission contract; the production
+  // background mode defers diagnosis to TRAINING_PREPARE.
+  await page.addInitScript(()=>{window.MC_TRAIN_ADMISSION_MODE='synchronous'});
   await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',f.project.id);await route.fallback({url:url.toString()})});
   // Only resource discovery is substituted; compatibility, GT, content and admission stay real.
   await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'duplicate-cpu',name:'隔离 CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Detect',base_model:'yolo11n.pt',default_epochs:1,default_imgsz:640,default_batch:1}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]}}));
@@ -63,6 +76,7 @@ async function openDraft(page,f) {
   await page.locator('[data-algorithm-card]',{hasText:'真实冲突回归'}).getByRole('button',{name:'训练',exact:true}).click();
   await expect(page.getByRole('dialog',{name:/创建训练任务/})).toBeVisible();
   await page.evaluate(f=>{window.TrainingDraftRuntime.update({algorithmId:f.algorithmId,newLabelCodes:['person','vehicle'],materialIds:f.ids,splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20});},f);
+  await page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('button[data-training-step="3"]').click();
   await page.getByRole('button',{name:'开始训练',exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().issue_count)).toBe(2);
   await page.getByRole('dialog',{name:'训练暂不可开始',exact:true}).getByRole('button',{name:'返回训练配置',exact:true}).click();
@@ -199,8 +213,12 @@ a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upser
   const audit=await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`);runIsolatedBatch(f.project.id,(await audit.json()).task_id);
   const preview=page.waitForResponse(r=>r.url().endsWith('/training-plans'));
   await page.getByRole('button',{name:'删除已选 · 安全预览',exact:true}).click();
-  const result=await(await preview).json();expect(result.delete_count).toBe(0);expect(result.manual_required_count).toBe(1);
-  await expect(page.locator('.material-integrity47-zero-delete')).toContainText('没有可安全删除的素材');
+  // An outdated manual keeper is invalidated after GT changes. The current
+  // deterministic KEEP_ONE policy retains a copy without claiming its GT is
+  // more correct; the frozen preview still requires explicit confirmation.
+  const result=await(await preview).json();expect(result.delete_count).toBe(1);expect(result.manual_required_count).toBe(0);
+  expect(result.auto_conflict_keeper_groups).toBeGreaterThanOrEqual(1);
+  await expect(page.getByRole('button',{name:'确认删除 1 条索引',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'返回选择 · 保留勾选',exact:true}).click();
   await page.evaluate(f=>{window.TrainingDraftRuntime.update({materialIds:f.ids.filter(id=>id!=='duplicate-copy'),testMaterialIds:['duplicate-copy'],splitMode:'independent_test_set',experimentPercent:null});},f);
   await page.evaluate(async()=>{await window.TrainingMaterialSummaryRuntime.refreshCompatibility({force:true});window.TrainingMaterialSummaryRuntime.openCompatibilityIssues()});
@@ -282,7 +300,14 @@ test('real duplicate GT comparison edits the original annotation and rechecks be
   await evidence(page,testInfo,'precheck-resolved');expect(trainPosts).toHaveLength(0);
   await page.getByRole('button',{name:'返回训练配置 · 保留草稿',exact:true}).click();
   const accepted=page.waitForResponse(r=>r.url().endsWith('/train/start')&&r.request().method()==='POST');
-  await page.getByRole('button',{name:'开始训练',exact:true}).click();const admission=await accepted;expect(admission.ok(),await admission.text()).toBeTruthy();expect(trainPosts).toHaveLength(1);
+  await page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('button[data-training-step="3"]').click();
+  await page.getByRole('button',{name:'开始训练',exact:true}).click();
+  // Corrected duplicate GT leaves two single-category positives. The final
+  // sample-coverage review is required, but no negative receipt is created.
+  const confirmation=page.getByRole('dialog',{name:'确认本次训练样本',exact:true});
+  await expect(confirmation).toContainText('部分类别覆盖');
+  await confirmation.getByRole('button',{name:'确认并创建',exact:true}).click();
+  const admission=await accepted;expect(admission.ok(),await admission.text()).toBeTruthy();expect(trainPosts).toHaveLength(1);
   const history=JSON.parse(isolatedPython(f.project.id,`import json,app; print(json.dumps(app.shared_task_artifacts().read_json(${JSON.stringify(f.oldTask)},'payload.json')))`));expect(history).toEqual(f.history);
 });
 
@@ -381,7 +406,7 @@ test('GT review can explicitly discard all unprotected conflict identities throu
   await openDraft(page,f);
   await page.evaluate(()=>closeModal());
   await page.evaluate(async()=>await window.openMaterialIntegrityAudit47());
-  await page.locator('[data-gt-bulk-review]').click();
+  await (await revealGtBulkReview(page)).click();
   const review=page.locator('.modal:not(.hidden) .gt-review-workbench');
   await expect(review.locator('[data-gt-review-discard]')).toHaveCount(1);
   await review.locator('[data-gt-review-discard]').check();
@@ -413,7 +438,7 @@ test('late GT group response cannot replace the review after returning',async({p
   await openDraft(page,f);
   await page.evaluate(()=>closeModal());
   await page.evaluate(()=>{void window.openMaterialIntegrityAudit47()});
-  const reviewButton=page.locator('.modal:not(.hidden) [data-gt-bulk-review]');
+  const reviewButton=await revealGtBulkReview(page);
   await expect(reviewButton).toBeVisible();
   await reviewButton.click();
   const review=page.locator('.modal:not(.hidden) .gt-review-workbench');

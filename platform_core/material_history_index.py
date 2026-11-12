@@ -1,0 +1,205 @@
+"""Rebuildable, conservative history-reference index for material impact previews.
+
+The index is a derived read model, never a source of deletion authorization.
+The source signature checks task/algorithm logical revisions, artifact file
+metadata, snapshot trees and algorithm history before and after each cold scan.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import uuid
+from contextlib import closing
+from pathlib import Path
+
+from filelock import FileLock, Timeout as FileLockTimeout
+
+_SCHEMA = """
+CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE references_by_image (image_id TEXT PRIMARY KEY, reasons_json TEXT NOT NULL);
+"""
+_VERSION = "material-history-v1"
+
+
+def _source_signature(project_id, project_path, repository, artifacts):
+    """Metadata invalidation includes only registered task owners.
+
+    DELETE_INDEX previews create unregistered plan artifacts; they cannot
+    invalidate the history index on every request.
+    """
+    digest = hashlib.sha256()
+    task_log_paths = set()
+    full_task_roots = []
+    narrow_task_files = []
+    # SQLite/WAL inode and mtime are not business revisions: a read or
+    # checkpoint can change them without any task mutation.
+    with closing(sqlite3.connect(f"file:{Path(repository.path)}?mode=ro", uri=True)) as db:
+        # Only fields actually consumed by the reference scanner determine
+        # the history generation. Worker heartbeat, stage, progress, lease and
+        # updated_at writes do not change protected material dependencies.
+        for row in db.execute(
+            "SELECT task_id,project_id,kind,status,payload_ref,result_ref,log_ref,"
+            "retry_of,attempt,process_pid,process_create_time,process_command_hash "
+            "FROM tasks WHERE project_id=? ORDER BY task_id", (str(project_id),)
+        ):
+            task_id, _project, kind, status, payload_ref, _result, log_ref = row[:7]
+            task_root = Path(artifacts.root) / str(task_id)
+            # Only TRAINING/CONVERSION and failed PREPARE can inspect arbitrary
+            # archived files as evidence of materialized input or recovery.
+            # Material batches and annotation workers use their request and
+            # active frozen selection, not their mutable progress/outputs.
+            if kind in ('TRAINING', 'MODEL_CONVERSION') or (kind == 'TRAINING_PREPARE' and status == 'FAILED'):
+                full_task_roots.append(task_root)
+                task_log_paths.add(task_root / str(log_ref))
+            else:
+                narrow_task_files.append(task_root / str(payload_ref))
+                if (status in ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED') and
+                    kind in ('TRAINING_PREPARE', 'AI_ANNOTATION', 'MATERIAL_IMPORT', 'CLEANING', 'MATERIAL_BATCH')):
+                    narrow_task_files.append(task_root / 'selection.sqlite3')
+            digest.update(repr(tuple(row)).encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\n")
+    roots = [Path(project_path) / "snapshots"]
+    roots.extend(full_task_roots)
+    files = [Path(project_path) / "algorithms.json", *narrow_task_files]
+    algo_db = Path(project_path) / "algorithms.sqlite3"
+    if algo_db.is_file():
+        try:
+            with closing(sqlite3.connect(f"file:{algo_db}?mode=ro", uri=True)) as db:
+                row = db.execute(
+                    "SELECT value FROM algorithm_store_meta WHERE key='algorithm_revision'"
+                ).fetchone()
+            digest.update(repr(("algorithm_revision", row[0] if row else None)).encode())
+        except sqlite3.Error:
+            # The first legacy read may initialize/migrate the SQL store;
+            # the before/after signature check will detect that change.
+            digest.update(b"algorithm_sql_not_initialized")
+    else:
+        digest.update(b"algorithm_sql_missing")
+
+    def record(path):
+        path = Path(path)
+        try:
+            stat = path.lstat()
+            values = (str(path), stat.st_mode, stat.st_size, stat.st_mtime_ns,
+                      stat.st_ctime_ns, stat.st_ino)
+        except FileNotFoundError:
+            values = (str(path), "missing")
+        digest.update(repr(values).encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\n")
+
+    for path in files:
+        record(path)
+    for root in roots:
+        record(root)
+        if not root.is_dir():
+            continue
+
+        def fail(error):
+            raise error
+
+        for directory, dirs, names in os.walk(root, followlinks=False, onerror=fail):
+            dirs.sort()
+            names.sort()
+            for name in dirs:
+                record(Path(directory) / name)
+            for name in names:
+                path = Path(directory) / name
+                # Logs are never used as a deletion authorization signal.
+                # Their size/mtime changes during every Worker progress write,
+                # which otherwise causes endless cold-scan invalidations.
+                if path not in task_log_paths:
+                    record(path)
+    return digest.hexdigest()
+
+
+def _read_index(path, signature, wanted):
+    if not path.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+            row = db.execute("SELECT value FROM metadata WHERE key='signature'").fetchone()
+            schema = db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
+            if not row or row[0] != signature or not schema or schema[0] != _VERSION:
+                return None
+            if wanted is None:
+                result = db.execute("SELECT image_id,reasons_json FROM references_by_image")
+                return {str(i): json.loads(payload) for i, payload in result}
+            output = {}
+            ids = sorted(set(map(str, wanted)))
+            for start in range(0, len(ids), 300):
+                batch = ids[start:start+300]
+                if not batch:
+                    continue
+                query = ",".join("?" for _ in batch)
+                for i, payload in db.execute(
+                    f"SELECT image_id,reasons_json FROM references_by_image WHERE image_id IN ({query})",
+                    batch,
+                ):
+                    output[str(i)] = json.loads(payload)
+            return output
+    except (sqlite3.Error, ValueError, TypeError, OSError):
+        return None
+
+
+def _write_index(path, signature, references):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with closing(sqlite3.connect(temporary)) as db:
+            db.executescript(_SCHEMA)
+            db.executemany(
+                "INSERT INTO metadata VALUES (?,?)",
+                (("schema", _VERSION), ("signature", signature)),
+            )
+            db.executemany(
+                "INSERT INTO references_by_image VALUES (?,?)",
+                ((str(image_id), json.dumps(reasons, ensure_ascii=False, sort_keys=True))
+                 for image_id, reasons in references.items()),
+            )
+            db.commit()
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def query_material_history(project_id, project_path, repository, artifacts, scanner,
+                           *, reference_image_ids=None):
+    """Single-flight cold scans with read-only per-image lookup on a valid index.
+
+    A changed source during the scan fails closed and never publishes partial
+    history. The caller can report UNAVAILABLE instead of manufacturing zero.
+    """
+    if not isinstance(getattr(repository, "path", None), (str, Path)) or not isinstance(
+        getattr(artifacts, "root", None), (str, Path)
+    ):
+        return scanner(project_id, project_path, repository, artifacts, with_reasons=True)
+    index = Path(project_path) / "material-history-reference-index.sqlite3"
+    try:
+        with FileLock(str(index) + ".lock", timeout=25):
+            for _ in range(3):
+                before = _source_signature(project_id, project_path, repository, artifacts)
+                cached = _read_index(index, before, reference_image_ids)
+                if cached is not None:
+                    # Mutation between signature and retrieval invalidates reuse.
+                    if before == _source_signature(project_id, project_path, repository, artifacts):
+                        return cached
+                scanned = scanner(project_id, project_path, repository, artifacts, with_reasons=True)
+                after = _source_signature(project_id, project_path, repository, artifacts)
+                if before != after:
+                    # Legitimate first-read SQL migrations can change the
+                    # source once. Retry on a fresh stable generation instead
+                    # of reporting history as unavailable immediately.
+                    continue
+                _write_index(index, before, scanned)
+                if reference_image_ids is None:
+                    return scanned
+                wanted = set(map(str, reference_image_ids))
+                return {image_id: evidence for image_id, evidence in scanned.items() if image_id in wanted}
+            raise ValueError("historical material evidence changed during scan")
+    except FileLockTimeout as error:
+        raise ValueError("material history scan is busy; please retry") from error

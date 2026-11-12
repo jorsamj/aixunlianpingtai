@@ -11,6 +11,15 @@ import {
   installAlgorithmListRuntime,
 } from '../../static/modules/algorithm-list-runtime.js';
 
+test('algorithm filter CSS tracks actual page width and does not impose fixed popover minimums', () => {
+  const css = fs.readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.algorithm-filter-surface\{[^}]*container-type:inline-size/);
+  assert.match(css, /\.algorithm-list-page\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /@container\s*\(max-width:780px\)/);
+  assert.match(css, /@container\s*\(max-width:520px\)/);
+  assert.doesNotMatch(css, /\.algorithm-category-popover\{[^}]*min-width:560px/);
+});
+
 function response(body) {
   return {
     ok: true,
@@ -68,7 +77,7 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
     async fetch(url) {
       urls.push(url);
       if (url.includes('/algorithms')) return response({items: [{id: 'a2', name: '烟火检测', versions: []}]});
-      if (url.endsWith('/jobs')) return response([{id: 'j2', status: 'running'}]);
+      if (url.endsWith('/jobs?summary_only=true')) return response([{id: 'j2', status: 'running'}]);
       throw new Error(`unexpected URL: ${url}`);
     },
   };
@@ -80,8 +89,8 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   const result = await runtime.refresh();
 
   assert.deepEqual(urls.sort(), [
-    '/api/projects/project%201/jobs',
-    '/api/v12/projects/project%201/algorithms',
+    '/api/projects/project%201/jobs?summary_only=true',
+    '/api/v12/projects/project%201/algorithms?summary_only=true',
   ]);
   assert.deepEqual(state.algorithms.map(row => row.id), ['a2']);
   assert.deepEqual(state.jobs.map(row => row.id), ['j2']);
@@ -99,7 +108,7 @@ test('algorithm cards update before slow job history completes', async () => {
   const seen = [];
   globalThis.window = {fetch: async url => {
     seen.push(url);
-    if (url.endsWith('/jobs')) { await slowJobs; return response([{id:'fresh-job'}]); }
+    if (url.endsWith('/jobs?summary_only=true')) { await slowJobs; return response([{id:'fresh-job'}]); }
     return response({items:[{id:'new-algorithm',name:'先显示算法'}]});
   }};
   const runtime = installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
@@ -464,6 +473,17 @@ test('current mAP50 never falls back to generic accuracy', () => {
   assert.equal(algorithmVersionMap50({metrics: {mAP50: 0.8}}), 80);
 });
 
+test('current mAP50 skips nullable SQL summary fields instead of displaying false zero', () => {
+  assert.ok(Math.abs(algorithmVersionMap50({map50:null,mAP50:null,
+    metrics:{'metrics/mAP50(B)':0.5851}})-58.51)<1e-9);
+  assert.ok(Math.abs(algorithmVersionMap50({map50:'  ',mAP50:null,
+    metrics:{mAP50:0.9268}})-92.68)<1e-9);
+  assert.equal(algorithmVersionMap50({map50:null,mAP50:null,metrics:{}}),null);
+  assert.equal(algorithmVersionMap50({map50:0,metrics:{mAP50:0.8}}),0);
+  assert.equal(algorithmVersionMap50({metrics:{},evaluation:{metrics:{'metrics/mAP50(B)':0.7}}}),70);
+  assert.equal(algorithmVersionMap50({map50:false,metrics:{mAP50:0.8}}),80);
+});
+
 
 test('category picker rows are whole-row interactive for drill-down and leaf selection', async () => {
   const {readFileSync} = await import('node:fs');
@@ -475,4 +495,60 @@ test('category picker rows are whole-row interactive for drill-down and leaf sel
   assert.match(source, /viewState\.categoryPath = \[\.\.\.\(row\.ancestorIds \|\| \[\]\)/);
   assert.match(source, /return toggleDraftCategory\(row\.id\)/);
   assert.match(source, /event\.target === categoryRow && \['Enter', ' '\]\.includes\(event\.key\)/);
+});
+
+test('suspected deletion remains visible beside an existing running task and preserves training availability', () => {
+  const source=fs.readFileSync(new URL('../../static/modules/algorithm-list-runtime.js',import.meta.url),'utf8');
+  const start=source.indexOf('  function algorithmRowView('),end=source.indexOf('  function renderRows()',start);
+  const context={algorithm:{id:'a',name:'疑似算法',external_active:true,external_deletion_status:'SUSPECTED_DELETED',versions:[]},
+    currentVersion:()=>null,algorithmVersionMap50:()=>null,trainingCount:()=>0,providerMeta:()=>({external:true,sourceLabel:'新畅联',deletion:{state:'SUSPECTED_DELETED',label:'待核实'}}),algorithmTrainability:()=>({ready:true}),activeJob:()=>({status:'running'}),trainingStatusText:()=> '训练中',state:()=>({jobs:[],alg428Expanded:{}}),algorithmTypeText:()=>'',dateText:()=>'',versionRows:()=>'',esc:value=>String(value??'')};
+  const html=vm.runInNewContext(`${source.slice(start,end)};algorithmRowView(algorithm).html`,context);
+  assert.match(html,/data-external-deletion="SUSPECTED_DELETED"/);assert.match(html,/待核实/);assert.match(html,/训练中/);
+  assert.doesNotMatch(html,/data-algorithm-train="a"[^>]*disabled/);
+});
+
+test('leaving algorithm list aborts page-owned GETs and releases the inflight owner', async () => {
+  const state = {page:'算法列表',project:{id:'p1'},algorithms:[{id:'existing'}],jobs:[],alg428Expanded:{}};
+  const signals=[];
+  globalThis.window={fetch:(_url,{signal})=>{
+    signals.push(signal);
+    return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>{
+      const error=new Error('aborted');error.name='AbortError';reject(error);
+    },{once:true}));
+  }};
+  const runtime=installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try {
+    const request=runtime.refresh({render:true});
+    assert.equal(signals.length,2);
+    runtime.beforeNavigate('数据集');
+    state.page='数据集';
+    const result=await request;
+    assert.equal(result.stale,true);
+    assert.ok(signals.every(signal=>signal.aborted));
+    assert.deepEqual(state.algorithms.map(x=>x.id),['existing']);
+    assert.equal(runtime.state().inflight,false);
+  } finally {runtime.destroy();cleanup();}
+});
+
+test('shared algorithm GET consumers are not aborted by a page departure', async () => {
+  const state={page:'算法列表',project:{id:'p1'},algorithms:[],jobs:[],alg428Expanded:{}};
+  const waiting=[];const signals=[];
+  globalThis.window={fetch:(_url,{signal})=>new Promise(resolve=>{
+    signals.push(signal);waiting.push(resolve);
+  })};
+  const runtime=installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try{
+    const page=runtime.refresh({render:true});
+    const shared=runtime.refresh({render:false});
+    assert.equal(signals.length,2);
+    runtime.beforeNavigate('数据集');
+    state.page='数据集';
+    assert.ok(signals.every(signal=>!signal.aborted));
+    waiting[0](response({items:[{id:'new'}]}));
+    waiting[1](response([{id:'j1'}]));
+    const values=await Promise.all([page,shared]);
+    assert.equal(values[0].stale,false);
+    assert.deepEqual(state.algorithms.map(x=>x.id),['new']);
+    assert.equal(runtime.state().inflight,false);
+  }finally{runtime.destroy();cleanup();}
 });

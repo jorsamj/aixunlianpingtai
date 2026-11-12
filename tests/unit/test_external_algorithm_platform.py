@@ -1,5 +1,9 @@
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -8,6 +12,7 @@ from platform_core.external_algorithm_platform import (
     ChangLianEndpoints,
     ExternalAlgorithmPlatformService,
     ExternalPlatformConfigPayload,
+    ExternalPlatformModePayload,
     EndpointPayload,
     PROVIDER_CHANGLIAN,
     SOURCE_EXTERNAL,
@@ -20,6 +25,7 @@ from platform_core.external_algorithm_platform import (
     resolve_external_training_analysis,
 )
 from platform_core.algorithms import list_algorithms, save_algorithms
+from platform_core.algorithm_sql_store import AlgorithmSqlStore
 from platform_core.errors import PlatformError
 from platform_core.secrets import MemorySecretStore
 
@@ -72,6 +78,213 @@ def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
         "/internal/auth/token",
         "/internal/base/category/tree",
     ]
+
+
+def test_master_switch_stops_saved_and_inflight_provider_clients_without_erasing_credentials(tmp_path: Path):
+    session = FakeSession()
+    secrets = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: secrets,
+        client_factory=lambda **kwargs: ChangLianClient(session=session, **kwargs),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    existing_client = service._client()
+    assert existing_client.category_tree()["data"][0]["categoryId"] == "c1"
+    total_calls = len(session.calls)
+
+    switched = service.set_mode(ExternalPlatformModePayload(mode="local"))
+    assert switched["mode"] == "local"
+    assert switched["auto_sync_enabled"] is False
+    assert switched["auto_publish_enabled"] is False
+    assert switched["base_url"] == "https://changlian.example"
+    assert switched["credentials"]["configured"] is True
+    assert service.repository.config()["credential_ref"]
+    # A stale open connection tab still submits mode=external on Save.
+    # Only the dedicated master-switch endpoint is authorized to switch it.
+    saved_stale_draft = service.save(ExternalPlatformConfigPayload(
+        mode="external", base_url="https://updated.example", endpoints=EndpointPayload(),
+    ), preserve_mode=True)
+    assert saved_stale_draft["mode"] == "local"
+    assert saved_stale_draft["base_url"] == "https://updated.example"
+    with pytest.raises(PlatformError) as stale_client:
+        existing_client.category_tree()
+    assert stale_client.value.code == "EXTERNAL_PLATFORM_NOT_ACTIVE"
+    with pytest.raises(PlatformError):
+        service._client()
+    with pytest.raises(PlatformError):
+        service.test_connection(ExternalPlatformConfigPayload(
+            mode="external", base_url="https://draft.example", access_key="ak", access_secret="secret",
+        ))
+    with pytest.raises(PlatformError):
+        service.diagnose()
+    assert len(session.calls) == total_calls, "no saved, draft or preexisting client may call out while off"
+
+    restored = service.set_mode(ExternalPlatformModePayload(mode="external"))
+    assert restored["base_url"] == "https://updated.example"
+    assert restored["credentials"]["configured"] is True
+    assert restored["auto_sync_enabled"] is True
+    assert service._client().category_tree()["data"][0]["categoryId"] == "c1"
+
+
+def test_master_switch_corrupt_config_is_not_overwritten(tmp_path: Path):
+    service = ExternalAlgorithmPlatformService(data_dir=tmp_path, secret_store_factory=MemorySecretStore)
+    path = service.repository.config_path
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(PlatformError) as error:
+        service.set_mode(ExternalPlatformModePayload(mode="local"))
+    assert error.value.code == "EXTERNAL_PLATFORM_CONFIG_INVALID"
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_old_copied_external_config_is_automatically_off_until_explicit_switch(tmp_path: Path):
+    service = ExternalAlgorithmPlatformService(data_dir=tmp_path, secret_store_factory=MemorySecretStore)
+    path = service.repository.config_path
+    legacy = {
+        "mode": "external", "base_url": "https://old-cloud.example",
+        "auto_sync_enabled": True, "auto_publish_enabled": True,
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    effective = service.repository.config()
+    assert effective["mode"] == "local"
+    assert effective["auto_sync_enabled"] is False
+    assert effective["auto_publish_enabled"] is False
+    assert effective["base_url"] == "https://old-cloud.example"
+    assert json.loads(path.read_text(encoding="utf-8")) == legacy
+
+    # Even saving a connection form still cannot turn on legacy networking.
+    service.repository.save_config({
+        **legacy, "provider": "changlian", "endpoints": {},
+    }, preserve_mode=True)
+    assert service.repository.config()["mode"] == "local"
+    service.set_mode(ExternalPlatformModePayload(mode="external"))
+    assert service.repository.config()["mode"] == "external"
+    assert service.repository.config()["mode_confirmed_at"]
+
+
+def test_saved_changlian_credentials_share_one_auth_exchange_across_request_clients(tmp_path: Path):
+    """Each API handler builds a client; it should not re-sign and re-token every GET."""
+    calls = []
+    lock = threading.Lock()
+
+    class CountingSession:
+        def request(self, method, url, **kwargs):
+            path = url.split("changlian.example")[-1]
+            with lock:
+                calls.append((path, kwargs))
+            if path == "/internal/auth/test-sign":
+                time.sleep(0.005)
+                return FakeResponse({"code": 200, "data": {"timestamp": "100", "nonce": "abc", "signature": "sig"}})
+            if path == "/internal/auth/token":
+                return FakeResponse({"code": 200, "data": {"accessToken": "token-shared", "tokenType": "Bearer", "expiresIn": 3600}})
+            if path == "/internal/base/category/tree":
+                assert kwargs["headers"]["Authorization"] == "Bearer token-shared"
+                return FakeResponse({"code": 200, "data": []})
+            if path == "/internal/auth/logout":
+                return FakeResponse({"code": 200, "data": True})
+            raise AssertionError(path)
+
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path, secret_store_factory=lambda: memory,
+        client_factory=lambda **kwargs: ChangLianClient(session=CountingSession(), **kwargs),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    clients = [service._client() for _ in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(response["data"] == [] for response in pool.map(lambda c: c.category_tree(), clients))
+    assert sum(path == "/internal/auth/test-sign" for path, _ in calls) == 1
+    assert sum(path == "/internal/auth/token" for path, _ in calls) == 1
+    assert sum(path == "/internal/base/category/tree" for path, _ in calls) == 8
+
+    service._client().logout()
+    service._client().category_tree()
+    assert sum(path == "/internal/auth/token" for path, _ in calls) == 2
+
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="rotated-secret", endpoints=EndpointPayload(),
+    ))
+    service._client().category_tree()
+    assert sum(path == "/internal/auth/token" for path, _ in calls) == 3
+
+
+def test_saved_changlian_token_401_invalidates_without_replaying_post(tmp_path: Path):
+    events = []
+    token_number = 0
+
+    class RevocationSession:
+        def request(self, method, url, **kwargs):
+            nonlocal token_number
+            path = url.split("changlian.example")[-1]
+            events.append((method, path))
+            if path == "/internal/auth/test-sign":
+                return FakeResponse({"code": 200, "data": {"timestamp": "100", "nonce": "abc", "signature": "sig"}})
+            if path == "/internal/auth/token":
+                token_number += 1
+                return FakeResponse({"code": 200, "data": {"accessToken": f"token-{token_number}", "expiresIn": 3600}})
+            if path == "/internal/algorithm/algorithm-version/add":
+                return FakeResponse({"code": 401, "message": "revoked"}, status_code=401)
+            if path == "/internal/base/category/tree":
+                assert kwargs["headers"]["Authorization"] == f"Bearer token-{token_number}"
+                return FakeResponse({"code": 200, "data": []})
+            raise AssertionError(path)
+
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path, secret_store_factory=lambda: memory,
+        client_factory=lambda **kwargs: ChangLianClient(session=RevocationSession(), **kwargs),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    service._client().category_tree()
+    assert token_number == 1
+
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        service._client()._request("POST", "/internal/algorithm/algorithm-version/add", auth=True, json={"analysisId": 1})
+    assert sum(path == "/internal/algorithm/algorithm-version/add" for _, path in events) == 1
+    assert token_number == 1  # A failed mutation must not be posted again.
+
+    service._client().category_tree()
+    assert token_number == 2
+    assert sum(path == "/internal/auth/test-sign" for _, path in events) == 2
+
+
+def test_changlian_draft_auth_does_not_share_saved_token(tmp_path: Path):
+    memory = MemorySecretStore()
+    sessions = []
+
+    def new_client(**kwargs):
+        session = FakeSession()
+        sessions.append(session)
+        return ChangLianClient(session=session, **kwargs)
+
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path, secret_store_factory=lambda: memory, client_factory=new_client,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    service._client().category_tree()
+    assert len(sessions[0].calls) == 3
+    service._client().category_tree()
+    assert len(sessions[1].calls) == 1  # Saved token is reused by the next client.
+
+    draft = ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    )
+    service._client_for_payload(draft).category_tree()
+    assert len(sessions[2].calls) == 3  # Test-connection credentials never enter the saved cache.
 
 
 def test_changlian_default_endpoints_match_documented_core_contract():
@@ -308,7 +521,7 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
     assert algorithm_is_external_readonly(path, external["id"]) is True
 
 
-def test_missing_external_product_is_deleted_with_versions(tmp_path: Path):
+def test_missing_external_product_is_suspected_and_preserves_versions(tmp_path: Path):
     path = tmp_path / "algorithms.json"
     save_algorithms(path, [
         {
@@ -338,9 +551,13 @@ def test_missing_external_product_is_deleted_with_versions(tmp_path: Path):
     )
 
     rows = list_algorithms(path)
-    assert result["deleted"] == 1
+    assert result["deleted"] == 0
+    assert result["suspected_deleted"] == 1
     assert result["inactivated"] == 0
-    assert [row["id"] for row in rows] == ["local-keep"]
+    external = next(row for row in rows if row["id"] == "external-p1")
+    assert external["external_deletion_status"] == "SUSPECTED_DELETED"
+    assert external["versions"] == [{"id": "v1"}]
+    assert {row["id"] for row in rows} == {"local-keep", "external-p1"}
 
 
 def test_remote_status_two_is_retained_as_inactive_not_deleted(tmp_path: Path):
@@ -500,7 +717,7 @@ def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: P
     assert row["source_type"] == SOURCE_EXTERNAL
 
 
-def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(tmp_path: Path):
+def test_empty_sync_retains_algorithm_and_never_calls_purger(tmp_path: Path):
     calls = []
 
     class CompleteListClient(FakeChangLianClient):
@@ -565,18 +782,17 @@ def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(
     )
 
     assert calls[-1].get("status") == ""
-    assert purger.items == [("project-hard-delete", "external-p1", "p1")]
-    assert result["mirror"]["deleted"] == 1
-    assert list_algorithms(algorithms_path) == []
-    counts = result["sync"]["counts"]
-    assert counts["algorithms_purged"] == 1
-    assert counts["tasks_deleted"] == 2
-    assert counts["artifacts_deleted"] == 3
-    assert counts["remote_objects_deleted"] == 3
-    assert counts["publications_deleted"] == 1
+    assert purger.items == []
+    assert result["mirror"]["deleted"] == 0
+    retained = list_algorithms(algorithms_path)[0]
+    assert retained["external_deletion_status"] == "SUSPECTED_DELETED"
+    assert retained["versions"] == [{"id": "v1"}]
+    assert retained["external_active"] is True
+    assert all(result["sync"]["counts"][key] == 0 for key in (
+        "algorithms_purged", "tasks_deleted", "artifacts_deleted", "remote_objects_deleted", "publications_deleted"))
 
 
-def test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker(tmp_path: Path):
+def test_suspected_missing_algorithm_does_not_invoke_destructive_purger(tmp_path: Path):
     class MissingProductClient(FakeChangLianClient):
         def products(self, **_filters):
             return {"data": []}
@@ -615,21 +831,16 @@ def test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker(tmp_pat
         "current_version_id": "v1",
     }])
 
-    with pytest.raises(Exception):
-        service.sync(
-            project_id="project-delete-failed",
-            algorithms_path=algorithms_path,
-        )
-
+    service.sync(project_id="project-delete-failed", algorithms_path=algorithms_path)
     retained = list_algorithms(algorithms_path)
     assert len(retained) == 1
-    assert retained[0]["external_active"] is False
-    assert retained[0]["external_status"] == "deleted_pending_cleanup"
-    assert retained[0]["external_delete_pending"] is True
+    assert retained[0]["external_active"] is True
+    assert retained[0]["external_deletion_status"] == "SUSPECTED_DELETED"
+    assert not retained[0].get("external_delete_pending")
     assert retained[0]["versions"] == [{"id": "v1"}]
 
 
-def test_reappeared_external_algorithm_clears_delivery_retirement_marker(tmp_path: Path):
+def test_reappeared_external_algorithm_cannot_revoke_confirmed_cleanup_marker(tmp_path: Path):
     service = _configured_external_service(tmp_path, FakeChangLianClient)
     algorithms_path = tmp_path / "project-reappeared" / "algorithms.json"
     algorithms_path.parent.mkdir(parents=True)
@@ -654,10 +865,10 @@ def test_reappeared_external_algorithm_clears_delivery_retirement_marker(tmp_pat
 
     assert result["ok"] is True
     row = list_algorithms(algorithms_path)[0]
-    assert row["external_active"] is True
-    assert row["external_status"] == "1"
-    assert row["external_delete_pending"] is False
-    assert row["external_delete_pending_at"] == ""
+    assert row["external_active"] is False
+    assert row["external_status"] == "deleted_pending_cleanup"
+    assert row["external_delete_pending"] is True
+    assert row["external_delete_pending_at"] == "2026-10-04T00:00:00+00:00"
     assert row["versions"] == [{"id": "v1"}]
 
 
@@ -1198,7 +1409,7 @@ def test_sync_fails_closed_when_product_id_is_missing(tmp_path: Path):
     with pytest.raises(Exception) as error:
         service.sync(project_id="p-product-id", algorithms_path=algorithms_path)
 
-    assert getattr(error.value, "code", "") == "EXTERNAL_PRODUCT_ID_MISSING"
+    assert getattr(error.value, "code", "") == "EXTERNAL_PRODUCT_RESPONSE_INVALID"
     assert list_algorithms(algorithms_path) == []
     assert service.repository.cache().get("provider") is None
     assert service.repository.history()[0]["status"] == "failed"
@@ -1331,16 +1542,19 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
 
 def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
-    start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    start = source.index('@app.post("/api/v12/projects/{project_id}/train/start"')
     end = source.index("def _v48_resource_key", start)
     block = source[start:end]
 
     split_gate = "if not payload.split_mode:"
-    enqueue = "return _enqueue_explicit_training(project_id, payload)"
+    enqueue = "return _enqueue_explicit_training("
 
     for marker in (split_gate, enqueue):
         assert marker in block
     assert block.index(split_gate) < block.index(enqueue)
+    assert "return v12_start_train(project_id, payload, request=request)" in block
+    assert "review_actor_id = _material_governance_actor(request, project_id)[\"actor_id\"]" in block
+    assert "project_id, payload, review_actor_id=review_actor_id" in block
     assert "_refresh_external_training_algorithm(" not in block
     assert "assert_external_algorithm_master_data_current(" not in block
     assert "resolve_external_training_analysis(" not in block
@@ -1353,17 +1567,22 @@ def test_training_create_has_one_external_truth_owner_plus_compatibility_delegat
     enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
     enqueue_block = source[enqueue_start:enqueue_end]
     assert '"training_input_state": "PREPARING"' in enqueue_block
-    assert "TaskKind.TRAINING_PREPARE" in enqueue_block
+    # Deterministic child creation is owned by the isolated prepare helper;
+    # the HTTP entrypoint intentionally delegates and must not duplicate it.
+    prepare_child = (Path(__file__).resolve().parents[2] / "platform_core" / "training_prepare_child.py").read_text(encoding="utf-8")
+    assert "ensure_training_prepare_child(" in enqueue_block
+    assert "TaskKind.TRAINING_PREPARE" in prepare_child
     assert "with FileLock(str(locks_dir / f\"{task_id}.lock\"), timeout=30)" in enqueue_block
-    assert "_enqueue_explicit_training_locked(project_id, payload, task_id)" in enqueue_block
+    assert "_enqueue_explicit_training_locked(" in enqueue_block
+    assert "project_id, payload, task_id, review_actor_id=review_actor_id" in enqueue_block
     assert "_refresh_external_training_algorithm(" not in enqueue_block
     assert "assert_external_algorithm_master_data_current(" not in enqueue_block
     assert "resolve_external_training_analysis(" not in enqueue_block
 
-    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start"')
     v12_end = source.index("def _v48_resource_key", v12_start)
     v12_block = source[v12_start:v12_end]
-    assert "return _enqueue_explicit_training(project_id, payload)" in v12_block
+    assert "return _enqueue_explicit_training(" in v12_block
     assert "_refresh_external_training_algorithm(" not in v12_block
     assert "assert_external_algorithm_master_data_current(" not in v12_block
     assert "resolve_external_training_analysis(" not in v12_block
@@ -1594,7 +1813,7 @@ def test_training_preflight_rechecks_changlian_and_blocks_non_visual_change(tmp_
     assert "analysisType=1" in blocked.value.solution
 
 
-def test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_sync(tmp_path: Path):
+def test_training_preflight_reports_drift_without_full_sync_or_mutating_algorithms(tmp_path: Path, monkeypatch):
     state = {"analysis_id": "a1"}
 
     class MutableVisualTrainingPreflightClient(FakeChangLianClient):
@@ -1633,20 +1852,121 @@ def test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_
     assert before["external_analysis_ids"] == ["a1"]
 
     state["analysis_id"] = "a2"
+    monkeypatch.setattr(service, "sync", lambda **kwargs: pytest.fail("preflight must never trigger a full sync"))
+    before_revision = AlgorithmSqlStore(algorithms_path).revision()
+    with pytest.raises(PlatformError) as blocked:
+        service.training_preflight(
+            project_id="preflight-drift",
+            algorithms_path=algorithms_path,
+            algorithm_id=before["id"],
+        )
+
+    assert blocked.value.code == "EXTERNAL_ALGORITHM_SYNC_REQUIRED"
+    assert blocked.value.status_code == 409
+    assert "同步" in blocked.value.solution
+    assert AlgorithmSqlStore(algorithms_path).revision() == before_revision
+    current = list_algorithms(algorithms_path)[0]
+    assert current["id"] == before["id"]
+    assert current["external_analysis_ids"] == ["a1"]
+    assert current["external_analysis_id"] == "a1"
+
+
+def test_training_preflight_allows_metadata_drift_and_added_visual_analysis_without_sync(tmp_path: Path, monkeypatch):
+    state = {"name": "抽烟检测", "category": "c1", "code": "", "extra_visual": False}
+
+    class MetadataDriftClient(FakeChangLianClient):
+        def product_info(self, product_id):
+            return {"data": {
+                "productId": product_id, "productName": state["name"],
+                "categoryId": state["category"], "productCode": state["code"], "status": 1,
+            }}
+
+        def analyses(self, product_id):
+            rows = [{"analysisId": "a1", "analysisType": 1, "status": 1}]
+            if state["extra_visual"]:
+                rows.append({"analysisId": "a2", "analysisType": 1, "status": 1})
+            return {"data": rows}
+
+        def analysis_info(self, analysis_id):
+            return {"data": {
+                "analysisId": analysis_id, "productId": "p1", "analysisType": 1, "status": 1,
+            }}
+
+    service = _configured_external_service(tmp_path, MetadataDriftClient)
+    algorithms_path = tmp_path / "metadata-drift" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="metadata-drift", algorithms_path=algorithms_path)
+    original = list_algorithms(algorithms_path)[0]
+    revision = AlgorithmSqlStore(algorithms_path).revision()
+    state.update(name="抽烟检测（新）", category="c2", code="NEW-CODE", extra_visual=True)
+    monkeypatch.setattr(service, "sync", lambda **kwargs: pytest.fail("GET preflight must be read-only"))
+
     result = service.training_preflight(
-        project_id="preflight-drift",
-        algorithms_path=algorithms_path,
-        algorithm_id=before["id"],
+        project_id="metadata-drift", algorithms_path=algorithms_path, algorithm_id=original["id"],
     )
 
     assert result["ready"] is True
-    assert result["source"] == "changlian"
-    assert result["refreshed"] is True
-    assert result["trainable_analysis_ids"] == ["a2"]
-    current = list_algorithms(algorithms_path)[0]
-    assert current["id"] == before["id"]
-    assert current["external_analysis_ids"] == ["a2"]
-    assert current["external_analysis_id"] == "a2"
+    assert result["refreshed"] is False
+    assert result["drift_detected"] is True
+    assert set(result["drift_fields"]) == {"name", "code", "category", "analyses"}
+    assert set(result["trainable_analysis_ids"]) == {"a1", "a2"}
+    assert result["algorithm"]["id"] == original["id"]
+    assert result["algorithm"]["external_analysis_ids"] == ["a1"]
+    assert AlgorithmSqlStore(algorithms_path).revision() == revision
+
+
+def test_training_preflight_fails_closed_if_one_of_existing_visual_analyses_is_revoked(tmp_path: Path):
+    state = {"a1_enabled": True}
+
+    class RevokedVisualClient(FakeChangLianClient):
+        def analyses(self, product_id):
+            return {"data": [
+                {"analysisId": "a1", "analysisType": 1, "status": int(state["a1_enabled"])},
+                {"analysisId": "a2", "analysisType": 1, "status": 1},
+            ]}
+
+        def analysis_info(self, analysis_id):
+            return {"data": {
+                "analysisId": analysis_id, "productId": "p1", "analysisType": 1,
+                "status": int(state["a1_enabled"]) if analysis_id == "a1" else 1,
+            }}
+
+    service = _configured_external_service(tmp_path, RevokedVisualClient)
+    algorithms_path = tmp_path / "revoked-visual" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="revoked-visual", algorithms_path=algorithms_path)
+    algorithm = list_algorithms(algorithms_path)[0]
+    assert set(algorithm["external_analysis_ids"]) == {"a1", "a2"}
+    state["a1_enabled"] = False
+
+    with pytest.raises(PlatformError) as blocked:
+        service.training_preflight(
+            project_id="revoked-visual", algorithms_path=algorithms_path, algorithm_id=algorithm["id"],
+        )
+    assert blocked.value.code == "EXTERNAL_ALGORITHM_SYNC_REQUIRED"
+
+
+def test_training_preflight_enforces_remote_time_budget_without_sync(tmp_path: Path, monkeypatch):
+    class SlowVisualClient(FakeChangLianClient):
+        def analyses(self, product_id):
+            time.sleep(0.025)
+            return super().analyses(product_id)
+
+    service = _configured_external_service(tmp_path, SlowVisualClient)
+    algorithms_path = tmp_path / "slow-visual" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="slow-visual", algorithms_path=algorithms_path)
+    algorithm = list_algorithms(algorithms_path)[0]
+    monkeypatch.setattr("platform_core.external_algorithm_platform.EXTERNAL_TRAINING_PREFLIGHT_BUDGET_SECONDS", 0.005)
+    with pytest.raises(PlatformError) as timeout:
+        service.training_preflight(
+            project_id="slow-visual", algorithms_path=algorithms_path, algorithm_id=algorithm["id"],
+        )
+    assert timeout.value.code == "EXTERNAL_TRAINING_PREFLIGHT_TIMEOUT"
+    assert timeout.value.status_code == 503
 
 
 def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(tmp_path: Path):
@@ -2158,3 +2478,58 @@ def test_weight_info_default_keeps_existing_publisher_client_call_compatible():
     client=_authenticated_mutation_client(session)
     assert client.weight_info('legacy-weight-1')['data']['tags']==['Car']
     assert session.calls[0][1].endswith('/getInfo/legacy-weight-1') and 'params' not in session.calls[0][2]
+
+
+@pytest.mark.parametrize("response", [None, {}, {"data": None}, {"data": {"records": []}},
+    {"data": [None]}, {"code": 500, "data": []}, {"data": [], "total": 7},
+    {"data": [{"productId": "p1", "productName": "产品", "productType": 3, "status": 1}] * 2}])
+def test_invalid_product_observation_preserves_last_valid_generation(tmp_path, response):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    path = tmp_path / "projects" / "p" / "algorithms.json"
+    path.parent.mkdir(parents=True)
+    save_algorithms(path, [])
+    service.sync(project_id="p", algorithms_path=path)
+    original_cache = service.repository.cache()
+    original_rows = list_algorithms(path)
+    class BrokenClient(FakeChangLianClient):
+        def products(self, **filters): return response
+    service.client_factory = BrokenClient
+    with pytest.raises(PlatformError):
+        service.sync(project_id="p", algorithms_path=path)
+    assert service.repository.cache() == original_cache
+    assert list_algorithms(path) == original_rows
+
+
+def test_suspected_deletion_does_not_cancel_running_training(tmp_path):
+    from platform_core.task_runtime import ArtifactStore, TaskRecord, TaskKind, TaskRepository
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    path = tmp_path / "projects" / "p" / "algorithms.json"
+    path.parent.mkdir(parents=True)
+    save_algorithms(path, [])
+    service.sync(project_id="p", algorithms_path=path)
+    row = list_algorithms(path)[0]
+    artifacts = ArtifactStore(tmp_path / "task_runtime/artifacts")
+    tasks = TaskRepository(tmp_path / "task_runtime/tasks.sqlite3")
+    artifacts.atomic_write_json("active-training", "request.json", {"algorithm_asset_id": row["id"]})
+    tasks.create(TaskRecord.new("active-training", "p", TaskKind.TRAINING, "request.json", "training:remote:p"))
+    tasks.claim_next("trainer", (TaskKind.TRAINING,), (), 30)
+    class EmptyClient(FakeChangLianClient):
+        def products(self, **filters): return {"code": 200, "data": [], "total": 0}
+    service.client_factory = EmptyClient
+    service.sync(project_id="p", algorithms_path=path)
+    assert tasks.get("active-training").status.value == "RUNNING"
+    assert list_algorithms(path)[0]["external_deletion_status"] == "SUSPECTED_DELETED"
+    service.client_factory = FakeChangLianClient
+    service.sync(project_id="p", algorithms_path=path)
+    assert list_algorithms(path)[0]["external_deletion_status"] == "NORMAL"
+    assert tasks.get("active-training").status.value == "RUNNING"
+
+
+@pytest.mark.parametrize("status,body", [(403, {"code": 403}), (500, {"code": 200, "data": []}),
+    (200, {"code": 500, "data": []})])
+def test_real_product_http_errors_never_become_empty_success(status, body):
+    session = FakeSession()
+    session.request = lambda *a, **k: FakeResponse(body, status)
+    client = _authenticated_mutation_client(session)
+    with pytest.raises(Exception):
+        client.products(status="")

@@ -4,19 +4,56 @@ import {
   installTrainingCreateHydrationRuntime,
   trainingCreationInputsReady,
   trainingOptionsHydrated,
+  trainingResourceUnavailableReason,
 } from '../../static/modules/training-create-hydration.js';
 
-test('training create inputs require complete ready target and recommendation', () => {
+test('training resources require a complete target while recommendation is optional', () => {
   assert.equal(trainingOptionsHydrated([{status: 'ready'}]), false);
   assert.equal(trainingOptionsHydrated([{status: 'ready', algorithms: [], base_models: []}]), false);
   assert.equal(trainingOptionsHydrated([{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}]), true);
   assert.equal(trainingCreationInputsReady({
     targets: [{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}],
     rec: null,
-  }), false);
+  }), true);
 });
 
-test('first training open paints a shell before parallel hydration and then runs the canonical form owner', async () => {
+test('warning-only training options are diagnosed as missing model evidence, not a generic GPU outage', () => {
+  assert.match(trainingResourceUnavailableReason([{status:'warning',algorithms:[{key:'detect'}],base_models:[]}]), /基础模型或训练配置/);
+  assert.match(trainingResourceUnavailableReason([{status:'offline'}]), /离线/);
+  assert.match(trainingResourceUnavailableReason([]), /未发现训练资源/);
+});
+
+test('an unavailable response or a replaced shared target list never poisons the five-minute training cache', async () => {
+  const previousWindow=globalThis.window;
+  const state={targets:[],rec:null};
+  let calls=0;
+  globalThis.window={};
+  try{
+    const runtime=installTrainingCreateHydrationRuntime({
+      getState:()=>state,projectId:()=> 'p',openTrainingForm:()=> 'opened',
+      request:async url=>{
+        assert.match(url,/^\/api\/training_options/);
+        calls++;
+        return calls===1
+          ? {targets:[{id:'unready',status:'warning',algorithms:[{key:'detect'}],base_models:[]}]}
+          : {targets:[{id:'gpu-a800',status:'ready',algorithms:[{key:'detect'}],base_models:[]}]};
+      },
+    });
+    await runtime.hydrateOptions({requireTrainable:false});
+    assert.equal(state.trainingCreationLoading.resources.status,'unavailable');
+    assert.match(state.trainingCreationLoading.resources.error,/基础模型/);
+    await runtime.hydrateOptions({requireTrainable:false});
+    assert.equal(calls,2,'a warning response must not remain cached');
+    assert.equal(state.trainingCreationLoading.resources.status,'ready');
+    state.targets=[]; // Another page may update shared state after the GET.
+    await runtime.hydrateOptions({requireTrainable:false});
+    assert.equal(calls,3,'a timestamp cannot authorize an empty target list');
+    assert.equal(state.targets[0].id,'gpu-a800');
+    runtime.destroy();
+  }finally{globalThis.window=previousWindow;}
+});
+
+test('first training open mounts the real form immediately and publishes independent hydration', async () => {
   const originalWindow = globalThis.window;
   const calls = [];
   let formOpenCalls = 0;
@@ -30,8 +67,8 @@ test('first training open paints a shell before parallel hydration and then runs
   const openTrainingForm = aid => {
     formOpenCalls += 1;
     assert.equal(aid, 'alg-1');
-    assert.equal(state.targets[0].id, 'gpu-a800');
-    assert.equal(state.rec.device, 'cuda:0');
+    assert.equal(state.targets[0].id, 'stale');
+    assert.equal(state.rec, null);
     return 'opened';
   };
   try {
@@ -56,16 +93,20 @@ test('first training open paints a shell before parallel hydration and then runs
       closeShell: () => shellCalls.push({closed: true}),
     });
     const pending = runtime.start('alg-1');
-    assert.equal(formOpenCalls, 0);
-    assert.equal(shellCalls.length, 1);
-    assert.equal(shellCalls[0].aid, 'alg-1');
+    assert.equal(formOpenCalls, 1);
+    assert.equal(shellCalls.length, 0);
+    await pending;
     assert.deepEqual(calls, ['/api/training_options?project_id=project-1', '/api/system/recommendation']);
     releaseRecommendation();
     releaseOptions();
     const result = await pending;
     assert.equal(result, 'opened');
     assert.equal(formOpenCalls, 1);
-    assert.deepEqual(shellCalls.at(-1), {closed: true});
+    assert.equal(shellCalls.length, 0);
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(state.targets[0].id,'gpu-a800');
+    assert.equal(state.rec.device,'cuda:0');
+    runtime.destroy();
   } finally {
     globalThis.window = originalWindow;
   }
@@ -104,6 +145,36 @@ test('focused training resource hydration publishes options before recommendatio
     assert.equal(state.rec, null);
     releaseRecommendation();
     await Promise.resolve();
+    runtime.destroy();
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('training resources become ready even if optional recommendation never resolves', async () => {
+  const originalWindow = globalThis.window;
+  const state = {targets: [], rec: null};
+  globalThis.window = {};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      openTrainingForm: () => 'opened',
+      request: async url => {
+        if (url.startsWith('/api/training_options')) {
+          return {targets: [{id: 'worker-a800', status: 'ready', algorithms: [{key:'yolo11n'}], base_models: []}]};
+        }
+        if (url === '/api/system/recommendation') return new Promise(() => {});
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+    const completed = await Promise.race([
+      runtime.hydrate().then(() => 'ready'),
+      new Promise(resolve => setTimeout(() => resolve('blocked'), 50)),
+    ]);
+    assert.equal(completed, 'ready', 'advisory recommendation cannot block training resources');
+    assert.equal(state.targets[0].id, 'worker-a800');
+    assert.equal(state.rec, null);
     runtime.destroy();
   } finally {
     globalThis.window = originalWindow;
@@ -201,8 +272,9 @@ test('external preflight starts in parallel with training options and recommenda
       closeShell: () => {},
     });
     const pending = runtime.start('external-1');
+    assert.equal(await pending,'opened');
     await Promise.resolve();
-    assert.deepEqual(new Set(started), new Set(['shell', '/api/training_options?project_id=project-1', '/api/system/recommendation', 'preflight:external-1']));
+    assert.deepEqual(new Set(started), new Set(['/api/training_options?project_id=project-1', '/api/system/recommendation', 'preflight:external-1']));
     release();
     await pending;
   } finally {
@@ -210,7 +282,7 @@ test('external preflight starts in parallel with training options and recommenda
   }
 });
 
-test('closed or superseded shell cannot open a stale training dialog', async () => {
+test('superseded hydration never reopens a form after its immediate initial mount', async () => {
   const originalWindow = globalThis.window;
   const opened = [];
   const currentTokens = new Set();
@@ -238,7 +310,10 @@ test('closed or superseded shell cannot open a stale training dialog', async () 
     const second = runtime.start('alg-2');
     release();
     await Promise.all([first, second]);
-    assert.deepEqual(opened, ['alg-2']);
+    assert.deepEqual(opened, ['alg-1','alg-2']);
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.deepEqual(opened,['alg-1','alg-2']);
+    runtime.destroy();
   } finally {
     globalThis.window = originalWindow;
   }
@@ -313,4 +388,71 @@ test('recent external preflight opens the canonical training form without a prep
   } finally {
     globalThis.window = originalWindow;
   }
+});
+
+test('external metadata drift stays trainable and surfaces one compact sync advisory', async () => {
+  const originalWindow=globalThis.window;
+  const state={algorithms:[{id:'external-1',source_type:'EXTERNAL',provider_type:'CHANG_LIAN'}],targets:[],rec:null};
+  globalThis.window={};
+  try {
+    const runtime=installTrainingCreateHydrationRuntime({
+      getState:()=>state,projectId:()=> 'p',openTrainingForm:()=> 'opened',
+      request:async url=>url.startsWith('/api/training_options')?{targets:[]}:{recommendation_source:'unverified_fallback'},
+      preflight:async ()=>({drift_detected:true,drift_fields:['name','category']}),
+      preflightFresh:()=>false,
+    });
+    await runtime.start('external-1');
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(runtime.diagnostics().preflight.status,'warning');
+    assert.match(runtime.diagnostics().preflight.warning,/不影响现有视觉分析方式/);
+    assert.equal(runtime.diagnostics().preflight.error,'');
+    runtime.destroy();
+  } finally {globalThis.window=originalWindow;}
+});
+
+test('external preflight timeout terminates within its own budget and retry is not trapped by old work', async () => {
+  const originalWindow=globalThis.window;
+  const state={algorithms:[{id:'external-1',source_type:'EXTERNAL',provider_type:'CHANG_LIAN'}],targets:[],rec:null};
+  globalThis.window={};
+  let releaseFirst;
+  const first=new Promise(resolve=>{releaseFirst=resolve;});
+  let calls=0;
+  try {
+    const runtime=installTrainingCreateHydrationRuntime({
+      getState:()=>state,projectId:()=> 'p',openTrainingForm:()=> 'opened',
+      requestTimeoutMs:100,preflightTimeoutMs:20,
+      request:async url=>url.startsWith('/api/training_options')?{targets:[]}:{device:'auto'},
+      preflight:async()=>{calls++;return calls===1?first:{drift_detected:false};},
+      preflightFresh:()=>false,
+    });
+    await runtime.start('external-1');
+    await new Promise(resolve=>setTimeout(resolve,35));
+    assert.equal(runtime.diagnostics().preflight.status,'error');
+    assert.match(runtime.diagnostics().preflight.error,/超时/);
+    await runtime.prewarm('external-1');
+    assert.equal(calls,2);
+    assert.equal(runtime.diagnostics().preflight.status,'ready');
+    releaseFirst({drift_detected:true});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(runtime.diagnostics().preflight.status,'ready','late timed-out response must not change the displayed result');
+    runtime.destroy();
+  } finally {globalThis.window=originalWindow;}
+});
+
+
+test('preparation deadline settles never-resolving inputs and prevents late publication', async () => {
+  const previous=globalThis.window;globalThis.window={};
+  const state={targets:[],rec:null};let release;const notices=[];let opened=0;
+  const runtime=installTrainingCreateHydrationRuntime({getState:()=>state,projectId:()=> 'p',requestTimeoutMs:20,
+    request:()=>new Promise(resolve=>{release=resolve;}),openTrainingForm:()=>{opened++;},openShell:()=>{},isShellCurrent:()=>true,notify:value=>notices.push(value)});
+  try {
+    await runtime.start('a');
+    assert.equal(opened,1);
+    await new Promise(resolve=>setTimeout(resolve,35));
+    assert.equal(runtime.diagnostics().resources.status,'error');
+    assert.match(runtime.diagnostics().resources.error,/超时/);
+    assert.equal(runtime.diagnostics().recommendation.status,'error');
+    release({targets:[{id:'late'}]});await new Promise(resolve=>setTimeout(resolve,0));
+    assert.deepEqual(state.targets,[]);
+  }finally{runtime.destroy();globalThis.window=previous;}
 });

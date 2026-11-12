@@ -206,22 +206,24 @@ test('an action deadline ends the spinner without repeating an unresolved origin
   await expect(button).toHaveText('暂停');
 });
 
-test('late history cleanup cannot resurrect a destroyed task center or replace its successor',async({page})=>{
+test('display-only completed cleanup never deletes server history or resurrects a destroyed task center',async({page})=>{
   await page.goto('/');
   await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
   expect(await page.evaluate(async()=>{
     window.UploadTaskCenterRuntime.destroy();
     const {installUploadTaskCenter}=await import('/static/modules/upload-task-center.js');
-    let resolveDelete;
+    let deleteRequests=0;
     const registry={clear(){},startTimeout(){}};
-    const old=installUploadTaskCenter({projectId:()=> 'utc-cleanup',pollRegistry:registry,fetchImpl:()=>new Promise(resolve=>resolveDelete=resolve)});
+    const old=installUploadTaskCenter({projectId:()=> 'utc-cleanup',pollRegistry:registry,fetchImpl:()=>{deleteRequests++;throw new Error('display-only clear must not DELETE server evidence')}});
     old.upsert({id:'zip:old',kind:'zip',status:'DONE'});
-    const pending=old.clearCompleted();await Promise.resolve();old.destroy();
+    const pending=old.clearCompleted();
+    const removed=old.list().length===0;
+    old.destroy();
     const current=installUploadTaskCenter({projectId:()=> 'utc-successor',pollRegistry:registry});
     current.upsert({id:'image:new',kind:'browser-upload',title:'新实例',status:'UPLOADING'});
     const shell=document.querySelector('.utc-shell');
-    resolveDelete(Response.json({ok:true}));await pending;
-    const result=window.UploadTaskCenterRuntime===current&&document.querySelector('.utc-shell')===shell&&current.list()[0].id==='image:new';
+    await pending;
+    const result=removed&&deleteRequests===0&&window.UploadTaskCenterRuntime===current&&document.querySelector('.utc-shell')===shell&&current.list()[0].id==='image:new';
     current.destroy();
     return result;
   })).toBe(true);

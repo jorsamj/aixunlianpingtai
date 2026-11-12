@@ -21,12 +21,18 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
+      - 'platform_core/training_workspace_lifecycle.py'
+      - 'platform_core/training_workspace_http.py'
+      - 'tests/unit/test_training_workspace_lifecycle.py'
       - 'platform_core/material_batches.py'
       - 'platform_core/training_compatibility.py'
       - 'tests/unit/test_material_reference_reasons.py'
       - 'tests/unit/test_training_duplicate_conflicts.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/training_selection_reference.py'
+      - 'tests/unit/test_training_selection_reference.py'
+      - 'platform_core/remote_training_inputs.py'
       - 'platform_core/training_tasks.py'
       - 'platform_core/algorithms.py'
       - 'platform_core/algorithm_sql_store.py'
@@ -40,6 +46,8 @@ on:
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
       - 'platform_core/task_runtime/repository.py'
+      - 'platform_core/task_runtime/scheduler.py'
+      - 'task_worker.py'
       - 'platform_core/worker_registry.py'
       - 'platform_core/worker_supervisor.py'
       - 'tests/unit/test_remote_training_transport.py'
@@ -73,6 +81,8 @@ on:
       - 'tests/api/test_training_request.py'
       - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/api/test_mother_model_registry_isolated.py'
+      - 'platform_core/mother_model_assets.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
@@ -97,8 +107,14 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
+      - 'platform_core/training_workspace_lifecycle.py'
+      - 'platform_core/training_workspace_http.py'
+      - 'tests/unit/test_training_workspace_lifecycle.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/training_selection_reference.py'
+      - 'tests/unit/test_training_selection_reference.py'
+      - 'platform_core/remote_training_inputs.py'
       - 'platform_core/training_tasks.py'
       - 'platform_core/algorithms.py'
       - 'platform_core/algorithm_sql_store.py'
@@ -112,6 +128,8 @@ on:
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
       - 'platform_core/task_runtime/repository.py'
+      - 'platform_core/task_runtime/scheduler.py'
+      - 'task_worker.py'
       - 'platform_core/worker_registry.py'
       - 'platform_core/worker_supervisor.py'
       - 'tests/unit/test_remote_training_transport.py'
@@ -145,6 +163,8 @@ on:
       - 'tests/api/test_training_request.py'
       - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/api/test_mother_model_registry_isolated.py'
+      - 'platform_core/mother_model_assets.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
@@ -167,12 +187,16 @@ jobs:
         run: >-
           python -m pip install --disable-pip-version-check
           pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic opencv-python-headless fastapi httpx python-multipart
+      - name: Install pinned trainer source for official stopper contract
+        run: python -m pip install --disable-pip-version-check --no-deps "ultralytics==8.4.127"
       - name: Compile remote training preparation chain
         run: >-
           python -m py_compile
           platform_core/remote_training_transport.py
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
+          platform_core/training_selection_reference.py
+          platform_core/remote_training_inputs.py
           platform_core/training_tasks.py
           platform_core/algorithms.py
           platform_core/algorithm_sql_store.py
@@ -193,6 +217,8 @@ jobs:
           platform_core/remote_material_lifecycle.py
           platform_core/model_artifacts.py
           platform_core/training_recovery_api.py
+          platform_core/training_workspace_lifecycle.py
+          platform_core/training_workspace_http.py
           node_agent.py
           train_worker.py
           platform_core/task_node_assignments.py
@@ -226,6 +252,7 @@ jobs:
           tests/unit/task_runtime/test_worker_registry.py
           tests/unit/task_runtime/test_repository.py
           tests/integration/test_remote_training_prepare_task.py
+          tests/unit/test_training_selection_reference.py
           tests/integration/test_training_task_worker.py
           tests/integration/test_training_completed_job_recovery.py
       - name: Portable bundle and scheduler contracts
@@ -243,6 +270,7 @@ jobs:
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_material_reference_reasons.py
           tests/unit/test_training_duplicate_conflicts.py
+          tests/unit/test_training_workspace_lifecycle.py
       - name: Linux cgroup v2 and process FD resource evidence
         if: runner.os == 'Linux'
         run: >-
@@ -281,6 +309,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_remote_training_prepare_task.py
+          tests/unit/test_training_selection_reference.py
           tests/integration/test_training_task_worker.py
 
   ultralytics-loader-contract:
@@ -294,11 +323,15 @@ jobs:
       - name: Install production-compatible Ultralytics loader runtime
         run: |
           python -m pip install --disable-pip-version-check "torch==2.5.0+cpu" "torchvision==0.20.0+cpu" --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --disable-pip-version-check pytest "ultralytics==8.4.127"
+          python -m pip install --disable-pip-version-check pytest "ultralytics==8.4.127" fastapi httpx uvicorn python-multipart pyyaml requests onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 cryptography
       - name: Verify platform resource truth against real Ultralytics DataLoader
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_ultralytics_loader_resource_contract.py
+      - name: Verify algorithm negative pool against actual YOLO dataset loader
+        run: >-
+          python -m pytest -q tests/api/test_training_negative_review.py
+          -k algorithm_pool_review_to_real_yolo_background
 
   api:
     runs-on: ubuntu-24.04
@@ -319,8 +352,10 @@ jobs:
           python -m py_compile
           app.py
           tests/api/test_mother_model_preinstall.py
+          tests/api/test_mother_model_registry_isolated.py
           platform_core/remote_training_transport.py
           platform_core/remote_training_tasks.py
+          platform_core/training_selection_reference.py
           platform_core/remote_execution_transport.py
           platform_core/task_node_assignments.py
           platform_core/worker_registry.py
@@ -331,6 +366,7 @@ jobs:
           tests/api/test_evaluation_diagnostic_image.py
           tests/api/test_hard_sample_mining_api.py
           tests/api/test_mother_model_preinstall.py
+          tests/api/test_mother_model_registry_isolated.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py
       - name: Permanent remote training preparation guards
@@ -368,7 +404,7 @@ jobs:
           grep -Fq 'test_local_finalization_reuses_same_task_version_before_stale_check' tests/integration/test_training_completed_job_recovery.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_training_tasks.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_execution_transport.py
-          grep -Fq 'test_remote_training_prepare_handler_builds_bundle_and_activates_target' tests/integration/test_remote_training_prepare_task.py
+          grep -Fq 'test_remote_training_prepare_handler_freezes_indices_and_activates_target' tests/integration/test_remote_training_prepare_task.py
           grep -Fq 'test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate' tests/unit/test_remote_execution_transport.py
           grep -Fq 'test_remote_training_commit_reuses_existing_task_version_before_base_stale_check' tests/unit/test_remote_execution_transport.py
           grep -Fq 'version_id = self._remote_training_version_id(' platform_core/remote_execution_transport.py
@@ -392,9 +428,9 @@ jobs:
           import re
 
           source = Path("static/app.js").read_text(encoding="utf-8")
-          match = re.search(r'<select id="ts428Precision"[^>]*>(.*?)</select>', source, re.S)
+          match = re.search(r'<select id="trV3ManualPrecision"[^>]*>(.*?)</select>', source, re.S)
           if not match:
-              raise SystemExit("training precision selector ts428Precision is missing")
+              raise SystemExit("training precision selector trV3ManualPrecision is missing")
           training_precision = match.group(1)
           for value in ("auto", "fp16", "fp32"):
               if f'value="{value}"' not in training_precision:
@@ -413,7 +449,7 @@ jobs:
           grep -Fq 'service.training_preflight(' platform_core/remote_training_tasks.py
           grep -Fq 'assert_external_algorithm_master_data_current(self.data_dir, algorithm)' platform_core/remote_training_tasks.py
           ! grep -Fq '_refresh_external_training_algorithm(' app.py
-          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          grep -Fq '_stage_validation_source(args.data, cache)' train_worker.py
           grep -Fq 'test_images_dir=dataset_root/"images"/"test"' train_worker.py
           grep -Fq 'current_item="独立评测集盲测"' train_worker.py
           if grep -Fq '独立试验集盲测' train_worker.py; then echo 'final test split must be presented as evaluation, not validation/trial data' >&2; exit 1; fi
@@ -469,7 +505,7 @@ jobs:
           grep -Fq '"decision": "continue_below_target"' train_worker.py
           grep -Fq 'test_below_target_never_stops_training_even_below_reference_line' tests/unit/test_training_early_stopping_reason.py
           grep -Fq 'test_stage_gate_uses_validation_split_not_final_test_split' tests/unit/test_training_early_stopping_reason.py
-          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          grep -Fq '_stage_validation_source(args.data, cache)' train_worker.py
           ! grep -Fq 'import sqlite3' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           grep -Fq 'return "agent"' platform_core/task_node_assignments.py

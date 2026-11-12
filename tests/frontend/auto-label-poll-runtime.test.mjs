@@ -23,7 +23,7 @@ function taskView(task = {}) {
     progressText: `${completed} / ${total}`,
     boxes: Number(task.summary?.boxes || 0),
     canReview: status === 'AWAITING_CONFIRMATION',
-    canRetry: ['SUCCEEDED', 'FAILED'].includes(status),
+    canRetry: status === 'FAILED',
   };
 }
 
@@ -46,8 +46,16 @@ test('auto-label task rows render label names and task actions without page mark
   assert.match(html, /已完成/);
   assert.match(html, /100\.0%/);
   assert.match(html, /详情/);
-  assert.match(html, /重试/);
+  assert.doesNotMatch(html, /继续任务/, 'already completed task must not be re-inferred');
   assert.doesNotMatch(html, /<section/);
+});
+
+test('failed AI task uses original list action for incremental recovery', () => {
+  const html = renderAutoLabelTaskRows([{id:'failed-1',status:'FAILED',name:'待恢复标注'}], {
+    annotationTaskView:taskView,
+  });
+  assert.match(html,/retryAiTask60\('failed-1'\)/);
+  assert.match(html,/继续任务/);
 });
 
 test('polling row preserves a backend-proven AI annotation queue position and wait reason', () => {

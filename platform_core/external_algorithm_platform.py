@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-from contextlib import ExitStack
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -23,6 +21,7 @@ from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
 from .integration_audit import IntegrationAuditRepository, redact
+from .performance_diagnostics import measure
 from .secrets import SecretCredentialStore, secret_ref
 
 
@@ -41,6 +40,8 @@ DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60
 AUTO_SYNC_TIMEZONE_NAME = "Asia/Shanghai"
 AUTO_SYNC_TIMEZONE = timezone(timedelta(hours=8), name=AUTO_SYNC_TIMEZONE_NAME)
 AUTO_SYNC_SCHEDULE_LOCAL_TIMES = ("08:00", "12:00", "15:00")
+# Time budget for one product's read-only provider training eligibility check.
+EXTERNAL_TRAINING_PREFLIGHT_BUDGET_SECONDS = 8.0
 
 CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
     {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"human_login"},
@@ -166,6 +167,8 @@ class ChangLianEndpoints:
 DEFAULT_CONFIG: Dict[str, Any] = {
     "schema_version": CONFIG_SCHEMA_VERSION,
     "mode": "local",
+    # No network is authorized merely because an old copied config says external.
+    "mode_confirmed_at": None,
     "provider": "changlian",
     "base_url": "",
     "auto_sync_enabled": False,
@@ -245,6 +248,12 @@ class ExternalPlatformConfigPayload(BaseModel):
     endpoints: EndpointPayload = Field(default_factory=EndpointPayload)
 
 
+class ExternalPlatformModePayload(BaseModel):
+    """The master switch is independent of saved provider credentials."""
+
+    mode: Literal["local", "external"]
+
+
 class ExternalPlatformRepository:
     def __init__(self, data_dir: Path):
         self.root = Path(data_dir) / "external_algorithm_platform"
@@ -257,57 +266,76 @@ class ExternalPlatformRepository:
 
     def config(self) -> Dict[str, Any]:
         with self.lock:
-            if not self.config_path.exists():
-                return json.loads(json.dumps(DEFAULT_CONFIG))
-            try:
-                body = json.loads(self.config_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise PlatformError(
-                    "EXTERNAL_PLATFORM_CONFIG_INVALID",
-                    "外部平台配置无法读取",
-                    str(error),
-                    "请恢复 external_algorithm_platform/config.json，或重新保存平台对接配置。",
-                    500,
-                ) from error
-            if not isinstance(body, dict):
-                raise PlatformError(
-                    "EXTERNAL_PLATFORM_CONFIG_INVALID",
-                    "外部平台配置格式不正确",
-                    "配置根节点必须为对象。",
-                    "请重新保存平台对接配置。",
-                    500,
-                )
-            result = json.loads(json.dumps(DEFAULT_CONFIG))
-            result.update(body)
-            result["endpoints"] = asdict(ChangLianEndpoints.from_mapping(body.get("endpoints")))
-            if str(result.get("mode") or "local") == "external":
-                # Provider has no webhook/subscription contract. Automatic master
-                # data reconciliation is fixed to the canonical China-time slots;
-                # completed training/conversion results remain auto-published.
-                result["auto_sync_enabled"] = True
-                result["auto_publish_enabled"] = True
-            return result
+            return self._config_unlocked()
 
-    def save_config(self, value: Mapping[str, Any]) -> Dict[str, Any]:
-        current = self.config()
-        result = dict(current)
-        mode = str(value.get("mode") or "local")
-        result.update({
-            "schema_version": CONFIG_SCHEMA_VERSION,
-            "mode": mode,
-            "provider": str(value.get("provider") or "changlian"),
-            "base_url": normalize_base_url(value.get("base_url")),
-            "auto_sync_enabled": mode == "external",
-            # Legacy compatibility field only; scheduling no longer reads it.
-            "auto_sync_interval_seconds": int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
-            "auto_publish_enabled": mode == "external",
-            "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
-            "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
-            "updated_at": utc_now(),
-        })
+    def _config_unlocked(self) -> Dict[str, Any]:
+        if not self.config_path.exists():
+            return json.loads(json.dumps(DEFAULT_CONFIG))
+        try:
+            body = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_CONFIG_INVALID", "外部平台配置无法读取", str(error),
+                "请恢复 external_algorithm_platform/config.json，或重新保存平台对接配置。", 500,
+            ) from error
+        if not isinstance(body, dict):
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_CONFIG_INVALID", "外部平台配置格式不正确", "配置根节点必须为对象。",
+                "请重新保存平台对接配置。", 500,
+            )
+        result = json.loads(json.dumps(DEFAULT_CONFIG))
+        result.update(body)
+        result["endpoints"] = asdict(ChangLianEndpoints.from_mapping(body.get("endpoints")))
+        if str(result.get("mode") or "local") == "external" and not body.get("mode_confirmed_at"):
+            # A pre-switch external config may have been copied to a new LAN
+            # deployment. Require an explicit 531+ opt-in before any outbound I/O.
+            result["mode"] = "local"
+            result["auto_sync_enabled"] = False
+            result["auto_publish_enabled"] = False
+        if str(result.get("mode") or "local") == "external":
+            result["auto_sync_enabled"] = True
+            result["auto_publish_enabled"] = True
+        return result
+
+    def save_config(self, value: Mapping[str, Any], *, preserve_mode: bool = False) -> Dict[str, Any]:
+        # Saved connection drafts must not resurrect external mode after the
+        # operator turned the master switch off in another tab/process.
         with self.lock:
+            current = self._config_unlocked()
+            result = dict(current)
+            mode = str((current.get("mode") if preserve_mode else value.get("mode")) or "local")
+            result.update({
+                "schema_version": CONFIG_SCHEMA_VERSION,
+                "mode": mode,
+                "mode_confirmed_at": utc_now(),
+                "provider": str(value.get("provider") or "changlian"),
+                "base_url": normalize_base_url(value.get("base_url")),
+                "auto_sync_enabled": mode == "external",
+                # Legacy compatibility field only; scheduling no longer reads it.
+                "auto_sync_interval_seconds": int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
+                "auto_publish_enabled": mode == "external",
+                "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
+                "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
+                "updated_at": utc_now(),
+            })
             atomic_write_json(self.config_path, result)
         return result
+
+    def set_mode(self, mode: Literal["local", "external"]) -> Dict[str, Any]:
+        """Update only the integration switch; retain all saved connection settings."""
+        if mode not in {"local", "external"}:
+            raise ValueError("Invalid external platform mode")
+        with self.lock:
+            current = self._config_unlocked()
+            current.update({
+                "mode": mode,
+                "mode_confirmed_at": utc_now(),
+                "auto_sync_enabled": mode == "external",
+                "auto_publish_enabled": mode == "external",
+                "updated_at": utc_now(),
+            })
+            atomic_write_json(self.config_path, current)
+            return current
 
     def cache(self) -> Dict[str, Any]:
         with self.lock:
@@ -502,6 +530,50 @@ def extract_items(value: Any) -> list[Dict[str, Any]]:
     return []
 
 
+def validated_product_snapshot(value: Any, *, numeric_ids: bool = False) -> list[Dict[str, Any]]:
+    """Validate the documented product list envelope without inferring deletion.
+
+    listAll has no documented completeness/deletion guarantee. Even a valid
+    empty observation must never authorize a destructive reconciliation.
+    """
+    def invalid(reason: str):
+        raise PlatformError("EXTERNAL_PRODUCT_RESPONSE_INVALID", "新畅联产品响应不完整或格式异常",
+                            reason, "保留上次有效数据；请核对官方接口响应后重试。", 502)
+    if not isinstance(value, dict) or not isinstance(value.get("data"), list):
+        invalid("产品列表必须返回包含 data 数组的对象")
+    if numeric_ids and "code" not in value:
+        invalid("实际产品接口缺少明确的业务成功状态")
+    if "code" in value and (isinstance(value["code"], bool) or str(value["code"]) not in {"0", "200"}):
+        invalid("产品列表业务状态不是成功")
+    rows = value["data"]
+    if "total" in value:
+        total = value["total"]
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0 or total != len(rows):
+            invalid("listAll 返回总量与记录数量不一致")
+    identities = set()
+    result = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            invalid(f"第 {index} 条产品记录不是对象")
+        identity = row.get("productId")
+        if isinstance(identity, bool) or not isinstance(identity, (str, int)) or not str(identity).strip():
+            invalid(f"第 {index} 条产品缺少合法 productId")
+        identity = str(identity).strip()
+        if numeric_ids and (not identity.isascii() or not identity.isdigit() or not 0 < int(identity) <= 9223372036854775807 or identity != str(int(identity))):
+            invalid(f"第 {index} 条产品 productId 不是正 int64")
+        if identity in identities:
+            invalid(f"第 {index} 条产品 ID 重复")
+        if not isinstance(row.get("productName"), str) or not row["productName"].strip():
+            invalid(f"第 {index} 条产品缺少名称")
+        if isinstance(row.get("productType"), bool) or str(row.get("productType")) != "3":
+            invalid(f"第 {index} 条产品 productType 缺失或不是算法产品")
+        if isinstance(row.get("status"), bool) or str(row.get("status")) not in {"1", "2"}:
+            invalid(f"第 {index} 条产品 status 缺失或未知")
+        identities.add(identity)
+        result.append(dict(row))
+    return result
+
+
 def flatten_category_tree(value: Any) -> list[Dict[str, Any]]:
     roots = extract_items(value)
     result: list[Dict[str, Any]] = []
@@ -565,6 +637,39 @@ def _dump_weight_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
             body[key] = _remote_json_id(body[key])
     return body
 
+class _SharedChangLianBearer:
+    """Process-local, service-scoped singleflight token for saved credentials.
+
+    Never share requests.Session objects, expose a token in persisted state, or
+    reuse a token under a changed URL/credential/endpoint fingerprint.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._scope = ""
+        self._token_type = "Bearer"
+        self._token = ""
+        self._expires_at = 0.0
+
+    def acquire(self, scope: str, refresh: Callable[[], tuple[str, str, float]]) -> tuple[str, str]:
+        with self._lock:
+            if self._scope == scope and self._token and time.monotonic() < self._expires_at:
+                return self._token_type, self._token
+            token_type, token, expires_at = refresh()
+            self._scope = scope
+            self._token_type = token_type
+            self._token = token
+            self._expires_at = expires_at
+            return token_type, token
+
+    def invalidate(self, scope: str | None = None, *, rejected_token: str | None = None) -> None:
+        with self._lock:
+            if (scope is None or scope == self._scope) and (rejected_token is None or rejected_token == self._token):
+                self._scope = ""
+                self._token = ""
+                self._expires_at = 0.0
+
+
 class ChangLianClient:
     def __init__(
         self,
@@ -587,6 +692,11 @@ class ChangLianClient:
         self._token_type = "Bearer"
         self._token_expires_at = 0.0
         self._token_lock = threading.Lock()
+        self._shared_bearer_cache: _SharedChangLianBearer | None = None
+        # Provider clients created by an integration service re-check the
+        # persisted master switch before EVERY HTTP call, including auth calls.
+        # This also fences clients created before the operator switched off.
+        self._external_enabled_check: Callable[[], None] | None = None
         self.audit_callback = audit_callback
         self.audit_context: Dict[str, Any] = {}
         if not self.access_key or not self.access_secret:
@@ -600,6 +710,12 @@ class ChangLianClient:
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url + "/", str(path or "").lstrip("/"))
+
+    def _auth_scope(self) -> str:
+        return hashlib.sha256(json.dumps([
+            self.base_url, self.access_key, self.access_secret,
+            self.endpoints.test_sign, self.endpoints.token,
+        ], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
     def set_audit_context(self, **context: Any) -> None:
         self.audit_context.update({key: value for key, value in context.items() if value not in (None, "")})
@@ -659,10 +775,13 @@ class ChangLianClient:
         auth: bool = False,
         **kwargs: Any,
     ) -> Any:
+        if self._external_enabled_check is not None:
+            self._external_enabled_check()
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
-            token_type, token = self.token()
+            with measure('external.auth_wait'):
+                token_type, token = self.token()
             # The official OpenAPI compilation declares Authorization: Bearer
             # for all internal business APIs. "Access-Token" in logout prose
             # names the token value; it is not the HTTP header name.
@@ -676,13 +795,18 @@ class ChangLianClient:
             "json": kwargs.get("json") or {},
         }
         try:
-            response = self.session.request(
-                method.upper(),
-                self._url(path),
-                headers=headers,
-                timeout=self.timeout,
-                **kwargs,
-            )
+            kind = ('external.http.auth' if path in {self.endpoints.test_sign, self.endpoints.token}
+                    else 'external.http.business')
+            with measure(kind):
+                if self._external_enabled_check is not None:
+                    self._external_enabled_check()
+                response = self.session.request(
+                    method.upper(),
+                    self._url(path),
+                    headers=headers,
+                    timeout=self.timeout,
+                    **kwargs,
+                )
         except requests.RequestException as error:
             self._emit_audit({
                 "operation": self._operation_for_path(path), "status": "UNKNOWN", "method": method,
@@ -714,6 +838,13 @@ class ChangLianClient:
             "error_code": business_code if (business_failed or not http_ok) else "",
             "error_message": message if (business_failed or not http_ok) else "",
         })
+        if auth and response.status_code == 401:
+            # Do not replay a potentially mutating request. A later explicit
+            # request may authenticate afresh after the server revoked a token.
+            if self._shared_bearer_cache is not None:
+                self._shared_bearer_cache.invalidate(self._auth_scope(), rejected_token=token)
+            self._token = ""
+            self._token_expires_at = 0.0
         if not http_ok:
             suffix = f"：{message}" if message else ""
             raise RuntimeError(f"外部平台请求失败 HTTP {response.status_code}{suffix}")
@@ -737,7 +868,25 @@ class ChangLianClient:
             "Signature": str(signature),
         }
 
+    def _fetch_new_token(self) -> tuple[str, str, float]:
+        signature_headers = self._signature()
+        headers = {"Access-Key": self.access_key, **signature_headers}
+        body = _unwrap(self._request("POST", self.endpoints.token, headers=headers))
+        if not isinstance(body, dict):
+            raise RuntimeError("Token 接口返回格式不正确")
+        token = _value_from(body, "accessToken", "access_token", "token")
+        if not token:
+            raise RuntimeError("Token 接口未返回 accessToken")
+        token_type = str(_value_from(body, "tokenType", "token_type") or "Bearer")
+        try:
+            expires_in = max(30, int(_value_from(body, "expiresIn", "expires_in") or 3600))
+        except (TypeError, ValueError):
+            expires_in = 3600
+        return token_type, str(token), time.monotonic() + max(15, int(expires_in * 0.8))
+
     def token(self) -> tuple[str, str]:
+        if self._shared_bearer_cache is not None:
+            return self._shared_bearer_cache.acquire(self._auth_scope(), self._fetch_new_token)
         now = time.monotonic()
         if self._token and now < self._token_expires_at:
             return self._token_type, self._token
@@ -745,22 +894,10 @@ class ChangLianClient:
             now = time.monotonic()
             if self._token and now < self._token_expires_at:
                 return self._token_type, self._token
-            signature_headers = self._signature()
-            headers = {"Access-Key": self.access_key, **signature_headers}
-            body = _unwrap(self._request("POST", self.endpoints.token, headers=headers))
-            if not isinstance(body, dict):
-                raise RuntimeError("Token 接口返回格式不正确")
-            token = _value_from(body, "accessToken", "access_token", "token")
-            if not token:
-                raise RuntimeError("Token 接口未返回 accessToken")
-            token_type = str(_value_from(body, "tokenType", "token_type") or "Bearer")
-            try:
-                expires_in = max(30, int(_value_from(body, "expiresIn", "expires_in") or 3600))
-            except (TypeError, ValueError):
-                expires_in = 3600
-            self._token = str(token)
+            token_type, token, expires_at = self._fetch_new_token()
+            self._token = token
             self._token_type = token_type
-            self._token_expires_at = time.monotonic() + max(15, int(expires_in * 0.8))
+            self._token_expires_at = expires_at
             return token_type, self._token
 
     def probe(self) -> Dict[str, Any]:
@@ -777,6 +914,8 @@ class ChangLianClient:
         try:
             return self._request("POST", self.endpoints.logout, auth=True)
         finally:
+            if self._shared_bearer_cache is not None:
+                self._shared_bearer_cache.invalidate(self._auth_scope())
             self._token = ""
             self._token_expires_at = 0.0
 
@@ -837,7 +976,11 @@ class ChangLianClient:
         params = dict(filters)
         params.setdefault("productType", "3")
         params.setdefault("status", "1")
-        return self._request("GET", self.endpoints.product_list, auth=True, params=_compact_params(params))
+        response = self._request("GET", self.endpoints.product_list, auth=True, params=_compact_params(params))
+        # Validate real provider IDs at the boundary; internal legacy snapshots
+        # retain their historical stable string identities.
+        validated_product_snapshot(response, numeric_ids=True)
+        return response
 
     def product_info(self, product_id: Any) -> Any:
         path = self.endpoints.product_detail.replace("{productId}", str(product_id))
@@ -1271,6 +1414,7 @@ def mirror_products_to_algorithms(
             "external_status": product_status,
             "external_delete_pending": False,
             "external_delete_pending_at": "",
+            "external_deletion_status": "NORMAL",
             "external_last_synced_at": synced_at,
             "external_master_data_digest": str(master_digest or ""),
         }
@@ -1279,19 +1423,21 @@ def mirror_products_to_algorithms(
 
 
 class ExternalAlgorithmLocalPurger:
-    """Delete local state owned by a provider algorithm that no longer exists remotely.
-
-    The remote master-data product has already disappeared, so this purger never
-    calls ChangLian delete APIs. It only removes local derivative state and the
-    platform's model-delivery objects. Running durable work is cancelled first;
-    metadata deletion is deferred until the worker has acknowledged cancellation.
-    """
-
-    _ACTIVE = {"QUEUED", "RUNNING", "CANCEL_REQUESTED", "AWAITING_CONFIRMATION"}
+    """Shared legacy identity helpers; execution moved to the Durable handler."""
 
     def __init__(self, data_dir: Path, secret_store_factory: Callable[[], Any]):
         self.data_dir = Path(data_dir)
         self.secret_store_factory = secret_store_factory
+
+    def model_service(self):
+        from .model_artifacts import ModelArtifactService
+        from .storage import StorageSourceRepository
+        return ModelArtifactService(
+            data_dir=self.data_dir, project_dir=lambda pid: self._project_root(pid),
+            algorithms_file=lambda pid: self._project_root(pid) / "algorithms.json",
+            storage_sources_factory=lambda: StorageSourceRepository(self.data_dir / "storage" / "storage_sources.sqlite3"),
+            storage_credentials_factory=lambda: SecretCredentialStore(self.secret_store_factory()),
+        )
 
     def _project_root(self, project_id: str) -> Path:
         return self.data_dir / "projects" / str(project_id)
@@ -1327,175 +1473,11 @@ class ExternalAlgorithmLocalPurger:
         ).strip()
 
     def purge(self, project_id: str, algorithm: Mapping[str, Any]) -> Dict[str, int]:
-        from .external_algorithm_publish import ExternalPublicationRepository
-        from .model_artifacts import ModelArtifactService
-        from .storage import StorageSourceRepository
-        from .task_runtime import ArtifactStore, TaskKind, TaskRepository, TaskStatus
+        # Destructive synchronous reconciliation is retired. The durable handler
+        # is the sole execution owner after verified confirmation has committed.
+        raise PlatformError("EXTERNAL_ALGORITHM_DURABLE_CLEANUP_REQUIRED", "请通过已确认删除的持久清理任务执行",
+                            "", "缺失产品只能标记待核验，不能直接清理。", 409)
 
-        project_id = str(project_id)
-        algorithm_id = str(algorithm.get("id") or "").strip()
-        if not algorithm_id:
-            raise PlatformError(
-                "EXTERNAL_ALGORITHM_DELETE_ID_MISSING",
-                "外部算法删除身份不完整",
-                str(algorithm.get("external_product_id") or ""),
-                "请重新同步新畅联主数据。",
-                409,
-            )
-
-        project_root = self._project_root(project_id)
-        task_repository = TaskRepository(self.data_dir / "task_runtime" / "tasks.sqlite3")
-        task_artifacts = ArtifactStore(self.data_dir / "task_runtime" / "artifacts")
-        owned_task_ids: set[str] = set()
-        training_task_ids: set[str] = set()
-        conversion_task_ids: set[str] = set()
-        legacy_active: list[str] = []
-
-        jobs_root = project_root / "jobs"
-        for job_file in jobs_root.glob("*/job.json") if jobs_root.exists() else ():
-            try:
-                job = json.loads(job_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                job = {}
-            task_id = str(job.get("task_id") or job.get("id") or job_file.parent.name)
-            durable = task_repository.get(task_id)
-            payload = (
-                task_artifacts.read_json(task_id, durable.payload_ref, default={})
-                if durable is not None else {}
-            )
-            if self._training_algorithm_id(job, payload) != algorithm_id:
-                continue
-            training_task_ids.add(task_id)
-            owned_task_ids.add(task_id)
-            status = str(job.get("status") or "").strip().lower()
-            if durable is None and status in {
-                "queued", "waiting", "pending", "running", "paused", "cancel_requested"
-            }:
-                legacy_active.append(f"TRAINING:{task_id}")
-
-        deploy_roots = [
-            project_root / "deploy" / "jobs",
-            project_root / "deployment" / "jobs",
-        ]
-        deploy_dirs: dict[str, Path] = {}
-        for root in deploy_roots:
-            for job_file in root.glob("*/job.json") if root.exists() else ():
-                try:
-                    job = json.loads(job_file.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    job = {}
-                if self._deploy_algorithm_id(job) != algorithm_id:
-                    continue
-                task_id = str(job.get("task_id") or job.get("id") or job_file.parent.name)
-                conversion_task_ids.add(task_id)
-                owned_task_ids.add(task_id)
-                deploy_dirs[task_id] = job_file.parent
-                durable = task_repository.get(task_id)
-                status = str(job.get("status") or "").strip().lower()
-                if durable is None and status in {
-                    "queued", "waiting", "pending", "running", "cancel_requested"
-                }:
-                    legacy_active.append(f"MODEL_CONVERSION:{task_id}")
-
-        # Include remote-input preparation tasks linked to owned training tasks,
-        # and deployment tests linked to owned conversion tasks.
-        cursor = None
-        while True:
-            page = task_repository.list(project_id=project_id, limit=100, cursor=cursor)
-            for task in page.items:
-                payload = task_artifacts.read_json(
-                    task.task_id, task.payload_ref, default={}
-                )
-                if not isinstance(payload, Mapping):
-                    payload = {}
-                if (
-                    task.kind is TaskKind.TRAINING_PREPARE
-                    and str(payload.get("training_task_id") or "") in training_task_ids
-                ):
-                    owned_task_ids.add(task.task_id)
-                elif (
-                    task.kind is TaskKind.DEPLOYMENT_TEST
-                    and str(payload.get("source_conversion_job_id") or "") in conversion_task_ids
-                ):
-                    owned_task_ids.add(task.task_id)
-            cursor = page.next_cursor
-            if not cursor:
-                break
-
-        pending: list[str] = []
-        for task_id in sorted(owned_task_ids):
-            task = task_repository.get(task_id)
-            if task is None:
-                continue
-            if task.status.value in self._ACTIVE:
-                try:
-                    task = task_repository.request_cancel(task_id)
-                except Exception as error:
-                    pending.append(f"{task.kind.value}:{task_id}:{error}")
-                    continue
-            if task.status in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
-                pending.append(f"{task.kind.value}:{task_id}")
-
-        if legacy_active or pending:
-            detail = "；".join((legacy_active + pending)[:20])
-            raise PlatformError(
-                "EXTERNAL_ALGORITHM_DELETE_WAITING_FOR_TASKS",
-                "外部算法已从新畅联删除，正在停止其本地任务",
-                detail,
-                "平台已请求取消 durable 任务；待运行任务退出后再次同步即可完成算法及训练成果硬删除。",
-                409,
-            )
-
-        tasks_deleted = 0
-        for task_id in sorted(owned_task_ids):
-            task = task_repository.get(task_id)
-            if task is not None:
-                try:
-                    if task_repository.delete_terminal(
-                        task_id, project_id=project_id, kind=task.kind,
-                    ):
-                        tasks_deleted += 1
-                except ValueError:
-                    raise PlatformError(
-                        "EXTERNAL_ALGORITHM_DELETE_TASK_ACTIVE",
-                        "外部算法仍有非终态任务，暂不能删除",
-                        f"{task.kind.value}:{task_id}",
-                        "请等待任务停止后重新同步。",
-                        409,
-                    )
-            task_artifacts.delete_task(task_id)
-            shutil.rmtree(jobs_root / task_id, ignore_errors=True)
-            for root in deploy_roots:
-                shutil.rmtree(root / task_id, ignore_errors=True)
-            shutil.rmtree(project_root / "predictions" / task_id, ignore_errors=True)
-
-        # Remove model objects (including OSS) before dropping their canonical rows.
-        model_assets = ModelArtifactService(
-            data_dir=self.data_dir,
-            project_dir=lambda pid: self._project_root(pid),
-            algorithms_file=lambda pid: self._project_root(pid) / "algorithms.json",
-            storage_sources_factory=lambda: StorageSourceRepository(
-                self.data_dir / "storage" / "storage_sources.sqlite3"
-            ),
-            storage_credentials_factory=lambda: SecretCredentialStore(
-                self.secret_store_factory()
-            ),
-        )
-        artifact_summary = model_assets.purge_algorithm(project_id, algorithm_id)
-        publication_summary = ExternalPublicationRepository(
-            self.data_dir
-        ).delete_algorithm(project_id, algorithm_id, provider=PROVIDER_CHANGLIAN)
-
-        shutil.rmtree(
-            project_root / "algorithm_versions" / algorithm_id,
-            ignore_errors=True,
-        )
-
-        return {
-            "tasks_deleted": tasks_deleted,
-            **artifact_summary,
-            **publication_summary,
-        }
 
 
 def algorithm_is_external_readonly(algorithms_path: Path, algorithm_id: str) -> bool:
@@ -1612,15 +1594,12 @@ def assert_external_algorithm_master_data_current(data_dir: Path, algorithm: Map
 
 
 def assert_local_algorithm_create_allowed(data_dir: Path) -> None:
-    config = ExternalPlatformRepository(Path(data_dir)).config()
-    if str(config.get("mode") or "local") == "external":
-        raise PlatformError(
-            "EXTERNAL_MASTER_DATA_ACTIVE",
-            "当前算法主数据由外部平台管理",
-            "已启用新畅联算法主数据，当前平台不再创建独立算法产品。",
-            "请先在新畅联创建算法产品，然后执行“立即同步”。",
-            409,
-        )
+    """Compatibility hook: independent local algorithms may always be created.
+
+    External *existing* algorithms remain read-only under
+    ``assert_algorithm_mutable``; local creation never queries a provider.
+    """
+    return None
 
 
 class ExternalAlgorithmPlatformService:
@@ -1642,6 +1621,7 @@ class ExternalAlgorithmPlatformService:
             self.data_dir, secret_store_factory,
         )
         self.thread_factory = thread_factory
+        self._shared_bearer_cache = _SharedChangLianBearer()
 
     def _credential_store(self) -> SecretCredentialStore:
         return SecretCredentialStore(self.secret_store_factory())
@@ -1745,6 +1725,9 @@ class ExternalAlgorithmPlatformService:
                 "请先切换为“外部平台 / 新畅联”并保存。",
                 409,
             )
+
+    def external_integration_enabled(self) -> bool:
+        return str(self.repository.config().get("mode") or "local") == "external"
 
     def start_sync(
         self,
@@ -1994,7 +1977,7 @@ class ExternalAlgorithmPlatformService:
             "blocking_keys": [str(row.get("key") or "") for row in blocking],
         }
 
-    def save(self, payload: ExternalPlatformConfigPayload) -> Dict[str, Any]:
+    def save(self, payload: ExternalPlatformConfigPayload, *, preserve_mode: bool = False) -> Dict[str, Any]:
         current = self.repository.config()
         ref = str(current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"])
         credential_store = self._credential_store()
@@ -2016,10 +1999,20 @@ class ExternalAlgorithmPlatformService:
                     422,
                 )
             credential_store.set(ref, merged)
-        self.repository.save_config(payload.model_dump(exclude={"access_key", "access_secret"}))
+        self.repository.save_config(
+            payload.model_dump(exclude={"access_key", "access_secret"}),
+            preserve_mode=preserve_mode,
+        )
+        self._shared_bearer_cache.invalidate()
+        return self.public_config()
+
+    def set_mode(self, payload: ExternalPlatformModePayload) -> Dict[str, Any]:
+        self.repository.set_mode(payload.mode)
+        self._shared_bearer_cache.invalidate()
         return self.public_config()
 
     def _client_for_payload(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> ChangLianClient:
+        self._assert_sync_active()
         config = self.repository.config()
         provider = str(payload.provider if payload is not None else config.get("provider") or "changlian")
         if provider != "changlian":
@@ -2044,13 +2037,20 @@ class ExternalAlgorithmPlatformService:
             access_key = str(payload.access_key or "").strip() or str(stored.get("access_key_id") or "")
             access_secret = str(payload.access_secret or "") or str(stored.get("access_secret") or "")
             endpoints = ChangLianEndpoints.from_mapping(payload.endpoints.model_dump())
-        return self.client_factory(
+        client = self.client_factory(
             base_url=base_url,
             access_key=access_key,
             access_secret=access_secret,
             endpoints=endpoints,
             audit_callback=self.audit.record,
         )
+        # Only saved provider credentials participate in shared auth. Draft
+        # connection tests stay isolated; each client owns its HTTP session.
+        if payload is None and isinstance(client, ChangLianClient):
+            client._shared_bearer_cache = self._shared_bearer_cache
+        if isinstance(client, ChangLianClient):
+            client._external_enabled_check = self._assert_sync_active
+        return client
 
     def _client(self) -> ChangLianClient:
         return self._client_for_payload()
@@ -2261,10 +2261,9 @@ class ExternalAlgorithmPlatformService:
         algorithm_id: str,
     ) -> Dict[str, Any]:
         algorithms_path = Path(algorithms_path)
-        algorithm = next(
-            (row for row in list_algorithms(algorithms_path) if str(row.get("id") or "") == str(algorithm_id)),
-            None,
-        )
+        # The training gate is scoped to a single product. Reading the entire
+        # algorithm/version graph here also decodes unrelated evaluation blobs.
+        algorithm = AlgorithmSqlStore(algorithms_path).read_one(str(algorithm_id))
         if algorithm is None:
             raise PlatformError(
                 "ALGORITHM_NOT_FOUND",
@@ -2294,6 +2293,9 @@ class ExternalAlgorithmPlatformService:
                 409,
             )
         product_id = str(algorithm.get("external_product_id") or "").strip()
+        if algorithm.get("external_delete_pending") is True:
+            raise PlatformError("EXTERNAL_ALGORITHM_CONFIRMED_DELETED", "该算法已确认删除，不能创建新训练",
+                                "", "请查看外部算法清理状态。", 409)
         if not product_id:
             raise PlatformError(
                 "EXTERNAL_PRODUCT_ID_MISSING",
@@ -2303,9 +2305,39 @@ class ExternalAlgorithmPlatformService:
                 409,
             )
         client = self._client()
+        # The provider client belongs to this request. Bound every successive
+        # HTTP hop to the *remaining* budget; a large analysis list must not
+        # turn this single-algorithm read into an unbounded training gate.
+        deadline = time.monotonic() + EXTERNAL_TRAINING_PREFLIGHT_BUDGET_SECONDS
+
+        def checked_provider_call(call: Callable[[], Any]) -> Any:
+            def timeout_error() -> PlatformError:
+                return PlatformError(
+                    "EXTERNAL_TRAINING_PREFLIGHT_TIMEOUT",
+                    "外部算法状态核验超时",
+                    f"productId={product_id}",
+                    "请重试本算法状态核验；无需重新同步全部算法。",
+                    503,
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise timeout_error()
+            if isinstance(client, ChangLianClient):
+                client.timeout = max(0.05, min(client.timeout, remaining))
+            try:
+                result = call()
+            except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise timeout_error() from error
+                raise
+            if time.monotonic() > deadline:
+                raise timeout_error()
+            return result
+
         try:
             product_rows = _validated_external_items(
-                client.product_info(product_id),
+                checked_provider_call(lambda: client.product_info(product_id)),
                 id_resolver=_product_id,
                 error_code="EXTERNAL_PRODUCT_DETAIL_ID_MISSING",
                 entity_name=f"算法产品 {product_id} 详情",
@@ -2330,13 +2362,13 @@ class ExternalAlgorithmPlatformService:
                     409,
                 )
             summaries = _validated_external_items(
-                client.analyses(product_id),
+                checked_provider_call(lambda: client.analyses(product_id)),
                 id_resolver=_analysis_id,
                 error_code="EXTERNAL_ANALYSIS_ID_MISSING",
                 entity_name=f"算法产品 {product_id} 的分析方式",
             )
             details = [
-                _analysis_detail_truth(client, summary, product_id=product_id)
+                checked_provider_call(lambda summary=summary: _analysis_detail_truth(client, summary, product_id=product_id))
                 for summary in summaries
             ]
         except PlatformError:
@@ -2381,30 +2413,36 @@ class ExternalAlgorithmPlatformService:
         remote_name = str(_value_from(product, "productName", "name", "algorithmName") or "").strip()
         remote_code = str(_value_from(product, "productCode", "code") or "").strip()
         remote_category_id = _category_id(product)
-        drifted = (
-            analysis_contract(local_summaries) != analysis_contract(remote_summaries)
-            or (remote_name and remote_name != str(algorithm.get("name") or "").strip())
-            or remote_code != str(algorithm.get("external_product_code") or "").strip()
-            or remote_category_id != str(algorithm.get("external_category_id") or "").strip()
-        )
-        if drifted:
-            self.sync(
-                project_id=project_id,
-                algorithms_path=algorithms_path,
-                sync_type="auto",
+        drift_fields = []
+        if analysis_contract(local_summaries) != analysis_contract(remote_summaries):
+            drift_fields.append("analyses")
+        if remote_name and remote_name != str(algorithm.get("name") or "").strip():
+            drift_fields.append("name")
+        if remote_code != str(algorithm.get("external_product_code") or "").strip():
+            drift_fields.append("code")
+        if remote_category_id != str(algorithm.get("external_category_id") or "").strip():
+            drift_fields.append("category")
+        # Names, category/code and changes to unrelated analysis attributes
+        # do not revoke the existing visual-training entitlement. In contrast,
+        # any previously selectable visual ID which is now missing/disabled or
+        # non-visual must fail closed until the canonical sync owner refreshes
+        # the mirror. Never mutate the mirror or start global reconciliation
+        # during this read-only GET.
+        local_visual_ids = {
+            _analysis_id(row) for row in local_summaries
+            if _analysis_is_visual(row) and _analysis_is_enabled(row)
+        }
+        remote_visual_ids = {_analysis_id(row) for row in visual}
+        selected_id = str(algorithm.get("external_analysis_id") or "").strip()
+        revoked_ids = sorted(local_visual_ids - remote_visual_ids)
+        if not local_visual_ids or revoked_ids or (selected_id and selected_id not in remote_visual_ids):
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_SYNC_REQUIRED",
+                "本算法可训练的视觉分析方式已变化，请同步后再训练",
+                f"productId={product_id}; revoked_ids={','.join(revoked_ids)}; selected_id={selected_id}",
+                "请在“平台对接”同步并确认训练分析方式；预检不会自动同步全部算法。",
+                409,
             )
-            algorithm = next(
-                (row for row in list_algorithms(algorithms_path) if str(row.get("id") or "") == str(algorithm_id)),
-                None,
-            )
-            if algorithm is None or algorithm.get("external_active") is False:
-                raise PlatformError(
-                    "EXTERNAL_ALGORITHM_INACTIVE",
-                    "该算法已被删除或下架，不能创建训练任务",
-                    product_id,
-                    "请刷新算法列表后重新选择。",
-                    409,
-                )
 
         return {
             "ok": True,
@@ -2415,7 +2453,9 @@ class ExternalAlgorithmPlatformService:
             "trainable_analysis_ids": [_analysis_id(row) for row in visual],
             "analyses": remote_summaries,
             "algorithm": algorithm,
-            "refreshed": drifted,
+            "refreshed": False,
+            "drift_detected": bool(drift_fields),
+            "drift_fields": drift_fields,
         }
 
 
@@ -2499,14 +2539,8 @@ class ExternalAlgorithmPlatformService:
             )
 
             request_started = time.perf_counter()
-            # Deletion truth must come from the complete provider product set.
-            # status=2 means inactive; complete absence means deleted.
-            products = _validated_external_items(
-                client.products(status=""),
-                id_resolver=_product_id,
-                error_code="EXTERNAL_PRODUCT_ID_MISSING",
-                entity_name="算法产品",
-            )
+            # Omitted status is an observation, never authoritative deletion proof.
+            products = validated_product_snapshot(client.products(status=""))
             self._update_sync_operation(
                 project_id,
                 str(operation_id),
@@ -2620,136 +2654,21 @@ class ExternalAlgorithmPlatformService:
             }
             previous_cache = self.repository.cache()
 
-            self._update_sync_operation(
-                project_id,
-                str(operation_id),
-                current_phase="purge_removed_algorithms",
-            )
-            incoming_product_ids = {_product_id(row) for row in products if _product_id(row)}
-            existing_external = [
-                dict(row)
-                for row in list_algorithms(Path(algorithms_path))
-                if str(row.get("source_type") or "").upper() == SOURCE_EXTERNAL
-                and str(row.get("provider_type") or "").upper() == PROVIDER_CHANGLIAN
-            ]
-            purge_summary = {
-                "algorithms_purged": 0,
-                "tasks_deleted": 0,
-                "artifacts_deleted": 0,
-                "remote_objects_deleted": 0,
-                "publications_deleted": 0,
-            }
-            removed_external = [
-                row
-                for row in existing_external
-                if not str(row.get("external_product_id") or "")
-                or str(row.get("external_product_id") or "") not in incoming_product_ids
-            ]
-            from .model_artifacts import model_delivery_version_fence
-            retirement_store = AlgorithmSqlStore(Path(algorithms_path))
-            # Keep one existing delivery fence per current version until the
-            # canonical mirror has hard-deleted the missing external algorithm.
-            # A durable delete-pending marker blocks new publish/auto-upload work
-            # if purge or mirror later fails and the local row must remain.
-            with ExitStack() as delivery_fences:
-                locked: set[tuple[str, str]] = set()
-                for existing_algorithm in sorted(
-                    removed_external,
-                    key=lambda row: str(row.get("id") or ""),
-                ):
-                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
-                    for version in sorted(
-                        (
-                            row for row in (existing_algorithm.get("versions") or [])
-                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
-                        ),
-                        key=lambda row: str(row.get("id") or ""),
-                    ):
-                        version_id = str(version.get("id") or "").strip()
-                        identity = (algorithm_id, version_id)
-                        if identity in locked:
-                            continue
-                        delivery_fences.enter_context(
-                            model_delivery_version_fence(
-                                self.data_dir,
-                                project_id,
-                                algorithm_id,
-                                version_id,
-                            )
-                        )
-                        locked.add(identity)
-
-                for existing_algorithm in removed_external:
-                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
-                    retiring = retirement_store.patch_algorithm(
-                        algorithm_id,
-                        {
-                            "external_active": False,
-                            "external_status": "deleted_pending_cleanup",
-                            "external_delete_pending": True,
-                            "external_delete_pending_at": synced_at,
-                        },
-                    )
-                    # Re-read/acquire any version that appeared while the first
-                    # lock set was being established. New publication is now
-                    # blocked by external_active=False/delete-pending.
-                    for version in sorted(
-                        (
-                            row for row in (retiring.get("versions") or [])
-                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
-                        ),
-                        key=lambda row: str(row.get("id") or ""),
-                    ):
-                        version_id = str(version.get("id") or "").strip()
-                        identity = (algorithm_id, version_id)
-                        if identity in locked:
-                            continue
-                        delivery_fences.enter_context(
-                            model_delivery_version_fence(
-                                self.data_dir,
-                                project_id,
-                                algorithm_id,
-                                version_id,
-                            )
-                        )
-                        locked.add(identity)
-
-                    current = self.local_purger.purge(project_id, retiring)
-                    purge_summary["algorithms_purged"] += 1
-                    for key in (
-                        "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
-                        "publications_deleted",
-                    ):
-                        purge_summary[key] += int(current.get(key) or 0)
-
-                self._update_sync_operation(
-                    project_id,
-                    str(operation_id),
-                    current_phase="cache_commit",
+            purge_summary = {"algorithms_purged": 0, "tasks_deleted": 0,
+                             "artifacts_deleted": 0, "remote_objects_deleted": 0,
+                             "publications_deleted": 0}
+            self._update_sync_operation(project_id, str(operation_id), current_phase="cache_commit")
+            self.repository.save_cache(cache)
+            try:
+                self._update_sync_operation(project_id, str(operation_id), current_phase="algorithm_mirror_commit")
+                mirror = mirror_products_to_algorithms(
+                    algorithms_path=algorithms_path, products=products, categories=categories,
+                    analyses_by_product=analyses_by_product, provider=PROVIDER_CHANGLIAN,
+                    synced_at=synced_at, master_digest=digest,
                 )
-                self.repository.save_cache(cache)
-                try:
-                    self._update_sync_operation(
-                        project_id,
-                        str(operation_id),
-                        current_phase="algorithm_mirror_commit",
-                    )
-                    mirror = mirror_products_to_algorithms(
-                        algorithms_path=algorithms_path,
-                        products=products,
-                        categories=categories,
-                        analyses_by_product=analyses_by_product,
-                        provider=PROVIDER_CHANGLIAN,
-                        synced_at=synced_at,
-                        master_digest=digest,
-                    )
-                except Exception:
-                    # Cache and algorithm mirror are one successful generation.
-                    try:
-                        self.repository.save_cache(previous_cache)
-                    except Exception:
-                        pass
-                    raise
+            except Exception:
+                self.repository.save_cache(previous_cache)
+                raise
 
             counts = {
                 "categories": len(categories),
@@ -2902,7 +2821,13 @@ def external_algorithm_platform_router(
 
     @router.put("/config")
     def save_config(payload: ExternalPlatformConfigPayload):
-        return {"ok": True, "config": service.save(payload)}
+        # Only /mode may change the authoritative master switch. Older tabs
+        # can still edit connection fields without re-enabling background I/O.
+        return {"ok": True, "config": service.save(payload, preserve_mode=True)}
+
+    @router.put("/mode")
+    def set_integration_mode(payload: ExternalPlatformModePayload):
+        return {"ok": True, "config": service.set_mode(payload)}
 
     @router.post("/test")
     def test_connection(payload: Optional[ExternalPlatformConfigPayload] = None):
@@ -3168,7 +3093,47 @@ def external_algorithm_platform_router(
         return {
             "ok": True,
             "operation": service.current_sync_operation(project_id),
+            "cleanup_summary": cleanup_summary(project_id),
         }
+
+    def cleanup_repository(project_id):
+        from .external_algorithm_cleanup import CleanupRepository
+        get_project(project_id)
+        return CleanupRepository(algorithms_file(project_id))
+
+    def cleanup_summary(project_id):
+        return cleanup_repository(project_id).summary()
+
+    @router.get("/cleanup-operations")
+    def cleanup_operations(project_id: str = Query(..., min_length=1),
+                           limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0)):
+        repository = cleanup_repository(project_id)
+        operations = repository.public_operations(limit=limit, offset=offset)
+        total = sum(repository.summary().values())
+        return {"ok": True, "items": operations, "total": total,
+                "offset": offset, "limit": limit, "has_more": offset + limit < total,
+                "next_offset": offset + limit if offset + limit < total else None}
+
+    @router.get("/cleanup-operations/{operation_id}")
+    def cleanup_operation_detail(operation_id: str, project_id: str = Query(..., min_length=1)):
+        operation = cleanup_repository(project_id).public_operation(operation_id)
+        if operation is None:
+            raise PlatformError("EXTERNAL_CLEANUP_NOT_FOUND", "未找到该项目的清理记录", "", status_code=404)
+        return {"ok": True, "operation": operation}
+
+    @router.post("/cleanup-operations/{operation_id}/retry")
+    def cleanup_operation_retry(operation_id: str, project_id: str = Query(..., min_length=1)):
+        from .external_algorithm_cleanup import FAILED
+        repository = cleanup_repository(project_id)
+        operation = repository.get(operation_id)
+        if operation is None:
+            raise PlatformError("EXTERNAL_CLEANUP_NOT_FOUND", "未找到该项目的清理记录", "", status_code=404)
+        if operation["state"] != FAILED:
+            raise PlatformError("EXTERNAL_CLEANUP_NOT_RETRYABLE", "仅清理失败的任务可以重试", "", status_code=409)
+        # Dispatch validates the original payload/task identity and retries the
+        # same Durable task. No endpoint can submit deletion evidence or force.
+        repository.dispatch(service.data_dir, retry_failed=True, operation_id=operation_id)
+        return {"ok": True, "operation": repository.get(operation_id)}
 
     @router.get("/sync-history")
     def sync_history(limit: int = Query(default=20, ge=1, le=100)):

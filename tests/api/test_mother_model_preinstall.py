@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from io import BytesIO
+import zipfile
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -33,9 +34,33 @@ def test_preinstall_is_durable_and_the_same_file_is_idempotent(tmp_path, monkeyp
     repeated = _upload(platform, "yolo11n.pt", payload)
     assert repeated["reused"] is True
     assert path.read_bytes() == payload
-    assert platform._ready_ultralytics_mother_model("project-test", "yolo11n.pt") == str(path.resolve())
+    with pytest.raises(HTTPException) as blocked:
+        platform._ready_ultralytics_mother_model("project-test", "yolo11n.pt")
+    assert blocked.value.status_code == 409  # bytes != a verified YOLO checkpoint
     rows = platform.list_base_models().get("items", [])
-    assert any(row.get("source") == "preinstalled" and row.get("value") == str(path.resolve()) for row in rows)
+    assert any(row.get("source") == "preinstalled" and row.get("asset_id") == uploaded["asset_id"] and row.get("trainable") is False for row in rows)
+
+
+def test_pinned_official_upload_is_automatically_trainable_without_sandbox(tmp_path, monkeypatch):
+    import app as platform
+    from platform_core import mother_model_assets
+
+    monkeypatch.setattr(platform, "DATA_DIR", tmp_path)
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("archive/data.pkl", b"official-test-checkpoint" * 120)
+    payload = buffer.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(mother_model_assets, "_OFFICIAL_YOLO11_DETECT", {"yolo11n.pt": (len(payload), digest)})
+    monkeypatch.setattr(platform, "_verify_mother_model_checkpoint", lambda path: (_ for _ in ()).throw(AssertionError("sandbox must not run")))
+
+    result = _upload(platform, "yolo11n.pt", payload)
+    assert result["validation_status"] == "VERIFIED"
+    assert platform._ready_ultralytics_mother_model("test-project", f"asset:{result['asset_id']}") == str((tmp_path / "models" / "yolo11n.pt").resolve())
+    stored = next(row for row in platform.list_mother_model_assets()["items"] if row["asset_id"] == result["asset_id"])
+    assert stored["verification_method"] == "official_release_sha256"
+    assert stored["nc"] == 80
+    assert _upload(platform, "yolo11n.pt", payload)["reused"] is True
 
 
 def test_preinstalled_weight_never_overwrites_another_digest(tmp_path, monkeypatch):

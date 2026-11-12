@@ -1,0 +1,287 @@
+{
+  "scope": "Local real Chrome, isolated small backend; snapshot HTTP unmocked, background status route fixture running; 10 reloads; not production or 217130-row browser measurement",
+  "rows": [
+    {
+      "index": 0,
+      "interactiveMs": 1282,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 74.3999999910593,
+      "downloadMs": 0.800000011920929,
+      "durationMs": 80.20000000298023,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.19999998807907104,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 56.69
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 56.61
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 1,
+      "interactiveMs": 1099,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 69.90000000596046,
+      "downloadMs": 1.2000000029802322,
+      "durationMs": 73.40000000596046,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.10000000894069672,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 49.68
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 49.58
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 2,
+      "interactiveMs": 1085,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 75.70000000298023,
+      "downloadMs": 1.1000000089406967,
+      "durationMs": 80.40000000596046,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.19999998807907104,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 54.86
+        },
+        {
+          "name": "serialize",
+          "duration": 0.06
+        },
+        {
+          "name": "revision",
+          "duration": 54.78
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 3,
+      "interactiveMs": 1246,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 91.79999999701977,
+      "downloadMs": 0.5999999940395355,
+      "durationMs": 95.79999999701977,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.20000000298023224,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 64.12
+        },
+        {
+          "name": "serialize",
+          "duration": 0.06
+        },
+        {
+          "name": "revision",
+          "duration": 64.03
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 4,
+      "interactiveMs": 1290,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 94.80000001192093,
+      "downloadMs": 0.699999988079071,
+      "durationMs": 98.3999999910593,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.20000000298023224,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 70.52
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 70.43
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 5,
+      "interactiveMs": 1272,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 74.59999999403954,
+      "downloadMs": 0.7999999970197678,
+      "durationMs": 78.3999999910593,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.09999999403953552,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 48.6
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 48.51
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 6,
+      "interactiveMs": 1388,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 75.70000000298023,
+      "downloadMs": 0.7000000029802322,
+      "durationMs": 79.29999999701977,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.10000000894069672,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 47.79
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 47.7
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 7,
+      "interactiveMs": 1312,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 69.79999999701977,
+      "downloadMs": 0.7999999970197678,
+      "durationMs": 73.79999999701977,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.20000000298023224,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 48.05
+        },
+        {
+          "name": "serialize",
+          "duration": 0.08
+        },
+        {
+          "name": "revision",
+          "duration": 47.94
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 8,
+      "interactiveMs": 1222,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 72.59999999403954,
+      "downloadMs": 1.2000000029802322,
+      "durationMs": 78.20000000298023,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.09999999403953552,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 48.96
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 48.87
+        }
+      ],
+      "snapshotRequests": 1
+    },
+    {
+      "index": 9,
+      "interactiveMs": 1262,
+      "url": "http://127.0.0.1:8011/api/v53/bootstrap/snapshot",
+      "connectMs": 0,
+      "dnsMs": 0,
+      "ttfbMs": 126.70000000298023,
+      "downloadMs": 1.5,
+      "durationMs": 131.6000000089407,
+      "bytes": 2033,
+      "decodedBytes": 2033,
+      "jsonParseMs": 0.20000000298023224,
+      "serverTiming": [
+        {
+          "name": "bootstrap",
+          "duration": 102.77
+        },
+        {
+          "name": "serialize",
+          "duration": 0.07
+        },
+        {
+          "name": "revision",
+          "duration": 102.67
+        }
+      ],
+      "snapshotRequests": 1
+    }
+  ],
+  "interactive_p95_ms": 1388,
+  "snapshot_ttfb_p95_ms": 126.70000000298023
+}

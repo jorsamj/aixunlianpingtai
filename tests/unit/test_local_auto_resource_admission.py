@@ -132,6 +132,40 @@ def test_local_auto_prepare_publishes_admission_evidence_without_freezing_resour
     assert "resolved_batch" not in admission
 
 
+def test_local_auto_prepare_without_gpu_telemetry_waits_for_scheduler_instead_of_falling_back_to_cpu(
+    tmp_path, monkeypatch,
+):
+    data_dir = tmp_path / "data"
+    project_id = "project-no-telemetry"
+    project = data_dir / "projects" / project_id
+    project.mkdir(parents=True)
+    (project / "algorithms.json").write_text(
+        json.dumps([{"id": "algorithm-auto", "name": "auto", "versions": []}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda _: _Model()))
+    import platform_core.gpu_resources as gpu_resources
+    monkeypatch.setattr(gpu_resources, "sample_gpus", lambda _python=None: [])
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    target = SimpleNamespace(task_id="train-no-telemetry", project_id=project_id)
+    result = TrainingPrepareHandler(data_dir)._resolve_local_resources(
+        SimpleNamespace(artifacts=artifacts), target,
+        {
+            "algorithm_asset_id": "algorithm-auto", "model": "mother.pt",
+            "framework": "ultralytics", "device": "auto", "requested_device": "auto",
+            "resource_strategy": "auto", "resource_profile": "balanced",
+            "gpu_policy": "auto", "imgsz": 640, "precision": "auto", "amp": True,
+        },
+        tmp_path / "bundle", [], SimpleNamespace(counts={"train": 100}),
+    )
+    assert result["resource_resolution_deferred"] is True
+    assert result["resource_admission_ref"] == "resource-admission.json"
+    assert "resolved_device" not in result
+    evidence = artifacts.read_json(target.task_id, "resource-admission.json")
+    assert evidence["candidate_gpu_count"] == 0
+    assert evidence["candidate_gpu_uuids"] == []
+
+
 
 def test_assignment_time_resource_freeze_is_execution_fenced(tmp_path, monkeypatch):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")

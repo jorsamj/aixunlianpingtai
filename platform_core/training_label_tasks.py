@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -24,6 +25,40 @@ _LABEL_CONTRACT: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 _ORIGINAL_LABEL_SCHEMA = base._label_schema
 _ORIGINAL_SELECTED_PROJECT_IMAGES = base._selected_project_images
+
+
+def training_background_selection_fingerprint(project: Path, image_ids: Sequence[str]) -> str:
+    """Bind user consent to selected source/GT truth, not project-wide revisions.
+
+    Both callers hold the existing material/annotation lifecycle fence. A
+    change to an unrelated row must not invalidate an otherwise safe task.
+    """
+    from .material_repository import MaterialRepository
+
+    selected = sorted({str(value).strip() for value in image_ids if str(value).strip()})
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    fingerprint = hashlib.sha256(b"training-background-selection-v2\n")
+    for offset in range(0, len(selected), 500):
+        chunk = selected[offset:offset + 500]
+        by_id = {str(row.get("id") or ""): row for row in materials.get_many(chunk)}
+        gt_by_id = annotations.get_many(chunk)
+        for image_id in chunk:
+            row = by_id.get(image_id) or {}
+            gt = gt_by_id.get(image_id) or {}
+            # This canonical digest includes boxes, state and review scope;
+            # legacy annotation JSON does not always store a digest itself.
+            identity = (
+                image_id,
+                bool(row),
+                row,
+                gt.get("version"),
+                annotations.record_digest(gt),
+            )
+            fingerprint.update(json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), default=str).encode("utf-8"))
+            fingerprint.update(b"\n")
+    return fingerprint.hexdigest()
 
 
 def _unique_codes(values: Sequence[Any] | None) -> list[str]:
@@ -241,7 +276,7 @@ def selected_material_label_codes(
                 if code not in seen:
                     seen.add(code)
                     encountered.append(code)
-                if code not in positive_seen:
+                if code not in positive_seen and training_material_role(annotation, {"effective_label_codes": [code]})["role"] == "positive":
                     positive_seen.add(code)
                     positive_encountered.append(code)
             for value in annotation.get("annotation_scope") or []:
@@ -409,6 +444,8 @@ def _frozen_base_contract(
     selection: Mapping[str, Any],
     mother_model: str,
     framework: str,
+    *,
+    include_weight_digest: bool = True,
 ) -> dict[str, Any]:
     framework_value = str(framework or "ultralytics").strip().lower()
     reference = str(selection.get("base_model_path") or mother_model or "").strip()
@@ -446,7 +483,7 @@ def _frozen_base_contract(
     resolved = candidate.resolve()
     result.update(
         base_model_reference=str(resolved),
-        base_model_sha256=base._sha256(resolved),
+        base_model_sha256=base._sha256(resolved) if include_weight_digest else "",
         base_model_size_bytes=int(resolved.stat().st_size),
     )
     return result
@@ -457,6 +494,9 @@ def resolve_training_label_contract(
     project: str | Path,
     payload: Mapping[str, Any],
     algorithm: Mapping[str, Any],
+    *,
+    require_positive_evidence: bool = True,
+    include_base_weight_digest: bool = True,
 ) -> dict[str, Any]:
     """Resolve the only label schema that may reach YOLO for this task.
 
@@ -465,6 +505,10 @@ def resolve_training_label_contract(
     NEW task labels are resolved through current canonical governance. Explicit
     merged_into decisions collapse inherited labels; plain inactive/missing
     labels fail closed. Mother-model classes never enter the contract.
+
+    ``include_base_weight_digest=False`` is reserved for non-persisted role or
+    selection-intent projections. All final training/freeze contracts retain
+    the default True and rehash the exact selected checkpoint before use.
     """
 
     data_root = Path(data_dir).resolve()
@@ -495,6 +539,7 @@ def resolve_training_label_contract(
         base_selection,
         mother,
         framework_value,
+        include_weight_digest=include_base_weight_digest,
     )
 
     inherited: list[dict[str, Any]] = []
@@ -516,21 +561,17 @@ def resolve_training_label_contract(
     )
     retained_inherited_codes = [str(item["code"]) for item in retained_inherited]
     retained_inherited_set = set(retained_inherited_codes)
-    available = selected_material_label_codes(
+    available = (selected_material_label_codes(
         project_path,
         payload,
         positive_only=True,
-    )
+    ) if require_positive_evidence else [])
     available_set = set(available)
 
     invalid_requested = [
         code for code in requested
         if code not in available_set and code not in retained_inherited_set
     ]
-    if invalid_requested:
-        raise ValueError(
-            "本次选择的标签不在已选素材中: " + ", ".join(invalid_requested[:10])
-        )
     if previous is None and not requested:
         raise ValueError(
             "首次训练必须从已选素材实际携带的标签中至少选择一个；母算法自带类别不会自动继承。"
@@ -565,8 +606,45 @@ def resolve_training_label_contract(
     if [int(item.get("class_id", -1)) for item in effective] != list(range(len(effective))):
         raise ValueError("训练标签 class_id 必须连续为 0..N-1")
 
-    return {
+    mother_evidence: dict[str, Any] = {}
+    if previous is None and include_base_weight_digest and base_contract.get("base_model_sha256"):
+        # Preserve the source checkpoint's real, ordered class IDs separately
+        # from the dataset GT. Never interpret class 0 from an uploaded weight
+        # as class 0 in the new algorithm merely because nc happens to match.
+        from .mother_model_assets import list_assets
+
+        source = next((item for item in list_assets(data_root)
+                       if item.get("sha256") == base_contract["base_model_sha256"]
+                       and item.get("validation_status") == "VERIFIED"
+                       and item.get("trainable") is True), None)
+        if source:
+            original = list(source.get("names") or [])
+            target_names = [str(item.get("code") or "") for item in effective]
+            mapping = (
+                "same_order" if original == target_names
+                else "different_class_count" if len(original) != len(target_names)
+                else "different_class_meaning_or_order"
+            )
+            mother_evidence = {
+                "base_model_asset_id": source["asset_id"],
+                "base_model_original_names": original,
+                "base_model_original_task": source.get("task"),
+                "base_model_class_relation": mapping,
+                "base_model_label_evidence": (
+                    "official_release_sha256" if source.get("verification_method") == "official_release_sha256"
+                    else "sandbox_verified"
+                ),
+            }
+            if mapping == "different_class_meaning_or_order":
+                raise ValueError(
+                    "所选母模型类别数量一致，但原始标签顺序或含义不同；当前训练器未验证检测头重排/重置，"
+                    "已阻止静默错配。请选用原始标签一致的模型，或改用不同类别数的官方预训练权重。"
+                )
+
+    contract = {
         "schema_version": 1,
+        "strict_target_negative_scope": True,
+        "training_projection_policy": base.TRAINING_PROJECTION_POLICY_V3,
         "algorithm_id": str(algorithm.get("id") or ""),
         "available_material_label_codes": available,
         "requested_label_codes": requested,
@@ -580,12 +658,33 @@ def resolve_training_label_contract(
         "label_schema_changed": label_schema_changed,
         "label_schema_change_reasons": schema_change_reasons,
         **base_contract,
+        **mother_evidence,
         "base_training_mode": "previous_weights_init" if previous is not None else "mother_model_init",
         "strict_resume": False,
         "optimizer_state_resumed": False,
         "mother_model_labels_inherited": False,
         "project_label_count": len(project_rank),
     }
+
+    receipt_ids = _unique_codes([*(payload.get("train_image_ids") or []), *(payload.get("val_image_ids") or []),
+        *(payload.get("selected_image_ids") or []), *(payload.get("image_ids") or []), *(payload.get("test_image_ids") or [])])
+    receipts = AnnotationRepository(project_path).task_negative_receipts(task_negative_context(contract), receipt_ids)
+    if receipts:
+        contract["task_negative_confirmations"] = receipts
+        contract["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY_V4
+    if invalid_requested and require_positive_evidence:
+        # Missing class evidence requires an explicit task-level confirmation.
+        # For a first model at least one requested class must still have real
+        # positive evidence; the user cannot create a negative-only detector.
+        acknowledged = bool(receipts) and (
+            previous is not None or bool(set(available) & set(requested))
+        )
+        if not acknowledged:
+            raise ValueError(
+                "本次训练缺少 " + ", ".join(invalid_requested[:10])
+                + " 正样本（标签不在已选素材的有效正样本中）；请先选择正样本，或在最终创建时确认本次目标范围。"
+            )
+    return contract
 
 
 def _contract_for_project(project: Path) -> dict[str, Any] | None:
@@ -610,9 +709,10 @@ def _projection_digest(
     allowed: Sequence[str],
     selected_boxes: Sequence[Mapping[str, Any]],
     excluded_boxes: Sequence[Mapping[str, Any]],
+    policy: str = base.TRAINING_PROJECTION_POLICY,
 ) -> str:
     payload = {
-        "policy": base.TRAINING_PROJECTION_POLICY,
+        "policy": policy,
         "source_annotation_state": str(state),
         "effective_label_codes": list(allowed),
         "selected_boxes": [dict(box) for box in selected_boxes],
@@ -627,6 +727,160 @@ def _projection_digest(
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def task_negative_context(contract):
+    value = [str(contract.get("algorithm_id") or ""), sorted(contract.get("effective_label_codes") or [])]
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def task_negative_identity(row, contract):
+    value = {"image_id": str(row.get("id") or row.get("image_id") or ""),
+             "source_content_sha256": str(row.get("content_sha256") or ""),
+             "annotation_version": int(row.get("annotation_version") or row.get("version") or 0),
+             "annotation_hash": str(row.get("annotation_hash") or row.get("content_digest") or ""),
+             "context_key": task_negative_context(contract)}
+    value["receipt_id"] = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    return value
+
+
+def _task_negative_processed(row):
+    return (str(row.get("processing_status") or "").strip().lower() == "processed"
+            or bool(row.get("cleaned_at")) or bool(row.get("clean_skipped")))
+
+
+def task_negative_confirmable(row, contract):
+    # Validate geometry/source flags using the existing role classifier, with
+    # only task-local scope supplied. This never writes the formal annotation.
+    state = str(row.get("annotation_state") or "unannotated")
+    if state not in {"annotated", "confirmed_empty", "unannotated"}:
+        return False
+    if state == "unannotated" and (row.get("boxes") or not _task_negative_processed(row)):
+        return False
+    if row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim"):
+        return False
+    if len(str(row.get("content_sha256") or "")) != 64:
+        return False
+    candidate = dict(row, annotation_scope=list(contract.get("effective_label_codes") or []))
+    if state == "unannotated":
+        candidate["annotation_state"] = "confirmed_empty"
+    return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "confirmed_negative"
+
+
+def task_partial_scope_confirmable(row, contract):
+    """A task-scoped human attestation can cover a missing *target* scope.
+
+    Existing target boxes remain positive; original GT and its scope never
+    change. Invalid/stale annotations and missing source identity stay blocked.
+    """
+    if str(row.get("annotation_state") or "") != "annotated":
+        return False
+    if row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim"):
+        return False
+    if len(str(row.get("content_sha256") or "")) != 64:
+        return False
+    issue = training_material_role(row, contract).get("scope_issue") or {}
+    if issue.get("issue_type") != "partial_review_scope":
+        return False
+    required = set(contract.get("effective_label_codes") or [])
+    if not any(str(box.get("label") or box.get("code") or "") in required for box in row.get("boxes") or []):
+        return False
+    candidate = dict(row, annotation_scope=list(contract.get("effective_label_codes") or []))
+    return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "positive"
+
+
+def apply_background_training_scope_confirmation(
+    project: Path,
+    *,
+    task_id: str,
+    project_id: str,
+    payload: Mapping[str, Any],
+    selected_image_ids: Sequence[str],
+    contract: Mapping[str, Any],
+) -> int:
+    """Issue the *user-authorized* task-scope receipts after queued GT checks.
+
+    The HTTP request only saves authenticated intent + revisions; it never
+    declares images safe. This function runs within the material/GT fence,
+    validates original truth, and fails all-or-nothing on unsafe images.
+    Formal Ground Truth is never updated.
+    """
+    from .material_repository import MaterialRepository
+
+    attestation = payload.get("training_background_confirmation")
+    if not isinstance(attestation, Mapping):
+        return 0
+    original_train_ids = [str(item) for item in payload.get("train_image_ids") or ()]
+    original_test_ids = [str(item) for item in payload.get("test_image_ids") or ()]
+    selected_ids = [str(item) for item in selected_image_ids]
+    if (
+        attestation.get("schema_version") not in {1, 2}
+        or not payload.get("review_all_training_backgrounds")
+        or payload.get("admission_mode") != "background"
+        or not str(attestation.get("actor_id") or "").strip()
+        or str(attestation.get("task_id") or "") != task_id
+        or str(attestation.get("project_id") or "") != project_id
+        or str(attestation.get("algorithm_asset_id") or "") != str(payload.get("algorithm_asset_id") or "")
+        or str(attestation.get("request_identity") or "") != str(payload.get("request_identity") or "")
+        or sorted(attestation.get("train_image_ids") or ()) != sorted(original_train_ids)
+        or sorted(attestation.get("test_image_ids") or ()) != sorted(original_test_ids)
+        or len(selected_ids) != len(set(selected_ids))
+        or not set(selected_ids).issubset(original_train_ids)
+        or set(selected_ids).intersection(original_test_ids)
+    ):
+        raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_INVALID: 本次训练人工确认凭据不匹配")
+
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    if attestation.get("schema_version") == 2:
+        original_ids = [*original_train_ids, *original_test_ids]
+        expected = str(attestation.get("selected_input_fingerprint") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) or (
+            training_background_selection_fingerprint(project, original_ids) != expected
+        ):
+            raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 本次所选素材或正式标注已变化，请重新核对并提交")
+    elif (
+        materials.current_revision() != attestation.get("material_revision")
+        or annotations.current_revision() != attestation.get("annotation_revision")
+    ):
+        # v1 in-flight requests do not contain a selected-row snapshot. Keep
+        # their original strict contract instead of retroactively weakening it.
+        raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 训练素材或正式标注已变化，请重新核对并提交")
+
+    rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(materials, project, selected_ids)
+    if len(rows) != len(selected_ids) or {str(row.get("id") or "") for row in rows} != set(selected_ids):
+        raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 训练素材已变化，请重新选择")
+
+    confirmed = {str(receipt.get("receipt_id") or "") for receipt in contract.get("task_negative_confirmations") or ()}
+    required = set(contract.get("effective_label_codes") or ())
+    pending = []
+    seen = set()
+    for row in rows:
+        role = training_material_role(row, contract)["role"]
+        if role == "pending_review":
+            if not (task_negative_confirmable(row, contract) or task_partial_scope_confirmable(row, contract)):
+                raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_UNSAFE: 存在不可批量确认的正式标注问题")
+        elif role == "positive":
+            present = {
+                str(box.get("label") or box.get("code") or "").strip()
+                for box in row.get("boxes") or ()
+                if str(box.get("label") or box.get("code") or "").strip() in required
+            }
+            if not present or len(present) == len(required):
+                continue
+        else:
+            continue
+        evidence = task_negative_identity(row, contract)
+        receipt_id = evidence["receipt_id"]
+        if receipt_id not in confirmed and receipt_id not in seen:
+            pending.append(evidence)
+            seen.add(receipt_id)
+    if pending:
+        annotations.confirm_task_negatives(
+            task_negative_context(contract), pending,
+            {"actor_id": str(attestation["actor_id"]), "action": "explicit_background_training_scope_confirmation", "task_id": task_id},
+        )
+    return len(pending)
 
 
 def training_material_scope_issue(
@@ -655,7 +909,10 @@ def training_material_scope_issue(
         issue_type = "missing_annotation"
         missing = sorted(set(required))
     else:
-        missing = [] if "*" in reviewed else sorted(set(required) - reviewed)
+        wildcard_reviewed = "*" in reviewed
+        if contract.get("strict_target_negative_scope") and not (set(present) & set(required)):
+            wildcard_reviewed = False
+        missing = [] if wildcard_reviewed else sorted(set(required) - reviewed)
         if not missing:
             return None
         issue_type = "partial_review_scope"
@@ -670,6 +927,48 @@ def training_material_scope_issue(
     }
 
 
+def training_material_role(row: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify authoritative formal GT against the complete task review scope."""
+    issue = training_material_scope_issue(row, contract)
+    required = set(_unique_codes(contract.get("effective_label_codes") or []))
+    boxes = list(row.get("boxes") or [])
+    annotation_source = str(row.get("annotation_source_content_sha256") or "").strip().lower()
+    current_source = str(row.get("content_sha256") or "").strip().lower()
+    stale_source = bool(annotation_source and current_source and annotation_source != current_source)
+    if (row.get("source_available") is False or stale_source or
+            any(row.get(key) for key in ("annotation_needs_review", "external_annotation_needs_review", "needs_review"))):
+        return {"role": "pending_review", "scope_issue": {
+            "image_id": str(row.get("id") or row.get("image_id") or ""),
+            "issue_type": "annotation_needs_review", "missing_label_codes": sorted(required)}}
+    try:
+        for box in boxes:
+            if all(key in box for key in ("x1", "y1", "x2", "y2")):
+                values = [float(box[key]) for key in ("x1", "y1", "x2", "y2")]
+                valid = values[2] > values[0] >= 0 and values[3] > values[1] >= 0
+            else:
+                values = [float(box[key]) for key in ("cx", "cy", "w", "h")]
+                valid = values[2] > 0 and values[3] > 0
+            if row.get("width") and row.get("height"):
+                base._yolo_line(box, float(row["width"]), float(row["height"]), 0)
+            if not valid or not all(math.isfinite(v) for v in values):
+                raise ValueError("invalid box")
+        if str(row.get("annotation_state")) == "annotated" and not boxes:
+            raise ValueError("empty positive GT")
+        if str(row.get("annotation_state")) == "confirmed_empty" and boxes:
+            raise ValueError("contradictory empty GT")
+    except (KeyError, TypeError, ValueError):
+        issue = {"image_id": str(row.get("id") or row.get("image_id") or ""),
+                 "issue_type": "invalid_annotation", "missing_label_codes": sorted(required)}
+    if issue and issue.get("issue_type") in {"missing_annotation", "partial_review_scope"}:
+        identity = task_negative_identity(row, contract)
+        if any(e.get("receipt_id") == identity["receipt_id"] for e in contract.get("task_negative_confirmations") or []):
+            issue = None
+    if not required or issue is not None:
+        return {"role": "pending_review", "scope_issue": issue}
+    positive = any(str(box.get("label") or box.get("code") or "").strip() in required for box in boxes)
+    return {"role": "positive" if positive else "confirmed_negative", "scope_issue": None}
+
+
 def project_training_rows(
     rows: Sequence[Mapping[str, Any]],
     contract: Mapping[str, Any],
@@ -680,6 +979,8 @@ def project_training_rows(
     projected: list[dict[str, Any]] = []
     for original in rows:
         row = dict(original)
+        if contract.get("strict_target_negative_scope"):
+            row["strict_target_negative_scope"] = True
         state = str(row.get("annotation_state") or "unannotated")
         raw_scope = [str(value) for value in row.get("annotation_scope") or []]
         boxes = [dict(box) for box in (row.get("boxes") or [])]
@@ -717,7 +1018,11 @@ def project_training_rows(
         else:
             row["source_labels"] = present
 
-        scope_issue = training_material_scope_issue(row, contract)
+        scope_issue = (
+            training_material_role(row, contract)["scope_issue"]
+            if contract.get("training_projection_policy") in {base.TRAINING_PROJECTION_POLICY_V3, base.TRAINING_PROJECTION_POLICY_V4}
+            else training_material_scope_issue(row, contract)
+        )
         if scope_issue is not None:
             missing = list(scope_issue["missing_label_codes"])
             if scope_issue["issue_type"] == "missing_annotation":
@@ -730,15 +1035,40 @@ def project_training_rows(
                 + ", ".join(missing[:5])
             )
 
-        if excluded_boxes:
+        policy = str(contract.get("training_projection_policy") or base.TRAINING_PROJECTION_POLICY)
+        # Never accept task-local projection claims from incoming material metadata.
+        for key in ("training_excluded_boxes", "training_projection_policy", "training_projection_digest",
+                    "task_negative_confirmation"):
+            row.pop(key, None)
+        if excluded_boxes or policy in {base.TRAINING_PROJECTION_POLICY_V3, base.TRAINING_PROJECTION_POLICY_V4}:
             row["training_excluded_boxes"] = excluded_boxes
-            row["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY
+            row["training_projection_policy"] = policy
             row["training_projection_digest"] = _projection_digest(
                 state=state,
                 allowed=allowed_order,
                 selected_boxes=selected_boxes,
                 excluded_boxes=excluded_boxes,
+                policy=policy,
             )
+
+        scope_receipt = None
+        if policy == base.TRAINING_PROJECTION_POLICY_V4:
+            # A user-authorized receipt may cover missing target labels while
+            # retaining existing positive boxes. It is bound to the original
+            # annotation identity; no change is made to canonical project GT.
+            evidence = task_negative_identity(original, contract)
+            scope_receipt = next((item for item in contract.get("task_negative_confirmations") or []
+                                  if item.get("receipt_id") == evidence["receipt_id"]), None)
+            if scope_receipt:
+                row["task_negative_confirmation"] = dict(scope_receipt)
+                row["training_projection_digest"] = hashlib.sha256(
+                    (row["training_projection_digest"] + evidence["receipt_id"]).encode()
+                ).hexdigest()
+
+        if policy == base.TRAINING_PROJECTION_POLICY_V4 and not selected_boxes:
+            row.update(annotation_state="confirmed_empty", annotated=True, boxes=[], annotation_scope=sorted(allowed), negative_origin="reviewed_task_negative")
+            state = "confirmed_empty"
+            raw_scope = sorted(allowed)
 
         if state == "annotated":
             reviewed = {str(value).strip() for value in raw_scope if str(value).strip()}
@@ -749,7 +1079,7 @@ def project_training_rows(
                 row["boxes"] = selected_boxes
                 explicit = {value for value in raw_scope if value and value != "*"}
                 row["annotation_scope"] = (
-                    sorted(allowed) if "*" in reviewed
+                    sorted(allowed) if "*" in reviewed or scope_receipt
                     else sorted((explicit & allowed) | {
                         str(box.get("label") or box.get("code") or "").strip()
                         for box in selected_boxes
@@ -762,7 +1092,7 @@ def project_training_rows(
                 row["annotated"] = True
                 row["boxes"] = []
                 row["annotation_scope"] = sorted(allowed)
-                row["negative_origin"] = "redacted_unselected_labels"
+                row["negative_origin"] = ("reviewed_task_negative" if policy == base.TRAINING_PROJECTION_POLICY_V3 else "redacted_unselected_labels")
             else:
                 row["boxes"] = []
         else:

@@ -1,0 +1,304 @@
+{
+  "basic": {
+    "schema_version": 1,
+    "project_id": "isolated",
+    "task_id": "poc",
+    "engine": "fiftyone",
+    "feature": "hog-color-v1",
+    "feature_description": "HOG形状与颜色直方图，非语义模型；仅供人工复核",
+    "total": 3,
+    "scanned": 3,
+    "failed": 0,
+    "failures": [],
+    "similar_pairs": [
+      {
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ],
+        "distance": 0.33038732409477234,
+        "issue_type": "visual_similarity",
+        "requires_confirmation": true
+      }
+    ],
+    "uniqueness": [
+      {
+        "image_id": "image-0",
+        "value": 1.0
+      },
+      {
+        "image_id": "image-1",
+        "value": 1.0
+      },
+      {
+        "image_id": "image-2",
+        "value": 1.0
+      }
+    ],
+    "checks": {
+      "visual_similarity": {
+        "status": "completed",
+        "checked": 3
+      },
+      "leakage": {
+        "status": "completed",
+        "checked": 3,
+        "evidence": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ]
+      },
+      "mistakenness": {
+        "status": "not_checked",
+        "reason": "未提供经过核验的模型预测与正式GT证据"
+      },
+      "hardness": {
+        "status": "not_checked",
+        "reason": "不生成缺少logits依据的困难度分数"
+      }
+    },
+    "database_cleaned": true,
+    "threshold": 0.4,
+    "metric": "unit_normalized_euclidean",
+    "distance_description": "单位特征欧氏距离，越小越相似；不是相似百分比",
+    "automatic_execution": false,
+    "requires_confirmation": true,
+    "source_images_copied": 0,
+    "succeeded": 3,
+    "duplicate_count": 1,
+    "complete": true,
+    "elapsed_seconds": 4.594000000040978
+  },
+  "prediction_fixture": {
+    "schema_version": 1,
+    "project_id": "isolated",
+    "task_id": "poc",
+    "engine": "fiftyone",
+    "feature": "hog-color-v1",
+    "feature_description": "HOG形状与颜色直方图，非语义模型；仅供人工复核",
+    "total": 3,
+    "scanned": 3,
+    "failed": 0,
+    "failures": [],
+    "similar_pairs": [
+      {
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ],
+        "distance": 0.33038732409477234,
+        "issue_type": "visual_similarity",
+        "requires_confirmation": true
+      }
+    ],
+    "uniqueness": [
+      {
+        "image_id": "image-0",
+        "value": 1.0
+      },
+      {
+        "image_id": "image-1",
+        "value": 1.0
+      },
+      {
+        "image_id": "image-2",
+        "value": 1.0
+      }
+    ],
+    "checks": {
+      "visual_similarity": {
+        "status": "completed",
+        "checked": 3
+      },
+      "leakage": {
+        "status": "completed",
+        "checked": 3,
+        "evidence": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ]
+      },
+      "mistakenness": {
+        "status": "completed",
+        "checked": 3,
+        "not_checked": 0
+      },
+      "hardness": {
+        "status": "not_checked",
+        "reason": "不生成缺少logits依据的困难度分数"
+      }
+    },
+    "database_cleaned": true,
+    "threshold": 0.4,
+    "metric": "unit_normalized_euclidean",
+    "distance_description": "单位特征欧氏距离，越小越相似；不是相似百分比",
+    "automatic_execution": false,
+    "requires_confirmation": true,
+    "source_images_copied": 0,
+    "succeeded": 3,
+    "duplicate_count": 1,
+    "annotation_candidates": [
+      {
+        "image_id": "image-0",
+        "issue_type": "suspected_annotation",
+        "possible_missing": 1,
+        "possible_spurious": 0,
+        "mistakenness": -1,
+        "annotation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prediction_evidence": {
+          "evaluation_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "model_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "benchmark_scope_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "image_content_sha256": "9fce86cd329a68c97834649c294691727726aec986a7b399cbd6c68efd9a87e1"
+        },
+        "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
+        "requires_confirmation": true
+      },
+      {
+        "image_id": "image-1",
+        "issue_type": "suspected_annotation",
+        "possible_missing": 1,
+        "possible_spurious": 0,
+        "mistakenness": -1,
+        "annotation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prediction_evidence": {
+          "evaluation_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "model_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "benchmark_scope_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "image_content_sha256": "8298e47e6b7405bbee519bde53abf6d0214b993d9c3305682d9f0474657b7777"
+        },
+        "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
+        "requires_confirmation": true
+      },
+      {
+        "image_id": "image-2",
+        "issue_type": "suspected_annotation",
+        "possible_missing": 1,
+        "possible_spurious": 0,
+        "mistakenness": -1,
+        "annotation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prediction_evidence": {
+          "evaluation_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "model_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "benchmark_scope_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "image_content_sha256": "d04384cc251206e4d3b470fc9034f44b2ba344f34e9fc631359d246e31a92bbe"
+        },
+        "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
+        "requires_confirmation": true
+      }
+    ],
+    "complete": true,
+    "elapsed_seconds": 5.077999999979511
+  },
+  "identical": {
+    "schema_version": 1,
+    "project_id": "isolated",
+    "task_id": "poc",
+    "engine": "fiftyone",
+    "feature": "hog-color-v1",
+    "feature_description": "HOG形状与颜色直方图，非语义模型；仅供人工复核",
+    "total": 4,
+    "scanned": 4,
+    "failed": 0,
+    "failures": [],
+    "similar_pairs": [
+      {
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ],
+        "distance": 0.0,
+        "issue_type": "visual_similarity",
+        "requires_confirmation": true
+      },
+      {
+        "image_ids": [
+          "image-0",
+          "image-2"
+        ],
+        "distance": 0.0,
+        "issue_type": "visual_similarity",
+        "requires_confirmation": true
+      },
+      {
+        "image_ids": [
+          "image-0",
+          "image-3"
+        ],
+        "distance": 0.0,
+        "issue_type": "visual_similarity",
+        "requires_confirmation": true
+      }
+    ],
+    "uniqueness": [
+      {
+        "image_id": "image-0",
+        "value": null,
+        "status": "not_checked",
+        "reason": "特征距离退化，独特性未定义"
+      },
+      {
+        "image_id": "image-1",
+        "value": null,
+        "status": "not_checked",
+        "reason": "特征距离退化，独特性未定义"
+      },
+      {
+        "image_id": "image-2",
+        "value": null,
+        "status": "not_checked",
+        "reason": "特征距离退化，独特性未定义"
+      },
+      {
+        "image_id": "image-3",
+        "value": null,
+        "status": "not_checked",
+        "reason": "特征距离退化，独特性未定义"
+      }
+    ],
+    "checks": {
+      "visual_similarity": {
+        "status": "completed",
+        "checked": 4
+      },
+      "leakage": {
+        "status": "completed",
+        "checked": 4,
+        "evidence": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image_ids": [
+          "image-0",
+          "image-1",
+          "image-2",
+          "image-3"
+        ]
+      },
+      "mistakenness": {
+        "status": "not_checked",
+        "checked": 0,
+        "reason": "未提供经过核验的模型预测与正式GT证据"
+      },
+      "hardness": {
+        "status": "not_checked",
+        "reason": "不生成缺少logits依据的困难度分数"
+      }
+    },
+    "database_cleaned": true,
+    "threshold": 0.4,
+    "metric": "unit_normalized_euclidean",
+    "distance_description": "单位特征欧氏距离，越小越相似；不是相似百分比",
+    "automatic_execution": false,
+    "requires_confirmation": true,
+    "source_images_copied": 0,
+    "succeeded": 4,
+    "duplicate_count": 3,
+    "annotation_candidates": [],
+    "complete": true,
+    "elapsed_seconds": 4.264999999955762
+  },
+  "prediction_fixture_note": "Controlled synthetic API fixture; not real trained model predictions or production GT.",
+  "environment_bytes": 894976080,
+  "wheelhouse_bytes": 240052148,
+  "scope": "Local isolated CPU PoC only; no production access; 10k/100k and Linux not verified."
+}

@@ -17,6 +17,7 @@ from platform_core.training_label_tasks import (
     project_training_rows,
     resolve_training_label_contract,
     selected_material_label_codes,
+    task_negative_confirmable,
     training_material_scope_issue,
 )
 from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
@@ -245,6 +246,53 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     })
     assert frozen_base["base_version_id"] == "v1"
     assert frozen_base["base_model_path"] == str(model.resolve())
+
+
+def test_picker_role_preview_skips_full_checkpoint_hash_without_weakening_submission(tmp_path: Path, monkeypatch):
+    import platform_core.training_label_tasks as label_tasks
+    data_dir, project = _project(tmp_path)
+    model = project / "best.pt"
+    model.write_bytes(b"verified-training-checkpoint")
+    algorithm = {"id": "algorithm", "versions": [{
+        "id": "version-one", "stored_path": str(model),
+        "training_status": "SUCCEEDED", "artifact_verified": True,
+        "trainable": True, "framework": "ultralytics",
+        "label_schema": [{"code": "fire", "class_id": 0}],
+    }]}
+    calls = []
+    actual_sha256 = label_tasks.base._sha256
+
+    def tracked_sha256(path):
+        calls.append(str(path))
+        return actual_sha256(path)
+
+    monkeypatch.setattr(label_tasks.base, "_sha256", tracked_sha256)
+    payload = {"base_version_id": "version-one", "model": "yolo11n.pt", "train_labels": []}
+    preview = resolve_training_label_contract(
+        data_dir, project, payload, algorithm, require_positive_evidence=False,
+        include_base_weight_digest=False,
+    )
+    assert preview["effective_label_codes"] == ["fire"]
+    assert preview["base_model_reference"] == str(model.resolve())
+    assert preview["base_model_size_bytes"] == model.stat().st_size
+    assert preview["base_model_sha256"] == ""
+    assert calls == []
+
+    formal = resolve_training_label_contract(
+        data_dir, project, payload, algorithm, require_positive_evidence=False,
+    )
+    assert formal["base_model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
+    assert calls == [str(model.resolve())]
+
+    # Digest-free preview must still reject an unavailable inherited weight.
+    model.unlink()
+    from platform_core.errors import PlatformError
+    with pytest.raises(PlatformError) as error:
+        resolve_training_label_contract(
+            data_dir, project, payload, algorithm,
+            require_positive_evidence=False, include_base_weight_digest=False,
+        )
+    assert error.value.code == "ITERATION_BASE_UNAVAILABLE"
 
 
 def test_input_freeze_identity_changes_when_frozen_base_model_changes(tmp_path: Path):
@@ -604,6 +652,35 @@ def test_projection_rejects_unreviewed_class_in_task_schema(selected_codes):
     assert projected[0]["annotation_state"] == "confirmed_empty"
     assert projected[0]["annotation_scope"] == ["fire"]
     assert projected[0]["negative_origin"] == "redacted_unselected_labels"
+
+
+def test_multiclass_projected_gt_preserves_partial_positive_boxes_and_class_identity():
+    rows = [
+        {"id":"only-person", "annotation_state":"annotated", "annotation_scope":["person","head"],
+            "boxes":[_box("person")]},
+        {"id":"only-head", "annotation_state":"annotated", "annotation_scope":["person","head"],
+            "boxes":[_box("head")]},
+        {"id":"both", "annotation_state":"annotated", "annotation_scope":["person","head"],
+            "boxes":[_box("person"),_box("head")]},
+    ]
+    projected = project_training_rows(rows, {"effective_label_codes":["person","head"]})
+    assert [row["annotation_state"] for row in projected] == ["annotated"]*3
+    assert [[box["label"] for box in row["boxes"]] for row in projected] == [
+        ["person"],["head"],["person","head"]]
+    assert all("negative_origin" not in row for row in projected)
+    assert all(row["annotation_scope"] == ["head","person"] for row in projected)
+
+
+def test_uncommitted_gt_is_never_a_task_confirmable_negative():
+    contract={"effective_label_codes":["person","head"]}
+    row={"id":"image-a", "annotation_state":"unannotated", "annotation_scope":[],
+         "boxes":[],"content_sha256":"a"*64}
+    assert task_negative_confirmable(row,contract) is False
+    assert task_negative_confirmable({**row,"annotation_state":"annotated"},contract) is False
+    assert task_negative_confirmable({**row,"annotation_state":"confirmed_empty",
+        "annotation_scope":["person"]},contract) is True
+    assert task_negative_confirmable({**row,"annotation_state":"confirmed_empty",
+        "source_available":False},contract) is False
 
 
 def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_path: Path):

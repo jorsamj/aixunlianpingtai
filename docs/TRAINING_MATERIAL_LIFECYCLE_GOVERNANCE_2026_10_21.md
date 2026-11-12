@@ -1,3 +1,285 @@
+## 2026-10-23｜旧素材全面只读检查体验修复（代码及隔离CI已验收）
+
+用户确认：一次开始自动顺序检查全部素材，每批仍最多50；真实汇总/分页，暂停继续/失败重试/刷新恢复；并发变化必须提示重核。只读检查不自动迁移、不改原图/GT/正式素材、不删除或回收。基线503e697444c04046cefd1c938216443103d7e0cd / VERSION379，fetch0/0；5944祖先及两份未提交模板测试保留。
+
+根因：原scan支持next_cursor，但页面只请求本批、结果覆盖且无全量检查证据。最小设计：在原scan增加真实总量和素材/Annotation现有revision及catalog证据；原前端单循环顺序请求、按图片身份幂等保存每批。浏览器IndexedDB仅缓存检查回执/游标，不成为素材/GT/任务truth；离开/刷新暂停，继续前服务端复验同一catalog。异常明细索引分页，不全量渲染；迁移仍最多50个当前候选独立preview/apply。否决全库一次大请求、无界并发及新Worker/任务库。无法证明的历史GT/缩略图/外部存储明确未知，不冒充全库正常。
+
+实施清单：
+- [x] 原Python scan补总量/稳定版本/变化拒绝及公开诊断字段；120条50+50+20、只读及并发漂移必要测试先RED后GREEN。
+- [x] 原JS原位接顺序扫描、IndexedDB事务进度/去重、暂停/继续/刷新/失败恢复与过滤分页；原迁移合同保持。
+- [x] 仅原兼容工具后端及Chrome冒烟（120条自动/暂停刷新/失败/明细）；不运行本地全仓测试。
+- [x] 更新本节、接续入口、版本缓存；正常提交推送并核验最终SHA原CI，不部署生产、不生产扫描。
+
+状态：已验收（代码及隔离数据，不含生产）。原模块实现顺序50条循环、真实总量和六类交叉汇总、25条索引分页、批次和游标同一IndexedDB事务提交、暂停/失败/刷新恢复。迁移只作用当前页明确候选，保留原preview/确认/apply幂等身份。缓存不是正式任务或素材数据。
+
+实际RED：120条Python先因缺total失败；Chrome先找不到“开始全面检查”。GREEN：原兼容后端两文件15通过0失败0跳过，Chrome原文件3场景通过（120条50+50+20、单并发、失败不完成、暂停100条刷新后续20条、不重复累计、过滤分页、409拒绝旧版本，以及原迁移重试/迟到隔离）；版本Owner9通过。原Chrome旧fixture未按后端游标排序，改为真实ID排序，未减少原断言。未本地全仓测试。VERSION42.24.380，静态426及兼容模块fullscan缓存。
+
+只读审查发现并补齐：saveSession也比较session id/cursor/checked，旧窗口不覆盖新窗口进度；uploads/旧GT目录变化也使catalog失效。素材/GT现有revision负责平台内并发变化，scan前后都核验；恢复成功不把历史原图检查冒充当前原图证明。汇总仅代表逐条检查时点，不是文件系统原子快照；绕过平台的原图原位改写和无统一版本旧GT须另行核验，页面明确提示。未增加全库反复stat扫描或文件监控器。无缩略图引用视为尚未按需生成；外部或结构未知引用显示未知，不臆测损坏。
+
+代码提交6f663e1ce875fb72d85205d26ea69bbf03752406已正常推送，按准确head_sha分页查询38/38 Actions、102/102 Checks全部success，失败/取消/跳过均0。回执：https://github.com/jorsamj/aixunlianpingtai/commit/6f663e1ce875fb72d85205d26ea69bbf03752406/checks 。本节仅补实际验收结果，产生的新文档HEAD自身仍须独立核查GitHub Checks后交付，不自动继承6f绿色。下一会话从本节及原三个compatibility模块接续；同浏览器恢复，换浏览器或清理本机缓存需要重新扫描。真实生产扫描和大库耗时NOT VERIFIED；不得将隔离120条当生产性能结论。未部署、未生产扫描/迁移/删除。
+
+## 2026-10-23｜第二阶段接续：第二阶段代码及隔离CI已验收（生产未操作）
+
+本轮附件48129ab7需求正式接续，基线HEAD `5b79f35d81670fd3cb16346fe01b61eeb508b6ed`/VERSION42.24.377，fetch远端仍3cc331f2，无分叉。5944及前阶段所有提交和两份未提交模板测试保留，不扩大模板功能，不重审全仓、不重复建设已有API。
+
+|任务|优先级/状态|本轮计划与验收|
+|--|--|--|
+|S2-01 远程按需准备|P0/已验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
+|S2-02 自动安全回收|P0/已验收|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
+|S2-03 详情人工释放与历史只读扫描|P1/已验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
+|S2-04 旧素材兼容检测及最小迁移|P1/已验收|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
+|S2-05 缩略图及受控原图物理回收|P2/已验收|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
+
+关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
+
+### S2-01 实施与证据（提交21c78788，完整SHA见Git完整历史，父提交5b79f35d）
+
+原Prepare统一indices_only；旧未冻结请求通过原GT生命周期锁/投影/冻结Owner补齐一次冻结，排队无完整Bundle或上传ZIP。新远程schema3仅冻结索引；正式execution代次/令牌/租约校验后才能读manifest和原图，逐块重查所有权并在最后一块前核EOF。使用StorageManager.stat/open_reader，Agent逐图核SHA/size并复用一个原始下载缓冲；原materializer延迟读取且仍隔离复制、归一化、生成YOLO标签及隐藏TestGT。模型须为预置可信object，不隐式联网下载母模型。旧schema1/2保留原ZIP校验兼容。
+
+结果归档携带完整物化manifest、冻结来源与dataset revision，以及报告实际错误图片（复用原最多200样本合同），控制端复核源SHA/大小、角色规范路径、冻结GT派生标签SHA与角色数量；保留evidence供原报告读取，避免依赖完整数据集目录。修复/遮挡后的像素哈希由受认证Worker证明，控制端未重下全部图片独立复算，此项限制必须保留。两项审查缺口（源大小仅检查正数、角色路径未绑定）已RED9→GREEN13修正，不放宽安全断言。
+
+实际测试分批执行，不能合并冒充一次全套结果：Prepare集成18通过1失败，失败源于旧测试仍要求排队ZIP；改为真实冻结GT篡改后定向1通过，恢复/取消相关4通过。原单元Agent+portable39通过；后续indexed成功/坏大小/同大小坏SHA定向3通过。resolver预领取不签数据集/拒绝非预置模型1通过。协议相关52通过1既有skip，新增EOF/归属合同1通过。结果manifest相关17通过，实际错误图片归档/篡改/路径/非Test样本6通过，最后证据路径/大小定向13通过。此前真实RED包括排队已复制、缺新合同、源身份不匹配及旧失效fixture；均有针对性修正，没有删除原测试。py_compile与diff检查通过；无需GPU，不执行全仓Python/Node/Chrome。
+
+实际修改集中remote_training_tasks、remote_training_inputs、training_tasks、agent_execution、node_agent_executor_runtime、node_agent_training_runtime、remote_execution_transport、remote_training_results、原recovery router/app接线及相应原测试/工作流。仅验证隔离本地存储和伪训练子进程；真实OSS/NAS、多机下载性能、大规模元数据响应/峰值磁盘未核验。manifest一次传输元数据，2项有界缓存不缓存图片。未推送、没有新SHA CI，不能宣称整体专项完成。下一阶段自动维护与Agent失败Checkpoint保护仍在实现，兼容迁移/P2未开始。生产部署、数据库迁移、真实对象删除、历史Bundle清理和GPU均未执行。
+
+### S2-02 自动回收实施中（尚未推送/CI）
+
+原Scheduler.serve_forever接唯一有界维护回调：启动即扫描，任务结束仅唤醒，30秒兜底，每批默认4项/上限16项，复用原tasks和既有cleanup/回执，不新建数据库或独立调度器。重启从持久任务及回执恢复；--once仍只诊断执行。贵树扫描/模型SHA/证据归档在DB事务外，最终短事务重验任务/证据stamp/实际消费者再隔离目录，unlink在锁外。独立冻结训练不再误阻塞同项目回收；queued显式引用、未知评测引用、租约/进程身份不明仍保守保护。共享缓存完全不在回收范围。
+
+远程Agent原finally无条件整目录删除会丢失败Checkpoint，本轮改为只有正式模型结果及任务终态确认后整目录释放；未启动Trainer的失败可释放输入；已启动失败/取消保留日志/配置/任务身份，有Checkpoint时整份输入保留，无Checkpoint仅删除受控input。精确进程终止不确定则全保留。重启精确清除旧进程后同样保护Checkpoint，不将未确认结果当成功。目录先拒绝链接/共享硬链接/特殊文件，隔离后可重试；逻辑删除字节不冒充物理空间。
+
+实际必要RED7后，本地lifecycle+受影响scheduler31通过/1系统symlink权限skip；Agent保留恢复/失败幂等2项先RED，结合取消/栅栏/原进程未知/indexed输入8通过，重启无Checkpoint/有Checkpoint与本地保留4通过。未运行全仓或GPU。真实节点失联/长时间断电/OSS/NAS未验收，失败Checkpoint尚不自动放弃恢复；恢复依赖存在保持阻塞。P1详情正在接原API，历史只读聚合与兼容迁移仍待实施。
+
+### S2-03 详情与历史dry-run（父提交ad556482）
+
+原TrainingRecoveryRuntime显示真实临时逻辑空间、可安全清理/恢复依赖等原因/资格未知及重读；释放明确确认，提交原attempt/Snapshot，原Loading+锁防重复，detail会话/project/task身份拒绝迟到回填，409展示真实阻塞。原训练任务页增加历史临时空间只读入口，原Modal分页展示，不含批量删除。GET v62 training-tasks/workspace-history每页最多20个持久任务，只读汇总已索引work/bundle；未纳入TaskRepository的古老目录不在本接口扫描范围，不能将其结果当全服务器51GB实际盘点。无归属marker的历史任务只报告OWNERSHIP_UNVERIFIED，不自动接管删除。
+
+Node原recovery文件27通过，新增workspace/cache定向5通过；visibility定向5通过，最终cache接线guard1通过（同文件21未选用例，不冒充新跳过）。真实Chrome在独立临时数据/8027运行2通过，包含可清理/阻塞/未知/确认/重复锁/完成与历史GET分页；截图workspace-released.png、workspace-history-readonly.png保存在隔离test-results，已视觉核验。history后端1项实际RED→GREEN证明跨项目、分页及文件字节全不变。只更新准确静态import守卫，没有删除/降低原测试。
+
+旧素材工具仍在实现，未推送/最终SHA CI，生产未部署或清理。当前两项核心提交21c78788/ad556482均保留，本地5944与未提交模板测试不动。
+
+### S2-04 旧素材工具（父提交46d2297f）
+
+临时入口“高级功能→旧素材兼容迁移”，可用LEGACY_MATERIAL_COMPATIBILITY_ENABLED=0关闭API；移除临时页面/路由/module不影响已补齐的正式元数据。每批最多50，scan/preview不构造会隐式初始化的仓库，不建缓存/数据库；同时只读核对SQLite、旧images.json、GT状态/version与旧缩略图引用。正常显示无需迁移，未知/GT或索引冲突仅报告。实际可自动修复范围为现有schema5/default_local/project uploads且原图、尺寸、GT身份可证明，只有缺SHA/size时补齐。JSON-only、remote/custom source root、未知schema/缺尺寸不自动转换，不为迁移强制导入全部历史图。
+
+apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完整fingerprint与稳定task_id。原生命周期/存储配置锁、全元数据备份fsync+复读+摘要、备份后重新预览、原MaterialRepository事务内revision/完整payload/索引列/实际影响ID精确CAS后变更；原GT/原图/image_id/历史Snapshot全不修改。同task备份中断恢复与commit后audit幂等，后续新写入不被旧备份覆盖。未加入新任务数据库/迁移状态机；每批原子，可离开/停止发下一批，重新读取或同task安全重试。
+
+实际核心+原Material生命周期18通过；API鉴权/确认/边界/过滤内部证据1通过。真实Chrome独立临时数据1通过，覆盖真实导航、慢scan/preview/apply、候选过滤、明确确认、503同task指纹重试、防重复与离页迟到；开发中2次selector问题仅修测试后GREEN，未修改实现绕过。py_compile/diff通过。API前端/后端贯通，未运行全仓；未在生产执行scan或迁移，不能据隔离数据推断生产是否需要迁移。未知旧数据仍须独立只读核验。
+
+### S2-04 收尾修正：GT绑定冲突只报告
+
+收尾发现缺SHA/size的记录虽读取了正式GT，但未比较投影annotation_version及annotation_source_content_sha256，可能把冲突误列为可补齐。新增两参数场景真实RED（2失败，均误为candidate），原服务最小增加正式版本/源内容身份比较，冲突拒绝apply且保持原素材/GT不变；同两场景与原正常备份幂等用例GREEN共3通过/9未选择。并非修改GT或扩大迁移范围；正常已有完整元数据仍不做强制重哈希。此修复单独提交，准确SHA见下方最终阶段表。
+
+### S2-05 缩略图已实现，原图物理回收另行补安全合同（父提交fa970912）
+
+原MaterialCache新增按源SHA+thumbnail-v1/EXIF-fit/RGB/JPEGq82/no-upscale/edge版本的派生索引，指向实际JPEG SHA内容缓存；派生索引和图片均受原锁/TTL/配额，坏指针、损坏或驱逐后按需重建。原StorageManager.thumbnail只读，不自动写SHA/size，不另建缓存管理器或数据库；无可信SHA时原图入口继续可用并由兼容工具单独预览。public_material新增thumbnail_url，原素材网格/列表优先缩略图、详情/标注继续原url；卡片签名纳入SHA与缩略图URL。HTTP流式发送全程持原cache锁，finally/断连释放。
+
+必要专属6项先RED后GREEN，结合原cache_lifecycle/manager受影响共16通过；实际原材料API1通过，确认JPEG边长/重复请求/原图及GT不变；原素材UI Node3通过（同类断言扩展优先缩略图）。真实Chrome隔离1通过，真实上传1200×800 PNG→分页真实thumbnail_url→原materialMedia412发200 JPEG→自然384×256可见，原图URL及前后SHA一致，无pageerror。截图real-material-thumbnail.png已核验。不运行全仓或真实GPU/OSS。
+
+原图物理删除仍不能复用临时Bundle清理：原retirements字段CHECK reclaimed_bytes=0代表逻辑删除，缺源byte读取租约与所有引用写入者栅栏。正在补受控local-only设计/实现；旧节点、不受控NAS/OSS/未知索引必须保持拒绝，不将物理GC标完成，不执行任何生产删除。
+
+### S2-05 受控离线原图回收（父提交0513c5a1）
+
+新增LocalMaterialReclamationService复用原Material退役记录、Storage audit、TaskRepository和ArtifactStore，不改schema，不放宽retirements.reclaimed_bytes CHECK=0。原图物理回收与Bundle完全分离，不提供在线删除按钮/API；只有维护进程明确controlled_local_writers且环境MC_CONTROLLED_LOCAL_MATERIAL_GC=1才允许，经运维确认停服并维持独占维护是额外前置。程序同时检查已知Web/Worker/Agent/子进程、注册租约、进程组、未知线程与legacy消费者；原当前app/worker入口使用同maintenance startup barrier，GC全程持有。未知旧进程无法确认时拒绝，不能把两个开关当成所有旧版本/任意外部进程已受控的证明。
+
+只支持本机固定盘default_local/project uploads中的已退休真实图片。全项目live/retired引用/旧索引/GT保留及恢复依赖核验、PIL格式验证、SHA/size/inode/mtime/nlink、源配置/路径/junction/硬链接核验；NAS/OSS、自定义共享根、未知模式明确unsupported。已知终态任务及历史模型不永久阻塞，真实恢复依赖仍保护。引用写入与源读取/写入同原project/byte fence；任务/源/项目锁不等待形成环，任一忙立即拒绝可重试。精确受控范围不涉及原始GT、Checkpoint、模型、Snapshot或共享cache。
+
+昂贵哈希/格式/全引用审计在TaskDB事务外，最后单个本地文件rename+短unlink在原TaskDB guard内，删除前重查任务/进程证据。先持久回执再隔离，detached回执不倒退prepared；unlink后末回执失败可恢复absent_after_detach，补原Owner审计但本次删除bytes记0，物理释放始终未知。审计key绑定退役request+operation digest，detach前检查冲突；回执有摘要/原retirement摘要及准确路径血缘，拒绝伪造/外链。原web内容及报告source FileResponse发送期间持源byte lease；与原FileResponse Range及生命周期兼容。
+
+独立工具tools/reclaim_retired_original.py默认仅预览，要求明确--data-dir/--project/--retirement-task/--image-id，不构造会初始化的Owner。--apply另需准确fingerprint、稳定operation_id、当前项目/图片确认文字与本机真实actor；不能把此脚本当生产执行授权。本轮只执行--help和空隔离目录安全检查（退出2且初始化文件0），未运行任何生产路径。恢复必须沿用同operation_id与指纹；出现新源/未知身份时保留并报告。
+
+实际：相关限定集合67通过1系统symlink skip，原batch4通过；后续血缘/恢复3定向通过、路径1通过1系统skip、未知身份/恢复证据1通过。目录链接边界还须Linux CI实际覆盖。HTTP实际发送锁1通过，原素材API4通过与报告真实格式/原图身份5通过；未重复原报告全37。审查发现的离线进程漏检、恢复倒退、审计身份冲突、预览WAL副作用及回执外链已修并加必要合同，未降低断言。P1共享只读连接/digest移回原MaterialRepository，临时兼容页面/API可移除，正式GC无临时工具依赖。
+
+### S2-05 既有存储页面与最终交接（代码待最终SHA CI）
+
+复用原StorageCacheRuntime及原缓存维护采样：显示原图索引逻辑量、GT SQLite逻辑量、已索引缩略图缓存、配置共享缓存及Worker/可回收/待清理/清理失败八项。没有建立统计数据库或扫描全目录。素材索引任一size缺失则该总量未获取；GT不含旧JSON；缩略图是已有指针可归属的缓存子集，不包含失效指针留下的孤立文件；全部缓存可跨节点，不能相加冒充独占空间。Worker/可回收/待清理/失败回执缺全量可信采样，返回null显示未获取，详情和历史分页另可逐项查看。实际物理释放始终未获取，未把删除字节/逻辑退役算成磁盘释放。
+
+后台刷新保留已有样本，失败标明旧样本/可重试，首读失败显示未获取；项目与页面身份隔离迟到响应。原临时迁移页面注册的disposer已纳入原NavigationStability销毁列表。VERSION按原规则由377增至42.24.378，更新原静态缓存标记及准确接线守卫。受影响原CI增加新核心文件和五个独立Chrome冒烟（四份spec）；不新建测试框架，不削弱原断言。
+
+本阶段实际必要Python摘要2通过，后与原HTTP源发送锁共3通过；原Node storage-cache文件12通过、版本标记9通过；发现错误刷新清空旧样本后增加原断言，定向1通过/11未选择。真实Chrome摘要单例通过，覆盖八项口径/503恢复/防重复/离页迟到；随后发现同项目离页返回复用旧在途请求会锁住Loading，单项Node真实RED→GREEN（1通过/12未选），原Chrome同一用例追加返回场景1通过（5.7秒），不增加独立场景计数。另补两项真实观测偏差：Worker非2xx/坏JSON保留已知节点并明确失败重试；原maintenance只复用一次inventory，记录inventory_complete，读取不完整或旧快照无标记时新摘要两项缓存返回未知，待下一次原维护完整采样，不改变删除循环/新增扫描。原Node单例1失败→1通过/13未选，Python必要合同3失败1通过→与正向用例合并5通过/6未选。全轮本地Chrome共5个独立场景（workspace两项、legacy一项、thumbnail一项、summary一项），重复执行不重复计数；GPU、NAS/OSS真实端到端、生产旧库、生产浏览器均NOT VERIFIED。已知Windows symlink权限skip保留，等待Linux准确SHA CI补验，不当PASS。
+
+阶段提交（均保留前阶段5944及已有提交，不重写历史）：
+
+|阶段|实际提交|
+|--|--|
+|远程冻结输入|`21c787889dc24cdb98a9253897204419b1b02f64`|
+|自动回收/Agent恢复保护|`ad5564822beedddfb9477ba2e0fa0dfe47811d0d`|
+|任务详情/历史只读|`46d2297fd8accb91b8f5de24333aca6d9116b61f`|
+|旧素材元数据工具|`fa97091204d699331f079d4a6bf07e8d44acbc35`|
+|按需缩略图|`0513c5a1034136466966e7366fa0f1d2109abe0e`|
+|离线受控原图回收|`97e0d8b7144c29f876642064834ad4b29fb5a4ee`|
+|GT绑定冲突拒绝|`7abd07f1106b5db121a6f1f876647098fb2862b7`|
+
+存储用量/发行及文档收尾提交以Git完整历史为准；最终代码和文档各自HEAD必须重新读取GitHub Actions/Checks，不能借用旧SHA。本文较早阶段中“未实现/未推送/待做”均是当时事实，最新矩阵和本节优先；不反向篡改历史测试失败记录。
+
+### 最终业务问题逐项回答及实际边界
+
+1. **原图实际位置**：本轮未读取生产；既有StorageManager按storage_source_id/object_key解析。本地旧默认projects/<pid>/uploads保留，配置NAS/OSS仍走原驱动，不宣称所有原图已统一搬迁或全局只有一份。
+2. **统一索引**：复用MaterialRepository和StorageSource合同支持local/NAS/S3/OSS读取；本轮远程按需通道经原驱动代理读取，不下发凭据。真实远端驱动/跨机性能NOT VERIFIED，不为历史单份物理内容强迁全库。
+3. **GT权威**：AnnotationRepository的正式SQLite、版本/CAS和既有历史回退；工作目录YOLO不是权威。不同GT/image_id不合并，迁移不写GT。
+4. **YOLO TXT时机**：实际Worker执行所有权确认后从冻结GT派生；随owned工作Bundle安全回收，必要冻结/报告证据另归档，保留正式GT。
+5. **创建/排队零完整副本**：新Prepare本地和远程均indices_only；分配resolver只描述。旧schema1/2已存在ZIP兼容保留，不能承诺历史目录已清空。
+6. **本地/远程按需**：本地TrainingHandler和远程Agent正式lease后物化，SHA/size/冻结版本及角色验证；隔离本地存储/伪Trainer通过，真实GPU/跨机/OSS/NAS未验。
+7. **终态自动回收**：原Scheduler有界维护/结束唤醒/启动恢复；成功必须归档/独立Test等依赖解除，失败/取消按进程和恢复证据判断；Checkpoint/未知消费者保留，不按终态直接删。
+8. **证据保留**：原图、GT、模型、Checkpoint、Snapshot不属于Bundle回收目标；结果只保必要错误样本而非整集。受认证Worker修复后像素SHA不是控制端独立重算全图的证明，限制保留。
+9. **历史可回收量**：51GB/31GB/20GB仅用户旧信息，当前未实测，无法给出真实可回收数。只读入口仅TaskRepository已索引任务，不覆盖任意古老磁盘目录；无ownership marker只报告不接管。
+10. **旧素材是否需要迁移**：生产未扫描，未知；已完整兼容数据明确无需迁移。临时工具只补现有schema5且default_local受控原图可证明的缺SHA/size，冲突/JSON-only/外部未知仅报告。
+11. **原图搬迁**：本轮元数据工具完全不搬、不复制、不改名、不删除原图；没有为满足单份目标强制迁移。独立离线物理GC需单独授权维护，不包含在迁移里。
+12. **工具暂停/恢复/关闭/移除**：批次最多50，停止发下一批即暂停；单批CAS+备份+同task幂等重试，中断不覆盖新数据。服务端保存备份task_id，刷新后重扫识别已正常记录；前端未新增跨刷新任务数据库。LEGACY_MATERIAL_COMPATIBILITY_ENABLED=0关API，可再移除临时导航/API/module；正式元数据/共享只读Owner工具不依赖临时模块。
+13. **缩略图可靠性**：源SHA+处理规格版本→真实JPEG内容SHA，复用原TTL/配额/锁；坏缓存/驱逐按需重建，GT单独实时叠加，不因GT改色复制图片。
+14. **物理删除保护**：只提供受控固定本地盘离线维护工具；全引用/退役/任务/恢复/进程/路径/source-byte lease核验与审计恢复。在线、未知旧节点、NAS/OSS不开放；无Delete Marker/对象版本释放承诺，没有生产删除或空间释放事实。
+15. **未验证条件**：真实OSS/NAS、旧节点混跑、跨服务器断网恢复性能、大库峰值、生产旧库、GPU均NOT VERIFIED；不能把隔离通过当生产通过。
+16. **提交/CI**：上述实现提交真实存在，最终发行/文档收尾SHA的远端证据待本节后续回执；5944与两份模板测试保留，不把本地GREEN当CI。
+17. **生产升级前**：另行授权部署；先只读核配置/版本/原图GT可达性、活跃消费者/旧Worker、实际磁盘量和历史任务身份；维护窗口/备份/小批恢复演练后，分别申请生产元数据迁移或物理回收授权。本轮没有这些执行授权。
+
+### 首推准确SHA CI失败及修正（验收未完成）
+
+首推代码c077c3e7d2e5f46daf2fbf74cd1c6c7bfa9bd108，GitHub实际启动51个Actions/136个Checks（包含仓库既有依赖dispatch，非手工重复跑全仓）。已取得的时点为33成功/17失败/1仍运行，不能宣称绿色。主要失败：
+
+- Storage Cache Governance：56通过1失败，原HTTP fixture直接disconnect；最新Starlette1.9.0依法停止发送，不能断言完整body。改连接期request/完成后disconnect，仍逐send核锁+完整bytes，再加ASGI2.4 send断链释放。原本地1.3.1两项通过，临时解压CI同版1.9.0隔离导入同两项通过，未改生产FileResponse或安装环境。
+- Material Annotation Atomicity：legacy集合18通过10失败，回收测试读取真实Linux宿主进程触发PROCESS_INSPECTION_UNKNOWN。只修隔离fixture提供可检查的离线进程清单，并加cmdline/cwd未知仍拒绝删除两例；单文件16通过1本机symlink skip。生产保护未放宽，Linux新SHA仍待验证。
+- 路由挂载精准断言未包含本轮workspace_actor_provider及agent_training_inputs_provider，多个复用CI失败。更新精确集合并加真实服务端actor/输入Provider函数名断言；原单测定向1通过3未选，仍要求唯一挂载及原Owner。
+- 错freeze结果在拒绝前导入重训练模块，在轻量RKNN/portable等CI缺yaml。只把完整数据集依赖移至freeze/持久身份校验之后，坏身份仍先拒绝；原定向1通过53未选，未增加轻量任务GPU依赖。
+- 保留5944带来的官方stopper源码测试需要固定ultralytics包；两份相关原CI仅补--no-deps ultralytics==8.4.127源码（与既有requirements完全相同），不下载模型、不拉GPU依赖、不跳过测试。原训练守卫的旧排队builds_bundle及硬编码val路径断言更新为真实仅索引测试名和正式validation source调用；完整原guard脚本实际退出0，不删安全断言。
+
+修正以新提交正常推送，最终结果必须绑定新完整SHA；首推失败保留本记录，不用rerun旧绿遮盖。
+
+### 第二次提交前端接线断言补验
+
+cd4fec7acc89a2edfb2e5590a6e75ea752584fb3的Frontend Runtime Node发现唯一过期精确导航断言：原高级功能集合未含本轮正式临时入口“旧素材兼容迁移”。只在原render-owner-retirement.test.mjs精确集合增加该项，保留唯一导航/无wrapper/无旧页面等所有断言；原navigation相关11项通过。此前路由/HTTP/未知进程保护及依赖修正保持，新SHA仍需完整查询，不引用先前SHA成功项充当前验收。
+
+### Chrome受影响夹具适配（最终CI待新SHA）
+
+7d0db97efd4c9c0060281caf5ac7f64f52418443准确21 Actions为20成功1失败、55 Checks为54成功1失败。Node1305/1305通过，Chrome244项242通过2失败，新增存储五项实际均通过；失败为既有annotation-ui-governance的fit/broken source。未将其写成已全绿，未删除失败测试。
+
+只改原spec：坏图用例把新卡片thumbnail?edge=384当原图并拼第二个?，造成非法edge/路由不命中；改从真实annotation GET image.url取得原图，用URL.searchParams.set及pathname/flag精确匹配，保留GT POST=0、错误无SVG及重试有SVG。fit公式原client尺寸正确，旧测试分别异步读两个boundingBox可能跨180ms入场动画帧（CI差5.216px）；现在等待原ResizeObserver的实际scale与viewport fit公式收敛后，同一次evaluate原子测量，x/y<2px和手动pan/resize scale/style不变全部保留，不关动画/不固定sleep/不靠重试。
+
+隔离8027仅原两失败用例先1通过1失败（本机fit未复现CI跨帧；broken稳定RED），修复后同两例2通过（9.4s）。未改标注器、FileResponse、GT、保存合同或新缩略图逻辑，不扩大标注功能，不机械重跑本地全部244；新提交准确CI仍需远端验收。
+
+### 收尾安全问题：成功Agent的额外Checkpoint（进行中）
+
+只读复核发现确定缺口：Agent的committed分支直接整generation清理，跳过失败分支.pt保护；现有train_worker/Agent确实支持--save-period，但最终正式发布仅best/last，epoch*.pt及先前AI追加训练run的Checkpoint未必归档。默认save_period=-1不能证明可删除未知权重。此问题不是生产事故证据，本轮从未执行生产训练/清理；但不能按现状宣称所有Checkpoint均受保护。
+
+已回开S2-02修复：成功也核非input权重，仅SHA/size绑定已确认发布成果且最终提交成功的重复副本可全清；未知Checkpoint保留，成功情况下只清input并在原回执写清范围，避免因此永久留整套图片；失败/取消恢复保护不放宽。必要原Agent unit先RED→GREEN后登记，本节尚不表示修复完成，不新建状态机或模型归档库。
+
+### 额外Checkpoint修正与已取得的准确CI证据
+
+5034b1fbc62b2bf0242967baaf350243c3e56284已实际21/21 Actions、55/55 Checks全部success，Frontend Runtime Stabilization run39905620731的Node1305/1305、Chrome244/244通过；这证明当时已提交代码和夹具，不覆盖随后发现的成功Checkpoint缺口。该缺口不能用已有绿色结果豁免。
+
+原Agent最小修正：committed仍逐个核所有非input .pt；只有size/SHA匹配本次经模型confirm、结果confirm和正式finish完成后的model_evidence，才视为已归档重复副本并允许整generation回收。未知周期/旧阶段Checkpoint或证据不符，仅回收input，原回执明确agent_input_only、UNARCHIVED_CHECKPOINT和保留相对路径。失败/取消仍完整保留有Checkpoint的恢复输入；清理异常不覆盖正式成功结果。
+
+原单元新增三参数（未知epoch/已归档重复best/last/大小不符）真实RED3→GREEN，联合真实子进程成功接线、原失败/不可读保护7通过22未选。主线程再核indexed路径发现1失败2通过：已核验的母模型原在model/base.pt被正确保守保留；现把该输入移至原input/model/专用子目录，继续原下载SHA/size校验，不把任意model目录加入删除白名单。原成功整目录消失断言保留，并补实际Worker args输入路径，三条indexed最终3通过26未选。未扩大训练模板/后台状态，不重复全仓测试；额外Checkpoint保留在Agent本地原generation，尚未扩成新的归档模型版本，不承诺它已上传平台。
+
+上述Checkpoint修正的新提交仍须准确SHA CI，S2-02保持已完成待验收；不能将5034的21/55借用为新提交验收。
+
+### 最终代码验收回执与文档自身SHA（2026-10-23）
+
+最终业务代码：[42339bd4da00d5f0ea082f2fd16791564bdb990a](https://github.com/jorsamj/aixunlianpingtai/commit/42339bd4da00d5f0ea082f2fd16791564bdb990a)，VERSION **42.24.378**。实际分页取得 **23/23 Actions、62/62 Checks**，每项head_sha严格相同且completed/success，失败/取消/跳过/运行中均0。独立窄范围只读审查该Checkpoint修正未发现确定P0/P1，不取代测试。S2-01–05在本文明确支持范围内标为已验收，指代码和隔离验收，不是生产部署/数据治理完成。
+
+|关键CI|准确运行|绑定SHA|结果|
+|--|--|--|--|
+|Frontend Runtime Stabilization|[run39907205094](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907205094)|42339bd4da00d5f0ea082f2fd16791564bdb990a|success|
+|Remote Training Runtime|[run39907209414](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907209414), [run39907205002](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907205002)|42339bd4da00d5f0ea082f2fd16791564bdb990a|success|
+|Storage Cache Governance|[run39907209329](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907209329)|42339bd4da00d5f0ea082f2fd16791564bdb990a|success|
+
+本次准确代码SHA的Frontend日志：Node **1305/1305**，Chrome **244/244**通过。此前素材原子性[run39903047831](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39903047831)绑定cd4fec7acc89a2edfb2e5590a6e75ea752584fb3，分步152/30/116通过，其中legacy+原图回收30项Linux无skip，补验本机符号链接限制；这项旧SHA结果明确独立记录，未冒充42339的新运行。存储相关58 Python及21 Node通过已在各自准确日志留证。额外Checkpoint最后本地定向7+3（共10个不同场景）通过；核心存储Chrome5项加CI失败补核标注2项，本地不同场景7项，重复执行不重复计数；没有手动全仓Python/Node/244Chrome重复跑。首推/接线/依赖/HTTP版本/坏图及跨帧夹具的实际FAIL和修正保留上述记录，不以测试删除、放宽断言或跳过安全限制取得绿色。
+
+阶段补充提交：用量/发行c077c3e7d2e5f46daf2fbf74cd1c6c7bfa9bd108；CI环境合同cd4fec7acc89a2edfb2e5590a6e75ea752584fb3；导航精确断言7d0db97efd4c9c0060281caf5ac7f64f52418443；Chrome夹具5034b1fbc62b2bf0242967baaf350243c3e56284（独立21/55及Chrome244通过）；成功Checkpoint保护42339bd4da00d5f0ea082f2fd16791564bdb990a。原5944及前阶段全部提交为祖先，两个未提交训练模板测试始终保留，其他工作树未覆盖。
+
+本轮所有生产操作仍为**未执行**：未部署、未迁移生产数据库、未清理历史Bundle/原图/GT/模型/Checkpoint/OSS/NAS、未真实GPU训练。51GB/31GB/20GB没有重新现场盘点，实际释放量未知；本轮不能承诺全局原图已物理单份，不能把逻辑退役/删除字节当物理释放。额外Checkpoint安全保留在Agent原generation，尚未自动注册新模型版本；真实OSS/NAS、跨服务器性能/断网/旧节点、大库及GPU为NOT VERIFIED。旧快照无inventory_complete时缓存量保守未获取，等待原维护采样，不另加扫描。
+
+证据副本位于本机visualizations/2026/10/21/01a15d6e-6553-7640-9e31-04ade914aca9/storage-lifecycle-second-stage-20261023；GitHub上述绑定提交日志为远端依据，不含凭据。本文及AGENTS/CODEX_CURRENT_STATE的这次更新仅补验收，不改业务/VERSION。**文档补提的新HEAD必须独立再查全部已触发Actions/Checks，不能借42339绿色；文档自身提交身份由git log -1 --format=%H -- docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md获取，最终回执为同证据目录storage-ci-final.json及该实际提交GitHub Checks。** 不为把SHA写回自身而循环产生文档提交；最终交付完整SHA由实际Git及GitHub核对后报告。
+
+下一阶段仅生产前只读核验方案/获批后的受控升级，不自动执行。实际配置、GT/原图可达性、节点混版本、活动/恢复消费者、历史ownership及磁盘量应先核；任何生产部署、元数据迁移或物理释放须分别另行授权。临时兼容工具可关闭/移除，不重复建设已有Storage/Material/Annotation/BundleCache/Task Owner。本文顶部及最终17项回答是当前唯一专项交接依据，较早阶段未实现/待做/未推送描述是历史时点。
+
+### 接续指令
+
+先读本文顶部S2矩阵及本节，再读remote_training_inputs.py / node_agent_training_runtime.py / training_workspace_lifecycle.py / scheduler.py，前端从training-recovery-runtime.js和legacy-material-compatibility.js，缩略图从原StorageManager/MaterialCache，物理GC仅local_material_reclamation.py及tools/reclaim_retired_original.py。禁止重复建设StorageManager/Material/Annotation/BundleCache/Task状态；不要继续训练模板、Uppy或chipCode需求。保留两份未提交模板测试及其他工作树。生产真实量/外部存储/旧数据未知条件以只读计划和独立授权接续，不自动执行清理。
+
+## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
+
+基础提交 `49898942` 保留，父提交 `2003311a`，未推送/未核验新 SHA CI。报告原 FileResponse 扩展为 task workspace 同锁流式读取：发送期间持锁，断连 finally 释放；已创建但尚未发送的响应若遇回收，改读经同一 SHA 校验的 evidence 字节。元数据读取遇目录隔离竞争也重查归档位置；EXIF 显示派生仍为既有内存响应，未改变评测像素或原图。定向真实 ASGI 文件响应验证发送时锁不能被回收竞争者获取，迟到响应返回相同实际字节，结束后锁释放。
+
+在原 training_recovery_router 增加 GET workspace（只读预览）、POST workspace/cleanup（明确确认 + 预览 attempt/Snapshot 二次校验）。生产接入原 _material_governance_actor，成功登录且可访问项目即同权；无管理员、白名单或新角色。身份由服务端提供，不接受正文 actor；错误项目404/无真实登录身份401/缺确认422/过期或保护409/IO未完成503且可重试。回收不改变训练 FAILED/SUCCEEDED 等真实状态。
+
+新增合同接入原 Remote Training Runtime 工作流对应定向步骤，保留原断言/任务/范围，补新模块与测试路径；未创建第二套 CI。以该工作流隔离依赖边界执行新单元文件，15通过、1跳过（Windows无创建symlink权限）、1既有warning（3.35秒）。此前报告/消费者联合51通过1跳过（5.04秒），原恢复API及新增鉴权/确认集成20通过（1.03秒）。没有反复执行全仓；文件级通过是相关阶段证据，不冒充最终实际SHA远端CI。
+
+当前状态：本地准备时机及受保护回收后端有隔离证据；尚无自动回收调度、失败任务清理按钮/真实Chrome验收、远程 Agent 索引按需获取、旧素材兼容工具、缩略图/原图物理GC。API尚未在生产部署或调用。下一步继续上述未完成核心闭环，不扩大训练模板。原图物理释放0项生产执行，历史约51GB/31GB/20GB仍仅历史治理线索，未经生产只读复核及独立删除授权。
+
+## 2026-10-23｜回收后端基础实现（进行中，尚未开放入口）
+
+### 代码与边界
+
+准备恢复补验提交 `2003311a`；本地执行 Worker 新增 workspace-lifecycle 归属证明，仅在其实际准备新 Bundle 时写入，不收编历史预制目录。新增 `training_workspace_lifecycle.py` 使用原 TaskRepository/ArtifactStore：只读资格、任务状态/租约/进程及 POSIX 进程组、恢复 Checkpoint、同项目活动训练/准备/评测保守保护；允许清理的路径仅 work/bundle。复用原训练缓存的链接/安全路径校验，拒绝 junction/symlink/shared hardlink/特殊文件。共享缓存、原图、GT、模型、Checkpoint、Snapshot 均不在删除范围。
+
+原 TaskRepository 新增短事务 guard，序列化资格/目录隔离与 create/claim/retry；耗时 unlink 在事务外。先保留 Bundle 元数据/GT 标签及报告实际错误图片，再原位重命名到固定隔离目录，限定删除；失败有 retryable 回执，相同调用可重试，不修改训练真实状态。审计记录请求人/拒绝原因/候选逻辑字节/结果；逻辑删除字节不等于文件系统释放空间。成功回收要求 committed worker checkpoint、任务归档模型 SHA/size 与正式算法版本的模型证据一致。原 AlgorithmSqlStore 增加 readonly 核验（不初始化或迁移旧 JSON）。报告图片及 benchmark 元数据支持已留存的 evidence/bundle，仍核验冻结图片身份及 SHA，不用原图替代已归一化的评测像素。
+
+### 实际证据与未完成
+
+- 必要回收合同：13通过、1跳过（当前 Windows 无 symlink 创建权限；该边界仍需 Linux CI 实测），0失败；包含失败/成功、Checkpoint、活动消费者、身份、错误项目、活进程、限定清理、幂等及删除中断恢复。开发中曾暴露 readonly 算法查询隐式迁移与 Windows rb 句柄 fsync 问题，均已修正；未删除/削弱安全断言。
+- 原完整本地 Prepare→实际 Worker→模型提交集成追加实际清理后核对原图/外部原图/GT/Snapshot/模型 hash 不变，1通过；原报告图片 API 回归37通过，归一化 evidence 路径先 RED1失败再 GREEN。
+- 本次后端服务尚未挂接 API/自动回收/前端。仍须连接报告 HTTP 流式读取期间的消费者锁、活动评测/恢复读取生命周期；当前只实现同项目活动任务的保守阻塞，不宣称细粒度消费者租约完整。
+- 远程排队仍使用旧完整 Bundle，目标 Agent 按需准备未完成。失败有恢复 Checkpoint 时保持阻塞，尚未提供放弃恢复确认。历史目录无归属证明仅报告，不开放删除。
+- 旧素材扫描/迁移、缩略图治理、原图物理删除未完成。本阶段未跑无关 Node/Chrome/全仓测试，未推送/无新 SHA CI，未执行生产动作或真实 GPU。
+
+下一步先接消费者读取保护及回收 API/失败详情，再解决远程按需准备与自动安全回收；核心闭环未验收前不开展生产清理。VERSION仍42.24.377，两份训练模板测试保持未提交。
+
+## 2026-10-23｜准备恢复边界补验
+
+准备时机阶段提交 `4b927fef22883109695387750de05da2d4574090` 已保留，尚未推送/CI。追加审查发现本地 READY 恢复仍要求旧完整 Bundle；已用同一隔离集成用例得到 RED（1失败），修复为校验 DEFERRED 计划、Snapshot/Revision/冻结身份、counts及资源证据，远程及历史完整 Bundle 校验保持。计划身份/数量/状态篡改均拒绝。定向集成与原远程准备回归合计20通过、0失败、0跳过（5条既有弃用警告，16.92秒）。本条不代表远程按需准备、安全回收、兼容迁移或生产空间释放完成。
+
+## 2026-10-23｜正式实施：准备时机第一阶段（本地链路定向通过）
+
+用户已认可只读审计并授权按依赖持续开发，不再扩展训练模板。起始本地5944e1a558a34f7be008b644a5a3b07b4ed132cd，父/远端3cc331f2fa9b568ec27d59419d6b813a0aab7cb3，VERSION377。安全引用refs/codex-safety/storage-resume-20261023已保护5944，未提交的两份训练模板测试保留，其他工作树不动。
+
+### 本阶段实际代码
+
+- 修改`platform_core/remote_training_tasks.py`原_prepare_bundle：本地准备使用indices_only，只冻结原Snapshot/revision与小型input-plan预算元数据，不创建work/bundle、不读取TrainingBundleCache恢复完整图片、不生成YOLO副本。原StorageManager/Task/模型/GT不重建。
+- 本地prepared-input明确materialization_state=DEFERRED，bundle_path为空；原TrainingHandler仍在核验有效assignment、lease和GPU reservation后，读取相同冻结合同并真正获取/生成数据。资源预算逻辑保留原Owner，remote_cache_ready按实际data.yaml是否存在取值，不以索引就绪冒充图片缓存就绪。
+- 远程准备仍走原完整bundle/上传合同，**尚未改成目标Worker按需准备，不能把本地修复写成全部完成**。历史已物化任务保持原兼容，未在本阶段清理任何目录。后续回收、消费者、前端、兼容工具尚未实现。
+
+### 实际验证
+
+复用原`tests/integration/test_training_task_worker.py`完整Task→Prepare→Worker→归档集成用例，只增加排队时work/bundle及远程zip必须不存在的断言。先真实RED1失败（发现排队已物化），修改后同用例GREEN1通过/5既有warnings（2.72s）；仍验证实际Worker生成图片、标签、模型hash、原图引用与完整归档。原`test_remote_training_prepare_task.py`相关回归19通过/5既有warnings（13.14s）。未执行全Python/Node/Chrome或GPU，未增加平行测试框架。日志C:/tmp/storage-preparation-timing-red.log、storage-preparation-timing-green.log、storage-remote-prepare-regression.log。最后仅改真实进度文案，不重复运行无变更业务测试。
+
+本阶段为可独立审查的本地链路修复，推送/精确CI尚未执行；版本在整体交付时按仓库规则处理，不凭本地通过宣称CI绿色。下一步目标是远程任务领取后按需准备及可信消费者登记，再接Bundle回收资格/执行/审计。严禁根据终态直接rmtree；原图物理删除、生产历史Bundle清理、生产迁移/部署均未执行且未获授权。
+
+---
+
+## 2026-10-23｜统一存储、工作副本及旧素材兼容补充（审计进行中）
+
+本节为最新存储需求与测试约束；既有第十/十一节已验收能力继续复用，旧MLG未实现事项不得标为完成。当前远端/本地HEAD3cc331f2，VERSION42.24.377；其他工作树不动。训练模板及创建流程仍在[训练模式专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)接续，属于独立子任务。
+
+**最新测试规则优先：** 仅改变的核心数据合同新增必要测试；复用既有用例，不机械重复全Python/Node/Chrome，不扩大无关CI，不修改安全断言。相同代码已通过且未再改变则不重跑；前端仅核心真实Chrome冒烟，生产/GPU禁止。必须保留索引读取/GT及版本/排队无完整副本/有效Worker所有权才准备/清理不误删/活动共享保护/失败幂等重试/迁移中断恢复验证。
+
+### 新需求边界与顺序
+
+1. 统一存储继续StorageManager/StorageSource及MaterialRepository、AnnotationRepository、Task/Worker/ModelArtifact。原图按SHA内容身份与image_id/GT身份分离，不因同图合并GT；跨项目访问与引用隔离。配置存储资源、能力/根目录/secret_ref/节点/用途/健康及容量，未获取容量明确未知，不能虚构0。
+2. GT继续原Annotation版本/CAS/digest，YOLO TXT仅Worker临时派生；修改GT不复制原图。缩略图按内容+规格版本缓存，GT叠加不成为原图；已有索引有效则复用，失败可按需恢复，禁止为了列表把全量原图下载至控制后台。
+3. 创建和QUEUED只存原申请索引/配置；有效执行所有权及Worker数据准备后才取完整图片并核SHA、冻结GT和划分。原MaterialCache/TrainingBundleCache仍受配额/引用治理；禁用Trainer可写硬链接，不能训练修改原图/共享缓存。
+4. 工作Bundle回收与原图物理删除明确分开。成功/失败/取消均须核实进程终止、必要Test完成、模型/Checkpoint/指标日志/配置/冻结证据归档、下游与真实消费者租约解除及严格路径所有权。稳定身份/幂等/审计/中断恢复，真实释放量；失败任务详情需明确可清理/阻塞/未知/进度及手动释放入口。
+5. 历史扫描先只读/dry-run。51GB/31GB/20GB均是旧用户现场信息，当前未测；未授权生产清理，不把具备代码写成已释放空间。
+6. **兼容迁移工具是独立临时入口**：高级功能→旧素材兼容迁移，可配置关闭、以后可移除；不能重建永久素材/GT系统。原图不移动、不重命名、不复制、不删除，image_id不变；只读批次检查→证据明确的元数据预览→用户确认→备份可读/版本与活动写入复验→原位兼容/幂等小批→可恢复结果。正常数据明确无需迁移；未知GT版本不猜、同图不同GT不合并、缩略图丢失不当作原图丢失。不得重写历史Snapshot、修改存储资源配置或夹带Bundle/物理GC。
+7. 兼容迁移先查真实Schema/索引差异，不为迁移而迁移；跨SQLite数据库须用原一致性/补偿机制，不能假装跨库单事务。恢复不能覆盖迁移期间的新写入。生产迁移/不可逆Schema/删除/部署仍须独立授权。
+
+### 当前审计事实与待办
+
+| 子阶段 | 状态 | 当前证据与剩余 |
+|---|---|---|
+| 存储A 原链审计 | 进行中 | 原TrainingHandler使用work/bundle，materialize_portable_dataset仍做派生副本；需继续证明准备时机/执行所有权及所有消费者 |
+| 存储B 内容身份/可配置存储 | 未开始 | 旧Material/Storage资源复用；全局不可变单份物理内容与跨Worker删除租约尚未落地 |
+| 存储C GT/缩略图/冻结 | 未开始 | 既有GT/CAS与SHA划分已具备；派生资源索引/报告小图归档需审计 |
+| 存储D Worker按需工作副本 | 未开始 | 不得将已有cache淘汰当成任务副本按需获取已完成 |
+| 存储E Bundle资格及回收 | 未开始 | 需完整消费者、进程和归档证据；任何生产释放均未执行 |
+| 存储F 物理删除/历史dry-run | 未开始 | 原DELETE_INDEX逻辑删除继续使用，物理释放不能冒充 |
+| 兼容A 只读Schema/历史引用审计 | 未开始 | 不能访问生产，生产兼容数量/需迁移数/人工数均未获取 |
+| 兼容B–D 工具/预览/安全执行/UI | 未开始 | 仅真实缺口可迁移；与存储搬迁/GC隔离，可移除入口 |
+| 验收 | 未开始 | 按上述精简矩阵，每次仅必要受影响回归，不借上一轮绿色SHA |
+
+最新附件原文已读取；生产存储、真实旧库记录数量与可访问性尚未读取或修改。接续优先收口工作树中已开始的训练P0（验证来源/真关闭早停），再沿本节存储A及兼容A完成审计与最小设计；不得丢弃训练模板已写RED或把未实现功能标成完成。
+
+---
+
 > 最新补充：第十一节为2026-10-22用户正式变更——仅点击开始训练才正式准入，覆盖旧自动弹窗/草稿变化自动正式预检交互。安全规则不变。
 
 # GT 素材保护、训练数据单份存储及历史 Bundle 生命周期治理

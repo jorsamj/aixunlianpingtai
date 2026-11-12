@@ -18,7 +18,7 @@ from .training_devices import normalize_training_device
 from .task_runtime import TaskKind
 from .task_runtime.fenced_repository import FencedTaskRepository
 from .task_runtime.models import TaskStatus, utc_now
-from .task_runtime.repository import _from_row
+from .task_runtime.repository import _from_row, admission_preparer
 
 
 ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
@@ -129,10 +129,13 @@ def task_node_capability(task, artifacts) -> str | None:
         TaskKind.AI_ANNOTATION: "annotation",
         TaskKind.VIDEO_FRAMES: "video",
         TaskKind.TRAINING: "training",
+        TaskKind.MODEL_INSTALL: "model-upload",
     }
     if task.kind in fixed:
         return fixed[task.kind]
     if task.kind is TaskKind.DEPLOYMENT_TEST:
+        if "deployment.input.pending" in task.required_capabilities:
+            return None
         try:
             payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
         except (OSError, TypeError, ValueError):
@@ -217,6 +220,7 @@ def task_node_connection_mode(task, artifacts) -> str | None:
         TaskKind.MATERIAL_IMPORT,
         TaskKind.MATERIAL_BATCH,
         TaskKind.DEPLOYMENT_TEST,
+        TaskKind.MODEL_INSTALL,
     }:
         return None
     try:
@@ -1041,6 +1045,7 @@ class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
                 return True, None
             return caller(database, candidate, owner, token, expires_at, now)
 
+        assignment_guard.prepare = admission_preparer(caller)
         return super().claim_next(
             worker_id,
             kinds,

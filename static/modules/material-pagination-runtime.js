@@ -17,7 +17,7 @@ export function buildMaterialQuery({
   sourceId = 'all',
   processingStatus = '',
   labels = [],
-  annotated = 'all',
+  annotated = 'all', sourceBatchId='', annotationState='', qualityStatus='', createdFrom='', createdTo='',
 } = {}) {
   const params = new URLSearchParams();
   if (page !== null && page !== undefined) {
@@ -29,6 +29,7 @@ export function buildMaterialQuery({
   }
   if (query) params.set('query', String(query));
   if (sourceId && sourceId !== 'all') params.append('storage_source_id', String(sourceId));
+  for(const [key,value] of Object.entries({source_batch_id:sourceBatchId,annotation_state:annotationState,quality_status:qualityStatus,created_from:createdFrom,created_to:createdTo}))if(value)params.set(key,String(value));
   if (processingStatus) params.set('processing_status', String(processingStatus));
   for (const label of labels || []) if (label) params.append('label', String(label));
   if (annotated === 'marked' || annotated === true) params.set('annotated', 'true');
@@ -50,6 +51,22 @@ function escHtml(value) {
   })[char]);
 }
 
+export function materialLabelCandidates(labels, selected, query, limit = 40) {
+  const term = String(query || '').trim().toLocaleLowerCase();
+  const rows = new Map();
+  for (const label of (labels || []).filter(Boolean)) {
+    const code = String(typeof label === 'string' ? label : label.code || label.name || '');
+    if (!rows.has(code)) rows.set(code, {code, name: String(label.display_name || label.name || code)});
+  }
+  return [...rows.values()].filter(row => row.code && (!term || `${row.code} ${row.name}`.toLocaleLowerCase().includes(term)))
+    .sort((a,b) => Number(selected?.has(b.code)) - Number(selected?.has(a.code))).slice(0, limit);
+}
+
+export function materialRowsByCardIdentity(cards, rows) {
+  const byId = new Map((rows || []).map(row => [String(row.id), row]));
+  return [...cards].map(card => byId.get(String(card.dataset?.materialId || '')));
+}
+
 export function installMaterialPaginationRuntime() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return false;
   if (window.__materialPaginationRuntime61Installed) return true;
@@ -65,6 +82,18 @@ export function installMaterialPaginationRuntime() {
   let requestSerial = 0;
   let pageLoadFlight = null;
   let pageLoadFlightKey = '';
+  let pageLoadAbort = null;
+  let statusCountsCache = null;
+  let statusCountsRevision = 0;
+  const STATUS_COUNTS_REUSE_MS = 3000;
+  function invalidateStatusCounts61() {
+    statusCountsRevision++;
+    statusCountsCache = null;
+    statusCountsFlight = null;
+    statusCountsFlightKey = '';
+  }
+  let statusCountsFlight = null;
+  let statusCountsFlightKey = '';
   let searchTimer = null;
   let suppressCardReload = false;
   let refreshBusy = false;
@@ -79,7 +108,11 @@ export function installMaterialPaginationRuntime() {
   state.materialPage61 = state.materialPage61 || {
     cursor: '', nextCursor: '', cursorStack: [], page: 1, total: 0,
     unprocessedTotal: 0, processedTotal: 0,
+    statusCountsAvailable: false, statusCountsScope: '',
   };
+  if (typeof state.materialPage61.statusCountsAvailable !== 'boolean') {
+    state.materialPage61.statusCountsAvailable = false;
+  }
   state.materialShellSignature61 = state.materialShellSignature61 || '';
 
   const projectId = () => String(state.project?.id || '');
@@ -154,12 +187,13 @@ export function installMaterialPaginationRuntime() {
   }
 
   function filters61() {
-    const tab = state.data412Tab || 'unprocessed';
+    const tab = state.data412Tab || 'all';
     return {
       query: String(state.materialQuery61 || '').trim(),
       sourceId: String(state.materialSourceFilter61 || 'all'),
-      processingStatus: tab === 'processed' ? 'processed' : 'unprocessed',
-      labels: tab === 'processed' ? [...(state.data412Labels || new Set())] : [],
+      processingStatus: tab === 'processed' ? 'processed' : tab === 'unprocessed' ? 'unprocessed' : '',
+      annotationState: ['unannotated','annotated','needs_review'].includes(tab)?tab:'',sourceBatchId:state.materialBatchFilter61||'',qualityStatus:state.materialQualityFilter61||'',createdFrom:state.materialCreatedFrom61||'',createdTo:state.materialCreatedTo61||'',
+      labels: [...(state.data412Labels || new Set())],
       annotated: tab === 'processed' ? (state.materialAnnotated61 || 'all') : 'all',
     };
   }
@@ -168,7 +202,7 @@ export function installMaterialPaginationRuntime() {
     const f = filters61();
     return JSON.stringify([
       projectId(), state.data412Tab || 'unprocessed', f.query, f.sourceId,
-      f.processingStatus, [...f.labels].sort(), f.annotated,
+      f.processingStatus, [...f.labels].sort(), f.annotated,f.sourceBatchId,f.annotationState,f.qualityStatus,f.createdFrom,f.createdTo,
     ]);
   }
 
@@ -203,6 +237,8 @@ export function installMaterialPaginationRuntime() {
         total: Number(info.total || 0),
         unprocessedTotal: Number(info.unprocessedTotal || 0),
         processedTotal: Number(info.processedTotal || 0),
+        statusCountsScope: info.statusCountsScope || '',
+        statusCountsAvailable: info.statusCountsAvailable === true,
       },
     };
     return true;
@@ -229,7 +265,7 @@ export function installMaterialPaginationRuntime() {
     return true;
   }
 
-  async function fetchMaterialPage61(page = 1) {
+  async function fetchMaterialPage61(page = 1, signal = null) {
     const pid = projectId();
     if (!pid) return {items: [], total: 0, next_cursor: null};
     const f = filters61();
@@ -241,22 +277,36 @@ export function installMaterialPaginationRuntime() {
     return responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
+      ...(signal ? {signal} : {}),
     }));
   }
 
-  async function fetchStatusTotal61(processingStatus) {
+  async function fetchStatusCounts61({force = false} = {}) {
     const pid = projectId();
-    if (!pid) return 0;
-    const params = buildMaterialQuery({
-      limit: 1,
-      sourceId: String(state.materialSourceFilter61 || 'all'),
-      processingStatus,
-    });
-    const page = await responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
+    if (!pid) return {unprocessed: 0, processed: 0};
+    const sourceId = String(state.materialSourceFilter61 || 'all');
+    const key = JSON.stringify([pid, sourceId]);
+    if (!force && statusCountsCache?.key === key
+        && Date.now() - statusCountsCache.at < STATUS_COUNTS_REUSE_MS) return statusCountsCache.data;
+    if (statusCountsFlight && statusCountsFlightKey === key) return statusCountsFlight;
+    const revision = statusCountsRevision;
+    const params = new URLSearchParams();
+    if (sourceId !== 'all') params.append('storage_source_id', sourceId);
+    const task = materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials/status-counts?${params}`, {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
-    }));
-    return Number(page.total || 0);
+    }).then(responseJson).then(data => {
+      // Invalidation releases the flight slot, but earlier awaiters may still
+      // be waiting. Never hand them a retired count that could rewrite totals.
+      if (revision !== statusCountsRevision || projectId() !== pid || String(state.materialSourceFilter61 || 'all') !== sourceId)
+        throw Object.assign(new Error('素材状态统计结果已过期'), {code:'MATERIAL_STATUS_COUNTS_RETIRED'});
+      statusCountsCache = {key, at: Date.now(), data};
+      return data;
+    });
+    statusCountsFlight = task;
+    statusCountsFlightKey = key;
+    try { return await task; }
+    finally { if (statusCountsFlight === task) { statusCountsFlight = null; statusCountsFlightKey = ''; } }
   }
 
   async function refreshSummary61() {
@@ -264,16 +314,12 @@ export function installMaterialPaginationRuntime() {
     if (!pid || !isPagedDataset()) return;
     const expectedPage = state.page;
     try {
-      const totalParams = buildMaterialQuery({limit: 1});
-      const annotatedParams = buildMaterialQuery({limit: 1, annotated: 'marked'});
-      const [totalPage, annotatedPage] = await Promise.all([
-        responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${totalParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
-        responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${annotatedParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
-      ]);
+      const counts = await fetchStatusCounts61();
+      if (projectId() !== pid) return;
       if (state.page !== expectedPage || !isPagedDataset()) return;
       state.materialSummary61 = {
-        total: Number(totalPage.total || 0),
-        annotated: Number(annotatedPage.total || 0),
+        total: Number(counts.total || 0),
+        annotated: Number(counts.annotated || 0),
       };
       decorateSummary61();
     } catch (_error) {
@@ -305,6 +351,7 @@ export function installMaterialPaginationRuntime() {
       q.value = state.materialQuery61 || '';
       q.oninput = () => {
         state.materialQuery61 = q.value || '';
+        retireMaterialPage61();
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => loadMaterialPage61({reset: true}), 220);
       };
@@ -339,8 +386,9 @@ export function installMaterialPaginationRuntime() {
     if (sourceSelect) sourceSelect.value = String(state.materialSourceFilter61 || 'all');
 
     const cards = [...document.querySelectorAll('.data426-card')];
+    const cardRows = materialRowsByCardIdentity(cards, state.images);
     cards.forEach((card, index) => {
-      const row = (state.images || [])[index];
+      const row = cardRows[index];
       const meta = card.querySelector('.data426-meta');
       if (!row || !meta || meta.querySelector('.storage61-badge')) return;
       const source = (state.storageSources61 || []).find(item => item.id === (row.storage_source_id || 'default_local'));
@@ -355,13 +403,46 @@ export function installMaterialPaginationRuntime() {
     if (clear) clear.classList.toggle('on', selected.size === 0);
   }
 
+  function decorateLabelSearch61() {
+    const host = document.querySelector('.data426-filtertop');
+    const chips = host?.querySelector('.data426-chips');
+    if (!chips) return;
+    let search = host.querySelector('[data-material-label-search]');
+    if (!search) {
+      search = document.createElement('input'); search.className = 'input';
+      search.placeholder = '搜索标签名称或编码'; search.setAttribute('aria-label', '搜索素材标签');
+      search.dataset.materialLabelSearch = ''; search.value = state.materialLabelQuery61 || '';
+      chips.before(search);
+    }
+    const render = () => {
+      const labels = [...(state.labels || []), ...(state.images || []).flatMap(row => row.labels || [])];
+      const candidates = materialLabelCandidates(labels, state.data412Labels, search.value);
+      chips.innerHTML = '<button class="data426-chip clear">全部</button>' + candidates.map(row =>
+        `<button class="data426-chip ${state.data412Labels?.has(row.code) ? 'on' : ''}" data-label-code="${escHtml(row.code)}" title="${escHtml(row.code)}">${escHtml(row.name)}</button>`).join('');
+      chips.querySelector('.clear').onclick = () => { window.clearLabels412(); render(); };
+      chips.querySelectorAll('[data-label-code]').forEach(button => { button.onclick = () => window.toggleLabel412(button.dataset.labelCode); });
+      syncLabelChipState61();
+    };
+    search.oninput = () => { state.materialLabelQuery61 = search.value; render(); };
+    render();
+  }
+
   function decorateDataset61() {
     const info = state.materialPage61;
     const tabs = [...document.querySelectorAll('.data424-tabs button')];
-    if (tabs[0]?.querySelector('b')) tabs[0].querySelector('b').textContent = String(info.unprocessedTotal || 0);
-    if (tabs[1]?.querySelector('b')) tabs[1].querySelector('b').textContent = String(info.processedTotal || 0);
+    if (tabs[0]?.querySelector('b')) tabs[0].querySelector('b').textContent = info.statusCountsAvailable === false ? '—' : String(info.unprocessedTotal || 0);
+    if (tabs[1]?.querySelector('b')) tabs[1].querySelector('b').textContent = info.statusCountsAvailable === false ? '—' : String(info.processedTotal || 0);
     const count = document.getElementById('data412Count');
     if (count) count.textContent = `${info.total || 0} 张`;
+    const filterCount = document.getElementById('materialFilterCount');
+    if (filterCount) {
+      const selectedLabels = state.data412Labels?.size || 0;
+      const selectedFields = ['materialBatchFilter61', 'materialQualityFilter61', 'materialCreatedFrom61', 'materialCreatedTo61']
+        .filter(key => String(state[key] || '').trim()).length;
+      const activeFilters = selectedLabels + selectedFields;
+      filterCount.textContent = String(activeFilters);
+      filterCount.hidden = activeFilters === 0;
+    }
     const selectedCount = document.getElementById('data412SelCount');
     if (selectedCount) selectedCount.textContent = `已选 ${(state.data412Selected || new Set()).size} 张`;
     const pager = document.getElementById('data412Pager');
@@ -386,6 +467,7 @@ export function installMaterialPaginationRuntime() {
       });
     }
     decorateStorage61();
+    decorateLabelSearch61();
     restoreControls61();
     syncLabelChipState61();
     decorateSummary61();
@@ -407,6 +489,8 @@ export function installMaterialPaginationRuntime() {
   }
 
   function renderPagedDataset61({forceShell = false} = {}) {
+    if (window.UploadConfirmationRuntime?.renderIfActive?.()) return 'upload-confirmation';
+    if(window.NegativePoolRuntime?.active('materials'))return window.NegativePoolRuntime.renderPool('materials');
     if (!isPagedDataset() || typeof baseRenderDatasets !== 'function') return false;
     const structure = shellSignature61();
     const needsShell = forceShell || !hasDatasetShell61() || state.materialShellSignature61 !== structure;
@@ -422,8 +506,16 @@ export function installMaterialPaginationRuntime() {
     return 'patch';
   }
 
+  function retireMaterialPage61() {
+    requestSerial++;
+    pageLoadAbort?.abort();
+    pageLoadAbort = null;
+    pageLoadFlight = null;
+    pageLoadFlightKey = '';
+  }
   async function loadMaterialPage61({reset = false, page = undefined} = {}) {
     if (!isPagedDataset()) return {stale: true};
+    const selectionScope=filterSignature61();if(state.materialSelectionScope549!==selectionScope){state.data412Selected?.clear?.();state.materialSelectionScope549=selectionScope}
     const info = state.materialPage61;
     if (reset) {
       info.page = 1;
@@ -431,17 +523,19 @@ export function installMaterialPaginationRuntime() {
     const requestedPage = page === undefined ? Math.max(1, Number(info.page) || 1) : Math.max(1, Number(page) || 1);
     const flightKey = JSON.stringify([projectId(), filterSignature61(), requestedPage, transport.pageSize || 48]);
     if (pageLoadFlight && pageLoadFlightKey === flightKey) return pageLoadFlight;
+    retireMaterialPage61();
+    const controller = new AbortController();
+    pageLoadAbort = controller;
+    const countsScope = JSON.stringify([projectId(), String(state.materialSourceFilter61 || 'all')]);
+    if (info.statusCountsScope !== countsScope) info.statusCountsAvailable = false;
 
     const run = (async () => {
       const serial = ++requestSerial;
       const expectedPage = state.page;
       try {
-        const totalsPromise = Promise.all([
-          fetchStatusTotal61('unprocessed'),
-          fetchStatusTotal61('processed'),
-        ]);
-        const materialPage = await fetchMaterialPage61(requestedPage);
-        if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
+        const totalsPromise = fetchStatusCounts61().catch(error => ({error}));
+        const materialPage = await fetchMaterialPage61(requestedPage, controller.signal);
+        if (controller.signal.aborted || serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
         state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
         info.nextCursor = materialPage.next_cursor || '';
         info.total = Number(materialPage.total || 0);
@@ -450,16 +544,31 @@ export function installMaterialPaginationRuntime() {
         state.materialFilterSignature61 = filterSignature61();
         rememberDatasetPage61();
         const mode = renderPagedDataset61();
-        const [unprocessedTotal, processedTotal] = await totalsPromise;
+    window.NegativePoolRuntime?.decorateOriginal('materials');
+        const counts = await totalsPromise;
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
-        info.unprocessedTotal = unprocessedTotal;
-        info.processedTotal = processedTotal;
+        if (counts.error?.code === 'MATERIAL_STATUS_COUNTS_RETIRED') return {stale: true};
+        if (counts.error) {
+          info.statusCountsAvailable = false;
+          window.toast?.(`素材状态数量读取失败，可刷新重试：${counts.error.message || counts.error}`);
+        } else {
+          info.unprocessedTotal = Number(counts.unprocessed || 0);
+          info.processedTotal = Number(counts.processed || 0);
+          info.statusCountsAvailable = true;
+          info.statusCountsScope = countsScope;
+          state.materialSummary61 = {
+            total: Number(counts.total || 0),
+            annotated: Number(counts.annotated || 0),
+          };
+          decorateSummary61();
+        }
         rememberDatasetPage61();
         decorateDataset61();
         return {stale: false, mode, items: state.images, total: info.total};
       } catch (error) {
-        if (serial === requestSerial && isPagedDataset()) window.toast?.(error.message || String(error));
-        return {stale: serial !== requestSerial, error};
+        if (controller.signal.aborted || serial !== requestSerial) return {stale: true};
+        if (isPagedDataset()) window.toast?.(error.message || String(error));
+        return {stale: false, error};
       }
     })();
 
@@ -471,6 +580,7 @@ export function installMaterialPaginationRuntime() {
       if (pageLoadFlight === run) {
         pageLoadFlight = null;
         pageLoadFlightKey = '';
+        if (pageLoadAbort === controller) pageLoadAbort = null;
       }
     }
   }
@@ -548,12 +658,14 @@ export function installMaterialPaginationRuntime() {
     void loadMaterialPage61({reset: true});
   };
 
+  window.setMaterialFilter549=(key,value)=>{state[key]=String(value||'');state.data412Selected.clear();void loadMaterialPage61({reset:true})};
   window.materialBatchFilters61 = () => {
     const value = filters61();
     return {
       query: value.query,
       storage_source_ids: value.sourceId && value.sourceId !== 'all' ? [value.sourceId] : [],
       processing_status: value.processingStatus,
+      source_batch_id:value.sourceBatchId,annotation_state:value.annotationState,quality_status:value.qualityStatus,created_from:value.createdFrom,created_to:value.createdTo,
       labels: [...value.labels],
       // Raw-batch bulk actions must not include already annotated or index-pending rows.
       annotated: value.processingStatus === 'unprocessed' ? false : value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
@@ -567,7 +679,7 @@ export function installMaterialPaginationRuntime() {
     if (!isPagedDataset() || !state.data412DeleteMode) return window.toast?.('请先进入数据集批量操作');
     const filters = window.materialBatchFilters61?.() || {};
     const narrowed = Boolean(
-      String(filters.query || '').trim() || (filters.labels || []).length
+      filters.source_batch_id||filters.annotation_state||filters.quality_status||filters.created_from||filters.created_to||String(filters.query || '').trim() || (filters.labels || []).length
       || (filters.storage_source_ids || []).length
       || (state.data412Tab === 'processed' && String(state.materialAnnotated61 || 'all') !== 'all')
     );
@@ -579,6 +691,10 @@ export function installMaterialPaginationRuntime() {
   window.batchDelete426 = window.batchDelete429 = () => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[...(state.data424Selected||[])]});
   window.reloadMaterialPage61 = async () => {
     invalidateFullPool61();
+    invalidateStatusCounts61();
+    // A mutation needs evidence newer than any same-filter request already in flight.
+    // Starting the replacement increments requestSerial and fences the older response.
+    pageLoadFlightKey = '';
     const result = await loadMaterialPage61({reset: true});
     try { await window.ZipImportRuntime?.reconcile?.('material-page'); } catch (_) {}
     return result;
@@ -588,6 +704,7 @@ export function installMaterialPaginationRuntime() {
   window.markReady412 = async function markReadyAndRefreshPagedMaterials(imageIds) {
     const result = await baseMarkReady?.(imageIds);
     invalidateFullPool61();
+    invalidateStatusCounts61();
     if (isPagedDataset()) await loadMaterialPage61({reset: true});
     return result;
   };
@@ -618,6 +735,7 @@ export function installMaterialPaginationRuntime() {
   };
 
   window.renderDatasets424 = function serverPagedDatasets() {
+    if (window.UploadConfirmationRuntime?.renderIfActive?.()) return 'upload-confirmation';
     if (!isPagedDataset()) return baseRenderDatasets?.();
     const signature = filterSignature61();
     const useCachedEntry = cachedEntryPending && signature === state.materialFilterSignature61;
@@ -637,7 +755,11 @@ export function installMaterialPaginationRuntime() {
     const current = String(state.page || '');
     const leavingDataset = current === '数据集' && target !== '数据集' && transport.mode === 'paged';
     const leavingFull = requiresFullMaterialPool(current) && transport.mode === 'full';
-    if (leavingDataset) rememberDatasetPage61();
+    if (leavingDataset) {
+      rememberDatasetPage61();
+      clearTimeout(searchTimer);
+      retireMaterialPage61();
+    }
     if (leavingFull) rememberFullPool61(state.images);
     const full = requiresFullMaterialPool(target);
     transport.mode = full ? 'full' : 'paged';
@@ -662,6 +784,7 @@ export function installMaterialPaginationRuntime() {
   function afterNavigate61(page, navigation) {
     const target = String(navigation?.target || (page === '自动标注' ? '自动标注及清洗' : page || ''));
     const full = navigation?.full === true || (navigation?.full == null && requiresFullMaterialPool(target));
+    if(target==='数据集')void window.UploadConfirmationRuntime?.restoreForProject?.(state.project?.id);
     if (full) {
       const action = window.NavigationStability?.action?.(target);
       if (navigation?.fullPoolFresh) return true;
@@ -693,6 +816,7 @@ export function installMaterialPaginationRuntime() {
     event.stopImmediatePropagation();
     if (button.disabled || refreshBusy) return;
     refreshBusy = true;
+    invalidateStatusCounts61();
     button.disabled = true;
     void focusedRefresh61().then(
       () => window.toast?.('素材已刷新'),
@@ -722,6 +846,8 @@ export function installMaterialPaginationRuntime() {
     refresh: focusedRefresh61,
     invalidate() {
       invalidateFullPool61();
+      invalidateStatusCounts61();
+      retireMaterialPage61();
       // Label remap updates MaterialRepository projection; a navigation cache
       // must never restore a pre-remap label card after this invalidation.
       state.materialPageCache61 = null;
@@ -739,6 +865,8 @@ export function installMaterialPaginationRuntime() {
       return {
         requestSerial,
         refreshBusy,
+        pageReadPending: Boolean(pageLoadFlight),
+        summaryCached: Boolean(statusCountsCache && Date.now() - statusCountsCache.at < STATUS_COUNTS_REUSE_MS),
         filterSignature: state.materialFilterSignature61 || '',
         shellSignature: state.materialShellSignature61 || '',
         cachedItems: Array.isArray(state.materialPageCache61?.items) ? state.materialPageCache61.items.length : 0,

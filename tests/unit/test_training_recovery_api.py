@@ -200,6 +200,30 @@ def test_manual_resource_failure_is_the_single_primary_failure_before_worker_sta
     assert task.error in truth["secondary_diagnostics"]
 
 
+def test_training_recovery_shows_safe_host_budget_and_disk_shortage_details():
+    task = failed_training_task()
+    task.error = (
+        "TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: host RAM budget exceeded; "
+        "requested batch=64, workers=8, estimated=32212254720 bytes, "
+        "budget=17179869184 bytes, suggested batch=64, workers=2; source=host"
+    )
+    host = training_recovery_truth(task, FakeArtifacts({}))
+    assert host["primary_error_code"] == "RESOURCE_MANUAL_INVALID"
+    assert "30.0 GiB" in host["primary_message"]
+    assert "16.0 GiB" in host["primary_message"]
+    assert "Batch 64、Workers 2" in host["primary_message"]
+
+    task.error = (
+        "TRAINING_PREPARATION_FAILED: [Errno 28] Insufficient disk space for training bundle: "
+        "free=13958643712 bytes, required=21474836480 bytes, "
+        "remaining=10737418240 bytes, atomic_copy_peak=9663676416 bytes, safety_reserve=536870912 bytes"
+    )
+    disk = training_recovery_truth(task, FakeArtifacts({}))
+    assert "磁盘空间不足" in disk["primary_message"]
+    assert "13.0 GiB" in disk["primary_message"]
+    assert "20.0 GiB" in disk["primary_message"]
+
+
 def test_legacy_prepare_lease_loss_is_reported_as_training_input_not_trainer_failure():
     task = failed_training_task()
     task.stage = "training_input_preparation_failed"

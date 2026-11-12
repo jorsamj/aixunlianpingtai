@@ -47,6 +47,8 @@ _PUBLIC_SNAPSHOT_KEYS = (
     "scanned_files",
     "before_bytes",
     "after_bytes",
+    "thumbnail_logical_bytes",
+    "inventory_complete",
     "evicted_files",
     "evicted_bytes",
     "ttl_evictions",

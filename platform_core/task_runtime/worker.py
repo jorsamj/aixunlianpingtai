@@ -4,16 +4,39 @@ import json
 import os
 import tempfile
 import threading
+import sqlite3
+from functools import wraps
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .artifacts import ArtifactStore
 from .models import TaskLease, TaskRecord, TaskStatus
 from .process_control import ProcessController, ProcessIdentity, ProcessIdentityMismatchError
+from .sqlite_busy import confirmed_deadline, is_sqlite_busy, retry_context_active, run_with_busy_retry
 
 
 class ExecutionFencedError(RuntimeError):
     """Raised when this Worker no longer owns the current task execution."""
+
+
+def _lease_operation(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        # Publish/read the confirmed deadline under one reentrant operation lock.
+        with self._lease_operation_lock:
+            if self.service_stop is not None and self.service_stop.is_set():
+                self.mark_lease_lost()
+            if self.lease_lost:
+                raise ExecutionFencedError("task execution lease was lost")
+            owns_retry = not retry_context_active()
+            try:
+                return run_with_busy_retry(lambda: method(self, *args, **kwargs), deadline=self._confirmed_deadline - .25)
+            except sqlite3.OperationalError as error:
+                if owns_retry and is_sqlite_busy(error):
+                    self.mark_lease_lost()
+                    raise ExecutionFencedError("task operation exceeded its confirmed lease renewal window") from error
+                raise
+    return wrapped
 
 
 class RepositoryPort(Protocol):
@@ -90,6 +113,7 @@ class WorkerContext:
     repository: RepositoryPort
     artifacts: ArtifactStore
     lease_seconds: int = 30
+    service_stop: threading.Event | None = None
     _lease_lost: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _cancel_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _process_identity: ProcessIdentity | None = field(default=None, init=False, repr=False)
@@ -97,9 +121,12 @@ class WorkerContext:
     _artifact_store: ArtifactStore = field(init=False, repr=False)
     _diagnostic_stage: str = field(default="", init=False, repr=False)
     _diagnostic_current_item: str = field(default="", init=False, repr=False)
+    _confirmed_deadline: float = field(default=0, init=False, repr=False)
+    _lease_operation_lock: object = field(default_factory=threading.RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.lease_seconds = max(1, int(self.lease_seconds))
+        self._confirmed_deadline = confirmed_deadline(self.lease.expires_at)
         self._diagnostic_stage = str(self.task.stage or "")
         self._diagnostic_current_item = str(self.task.current_item or "")
         self._artifact_store = self.artifacts
@@ -126,6 +153,7 @@ class WorkerContext:
     def mark_lease_lost(self) -> None:
         self._lease_lost.set()
 
+    @_lease_operation
     def assert_current_execution(self) -> TaskRecord | None:
         if self._lease_lost.is_set():
             raise ExecutionFencedError("task execution lease was lost")
@@ -146,7 +174,20 @@ class WorkerContext:
             raise ExecutionFencedError("task execution is no longer active")
         return current
 
+    @_lease_operation
     def heartbeat(self, progress=None, stage=None, current_item=None) -> TaskRecord:
+        result = self._heartbeat_once(progress, stage, current_item)
+        if result.lease_expires_at:
+            self._confirmed_deadline = max(self._confirmed_deadline, confirmed_deadline(result.lease_expires_at))
+        return result
+
+    @_lease_operation
+    def run_owned(self, operation):
+        """Run a short auxiliary DB operation within the confirmed lease budget."""
+        self.assert_current_execution()
+        return operation()
+
+    def _heartbeat_once(self, progress=None, stage=None, current_item=None) -> TaskRecord:
         # Keep the attempted progress locally before touching SQLite. If the
         # renewal itself fails, journald still receives the useful operation
         # stage without depending on the unavailable task database.
@@ -183,6 +224,7 @@ class WorkerContext:
             self.mark_lease_lost()
             raise ExecutionFencedError("task heartbeat lost execution ownership") from error
 
+    @_lease_operation
     def finish(
         self,
         status: TaskStatus,
@@ -220,6 +262,16 @@ class WorkerContext:
             raise ExecutionFencedError("task finish lost execution ownership") from execution_error
 
     def bind_process(self, identity: ProcessIdentity) -> TaskRecord:
+        with self._process_lock:
+            self._process_identity = identity
+        try:
+            return self._bind_process_owned(identity)
+        except BaseException:
+            self.terminate_bound_process()
+            raise
+
+    @_lease_operation
+    def _bind_process_owned(self, identity: ProcessIdentity) -> TaskRecord:
         self.assert_current_execution()
         binder = getattr(self.repository, "bind_process")
         try:
@@ -241,6 +293,7 @@ class WorkerContext:
             self._process_identity = identity
         return result
 
+    @_lease_operation
     def begin_finalization(self) -> TaskRecord:
         self.assert_current_execution()
         transition = getattr(self.repository, "begin_finalization")

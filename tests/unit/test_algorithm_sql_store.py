@@ -49,6 +49,40 @@ def _legacy_rows():
     ]
 
 
+def test_summary_projection_skips_large_version_evidence_without_mutating_full_detail(tmp_path):
+    path = tmp_path / "project" / "algorithms.json"
+    rows = _legacy_rows()
+    version = rows[0]["versions"][0]
+    version.update({
+        "metrics": {"map50": 0.81},
+        "evaluation": {
+            "status": "succeeded", "evaluation_id": "eval-1",
+            "metrics": {"map50": 0.79},
+            "error_samples": [{"evidence": "x" * 200_000}],
+        },
+        "label_contract": {"historical_labels": "y" * 150_000},
+        "training_lineage": {"task_id": "job-1"},
+    })
+    store = AlgorithmSqlStore(path)
+    store.replace_all(rows)
+    compact = store.read_all(summary_only=True)[0]
+    compact_version = compact["versions"][0]
+    assert compact["versions_compact"] is True
+    assert compact_version["metrics"]["map50"] == 0.81
+    assert compact_version["evaluation"] == {
+        "status": "succeeded", "evaluation_id": "eval-1",
+        "metrics": {"map50": 0.79},
+    }
+    assert compact_version["training_lineage"] == {"task_id": "job-1"}
+    assert "label_contract" not in compact_version
+    assert len(json.dumps(compact, ensure_ascii=False)) < 10_000
+
+    full = store.read_one("legacy-local")
+    assert full["versions"][0]["label_contract"] == version["label_contract"]
+    assert full["versions"][0]["evaluation"]["error_samples"] == version["evaluation"]["error_samples"]
+    assert "versions_compact" not in full
+
+
 class _ConnectionWithoutJournalMode:
     def __init__(self, connection):
         self._connection = connection
@@ -71,6 +105,24 @@ class _ConnectionWithoutJournalMode:
 
     def __getattr__(self, name):
         return getattr(self._connection, name)
+
+
+def test_exists_uses_project_identity_only_and_full_read_contract_is_unchanged(tmp_path, monkeypatch):
+    path = tmp_path / 'project' / 'algorithms.json'
+    store = AlgorithmSqlStore(path)
+    rows = _legacy_rows()
+    rows[0]['versions'][0].update(evaluation={'unknown_report':[1,2,3]}, label_contract={'opaque':'keep'})
+    store.replace_all(rows)
+    original = store.read_all()[0]
+    assert store.read_one('legacy-local') == original
+    with monkeypatch.context() as scope:
+        scope.setattr(AlgorithmSqlStore, '_json_object', staticmethod(lambda _value: pytest.fail('identity must not parse JSON')))
+        assert store.exists('legacy-local') is True
+        assert store.exists('missing') is False
+        with store._connect() as db:
+            db.execute("UPDATE algorithms SET project_id='another-project' WHERE id='legacy-local'")
+            db.commit()
+        assert store.exists('legacy-local') is False
 
 
 def test_ordinary_connection_does_not_negotiate_journal_mode(tmp_path: Path, monkeypatch):

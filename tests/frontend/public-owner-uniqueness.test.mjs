@@ -25,7 +25,7 @@ test('storage upload uses private owners until final activation', () => {
 test('AI review public owner is v60 only', () => {
   assert.equal(app.includes('window.reviewAiLabel427=window.__m4ReviewCandidates'), false);
   assert.match(app, /Persistent v60 AI annotation UI/);
-  assert.match(app, /window\.reviewAiLabel427=async function\(id\)/);
+  assert.match(app, /window\.reviewAiLabel427=async function\(id(?:,|\))/);
   assert.match(app, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\)/);
 });
 

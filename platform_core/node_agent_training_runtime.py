@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import requests
@@ -208,6 +210,7 @@ class AgentTrainingRunner:
         transfer_timeout: float = 600.0,
         process_poll_interval: float = 0.2,
         resource_resolver=None,
+        mother_model_install_dir: str | Path | None = None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -220,6 +223,11 @@ class AgentTrainingRunner:
         self.transfer_timeout = max(30.0, float(transfer_timeout))
         self.process_poll_interval = max(0.05, float(process_poll_interval))
         self.resource_resolver = resource_resolver or self._resolve_resource_contract_subprocess
+        self.mother_model_install_dir = (
+            Path(mother_model_install_dir).expanduser()
+            if mother_model_install_dir and str(mother_model_install_dir).strip()
+            else None
+        )
         self.controller = ProcessController()
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
@@ -291,8 +299,87 @@ class AgentTrainingRunner:
                     f"{type(error).__name__}: {error}"
                 )
                 return False
+            recovered_lease = SimpleNamespace(task_id=str(record["task_id"]), generation=int(record["generation"]))
+            try:
+                recovered_dir = self.workdirs.path_for(recovered_lease)
+            except (OSError, ValueError) as error:
+                self._recovery_error = f"recovered training workspace is unsafe or unreadable: {type(error).__name__}"
+                return False
+            execution = _read_json(recovered_dir / "execution.json", {})
+            if not isinstance(execution, dict):
+                self._recovery_error = "recovered training execution metadata is invalid"
+                return False
+            if execution.get("kind") == "TRAINING":
+                self._cleanup_training_workdir(recovered_lease, trainer_started=True, committed=False)
         self._recovery_error = ""
         return True
+
+    def _cleanup_training_workdir(self, lease, *, trainer_started, committed, model_evidence=None):
+        """Process death is proven by the caller; retain uncommitted recovery evidence."""
+        from .training_workspace_lifecycle import TrainingWorkspaceLifecycle
+        try:
+            workdir = self.workdirs.path_for(lease)
+        except (OSError, ValueError):
+            return  # No safe audit path; never mask an already committed result.
+        receipt = workdir / "workspace-cleanup.json"
+        try:
+            # Reject links, shared hardlinks and special files before any removal.
+            TrainingWorkspaceLifecycle._tree_bytes(workdir)
+            checkpoints = [path for path in workdir.rglob("*")
+                           if path.suffix.lower() == ".pt" and "input" not in path.relative_to(workdir).parts[:1]]
+            unarchived = []
+            if committed:
+                archived = {(item["size_bytes"], item["sha256"]) for item in model_evidence or ()
+                            if isinstance(item, Mapping) and type(item.get("size_bytes")) is int
+                            and item["size_bytes"] > 0 and isinstance(item.get("sha256"), str)
+                            and re.fullmatch(r"[0-9a-f]{64}", item["sha256"])}
+                sizes = {size for size, _digest in archived}
+                for path in checkpoints:
+                    try:
+                        if path.stat().st_size in sizes and _sha256_file(path) in archived:
+                            continue
+                    except (OSError, ValueError):
+                        pass  # Unreadable weights remain unverified and retained.
+                    unarchived.append(path.relative_to(workdir).as_posix())
+                if not unarchived:
+                    self.workdirs.cleanup(lease)
+                    return
+            elif not trainer_started and not checkpoints:
+                self.workdirs.cleanup(lease)
+                return
+            if checkpoints and not committed:
+                self.workdirs._atomic_write_json(receipt, {
+                    "task_id": lease.task_id, "generation": lease.generation,
+                    "status": "retained", "blockers": ["RECOVERY_DEPENDENCY"],
+                    "physical_space_released": None,
+                })
+                return
+            source, detached = workdir / "input", workdir / ".input-reclaim"
+            if source.exists():
+                if detached.exists():
+                    raise OSError("previous input cleanup pending")
+                os.replace(source, detached)
+            size = TrainingWorkspaceLifecycle._tree_bytes(detached)
+            if detached.exists():
+                shutil.rmtree(detached)
+            # Failure logs, config, result files and execution lineage stay intact.
+            self.workdirs._atomic_write_json(receipt, {
+                "task_id": lease.task_id, "generation": lease.generation,
+                "status": "deleted", "scope": "agent_input_only",
+                "deleted_logical_bytes": size, "physical_space_released": None,
+                **({"blockers": ["UNARCHIVED_CHECKPOINT"],
+                    "retained_checkpoint_refs": unarchived} if unarchived else {}),
+            })
+        except (OSError, ValueError):
+            # Cleanup must never turn a confirmed training result into failure.
+            try:
+                self.workdirs._atomic_write_json(receipt, {
+                    "task_id": lease.task_id, "generation": lease.generation,
+                    "status": "retryable", "blockers": ["CLEANUP_UNVERIFIED"],
+                    "physical_space_released": None,
+                })
+            except OSError:
+                pass  # Retain files when even the local audit write is unavailable.
 
     def _terminate_active(self, *, strict: bool = False) -> bool:
         lease, identity = self._active_process()
@@ -403,10 +490,12 @@ class AgentTrainingRunner:
         contract: Mapping[str, Any],
         destination: Path,
         monitor: ExecutionLeaseMonitor,
+        *, source_response_factory=None,
     ) -> Path:
-        if str(contract.get("method") or "GET").upper() != "GET":
+        if source_response_factory is None and str(contract.get("method") or "GET").upper() != "GET":
             raise AgentTrainingRuntimeError("portable download method must be GET")
-        url = _absolute_http_url(contract.get("url"), "download.url")
+        url = (_absolute_http_url(contract.get("url"), "download.url")
+            if source_response_factory is None else None)
         headers = contract.get("headers")
         if headers is None:
             headers = {}
@@ -417,13 +506,13 @@ class AgentTrainingRunner:
         temporary = destination.with_name(f".{destination.name}.download")
         temporary.unlink(missing_ok=True)
         try:
-            response = self.transfer_session.get(
+            response = (source_response_factory() if source_response_factory is not None else self.transfer_session.get(
                 url,
                 headers={str(key): str(value) for key, value in headers.items()},
                 stream=True,
                 timeout=self.transfer_timeout,
                 allow_redirects=False,
-            )
+            ))
         except requests.RequestException as error:
             raise AgentTrainingRuntimeError(
                 f"portable download failed: {type(error).__name__}: {error}"
@@ -465,6 +554,47 @@ class AgentTrainingRunner:
                 response.close()
             except Exception:
                 pass
+
+    def _materialize_indexed_inputs(self, lease, workdir, monitor):
+        from .training_tasks import materialize_portable_dataset, resolve_remote_training_bundle, resolve_training_input_freeze
+        from .training_splits import SplitRequest, SplitMode
+        self._assert_active(monitor)
+        body = self.client.training_inputs_manifest(lease)
+        self._assert_active(monitor)
+        frozen = body.get("freeze")
+        inputs = lease.payload["inputs"]
+        if (not isinstance(frozen, Mapping) or inputs.get("type") != "frozen-manifest-v1"
+                or frozen.get("source_input_freeze_id") != inputs.get("input_freeze_id")):
+            raise AgentTrainingRuntimeError("frozen input origin identity changed")
+        split = frozen.get("split") or {}
+        request = SplitRequest(mode=SplitMode(split["mode"]),
+            train_image_ids=tuple(split["train_image_ids"]), test_image_ids=tuple(split["test_image_ids"]),
+            experiment_percent=split.get("experiment_percent"), validation_percent=split["validation_percent"])
+        rows, _schema, _manifest, snapshot = resolve_training_input_freeze(
+            frozen, request, seed=split["seed"], supplement_candidate_set=body.get("supplement_candidate_set"),
+        )
+        if (snapshot["snapshot_id"] != lease.payload["snapshot_id"]
+                or snapshot["dataset_revision_id"] != lease.payload["dataset_revision_id"]):
+            raise AgentTrainingRuntimeError("frozen dataset identity changed")
+        if (lease.payload.get("counts") != snapshot.get("counts")
+                or int(lease.payload.get("dataset_bytes") or 0) != sum(int(row["size_bytes"]) for row in rows)):
+            raise AgentTrainingRuntimeError("frozen dataset budget/counts changed")
+        # One bounded download buffer, not a complete second source dataset.
+        buffer = workdir / "input" / "source-image"
+        def materialize(row):
+            self._assert_active(monitor)
+            return self._download({"size_bytes": row["size_bytes"], "sha256": row["content_sha256"]},
+                buffer, monitor, source_response_factory=lambda: self.client.open_training_source(lease, row["id"]))
+        def progress(done, total, _item):
+            augmented=bool(_item.get('augmentation'))
+            self._heartbeat(monitor, progress=(11 + 2 * done / max(1,total)) if augmented else 2 + 9 * done / max(1, total),
+                stage="REMOTE_TRAINING_AUGMENTING" if augmented else "REMOTE_TRAINING_PREPARING_INPUTS", current_item=("生成跨设备增强图片 " if augmented else "已校验训练素材 ")+f"{done}/{total}")
+        try:
+            bundle = materialize_portable_dataset(workdir / "input", snapshot, rows,
+                materialize, defer_source_reads=True, progress=progress)
+            return resolve_remote_training_bundle(bundle / "manifest.json")
+        finally:
+            buffer.unlink(missing_ok=True)
 
     def _model_argument(
         self,
@@ -512,13 +642,71 @@ class AgentTrainingRunner:
             raise AgentTrainingRuntimeError(
                 "portable Ultralytics base model must be a .pt file"
             )
+        cached = self._copy_verified_installed_model(download, workdir, monitor)
+        if cached is not None:
+            self._heartbeat(
+                monitor,
+                progress=12,
+                stage="REMOTE_TRAINING_MODEL_CACHE_VERIFIED",
+                current_item="已校验本节点母模型 SHA256，复用已安装权重",
+            )
+            return str(cached)
         return str(
             self._download(
                 download,
-                workdir / "model" / file_name,
+                workdir / "input" / "model" / file_name,
                 monitor,
             )
         )
+
+    def _copy_verified_installed_model(
+        self,
+        download: Mapping[str, Any],
+        workdir: Path,
+        monitor: ExecutionLeaseMonitor,
+    ) -> Path | None:
+        """Reuse only the Agent's own content-addressed install, never a user path.
+
+        Keep a task-local copy so another installation/process cannot mutate the
+        model during a long training run. Invalid or missing cache is a miss;
+        the existing verified object-store download remains authoritative.
+        """
+        root = self.mother_model_install_dir
+        if root is None or root.is_symlink() or not root.is_dir():
+            return None
+        expected_size, sha = _expected_evidence(download)
+        source = root / f"managed-{sha}.pt"
+        if source.is_symlink() or not source.is_file():
+            return None
+        destination = workdir / "input" / "model" / f"managed-{sha}.pt"
+        temporary = destination.with_name(f".{destination.name}.copy")
+        try:
+            if source.stat().st_size != expected_size:
+                return None
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            # Task workspace is exclusively owned by this lease/generation.
+            temporary.unlink(missing_ok=True)
+            digest = hashlib.sha256()
+            copied = 0
+            with source.open("rb") as reader, temporary.open("xb") as writer:
+                for chunk in iter(lambda: reader.read(_TRANSFER_CHUNK_BYTES), b""):
+                    self._assert_active(monitor)
+                    copied += len(chunk)
+                    if copied > expected_size:
+                        return None
+                    digest.update(chunk)
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+            if copied != expected_size or digest.hexdigest() != sha:
+                return None
+            self._assert_active(monitor)
+            os.replace(temporary, destination)
+            return destination
+        except (OSError, ValueError):
+            return None
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _parameter(payload: Mapping[str, Any], key: str, default: Any) -> Any:
@@ -1114,6 +1302,9 @@ class AgentTrainingRunner:
             "early_stopping_patience",
             "best_epoch",
             "completed_epochs",
+            "training_started",
+            "usage_completed_epoch",
+            "usage_validation_observed",
             "requested_epochs",
             "runtime_stop_policy",
             "requested_device",
@@ -1168,6 +1359,9 @@ class AgentTrainingRunner:
             )
         dataset_revision_id = str(payload.get("dataset_revision_id") or "").strip()
 
+        if isinstance(payload.get("inputs"), Mapping) and (payload.get("model") or {}).get("type") != "object":
+            raise AgentTrainingRuntimeError("indexed training requires a verified preprovisioned model object")
+
         workdir = self.workdirs.prepare(lease)
         monitor = ExecutionLeaseMonitor(
             self.client,
@@ -1177,43 +1371,50 @@ class AgentTrainingRunner:
         )
         monitor.start()
         log_offset = 0
+        trainer_started = False
+        committed = False
+        model_evidence: list[dict[str, Any]] = []
         try:
             self._heartbeat(
                 monitor,
                 progress=2,
                 stage="REMOTE_TRAINING_DOWNLOADING_BUNDLE",
             )
-            bundle = payload.get("bundle")
-            if (
-                not isinstance(bundle, Mapping)
-                or str(bundle.get("type") or "") != "object"
-                or not isinstance(bundle.get("download"), Mapping)
-            ):
-                raise AgentTrainingRuntimeError(
-                    "portable training bundle download is missing"
-                )
-            bundle_download = bundle["download"]
-            archive = self._download(
-                bundle_download,
-                workdir / "input" / "training-bundle.zip",
-                monitor,
-            )
-
-            self._heartbeat(
-                monitor,
-                progress=7,
-                stage="REMOTE_TRAINING_VERIFYING_BUNDLE",
-            )
-            try:
-                verified_bundle = extract_training_bundle_archive(
-                    archive,
-                    workdir / "input" / "bundle",
+            indexed_inputs = isinstance(payload.get("inputs"), Mapping)
+            if indexed_inputs:
+                verified_bundle = self._materialize_indexed_inputs(lease, workdir, monitor)
+            else:
+                bundle = payload.get("bundle")
+                if (
+                    not isinstance(bundle, Mapping)
+                    or str(bundle.get("type") or "") != "object"
+                    or not isinstance(bundle.get("download"), Mapping)
+                ):
+                    raise AgentTrainingRuntimeError(
+                        "portable training bundle download is missing"
+                    )
+                bundle_download = bundle["download"]
+                archive = self._download(
                     bundle_download,
+                    workdir / "input" / "training-bundle.zip",
+                    monitor,
                 )
-            except RemoteTrainingTransportError as error:
-                raise AgentTrainingRuntimeError(
-                    f"{error.code}: {error}"
-                ) from error
+
+                self._heartbeat(
+                    monitor,
+                    progress=7,
+                    stage="REMOTE_TRAINING_VERIFYING_BUNDLE",
+                )
+                try:
+                    verified_bundle = extract_training_bundle_archive(
+                        archive,
+                        workdir / "input" / "bundle",
+                        bundle_download,
+                    )
+                except RemoteTrainingTransportError as error:
+                    raise AgentTrainingRuntimeError(
+                        f"{error.code}: {error}"
+                    ) from error
             if verified_bundle.snapshot_id != snapshot_id:
                 raise AgentTrainingRuntimeError(
                     "portable training bundle snapshot changed"
@@ -1288,6 +1489,7 @@ class AgentTrainingRunner:
                     stderr=subprocess.STDOUT,
                 )
                 self._set_active_process(lease, launched.identity)
+                trainer_started = True
                 try:
                     self.workdirs.persist_process_identity(
                         lease,
@@ -1469,8 +1671,10 @@ class AgentTrainingRunner:
                 snapshot_id=snapshot_id,
                 destination=workdir / "output" / "training-result.zip",
                 include_model_bytes=False,
+                **({"dataset_manifest": _read_json(verified_bundle.root / "manifest.json", {}),
+                    "input_freeze_id": payload["inputs"]["input_freeze_id"],
+                    "dataset_root": verified_bundle.root} if indexed_inputs else {}),
             )
-            model_evidence: list[dict[str, Any]] = []
             local_model_by_role: dict[str, Path] = {}
             for item in result_archive.models:
                 role = str(item.get("role") or "").strip().lower()
@@ -1684,6 +1888,7 @@ class AgentTrainingRunner:
                     "control plane returned unexpected training terminal "
                     f"status: {status or '<empty>'}"
                 )
+            committed = True
             return AgentTrainingOutcome(
                 lease.task_id,
                 lease.generation,
@@ -1759,7 +1964,8 @@ class AgentTrainingRunner:
             monitor.stop()
             _active_lease, active_identity = self._active_process()
             if active_identity is None:
-                self.workdirs.cleanup(lease)
+                self._cleanup_training_workdir(lease, trainer_started=trainer_started,
+                    committed=committed, model_evidence=model_evidence)
             # If exact process cleanup could not be proven, preserve both the
             # in-memory identity and generation workdir for retry/restart
             # recovery. Never erase the only evidence of a possibly live GPU

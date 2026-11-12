@@ -7,7 +7,7 @@ async function boot(page) {
 
 async function protectNewPageModal(page, pageName = '数据集') {
   await page.evaluate(name => window.setPage(name), pageName);
-  await expect(page.locator('#title')).toContainText(pageName);
+  await expect(page.locator('#title')).toContainText(pageName==='模型配置'?'AI 辅助配置':pageName);
   await page.evaluate(() => {
     const modal = document.getElementById('modal');
     document.getElementById('modalTitle').textContent = 'R2新页面保护';
@@ -38,7 +38,7 @@ test('stale final M4 model save cannot close or redraw the page selected afterwa
   });
 
   await page.evaluate(() => window.setPage('模型配置'));
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await page.evaluate(() => window.openModelConfigModalV35());
   await page.locator('#mcName').fill('R2视觉模型');
   await page.locator('#mcModel').fill('r2-vlm');
@@ -123,7 +123,7 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
   release();
   await page.waitForTimeout(900);
 
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('#modal'), 'stale clean confirm closed the newer page modal').not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle'), 'stale clean confirm replaced the newer page modal').toHaveText('R2新页面保护');
   await expect(page.locator('#actionFenceR2Sentinel'), 'stale clean confirm destroyed the newer page modal body').toHaveText('new-page-r2');
@@ -170,7 +170,7 @@ test('stale v60 AI review completion cannot patch or close UI owned by a newer p
   release();
   await page.waitForTimeout(700);
 
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('#modal'), 'stale v60 AI completion closed the newer page modal').not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle'), 'stale v60 AI completion replaced the newer page modal').toHaveText('R2新页面保护');
   await expect(page.locator('#actionFenceR2Sentinel'), 'stale v60 AI completion destroyed the newer page modal body').toHaveText('new-page-r2');

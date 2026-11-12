@@ -22,6 +22,15 @@ def test_sophon_normalizes_explicit_fp16_static_batch_one(chip):
     assert values["preprocessing"]["owner"] == "caller"
 
 
+def test_sophon_pt_export_class_order_is_checked_before_compiler():
+    trace = {"label_binding": {"status": "verified"}, "label_codes": ["smoke", "fire"]}
+    assert worker.verify_sophon_pt_class_identity(trace, {"0": "smoke", "1": "fire"}, is_pt=True) == "matched"
+    assert worker.verify_sophon_pt_class_identity(trace, None, is_pt=True) == "unavailable"
+    with pytest.raises(worker.ConversionError) as raised:
+        worker.verify_sophon_pt_class_identity(trace, {"0": "fire", "1": "smoke"}, is_pt=True)
+    assert raised.value.code == "MODEL_CLASS_IDENTITY_MISMATCH"
+
+
 def test_training_rectangle_remains_default_rectangle():
     values=derive_version_conversion_defaults({"training_lineage":{"parameters":{"actual":{"imgsz":[384,640]}}}})
     assert (values["input_height"], values["input_width"]) == (384,640)
@@ -41,6 +50,32 @@ def test_pt_export_uses_explicit_rectangle_without_interpolating_source(tmp_path
     assert "imgsz=[384, 640]" in script
     assert str(source) not in script
     assert str(source) in commands[0][3:]
+
+
+def test_pt_export_does_not_silently_reuse_old_onnx(tmp_path, monkeypatch):
+    source = tmp_path / "model.pt"
+    source.write_bytes(b"source")
+    source.with_suffix(".onnx").write_bytes(b"stale")
+    output = tmp_path / "out"
+    output.mkdir()
+    monkeypatch.setattr(worker, "run_cmd", lambda *args, **kwargs: "no new artifact")
+    with pytest.raises(RuntimeError, match="拒绝复用旧产物"):
+        worker.export_pt_to_onnx(source, output, {}, {}, tmp_path / "log")
+
+
+def test_pt_export_uses_reported_artifact_instead_of_stale_name(tmp_path, monkeypatch):
+    source = tmp_path / "model.pt"
+    source.write_bytes(b"source")
+    source.with_suffix(".onnx").write_bytes(b"stale")
+    fresh = tmp_path / "model_alternative.onnx"
+    output = tmp_path / "out"
+    output.mkdir()
+    def reported_export(*args, **kwargs):
+        fresh.write_bytes(b"new-export")
+        return f"__CONVERSION_ONNX_PATH__={fresh}\n"
+    monkeypatch.setattr(worker, "run_cmd", reported_export)
+    result = worker.export_pt_to_onnx(source, output, {}, {}, tmp_path / "log")
+    assert result.read_bytes() == b"new-export"
 
 
 def _onnx_identity(path, shape):
@@ -124,6 +159,116 @@ def test_sophon_probe_executes_tools_and_limits_advertised_chips(tmp_path):
     assert facts["supported_chips"] == ["bm1684x","bm1688"]
     assert facts["supported_precisions"] == ["fp16"]
     assert facts["calibration_available"]
+    assert facts["offline_reference_available"] is False
+
+
+def test_sophon_compiler_passes_official_reference_flags_when_sdk_supports_them(tmp_path, monkeypatch):
+    import numpy as np
+
+    source = tmp_path / "input.onnx"
+    source.write_bytes(b"isolated-model")
+    environment = {"tools": {"model_transform": "transform.py", "model_deploy": "deploy.py", "model_tool": "model_tool"},
+                   "python_path": "python", "version": "fixture", "chip_option": "--chip",
+                   "offline_reference_available": True, "offline_compare_all_available": True}
+
+    def sample(_onnx, out, _height, _width):
+        path = out / "input.npz"
+        np.savez(path, images=np.ones((1, 3, 32, 32), dtype=np.float32))
+        return path
+
+    commands = []
+
+    def run(argv, *args, **kwargs):
+        commands.append(argv)
+        if "--test_result" in argv:
+            np.savez(Path(argv[argv.index("--test_result") + 1]), output=np.ones((1, 5), dtype=np.float32))
+        if "--mlir" in argv and "--model_def" in argv:
+            Path(argv[argv.index("--mlir") + 1]).write_bytes(b"mlir")
+        if "--model" in argv:
+            Path(argv[argv.index("--model") + 1]).write_bytes(b"bmodel")
+        if "--info" in argv:
+            return "model chip: bm1688"
+        return ""
+
+    monkeypatch.setattr(worker, "_sophon_offline_reference_input", sample)
+    monkeypatch.setattr(worker, "run_cmd", run)
+    result = worker.build_sophon(source, tmp_path, {}, {"chip": "bm1688", "input_height": 32,
+        "input_width": 32, "precision": "fp16"}, None, tmp_path / "log", verified_toolchain=environment)
+    assert result.is_file()
+    assert "--test_input" in commands[0] and "--test_result" in commands[0]
+    assert "--test_input" in commands[1] and "--test_reference" in commands[1]
+    assert "--compare_all" not in commands[1]  # SDK capability alone must not expand the publishing gate.
+    receipt = json.loads((tmp_path / "sophon_validation.json").read_text(encoding="utf-8"))
+    assert receipt["model_validation_status"] == "incomplete"
+    assert receipt["compiler_numeric_status"] == "passed_synthetic_reference"
+    assert receipt["offline_reference"]["comparison_scope"] == "outputs_only"
+    assert receipt["offline_reference"]["compare_all"] is False
+    assert len(receipt["offline_reference"]["input"]["sha256"]) == 64
+
+
+def test_sophon_compiler_reference_failure_is_not_published(tmp_path, monkeypatch):
+    import numpy as np
+
+    source = tmp_path / "input.onnx"
+    source.write_bytes(b"model")
+    environment = {"tools": {"model_transform": "transform.py", "model_deploy": "deploy.py", "model_tool": "model_tool"},
+                   "python_path": "python", "offline_reference_available": True}
+
+    def sample(_onnx, out, _height, _width):
+        path = out / "input.npz"
+        np.savez(path, images=np.ones((1, 3, 32, 32), dtype=np.float32))
+        return path
+
+    def run(argv, *args, **kwargs):
+        if "--model_def" in argv:
+            Path(argv[argv.index("--mlir") + 1]).write_bytes(b"mlir")
+            np.savez(Path(argv[argv.index("--test_result") + 1]), output=np.ones((1, 5)))
+        if "--model" in argv:
+            raise RuntimeError("compiler comparison mismatch")
+        return ""
+
+    monkeypatch.setattr(worker, "_sophon_offline_reference_input", sample)
+    monkeypatch.setattr(worker, "run_cmd", run)
+    with pytest.raises(worker.ConversionError) as raised:
+        worker.build_sophon(source, tmp_path, {}, {"chip": "bm1688", "input_height": 32,
+            "input_width": 32, "precision": "fp16"}, None, tmp_path / "log", verified_toolchain=environment)
+    assert raised.value.code == "SOPHON_OFFLINE_REFERENCE_FAILED"
+    assert not list(tmp_path.glob("*.bmodel"))
+
+
+def test_sophon_comparison_diagnostic_opt_in_requires_sdk_support(tmp_path):
+    source = tmp_path / "input.onnx"
+    source.write_bytes(b"test")
+    environment = {"tools": {"model_transform": "x", "model_deploy": "y", "model_tool": "z"},
+                   "python_path": "python", "offline_reference_available": False,
+                   "offline_compare_all_available": False}
+    with pytest.raises(worker.ConversionError) as raised:
+        worker.build_sophon(source, tmp_path, {}, {"chip": "bm1688", "precision": "fp16",
+            "sophon_compare_all": True, "input_height": 32, "input_width": 32},
+            None, tmp_path / "log", verified_toolchain=environment)
+    assert raised.value.code == "SOPHON_COMPARE_ALL_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("message, code", [
+    ("CompilerError: unsupported operator ConvTranspose", "SOPHON_DEPLOY_FAILED"),
+    ("npz_tool.py compare: output not pass tolerance", "SOPHON_OFFLINE_REFERENCE_FAILED"),
+    ("compiler comparison mismatch", "SOPHON_OFFLINE_REFERENCE_FAILED"),
+])
+def test_sophon_deploy_error_classification_does_not_blame_numeric_unconditionally(message, code):
+    failure = worker.classify_sophon_deploy_failure(RuntimeError(message), reference_available=True)
+    assert failure.code == code
+
+
+def test_sophon_deploy_without_reference_does_not_claim_numeric_comparison():
+    failure = worker.classify_sophon_deploy_failure(RuntimeError("unsupported op"), reference_available=False)
+    assert failure.code == "SOPHON_DEPLOY_FAILED"
+
+
+def test_sophon_deploy_timeout_is_distinct_from_numeric_failure():
+    import subprocess
+    failure = worker.classify_sophon_deploy_failure(
+        subprocess.TimeoutExpired(["model_deploy.py"], 15), reference_available=True)
+    assert failure.code == "SOPHON_DEPLOY_TIMEOUT"
 
 
 def test_sophon_probe_existing_but_broken_tools_are_unavailable(tmp_path):
@@ -169,6 +314,10 @@ def test_sophon_worker_isolated_tool_protocol_records_manifest_and_unverified_st
     assert finished["execution_evidence"] == manifest["execution_evidence"]
     evidence = manifest["execution_evidence"]
     assert evidence["compiler_precision"] == "F16"
+    assert evidence["compiler_numeric_status"] == "unavailable"  # Stub SDK did not advertise reference checks.
+    assert evidence["deployment_contract_status"] == "incomplete"  # Historical fixture has no trusted binding evidence.
+    assert manifest["inference_contract"]["caller_acknowledged"] is False
+    assert manifest["inference_contract"]["output_decoder"] == "unverified_external"
     assert evidence["artifact_precision"] is None
     assert evidence["onnx_export"] == "reused_existing_onnx"
     assert manifest["source"] == trace

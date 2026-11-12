@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from functools import wraps
 import re
 import sqlite3
 import threading
@@ -156,7 +158,37 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
     )
 
 
+def _controlled_source_write(function):
+    @wraps(function)
+    def fenced(self, *args, **kwargs):
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            return function(self, *args, **kwargs)
+        path = getattr(self, "path", None)
+        if path is None:
+            path = Path(args[0])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from ..material_repository import _LIFECYCLE_LOCAL
+        # Existing flows can hold project->source while compatibility holds
+        # source->project. Never wait on the reverse edge in controlled mode.
+        timeout = 0 if getattr(_LIFECYCLE_LOCAL, "held", {}) else 60
+        with storage_source_lifecycle_fence(path, timeout=timeout):
+            return function(self, *args, **kwargs)
+    return fenced
+
+
 class StorageSourceRepository:
+    @classmethod
+    def open_readonly(cls, path: str | Path):
+        """No source defaults, schema upgrade, lifecycle write lock or mkdir."""
+        owner = cls.__new__(cls)
+        owner.path = Path(path)
+        owner._read_only = True
+        owner.reference_counter = lambda _source_id: 0
+        with closing(owner._connect()) as database:
+            database.execute("SELECT id,runtime_revision FROM storage_sources LIMIT 0")
+        return owner
+
+    @_controlled_source_write
     def __init__(
         self,
         path: str | Path,
@@ -201,6 +233,10 @@ class StorageSourceRepository:
                     raise
 
     def _connect(self) -> sqlite3.Connection:
+        if getattr(self, "_read_only", False):
+            database = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5, isolation_level=None)
+            database.row_factory = sqlite3.Row
+            return database
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
         # Configure lock waiting before any pragma that may need a schema/write
@@ -240,6 +276,7 @@ class StorageSourceRepository:
             raise RuntimeError("storage source repository has no default source")
         return _from_row(row)
 
+    @_controlled_source_write
     def create(self, value: Mapping[str, Any]) -> StorageSource:
         source_id = str(value.get("id") or "").strip()
         name = str(value.get("name") or "").strip()
@@ -276,6 +313,7 @@ class StorageSourceRepository:
                 raise
         return self.get(source_id)  # type: ignore[return-value]
 
+    @_controlled_source_write
     def update(self, source_id: str, changes: Mapping[str, Any]) -> StorageSource:
         current = self.get(source_id)
         if current is None:
@@ -321,6 +359,7 @@ class StorageSourceRepository:
             )
         return self.get(source_id)  # type: ignore[return-value]
 
+    @_controlled_source_write
     def set_default(self, source_id: str) -> StorageSource:
         source = self.get(source_id)
         if source is None:
@@ -357,6 +396,7 @@ class StorageSourceRepository:
                 raise KeyError(f"storage source does not exist: {source_id}")
         return self.get(source_id)  # type: ignore[return-value]
 
+    @_controlled_source_write
     def delete(self, source_id: str) -> bool:
         if str(source_id) == "default_local":
             raise ValueError("default local storage cannot be deleted")

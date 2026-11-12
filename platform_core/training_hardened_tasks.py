@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from platform_core.task_runtime.process_start_gate import execution_environment
+
 import os
 import re
 import shutil
@@ -530,9 +532,7 @@ def _run_checkpoint_validation(
     result_path = job_file.parent / "final-validation.json"
     controller = base.ProcessController()
 
-    context.repository.heartbeat(
-        context.task.task_id,
-        context.lease.lease_token,
+    context.heartbeat(
         progress=96,
         stage="recovering_checkpoint" if recovery else "final_validation",
         current_item=("恢复 checkpoint，正在独立验证" if recovery else "训练完成，正在独立验证最佳模型"),
@@ -544,23 +544,17 @@ def _run_checkpoint_validation(
             launched = base.launch_process(
                 argv,
                 cwd=root,
-                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, **execution_environment(context), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            context.repository.bind_process(
-                context.task.task_id,
-                context.lease.lease_token,
-                launched.identity,
-            )
+            context.bind_process(launched.identity)
             while launched.process.poll() is None:
                 if context.cancel_requested():
                     controller.terminate_tree(launched.identity)
                     raise InterruptedError("training cancelled during final validation")
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=97,
                     stage="final_validation",
                     current_item="独立验证 best.pt",
@@ -628,16 +622,12 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
             launched = base.launch_process(
                 launch_argv,
                 cwd=root,
-                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, **execution_environment(context), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            context.repository.bind_process(
-                context.task.task_id,
-                context.lease.lease_token,
-                launched.identity,
-            )
+            context.bind_process(launched.identity)
             next_metrics = 0.0
             completion_seen_at = None
             while launched.process.poll() is None:
@@ -645,9 +635,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     try:
                         controller.terminate_tree(launched.identity)
                     except PermissionError as error:
-                        context.repository.heartbeat(
-                            context.task.task_id,
-                            context.lease.lease_token,
+                        context.heartbeat(
                             stage="cancelling",
                             current_item=f"waiting for verified process cleanup: {error}",
                         )
@@ -662,9 +650,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     expected_models_root=expected_models_root,
                 ) is None:
                     completion_seen_at = completion_seen_at or time.monotonic()
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=95,
                         stage="finalizing",
                         current_item="verified training complete; finalizing",
@@ -673,9 +659,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                         try:
                             controller.terminate_tree(launched.identity)
                         except PermissionError as error:
-                            context.repository.heartbeat(
-                                context.task.task_id,
-                                context.lease.lease_token,
+                            context.heartbeat(
                                 progress=95,
                                 stage="finalizing",
                                 current_item=f"waiting for verified process cleanup: {error}",
@@ -695,9 +679,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                 )
                 if ready is not None:
                     checkpoint_ready = ready
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=95,
                         stage="cleaning_training_process",
                         current_item="训练主循环完成，正在释放训练进程资源",
@@ -706,9 +688,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                         controller.terminate_tree(launched.identity)
                     except PermissionError as error:
                         checkpoint_ready = None
-                        context.repository.heartbeat(
-                            context.task.task_id,
-                            context.lease.lease_token,
+                        context.heartbeat(
                             progress=95,
                             stage="cleaning_training_process",
                             current_item=f"waiting for verified process cleanup: {error}",
@@ -717,11 +697,9 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                         continue
                     break
 
-                current_task = context.repository.get(context.task.task_id)
+                current_task = context.assert_current_execution()
                 if current_task is not None and current_task.stage == "paused":
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         stage="paused",
                     )
                     time.sleep(0.25)
@@ -730,16 +708,14 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     metrics = base.read_metrics(
                         context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")
                     )
-                    update_reservation_evidence(context.repository, context.lease, metrics)
+                    context.run_owned(lambda: update_reservation_evidence(context.repository, context.lease, metrics))
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
                 training_started = bool(
                     job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
                 )
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=max(20, min(95, progress)),
                     stage="training" if training_started else "trainer_startup",
                     current_item=current,

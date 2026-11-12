@@ -12,7 +12,7 @@ test('opening training modal does not wait for GPU device probe', () => {
   assert.notEqual(end, -1, 'canonical training open owner must have an end');
   const block = source.slice(start, end);
   const modalOpen = block.indexOf('window.openTrainingCreateDialog429?.(algorithmId)');
-  const deviceProbe = block.indexOf("api('/api/v62/training-devices')");
+  const deviceProbe = block.indexOf("api('/api/v62/training-devices',{signal})");
   assert.notEqual(modalOpen, -1, 'canonical owner must open the real training form');
   assert.notEqual(deviceProbe, -1, 'device probe must remain present');
   assert.ok(modalOpen < deviceProbe, 'modal must open before the potentially slow GPU probe starts');
@@ -25,9 +25,10 @@ test('training device inventory persists across browser reloads and revalidates 
   assert.match(source, /localStorage\.setItem\(trainingDeviceCacheKeyV3\(\)/);
   assert.match(source, /localStorage\.removeItem\(trainingDeviceCacheKeyV3\(\)\)/);
   assert.match(source, /state\.trainingDevicesV3\?\.options\?\.length\?state\.trainingDevicesV3:restoreTrainingDeviceCacheV3\(\)/);
-  assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
+  assert.match(source, /if\(!cacheFresh\)void window\.PlatformCore\.withRequestDeadline\(signal=>api\('\/api\/v62\/training-devices',\{signal\}\)/);
   assert.match(source, /applyDevices\(cachedDevices,\{persist:false,paint:false\}\)/);
-  assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
+  assert.match(source,/if\(!currentPreparation\(\)\)return;state\.trainingDevicesV3=/);
+  assert.match(source, /if\(!cacheFresh\)void window\.PlatformCore\.withRequestDeadline\(signal=>api\('\/api\/v62\/training-devices',\{signal\}\)/);
 });
 
 
@@ -41,5 +42,14 @@ test('device revalidation keeps scheduler-owned auto ahead of stale concrete GPU
   const draftWrite=block.indexOf('TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}})');
   assert.ok(domWrite>=0&&draftWrite>domWrite);
   assert.match(block,/autoOption=options\.find\(row=>String\(row\?\.id\|\|''\)==='auto'/);
-  assert.match(block,/requestedDevice=autoOption\?'auto'/);
+  const owner=source.slice(start,end+'renderSplit()}'.length);
+  for(const [requested,expected] of [['auto','auto'],['cpu','cpu'],['gone-gpu','auto']]){
+    const state={trainingDraft:{resource:{device:requested}}},control={},writes=[];
+    const apply=new Function('state','currentPreparation','persistTrainingDeviceCacheV3','document','window','renderSplit',
+      owner+';return applyDevices;')(state,()=>true,()=>{}, {getElementById:()=>control},
+        {TrainingDraftRuntime:{update:value=>writes.push(value)}},()=>{});
+    apply({recommended:'cuda:0',options:[{id:'auto',available:true},{id:'cpu',available:true},{id:'cuda:0',available:true}]});
+    assert.equal(control.value,expected);
+    assert.equal(writes.at(-1).resource.device,expected);
+  }
 });

@@ -99,7 +99,7 @@ def test_bootstrap_snapshot_is_pre_serialized_without_changing_json(monkeypatch)
     )
     monkeypatch.setattr(app_module, "_v53_choose_project", lambda projects, _preferred: projects[0])
 
-    response = app_module.v53_bootstrap_snapshot("")
+    response = app_module.v53_bootstrap_snapshot("",core=False)
 
     assert isinstance(response, Response)
     payload = json.loads(response.body)
@@ -128,7 +128,7 @@ def test_refreshed_bootstrap_counts_each_project_once_and_replaces_cache(monkeyp
         lambda project_id: {"project": {"id": project_id}, "generated_at": "fresh"},
     )
 
-    response = app_module.v53_bootstrap_snapshot("p2", refresh=True)
+    response = app_module.v53_bootstrap_snapshot("p2", refresh=True,core=False)
     payload = json.loads(response.body)
 
     assert calls == ["p1", "p2", "p3"]
@@ -654,6 +654,11 @@ def test_clean_confirmation_updates_only_frozen_selection_without_full_table_mut
         app_module,
         "_v47_frozen_clean_selection_ids",
         lambda _task_id: image_ids,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v47_validate_clean_confirmation",
+        lambda _project_id, _task_id: set(image_ids),
     )
     monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
     monkeypatch.setattr(app_module, "shared_task_artifacts", lambda: FakeArtifacts())

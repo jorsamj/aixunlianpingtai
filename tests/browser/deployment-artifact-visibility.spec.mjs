@@ -20,7 +20,7 @@ test('completed conversion becomes visible in canonical version dialog without m
   let retiredArtifactCalls = 0;
 
   await page.route(
-    `**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`,
+    `**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`,
     route => {
       historyCalls += 1;
       const item = {
@@ -92,6 +92,7 @@ test('completed conversion becomes visible in canonical version dialog without m
   await expect(dialog).toBeVisible();
   const job = dialog.locator('[data-conversion-job-id="deploy-artifact-job"]');
   await expect(job.locator('[data-conversion-progress]')).toHaveAttribute('data-progress', '42.00');
+  await job.locator('.convert428-job-details > summary').click();
   await expect(job.getByText('converted.onnx', {exact: true})).toHaveCount(0);
 
   complete = true;

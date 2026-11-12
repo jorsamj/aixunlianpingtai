@@ -14,7 +14,7 @@ function region(source,startToken,endToken) {
 
 test('durable ZIP completion keeps review ownership and refreshes only label/material domains', () => {
   const owner=region(zipRuntime,'async function applyCompletion(project,job,reason)','function publishTaskCenterJob');
-  assert.match(owner,/completeZipImportReview412\?\.\(id\)/);
+  assert.match(owner,/completeZipImportReview412\?\.\(id,\{autoOpen:false\}\)/);
   assert.match(owner,/refreshLabels414\?\.\(false\)/);
   assert.match(owner,/reloadMaterialPage61\?\.\(\)/);
   assert.doesNotMatch(owner,/loadRelated\s*\(/);

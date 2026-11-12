@@ -9,9 +9,9 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .auto_label import provider_factory
+from .auto_label import provider_factory, coordinate_contract
 from .prompts import render_prompt, template_version_id, version_template
-from .secrets import KeyringSecretStore
+from .secrets import KeyringSecretStore, SecretStoreUnavailable
 
 
 _SECRET_FIELDS = frozenset({
@@ -64,6 +64,7 @@ def freeze_model_config(config: Mapping[str, Any]) -> tuple[dict[str, Any], str]
     request.json. Workers resolve that reference only when the task executes.
     """
     snapshot = _json_clone(dict(config))
+    snapshot.update(coordinate_contract(snapshot))
     for key in _SECRET_FIELDS:
         snapshot.pop(key, None)
     snapshot["headers_json"] = _clean_headers(snapshot.get("headers_json"))
@@ -72,6 +73,22 @@ def freeze_model_config(config: Mapping[str, Any]) -> tuple[dict[str, Any], str]
         raise ValueError("AI_MODEL_CONFIG_ID_MISSING: annotation model configuration has no id")
     if not str(snapshot.get("model_name") or "").strip():
         raise ValueError("AI_MODEL_NAME_MISSING: annotation model name is empty")
+    from .inference_policy import resolve_inference_policy
+    if not snapshot.get("inference_account_identity") and snapshot.get("secret_ref"):
+        reference = str(snapshot["secret_ref"])
+        try:
+            credential = (os.environ.get(reference[4:]) if reference.startswith("env:")
+                          else KeyringSecretStore().get(reference))
+        except SecretStoreUnavailable:
+            # Identity enrichment must not turn freezing a historical reference
+            # into a headless Keyring precondition. Without credential evidence
+            # capacity remains conservative; execution still requires the key.
+            credential = None
+        if credential:
+            snapshot["inference_account_identity"] = hashlib.sha256(credential.encode()).hexdigest()
+    snapshot["inference_execution_policy"] = resolve_inference_policy(snapshot)
+    if snapshot.get("secret_ref") and not snapshot.get("inference_account_identity"):
+        snapshot["inference_execution_policy"].update(concurrency=1, max_attempts=1, evidence_status="credential_unavailable")
     body = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     revision = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return snapshot, revision
@@ -112,14 +129,20 @@ def build_annotation_prompt(cfg, labels, *, width, height, business_instruction,
     if not template:
         template = DEFAULT_ANNOTATION_PROMPT
     if "{{" in template:
-        return render_prompt(
+        rendered = render_prompt(
             template,
             labels=labels,
             width=width,
             height=height,
             business_instruction=business_instruction,
         )
-    return template.replace("{labels}", "、".join(str(item.get("code")) for item in labels))
+    else:
+        rendered = template.replace("{labels}", "、".join(str(item.get("code")) for item in labels))
+    contract = coordinate_contract(cfg, legacy=True)
+    if contract["coordinate_space"] == "legacy_auto":
+        return rendered
+    return rendered + "\n平台受控坐标合同（优先于上述自定义要求）：仅返回 JSON object boxes；字段 x1,y1,x2,y2 的依次含义为 " + contract["coordinate_order"] + "; coordinate_origin=" + contract.get("coordinate_origin", "top_left") + "; coordinate_image_space=" + contract.get("coordinate_image_space", "original_input") + "; coordinate_space=" + contract["coordinate_space"] + f"；图像坐标基准为原始输入 {width}x{height}。不得自行缩放或改换坐标顺序；无目标返回 boxes:[]。"
+
 
 
 def prepare_request(
@@ -238,14 +261,16 @@ def prepare_request(
             next((item for item in configs if str(item.get("id")) == selected_id), None)
             if selected_id
             else next(
-                (item for item in configs if item.get("default_for_annotation")),
-                configs[0] if configs else None,
+                (item for item in configs if item.get("default_for_annotation") and item.get("enabled") is not False),
+                next((item for item in configs if item.get("enabled") is not False), None),
             )
         )
         if not config:
             raise ValueError(
                 "AI_MODEL_CONFIG_NOT_FOUND: configure and select an available annotation model"
             )
+        if config.get("enabled") is False:
+            raise ValueError("AI_MODEL_DISABLED: selected annotation model is disabled")
         snapshot, revision = freeze_model_config(config)
         prepared.update({
             "model_config_id": snapshot["id"],
@@ -369,6 +394,12 @@ def prepare_request(
         raise ValueError(
             "AI_MODEL_SECRET_UNAVAILABLE: frozen model credential reference is unavailable to this Worker"
         )
+    if secret:
+        identity = hashlib.sha256(secret.encode()).hexdigest()
+        frozen_identity = runtime_config.get("inference_account_identity")
+        if frozen_identity and frozen_identity != identity:
+            raise ValueError("AI_MODEL_CREDENTIAL_CHANGED: frozen model credential changed; create a new task")
+        runtime_config["inference_account_identity"] = identity
     runtime_config["_api_key"] = secret or ""
     runtime_config["headers_json"] = _clean_headers(runtime_config.get("headers_json"))
     public_config = {

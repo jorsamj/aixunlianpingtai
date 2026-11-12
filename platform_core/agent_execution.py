@@ -301,6 +301,13 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
         )
 
     result: dict[str, Any] = {}
+    # Authenticated TRAINING result evidence must survive transport normalization.
+    # A truthy string is not execution evidence.
+    for key in ('training_started', 'usage_completed_epoch', 'usage_validation_observed'):
+        if key in value:
+            if type(value[key]) is not bool:
+                raise AgentExecutionError('REMOTE_RESULT_METADATA_INVALID', f'{key} must be boolean', 422)
+            result[key] = value[key]
     if "ok" in value:
         result["ok"] = bool(value.get("ok"))
 
@@ -366,6 +373,30 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
                 if type(evidence[key]) is not bool:
                     raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"execution_evidence.{key} must be boolean", 422)
                 clean[key] = evidence[key]
+        # Keep verified channel adaptation facts when Agent transports the result.
+        for field in ("source_color_order", "input_color_order"):
+            if field in evidence:
+                value_color = evidence[field]
+                if value_color is not None and value_color not in ("rgb", "bgr"):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"invalid {field}", 422)
+                clean[field] = value_color
+        adapter = evidence.get("color_adapter")
+        if adapter is not None:
+            if not isinstance(adapter, dict) or set(adapter) - {
+                "source_color_order", "input_color_order", "status", "applied",
+                "verified", "method", "check"
+            }:
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid color adapter evidence", 422)
+            for field in ("source_color_order", "input_color_order"):
+                if field in adapter and adapter[field] not in ("rgb", "bgr"):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter color order", 422)
+            for field in ("applied", "verified"):
+                if field in adapter and type(adapter[field]) is not bool:
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter verification", 422)
+            for field in ("status", "method", "check"):
+                if field in adapter and (not isinstance(adapter[field], str) or len(adapter[field]) > 120):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter method", 422)
+            clean["color_adapter"] = dict(adapter)
         shape = evidence.get("onnx_input_shape")
         if shape is not None:
             if not isinstance(shape, list) or len(shape)!=4 or any(type(d) is not int or not 0<d<=8192 for d in shape):
@@ -535,6 +566,8 @@ class AgentExecutionService:
         material_scan_read_provider=None,
         clean_selection_page_provider=None,
         clean_selection_read_provider=None,
+        training_inputs_provider=None,
+        model_install_asset_provider=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -550,6 +583,8 @@ class AgentExecutionService:
         self.material_scan_read_provider = material_scan_read_provider
         self.clean_selection_page_provider = clean_selection_page_provider
         self.clean_selection_read_provider = clean_selection_read_provider
+        self.training_inputs_provider = training_inputs_provider
+        self.model_install_asset_provider = model_install_asset_provider
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -1007,6 +1042,12 @@ class AgentExecutionService:
                 "remote execution heartbeat lost ownership",
                 409,
             ) from error
+        if current.kind is TaskKind.TRAINING and str(stage or '') == 'first_batch':
+            from .training_material_usage import TrainingMaterialUsage
+            self._owned_execution(node_id, node_token, task_id, execution_lease_token, execution_generation)
+            TrainingMaterialUsage(self.repository).record_execution(
+                task_id, first_batch=True, generation=int(execution_generation),
+                owner=(task_id, execution_lease_token, int(execution_generation)))
         if resolution is not None or runtime is not None:
             # Re-prove generation/node ownership immediately before publishing
             # Agent-observed training truth. This projects the one frozen
@@ -1077,6 +1118,164 @@ class AgentExecutionService:
         )
         self.artifacts.append_log(task.task_id, task.log_ref, value)
         return {"ok": True, "bytes": len(value.encode("utf-8"))}
+
+    def _training_inputs(self, node_id, node_token, task_id, execution_lease_token,
+                         execution_generation, *, image_id=None):
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        remote = payload.get("remote_execution")
+        training = remote.get("training") if isinstance(remote, dict) else None
+        if (task.kind is not TaskKind.TRAINING or not isinstance(training, dict)
+                or type(training.get("schema_version")) is not int
+                or training["schema_version"] != 3
+                or not callable(self.training_inputs_provider)):
+            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_UNAVAILABLE",
+                                      "frozen training inputs are unavailable", 409)
+        try:
+            result = self.training_inputs_provider(task, payload, image_id=image_id)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_TRAINING_INPUTS_FAILED")),
+                str(error), int(getattr(error, "status_code", 500)),
+            ) from error
+        if not isinstance(result, dict):
+            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "invalid input contract", 500)
+        return result
+
+    def training_inputs_manifest(self, node_id, node_token, task_id,
+                                 execution_lease_token, execution_generation):
+        return self._training_inputs(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+
+    def training_source_read(self, node_id, node_token, task_id,
+                             execution_lease_token, execution_generation, *, image_id):
+        from fastapi.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        # Authenticate before even validating the requested source identity.
+        self._owned_execution(node_id, node_token, task_id,
+                              execution_lease_token, execution_generation)
+        if not isinstance(image_id, str) or not image_id.strip():
+            raise AgentExecutionError("REMOTE_TRAINING_INPUT_ID_INVALID", "image_id is required", 422)
+        contract = self._training_inputs(node_id, node_token, task_id,
+                                        execution_lease_token, execution_generation, image_id=image_id)
+        reader = contract.get("reader")
+        try:
+            size = contract.get("size_bytes")
+            sha = contract.get("sha256")
+            if (type(size) is not int or size <= 0 or not isinstance(sha, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{64}", sha)
+                    or not callable(getattr(reader, "read", None))
+                    or not callable(getattr(reader, "close", None))):
+                raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "invalid source contract", 500)
+            def chunks():
+                remaining = size
+                try:
+                    while remaining:
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        chunk = reader.read(min(1024 * 1024, remaining))
+                        if not isinstance(chunk, bytes) or not chunk or len(chunk) > remaining:
+                            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "source size mismatch", 409)
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        remaining -= len(chunk)
+                        if remaining == 0 and reader.read(1) != b"":
+                            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "source exceeds frozen size", 409)
+                        yield chunk
+                finally:
+                    reader.close()
+            return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                     headers={"Content-Length": str(size), "X-Content-SHA256": sha,
+                                              "Cache-Control": "private, no-store",
+                                              "X-Content-Type-Options": "nosniff"},
+                                     background=BackgroundTask(reader.close))
+        except BaseException:
+            if callable(getattr(reader, "close", None)):
+                reader.close()
+            raise
+
+    def model_install_source(self, node_id, node_token, task_id,
+                             execution_lease_token, execution_generation):
+        """Lease-fenced transfer of one verified asset, never an arbitrary path."""
+        from fastapi.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        task = self._owned_execution(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+        payload = self._read_task_payload(task)
+        asset_id = str(payload.get("asset_id") or "")
+        if (task.kind is not TaskKind.MODEL_INSTALL
+                or str(payload.get("node_id") or "") != node_id
+                or not callable(self.model_install_asset_provider)):
+            raise AgentExecutionError("MODEL_INSTALL_UNAVAILABLE", "model install is not authorized", 409)
+        asset = self.model_install_asset_provider(asset_id)
+        if (not isinstance(asset, dict)
+                or str(asset.get("sha256") or "") != str(payload.get("sha256") or "")
+                or asset.get("size_bytes") != payload.get("size_bytes")):
+            raise AgentExecutionError("MODEL_INSTALL_ASSET_CHANGED", "verified model asset changed", 409)
+        from pathlib import Path
+        path = Path(str(asset.get("path") or ""))
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != asset["size_bytes"]:
+            raise AgentExecutionError("MODEL_INSTALL_ASSET_MISSING", "model asset is unavailable", 409)
+        stream = path.open("rb")
+        size = int(asset["size_bytes"])
+        try:
+            def chunks():
+                remaining = size
+                try:
+                    while remaining:
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        chunk = stream.read(min(4 * 1024 * 1024, remaining))
+                        if not chunk:
+                            raise AgentExecutionError("MODEL_INSTALL_SOURCE_TRUNCATED", "model changed during transfer", 409)
+                        remaining -= len(chunk)
+                        yield chunk
+                    if stream.read(1):
+                        raise AgentExecutionError("MODEL_INSTALL_SOURCE_CHANGED", "model grew during transfer", 409)
+                finally:
+                    stream.close()
+            return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                     headers={"Content-Length": str(size),
+                                              "X-Content-SHA256": str(asset["sha256"]),
+                                              "Cache-Control": "private, no-store",
+                                              "X-Content-Type-Options": "nosniff"},
+                                     background=BackgroundTask(stream.close))
+        except BaseException:
+            stream.close()
+            raise
+
+    def model_install_receipt(self, node_id, node_token, task_id,
+                              execution_lease_token, execution_generation, receipt):
+        task = self._owned_execution(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+        payload = self._read_task_payload(task)
+        if task.kind is not TaskKind.MODEL_INSTALL or str(payload.get("node_id")) != node_id:
+            raise AgentExecutionError("MODEL_INSTALL_UNAVAILABLE", "model install is not authorized", 409)
+        if not isinstance(receipt, dict) or (
+            str(receipt.get("asset_id") or "") != str(payload.get("asset_id") or "")
+            or str(receipt.get("sha256") or "") != str(payload.get("sha256") or "")
+            or type(receipt.get("size_bytes")) is not int
+            or receipt["size_bytes"] != payload.get("size_bytes")
+        ):
+            raise AgentExecutionError("MODEL_INSTALL_RECEIPT_INVALID", "installed asset evidence mismatch", 422)
+        path = str(receipt.get("path") or "")
+        if (not path or len(path) > 600 or "\x00" in path or ".." in path.split("/")
+                or not path.startswith("/")):
+            raise AgentExecutionError("MODEL_INSTALL_RECEIPT_INVALID", "installed path evidence invalid", 422)
+        self._owned_execution(node_id, node_token, task_id,
+                              execution_lease_token, execution_generation)
+        ref = f"model-install/{int(execution_generation)}/receipt.json"
+        self.artifacts.atomic_write_json(task.task_id, ref, {
+            "asset_id": payload["asset_id"], "sha256": payload["sha256"],
+            "size_bytes": payload["size_bytes"], "node_id": node_id,
+            "path": path, "execution_generation": int(execution_generation),
+            "verified_by": "agent-sha256",
+        })
+        return {"accepted": True, "result_ref": ref}
 
     def material_scan_page(
         self,
@@ -2063,6 +2262,19 @@ class AgentExecutionService:
                 "cancel-requested execution may only finish as CANCELLED",
                 409,
             )
+        if current.kind is TaskKind.MODEL_INSTALL and target is TaskStatus.SUCCEEDED:
+            receipt_ref = f"model-install/{int(execution_generation)}/receipt.json"
+            receipt = self.artifacts.read_json(current.task_id, receipt_ref, default={})
+            payload = self._read_task_payload(current)
+            if (not isinstance(receipt, dict)
+                    or receipt.get("asset_id") != payload.get("asset_id")
+                    or receipt.get("sha256") != payload.get("sha256")
+                    or receipt.get("size_bytes") != payload.get("size_bytes")
+                    or receipt.get("node_id") != node_id
+                    or receipt.get("execution_generation") != int(execution_generation)):
+                raise AgentExecutionError("MODEL_INSTALL_RECEIPT_MISSING",
+                                          "verified node installation receipt is required", 409)
+            result_ref = receipt_ref
         if target in {
             TaskStatus.SUCCEEDED,
             TaskStatus.PARTIAL_SUCCESS,
@@ -2141,6 +2353,8 @@ def agent_executor_router(
     material_scan_read_provider=None,
     clean_selection_page_provider=None,
     clean_selection_read_provider=None,
+    training_inputs_provider=None,
+    model_install_asset_provider=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -2160,6 +2374,8 @@ def agent_executor_router(
             material_scan_read_provider=material_scan_read_provider,
             clean_selection_page_provider=clean_selection_page_provider,
             clean_selection_read_provider=clean_selection_read_provider,
+            training_inputs_provider=training_inputs_provider,
+            model_install_asset_provider=model_install_asset_provider,
         )
 
     def token(authorization: str | None) -> str:
@@ -2240,6 +2456,35 @@ def agent_executor_router(
             invoke(_execution_generation, payload.get("execution_generation")),
             str(payload.get("text") or ""),
         )
+
+    @router.post("/executions/{task_id}/training-inputs/manifest")
+    def training_inputs_manifest(node_id: str, task_id: str, payload: dict = Body(...),
+                                 authorization: str | None = Header(default=None)):
+        return invoke(service().training_inputs_manifest, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")))
+
+    @router.post("/executions/{task_id}/training-inputs/read")
+    def training_source_read(node_id: str, task_id: str, payload: dict = Body(...),
+                             authorization: str | None = Header(default=None)):
+        return invoke(service().training_source_read, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")),
+                      image_id=payload.get("image_id"))
+
+    @router.post("/executions/{task_id}/mother-model/read")
+    def read_mother_model(node_id: str, task_id: str, payload: dict = Body(...),
+                          authorization: str | None = Header(default=None)):
+        return invoke(service().model_install_source, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")))
+
+    @router.post("/executions/{task_id}/mother-model/receipt")
+    def confirm_mother_model(node_id: str, task_id: str, payload: dict = Body(...),
+                             authorization: str | None = Header(default=None)):
+        return invoke(service().model_install_receipt, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")), payload.get("receipt"))
 
     @router.post("/executions/{task_id}/material-scan/page")
     def material_scan_page(

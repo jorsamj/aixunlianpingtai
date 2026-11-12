@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
+from filelock import Timeout
+from starlette.requests import Request
 
 from .task_runtime import TaskKind, TaskStatus
 
@@ -164,10 +167,32 @@ def _primary_failure(task, failure: Mapping[str, Any]) -> dict[str, Any]:
         "RESOURCE_MANUAL_INVALID": "手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。",
         "GPU_MEMORY_INSUFFICIENT": "当前 GPU 资源不足以安全启动训练，请调整配置或等待可用资源。",
     }
+    primary_message = messages.get(str(code or ""), raw)
+    if code == "RESOURCE_MANUAL_INVALID" and "host RAM budget exceeded" in raw:
+        memory = re.search(
+            r"estimated=(\d+) bytes, budget=(\d+) bytes, "
+            r"suggested batch=(\d+), workers=(\d+)", raw,
+        )
+        if memory:
+            estimated, budget, batch, workers = (int(part) for part in memory.groups())
+            primary_message = (
+                f"执行节点内存预算不足：当前配置估算 {estimated / 1024**3:.1f} GiB，"
+                f"允许预算 {budget / 1024**3:.1f} GiB；"
+                f"可尝试 Batch {batch}、Workers {workers}，或使用自动资源配置。"
+            )
+    elif "Insufficient disk space for training bundle" in raw:
+        disk = re.search(r"free=(\d+) bytes, required=(\d+) bytes", raw)
+        if disk:
+            free, required = (int(part) for part in disk.groups())
+            primary_message = (
+                f"训练素材准备磁盘空间不足：剩余 {free / 1024**3:.1f} GiB，"
+                f"本次准备预计至少需要 {required / 1024**3:.1f} GiB；"
+                "请释放可安全回收的工作空间或减少任务数据量。"
+            )
     return {
         "primary_error_code": code,
         "primary_stage": stage,
-        "primary_message": messages.get(str(code or ""), raw),
+        "primary_message": primary_message,
         "secondary_diagnostics": diagnostics,
     }
 
@@ -485,7 +510,10 @@ def training_recovery_router(
     agent_material_scan_read_provider=None,
     agent_clean_selection_page_provider=None,
     agent_clean_selection_read_provider=None,
+    agent_training_inputs_provider=None,
+    agent_model_install_asset_provider=None,
     project_path_provider=None,
+    workspace_actor_provider=None,
 ):
     from fastapi import APIRouter, Body, HTTPException, Query
 
@@ -497,6 +525,78 @@ def training_recovery_router(
         if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
             raise HTTPException(status_code=404, detail="训练任务不存在")
         return task
+
+    def workspace_service(project_id):
+        if project_path_provider is None:
+            raise HTTPException(status_code=503, detail="训练临时空间服务不可用")
+        from .training_workspace_lifecycle import TrainingWorkspaceLifecycle
+        return TrainingWorkspaceLifecycle(
+            Path(project_path_provider(project_id)).parent.parent,
+            task_repository(), task_artifacts(),
+        )
+
+    @recovery_router.get("/workspace-history")
+    def workspace_history(project_id: str, after: str = "", limit: int = Query(default=20, ge=1, le=20)):
+        get_project(project_id)
+        return {"ok": True, **workspace_service(project_id).history_page(project_id, after=after, limit=limit)}
+
+    @recovery_router.get("/{task_id}/workspace")
+    def workspace_preview(project_id: str, task_id: str):
+        require_task(project_id, task_id)
+        return {"ok": True, "workspace": workspace_service(project_id).inspect(project_id, task_id)}
+
+    @recovery_router.post("/{task_id}/workspace/cleanup")
+    def workspace_cleanup(project_id: str, task_id: str, request: Request, payload: dict = Body(...)):
+        require_task(project_id, task_id)
+        if workspace_actor_provider is None:
+            raise HTTPException(status_code=503, detail="真实登录身份服务不可用")
+        actor = workspace_actor_provider(request, project_id)
+        actor_id = str((actor or {}).get("actor_id") or "").strip()
+        if not actor_id:
+            raise HTTPException(status_code=401, detail="请先登录平台")
+        if (payload.get("confirm") != "release_training_workspace"
+                or type(payload.get("attempt")) is not int or not payload.get("snapshot_id")):
+            raise HTTPException(status_code=422, detail="请核对临时空间预览并明确确认释放")
+        try:
+            result = workspace_service(project_id).cleanup(
+                project_id, task_id, actor=actor_id, expected_attempt=payload["attempt"],
+                expected_snapshot_id=str(payload["snapshot_id"]),
+            )
+        except RuntimeError as error:
+            code = getattr(error, "workspace_code", "TRAINING_WORKSPACE_PROTECTED")
+            retryable = bool(getattr(error, "workspace_retryable", False))
+            # Retryable is a *recovery hint*, not automatically HTTP 503.
+            # A stale attempt/snapshot is a client conflict (409); low disk
+            # space is transient service unavailability (503).
+            status = 503 if code == "DISK_SPACE_INSUFFICIENT" else 409
+            blockers = [item for item in str(error).split(",")
+                        if re.fullmatch(r"[A-Z][A-Z0-9_]*", item)]
+            raise HTTPException(status_code=status, detail={
+                "code": code, "blockers": blockers or [code],
+                "retryable": retryable,
+                "stage": getattr(error, "workspace_stage", None),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
+        except Timeout as error:
+            raise HTTPException(status_code=503, detail={
+                "code": "WORKSPACE_BUSY", "retryable": True,
+                "stage": getattr(error, "workspace_stage", "owner_lock"),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
+        except sqlite3.Error as error:
+            raise HTTPException(status_code=503, detail={
+                "code": "WORKSPACE_DATABASE_BUSY", "retryable": True,
+                "stage": getattr(error, "workspace_stage", None),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
+        except OSError as error:
+            raise HTTPException(status_code=503, detail={
+                "code": getattr(error, "workspace_code", "TRAINING_WORKSPACE_RETRYABLE"),
+                "message": "临时空间释放结果未确认，请重新核验",
+                "retryable": True, "stage": getattr(error, "workspace_stage", None),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
+        return {"ok": True, "workspace": result}
 
     @recovery_router.get("/{task_id}/input-diagnosis")
     def input_diagnosis(project_id: str, task_id: str,
@@ -692,5 +792,7 @@ def training_recovery_router(
         material_scan_read_provider=agent_material_scan_read_provider,
         clean_selection_page_provider=agent_clean_selection_page_provider,
         clean_selection_read_provider=agent_clean_selection_read_provider,
+        training_inputs_provider=agent_training_inputs_provider,
+        model_install_asset_provider=agent_model_install_asset_provider,
     ))
     return root

@@ -1,5 +1,6 @@
 import pytest
 import app as api
+from datetime import datetime, timezone
 from fastapi import HTTPException
 from platform_core.task_runtime import TaskKind
 from types import SimpleNamespace
@@ -9,13 +10,15 @@ from contextlib import nullcontext
 def test_sophon_creation_requires_live_chip_support(tmp_path, monkeypatch, params):
     source=tmp_path/'model.onnx';source.write_bytes(b'onnx')
     monkeypatch.setattr(api,'_resolve_deploy_source', lambda *a: {'kind':'imported','path':str(source)})
-    monkeypatch.setattr(api,'_deploy_resource_by_id',lambda *a: {'id':'sophon-remote','kind':'sophon','mode':'remote','status':'ready','targets':['sophon'],'supported_chips':['bm1684x']})
+    monkeypatch.setattr(api,'_deploy_resource_by_id',lambda *a: {'id':'sophon-remote','kind':'sophon','mode':'remote','status':'ready','targets':['sophon'],'supported_chips':['bm1684x'],
+        'last_checked_at':datetime.now(timezone.utc).isoformat()})
     calls=[]
-    monkeypatch.setattr(api,'_detect_remote_deploy_resource',lambda r: calls.append(r) or {**r,'status':'ready','supported_chips':['bm1688']})
+    monkeypatch.setattr(api,'_remote_conversion_resource_online',lambda r: calls.append('online'))
+    monkeypatch.setattr(api,'_detect_remote_deploy_resource',lambda r: pytest.fail('formal admission must not repeat full SDK detection'))
     with pytest.raises(HTTPException) as error:
         api._v39_create_deploy_job_under_version_fence('p',api.DeployJobReq(source_id='src',resource_id='sophon-remote',target='sophon',params=params))
     assert error.value.status_code == 400
-    assert len(calls)==1
+    assert calls==['online']
 
 
 def test_remote_sophon_admission_uses_existing_durable_owner(tmp_path,monkeypatch):
@@ -27,10 +30,13 @@ def test_remote_sophon_admission_uses_existing_durable_owner(tmp_path,monkeypatc
     source=tmp_path/'model.onnx';_onnx_identity(source,[1,3,640,640])
     monkeypatch.setattr(api,'_resolve_deploy_source',lambda *a:{'kind':'imported','path':str(source)})
     resource={'id':'sophon-remote','kind':'sophon','mode':'remote','status':'ready','targets':['sophon'],
-              'supported_chips':['bm1688'],'supported_precisions':['fp16'],'secret_ref':'test-secret','base_url':'http://isolated.invalid'}
+              'supported_chips':['bm1688'],'supported_precisions':['fp16'],'secret_ref':'test-secret','base_url':'http://isolated.invalid',
+              'last_checked_at':datetime.now(timezone.utc).isoformat()}
     resource.update(version='v1.30.2-20260831',sophon_probe=live()['sophon_probe'])
     monkeypatch.setattr(api,'_deploy_resource_by_id',lambda *a:resource)
-    monkeypatch.setattr(api,'_detect_remote_deploy_resource',lambda r:dict(r))
+    monkeypatch.setattr(api,'_detect_remote_deploy_resource',lambda r:pytest.fail('formal admission must not repeat full SDK detection'))
+    online=[]
+    monkeypatch.setattr(api,'_remote_conversion_resource_online',lambda r:online.append(r['id']))
     monkeypatch.setattr(api,'_deploy_resource_public',lambda r:{k:v for k,v in r.items() if k!='secret_ref'})
     monkeypatch.setattr(api,'get_active_ultralytics_env',lambda:{})
     monkeypatch.setattr(api,'get_active_paddle_env',lambda:{})
@@ -43,6 +49,7 @@ def test_remote_sophon_admission_uses_existing_durable_owner(tmp_path,monkeypatc
     monkeypatch.setattr(api,'shared_task_artifacts',lambda:SimpleNamespace(atomic_write_json=lambda t,r,p:payloads.append(p)))
     monkeypatch.setattr(api.threading,'Thread',lambda *a,**k:pytest.fail('Sophon must not start a detached sync thread'))
     result=api._v39_create_deploy_job_under_version_fence('p',api.DeployJobReq(source_id='src',resource_id='sophon-remote',target='sophon',params={'chip':'bm1688'}))
+    assert online==['sophon-remote']
     assert len(tasks)==1 and tasks[0].kind is TaskKind.MODEL_CONVERSION
     assert result['job']['task_id']==tasks[0].task_id
     assert payloads[0]['execution_mode']=='remote'
@@ -106,7 +113,7 @@ def _sophon_scan():
     return scan
 
 
-@pytest.mark.parametrize("entry", ["scan", "plugins", "detect"])
+@pytest.mark.parametrize("entry", ["scan", "detect"])
 def test_sophon_authenticated_detection_updates_resource_list_and_public_projection(sophon_resources, entry):
     import json
     rows, state = sophon_resources
@@ -119,12 +126,6 @@ def test_sophon_authenticated_detection_updates_resource_list_and_public_project
         local = [c for c in result["components"] if c["key"].startswith("tpu_")]
         assert len(local) == 3 and all(c["status"] == "missing" and c["name"].startswith("本机") for c in local)
         assert all(not c["path"] for c in local)
-    elif entry == "plugins":
-        result = api.v41_deploy_plugins()
-        plugin = next(p for p in result["items"] if p["id"] == "sophon")
-        assert plugin["status"] == "ready" and len(plugin["resources"]) == 1
-        assert plugin["resources"][0]["version"] == "v1.30.2-20260831"
-        assert plugin["resources"][0]["has_api_key"] is True
     else:
         result = api.v39_detect_deploy_resource("sophon-remote")
         assert result["status"] == "ready" and result["version"] == "v1.30.2-20260831"
@@ -134,6 +135,20 @@ def test_sophon_authenticated_detection_updates_resource_list_and_public_project
     assert rows[0]["secret_ref"] == "isolated-ref"
     assert "isolated-key" not in json.dumps(result) and "isolated-ref" not in json.dumps(result)
     assert "isolated-key" not in json.dumps(rows)
+
+
+def test_sophon_plugin_catalog_does_not_trigger_remote_health_probe(sophon_resources):
+    rows, state = sophon_resources
+    result = api.v41_deploy_plugins()
+    plugin = next(p for p in result["items"] if p["id"] == "sophon")
+    assert plugin["status"] in {"missing", "unchecked"}
+    assert not plugin["resources"]
+    assert not state["calls"]
+    assert rows[0]["status"] == "missing"
+    api.v39_detect_deploy_resource("sophon-remote")
+    plugin = next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")
+    assert plugin["status"] == "ready" and len(plugin["resources"]) == 1
+    assert plugin["resources"][0]["has_api_key"] is True
 
 
 @pytest.mark.parametrize("failure", ["auth", "sdk"])
@@ -150,6 +165,9 @@ def test_sophon_scan_failure_and_recovery_propagates_to_plugins_and_conversion_l
     assert ("401" if failure == "auth" else "model_deploy failed") in listed["message"]
     assert next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")["status"] == "missing"
     state["mode"] = "ready"
+    # Browsing the catalog never repairs a failed remote resource by probing.
+    assert next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")["status"] == "missing"
+    api.v39_detect_deploy_resource("sophon-remote")
     assert next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")["status"] == "ready"
     assert api.v39_list_deploy_resources()["items"][0]["status"] == "ready"
     assert next(c for c in _sophon_scan()["capabilities"] if c["name"].startswith("算能"))["status"] == "ready"

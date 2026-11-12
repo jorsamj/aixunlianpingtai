@@ -84,7 +84,7 @@ test('persisted service-node page has its owner installed in the main runtime be
     runtime: 'service-node-runtime-422539',
     owner: true,
   });
-  await expect(page.locator('#title')).toHaveText('服务节点');
+  await expect(page.locator('#title')).toHaveText('算力与节点');
   await expect(page.locator('[data-service-node-page="1"]')).toBeVisible();
   await expect(page.locator('#view')).not.toContainText('模块尚未');
   await expect(page.locator('#view')).not.toContainText('当前页面不存在');
@@ -95,12 +95,6 @@ test('persisted service-node page has its owner installed in the main runtime be
 test('startup progress keeps the same boot card while status advances', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
-
-  await page.goto('/');
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
-  await page.evaluate(() => window.setPage('标签管理'));
-  await expect(page.locator('#title')).toHaveText('标签管理');
-  await page.evaluate(() => window.PollRegistryRuntime?.registry?.clearAll?.());
 
   let statusCalls = 0;
   let releaseSecond;
@@ -144,9 +138,7 @@ test('startup progress keeps the same boot card while status advances', async ({
     });
   });
 
-  await page.evaluate(() => {
-    window.__bootProbePromise = window.loadStartupSnapshot413(false);
-  });
+  await page.goto('/');
 
   await expect.poll(() => statusCalls, {timeout: 5_000}).toBeGreaterThan(0);
   await expect(page.locator('[data-boot-card="1"]')).toHaveCount(1);
@@ -167,13 +159,43 @@ test('startup progress keeps the same boot card while status advances', async ({
   }))).toEqual({card:true, bar:true, progress:'60.00', transform:'scaleX(0.6)'});
 
   releaseReady();
-  await page.evaluate(async () => {
-    await window.__bootProbePromise;
-    window.render?.();
-  });
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
   await expect(page.locator('[data-boot-card="1"]')).toHaveCount(0);
   expect(snapshotCalls).toBe(2);
   expect(pageErrors).toEqual([]);
+});
+
+test('re-entering the startup probe after readiness cannot overwrite a live business page', async ({page}) => {
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+  await page.evaluate(async () => { await window.setPage('标签管理'); });
+  await expect(page.locator('#title')).toHaveText('标签管理');
+  await page.evaluate(() => {
+    const field = document.createElement('input');
+    field.id = 'late-boot-user-draft';
+    field.value = '用户未提交内容';
+    document.getElementById('view').appendChild(field);
+  });
+
+  let releaseSnapshot;
+  const gate = new Promise(resolve => { releaseSnapshot = resolve; });
+  let observed;
+  const seen = new Promise(resolve => { observed = resolve; });
+  await page.route(/\/api\/v53\/bootstrap\/snapshot(?:\?.*)?$/, async route => {
+    observed();
+    await gate;
+    await route.continue();
+  });
+  await page.evaluate(() => { window.__lateBootProbe = window.loadStartupSnapshot413(false); });
+  await seen;
+  await page.waitForTimeout(3200); // crosses the old timer that reclaimed #view
+  await expect(page.locator('[data-boot-card="1"]')).toHaveCount(0);
+  await expect(page.locator('#late-boot-user-draft')).toHaveValue('用户未提交内容');
+  releaseSnapshot();
+  await page.evaluate(async () => { await window.__lateBootProbe; });
+  await expect(page.locator('#title')).toHaveText('标签管理');
+  await expect(page.locator('#late-boot-user-draft')).toHaveValue('用户未提交内容');
+  await expect(page.locator('[data-boot-card="1"]')).toHaveCount(0);
 });
 
 

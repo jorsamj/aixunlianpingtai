@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from datetime import date
 from typing import Any, Mapping, Sequence
 
 
@@ -36,6 +37,12 @@ class MaterialFilters:
     labels: tuple[str, ...] = ()
     annotated: bool | None = None
     annotation_state: str | None = None
+    partial_labels: tuple[str, ...] = ()
+    source_batch_id: str | None = None
+    source_batch_image_ids: tuple[str, ...] = ()
+    quality_status: str | None = None
+    created_from: str | None = None
+    created_to: str | None = None
 
     def __post_init__(self) -> None:
         query = str(self.query or "").strip()
@@ -48,9 +55,19 @@ class MaterialFilters:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "storage_source_ids", _normalized_values(self.storage_source_ids))
         object.__setattr__(self, "labels", _normalized_values(self.labels))
+        object.__setattr__(self, "partial_labels", _normalized_values(self.partial_labels))
+        object.__setattr__(self, "source_batch_image_ids", _normalized_values(self.source_batch_image_ids))
         for field_name in ("processing_status", "split", "annotation_state"):
             value = getattr(self, field_name)
             object.__setattr__(self, field_name, str(value).strip().lower() if value is not None and str(value).strip() else None)
+        object.__setattr__(self, 'source_batch_id', str(self.source_batch_id).strip() if self.source_batch_id else None)
+        if self.quality_status not in (None, '', 'pending_decision', 'processed', 'issue'):
+            raise ValueError('invalid quality_status')
+        for field_name in ('created_from', 'created_to'):
+            value = getattr(self, field_name)
+            object.__setattr__(self, field_name, date.fromisoformat(str(value)).isoformat() if value else None)
+        if self.created_from and self.created_to and self.created_from > self.created_to:
+            raise ValueError('created_from must not be after created_to')
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "MaterialFilters":
@@ -75,6 +92,8 @@ class MaterialFilters:
             "labels": list(self.labels),
             "annotated": self.annotated,
             "annotation_state": self.annotation_state,
+            **({"partial_labels": list(self.partial_labels)} if self.partial_labels else {}),
+            **{key:getattr(self,key) for key in ('source_batch_id','quality_status','created_from','created_to') if getattr(self,key)},
         }
 
 

@@ -1,3 +1,4 @@
+import {mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {test, expect} from '@playwright/test';
 
 // Isolated UI contract fixtures. These are not SDK compilation or hardware evidence.
@@ -76,7 +77,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   expect(configured.ok()).toBeTruthy();
   const vendorAlgorithmId = 'vendor-target-algorithm';
   const vendorVersionId = 'vendor-target-version';
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${vendorAlgorithmId}/versions/${vendorVersionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${vendorAlgorithmId}/versions/${vendorVersionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -85,7 +86,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
       items: []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [
@@ -105,11 +106,11 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   await page.evaluate(() => window.setPage('模型配置'));
-  await page.getByRole('button', {name: /新增模型/}).click();
+  await page.locator('[data-model-config-panel]').getByRole('button', {name: '新增视觉模型', exact: true}).click();
   const modelDialog = page.getByRole('dialog');
   await expect(modelDialog.locator('#mcProviderAdapter')).toBeVisible();
   await expect(modelDialog.locator('#mcProviderAdapter option')).toHaveText([
-    /火山方舟/, /阿里云千问/, /本地 OpenAI/, /Ollama/
+    /火山方舟/, /阿里云千问/, /OpenAI 兼容/, /Ollama/, /WeVisOne/
   ]);
   await expect(modelDialog.locator('#mcApiKey')).toHaveValue('');
   await expect(modelDialog.locator('#mcAnnPrompt')).toBeVisible();
@@ -145,11 +146,14 @@ test('vision providers, candidate review, and vendor target parameters are expli
     })
   }));
   await page.evaluate(() => window.reviewAiLabel427('fake-task'));
-  const candidateDialog = page.getByRole('dialog', {name: 'AI标注审核工作台 · 待确认'});
-  await expect(candidateDialog.getByText(/不会自动写入正式标注/)).toBeVisible();
-  await expect(candidateDialog.locator('.data412-box')).toBeVisible();
-  await expect(candidateDialog.getByRole('button', {name: '全部接受'})).toBeVisible();
-  await candidateDialog.getByRole('button', {name: '暂不处理'}).click();
+  const reviewPage = page.locator('.ai-review-page-shell');
+  // Compact review layout deliberately hides this explanatory paragraph;
+  // the safety statement still must exist in the canonical page contract.
+  await expect(reviewPage.getByText(/不会自动写入正式标注/)).toHaveText(/不会自动写入正式标注/);
+  await expect(reviewPage.locator('.data412-box')).toBeVisible();
+  await expect(reviewPage.getByRole('button', {name:/审核剩余/})).toBeVisible();
+  await reviewPage.getByRole('button', {name: '暂不处理'}).click();
+  await expect(reviewPage).toHaveCount(0);
 
   await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [vendorAlgorithmId, vendorVersionId]);
   const versionDialog = page.getByRole('dialog', {name: '版本转换'});
@@ -161,6 +165,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
 
   await conversionDialog.locator('input[name="conv428Target"][value="onnx"]').check();
   await expect(conversionDialog.locator('#conv428Opset')).toBeVisible();
+  await expect(conversionDialog.locator('.conversion560-advanced #conv428OnnxFields')).toHaveCount(0);
   await expect(conversionDialog.locator('#conv428Resource')).toContainText('Ultralytics ONNX');
 
   await conversionDialog.locator('input[name="conv428Target"][value="paddle_inference"]').check();
@@ -177,6 +182,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
 
   await conversionDialog.locator('input[name="conv428Target"][value="tensorrt"]').check();
   await expect(conversionDialog.locator('#conv428TargetEnvironment')).toBeVisible();
+  await expect(conversionDialog.locator('.conversion560-advanced #conv428TensorRtFields')).toHaveCount(0);
   await expect.poll(()=>conversionDialog.locator('#conv428Precision option[value="bf16"]:enabled').count()).toBe(0);
 
   await conversionDialog.locator('input[name="conv428Target"][value="sophon"]').check();
@@ -190,6 +196,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(conversionDialog.locator('#conv428Height')).toBeVisible();
   await expect(conversionDialog.locator('#conv428SophonBatch')).toHaveValue('1');
   await expect(conversionDialog.locator('#conv428Preprocess')).toBeVisible();
+  await expect(conversionDialog.locator('.conversion560-advanced #conv428Preprocess')).toHaveCount(0);
 });
 
 test('version conversion shows configured compiler resources and their readiness', async ({page, request}) => {
@@ -199,7 +206,7 @@ test('version conversion shows configured compiler resources and their readiness
   }})).json();
   const algorithmId = 'algorithm-resource-test';
   const versionId = 'version-resource-test';
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -208,7 +215,7 @@ test('version conversion shows configured compiler resources and their readiness
       items: []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [
@@ -233,7 +240,10 @@ test('version conversion shows configured compiler resources and their readiness
   await createDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('Windows RKNN-Toolkit2');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('未检测到 RKNN-Toolkit2');
-  await expect(createDialog.getByRole('button', {name: '配置部署资源'})).toBeVisible();
+  // Resource configuration stays in the original deployment resource page;
+  // the conversion modal exposes explicit SDK detection and a refresh entry.
+  await expect(createDialog.getByRole('button', {name: '检测当前资源'})).toBeVisible();
+  await expect(createDialog.getByRole('button', {name: '刷新资源'})).toBeVisible();
   await createDialog.getByRole('button', {name: '取消'}).click();
   await expect(historyDialog).toBeVisible();
 });
@@ -256,7 +266,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   const algorithmId = 'algorithm-rknn-agent-resource';
   const versionId = 'version-rknn-agent-resource';
 
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -265,7 +275,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
       items: []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [{
@@ -340,7 +350,7 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   let releaseHardwareSuccess;
   const hardwareSuccessGate = new Promise(resolve => { releaseHardwareSuccess = resolve; });
 
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -542,7 +552,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
   let submitted = null;
   let created = false;
 
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -551,7 +561,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
       items: created ? [{id: 'rknn-int8-job', target: 'rockchip', target_name: '瑞芯微 RKNN', status: 'running', stage: 'RKNN 编译中', progress: 37, message: '正在生成 RKNN 产物', params: {chip: 'rk3568', precision: 'int8'}, resource_name: 'RKNN Agent · RK3568', outputs: []}] : []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [{
@@ -610,6 +620,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
 
   await dialog.locator('#conv428Precision').selectOption('int8');
   await expect(dialog.locator('#conv428Calibration')).toBeVisible();
+  await expect(dialog.locator('.conversion560-advanced #conv428Calibration')).toHaveCount(0);
   await expect(dialog.locator('#conv428CalibrationDataset')).toHaveValue('calibration-dataset');
   await dialog.locator('#conv428CalibrationSplit').selectOption('val');
   await dialog.locator('#conv428CalibrationCount').fill('64');
@@ -640,11 +651,11 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   const project=await (await request.post('/api/projects',{data:{name:`Sophon UI-${Date.now()}`,labels:[{code:'smoke'}]}})).json();
   let ready=false,submitted=null,created=false;
   await selectIsolatedTestProject(page,project.id);
-  await page.route('**/api/v39/deploy/resources',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
     id:'sophon-remote',name:'独立 TPU-MLIR',kind:'sophon',mode:'remote',status:ready?'ready':'missing',
     targets:ready?['sophon']:[],supported_chips:ready?['bm1684x','bm1688']:[],supported_precisions:ready?['fp16']:[],
     version:ready?'v1.30.2-20260831':'',message:ready?'TPU-MLIR自检通过':'TPU_MLIR_NOT_FOUND：model_deploy.py缺失'}]})}));
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/sophon-a/versions/v1/deployments`,route=>route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/sophon-a/versions/v1/deployments*`,route=>route.fulfill({
     status:200,contentType:'application/json',body:JSON.stringify({algorithm:{id:'sophon-a',name:'烟火算法'},
       version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
         conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},
@@ -700,8 +711,8 @@ test('formal deployment menu persists vendor chips and selects BM1684 FP32 throu
   await page.unroute('**/api/v39/deploy/catalog');
   const project=await (await request.post('/api/projects',{data:{name:'动态BM1684-'+Date.now(),labels:[{code:'fire'}]}})).json();
   await selectIsolatedTestProject(page,project.id);
-  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[{id:'sdk',kind:'sophon',name:'独立SDK',mode:'remote',status:'ready',targets:['sophon'],version:'v1.30.2-20260831',supported_chips:['bm1684','bm1688'],supported_precisions:['fp16','fp32']}]}}));
-  await page.route('**/api/v42/projects/*/algorithms/dynamic-a/versions/v1/deployments',r=>r.fulfill({json:{algorithm:{id:'dynamic-a',name:'动态转换'},version:{id:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},items:[]}}));
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[{id:'sdk',kind:'sophon',name:'独立SDK',mode:'remote',status:'ready',targets:['sophon'],version:'v1.30.2-20260831',supported_chips:['bm1684','bm1688'],supported_precisions:['fp16','fp32']}]}}));
+  await page.route('**/api/v42/projects/*/algorithms/dynamic-a/versions/v1/deployments*',r=>r.fulfill({json:{algorithm:{id:'dynamic-a',name:'动态转换'},version:{id:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},items:[]}}));
   await page.route('**/api/v39/projects/*/deploy/resolve',async route=>{
     const p=route.request().postDataJSON().params,chip=data.chips.find(c=>c.id===p.local_chip_id),precision=chip?.sdk_code==='bm1684'?'fp32':'fp16';
     await route.fulfill({json:{ready:!!chip&&(!p.precision||p.precision===precision),errors:chip?[]:['请选择目标芯片'],allowed_precisions:[precision],
@@ -715,10 +726,10 @@ test('formal deployment menu persists vendor chips and selects BM1684 FP32 throu
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
   const nav=page.locator('#nav');
   await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();
-  await expect(nav.getByRole('button',{name:/部署资源/})).toBeVisible({timeout:5000});
-  await nav.getByRole('button',{name:/部署资源/}).click();
-  await expect(page.locator('#title')).toHaveText('部署资源');
-  await expect(nav.getByRole('button',{name:/部署资源/})).toHaveClass(/active/);
+  await expect(nav.getByRole('button',{name:/模型转换环境/})).toBeVisible({timeout:5000});
+  await nav.getByRole('button',{name:/模型转换环境/}).click();
+  await expect(page.locator('#title')).toHaveText('模型转换环境');
+  await expect(nav.getByRole('button',{name:/模型转换环境/})).toHaveClass(/active/);
   for(const name of ['厂商与芯片字典','检测本机工具','新增部署资源'])await expect(page.getByRole('button',{name,exact:true})).toBeVisible();
   await page.getByRole('button',{name:'厂商与芯片字典',exact:true}).click();
   const editor=page.locator('#conversion-catalog-host');
@@ -751,12 +762,13 @@ test('formal deployment menu persists vendor chips and selects BM1684 FP32 throu
   expect(persisted.chips.find(c=>c.id===chipId)).toMatchObject({sdk_code:'rk3568',constraint_id:'rknn-verified'});
   expect(persisted.vendors.find(v=>v.id===vendorId)).toMatchObject({name:'瑞芯微',template_id:'rknn',enabled:true});
   Object.assign(data,{vendors:persisted.vendors,chips:persisted.chips});
-  await page.reload();await expect(page.locator('#title')).toHaveText('部署资源');
-  await expect(nav.getByRole('button',{name:/部署资源/})).toHaveClass(/active/);
-  await nav.getByRole('button',{name:/模型配置/}).click();
-  await expect(page.locator('#title')).toHaveText('模型配置');
+  await page.reload();await expect(page.locator('#title')).toHaveText('模型转换环境');
+  await expect(nav.getByRole('button',{name:/模型转换环境/})).toHaveClass(/active/);
+  await nav.getByRole('button',{name:/AI 辅助配置/}).click();
+  await expect(page.locator('#title')).toHaveText('AI 辅助配置');
   await expect(page.getByRole('button',{name:'厂商与芯片字典',exact:true})).toHaveCount(0);
-  await nav.getByRole('button',{name:/部署资源/}).click();
+  await nav.getByRole('button',{name:/模型转换环境/}).click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
   await expect(editor.locator('[data-catalog-vendor]')).toHaveCount(3);
   await editor.locator('[data-catalog-vendor="local-s"] .catalog-name').click();
   await expect(editor.locator('[data-catalog-chip]')).toHaveCount(3);
@@ -796,7 +808,8 @@ test('catalog CRUD preserves hidden identities, references, pending chips, and c
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
   const nav=page.locator('#nav');
   if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();
-  await nav.getByRole('button',{name:/部署资源/}).click();
+  await nav.getByRole('button',{name:/模型转换环境/}).click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
   const editor=page.locator('#conversion-catalog-host'),form=page.locator('[data-catalog-dialog]');
   await expect(editor.getByRole('button',{name:'+ 新增厂商'})).toBeVisible();
   const before=await (await request.get('/api/v39/deploy/catalog')).json();
@@ -844,7 +857,8 @@ test('catalog isolated actions and late save results preserve a newer form',asyn
  await page.unroute('**/api/v39/deploy/catalog');
  const project=await (await request.post('/api/projects',{data:{name:'字典异步-'+Date.now(),labels:[]}})).json();await selectIsolatedTestProject(page,project.id);
  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
- const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/部署资源/}).click();
+ const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/模型转换环境/}).click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
  const host=page.locator('#conversion-catalog-host'),form=page.locator('[data-catalog-dialog]');
  let release,arrived=false,writes=0;
  const gate=new Promise(resolve=>release=resolve);
@@ -865,7 +879,8 @@ test('catalog server filters pages and safely replays an unknown save outcome',a
  }
  const project=await (await request.post('/api/projects',{data:{name:'字典分页-'+Date.now(),labels:[]}})).json();await selectIsolatedTestProject(page,project.id);
  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
- const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/部署资源/}).click();
+ const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/模型转换环境/}).click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
  const host=page.locator('#conversion-catalog-host'),filter=host.locator('[data-filter="vendors"]'),form=page.locator('[data-catalog-dialog]');
  await filter.getByRole('searchbox').fill('Page');await filter.getByRole('button',{name:'查询',exact:true}).click();
  await expect(host.locator('[data-catalog-vendor]')).toHaveCount(10);await host.locator('[data-slot="vendors-pager"]').getByRole('button',{name:'下一页'}).click();await expect(host.locator('[data-catalog-vendor]')).toHaveCount(1);await expect(host.locator('[data-catalog-vendor]')).toContainText('Page 10');
@@ -893,7 +908,8 @@ test('catalog missing historical job permits ordinary editing while identity and
   });
   page.on('request',r=>{if(r.url().endsWith('/catalog/operations')&&r.method()==='POST')writes.push(r.postDataJSON())});
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
-  const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/部署资源/}).click();
+  const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/模型转换环境/}).click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
   const host=page.locator('#conversion-catalog-host'),row=host.locator(`[data-catalog-vendor="${id}"]`),form=page.locator('[data-catalog-dialog]');
   await row.getByRole('button',{name:'编辑',exact:true}).click();await expect(form.locator('[name="name"]')).toBeEditable();await expect(form.locator('[name="template_id"]')).toBeDisabled();
   await expect(form).toContainText('历史引用未核验');await expect(form).toContainText('普通编辑可用');await expect(form).toContainText('删除和改挂暂不可用');
@@ -903,7 +919,8 @@ test('catalog missing historical job permits ordinary editing while identity and
   await row.getByRole('button',{name:'停用',exact:true}).click();await expect(row).toContainText('已停用');await row.getByRole('button',{name:'启用',exact:true}).click();await expect(row).toContainText('已启用');
   await row.getByRole('button',{name:'删除',exact:true}).click();await expect(form).toContainText('历史引用未核验');await expect(form.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);await form.getByRole('button',{name:'取消',exact:true}).click();
   expect(writes.map(x=>x.action)).toEqual(['update','disable','enable']);expect(reads).toBe(4);
-  await nav.getByRole('button',{name:/模型配置/}).click();await nav.getByRole('button',{name:/部署资源/}).click();await expect(row).toContainText('00 Renamed despite missing job');
+  await nav.getByRole('button',{name:/AI 辅助配置/}).click();await nav.getByRole('button',{name:/模型转换环境/}).click();await expect(row).toContainText('00 Renamed despite missing job');
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'厂商与芯片字典',exact:true}).click();
   await page.reload();await expect(row).toContainText('00 Renamed despite missing job');await expect(row).toContainText('已启用');
   const saved=await (await request.get('/api/v39/deploy/catalog')).json();expect(saved.vendors.find(v=>v.id===id)).toMatchObject({name:'00 Renamed despite missing job',template_id:'rknn',enabled:true});
 });
@@ -915,9 +932,9 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
   const resource={id:'precision-sdk',kind:'sophon',name:'独立 TPU-MLIR',mode:'remote',status:'ready',targets:['sophon'],
     supported_chips:['bm1684x','bm1688'],supported_precisions:['fp16','fp32'],version:'v1.30.2-20260831'};
   let submitted=null,detects=0,posts=0;
-  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[resource]}}));
-  await page.route('**/api/v39/deploy/resources/precision-sdk/detect',r=>{detects++;return r.fulfill({json:resource})});
-  await page.route('**/api/v42/projects/*/algorithms/precision-a/versions/v1/deployments',r=>r.fulfill({json:{
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[resource]}}));
+  await page.route('**/api/v39/deploy/resources/precision-sdk/detect/start',r=>{detects++;return r.fulfill({json:resource})});
+  await page.route('**/api/v42/projects/*/algorithms/precision-a/versions/v1/deployments*',r=>r.fulfill({json:{
     algorithm:{id:'precision-a',name:'参数一致性'},version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
       conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp16'}},
     items:submitted?[{id:'pjob',target:'sophon',resource_name:resource.name,status:'blocked_by_hardware',progress:100,
@@ -946,13 +963,13 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
   await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');await dialog.locator('#conv428Height').blur();
   await expect(dialog.locator('#conv428Precision')).toHaveValue('fp32');
   await dialog.locator('#conv428Preprocess > summary').click();
-  await dialog.locator('#conv428Pixel').selectOption('bgr');await dialog.locator('#conv428Letterbox').uncheck();
+  await dialog.locator('#conv428InputColor').selectOption('bgr');await dialog.locator('#conv428Letterbox').uncheck();
   await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
   await page.screenshot({path:testInfo.outputPath('sophon-precision-form.png')});
   await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).not.toBeNull();
   expect(posts).toBe(1);expect(submitted.params).toMatchObject({precision:'fp32',chip:'bm1684x',input_width:640,input_height:384,
-    preprocessing:{pixel_format:'bgr',letterbox:false}});
-  const history=page.getByRole('dialog',{name:'版本转换'});await history.locator('.convert428-evidence > summary').click();
+    source_color_order:'rgb',input_color_order:'bgr',preprocessing:{pixel_format:'bgr',letterbox:false}});
+  const history=page.getByRole('dialog',{name:'版本转换'});await history.locator('.convert428-job-details > summary').click();await history.locator('.convert428-evidence > summary').click();
   await expect(history).toContainText('F32');await expect(history).toContainText('未核验');await expect(history).toContainText('未实机验证');
   await page.screenshot({path:testInfo.outputPath('sophon-precision-evidence.png')});
 });
@@ -961,8 +978,8 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
 test('existing ONNX keeps its graph and hides inapplicable export controls',async({page,request})=>{
   const project=await (await request.post('/api/projects',{data:{name:`onnx-reuse-${Date.now()}`,labels:[{code:'fire'}]}})).json();
   await selectIsolatedTestProject(page,project.id);let submitted;
-  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[{id:'onnx',name:'ONNX',kind:'ultralytics',status:'ready',targets:['onnx']}]}}));
-  await page.route('**/api/v42/projects/*/algorithms/reuse-a/versions/v1/deployments',r=>r.fulfill({json:{algorithm:{id:'reuse-a'},
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[{id:'onnx',name:'ONNX',kind:'ultralytics',status:'ready',targets:['onnx']}]}}));
+  await page.route('**/api/v42/projects/*/algorithms/reuse-a/versions/v1/deployments*',r=>r.fulfill({json:{algorithm:{id:'reuse-a'},
     version:{id:'v1',version_name:'source-onnx',model_name:'model.onnx',stored_path:'/isolated/model.onnx',conversion_defaults:{source_format:'onnx',input_width:640,input_height:384}},items:[]}}));
   await page.route('**/api/v39/projects/*/deploy/jobs',r=>{submitted=r.request().postDataJSON();return r.fulfill({json:{ok:true,job:{id:'reuse'}}})});
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
@@ -972,4 +989,83 @@ test('existing ONNX keeps its graph and hides inapplicable export controls',asyn
   await expect(dialog.locator('#conv428InheritedHint')).toContainText('保留原图');
   await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).toBeTruthy();
   for(const key of ['precision','opset','dynamic','simplify','input_size'])expect(submitted.params).not.toHaveProperty(key);
+});
+
+
+test('conversion formal modal survives slow resources and isolated catalog failure with retry',async({page})=>{
+  let release,failed=true;
+  const barrier=new Promise(resolve=>release=resolve);
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,async route=>{await barrier;await route.fulfill({json:{items:[{id:'onnx-late',name:'ONNX late',kind:'ultralytics',mode:'local',status:'ready',targets:['onnx']}]}})});
+  await page.route('**/api/v39/deploy/catalog',route=>route.fulfill(failed?{status:503,json:{message:'catalog isolated failure'}}:{json:uiCatalog}));
+  await page.route('**/api/v42/projects/*/algorithms/immediate-a/versions/v1/deployments*',route=>route.fulfill({json:{algorithm:{name:'Immediate source'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt',conversion_defaults:{input_size:640}},items:[]}}));
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>{void window.openNewConvert428('immediate-a','v1')});
+  const dialog=page.getByRole('dialog',{name:'新建版本转换'});
+  await expect(dialog).toBeVisible();await expect(dialog.locator('#conv428SourceLoad')).toHaveText('源版本已核验');
+  await expect(dialog.locator('#conv428CatalogLoad')).toContainText('catalog isolated failure');
+  await dialog.locator('#conv428Input').fill('800');await dialog.locator('#conv428Input').dispatchEvent('change');
+  await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();
+  failed=false;await dialog.locator('#conv428CatalogLoad').getByRole('button',{name:'重试'}).click();
+  await expect(dialog.locator('[data-conversion-vendors]')).toContainText('算能');
+  await expect(dialog.locator('#conv428Input')).toHaveValue('800');
+  release();await expect(dialog.locator('#conv428Resource')).toHaveValue('onnx-late');
+  await expect(dialog.locator('#conv428Input')).toHaveValue('800');
+  await expect(dialog).toBeVisible();
+});
+
+
+test('controlled current modal appears before held resource response using recorded baseline evidence',async({page})=>{
+ const output='docs/artifacts/conversion-modal-controlled-20261028';
+ const recorded=JSON.parse(readFileSync(output+'/timing.json','utf8'));
+ const baseline=recorded.results.find(row=>row.mode==='baseline');expect(baseline.modal_observed_ms).toBeGreaterThanOrEqual(1100);
+ let measuring=false,released=false;const counts={resources:0,source_history:0,catalog:0};
+ await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,async route=>{if(measuring)counts.resources++;await new Promise(resolve=>setTimeout(resolve,1200));released=true;await route.fulfill({json:{items:[{id:'timing-onnx',name:'ONNX timing',kind:'ultralytics',mode:'local',status:'ready',targets:['onnx']}]}})});
+ await page.route('**/api/v39/deploy/catalog',route=>{if(measuring)counts.catalog++;return route.fulfill({json:uiCatalog})});
+ await page.route('**/api/v42/projects/*/algorithms/timing-a/versions/v1/deployments*',route=>{if(measuring)counts.source_history++;return route.fulfill({json:{algorithm:{name:'Controlled timing'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt',conversion_defaults:{input_size:640}},items:[]}})});
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>{for(const key of Object.keys(localStorage))if(key.includes('verdeploy'))localStorage.removeItem(key)});
+ measuring=true;const start=await page.evaluate(()=>{const now=performance.now();void window.openNewConvert428('timing-a','v1');return now});
+ await expect(page.getByRole('dialog',{name:'新建版本转换'})).toBeVisible();const appeared=await page.evaluate(()=>performance.now());
+ expect(released,'formal form must appear before the held resource response').toBe(false);await expect(page.locator('#conv428Resource')).toHaveValue('timing-onnx');
+ expect(counts).toEqual({resources:1,source_history:1,catalog:1});
+ writeFileSync(output+'/current-timing-check.json',JSON.stringify({environment:'isolated real Chrome protocol fixtures; NOT production',baseline_evidence:'timing.json from prior measured run; baseline NOT rerun by this test',recorded_baseline_sha:recorded.baseline_sha,recorded_baseline_modal_ms:baseline.modal_observed_ms,current_modal_observed_ms:Math.round(appeared-start),controlled_resource_delay_ms:1200,request_counts:counts},null,2));
+});
+
+
+test('CSC direct target saves acknowledged external contract without claiming device application',async({page})=>{
+ await page.setViewportSize({width:1920,height:1440});
+ let submitted;
+ const capabilities={target:'onnx',capability:'contract_only',presets:['bt601_limited','bt601_full','bt709_limited','bt709_full'],input_formats:['NV12','I420','YUV444'],modes:['none','device_default'],embedded_supported:false,execution_location:'external_preprocessing',board_verification:'NOT VERIFIED'};
+ await page.route('**/api/v39/deploy/catalog',route=>route.fulfill({json:{...uiCatalog,csc_capabilities_by_target:{onnx:capabilities}}}));
+ await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,route=>route.fulfill({json:{items:[{id:'csc-onnx',name:'ONNX CSC contract',kind:'ultralytics',mode:'local',status:'ready',targets:['onnx']}]}}));
+ await page.route('**/api/v42/projects/*/algorithms/csc-a/versions/v1/deployments*',route=>route.fulfill({json:{algorithm:{name:'CSC external'},version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:640}},items:[]}}));
+ await page.route('**/api/v39/projects/*/deploy/jobs',route=>{submitted=route.request().postDataJSON();return route.fulfill({json:{ok:true,job:{id:'csc-job'}}})});
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>window.openNewConvert428('csc-a','v1'));
+ const dialog=page.getByRole('dialog',{name:'新建版本转换'});await dialog.locator('#conv428CscPreset').selectOption('bt709_full');
+ await expect(dialog.locator('#conv428CscExternal')).toBeVisible();await expect(dialog.locator('#conv428CscStatus')).toContainText('未应用到设备');
+ await dialog.locator('#conv428CscFormat').selectOption('NV12');await dialog.locator('#conv428CscAck').check();
+ await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-csc-create-1920.png'});
+ await page.setViewportSize({width:1366,height:768});await dialog.locator('.modal-body').hover();await page.mouse.wheel(0,2200);
+ await expect(dialog.locator('[data-convert-submit]')).toBeInViewport();await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
+ expect(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth&&node.querySelector('.modal-body').scrollWidth<=node.querySelector('.modal-body').clientWidth)).toBe(true);
+ await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-csc-create-1366.png'});await dialog.locator('[data-convert-submit]').click();
+ await expect.poll(()=>submitted).toBeTruthy();expect(submitted.params.csc).toEqual({preset:'bt709_full',require_embedded:false,input_format:'NV12',deployment_contract_acknowledged:true});
+});
+
+
+test('version history requests bounded server pages and complete filters with truthful totals',async({page})=>{
+ await page.setViewportSize({width:1920,height:1440});
+ const queries=[];
+ await page.route('**/api/v42/projects/*/algorithms/paged-a/versions/v1/deployments*',route=>{
+  const q=Object.fromEntries(new URL(route.request().url()).searchParams);queries.push(q);const current=Number(q.page||1),filtered=q.target==='sophon';
+  return route.fulfill({json:{algorithm:{name:'Paged history'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt'},page:current,page_size:20,total:filtered?2:41,total_pages:filtered?1:3,complete:false,unreadable_count:1,items:[{id:'page-'+current,target:'sophon',target_name:'算能',status:'done',progress:100,created_at:'2026-10-28',source_identity:{sha256:'a'.repeat(64)},execution_evidence:{sdk_version:'isolated-sdk'},params:{chip:'bm1688',precision:'fp16'},outputs:[]}]}})
+ });
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>window.openVersionConvert428('paged-a','v1'));
+ const dialog=page.getByRole('dialog',{name:'版本转换'});
+ await expect(dialog.locator('.convert428-summary')).toContainText('41');expect(queries[0].page_size).toBe('20');
+ await expect(dialog.locator('[data-history-notice]')).toContainText('无法读取 1 条');await expect(dialog).toContainText('历史未记录');
+ await dialog.getByRole('button',{name:'下一页',exact:true}).click();await expect(dialog.locator('.convert428-history-pager')).toContainText('第 2 / 3 页');expect(queries.at(-1).page).toBe('2');
+ await dialog.locator('[name="target"]').selectOption('sophon');await dialog.locator('[name="chip"]').fill('bm1688');await dialog.locator('[name="precision"]').selectOption('fp16');await dialog.locator('[name="csc"]').selectOption('legacy_unknown');
+ await expect.poll(()=>queries.at(-1)?.csc).toBe('legacy_unknown');expect(queries.at(-1)).toMatchObject({page:'1',page_size:'20',target:'sophon',chip:'bm1688',precision:'fp16',csc:'legacy_unknown'});
+ await expect(dialog.locator('.convert428-history-pager')).toContainText('共 2 条');
+ await dialog.locator('.convert428-job-details > summary').click();await dialog.getByRole('button',{name:'刷新',exact:true}).click();await expect(dialog.locator('.convert428-job-details')).toHaveJSProperty('open',true);await dialog.locator('.convert428-evidence > summary').click();await expect(dialog.locator('.convert428-evidence')).toContainText('isolated-sdk');await expect(dialog.locator('.convert428-evidence')).toContainText('a'.repeat(64));await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-history-details-1920.png'});
 });

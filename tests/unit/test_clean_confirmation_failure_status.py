@@ -40,15 +40,15 @@ def test_clean_confirm_does_not_mark_failed_deletions_processed(
         lambda: SimpleNamespace(atomic_write_json=lambda task, name, payload: written.update(payload)),
     )
 
-    result = app.v47_confirm_clean(
-        "project-1", task_id,
-        app.V47CleanConfirmReq(delete_ids=["delete-ok", "delete-error"]),
-    )
-
-    assert result["ok"] is False
-    assert result["processed_ids"] == ["keep"]
-    assert len(patches) == 1
-    assert patches[0][0] == ["keep"]
-    assert patches[0][1]["processing_status"] == "processed"
-    assert written["delete_failures"] == len(failed)
-    assert written["processed_ids"] == ["keep"]
+    # Legacy synchronous deletion was retired before this workbench change.
+    # It must refuse before any mocked deletion, material patch or receipt write.
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as failure:
+        app.v47_confirm_clean(
+            "project-1", task_id,
+            app.V47CleanConfirmReq(delete_ids=["delete-ok", "delete-error"]),
+        )
+    assert failure.value.status_code == 409
+    assert failure.value.detail["code"] == "MATERIAL_DELETE_PREVIEW_REQUIRED"
+    assert patches == []
+    assert written == {}

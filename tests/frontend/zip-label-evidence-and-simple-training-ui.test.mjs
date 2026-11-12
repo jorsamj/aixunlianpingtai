@@ -53,8 +53,8 @@ test('training first-open exposes four modes and visible canonical labels withou
   assert.doesNotMatch(creation,/id="tr429QuickEpoch"/);
   assert.doesNotMatch(creation,/编辑全部训练参数/);
   assert.match(creation,/train-v3-internals" hidden/);
-  assert.match(modalStyles,/train-create-saas-v2/);
-  assert.match(modalStyles,/training-label-choice b\{font-size:15px/);
+  assert.match(modalStyles,/\.training-create-modal-card/);
+  assert.match(modalStyles,/training-label-choice b\{font-size:13px/);
   assert.match(training,/const labelPanel=document\.getElementById\('trainingLabelContractPanel'\)/);
   assert.match(training,/labelSlot\.appendChild\(labelPanel\)/);
 });
@@ -79,7 +79,7 @@ test('ZIP labels have one batch source plan with explicit durable creation and r
   assert.match(confirmation,/buildManualLabelMapping\(review\)/);
   const create=confirmation.indexOf('await createPlatformLabel(project,code,name)');
   const verify=confirmation.indexOf('verified.has(String(code))');
-  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}})');
+  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation})');
   assert.ok(create>=0&&create<verify&&verify<submit,
     'final confirmation creates and verifies canonical labels before admitting the ZIP import');
   assert.match(zip,/zip-label-workspace/);

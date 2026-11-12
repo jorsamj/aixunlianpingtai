@@ -67,7 +67,7 @@ test('app.js visible training entrypoint owns canonical reset before rendering t
   const dialogAlias = app.indexOf('window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;', dialogOwner);
   assert.ok(dialogOwner >= 0 && dialogAlias > dialogOwner);
   const dialogSource = app.slice(dialogOwner, dialogAlias);
-  const canonicalWrite = dialogSource.indexOf("window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[],priority:50,resource:{strategy:'auto',profile:'performance',device:'auto',gpuPolicy:'exclusive',batch:null,workers:null,cache:null}");
+  const canonicalWrite = dialogSource.indexOf("window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],trainSelectionRef:'',trainSelectionCount:0,testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[],priority:50,resource:{strategy:'auto',profile:'performance',device:'auto',gpuPolicy:'exclusive',batch:null,workers:null,cache:null}");
   const modalOpen = dialogSource.indexOf("modal('创建训练任务'");
   assert.ok(canonicalWrite >= 0 && modalOpen > canonicalWrite);
   assert.match(dialogSource, /data-training-mode="full"/);
@@ -86,10 +86,12 @@ test('app.js visible training entrypoint owns canonical reset before rendering t
 
 test('final classic picker split and settings actions own their canonical writes directly', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const confirmAt = app.lastIndexOf('window.confirmTrainMaterialPickerV3=function(){');
+  const picker = readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const splitAt = app.lastIndexOf('window.setTrainSplitModeV3=mode=>{');
   const saveAt = app.lastIndexOf('window.saveTrainSettings428=function saveTrainingSettingsCanonical428(){');
-  assert.ok(confirmAt >= 0 && app.slice(confirmAt, confirmAt + 1400).includes('TrainingDraftRuntime.update(patch)'));
+  assert.equal(app.includes('window.confirmTrainMaterialPickerV3=function(){'), false);
+  assert.match(picker, /window\.confirmTrainMaterialPickerV3 = function confirmPicker\(\)/);
+  assert.match(picker, /trainingDraftRuntime\.update\(\{\.\.\.patch,trainSelectionRef:'',trainSelectionCount:0\}\)/);
   assert.ok(splitAt >= 0 && app.slice(splitAt, splitAt + 800).includes('TrainingDraftRuntime.update({splitMode'));
   assert.ok(saveAt >= 0 && app.slice(saveAt, saveAt + 1800).includes('TrainingDraftRuntime?.update?.({config:c})'));
 });

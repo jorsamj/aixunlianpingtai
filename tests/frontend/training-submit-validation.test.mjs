@@ -4,7 +4,9 @@ import {readFileSync} from 'node:fs';
 
 import {
   buildTrainingEngineParameters,
+  normalizeTrainingTimeLimit,
   formatTrainingValidationError,
+  validateTrainingCreatedResponse,
 } from '../../static/modules/training-submit.js';
 
 test('training submit normalizes string batch and workers before strict backend validation', () => {
@@ -84,17 +86,18 @@ test('compact training UI keeps four modes and canonical label/material selectio
   assert.doesNotMatch(source, /<option value="shared">共享<\/option>/);
 });
 
-test('external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local', () => {
+test('external ChangLian training hydrates truth independently after immediate form mount and log refresh stays modal-local', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const hydration = readFileSync(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const externalRuntime = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  assert.match(main, /preflight: algorithmId => externalAlgorithmPlatformRuntime\.preflightTraining/);
+  assert.match(main, /preflight: \(algorithmId, \{signal,force\} = \{\}\) => externalAlgorithmPlatformRuntime\.preflightTraining/);
   assert.match(main, /openTrainingForm: window\.openTrainingCreateCanonical429/);
   assert.match(hydration, /externalChangLian/);
-  assert.match(hydration, /const needsExternalPreflight = externalChangLian && !externalPreflightFresh/);
-  assert.match(hydration, /if \(!needsPreparation\) return openForm\(aid\)/);
-  assert.match(hydration, /needsExternalPreflight && typeof preflight === 'function' \? preflight\(aid\)/);
+  assert.match(hydration, /const opened=await openForm\(aid\)/);
+  assert.match(hydration, /void hydratePreflight\(aid\)\.catch/);
+  assert.match(hydration, /withRequestDeadline\(signal=>preflight\(aid,\{signal,force\}\)/);
+  assert.ok(hydration.indexOf('const opened=await openForm(aid)')<hydration.indexOf('void hydratePreflight(aid)'));
   assert.match(externalRuntime, /training-preflight\?project_id=/);
   assert.match(externalRuntime, /algorithm_id=\$\{encodeURIComponent\(id\)\}/);
   const ownerStart = source.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
@@ -233,7 +236,7 @@ test('scheduler-owned cluster hides controller CUDA and enforces GPU exclusivity
   assert.match(source, /中央自动分配/);
   assert.match(source, /单卡独占训练/);
   assert.match(source, /不会把控制机本地 cuda:N 当作远端集群设备/);
-  assert.match(source, /existing\?\.dataset\?\.targetId===targetId/);
+  assert.match(source, /existing\?\.dataset\?\.resourceSignature===resourceSignature/);
   assert.match(source, /gpuPolicy:'exclusive'/);
   assert.doesNotMatch(source, /<option value="auto">兼容自动隔离<\/option>/);
 });
@@ -246,13 +249,59 @@ test('custom settings retain professional augmentation without a GPU-sharing byp
     'ts428MultiScale', 'ts428HsvH', 'ts428HsvS', 'ts428HsvV',
     'ts428Translate', 'ts428Scale', 'ts428FlipUD', 'ts428FlipLR', 'ts428Rect',
   ]) assert.match(source, new RegExp('id="' + id + '"'));
-  assert.match(source, /multi_scale:num\('ts428MultiScale'/);
-  assert.match(source, /hsv_h:num\('ts428HsvH'/);
-  assert.match(source, /translate:num\('ts428Translate'/);
-  assert.match(source, /fliplr:num\('ts428FlipLR'/);
-  assert.match(source, /rect:!!document\.getElementById\('ts428Rect'\)/);
+  assert.match(source, /MultiScale:'multi_scale'/);
+  assert.match(source, /HsvH:'hsv_h'/);
+  assert.match(source, /Translate:'translate'/);
+  assert.match(source, /FlipLR:'fliplr'/);
+  assert.match(source, /Rect:'rect'/);
   assert.match(source, /Batch：自动/);
   assert.match(source, /Workers：自动/);
   assert.match(source, /推荐 \$\{recommendation\.batch\} · 当前估算安全范围 1 ~/);
   assert.match(source, /手动模式是硬约束，不满足预算时会在启动 Trainer 前失败/);
+});
+
+
+test('repository lookup distinguishes persisted execution outcomes from a fresh creation acknowledgment',()=>{
+  for(const status of ['FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE','SUCCEEDED','CANCELLED','CANCEL_REQUESTED','PARTIAL_SUCCESS']){
+    const body={ok:true,task:{task_id:'train_aaaaaaaaaaaaaaaaaaaa',kind:'TRAINING',status,project_id:'p',algorithm_id:'a'}};
+    assert.throws(()=>validateTrainingCreatedResponse(body,body.task.task_id,{projectId:'p',algorithmId:'a'}));
+    assert.equal(validateTrainingCreatedResponse(body,body.task.task_id,{projectId:'p',algorithmId:'a',persistedLookup:true}).status,status);
+  }
+});
+
+
+test('optional max training time accepts blank or zero as unlimited', () => {
+  assert.equal(normalizeTrainingTimeLimit(null), null);
+  assert.equal(normalizeTrainingTimeLimit(''), null);
+  assert.equal(normalizeTrainingTimeLimit('  '), null);
+  assert.equal(normalizeTrainingTimeLimit(0), null);
+  assert.equal(normalizeTrainingTimeLimit('0'), null);
+  assert.equal(normalizeTrainingTimeLimit(0.5), 0.5);
+  for (const value of [-1, 721, 'abc', Infinity]) {
+    assert.throws(() => normalizeTrainingTimeLimit(value), /最长训练时长/);
+  }
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('placeholder="不限" value="${c.time == null || Number(c.time) === 0 ?'));
+  assert.ok(!source.includes('value="${c.time??0}"'));
+  assert.ok(source.includes("input.id==='ts428Time'&&input.value.trim()===''?null"));
+});
+
+test('training submission keeps Epochs and optional time cap as separate values', () => {
+  const base = {
+    resource: {device: 'auto', batch: 8, workers: 0, strategy: 'manual'},
+    trainingMode: 'custom',
+    config: {epochs: 150, time: 2},
+  };
+  const target = {id: 'gpu', framework: 'ultralytics', type: 'local'};
+  const algorithm = {key: 'yolo11n_det', base_model: 'yolo11n.pt'};
+  assert.deepEqual(
+    (({epochs, time}) => ({epochs, time}))(
+      buildTrainingEngineParameters({draft: base, target, algorithm})
+    ),
+    {epochs: 150, time: 2},
+  );
+  assert.equal(
+    buildTrainingEngineParameters({draft: {...base, config: {epochs: 150, time: null}}, target, algorithm}).time,
+    null,
+  );
 });
