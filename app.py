@@ -28027,7 +28027,7 @@ def _v49_job_label_counts(project_id: str, job: Dict[str, Any]) -> Dict[str, int
     return counts
 
 @app.get('/api/v49/projects/{project_id}/algorithms/{algorithm_id}/report')
-def v49_algorithm_report(project_id: str, algorithm_id: str):
+def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool = False):
     algo = next((x for x in list_algorithms_internal(project_id) if x.get('id') == algorithm_id), None)
     if not algo:
         raise HTTPException(status_code=404, detail='算法不存在')
@@ -28077,8 +28077,13 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
         if m is None:
             try: m=float((j.get('metrics') or {}).get('map50'))
             except Exception: m=None
-        lc=_v49_job_label_counts(project_id,j)
-        for k,v in lc.items(): total_label_counts[k]=total_label_counts.get(k,0)+int(v)
+        # Historical label counts are expensive when frozen project Snapshots
+        # are unavailable: the legacy helper reopens mutable annotations for
+        # every selected image of every attempt. The report workbench requests
+        # lightweight=True to preserve truthful, fast historical metadata.
+        lc = {} if lightweight else _v49_job_label_counts(project_id, j)
+        for k, v in lc.items():
+            total_label_counts[k] = total_label_counts.get(k, 0) + int(v)
         elapsed = j.get('elapsed_seconds')
         try:
             measured = float(elapsed) if elapsed is not None and elapsed != '' and not isinstance(elapsed, bool) else None
@@ -28092,8 +28097,44 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
     current_id=str(algo.get('current_version_id') or '')
     current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
     aggregate=build_algorithm_report(versions)
+    # Summaries are derived only from immutable/current-version catalog facts.
+    # Never infer historical Test quality from a Val mAP or mutable GT.
+    quality_rows = []
+    for version in sorted(versions, key=lambda v: str(
+        v.get('finished_at') or v.get('created_at') or v.get('version_name') or ''
+    ))[-40:]:
+        evaluation = version.get('evaluation') or {}
+        if not isinstance(evaluation, dict):
+            evaluation = {}
+        ev_metrics = evaluation.get('metrics') or {}
+        if not isinstance(ev_metrics, dict):
+            ev_metrics = {}
+        test_map50 = _v49_metric_from_report(
+            {'metrics': ev_metrics}, 'metrics/mAP50(B)', 'map50', 'mAP50'
+        ) if evaluation.get('status') == 'succeeded' else None
+        quality_rows.append({
+            'version_id': version.get('id'),
+            'version_name': version.get('version_name') or '',
+            'finished_at': version.get('finished_at') or version.get('created_at') or '',
+            'val_map50': _map50(version),
+            'test_map50': test_map50,
+            'test_status': evaluation.get('status') or 'unavailable',
+            'test_snapshot_id': evaluation.get('snapshot_id') or '',
+            'train_snapshot_id': version.get('snapshot_id') or '',
+            'is_current': str(version.get('id') or '') == current_id,
+        })
+    current_quality = next(
+        (row for row in quality_rows if row['is_current']), None
+    )
     success = _successful_training_counts(project_id).get(str(algorithm_id), 0)
-    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,'jobs_truncated':len(jobs)>20}
+    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,
+       'label_counts_scope': 'not_computed_fast' if lightweight else 'cumulative_training_boxes',
+       'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,
+            'jobs_truncated':len(jobs)>20,
+            'version_quality':quality_rows,
+            'version_quality_total':len(versions),
+            'version_quality_truncated':len(versions)>40,
+            'current_quality':current_quality}
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
