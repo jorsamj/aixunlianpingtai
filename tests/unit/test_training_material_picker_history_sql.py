@@ -406,3 +406,58 @@ def test_test_reserved_browse_is_token_indexed_and_equivalent_to_usage_projectio
     test_filters,_=api._usage_filters(repo,{'algorithm_asset_id':'a','usage_state':'test_reserved',
         'role':'test','browse_only':True})
     assert '__usage_sql_exclusion' not in test_filters
+
+
+def test_unknown_and_unused_history_filters_use_indexed_antijoin(tmp_path, monkeypatch):
+    """Complete coverage is required for unused, not for unknown; other algorithms stay independent."""
+    from platform_core.task_runtime.repository import TaskRepository
+    import platform_core.training_material_picker_api as api
+    import sqlite3
+    repo = MaterialRepository(tmp_path/'data'/'projects'/'history-unmatched')
+    repo.upsert_many([
+        {'id':'used','filename':'used.jpg','content_sha256':'a'*64,'processing_status':'processed'},
+        {'id':'same-hash','filename':'same.jpg','content_sha256':'a'*64,'processing_status':'processed'},
+        {'id':'other-alg','filename':'other.jpg','content_sha256':'b'*64,'processing_status':'processed'},
+        {'id':'fresh','filename':'fresh.jpg','content_sha256':'c'*64,'processing_status':'processed'},
+    ])
+    task_path=repo.project_path.parent.parent/'task_runtime'/'tasks.sqlite3'
+    TaskRepository(task_path)
+    usage=TrainingMaterialUsage(task_path)
+    for image_id, algorithm in [('used','a'),('other-alg','b')]:
+        row=repo.get(image_id)
+        task='job-'+image_id
+        usage.record_selected('history-unmatched',algorithm,task,{
+            'snapshot_id':task,'images':[{'image_id':image_id,'role':'train',
+                'content_sha256':row['content_sha256']}]},source_images=[row])
+        usage.record_execution(task,completed_epoch=True)
+    gt=AnnotationRepository(repo.project_path)
+    for complete, wanted in [(False,'unknown'),(True,'unused')]:
+        usage.mark_coverage('history-unmatched','a',complete=complete)
+        api._cached_usage_pool.cache_clear()
+        canonical=api._cached_usage_pool(str(repo.project_path),str(task_path),repo.current_revision(),
+            'a',usage.read_revision(),'train',True)
+        expected={key for key,fact in canonical['by_image_id'].items() if fact['state']==wanted}
+        expected.update(canonical['state_ids'][wanted])
+        assert expected=={'other-alg','fresh'}
+        with monkeypatch.context() as patch:
+            patch.setattr(api,'_cached_usage_pool',lambda *a: (_ for _ in ()).throw(
+                AssertionError('unknown/unused may not scan every project material')))
+            filters, facts=api._usage_filters(repo,{'algorithm_asset_id':'a',
+                'usage_state':wanted,'browse_only':True})
+            assert filters['__usage_sql_exclusion']['scope_only']=='history_unmatched'
+            page=api._gt_material_filter_page(repo,gt,filters=filters,include_payload=False,limit=60)
+            assert page['total']==len(expected)
+            assert set(page['items'])==expected
+            clauses,params=api._picker_filter_sql(filters)
+            with sqlite3.connect(repo.path) as db:
+                api._attach_usage_exclusion(db,filters)
+                plan=[r[3] for r in db.execute('EXPLAIN QUERY PLAN SELECT m.id FROM materials m WHERE '
+                    +' AND '.join(clauses),params)]
+            assert any('SEARCH t USING COVERING INDEX' in detail for detail in plan),plan
+        opposite='unused' if wanted=='unknown' else 'unknown'
+        with monkeypatch.context() as patch:
+            patch.setattr(api,'_cached_usage_pool',lambda *a: (_ for _ in ()).throw(
+                AssertionError('impossible state must not scan the full pool')))
+            impossible,_=api._usage_filters(repo,{'algorithm_asset_id':'a',
+                'usage_state':opposite,'browse_only':True})
+            assert api._gt_material_filter_page(repo,gt,filters=impossible,limit=60)['total']==0

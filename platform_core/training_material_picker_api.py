@@ -204,8 +204,15 @@ def _indexed_usage_state_shortcut(task_path, project_id, algorithm_id, revision,
         complete = bool(coverage and coverage[0])
         if state == "unused" and not complete:
             return ("none", "unknown")
+        if state == "unknown" and complete:
+            return ("none", "complete")
         if db.execute("SELECT 1 FROM training_usage_tokens WHERE project_id=? LIMIT 1",
                       (project_id,)).fetchone():
+            # 'unknown'/'unused' are exactly the images without any token
+            # matching this algorithm when the coverage truth is pinned.
+            # Keep all nonempty-history role/scope states on their own path.
+            if not scope and state in {"unknown", "unused"}:
+                return ("unmatched", "complete" if complete else "unknown")
             return None
         # A tokenless but nonempty usage projection could be corrupt; do not
         # reinterpret its history as a safe unused selection.
@@ -274,6 +281,14 @@ def _usage_filters(repository, filters):
         count("usage_state_index_shortcuts")
         if resolution == "none":
             body["usage_image_ids"] = []
+        elif resolution == "unmatched":
+            # Do not enumerate 200k IDs just to express an anti-join. The
+            # attached Task token index uses the same source identity rules.
+            body["__usage_sql_exclusion"] = {
+                "path": str(task_path), "project_id": repository.project_path.name,
+                "algorithm_id": algorithm_id, "role": str(body.get("role") or "train"),
+                "revision": usage_revision, "scope_only": "history_unmatched",
+            }
         else:
             # The old full-pool path replaces caller-supplied usage IDs. When
             # every processed row matches, omit the predicate rather than
@@ -453,6 +468,21 @@ def _picker_filter_sql(filters=None):
                 "AND t.token_value=json_extract(rel.value,'$[1]') "
                 "AND u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role "
                 "AND u.algorithm_id=? AND u.role='test' AND (u.evidence>0"+active+"))"
+            )
+            params.extend((sql_exclusion['project_id'], sql_exclusion['algorithm_id']))
+        elif sql_exclusion['scope_only']=='history_unmatched':
+            # No current-algorithm record shares an original, derivative,
+            # content SHA, file or group token with this material. Coverage
+            # decides whether that means 'unused' or merely 'unknown'.
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM json_each(picker_relation_tokens(m.id,m.content_sha256,m.payload_json)) rel "
+                "CROSS JOIN usage_index.training_usage_tokens t "
+                "CROSS JOIN usage_index.training_material_usage u "
+                "WHERE t.project_id=? "
+                "AND t.token_kind=json_extract(rel.value,'$[0]') "
+                "AND t.token_value=json_extract(rel.value,'$[1]') "
+                "AND u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role "
+                "AND u.algorithm_id=?)"
             )
             params.extend((sql_exclusion['project_id'], sql_exclusion['algorithm_id']))
         elif sql_exclusion['scope_only']=='current_only':
