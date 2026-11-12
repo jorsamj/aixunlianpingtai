@@ -51,6 +51,7 @@ on:
       - 'tests/frontend/upload-task-center.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/import-dock-style.test.mjs'
+      - 'tests/browser/zip-import-material-flow.spec.mjs'
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
       - 'tests/browser/zip-label-presentation.spec.mjs'
       - 'tests/browser/material-upload-chunking.spec.mjs'
@@ -91,7 +92,8 @@ jobs:
           node --check static/modules/storage-import-progress.js &&
           node --check static/app.js &&
           node --check static/zip-import-bootstrap.mjs &&
-          node --check tests/browser/zip-import-refresh-recovery.spec.mjs
+          node --check tests/browser/zip-import-refresh-recovery.spec.mjs &&
+          node --check tests/browser/zip-import-material-flow.spec.mjs
       - name: Upload, refresh, queue and progress contracts
         run: >-
           node --test
