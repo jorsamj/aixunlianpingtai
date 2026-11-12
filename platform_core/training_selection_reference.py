@@ -28,11 +28,16 @@ def _write_selection(data_dir,context,image_ids,reference,request_scope):
     ArtifactStore(Path(data_dir)/'task_runtime'/'artifacts').artifact_path(reference,'selection.sqlite3')
     with closing(BatchSelection(path)) as manifest:
         with manifest.transaction():
-            for index,image_id in enumerate(image_ids):
-                if index>=MAX_FROZEN_SELECTION_IDS:raise ValueError('冻结选择超过100万条上限，请缩小筛选范围')
-                identity=str(image_id).strip()
-                if not identity or len(identity)>256:raise ValueError('invalid selection identity')
-                manifest.database.execute('INSERT OR IGNORE INTO selection(image_id) VALUES (?)',(identity,))
+            # A single prepared statement consumes this bounded generator.
+            # Keep all ID validation and the upper bound inside the same
+            # transaction: a late invalid row must roll back the whole draft.
+            def checked_rows():
+                for index,image_id in enumerate(image_ids):
+                    if index>=MAX_FROZEN_SELECTION_IDS:raise ValueError('冻结选择超过100万条上限，请缩小筛选范围')
+                    identity=str(image_id).strip()
+                    if not identity or len(identity)>256:raise ValueError('invalid selection identity')
+                    yield (identity,)
+            manifest.database.executemany('INSERT OR IGNORE INTO selection(image_id) VALUES (?)',checked_rows())
             count=manifest.database.execute('SELECT COUNT(*) FROM selection').fetchone()[0]
             if not count:raise ValueError('没有符合条件的可选训练素材')
             digest=hashlib.sha256()
