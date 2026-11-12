@@ -571,6 +571,20 @@ def _build_snapshot_v2(
     }
 
 
+def snapshot_content_matches_identity(snapshot: Mapping[str, Any], snapshot_id: str) -> bool:
+    """Verify frozen Snapshot ID against original canonical payload (not mutable GT)."""
+    if not isinstance(snapshot, Mapping):
+        return False
+    expected = str(snapshot_id or "").strip().lower()
+    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        return False
+    if str(snapshot.get("snapshot_id") or "").strip().lower() != expected:
+        return False
+    payload = {key: value for key, value in snapshot.items()
+               if key not in ("snapshot_id", "created_at")}
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest() == expected
+
+
 def persist_snapshot(directory: Path, snapshot: Mapping[str, Any]) -> Path:
     snapshot_id = str(snapshot.get("snapshot_id") or "")
     if not snapshot_id:
