@@ -1485,7 +1485,9 @@ class ExternalAlgorithmPublishService:
             meta=winner.get("model_metadata") or winner.get("metadata") or {}
             stored=self.model_assets.repository.get(winner["artifact_id"]) or {}
             known=stored.get("storage_status")=="UPLOADED" and stored.get("conversion_job_id")==winner.get("conversion_job_id") and stored.get("sha256")==winner["sha256"]
-            if meta.get("manifest_metadata_error") or (not meta.get("conversion_identity_verified") and not known):
+            if (meta.get("manifest_metadata_error")
+                    or (meta.get("remote_job_id") and not meta.get("conversion_identity_verified"))
+                    or (not meta.get("conversion_identity_verified") and not known)):
                 choices[key]={"error":"当前成果缺少与任务匹配的Manifest或输出SHA/大小证据","code":"EXTERNAL_WEIGHT_CONVERSION_IDENTITY_UNCONFIRMED"}
                 continue
             selection={"artifact_id":winner["artifact_id"],"sha256":winner["sha256"],"conversion_job_id":winner.get("conversion_job_id"),

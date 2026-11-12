@@ -1649,7 +1649,14 @@ class ModelArtifactService:
                 continue
             digest = _sha256(path)
             if kind == "conversion":
-                metadata["conversion_identity_verified"]=bool(metadata.get("conversion_output_sha256")==digest and metadata.get("conversion_output_size")==path.stat().st_size)
+                # A remote download can hash its own bytes, but that alone
+                # cannot establish the remote conversion task/source identity.
+                # Remote conversion requires the bound manifest checked below.
+                metadata["conversion_identity_verified"]=bool(
+                    not metadata.get("remote_job_id")
+                    and metadata.get("conversion_output_sha256")==digest
+                    and metadata.get("conversion_output_size")==path.stat().st_size
+                )
             if kind == "conversion" and metadata.get("manifest_path"):
                 manifest = _json_load(Path(metadata["manifest_path"]), {})
                 outputs = [r for r in manifest.get("outputs",[]) if Path(str(r.get("name") or "")).name==path.name] if isinstance(manifest,dict) else []

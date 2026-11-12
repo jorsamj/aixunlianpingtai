@@ -4739,3 +4739,22 @@ def test_external_publication_blocks_only_the_algorithm_pending_deletion_verific
     with pytest.raises(PlatformError) as error:
         service._assert_current_external_identity(algorithm,{'id':'v1'})
     assert error.value.code=='EXTERNAL_PRODUCT_DELETION_UNVERIFIED'
+
+
+
+def test_remote_onnx_utc_receipt_is_not_publishable_without_bound_manifest(tmp_path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
+    candidate = {
+        "artifact_id": "remote-only-receipt", "target": "onnx", "chip_code": "",
+        "sha256": "b" * 64, "conversion_job_id": "local-received",
+        "metadata": {
+            "finished_at": "2026-11-12T06:15:49+00:00",
+            "remote_job_id": "remote-received",
+            "conversion_identity_verified": False,
+        },
+    }
+    choices = service._automatic_delivery_choices({}, [candidate])
+    assert choices["onnx:"]["code"] == "EXTERNAL_WEIGHT_CONVERSION_IDENTITY_UNCONFIRMED"
+    assert "artifact_id" not in choices["onnx:"]

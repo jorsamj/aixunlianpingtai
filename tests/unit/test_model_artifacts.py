@@ -1875,3 +1875,28 @@ def test_legacy_remote_onnx_manifest_recovers_only_bound_utc_evidence(tmp_path, 
         assert old["conversion_identity_verified"] is False
         assert old["finished_at"] == "2026-11-12 14:06:47"
         assert "不匹配" in old["manifest_metadata_error"]
+
+
+
+def test_remote_utc_receipt_and_self_hash_without_manifest_cannot_prove_conversion(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    version = _metadata_model(tmp_path)
+    output = tmp_path / "remote-no-manifest.onnx"
+    output.write_bytes(b"model-without-bound-manifest")
+    source_sha = hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    job = {
+        "id": "local-received", "remote_job_id": "remote-received",
+        "target": "onnx", "status": "done",
+        "source_trace": {"sha256": source_sha},
+        "conversion_finished_at": "2026-11-12T06:15:49+00:00",
+        "outputs": [{
+            "path": str(output),
+            "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+            "size_bytes": output.stat().st_size,
+        }],
+    }
+    monkeypatch.setattr(service, "_conversion_jobs", lambda *args: [job])
+    item = next(row for row in service.discover_version_artifacts("p1", {"id": "a1"}, version) if row["target"] == "onnx")
+    assert item["metadata"]["finished_at"] == "2026-11-12T06:15:49+00:00"
+    assert item["metadata"]["remote_job_id"] == "remote-received"
+    assert item["metadata"]["conversion_identity_verified"] is False
