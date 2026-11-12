@@ -13,7 +13,7 @@
 .algorithm-report429 .alg-report-stat b{display:block;margin:6px 0 4px;font-size:25px;line-height:1.2;font-weight:680;font-variant-numeric:tabular-nums}
 .algorithm-report429 .alg-report-stat small{display:block;line-height:1.5;color:#8190a0;font-size:11px;overflow-wrap:anywhere}
 .algorithm-report429 .alg-report-tabs{display:flex;align-items:center;gap:18px;position:sticky;top:-1px;z-index:2;background:#fff;border-bottom:1px solid var(--ar-border);overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;margin-bottom:18px}
-.algorithm-report429 .alg-report-tabs [role=tab]{appearance:none;flex:none;border:0;background:transparent;border-bottom:2px solid transparent;font:600 14px/1.35 inherit;color:var(--ar-muted);padding:12px 3px;cursor:pointer;white-space:nowrap}
+.algorithm-report429 .alg-report-tabs [role=tab]{appearance:none;flex:none;border:0;background:transparent;border-bottom:2px solid transparent;font-family:inherit;font-size:14px;font-weight:600;line-height:1.35;color:var(--ar-muted);padding:12px 3px;cursor:pointer;white-space:nowrap}
 .algorithm-report429 .alg-report-tabs [role=tab][aria-selected=true]{color:#1d4f91;border-color:#1d4f91}
 .algorithm-report429 .alg-report-tabs [role=tab]:focus-visible{outline:2px solid #2457c5;outline-offset:-3px}
 .algorithm-report429 .alg-report-pane[hidden]{display:none!important}
@@ -79,7 +79,6 @@
   overscroll-behavior:contain;
   scrollbar-gutter:stable;
 }
-.modal:not(.hidden)>.modal-card.wide{height:min(90dvh,1020px)}
 .modal:not(.hidden):has([data-algorithm-report])>.modal-card,
 .modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card{
   width:min(1180px,calc(100vw - 24px));
@@ -89,7 +88,6 @@
 .modal:not(.hidden):has([data-algorithm-report])>.modal-card>.modal-body,
 .modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card>.modal-body{background:#fff}
 @media(max-width:580px){
-  .modal:not(.hidden)>.modal-card.wide{height:calc(100dvh - 16px);max-height:calc(100dvh - 16px)}
   .modal:not(.hidden):has([data-algorithm-report])>.modal-card,
   .modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card{height:calc(100dvh - 16px)}
 }
