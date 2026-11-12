@@ -294,7 +294,11 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     snapshot = artifacts.read_json("task-one", "snapshot.json")
     project_snapshot = project / "snapshots" / (snapshot["snapshot_id"] + ".json")
     assert project_snapshot.is_file()
-    assert json.loads(project_snapshot.read_text(encoding="utf-8")) == snapshot
+    project_truth = json.loads(project_snapshot.read_text(encoding="utf-8"))
+    # TRAINING may replay the same frozen content after PREPARE with a new
+    # created_at; the immutable identity must remain the same.
+    assert {k: v for k, v in project_truth.items() if k != "created_at"} == {
+        k: v for k, v in snapshot.items() if k != "created_at"}
     assert "image-7" not in set(snapshot["ids"]["train"] + snapshot["ids"]["validation"] + snapshot["ids"]["test"])
     assert result["base_selection_reason"] == "mother_model"
     assert result["verified_models"][0]["size_bytes"] > 0
