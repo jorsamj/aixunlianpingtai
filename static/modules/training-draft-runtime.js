@@ -154,7 +154,10 @@ export function installTrainingDraftRuntime({
     const target = event?.target;
     if (!target?.closest) return false;
     if (target.closest('.training-label-contract')) return false;
-    return Boolean(target.closest('.train429-create') || target.closest('.train-v3-picker'));
+    // The picker owns provisional edits. Confirmation and policy changes write
+    // through TrainingDraftRuntime.update, without a generic DOM-event resync.
+    if (target.closest('.train-v3-picker')) return false;
+    return Boolean(target.closest('.train429-create'));
   }
 
   function ownedDirectControl(event) {

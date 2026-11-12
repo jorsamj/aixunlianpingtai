@@ -155,3 +155,29 @@ test('canonical draft subscribers receive update intent and unsubscribe determin
   assert.equal(events.length, 1);
   cleanup(runtime);
 });
+
+
+test('provisional picker events do not repeatedly normalize a 20k-material training draft', async () => {
+  const {listeners} = setupDom();
+  const ids = Array.from({length: 20000}, (_, i) => 'image-' + i);
+  const state = {
+    trainingDraft: createTrainingDraft({algorithmId:'alg-1', materialIds:ids, newLabelCodes:['person']}),
+    algorithms:[{id:'alg-1', versions:[]}],
+  };
+  globalThis.window = {fetch: async () => ({ok:true})};
+  const runtime = installTrainingDraftRuntime({getState:()=>state, ...dependencies()});
+  let events = 0;
+  runtime.subscribe(()=>{events += 1});
+  const pickerTarget = {id:'trV3Q', closest(selector){return selector==='.train-v3-picker' ? {} : null}};
+  for(const type of ['click','input','change']) listeners.get(type)({target:pickerTarget});
+  await Promise.resolve();
+  assert.equal(events,0, 'provisional picker state must not trigger canonical draft resync');
+  assert.equal(state.trainingDraft.materialIds.length,20000);
+  runtime.update({newLabelCodes:['smoke']});
+  assert.equal(events,1, 'explicit canonical writes remain observable');
+  const createTarget={id:'generic', closest(selector){return selector==='.train429-create'?{}:null}};
+  listeners.get('change')({target:createTarget});
+  await Promise.resolve();
+  assert.equal(events,2, 'other generic training controls retain their sync behavior');
+  cleanup(runtime);
+});

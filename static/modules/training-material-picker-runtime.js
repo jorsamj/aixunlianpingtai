@@ -48,6 +48,14 @@ export function trainingMaterialSelectionPatch({role = 'train', selectedIds = []
     };
 }
 
+// A picker may open with tens of thousands of explicit IDs. Build the
+// robustness scope once instead of repeatedly normalizing it per candidate.
+export function initialTrainingMaterialIds({role='train', materialIds=[], testMaterialIds=[], robustnessImageIds=[], blocked=new Set()}={}) {
+  const source = role==='robustness' ? robustnessImageIds : role==='test' ? testMaterialIds : materialIds;
+  const scope = role==='robustness' ? new Set(uniqueIds(materialIds)) : null;
+  return uniqueIds(source).filter(id => !blocked.has(id) && (!scope || scope.has(id)));
+}
+
 export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train', negativePoolOnly = false, negativeCategoryIds = [], countMode = '', labelMode = 'any'} = {}) {
   const params = new URLSearchParams();
   if (page != null) {
@@ -1288,12 +1296,22 @@ export function installTrainingMaterialPickerRuntime({
     activeController?.abort();activePageKey=null;picker?.bulkController?.abort();picker?.historyControllers?.forEach(c=>c.abort());++requestSequence;clearTimeout(searchTimer);
     injectStyles();
     if (typeof role === 'object') role=role.role;
+    const currentDraft = draft();
+    const scopeIds = uniqueIds(currentDraft.materialIds);
+    const selectedRole = ['test','robustness'].includes(role) ? role : 'train';
+    const initialIds = initialTrainingMaterialIds({
+      role: selectedRole,
+      materialIds: scopeIds,
+      testMaterialIds: currentDraft.testMaterialIds,
+      robustnessImageIds: currentDraft.robustness_policy?.selection?.image_ids,
+      blocked: blockedIds(selectedRole),
+    });
     picker = {
-      reference:role!=='test' && draft().trainSelectionRef?{selection_ref:draft().trainSelectionRef,count:draft().trainSelectionCount}:null,
+      reference:selectedRole!=='test' && currentDraft.trainSelectionRef?{selection_ref:currentDraft.trainSelectionRef,count:currentDraft.trainSelectionCount}:null,
       sampleRole:'', effectiveLabels:[], roleCounts:null, reviewing:false, reviewSelected:new Set(),
-      role: ['test','robustness'].includes(role) ? role : 'train',
-      filters:{}, view:'grid', historyControllers:new Set(), scopeIds:uniqueIds(draft().materialIds),
-      query: '', labels: new Set(), sortOrder: 'newest', selected: new Set(uniqueIds(role==='robustness'?draft().robustness_policy?.selection?.image_ids:role==='test'?draft().testMaterialIds:draft().materialIds).filter(id=>!blockedIds(role).has(id) && (role!=='robustness' || uniqueIds(draft().materialIds).includes(id)))),
+      role: selectedRole,
+      filters:{}, view:'grid', historyControllers:new Set(), scopeIds,
+      query: '', labels: new Set(), sortOrder: 'newest', selected: new Set(initialIds),
       pageSize: DEFAULT_PAGE_SIZE, page: 1, totalPages: 1,
       items: [], total: null, hasNext: false, loading: false, repositoryRevision: null,
       annotationRevision: null, usageRevision: null,
@@ -1411,7 +1429,8 @@ export function installTrainingMaterialPickerRuntime({
     if(picker.reference){trainingDraftRuntime.update({materialIds:[],trainSelectionRef:picker.reference.selection_ref,trainSelectionCount:picker.reference.count});window.closeModal?.();window.refreshTrainingMaterialSelectionUiV3?.();return true;}
     if(picker.role==='robustness'){
       const policy=current.robustness_policy || {};
-      trainingDraftRuntime.update({robustness_policy:{...policy,selection:{...(policy.selection || {}),mode:'manual',image_ids:[...picker.selected].filter(id=>picker.scopeIds.includes(id))}}});
+      const scope = new Set(picker.scopeIds);
+      trainingDraftRuntime.update({robustness_policy:{...policy,selection:{...(policy.selection || {}),mode:'manual',image_ids:[...picker.selected].filter(id=>scope.has(id))}}});
       window.closeModal?.();window.refreshTrainingMaterialSelectionUiV3?.();return true;
     }
     const patch = trainingMaterialSelectionPatch({

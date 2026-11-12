@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectable, trainingMaterialSelectionPatch} from '../../static/modules/training-material-picker-runtime.js';
+import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectable, trainingMaterialSelectionPatch, initialTrainingMaterialIds} from '../../static/modules/training-material-picker-runtime.js';
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -368,4 +368,19 @@ test('training picker action owner disables confirmation during page and bulk re
   sync();
   assert.equal(buttons.every(button => !button.disabled), true, 'actions must unlock on final completion');
   assert.match(source, /if \(!picker \|\| picker\.loading \|\| picker\.bulkPending \|\| picker\.reviewPending\) return false/);
+});
+
+
+test('large picker initial selection is scope-bounded without per-image linear includes', () => {
+  const images=Array.from({length:20000},(_,i)=>'image-'+i);
+  const selected=initialTrainingMaterialIds({role:'robustness',materialIds:images,
+    robustnessImageIds:[...images,'outside','image-0'],blocked:new Set(['image-7'])});
+  assert.equal(selected.length,19999);
+  assert.equal(selected[0],'image-0');
+  assert.ok(!selected.includes('image-7'));
+  assert.ok(!selected.includes('outside'));
+  assert.deepEqual(initialTrainingMaterialIds({role:'train',materialIds:['a','a','b'],blocked:new Set(['b'])}),['a']);
+  assert.deepEqual(initialTrainingMaterialIds({role:'test',testMaterialIds:['a','b','a'],blocked:new Set(['a'])}),['b']);
+  assert.doesNotMatch(source,/uniqueIds\(draft\(\)\.materialIds\)\.includes\(id\)/);
+  assert.doesNotMatch(source,/picker\.scopeIds\.includes\(id\)/);
 });
