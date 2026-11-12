@@ -52,7 +52,7 @@
     }
     select.addEventListener('change', sync);
     root.querySelector('.conversion560-status-strip')?.after(tabs);
-    if (!tabs.isConnected) filters.before(tabs);
+    if (!tabs.isConnected) (filters.closest('.conversion560-filter-shell') || filters).before(tabs);
   }
 
   function decorateHistory(root) {
@@ -66,7 +66,7 @@
       const bar = document.createElement('div');
       bar.className = 'conversion560-status-strip';
       bar.setAttribute('aria-label','转换任务概览');
-      bar.innerHTML = summaryValues.map(({label,value}) => `<span><strong>${escapeHtml(value)}</strong> ${escapeHtml(label.replace('筛选结果总数','当前筛选').replace('本页已产生产物','本页完成').replace('本页进行中','本页进行中'))}</span>`).join('');
+      bar.innerHTML = summaryValues.map(({label,value}) => `<span><strong>${escapeHtml(value)}</strong> ${escapeHtml(label.replace('筛选结果总数','当前筛选').replace('本页已产生产物','本页已产生产物').replace('本页进行中','本页进行中'))}</span>`).join('');
       top.insertAdjacentElement('afterend',bar);
     }
     const filters = root.querySelector('.convert428-history-filters');
@@ -97,13 +97,14 @@
     detailHeader.innerHTML = '<button type="button" class="btn conversion-ui-back" data-conversion-ui-back>← 返回转换记录</button><div><strong data-conversion-ui-detail-title>转换详情</strong><small>执行概况、配置、产物与原始证据</small></div>';
     list.before(detailHeader);
     let lastScroll = 0;
+    let lastTrigger = null;
     const modalScroll = () => root.closest('.modal-body') || root.closest('[role="dialog"]') || root;
     const closeDetail = () => {
       root.classList.remove('conversion-ui-inspecting');
       root.querySelector('.conversion-ui-inspected')?.classList.remove('conversion-ui-inspected');
       detailHeader.hidden = true;
       modalScroll().scrollTop = lastScroll;
-      root.querySelector('[data-conversion-ui-open]')?.focus({preventScroll:true});
+      (lastTrigger?.isConnected ? lastTrigger : root.querySelector('[data-conversion-ui-open]'))?.focus({preventScroll:true});
     };
     root.addEventListener('click', event => {
       if (event.target.closest('[data-conversion-ui-back]')) { closeDetail(); return; }
@@ -112,6 +113,7 @@
       const job = trigger.closest('.convert428-job');
       if (!job) return;
       lastScroll = modalScroll().scrollTop;
+      lastTrigger = trigger;
       root.querySelector('.conversion-ui-inspected')?.classList.remove('conversion-ui-inspected');
       job.classList.add('conversion-ui-inspected');
       root.classList.add('conversion-ui-inspecting');
@@ -146,6 +148,7 @@
         open.textContent = '查看详情';
         const originalActions = [...actions.children].filter(node => node.matches('button,a'));
         const primary = originalActions.find(node => /下载/.test(node.textContent || '')) ||
+          originalActions.find(node => node.dataset.conversionNumeric === '1') ||
           originalActions.find(node => /查看日志|日志/.test(node.textContent || ''));
         if (primary) primary.classList.add('conversion-ui-primary-action');
         const secondary = originalActions.filter(node => node !== primary);
