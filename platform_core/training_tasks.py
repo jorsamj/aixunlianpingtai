@@ -43,6 +43,7 @@ from .snapshots import (
     ensure_dataset_revision,
     is_training_ground_truth,
     persist_dataset_revision,
+    persist_snapshot,
 )
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
@@ -3257,6 +3258,9 @@ class TrainingHandler:
         revision = dataset_revision_document(snapshot)
         persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
+        # The read-only frozen Test preview resolves this immutable project-level
+        # identity; keeping only the task copy makes all post-training previews 409.
+        persist_snapshot(project / "snapshots", snapshot)
         from .training_material_usage import record_context_snapshot
         context.run_owned(lambda: record_context_snapshot(context, context.task, payload, snapshot))
         context.artifacts.atomic_write_json(
