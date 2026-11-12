@@ -28097,6 +28097,7 @@ def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool =
     current_id=str(algo.get('current_version_id') or '')
     current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
     aggregate=build_algorithm_report(versions)
+    val_by_version_id = {str(item.get('version_id')): item.get('map50') for item in aggregate['trend']}
     # Summaries are derived only from immutable/current-version catalog facts.
     # Never infer historical Test quality from a Val mAP or mutable GT.
     quality_rows = []
@@ -28116,7 +28117,7 @@ def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool =
             'version_id': version.get('id'),
             'version_name': version.get('version_name') or '',
             'finished_at': version.get('finished_at') or version.get('created_at') or '',
-            'val_map50': _map50(version),
+            'val_map50': val_by_version_id.get(str(version.get('id') or '')),
             'test_map50': test_map50,
             'test_status': evaluation.get('status') or 'unavailable',
             'test_snapshot_id': evaluation.get('snapshot_id') or '',
@@ -28129,7 +28130,7 @@ def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool =
     success = _successful_training_counts(project_id).get(str(algorithm_id), 0)
     return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,
        'label_counts_scope': 'not_computed_fast' if lightweight else 'cumulative_training_boxes',
-       'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,
+       'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': val_by_version_id.get(str(current.get('id') or '')) if current else None}, 'trend':trend, 'jobs':jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,
             'jobs_truncated':len(jobs)>20,
             'version_quality':quality_rows,
             'version_quality_total':len(versions),
