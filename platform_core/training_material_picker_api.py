@@ -1000,6 +1000,7 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None, cu
             # Keep the same authoritative role classification, but advance by
             # the last material identity. Repeated OFFSET page=N queries scan
             # prior candidate pages again on every deeper role-filtered page.
+            count("role_deferred_cursor_chunks")
             chunk=_role_material_page(repository,annotations,contract,query=query,labels=labels,
                 cursor=source_cursor,limit=min(MAX_PAGE_SIZE,120),sort_order=sort_order,filters=selected,
                 defer_role_counts=True,count_mode='deferred',include_payload=True)
