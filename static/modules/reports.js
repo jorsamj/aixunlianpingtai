@@ -509,3 +509,110 @@ export function lineageReportHtml({algorithm={},version={}}={}) {
   const fact=(label,value)=>`<div class="report-fact"><small>${escapeText(label)}</small><b>${escapeText(analysisValue(value))}</b></div>`;
   return `<div class="report429 lineage429 training-lineage-workspace"><header class="quality-workspace-head"><div><span>TRAINING LINEAGE · 冻结版本事实</span><h2>${escapeText(algorithm.name||'算法')} <small>${escapeText(version.version_name||version.id||'')}</small></h2><p>版本迭代与断点续训分别保留原始合同，当前配置不改写历史。</p></div></header><div class="report-facts-grid">${fact('训练框架',lineage.framework)}${fact('实际精度',params.actual?.effective_precision??params.actual?.precision)}${fact('实际训练尺寸',params.actual?.imgsz)}${fact('实际设备',execution.actual_device)}</div><section class="report429-card"><header><b>母模型 → 当前版本</b></header><div class="report-facts-grid">${fact('来源版本',base.version_name||base.version_id)}${fact('母模型',String(base.model||'').split(/[\\/]/).pop())}${fact('训练任务',lineage.task_id)}${fact('Worker / 节点',[execution.worker_id,execution.node_id].filter(Boolean))}</div></section><section class="report429-card"><header><b>数据与冻结身份</b></header><div class="report-facts-grid">${fact('数据版本 Dataset Revision',lineage.dataset_revision_id)}${fact('Snapshot',lineage.snapshot_id)}</div></section><section class="report429-card"><header><b>模型产物</b><span>${(lineage.artifacts||[]).length} 个已记录成果</span></header><div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>文件</th><th>SHA256</th><th>大小 / 字节</th></tr></thead><tbody>${(lineage.artifacts||[]).map(row=>`<tr><td>${escapeText(row.role||'未记录')}</td><td>${escapeText(row.file_name||row.model_name||'未记录')}</td><td class="report-hash">${escapeText(row.sha256||'未记录')}</td><td>${row.size_bytes??'未记录'}</td></tr>`).join('')||'<tr><td colspan="4">未记录已验证成果</td></tr>'}</tbody></table></div></section><details class="report429-card"><summary>实际训练参数 / 请求参数与完整技术证据</summary><pre class="log report-technical">${escapeText(JSON.stringify(lineage,null,2))}</pre></details></div>`;
 }
+
+
+/* Algorithm-level report: bounded first paint and lazy evidence panels. */
+export function algorithmReportPercent(raw){
+  const n=typeof raw==="number"?raw:(typeof raw==="string"&&raw.trim()?Number(raw):NaN);
+  return Number.isFinite(n)&&n>=0&&n<=1?(n*100).toFixed(1)+"%":"未记录";
+}
+
+export function algorithmReportView(section,payload){
+  const e=escapeText, pct=algorithmReportPercent, rows=Array.isArray(payload.version_quality)?payload.version_quality:[];
+  const jobs=Array.isArray(payload.jobs)?payload.jobs:[], summary=payload.summary||{};
+  const safeTime=value=>{if(!value)return "未记录";const t=String(value);return e(t.replace("T"," ").replace(/Z$/," UTC").slice(0,24))};
+  if(section==="versions"){
+    const recent=rows.slice().reverse();
+    return `<section class="alg-report-section"><div class="alg-report-section-heading"><h3>版本效果对比</h3><small>最近 ${recent.length} / ${payload.version_quality_total??recent.length} 个版本 · Val 与独立 Test 分列</small></div>
+      <p class="alg-report-notice">不同冻结 Snapshot 的 Test mAP50 不应直接比较；Val 变化也不能单独证明真实业务效果提升。</p>
+      <div class="table-wrap"><table class="table alg-report-table"><thead><tr><th>版本</th><th>Val mAP50</th><th>独立 Test mAP50</th><th>Test 证据</th><th>完成时间</th></tr></thead><tbody>${recent.map(row=>`<tr><td><b>${e(row.version_name||row.version_id||"未命名")}</b>${row.is_current?'<small class="alg-report-current">当前</small>':""}</td><td>${pct(row.val_map50)}</td><td>${row.test_status==="succeeded"?pct(row.test_map50):"未完成"}</td><td>${e(row.test_snapshot_id?"冻结记录存在":"未记录")}</td><td>${safeTime(row.finished_at)}</td></tr>`).join("")||'<tr><td colspan="5">暂无已记录版本</td></tr>'}</tbody></table></div>
+      ${payload.version_quality_truncated?'<p class="alg-report-footnote">为保证流畅，仅展示最近 40 个版本；历史版本仍保留在算法版本列表。</p>':""}
+    </section>`;
+  }
+  if(section==="data"){
+    const c=payload.current_quality||{};
+    const scope=summary.label_counts_scope||"unknown";
+    const labels=Object.entries(summary.label_counts||{}).sort((a,b)=>Number(b[1])-Number(a[1])).slice(0,30);
+    return `<section class="alg-report-section"><div class="alg-report-section-heading"><h3>数据与质量依据</h3><small>只展示有证据的冻结信息</small></div>
+      <div class="alg-report-detail-grid">
+        <div><span>当前版本 Snapshot</span><b class="alg-report-break">${e(c.train_snapshot_id||"未记录")}</b></div>
+        <div><span>独立 Test 状态</span><b>${e(c.test_status==="succeeded"?"已完成":c.test_status||"未记录")}</b></div>
+        <div><span>Test 冻结身份</span><b class="alg-report-break">${e(c.test_snapshot_id||"未记录")}</b></div>
+        <div><span>历史标签统计</span><b>${scope==="not_computed_fast"?"快速模式未汇总":"按训练任务累计框数"}</b></div>
+      </div>
+      ${scope==="not_computed_fast"?'<p class="alg-report-notice">为避免读取数万张历史标注和错误地将当前素材当作历史证据，本页不计算跨训练任务标签总量。查看单版本训练报告中的冻结类别分布。</p>':`<div class="alg-report-labels">${labels.map(([label,count])=>`<div><span>${e(label)}</span><b>${e(count)}</b></div>`).join("")||'<p>标签统计未记录</p>'}</div>`}
+      <p class="alg-report-footnote">详细逐类别 Precision / Recall、FP / FN、冻结 Test 图片和可信度分析请进入对应单版本训练报告或独立评测页。</p>
+    </section>`;
+  }
+  if(section==="jobs"){
+    return `<section class="alg-report-section"><div class="alg-report-section-heading"><h3>近期训练任务</h3><small>最近 ${jobs.length} / ${payload.jobs_total??jobs.length} 条任务 · 由真实任务状态提供</small></div>
+      <div class="table-wrap"><table class="table alg-report-table"><thead><tr><th>任务</th><th>记录时间</th><th>状态</th><th>Val mAP50</th><th>操作</th></tr></thead><tbody>${jobs.slice().reverse().map(job=>`<tr><td><b>${e(job.version||job.job_id||"未记录")}</b></td><td>${safeTime(job.finished_at||job.created_at)}</td><td>${e(job.status||"未记录")}</td><td>${pct(job.map50)}</td><td>${job.job_id?`<button type="button" class="btn mini" data-algorithm-report-job="${e(job.job_id)}">查看训练报告</button>`:"—"}</td></tr>`).join("")||'<tr><td colspan="5">暂无任务记录</td></tr>'}</tbody></table></div>
+      ${payload.jobs_truncated?'<p class="alg-report-footnote">为避免一次渲染全部历史任务，这里仅展示最近 20 条。完整记录请在训练任务页面检索。</p>':""}
+    </section>`;
+  }
+  return "";
+}
+
+export function algorithmReportHtml(payload={}){
+  const e=escapeText,pct=algorithmReportPercent;
+  const a=payload.algorithm||{},s=payload.summary||{},quality=payload.current_quality||{},delta=payload.latest_vs_previous||{};
+  const trend=(Array.isArray(payload.version_quality)?payload.version_quality:[]).filter(row=>typeof row.val_map50==="number"&&Number.isFinite(row.val_map50)&&row.val_map50>=0&&row.val_map50<=1).slice(-30);
+  const points=trend.map((r,i)=>({x:24+i*(590/Math.max(trend.length-1,1)),y:148-r.val_map50*116,raw:r}));
+  const line=points.length>=2?`<polyline class="alg-report-line" points="${points.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")}"/>`:"";
+  const chart=points.length>=2?`<svg viewBox="0 0 640 178" role="img" aria-label="最近${points.length}个版本的验证集 mAP50 趋势">
+    <line x1="24" y1="32" x2="614" y2="32" class="alg-report-grid-line"/><line x1="24" y1="90" x2="614" y2="90" class="alg-report-grid-line"/><line x1="24" y1="148" x2="614" y2="148" class="alg-report-grid-line"/>
+    ${line}${points.map(p=>`<circle class="alg-report-dot" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.2"><title>${e(p.raw.version_name||p.raw.version_id||"版本")} · ${pct(p.raw.val_map50)}</title></circle>`).join("")}
+    <text x="24" y="170">${e(trend[0]?.version_name||"")}</text><text x="614" y="170" text-anchor="end">${e(trend.at(-1)?.version_name||"")}</text></svg>`:'<div class="alg-report-empty">历史有效 Val 指标不足，不能生成趋势线。</div>';
+  const verifiedTest=quality.test_status==="succeeded"?pct(quality.test_map50):"未完成";
+  const d=typeof delta.map50_delta==="number"&&Number.isFinite(delta.map50_delta)?`${delta.map50_delta>=0?"+":""}${(delta.map50_delta*100).toFixed(1)} pp`:"未记录";
+  const card=(title,value,note)=>`<div class="alg-report-stat"><span>${e(title)}</span><b>${e(value)}</b><small>${e(note)}</small></div>`;
+  return `<div class="algorithm-report429" data-algorithm-report>
+    <header class="alg-report-hero"><div><span class="alg-report-eyebrow">ALGORITHM QUALITY REPORT</span><h2>${e(a.name||"算法综合报告")}</h2><p>${e(a.industry||"算法训练")} · 当前版本 ${e(s.current_version||s.latest_version||"未记录")}</p></div><div class="alg-report-hero-meta"><b>${e(a.version_count??0)}</b><small>版本记录</small></div></header>
+    <div class="alg-report-stats">${card("当前版本 Val mAP50",pct(s.latest_accuracy),"仅 Validation 指标")}
+      ${card("当前版本独立 Test",verifiedTest,"不代表业务准确率")}
+      ${card("历史最佳 Val mAP50",pct(payload.best_map50),payload.best_version||"未记录版本")}
+      ${card("最近版本 Val 变化",d,"不同数据条件不直接归因")}</div>
+    <nav class="alg-report-tabs" role="tablist" aria-label="算法报告模块">${[["overview","概览"],["versions","版本对比"],["data","数据质量"],["jobs","训练记录"]].map(([name,label],i)=>`<button type="button" role="tab" data-algorithm-report-tab="${name}" aria-selected="${i===0}" tabindex="${i===0?0:-1}">${label}</button>`).join("")}</nav>
+    <section class="alg-report-pane" data-algorithm-report-pane="overview">
+      <section class="alg-report-section"><div class="alg-report-section-heading"><h3>质量趋势</h3><small>最近 ${trend.length} 个有 Val 指标的版本</small></div>${chart}<p class="alg-report-footnote">同一算法的历史 Val 趋势，仅表示记录中的验证集指标；不同训练/验证数据条件下不能直接断言模型提升。</p></section>
+      <section class="alg-report-overview-grid"><article><h3>训练概况</h3><dl><dt>成功训练</dt><dd>${e(s.successful_count??0)} 次</dd><dt>训练尝试总数</dt><dd>${e(s.attempt_count??"未记录")} 次</dd><dt>累计训练时长</dt><dd>${Number.isFinite(Number(s.total_duration_seconds))?e((Number(s.total_duration_seconds)/3600).toFixed(1)+" 小时"):"未记录"}</dd><dt>耗时记录覆盖</dt><dd>${e(s.duration_record_count??0)} / ${e(s.attempt_count??0)}</dd></dl></article>
+      <article><h3>当前评测边界</h3><dl><dt>训练完成</dt><dd>不等于业务验收</dd><dt>独立 Test</dt><dd>${e(quality.test_status==="succeeded"?"已有冻结评测记录":"未完成或未记录")}</dd><dt>测试基准</dt><dd>${e(quality.test_snapshot_id?"已记录 Snapshot":"身份未记录")}</dd><dt>业务可用性</dt><dd>需现场验证</dd></dl></article></section>
+    </section>
+    ${["versions","data","jobs"].map(name=>`<section class="alg-report-pane" data-algorithm-report-pane="${name}" hidden></section>`).join("")}
+  </div>`;
+}
+
+export function mountAlgorithmReport(root,payload,{onJob}={}){
+  if(!root)return;
+  const render=name=>{
+    const pane=root.querySelector(`[data-algorithm-report-pane="${name}"]`);
+    if(pane&&name!=="overview"&&!pane.dataset.rendered){
+      pane.innerHTML=algorithmReportView(name,payload);
+      pane.dataset.rendered="true";
+    }
+  };
+  root.addEventListener("click",event=>{
+    const job=event.target.closest("[data-algorithm-report-job]");
+    if(job){onJob?.(job.dataset.algorithmReportJob);return}
+    const tab=event.target.closest("[data-algorithm-report-tab]");
+    if(!tab)return;
+    const name=tab.dataset.algorithmReportTab;
+    render(name);
+    root.querySelectorAll("[data-algorithm-report-tab]").forEach(button=>{
+      const selected=button===tab;
+      button.setAttribute("aria-selected",String(selected));
+      button.tabIndex=selected?0:-1;
+    });
+    root.querySelectorAll("[data-algorithm-report-pane]").forEach(pane=>{pane.hidden=pane.dataset.algorithmReportPane!==name});
+    root.closest(".modal-body")?.scrollTo({top:0,behavior:"instant"});
+  });
+  root.addEventListener("keydown",event=>{
+    const tab=event.target.closest("[data-algorithm-report-tab]");
+    if(!tab||!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const tabs=[...root.querySelectorAll("[data-algorithm-report-tab]")];
+    const index=tabs.indexOf(tab);
+    const next=event.key==="Home"?0:event.key==="End"?tabs.length-1:(index+(event.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;
+    tabs[next].focus({preventScroll:true});tabs[next].click();
+  });
+}
