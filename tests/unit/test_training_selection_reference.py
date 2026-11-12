@@ -109,3 +109,70 @@ def test_streaming_selection_rejects_late_invalid_identity_without_leaking_manif
         refs.freeze_selection(tmp_path, {'project_id': 'project-scale'}, invalid_after_many())
     assert not list((tmp_path/'task_runtime'/'artifacts').glob(
         'trainselection_*/selection.sqlite3'))
+
+
+def test_quota_scan_stops_after_sufficient_active_references_without_changing_cleanup(tmp_path, monkeypatch):
+    """A quota rejection should not open every unrelated selection database."""
+    import platform_core.training_selection_reference as refs
+    root = tmp_path / 'task_runtime' / 'artifacts'
+    references = [refs.freeze_selection(tmp_path, {'project_id':'p'}, [f'image-{n}'])
+                  for n in range(8)]
+    real_path = refs._path
+    inspected = []
+    def tracked_path(data_dir, reference):
+        inspected.append(reference)
+        return real_path(data_dir, reference)
+    monkeypatch.setattr(refs, '_path', tracked_path)
+    assert refs._draft_quota_count(tmp_path, root, 'p', stop_at=3) == 3
+    assert len(inspected) == 3
+    inspected.clear()
+    assert refs._draft_quota_count(tmp_path, root, 'p') == 8
+    assert len(inspected) == 8
+
+    # Submitted selections stay immutable and do not consume draft quota.
+    monkeypatch.setattr(refs, '_path', real_path)
+    refs.mark_selection_submitted(tmp_path, references[0]['selection_ref'], 'parent-task')
+    old_time = refs.time.time()
+    monkeypatch.setattr(refs.time, 'time', lambda: old_time + 90000)
+    assert refs._draft_quota_count(tmp_path, root, 'p', stop_at=2) == 0
+    assert refs.read_selection(tmp_path, references[0]['selection_ref'], {'project_id':'p'}) == ['image-0']
+    with pytest.raises(ValueError, match='过期'):
+        refs.read_selection(tmp_path, references[1]['selection_ref'], {'project_id':'p'})
+
+
+def test_real_context_training_and_test_frozen_references_reach_worker_validation(tmp_path):
+    """Use actual material/GT/history revisions through creation and Worker guards."""
+    from platform_core.material_repository import MaterialRepository
+    from platform_core.training_selection_reference import (selection_context,
+        freeze_selection, mark_selection_submitted, validate_payload_references)
+    project_id = 'ref-integrity-project'
+    data_dir = tmp_path / 'data'
+    repo = MaterialRepository(data_dir / 'projects' / project_id)
+    repo.upsert_many([{'id':f'img-{i:05d}', 'filename':f'{i:05d}.jpg',
+        'processing_status':'processed', 'content_sha256':f'{i+1:064x}'}
+        for i in range(1200)])
+    train_ids = [f'img-{i:05d}' for i in range(1000)]
+    test_ids = [f'img-{i:05d}' for i in range(1000, 1200)]
+    payload = {'algorithm_asset_id':'algorithm-1','base_version_id':'version-1',
+        'framework':'ultralytics','history_policy':'include_history',
+        'train_labels': [], 'train_image_ids':train_ids,'test_image_ids':test_ids}
+    train_ref = freeze_selection(data_dir, selection_context(data_dir, project_id, payload, 'train'), train_ids)
+    test_ref = freeze_selection(data_dir, selection_context(data_dir, project_id, payload, 'test'), test_ids)
+    assert train_ref['count'] == 1000 and test_ref['count'] == 200
+    # User selects the effective label after freezing unfiltered material IDs.
+    submitted = {**payload, 'train_labels':['person'],
+        'train_selection_ref':train_ref['selection_ref'],
+        'test_selection_ref':test_ref['selection_ref']}
+    mark_selection_submitted(data_dir, train_ref['selection_ref'], 'training-parent-1')
+    mark_selection_submitted(data_dir, test_ref['selection_ref'], 'training-parent-1')
+    validate_payload_references(data_dir, project_id, submitted)
+    with pytest.raises(ValueError, match='不一致'):
+        validate_payload_references(data_dir, project_id,
+            {**submitted, 'test_image_ids':test_ids[:-1]})
+    with pytest.raises(ValueError, match='不一致'):
+        validate_payload_references(data_dir, project_id,
+            {**submitted, 'train_image_ids':[train_ids[0], *train_ids[1:-1]]})
+    # Revision fencing still rejects a stale frozen selection at Worker time.
+    repo.patch({train_ids[0]: {'filename':'revised.jpg'}})
+    with pytest.raises(ValueError, match='已更新'):
+        validate_payload_references(data_dir, project_id, submitted)

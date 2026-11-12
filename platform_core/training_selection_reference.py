@@ -57,9 +57,14 @@ def _expired(metadata):
         time.time()-float(metadata.get('created_at',0))>max(60,int(os.environ.get('MC_TRAIN_SELECTION_DRAFT_TTL_SECONDS','86400'))))
 
 
-def _draft_quota_count(data_dir,root,project_id):
+def _draft_quota_count(data_dir,root,project_id,*,stop_at=None):
+    # Admission only needs to know whether the quota is reached. Under heavy
+    # task history, do not open/lock the remaining independent SQLite files
+    # after that result is already conclusive. Unbounded callers still count all.
     active=0;compacted=False
     for path in root.glob('trainselection_*/selection.sqlite3'):
+        if stop_at is not None and active>=stop_at:
+            return active
         checked=_path(data_dir,path.parent.name)
         try:
             with FileLock(str(checked)+'.freeze.lock',timeout=0),closing(sqlite3.connect(checked)) as db:
@@ -134,7 +139,7 @@ def freeze_selection(data_dir,context,image_ids,*,request_id=None,request_scope=
                 return {'selection_ref':reference,'count':len(ids)}
             # Explicit bound; never delete a manifest that may back a queued task.
             quota=max(1,int(os.environ.get('MC_TRAIN_SELECTION_MAX_REFERENCES','128')))
-            if _draft_quota_count(data_dir,path.parent.parent,context.get('project_id'))>=quota:
+            if _draft_quota_count(data_dir,path.parent.parent,context.get('project_id'),stop_at=quota)>=quota:
                 raise ValueError('服务器冻结选择数量达到配额，请先按任务产物保留策略整理')
             if shutil.disk_usage(path.parent).free<512*1024*1024:
                 raise ValueError('服务器冻结选择磁盘空间不足，至少需要512MiB预留')
