@@ -20882,11 +20882,19 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
     jd=_deploy_job_dir(project_id,job_id); jf=jd/"job.json"; job=read_json(jf,{})
     resource=_deploy_resource_by_id(str(job.get("resource_id") or "")); base=str(resource.get("base_url") or "").rstrip("/"); key=str(resource.get("api_key") or "")
     try:
-        source=Path(job["source_path"]); params=job.get("params") or {}
+        source_raw = str(job.get("source_path") or "").strip()
+        source = Path(source_raw) if source_raw else None
+        if source is None or not source.is_file():
+            raise ValueError("远程转换源模型不存在或不是有效文件，请检查任务源文件")
+        params = job.get("params") or {}
+        # Path("") becomes "."; an absent optional config is not a file.
+        config_raw = str(params.get("config_path") or "").strip()
+        cfg = Path(config_raw).expanduser() if config_raw else None
+        if cfg is not None and not cfg.is_file():
+            raise ValueError("远程转换配置文件不存在或不是有效文件，请检查 config_path")
         files={"source_model":(source.name,source.open("rb"),"application/octet-stream")}
-        cfg=Path(str(params.get("config_path") or ""))
         cfg_fp=None
-        if cfg.exists(): cfg_fp=cfg.open("rb"); files["config_file"]=(cfg.name,cfg_fp,"application/octet-stream")
+        if cfg is not None: cfg_fp=cfg.open("rb"); files["config_file"]=(cfg.name,cfg_fp,"application/octet-stream")
         cal_dir=Path(job.get("calibration_dir") or "") if job.get("calibration_dir") else None
         cal_zip=None
         if cal_dir and cal_dir.exists():

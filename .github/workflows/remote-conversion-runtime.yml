@@ -21,6 +21,7 @@ on:
       - 'tests/unit/test_conversion_history.py'
       - 'tests/unit/test_conversion_resource_detection.py'
       - 'tests/api/test_conversion_jobs.py'
+      - 'tests/api/test_remote_conversion_optional_config.py'
       - 'platform_core/compute_platform_catalog.py'
       - 'platform_core/model_metadata.py'
       - 'platform_core/model_artifacts.py'
@@ -86,6 +87,7 @@ on:
       - 'tests/unit/test_conversion_history.py'
       - 'tests/unit/test_conversion_resource_detection.py'
       - 'tests/api/test_conversion_jobs.py'
+      - 'tests/api/test_remote_conversion_optional_config.py'
       - 'platform_core/compute_platform_catalog.py'
       - 'platform_core/model_metadata.py'
       - 'platform_core/model_artifacts.py'
@@ -254,6 +256,7 @@ jobs:
           tests/unit/test_conversion_history.py
           tests/unit/test_conversion_resource_detection.py
           tests/api/test_conversion_jobs.py::test_existing_onnx_conversion_ships_explicit_csc_reference_without_weight_changes
+          tests/api/test_remote_conversion_optional_config.py
       - name: Permanent Remote Conversion guards
         shell: bash
         run: |
