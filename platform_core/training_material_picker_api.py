@@ -215,7 +215,7 @@ def _indexed_usage_state_shortcut(task_path, project_id, algorithm_id, revision,
         if scope:
             return ("none", "complete" if complete else "unknown")
         all_state = "unused" if complete else "unknown"
-        return ("all" if state == all_state else "none", all_state)
+        return ("all" if state == all_state else "none", "complete" if complete else "unknown")
 
 @stage("training.usage_filters")
 def _usage_filters(repository, filters):

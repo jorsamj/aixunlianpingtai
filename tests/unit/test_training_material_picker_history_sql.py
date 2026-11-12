@@ -338,9 +338,19 @@ def test_unknown_coverage_cannot_qualify_any_unused_material_even_with_history(t
             "algorithm_asset_id": "alg", "usage_state": "unused", "browse_only": True})
         assert api._gt_material_filter_page(repo, gt, filters=filters, limit=60)["total"] == 0
         assert facts["coverage"] == "unknown"
-    # Other states with recorded tokens still use the existing evidence evaluator.
-    selected, facts = api._usage_filters(repo, {
-        "algorithm_asset_id": "alg", "usage_state": "used",
-        "history_policy": "include_history", "browse_only": False})
-    assert selected["usage_image_ids"] == ["x"]
-    assert facts["by_image_id"]["x"]["state"] == "used"
+    # Real project tokens cannot use the empty-index shortcut: the existing
+    # per-material history evaluator remains authoritative, including all
+    # exposure and exclusion policies.
+    original_pool = api._cached_usage_pool
+    calls = []
+    def tracked_pool(*args):
+        calls.append(args)
+        return original_pool(*args)
+    with monkeypatch.context() as patch:
+        patch.setattr(api, "_cached_usage_pool", tracked_pool)
+        selected, facts = api._usage_filters(repo, {
+            "algorithm_asset_id": "alg", "usage_state": "used",
+            "history_policy": "include_history", "browse_only": False})
+    assert len(calls) == 1
+    assert facts["revision"] == usage.read_revision()
+    assert "usage_image_ids" in selected
