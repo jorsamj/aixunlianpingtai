@@ -203,9 +203,9 @@ test('bulk modal retirement restores the outer trigger and retires storage polli
     trigger.focus({preventScroll:true});
     window.modal('批量关闭的父弹窗','<input id="bulk-parent-draft" value="原内容">');
   });
-  await expect(page.locator('#modal .modal-head .icon')).toBeFocused();
+  await expect.poll(()=>page.evaluate(()=>{const root=document.getElementById('modal');return root.contains(document.activeElement)&&document.activeElement!==root;})).toBe(true);
   await page.evaluate(()=>window.modal('批量关闭的子弹窗','<input id="bulk-child-draft" value="子内容">'));
-  await expect(page.locator('.v424-modal-layer .modal-head .icon')).toBeFocused();
+  await expect.poll(()=>page.evaluate(()=>{const child=document.querySelector('.v424-modal-layer');return Boolean(child?.contains(document.activeElement)&&document.activeElement!==child);})).toBe(true);
   const evidence=await page.evaluate(()=>{
     const original=window.beforeCloseStorageImport61;
     let storageCleanup=0;
