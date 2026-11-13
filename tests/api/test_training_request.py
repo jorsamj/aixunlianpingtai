@@ -2398,7 +2398,7 @@ def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
     assert prepared["test_image_ids"] == expected_test
     frozen = platform.shared_task_artifacts().read_json(task_id, "input-freeze.json")
     assert frozen["snapshot_id"]
-    assert {row["image_id"] for row in frozen["images"]} == set(expected_train + expected_test)
+    assert {row["id"] for row in frozen["images"]} == set(expected_train + expected_test)
     assert not platform.shared_task_artifacts().artifact_path(
         task_id, "work/bundle",
     ).exists()
