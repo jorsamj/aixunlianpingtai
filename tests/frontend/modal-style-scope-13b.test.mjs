@@ -26,9 +26,9 @@ test('algorithm report stylesheet cannot install unscoped modal layout rules',()
   assert.match(report,/scrollbar-gutter:stable/);
 });
 
-test('only algorithm report asset receives a new cache marker',()=>{
+test('report modal styling stays scoped while current entry bundles share the same cache marker',()=>{
   assert.match(index,/\/static\/algorithm-report-modal\.css\?v=20261113-modal-scope1/);
-  assert.match(index,/\/static\/app\.js\?v=42\.25\.600/);
-  assert.match(index,/\/static\/main\.mjs\?v=42\.25\.600/);
-  assert.match(index,/\/static\/styles\.css\?v=42\.25\.600/);
+  assert.match(index,/\/static\/app\.js\?v=42\.25\.601/);
+  assert.match(index,/\/static\/main\.mjs\?v=42\.25\.601/);
+  assert.match(index,/\/static\/styles\.css\?v=42\.25\.601/);
 });

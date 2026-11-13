@@ -41,7 +41,7 @@ test('13C-03 removes provider page module from startup static graph',()=>{
   assert.match(main,/changLianDataBrowserRuntime\?\.render\?\.\(\)/);
   assert.match(main,/changLianDataBrowserRuntime\?\.destroy\?\.\(\)/);
   for(const name of ['app.js','main.mjs','styles.css'])
-    assert.ok(html.includes('/static/'+name+'?v=42.25.600'));
+    assert.ok(html.includes('/static/'+name+'?v=42.25.601'));
 });
 
 test('only entering page loads module; provider refresh remains manual',async()=>{

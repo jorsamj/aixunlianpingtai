@@ -17,7 +17,7 @@ function setup(){
 test('classic presenter loads before app.js and preserves its synchronous bridge',()=>{
   const resource=html.indexOf('/static/modules/training-resource-cards.js?v=42.25.601-13c04b');
   const classic=html.indexOf('/static/app.js?v=42.25.601');
-  const module=html.indexOf('/static/main.mjs?v=42.25.600');
+  const module=html.indexOf('/static/main.mjs?v=42.25.601');
   assert.ok(resource>=0&&resource<classic&&classic<module);
   assert.match(appSource,/function trainingResourceCardsHtmlV3\(\)\{/);
   assert.match(appSource,/renderer\(state\.targets\|\|\[\],\{escape:esc,familySummary\}\)/);
@@ -40,7 +40,7 @@ test('resource card renderer preserves ready, offline, Paddle, and server action
   assert.match(rendered,/GPU &lt;A&gt;/);
   assert.doesNotMatch(rendered,/GPU <A>/);
   assert.match(rendered,/class="res-card ready"/);
-  assert.match(rendered,/待确认/);
+  assert.match(rendered,/不可用/);
   assert.match(rendered,/2 个算法/);
   assert.match(rendered,/1 个权重/);
   assert.match(rendered,/YOLO 3/);
