@@ -44,7 +44,8 @@ test('quality detection only projects server-qualified training algorithms and v
   assert.match(workbench, /成功训练版本/);
   assert.doesNotMatch(workbench, /source==='builtin'/);
   assert.doesNotMatch(workbench, /best\\\.pt/);
-  assert.match(main,/installQualityDetectionWorkbench/);
+  assert.match(main,/installLazyQualityDetectionWorkbench/);
+  assert.doesNotMatch(main,/^import \{installQualityDetectionWorkbench\} from/m);
   assert.doesNotMatch(app,/function qualityDetectionShell64/);
 });
 

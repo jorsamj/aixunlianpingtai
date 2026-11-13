@@ -28,5 +28,5 @@ test('lazy owner checks navigation, project and render generation before touchin
 });
 
 test('main entry keeps the numeric same-version cache contract',()=>{
-  for(const name of ['styles.css','app.js','main.mjs'])assert.ok(html.includes('/static/'+name+'?v=42.25.601'));
+  for(const name of ['styles.css','app.js','main.mjs'])assert.ok(html.includes('/static/'+name+'?v=42.25.602'));
 });

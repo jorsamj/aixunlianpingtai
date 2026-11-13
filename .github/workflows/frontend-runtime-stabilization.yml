@@ -24,6 +24,7 @@ jobs:
         run: >-
           node --check static/app.js &&
           node --check static/modules/navigation-stability.js &&
+          node --check static/modules/lazy-quality-detection-workbench.js &&
           node --check static/modules/negative-samples.js &&
           node --check static/modules/service-node-runtime.js &&
           node --check static/modules/resource-discovery.js &&
@@ -40,6 +41,7 @@ jobs:
           node --check static/modules/prison-night-inspection-entry.mjs &&
           node --check tests/browser/material-pagination-performance.spec.mjs &&
           node --check tests/browser/page-loading-performance.spec.mjs &&
+          node --check tests/browser/quality-detection-lazy-load.spec.mjs &&
           node --check tests/browser/frontend-startup-profile.spec.mjs &&
           node --check tests/browser/algorithm-list-performance.spec.mjs &&
           node --check tests/browser/enterprise-list-navigation-focused.spec.mjs &&
@@ -479,6 +481,8 @@ jobs:
           tests/browser/prison-night-isolation.spec.mjs
           tests/browser/quality-detection-workbench.spec.mjs
           tests/browser/scenario-evaluation-workspace.spec.mjs
+          tests/browser/quality-detection-lazy-load.spec.mjs
+          tests/browser/quality-detection-workbench.spec.mjs
           tests/browser/scenario-evaluation-analysis.spec.mjs
           tests/browser/material-workspace-ui.spec.mjs
           tests/browser/training-workspace.spec.mjs

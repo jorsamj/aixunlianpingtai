@@ -28,7 +28,7 @@ test('algorithm report stylesheet cannot install unscoped modal layout rules',()
 
 test('report modal styling stays scoped while current entry bundles share the same cache marker',()=>{
   assert.match(index,/\/static\/algorithm-report-modal\.css\?v=20261113-modal-scope1/);
-  assert.match(index,/\/static\/app\.js\?v=42\.25\.601/);
-  assert.match(index,/\/static\/main\.mjs\?v=42\.25\.601/);
-  assert.match(index,/\/static\/styles\.css\?v=42\.25\.601/);
+  assert.match(index,/\/static\/app\.js\?v=42\.25\.602/);
+  assert.match(index,/\/static\/main\.mjs\?v=42\.25\.602/);
+  assert.match(index,/\/static\/styles\.css\?v=42\.25\.602/);
 });
