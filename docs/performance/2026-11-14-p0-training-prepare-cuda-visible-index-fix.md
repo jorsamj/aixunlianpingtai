@@ -4,7 +4,7 @@
 - 唯一提交分支：`feature/external-algorithm-publishing`
 - 审计基线：`5791e5c86ed10e0bb23e887ab185a73ad04f6b06`（上一轮准确 Actions 37/37 success，包含 Chrome 失败分片重跑成功）
 - 范围：`platform_core/remote_training_tasks.py:TrainingPrepareHandler._resolve_local_resources` 和对应 Python 回归；**不改** `task_worker.py`、GPU 调度租约、TRAINING_PREPARE 数据/GT、训练资源决议算法或生产服务器
-- 状态：源码修复/隔离测试已提交；准确新提交 SHA 的 CI 结果需单独核验，**不宣称生产部署或真实硬件验收完成**
+- 状态：修复代码提交 `bed687dde99f49b42618f03362d65118c1269d28`；该准确 SHA 的 GitHub Actions **22/22 工作流完成且成功**（0 失败，0 未完成）。Linux/Windows 训练准备合同、两组 Remote Training Runtime、Ultralytics DataLoader、前端 Chrome 全部成功；**不代表生产部署或真实 GPU/GT 现场验收**
 
 ## 已确认的两条确定性 Bug
 
@@ -44,3 +44,12 @@
 - **单独后续专项**：固定 GPU + AUTO 策略当前仍在准备阶段而不是最终调度分配后做资源计算；虽然 Worker 启动前有资源漂移保护，但这不完全满足“排队后按真实分配资源重新决议”。不能在本次索引 Bug 修复中直接改 GPU 预约/调度。
 - **CI**：本文件与代码、测试一次性原子提交后，需查询准确 SHA 的 GitHub Actions，失败时先读日志而不宣称通过。
 - **生产**：未访问/重启/部署 A800、4070；未修改训练任务、GT、数据库或真实模型；真实 GPU、队列/Agent 场景与 20k 正式 GT 端到端仍为待验收。
+
+## 代码提交准确 CI 结案（2026-11-14）
+
+- **代码与回归提交**：[`bed687dde99f49b42618f03362d65118c1269d28`](https://github.com/jorsamj/aixunlianpingtai/commit/bed687dde99f49b42618f03362d65118c1269d28)。
+- 同一代码 SHA 的 GitHub Actions：**22/22 completed/success，0 failed，0 pending**，并非其他历史提交的 CI。实际前端 Chrome 三分片全部成功。
+- [Remote Training Runtime（第一组）](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43471880154) 和 [Remote Training Runtime（第二组）](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43471893806)：Windows / Ubuntu 准备合同、API、Ultralytics Loader 成功；Ubuntu 新增回归所在测试批次 **123 passed**。
+- [Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43471880097)：4/4 Job 成功。
+- 本轮按“**源码修复 + Python 回归 + 准确 CI 完成**”关闭；**A800/4070 实际版本、真实 GPU 排队与 AUTO 资源重新决议、正式 GT/20k 端到端验证**仍未验收。
+- 本结案补充是单独的**文档提交**；文档提交自身的准确 SHA/CI 需要另行核验，不能冒充上述代码 CI。
