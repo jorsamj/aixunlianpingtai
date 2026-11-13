@@ -424,7 +424,8 @@ test('training picker action owner disables confirmation during page and bulk re
     disabled: false, classes: new Set(),
     classList: { toggle() {} },
   }));
-  const modalLayer = { querySelectorAll: () => buttons };
+  const cardInputs = [{disabled:false,dataset:{}},{disabled:true,dataset:{}}];
+  const modalLayer = {querySelectorAll: selector => selector.includes('#trV3Grid') ? cardInputs : buttons};
   const owner = {loading: true, bulkPending: false, reviewPending: false};
   const getSync = new Function('picker', 'modalLayer', 'document',
     source.slice(begin, end) + '\nreturn syncPickerActions;');
@@ -435,12 +436,49 @@ test('training picker action owner disables confirmation during page and bulk re
   owner.bulkPending = true;
   sync();
   assert.equal(buttons.every(button => button.disabled), true, 'server bulk selection must lock actions');
+  assert.equal(cardInputs[0].disabled, true, 'eligible checkbox must lock');
+  assert.equal(cardInputs[0].dataset.bulkSelectionLocked, '1');
+  assert.equal(cardInputs[1].disabled, true, 'policy-blocked checkbox stays disabled');
+  assert.equal(cardInputs[1].dataset.bulkSelectionLocked, undefined);
   owner.bulkPending = false;
   sync();
   assert.equal(buttons.every(button => !button.disabled), true, 'actions must unlock on final completion');
+  assert.equal(cardInputs[0].disabled, false, 'locked checkbox restores');
+  assert.equal(cardInputs[1].disabled, true, 'policy-blocked checkbox stays disabled');
   assert.match(source, /if \(!picker \|\| picker\.loading \|\| picker\.bulkPending \|\| picker\.reviewPending\) return false/);
 });
 
+
+
+test('late checkbox change cannot mutate explicit or frozen selection during bulk request', () => {
+  const begin = source.indexOf('  function toggle(id, on, checkbox) {');
+  const end = source.indexOf('\n  async function page(delta) {', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const makeToggle = new Function('picker','blockedIds','trainingMaterialSelectable',
+    'notify','updateCounts','document',source.slice(begin,end)+'\nreturn toggle;');
+  const notified=[],counts=[];
+  const picker={role:'train',reviewPending:false,reviewing:false,bulkPending:true,
+    selected:new Set(['image-a']),reference:null,items:[{id:'image-a',selection_member:true}]};
+  const toggle=makeToggle(picker,()=>new Set(),()=>true,
+    message=>notified.push(message),()=>counts.push('paint'),{getElementById:()=>null});
+  const checkbox={checked:false,closest:()=>({classList:{toggle(){}}})};
+  toggle('image-a',false,checkbox);
+  assert.deepEqual([...picker.selected],['image-a']);
+  assert.equal(checkbox.checked,true,'stale change must restore original checkbox state');
+  assert.equal(counts.length,0,'in-flight change must not repaint selected count');
+  picker.reference={selection_ref:'trainselection_'+'a'.repeat(32),count:22015};
+  picker.selected.clear();
+  checkbox.checked=false;
+  toggle('image-a',false,checkbox);
+  assert.ok(picker.reference,'late change must not discard frozen reference');
+  assert.equal(checkbox.checked,true,'frozen membership is authoritative');
+  picker.reference=null;picker.selected.add('image-a');picker.bulkPending=false;
+  checkbox.checked=false;
+  toggle('image-a',false,checkbox);
+  assert.deepEqual([...picker.selected],[],'checkbox works after bulk finishes');
+  assert.equal(counts.length,1);
+  assert.equal(notified.length,0);
+});
 
 test('large picker initial selection is scope-bounded without per-image linear includes', () => {
   const images=Array.from({length:20000},(_,i)=>'image-'+i);

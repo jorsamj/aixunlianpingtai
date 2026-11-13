@@ -52,5 +52,5 @@ test('ESM view owns presentation only; canonical router and entry cache remain i
   assert.doesNotMatch(main,/function renderNavigationChrome\(\)/);
   assert.doesNotMatch(main,/function renderUnknownPage\(page\)/);
   assert.doesNotMatch(source,/registerPageOwner|addEventListener|setPage|window\.PlatformCore/);
-  assert.match(html,/main\.mjs\?v=42\.25\.605/);
+  assert.match(html,/main\.mjs\?v=42\.25\.606/);
 });

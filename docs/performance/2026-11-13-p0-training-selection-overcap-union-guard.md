@@ -52,3 +52,7 @@
 - 本轮是源码/回归修复，非 A800/4070 部署或线上实测。
 - 不迁库，不新增缓存 Owner，不复制/清理任何 GT 或训练数据。
 - 本轮新代码 SHA 及其 CI：**提交后另核，以准确 SHA 为准**。
+
+## 2026-11-13 本项结案复核
+
+超限跨筛选保护提交 `6b6bf11b6928b548c9323018b08bc6f3356e69c0` 的准确 GitHub Actions **37/37 completed/success**，Frontend Node **1664/1664**；Training Material Picker 的 contracts/real-chrome-picker 均成功。上文“CI 待查”为该记录撰写时状态，以本段为最终结果。后续另开「批量操作中复选框并发」最小专项，不更改本轮 50,000 超限 fail-closed 合同；真实正式 GT 20k/30k 的生产 Worker 验收仍未完成。

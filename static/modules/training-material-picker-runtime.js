@@ -890,6 +890,19 @@ export function installTrainingMaterialPickerRuntime({
       button.disabled = disabled;
       button.classList.toggle('train-v3-loading', disabled);
     });
+    // Lock only material checkboxes while server bulk selection is pending.
+    // Restore only controls locked here, never policy-blocked inputs.
+    const checkboxes = modalLayer?.querySelectorAll?.('#trV3Grid .train-v3-card input[type="checkbox"]')
+      || document.querySelectorAll('#trV3Grid .train-v3-card input[type="checkbox"]');
+    checkboxes.forEach(input => {
+      if (owner.bulkPending && !input.disabled) {
+        input.disabled = true;
+        input.dataset.bulkSelectionLocked = '1';
+      } else if (!owner.bulkPending && input.dataset.bulkSelectionLocked === '1') {
+        input.disabled = false;
+        delete input.dataset.bulkSelectionLocked;
+      }
+    });
   }
 
   function renderSelectedList() {
@@ -1061,6 +1074,8 @@ export function installTrainingMaterialPickerRuntime({
     updateCounts();
     renderPager();
     attachImageFallbacks();
+    // Reapply the lock if rendering replaced cards during an in-flight bulk request.
+    syncPickerActions();
   }
 
   async function loadPage({reset = false, page = null} = {}) {
@@ -1396,6 +1411,15 @@ export function installTrainingMaterialPickerRuntime({
   function toggle(id, on, checkbox) {
     if (!picker || picker.reviewPending) return;
     const value = String(id || '');
+    if (picker.bulkPending) {
+      // Already queued checkbox change events must not mutate an in-flight scope.
+      if (checkbox) checkbox.checked = picker.reviewing
+        ? picker.reviewSelected.has(value)
+        : picker.reference
+          ? Boolean((picker.items || []).find(row => String(row.id) === value)?.selection_member)
+          : picker.selected.has(value);
+      return;
+    }
     if (picker.reviewing) {
       if (picker.items.find(row=>String(row.id)===value)?.sample_role !== 'pending_negative') return;
       if (on && picker.reviewSelected.size >= 50) {if(checkbox)checkbox.checked=false;return notify('每批最多审核 50 张');}

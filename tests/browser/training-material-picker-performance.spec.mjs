@@ -265,6 +265,57 @@ test('training material picker opens immediately, renders larger previews, and p
   expect(pageErrors).toEqual([]);
 });
 
+
+test('in-flight bulk selection locks checkboxes and ignores late checkbox changes', async ({page}) => {
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
+  const pid=await page.evaluate(()=>state.project.id);
+  const base='**/api/v62/projects/'+pid+'/training-materials';
+  let releaseBulk;
+  const bulkGate=new Promise(resolve=>{releaseBulk=resolve;});
+  await page.route(base+'?*',route=>route.fulfill({json:{
+    items:[material(0),material(1)],total:2,page:1,page_size:60,
+    total_pages:1,has_next:false,repository_revision:88,
+  }}));
+  await page.route(base+'/bulk-selection',async route=>{
+    await bulkGate;
+    await route.fulfill({json:{
+      items:['picker-1-000','picker-1-001'],total:2,repository_revision:88,
+    }});
+  });
+  await page.evaluate(()=>{
+    window.TrainingDraftRuntime.update({algorithmId:'isolated-algorithm',materialIds:[],
+      trainSelectionRef:'',trainSelectionCount:0,newLabelCodes:['smoke']});
+    window.openTrainMaterialPickerV3('train');
+  });
+  const first=page.locator('[data-material-id="picker-1-000"] input[type="checkbox"]');
+  const second=page.locator('[data-material-id="picker-1-001"] input[type="checkbox"]');
+  await expect(first).toBeEnabled();
+  await first.check();
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialPickerRuntime.state().selected)).toBe(1);
+  try {
+    await page.evaluate(()=>{void window.TrainingMaterialPickerRuntime.bulkAction('select-filtered');});
+    await expect(first).toBeDisabled();
+    await expect(second).toBeDisabled();
+    await expect(page.getByRole('button',{name:'确认选择',exact:true})).toBeDisabled();
+    const unchanged=await page.evaluate(()=>{
+      const input=document.querySelector('[data-material-id="picker-1-000"] input');
+      input.checked=false;
+      window.toggleTrainMaterialV3('picker-1-000',false,input);
+      return {checked:input.checked,selected:window.TrainingMaterialPickerRuntime.state().selected};
+    });
+    expect(unchanged).toEqual({checked:true,selected:1});
+  } finally {
+    releaseBulk();
+  }
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialPickerRuntime.state().bulkPending)).toBe(false);
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialPickerRuntime.state().selected)).toBe(2);
+  await expect(first).toBeEnabled();
+  await expect(second).toBeEnabled();
+  await expect(first).toBeChecked();
+  await expect(second).toBeChecked();
+});
+
 test('isolated Chrome records picker click-to-decoded-paint and long tasks for 192px previews', async ({page}) => {
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
