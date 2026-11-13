@@ -2,6 +2,8 @@
 
 ## 最新进度（2026-11-13，覆盖下文历史阻断快照）
 
+> **2026-11-13｜13C-04F 代码/CI 验收已关闭；新会话转入 P0 训练素材正式闭环**：写本次接续记录前的唯一长期分支 HEAD `4b1f48327b1fd8d38ec1294692cf419405a900d3`，该**仅文档**提交的准确 GitHub Actions **21/21 全部成功**；最近一次有业务/测试代码改动的提交 `3aecc232b607913973a4ed53a30fbea870643d89` 亦 **21/21 工作流成功**（前端单测 1662/1662、Chrome 382/382，包含转换监听 30 次无关 DOM 变化零新增所测全局扫描）。13C-04D 质量中心懒加载、04E 组件检测懒加载、04F-01 转换主逻辑只读审计、04F-02 MutationObserver 变更范围收敛都已按**代码与隔离测试**收尾，不能称真实生产 P95 或正式 GT 已验收。**下一会话优先 P0：20k–30k 训练素材冻结 → 草稿 → POST → TRAINING_PREPARE Worker 引用和正式 GT 数量/标签核验；其次 200k 素材性能、报告/弹窗 P95；暂不再拆 v39/v41 或改 Vue/MySQL/Redis。** 完整新进度快照：[PROJECT_NEXT_SESSION_HANDOFF_2026-11-13.md](./PROJECT_NEXT_SESSION_HANDOFF_2026-11-13.md)；可复制新会话提示词：[NEW_CHAT_PROMPT_2026-11-13.md](./NEW_CHAT_PROMPT_2026-11-13.md)。本次只补文档，不修改业务/测试代码、GT、数据库、Worker 或生产服务器。**本次新文档提交自己的准确 CI 应重新查询，不预写通过。**
+
 > **2026-11-13｜13C-04F-02 CI 最终结论（准确代码 SHA `3aecc232b607913973a4ed53a30fbea870643d89`）**：最新业务/测试代码对应 **21/21 GitHub Actions 工作流成功，0 失败，0 未完成**；Frontend Runtime Stabilization 4/4 Job 成功（frontend 1662/1662 单测、Chrome 三分片合计 382 项成功：131+126+125）。Chrome 专项验证 30 次无关 childList 更新不触发新增全局转换根扫描，异步插入转换历史/编辑器/源加载提示仍能完成装饰。这证明局部 DOM 扫描治理与被测路径的回归通过，**不代表真实生产环境 P95 提速**。证据：[准确代码 CI](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43435335641)。目前 13C-04F-02 可按“代码与隔离 Chrome 验收完成”关闭；A800/4070、真实用户性能和后端系统现场验收继续保持未关闭。下一步先做性能指标对照，暂不拆 v39/v41 转换主逻辑。
 
 > **2026-11-13｜13C-04F-02 转换展示 DOM 观察范围优化**：在保持原转换逻辑/弹窗/任务 Owner 不动的前提下，仅筛选 `MutationObserver` 的相关 DOM 记录，避免普通素材和训练页 childList 更新触发三次全局转换节点查询；新增 Chrome 30 次非转换 DOM 变化及异步转换弹窗装饰回归。待本轮准确 SHA 的 CI 证明通过后才能结项；尚未有生产 P95 结果。见 [本轮记录](./2026-11-13-frontend-13c-04f-02-conversion-mutation-scope.md)。
