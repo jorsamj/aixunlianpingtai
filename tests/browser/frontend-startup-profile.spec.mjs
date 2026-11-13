@@ -89,17 +89,47 @@ function numericMetrics(data) {
   return Object.fromEntries((data?.metrics||[]).filter(row=>names.has(row.name)).map(row=>[row.name, row.value]));
 }
 
-function usedCoverageChars(ranges) {
-  const items=(ranges||[]).map(row=>[row.start,row.end])
-    .filter(([start,end])=>Number.isFinite(start)&&Number.isFinite(end)&&end>start)
-    .sort((a,b)=>a[0]-b[0]);
-  let start=-1,end=-1,total=0;
-  for(const [a,b] of items){
-    if(start<0){start=a;end=b;continue;}
-    if(a<=end){end=Math.max(end,b);continue;}
-    total+=end-start;start=a;end=b;
+function usedCoverageChars(functions,totalChars) {
+  // Playwright JSCoverage reports V8 nested function ranges, not CSS ranges.
+  // The most specific live range decides whether each span was executed.
+  const segments=[];
+  for(const fn of functions||[]){
+    for(const range of fn.ranges||[]){
+      const start=Math.max(0,Math.min(totalChars,Number(range.startOffset)));
+      const end=Math.max(0,Math.min(totalChars,Number(range.endOffset)));
+      if(Number.isFinite(start)&&Number.isFinite(end)&&end>start){
+        segments.push({start,end,count:Number(range.count)||0,length:end-start});
+      }
+    }
   }
-  return total+(start<0?0:end-start);
+  if(!segments.length)return null;
+  const events=[];
+  for(let i=0;i<segments.length;i++){
+    events.push({at:segments[i].start,type:1,index:i});
+    events.push({at:segments[i].end,type:-1,index:i});
+  }
+  events.sort((a,b)=>a.at-b.at||a.type-b.type);
+  const active=new Set();
+  let previous=0,used=0,index=0;
+  while(index<events.length){
+    const position=events[index].at;
+    if(position>previous&&active.size){
+      let mostSpecific=null;
+      for(const key of active){
+        const span=segments[key];
+        if(!mostSpecific||span.length<mostSpecific.length||
+          (span.length===mostSpecific.length&&span.count<mostSpecific.count))mostSpecific=span;
+      }
+      if(mostSpecific?.count>0)used+=position-previous;
+    }
+    while(index<events.length&&events[index].at===position){
+      const {type,index:rangeIndex}=events[index];
+      if(type>0)active.add(rangeIndex);else active.delete(rangeIndex);
+      index++;
+    }
+    previous=position;
+  }
+  return used;
 }
 
 test('13C-04C measures independent cold and cache-preserving Chrome startups', async ({page}, testInfo) => {
@@ -114,6 +144,7 @@ test('13C-04C measures independent cold and cache-preserving Chrome startups', a
   try{
     for(let index=0;index<5;index++){
       if(index<3)await session.send('Network.clearBrowserCache');
+      const beforeMetrics=numericMetrics(await session.send('Performance.getMetrics'));
       await page.goto('/', {waitUntil:'load'});
       await expect.poll(()=>page.evaluate(()=>state.uiReady===true),{timeout:15_000}).toBe(true);
       const snapshot=await readBrowserSnapshot(page);
@@ -122,7 +153,9 @@ test('13C-04C measures independent cold and cache-preserving Chrome startups', a
         iteration:index+1,
         cacheMode:index<3?'cleared-before-navigation':'preserved-from-prior-navigation',
         ...snapshot,
-        cdp:numericMetrics(cdp)
+        cdp:Object.fromEntries(Object.entries(numericMetrics(cdp)).map(([key,value])=>[
+          key,key.endsWith('Duration') ? Math.max(0,value-Number(beforeMetrics[key]||0)) : value
+        ]))
       });
       expect(snapshot.uiReady).toBe(true);
       expect(snapshot.appScript).not.toBeNull();
@@ -166,8 +199,8 @@ test('13C-04C captures real V8 JS coverage and scoped page navigation', async ({
     try {return /^\/static\/.*\.(?:m?js)$/.test(new URL(row.url).pathname);}catch(_){return false;}
   }).map(row=>{
     const path=new URL(row.url).pathname;
-    const totalChars=row.text?.length||0;
-    const usedChars=usedCoverageChars(row.ranges);
+    const totalChars=row.source?.length||0;
+    const usedChars=usedCoverageChars(row.functions,totalChars);
     return {
       path,totalChars,usedChars,
       usedRatio:totalChars ? Math.round(usedChars/totalChars*1000)/10 : null

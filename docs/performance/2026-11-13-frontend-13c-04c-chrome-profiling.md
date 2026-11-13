@@ -8,9 +8,9 @@
 
 ## 新增证据
 
-`tests/browser/frontend-startup-profile.spec.mjs` 在 CI Chrome 中做五次完整页面导航：前 3 次清浏览器缓存，后 2 次保留缓存。记录 `uiReady` 时间、Navigation/Paint Timing、脚本资源压缩传输体量/解码体量、Long Tasks、CDP TaskDuration/ScriptDuration（如可用）。
+`tests/browser/frontend-startup-profile.spec.mjs` 在 CI Chrome 中做五次完整页面导航：前 3 次清浏览器缓存，后 2 次保留缓存。记录 `uiReady` 时间、Navigation/Paint Timing、脚本资源压缩传输体量/解码体量、Long Tasks、CDP TaskDuration/ScriptDuration（按每次导航前后差值计算，如可用）。
 
-另一次单独启用 Playwright/V8 代码覆盖率，输出 `app.js` 与 `main.mjs` 的已执行字符占比，并测训练任务、素材库页面切换。覆盖率会产生额外开销，**不混入首屏性能样本**。
+另一次单独启用 Playwright/V8 代码覆盖率，按 Playwright 的 `source/functions` 与 V8 最具体执行区间输出 `app.js` 与 `main.mjs` 的已执行字符占比，并测训练任务、素材库页面切换。覆盖率会产生额外开销，**不混入首屏性能样本**。
 
 产物：`frontend-startup-profile.json`、`frontend-script-coverage.json` 通过 GitHub Actions 上传；单测仅断言页面就绪、入口脚本存在、无页面异常，**不设不稳定的耗时阈值**。
 
