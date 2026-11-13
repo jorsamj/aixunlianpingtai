@@ -8580,12 +8580,16 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const layers=[...document.querySelectorAll('.v424-modal-layer')];
     const base=document.getElementById('modal');
     const top=layers.at(-1)||((base&&!base.classList.contains('hidden'))?base:null);
+    // The base dialog is reused: same DOM element does not mean same modal owner.
+    const closeOwner=window.ModalContentRuntime?.captureOwner?.();
     window.beforeCloseEvaluationPreview429?.(top);
     const annotationRoot=top?.querySelector('.ann420-stable');
     if(annotationRoot)state.annotationEditor?.flush?.();
     if(annotationRoot&&state.annotationWorkbench?.dirty){
       const ok=await window.saveAnn(true);
       if(!ok)return false;
+      // Refuse a stale continuation after modal re-open or page/project change.
+      if(closeOwner&&!closeOwner.isCurrent())return false;
       const currentLayers=[...document.querySelectorAll('.v424-modal-layer')];
       const currentTop=currentLayers.at(-1)||((base&&!base.classList.contains('hidden'))?base:null);
       if(currentTop!==top)return false;

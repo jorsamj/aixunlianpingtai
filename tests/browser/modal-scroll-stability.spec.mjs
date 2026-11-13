@@ -138,3 +138,60 @@ test('13B scoped report CSS preserves normal, minimized import and nested dialog
   await page.evaluate(()=>window.closeModal());
   await expect(report).toBeHidden();
 });
+
+test('late annotation save cannot dismiss a newly reused base modal', async ({page}) => {
+  await ready(page);
+  await expect(page.locator('#modal')).toBeHidden();
+  const evidence = await page.evaluate(async () => {
+    const originalSave = window.saveAnn;
+    const originalWorkbench = state.annotationWorkbench;
+    const originalEditor = state.annotationEditor;
+    let signalSaveStarted;
+    let releaseSave;
+    const saveStarted = new Promise(resolve => {signalSaveStarted = resolve;});
+    const holdSave = new Promise(resolve => {releaseSave = resolve;});
+    let saveCalls = 0;
+    let cancelCalls = 0;
+    try {
+      window.saveAnn = async () => {
+        saveCalls++;
+        signalSaveStarted();
+        await holdSave;
+        return true;
+      };
+      state.annotationWorkbench = {dirty:true, cancel() {cancelCalls++}};
+      state.annotationEditor = {flush() {}};
+      window.modal('原标注弹窗', '<section class="ann420-stable"><input value="原草稿"></section>');
+      const oldClose = window.closeModal();
+      await saveStarted;
+      // A different owner retires the original base layer while saving.
+      window.closeModalCore424();
+      // The next modal deliberately reuses #modal, so a DOM identity guard
+      // alone would incorrectly close it when the old save finishes.
+      window.modal('重新打开的业务弹窗', '<input id="new-modal-draft" value="必须保留">');
+      releaseSave();
+      const closeResult = await oldClose;
+      const root = document.getElementById('modal');
+      return {
+        closeResult, saveCalls, cancelCalls,
+        title:root.querySelector('#modalTitle')?.textContent,
+        draft:root.querySelector('#new-modal-draft')?.value,
+        hidden:root.classList.contains('hidden'),
+      };
+    } finally {
+      releaseSave?.();
+      window.saveAnn = originalSave;
+      state.annotationWorkbench = originalWorkbench;
+      state.annotationEditor = originalEditor;
+      await window.closeModal();
+    }
+  });
+  expect(evidence).toMatchObject({
+    closeResult:false,
+    saveCalls:1,
+    cancelCalls:0,
+    title:'重新打开的业务弹窗',
+    draft:'必须保留',
+    hidden:false,
+  });
+});
