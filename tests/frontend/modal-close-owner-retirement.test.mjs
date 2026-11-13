@@ -52,3 +52,18 @@ test('modal and closeModal each expose one public owner', () => {
   assert.match(app, /window\.modal=modal/);
   assert.match(app, /window\.closeModal=async function closeModalCanonical420\(\)/);
 });
+
+
+test('bulk close retires import polling and restores the original outer focus only',()=>{
+  const start=app.indexOf('window.closeAllModals424=function(){');
+  const end=app.indexOf('\n  };',start);
+  assert.ok(start>=0&&end>start);
+  const block=app.slice(start,end);
+  assert.match(block,/window\.beforeCloseStorageImport61\?\.\(\)/);
+  assert.match(block,/const rootLayer=baseModal&&!baseModal\.classList\.contains\('hidden'\)\?baseModal:dynamicModalStack\[0\]/);
+  assert.match(block,/beforeCloseModal424\(layer\)/);
+  assert.match(block,/modalReturnFocus424\.delete\(layer\)/);
+  assert.match(block,/if\(rootLayer\)restoreModalFocus424\(rootLayer\)/);
+  assert.ok(block.indexOf('window.beforeCloseStorageImport61?.()')<block.indexOf('for(const layer of'));
+  assert.ok(block.indexOf('if(rootLayer)restoreModalFocus424(rootLayer)')>block.indexOf('closeModalBase()'));
+});

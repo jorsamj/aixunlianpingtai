@@ -195,3 +195,39 @@ test('late annotation save cannot dismiss a newly reused base modal', async ({pa
     hidden:false,
   });
 });
+
+test('bulk modal retirement restores the outer trigger and retires storage polling once',async({page})=>{
+  await ready(page);
+  await page.evaluate(()=>{
+    const trigger=document.getElementById('refreshBtn');
+    trigger.focus({preventScroll:true});
+    window.modal('批量关闭的父弹窗','<input id="bulk-parent-draft" value="原内容">');
+  });
+  await expect(page.locator('#modal .modal-head .icon')).toBeFocused();
+  await page.evaluate(()=>window.modal('批量关闭的子弹窗','<input id="bulk-child-draft" value="子内容">'));
+  await expect(page.locator('.v424-modal-layer .modal-head .icon')).toBeFocused();
+  const evidence=await page.evaluate(()=>{
+    const original=window.beforeCloseStorageImport61;
+    let storageCleanup=0;
+    try{
+      window.beforeCloseStorageImport61=()=>{storageCleanup++;original?.()};
+      window.closeAllModals424();
+      return {
+        storageCleanup,
+        focused:document.activeElement?.id,
+        baseHidden:document.getElementById('modal')?.classList.contains('hidden'),
+        dynamicLayers:document.querySelectorAll('.v424-modal-layer').length,
+        activeLayer:window.ModalContentRuntime?.activeLayer?.()?.id||null,
+      };
+    }finally{
+      window.beforeCloseStorageImport61=original;
+    }
+  });
+  expect(evidence).toEqual({
+    storageCleanup:1,
+    focused:'refreshBtn',
+    baseHidden:true,
+    dynamicLayers:0,
+    activeLayer:null,
+  });
+});

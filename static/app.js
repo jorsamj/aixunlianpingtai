@@ -2928,7 +2928,22 @@ window.installUsability417=function(){
     if(layer===baseModal&&!layer.classList.contains('hidden')){++modalIntentEpoch424;beforeCloseModal424(layer);baseModal.classList.remove('import350-modal','import350-minimized');closeModalBase();modalReturnFocus424.delete(layer);return true}
     return false;
   };
-  window.closeAllModals424=function(){++modalIntentEpoch424;window.PlatformCore?.presentation?.hideTooltip?.();for(const layer of [...dynamicModalStack,baseModal]){beforeCloseModal424(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
+  window.closeAllModals424=function(){
+    ++modalIntentEpoch424;
+    window.PlatformCore?.presentation?.hideTooltip?.();
+    // Bulk retirement bypasses canonical single-close, so retire its storage poll.
+    window.beforeCloseStorageImport61?.();
+    const rootLayer=baseModal&&!baseModal.classList.contains('hidden')?baseModal:dynamicModalStack[0];
+    for(const layer of [...dynamicModalStack,baseModal])beforeCloseModal424(layer);
+    while(dynamicModalStack.length){
+      const layer=dynamicModalStack.pop();
+      layer.remove();
+      if(layer!==rootLayer)modalReturnFocus424.delete(layer);
+    }
+    if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase();
+    // Restore only the outer trigger; child focus targets have been detached.
+    if(rootLayer)restoreModalFocus424(rootLayer);
+  };
 
   // ---------- all images are one logical data pool ----------
 
