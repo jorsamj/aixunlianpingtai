@@ -495,7 +495,7 @@ for (const frozenCount of [20_000, 30_000]) {
       ok: true, recommendation: {device: 'cpu', batch: 2, workers: 0, precision: 'auto', safe_batch_max: 32},
     }}));
     await page.route('**/api/v62/projects/*/training-materials/compatibility', route =>
-      route.fulfill({json: {compatible: true, issue_count: 0, items: [], issue_counts: {}}));
+      route.fulfill({json: {compatible: true, issue_count: 0, items: [], issue_counts: {}}}));
     await page.route('**/api/v62/projects/' + project.id + '/training-materials?*', route => {
       const url = new URL(route.request().url());
       const number = Number(url.searchParams.get('page') || 1);
