@@ -3,7 +3,7 @@ import {installMaterialPresentation} from './modules/material-presentation.js?v=
 import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=42.25.562';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=42.24.525';
-import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261102-history';
+import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.js?v=20261113-13c02';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=4';
@@ -200,7 +200,7 @@ window.PlatformCore.runtime.changLianDataBrowserRuntime = changLianDataBrowserRu
 
 const qualityDetectionWorkbench=installQualityDetectionWorkbench({getState:()=>state,api,toast:notify,modal,closeModal,esc});
 window.QualityDetectionWorkbenchRuntime=qualityDetectionWorkbench;
-const advancedEvaluation=installAdvancedEvaluation({getState:()=>state,api});
+const advancedEvaluation=installLazyAdvancedEvaluation({getState:()=>state,api});
 window.AdvancedEvaluationRuntime=advancedEvaluation;
 
 const conversionCatalogRuntime = installConversionCatalogRuntime({api,getState:()=>state,modal:(...args)=>modal(...args),closeModal:()=>closeModal()});

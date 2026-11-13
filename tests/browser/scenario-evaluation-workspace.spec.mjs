@@ -151,3 +151,54 @@ for(const compare of [false,true])test(`SCN stopping subsequent work retains the
  await expect(page.locator('#scenarioQuickEvidence64 figure:not([hidden])').first()).toBeVisible();await expect(page.locator('#scenarioQuickEvidence64 figure:not([hidden]) svg rect')).toHaveCount(1);await expect(page.locator('#scenarioQuickEvidence64 .scn-sample')).toContainText(compare?'部分结果可用':'完成');
  expect(await page.evaluate(()=>state.benchBatch64.results[0].a.task_id)).toBe('controlled-task');expect(c.posts).toHaveLength(1);await expect(page.locator('#benchBatchSummary64')).toContainText('已停止后续图片检测');await expect(page.locator('#benchRun64')).toBeEnabled();
 });
+
+test('13C advanced evaluation stays unloaded through overview and detect, then loads once',async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady),{timeout:20000}).toBe(true);
+  const count=()=>page.evaluate(()=>performance.getEntriesByType('resource')
+    .filter(entry=>new URL(entry.name).pathname.endsWith('/static/modules/advanced-evaluation.js')).length);
+  expect(await count()).toBe(0);
+  await page.evaluate(()=>window.setPage('质量中心'));
+  await expect(page.getByRole('button',{name:'高级评测',exact:true})).toBeVisible();
+  expect(await count()).toBe(0);
+  await page.getByRole('button',{name:'高级评测',exact:true}).click();
+  await expect(page.locator('[data-advanced-evaluation] .advanced-heading h2')).toHaveText('模型深度评测');
+  await expect(page.locator('[data-quality-tabs="1"]')).toBeVisible();
+  expect(await count()).toBe(1);
+  await page.getByRole('button',{name:'质量概览',exact:true}).click();
+  await expect(page.locator('[data-advanced-evaluation]')).toHaveCount(0);
+  await page.getByRole('button',{name:'高级评测',exact:true}).click();
+  await expect(page.locator('[data-advanced-evaluation] .advanced-heading h2')).toHaveText('模型深度评测');
+  expect(await count()).toBe(1);
+});
+
+test('13C old advanced-tab import cannot repaint quality overview after leaving',async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
+  let started,release;
+  const seen=new Promise(resolve=>{started=resolve});
+  const held=new Promise(resolve=>{release=resolve});
+  await page.route('**/static/modules/advanced-evaluation.js*',async route=>{
+    started();
+    await held;
+    await route.continue();
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady),{timeout:20000}).toBe(true);
+  await page.evaluate(()=>window.setPage('质量中心'));
+  await page.getByRole('button',{name:'高级评测',exact:true}).click();
+  await seen;
+  await page.getByRole('button',{name:'质量概览',exact:true}).click();
+  await expect(page.locator('[data-advanced-evaluation]')).toHaveCount(0);
+  const responded=page.waitForResponse(r=>r.url().includes('/static/modules/advanced-evaluation.js'));
+  release();
+  await responded;
+  await page.evaluate(async()=>{
+    await import('/static/modules/advanced-evaluation.js?v=20261102-history');
+    await Promise.resolve();
+  });
+  await expect(page.getByRole('button',{name:'质量概览',exact:true})).toBeVisible();
+  await expect(page.locator('[data-advanced-evaluation]')).toHaveCount(0);
+  await page.getByRole('button',{name:'高级评测',exact:true}).click();
+  await expect(page.locator('[data-advanced-evaluation] .advanced-heading h2')).toHaveText('模型深度评测');
+});
