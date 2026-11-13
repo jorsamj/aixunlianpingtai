@@ -25,7 +25,7 @@ test('material pages and filtered search complete while 200k-scope status summar
       const number=Number(url.searchParams.get('page')||1);
       const term=url.searchParams.get('query')||'';
       pageRequests.push({number,term});
-      const imageId=term?'search-match':number===2?'page-two':'page-one';
+      const imageId=term?'needle-match':number===2?'page-two':'page-one';
       return route.fulfill({json:{
         items:[{id:imageId,filename:imageId+'.jpg',processing_status:'processed',
           storage_source_id:'default_local',created_at:'2026-11-13T00:00:00Z',labels:[],annotated:false,box_count:0}],
@@ -50,7 +50,7 @@ test('material pages and filtered search complete while 200k-scope status summar
     await expect(page.locator('#data412Grid')).toContainText('page-two.jpg');
     await expect.poll(()=>page.evaluate(()=>window.MaterialPaginationRuntime61.state().pageReadPending),{timeout:3500}).toBe(false);
     await page.locator('#data412Q').fill('needle');
-    await expect(page.locator('#data412Grid')).toContainText('search-match.jpg');
+    await expect(page.locator('#data412Grid')).toContainText('needle-match.jpg');
     await expect.poll(()=>page.evaluate(()=>window.MaterialPaginationRuntime61.state().pageReadPending),{timeout:3500}).toBe(false);
     expect(pageRequests.some(row=>row.number===2)).toBe(true);
     expect(pageRequests.some(row=>row.term==='needle')).toBe(true);
