@@ -7,6 +7,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/paddle_detection_catalog.py'
+      - 'tests/unit/test_paddle_detection_catalog.py'
       - 'train_worker.py'
       - 'requirements.txt'
       - 'static/app.js'
@@ -93,6 +95,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - 'platform_core/paddle_detection_catalog.py'
+      - 'tests/unit/test_paddle_detection_catalog.py'
       - 'train_worker.py'
       - 'requirements.txt'
       - 'static/app.js'
@@ -189,9 +193,12 @@ jobs:
           pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic opencv-python-headless fastapi httpx python-multipart
       - name: Install pinned trainer source for official stopper contract
         run: python -m pip install --disable-pip-version-check --no-deps "ultralytics==8.4.127"
+      - name: PaddleDetection catalog extraction contract
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_paddle_detection_catalog.py
       - name: Compile remote training preparation chain
         run: >-
           python -m py_compile
+          platform_core/paddle_detection_catalog.py
           platform_core/remote_training_transport.py
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
