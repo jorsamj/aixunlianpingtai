@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+const source=readFileSync(new URL('../../static/modules/component-scan-runtime.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const styles=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 
 test('component scan active progress patches a stable shell and uses central polling',()=>{
   const start=source.lastIndexOf("const COMPONENT_SCAN_POLL_KEY='component-scan-v40'");
-  const end=source.indexOf('// ============================================================\n// v41:',start);
+  const end=source.length;
   assert.ok(start>=0&&end>start);
   const block=source.slice(start,end);
   assert.match(block,/function patchCompProgress\(\)/);
@@ -24,7 +24,7 @@ test('component scan active progress patches a stable shell and uses central pol
 
 test('component page restores a sanitized last-scan snapshot and skips fresh historical reads',()=>{
   const start=source.lastIndexOf("const COMPONENT_SCAN_CACHE_KEY='cl_component_scan_v40_snapshot'");
-  const end=source.indexOf('// ============================================================\n// v41:',start);
+  const end=source.length;
   assert.ok(start>=0&&end>start);
   const block=source.slice(start,end);
   assert.match(block,/const COMPONENT_SCAN_CACHE_TTL_MS=5\*60\*1000/);
@@ -40,4 +40,13 @@ test('component page restores a sanitized last-scan snapshot and skips fresh his
   const shape=block.slice(shapeStart,shapeEnd);
   assert.match(shape,/components:Array\.isArray/);
   assert.doesNotMatch(shape,/token|secret|api_key/i);
+});
+
+test('component code is lazy and has exactly one canonical navigation owner',()=>{
+  const classic=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  const main=readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
+  assert.doesNotMatch(classic,/COMPONENT_SCAN_POLL_KEY/);
+  assert.match(main,/componentScanPending = import\('\.\/modules\/component-scan-runtime\.js\?v=/);
+  assert.match(main,/navigationStabilityRuntime\.action\('组件检测'\)/);
+  assert.match(main,/registerPageOwner\(\s*'组件检测', renderComponentScanOnDemand/);
 });

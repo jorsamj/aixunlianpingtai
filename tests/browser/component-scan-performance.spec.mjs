@@ -123,3 +123,21 @@ test('Sophon component page separates local absence from authenticated remote ca
   await expect(remote).toContainText('v1.30.2-20260831');
   await expect(remote).toContainText('满足');
 });
+
+test('component scan is not fetched on initial page and its module is reused',async ({page})=>{
+  const pageErrors=[];
+  page.on('pageerror',error=>pageErrors.push(error));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  const loaded=()=>page.evaluate(()=>performance.getEntriesByType('resource')
+    .filter(x=>x.name.includes('/modules/component-scan-runtime.js?')).length);
+  expect(await loaded()).toBe(0);
+  await page.evaluate(()=>window.setPage('组件检测'));
+  await expect(page.locator('#componentBody')).toBeVisible({timeout:10_000});
+  expect(await loaded()).toBe(1);
+  await page.evaluate(()=>window.setPage('总览'));
+  await page.evaluate(()=>window.setPage('组件检测'));
+  await expect(page.locator('#componentBody')).toBeVisible({timeout:10_000});
+  expect(await loaded()).toBe(1);
+  expect(pageErrors).toEqual([]);
+});

@@ -622,9 +622,53 @@ window.PlatformCore.runtime.changLianDataBrowserPageOwner = {
 
 // Component detection is a canonical business page. Own it directly instead of
 // depending on the historical app.js render override chain racing with navigation.
-const unregisterComponentPageOwner = navigationStabilityRuntime.registerPageOwner('组件检测', () => (
-  window.renderComponentCheckV40?.()
-));
+// 13C-04E: reuse the one canonical navigation owner, loading component scan
+// only when requested. The old HTTP, cache and PollRegistry contracts remain.
+let componentScanRuntime = null;
+let componentScanModule = null;
+let componentScanPending = null;
+let componentScanAttempt = 0;
+let componentScanRenderSequence = 0;
+function renderComponentScanOnDemand() {
+  const sequence = ++componentScanRenderSequence;
+  const owner = navigationStabilityRuntime.action('组件检测');
+  const projectId = String(state.project?.id || '');
+  const current = () => sequence === componentScanRenderSequence
+    && state.page === '组件检测'
+    && String(state.project?.id || '') === projectId && owner.isCurrent();
+  const mount = module => {
+    if (!current()) return false;
+    if (!componentScanRuntime) componentScanRuntime = module.installComponentScanRuntime({
+      state, api, safe, toast: notify, esc,
+    });
+    return componentScanRuntime.render();
+  };
+  if (componentScanRuntime) return current() ? componentScanRuntime.render() : false;
+  if (componentScanModule) return mount(componentScanModule);
+  const view = document.getElementById('view');
+  if (view) view.innerHTML = '<section class="panel"><div class="panel-body" role="status">正在打开组件检测…</div></section>';
+  if (!componentScanPending) {
+    componentScanPending = import('./modules/component-scan-runtime.js?v=20261113-13c04e&attempt=' + (++componentScanAttempt))
+      .then(module => {
+        if (typeof module.installComponentScanRuntime !== 'function') throw new Error('组件检测模块缺少初始化入口');
+        componentScanModule = module;
+        return module;
+      }).finally(() => { componentScanPending = null; });
+  }
+  return componentScanPending.then(mount).catch(() => {
+    if (!current()) return false;
+    const live = document.getElementById('view');
+    if (!live) return false;
+    live.innerHTML = '<section class="panel"><div class="panel-body"><h3>组件检测暂不可用</h3><p class="muted-line">页面模块加载失败，请重试。</p><button type="button" class="btn" data-component-scan-retry>重试</button></div></section>';
+    live.querySelector('[data-component-scan-retry]')?.addEventListener('click', () => {
+      if (current()) void renderComponentScanOnDemand();
+    }, {once:true});
+    return false;
+  });
+}
+const unregisterComponentPageOwner = navigationStabilityRuntime.registerPageOwner(
+  '组件检测', renderComponentScanOnDemand
+);
 window.PlatformCore.runtime.componentPageOwner = {
   destroy() { unregisterComponentPageOwner?.(); },
 };
