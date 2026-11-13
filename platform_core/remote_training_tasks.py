@@ -794,7 +794,7 @@ class TrainingPrepareHandler:
     ):
         """Prepare AUTO admission evidence or resolve non-deferred local resources."""
         from ultralytics import YOLO
-        from .gpu_resources import sample_gpus
+        from .gpu_resources import sample_gpus, _cuda_index
         from .training_devices import normalize_training_device
 
         project = self.data_dir / "projects" / target.project_id
@@ -822,7 +822,12 @@ class TrainingPrepareHandler:
         requested_device = normalize_training_device(
             payload.get("requested_device", payload.get("device")),
         )
-        sampled = [row for row in sample_gpus() if row.get("telemetry_available")]
+        # NVML and nvidia-smi report physical ordinals; the scheduler uses
+        # CUDA-visible ordinals. Reuse its mapping and exclude masked devices.
+        sampled = [
+            row for row in sample_gpus()
+            if row.get("telemetry_available") and _cuda_index(row) is not None
+        ]
         strategy = str(payload.get("resource_strategy") or "auto").strip().lower()
         gpu_policy = str(payload.get("gpu_policy") or "auto").strip().lower()
         if (
@@ -867,13 +872,13 @@ class TrainingPrepareHandler:
             # Resolve against the most constrained currently schedulable GPU so
             # the later scheduler assignment cannot make an AUTO plan unsafe.
             selected_gpu = min(sampled, key=lambda row: int(row.get("free_bytes") or 0))
-            resolution_device = f"cuda:{int(selected_gpu.get('logical_cuda_index') or 0)}"
+            resolution_device = f"cuda:{_cuda_index(selected_gpu)}"
         elif requested_device.startswith("cuda:"):
             index = int(requested_device.split(":", 1)[1])
             selected_gpu = next(
                 (
                     row for row in sampled
-                    if int(row.get("logical_cuda_index") or row.get("physical_index") or -1) == index
+                    if _cuda_index(row) == index
                 ),
                 None,
             )

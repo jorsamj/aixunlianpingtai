@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+import pytest
 from types import SimpleNamespace
 
 from platform_core.task_runtime import (
@@ -271,3 +273,105 @@ def test_assignment_time_resource_freeze_is_execution_fenced(tmp_path, monkeypat
     assert artifacts.read_json(
         "train-fenced", "resolved-resources.json", default={},
     )["resolved_batch"] == 64
+
+
+@pytest.mark.parametrize(
+    ("visibility", "requested_device", "gpu_indices", "expected_device", "expected_gpu_uuid"),
+    [
+        (None, "cuda:0", (0,), "cuda:0", "GPU-0"),
+        (None, "cuda:1", (0, 1), "cuda:1", "GPU-1"),
+        (None, "auto", (0, 1), "cuda:1", "GPU-1"),
+        ("1,0", "cuda:0", (0, 1), "cuda:0", "GPU-1"),
+        ("1,0", "cuda:1", (0, 1), "cuda:1", "GPU-0"),
+        ("1", "auto", (0, 1), "cuda:0", "GPU-1"),
+        ("GPU-1,GPU-0", "auto", (0, 1), "cuda:0", "GPU-1"),
+        ("1", "cuda:1", (0, 1), None, None),
+    ],
+)
+def test_prepare_non_deferred_resource_resolution_uses_visible_cuda_ordinals(
+    tmp_path, monkeypatch, visibility, requested_device, gpu_indices,
+    expected_device, expected_gpu_uuid,
+):
+    """The preparation resolver must agree with scheduler-visible CUDA indices."""
+    from platform_core.remote_training_tasks import RemoteTrainingPreparationError
+    import platform_core.gpu_resources as gpu_resources
+    import platform_core.training_metrics as training_metrics
+
+    if visibility is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visibility)
+
+    data_dir = tmp_path / "data"
+    project = data_dir / "projects" / "gpu-index-project"
+    project.mkdir(parents=True)
+    (project / "algorithms.json").write_text(
+        json.dumps([{"id": "algorithm-auto", "name": "GPU mapping", "versions": []}]),
+        encoding="utf-8",
+    )
+    rows = [
+        {
+            "gpu_uuid": f"GPU-{index}",
+            "physical_index": index,
+            "gpu_index": index,
+            "free_bytes": (20 if index == 0 else 9) * GIB,
+            "total_bytes": 24 * GIB,
+            "utilization": 5.0,
+            "telemetry_available": True,
+        }
+        for index in gpu_indices
+    ]
+    monkeypatch.setattr(gpu_resources, "sample_gpus", lambda: rows)
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda _: _Model()))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+
+    captured = []
+    def fake_resolve(request, resource_context, _model, _torch):
+        captured.append((request["device"], resource_context["resolution_gpu_uuid"]))
+        return {
+            "resource_strategy": "manual",
+            "resolved_batch": 4,
+            "resolved_workers": 0,
+            "resolved_cache": False,
+            "estimated_gpu_memory_bytes": 2 * GIB,
+        }
+    monkeypatch.setattr(training_metrics, "resolve_resources", fake_resolve)
+
+    runtime = data_dir / "task_runtime"
+    runtime.mkdir(parents=True)
+    repository = TaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    context = SimpleNamespace(repository=repository, artifacts=artifacts)
+    payload = {
+        "algorithm_asset_id": "algorithm-auto",
+        "model": "mother.pt",
+        "framework": "ultralytics",
+        "resource_strategy": "manual",
+        "resource_profile": "balanced",
+        "gpu_policy": "exclusive",
+        "requested_device": requested_device,
+        "device": requested_device,
+        "batch": 4,
+        "workers": 0,
+        "cache": False,
+        "imgsz": 640,
+    }
+    resolver = TrainingPrepareHandler(data_dir)
+    if expected_device is None:
+        with pytest.raises(RemoteTrainingPreparationError, match="指定 GPU 缺少可验证的资源遥测"):
+            resolver._resolve_local_resources(
+                context, SimpleNamespace(task_id="gpu-map-test", project_id="gpu-index-project"),
+                payload, tmp_path / "bundle", [], SimpleNamespace(counts={"train": 5}),
+            )
+        assert captured == []
+        return
+
+    prepared = resolver._resolve_local_resources(
+        context, SimpleNamespace(task_id="gpu-map-test", project_id="gpu-index-project"),
+        payload, tmp_path / "bundle", [], SimpleNamespace(counts={"train": 5}),
+    )
+    assert captured == [(expected_device, expected_gpu_uuid)]
+    assert prepared["resolved_batch"] == 4
+    saved = artifacts.read_json("gpu-map-test", "resource-context.json", default={})
+    assert saved["resolution_device"] == expected_device
+    assert saved["resolution_gpu_uuid"] == expected_gpu_uuid
