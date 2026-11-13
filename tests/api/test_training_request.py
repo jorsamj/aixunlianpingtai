@@ -2262,10 +2262,11 @@ def test_frozen_selection_replay_survives_revision_change(client,seeded_project)
     assert changed.status_code==409,changed.text
 
 
+@pytest.mark.parametrize('batch_size', [20_000, 30_000])
 def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
-    client, seeded_project, monkeypatch,
+    client, seeded_project, monkeypatch, batch_size,
 ):
-    """Control-plane scale: HTTP expansion, durable parent and Worker guard, no GPU.
+    """Control-plane scale: Real filtered HTTP freeze, durable parent and Worker guard, no GPU.
 
     The Prepare handler stops immediately after its *real* reference validation,
     before GT resolution and image I/O. Separate small real-GT tests cover READY.
@@ -2274,11 +2275,11 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
     from platform_core.remote_training_tasks import TrainingPrepareHandler
     from platform_core.task_runtime import TaskKind, TaskStatus
     from platform_core.training_selection_reference import (
-        freeze_selection, selection_context, validate_payload_references,
+        read_selection, selection_context, validate_payload_references,
     )
 
     project_id, _seed = seeded_project
-    image_ids = [f"scale-image-{i:06d}" for i in range(20_000)]
+    image_ids = [f"scale-image-{i:06d}" for i in range(batch_size)]
     materials = platform.material_store(project_id)
     materials.upsert_many([
         {
@@ -2292,13 +2293,13 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
     ])
     result = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
-        json={"name": "20k冻结引用传递验收", "algorithm_type": "yolo_ultralytics"},
+        json={"name": f"{batch_size}冻结引用传递验收", "algorithm_type": "yolo_ultralytics"},
     )
     assert result.status_code == 200, result.text
     algorithm_id = result.json()["algorithm"]["id"]
     request = {
         "task_id": "train_" + hashlib.sha256(
-            (project_id + "-selection-20k").encode()
+            (project_id + f"-selection-{batch_size}").encode()
         ).hexdigest()[:24],
         "framework": "ultralytics",
         "algorithm_asset_id": algorithm_id,
@@ -2312,13 +2313,21 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
         "validation_percent": 20,
         "experiment_percent": 20,
     }
+    # The same filtered endpoint used by the picker must freeze exactly the
+    # matching IDs, not all processed materials or just the first visible page.
+    freeze_response = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-reference",
+        json={**request, "role": "train", "query": "scale-image-"},
+    )
+    assert freeze_response.status_code == 200, freeze_response.text
+    receipt = freeze_response.json()
+    assert receipt["count"] == batch_size
+    assert "items" not in receipt and "image_ids" not in receipt
+    assert len(freeze_response.content) < 500
     bound_context = selection_context(
         platform.DATA_DIR, project_id, platform.TrainReq(**request).model_dump(mode="json"),
     )
-    receipt = freeze_selection(
-        platform.DATA_DIR, bound_context, iter(image_ids), request_scope="",
-    )
-    assert receipt["count"] == len(image_ids)
+    assert read_selection(platform.DATA_DIR, receipt["selection_ref"], bound_context) == image_ids
     request["train_selection_ref"] = receipt["selection_ref"]
 
     response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
