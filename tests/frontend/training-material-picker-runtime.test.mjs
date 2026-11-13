@@ -103,6 +103,45 @@ test('server-frozen train reference is never reused by independent Test or robus
   }
 });
 
+
+test('over-cap server fallback never discards earlier explicit selections', async () => {
+  const begin = source.indexOf('  async function resolveBulkSelection(');
+  const end = source.indexOf('\n  async function bulkAction(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const createResolver = new Function('projectId', 'picker', 'taskPayload', 'filterPayload',
+    'fetchImpl', 'withRequestDeadline', 'readJson', 'uniqueIds', 'window',
+    source.slice(begin, end) + '\nreturn resolveBulkSelection;');
+  const uid = 'trainselection_' + 'a'.repeat(32);
+  for (const scenario of [
+    {name: 'existing explicit IDs must survive', selected: ['earlier-filter-a', 'earlier-filter-b'], fallback: false},
+    {name: 'no explicit IDs retains existing reference fallback', selected: [], fallback: true},
+  ]) {
+    const picker = {role: 'train', selected: new Set(scenario.selected), total: null, hasNext: true, page: 1,
+      query: 'smoke', labels: new Set(), sampleRole: '', sortOrder: 'newest',
+      bulkController: {signal: {}}, referenceRequest: null};
+    const calls = [];
+    const resolve = createResolver(() => 'project', picker, () => ({algorithm_asset_id: 'alg'}),
+      () => ({role: 'train'}), async (url) => {
+        calls.push(url);
+        if (url.endsWith('/bulk-selection')) return {ok: false, clone: () => ({
+          json: async () => ({detail: '筛选结果超过单次选择上限 50000 张'}),
+        })};
+        return {ok: true, json: async () => ({selection_ref: uid, count: 60000})};
+      }, operation => operation(undefined), response => response.json(),
+      values => [...new Set(values || [])],
+      {crypto: {randomUUID: () => '123e4567-e89b-42d3-a456-426614174000'}});
+    if (scenario.fallback) {
+      const result = await resolve({preferReference: false});
+      assert.equal(result.reference?.selection_ref, uid);
+      assert.equal(calls.length, 2, scenario.name);
+    } else {
+      await assert.rejects(resolve({preferReference: false}), /已有逐张选择.*无法安全合并/, scenario.name);
+      assert.equal(calls.length, 1, 'no reference can be written when explicit IDs already exist');
+    }
+    assert.deepEqual([...picker.selected], scenario.selected, scenario.name);
+  }
+});
+
 test('unknown-total multi-page train bulk selection bypasses the 2000-ID probe', async () => {
   const begin = source.indexOf('  async function resolveBulkSelection(');
   const end = source.indexOf('\n  async function bulkAction(', begin);

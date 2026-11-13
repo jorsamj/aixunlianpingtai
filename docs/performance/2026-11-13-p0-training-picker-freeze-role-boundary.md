@@ -28,3 +28,7 @@
 - 11 项失败原因：app.js、main.mjs、styles.css 必须共享纯数字点分缓存版本；前次仅将 main 更新为带后缀版本，精确源码守卫仍是旧值。
 - 补修统一入口和训练选择器导入版本为 `42.25.604`，固定版本断言同步，**没有删除或放宽任何测试**；原训练素材业务修复不变。
 - 补修准确 SHA/CI 待核。未部署、未改生产 GT/任务或 Worker。
+
+## 结案复核（2026-11-13）
+
+角色边界修复代码 `34b75a12` 经入口缓存补修 `b4ad738bfe440d440971a1590644bfeba0f148cb` 后，准确 GitHub Actions **37/37 completed/success**；Frontend Node **1663/1663**，Training Material Picker 的 contracts 与 real-chrome-picker 成功，Frontend 三份浏览器分片最终随工作流 success。上文“待核”保留为当时快照，以本条更新为当前结论。未做 A800/4070 部署和正式 GT 的生产验收。

@@ -1198,6 +1198,9 @@ export function installTrainingMaterialPickerRuntime({
     if (!pid) throw new Error('当前项目不存在');
     return withRequestDeadline(async signal=>{
     const freezeReference=async()=>{
+      // A frozen filter cannot represent the union of an earlier ad-hoc
+      // selection and this result. Never silently drop those explicit IDs.
+      if(picker?.selected?.size)throw new Error('当前已有逐张选择，超限筛选结果无法安全合并；请先全部不选，再全选当前筛选范围');
       // Reuse the existing frozen selection owner. Scope and request ID must
       // be identical whether the server cap triggered the fallback or this
       // dialog already knows the filtered count exceeds the fast-path cap.
