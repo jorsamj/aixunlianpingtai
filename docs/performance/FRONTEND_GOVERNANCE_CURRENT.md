@@ -1,5 +1,15 @@
 # 畅联云算法训练平台｜前后端性能优化与渐进式模块化治理｜当前进度与接续任务书
 
+## 最新进度（2026-11-13，覆盖下文历史阻断快照）
+
+> **2026-11-13｜13C-04D → 13C-04E 更新（旧记录保留为历史快照）**：唯一长期分支 `feature/external-algorithm-publishing`；本轮最后业务/测试代码提交 `c61e82d20d398652dad1724ba2af58df02db7b63`。13C-04D 质量中心场景实测改为按需加载，准确代码 `5f19d231` 的 Frontend Runtime Stabilization 4/4 Job 成功，隔离 Chrome 首屏解码 JS 约减 108 KB（3.4%，不等于生产提速）。13C-04E 将组件检测 v40 从经典 `static/app.js` 迁出并首次进入按需 import，原 Owner、API、缓存、PollRegistry 保留；`app.js` 从 1,394,659 B 减至 1,386,275 B，减少 8,384 B（0.60%）。`a58bda75` Frontend Runtime Stabilization 4/4 Job 成功、单测 1661/1661 和 Chrome 3/3 分片成功。历史 Online Feedback Runtime 两项 Chrome 失败在 13C-04D 基线已存在，`c61e82d` 只修测试等待异步 Workbench 就绪，准确提交对应两组 Online Feedback Runtime 均成功。已核验 `c61e82d20d398652dad1724ba2af58df02db7b63` 准确提交对应全仓 GitHub Actions **22/22 工作流成功**（其中 Frontend Runtime Stabilization 4/4 Job、两组 Online Feedback Runtime 均成功）；验证不代表生产现场达标。原 A～E / T01～T10、正式 GT 20k/200k、A800/4070、Safari 和离线部署现场验收仍未关闭。下一轮仅审计 13C-04F 部署转换代码依赖，不允许整块迁移或扩大业务范围。
+
+### 13C-04E 准确阶段证据
+
+- 13C-04E 代码：`ab30f40bc7b6b19f07c2a7cd2d7d47e7b74fc368`；CI 保护守卫校正：`5faab63795712013010e031f51c93df795e7c883`；静态缓存与 Owner 测试断言校正：`a58bda7524521ec168a3548b0c0bbf2b2ba36f66`；线上反馈异步测试就绪修复：`c61e82d20d398652dad1724ba2af58df02db7b63`。
+- [13C-04E 前端 4/4 Job 通过](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43426627830)；前端最新代码提交的主回归 [见本次 CI](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43428159022)；原生平台启动、素材冻结、Worker、真实设备速度不因这些自动化结果认定已验收。`c61e82d` 的准确 [Frontend CI](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43428159022) 及 [Online Feedback CI](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43428159103) 已取得成功结论；**代码提交全仓 22/22 成功**。
+- 组件检测只是首个真正从 `app.js` 迁出的低频功能，收益为源码首屏减少 8,384 B；还没有同 CI 环境下首屏 JavaScript 解码/P95 的新增稳定对照数据。下一轮 13C-04F 先对部署转换 v39 建跨区域调用矩阵：它约 45 KB，至少有 `loadDeployData`、`refreshDeployResourcesV39` 和多个转换/部署动作被其他区域引用，**不能整体直接拆**。
+
 > 截至 2026-11-13；唯一开发/推送分支 `feature/external-algorithm-publishing`；写入本文档之前核验远端 HEAD 为 `a0997c98d30dc4d9d63ba91092e7b27a23185ced`。
 >
 > 本文档为【当前进度单一入口】。原《性能优化与渐进式模块化治理专项任务书》A～E 任务包、P0/P1/P2 问题和 T01～T10 验收合同仍有效；不得因本进度文档删除原验收条件。本文档写入后 HEAD 将产生新的**仅文档提交**，不是代码版本前进或业务功能验收。
