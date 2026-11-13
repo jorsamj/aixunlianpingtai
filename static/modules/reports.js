@@ -477,9 +477,9 @@ export function trainingReportHtml({job={},report={}}={}) {
     ${report.note?`<p class="item-sub">${escapeText(report.note)}</p>`:''}
     <nav class="quality-tabs" role="tablist" aria-label="训练报告视图">${[['overview','概览'],['curves','训练曲线'],['errors','异常样本'],['provenance','数据与溯源']].map(([key,title])=>`<button class="btn" role="tab" data-report-tab="${key}" aria-selected="${key==='overview'}">${title}</button>`).join('')}</nav>
     <section data-report-pane="overview"><section class="report429-card"><div class="report425-facts">${kv('最大轮次',report.requested_train_params?.epochs)}${kv('实际轮次',report.completed_epochs)}${kv('停止原因',report.completion_reason==='quality_target_reached'?'达到目标指标，提前完成':report.completion_reason)}${kv('训练停止目标状态',report.completion_reason==='quality_target_reached'?'已达标':'未确认')}</div></section><div class="report-facts-grid">${kv('实际训练精度',actual.effective_precision??actual.precision)}${kv('实际输入尺寸',actual.imgsz)}${kv('Train / Val / Test图片',`${count.train??'未记录'} / ${count.validation??count.val??'未记录'} / ${count.test??'未记录'}`)}${kv('实际Batch / Workers',`${actual.batch??'未记录'} / ${actual.workers??'未记录'}`)}</div>${metricCredibilityHtml(report.metric_credibility)}<section class="report429-card"><header><b>结果解读边界</b></header><p>训练成功、模型精度与实际业务可用是不同事实。Validation 指标不代表独立 Test 或业务验收；请结合冻结证据和现场要求判断。</p><button class="btn" data-report-scenario>场景算法实测</button></section></section>
-    <section data-report-pane="curves" hidden>${trainingCharts(report.history||[],report.runtime_metrics?.samples||[])}</section>
+    <section data-report-pane="curves" hidden></section>
     <section data-report-pane="errors" hidden><section class="evaluation429-gallery report429-card"><header><b>代表性异常样本</b><span>已记录 ${errors.total_error_samples??errors.recorded_candidates??'未知'} 张异常，展示 ${samples.length} 张冻结引用</span></header><div class="evaluation429-gallery-bar"></div><div class="evaluation429-image-grid">${samples.map((row,index)=>`<article class="evaluation429-image-card" data-report-error="${index}" tabindex="0" role="button" aria-label="查看异常样本${index+1}" data-eval-url="${escapeText(previewUrl(row))}" data-eval-image="${escapeText(row.image)}" data-eval-width="${escapeText(row.image_width||'')}" data-eval-height="${escapeText(row.image_height||'')}"><span class="evaluation429-thumb"><img alt="冻结异常样本${index+1}" hidden><span class="evaluation429-thumb-status" data-eval-thumb-status>打开区域后按需读取</span></span><div class="evaluation429-card-title"><b>样本 ${index+1}</b><span data-eval-thumb-state>待读取</span></div><small data-eval-thumb-format></small><div class="evaluation429-counts"><i>FP ${row.fp_count}</i><i>FN ${row.fn_count}</i></div><p>${escapeText([...(row.fp_labels||[]),...(row.fn_labels||[])].join(' / '))}</p><small>GT ${row.boxes_truncated?'未完整记录':row.gt_boxes?.length??'未记录'} · 预测 ${row.boxes_truncated?'未完整记录':row.pred_boxes?.length??'未记录'}</small></article>`).join('')||`<p class="quality-empty">${escapeText(errors.reason||'未记录可信的冻结异常图片；训练错误不等于检测错误样本。')}</p>`}</div><p class="item-sub">只读冻结 Test 证据，未复制原图。图片不可用时不展示检测框；按权限手动附图给 ChatGPT。</p></section></section>
-    <section data-report-pane="provenance" hidden><div class="report-facts-grid">${kv('Dataset Revision',report.dataset_revision_id)}${kv('Snapshot',report.snapshot_id)}${kv('母版本',report.base_version_name||report.base_version_id)}${kv('框架与模型',`${report.framework||'未记录'} / ${report.model_architecture||'未记录'}`)}</div><section class="report429-card"><header><b>请求 → 实际运行</b></header><div class="table-wrap"><table class="table"><thead><tr><th>参数</th><th>请求</th><th>实际</th></tr></thead><tbody>${['imgsz','precision','batch','workers','optimizer','lr0'].map(key=>`<tr><td>${key}</td><td>${escapeText(analysisValue(report.requested_train_params?.[key]))}</td><td>${escapeText(analysisValue(key==='optimizer'?report.runtime_metrics?.runtime_optimizer:key==='lr0'?report.runtime_metrics?.runtime_initial_learning_rates:key==='precision'?actual.effective_precision??actual.precision:actual[key]))}</td></tr>`).join('')}</tbody></table></div></section>${frozenReportEvidenceHtml(report)}<details><summary>完整技术证据与冻结合同</summary><pre class="log report-technical">${escapeText(JSON.stringify(report,null,2))}</pre></details></section>
+    <section data-report-pane="provenance" hidden><div class="report-facts-grid">${kv('Dataset Revision',report.dataset_revision_id)}${kv('Snapshot',report.snapshot_id)}${kv('母版本',report.base_version_name||report.base_version_id)}${kv('框架与模型',`${report.framework||'未记录'} / ${report.model_architecture||'未记录'}`)}</div><section class="report429-card"><header><b>请求 → 实际运行</b></header><div class="table-wrap"><table class="table"><thead><tr><th>参数</th><th>请求</th><th>实际</th></tr></thead><tbody>${['imgsz','precision','batch','workers','optimizer','lr0'].map(key=>`<tr><td>${key}</td><td>${escapeText(analysisValue(report.requested_train_params?.[key]))}</td><td>${escapeText(analysisValue(key==='optimizer'?report.runtime_metrics?.runtime_optimizer:key==='lr0'?report.runtime_metrics?.runtime_initial_learning_rates:key==='precision'?actual.effective_precision??actual.precision:actual[key]))}</td></tr>`).join('')}</tbody></table></div></section>${frozenReportEvidenceHtml(report)}<details data-report-technical-details><summary>完整技术证据与冻结合同</summary><pre class="log report-technical" data-report-technical></pre></details></section>
     <details class="report429-card report-supplements"><summary>补充实际场景（可选）</summary><p class="item-sub">用户提供的现场描述，尚未由训练系统独立验证。</p><div class="form two">${[['scenario','实际业务场景与摄像头环境'],['target','期望指标与可接受误报漏报'],['observed','现场已观察问题'],['deployment','计划硬件、分析频率与性能要求']].map(([key,title])=>`<label class="field"><span>${title}</span><textarea class="input" rows="2" maxlength="2000" data-report-supplement="${key}"></textarea></label>`).join('')}</div></details>
     <details class="report429-card" data-report-analysis-preview><summary>预览完整 ChatGPT 分析材料</summary><textarea class="input report-analysis-text" readonly aria-label="ChatGPT分析材料"></textarea></details><p class="item-sub" data-report-copy-status role="status">本地确定性组装，不调用 AI，不上传图片或报告。</p>
   </div>`;
@@ -489,7 +489,16 @@ export function mountTrainingReport(root,response,{notify,onEvaluation,onSample,
   const {signal}=controller,report=response.report||{};
   const material=()=>chatGPTAnalysisMaterial(response,Object.fromEntries([...root.querySelectorAll('[data-report-supplement]')].map(node=>[node.dataset.reportSupplement,node.value])));
   const preview=()=>{const area=root.querySelector('.report-analysis-text');area.value=material();return area};
-  root.addEventListener('toggle',event=>{if(event.target.matches('[data-report-analysis-preview]')&&event.target.open)preview()},{capture:true,signal});
+  root.addEventListener('toggle',event=>{
+    if(event.target.matches('[data-report-technical-details]')&&event.target.open){
+      const evidence=event.target.querySelector('[data-report-technical]');
+      if(evidence&&!evidence.dataset.rendered){
+        evidence.textContent=JSON.stringify(currentReportFacts(response),null,2);
+        evidence.dataset.rendered='true';
+      }
+    }
+    if(event.target.matches('[data-report-analysis-preview]')&&event.target.open)preview();
+  },{capture:true,signal});
   root.addEventListener('input',event=>{if(event.target.matches('[data-report-supplement]')&&root.querySelector('[data-report-analysis-preview]').open)preview()},{signal});
   root.addEventListener('click',async event=>{
     if(!isCurrent())return;
@@ -497,7 +506,14 @@ export function mountTrainingReport(root,response,{notify,onEvaluation,onSample,
     if(tab){
       root.querySelectorAll('[data-report-tab]').forEach(node=>node.setAttribute('aria-selected',String(node===tab)));
       root.querySelectorAll('[data-report-pane]').forEach(node=>node.hidden=node.dataset.reportPane!==tab.dataset.reportTab);
-      if(tab.dataset.reportTab==='curves')void mountReportCharts(root,report.history||[],report.runtime_metrics?.samples||[]);
+      if(tab.dataset.reportTab==='curves'){
+        const pane=root.querySelector('[data-report-pane="curves"]');
+        if(pane&&!pane.dataset.rendered){
+          pane.innerHTML=trainingCharts(report.history||[],report.runtime_metrics?.samples||[]);
+          pane.dataset.rendered='true';
+        }
+        void mountReportCharts(root,report.history||[],report.runtime_metrics?.samples||[]);
+      }
       if(tab.dataset.reportTab==='errors')globalThis.window?.hydrateEvaluationGallery429?.(isCurrent,root);
       return;
     }

@@ -255,6 +255,7 @@ jobs:
           tests/unit/test_training_evaluation.py
           tests/api/test_training_ground_truth_gate.py
           tests/api/test_training_metric_credibility_report.py
+          tests/api/test_v49_report_history_reuse.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_launcher_workers.py
           tests/unit/test_a800_rc_acceptance.py
