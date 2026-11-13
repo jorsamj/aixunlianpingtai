@@ -1977,7 +1977,8 @@ window.installUsability417=function(){
 
   const modalEl=document.getElementById('modal');if(modalEl)modalEl.addEventListener('mousedown',e=>{if(e.target===modalEl)closeModal()});
   document.addEventListener('keydown',e=>{
-    if(e.defaultPrevented||e.isComposing||e.key!=='Escape')return;
+    if(e.defaultPrevented)return;
+    if(e.isComposing||e.key!=='Escape')return;
     // A child dialog can outlive the base dialog; Escape always closes the active stack layer.
     if(!window.ModalContentRuntime?.activeLayer?.())return;
     e.preventDefault();

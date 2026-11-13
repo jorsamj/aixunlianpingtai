@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
-const autofocus = "requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})";
+const autofocus = "first?.focus({preventScroll:true});";
 
 test('enhancePageV37 compatibility helper cannot return', () => {
   assert.equal(app.includes('function enhancePageV37'), false);
@@ -30,7 +30,7 @@ test('base modal owns autofocus without a V37 compatibility wrapper', () => {
   assert.equal(app.includes('const baseModalV37=modal;'), false);
   assert.equal(app.includes('baseModalV37('), false);
   assert.equal(app.split(autofocus).length - 1, 1);
-  assert.equal(app.includes("function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);"), true);
+  assert.match(app, /function modalBase\(title,body,wide=false\)\{\s+const layer=\$\('#modal'\);\s+resetBaseModalPresentation\(\);/);
   assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), false);
   assert.equal(app.includes('modalBase(title,body,wide);focusModal424(baseModal);return decorateImportModal424(baseModal,title);'), true);
   assert.match(app, /function decorateImportModal424\(layer,title\)/);
