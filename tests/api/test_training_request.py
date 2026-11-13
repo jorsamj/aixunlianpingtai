@@ -2260,3 +2260,145 @@ def test_frozen_selection_replay_survives_revision_change(client,seeded_project)
     assert replay.status_code==202 and replay.json()['idempotent'] is True,replay.text
     changed=client.post(f'/api/v12/projects/{project_id}/train/start',json={**request,'epochs':3})
     assert changed.status_code==409,changed.text
+
+
+def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
+    client, seeded_project, monkeypatch,
+):
+    """Control-plane scale: HTTP expansion, durable parent and Worker guard, no GPU.
+
+    The Prepare handler stops immediately after its *real* reference validation,
+    before GT resolution and image I/O. Separate small real-GT tests cover READY.
+    """
+    import app as platform
+    from platform_core.remote_training_tasks import TrainingPrepareHandler
+    from platform_core.task_runtime import TaskKind, TaskStatus
+    from platform_core.training_selection_reference import (
+        freeze_selection, selection_context, validate_payload_references,
+    )
+
+    project_id, _seed = seeded_project
+    image_ids = [f"scale-image-{i:06d}" for i in range(20_000)]
+    materials = platform.material_store(project_id)
+    materials.upsert_many([
+        {
+            "id": image_id,
+            "filename": image_id + ".jpg",
+            "object_key": "uploads/" + image_id + ".jpg",
+            "processing_status": "processed",
+            "content_sha256": f"{i+1:064x}",
+        }
+        for i, image_id in enumerate(image_ids)
+    ])
+    result = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "20k冻结引用传递验收", "algorithm_type": "yolo_ultralytics"},
+    )
+    assert result.status_code == 200, result.text
+    algorithm_id = result.json()["algorithm"]["id"]
+    request = {
+        "task_id": "train_" + hashlib.sha256(
+            (project_id + "-selection-20k").encode()
+        ).hexdigest()[:24],
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm_id,
+        "model": "yolo11n.pt",
+        "device": "cpu",
+        "admission_mode": "background",
+        "split_mode": "random_test_from_training_pool",
+        "train_labels": ["fire"],
+        "train_image_ids": [],
+        "test_image_ids": [],
+        "validation_percent": 20,
+        "experiment_percent": 20,
+    }
+    bound_context = selection_context(
+        platform.DATA_DIR, project_id, platform.TrainReq(**request).model_dump(mode="json"),
+    )
+    receipt = freeze_selection(
+        platform.DATA_DIR, bound_context, iter(image_ids), request_scope="",
+    )
+    assert receipt["count"] == len(image_ids)
+    request["train_selection_ref"] = receipt["selection_ref"]
+
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 202, response.text
+    created = response.json()
+    parent_id = created["task"]["id"]
+    assert parent_id == request["task_id"]
+    assert created["training_input_state"] == "PREPARING"
+    assert created["task"]["status"] == "QUEUED"
+    prepare_id = created["preparation_task_id"]
+    parent = platform.shared_task_repository().get(parent_id)
+    prepare = platform.shared_task_repository().get(prepare_id)
+    assert parent.kind is TaskKind.TRAINING and parent.status is TaskStatus.QUEUED
+    assert prepare.kind is TaskKind.TRAINING_PREPARE
+    persisted = platform.shared_task_artifacts().read_json(parent_id, "payload.json")
+    assert persisted["train_selection_ref"] == receipt["selection_ref"]
+    assert persisted["train_image_ids"] == image_ids
+    assert len(persisted["requested_split"]["train_image_ids"]) == len(image_ids)
+
+    handler = TrainingPrepareHandler(platform.DATA_DIR)
+    received = []
+    def stop_after_real_worker_guard(_context, _target, payload):
+        received.extend(payload["train_image_ids"])
+        raise InterruptedError("isolated stop after real Worker reference guard")
+    monkeypatch.setattr(handler, "_freeze_request_contract", stop_after_real_worker_guard)
+    context = SimpleNamespace(
+        task=prepare,
+        repository=platform.shared_task_repository(),
+        artifacts=platform.shared_task_artifacts(),
+        heartbeat=lambda **_kwargs: None,
+    )
+    with pytest.raises(InterruptedError, match="isolated stop"):
+        handler.run(context)
+    assert received == image_ids
+    assert platform.shared_task_repository().get(parent_id).status is TaskStatus.QUEUED
+    assert not platform.shared_task_artifacts().artifact_path(
+        parent_id, "input-freeze.json",
+    ).exists()
+    # Exact expanded IDs are rechecked at the Worker, not trusted from HTTP.
+    with pytest.raises(ValueError, match="不一致"):
+        validate_payload_references(
+            platform.DATA_DIR, project_id, {
+                **persisted, "train_image_ids": image_ids[:-1],
+            },
+        )
+
+
+def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
+    client, seeded_project,
+):
+    """Real annotated inputs: HTTP -> parent -> actual Prepare GT/freeze stage."""
+    import app as platform
+    from platform_core.training_selection_reference import (
+        freeze_selection, selection_context, validate_payload_references,
+    )
+
+    project_id, request = _training_create_replay_fixture(client, seeded_project)
+    expected_train = list(request["train_image_ids"])
+    expected_test = list(request["test_image_ids"])
+    context = selection_context(
+        platform.DATA_DIR, project_id, platform.TrainReq(**request).model_dump(mode="json"),
+    )
+    receipt = freeze_selection(platform.DATA_DIR, context, iter(expected_train))
+    frozen_request = {
+        **request, "train_selection_ref": receipt["selection_ref"], "train_image_ids": [],
+    }
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=frozen_request)
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task"]["id"]
+    persisted = platform.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert persisted["train_image_ids"] == expected_train
+    assert persisted["test_image_ids"] == expected_test
+    validate_payload_references(platform.DATA_DIR, project_id, persisted)
+
+    prepared = _freeze_admitted_training(platform, task_id)
+    assert prepared["train_image_ids"] == expected_train
+    assert prepared["test_image_ids"] == expected_test
+    frozen = platform.shared_task_artifacts().read_json(task_id, "input-freeze.json")
+    assert frozen["snapshot_id"]
+    assert {row["image_id"] for row in frozen["images"]} == set(expected_train + expected_test)
+    assert not platform.shared_task_artifacts().artifact_path(
+        task_id, "work/bundle",
+    ).exists()
