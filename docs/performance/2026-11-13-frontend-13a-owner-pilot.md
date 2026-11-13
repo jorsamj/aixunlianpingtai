@@ -22,7 +22,7 @@
 
 - 原 `renderNavigationChrome` 和 `renderUnknownPage` **展示实现**移入单个 ESM 文件；`main.mjs` 仍唯一负责导航路由、Page Owner 注册、启动/离开页逻辑。
 - 新模块没有状态中心、网络请求、计时器、事件绑定，也不设置 `window.*`。DOM 内容、版本显示与未知页文案沿用原实现。
-- `index.html` 仅为 `main.mjs` 增加 `-13a1` 缓存后缀；`app.js`、CSS 缓存标识和正式版本号保持原值。
+- `index.html` 使用纯数字缓存版本 `42.25.595`，`app.js`、`main.mjs`、`styles.css` 三入口保持一致；正式版本号 `42.24.592` 不变。
 - 新增 `navigation-presentation-owner.test.mjs` 定向断言：fallback nav、当前 Tab 样式、服务端版本、未知页面属性过滤及唯一 Owner。
 - 若需回退，整体撤销本次提交即可；无数据库或生产数据迁移。
 
@@ -31,3 +31,8 @@
 这是一次**结构等价迁移**，不声称 P95 改善，不重复 20k/30k/200k 压测。全量 `window.*` 动态依赖和 `app.js` 内联 DOM 的消费图仍需后续补齐；不能把初版职责表当完整静态依赖 AST 证明。
 
 待该提交 CI 核对，实际结果另行记录。13B 再处理 Modal 栈、scroll-lock、关闭后事件/请求/轮询销毁。A800、4070 未获授权不得部署、重启或修改数据；不 merge main、不创建 Release、不强推。
+
+
+## 本轮 CI 失败精准修复（2026-11-13）
+
+首个 13A 提交 `06d341faf299a553a2a58ab90bf1877806f411ad` 触发 37 项工作流：35 成功、2 失败。日志确认：Material Upload Chunking 拒绝带字母的 main.mjs 缓存标识，Frontend Runtime Stabilization 除该问题外还有 AI 审核入口三版本一致性断言和已迁出展示函数的旧源码位置断言。本提交恢复统一纯数字缓存版本 42.25.595，更新测试以审计真实展示 Owner，保留 DOM 交互语义断言；未触碰业务行为、GT/Worker/生产。该修复提交的 CI 尚须另行确认。

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const navigationPresentation = fs.readFileSync(new URL('../../static/modules/navigation-presentation.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 function block(start, end) {
   const from = source.indexOf(start);
@@ -232,10 +233,11 @@ test('active sidebar navigation is a user-click no-op while programmatic same-pa
 
 
 test('ordinary page navigation patches chrome state without rebuilding the sidebar', () => {
-  const start = main.indexOf('function renderNavigationChrome()');
-  const end = main.indexOf('\n\nfunction applyPostRenderNormalization', start);
+  const start = navigationPresentation.indexOf('function renderChrome()');
+  const end = navigationPresentation.indexOf('\n\n  function renderUnknown(', start);
   assert.ok(start >= 0 && end > start);
-  const chrome = main.slice(start, end);
+  assert.match(main, /navigationPresentation\.renderChrome\(\)/);
+  const chrome = navigationPresentation.slice(start, end);
   assert.match(chrome, /querySelectorAll\('\.nav-btn'\)/);
   assert.match(chrome, /classList\.toggle\('active', label === \(advancedPageInfo\(currentPage\)\?\.title \|\| currentPage\)\)/);
   assert.doesNotMatch(chrome, /nav-project/);
