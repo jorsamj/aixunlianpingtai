@@ -454,3 +454,141 @@ test('large all-available fallback does not freeze only the active filtered subs
  expect(frozenScope.negative_pool_only).toBeUndefined();
  await expect(page.locator('#trV3SelectedTotal')).toHaveText('200000');
 });
+
+
+for (const frozenCount of [20_000, 30_000]) {
+  test('frozen filtered browser create journey preserves ' + frozenCount + ' IDs and GT label summary', async ({page, request}) => {
+    test.setTimeout(120_000);
+    const created = await request.post('/api/projects', {data: {
+      name: 'isolated-frozen-browser-' + frozenCount + '-' + Date.now(),
+      labels: [{code: 'smoke', display_name: '烟雾'}],
+    }});
+    expect(created.ok()).toBeTruthy();
+    const project = await created.json();
+    const algResponse = await request.post('/api/v12/projects/' + project.id + '/algorithms', {
+      data: {name: '冻结浏览器训练算法', algorithm_type: 'yolo_ultralytics'},
+    });
+    expect(algResponse.ok()).toBeTruthy();
+    const algorithmId = (await algResponse.json()).algorithm.id;
+    const ref = 'trainselection_' + (frozenCount === 20_000 ? 'a' : 'b').repeat(32);
+    let freezeBody = null;
+    let submitted = null;
+    let bulkCalls = 0;
+    let pageTwoSeen = false;
+
+    await page.route('**/api/v53/bootstrap/snapshot**', route => {
+      const url = new URL(route.request().url());
+      url.searchParams.set('preferred_project_id', project.id);
+      return route.fallback({url: url.toString()});
+    });
+    await page.route('**/api/training_options**', route => route.fulfill({json: {targets: [{
+      id: 'browser-ultralytics', name: 'Chrome 测试 Ultralytics',
+      type: 'local', framework: 'ultralytics', status: 'ready',
+      algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt',
+        default_epochs: 10, default_imgsz: 640, default_batch: 2}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status: 'FOUND'}],
+    }]}}));
+    await page.route('**/api/v62/training-devices', route => route.fulfill({json: {
+      recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}],
+    }}));
+    await page.route('**/api/system/recommendation', route => route.fulfill({json: {
+      ok: true, recommendation: {device: 'cpu', batch: 2, workers: 0, precision: 'auto', safe_batch_max: 32},
+    }}));
+    await page.route('**/api/v62/projects/*/training-materials/compatibility', route =>
+      route.fulfill({json: {compatible: true, issue_count: 0, items: [], issue_counts: {}}));
+    await page.route('**/api/v62/projects/' + project.id + '/training-materials?*', route => {
+      const url = new URL(route.request().url());
+      const number = Number(url.searchParams.get('page') || 1);
+      const term = url.searchParams.get('query') || '';
+      if (term === 'picker' && number === 2) pageTwoSeen = true;
+      const total = term === 'picker' ? frozenCount : 200_000;
+      const rows = Array.from({length: 60}, (_, i) => ({
+        ...material(i, number), labels: ['smoke'], annotation_state: 'annotated',
+        annotated: true, box_count: 1,
+        boxes: [{label: 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
+      }));
+      return route.fulfill({json: {items: rows, page: number, page_size: 60,
+        total, total_pages: Math.ceil(total / 60), has_next: number * 60 < total,
+        repository_revision: 88, annotation_revision: 91,
+        usage_revision: '3', negative_pool_revision: '1', negative_confirmation_revision: 0}});
+    });
+    await page.route('**/api/v62/projects/' + project.id + '/training-materials/bulk-selection', route => {
+      bulkCalls++;
+      return route.fulfill({status: 500, json: {detail: 'large selection must stay server-frozen'}});
+    });
+    await page.route('**/api/v62/projects/' + project.id + '/training-materials/selection-reference', route => {
+      freezeBody = route.request().postDataJSON();
+      return route.fulfill({json: {selection_ref: ref, count: frozenCount, role: 'train'}});
+    });
+    await page.route('**/api/v62/projects/' + project.id + '/training-materials/selection-membership', route => {
+      const ids = route.request().postDataJSON().image_ids || [];
+      return route.fulfill({json: {items: ids}});
+    });
+    await page.route('**/api/v62/projects/' + project.id + '/training-materials/selection-summary', route => {
+      const payload = route.request().postDataJSON();
+      if (payload.train_selection_ref !== ref) return route.fallback();
+      expect(payload.image_ids).toEqual([]);
+      return route.fulfill({json: {
+        selection_reference: true, requested_count: frozenCount, matched_count: frozenCount,
+        selectable_count: frozenCount, eligible_count: frozenCount, pending_annotation_count: 0,
+        selectable_total: 200_000, eligible_total: frozenCount, pending_annotation_total: 200_000 - frozenCount,
+        box_count: frozenCount, label_codes: ['smoke'], positive_label_codes: ['smoke'],
+        label_counts: {smoke: frozenCount}, repository_revision: 88, annotation_revision: 91,
+      }});
+    });
+    await page.route('**/api/v12/projects/' + project.id + '/train/start', route => {
+      submitted = route.request().postDataJSON();
+      return route.fulfill({status: 202, json: {ok: true, task: {
+        id: submitted.task_id, task_id: submitted.task_id, project_id: project.id,
+        algorithm_id: algorithmId, kind: 'TRAINING', task_type: 'TRAINING',
+        status: 'QUEUED', persisted_status: 'QUEUED', phase: 'queued',
+      }, training_input_state: 'PREPARING'}});
+    });
+    await page.addInitScript(() => {
+      window.MC_TRAIN_ADMISSION_MODE = 'background';
+      localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+    });
+    await page.goto('/');
+    await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
+    await page.getByRole('button', {name: /算法列表/}).click();
+    const card = page.locator('.alg428-card', {hasText: '冻结浏览器训练算法'});
+    await card.getByRole('button', {name: '训练'}).click();
+    const dialog = page.getByRole('dialog', {name: '创建训练任务'});
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', {name: '选择训练素材'}).click();
+    const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
+    await expect(picker.locator('.train-v3-card')).toHaveCount(60);
+    await picker.locator('#trV3Q').fill('picker');
+    await expect(picker.locator('#trV3PickerCount')).toContainText('筛选结果 ' + frozenCount + ' 张');
+    await picker.getByRole('button', {name: '下一页'}).click();
+    await expect(picker.locator('#trV3Pager')).toContainText('第 2 页');
+    expect(pageTwoSeen).toBe(true);
+    await picker.getByRole('button', {name: '全选当前筛选', exact: true}).click();
+    await expect(picker.locator('#trV3SelectedTotal')).toHaveText(String(frozenCount));
+    expect(freezeBody).toMatchObject({algorithm_asset_id: algorithmId, query: 'picker', role: 'train'});
+    expect(bulkCalls).toBe(0);
+    expect(JSON.stringify(freezeBody).length).toBeLessThan(5000);
+    await picker.getByRole('button', {name: '确认选择', exact: true}).click();
+    await expect.poll(() => page.evaluate(() => {
+      const draft = window.TrainingDraftRuntime.current();
+      return {ref: draft.trainSelectionRef, count: draft.trainSelectionCount, ids: draft.materialIds.length};
+    })).toEqual({ref, count: frozenCount, ids: 0});
+    await expect(dialog.locator('#tr429Labels')).toContainText('烟雾');
+    await expect(dialog.locator('#tr429Labels')).toContainText('正式标注 ' + frozenCount);
+    const label = dialog.locator('#trainingLabelContractPanel input[data-training-label-code="smoke"]');
+    await expect(label).toBeVisible();
+    await label.check();
+    await page.evaluate(() => window.setTrainingWorkbenchStep(3));
+    const backgroundConfirm = dialog.locator('#tr429BackgroundScopeConfirm');
+    await expect(backgroundConfirm).toBeVisible();
+    await backgroundConfirm.check();
+    await dialog.getByRole('button', {name: '开始训练'}).click();
+    await expect.poll(() => submitted).not.toBeNull();
+    expect(submitted.algorithm_asset_id).toBe(algorithmId);
+    expect(submitted.train_selection_ref).toBe(ref);
+    expect(submitted.train_image_ids).toEqual([]);
+    expect(submitted.train_labels).toEqual(['smoke']);
+    expect(submitted.admission_mode).toBe('background');
+    expect(JSON.stringify(submitted).length).toBeLessThan(5000);
+  });
+}
