@@ -510,6 +510,7 @@ jobs:
           tests/browser/enterprise-list-navigation-focused.spec.mjs
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
+          tests/browser/material-summary-nonblocking.spec.mjs
           tests/browser/material-library-flow.spec.mjs
           tests/browser/negative-pool-members.spec.mjs
           tests/browser/material-presentation-poc.spec.mjs

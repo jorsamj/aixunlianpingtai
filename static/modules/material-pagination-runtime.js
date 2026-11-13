@@ -545,25 +545,32 @@ export function installMaterialPaginationRuntime() {
         rememberDatasetPage61();
         const mode = renderPagedDataset61();
     window.NegativePoolRuntime?.decorateOriginal('materials');
-        const counts = await totalsPromise;
-        if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
-        if (counts.error?.code === 'MATERIAL_STATUS_COUNTS_RETIRED') return {stale: true};
-        if (counts.error) {
-          info.statusCountsAvailable = false;
-          window.toast?.(`素材状态数量读取失败，可刷新重试：${counts.error.message || counts.error}`);
-        } else {
-          info.unprocessedTotal = Number(counts.unprocessed || 0);
-          info.processedTotal = Number(counts.processed || 0);
-          info.statusCountsAvailable = true;
-          info.statusCountsScope = countsScope;
-          state.materialSummary61 = {
-            total: Number(counts.total || 0),
-            annotated: Number(counts.annotated || 0),
-          };
-          decorateSummary61();
-        }
-        rememberDatasetPage61();
-        decorateDataset61();
+        // The page is ready when its records paint. Slow, revision-keyed
+        // status badges must not hold navigation, search, or refresh open.
+        // A later request owns the summary; retired page callbacks cannot
+        // overwrite newer cards or counters.
+        void totalsPromise.then(counts => {
+          if (controller.signal.aborted || serial !== requestSerial
+              || state.page !== expectedPage || !isPagedDataset()
+              || countsScope !== JSON.stringify([projectId(), String(state.materialSourceFilter61 || 'all')])) return;
+          if (counts.error?.code === 'MATERIAL_STATUS_COUNTS_RETIRED') return;
+          if (counts.error) {
+            info.statusCountsAvailable = false;
+            window.toast?.(`素材状态数量读取失败，可刷新重试：${counts.error.message || counts.error}`);
+          } else {
+            info.unprocessedTotal = Number(counts.unprocessed || 0);
+            info.processedTotal = Number(counts.processed || 0);
+            info.statusCountsAvailable = true;
+            info.statusCountsScope = countsScope;
+            state.materialSummary61 = {
+              total: Number(counts.total || 0),
+              annotated: Number(counts.annotated || 0),
+            };
+            decorateSummary61();
+          }
+          rememberDatasetPage61();
+          decorateDataset61();
+        });
         return {stale: false, mode, items: state.images, total: info.total};
       } catch (error) {
         if (controller.signal.aborted || serial !== requestSerial) return {stale: true};
