@@ -1,3 +1,4 @@
+import {createNavigationPresentation} from './modules/navigation-presentation.js?v=42.25.594-13a1';
 import {installMaterialPresentation} from './modules/material-presentation.js?v=42.24.549';
 import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=42.25.562';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
@@ -380,24 +381,7 @@ window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 const advancedNavigation = installAdvancedNavigation({getState:()=>state,navigate:page=>window.setPage(page)});
 Object.assign(window.PlatformCore.navigation,{advancedMenus:ADVANCED_MENUS,advancedPageInfo,selectAdvancedSection:advancedNavigation.select});
 
-function renderNavigationChrome() {
-  const nav = document.getElementById('nav');
-  const buttons = nav ? [...nav.querySelectorAll('.nav-btn')] : [];
-  if (!nav || !buttons.length) {
-    window.renderNav?.();
-  } else {
-    const currentPage = String(state.page || '');
-    buttons.forEach(button => {
-      const label = String(button.querySelector('.nav-left b')?.textContent || '').trim();
-      button.classList.toggle('active', label === (advancedPageInfo(currentPage)?.title || currentPage));
-    });
-    const version = nav.querySelector('.nav-footer b');
-    if (version) version.textContent = `v${String(state.versionInfo?.version || '—')}`;
-  }
-  window.renderTop?.();
-  window.renderSummary?.();
-  advancedNavigation.render();
-}
+const navigationPresentation = createNavigationPresentation({getState:()=>state,advancedPageInfo,advancedNavigation});
 
 function applyPostRenderNormalization(page) {
   if (String(state.page || '') !== String(page || '')) return;
@@ -406,7 +390,7 @@ function applyPostRenderNormalization(page) {
 
 function renderCanonicalOwner(page, {source = 'canonical-router'} = {}) {
   const normalizedPage = String(page || state.page || '');
-  renderNavigationChrome();
+  navigationPresentation.renderChrome();
   const result = navigationStabilityRuntime.renderPage(normalizedPage, {source});
   if (result && typeof result.then === 'function') {
     return result.finally(() => applyPostRenderNormalization(normalizedPage));
@@ -415,13 +399,6 @@ function renderCanonicalOwner(page, {source = 'canonical-router'} = {}) {
   return result;
 }
 
-function renderUnknownPage(page) {
-  renderNavigationChrome();
-  const summary = document.getElementById('summary');
-  const view = document.getElementById('view');
-  if (summary) summary.innerHTML = '';
-  if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面不存在或已下线</section>`;
-}
 
 const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
@@ -539,7 +516,7 @@ const navigationStabilityRuntime = installNavigationStability({
     } else if (navigationStabilityRuntime.isKnownPage(page)) {
       renderResult = render();
     } else {
-      renderResult = renderUnknownPage(page);
+      renderResult = navigationPresentation.renderUnknown(page);
     }
     window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);
     refreshCurrentPageOwner(page);
