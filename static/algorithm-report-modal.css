@@ -63,23 +63,27 @@
   .algorithm-report429 .alg-report-tabs{gap:13px}
   .algorithm-report429 .alg-report-section{padding:14px}
 }
-/* Safe alignment prevents a tall centered popup from becoming unreachable.
-   The overlay is a fallback scrollport; its card body remains primary. */
-.modal:not(.hidden){
+/* 13B: the generic modal scroll fallback is owned by styles.css.
+   Only algorithm report dialogs override it here; other business modals,
+   especially minimized imports and immersive review, keep their own layout. */
+.modal:not(.hidden):has([data-algorithm-report]),
+.modal:not(.hidden):has([data-algorithm-report-loading]){
   align-items:safe center;
   overflow-y:auto;
   overflow-x:hidden;
   overscroll-behavior:contain;
 }
-/* Fix shared overflow ownership: one actual scrollport within each modal card. */
-.modal:not(.hidden)>.modal-card{
+.modal:not(.hidden):has([data-algorithm-report])>.modal-card,
+.modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card{
   min-height:0;
   max-height:calc(100dvh - 24px);
   display:flex;
   flex-direction:column;
 }
-.modal:not(.hidden)>.modal-card>.modal-head{flex:0 0 auto;min-height:54px}
-.modal:not(.hidden)>.modal-card>.modal-body{
+.modal:not(.hidden):has([data-algorithm-report])>.modal-card>.modal-head,
+.modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card>.modal-head{flex:0 0 auto;min-height:54px}
+.modal:not(.hidden):has([data-algorithm-report])>.modal-card>.modal-body,
+.modal:not(.hidden):has([data-algorithm-report-loading])>.modal-card>.modal-body{
   min-height:0;
   min-width:0;
   flex:1 1 auto;

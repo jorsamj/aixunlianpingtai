@@ -96,3 +96,45 @@ for (const viewport of [{width: 390, height: 844}, {width: 1280, height: 720}]) 
     expect(layout.bodyOverflow).toBe('hidden');
   });
 }
+
+
+test('13B scoped report CSS preserves normal, minimized import and nested dialog scroll owners',async({page})=>{
+  await page.setViewportSize({width:1280,height:720});
+  await ready(page);
+
+  await page.evaluate(()=>window.modal('ZIP 导入布局回归','<section style="height:1700px">导入正文</section>',true));
+  const importModal=page.locator('#modal');
+  await expect(importModal.locator('[data-import-minimize]')).toBeVisible();
+  await importModal.locator('[data-import-minimize]').click();
+  await expect(importModal).toHaveClass(/import350-minimized/);
+  const minimized=await importModal.evaluate(node=>({
+    overflowY:getComputedStyle(node).overflowY,
+    contents:getComputedStyle(node.querySelector('.modal-body')).display,
+  }));
+  expect(minimized.overflowY).not.toBe('auto');
+  expect(minimized.contents).toBe('none');
+  await page.evaluate(()=>window.closeModal());
+
+  await page.evaluate(()=>window.modal('算法综合训练报告','<section data-algorithm-report-loading><div style="height:2200px">报告加载长内容</div></section>',true));
+  const report=page.getByRole('dialog',{name:'算法综合训练报告',exact:true});
+  const reportCard=report.locator('.modal-card'),reportBody=report.locator('.modal-body');
+  await expect(report).toBeVisible();
+  const frame=await reportCard.evaluate(node=>{const bounds=node.getBoundingClientRect();return{top:bounds.top,bottom:bounds.bottom}});
+  expect(frame.top).toBeGreaterThanOrEqual(-2);
+  expect(frame.bottom).toBeLessThanOrEqual(722);
+  await reportBody.evaluate(node=>{node.scrollTop=350});
+  expect(await reportBody.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
+
+  await page.evaluate(()=>window.modal('普通二次确认','<p>应当只是小型确认窗口</p>',false));
+  const child=page.getByRole('dialog',{name:'普通二次确认',exact:true});
+  await expect(child).toBeVisible();
+  const childHeight=await child.locator('.modal-card').evaluate(node=>node.getBoundingClientRect().height);
+  expect(childHeight).toBeLessThan(500);
+  await page.keyboard.press('Escape');
+  await expect(child).toHaveCount(0);
+  await expect(report).toBeVisible();
+  await reportBody.evaluate(node=>{node.scrollTop=510});
+  expect(await reportBody.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
+  await page.evaluate(()=>window.closeModal());
+  await expect(report).toBeHidden();
+});

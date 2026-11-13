@@ -50,7 +50,7 @@ test('lightweight URL and bounded async ownership are used for the algorithm rep
   assert.match(main,/algorithmReportHtml, mountAlgorithmReport/);
 });
 test('modal always owns a limited scrollport even when cards resize',()=>{
-  assert.match(css,/\.modal:not\(\.hidden\)>\.modal-card>\.modal-body\{/);
+  assert.match(css,/\.modal:not\(\.hidden\):has\(\[data-algorithm-report-loading\]\)>\.modal-card>\.modal-body\{/);
   assert.match(css,/min-height:0/);
   assert.match(css,/align-items:safe center/);
   assert.match(css,/overflow-x:hidden/);
