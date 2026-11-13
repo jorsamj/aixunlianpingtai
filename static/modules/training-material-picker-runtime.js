@@ -1314,7 +1314,7 @@ export function installTrainingMaterialPickerRuntime({
       blocked: blockedIds(selectedRole),
     });
     picker = {
-      reference:selectedRole!=='test' && currentDraft.trainSelectionRef?{selection_ref:currentDraft.trainSelectionRef,count:currentDraft.trainSelectionCount}:null,
+      reference:selectedRole==='train' && currentDraft.trainSelectionRef?{selection_ref:currentDraft.trainSelectionRef,count:currentDraft.trainSelectionCount}:null,
       sampleRole:'', effectiveLabels:[], roleCounts:null, reviewing:false, reviewSelected:new Set(),
       role: selectedRole,
       filters:{}, view:'grid', historyControllers:new Set(), scopeIds,

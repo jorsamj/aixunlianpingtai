@@ -71,6 +71,38 @@ test('large train selections opt into existing server-frozen references while sm
   assert.match(source, /picker\.selected\.clear\(\)/);
 });
 
+
+test('server-frozen train reference is never reused by independent Test or robustness pickers', async () => {
+  const begin = source.indexOf('  async function open(role) {');
+  const end = source.indexOf('\n  async function loadNegativeCategories()', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const build = new Function('initialTrainingMaterialIds', 'uniqueIds', 'env', [
+    'let picker=null,activeController=null,activePageKey=null,requestSequence=0,searchTimer=null,modalLayer=null;',
+    'const DEFAULT_PAGE_SIZE=60;',
+    "const projectId=()=> 'p1',draft=()=>env.draft,blockedIds=()=>new Set(),state=()=>env.state;",
+    'const cancelViewportFrame=()=>{},injectStyles=()=>{},modalHtml=()=>"",renderSkeleton=()=>{},loadPage=async()=>{};',
+    'const window={modal:()=>null},document={querySelector:()=>null};',
+    source.slice(begin, end),
+    'return {open, current:()=>picker};',
+  ].join('\n'));
+  const unique = values => [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
+  const env = {draft: {
+    algorithmId: 'alg1', materialIds: ['train1'], testMaterialIds: ['test1'],
+    trainSelectionRef: 'trainselection_' + 'a'.repeat(32), trainSelectionCount: 22015,
+    robustness_policy: {selection: {image_ids: ['train1']}},
+  }, state: {}};
+  for (const [role, expectRef] of [['train', true], ['test', false], ['robustness', false]]) {
+    const runtime = build(initialTrainingMaterialIds, unique, env);
+    await runtime.open(role);
+    assert.equal(runtime.current().role, role);
+    assert.equal(Boolean(runtime.current().reference), expectRef, role);
+    if (expectRef) {
+      assert.equal(runtime.current().reference.selection_ref, env.draft.trainSelectionRef);
+      assert.equal(runtime.current().reference.count, 22015);
+    }
+  }
+});
+
 test('unknown-total multi-page train bulk selection bypasses the 2000-ID probe', async () => {
   const begin = source.indexOf('  async function resolveBulkSelection(');
   const end = source.indexOf('\n  async function bulkAction(', begin);

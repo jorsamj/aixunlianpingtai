@@ -1,3 +1,5 @@
+> **2026-11-13｜P0 训练冻结引用的角色边界最小修复（准确新 SHA CI 待核）**：基于 `b1ac71b1df9eea2cf230bcba3371279e7fc8258b` 的只读源码复现：训练冻结约 22,015 张时，「增强原图」选择器错误继承 train selection_ref，后续分页以 `role=robustness` 调用 selection-membership；后端只接受 train/test，导致增强选材读取失败。修复将冻结引用限制为 train 角色；增加实际 open(role) Node 回归与相关静态缓存键。**不动**大规模训练冻结 Owner、GT、数据库、Worker、任务提交。注意 main.mjs 实际传入的默认 `admissionMode` 为 background（仅显式 MC_TRAIN_ADMISSION_MODE=synchronous 才同步），此前误读模块默认值已更正。未获得正式 GT 20k/30k 现场验收，不等于整体 P0 解决；[专项详见](./2026-11-13-p0-training-picker-freeze-role-boundary.md)。本记录由当前业务改动一起提交，准确新 SHA 的 GitHub CI 需另核。
+
 # 畅联云算法训练平台｜前后端性能优化与渐进式模块化治理｜当前进度与接续任务书
 
 ## 最新进度（2026-11-13，覆盖下文历史阻断快照）
