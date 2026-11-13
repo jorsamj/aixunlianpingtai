@@ -595,10 +595,11 @@ export function installMaterialPaginationRuntime() {
   async function focusedRefresh61() {
     if (!isPagedDataset()) return false;
     const info = state.materialPage61;
-    await Promise.all([
-      loadMaterialPage61({page: info.page || 1}),
-      refreshSummary61(),
-    ]);
+    // Refresh completion belongs to the visible page. Summary counters may
+    // take longer across a large repository, but must not hold the button.
+    const pageRead = loadMaterialPage61({page: info.page || 1});
+    void refreshSummary61();
+    await pageRead;
     return true;
   }
 

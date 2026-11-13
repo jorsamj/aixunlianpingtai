@@ -16,3 +16,14 @@ test('page loading settles independently of revision-keyed status-count requests
   assert.match(load,/info\.statusCountsScope = countsScope/);
   assert.match(load,/return \{stale: false, mode, items: state\.images, total: info\.total\};/);
 });
+
+test('manual material refresh does not hold the button for global counters',()=>{
+  const start=source.indexOf('  async function focusedRefresh61(');
+  const end=source.indexOf('  window.materialNext61 =',start);
+  assert.ok(start>=0&&end>start);
+  const refresh=source.slice(start,end);
+  assert.match(refresh,/const pageRead = loadMaterialPage61/);
+  assert.match(refresh,/void refreshSummary61\(\)/);
+  assert.match(refresh,/await pageRead/);
+  assert.doesNotMatch(refresh,/await Promise\.all/);
+});

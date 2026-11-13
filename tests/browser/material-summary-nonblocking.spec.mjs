@@ -55,6 +55,11 @@ test('material pages and filtered search complete while 200k-scope status summar
     expect(pageRequests.some(row=>row.number===2)).toBe(true);
     expect(pageRequests.some(row=>row.term==='needle')).toBe(true);
     expect(await page.locator('.data412-card').count()).toBeLessThanOrEqual(48);
+    // The header refresh must retire when the current page paints, without
+    // waiting for the still-unresolved 200k-scope status counter.
+    await page.locator('#refreshBtn').click();
+    await expect.poll(()=>page.evaluate(()=>window.MaterialPaginationRuntime61.state().refreshBusy),{timeout:3500}).toBe(false);
+    await expect(page.locator('#data412Grid')).toContainText('needle-match.jpg');
   }finally{
     releaseCounts();
   }
