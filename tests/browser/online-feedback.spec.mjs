@@ -12,9 +12,20 @@ async function openQualityFeedbackFromResult(page, {
   taskId, fileName, predictionId, detections = [],
   algorithmId = 'algo-feedback', versionId = 'version-feedback',
 }) {
-  await page.evaluate(async payload => {
-    window.setPage('质量中心');
-    await window.setQualityCenterTab411?.('detect');
+  // Quality detection is intentionally lazy-loaded. Wait for its original
+  // runtime and DOM to mount before injecting the synthetic completed result.
+  await page.evaluate(async () => {
+    await window.setPage('质量中心');
+    await window.setQualityCenterTab411('detect');
+  });
+  await expect.poll(() => page.evaluate(() =>
+    state.page === '质量中心'
+    && state.qualityCenterTab411 === 'detect'
+    && typeof window.renderBenchBatch64 === 'function'
+    && typeof window.openBenchResult64 === 'function'
+    && !!document.getElementById('benchBatchList64')
+  ), {timeout: 15_000}).toBe(true);
+  await page.evaluate(payload => {
     state.benchBatch64 = {
       id: 'browser-feedback-batch',
       mode: 'a',
@@ -54,8 +65,8 @@ async function openQualityFeedbackFromResult(page, {
         b: null,
       }],
     };
-    window.renderBenchBatch64?.();
-    window.openBenchResult64?.(0);
+    window.renderBenchBatch64();
+    window.openBenchResult64(0);
   }, {taskId, fileName, predictionId, detections, algorithmId, versionId});
 
   const detail = page.getByRole('dialog', {name: '检测详情'});
