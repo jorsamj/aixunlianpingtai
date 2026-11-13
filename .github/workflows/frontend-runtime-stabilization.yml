@@ -179,11 +179,18 @@ jobs:
             exit 1
           fi
           grep -Fq 'replaceVideo424Timer' static/modules/poll-registry.js
-          grep -Fq "const COMPONENT_SCAN_POLL_KEY='component-scan-v40'" static/app.js
-          grep -Fq "PollRegistryRuntime?.startTimeout?.(COMPONENT_SCAN_POLL_KEY,'组件检测',callback,650)" static/app.js
-          grep -Fq 'function patchCompProgress()' static/app.js
-          grep -Fq "registerPageOwner('组件检测'" static/main.mjs
-          grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
+          # 13C-04E: the component page is now a lazy module. Keep the
+          # original PollRegistry, progress-patch and single navigation-owner guards.
+          grep -Fq "const COMPONENT_SCAN_POLL_KEY='component-scan-v40'" static/modules/component-scan-runtime.js
+          grep -Fq "PollRegistryRuntime?.startTimeout?.(COMPONENT_SCAN_POLL_KEY,'组件检测',callback,650)" static/modules/component-scan-runtime.js
+          grep -Fq 'function patchCompProgress()' static/modules/component-scan-runtime.js
+          if grep -Fq "const COMPONENT_SCAN_POLL_KEY='component-scan-v40'" static/app.js; then
+            echo 'component scan was reintroduced into the startup script' >&2
+            exit 1
+          fi
+          grep -Fq "const unregisterComponentPageOwner = navigationStabilityRuntime.registerPageOwner(" static/main.mjs
+          grep -Fq "'组件检测', renderComponentScanOnDemand" static/main.mjs
+          grep -Fq "componentScanPending = import('./modules/component-scan-runtime.js" static/main.mjs
           grep -Fq "registry.startTimeout(pollKey, '训练资源', tick, 1100)" static/modules/resource-discovery.js
           grep -Fq 'patchResourceDiscoveryProgress(live, task, kind)' static/modules/resource-discovery.js
           grep -Fq "build: 'material-batch-runtime-422408'" static/modules/material-batches.js
