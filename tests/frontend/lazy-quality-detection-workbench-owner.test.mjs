@@ -49,7 +49,7 @@ test('quality detection heavy module is absent from the startup import graph',()
   assert.match(classic,/window\.renderDetectBench\?\.\(\)/);
   assert.match(bench,/export function installQualityDetectionWorkbench\(/);
   const mainVersion=index.match(/\/static\/main\.mjs\?v=([\d.]+)/)?.[1];
-  assert.equal(mainVersion,'42.25.603');
+  assert.equal(mainVersion,'42.25.604');
   assert.ok(index.includes('/static/app.js?v='+mainVersion));
   assert.ok(index.includes('/static/styles.css?v='+mainVersion));
 });

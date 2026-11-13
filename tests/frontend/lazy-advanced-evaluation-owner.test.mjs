@@ -36,7 +36,7 @@ test('advanced evaluation is absent from the main static import graph',()=>{
   assert.match(main,/const advancedEvaluation=installLazyAdvancedEvaluation\(\{getState:\(\)=>state,api\}\)/);
   assert.match(main,/window\.AdvancedEvaluationRuntime=advancedEvaluation/);
   assert.match(main,/if\(page!=='质量中心'\)advancedEvaluation\.deactivate\(\)/);
-  assert.match(html,/\/static\/main\.mjs\?v=42\.25\.603/);
+  assert.match(html,/\/static\/main\.mjs\?v=42\.25\.604/);
 });
 
 test('only first advanced-tab mount loads module and repeated mounts reuse it',async()=>{
