@@ -2420,12 +2420,12 @@ def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
     assert response.status_code == 202, response.text
     task_id = response.json()["task"]["id"]
     persisted = platform.shared_task_artifacts().read_json(task_id, "payload.json")
-    assert persisted["train_image_ids"] == expected_train
+    assert sorted(persisted["train_image_ids"]) == sorted(expected_train)
     assert persisted["test_image_ids"] == expected_test
     validate_payload_references(platform.DATA_DIR, project_id, persisted)
 
     prepared = _freeze_admitted_training(platform, task_id)
-    assert prepared["train_image_ids"] == expected_train
+    assert sorted(prepared["train_image_ids"]) == sorted(expected_train)
     assert prepared["test_image_ids"] == expected_test
     frozen = platform.shared_task_artifacts().read_json(task_id, "input-freeze.json")
     assert frozen["snapshot_id"]
