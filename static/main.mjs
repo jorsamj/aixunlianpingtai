@@ -21,7 +21,7 @@ import {installPageRequestScope, isPageNavigationCancelled} from './modules/page
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.573';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
-import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
+import {installLazyChangLianDataBrowserRuntime} from './modules/lazy-changlian-data-browser.js?v=20261113-13c03';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226511';
@@ -189,7 +189,7 @@ const externalAlgorithmPlatformRuntime = installExternalAlgorithmPlatformRuntime
 });
 window.PlatformCore.runtime.externalAlgorithmPlatformRuntime = externalAlgorithmPlatformRuntime;
 
-const changLianDataBrowserRuntime = installChangLianDataBrowserRuntime({
+const changLianDataBrowserRuntime = installLazyChangLianDataBrowserRuntime({
   modal: (...args) => modal(...args),
   closeModal: () => closeModal(),
   getState: () => state,

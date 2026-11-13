@@ -231,3 +231,74 @@ test('quality refresh cancellation cannot repaint the next canonical page',async
   await expect(page.locator('#view')).not.toContainText('retired quality request');
 });
 
+test('13C-03 provider page is fetched on first entry, reused, and retains manual-only API reads',async({page})=>{
+  let providerReads=0;
+  await page.route('**/api/v63/external-algorithm-platform/provider/**',route=>{
+    providerReads++;
+    return route.fulfill({json:{ok:true,response:{code:200,data:[]}}});
+  });
+  await ready(page);
+  const moduleCount=()=>page.evaluate(()=>performance.getEntriesByType('resource')
+    .filter(entry=>new URL(entry.name).pathname.endsWith('/static/modules/changlian-data-browser.js')).length);
+  expect(await moduleCount()).toBe(0);
+  await page.evaluate(()=>{void window.setPage('畅联云数据')});
+  await expect(page.locator('[data-changlian-data-browser="1"]')).toBeVisible();
+  expect(await moduleCount()).toBe(1);
+  expect(providerReads).toBe(0);
+  await page.evaluate(()=>{void window.setPage('算法列表')});
+  await expect(page.locator('#title')).toContainText('算法列表');
+  await page.evaluate(()=>{void window.setPage('畅联云数据')});
+  await expect(page.locator('[data-changlian-data-browser="1"]')).toBeVisible();
+  expect(await moduleCount()).toBe(1);
+  expect(providerReads).toBe(0);
+  await page.locator('[data-cldb-refresh]').click();
+  await expect(page.locator('[data-cldb-refresh]')).toBeEnabled();
+  expect(providerReads).toBe(2);
+});
+
+test('13C-03 retired lazy provider import cannot render into training page',async({page})=>{
+  let markStarted,release;
+  const started=new Promise(resolve=>{markStarted=resolve});
+  const held=new Promise(resolve=>{release=resolve});
+  await page.route('**/static/modules/changlian-data-browser.js*',async route=>{
+    markStarted();
+    await held;
+    await route.continue();
+  });
+  await ready(page);
+  await page.evaluate(()=>{void window.setPage('畅联云数据')});
+  await started;
+  await page.evaluate(()=>{void window.setPage('训练任务')});
+  await expect(page.locator('.train428-page')).toBeVisible();
+  const responded=page.waitForResponse(res=>res.url().includes('/static/modules/changlian-data-browser.js'));
+  release();
+  await responded;
+  await page.evaluate(async()=>{
+    await import('/static/modules/changlian-data-browser.js?v=63002&load_attempt=1');
+    await Promise.resolve();
+  });
+  await expect(page.locator('.train428-page')).toBeVisible();
+  await expect(page.locator('[data-changlian-data-browser]')).toHaveCount(0);
+  await page.evaluate(()=>{void window.setPage('畅联云数据')});
+  await expect(page.locator('[data-changlian-data-browser="1"]')).toBeVisible();
+});
+
+test('13C-03 failed provider module import can recover with a different request URL',async({page})=>{
+  let moduleRequests=0,providerReads=0;
+  await page.route('**/api/v63/external-algorithm-platform/provider/**',route=>{
+    providerReads++;
+    return route.fulfill({json:{ok:true,response:{code:200,data:[]}}});
+  });
+  await page.route('**/static/modules/changlian-data-browser.js*',async route=>{
+    moduleRequests++;
+    if(moduleRequests===1)return route.abort('failed');
+    return route.continue();
+  });
+  await ready(page);
+  await page.evaluate(()=>{void window.setPage('畅联云数据')});
+  await expect(page.locator('[data-cldb-lazy-error]')).toBeVisible();
+  await page.locator('[data-cldb-lazy-retry]').click();
+  await expect(page.locator('[data-changlian-data-browser="1"]')).toBeVisible();
+  expect(moduleRequests).toBe(2);
+  expect(providerReads).toBe(0);
+});
