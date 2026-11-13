@@ -4,7 +4,6 @@ import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=4
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=42.24.525';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261102-history';
-import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=4';
@@ -551,7 +550,36 @@ const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, 
     return renderer();
   })
 ));
-const unregisterLegacyMaterialCompatibility = navigationStabilityRuntime.registerPageOwner('旧素材兼容迁移', () => renderLegacyMaterialCompatibility({projectId:()=>state.project?.id, notify}));
+// 13C-01: the compatibility migration UI is rarely opened. Keep its existing
+// scan/preview/apply owner intact, but load its 15 KB module on first navigation.
+let legacyCompatibilityModule = null;
+let legacyCompatibilityRenderSequence = 0;
+function renderLegacyCompatibilityOnDemand(){
+  const sequence = ++legacyCompatibilityRenderSequence;
+  const owner = navigationStabilityRuntime.action('旧素材兼容迁移');
+  const projectId = String(state.project?.id || '');
+  const current = () => sequence === legacyCompatibilityRenderSequence
+    && owner.isCurrent() && String(state.project?.id || '') === projectId;
+  const renderLoaded = module => {
+    if(!current())return false;
+    return module.renderLegacyMaterialCompatibility({projectId:()=>state.project?.id,notify});
+  };
+  if(legacyCompatibilityModule)return renderLoaded(legacyCompatibilityModule);
+  const view=document.getElementById('view');
+  if(view)view.innerHTML='<section class="panel"><p class="muted-line" role="status">正在打开旧素材兼容迁移…</p></section>';
+  return import('./modules/legacy-material-compatibility.js?v=20261023fullscan').then(module=>{
+    legacyCompatibilityModule=module;
+    return renderLoaded(module);
+  }).catch(()=>{
+    if(!current())return false;
+    const live=document.getElementById('view');
+    if(!live)return false;
+    live.innerHTML='<section class="panel"><h3>旧素材兼容迁移暂不可用</h3><p class="muted-line">页面模块加载失败，请重试。</p><button type="button" class="btn" data-compat-load-retry>重试</button></section>';
+    live.querySelector('[data-compat-load-retry]')?.addEventListener('click',()=>{void window.setPage('旧素材兼容迁移')},{once:true});
+    return false;
+  });
+}
+const unregisterLegacyMaterialCompatibility = navigationStabilityRuntime.registerPageOwner('旧素材兼容迁移', renderLegacyCompatibilityOnDemand);
 // Dedicated isolated demo page owner; no Training/Material/Agent/Task owner reuse.
 const unregisterPrisonNightPageOwner = navigationStabilityRuntime.registerPageOwner(
   'AI算法底座', () => renderPrisonNightInspectionPage()

@@ -121,3 +121,46 @@ test('failed batch is retried once, pause and refresh resume without double coun
   await page.route('**/legacy-material-compatibility/scan?**',route=>route.fulfill({status:409,json:{detail:'素材或GT已变化'}}));await page.reload();await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);await c.open();await expect(page.locator('[data-compat-status]')).toContainText('上次检查版本无法确认');await expect(page.getByRole('button',{name:'继续检查 / 重试',exact:true})).toBeDisabled();await expect(page.locator('[data-compat-status]')).not.toContainText('全量检查完成');
   await expect(page.locator('[data-compat-summary]')).toContainText('正常兼容 80');await expect(page.locator('[data-compat-summary]')).toContainText('可迁移 20');
 });
+
+test('13C legacy compatibility code is not fetched at startup, then loads once on its page',async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady&&Boolean(window.NavigationStability?.action)),{timeout:20000}).toBe(true);
+  const fetched=()=>page.evaluate(()=>performance.getEntriesByType('resource')
+    .filter(entry=>entry.name.includes('/static/modules/legacy-material-compatibility.js')).length);
+  expect(await fetched()).toBe(0);
+  await page.evaluate(()=>{void window.setPage('旧素材兼容迁移')});
+  await expect(page.locator('#view').getByRole('heading',{name:'旧素材兼容迁移',exact:true})).toBeVisible();
+  expect(await fetched()).toBe(1);
+  await page.evaluate(()=>{void window.setPage('训练任务')});
+  await expect(page.locator('.train428-page')).toBeVisible();
+  await page.evaluate(()=>{void window.setPage('旧素材兼容迁移')});
+  await expect(page.locator('#view').getByRole('heading',{name:'旧素材兼容迁移',exact:true})).toBeVisible();
+  expect(await fetched()).toBe(1);
+});
+
+test('13C leaving before optional module arrives cannot paint its retired page',async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
+  let requested,release;
+  const started=new Promise(resolve=>{requested=resolve});
+  const held=new Promise(resolve=>{release=resolve});
+  await page.route('**/static/modules/legacy-material-compatibility.js*',async route=>{
+    requested();
+    await held;
+    await route.continue();
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady&&Boolean(window.NavigationStability?.action)),{timeout:20000}).toBe(true);
+  await page.evaluate(()=>{void window.setPage('旧素材兼容迁移')});
+  await started;
+  await page.evaluate(()=>{void window.setPage('训练任务')});
+  await expect(page.locator('.train428-page')).toBeVisible();
+  const response=page.waitForResponse(r=>r.url().includes('/static/modules/legacy-material-compatibility.js'));
+  release();
+  await response;
+  // The route's own await has settled by this point; the retired owner must
+  // not replace the current view when import evaluation resumes.
+  await page.evaluate(async()=>{await import('/static/modules/legacy-material-compatibility.js?v=20261023fullscan');await Promise.resolve()});
+  await expect(page.locator('.train428-page')).toBeVisible();
+  await expect(page.locator('[data-compat-status]')).toHaveCount(0);
+});
