@@ -7,7 +7,7 @@
 ## 1. 本轮边界与准确状态
 
 - **代码已提交不等于 CI 已通过；CI 全绿不等于生产部署通过；模拟 Chrome/隔离 SQLite 不等于真实 20k/200k 正式 GT、内网、Safari 或训练 Worker 验收。**
-- 13C-03 最新代码提交：`a0997c98d30dc4d9d63ba91092e7b27a23185ced`，见 https://github.com/jorsamj/aixunlianpingtai/commit/a0997c98d30dc4d9d63ba91092e7b27a23185ced ；截至本次查询：**36/37 工作流成功、1 仍在执行或排队、0 已失败（2026-11-13 查询快照；不得视为最终通过）**。实时以 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43401136199 为准。
+- **最终 CI 更正（2026-11-13）：** 13C-03 Chrome 浏览器三个分片全部通过，但 Frontend Runtime Stabilization 的 `frontend` 单元测试失败：`tests/frontend/lazy-advanced-evaluation-owner.test.mjs:39` 仍断言 `main.mjs?v=42.25.599`，真实 `static/index.html` 已统一为 `42.25.600`。本轮属于既有静态缓存键守卫遗漏同步，未取得业务运行时失败证据。**必须先仅纠正该测试并验证新 SHA 全绿，再做 13C-04。**\n\n- 13C-03 最新代码提交：`a0997c98d30dc4d9d63ba91092e7b27a23185ced`，见 https://github.com/jorsamj/aixunlianpingtai/commit/a0997c98d30dc4d9d63ba91092e7b27a23185ced ；截至本次查询：**36/37 工作流成功、1 失败（2026-11-13 最终结果；Frontend Runtime Stabilization 单元测试旧缓存键断言；禁止部署）**。实时以 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43401136199 为准。
 - 未获取 A800/双 4070 的生产部署授权；未进行生产重启、训练中断、GT/索引/数据库修改、部署或 Release。不能用 GitHub Actions 结论代替授权。
 - 后续仍采用最小专项流程：准确 HEAD → 读真实代码与失败日志 → 精准修复 → 定向 Node/Python/Chrome → 准确 SHA CI → 文档归档。避免无意义重跑全量 20k/30k/200k 压测。
 
@@ -30,7 +30,7 @@
 | 13B-03 | `51c88621fc07f9e636754b87ce9be6d0c5459862` → `a740338dd124402f0a0d1a6284cdff8edf93b5c4` | 集中关闭恢复最外层焦点、取消存储导入轮询；纠正过窄的浏览器焦点断言 | 前一个提交 40/41，修订后 21/21 成功 |
 | 13C-01 | `bd0e5fbedbf9a8c55eef8d8442e61fdb3be0795f` | 旧素材兼容迁移页（约 15 KB）延迟 import、导航租约和错误重试 | 37/37 成功 |
 | 13C-02 | `77c49b67cf0aad298b0e0cd7dcedd7f224aa1da8` | 高级评测独立模块（约 31 KB）按质量中心页签延迟加载 | 37/37 成功 |
-| 13C-03 | `a0997c98d30dc4d9d63ba91092e7b27a23185ced` | 畅联云数据浏览器独立模块（约 24 KB）按进入页面加载；手动刷新合同不变 | **36/37 工作流成功、1 仍在执行或排队、0 已失败（2026-11-13 查询快照；不得视为最终通过）** |
+| 13C-03 | `a0997c98d30dc4d9d63ba91092e7b27a23185ced` | 畅联云数据浏览器独立模块（约 24 KB）按进入页面加载；手动刷新合同不变 | **36/37 工作流成功、1 失败（2026-11-13 最终结果；Frontend Runtime Stabilization 单元测试旧缓存键断言；禁止部署）** |
 
 专项原始记录：
 - [13B-01](./2026-11-13-frontend-13b-modal-scope.md) / [13B-02](./2026-11-13-frontend-13b-async-close-owner.md) / [13B-03](./2026-11-13-frontend-13b-bulk-close-focus.md)
@@ -48,7 +48,7 @@
 ## 5. 下一轮任务：13C-03 结束后先做 13C-04（app.js 主文件边界）
 
 ### 5.1 进入条件
-- 必须先完成 `a0997c98d30dc4d9d63ba91092e7b27a23185ced` 同提交 37 个 GitHub Actions 的最终验收；失败先按 job/line 修复，**不得在红 CI 上叠加下一轮**。
+- 必须先精准修复 `a0997c98d30dc4d9d63ba91092e7b27a23185ced` 已确认的 `tests/frontend/lazy-advanced-evaluation-owner.test.mjs:39` 静态缓存键断言，并核对修复后准确 SHA 的完整 CI；其他失败仍按 job/line 修复，**不得在红 CI 上叠加下一轮**。
 - 复核远端开发分支 HEAD、已有 Owner 表/ES Modules、原任务书 T01～T10 要求。
 - 不启动 20k/200k 全链路反复压测，仅对候选拆分区域做必要的 Chrome/单测/小型性能验证。
 

@@ -27,5 +27,6 @@
 
 ## 2026-11-13 开发后独立 CI 核验快照
 
-- 代码提交 `a0997c98d30dc4d9d63ba91092e7b27a23185ced` 已推送长期分支。GitHub Actions 37项截至本次查询：**36/37 工作流成功、1 仍在执行或排队、0 已失败（2026-11-13 查询快照；不得视为最终通过）**；可打开 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43401136199 查询准确最终结论。
+- 代码提交 `a0997c98d30dc4d9d63ba91092e7b27a23185ced` 已推送长期分支。GitHub Actions 37项截至本次查询：**36/37 工作流成功、1 失败（2026-11-13 最终结果；Frontend Runtime Stabilization 单元测试旧缓存键断言；禁止部署）**；可打开 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43401136199 查询准确最终结论。
 - 不得将仍在进行的 CI 归类为“已验收”或据此部署。后续执行状态及13C-04计划统一在 [前端治理当前进度](./FRONTEND_GOVERNANCE_CURRENT.md)。
+\n## 准确 SHA CI 最终结果更正（2026-11-13）\n\n业务代码 `a0997c98d30dc4d9d63ba91092e7b27a23185ced` 最终 **36/37 工作流成功，1 个 Frontend Runtime Stabilization 失败**。其 browser-navigation (1)/(2)/(3) 均成功，仅 `frontend` 单元测试中 `tests/frontend/lazy-advanced-evaluation-owner.test.mjs:39` 的入口缓存键仍断言 `main.mjs?v=42.25.599`，实际 `static/index.html` 使用 `42.25.600`，导致静态断言失败。本条是确定的测试合同遗漏，不是已经证明线上业务故障；下一步先定向对齐测试，再按新 SHA CI 完整验收。\n
