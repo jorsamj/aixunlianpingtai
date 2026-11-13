@@ -2,6 +2,8 @@
 
 ## 最新进度（2026-11-13，覆盖下文历史阻断快照）
 
+> **2026-11-13｜13C-04F-01 部署转换只读审计（不改业务代码）**：基线 `549df056161c515f38a7984be4e59f848f15a154` 的 GitHub Actions **23/23 工作流成功**。v39 块约 **45.1 KB**，仍提供正式部署资源 Owner、缓存、转换任务操作及 RKNN 板端验收，**不允许整段提取**；v41 约 **6.0 KB**，涉及缓存失效与 SDK 安装，暂无明确收益。更可控的候选是启动时加载的 `static/modules/conversion-workbench-ui.js`（17,862 B），其中全局 `MutationObserver(document.documentElement,{childList:true,subtree:true})` 在非转换页面也会观察 DOM 更改；仅确认潜在额外工作量，未测得 P95 或卡顿根因。下一步 13C-04F-02 先 Chrome 测量，再评估显式展示挂载和按需加载；**不得直接改动 v39/v428 转换提交、安全恢复、资源状态与硬件验收**。详见 [13C-04F-01 只读审计报告](./2026-11-13-frontend-13c-04f-deployment-conversion-readonly-audit.md)。
+
 > **2026-11-13｜13C-04D → 13C-04E 更新（旧记录保留为历史快照）**：唯一长期分支 `feature/external-algorithm-publishing`；本轮最后业务/测试代码提交 `c61e82d20d398652dad1724ba2af58df02db7b63`。13C-04D 质量中心场景实测改为按需加载，准确代码 `5f19d231` 的 Frontend Runtime Stabilization 4/4 Job 成功，隔离 Chrome 首屏解码 JS 约减 108 KB（3.4%，不等于生产提速）。13C-04E 将组件检测 v40 从经典 `static/app.js` 迁出并首次进入按需 import，原 Owner、API、缓存、PollRegistry 保留；`app.js` 从 1,394,659 B 减至 1,386,275 B，减少 8,384 B（0.60%）。`a58bda75` Frontend Runtime Stabilization 4/4 Job 成功、单测 1661/1661 和 Chrome 3/3 分片成功。历史 Online Feedback Runtime 两项 Chrome 失败在 13C-04D 基线已存在，`c61e82d` 只修测试等待异步 Workbench 就绪，准确提交对应两组 Online Feedback Runtime 均成功。已核验 `c61e82d20d398652dad1724ba2af58df02db7b63` 准确提交对应全仓 GitHub Actions **22/22 工作流成功**（其中 Frontend Runtime Stabilization 4/4 Job、两组 Online Feedback Runtime 均成功）；验证不代表生产现场达标。原 A～E / T01～T10、正式 GT 20k/200k、A800/4070、Safari 和离线部署现场验收仍未关闭。下一轮仅审计 13C-04F 部署转换代码依赖，不允许整块迁移或扩大业务范围。
 
 ### 13C-04E 准确阶段证据
