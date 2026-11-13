@@ -472,6 +472,7 @@ jobs:
         run: >-
           npx playwright test --shard=${{ matrix.shard }}/3 --reporter=line
           tests/browser/navigation-stability.spec.mjs
+          tests/browser/modal-scroll-stability.spec.mjs
           tests/browser/core-actions.spec.mjs
           tests/browser/overview-tabs.spec.mjs
           tests/browser/prison-night-isolation.spec.mjs
