@@ -2380,17 +2380,39 @@ def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
 ):
     """Real annotated inputs: HTTP -> parent -> actual Prepare GT/freeze stage."""
     import app as platform
-    from platform_core.training_selection_reference import (
-        freeze_selection, selection_context, validate_payload_references,
-    )
+    from platform_core.training_selection_reference import validate_payload_references
 
     project_id, request = _training_create_replay_fixture(client, seeded_project)
     expected_train = list(request["train_image_ids"])
     expected_test = list(request["test_image_ids"])
-    context = selection_context(
-        platform.DATA_DIR, project_id, platform.TrainReq(**request).model_dump(mode="json"),
+    # Distinguish the two Train files from the independent Test file using
+    # a real picker query, without changing any annotation or source identity.
+    platform.material_store(project_id).patch({
+        image_id: {"filename": f"accepted-train-{index}.jpg"}
+        for index, image_id in enumerate(expected_train)
+    })
+    frozen_response = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-reference",
+        json={**request, "role": "train", "query": "accepted-train-"},
     )
-    receipt = freeze_selection(platform.DATA_DIR, context, iter(expected_train))
+    assert frozen_response.status_code == 200, frozen_response.text
+    receipt = frozen_response.json()
+    assert receipt["count"] == len(expected_train)
+    assert "image_ids" not in receipt and "items" not in receipt
+    # The create form's material/label summary must use the same reference
+    # before submission, including formal-GT positive labels.
+    summary = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-summary",
+        json={**request, "train_selection_ref": receipt["selection_ref"],
+              "image_ids": [], "summary_only": True},
+    )
+    assert summary.status_code == 200, summary.text
+    facts = summary.json()
+    assert facts["selection_reference"] is True
+    assert facts["requested_count"] == len(expected_train)
+    assert facts["matched_count"] == len(expected_train)
+    assert facts["eligible_count"] == len(expected_train)
+    assert facts["positive_label_codes"] == ["fire"]
     frozen_request = {
         **request, "train_selection_ref": receipt["selection_ref"], "train_image_ids": [],
     }
