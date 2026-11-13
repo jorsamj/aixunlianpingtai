@@ -405,10 +405,9 @@ window.testSavedTrainServer=async(serverId,button)=>{
   finally{if(button?.isConnected){button.disabled=false;button.textContent='检测';}}
 };
 function trainingResourceCardsHtmlV3(){
-  return (state.targets||[]).map(t=>`<div class="res-card ${t.status==='ready'?'ready':'warn'}">
-    <div class="res-main"><div class="res-icon">${t.framework==='paddle'?'桨':t.type==='server'?'服':'U'}</div><div><div class="item-title">${esc(t.name)}</div><div class="item-sub">${t.framework==='paddle'?'飞桨 PaddleDetection':t.framework==='ultralytics'?'Ultralytics':'未知'} · ${t.type==='server'?'训练服务器':'本机环境'} ${t.version?'· '+esc(t.version):''}</div>${t.framework==='paddle'?`<div class="item-sub">${esc(familySummary(t)||t.scan?.error||'未扫描到 configs，请确认 PaddleDetection 目录')}</div>`:''}</div></div>
-    <div class="res-meta"><span class="pill ${t.status==='ready'?'ok':'warn'}">${t.status==='ready'?'可用':t.status==='offline'?'不可用':'待确认'}</span><span class="pill blue">${(t.algorithms||[]).length} 个算法</span><span class="pill">${(t.base_models||[]).length} 个权重</span>${t.id?.startsWith('server:')&&!t.scheduler_owned?`<button class="btn mini" onclick='testSavedTrainServer(${esc(JSON.stringify(String(t.server_id||'')))},this)'>检测</button>`:''}${t.framework==='paddle'?`<button class="btn mini" onclick="viewResourceAlgorithms('${esc(t.id)}')">查看算法</button>`:''}</div>
-  </div>`).join('');
+  const renderer=window.TrainingResourceCardsRuntime?.render;
+  if(typeof renderer!=='function')throw new Error('训练资源展示模块未加载，请刷新页面');
+  return renderer(state.targets||[],{escape:esc,familySummary});
 }
 window.patchTrainingResourceCardsV3=function(){
   const grid=document.querySelector('.resource-layout .resource-grid');
