@@ -55,7 +55,17 @@ export function installLazyQualityDetectionWorkbench({
         getState, api, toast, modal, closeModal, esc,
       });
       if (!current()) return false;
-      return runtime.render();
+      // The legacy quality-center caller prepends its tab bar synchronously.
+      // On first lazy load, the real workbench replaces #view asynchronously;
+      // reattach that exact tab bar so overview/detection navigation survives.
+      const view = doc?.getElementById?.('view');
+      const tabs = view?.querySelector?.('[data-quality-tabs="1"]');
+      const rendered = runtime.render();
+      if (tabs && current() && view === doc?.getElementById?.('view')
+          && !view.querySelector?.('[data-quality-tabs="1"]')) {
+        view.insertAdjacentElement('afterbegin', tabs);
+      }
+      return rendered;
     };
 
     if (runtime) return current() ? runtime.render() : false;

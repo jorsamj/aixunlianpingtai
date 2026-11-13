@@ -108,3 +108,49 @@ test('network failure keeps the quality tab usable and exposes explicit retry',a
   assert.equal(typeof f.body.querySelector('[data-quality-detection-retry]').onclick,'function');
   assert.equal(f.installs,0);
 });
+
+test('async first mount reattaches the original quality tab row after workbench replaces view',async()=>{
+  const state={page:'质量中心',qualityCenterTab411:'detect',project:{id:'p1'}};
+  const originalTabs={id:'quality-navigation'};
+  let tabAttached=false,attachCount=0;
+  const body={innerHTML:'',querySelector:()=>null};
+  const root={querySelector:selector=>selector==='[data-quality-detection-lazy-body]'?body:null};
+  const view={
+    _html:'',
+    set innerHTML(value){this._html=value;tabAttached=false},
+    get innerHTML(){return this._html},
+    querySelector(selector){
+      if(selector==='[data-quality-tabs="1"]')return tabAttached?originalTabs:null;
+      if(selector==='[data-quality-detection-lazy]')return root;
+      return null;
+    },
+    insertAdjacentElement(position,node){
+      assert.equal(position,'afterbegin');
+      assert.equal(node,originalTabs);
+      assert.equal(tabAttached,false);
+      tabAttached=true;
+      attachCount++;
+    },
+  };
+  const doc={getElementById:id=>id==='view'?view:null};
+  let resolve;
+  const modulePromise=new Promise(yes=>{resolve=yes});
+  const facade=installLazyQualityDetectionWorkbench({
+    getState:()=>state,api:()=>{},toast:()=>{},modal:()=>{},closeModal:()=>{},esc:String,
+    host:{},doc,navigationOwner:()=>({isCurrent:()=>true}),load:()=>modulePromise,
+  });
+  const opening=facade.render();
+  await Promise.resolve();
+  // This is what classic renderQualityCenter424 does immediately after calling
+  // renderDetectBench, before the real workbench module has finished loading.
+  view.insertAdjacentElement('afterbegin',originalTabs);
+  assert.equal(tabAttached,true);
+  resolve({installQualityDetectionWorkbench:()=>({
+    render:()=>{view.innerHTML='<section data-quality-detection-shell="1"></section>';return true},
+    deactivate:()=>{},
+  })});
+  assert.equal(await opening,true);
+  assert.equal(tabAttached,true);
+  assert.equal(attachCount,2);
+  assert.match(view.innerHTML,/data-quality-detection-shell/);
+});
