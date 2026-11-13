@@ -308,7 +308,8 @@ test('training resource page composes an explicit base owner instead of wrapping
 test('platform and component pages keep dedicated owners', () => {
   assert.match(main, /registerPageOwner\('平台对接'/);
   assert.match(main, /registerPageOwner\('畅联云数据'/);
-  assert.match(main, /registerPageOwner\('组件检测'/);
+  assert.match(main, /const unregisterComponentPageOwner = navigationStabilityRuntime\.registerPageOwner\(\s*'组件检测', renderComponentScanOnDemand/);
+  assert.match(main, /componentScanPending = import\('\.\/modules\/component-scan-runtime\.js\?v=/);
 });
 
 test('service-node runtime owns its page directly', () => {
