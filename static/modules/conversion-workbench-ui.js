@@ -286,7 +286,19 @@
   }
   let scheduled=false;
   const schedule=()=>{if(scheduled)return;scheduled=true;queueMicrotask(()=>{scheduled=false;decorate();});};
-  const observer=new MutationObserver(schedule);
+  // 13C-04F-02: keep async conversion modal decoration, but skip unrelated DOM churn.
+  const conversionRootSelector='.convert428-v2,.convert428-create';
+  function touchesConversionNode(node){
+    return node?.nodeType===1&&(node.matches(conversionRootSelector)||Boolean(node.querySelector(conversionRootSelector)));
+  }
+  function isConversionMutation(records){
+    return records.some(record=>{
+      const target=record.target;
+      if(target?.nodeType===1&&target.closest(conversionRootSelector))return true;
+      return [...record.addedNodes].some(touchesConversionNode);
+    });
+  }
+  const observer=new MutationObserver(records=>{if(isConversionMutation(records))schedule();});
   observer.observe(document.documentElement,{childList:true,subtree:true});
   schedule();
   window.ConversionWorkbenchUI=Object.freeze({refresh:decorate});

@@ -47,3 +47,11 @@ test('catalog keeps canonical action ownership while de-cluttering vendor and ch
   assert.match(catalog,/const primary=entity==='chips'\?'detect':'view'/);
   assert.match(css,/#conversion-catalog-host>\.panel-body/);
 });
+
+test('conversion presentation observer is scoped to conversion-node changes',()=>{
+  assert.match(ui,/const conversionRootSelector='\.convert428-v2,\.convert428-create'/);
+  assert.match(ui,/if\(isConversionMutation\(records\)\)schedule\(\)/);
+  assert.match(ui,/record\.addedNodes/);
+  assert.match(ui,/target\.closest\(conversionRootSelector\)/);
+  assert.doesNotMatch(ui,/new MutationObserver\(schedule\)/);
+});

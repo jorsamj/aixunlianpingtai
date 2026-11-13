@@ -79,3 +79,48 @@ test('conversion editor keeps target-required fields visible outside advanced se
   await expect(page.locator('.conversion560-advanced #conv428Calibration')).toHaveCount(0);
   await expect(page.locator('.conversion560-advanced .convert428-csc')).toHaveCount(1);
 });
+
+test('unrelated DOM churn does not rescan conversion roots; async conversion DOM still decorates',async ({page})=>{
+  await page.goto('about:blank');
+  await page.setContent('<!doctype html><html><body><div id="unrelated"></div><div id="late"></div></body></html>');
+  await page.evaluate(()=>{
+    const original=document.querySelectorAll.bind(document);
+    window.__conversionDocumentScans=0;
+    document.querySelectorAll=selectors=>{
+      if(String(selectors).startsWith('.convert428-v2:not('))window.__conversionDocumentScans++;
+      return original(selectors);
+    };
+  });
+  await page.addScriptTag({path:'static/modules/conversion-workbench-ui.js'});
+  await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
+  const before=await page.evaluate(()=>window.__conversionDocumentScans);
+  await page.evaluate(async ()=>{
+    const box=document.getElementById('unrelated');
+    for(let i=0;i<30;i++){
+      const node=document.createElement('span');node.textContent='material '+i;box.append(node);
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
+  });
+  const after=await page.evaluate(()=>window.__conversionDocumentScans);
+  console.log('[13C-04F-02] unrelated DOM mutations=30, conversion global scans='+String(after-before));
+  expect(after-before).toBe(0);
+  await page.evaluate(()=>{
+    document.getElementById('late').insertAdjacentHTML('beforeend',`<div class="convert428-v2">
+      <div class="convert428-top">转换记录</div>
+      <div class="convert428-summary"><div><span>筛选结果总数</span><b>1</b></div></div>
+      <form class="convert428-history-filters"><select name="status"><option value="">全部</option><option value="done">已完成</option></select></form>
+      <div class="convert428-job-list"><div class="convert428-job"><div class="convert428-job-title"><b>ONNX</b></div><div class="convert428-actions"><button>下载</button></div><details class="convert428-job-details"><summary>配置</summary></details></div></div>
+    </div>`);
+  });
+  await expect(page.locator('.conversion560-history .conversion-ui-open')).toHaveCount(1);
+  await page.evaluate(()=>{
+    document.getElementById('late').insertAdjacentHTML('beforeend',`<form class="convert428-create">
+      <section><b>源模型</b><div class="convert428-source"><strong>best.pt</strong></div></section>
+      <section><b>格式</b><div class="convert428-targets"><label><input type="radio" name="conv428Target" value="onnx" checked><b>ONNX</b></label></div></section>
+      <section><b>厂商</b></section><section><b>设置</b><div class="form"><input id="conv428Input" value="640"></div></section>
+    </form>`);
+  });
+  await expect(page.locator('.convert428-create .conversion560-aside')).toHaveCount(1);
+  await page.evaluate(()=>document.querySelector('.convert428-create').insertAdjacentHTML('afterbegin','<div id="conv428SourceLoad">正在读取模型源</div>'));
+  await expect(page.locator('.convert428-create .conversion560-main #conv428SourceLoad')).toHaveCount(1);
+});
