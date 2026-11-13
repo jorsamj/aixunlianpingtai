@@ -1965,3 +1965,10 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .ai-review-ambiguity-controls label[for="ai60AmbiguousThreshold"] .input{width:128px;font-variant-numeric:tabular-nums}
 .ai-review-ambiguity-controls label[for="ai60AmbiguousKeep"] .input{width:220px}
 @media(max-width:768px){.ai-review-ambiguity-controls label[for="ai60AmbiguousMode"] .input,.ai-review-ambiguity-controls label[for="ai60AmbiguousThreshold"] .input,.ai-review-ambiguity-controls label[for="ai60AmbiguousKeep"] .input{width:100%}}
+
+/* P1 modal scroll ownership: the application scrolls .view, not body.
+   Keep tall centered dialogs reachable without disturbing specialized workbench scrollers. */
+.modal:not(.import350-minimized){align-items:safe center;overflow-y:auto;overscroll-behavior:contain}
+.modal:not(.import350-minimized)>.modal-card{min-height:0}
+.modal:not(.import350-minimized)>.modal-card>.modal-head{flex-shrink:0}
+.modal:not(.import350-minimized)>.modal-card>.modal-body{min-height:0;overscroll-behavior:contain}

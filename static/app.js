@@ -81,9 +81,26 @@ async function safe(p) {
   }
 }
 const state={page:'算法列表',uiReady:false,projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
-function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase;
+// Base modal is reused across workflows; never carry a prior workbench's layout into the next dialog.
+function resetBaseModalPresentation(){
+  const layer=$('#modal'),card=layer?.querySelector('.modal-card');
+  layer?.classList.remove('import350-modal','import350-minimized','annotation-workbench-layer','training-create-modal-layer','ai-review-workbench-layer');
+  card?.classList.remove('wide','annotation-workbench-modal','training-create-modal-card','ai-review-workbench-modal');
+}
+function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';resetBaseModalPresentation();state.activeImage=null} let closeModal=closeModalBase;
 function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html;if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);return root} window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});
-function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);const modalBody=$('#modalBody');modalBody.scrollTop=0;$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})} let modal=modalBase;
+function modalBase(title,body,wide=false){
+  const layer=$('#modal');
+  resetBaseModalPresentation();
+  $('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);
+  const modalBody=$('#modalBody');modalBody.scrollTop=0;
+  $('#modal .modal-card').classList.toggle('wide',!!wide);layer.classList.remove('hidden');
+  requestAnimationFrame(()=>{
+    if(layer.classList.contains('hidden'))return;
+    const first=layer.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');
+    first?.focus({preventScroll:true});
+  });
+} let modal=modalBase;
 function splitName(s){return s==='val'?'试验集':s==='test'?'评测集':'训练集'}
 function splitPill(s){return `<span class="pill ${s==='val'?'warn':s==='test'?'blue':'ok'}">${splitName(s)}</span>`}
 async function ensureWorkspace(){const projects=await api('/api/projects');if(!Array.isArray(projects)||projects.length!==1)throw new Error('默认空间加载失败');state.projects=projects;state.project=projects[0]}
@@ -1959,7 +1976,13 @@ window.installUsability417=function(){
 
 
   const modalEl=document.getElementById('modal');if(modalEl)modalEl.addEventListener('mousedown',e=>{if(e.target===modalEl)closeModal()});
-  document.addEventListener('keydown',e=>{if(e.defaultPrevented)return;if(e.key==='Escape'&&!document.getElementById('modal')?.classList.contains('hidden'))closeModal()});
+  document.addEventListener('keydown',e=>{
+    if(e.defaultPrevented||e.isComposing||e.key!=='Escape')return;
+    // A child dialog can outlive the base dialog; Escape always closes the active stack layer.
+    if(!window.ModalContentRuntime?.activeLayer?.())return;
+    e.preventDefault();
+    void closeModal();
+  });
 
 })();
 
