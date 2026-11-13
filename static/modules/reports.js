@@ -382,6 +382,9 @@ async function mountChartGroups(root,groups,{onCell}={}) {
   if(!owned){owned={charts:new Map(),groups:[],disposed:false};reportCharts.set(root,owned)}
   const revision=owned.revision=(owned.revision||0)+1;
   owned.groups=groups;owned.onCell=onCell;
+  // Configuration signatures only change when the caller remounts a report.
+  // ResizeObserver callbacks must not stringify full chart options repeatedly.
+  owned.signatures=new Map(groups.map(group=>[group.key,JSON.stringify(group.options)]));
   const disposeEntry=entry=>{entry.instance.off?.('click',entry.onClick);entry.instance.dispose();};
   const activeKeys=new Set(groups.map(group=>group.key));
   for(const [key,entry] of owned.charts)if(!activeKeys.has(key)||!root.contains(entry.host)){disposeEntry(entry);owned.charts.delete(key)}
@@ -402,24 +405,32 @@ async function mountChartGroups(root,groups,{onCell}={}) {
         if(entry&&entry.host!==host){disposeEntry(entry);owned.charts.delete(group.key);entry=null}
         if(!entry){
           host.textContent='';if(host.style.height==='auto')host.style.height='';
-          entry={host,instance:echarts.init(host,null,{renderer:'canvas'}),signature:''};owned.charts.set(group.key,entry);
+          entry={host,instance:echarts.init(host,null,{renderer:'canvas'}),signature:'',width:null,height:null,
+            onCell:null,cells:null};owned.charts.set(group.key,entry);
         }
-        const signature=JSON.stringify(group.options);
+        const signature=owned.signatures.get(group.key);
         if(signature!==entry.signature){
           const style=getComputedStyle(root),text=style.color||'#334155';
           entry.instance.setOption({...group.options,textStyle:{color:text},backgroundColor:'transparent'},{notMerge:true});
           entry.signature=signature;
         }
-        if(entry.onClick){entry.instance.off?.('click',entry.onClick);entry.onClick=null;}
-        if(group.cells&&typeof owned.onCell==='function'){
-          entry.onClick=params=>{
-            if(owned.disposed||!root.isConnected)return;
-            if(params?.componentType!=='series'||params.seriesType!=='heatmap')return;
-            const cell=group.cells[params.dataIndex];if(cell)owned.onCell?.(cell);
-          };
-          entry.instance.on('click',entry.onClick);
+        const onCell=group.cells&&typeof owned.onCell==='function'?owned.onCell:null;
+        if(entry.onCell!==onCell||entry.cells!==group.cells){
+          if(entry.onClick){entry.instance.off?.('click',entry.onClick);entry.onClick=null;}
+          if(onCell){
+            entry.onClick=params=>{
+              if(owned.disposed||!root.isConnected)return;
+              if(params?.componentType!=='series'||params.seriesType!=='heatmap')return;
+              const cell=group.cells[params.dataIndex];if(cell)owned.onCell?.(cell);
+            };
+            entry.instance.on('click',entry.onClick);
+          }
+          entry.onCell=onCell;entry.cells=group.cells;
         }
-        entry.instance.resize();
+        const width=host.clientWidth,height=host.clientHeight;
+        if(entry.width!==width||entry.height!==height){
+          entry.instance.resize();entry.width=width;entry.height=height;
+        }
       }
       for(const [key,entry] of owned.charts)if(!root.contains(entry.host)){disposeEntry(entry);owned.charts.delete(key)}
     };

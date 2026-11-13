@@ -94,10 +94,10 @@ function fakeEcharts(){
   const instances=[];
   const echarts={init(host){
     const events=new Map();
-    const chart={host,events,options:[],disposed:false,resizes:0,
+    const chart={host,events,options:[],disposed:false,resizes:0,ons:0,offs:0,
       setOption(options,settings){this.options.push({options,settings});},resize(){this.resizes++;},
-      on(event,handler){if(!events.has(event))events.set(event,new Set());events.get(event).add(handler);},
-      off(event,handler){if(handler)events.get(event)?.delete(handler);else events.delete(event);},
+      on(event,handler){this.ons++;if(!events.has(event))events.set(event,new Set());events.get(event).add(handler);},
+      off(event,handler){this.offs++;if(handler)events.get(event)?.delete(handler);else events.delete(event);},
       dispose(){this.disposed=true;events.clear();},emit(event,payload){for(const handler of events.get(event)||[])handler(payload);}};
     instances.push(chart);return chart;
   }};
@@ -122,7 +122,17 @@ test('shared runtime mounts once, rebinds exact matrix click, resizes and dispos
   matrix.emit('click',{componentType:'series',seriesType:'heatmap',dataIndex:0});
   assert.equal(first.length,0);assert.strictEqual(second[0],e.confusion_matrix.cells[0]);
   assert.deepEqual(second[0].images,['wrong.jpg']);
-  const resizeCount=matrix.resizes;observers[0].callback();assert.ok(matrix.resizes>resizeCount);
+  const resizeCount=matrix.resizes, optionCount=matrix.options.length;
+  const onCount=matrix.ons,offCount=matrix.offs;
+  observers[0].callback();observers[0].callback();
+  assert.equal(matrix.resizes,resizeCount,'unchanged geometry must not resize charts');
+  assert.equal(matrix.options.length,optionCount,'resize must not rebuild chart options');
+  assert.equal(matrix.events.get('click').size,1,'resize must not rebind click listeners');
+  assert.equal(matrix.ons,onCount);
+  assert.equal(matrix.offs,offCount);
+  root.hosts.get('evaluation-confusion').clientWidth=680;
+  observers[0].callback();
+  assert.equal(matrix.resizes,resizeCount+1,'actual width change must resize once');
   root.hosts.set('evaluation-confidence-1',{clientWidth:600,style:{}});
   root.hosts.set('evaluation-pr-1',{clientWidth:600,style:{}});
   await mod.mountEvaluationCharts(root,e,{classId:1,onCell:cell=>second.push(cell)});
