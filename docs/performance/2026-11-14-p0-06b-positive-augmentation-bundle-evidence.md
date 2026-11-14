@@ -45,3 +45,11 @@
 - 提交后查询**新测试提交 SHA** 的实际 Actions；如果失败，针对失败根因单独修复并在同一文档写证据。
 - **20k～30k 真实任务只读对账**仍需核对冻结 ref/count/digest → POST 展开 → `input-request-selection.json` → `input-freeze.json` → Snapshot 分组 ID/GT → portable Train 图片/标签与衍生计数 → 实际 Worker 配置和运行记录。只展示聚合计数、摘要及差异，不导出正式图片/GT。
 - 不同分辨率、画面裁剪/补边等视频输入规格增强功能暂不归入“已完成”。
+
+## 四、准确代码 SHA 的回归结果与用户决定（2026-11-14）
+
+- **被测代码提交**：`e625ace894badefe9a37ddc18fc3c8d10df81404`；Linux/Windows 的 `Training Input Integrity` 均为 `success`；两端 `Focused CSC and indexed consumption evidence contracts` 均为 **33 passed**，新增 person/smoke 正样本回归被真实执行。
+- **本次核查时的全仓状态**：准确代码 SHA 的 GitHub Actions **21/22 success，1 项仍在执行，0 failure**；未结束工作流：`Frontend Runtime Stabilization`。这只是**本次检查时点**，不能把未结束的工作流当作已通过；文档提交本身的 CI 也需按它自己的 SHA 核对。
+- **用户决定**：将 **P0-06C 真实 20k～30k 训练任务只读对账延后**。当前不连接 A800/4070、不读取生产任务、不跑训练、不部署、不更改正式 GT。不得因自动化测试通过就把 P0-06C 标成完成。
+- 后续若用户明确允许重新启动 P0-06C，先读取实际部署版本、现有任务与只读证据，再按照冻结引用 count/digest → 任务提交 → `input-request-selection.json` → `input-freeze.json` → Snapshot → portable bundle → Worker 真实启动配置与分组清单的顺序核对；只输出聚合计数、匿名摘要和差异原因，不暴露正式素材内容。
+- **下一独立专项**：P1 训练素材选择器 200k 规模下的交互与性能**证据审计优先**；范围、现有工具和准入门槛见 [接续计划](./2026-11-14-p0-06c-deferred-p1-picker-performance-next.md)。
