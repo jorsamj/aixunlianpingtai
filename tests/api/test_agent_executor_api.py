@@ -723,7 +723,6 @@ def test_remote_agent_recovery_diagnosis_is_read_only_and_node_scoped(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
     create_task(repository, artifacts, task_id="remote-held")
     _, token_a = create_node(repository, node_id="gpu-api-agent")
-    _, token_b = create_node(repository, node_id="gpu-api-other")
 
     allocator = AgentExecutionService(repository, artifacts).allocator
     assigned = allocator.assign_next()
@@ -748,6 +747,9 @@ def test_remote_agent_recovery_diagnosis_is_read_only_and_node_scoped(tmp_path):
     assert started.status_code == 200, started.text
     generation = started.json()["execution"]["generation"]
     assert generation == 1
+    # Introduce the second node only after the first Agent legitimately owns
+    # this execution; scheduler ranking must not influence this auth test.
+    _, token_b = create_node(repository, node_id="gpu-api-other")
 
     expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
     with repository._connect() as database:
