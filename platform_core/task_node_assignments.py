@@ -811,26 +811,80 @@ class CentralTaskAllocator:
     def assign_next(self, *, agent_only: bool = False) -> dict[str, Any] | None:
         current = datetime.now(timezone.utc)
         now = current.isoformat()
+        # The Agent poll path can encounter many queued local-Worker jobs.
+        # Inspect their payloads outside any SQLite writer transaction, so
+        # every Agent poll cannot lock out ordinary task creation/claim.
+        # Re-read each surviving candidate inside BEGIN IMMEDIATE below:
+        # the preflight snapshot never grants assignment ownership.
+        agent_candidate_ids = None
+        if agent_only:
+            with closing(self.repository._connect()) as preflight:
+                preflight_rows = preflight.execute(
+                    """
+                    SELECT task.* FROM tasks task
+                     WHERE task.status='QUEUED'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM task_node_assignments assignment
+                            WHERE assignment.task_id=task.task_id
+                              AND assignment.state IN ('ASSIGNED','CLAIMED')
+                       )
+                     ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
+                    """
+                ).fetchall()
+            agent_candidate_ids = []
+            for preflight_row in preflight_rows:
+                preflight_task = _from_row(preflight_row)
+                if task_node_connection_mode(preflight_task, self.artifacts) != "agent":
+                    continue
+                if task_node_capability(preflight_task, self.artifacts) is None:
+                    continue
+                if task_remote_execution_contract(preflight_task, self.artifacts) is None:
+                    continue
+                agent_candidate_ids.append(preflight_task.task_id)
+            if not agent_candidate_ids:
+                return None
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             if not agent_only:
                 # Agent-triggered auto assignment must not mutate unrelated
                 # local/preempted task state while scanning its own queue.
                 _resume_ready_preemptions_in(database, now)
-            task_rows = database.execute(
-                """
-                SELECT task.* FROM tasks task
-                 WHERE task.status='QUEUED'
-                   AND NOT EXISTS (
-                       SELECT 1 FROM task_node_assignments assignment
-                        WHERE assignment.task_id=task.task_id
-                          AND assignment.state IN ('ASSIGNED','CLAIMED')
-                   )
-                 ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
-                """
-            ).fetchall()
+            if agent_only:
+                # Revalidate queue status and active assignment for each
+                # preflighted ID under the one canonical allocation lock.
+                # A stale/preempted/cancelled task cannot be assigned.
+                task_rows = (
+                    database.execute(
+                        """
+                        SELECT task.* FROM tasks task
+                         WHERE task.task_id=? AND task.status='QUEUED'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM task_node_assignments assignment
+                                WHERE assignment.task_id=task.task_id
+                                  AND assignment.state IN ('ASSIGNED','CLAIMED')
+                           )
+                        """,
+                        (candidate_id,),
+                    ).fetchone()
+                    for candidate_id in agent_candidate_ids
+                )
+            else:
+                task_rows = database.execute(
+                    """
+                    SELECT task.* FROM tasks task
+                     WHERE task.status='QUEUED'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM task_node_assignments assignment
+                            WHERE assignment.task_id=task.task_id
+                              AND assignment.state IN ('ASSIGNED','CLAIMED')
+                       )
+                     ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
+                    """
+                ).fetchall()
             selected = None
             for task_row in task_rows:
+                if task_row is None:
+                    continue
                 task = _from_row(task_row)
                 capability = task_node_capability(task, self.artifacts)
                 if capability is None:
