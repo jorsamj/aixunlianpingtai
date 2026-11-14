@@ -1,0 +1,51 @@
+name: Agent Two Node Loopback HTTP Integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'tests/integration/test_two_agent_http_loopback.py'
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/service_nodes.py'
+      - '.github/workflows/agent-two-node-http-integration.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'tests/integration/test_two_agent_http_loopback.py'
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/service_nodes.py'
+      - '.github/workflows/agent-two-node-http-integration.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  two-node-loopback-http:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install control-plane and HTTP Agent test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest psutil requests fastapi uvicorn httpx filelock pillow
+          pyyaml keyring cryptography pydantic
+      - name: Validate isolated integration test syntax
+        run: python -m py_compile tests/integration/test_two_agent_http_loopback.py
+      - name: Validate two distinct Agents over real loopback TCP
+        env:
+          CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM: '0'
+        run: >-
+          python -m pytest -q --confcutdir=tests/integration
+          tests/integration/test_two_agent_http_loopback.py
