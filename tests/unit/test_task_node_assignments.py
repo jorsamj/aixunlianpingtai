@@ -1266,6 +1266,54 @@ def test_agent_auto_preflight_does_not_hold_writer_lock_while_reading_local_payl
     assert repository.get(local.task_id).status is TaskStatus.QUEUED
 
 
+def test_agent_auto_discovers_remote_task_behind_large_local_queue(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    local = create_task(
+        repository, artifacts, "bulk-local-example", TaskKind.TRAINING,
+        {"epochs": 10}, priority=1,
+    )
+    remote = create_task(
+        repository, artifacts, "bulk-remote-last", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    # Generate isolated SQLite metadata, not thousands of fake train inputs
+    # or browser requests. All local rows have no matching remote payload,
+    # like a training queue that is irrelevant to an Agent.
+    with repository._connect() as database:
+        template = database.execute(
+            "SELECT * FROM tasks WHERE task_id=?", (local.task_id,),
+        ).fetchone()
+        columns = list(template.keys())
+        variables = ",".join("?" for _ in columns)
+        statement = (
+            f"INSERT INTO tasks ({','.join(columns)}) VALUES ({variables})"
+        )
+        positions = {name: index for index, name in enumerate(columns)}
+        base = tuple(template[name] for name in columns)
+        rows = []
+        for index in range(1500):
+            values = list(base)
+            values[positions["task_id"]] = f"bulk-local-{index:05d}"
+            rows.append(tuple(values))
+        database.executemany(statement, rows)
+    create_online_node(
+        repository, "remote-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert assignment is not None
+    assert assignment["task_id"] == remote.task_id
+    assert repository.get(local.task_id).status is TaskStatus.QUEUED
+    assert len(CentralTaskAllocator(repository, artifacts).list(active_only=True)) == 1
+
+
 def test_agent_only_auto_assignment_has_one_real_executor_slot(tmp_path):
     repository, artifacts = runtime(tmp_path)
     for task_id in ("remote-first", "remote-second"):
