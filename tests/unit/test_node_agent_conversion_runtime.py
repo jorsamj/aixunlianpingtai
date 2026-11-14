@@ -827,3 +827,27 @@ def test_agent_forwards_completed_worker_execution_evidence_without_inventing_dt
     assert outcome.status=="BLOCKED_BY_HARDWARE"
     confirm=next(event for event in client.events if event[0]=="confirm")
     assert confirm[1]["execution_evidence"]==facts
+
+def test_conversion_runner_restart_fences_unverified_pre_spawn_intent(tmp_path):
+    source = b"portable-source-model"
+    current = _lease(source)
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    workdirs.prepare(current)
+    marker = workdirs.begin_process_launch(current)
+    runtime_root = tmp_path / "runtime-unknown-launch"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeClient()
+    runner = AgentConversionRunner(
+        client, workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+    )
+    assert runner.ready is False
+    assert "launch outcome is unverified" in runner.recovery_error
+    with pytest.raises(RemoteExecutionFenced, match="launch outcome is unverified"):
+        runner.run(current)
+    assert marker.is_file()
+    assert client.finish_calls == []

@@ -685,3 +685,49 @@ def test_executor_client_recovery_diagnosis_rejects_auth_and_transport_failures(
         client.recovery_diagnosis("task-1")
     assert parse_error.value.code == "NODE_EXECUTOR_INVALID_RESPONSE"
 
+
+def test_launch_intent_is_pre_spawn_hazard_and_blocks_unverified_cleanup(tmp_path):
+    body = start_body()
+    body["task"]["kind"] = "TRAINING"
+    current = RemoteExecutionLease.from_start_response(body)
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    workdirs.prepare(current)
+
+    marker = workdirs.begin_process_launch(current)
+    item = json.loads(marker.read_text(encoding="utf-8"))
+    assert item == {
+        "task_id": current.task_id,
+        "generation": current.generation,
+        "kind": "TRAINING",
+    }
+    assert workdirs.list_unverified_process_launch_intents("TRAINING") == [item]
+    assert workdirs.list_unverified_process_launch_intents("MODEL_CONVERSION") == []
+    assert current.lease_token not in marker.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="unverified process launch"):
+        workdirs.cleanup(current)
+
+    identity = ProcessIdentity(pid=4321, create_time=12345.5, command_hash="a" * 64)
+    workdirs.persist_process_identity(current, identity)
+    assert workdirs.list_unverified_process_launch_intents("TRAINING") == []
+    with pytest.raises(ValueError, match="unverified process launch"):
+        workdirs.cleanup(current)
+    workdirs.clear_process_identity(current)
+    assert not marker.exists()
+    workdirs.cleanup(current)
+
+
+def test_launch_intent_lineage_tampering_is_rejected_not_ignored(tmp_path):
+    body = start_body()
+    body["task"]["kind"] = "MODEL_CONVERSION"
+    current = RemoteExecutionLease.from_start_response(body)
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    workdirs.prepare(current)
+    marker = workdirs.begin_process_launch(current)
+    marker.write_text(json.dumps({
+        "task_id": current.task_id,
+        "generation": current.generation + 1,
+        "kind": "MODEL_CONVERSION",
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="lineage mismatch"):
+        workdirs.list_unverified_process_launch_intents("MODEL_CONVERSION")
+    assert marker.exists()

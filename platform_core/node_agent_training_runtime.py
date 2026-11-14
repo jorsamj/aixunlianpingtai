@@ -266,6 +266,13 @@ class AgentTrainingRunner:
 
     def _recover_persisted_processes(self) -> bool:
         try:
+            unverified = self.workdirs.list_unverified_process_launch_intents("TRAINING")
+            if unverified:
+                self._recovery_error = (
+                    "training launch outcome is unverified; exact process identity "
+                    "was not persisted for " + str(unverified[0]["task_id"])
+                )
+                return False
             records = self.workdirs.list_process_identities()
         except (OSError, ValueError) as error:
             self._recovery_error = (
@@ -1481,13 +1488,21 @@ class AgentTrainingRunner:
                 "PYTHONIOENCODING": "utf-8",
             }
             with runtime_log.open("ab") as log:
-                launched = launch_process(
-                    command,
-                    cwd=self.runtime_root,
-                    env=env,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                )
+                self.workdirs.begin_process_launch(lease)
+                try:
+                    launched = launch_process(
+                        command,
+                        cwd=self.runtime_root,
+                        env=env,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
+                except Exception as error:
+                    self._recovery_error = (
+                        "training process launch outcome is unverified; "
+                        "operator stop proof is required"
+                    )
+                    raise RemoteExecutionFenced(self._recovery_error) from error
                 self._set_active_process(lease, launched.identity)
                 trainer_started = True
                 try:
@@ -1963,7 +1978,8 @@ class AgentTrainingRunner:
         finally:
             monitor.stop()
             _active_lease, active_identity = self._active_process()
-            if active_identity is None:
+            if (active_identity is None
+                    and self.workdirs.read_process_launch_intent(lease) is None):
                 self._cleanup_training_workdir(lease, trainer_started=trainer_started,
                     committed=committed, model_evidence=model_evidence)
             # If exact process cleanup could not be proven, preserve both the

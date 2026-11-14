@@ -17,6 +17,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
 
@@ -679,6 +680,68 @@ class AgentExecutionWorkdir:
             "command_hash": command_hash,
         }
 
+    def begin_process_launch(self, lease: RemoteExecutionLease) -> Path:
+        """Record a possible child BEFORE spawning; absence of PID is not stop proof."""
+        kind = str(lease.kind)
+        if kind not in {"TRAINING", "MODEL_CONVERSION"}:
+            raise ValueError("process launch intent requires training or conversion")
+        marker = self.path_for(lease) / "process-launch-intent.json"
+        if marker.exists() or marker.is_symlink():
+            raise ValueError("process launch intent already exists")
+        self._atomic_write_json(marker, {
+            "task_id": _safe_component(lease.task_id, "task_id"),
+            "generation": int(lease.generation),
+            "kind": kind,
+        })
+        return marker
+
+    def read_process_launch_intent(self, lease) -> dict[str, Any] | None:
+        marker = self.path_for(lease) / "process-launch-intent.json"
+        if not marker.exists() and not marker.is_symlink():
+            return None
+        if marker.is_symlink() or not marker.is_file():
+            raise ValueError("process launch intent path is unsafe")
+        try:
+            raw = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("process launch intent is unreadable") from error
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"task_id", "generation", "kind"}
+            or raw.get("task_id") != _safe_component(lease.task_id, "task_id")
+            or type(raw.get("generation")) is not int
+            or raw["generation"] != int(lease.generation)
+            or raw.get("kind") not in {"TRAINING", "MODEL_CONVERSION"}
+            or getattr(lease, "kind", raw["kind"]) != raw["kind"]
+        ):
+            raise ValueError("process launch intent lineage mismatch")
+        return raw
+
+    def list_unverified_process_launch_intents(self, kind: str) -> list[dict[str, Any]]:
+        """Find unpaired launch hazards; this is a readiness gate, not stop proof."""
+        if kind not in {"TRAINING", "MODEL_CONVERSION"}:
+            raise ValueError("unsupported process launch kind")
+        known = {
+            (item["task_id"], item["generation"])
+            for item in self.list_process_identities()
+        }
+        result: list[dict[str, Any]] = []
+        base = self.root / "executions"
+        for marker in sorted(base.glob("*/*/process-launch-intent.json")):
+            task_id = _safe_component(marker.parent.parent.name, "task_id")
+            try:
+                generation = int(marker.parent.name)
+            except ValueError as error:
+                raise ValueError("process launch intent generation is invalid") from error
+            if generation <= 0:
+                raise ValueError("process launch intent generation is invalid")
+            item = self.read_process_launch_intent(
+                SimpleNamespace(task_id=task_id, generation=generation)
+            )
+            if item and item["kind"] == kind and (task_id, generation) not in known:
+                result.append(item)
+        return result
+
     def persist_process_identity(
         self,
         lease: RemoteExecutionLease,
@@ -768,8 +831,14 @@ class AgentExecutionWorkdir:
         if target is None:
             return
         path = Path(target) / "process-identity.json"
-        if path.is_symlink():
-            raise ValueError("persisted process identity path is unsafe")
+        marker = Path(target) / "process-launch-intent.json"
+        if path.is_symlink() or marker.is_symlink():
+            raise ValueError("persisted process identity or launch intent path is unsafe")
+        if marker.exists() and not marker.is_file():
+            raise ValueError("process launch intent path is unsafe")
+        # Only callers that verified termination may clear either record.
+        # Remove marker first so interrupted cleanup preserves PID identity.
+        marker.unlink(missing_ok=True)
         path.unlink(missing_ok=True)
 
     def list_process_identities(self) -> list[dict[str, Any]]:
@@ -838,6 +907,8 @@ class AgentExecutionWorkdir:
             return
         target = self._contained_directory(Path(task_dir) / generation, create=False)
         if target is not None:
+            if self.read_process_launch_intent(lease) is not None:
+                raise ValueError("unverified process launch blocks workspace cleanup")
             shutil.rmtree(target)
 
 

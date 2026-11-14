@@ -1513,3 +1513,27 @@ def test_committed_agent_cleanup_preserves_unarchived_checkpoints_but_releases_i
         assert receipt["scope"] == "agent_input_only"
         assert receipt["blockers"] == ["UNARCHIVED_CHECKPOINT"]
         assert receipt["retained_checkpoint_refs"]
+
+def test_training_runner_restart_fences_unverified_pre_spawn_intent(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    workdirs.prepare(current)
+    marker = workdirs.begin_process_launch(current)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runtime_root = tmp_path / "runtime-unknown-launch"
+    write_fake_train_worker(runtime_root)
+
+    runner = AgentTrainingRunner(
+        client, workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=transfer,
+        heartbeat_interval=1.0,
+    )
+    assert runner.ready is False
+    assert "launch outcome is unverified" in runner.recovery_error
+    with pytest.raises(RemoteExecutionFenced, match="launch outcome is unverified"):
+        runner.run(current)
+    assert marker.is_file()
+    assert client.finish_calls == []

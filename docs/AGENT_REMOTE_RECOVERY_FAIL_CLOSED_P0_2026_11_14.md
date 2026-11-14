@@ -68,3 +68,12 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - [GitHub issue #26](https://github.com/jorsamj/aixunlianpingtai/issues/26)：相关提交、RED/CI、隔离测试证据与 GO/NO-GO。
 - 唯一开发分支：`feature/external-algorithm-publishing`。
 - 本文为专项审计与设计准入记录，**不表示 P0-01C 可信证明协议已编码、上线或验收**。
+
+## 2026-11-14 P0-01C 小步二：子进程启动前危险标志（候选，准确 SHA CI 待验证）
+
+- 基线 `de483d2` 的 **26 项 GitHub Actions 全部 SUCCESS**；此前 Annotorious 首轮 130/131、重跑 131/131，此基线的相同分片再次 131/131。此事实只关闭当次 CI 红灯，不代表自动事件防抖问题永不复现。
+- 训练与模型转换执行器现于实际 `launch_process()` **之前**写 `process-launch-intent.json`（使用原来的原子写文件/fsync），只记录 task_id、generation 和 kind，不包含 Token、存储 URL 或密钥。此标志表示“可能启动了子进程，尚未证明终止”，**不是**生存证明或 stop-proof。
+- 若 SIGKILL、异常或重启令 intent 存在但找不到精确 PID/create_time/command_hash，Runner **不 ready / 不接新任务 / 不允许未知状态下正常提交 FAILED/重派**；任务工作目录不得删除。已持久化精确身份的任务仍走原进程树验证/清理，确认后连同 intent 清除。损坏的身份/intent 或路径 fail closed。
+- 已明确安全与可用性取舍：甚至 **spawn 之前**硬崩溃也可能留下无法自行清除的标志，必须人工或后续可信作业边界核验；现有 fsync 文件不等于完成断电级目录 fsync、OS 进程组可信证明或多主机实测。
+- 这是 **P0-01C 的前置危险证据保护**，非可信解锁协议。原节点 challenge、防重放、generation 绑定、进程组/cgroup/Windows Job Object 可信停止证明、中央 `BEGIN IMMEDIATE` 原子释放和审计、真实断网及 OSS/GPU UAT 仍未实现/验收。
+- 新增 workdir 与训练/转换 Runner 的隔离合同测试，**必须等本精确 SHA CI 完成才能宣称通过**。A800、双4070、生产数据库、OSS、自动派单默认 OFF 全部不动；生产 **NO-GO**。
