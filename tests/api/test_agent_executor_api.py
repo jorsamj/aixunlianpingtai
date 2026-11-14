@@ -551,3 +551,164 @@ def test_clean_selection_broker_requires_material_batch_clean_and_current_execut
     )
     assert fenced.status_code == 409
     assert fenced.json()["detail"]["code"] == "EXECUTION_FENCED"
+
+
+def test_two_agents_http_auto_assignment_and_fenced_execution(tmp_path, monkeypatch):
+    """Two independently authenticated Agents share one authoritative queue.
+
+    Exercise the actual FastAPI router without production GPU, OSS or network.
+    The first Agent owns one running task, the second must receive a distinct
+    task, and neither may start work using the other's assignment lease.
+    """
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    client, repository, artifacts = client_for(tmp_path)
+    _, token_a = create_node(repository, "http-agent-a")
+    _, token_b = create_node(repository, "http-agent-b")
+
+    def make_remote(task_id):
+        create_task(repository, artifacts, task_id)
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "target": "remote",
+            "epochs": 8,
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        })
+
+    def poll(node, token):
+        result = client.post(
+            f"/api/v63/node-executor/{node}/assignments/claim",
+            headers=auth(token),
+        )
+        assert result.status_code == 200, result.text
+        return result.json()
+
+    def start(node, token, task_id, assignment_token):
+        return client.post(
+            f"/api/v63/node-executor/{node}/assignments/{task_id}/start",
+            headers=auth(token),
+            json={"assignment_lease_token": assignment_token},
+        )
+
+    make_remote("http-agent-task-1")
+    first = poll("http-agent-a", token_a)
+    assert first["claimed"] is True
+    assert first["item"]["task"]["task_id"] == "http-agent-task-1"
+    first_assignment = first["item"]["assignment"]
+    assert first_assignment["node_id"] == "http-agent-a"
+    assert first_assignment["resolved_execution_config"]["node_id"] == "http-agent-a"
+
+    wrong_node = start(
+        "http-agent-b", token_b, "http-agent-task-1",
+        first_assignment["assignment_lease_token"],
+    )
+    assert wrong_node.status_code in (401, 403, 404, 409)
+    started_a = start(
+        "http-agent-a", token_a, "http-agent-task-1",
+        first_assignment["assignment_lease_token"],
+    )
+    assert started_a.status_code == 200, started_a.text
+    assert started_a.json()["task"]["status"] == "RUNNING"
+
+    make_remote("http-agent-task-2")
+    second = poll("http-agent-b", token_b)
+    assert second["claimed"] is True
+    assert second["item"]["task"]["task_id"] == "http-agent-task-2"
+    second_assignment = second["item"]["assignment"]
+    assert second_assignment["node_id"] == "http-agent-b"
+    assert second_assignment["resolved_execution_config"]["node_id"] == "http-agent-b"
+    assert second_assignment["assignment_lease_token"] != first_assignment["assignment_lease_token"]
+    started_b = start(
+        "http-agent-b", token_b, "http-agent-task-2",
+        second_assignment["assignment_lease_token"],
+    )
+    assert started_b.status_code == 200, started_b.text
+    assert started_b.json()["task"]["status"] == "RUNNING"
+
+    make_remote("http-agent-task-3")
+    assert poll("http-agent-a", token_a) == {"claimed": False, "item": None}
+    assert poll("http-agent-b", token_b) == {"claimed": False, "item": None}
+    assert repository.get("http-agent-task-3").status.value == "QUEUED"
+
+    repository.request_cancel("http-agent-task-1")
+    execution_a = started_a.json()["execution"]
+    cancelled = client.post(
+        "/api/v63/node-executor/http-agent-a/executions/http-agent-task-1/finish",
+        headers=auth(token_a),
+        json={
+            "execution_lease_token": execution_a["lease_token"],
+            "execution_generation": execution_a["generation"],
+            "status": "CANCELLED",
+        },
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["task"]["status"] == "CANCELLED"
+
+    resumed = poll("http-agent-a", token_a)
+    assert resumed["claimed"] is True
+    assert resumed["item"]["task"]["task_id"] == "http-agent-task-3"
+    assert resumed["item"]["assignment"]["node_id"] == "http-agent-a"
+    assert repository.get("http-agent-task-2").status.value == "RUNNING"
+
+
+def test_two_agents_http_strict_pin_survives_offline_and_reconnect(tmp_path, monkeypatch):
+    """An Agent-only portable task pinned to a disconnected node remains
+    queued, never silently spills to the other online Agent.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    client, repository, artifacts = client_for(tmp_path)
+    _, token_a = create_node(repository, "pin-agent-a")
+    nodes, token_b = create_node(repository, "pin-agent-b")
+    create_task(repository, artifacts, "pin-agent-task")
+    artifacts.atomic_write_json("pin-agent-task", "request.json", {
+        "target": "remote",
+        "epochs": 8,
+        "scheduling": {
+            "mode": "node",
+            "node_id": "pin-agent-b",
+            "queue_policy": "wait",
+        },
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    stale_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE service_nodes SET last_heartbeat_at=? WHERE node_id=?",
+            (stale_time, "pin-agent-b"),
+        )
+
+    poll_url = "/api/v63/node-executor/{}/assignments/claim"
+    online_a = client.post(poll_url.format("pin-agent-a"), headers=auth(token_a))
+    assert online_a.status_code == 200, online_a.text
+    assert online_a.json() == {"claimed": False, "item": None}
+    offline_b = client.post(poll_url.format("pin-agent-b"), headers=auth(token_b))
+    assert offline_b.status_code == 409
+    assert repository.get("pin-agent-task").status.value == "QUEUED"
+
+    nodes.heartbeat("pin-agent-b", token_b, {
+        "reported_capabilities": ["training"],
+        "resources": {
+            "memory": {"available_bytes": 32 * 1024**3},
+            "gpu": {"available": True, "gpus": [{
+                "id": "cuda:0", "index": 0,
+                "memory_free_bytes": 30 * 1024**3,
+                "memory_total_bytes": 40 * 1024**3,
+            }]},
+        },
+    })
+    online_b = client.post(poll_url.format("pin-agent-b"), headers=auth(token_b))
+    assert online_b.status_code == 200, online_b.text
+    claimed = online_b.json()
+    assert claimed["claimed"] is True
+    assert claimed["item"]["task"]["task_id"] == "pin-agent-task"
+    assert claimed["item"]["assignment"]["node_id"] == "pin-agent-b"
+    assert claimed["item"]["assignment"]["resolved_execution_config"]["node_id"] == "pin-agent-b"
+    assert client.post(poll_url.format("pin-agent-a"), headers=auth(token_a)).json() == {
+        "claimed": False, "item": None,
+    }
