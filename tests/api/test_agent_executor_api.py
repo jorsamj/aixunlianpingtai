@@ -786,6 +786,17 @@ def test_remote_agent_recovery_diagnosis_is_read_only_and_node_scoped(tmp_path):
     assert task.worker_id == "agent:gpu-api-agent"
     assert FencedTaskRepository(repository.path).release_expired() == 0
 
+    # A cancellation request must not turn an unverified remote stop into
+    # an ordinary cancellable/requeueable execution.
+    cancellation = repository.request_cancel("remote-held")
+    assert cancellation.status.value == "CANCEL_REQUESTED"
+    assert cancellation.stage == "recovery_blocked_remote_agent_unverified"
+    after_cancel = client.get(path, headers=auth(token_a))
+    assert after_cancel.status_code == 200, after_cancel.text
+    assert after_cancel.json()["task_status"] == "CANCEL_REQUESTED"
+    assert after_cancel.json()["automatic_reassignment_allowed"] is False
+    assert repository.get("remote-held").finished_at is None
+
 
 def test_remote_agent_recovery_diagnosis_refuses_nonheld_execution(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
