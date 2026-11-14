@@ -591,3 +591,221 @@ print(json.dumps({"ok": True, "engine": "isolated-test-runner", "model": options
         ("positive-task-a", 1), ("positive-task-b", 1),
     ]
     assert sorted(upload_confirms) == sorted(signed_prepares)
+
+
+def test_sigkilled_real_agent_releases_expired_execution_and_fences_old_generation(
+    tmp_path, monkeypatch,
+):
+    """Kill a real Node Agent while its source GET is blocked, then recover.
+
+    Simulate expiry deterministically after the *actual process is dead*.
+    A second real Agent executes generation 2; the stale generation cannot
+    heartbeat or finish. No GPU, model invocation or external storage occurs.
+    This does NOT model a live Agent cut off by a network partition.
+    """
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    from fastapi import Response
+    from platform_core.service_nodes import service_node_router
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    repo = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    nodes = ServiceNodeRepository(repo)
+    tokens = {}
+    for name in ("crash-agent-a", "crash-agent-b"):
+        _, tokens[name] = nodes.create({
+            "node_id": name,
+            "display_name": name,
+            "connection_mode": "agent",
+            "allowed_capabilities": ["deployment-test"],
+        })
+    task_id = "isolated-crash-task"
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "execution_mode": "agent",
+        "remote_execution": {
+            "version": 1, "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+        },
+    })
+    repo.create(TaskRecord.new(
+        task_id=task_id, project_id="isolated-crash-recovery",
+        kind=TaskKind.DEPLOYMENT_TEST, payload_ref="request.json",
+        resource_key="deployment-test:isolated-crash",
+    ), artifacts=artifacts)
+
+    entered_download = threading.Event()
+    release_download = threading.Event()
+    base = {"url": ""}
+
+    def portable_payload(task, _payload, assignment):
+        node_id = str(assignment["node_id"])
+        if node_id != "crash-agent-a":
+            # Second Agent proves retry can complete safely without touching
+            # any external inputs or launching a model subprocess.
+            return {
+                "schema_version": 1, "task_kind": "DEPLOYMENT_TEST",
+                "transport": "object-storage-v1",
+            }
+        payload = {
+            "schema_version": 1, "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+            "framework": "ultralytics", "runtime_format": "pt",
+            "input": {
+                "type": "object",
+                "download": {
+                    "method": "GET",
+                    "url": base["url"] + "/isolated-crash/slow-input",
+                    "headers": {},
+                    "file_name": "input.jpg",
+                    "size_bytes": 8,
+                    "sha256": "0" * 64,
+                },
+            },
+        }
+        return payload
+
+    app = FastAPI()
+    app.include_router(service_node_router(lambda: repo))
+    app.include_router(agent_executor_router(
+        lambda: repo, lambda: artifacts,
+        execution_payload_resolver=portable_payload,
+    ))
+
+    @app.get("/isolated-crash/slow-input")
+    def blocked_download():
+        entered_download.set()
+        release_download.wait(timeout=25)
+        return Response(b"aborted!", media_type="image/jpeg")
+
+    processes = []
+    handles = []
+    root = Path(__file__).resolve().parents[2]
+
+    def start_agent(name, address):
+        handle = (tmp_path / (name + ".log")).open("w+", encoding="utf-8")
+        handles.append(handle)
+        environment = os.environ.copy()
+        environment.update({
+            "MC_NODE_AGENT_TOKEN": tokens[name],
+            "MC_CONTROL_PLANE_URL": address,
+            "MC_NODE_ID": name,
+            "MC_NODE_CAPABILITIES": "deployment-test",
+            "PYTHONUNBUFFERED": "1",
+        })
+        process = subprocess.Popen(
+            [
+                sys.executable, "-u", str(root / "node_agent.py"),
+                "--state-dir", str(tmp_path / ("state-" + name)),
+                "--interval", "3", "--executor-poll-interval", "0.5",
+                "--execution-heartbeat-interval", "1",
+            ],
+            env=environment, cwd=str(root), stdin=subprocess.DEVNULL,
+            stdout=handle, stderr=subprocess.STDOUT, close_fds=True,
+        )
+        processes.append((name, process))
+        return process
+
+    with _loopback_server(app) as address:
+        base["url"] = address
+        try:
+            first_agent = start_agent("crash-agent-a", address)
+            assert entered_download.wait(timeout=35), (
+                "first real Agent never reached the blocked remote source"
+            )
+            assert repo.get(task_id).status.value == "RUNNING"
+            with repo._connect() as db:
+                old = db.execute(
+                    "SELECT attempt,lease_token,worker_id FROM tasks WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()
+            assert old["attempt"] == 1
+            assert old["worker_id"] == "agent:crash-agent-a"
+            assert old["lease_token"]
+
+            # Force an actual OS-level crash, not a graceful stop handler.
+            first_agent.kill()
+            first_agent.wait(timeout=12)
+            assert first_agent.returncode != 0
+            release_download.set()
+
+            # Fast-forward only isolated timestamps; no production clock,
+            # external service or actual lease interval is changed.
+            expired = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+            stale_heartbeat = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            with repo._connect() as db:
+                db.execute(
+                    "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+                    (expired, task_id),
+                )
+                db.execute(
+                    "UPDATE service_nodes SET last_heartbeat_at=? WHERE node_id=?",
+                    (stale_heartbeat, "crash-agent-a"),
+                )
+            assert FencedTaskRepository(repo.path).release_expired() == 1
+            assert repo.get(task_id).status.value == "QUEUED"
+
+            second_agent = start_agent("crash-agent-b", address)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                assert second_agent.poll() is None, "recovery Agent exited unexpectedly"
+                if repo.get(task_id).status.value == "FAILED":
+                    break
+                time.sleep(0.15)
+            recovered = repo.get(task_id)
+            assert recovered.status.value == "FAILED"
+            assert recovered.attempt == 2
+            with repo._connect() as db:
+                ownership = db.execute(
+                    """SELECT node_id FROM task_node_assignments
+                       WHERE task_id=? AND release_reason='execution_started'
+                       ORDER BY generation""", (task_id,),
+                ).fetchall()
+            assert [row["node_id"] for row in ownership] == [
+                "crash-agent-a", "crash-agent-b",
+            ]
+            assert recovered.worker_id is None
+            assert "portable deployment input contract is missing" in (recovered.error or "")
+
+            # Node A cannot revive a previous generation even after its
+            # heartbeat reconnects: the task token and generation were fenced.
+            stale = requests.post(
+                f"{address}/api/v63/node-executor/crash-agent-a/"
+                f"executions/{task_id}/heartbeat",
+                headers={"Authorization": f"Bearer {tokens['crash-agent-a']}"},
+                json={
+                    "execution_lease_token": old["lease_token"],
+                    "execution_generation": old["attempt"], "progress": 99,
+                },
+                timeout=5,
+            )
+            assert stale.status_code == 409, stale.text
+            assert stale.json()["detail"]["code"] == "EXECUTION_FENCED"
+            stale_finish = requests.post(
+                f"{address}/api/v63/node-executor/crash-agent-a/"
+                f"executions/{task_id}/finish",
+                headers={"Authorization": f"Bearer {tokens['crash-agent-a']}"},
+                json={
+                    "execution_lease_token": old["lease_token"],
+                    "execution_generation": old["attempt"],
+                    "status": "SUCCEEDED",
+                },
+                timeout=5,
+            )
+            assert stale_finish.status_code == 409, stale_finish.text
+            assert stale_finish.json()["detail"]["code"] == "EXECUTION_FENCED"
+            assert repo.get(task_id).attempt == 2
+            assert repo.get(task_id).status.value == "FAILED"
+        finally:
+            release_download.set()
+            for _name, process in processes:
+                if process.poll() is None:
+                    process.kill()
+            for _name, process in processes:
+                process.wait(timeout=12)
+            for handle in handles:
+                handle.close()
