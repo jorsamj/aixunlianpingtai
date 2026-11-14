@@ -123,11 +123,12 @@ def task_node_capability(task, artifacts) -> str | None:
         # Confirmation hands formal repository projection back to the existing
         # local Storage Worker; never send accepted material tasks to an Agent.
         return None
+    # Do not treat the service-node UI capability catalogue as a runnable
+    # remote TaskKind contract. These three TaskKinds remain with their
+    # existing local Worker handlers until a matching portable Agent runner
+    # is implemented and tested.
     fixed = {
         TaskKind.MATERIAL_IMPORT: "material-import",
-        TaskKind.CLEANING: "cleaning",
-        TaskKind.AI_ANNOTATION: "annotation",
-        TaskKind.VIDEO_FRAMES: "video",
         TaskKind.TRAINING: "training",
         TaskKind.MODEL_INSTALL: "model-upload",
     }
@@ -165,11 +166,16 @@ def task_node_capability(task, artifacts) -> str | None:
     if task.kind is TaskKind.MATERIAL_BATCH:
         payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
         operation = str(payload.get("operation") or "").strip().upper() if isinstance(payload, Mapping) else ""
-        if operation == "CLEAN":
+        # Only CLEAN with an explicit Agent execution intent has a portable
+        # MaterialBatch runner today. All other operations (including audits,
+        # annotation review and formal GT remapping) belong to the canonical
+        # local materials Worker, not the material-import Agent runner.
+        if (
+            operation == "CLEAN"
+            and str(payload.get("execution_mode") or "").strip().lower() == "agent"
+        ):
             return "cleaning"
-        if operation == "AI_ANNOTATE":
-            return "annotation"
-        return "material-import"
+        return None
     # Resource discovery remains local control-plane work for now.
     return None
 
