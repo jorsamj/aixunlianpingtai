@@ -192,3 +192,147 @@ def test_two_real_http_agent_clients_share_queue_and_obey_node_fencing(tmp_path,
         assert recovered and recovered["task"]["task_id"] == "loopback-task-b-retry"
         assert recovered["assignment"]["node_id"] == "loopback-agent-b"
         assert repo.get("loopback-task-a").status.value == "RUNNING"
+
+
+def test_two_real_node_agent_processes_heartbeat_claim_and_fail_safely(tmp_path, monkeypatch):
+    """Two *real* node_agent.py OS processes use HTTP and distinct state dirs.
+
+    Negative-path runtime contract: task execution begins, the real deployment
+    runner rejects deliberately missing input, reports FAILED and frees its
+    executor slot. This is NOT GPU training or a successful inference test.
+    """
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    from platform_core.service_nodes import service_node_router
+
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    runtime = tmp_path / "task_runtime"
+    repo = TaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    nodes = ServiceNodeRepository(repo)
+    tokens = {}
+    for name in ("process-agent-a", "process-agent-b"):
+        _, token = nodes.create({
+            "node_id": name,
+            "display_name": name,
+            "connection_mode": "agent",
+            "allowed_capabilities": ["deployment-test"],
+        })
+        tokens[name] = token
+        task_id = "process-task-" + name[-1]
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": name, "queue_policy": "wait"},
+            "remote_execution": {
+                "version": 1, "task_kind": "DEPLOYMENT_TEST",
+                "transport": "object-storage-v1",
+            },
+        })
+        repo.create(TaskRecord.new(
+            task_id=task_id,
+            project_id="isolated-real-agent-processes",
+            kind=TaskKind.DEPLOYMENT_TEST,
+            payload_ref="request.json",
+            resource_key="deployment-test:remote:" + task_id,
+        ), artifacts=artifacts)
+
+    def safe_negative_payload(task, payload, assignment):
+        # Valid portable envelope, intentionally missing input: real runner
+        # must never download data or invoke inference and must report FAILED.
+        return {
+            "schema_version": 1,
+            "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+        }
+
+    app = FastAPI()
+    app.include_router(service_node_router(lambda: repo))
+    app.include_router(agent_executor_router(
+        lambda: repo,
+        lambda: artifacts,
+        execution_payload_resolver=safe_negative_payload,
+    ))
+
+    root = Path(__file__).resolve().parents[2]
+    running = []
+    handles = []
+    with _loopback_server(app) as address:
+        try:
+            for name in tokens:
+                path = tmp_path / (name + ".log")
+                handle = path.open("w+", encoding="utf-8")
+                handles.append(handle)
+                env = os.environ.copy()
+                env["MC_NODE_AGENT_TOKEN"] = tokens[name]
+                env["MC_CONTROL_PLANE_URL"] = address
+                env["MC_NODE_ID"] = name
+                env["MC_NODE_CAPABILITIES"] = "deployment-test"
+                env["PYTHONUNBUFFERED"] = "1"
+                command = [
+                    sys.executable, "-u", str(root / "node_agent.py"),
+                    "--state-dir", str(tmp_path / (name + "-private-state")),
+                    "--interval", "3",
+                    "--executor-poll-interval", "0.5",
+                    "--execution-heartbeat-interval", "1",
+                ]
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(root),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                )
+                running.append((name, process, path))
+
+            deadline = time.monotonic() + 100
+            observed = {}
+            while time.monotonic() < deadline:
+                for name, process, path in running:
+                    assert process.poll() is None, (
+                        "Real Agent process exited before completing task: "
+                        + name + " " + path.read_text(encoding="utf-8", errors="replace")[-1600:]
+                    )
+                    task_id = "process-task-" + name[-1]
+                    current = repo.get(task_id)
+                    if current.status.value == "FAILED":
+                        observed[name] = current
+                if len(observed) == 2:
+                    break
+                time.sleep(0.2)
+            assert len(observed) == 2, {
+                name: {
+                    "status": repo.get("process-task-" + name[-1]).status.value,
+                    "log_tail": path.read_text(encoding="utf-8", errors="replace")[-1800:],
+                }
+                for name, _, path in running
+            }
+
+            for name, process, path in running:
+                task = observed[name]
+                assert task.status.value == "FAILED"
+                assert task.worker_id == "agent:" + name
+                assert task.attempt == 1, "Each task must execute exactly once"
+                assert "portable deployment input contract is missing" in (task.error or "")
+                node = nodes.get_public(name)
+                assert node["reported_capabilities"] == ["deployment-test"]
+                assert node["status"] == "ONLINE"
+                assert process.poll() is None
+                log = path.read_text(encoding="utf-8", errors="replace")
+                assert '"ok": true' in log.lower(), log[-1800:]
+        finally:
+            for _, process, _ in running:
+                if process.poll() is None:
+                    process.terminate()
+            for _, process, _ in running:
+                try:
+                    process.wait(timeout=12)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            for handle in handles:
+                handle.close()
