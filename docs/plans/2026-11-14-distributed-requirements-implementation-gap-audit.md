@@ -173,3 +173,27 @@
 3. 不增加第二套 Scheduler/Queue/DB Owner；沿用中央事务唯一约束、原 TaskRepository 及 Agent Claim，明确同一节点的真实执行槽，不允许单线程 Agent 因双 GPU 遥测被无限预分配。
 4. 分配与 claim 的异常、失联、时钟与 generation 栅栏必须具备保守恢复路径；在无法判断旧执行是否仍在运行时**不能自动重派**。
 5. P0-02 准确 HEAD 的 Central Node Assignment、Node Agent Executor 与 RKNN 合同 CI 未确认 GREEN 前，不推进 P0-01 的自动运行时入口；任何 A800 部署、Worker 重启或任务迁移仍需独立授权。
+
+
+## 10. 2026-11-14 P0-02 验收终态与 P0-01A 受控自动派单首轮（候选，CI 待核）
+
+### 10.1 P0-02 已取得真实 RED/GREEN 证据
+
+- P0-02 精确审计 HEAD \`12f938c5ca091b94e3a2c99f698a61a626247903\` 的 21 个 workflow run 已终态：**20 success、1 failure**。三个必须通过的 \`Central Node Assignment\`（run 43559784921，Linux/Windows/真实 API 成功）、\`Node Agent Executor\`（run 43559785146，Linux/Windows/真实 API 成功）、\`Remote RKNN Board Runtime Protocol\`（run 43559784871，Linux/Windows/API/Chrome 成功）全部为 SUCCESS。
+- 真实 RED：测试先行 \`4bc44d43\` 的中央能力合同报告 12 个不支持的 local-only 操作错误映射，Agent 合同报告 RKNN 领取被拒绝；补充 RED \`cdd162b2\` 的 Runner 缺失能力心跳合同报告 1 个失败。随后业务修复与准确 HEAD 上述合同 GREEN。**仅认定 P0-02 代码与 CI 层完成；远程 AI/视频/检查 Runner 和生产部署仍不包含在此完成定义。**
+- 准确 HEAD 前端独立红项 \`Frontend Runtime Stabilization\`（run 43559772709），\`browser-navigation (1)\` 130 passed/1 failed，\`tests/browser/annotorious-poc.spec.mjs:48\` 官方编辑器绘制后 \`createAnnotation\` 事件仍为 0；不将此故障冒称调度引入，也不宣称全仓 CI 全绿。
+
+### 10.2 P0-01A 第一段实现：认证 Agent 轮询触发有界自动派单
+
+- 代码修改集中于已有 \`CentralTaskAllocator.assign_next(*, agent_only=False)\` 与 \`AgentExecutionService.claim_assignment\`，HTTP 原路由工厂读取唯一显式开关 \`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM\`：**仅字符串 \`1\` 开启，默认完全关闭**。现有人工 \`allocate-next\` 和既有本地 Worker 路径不改。
+- 当已认证、启用、心跳在线且为 \`agent\` 模式的节点正常调用原领取 API，且当前没有自己的 Assignment 时，才触发**一次**原中央 allocator 的 \`agent_only=True\` 事务分配，再按原 \`claim_for_node\` 领取；既有 Agent 轮询负责后续推进。不是新建数据库、队列、长期线程或第二 scheduler。全局 allocator 仍按真实资源评分和手动 pin 排序，允许将任务分配给比本次请求节点更合适的其他在线 Agent，不强制偏向发起轮询的节点。
+- \`agent_only=True\` **同时要求** \`task_node_connection_mode(...) == "agent"\` 与合法版本化 \`remote_execution\` 合同；有可移植元数据但仍是本地模式的 A800 训练不得自动分配。局部 \`_node_active_work_count\` 已有 Assignment 或 RUNNING 计数时不再为当前串行 Agent 预分配第二任务；多 GPU 真并行属于后续多执行槽专项。新 Agent 分配扫描不调用原 \`_resume_ready_preemptions_in\`，以免修改无关本地抢占恢复任务。
+- RED 测试提交 \`ec9cc29f\`、\`a40c0447\`、\`dff159c3\` 分别覆盖 local-only 不被拦截、双 GPU 单执行槽、手动 pin、默认关闭、HTTP 按开关开启、节点鉴权；代码提交 \`2d879e05\`、\`5ab51dc2\`；补充单执行槽释放后下一轮自动推进、并发双请求唯一分配的测试 \`f317ddac\`、\`41c8238b\`；无关抢占恢复扫描修正 \`7f70077a\`。所有本节新提交的具体准确 SHA CI 必须独立查询，不把前一轮 P0-02 GREEN 视为 P0-01A 验收通过。
+
+### 10.3 尚未完成且不能提前启用生产的准入条件
+
+1. **P0-01A 新版本定向 CI（Linux/Windows/API）与 RED→GREEN 真正测试日志**仍需完成，任何失败先查具体原因。
+2. 多节点长轮询高频扫描可能让 \`assign_next\` 在存在大量本地 QUEUED 任务时频繁进入 \`BEGIN IMMEDIATE\` 事务；尚未取得 1k/10k 任务队列、多个 Agent 并发请求、A800 同库任务创建/领取 P95 的性能和锁争抢证据。**即便准确 CI 全绿也不得直接给 A800 开启开关。**
+3. 离线节点遗留 \`ASSIGNED\` / \`CLAIMED\`、旧执行进程仍存活的安全恢复尚未完成；本轮不擅自释放旧 assignment、不允许自动跨节点重复训练，需另外设计保守的 lease/generation/fencing 接管。
+4. P0-03 CPU/RAM/磁盘/I/O/执行槽硬预算、多 GPU 两任务真并行、远程素材检查/AI 标注/视频/标签统一 Runner、真实 OSS/NAS 数据亲和及控制端负载均未因本轮自动领取实现而完成。
+5. 没有访问、部署、重启或修改 A800/4070 的程序、数据或服务。生产升级、切换执行模式、打开 \`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM=1\` 必须经过**单独授权、当前系统只读核验、备份、隔离 UAT 和明确回滚预案**。
