@@ -158,3 +158,18 @@
 - 当前仍存在历史前端 CI 独立问题：基线 \`de174436\` **21 workflow runs = 20 success + 1 failure**；失败分片 \`Frontend Runtime Stabilization\` 的 \`tests/browser/training-create-scroll.spec.mjs:36\`，本专项未修改该文件，也不将失败归咎于本专项。
 - 本批 RED/GREEN、新 HEAD 的定向 Python Linux/Windows、Agent 合同、全仓 CI 终态必须以**准确提交 SHA** 再查；如果未终态写 \`PENDING\`，不宣称通过；真实 A800/4070 GPU、多服务器、OSS/NAS 以及生产 UAT 仍全部 \`NOT VERIFIED\`。
 - 回滚：仅回滚 \`task_node_assignments.py\` 和 \`node_agent_executor_loop.py\` 两个业务改动到基线（并按实际依赖撤回对应测试），无需 schema 迁移或数据操作；正式上线仍需要单独的 A800 版本兼容性、备份与停机窗口验收。
+
+
+### 9.4 Agent Runner 实际注册与能力上报（P0-02 补充）
+
+- 经源码复核 \`NodeAgentExecutorLoop.effective_capabilities()\` 曾只针对 \`model-upload\` 缺失 Runner 特判，而对 \`training\`、\`conversion\`、\`material-import\`、\`cleaning\` 缺少实际 Runner 的 Agent 仍可能上报能力。这样中央分配器会以错误心跳作出派单决定。
+- 测试提交 \`cdd162b2f807e2f4eca9d8bd8ee4f376112ec755\`，修复提交 \`e80ea129e0564f16609145bca0e0e5ee4b28cf83\`：所有能力统一要求对应 TaskKind 已注册真实可调用 \`run()\` 的 Runner，并要求 \`ready != False\`，否则不包含在有效能力心跳中；不改变任务 Lease/Claim、Runner 调用或本地 Worker。
+- 本节记录的是**代码候选修复**，不是完成验收。准确 HEAD 的 Actions 在本次核查时仍排队；RED/GREEN 执行日志、A800 实机、其它 GPU/OSS 的端到端行为均待核。不从本轮未执行的 RED 测试推断为已验证失败。
+
+### 9.5 P0-01 自动派单启动前的强制安全准入（未开发）
+
+1. 自动推进不得直接调用没有限定范围的 \`CentralTaskAllocator.assign_next()\`，因为它当前也会考虑本地 Worker 使用的 \`TRAINING\` 和其他本地任务。否则可能提前写入 ASSIGNED 并阻断 A800 本地 Worker；需要明确只处理可移植 Agent 合同且显式远程执行意图的任务。
+2. 新入口必须**默认关闭**，显式开关 + 受控任务范围 + 真实在线合格节点才允许分配；启动或停用不能迁移、抢占或重写已有 RUNNING/QUEUED 的本地任务。
+3. 不增加第二套 Scheduler/Queue/DB Owner；沿用中央事务唯一约束、原 TaskRepository 及 Agent Claim，明确同一节点的真实执行槽，不允许单线程 Agent 因双 GPU 遥测被无限预分配。
+4. 分配与 claim 的异常、失联、时钟与 generation 栅栏必须具备保守恢复路径；在无法判断旧执行是否仍在运行时**不能自动重派**。
+5. P0-02 准确 HEAD 的 Central Node Assignment、Node Agent Executor 与 RKNN 合同 CI 未确认 GREEN 前，不推进 P0-01 的自动运行时入口；任何 A800 部署、Worker 重启或任务迁移仍需独立授权。
