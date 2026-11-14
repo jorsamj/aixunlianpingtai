@@ -385,3 +385,30 @@ def test_executor_maps_rknn_board_capability_to_deployment_runner():
         capabilities=["deployment-test.rknn"],
     )
     assert loop.effective_capabilities() == ("deployment-test.rknn",)
+
+
+def test_rknn_board_deployment_claim_starts_only_its_executable_runner():
+    client = FakeClient([
+        claimed(kind="DEPLOYMENT_TEST", capability="deployment-test.rknn")
+    ])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(client, runner, capabilities=["deployment-test.rknn"])
+
+    assert loop.effective_capabilities() == ("deployment-test.rknn",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert runner.calls == ["task-1"]
+    assert loop.status().last_outcome == "SUCCEEDED"
+
+
+def test_rknn_board_deployment_does_not_claim_generic_deployment_capability():
+    client = FakeClient([
+        claimed(kind="DEPLOYMENT_TEST", capability="deployment-test")
+    ])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(client, runner, capabilities=["deployment-test.rknn"])
+
+    assert loop.run_once() is True
+    assert client.start_calls == []
+    assert runner.calls == []
+    assert "not executable" in loop.status().last_error
