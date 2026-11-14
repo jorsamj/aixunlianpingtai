@@ -494,7 +494,7 @@ def test_rare_positive_gt_first_preserves_filters_pages_cursors_and_usage(tmp_pa
                     "content_sha256": excluded["content_sha256"]}],
     }, source_images=[excluded])
     usage.record_execution("training-323", completed_epoch=True)
-    filters, _ = _usage_filters(repo, {"algorithm_asset_id": "alg", "browse_only": True})
+    filters, _ = _usage_filters(repo, {"algorithm_asset_id": "alg"})
     assert "__usage_sql_exclusion" in filters
     filters = {**filters, "storage_source_ids": ["nas"],
                "__role_target": {"labels": ["person"], "negative": False}}
