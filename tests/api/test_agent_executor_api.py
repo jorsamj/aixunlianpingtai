@@ -712,3 +712,87 @@ def test_two_agents_http_strict_pin_survives_offline_and_reconnect(tmp_path, mon
     assert client.post(poll_url.format("pin-agent-a"), headers=auth(token_a)).json() == {
         "claimed": False, "item": None,
     }
+
+
+def test_remote_agent_recovery_diagnosis_is_read_only_and_node_scoped(tmp_path):
+    """Diagnosis may expose a hold, never unlock one or reveal lease secrets."""
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.task_runtime import FencedTaskRepository
+
+    client, repository, artifacts = client_for(tmp_path)
+    create_task(repository, artifacts, task_id="remote-held")
+    _, token_a = create_node(repository, node_id="gpu-api-agent")
+    _, token_b = create_node(repository, node_id="gpu-api-other")
+
+    allocator = AgentExecutionService(repository, artifacts).allocator
+    assigned = allocator.assign_next()
+    assert assigned is not None
+    assert assigned["task_id"] == "remote-held"
+    assert assigned["node_id"] == "gpu-api-agent"
+    claimed = client.post(
+        "/api/v63/node-executor/gpu-api-agent/assignments/claim",
+        headers=auth(token_a),
+    )
+    assert claimed.status_code == 200
+    assert claimed.json()["claimed"] is True
+    started = client.post(
+        "/api/v63/node-executor/gpu-api-agent/assignments/remote-held/start",
+        headers=auth(token_a),
+        json={
+            "assignment_lease_token": claimed.json()["item"]["assignment"][
+                "assignment_lease_token"
+            ],
+        },
+    )
+    assert started.status_code == 200, started.text
+    generation = started.json()["execution"]["generation"]
+    assert generation == 1
+
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+            (expired, "remote-held"),
+        )
+    assert FencedTaskRepository(repository.path).release_expired() == 0
+    path = "/api/v63/node-executor/gpu-api-agent/executions/remote-held/recovery"
+    response = client.get(path, headers=auth(token_a))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["task_id"] == "remote-held"
+    assert result["node_id"] == "gpu-api-agent"
+    assert result["execution_generation"] == generation
+    assert result["task_status"] == "RUNNING"
+    assert result["recovery_state"] == "STOP_PROOF_REQUIRED"
+    assert result["automatic_reassignment_allowed"] is False
+    assert result["stop_proof_verified"] is False
+    assert "lease_token" not in str(result)
+    assert "token_hash" not in str(result)
+
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers=auth(token_b)).status_code == 401
+    wrong_path = "/api/v63/node-executor/gpu-api-other/executions/remote-held/recovery"
+    wrong = client.get(wrong_path, headers=auth(token_b))
+    assert wrong.status_code in {403, 404}
+    assert client.get(path.replace("remote-held", "no-such-task"), headers=auth(token_a)).status_code == 404
+
+    task = repository.get("remote-held")
+    assert task.status.value == "RUNNING"
+    assert task.stage == "recovery_blocked_remote_agent_unverified"
+    assert task.attempt == generation
+    assert task.worker_id == "agent:gpu-api-agent"
+    assert FencedTaskRepository(repository.path).release_expired() == 0
+
+
+def test_remote_agent_recovery_diagnosis_refuses_nonheld_execution(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    create_task(repository, artifacts)
+    _, token = create_node(repository)
+    diagnosis = client.get(
+        "/api/v63/node-executor/gpu-api-agent/executions/train-api-agent/recovery",
+        headers=auth(token),
+    )
+    assert diagnosis.status_code == 409
+    assert diagnosis.json()["detail"]["code"] == "REMOTE_RECOVERY_NOT_HELD"
+    assert repository.get("train-api-agent").status.value == "QUEUED"
