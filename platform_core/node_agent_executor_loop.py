@@ -235,7 +235,11 @@ class NodeAgentExecutorLoop:
         allowed_capabilities = (
             {"conversion", "conversion.rknn"}
             if kind == "MODEL_CONVERSION"
-            else ({default_capability} if default_capability else set())
+            else (
+                {"deployment-test", "deployment-test.rknn"}
+                if kind == "DEPLOYMENT_TEST"
+                else ({default_capability} if default_capability else set())
+            )
         )
         runner = self.runners.get(kind)
         effective = set(self.effective_capabilities())
