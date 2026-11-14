@@ -454,3 +454,43 @@ def test_cancelling_held_remote_execution_keeps_stop_unverified_fence(tmp_path):
     assert repository.get("waiting-contender").status is TaskStatus.QUEUED
     assert repository.get("agent-holder").attempt == 1
 
+
+def test_generic_stage_mutation_cannot_erase_remote_agent_stop_hold(tmp_path):
+    """Even internal stage updates cannot weaken an unresolved remote hold."""
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "remote-stage-owner", "project-1", TaskKind.MODEL_CONVERSION,
+        "request.json", "conversion:remote-stage-hold",
+    ))
+    first = repository.claim_next(
+        "agent:offline-node", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None
+    _expire(repository, "remote-stage-owner")
+    assert repository.release_expired() == 0
+    held = repository.get("remote-stage-owner")
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+
+    with pytest.raises(ValueError, match="running tasks"):
+        repository.set_stage("remote-stage-owner", "running")
+    after = repository.get("remote-stage-owner")
+    assert after.stage == "recovery_blocked_remote_agent_unverified"
+    assert after.status is TaskStatus.RUNNING
+    assert after.worker_id == "agent:offline-node"
+    assert after.attempt == 1
+
+
+def test_generic_stage_mutation_still_works_for_ordinary_running_task(tmp_path):
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "ordinary-stage-owner", "project-1", TaskKind.MODEL_CONVERSION,
+        "request.json", "conversion:ordinary-stage",
+    ))
+    first = repository.claim_next(
+        "local-worker", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None
+    assert repository.set_stage(
+        "ordinary-stage-owner", "preparing",
+    ).stage == "preparing"
+
