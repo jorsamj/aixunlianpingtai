@@ -127,3 +127,9 @@
 - **本轮完成：** 需求逐项对照、当前 HEAD 与 21/21 CI 复核、生产调用链只读审计、现行 Agent 任务矩阵与 P0 优先级明确。
 - **本轮未完成：** RED/GREEN 运行、源码修复、OSS/NAS 非生产联调、GPU/CPU 压测、生产 UAT；禁止把已有 CI 记成这些场景的验收。
 - **下一步最小开发顺序：** (1) 新增无人工 allocate 的 RED 合同，并验证实际失败；(2) 在同一测试中对不支持 Agent 的 operation、local Worker 和手动亲和增加 fail-closed 用例；(3) 复用 \`CentralTaskAllocator\` 在控制端或 Agent 领取入口实现有界、幂等、无第二套队列的自动推进；(4) 然后单独推进资源硬预算、Agent 多执行槽、OSS 直连和真实环境 UAT。不可简单启动多个未经租约保护的调度线程，不可将算力评分当作硬准入。
+
+
+### 8.7 第一阶段补充发现：RKNN 部署 Agent 能力声明与实际分派不一致、离线 Assignment 恢复缺口
+
+1. \`node_agent_executor_loop.py:18-49\` 宣称支持 \`deployment-test.rknn\`，\`effective_capabilities()\` 能将其上报；但是 \`run_once():219-240\` 对 \`DEPLOYMENT_TEST\` 使用的 \`allowed_capabilities\` 只有默认 \`deployment-test\`，特殊兼容集合仅为 \`MODEL_CONVERSION\` 提供。故一旦领取要求 \`deployment-test.rknn\` 的任务，会在调用 \`start_execution()\` 前被拒为 \`UNSUPPORTED_AGENT_TASK_KIND\`。现有 \`tests/unit/test_node_agent_executor_loop.py:379-388\` 只验证能力上报，不覆盖此类真实领取执行。**确定性源码合同缺陷，尚未增加 RED 测试；按 P0-02 单独精确修复。**
+2. \`task_node_assignments.py:805-822\` 排除所有已有 \`ASSIGNED/CLAIMED\` 的排队任务；\`:971-1025\` 仅在**同一节点**调用 \`claim_for_node()\` 时将该节点过期 CLAIMED 重新变成 ASSIGNED。若节点失联且分配仍为 ASSIGNED，目前审阅的自动派发/恢复入口没有证明旧分配会在 TTL 后安全释放并重新分配。该项需按 node TTL、generation/fencing、进程清理确认补负例；不能直接按超时盲目双重分配。
