@@ -1287,6 +1287,7 @@ def test_agent_auto_discovers_remote_task_behind_large_local_queue(tmp_path):
     # or browser requests. All local rows have no matching remote payload,
     # like a training queue that is irrelevant to an Agent.
     with repository._connect() as database:
+        database.execute("BEGIN IMMEDIATE")
         template = database.execute(
             "SELECT * FROM tasks WHERE task_id=?", (local.task_id,),
         ).fetchone()
@@ -1303,6 +1304,7 @@ def test_agent_auto_discovers_remote_task_behind_large_local_queue(tmp_path):
             values[positions["task_id"]] = f"bulk-local-{index:05d}"
             rows.append(tuple(values))
         database.executemany(statement, rows)
+        database.commit()
     create_online_node(
         repository, "remote-agent", ["training"], connection_mode="agent",
         resources=training_resources(free0=20 * 1024**3),
