@@ -851,3 +851,39 @@ def test_conversion_runner_restart_fences_unverified_pre_spawn_intent(tmp_path):
         runner.run(current)
     assert marker.is_file()
     assert client.finish_calls == []
+
+def test_conversion_normal_exit_must_verify_process_group_before_result_publication(tmp_path):
+    """A successful converter leader is insufficient when child-stop proof fails."""
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeClient()
+    session = FakeSession(source)
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(
+        client, workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=session,
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    class UnverifiableGroup:
+        def terminate_tree(self, identity, timeout=8.0):
+            raise PermissionError("converter descendant termination cannot be verified")
+
+    runner.controller = UnverifiableGroup()
+    with pytest.raises(RemoteExecutionFenced, match="cleanup could not be verified"):
+        runner.run(_lease(source))
+
+    assert not session.puts
+    assert not client.finish_calls
+    assert not any(event[0] in {"prepare", "confirm", "finalize"} for event in client.events)
+    records = workdirs.list_process_identities()
+    assert len(records) == 1
+    assert records[0]["task_id"] == "convert-agent-task"
+    assert records[0]["generation"] == 3
+    assert (workdirs.root / "executions" / "convert-agent-task" / "3" /
+            "process-launch-intent.json").is_file()

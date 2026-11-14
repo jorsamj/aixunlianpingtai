@@ -77,3 +77,10 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 已明确安全与可用性取舍：甚至 **spawn 之前**硬崩溃也可能留下无法自行清除的标志，必须人工或后续可信作业边界核验；现有 fsync 文件不等于完成断电级目录 fsync、OS 进程组可信证明或多主机实测。
 - 这是 **P0-01C 的前置危险证据保护**，非可信解锁协议。原节点 challenge、防重放、generation 绑定、进程组/cgroup/Windows Job Object 可信停止证明、中央 `BEGIN IMMEDIATE` 原子释放和审计、真实断网及 OSS/GPU UAT 仍未实现/验收。
 - 新增 workdir 与训练/转换 Runner 的隔离合同测试，**必须等本精确 SHA CI 完成才能宣称通过**。A800、双4070、生产数据库、OSS、自动派单默认 OFF 全部不动；生产 **NO-GO**。
+
+## 2026-11-14 P0-01C 继续审计：模型转换成功退出后的残留子进程围栏（候选 CI 待验）
+
+- 只读确认 `AgentConversionRunner.run()` 在转换主进程正常退出时，于 `finally` 直接清除 `process-identity.json` 并擦除内存身份；与训练 Runner 在成功退出后再次调用 `_terminate_active(strict=True)`、核验并清理整个进程组的安全策略不同。若转换器另起子进程并遗留，结果确认/终态可能在仍占用硬件时发生。
+- 修复仅把转换成功退出路径改为**先按现有 `ProcessController.terminate_tree` 检查/清理，验证失败就保留进程身份证据和启动危险标志，拒绝上传或发布最终结果**。复用原控制器、原执行租约和原结果确认，不加新后台任务或控制端分支。
+- 新负面测试将“转换主进程退出但进程组死亡无法证明”注入 `PermissionError`，要求 fail closed、不执行 prepare/confirm/finish、保留 task+generation 身份和 intent。原正向真实子进程测试继续作为成功回归。
+- Windows `ProcessController` 的现有进程组语义不等于 Job Object 级子孙生命周期证明；Linux 真实孤儿子进程和多机断网仍需要独立实测。此补丁不提供 stop proof 或解除中央 HOLD，生产继续 **NO-GO**。

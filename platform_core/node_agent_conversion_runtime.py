@@ -963,20 +963,13 @@ class AgentConversionRunner:
                 except (InterruptedError, RemoteExecutionFenced):
                     self._terminate_active(strict=True)
                     raise
-                finally:
-                    if launched.process.poll() is not None:
-                        try:
-                            self.workdirs.clear_process_identity(lease)
-                        except (OSError, ValueError) as error:
-                            self._recovery_error = (
-                                "conversion process identity cleanup could not be persisted: "
-                                f"{type(error).__name__}: {error}"
-                            )
-                            raise RemoteExecutionFenced(
-                                self._recovery_error
-                            ) from error
-                        self._clear_active_process()
 
+            # A successfully exited conversion leader does not prove that its
+            # detached SDK/DataLoader descendants have stopped. Keep the
+            # persisted exact identity and pre-spawn intent until the same
+            # process-tree/group cleanup used for training is verified.
+            # An unverified cleanup must block result upload and finish.
+            self._terminate_active(strict=True)
             self._assert_active(monitor)
             log_offset = self._forward_log_delta(
                 lease,
