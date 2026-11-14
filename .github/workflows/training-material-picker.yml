@@ -41,6 +41,8 @@ on:
       - 'static/main.mjs'
       - 'tests/api/test_training_negative_review.py'
       - 'tests/performance/test_training_compatibility_paging.py'
+      - 'tests/performance/test_picker_history_filters_scale.py'
+      - 'tests/performance/test_material_workbench_200k.py'
       - 'tests/unit/test_annotation_negative_review_evidence.py'
       - 'tests/unit/test_reviewed_negative_projection.py'
       - 'tests/frontend/training-material-picker-negative-review.test.mjs'
