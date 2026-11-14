@@ -55,7 +55,7 @@ class FencedTaskRepository(TaskRepository):
                 SELECT task_id FROM tasks
                  WHERE task_id<>? AND resource_key=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
-                   AND stage IN (?,?)
+                   AND stage IN (?,?,?)
                  LIMIT 1
                 """,
                 (
@@ -418,7 +418,7 @@ class FencedTaskRepository(TaskRepository):
                AND task_id NOT IN (
                     SELECT task_id FROM tasks
                      WHERE status IN ('RUNNING','CANCEL_REQUESTED')
-                       AND stage IN (?,?)
+                       AND stage IN (?,?,?)
                )
             """,
             (now, *_RECOVERY_HOLD_STAGES),
