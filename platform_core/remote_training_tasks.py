@@ -831,17 +831,24 @@ class TrainingPrepareHandler:
         strategy = str(payload.get("resource_strategy") or "auto").strip().lower()
         gpu_policy = str(payload.get("gpu_policy") or "auto").strip().lower()
         if (
-            requested_device == "auto"
+            requested_device != "cpu"
             and strategy == "auto"
             and gpu_policy in {"auto", "exclusive"}
         ):
+            # AUTO resources belong to the finally assigned GPU, even if pinned.
+            # A busy pinned GPU must wait for admission, not fail preparation.
+            candidates = [
+                row for row in sampled
+                if requested_device == "auto"
+                or f"cuda:{_cuda_index(row)}" == requested_device
+            ]
             model = YOLO(model_path)
             admission = auto_admission_evidence(payload, model)
             admission.update({
-                "candidate_gpu_count": len(sampled),
+                "candidate_gpu_count": len(candidates),
                 "candidate_gpu_uuids": [
                     str(row.get("gpu_uuid") or "")
-                    for row in sampled
+                    for row in candidates
                     if str(row.get("gpu_uuid") or "")
                 ],
             })

@@ -497,7 +497,7 @@ class GPUResourceManager:
         deferred_auto = (
             payload.get("resource_resolution_deferred") is True
             and str(payload.get("resource_strategy") or "auto").strip().lower() == "auto"
-            and device == "auto"
+            and (device == "auto" or device.startswith("cuda:"))
         )
         admission_estimate = (
             _number(payload.get("gpu_memory_floor_bytes")) or None

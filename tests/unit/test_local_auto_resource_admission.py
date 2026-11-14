@@ -375,3 +375,92 @@ def test_prepare_non_deferred_resource_resolution_uses_visible_cuda_ordinals(
     saved = artifacts.read_json("gpu-map-test", "resource-context.json", default={})
     assert saved["resolution_device"] == expected_device
     assert saved["resolution_gpu_uuid"] == expected_gpu_uuid
+
+
+@pytest.mark.parametrize(
+    ("requested_device", "available_indices", "expected_uuids"),
+    [
+        ("cuda:0", (0, 1), ["GPU-0"]),
+        ("cuda:1", (0, 1), ["GPU-1"]),
+        ("cuda:1", (), []),
+    ],
+)
+def test_fixed_gpu_auto_prepare_defers_without_calculating_resources(
+    tmp_path, monkeypatch, requested_device, available_indices, expected_uuids,
+):
+    import platform_core.gpu_resources as gpu_resources
+    import platform_core.training_metrics as training_metrics
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    project = tmp_path / "data" / "projects" / "pin-auto"
+    project.mkdir(parents=True)
+    (project / "algorithms.json").write_text(
+        json.dumps([{"id": "algorithm-pin", "name": "pin", "versions": []}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda _: _Model()))
+    monkeypatch.setattr(gpu_resources, "sample_gpus", lambda: [
+        {
+            "gpu_uuid": f"GPU-{index}", "physical_index": index,
+            "total_bytes": 24 * GIB,
+            "free_bytes": GIB if index == 1 else 22 * GIB,
+            "utilization": 90.0 if index == 1 else 5.0,
+            "telemetry_available": True,
+        }
+        for index in available_indices
+    ])
+    def no_early_resolution(*_args, **_kwargs):
+        raise AssertionError("AUTO resources must resolve after training assignment")
+    monkeypatch.setattr(training_metrics, "resolve_resources", no_early_resolution)
+
+    artifacts = ArtifactStore(tmp_path / "data" / "task_runtime" / "artifacts")
+    prepared = TrainingPrepareHandler(tmp_path / "data")._resolve_local_resources(
+        SimpleNamespace(artifacts=artifacts),
+        SimpleNamespace(task_id="train-pinned", project_id="pin-auto"),
+        {
+            "algorithm_asset_id": "algorithm-pin", "model": "mother.pt",
+            "framework": "ultralytics", "requested_device": requested_device,
+            "device": requested_device, "resource_strategy": "auto",
+            "resource_profile": "balanced", "gpu_policy": "exclusive",
+            "precision": "auto", "amp": True, "imgsz": 640,
+        },
+        tmp_path / "bundle", [], SimpleNamespace(counts={"train": 10}),
+    )
+    assert prepared["resource_resolution_deferred"] is True
+    assert prepared["gpu_memory_floor_bytes"] > 0
+    assert prepared["estimated_gpu_memory_bytes"] is None
+    assert "resolved_batch" not in prepared
+    assert not artifacts.artifact_path("train-pinned", "resolved-resources.json").exists()
+    admission = artifacts.read_json("train-pinned", "resource-admission.json")
+    assert admission["candidate_gpu_count"] == len(expected_uuids)
+    assert admission["candidate_gpu_uuids"] == expected_uuids
+
+
+@pytest.mark.parametrize(
+    ("strategy", "device", "expected_error"),
+    [
+        ("auto", "cuda:0", "GPU_ASSIGNMENT_REQUIRED"),
+        ("auto", "cuda:1", "GPU_ASSIGNMENT_REQUIRED"),
+        ("auto", "auto", "GPU_ASSIGNMENT_REQUIRED"),
+        ("auto", "cpu", "RESOURCE_DEFERRED_STRATEGY_INVALID"),
+        ("manual", "cuda:0", "RESOURCE_DEFERRED_STRATEGY_INVALID"),
+    ],
+)
+def test_handler_deferred_gpu_acceptance_does_not_allow_manual_or_cpu(
+    tmp_path, strategy, device, expected_error,
+):
+    from platform_core.training_tasks import TrainingHandler
+
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    artifacts.atomic_write_json("train-validation", "payload.json", {
+        "training_input_state": "READY",
+        "resource_resolution_deferred": True,
+        "resource_strategy": strategy,
+        "requested_device": device, "device": device,
+    })
+    context = SimpleNamespace(
+        artifacts=artifacts,
+        task=SimpleNamespace(task_id="train-validation", payload_ref="payload.json"),
+    )
+    with pytest.raises((ValueError, EnvironmentError), match=expected_error):
+        TrainingHandler(tmp_path).run(context)

@@ -453,3 +453,51 @@ def test_same_worker_id_visibility_is_preserved_across_nodes(tmp_path):
 def test_default_gpu_config_is_single_card_exclusive(monkeypatch):
     monkeypatch.delenv("TRAINING_GPU_MAX_CONCURRENT", raising=False)
     assert GPUConfig.from_env().max_concurrent == 1
+
+
+@pytest.mark.parametrize("pinned_index", [0, 1])
+def test_pinned_auto_waits_for_its_gpu_and_keeps_worker_assignment(
+    tmp_path, pinned_index,
+):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task_id = f"task-pinned-{pinned_index}"
+    artifacts = _Artifacts({task_id: {
+        "requested_device": f"cuda:{pinned_index}", "device": f"cuda:{pinned_index}",
+        "gpu_policy": "exclusive", "resource_strategy": "auto",
+        "resource_profile": "balanced", "resource_resolution_deferred": True,
+        "gpu_memory_floor_bytes": 2 * GIB, "estimated_gpu_memory_bytes": None,
+    }})
+    manager = NodeScopedGPUResourceManager(
+        repository, artifacts, node_id="node-pin", worker_id="worker-pin",
+        worker_slot="slot-pin", sampler=lambda _python: [], config=_config(),
+    )
+    for index in (0, 1):
+        _add_gpu(
+            repository, node_id="node-pin", worker_id="worker-pin",
+            gpu_uuid=f"GPU-{index}", physical_index=index, logical_index=index,
+            total_bytes=24 * GIB,
+            free_bytes=GIB if index == pinned_index else 22 * GIB,
+        )
+    allowed, reason = _admit(manager, repository, task_id, "worker-pin")
+    assert allowed is False
+    assert reason.startswith("GPU_MEMORY_INSUFFICIENT")
+    with closing(repository._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM gpu_reservations WHERE task_id=?", (task_id,),
+        ).fetchone()[0] == 0
+
+    # The same queued task can claim only its pinned GPU after that GPU recovers.
+    _add_gpu(
+        repository, node_id="node-pin", worker_id="worker-pin",
+        gpu_uuid=f"GPU-{pinned_index}", physical_index=pinned_index,
+        logical_index=pinned_index, total_bytes=24 * GIB, free_bytes=20 * GIB,
+    )
+    assert _admit(manager, repository, task_id, "worker-pin", lease_token="lease-pin") == (True, None)
+    assignment = manager.assignment(SimpleNamespace(
+        task=SimpleNamespace(task_id=task_id, payload_ref="payload.json"),
+        worker_id="worker-pin", lease_token="lease-pin",
+    ))
+    assert assignment["assigned_device"] == f"cuda:{pinned_index}"
+    assert assignment["gpu_uuid"] == f"GPU-{pinned_index}"
+    assert assignment["estimated_bytes"] == 2 * GIB
+    assert assignment["reserved_bytes"] > 2 * GIB

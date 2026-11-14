@@ -3093,10 +3093,10 @@ class TrainingHandler:
                 str(payload.get("resource_strategy") or "auto").strip().lower() != "auto"
                 or normalize_training_device(
                     payload.get("requested_device", payload.get("device"))
-                ) != "auto"
+                ) == "cpu"
             ):
                 raise ValueError(
-                    "RESOURCE_DEFERRED_STRATEGY_INVALID: only local AUTO device/AUTO resources may defer resolution"
+                    "RESOURCE_DEFERRED_STRATEGY_INVALID: only local GPU/AUTO resources may defer resolution"
                 )
             prepared_resources = {}
         if str(payload.get("target") or "local").lower() != "local":
