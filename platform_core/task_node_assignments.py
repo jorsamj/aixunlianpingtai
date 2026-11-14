@@ -25,6 +25,9 @@ from .task_runtime.repository import _from_row, admission_preparer
 ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
 ACTIVE_ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED")
 DEFAULT_ASSIGNMENT_LEASE_SECONDS = 30
+# Private return marker: preflight eligibility went stale while another Agent
+# reserved the last execution slot. Do not keep scanning queued JSON metadata.
+_AGENT_CAPACITY_EXHAUSTED = object()
 # Non-authoritative cursor for payload-only legacy tasks. Node/lease state is
 # always checked in SQLite; process restarts safely start the scan from front.
 _AGENT_LEGACY_SCAN_LOCK = Lock()
@@ -387,6 +390,33 @@ def _node_active_work_count(database, node_id: str) -> int:
         (f"agent:{node}", node),
     ).fetchone()[0])
     return assigned + running
+
+
+def _has_idle_agent_slot(database, *, now: datetime, ttl_seconds: int) -> bool:
+    """Check live Agent executor capacity under the canonical writer lock.
+
+    A preflight snapshot may be stale after concurrent Agent claims. This
+    check avoids doing expensive payload IO and additional writer transactions
+    when no node can execute the next automatic assignment. It never grants a
+    lease or replaces the existing task/node/capability validation.
+    """
+    nodes = database.execute(
+        """SELECT node_id,last_heartbeat_at,allowed_capabilities,reported_capabilities
+           FROM service_nodes
+          WHERE enabled=1 AND connection_mode='agent'
+            AND last_heartbeat_at IS NOT NULL"""
+    ).fetchall()
+    for node in nodes:
+        heartbeat = _utc(node["last_heartbeat_at"])
+        if heartbeat is None or (now - heartbeat).total_seconds() > ttl_seconds:
+            continue
+        allowed = set(_loads(node["allowed_capabilities"], []))
+        reported = set(_loads(node["reported_capabilities"], []))
+        if not allowed.intersection(reported):
+            continue
+        if _node_active_work_count(database, str(node["node_id"])) == 0:
+            return True
+    return False
 
 
 def _assigned_gpu_ids(database, node_id: str) -> set[str]:
@@ -966,6 +996,10 @@ class CentralTaskAllocator:
             return self._assign_next_candidates(None, agent_only=False)
         for candidate_ids in self._iter_agent_candidate_batches():
             assigned = self._assign_next_candidates(candidate_ids, agent_only=True)
+            if assigned is _AGENT_CAPACITY_EXHAUSTED:
+                # Every Agent is busy *now*: defer queued work until the next
+                # normal polling opportunity, rather than scanning the tail.
+                return None
             if assigned is not None:
                 return assigned
         return None
@@ -982,6 +1016,14 @@ class CentralTaskAllocator:
                 # eligibility must be measured at allocation, not at scan start.
                 current = datetime.now(timezone.utc)
                 now = current.isoformat()
+                if not _has_idle_agent_slot(
+                    database, now=current, ttl_seconds=self.heartbeat_ttl_seconds,
+                ):
+                    # Another concurrent claim consumed the last Agent slot
+                    # after preflight. No candidate is runnable, so release
+                    # SQLite's writer immediately and skip all remaining pages.
+                    database.commit()
+                    return _AGENT_CAPACITY_EXHAUSTED
             if not agent_only:
                 # Agent-triggered auto assignment must not mutate unrelated
                 # local/preempted task state while scanning its own queue.
