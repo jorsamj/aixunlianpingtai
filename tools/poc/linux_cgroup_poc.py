@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import subprocess
@@ -75,7 +76,36 @@ def wait_for(predicate, timeout: float = 6.0) -> bool:
     return bool(predicate())
 
 
+
+def _valid_test_intent(unit: str, root: Path) -> bool:
+    """Only an exact fresh synthetic unit/manifest may reach systemd."""
+    if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() == 0:
+        return False
+    if not re.fullmatch(r"clpoc-[0-9a-f]{24}\\.service", unit):
+        return False
+    if not root.is_dir() or not root.name.startswith("p001c2b-"):
+        return False
+    try:
+        intent = json.loads((root / "intent.json").read_text(encoding="utf-8"))
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return False
+    return (isinstance(intent, dict) and intent.get("unit") == unit
+            and intent.get("boot_id") == boot_id
+            and intent.get("purpose") == "P0-01C-2B-CPU-ONLY")
+
+
 def _payload(root: Path) -> int:
+    # A direct public --payload invocation must not start any computation.
+    try:
+        intent = json.loads((root / "intent.json").read_text(encoding="utf-8"))
+        unit = intent.get("unit", "") if isinstance(intent, dict) else ""
+        member = unified_path(Path("/proc/self/cgroup").read_text(encoding="utf-8"))
+        if not (_valid_test_intent(unit, root) and member
+                and member.endswith("/" + unit)):
+            return 4
+    except (OSError, ValueError):
+        return 4
     # Runs only inside a separate transient user service. A descendant with
     # a *new session* must still remain in the same cgroup, unlike killpg.
     child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(20)"],
@@ -95,6 +125,8 @@ def _payload(root: Path) -> int:
 
 
 def _start_service(unit: str, root: Path) -> int:
+    if not _valid_test_intent(unit, root) or not inspect()["eligible_for_poc"]:
+        return 4
     # Called from a disposable launcher so the parent can SIGKILL it after
     # start, reproducing loss of the agent process while compute continues.
     run = command(["systemd-run", "--user", "--no-ask-password", "--unit=" + unit,
