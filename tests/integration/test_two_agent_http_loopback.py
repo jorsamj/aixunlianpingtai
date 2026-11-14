@@ -809,3 +809,128 @@ def test_sigkilled_real_agent_releases_expired_execution_and_fences_old_generati
                 process.wait(timeout=12)
             for handle in handles:
                 handle.close()
+
+
+def test_loopback_heartbeat_partition_fences_monitor_and_stops_child_process(
+    tmp_path, monkeypatch,
+):
+    """A real HTTP 503 during lease heartbeat kills an isolated child process.
+
+    The monitor must fail closed without inventing a terminal result. Recovery
+    and generation fencing are then verified via the canonical SQLite store.
+    No actual inference, accelerator or external network is involved.
+    """
+    import subprocess
+    import sys
+
+    from fastapi.responses import JSONResponse
+    from platform_core.node_agent_executor_runtime import (
+        ExecutionLeaseMonitor, RemoteExecutionFenced,
+    )
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    repo = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    nodes = ServiceNodeRepository(repo)
+    _, token = nodes.create({
+        "node_id": "partition-agent",
+        "display_name": "partition-agent",
+        "connection_mode": "agent",
+        "allowed_capabilities": ["training"],
+    })
+    _heartbeat(nodes, "partition-agent", token)
+    task_id = "partition-training-task"
+    _task(repo, artifacts, task_id, "partition-agent")
+    lose_heartbeat = threading.Event()
+
+    app = FastAPI()
+    app.include_router(agent_executor_router(
+        lambda: repo, lambda: artifacts,
+        execution_payload_resolver=_remote_payload,
+    ))
+
+    @app.middleware("http")
+    async def drop_execution_heartbeat(request, call_next):
+        if lose_heartbeat.is_set() and request.url.path.endswith(
+            f"/executions/{task_id}/heartbeat"
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={"detail": {
+                    "code": "CONTROL_PLANE_UNREACHABLE",
+                    "message": "isolated heartbeat network partition",
+                }},
+            )
+        return await call_next(request)
+
+    child = None
+    monitor = None
+    with _loopback_server(app) as address:
+        client = NodeExecutorClient(address, "partition-agent", token, timeout=2.0)
+        claim = client.claim_assignment()
+        assert claim and claim["task"]["task_id"] == task_id
+        lease = client.start_execution(
+            task_id, claim["assignment"]["assignment_lease_token"],
+        )
+        assert lease.generation == 1
+        try:
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(45)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            def stop_owned_child():
+                if child.poll() is None:
+                    child.terminate()
+
+            monitor = ExecutionLeaseMonitor(
+                client, lease, interval=1.0, on_fenced=stop_owned_child,
+            )
+            initial = monitor.beat(progress=5, stage="isolated-active")
+            assert initial["task"]["status"] == "RUNNING"
+            monitor.start()
+            lose_heartbeat.set()
+            assert monitor.fenced.wait(timeout=8), (
+                "execution monitor did not fence after real HTTP 503"
+            )
+            child.wait(timeout=6)
+            assert child.returncode != 0, "isolated execution child must stop"
+            with pytest.raises(RemoteExecutionFenced):
+                monitor.assert_active()
+            assert repo.get(task_id).status.value == "RUNNING"
+            assert repo.get(task_id).attempt == 1
+
+            # Simulate time passage only after the monitored child is dead.
+            expired = (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat()
+            with repo._connect() as database:
+                database.execute(
+                    "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+                    (expired, task_id),
+                )
+            assert FencedTaskRepository(repo.path).release_expired() == 1
+            assert repo.get(task_id).status.value == "QUEUED"
+            assert repo.get(task_id).attempt == 1
+
+            late = requests.post(
+                f"{address}/api/v63/node-executor/partition-agent/"
+                f"executions/{task_id}/finish",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "execution_lease_token": lease.lease_token,
+                    "execution_generation": lease.generation,
+                    "status": "SUCCEEDED",
+                },
+                timeout=5,
+            )
+            assert late.status_code == 409, late.text
+            assert late.json()["detail"]["code"] == "EXECUTION_FENCED"
+        finally:
+            if monitor is not None:
+                monitor.stop()
+            if child is not None:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=6)
