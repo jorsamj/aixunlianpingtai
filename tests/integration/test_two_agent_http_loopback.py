@@ -315,7 +315,21 @@ def test_two_real_node_agent_processes_heartbeat_claim_and_fail_safely(tmp_path,
             for name, process, path in running:
                 task = observed[name]
                 assert task.status.value == "FAILED"
-                assert task.worker_id == "agent:" + name
+                # The canonical terminal transition intentionally clears
+                # tasks.worker_id/lease_token; inspect durable assignment history
+                # to prove which Agent actually started this generation.
+                assert task.worker_id is None
+                with repo._connect() as database:
+                    history = database.execute(
+                        """SELECT node_id, state, release_reason
+                           FROM task_node_assignments
+                          WHERE task_id=? ORDER BY generation DESC LIMIT 1""",
+                        ("process-task-" + name[-1],),
+                    ).fetchone()
+                assert history is not None
+                assert history["node_id"] == name
+                assert history["state"] == "RELEASED"
+                assert history["release_reason"] == "execution_started"
                 assert task.attempt == 1, "Each task must execute exactly once"
                 assert "portable deployment input contract is missing" in (task.error or "")
                 node = nodes.get_public(name)
