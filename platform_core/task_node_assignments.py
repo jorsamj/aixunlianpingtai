@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 from contextlib import closing
+from threading import Lock
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
@@ -24,6 +25,11 @@ from .task_runtime.repository import _from_row, admission_preparer
 ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
 ACTIVE_ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED")
 DEFAULT_ASSIGNMENT_LEASE_SECONDS = 30
+# Non-authoritative cursor for payload-only legacy tasks. Node/lease state is
+# always checked in SQLite; process restarts safely start the scan from front.
+_AGENT_LEGACY_SCAN_LOCK = Lock()
+_AGENT_LEGACY_SCAN_CURSORS = {}
+
 REMOTE_EXECUTION_CONTRACT_VERSION = 1
 SUPPORTED_REMOTE_EXECUTION_TRANSPORTS = (
     "object-storage-v1",
@@ -814,8 +820,10 @@ class CentralTaskAllocator:
         The canonical training:auto resource is local during normal operation.
         We examine it in a separate *legacy fallback* pass rather than dropping
         it: old/third-party producers may have persisted a remote payload there.
-        Every page advances using the complete scheduling sort key. There is
-        deliberately no hard global LIMIT that could strand a later pinned task.
+        Every page advances using the complete scheduling sort key. The
+        legacy-only fallback is bounded to one page *per poll*, with a
+        process-local round-robin cursor so later legacy jobs are revisited
+        under continued polling instead of being permanently truncated.
         """
         current = datetime.now(timezone.utc)
         with closing(self.repository._connect()) as database:
@@ -840,61 +848,90 @@ class CentralTaskAllocator:
         if not idle_capabilities:
             return
 
+        def fetch_page(predicate, cursor_key):
+            cursor_clause = ""
+            params = []
+            if cursor_key is not None:
+                priority, rank, created, task_id = cursor_key
+                cursor_clause = """
+                  AND (task.priority > ?
+                    OR (task.priority = ? AND task.queue_rank < ?)
+                    OR (task.priority = ? AND task.queue_rank = ? AND task.created_at > ?)
+                    OR (task.priority = ? AND task.queue_rank = ? AND task.created_at = ?
+                        AND task.task_id > ?))
+                """
+                params = [
+                    priority, priority, rank, priority, rank, created,
+                    priority, rank, created, task_id,
+                ]
+            with closing(self.repository._connect()) as preflight:
+                return preflight.execute(
+                    f"""
+                    SELECT task.* FROM tasks task
+                     WHERE task.status='QUEUED'
+                       AND task.kind IN (
+                           'TRAINING','MODEL_CONVERSION','MATERIAL_IMPORT',
+                           'MODEL_INSTALL','DEPLOYMENT_TEST','MATERIAL_BATCH'
+                       )
+                       AND ({predicate})
+                       AND NOT EXISTS (
+                           SELECT 1 FROM task_node_assignments assignment
+                            WHERE assignment.task_id=task.task_id
+                              AND assignment.state IN ('ASSIGNED','CLAIMED')
+                       )
+                       {cursor_clause}
+                     ORDER BY task.priority ASC, task.queue_rank DESC,
+                              task.created_at ASC, task.task_id ASC
+                     LIMIT 64
+                    """,
+                    (*params,),
+                ).fetchall()
+
+        def row_cursor(row):
+            return (
+                int(row["priority"]), int(row["queue_rank"]),
+                str(row["created_at"]), str(row["task_id"]),
+            )
+
         for legacy_local_fallback in (False, True):
             cursor_key = None
+            predicate = (
+                "task.kind='TRAINING' AND task.resource_key='training:auto' "
+                "AND task.required_capabilities NOT LIKE '%agent.remote%'"
+                if legacy_local_fallback else
+                "NOT (task.kind='TRAINING' AND task.resource_key='training:auto' "
+                "AND task.required_capabilities NOT LIKE '%agent.remote%')"
+            )
             while True:
-                predicate = (
-                    "task.kind='TRAINING' AND task.resource_key='training:auto' "
-                    "AND task.required_capabilities NOT LIKE '%agent.remote%'"
-                    if legacy_local_fallback else
-                    "NOT (task.kind='TRAINING' AND task.resource_key='training:auto' "
-                    "AND task.required_capabilities NOT LIKE '%agent.remote%')"
-                )
-                cursor_clause = ""
-                params = []
-                if cursor_key is not None:
-                    priority, rank, created, task_id = cursor_key
-                    cursor_clause = """
-                      AND (task.priority > ?
-                        OR (task.priority = ? AND task.queue_rank < ?)
-                        OR (task.priority = ? AND task.queue_rank = ? AND task.created_at > ?)
-                        OR (task.priority = ? AND task.queue_rank = ? AND task.created_at = ?
-                            AND task.task_id > ?))
-                    """
-                    params = [
-                        priority, priority, rank, priority, rank, created,
-                        priority, rank, created, task_id,
-                    ]
-                with closing(self.repository._connect()) as preflight:
-                    rows = preflight.execute(
-                        f"""
-                        SELECT task.* FROM tasks task
-                         WHERE task.status='QUEUED'
-                           AND task.kind IN (
-                               'TRAINING','MODEL_CONVERSION','MATERIAL_IMPORT',
-                               'MODEL_INSTALL','DEPLOYMENT_TEST','MATERIAL_BATCH'
-                           )
-                           AND ({predicate})
-                           AND NOT EXISTS (
-                               SELECT 1 FROM task_node_assignments assignment
-                                WHERE assignment.task_id=task.task_id
-                                  AND assignment.state IN ('ASSIGNED','CLAIMED')
-                           )
-                           {cursor_clause}
-                         ORDER BY task.priority ASC, task.queue_rank DESC,
-                                  task.created_at ASC, task.task_id ASC
-                         LIMIT 64
-                        """,
-                        (*params,),
-                    ).fetchall()
+                if legacy_local_fallback:
+                    # Compatibility: old producers may encode Agent intent only
+                    # inside the JSON payload of training:auto. Never discard
+                    # those tasks, but inspect at most one page per poll. A
+                    # process-local scan cursor resumes across HTTP requests.
+                    # The SQLite task/assignment tables remain the sole truth.
+                    db_stat = self.repository.path.stat()
+                    scan_key = (
+                        str(self.repository.path.resolve()),
+                        db_stat.st_dev, db_stat.st_ino,
+                    )
+                    with _AGENT_LEGACY_SCAN_LOCK:
+                        cursor_key = _AGENT_LEGACY_SCAN_CURSORS.get(scan_key)
+                        rows = fetch_page(predicate, cursor_key)
+                        if not rows and cursor_key is not None:
+                            # Queue may have changed or scan reached the tail.
+                            # Wrap around rather than permanently skip new
+                            # earlier-priority tasks and previously offline pins.
+                            rows = fetch_page(predicate, None)
+                        _AGENT_LEGACY_SCAN_CURSORS[scan_key] = (
+                            row_cursor(rows[-1]) if len(rows) == 64 else None
+                        )
+                else:
+                    rows = fetch_page(predicate, cursor_key)
                 if not rows:
                     break
                 eligible_ids = []
                 for row in rows:
-                    cursor_key = (
-                        int(row["priority"]), int(row["queue_rank"]),
-                        str(row["created_at"]), str(row["task_id"]),
-                    )
+                    cursor_key = row_cursor(row)
                     task = _from_row(row)
                     if task_node_connection_mode(task, self.artifacts) != "agent":
                         continue
@@ -911,13 +948,15 @@ class CentralTaskAllocator:
                         continue
                     eligible_ids.append(task.task_id)
                     if len(eligible_ids) == 8:
-                        # Only prevalidated IDs reach the canonical writer.
-                        # Do not retain a SQLite read cursor across the yield.
+                        # The canonical writer revalidates every task after
+                        # preflight; this scan never grants execution rights.
                         yield tuple(eligible_ids)
                         eligible_ids = []
                 if eligible_ids:
                     yield tuple(eligible_ids)
-                if len(rows) < 64:
+                if legacy_local_fallback or len(rows) < 64:
+                    # The legacy cursor is resumed by the next Agent poll; do
+                    # not scan the entire legacy queue in one HTTP request.
                     break
 
     def assign_next(self, *, agent_only: bool = False) -> dict[str, Any] | None:
