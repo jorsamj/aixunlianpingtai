@@ -12,7 +12,7 @@ import socket
 import threading
 import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import pytest
 import requests
 import uvicorn
@@ -364,7 +364,7 @@ def test_real_http_agent_deployment_success_upload_confirm_and_durable_result(tm
     from pathlib import Path
     import sys
 
-    from fastapi import HTTPException, Request, Response
+    from fastapi import HTTPException, Response
     from platform_core.node_agent_deployment_runtime import AgentDeploymentRunner
     from platform_core.node_agent_executor_loop import NodeAgentExecutorLoop
     from platform_core.node_agent_executor_runtime import AgentExecutionWorkdir
