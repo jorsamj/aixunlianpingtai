@@ -77,3 +77,40 @@ def test_direct_payload_invocation_rejected_without_manifest(monkeypatch, tmp_pa
     monkeypatch.setattr(poc.subprocess, "Popen", lambda *a, **k:
                         (_ for _ in ()).throw(AssertionError("must not spawn")))
     assert poc._payload(tmp_path) == 4
+
+
+def test_stop_requires_same_unit_id_group_and_invocation():
+    expected = {"Id": "clpoc-aaa.service", "ControlGroup": "/user.slice/a.service",
+                "InvocationID": "123456"}
+    assert poc.same_unit_instance(dict(expected), expected) is True
+    for field in expected:
+        changed = dict(expected)
+        changed[field] = "other"
+        assert poc.same_unit_instance(changed, expected) is False
+        missing = dict(expected)
+        missing.pop(field)
+        assert poc.same_unit_instance(missing, expected) is False
+
+
+def test_process_identity_stop_check_is_unknown_on_reused_pid(monkeypatch):
+    # state=R, starttime field22 = suffix field index19.
+    fields = ["R"] + ["0"] * 18 + ["12"]
+    monkeypatch.setattr(poc.Path, "read_text", lambda self, **kw: "999 (worker) " + " ".join(fields))
+    assert poc.process_executing_by_identity(999, 12) is True
+    assert poc.process_executing_by_identity(999, 13) is None
+    fields[0] = "Z"
+    assert poc.process_executing_by_identity(999, 12) is False
+
+
+def test_process_identity_stop_check_denied_is_unknown(monkeypatch):
+    def unreadable(self, **kwargs):
+        raise PermissionError("no access")
+    monkeypatch.setattr(poc.Path, "read_text", unreadable)
+    assert poc.process_executing_by_identity(999, 12) is None
+
+
+def test_process_identity_stop_check_missing_is_not_alive(monkeypatch):
+    def missing(self, **kwargs):
+        raise FileNotFoundError("gone")
+    monkeypatch.setattr(poc.Path, "read_text", missing)
+    assert poc.process_executing_by_identity(999, 12) is False
