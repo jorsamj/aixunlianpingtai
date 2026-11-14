@@ -121,6 +121,21 @@ def start(service, task_id, node_id, token, claimed):
     )
 
 
+def test_agent_poll_authorization_does_not_load_global_worker_projections(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    _nodes, token = create_node(repository)
+    service = execution_service(repository, artifacts)
+
+    def unrelated_runtime_not_needed(*_args, **_kwargs):
+        raise AssertionError("Agent claim must not enumerate all local workers")
+
+    monkeypatch.setattr(
+        ServiceNodeRepository, "_runtime_projection", unrelated_runtime_not_needed,
+    )
+    assert service.claim_assignment("gpu-agent", token) is None
+
+
 def test_agent_claim_default_off_does_not_silently_schedule_remote_work(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
