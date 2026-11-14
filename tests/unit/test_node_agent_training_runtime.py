@@ -1161,11 +1161,20 @@ def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_
             transfer_timeout=10,
         )
 
-        assert runner.ready is True
-        assert runner.recovery_error == ""
-        assert workdirs.list_process_identities() == []
-        launched.process.wait(timeout=5)
-        assert (recovered / "input").exists() == checkpoint
+        if os.name == "nt":
+            # No Windows Job Object stop proof exists after restart. A known
+            # PID is not evidence that detached descendants can be reaped.
+            assert runner.ready is False
+            assert "Job Object" in runner.recovery_error
+            assert len(workdirs.list_process_identities()) == 1
+            assert launched.process.poll() is None
+            assert (recovered / "input/pixels").read_bytes() == b"temporary"
+        else:
+            assert runner.ready is True
+            assert runner.recovery_error == ""
+            assert workdirs.list_process_identities() == []
+            launched.process.wait(timeout=5)
+            assert (recovered / "input").exists() == checkpoint
         if checkpoint:
             assert (recovered / "project/last.pt").read_bytes() == b"last-checkpoint"
     finally:

@@ -281,6 +281,18 @@ class AgentTrainingRunner:
                 f"persisted training process identity is unsafe or unreadable: {error}"
             )
             return False
+        if os.name == "nt" and records:
+            # CREATE_NEW_PROCESS_GROUP is not a Windows Job Object. After a
+            # Node Agent restart we no longer own the original child handles,
+            # and a departed leader PID does not prove SDK/DataLoader children
+            # exited. Never erase the persisted identity or admit a new task
+            # without a durable OS job boundary and verified cleanup.
+            self._recovery_error = (
+                "Windows training recovery lacks Job Object descendant stop proof; "
+                "persisted process identity retained for "
+                + str(records[0]["task_id"])
+            )
+            return False
         for record in records:
             identity = ProcessIdentity(
                 pid=int(record["pid"]),

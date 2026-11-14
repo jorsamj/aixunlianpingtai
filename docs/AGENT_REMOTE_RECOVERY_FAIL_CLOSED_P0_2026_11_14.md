@@ -117,3 +117,10 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 最小修复只在通用 `cleanup` 中增加 `read_process_identity(lease)` 非空时拒绝，损坏的身份文件本就 fail closed；必须由先证明进程停止的控制路径显式 `clear_process_identity`，然后才允许目录删除。没有修改执行器正常结果上传、中央 hold 释放或模型运行。
 - 新负面测试覆盖“仅 PID 身份、无 intent”的真实磁盘目录，验证拒绝删除、身份完整保留；显式清除身份后才能继续清理。预期小范围影响：历史未清理的仅 PID 身份目录会继续 HOLD，需要可信核验才能释放，这是安全优先行为。
 - 当前精确 SHA CI 尚待完整验收。未修改生产，仍 NO-GO。
+
+## 2026-11-15 P0-01C Windows Agent 重启持久 PID 恢复 Fail-Closed（CI 待验）
+
+- 只读代码审计：`ProcessController.terminate_tree` 在原 leader PID 消失时调用 `_terminate_posix_group(identity.pid)`；Windows 下该方法立即返回，故原代码可能在未确认 DataLoader/SDK 子孙进程是否存活时，清除 `process-identity.json` 和 `process-launch-intent.json` 并重新上报 ready。普通 `CREATE_NEW_PROCESS_GROUP` 不等于 Windows Job Object。参考 [Microsoft Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
+- 最小安全门槛只限 **Agent 初始化后的持久进程恢复**：在 Windows，若训练/转换共享 Workdir 仍有任何持久 PID 身份，**两种 Runner 均不 ready、保留 PID 身份/启动标志并保持故障诊断**，不再推断旧计算已停止。Linux 现行恢复、中央调度、运行时任务上传和其他任务种类不改。
+- Windows 合同测试覆盖两类 runner 均拒绝恢复并保留 task/generation/PID/命令 hash、通用目录清理也拒绝；既有训练重启正面测试按平台分支检查 Linux 正常恢复、Windows 缺 Job proof 持续阻断。代价是 Windows Agent 重启后遇到历史计算记录将持续 HOLD，必须以后续受控可信恢复方案处理，不能人工删文件放行。
+- **范围边界**：这不意味着 Windows 正常任务退出时的子进程管理已经安全；本次没有实现真正 Job Object 的“先绑定再运行”、防逃逸继承、意外断电/断线恢复、停机确认或中央原子解锁。生产准入仍 NO-GO；不操作 A800、双4070 或生产数据。待精确 SHA 全量 Actions 通过后才认定代码层验收。
