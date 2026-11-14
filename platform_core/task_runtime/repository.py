@@ -1179,7 +1179,15 @@ class TaskRepository(InferenceResourceMethods):
                 )
             elif status is TaskStatus.RUNNING:
                 database.execute(
-                    "UPDATE tasks SET status='CANCEL_REQUESTED', stage='cancelling', updated_at=? WHERE task_id=?",
+                    """UPDATE tasks
+                          SET status='CANCEL_REQUESTED',
+                              stage=CASE
+                                  WHEN stage='recovery_blocked_remote_agent_unverified'
+                                      THEN stage
+                                  ELSE 'cancelling'
+                              END,
+                              updated_at=?
+                        WHERE task_id=?""",
                     (now, str(task_id)),
                 )
             database.commit()
