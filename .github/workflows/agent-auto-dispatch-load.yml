@@ -7,6 +7,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'scripts/perf/agent_auto_dispatch_bench.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/agent_execution.py'
+      - 'tests/unit/test_task_node_assignments.py'
       - '.github/workflows/agent-auto-dispatch-load.yml'
 
 permissions:
