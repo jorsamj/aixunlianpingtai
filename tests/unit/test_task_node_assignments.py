@@ -1839,3 +1839,59 @@ def test_agent_auto_full_agent_has_zero_candidate_payload_reads(tmp_path, monkey
     monkeypatch.setattr(artifacts, "read_json", track_reads)
     assert allocator.assign_next(agent_only=True) is None
     assert not reads, "A fully occupied Agent should short-circuit without JSON I/O"
+
+
+def test_legacy_training_auto_fallback_scan_is_bounded_and_advances(tmp_path, monkeypatch):
+    """Legacy payload-only remote intent must eventually be found without
+    reading the entire canonical local training:auto queue on every poll.
+    The cursor is an optimization hint across *new allocator instances*, not
+    an ownership or task-status source of truth.
+    """
+    repository, artifacts = runtime(tmp_path)
+    local_ids = []
+    for index in range(96):
+        task = create_task(
+            repository, artifacts, f"fallback-local-{index:03d}",
+            TaskKind.TRAINING, {"epochs": 2}, priority=1,
+        )
+        local_ids.append(task.task_id)
+    legacy_remote = create_task(
+        repository, artifacts, "fallback-legacy-remote",
+        TaskKind.TRAINING, {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        }, priority=50,
+    )
+    with repository._connect() as database:
+        database.executemany(
+            "UPDATE tasks SET resource_key='training:auto' WHERE task_id=?",
+            [(task_id,) for task_id in (*local_ids, legacy_remote.task_id)],
+        )
+    create_online_node(
+        repository, "fallback-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    real_read_json = artifacts.read_json
+    reads = []
+
+    def tracked_read(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return real_read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", tracked_read)
+    selected = None
+    for _ in range(4):
+        reads.clear()
+        # Emulate FastAPI per-request allocator reconstruction.
+        selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+        assert len(set(local_ids).intersection(reads)) <= 64, (
+            "Compatibility scan must be bounded per Agent polling request"
+        )
+        if selected is not None:
+            break
+    assert selected is not None, "Keyset fallback must not permanently starve legacy remote tasks"
+    assert selected["task_id"] == legacy_remote.task_id
+    assert selected["node_id"] == "fallback-agent"
