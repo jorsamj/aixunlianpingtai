@@ -101,3 +101,36 @@ test('negative categories are loaded only after a user selects the pool filter',
     assert.equal(calls.filter(url=>url.includes('/negative-pool/categories')).length,1);
   }finally{delete globalThis.window;delete globalThis.document;}
 });
+
+
+test('small filtered selection replaces an earlier frozen train reference before confirming', async () => {
+  const frozenRef = 'trainselection_' + 'a'.repeat(32);
+  const draft = {
+    algorithmId: 'alg', materialIds: [], testMaterialIds: [], newLabelCodes: [],
+    trainSelectionRef: frozenRef, trainSelectionCount: 22015,
+  };
+  const calls = [];
+  const h = setup(draft, async (url, options = {}) => {
+    calls.push(url);
+    if (url.endsWith('/bulk-selection')) return response({
+      items: ['filtered-a', 'filtered-b'], total: 2,
+      repository_revision: 1, annotation_revision: 2, usage_revision: 'u',
+    });
+    return response(page(1));
+  });
+  try {
+    await h.runtime.open('train');
+    await tick();
+    assert.equal(h.runtime.state().selected, 0);
+    await h.runtime.bulkAction('select-filtered');
+    assert.equal(calls.filter(url => url.endsWith('/bulk-selection')).length, 1);
+    assert.equal(h.runtime.state().selected, 2);
+    assert.equal(window.confirmTrainMaterialPickerV3(), true);
+    assert.deepEqual(h.patch.materialIds, ['filtered-a', 'filtered-b']);
+    assert.equal(h.patch.trainSelectionRef, '');
+    assert.equal(h.patch.trainSelectionCount, 0);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});

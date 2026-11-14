@@ -1301,6 +1301,13 @@ export function installTrainingMaterialPickerRuntime({
       }
       const blocked = blockedIds(picker.role);
       const eligible = result.ids.filter(id => !blocked.has(id));
+      if (picker.reference) {
+        // This successful explicit batch supersedes the previous frozen scope.
+        // Never display explicit IDs while confirm still submits the old ref.
+        // Keep the frozen scope intact on request/revision failures above.
+        picker.reference = null;
+        picker.selected.clear();
+      }
       if (action === 'select-filtered' || action === 'select-all') eligible.forEach(id => picker.selected.add(id));
       else if (action === 'invert-filtered' || action === 'invert-all') eligible.forEach(id => picker.selected.has(id) ? picker.selected.delete(id) : picker.selected.add(id));
       renderPage();
