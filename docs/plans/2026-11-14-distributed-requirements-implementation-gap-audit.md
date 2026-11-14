@@ -197,3 +197,15 @@
 3. 离线节点遗留 \`ASSIGNED\` / \`CLAIMED\`、旧执行进程仍存活的安全恢复尚未完成；本轮不擅自释放旧 assignment、不允许自动跨节点重复训练，需另外设计保守的 lease/generation/fencing 接管。
 4. P0-03 CPU/RAM/磁盘/I/O/执行槽硬预算、多 GPU 两任务真并行、远程素材检查/AI 标注/视频/标签统一 Runner、真实 OSS/NAS 数据亲和及控制端负载均未因本轮自动领取实现而完成。
 5. 没有访问、部署、重启或修改 A800/4070 的程序、数据或服务。生产升级、切换执行模式、打开 \`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM=1\` 必须经过**单独授权、当前系统只读核验、备份、隔离 UAT 和明确回滚预案**。
+
+
+### 10.4 P0-01A 追加审计：写锁隔离、本地训练防抢占、大队列可发现性
+
+> 2026-11-14 接续 \`0c18f58c97e923226bd04318c55176cc9215bae2\` 之后的第二轮最小专项，仅涉及 \`platform_core/task_node_assignments.py\` 和 \`tests/unit/test_task_node_assignments.py\`；准确新 SHA CI 未终态时均按 **PENDING / NOT VERIFIED** 记录，不把代码提交称为验收成功。
+
+1. **读取本地队列不持有写锁：** 原 \`assign_next(agent_only=True)\` 在 \`BEGIN IMMEDIATE\` 后 \`SELECT task.*\` 并逐个读取本地素材/训练请求文件；如果大量本地排队任务存在，高频 Agent 轮询会独占 SQLite Writer，风险覆盖 A800 本地 Worker/Task API。新增 RED \`1d9f15a26d6f5b40fdc592cbf433eb96557b3af6\`：在读取本地任务 JSON 时独立 SQLite 连接尝试 \`BEGIN IMMEDIATE\`，要求不被 Agent 扫描阻塞。修复 \`2c71c92c1f0da6d53b70c5c6e92e5a415d93e2df\`：Agent-only 先使用读连接筛选支持 TaskKind、明确 Agent 模式及合法 portable 合同，释放读连接后进入原唯一事务，按候选 ID 重新验证 QUEUED/无活动 Assignment，再计算实际在线节点与 GPU/单执行槽。**人工 \`assign_next()\` 原逻辑未改**。
+2. **显式远程训练不得被本地 Worker 先领走：** 正式 \`RemoteTrainingPreparation._activate_target\` 会把远程目标标记为 \`training:remote:scheduler\`。原 \`AssignmentAwareFencedTaskRepository.claim_next\` 只检查已有 Assignment，尚未自动派单时本地训练 Worker 可能先领取；其原 GPU 准入又显式跳过 \`training:remote:\`，存在执行 Owner 错乱风险。新增 RED \`977becf3acb3f6856f47d1fb6d7e8184c635c304\`；修复 \`e0580d1529d1866e2379d7ccc4c287907350b6bd\` 在原本地领取守卫只针对 \`TaskKind.TRAINING\` 且 \`resource_key.startswith("training:remote:")\` 拒领并返回可诊断原因；不拦截普通 A800 本地训练，Agent 仍使用现有原子 QUEUED→RUNNING 租约。
+3. **较大队列防饿死功能测试：** \`cae3d4dcc9fd8b18706b285f487a23961890ac77\` 增加 1,500 条隔离生成本地训练队列元数据、末尾低优先级可移植 Agent 任务场景；\`9ea32ddf35275d16b51b2afc10ff4c8933490857\` 用一次 SQLite 事务批量生成测试数据，避免逐条 autocommit 污染结果。验证目标是**远程任务仍可被正确找到**，不是 1,500 条真实图像读写或 P95 压测。
+4. **进一步收敛预检与心跳时间：** \`99d622f914948fa424b099c170619062fc57cea2\` 在 Agent-only 预筛查 SQL 排除不支持远程执行器的 TaskKind，获取真正 Writer 事务后刷新在线心跳时钟；避免慢预检的过时在线证据导致错误分配。仍在原事务内重新检查严格 Node Pin、能力、GPU 与执行槽。
+5. **严格风险边界：** 这一版没有新增 DB schema、第二队列、任务迁移、自动释放过期远程 Assignment、GPU 并行执行器或 Worker 守护进程。真实多节点 10k+ QUEUED Agent 高频轮询仍可能占用 API CPU/磁盘读取，需真实不同排队比例下测量 P50/P95、SQLite \`busy\` 次数和远程候选扫描成本；未证明 20k/200k 全量队列在生产下达标。Agent 失联与旧进程未知时不得自动跨节点重派；后续 P0-01B / P0-03 独立处理。
+6. **CI 与生产：** P0-01A 初始 HEAD \`0c18f58c97e923226bd04318c55176cc9215bae2\` 的 \`Central Node Assignment\`（run 43564229848）首次查询为 SUCCESS，而 \`Node Agent Executor\`（run 43564229918）及其余相关工作流仍未终态；最新这一批完整 Linux/Windows、HTTP、Agent、真多节点、真实 A800/4070/OSS 性能和生产部署均需要独立验收。不开启 \`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM\`，不操作生产环境。
