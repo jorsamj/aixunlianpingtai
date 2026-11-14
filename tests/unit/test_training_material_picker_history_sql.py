@@ -574,21 +574,8 @@ def test_common_gt_positive_keeps_existing_sql_plan(tmp_path, monkeypatch):
             sample_role="positive", limit=10, count_mode="deferred")
     assert len(result["items"]) == 10
     assert result["has_next"] is True
-    # Exact-count mode, multi-label and negative role must never probe the
-    # sparse-positive gate, regardless of which labels they contain.
-    with monkeypatch.context() as patch:
-        patch.setattr(api, "_sparse_positive_gt_label",
-                      lambda *args, **kwargs: (_ for _ in ()).throw(
-                          AssertionError("non-sparse paths must not probe")))
-        for filters, mode in [
-            ({"__role_target": {"labels": ["person"], "negative": True}}, "deferred"),
-            ({"__role_target": {"labels": ["person", "other"], "negative": False}}, "deferred"),
-            ({"__role_target": {"labels": ["person"], "negative": False}}, "exact"),
-        ]:
-            # The gate itself is deliberately called for these cases, but it
-            # returns before querying the GT index; validate via a fresh DB
-            # connection below instead of using the page monkeypatch.
-            pass
+    # Exact-count mode, multi-label and negative role must skip the
+    # sparse-positive decision. Validate the decision function directly.
     import sqlite3
     with sqlite3.connect(repo.path) as db:
         db.execute("ATTACH DATABASE ? AS annotation_gt", (str(gt.path),))
