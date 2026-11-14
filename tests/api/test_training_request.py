@@ -2278,6 +2278,8 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
         read_selection, selection_context, validate_payload_references,
     )
 
+    from time import perf_counter
+    phase_ms = {}
     project_id, _seed = seeded_project
     image_ids = [f"scale-image-{i:06d}" for i in range(batch_size)]
     materials = platform.material_store(project_id)
@@ -2315,10 +2317,12 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
     }
     # The same filtered endpoint used by the picker must freeze exactly the
     # matching IDs, not all processed materials or just the first visible page.
+    phase_started = perf_counter()
     freeze_response = client.post(
         f"/api/v62/projects/{project_id}/training-materials/selection-reference",
         json={**request, "role": "train", "query": "scale-image-"},
     )
+    phase_ms["http_freeze"] = round((perf_counter() - phase_started) * 1000, 3)
     assert freeze_response.status_code == 200, freeze_response.text
     receipt = freeze_response.json()
     assert receipt["count"] == batch_size
@@ -2328,9 +2332,29 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
         platform.DATA_DIR, project_id, platform.TrainReq(**request).model_dump(mode="json"),
     )
     assert read_selection(platform.DATA_DIR, receipt["selection_ref"], bound_context) == image_ids
-    request["train_selection_ref"] = receipt["selection_ref"]
+    # The create form reads the selected formal-GT summary by reference, not
+    # by sending 20k/30k explicit image IDs back across HTTP.
+    phase_started = perf_counter()
+    summary_response = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-summary",
+        json={**request, "train_selection_ref": receipt["selection_ref"],
+              "image_ids": [], "summary_only": True},
+    )
+    phase_ms["http_gt_summary"] = round((perf_counter() - phase_started) * 1000, 3)
+    assert summary_response.status_code == 200, summary_response.text
+    summary = summary_response.json()
+    assert summary["selection_reference"] is True
+    assert summary["requested_count"] == batch_size
+    assert summary["matched_count"] == batch_size
+    assert summary["selectable_count"] == batch_size
+    assert summary["missing_image_ids"] == []
+    assert "image_ids" not in summary
+    assert len(summary_response.content) < 5000
 
+    request["train_selection_ref"] = receipt["selection_ref"]
+    phase_started = perf_counter()
     response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    phase_ms["http_create"] = round((perf_counter() - phase_started) * 1000, 3)
     assert response.status_code == 202, response.text
     created = response.json()
     parent_id = created["task"]["id"]
@@ -2359,8 +2383,10 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
         artifacts=platform.shared_task_artifacts(),
         heartbeat=lambda **_kwargs: None,
     )
+    phase_started = perf_counter()
     with pytest.raises(InterruptedError, match="isolated stop"):
         handler.run(context)
+    phase_ms["prepare_reference_guard"] = round((perf_counter() - phase_started) * 1000, 3)
     assert received == image_ids
     assert platform.shared_task_repository().get(parent_id).status is TaskStatus.QUEUED
     assert not platform.shared_task_artifacts().artifact_path(
@@ -2373,6 +2399,16 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
                 **persisted, "train_image_ids": image_ids[:-1],
             },
         )
+    print("picker_control_plane_timing " + json.dumps({
+        "scope": "isolated in-process HTTP and real SQLite; not production",
+        "batch_size": batch_size,
+        "phase_ms": phase_ms,
+        "receipt_bytes": len(freeze_response.content),
+        "summary_bytes": len(summary_response.content),
+        "submitted_ids": len(persisted["train_image_ids"]),
+        "worker_checked_ids": len(received),
+        "preparation_stage": "reference guard only; GT/image I/O intentionally not executed",
+    }, sort_keys=True))
 
 
 def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
