@@ -91,9 +91,9 @@ jobs:
           tests/api/test_training_material_selection_summary_api.py
           tests/api/test_runtime_router_app_mount.py
           tests/api/test_platform_performance_diagnostics.py
-      - name: Frozen 20k HTTP to Prepare Worker identity and real-GT small-cohort contract
+      - name: Frozen 20k/30k HTTP freeze-summary-create-Worker timeline and real-GT small-cohort contract
         run: >-
-          python -m pytest -q
+          python -m pytest -q -s
           tests/api/test_training_request.py::test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard
           tests/api/test_training_request.py::test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu
       - name: Isolated picker timing evidence (not production)
