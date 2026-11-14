@@ -103,3 +103,37 @@
 2. Linux PoC GREEN 才能提议 01C-2C；Windows 以 CreateJobObject/AssignProcessToJobObject、挂起启动后先绑定及 KILL_ON_JOB_CLOSE 另做验收。
 3. 双 OS 边界验证后，才研究原节点 challenge / boot-session / generation 签名和 SQLite `BEGIN IMMEDIATE` 事务；本轮绝不开发自动解除 HOLD。
 4. Issue #27 的前端重复失败仍为独立事项。即使本次 `e515ce7` 前端工作流通过，也不等于已消除它们的根因。
+
+## 8. 2026-11-15 P0-01C-2A/2B 第一轮实际开发（工具/隔离合同，不接业务 Runner）
+
+### 准确变更范围
+
+- `tools/poc/linux_cgroup_probe.py`：纯 Python 标准库、**只读**的 Linux cgroup v2 / systemd user bus / 非 root 账号 / 自身 cgroup / boot ID 环境预检；不列出 user manager 环境秘密，不创建 unit、改 cgroup 或接触中央平台。输出 `eligible_for_poc` 仅代表“具备进入下一项测试的初步条件”，绝不是停机证明。
+- `tools/poc/linux_cgroup_poc.py`：默认 `NOT_EXECUTED`；显式 `--run --isolated-test-host` 后，只有预检满足才试图在 **当前非 root 用户的 systemd user manager** 创建随机 `clpoc-<nonce>.service`。由 systemd manager 启动纯 CPU Python + `start_new_session=True` 的后代，校验 unit Id、InvocationID、MainPID、PID start ticks、`/proc/<pid>/cgroup` 与 `cgroup.events populated=1` 一致，然后对模拟 Agent launcher 执行 SIGKILL，确认被 systemd 管理的后代仍受管；仅在原 InvocationID 不变时尝试停止 unit，再读取正确 cgroup `populated=0`。缺失、消失、权限错误、身份不符或事件不可读均为 UNKNOWN/HOLD。独立测试服务 `RuntimeMaxSec=25s`，不接 GPU/OSS/中央接口。
+- `tests/unit/test_linux_cgroup_poc_contract.py`：6 个便携合同（mountinfo / unified path / cgroup.events 负面、cgroup 前缀身份拒绝、CLI 默认不可启动、环境阻断不应 spawn）。
+- `.github/workflows/node-agent-executor.yml`：仅新增独立 contract step 及新增文件 path triggers；Linux+Windows 都跑上述**纯合同测试**。**不在 Actions 中自动创建真实 systemd service，不把 6 项测试写成 kernel-proof。**旧 Agent/训练/转换/前端/DB 路径未改。
+
+### 本轮实测记录（务必区分环境）
+
+- 文档上一次 HEAD `e22662ef530f5ed6f368e1f0c1d91c9d70ed1432` 的 **22/22 Actions completed SUCCESS**（历史文档提交）。
+- 在**本会话使用的隔离 Linux 容器**（不是 A800，也不是双4070，也不是正式 GPU 多服务器）运行：
+  - probe 发现 cgroup2 mount `/sys/fs/cgroup`、可读控制器与 events、systemd 工具存在；但当前账户是 root，且没有可用 user bus / user manager；
+  - 返回 `NON_ROOT_REQUIRED`、`USER_BUS_UNAVAILABLE`、`USER_MANAGER_UNREACHABLE`，exit code `2`，**真实 systemd transient service PoC BLOCKED_ENVIRONMENT**；
+  - Python 语法检查通过；便携合同本地 `6 passed`；PoC 默认无参返回 `NOT_EXECUTED`，显式实测环境仍返回 `BLOCKED_ENVIRONMENT`。
+- 新增 workflow 合同提交 `1f257e24fe8a88f61cb4dd59e5e4557998788998` 后已触发 GitHub CI（Node Agent Push/PR 均排队）；在该 SHA 完整终态取得前不得称新提交已全绿。
+- **没有可信 stop proof**、没有真实 cgroup 写入试验、没有测试 OSS/GPU/跨节点 Agent。纯代码合同绿色不能降低生产 NO-GO。
+
+### 独立测试机执行手册（只准非生产、非 root）
+
+```bash
+python tools/poc/linux_cgroup_probe.py
+# 仅当结果 eligible_for_poc=true 且确认是专门隔离测试机：
+python tools/poc/linux_cgroup_poc.py
+# 默认必须显示 NOT_EXECUTED；只有明确接受临时 CPU systemd user unit 的测试环境才执行：
+python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
+```
+
+- `0`：**仅说明这一轮 CPU/systemd 内核 PoC 验证路径取得正向观测，仍不是中央 stop proof**；`2`：环境阻断/未授权启动；`3`：身份或停止无法验证，保持 UNKNOWN/HOLD。
+- 任何对 cgroup 的 `populated=0` 核验须在对应 task/代数/unit 实例身份已被证明、未失去 OS 边界控制时才有意义；unit 被 systemd GC、路径消失或者观察窗口丢失不得算成功。
+- 不要为了使测试通过而以 root 运行 Agent、打开自动派单、手工删除历史 PID 证据或在生产服务器创建 user unit。
+- 后续尚需测试 rootless 权限模型、user manager 失效、unit 名称复用、复杂多级子孙、权限逃逸/迁移、OOM、完整 DataLoader/GPU SDK、真实二节点 UAT；只有之后才评估 Linux Runner adapter。
