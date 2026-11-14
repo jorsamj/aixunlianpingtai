@@ -127,3 +127,18 @@
 ---
 
 **交接结论**：当前最重要的不是“再加更多调度按钮”，而是补齐**每代任务的 OS 可信执行边界与退出证明**。在此之前保持远端不明任务 HOLD、远程自动派单 OFF、生产 NO-GO；已获 GitHub Actions GREEN 的仅是对应 SHA 的代码保护与隔离测试，不能推导为真实生产安全上线。
+
+## 9. 2026-11-15 续审索引：P0-01C-2A/2B 实际 PoC 与仍未完成的验收
+
+> **本节晚于第 2 节历史交接快照；若数字冲突，以准确 SHA 的 GitHub Actions API 最新查询为准。**
+>
+> 本轮所有改动严格在 `feature/external-algorithm-publishing` 的 `tools/poc`、`tests/unit`、`.github/workflows/node-agent-executor.yml`、docs；**未改业务训练/转换 Runner、中央 owner/租约/SQLite、任何生产服务或配置**。
+
+- 上一阶段业务代码 `e515ce7`：**27/27 workflow completed SUCCESS**；历史 docs-only `e22662e`：**22/22 SUCCESS**。这两个数字都**不是本次新增 PoC 代码 CI**。
+- 本轮完成：Linux cgroup v2/systemd 非 root **只读能力预检工具** `tools/poc/linux_cgroup_probe.py`；需显式 `--run --isolated-test-host` 才会进入的 **隔离 CPU/systemd transient user service PoC** `tools/poc/linux_cgroup_poc.py`；新增 **12 个便携合同**（`tests/unit/test_linux_cgroup_poc_contract.py`）；已接 Node Agent Ubuntu/Windows CI 的纯合同 step。
+- 本地隔离容器：`python -m py_compile` 成功；**12 passed**；probe 确认 cgroup v2 可读但当前为 root、缺 user bus/user manager，所以真实 transient service 内核 PoC **BLOCKED_ENVIRONMENT**。这不代表真实 Linux OS 停机证明通过。
+- PoC 入口检查非 root、随机 unit 命名、测试 manifest/boot ID 和 payload 当前 cgroup；停机前须匹配 `Id + ControlGroup + InvocationID`；只有 cgroup `populated=0` 且已知测试父/子 PID+启动 tick 都已不在执行才允许**本地 PoC**返回 `LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF`。权限/身份不符、PID 复用、unit/cgroup 被 systemd 回收均 UNKNOWN/HOLD；尚无法证明未知后代永不逃逸。
+- 新增 PoC 合同准确代码提交：`675b4e538134d9553209db72a4c68bf9f25e42fa`；核查时其 23 个 GitHub Actions **全部 queued**，无实际 Job 日志、不能宣称 GREEN；随后 docs 另有提交，仅用于进度记录。排队根因尚未证实，不盲重跑。
+- **下一步**：先取精确 SHA 的最终 CI，随后才在经确认的**非生产、非 root、有 user manager 的 Ubuntu 22.04 隔离机**做真实 CPU cgroup PoC，记录 unit GC/进程逃逸失败场景，再决定是否进入 Linux Runner adapter。Windows Job Object、中央新鲜挑战 + SQLite 原子恢复和真实两物理机 GPU UAT 继续独立待办。
+- **完整审计与手册**：[`P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md`](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。Issue #26 继续追踪可信恢复；Issue #27 仍独立追踪前端回归。
+- **生产 NO-GO**；`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` 继续 OFF；不得删除 PID/启动证据、跳过 HOLD、把 `stop_proof_verified` 改成 true、触及 A800/4070 生产服务或数据。
