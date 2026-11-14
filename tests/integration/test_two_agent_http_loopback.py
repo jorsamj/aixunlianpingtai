@@ -350,3 +350,244 @@ def test_two_real_node_agent_processes_heartbeat_claim_and_fail_safely(tmp_path,
                     process.wait(timeout=5)
             for handle in handles:
                 handle.close()
+
+
+def test_real_http_agent_deployment_success_upload_confirm_and_durable_result(tmp_path, monkeypatch):
+    """Genuine HTTP control plane + actual isolated child process + fake object store.
+
+    Uses the production NodeExecutorClient, AgentDeploymentRunner and
+    NodeAgentExecutorLoop, with a synthetic inference entrypoint confined to
+    tmp_path. This proves the full result publication protocol, NOT actual
+    YOLO inference, GPU readiness or an external OSS account.
+    """
+    import hashlib
+    from pathlib import Path
+    import sys
+
+    from fastapi import HTTPException, Request, Response
+    from platform_core.node_agent_deployment_runtime import AgentDeploymentRunner
+    from platform_core.node_agent_executor_loop import NodeAgentExecutorLoop
+    from platform_core.node_agent_executor_runtime import AgentExecutionWorkdir
+    from platform_core.task_runtime import TaskStatus
+
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    nodes = ServiceNodeRepository(repository)
+    input_bytes = b"isolated-small-image-fixture"
+    output_bytes = b"isolated-rendered-result"
+    payloads = {}
+    uploads = {}
+    base = {"url": ""}
+    source_reads = []
+    signed_prepares = []
+    upload_confirms = []
+
+    def sha(value):
+        return hashlib.sha256(value).hexdigest()
+
+    for name in ("positive-agent-a", "positive-agent-b"):
+        _, token = nodes.create({
+            "node_id": name,
+            "display_name": name,
+            "connection_mode": "agent",
+            "allowed_capabilities": ["deployment-test"],
+        })
+        nodes.heartbeat(name, token, {
+            "reported_capabilities": ["deployment-test"],
+            "resources": {
+                "cpu": {"logical_cores": 4},
+                "memory": {"available_bytes": 16 * 1024**3},
+                "disk": {"free_bytes": 50 * 1024**3},
+                "gpu": {"available": False, "gpus": []},
+            },
+        })
+        payloads[name] = token
+        key = "positive-task-" + name[-1]
+        artifacts.atomic_write_json(key, "request.json", {
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": name},
+            "remote_execution": {
+                "version": 1, "task_kind": "DEPLOYMENT_TEST",
+                "transport": "object-storage-v1",
+            },
+        })
+        repository.create(TaskRecord.new(
+            task_id=key,
+            project_id="isolated-positive-result",
+            kind=TaskKind.DEPLOYMENT_TEST,
+            payload_ref="request.json",
+            resource_key="deployment-test:remote:" + key,
+        ), artifacts=artifacts)
+
+    def portable_payload(task, _payload, assignment):
+        return {
+            "schema_version": 1,
+            "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+            "framework": "ultralytics",
+            "runtime_format": "pt",
+            "confidence": 0.25,
+            "input": {
+                "type": "object",
+                "download": {
+                    "method": "GET",
+                    "url": base["url"] + "/isolated-objects/input/" + task.task_id,
+                    "headers": {},
+                    "size_bytes": len(input_bytes),
+                    "sha256": sha(input_bytes),
+                    "file_name": "input.jpg",
+                },
+            },
+            # The temporary child runner below only records this model name.
+            "model": {"type": "official", "reference": "yolo11n.pt"},
+            "output": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": "isolated-object-store",
+                    "object_key": task.task_id + "/result.jpg",
+                    "file_name": "result.jpg",
+                    "content_type": "image/jpeg",
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+            "selected_device": "cpu",
+        }
+
+    def prepare_upload(task, _payload, evidence):
+        key = (task.task_id, int(evidence["execution_generation"]))
+        signed_prepares.append(key)
+        return {
+            "already_uploaded": key in uploads,
+            "sha256": evidence["sha256"],
+            "size_bytes": evidence["size_bytes"],
+            "storage_ref": {
+                "storage_source_id": "isolated-object-store",
+                "object_key": task.task_id + "/result.jpg",
+                "file_name": "result.jpg",
+                "content_type": "image/jpeg",
+            },
+            "upload": None if key in uploads else {
+                "method": "PUT",
+                "url": base["url"] + f"/isolated-objects/output/{task.task_id}/{key[1]}",
+                "headers": {
+                    "Content-Length": str(evidence["size_bytes"]),
+                    "x-amz-meta-sha256": evidence["sha256"],
+                    "If-None-Match": "*",
+                },
+                "overwrite_protected": True,
+            },
+        }
+
+    def confirm_upload(task, _payload, evidence):
+        key = (task.task_id, int(evidence["execution_generation"]))
+        content = uploads.get(key)
+        if (
+            content is None
+            or len(content) != evidence["size_bytes"]
+            or sha(content) != evidence["sha256"]
+        ):
+            raise ValueError("isolated uploaded object evidence mismatch")
+        upload_confirms.append(key)
+        return {"result": {
+            "output_storage": {
+                "storage_source_id": "isolated-object-store",
+                "object_key": task.task_id + "/result.jpg",
+                "file_name": "result.jpg",
+                "content_type": "image/jpeg",
+            },
+        }}
+
+    app = FastAPI()
+    app.include_router(agent_executor_router(
+        lambda: repository, lambda: artifacts,
+        execution_payload_resolver=portable_payload,
+        result_upload_preparer=prepare_upload,
+        result_upload_confirmer=confirm_upload,
+    ))
+
+    @app.get("/isolated-objects/input/{task_id}")
+    def download_input(task_id: str):
+        source_reads.append(task_id)
+        return Response(
+            input_bytes, media_type="image/jpeg",
+            headers={"Content-Length": str(len(input_bytes))},
+        )
+
+    @app.put("/isolated-objects/output/{task_id}/{generation}")
+    async def upload_result(task_id: str, generation: int, request: Request):
+        content = await request.body()
+        if (
+            request.headers.get("if-none-match") != "*"
+            or request.headers.get("x-amz-meta-sha256") != sha(content)
+            or request.headers.get("content-length") != str(len(content))
+            or (task_id, generation) in uploads
+        ):
+            raise HTTPException(409, "isolated upload evidence or overwrite guard failed")
+        uploads[(task_id, generation)] = content
+        return {"ok": True}
+
+    with _loopback_server(app) as address:
+        base["url"] = address
+        for name, token in payloads.items():
+            runtime_root = tmp_path / ("sandbox-runtime-" + name)
+            runtime_root.mkdir()
+            (runtime_root / "predict_ultralytics_runner.py").write_text(
+                """
+import argparse
+import json
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", required=True)
+parser.add_argument("--input", required=True)
+parser.add_argument("--output", required=True)
+parser.add_argument("--conf")
+parser.add_argument("--device", default="")
+options = parser.parse_args()
+assert Path(options.input).read_bytes() == b"isolated-small-image-fixture"
+assert options.device == "cpu"
+Path(options.output).parent.mkdir(parents=True, exist_ok=True)
+Path(options.output).write_bytes(b"isolated-rendered-result")
+print(json.dumps({"ok": True, "engine": "isolated-test-runner", "model": options.model}))
+""".strip() + "\n", encoding="utf-8",
+            )
+            client = NodeExecutorClient(address, name, token)
+            runner = AgentDeploymentRunner(
+                client,
+                AgentExecutionWorkdir(tmp_path / ("private-workdir-" + name)),
+                runtime_root=runtime_root,
+                python_by_framework={"ultralytics": sys.executable},
+                heartbeat_interval=1.0,
+                process_poll_interval=0.05,
+            )
+            executor = NodeAgentExecutorLoop(
+                client, runner, capabilities=["deployment-test"],
+            )
+            assert executor.run_once() is True
+            task_id = "positive-task-" + name[-1]
+            task = repository.get(task_id)
+            assert task is not None
+            assert task.status is TaskStatus.SUCCEEDED
+            assert task.worker_id is None
+            assert task.attempt == 1
+            assert task.result_ref == "remote-results/1/result.json"
+            result = artifacts.read_json(task_id, task.result_ref, default={})
+            assert result["engine"] == "isolated-test-runner"
+            assert result["output_size_bytes"] == len(output_bytes)
+            assert result["output_sha256"] == sha(output_bytes)
+            assert result["execution_generation"] == 1
+            evidence = artifacts.read_json(
+                task_id, "remote-results/1/upload.json", default={},
+            )
+            assert evidence["confirmed"] is True
+            assert evidence["node_id"] == name
+            assert uploads[(task_id, 1)] == output_bytes
+            assert executor.status().completed_tasks == 1
+            assert executor.status().last_outcome == "SUCCEEDED"
+            assert client.claim_assignment() is None
+
+    assert sorted(source_reads) == ["positive-task-a", "positive-task-b"]
+    assert sorted(signed_prepares) == [
+        ("positive-task-a", 1), ("positive-task-b", 1),
+    ]
+    assert sorted(upload_confirms) == sorted(signed_prepares)
