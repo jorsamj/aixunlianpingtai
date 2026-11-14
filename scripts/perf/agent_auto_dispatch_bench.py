@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timezone
 import json
 import platform
 from pathlib import Path
@@ -140,8 +141,16 @@ def run_case(size, agents, repeat, profile):
                 service = AgentExecutionService(
                     repo, artifacts, heartbeat_ttl_seconds=3600, auto_assign_enabled=True)
                 item = service.claim_assignment(node_id, token)
-                return (time.perf_counter() - begin) * 1000, (
-                    item["task"]["task_id"] if item else None), None
+                claim = None
+                if item:
+                    assignment = item["assignment"]
+                    claim = {
+                        "task_id": item["task"]["task_id"],
+                        "token": assignment["assignment_lease_token"],
+                        "expires_at": assignment["lease_expires_at"],
+                        "observed_at": datetime.now(timezone.utc).timestamp(),
+                    }
+                return (time.perf_counter() - begin) * 1000, claim, None
             except Exception as error:
                 return (time.perf_counter() - begin) * 1000, None, f"{type(error).__name__}: {error}"
         start = time.perf_counter()
@@ -150,10 +159,30 @@ def run_case(size, agents, repeat, profile):
         wall_s = round(time.perf_counter() - start, 3)
         stop.set()
         watcher.join(timeout=2)
-        claims = [task_id for _, task_id, _ in results if task_id]
+        claims = [claim for _, claim, _ in results if claim]
         failures = [error for _, _, error in results if error] + writer["errors"]
-        if len(claims) != len(set(claims)):
-            raise AssertionError("FENCING_BROKEN: duplicate execution claims")
+        # CLAIMED is an expiring reservation, not a started execution. A task
+        # whose Agent never calls /start can be offered again with a new token
+        # after its prior claim lease expires. That is not duplicate execution.
+        # Only overlapping valid claim tokens would violate exclusive claiming.
+        by_task = {}
+        overlap = []
+        lease_reissues = 0
+        for claim in sorted(claims, key=lambda value: value["observed_at"]):
+            prior = by_task.get(claim["task_id"])
+            if prior is not None:
+                lease_reissues += 1
+                prior_expires = datetime.fromisoformat(
+                    str(prior["expires_at"]).replace("Z", "+00:00")
+                ).timestamp()
+                if (
+                    prior["token"] == claim["token"]
+                    or claim["observed_at"] < prior_expires - 0.5
+                ):
+                    overlap.append(claim["task_id"])
+            by_task[claim["task_id"]] = claim
+        if overlap:
+            failures.append(f"OVERLAPPING_CLAIM_TOKENS: {overlap[:5]}")
         with closing(repo._connect()) as db:
             active = db.execute(
                 "SELECT COUNT(*) FROM task_node_assignments WHERE state IN ('ASSIGNED','CLAIMED')"
@@ -165,7 +194,10 @@ def run_case(size, agents, repeat, profile):
             "poll_latency": summary([ms for ms, _, _ in results]),
             "sqlite_writer_latency": summary(writer["latencies"]),
             "sqlite_writer_busy": writer["busy"],
-            "unique_claims": len(claims), "active_assignments": active,
+            "total_claim_responses": len(claims),
+            "distinct_claimed_tasks": len(by_task),
+            "lease_reissues_without_start": lease_reissues,
+            "active_assignments": active,
             "errors": failures[:10],
         }
 
