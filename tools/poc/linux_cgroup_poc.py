@@ -41,6 +41,32 @@ def proc_start_ticks(pid: int) -> int:
     return int(suffix[19])
 
 
+def process_executing_by_identity(pid: int, expected_ticks: int) -> bool | None:
+    """True=old computation alive; False=gone or zombie; None=unverifiable.
+
+    PID reuse, malformed procfs and permissions are UNKNOWN, never proof.
+    """
+    try:
+        row = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        fields = row.rsplit(") ", 1)[1].split()
+        if int(fields[19]) != int(expected_ticks):
+            return None
+        return fields[0] not in {"Z", "X", "x"}
+    except (IndexError, ValueError, OverflowError):
+        return None
+
+
+def same_unit_instance(observed: dict[str, str], expected: dict[str, str]) -> bool:
+    """Stop only the exact unit instance first observed, never name alone."""
+    keys = ("Id", "ControlGroup", "InvocationID")
+    return all(expected.get(key) and observed.get(key) == expected[key] for key in keys)
+
+
 def process_in_cgroup(pid: int, group: str) -> bool:
     """Exact, current /proc binding; does not alone certify no historical escape."""
     if not group.startswith("/") or group == "/":
@@ -202,8 +228,8 @@ def run_poc() -> tuple[dict, int]:
             if not result["launcher_sigkill"] or not result["compute_survived_launcher"]:
                 result["outcome"] = "CRASH_BEHAVIOR_UNEXPECTED_HOLD"
                 return result, 3
-            # Only stop our exact randomly named unit if invocation still matches.
-            if unit_info(unit).get("InvocationID") != invocation:
+            # Recheck unit Id, ControlGroup and invocation before requesting stop.
+            if not same_unit_instance(unit_info(unit), initial):
                 result["outcome"] = "UNIT_REPLACED_HOLD"
                 return result, 3
             stopped = command(["systemctl", "--user", "--no-ask-password", "stop", unit], 8)
@@ -215,10 +241,18 @@ def run_poc() -> tuple[dict, int]:
             # removed path. systemd may GC the unit immediately after stop.
             result["cgroup_empty_verified"] = wait_for(
                 lambda: cg_populated(mount, group) == 0, 2)
+            # cgroup.events=0 is not sufficient if a previously-bound known
+            # child has moved elsewhere and is still computing.
+            known = ((ids["parent_pid"], ids["parent_ticks"]),
+                     (ids["child_pid"], ids["child_ticks"]))
+            result["known_processes_stopped"] = wait_for(
+                lambda: all(process_executing_by_identity(pid, ticks) is False
+                            for pid, ticks in known), 2)
+            local_pass = (result["cgroup_empty_verified"] and
+                          result["known_processes_stopped"])
             result["outcome"] = ("LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF"
-                                 if result["cgroup_empty_verified"] else
-                                 "CGROUP_GONE_OR_NOT_EMPTY_HOLD")
-            return result, 0 if result["cgroup_empty_verified"] else 3
+                                 if local_pass else "STOP_OR_MEMBERSHIP_UNVERIFIED_HOLD")
+            return result, 0 if local_pass else 3
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             result["outcome"] = "UNKNOWN_HOLD"
             result["error_type"] = type(error).__name__
@@ -232,7 +266,7 @@ def run_poc() -> tuple[dict, int]:
             # RuntimeMaxSec bounds the synthetic workload to 25 seconds.
             if started and bound:
                 try:
-                    if unit_info(unit).get("InvocationID") == initial.get("InvocationID"):
+                    if same_unit_instance(unit_info(unit), initial):
                         command(["systemctl", "--user", "--no-ask-password", "stop", unit], 8)
                 except (OSError, RuntimeError, subprocess.TimeoutExpired):
                     pass
