@@ -1705,3 +1705,137 @@ def test_running_agent_still_excludes_its_gpu_after_assignment_release():
         assert _assigned_gpu_ids(database, "gpu-node") == set()
     finally:
         database.close()
+
+
+# P0-01A performance RED: Agent-only polling must not turn a huge local or
+# already-unschedulable queue into unbounded JSON reads. No production data.
+def test_agent_auto_skips_canonical_local_training_queue_without_payload_scan(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    local_ids = []
+    for index in range(48):
+        task = create_task(
+            repository, artifacts, f"local-auto-{index:03d}", TaskKind.TRAINING,
+            {"epochs": 2}, priority=1,
+        )
+        local_ids.append(task.task_id)
+    with repository._connect() as database:
+        database.executemany(
+            "UPDATE tasks SET resource_key='training:auto' WHERE task_id=?",
+            [(task_id,) for task_id in local_ids],
+        )
+    create_task(
+        repository, artifacts, "remote-after-auto", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        }, priority=50,
+    )
+    create_online_node(
+        repository, "available-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    read_ids = []
+    read_json = artifacts.read_json
+
+    def track_reads(task_id, *args, **kwargs):
+        read_ids.append(task_id)
+        return read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", track_reads)
+    selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert selected is not None and selected["task_id"] == "remote-after-auto"
+    assert not set(local_ids).intersection(read_ids), (
+        "Canonical local-only training:auto tasks must not require JSON reads"
+    )
+
+
+def test_agent_auto_eligible_remote_head_does_not_read_entire_queue(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    for index in range(64):
+        create_task(
+            repository, artifacts, f"eligible-remote-{index:03d}",
+            TaskKind.TRAINING, {
+                "target": "remote",
+                "remote_execution": {
+                    "version": 1, "task_kind": "TRAINING",
+                    "transport": "object-storage-v1",
+                },
+            },
+        )
+    create_online_node(
+        repository, "free-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    reads = []
+    read_json = artifacts.read_json
+
+    def track_reads(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", track_reads)
+    selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert selected is not None
+    assert len(set(reads)) <= 16, (
+        "An immediately runnable head must not pre-read every remote payload"
+    )
+
+
+def test_agent_auto_scans_past_many_offline_pins_to_later_eligible_task(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    remote_contract = {
+        "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1",
+    }
+    for index in range(72):
+        create_task(
+            repository, artifacts, f"strict-offline-{index:03d}",
+            TaskKind.TRAINING, {
+                "target": "remote",
+                "scheduling": {"mode": "node", "node_id": "missing-agent"},
+                "remote_execution": remote_contract,
+            }, priority=1,
+        )
+    create_task(
+        repository, artifacts, "unblocked-after-pins", TaskKind.TRAINING, {
+            "target": "remote", "remote_execution": remote_contract,
+        }, priority=50,
+    )
+    create_online_node(
+        repository, "live-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert selected is not None
+    assert selected["task_id"] == "unblocked-after-pins"
+    assert selected["node_id"] == "live-agent"
+
+
+def test_agent_auto_full_agent_has_zero_candidate_payload_reads(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    remote_contract = {
+        "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1",
+    }
+    for index in range(40):
+        create_task(
+            repository, artifacts, f"busy-remote-{index:03d}", TaskKind.TRAINING,
+            {"target": "remote", "remote_execution": remote_contract},
+        )
+    create_online_node(
+        repository, "single-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next(agent_only=True) is not None
+    reads = []
+    read_json = artifacts.read_json
+
+    def track_reads(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", track_reads)
+    assert allocator.assign_next(agent_only=True) is None
+    assert not reads, "A fully occupied Agent should short-circuit without JSON I/O"
