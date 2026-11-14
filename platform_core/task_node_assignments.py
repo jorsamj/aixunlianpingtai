@@ -1189,6 +1189,33 @@ class CentralTaskAllocator:
         """
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
+        # A normal empty Agent poll has no state to mutate. Inspect only the
+        # current node's claimable/expired reservations and the shared CLEAN
+        # preemption queue before taking SQLite's single writer lock.
+        #
+        # This is a hint, never an ownership decision: an assignment created
+        # just after the read will be seen on the next poll. When work exists,
+        # the original BEGIN IMMEDIATE / lease-token fencing remains unchanged.
+        with closing(self.repository._connect()) as preflight:
+            possible_claim = preflight.execute(
+                """
+                SELECT 1 FROM task_node_assignments
+                 WHERE node_id=?
+                   AND (state='ASSIGNED'
+                     OR (state='CLAIMED' AND lease_expires_at IS NOT NULL
+                         AND lease_expires_at<=?))
+                 LIMIT 1
+                """,
+                (str(node_id), now),
+            ).fetchone()
+            if possible_claim is None:
+                # Even a node with no own assignments may be the poll that
+                # resumes a canceled CLEAN victim. Never drop this contract.
+                preemptions_waiting = preflight.execute(
+                    "SELECT 1 FROM task_preemptions WHERE state='WAITING_CANCEL' LIMIT 1"
+                ).fetchone()
+                if preemptions_waiting is None:
+                    return None
         expires = (now_dt + timedelta(seconds=max(5, int(lease_seconds)))).isoformat()
         token = secrets.token_urlsafe(24)
         with closing(self.repository._connect()) as database:
