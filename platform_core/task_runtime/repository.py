@@ -897,11 +897,24 @@ class TaskRepository(InferenceResourceMethods):
         if current_item is not None:
             updates.append("current_item=?")
             parameters.append(str(current_item))
-        parameters.extend([str(task_id), str(lease_token)])
+        # Generic local Worker heartbeat remains backward compatible, but a
+        # remote Agent may never refresh an expired execution or overwrite an
+        # unverified-stop safety hold. HTTP Agents normally use the stricter
+        # FencedTaskRepository; this closes the plain repository bypass.
+        parameters.extend([str(task_id), str(lease_token), now.isoformat()])
         with closing(self._connect()) as database:
             changed = database.execute(
                 f"UPDATE tasks SET {','.join(updates)} "
-                "WHERE task_id=? AND lease_token=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                """WHERE task_id=? AND lease_token=?
+                     AND status IN ('RUNNING','CANCEL_REQUESTED')
+                     AND (
+                         worker_id IS NULL OR worker_id NOT LIKE 'agent:%'
+                         OR (
+                             lease_expires_at IS NOT NULL
+                             AND lease_expires_at>?
+                             AND stage<>'recovery_blocked_remote_agent_unverified'
+                         )
+                     )""",
                 parameters,
             ).rowcount
         if changed != 1:
