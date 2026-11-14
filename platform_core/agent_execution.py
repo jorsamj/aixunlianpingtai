@@ -658,6 +658,46 @@ class AgentExecutionService:
             "task": _task_public(task),
         }
 
+    def remote_recovery_diagnosis(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Read-only stop-proof preflight, scoped to the original Agent.
+
+        No lease token, process credential or mutable recovery action is
+        exposed here. A new start/requeue requires a separate verified stop
+        protocol; node heartbeat alone is never such proof.
+        """
+        self._authenticate_node(
+            node_id, node_token, require_online=False, require_enabled=False,
+        )
+        task = self.repository.get(task_id)
+        if task is None or str(task.worker_id or "") != _agent_worker_id(node_id):
+            raise AgentExecutionError(
+                "TASK_NOT_FOUND", "no remote execution owned by this node", 404,
+            )
+        if (
+            task.status not in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}
+            or task.stage != "recovery_blocked_remote_agent_unverified"
+        ):
+            raise AgentExecutionError(
+                "REMOTE_RECOVERY_NOT_HELD",
+                "remote task is not awaiting a verified stop proof",
+                409,
+            )
+        return {
+            "task_id": task.task_id,
+            "node_id": str(node_id),
+            "execution_generation": int(task.attempt),
+            "task_status": task.status.value,
+            "recovery_state": "STOP_PROOF_REQUIRED",
+            "automatic_reassignment_allowed": False,
+            "stop_proof_verified": False,
+            "resource_wait_reason": task.resource_wait_reason,
+        }
+
     def start_execution(
         self,
         node_id: str,
@@ -2424,6 +2464,17 @@ def agent_executor_router(
     ):
         claimed = invoke(service().claim_assignment, node_id, token(authorization))
         return {"claimed": claimed is not None, "item": claimed}
+
+    @router.get("/executions/{task_id}/recovery")
+    def remote_recovery_diagnosis(
+        node_id: str,
+        task_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().remote_recovery_diagnosis,
+            node_id, token(authorization), task_id,
+        )
 
     @router.post("/assignments/{task_id}/start")
     def start_execution(
