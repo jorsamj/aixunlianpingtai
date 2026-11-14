@@ -167,6 +167,42 @@ def test_agent_claim_opt_in_automatically_allocates_only_explicit_remote_work(tm
     assert started["task"]["attempt"] == 1
 
 
+def test_agent_claim_opt_in_waits_for_running_slot_then_dispatches_next(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    for task_id in ("remote-one", "remote-two"):
+        create_task(repository, artifacts, task_id)
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        })
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    first = service.claim_assignment("gpu-agent", token)
+    assert first is not None
+    started = start(service, first["task"]["task_id"], "gpu-agent", token, first)
+
+    assert service.claim_assignment("gpu-agent", token) is None
+    assert service.allocator.list(active_only=True) == []
+
+    finished = service.finish_execution(
+        "gpu-agent", token, first["task"]["task_id"],
+        started["execution"]["lease_token"],
+        started["execution"]["generation"],
+        status="FAILED", error="synthetic finished slot",
+    )
+    assert finished["task"]["status"] == "FAILED"
+    second = service.claim_assignment("gpu-agent", token)
+    assert second is not None
+    assert second["task"]["task_id"] != first["task"]["task_id"]
+    assert len(service.allocator.list(active_only=True)) == 1
+
+
 def test_agent_claim_opt_in_rejects_wrong_token_without_allocating(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
