@@ -1113,6 +1113,12 @@ class TaskRepository(InferenceResourceMethods):
                     or int(row["attempt"]) == int(execution_generation)
                 )
             )
+            if owned and str(row["worker_id"] or "").startswith("agent:") and (
+                not row["lease_expires_at"]
+                or str(row["lease_expires_at"]) <= now
+                or current.stage == "recovery_blocked_remote_agent_unverified"
+            ):
+                owned = False
             if not owned:
                 database.rollback()
                 raise PermissionError("task execution does not own finalization")
@@ -1362,6 +1368,14 @@ class TaskRepository(InferenceResourceMethods):
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND (
+                       worker_id IS NULL OR worker_id NOT LIKE 'agent:%'
+                       OR (
+                           lease_expires_at IS NOT NULL
+                           AND lease_expires_at>?
+                           AND stage<>'recovery_blocked_remote_agent_unverified'
+                       )
+                   )
                 """,
                 (
                     status.value,
@@ -1376,6 +1390,7 @@ class TaskRepository(InferenceResourceMethods):
                     now,
                     str(task_id),
                     str(lease_token),
+                    now,
                 ),
             ).rowcount
         if changed != 1:
