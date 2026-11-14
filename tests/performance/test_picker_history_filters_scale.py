@@ -48,3 +48,80 @@ def test_history_and_role_filter_scale(tmp_path,size):
             assert any('SEARCH t USING COVERING INDEX' in row for row in plan),plan
         print(json.dumps({'fixture_only':True,'rows':size,'operation':operation,'samples':7,
             'plan':plan,'p50_ms':round(statistics.median(samples),3),'p95_ms':round(sorted(samples)[-1],3)}))
+
+        # Test-only probe: use the actual material-page SQL generator and GT
+        # predicate, without changing the production query or asserting speed
+        # ratios that vary across GitHub Actions runners.
+        if size == 200000 and operation in {'sparse_last_positive', 'no_match_positive'}:
+            from platform_core.material_repository import _deferred_material_page_sql
+            label_code = 'absent' if operation == 'no_match_positive' else 'person'
+            clauses, sql_params = _picker_filter_sql({
+                '__role_target': {'labels': [label_code], 'negative': False}
+            })
+            current_sql = _deferred_material_page_sql(
+                " WHERE m.processing_status='processed' AND " + " AND ".join(clauses),
+                descending=False, include_payload=True, offset=False,
+            )
+            # Experimental only: evaluate whether a label-first access path is
+            # worth further investigation for extremely selective positive GT.
+            label_first_sql = """
+                WITH gt_candidate_ids AS MATERIALIZED (
+                    SELECT DISTINCT ref.image_id
+                    FROM annotation_gt.annotation_label_references ref
+                    WHERE ref.label_code IN (?)
+                      AND ref.annotation_state='annotated'
+                      AND ref.box_count>0
+                )
+                SELECT m.id,m.created_at,m.payload_json
+                FROM gt_candidate_ids candidates
+                JOIN materials m ON m.id=candidates.image_id
+                WHERE m.processing_status='processed'
+                ORDER BY m.created_at,m.id LIMIT ?
+            """
+            binds = [*sql_params, 61]
+            with sqlite3.connect(repo.path) as db:
+                db.execute('ATTACH DATABASE ? AS annotation_gt', (str(gt.path),))
+                db.execute('PRAGMA temp_store=FILE')
+                methods = {
+                    'current_app_sql': (current_sql, binds),
+                    'experimental_gt_first': (label_first_sql, [label_code, 61]),
+                }
+                plans = {
+                    name: [entry[3] for entry in db.execute(
+                        'EXPLAIN QUERY PLAN ' + sql, params)]
+                    for name, (sql, params) in methods.items()
+                }
+                timings = {name: [] for name in methods}
+                results = {}
+                for iteration in range(21):
+                    order = list(methods)
+                    if iteration % 2:
+                        order.reverse()
+                    for name in order:
+                        sql, params = methods[name]
+                        started_at = time.perf_counter()
+                        ids = [entry[0] for entry in db.execute(sql, params)]
+                        timings[name].append(
+                            (time.perf_counter() - started_at) * 1000)
+                        if name not in results:
+                            results[name] = ids
+            assert results['current_app_sql'] == results['experimental_gt_first']
+            assert results['current_app_sql'][:60] == [
+                row['id'] for row in result['items']
+            ]
+            def summarize(values):
+                ordered = sorted(values)
+                return {
+                    'samples': len(values),
+                    'first_ms': round(values[0], 3),
+                    'p50_ms': round(statistics.median(values), 3),
+                    'sample_p95_ms': round(ordered[19], 3),
+                    'max_ms': round(ordered[-1], 3),
+                }
+            print(json.dumps({
+                'fixture_only': True, 'rows': size, 'operation': operation,
+                'probe': 'exact_app_page_sql_vs_experimental_label_first',
+                'scope': 'SQL page only; no FastAPI, full role classification, network, or browser',
+                'results_identical': True, 'plans': plans,
+                'timings': {key: summarize(vals) for key, vals in timings.items()},
+            }))
