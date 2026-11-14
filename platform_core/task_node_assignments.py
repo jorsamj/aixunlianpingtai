@@ -813,7 +813,10 @@ class CentralTaskAllocator:
         now = current.isoformat()
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
-            _resume_ready_preemptions_in(database, now)
+            if not agent_only:
+                # Agent-triggered auto assignment must not mutate unrelated
+                # local/preempted task state while scanning its own queue.
+                _resume_ready_preemptions_in(database, now)
             task_rows = database.execute(
                 """
                 SELECT task.* FROM tasks task
