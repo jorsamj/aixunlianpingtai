@@ -749,3 +749,35 @@ def test_unverified_launch_intent_shared_across_training_and_conversion(tmp_path
     assert workdirs.list_unverified_process_launch_intents("MODEL_CONVERSION") == []
     assert workdirs.list_unverified_process_launch_intents("TRAINING") == all_hazards
     assert marker.is_file()
+
+@pytest.mark.parametrize("bad_created", [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity"])
+def test_process_identity_rejects_nonfinite_create_time_without_dropping_evidence(
+    tmp_path, bad_created,
+):
+    current = lease()
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    target = workdirs.prepare(current)
+    with pytest.raises(ValueError, match="incomplete"):
+        workdirs.persist_process_identity(
+            current,
+            ProcessIdentity(
+                pid=4321, create_time=bad_created, command_hash="a" * 64,
+            ),
+        )
+    path = target / "process-identity.json"
+    assert not path.exists()
+
+    # Malformed data may originate from an interrupted or tampered file,
+    # not only from the writer. Both recovery read paths must fail closed.
+    path.write_text(json.dumps({
+        "task_id": current.task_id,
+        "generation": current.generation,
+        "pid": 4321,
+        "create_time": bad_created,
+        "command_hash": "a" * 64,
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="incomplete"):
+        workdirs.read_process_identity(current)
+    with pytest.raises(ValueError, match="incomplete"):
+        workdirs.list_process_identities()
+    assert path.exists()

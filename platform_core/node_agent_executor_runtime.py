@@ -10,6 +10,7 @@ Task-kind-specific portable runners are layered on top of these primitives.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -670,6 +671,7 @@ class AgentExecutionWorkdir:
         command_hash = str(value.get("command_hash") or "").strip().lower()
         if (
             pid <= 0
+            or not math.isfinite(create_time)
             or create_time <= 0
             or not re.fullmatch(r"[0-9a-f]{64}", command_hash)
         ):

@@ -11,6 +11,7 @@ from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository
 from platform_core.task_runtime.process_control import (
     ProcessController,
     ProcessIdentity,
+    ProcessIdentityMismatchError,
     hash_command,
     launch_process,
 )
@@ -131,3 +132,18 @@ def test_repository_binds_process_only_for_owned_lease(tmp_path):
         456.5,
         identity.command_hash,
     )
+
+@pytest.mark.parametrize("bad_created", [float("nan"), float("inf"), float("-inf"), "nan", "Infinity"])
+def test_process_controller_denies_nonfinite_creation_time_even_when_pid_and_command_match(
+    bad_created,
+):
+    # A matching command hash is not enough: NaN otherwise bypasses
+    # abs(observed_time - claimed_time) > tolerance comparisons.
+    current = psutil.Process(os.getpid())
+    record = ProcessIdentity(
+        pid=current.pid,
+        create_time=bad_created,
+        command_hash=hash_command(current.cmdline()),
+    )
+    with pytest.raises(ProcessIdentityMismatchError, match="invalid pid/create_time"):
+        ProcessController().inspect(record)

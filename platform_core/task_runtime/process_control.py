@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -85,7 +86,14 @@ def launch_process(
 class ProcessController:
     def inspect(self, identity: ProcessIdentity) -> psutil.Process:
         try:
-            process = psutil.Process(int(identity.pid))
+            pid = int(identity.pid)
+            expected_create_time = float(identity.create_time)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ProcessIdentityMismatchError("process identity has invalid pid/create_time") from error
+        if pid <= 0 or not math.isfinite(expected_create_time) or expected_create_time <= 0:
+            raise ProcessIdentityMismatchError("process identity has invalid pid/create_time")
+        try:
+            process = psutil.Process(pid)
             observed_create_time = process.create_time()
             observed_hash = hash_command(process.cmdline())
         except (psutil.NoSuchProcess, psutil.ZombieProcess) as error:
@@ -93,7 +101,8 @@ class ProcessController:
         except psutil.AccessDenied as error:
             raise PermissionError("process identity cannot be inspected") from error
         if (
-            abs(observed_create_time - float(identity.create_time)) > 0.01
+            not math.isfinite(observed_create_time)
+            or abs(observed_create_time - expected_create_time) > 0.01
             or observed_hash != identity.command_hash
         ):
             raise ProcessIdentityMismatchError("process identity does not match")

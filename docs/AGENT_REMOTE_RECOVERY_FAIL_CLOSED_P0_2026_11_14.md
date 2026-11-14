@@ -97,3 +97,9 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 在 Ubuntu GitHub Actions `Node Agent Executor` workflow 的独立 Linux step 中增加 `tests/integration/test_agent_launch_sigkill.py`。测试在全新临时目录中启动一个真正的 Agent 模拟进程，执行 `AgentExecutionWorkdir.prepare`、`begin_process_launch`，然后通过生产 `launch_process` 创建独立 POSIX 进程组的**纯 CPU sleep 子进程**。测试控制器确认孩子已存活后对 Agent 父进程执行真实 `SIGKILL`，因此能确定“子进程已启动、精确 PID 尚未持久化”的竞态窗口。
 - 分别验证 TRAINING、MODEL_CONVERSION 两种历史类型：Agent 被杀而模拟子进程仍活；磁盘只有 `process-launch-intent.json`、没有 `process-identity.json`；重启工作目录后**两种** Runner 都不 ready；异常工作目录不可删除，任务代数和种类可追踪；不意外杀死旧的未知子进程。进程清理由测试主管基于仅测试可见的 PID/create_time 定向完成，不生成产品 stop-proof。
 - 测试不连接控制平面、OSS、GPU，也不运行模型或实际训练/转换，因此只是 POSIX 单机故障证据，不是物理双机网络分区验收；Windows Job Object 和可靠的原机停止证明仍需专项完成。CI 完成之前不得标注通过；生产仍 NO-GO。
+
+## 2026-11-14 P0-01C 进程创建时间字段的非有限浮点安全校验（候选 CI 待验）
+
+- 只读审计发现持久化 `process-identity.json` 的 `create_time` 经 `float()` 转换后只判断 `<= 0`，`NaN/Infinity` 可绕过；`ProcessController.inspect` 的 `abs(actual - expected) > 0.01` 对 `NaN` 始终为 false，可能在 PID 复用且命令 hash 一致时错误认领进程。此为确定的数值比较边界，不依赖前端浏览器偶发问题。
+- 最小防护：Agent Workdir 读写身份与进程控制器核验处都要求 `math.isfinite(create_time)`，非法 PID/时间 fail closed。引入负面单测覆盖 `NaN`、`Infinity`、`-Infinity` 及 JSON 非有限值；既验证未写入异常身份，又验证既存不合法记录仍保留且阻止恢复；真实进程 PID/命令 hash 也不能用非有限时间冒充。未新增调度 owner、没有开放 stop-proof 解除或破坏现有模型结果协议。
+- 本提交的 CI 须按准确 SHA 重新核实，不以此前 `4173375` 的 Linux SIGKILL 两项通过替代新提交的验证。Windows/Linux CI 均需通过；生产仍 NO-GO。
