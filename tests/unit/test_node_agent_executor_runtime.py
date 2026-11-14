@@ -623,7 +623,6 @@ def test_executor_client_recovery_diagnosis_is_get_only_and_fails_closed():
 
 
 @pytest.mark.parametrize("bad_body", [
-    {},
     {"stop_proof_verified": True},
     {"automatic_reassignment_allowed": True},
     {"recovery_state": "PROVEN_STOPPED"},
@@ -637,6 +636,16 @@ def test_executor_client_recovery_diagnosis_rejects_misleading_success(bad_body)
     valid = _safe_recovery_diagnosis()
     valid.update(bad_body)
     session = ReadOnlyScriptedSession(FakeResponse(200, valid))
+    client = NodeExecutorClient(
+        "https://control.example.test", "node:1", "node-secret", session=session,
+    )
+    with pytest.raises(NodeExecutorHTTPError) as error:
+        client.recovery_diagnosis("task-1")
+    assert error.value.code == "NODE_EXECUTOR_INVALID_RESPONSE"
+
+
+def test_executor_client_recovery_diagnosis_requires_an_object_response():
+    session = ReadOnlyScriptedSession(FakeResponse(200, {}))
     client = NodeExecutorClient(
         "https://control.example.test", "node:1", "node-secret", session=session,
     )
