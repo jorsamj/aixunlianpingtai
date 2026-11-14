@@ -887,3 +887,28 @@ def test_conversion_normal_exit_must_verify_process_group_before_result_publicat
     assert records[0]["generation"] == 3
     assert (workdirs.root / "executions" / "convert-agent-task" / "3" /
             "process-launch-intent.json").is_file()
+
+def test_conversion_runner_blocks_unknown_training_launch_in_shared_state(tmp_path):
+    source = b"portable-source-model"
+    current = _lease(source)
+    foreign = RemoteExecutionLease(
+        task_id="foreign-training", kind="TRAINING",
+        project_id=current.project_id, generation=1,
+        lease_token=current.lease_token, lease_expires_at=current.lease_expires_at,
+        worker_id=current.worker_id, payload={}, assignment={}, transport={},
+    )
+    workdirs = AgentExecutionWorkdir(tmp_path / "shared-agent-state")
+    workdirs.prepare(foreign)
+    marker = workdirs.begin_process_launch(foreign)
+    client = FakeClient()
+    runner = AgentConversionRunner(
+        client, workdirs, runtime_root=tmp_path,
+        ultralytics_python=sys.executable, transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+    )
+    assert runner.ready is False
+    assert "TRAINING" in runner.recovery_error
+    with pytest.raises(RemoteExecutionFenced, match="launch outcome is unverified"):
+        runner.run(current)
+    assert marker.is_file()
+    assert not client.finish_calls

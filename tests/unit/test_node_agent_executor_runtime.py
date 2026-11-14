@@ -731,3 +731,21 @@ def test_launch_intent_lineage_tampering_is_rejected_not_ignored(tmp_path):
     with pytest.raises(ValueError, match="lineage mismatch"):
         workdirs.list_unverified_process_launch_intents("MODEL_CONVERSION")
     assert marker.exists()
+
+def test_unverified_launch_intent_shared_across_training_and_conversion(tmp_path):
+    body = start_body("training-hazard")
+    body["task"]["kind"] = "TRAINING"
+    current = RemoteExecutionLease.from_start_response(body)
+    workdirs = AgentExecutionWorkdir(tmp_path / "shared-agent-state")
+    workdirs.prepare(current)
+    marker = workdirs.begin_process_launch(current)
+
+    all_hazards = workdirs.list_unverified_process_launch_intents()
+    assert all_hazards == [{
+        "task_id": current.task_id,
+        "generation": current.generation,
+        "kind": "TRAINING",
+    }]
+    assert workdirs.list_unverified_process_launch_intents("MODEL_CONVERSION") == []
+    assert workdirs.list_unverified_process_launch_intents("TRAINING") == all_hazards
+    assert marker.is_file()

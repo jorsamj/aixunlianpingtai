@@ -191,11 +191,13 @@ class AgentConversionRunner:
 
     def _recover_persisted_processes(self) -> bool:
         try:
-            unverified = self.workdirs.list_unverified_process_launch_intents("MODEL_CONVERSION")
+            unverified = self.workdirs.list_unverified_process_launch_intents()
             if unverified:
                 self._recovery_error = (
-                    "conversion launch outcome is unverified; exact process identity "
-                    "was not persisted for " + str(unverified[0]["task_id"])
+                    "remote launch outcome is unverified; exact process identity "
+                    "was not persisted for "
+                    + str(unverified[0]["kind"]) + " task "
+                    + str(unverified[0]["task_id"])
                 )
                 return False
             records = self.workdirs.list_process_identities()

@@ -717,9 +717,14 @@ class AgentExecutionWorkdir:
             raise ValueError("process launch intent lineage mismatch")
         return raw
 
-    def list_unverified_process_launch_intents(self, kind: str) -> list[dict[str, Any]]:
-        """Find unpaired launch hazards; this is a readiness gate, not stop proof."""
-        if kind not in {"TRAINING", "MODEL_CONVERSION"}:
+    def list_unverified_process_launch_intents(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """Find unpaired launch hazards; no kind means all shared-compute hazards.
+
+        One Agent workdir is shared by TRAINING and MODEL_CONVERSION runners.
+        Neither runner may claim a new task while the other kind has an
+        unverified possibly-live child process.
+        """
+        if kind is not None and kind not in {"TRAINING", "MODEL_CONVERSION"}:
             raise ValueError("unsupported process launch kind")
         known = {
             (item["task_id"], item["generation"])
@@ -738,7 +743,7 @@ class AgentExecutionWorkdir:
             item = self.read_process_launch_intent(
                 SimpleNamespace(task_id=task_id, generation=generation)
             )
-            if item and item["kind"] == kind and (task_id, generation) not in known:
+            if item and (kind is None or item["kind"] == kind) and (task_id, generation) not in known:
                 result.append(item)
         return result
 

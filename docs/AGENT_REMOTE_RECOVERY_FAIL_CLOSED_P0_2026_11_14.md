@@ -84,3 +84,10 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 修复仅把转换成功退出路径改为**先按现有 `ProcessController.terminate_tree` 检查/清理，验证失败就保留进程身份证据和启动危险标志，拒绝上传或发布最终结果**。复用原控制器、原执行租约和原结果确认，不加新后台任务或控制端分支。
 - 新负面测试将“转换主进程退出但进程组死亡无法证明”注入 `PermissionError`，要求 fail closed、不执行 prepare/confirm/finish、保留 task+generation 身份和 intent。原正向真实子进程测试继续作为成功回归。
 - Windows `ProcessController` 的现有进程组语义不等于 Job Object 级子孙生命周期证明；Linux 真实孤儿子进程和多机断网仍需要独立实测。此补丁不提供 stop proof 或解除中央 HOLD，生产继续 **NO-GO**。
+
+## 2026-11-14 P0-01C 跨执行器共享状态安全门槛（本提交 CI 待验）
+
+- 只读核查 `node_agent.py::_build_executor`：训练与转换 Runner 使用同一个 `AgentExecutionWorkdir(state_dir / "executor")`，但早先各自传入 `TRAINING`/`MODEL_CONVERSION` 筛选未知启动危险标志。若训练在 spawn→PID 持久化窗口中异常退出且只留下 intent，转换 Runner 不会因该 intent 阻断 ready，反之亦然。同节点共享 GPU 的背景下可能继续分派新任务。
+- 最小修复：保留原 `list_unverified_process_launch_intents(kind)` 的按类型诊断能力，新增 `kind=None` 查看**所有**训练/转换未配对危险标志；训练和转换的恢复准入调用无类型过滤。任一未知子进程可能占用共享 GPU，两种新任务均必须 HOLD；未加数据库/新调度 owner，也不清理或假定旧进程停止。
+- 增加三类负面回归：共享 Workdir 可查询其他种类危险标志；未证实停止的历史转换阻止新训练；未证实停止的历史训练阻止新转换；保持原 task_id/generation、无结果发布/finish。
+- 该安全门槛的已知代价是不同任务类型之间也会相互阻断，这是故障防双执行的保守处理。仍缺可信 stop-proof、持久进程组身份/代数绑定、挑战防重放、中央原子解除、真实多机断网与 Windows Job Object 验收；CI 未完成前不宣称 GREEN，生产 NO-GO。

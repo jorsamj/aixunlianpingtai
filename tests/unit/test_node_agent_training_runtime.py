@@ -1537,3 +1537,28 @@ def test_training_runner_restart_fences_unverified_pre_spawn_intent(tmp_path):
         runner.run(current)
     assert marker.is_file()
     assert client.finish_calls == []
+
+def test_training_runner_blocks_unknown_conversion_launch_in_shared_state(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    foreign = RemoteExecutionLease(
+        task_id="foreign-conversion", kind="MODEL_CONVERSION",
+        project_id=current.project_id, generation=1,
+        lease_token=current.lease_token, lease_expires_at=current.lease_expires_at,
+        worker_id=current.worker_id, payload={}, assignment={}, transport={},
+    )
+    workdirs = AgentExecutionWorkdir(tmp_path / "shared-agent-state")
+    workdirs.prepare(foreign)
+    marker = workdirs.begin_process_launch(foreign)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner = AgentTrainingRunner(
+        client, workdirs, runtime_root=tmp_path,
+        ultralytics_python=sys.executable, transfer_session=transfer,
+        heartbeat_interval=1.0,
+    )
+    assert runner.ready is False
+    assert "MODEL_CONVERSION" in runner.recovery_error
+    with pytest.raises(RemoteExecutionFenced, match="launch outcome is unverified"):
+        runner.run(current)
+    assert marker.is_file()
+    assert not client.finish_calls
