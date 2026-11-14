@@ -651,27 +651,30 @@ def test_remote_log_is_server_owned_size_bounded_and_execution_fenced(tmp_path):
     assert stale.value.code == "EXECUTION_FENCED"
 
 
-def test_expired_generation_cannot_mutate_new_execution(tmp_path):
+def test_expired_agent_lease_holds_unverified_remote_owner_and_fences_stale_writes(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
     service = execution_service(repository, artifacts)
-    claimed1 = allocate_claim(service, "train-agent", "gpu-agent", token)
-    first = start(service, "train-agent", "gpu-agent", token, claimed1)
-    old_lease = first["execution"]
+    claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
+    started = start(service, "train-agent", "gpu-agent", token, claimed)
+    old_lease = started["execution"]
 
+    # Central cannot observe a remote Agent OS process. Expiry fences
+    # terminal writes, but it must not silently authorize a second execution.
     expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     with repository._connect() as database:
         database.execute(
             "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
             (expired, "train-agent"),
         )
-    assert service.fenced.release_expired() == 1
-    assert repository.get("train-agent").status is TaskStatus.QUEUED
-
-    claimed2 = allocate_claim(service, "train-agent", "gpu-agent", token)
-    second = start(service, "train-agent", "gpu-agent", token, claimed2)
-    assert second["execution"]["generation"] == 2
+    assert service.fenced.release_expired() == 0
+    held = repository.get("train-agent")
+    assert held.status is TaskStatus.RUNNING
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+    assert held.worker_id == "agent:gpu-agent"
+    assert held.attempt == 1
+    assert service.allocator.assign_next(agent_only=True) is None
 
     with pytest.raises(AgentExecutionError) as stale:
         service.heartbeat_execution(
@@ -683,8 +686,18 @@ def test_expired_generation_cannot_mutate_new_execution(tmp_path):
             progress=99,
         )
     assert stale.value.code == "EXECUTION_FENCED"
-    assert repository.get("train-agent").attempt == 2
 
+    with pytest.raises(AgentExecutionError) as late_finish:
+        service.finish_execution(
+            "gpu-agent",
+            token,
+            "train-agent",
+            old_lease["lease_token"],
+            old_lease["generation"],
+            status="SUCCEEDED",
+        )
+    assert late_finish.value.code == "EXECUTION_FENCED"
+    assert repository.get("train-agent").attempt == 1
 
 def test_token_rotation_between_preflight_and_transaction_blocks_start(tmp_path):
     repository, artifacts = runtime(tmp_path)
