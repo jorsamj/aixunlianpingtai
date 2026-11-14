@@ -110,3 +110,10 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 最小修复只在 `begin_process_launch` 之后、任何 `launch_process` 之前追加 POSIX 目录同步：依次对 generation、task、executions、Agent state root 及其上一级目录做 `fsync`，用于持久化新目录和原子重命名的目录项；同步失败直接抛异常阻止启动，并且不得删除已有危险标志。复用现有目录路径校验，没有改通用 JSON 写入路径或 SQLite。
 - 新负面测试：在 Linux 注入目录 `fsync` 异常，必须拒绝执行启动前方法、保留 task_id/generation/kind 标志且阻止无证据清理；正面测试核验所有必需目录同步发生。Windows 不提供对等的目录 `fsync` 保证，不虚称其具备断电级证明；受限文件系统/硬件缓存不遵循标准持久化合同也未在此验证。
 - 本次是“减少启动窗口危险证据因断电丢失的风险”，**并非**进程真实已停止的证据；可信 OS 级执行容器、远端挑战、防重放、中央原子解锁仍然缺失。须以新提交的精确 CI 结果验收，生产保持 NO-GO。
+
+## 2026-11-14 P0-01C 遗留 PID 身份的目录清理保护（候选 CI 待验）
+
+- 代码审计确认 `clear_process_identity_record` 为保留故障证据，采用先删除 `process-launch-intent.json`、再删除 `process-identity.json` 的顺序。若两步之间 Agent SIGKILL 或系统崩溃，目录仅剩 PID 身份记录。过去通用 `AgentExecutionWorkdir.cleanup()` 只拒绝尚有启动危险标志的目录，**可能在 PID 身份仍可证明旧进程存在时误删目录，丢掉最后一份恢复证据**。另外老版本可能本来就无 intent 而只有 PID 身份。
+- 最小修复只在通用 `cleanup` 中增加 `read_process_identity(lease)` 非空时拒绝，损坏的身份文件本就 fail closed；必须由先证明进程停止的控制路径显式 `clear_process_identity`，然后才允许目录删除。没有修改执行器正常结果上传、中央 hold 释放或模型运行。
+- 新负面测试覆盖“仅 PID 身份、无 intent”的真实磁盘目录，验证拒绝删除、身份完整保留；显式清除身份后才能继续清理。预期小范围影响：历史未清理的仅 PID 身份目录会继续 HOLD，需要可信核验才能释放，这是安全优先行为。
+- 当前精确 SHA CI 尚待完整验收。未修改生产，仍 NO-GO。

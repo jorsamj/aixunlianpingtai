@@ -948,6 +948,13 @@ class AgentExecutionWorkdir:
         if target is not None:
             if self.read_process_launch_intent(lease) is not None:
                 raise ValueError("unverified process launch blocks workspace cleanup")
+            # An interrupted clear_process_identity_record() can leave the
+            # exact PID identity after its launch-intent marker was deleted.
+            # Legacy workdirs can also contain identities without markers.
+            # Neither is proof the original process stopped: never erase the
+            # last recovery evidence through the general workspace cleanup.
+            if self.read_process_identity(lease) is not None:
+                raise ValueError("unverified process identity blocks workspace cleanup")
             shutil.rmtree(target)
 
 

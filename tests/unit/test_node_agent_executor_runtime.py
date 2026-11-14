@@ -836,3 +836,26 @@ def test_launch_intent_directory_fsync_failure_fences_and_retains_marker(
     }]
     with pytest.raises(ValueError, match="unverified process launch"):
         workdirs.cleanup(current)
+
+def test_workdir_cleanup_never_erases_unpaired_persisted_process_identity(tmp_path):
+    current = lease()
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    target = workdirs.prepare(current)
+    identity = ProcessIdentity(pid=4321, create_time=12345.5, command_hash="b" * 64)
+    path = workdirs.persist_process_identity(current, identity)
+
+    # A legacy record or SIGKILL after launch-intent unlink and before
+    # process-identity unlink has no marker. That is NOT stop proof.
+    assert not (target / "process-launch-intent.json").exists()
+    with pytest.raises(ValueError, match="unverified process identity"):
+        workdirs.cleanup(current)
+    assert path.is_file()
+    assert workdirs.read_process_identity(current) == {
+        "pid": 4321, "create_time": 12345.5, "command_hash": "b" * 64,
+    }
+
+    # A caller that has independently proven termination may explicitly
+    # clear the identity, then general workspace cleanup becomes safe.
+    workdirs.clear_process_identity(current)
+    workdirs.cleanup(current)
+    assert not target.exists()
