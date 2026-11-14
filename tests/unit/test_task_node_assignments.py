@@ -1172,6 +1172,113 @@ def test_invalid_remote_execution_contracts_fail_closed(tmp_path, contract):
     assert task_remote_execution_contract(task, artifacts) is None
 
 
+def test_agent_only_auto_assignment_fences_local_queue_and_requires_portable_intent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    local = create_task(
+        repository, artifacts, "train-local-first", TaskKind.TRAINING,
+        {
+            "epochs": 10,
+            # Portable metadata alone cannot turn a local training task remote.
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=1,
+    )
+    create_task(
+        repository, artifacts, "train-remote-second", TaskKind.TRAINING,
+        {
+            "target": "remote", "epochs": 10,
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    create_online_node(
+        repository, "a800-local", ["training"], connection_mode="local",
+        resources=training_resources(free0=30 * 1024**3),
+    )
+    create_online_node(
+        repository, "gpu-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assignment = allocator.assign_next(agent_only=True)
+    assert assignment is not None
+    assert assignment["task_id"] == "train-remote-second"
+    assert assignment["node_id"] == "gpu-agent"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+    assert allocator.assign_next(agent_only=True) is None
+    assert [item["task_id"] for item in allocator.list(active_only=True)] == [
+        "train-remote-second"
+    ]
+    local_worker = AssignmentAwareFencedTaskRepository(repository.path)
+    lease = local_worker.claim_next(
+        "local-training-worker", [TaskKind.TRAINING], [], lease_seconds=30
+    )
+    assert lease is not None
+    assert lease.task.task_id == local.task_id
+
+
+def test_agent_only_auto_assignment_has_one_real_executor_slot(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    for task_id in ("remote-first", "remote-second"):
+        create_task(
+            repository, artifacts, task_id, TaskKind.TRAINING,
+            {
+                "target": "remote",
+                "remote_execution": {
+                    "version": 1, "task_kind": "TRAINING",
+                    "transport": "object-storage-v1",
+                },
+            },
+        )
+    create_online_node(
+        repository, "two-gpu-serial-agent", ["training"],
+        connection_mode="agent",
+        resources=training_resources(
+            free0=25 * 1024**3, free1=24 * 1024**3
+        ),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next(agent_only=True)
+    assert first is not None
+    # The existing Agent executor is sequential, even with two GPUs. Do not
+    # pre-reserve a second task on a node unable to execute it concurrently.
+    assert allocator.assign_next(agent_only=True) is None
+    assert len(allocator.list(active_only=True)) == 1
+    allocator.release(first["task_id"], "test-release")
+    # Released but still queued work can be selected again; no false claim
+    # that the second task started merely because another GPU exists.
+    assert allocator.assign_next(agent_only=True) is not None
+
+
+def test_agent_only_auto_assignment_respects_strict_manual_node_pin(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository, artifacts, "remote-pinned-offline", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "scheduling": {"mode": "node", "node_id": "offline-pinned"},
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository, "other-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next(agent_only=True) is None
+    assert allocator.list(active_only=True) == []
+
+
 def test_repeated_and_concurrent_allocate_next_create_only_one_active_assignment(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, "train-once", TaskKind.TRAINING)
