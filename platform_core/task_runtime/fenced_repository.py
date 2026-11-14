@@ -21,6 +21,7 @@ _PROCESS_OBSERVATIONS = ContextVar("task_expired_process_observations", default=
 _RECOVERY_HOLD_STAGES = (
     "lease_expired_process_alive",
     "recovery_blocked_process_inspection",
+    "recovery_blocked_remote_agent_unverified",
 )
 
 
@@ -347,6 +348,22 @@ class FencedTaskRepository(TaskRepository):
         ).fetchall()
         released = 0
         for row in rows:
+            if str(row["worker_id"] or "").startswith("agent:"):
+                # A remote Agent may have lost its control-plane connection
+                # while its OS process continues to use the GPU. Unlike a
+                # local PID, central SQLite cannot prove remote process death.
+                # Never requeue (or finalize a cancellation) on TTL alone.
+                if str(row["stage"] or "") != "recovery_blocked_remote_agent_unverified":
+                    database.execute(
+                        """UPDATE tasks
+                              SET stage='recovery_blocked_remote_agent_unverified',
+                                  resource_wait_reason='REMOTE_AGENT_STOP_UNVERIFIED: remote execution may still be running',
+                                  updated_at=?
+                            WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')""",
+                        (now, row["task_id"]),
+                    )
+                self._hold_gpu_reservation(database, row["task_id"], now)
+                continue
             process_state = ("gone" if self._identity_from_row(row) is None else
                              _PROCESS_OBSERVATIONS.get().get(self._process_observation_key(row), "unknown"))
             if process_state == "alive":
