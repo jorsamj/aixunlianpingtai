@@ -115,6 +115,19 @@ def test_executor_reports_only_capabilities_this_agent_build_can_run():
     assert executable_agent_capabilities(["training", "conversion", "conversion.rknn"]) == ["conversion", "conversion.rknn", "training"]
 
 
+def test_executor_withdraws_capability_when_runner_not_registered():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["training", "conversion", "material-import", "cleaning", "model-upload", "deployment-test.rknn"],
+    )
+    # The deployment runner is registered by default, but the other
+    # capabilities have no runnable handler in this Agent instance.
+    assert loop.effective_capabilities() == ("deployment-test.rknn",)
+
+
 def test_executor_withdraws_training_capability_when_runner_recovery_is_unsafe():
     client = FakeClient([])
     deployment_runner = FakeRunner()
