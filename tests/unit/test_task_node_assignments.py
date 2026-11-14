@@ -445,12 +445,74 @@ def test_multi_gpu_node_assigns_distinct_gpus_then_queues_next_task(tmp_path):
 
 def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     repository, artifacts = runtime(tmp_path)
-    clean = create_task(repository, artifacts, "batch-clean", TaskKind.MATERIAL_BATCH, {"operation": "CLEAN"})
-    annotate = create_task(repository, artifacts, "batch-ai", TaskKind.MATERIAL_BATCH, {"operation": "AI_ANNOTATE"})
-    default = create_task(repository, artifacts, "batch-import", TaskKind.MATERIAL_BATCH, {"operation": "MOVE"})
+    clean = create_task(
+        repository, artifacts, "batch-clean", TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN", "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1, "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
     assert task_node_capability(clean, artifacts) == "cleaning"
-    assert task_node_capability(annotate, artifacts) == "annotation"
-    assert task_node_capability(default, artifacts) == "material-import"
+
+
+@pytest.mark.parametrize("kind, operation", [
+    (TaskKind.AI_ANNOTATION, None),
+    (TaskKind.VIDEO_FRAMES, None),
+    (TaskKind.CLEANING, None),
+    (TaskKind.MATERIAL_BATCH, "AI_ANNOTATE"),
+    (TaskKind.MATERIAL_BATCH, "SMART_AUDIT"),
+    (TaskKind.MATERIAL_BATCH, "AUDIT_MATERIAL_INTEGRITY"),
+    (TaskKind.MATERIAL_BATCH, "AUDIT_LABEL_INTEGRITY"),
+    (TaskKind.MATERIAL_BATCH, "REMAP_ANNOTATION_LABELS"),
+    (TaskKind.MATERIAL_BATCH, "REPAIR_ANNOTATION_PROJECTIONS"),
+    (TaskKind.MATERIAL_BATCH, "DELETE_INDEX"),
+    (TaskKind.MATERIAL_BATCH, "MOVE"),
+    (TaskKind.MATERIAL_BATCH, "CLEAN"),
+])
+def test_unsupported_remote_operations_remain_unassigned_and_local_worker_can_claim(
+    tmp_path, kind, operation,
+):
+    repository, artifacts = runtime(tmp_path)
+    payload = {
+        "remote_execution": {
+            "version": 1, "task_kind": kind.value,
+            "transport": "agent-artifact-v1",
+        },
+    }
+    if operation:
+        payload["operation"] = operation
+    # CLEAN without explicit agent mode remains a local MaterialBatch operation.
+    task = create_task(repository, artifacts, "local-owner", kind, payload)
+    create_online_node(
+        repository, "local-node",
+        ["annotation", "video", "cleaning", "material-import"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository, "remote-node",
+        ["annotation", "video", "cleaning", "material-import"],
+        connection_mode="agent",
+    )
+    assert task_node_capability(task, artifacts) is None
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+    worker = AssignmentAwareFencedTaskRepository(repository.path)
+    lease = worker.claim_next("existing-worker", (kind,), (), lease_seconds=30)
+    assert lease is not None
+    assert lease.task.task_id == task.task_id
+
+
+def test_explicit_agent_clean_without_portable_contract_cannot_assign_local_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository, artifacts, "agent-clean-unprepared", TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    create_online_node(repository, "local-node", ["cleaning"], connection_mode="local")
+    assert task_node_capability(task, artifacts) == "cleaning"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
 
 
 def test_clean_manual_node_affinity_never_spills_to_another_eligible_agent(tmp_path):
