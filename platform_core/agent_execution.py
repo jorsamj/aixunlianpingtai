@@ -609,7 +609,7 @@ class AgentExecutionService:
         required_capability: str | None = None,
     ) -> dict[str, Any]:
         self.nodes.authenticate(node_id, node_token)
-        node = self.nodes.get_public(node_id)
+        node = self.nodes.get_execution_admission(node_id)
         if require_enabled and not node["enabled"]:
             raise AgentExecutionError("NODE_DISABLED", "service node is disabled", 409)
         if require_online and not node["reachable"]:
