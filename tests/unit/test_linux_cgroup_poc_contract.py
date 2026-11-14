@@ -64,3 +64,16 @@ def test_blocked_environment_cannot_attempt_systemd_start(monkeypatch):
     assert result["outcome"] == "BLOCKED_ENVIRONMENT"
     assert result["stop_proof_verified"] is False
     assert result["central_recovery_allowed"] is False
+
+
+def test_internal_launcher_rejects_uncommitted_unit_before_systemd(monkeypatch, tmp_path):
+    monkeypatch.setattr(poc, "inspect", lambda: (_ for _ in ()).throw(AssertionError("must not inspect")))
+    monkeypatch.setattr(poc, "command", lambda *a, **kw:
+                        (_ for _ in ()).throw(AssertionError("must not call systemd")))
+    assert poc._start_service("other.service", tmp_path) == 4
+
+
+def test_direct_payload_invocation_rejected_without_manifest(monkeypatch, tmp_path):
+    monkeypatch.setattr(poc.subprocess, "Popen", lambda *a, **k:
+                        (_ for _ in ()).throw(AssertionError("must not spawn")))
+    assert poc._payload(tmp_path) == 4
