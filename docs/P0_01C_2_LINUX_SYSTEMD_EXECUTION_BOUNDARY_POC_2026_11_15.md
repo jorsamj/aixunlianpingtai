@@ -137,3 +137,43 @@ python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
 - 任何对 cgroup 的 `populated=0` 核验须在对应 task/代数/unit 实例身份已被证明、未失去 OS 边界控制时才有意义；unit 被 systemd GC、路径消失或者观察窗口丢失不得算成功。
 - 不要为了使测试通过而以 root 运行 Agent、打开自动派单、手工删除历史 PID 证据或在生产服务器创建 user unit。
 - 后续尚需测试 rootless 权限模型、user manager 失效、unit 名称复用、复杂多级子孙、权限逃逸/迁移、OOM、完整 DataLoader/GPU SDK、真实二节点 UAT；只有之后才评估 Linux Runner adapter。
+
+## 9. 2026-11-15 07:18+08 续审：CI 队列阻塞与最小停止判定加固
+
+### 9.1 可核实事实：准确 SHA，不把 `queued` 算作绿色
+
+- 本次续审开始时，长期分支 HEAD 为 `7f750d5497a60796c32fe0bd39b271b530ef7d31`；对应的 **23 项 GitHub Actions 全部 `queued`**，Node Agent Executor Push/PR 均未开始运行，故尚无失败日志、无成功测试数，不能宣称 CI GREEN。之后的精确新代码 SHA 也分别触发了工作流，且仍排队。
+- 该队列现象覆盖无关的前端、训练输入、登录、Task Runtime、素材导入等工作流；**目前只能确认“未启动”，无法证明是 Github 平台故障、额度/审批限制还是其他原因**，不以排队推断代码问题，也不盲目重跑或放宽断言。
+- 确认历史 `e22662ef530f5ed6f368e1f0c1d91c9d70ed1432`（仅文档阶段）对应 **22/22 GitHub Actions SUCCESS**；不能挪给最新 PoC 代码提交使用。
+- 本次补丁最新可核实代码提交：`675b4e538134d9553209db72a4c68bf9f25e42fa`（新增强身份核验的 **12 个便携合同**）。查询当刻该 SHA 的 **23/23 工作流仍 queued**，故此版本仍 **CI 待验**。后续文档提交也不得代替代码 CI。
+
+### 9.2 本次实际本地隔离测试
+
+本会话中实际在与生产隔离的 Linux 容器内执行 `python -m py_compile`、`pytest --confcutdir=tests/unit tests/unit/test_linux_cgroup_poc_contract.py`、只读 probe 和默认 PoC CLI：
+
+- 代码语法检查：成功；
+- **12 passed**（约 0.05s，针对**纯合同/工具行为**，不是内核写入试验）；
+- probe：`/sys/fs/cgroup` cgroup v2 可读，但当前 `euid=0`；缺可用 systemd user bus/user manager，返回 `NON_ROOT_REQUIRED`、`USER_BUS_UNAVAILABLE`、`USER_MANAGER_UNREACHABLE`，退出码 `2`；
+- PoC 默认无参：`NOT_EXECUTED`，退出码 `2`；有意识地**未尝试**在当前受限环境创建用户 service，也未访问生产服务器。
+- 以上事实仅证明隔离环境的预检能拒绝不符合权限前提的主机。**Linux cgroup 内核 PoC 仍 BLOCKED_ENVIRONMENT，Windows Job Object、中央 stop-proof、两物理节点 GPU UAT 仍未验。**
+
+### 9.3 定向加固的发现与修复
+
+**发现的危险边界**：原 PoC 仅在首次观测时核对了 `Id / ControlGroup / InvocationID`，在停机前和 finally 清理时只比较 `InvocationID`；且 `populated=0` 单独用来判定“本地 PoC PASS”。这种判定过窄：如果 unit 实例/归属被替换，或**已知进程迁移出原 cgroup 仍在运行**，仅凭空组不能支持正向结论。
+
+最小修复（**只改 PoC，不改变生产 Agent/OS/SQLite**）：
+
+1. `same_unit_instance` 要求停机前、finally 清理前的 `Id + ControlGroup + InvocationID` **全部与首次观测匹配**，缺失或变化拒绝把当前 unit 当成原实例；不能仅比较名称。
+2. `process_executing_by_identity(pid, start_ticks)` 检查 `/proc/<pid>/stat` 启动 tick 与状态：已知进程仍执行为 `True`、同一身份已经消失或僵尸为 `False`，**PID 复用/权限不足/字段损坏一律 `None` (UNKNOWN)**，不误判已经停机。
+3. 本地 `LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF` 的条件同时要求 `cgroup.events populated=0` **且测试中已知主/子进程均确认不再执行**；其中任意一项未知/不足，输出 `STOP_OR_MEMBERSHIP_UNVERIFIED_HOLD`，退出码 `3`。
+4. 新增 4 项负面合同：unit Id/ControlGroup/InvocationID 复核、PID 复用、procfs 权限拒绝、已知 PID 不存在。已有 8 项测试保留，总计 **12/12 本地通过**。这仍无法证明此前**未知**的全部后代没有逃逸，因此不产生可提交中央的 stop proof。
+
+**已知限制（必须留在后续专项）**：systemd 很可能在 stop 后及时移除 transient unit 的 cgroup 路径；届时新读取 `cgroup.events` 会变成 `UNKNOWN`，PoC 按设计不放行。不能为了获取 GREEN 把“目录消失”改成“空组”。后续需要在独立测试机评估观察窗口、unit 生命周期、可持续内核证据和迁移/逃逸权限限制，才能谈正式 `ExecutionBoundary`。
+
+### 9.4 下一轮精确执行顺序 / 风险与回退
+
+1. **只读收口 CI**：获取最终业务代码 SHA（不要用 docs SHA），逐项查询 23 个 Actions、尤其 Node Agent Executor Push/PR Linux+Windows；排队不报 GREEN，只有失败 Job 才读真实日志精准修复。
+2. **准备非生产 Linux Ubuntu 22.04 非 root 测试机**：确认 systemd 版本、user manager、bus、cgroup v2 委派；不要求用户去生产 A800/4070 做测试，且任何可能创建 transient service 的操作必须发生在**专门隔离测试主机**。
+3. **进行真实 2B CPU 内核实验**：`python tools/poc/linux_cgroup_probe.py`；仅 `eligible_for_poc=true` 且隔离环境确认后，执行 `python tools/poc/linux_cgroup_poc.py --run --isolated-test-host`，记录确切 unit identity、procfs、cgroup.events、Agent SIGKILL 和 stop/GC 时序。
+4. **不越级**：未通过以上测试，绝不把 systemd 路径接入 `launch_process` / Remote Training/Conversion Runner；不为获取 GREEN 开启自动派单，不删除遗留 PID/intent，不改中央 `REMOTE_AGENT_STOP_UNVERIFIED` 和 GPU 预留。
+5. **回退**：目前更改仅 `tools/poc`、`tests/unit`、Node Agent CI 合同和 docs，撤销这些开发分支文件不影响生产执行；若未来接入真正执行边界，须另制定状态保留和逐代回退程序。**生产 NO-GO**。
