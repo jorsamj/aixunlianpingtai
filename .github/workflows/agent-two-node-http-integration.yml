@@ -49,3 +49,9 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_two_agent_http_loopback.py
+      - name: Validate remote lease-expiry safety across canonical repositories
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/task_runtime/test_fencing.py
+          tests/unit/task_runtime/test_repository.py
+          tests/unit/test_agent_execution.py
