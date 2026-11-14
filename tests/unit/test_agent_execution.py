@@ -203,6 +203,37 @@ def test_agent_claim_opt_in_waits_for_running_slot_then_dispatches_next(tmp_path
     assert len(service.allocator.list(active_only=True)) == 1
 
 
+def test_agent_claim_opt_in_concurrent_polls_have_one_durable_owner(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    artifacts.atomic_write_json("train-agent", "request.json", {
+        "target": "remote",
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+
+    def poll():
+        return AgentExecutionService(
+            repository, artifacts, auto_assign_enabled=True,
+        ).claim_assignment("gpu-agent", token)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claims = list(executor.map(lambda _: poll(), range(2)))
+
+    assert len([item for item in claims if item is not None]) == 1
+    assignments = AgentExecutionService(
+        repository, artifacts,
+    ).allocator.list(active_only=True)
+    assert len(assignments) == 1
+    assert assignments[0]["task_id"] == "train-agent"
+    assert assignments[0]["state"] == "CLAIMED"
+
+
 def test_agent_claim_opt_in_rejects_wrong_token_without_allocating(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
