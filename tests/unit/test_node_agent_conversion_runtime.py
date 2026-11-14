@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from platform_core.node_agent_executor_runtime import (
     RemoteExecutionFenced,
     RemoteExecutionLease,
 )
+from platform_core.task_runtime.process_control import ProcessIdentity
 
 
 class FakeResponse:
@@ -912,3 +914,26 @@ def test_conversion_runner_blocks_unknown_training_launch_in_shared_state(tmp_pa
         runner.run(current)
     assert marker.is_file()
     assert not client.finish_calls
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows persistent Agent stop-proof gate")
+def test_windows_conversion_restart_never_erases_persisted_pid_without_job_object(tmp_path):
+    source = b"portable-source-model"
+    current = _lease(source)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    workspace = workdirs.prepare(current)
+    identity = ProcessIdentity(pid=2_147_483_647, create_time=12345.5, command_hash="b" * 64)
+    record = workdirs.persist_process_identity(current, identity)
+
+    runner = AgentConversionRunner(
+        object(), workdirs,
+        runtime_root=tmp_path, ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+    )
+    assert runner.ready is False
+    assert "Job Object" in runner.recovery_error
+    assert current.task_id in runner.recovery_error
+    assert record.is_file()
+    assert workdirs.list_process_identities()[0]["generation"] == current.generation
+    with pytest.raises(ValueError, match="unverified process identity"):
+        workdirs.cleanup(current)
+    assert workspace.is_dir()

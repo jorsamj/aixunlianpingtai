@@ -1572,3 +1572,21 @@ def test_training_runner_blocks_unknown_conversion_launch_in_shared_state(tmp_pa
         runner.run(current)
     assert marker.is_file()
     assert not client.finish_calls
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows persistent Agent stop-proof gate")
+def test_windows_training_restart_never_erases_persisted_pid_without_job_object(tmp_path):
+    current, _downloads = training_lease(tmp_path)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    workspace = workdirs.prepare(current)
+    identity = ProcessIdentity(pid=2_147_483_647, create_time=12345.5, command_hash="a" * 64)
+    record = workdirs.persist_process_identity(current, identity)
+
+    runner = AgentTrainingRunner(object(), workdirs, runtime_root=tmp_path)
+    assert runner.ready is False
+    assert "Job Object" in runner.recovery_error
+    assert current.task_id in runner.recovery_error
+    assert record.is_file()
+    assert workdirs.list_process_identities()[0]["generation"] == current.generation
+    with pytest.raises(ValueError, match="unverified process identity"):
+        workdirs.cleanup(current)
+    assert workspace.is_dir()

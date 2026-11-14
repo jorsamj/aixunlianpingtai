@@ -124,3 +124,9 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 最小安全门槛只限 **Agent 初始化后的持久进程恢复**：在 Windows，若训练/转换共享 Workdir 仍有任何持久 PID 身份，**两种 Runner 均不 ready、保留 PID 身份/启动标志并保持故障诊断**，不再推断旧计算已停止。Linux 现行恢复、中央调度、运行时任务上传和其他任务种类不改。
 - Windows 合同测试覆盖两类 runner 均拒绝恢复并保留 task/generation/PID/命令 hash、通用目录清理也拒绝；既有训练重启正面测试按平台分支检查 Linux 正常恢复、Windows 缺 Job proof 持续阻断。代价是 Windows Agent 重启后遇到历史计算记录将持续 HOLD，必须以后续受控可信恢复方案处理，不能人工删文件放行。
 - **范围边界**：这不意味着 Windows 正常任务退出时的子进程管理已经安全；本次没有实现真正 Job Object 的“先绑定再运行”、防逃逸继承、意外断电/断线恢复、停机确认或中央原子解锁。生产准入仍 NO-GO；不操作 A800、双4070 或生产数据。待精确 SHA 全量 Actions 通过后才认定代码层验收。
+
+## 2026-11-15 Windows 测试分层修正（候选 CI 待验）
+
+- `a4b8418` 的 Windows 新测试最初误放在共享的 `tests/unit/test_node_agent_executor_runtime.py`，使部分仅安装轻量控制面依赖的 Remote Cleaning/Portable Deployment Windows 工作流意外 import `AgentTrainingRunner`，触发缺少 `PyYAML` 的测试导入错误；另有一个训练测试漏写 `import os` 导致 Ubuntu 两个 NameError。**均为测试归属/导入问题，不应给不使用训练的工作流添加依赖，也无需改运行时代码。**
+- 随后 `e461737` 已补上训练测试的 `os` 导入。本提交进一步将 Windows 持久进程身份证据的两项回归分别迁到 `test_node_agent_training_runtime.py` 和 `test_node_agent_conversion_runtime.py`，共享 `test_node_agent_executor_runtime.py` 恢复纯轻量控制面合同。两类任务在 Windows 检查 ready=False、保留 PID+generation、拒绝无证据目录清理。
+- 代码运行时保持 `a4b8418` 的 Windows 恢复 fail-closed 策略不变；全量 Windows/Ubuntu Actions 必须以**本提交精确 SHA**重新核实。生产仍 NO-GO。
