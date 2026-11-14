@@ -774,3 +774,46 @@ def test_delegated_training_admission_cannot_ignore_remote_owner_hold(tmp_path):
     assert repository.get("remote-training-owner").status is TaskStatus.RUNNING
     assert repository.get("local-training-contender").status is TaskStatus.QUEUED
 
+
+def test_generic_heartbeat_cannot_resurrect_expired_remote_agent_lease(tmp_path):
+    """Plain TaskRepository must not bypass remote execution lease fencing."""
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    add(repository, "remote-heartbeat", "project-1", 5,
+        resource="training:remote-heartbeat", capability="cuda")
+    lease = repository.claim_next(
+        "agent:node-a", [TaskKind.TRAINING], {"cuda"},
+    )
+    assert lease is not None
+    assert lease.task.task_id == "remote-heartbeat"
+
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    with repository._connect() as db:
+        db.execute(
+            "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+            (expired, "remote-heartbeat"),
+        )
+
+    # Before any recovery sweep, stale Agent must not extend an expired lease.
+    with pytest.raises(PermissionError, match="lease"):
+        repository.heartbeat(
+            "remote-heartbeat", lease.lease_token,
+            progress=90, stage="training",
+        )
+    assert repository.get("remote-heartbeat").lease_expires_at == expired
+
+    # A generic recovery pass marks the remote STOP_UNVERIFIED hold.
+    assert repository.release_expired() == 0
+    held = repository.get("remote-heartbeat")
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+    with pytest.raises(PermissionError, match="lease"):
+        repository.heartbeat(
+            "remote-heartbeat", lease.lease_token,
+            progress=99, stage="completed",
+        )
+    after = repository.get("remote-heartbeat")
+    assert after.stage == "recovery_blocked_remote_agent_unverified"
+    assert after.progress == 0
+    assert after.lease_expires_at == expired
+    assert after.attempt == 1
+    assert after.worker_id == "agent:node-a"
+
