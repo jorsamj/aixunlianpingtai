@@ -209,3 +209,11 @@
 4. **进一步收敛预检与心跳时间：** \`99d622f914948fa424b099c170619062fc57cea2\` 在 Agent-only 预筛查 SQL 排除不支持远程执行器的 TaskKind，获取真正 Writer 事务后刷新在线心跳时钟；避免慢预检的过时在线证据导致错误分配。仍在原事务内重新检查严格 Node Pin、能力、GPU 与执行槽。
 5. **严格风险边界：** 这一版没有新增 DB schema、第二队列、任务迁移、自动释放过期远程 Assignment、GPU 并行执行器或 Worker 守护进程。真实多节点 10k+ QUEUED Agent 高频轮询仍可能占用 API CPU/磁盘读取，需真实不同排队比例下测量 P50/P95、SQLite \`busy\` 次数和远程候选扫描成本；未证明 20k/200k 全量队列在生产下达标。Agent 失联与旧进程未知时不得自动跨节点重派；后续 P0-01B / P0-03 独立处理。
 6. **CI 与生产：** P0-01A 初始 HEAD \`0c18f58c97e923226bd04318c55176cc9215bae2\` 的 \`Central Node Assignment\`（run 43564229848）首次查询为 SUCCESS，而 \`Node Agent Executor\`（run 43564229918）及其余相关工作流仍未终态；最新这一批完整 Linux/Windows、HTTP、Agent、真多节点、真实 A800/4070/OSS 性能和生产部署均需要独立验收。不开启 \`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM\`，不操作生产环境。
+
+### 10.5 Agent 高频轮询鉴权性能专项与阶段 CI
+
+- 旧入口每次 Agent `/assignments/claim` 都调用 `AgentExecutionService._authenticate_node -> ServiceNodeRepository.get_public`。后者除验证当前 node 的心跳/权限外，还读取 `WorkerInstanceService.list_runtime` 和全库运行中的 Worker/Task 投影，即使当前领取无任务也重复做这些全局查询。此入口处于每个 Agent 的高频正常轮询路径。
+- 新 RED 测试提交 `8396203414e78eec89e8a3791436a2401bc950c2`：当禁止调用 `_runtime_projection` 时，正常 Agent 领取仍应成功返回空。此测试的实际 RED CI 尚未确认，不能冒称已复现。
+- 最小修复提交 `f769c6bd9ec4851f33a4efcbc11871380c5c72fd` 在 `service_nodes.py` 新增 `get_execution_admission`：单节点权威行+原 `_public_row` 的状态/在线/能力投影，不枚举全局运行态；提交 `4d07db5736533732fbdf015a97b1573270d574b6` 使 `_authenticate_node` 使用轻量入口。Node UI 继续走原 `get_public`，完整 workers/durable_tasks 展示不变；鉴权仍在业务调用之前，`ServiceNodeRepository.authenticate` Token 校验不变。
+- `0c18f58c97e923226bd04318c55176cc9215bae2` 作为 P0-01A 初始业务实现 SHA，21 项 workflow 已终态：20 success、1 cancelled、0 failure，关键 Central Node Assignment 与 Node Agent Executor 均 SUCCESS；取消的工作流不可当作通过。该结果只验初始版本，**不能覆盖后续扫描事务解锁、远程训练防抢占以及本轮鉴权性能优化**。
+- 最新业务修复 `4d07db5736533732fbdf015a97b1573270d574b6` 及之后的最终 HEAD CI 仍需按准确 SHA 查询。真实 1k/10k 队列、多个远端 Agent、SQLite P95、节点失联/过期后防重执行、A800/4070 和 OSS 网络路径均未做生产验收；默认开关 `CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` 保持关闭。
