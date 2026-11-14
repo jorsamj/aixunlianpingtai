@@ -1895,3 +1895,55 @@ def test_legacy_training_auto_fallback_scan_is_bounded_and_advances(tmp_path, mo
     assert selected is not None, "Keyset fallback must not permanently starve legacy remote tasks"
     assert selected["task_id"] == legacy_remote.task_id
     assert selected["node_id"] == "fallback-agent"
+
+
+def test_empty_agent_claim_bypasses_writer_without_assignment_or_pending_preemption(tmp_path):
+    """Empty authenticated polls should not serialize SQLite writers.
+    This is a RED test for claim_for_node's unconditional BEGIN IMMEDIATE.
+    """
+    repository, artifacts = runtime(tmp_path, TracedRepository)
+    create_online_node(
+        repository, "idle-claim-agent", ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    repository.sql_trace.clear()
+    assert allocator.claim_for_node("idle-claim-agent") is None
+    statements = [statement.strip().upper() for statement in repository.sql_trace]
+    assert not any(statement.startswith("BEGIN IMMEDIATE") for statement in statements), (
+        "No assignment and no pending preemption must not acquire the SQLite writer"
+    )
+
+
+def test_empty_agent_claim_preserves_ready_preemption_recovery(tmp_path):
+    """Skipping an empty writer is permitted only when no CLEAN recovery
+    can be driven by this claim; existing durable preemptions still resume.
+    """
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository, artifacts, "preempted-victim", TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    create_task(
+        repository, artifacts, "finished-preemptor", TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    now = datetime.now(timezone.utc).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCELLED' WHERE task_id='preempted-victim'"
+        )
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED' WHERE task_id='finished-preemptor'"
+        )
+        database.execute(
+            """INSERT INTO task_preemptions
+               (incoming_task_id, victim_task_id, node_id, state, created_at)
+               VALUES (?, ?, ?, 'WAITING_CANCEL', ?)""",
+            ("finished-preemptor", "preempted-victim", "agent-clean", now),
+        )
+    assert allocator.claim_for_node("unrelated-idle-agent") is None
+    assert repository.get("preempted-victim").status is TaskStatus.QUEUED
+    assert allocator.list_preemptions(incoming_task_id="finished-preemptor")[0]["state"] == "RESUMED"
