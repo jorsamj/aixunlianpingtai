@@ -572,3 +572,107 @@ def test_executor_client_uses_fenced_clean_selection_routes():
     }
     assert session.calls[1]["url"].endswith("/executions/clean-one/clean-selection/read")
     assert session.calls[1]["json"]["image_id"] == "img-1"
+
+
+class ReadOnlyScriptedSession(ScriptedSession):
+    def get(self, url, *, headers, timeout):
+        self.calls.append({
+            "method": "GET", "url": url,
+            "headers": dict(headers), "timeout": timeout,
+        })
+        if not self.items:
+            raise AssertionError("unexpected recovery GET request")
+        item = self.items.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def _safe_recovery_diagnosis(**overrides):
+    body = {
+        "task_id": "task-1",
+        "node_id": "node:1",
+        "execution_generation": 3,
+        "task_status": "CANCEL_REQUESTED",
+        "recovery_state": "STOP_PROOF_REQUIRED",
+        "automatic_reassignment_allowed": False,
+        "stop_proof_verified": False,
+        "resource_wait_reason": "REMOTE_AGENT_STOP_UNVERIFIED",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_executor_client_recovery_diagnosis_is_get_only_and_fails_closed():
+    session = ReadOnlyScriptedSession(FakeResponse(200, _safe_recovery_diagnosis()))
+    client = NodeExecutorClient(
+        "https://control.example.test", "node:1", "node-secret",
+        session=session, timeout=7,
+    )
+    result = client.recovery_diagnosis("task-1")
+    assert result["execution_generation"] == 3
+    assert result["recovery_state"] == "STOP_PROOF_REQUIRED"
+    assert result["automatic_reassignment_allowed"] is False
+    assert result["stop_proof_verified"] is False
+    assert session.calls == [{
+        "method": "GET",
+        "url": "https://control.example.test/api/v63/node-executor/node%3A1/executions/task-1/recovery",
+        "headers": {"Authorization": "Bearer node-secret"},
+        "timeout": 7,
+    }]
+
+
+@pytest.mark.parametrize("bad_body", [
+    {},
+    {"stop_proof_verified": True},
+    {"automatic_reassignment_allowed": True},
+    {"recovery_state": "PROVEN_STOPPED"},
+    {"execution_generation": 0},
+    {"execution_generation": "3"},
+    {"node_id": "other-node"},
+    {"task_id": "other-task"},
+    {"task_status": "SUCCEEDED"},
+])
+def test_executor_client_recovery_diagnosis_rejects_misleading_success(bad_body):
+    valid = _safe_recovery_diagnosis()
+    valid.update(bad_body)
+    session = ReadOnlyScriptedSession(FakeResponse(200, valid))
+    client = NodeExecutorClient(
+        "https://control.example.test", "node:1", "node-secret", session=session,
+    )
+    with pytest.raises(NodeExecutorHTTPError) as error:
+        client.recovery_diagnosis("task-1")
+    assert error.value.code == "NODE_EXECUTOR_INVALID_RESPONSE"
+
+
+def test_executor_client_recovery_diagnosis_rejects_auth_and_transport_failures():
+    denied = ReadOnlyScriptedSession(FakeResponse(404, {
+        "detail": {"code": "TASK_NOT_FOUND", "message": "not owned by node"},
+    }))
+    client = NodeExecutorClient(
+        "https://control.example.test", "node:1", "node-secret", session=denied,
+    )
+    with pytest.raises(NodeExecutorHTTPError) as denied_error:
+        client.recovery_diagnosis("task-1")
+    assert denied_error.value.code == "TASK_NOT_FOUND"
+    assert denied_error.value.retryable is False
+
+    disconnected = ReadOnlyScriptedSession(requests.ConnectionError("partition"))
+    client = NodeExecutorClient(
+        "https://control.example.test", "node:1", "node-secret",
+        session=disconnected,
+    )
+    with pytest.raises(NodeExecutorHTTPError) as connection_error:
+        client.recovery_diagnosis("task-1")
+    assert connection_error.value.code == "NODE_EXECUTOR_TRANSPORT_FAILED"
+    assert connection_error.value.retryable is True
+
+    malformed = ReadOnlyScriptedSession(FakeResponse(200, invalid_json=True))
+    client = NodeExecutorClient(
+        "https://control.example.test", "node:1", "node-secret",
+        session=malformed,
+    )
+    with pytest.raises(NodeExecutorHTTPError) as parse_error:
+        client.recovery_diagnosis("task-1")
+    assert parse_error.value.code == "NODE_EXECUTOR_INVALID_RESPONSE"
+
