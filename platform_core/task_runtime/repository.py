@@ -812,6 +812,18 @@ class TaskRepository(InferenceResourceMethods):
                     database.rollback()
                     continue
                 delegated = admission is not None and current["kind"] == "TRAINING" and not str(current["resource_key"]).startswith("training:remote:")
+                # A delegated local training admission policy may reason about
+                # GPU capacity, but it cannot overrule an unverified remote
+                # execution's still-owned resource key.
+                if delegated and database.execute(
+                    """SELECT 1 FROM tasks WHERE resource_key=?
+                         AND status IN ('RUNNING','CANCEL_REQUESTED')
+                         AND stage='recovery_blocked_remote_agent_unverified'
+                         LIMIT 1""",
+                    (current["resource_key"],),
+                ).fetchone():
+                    database.rollback()
+                    continue
                 if not delegated and database.execute(
                     """SELECT 1 FROM tasks WHERE resource_key=?
                          AND status IN ('RUNNING','CANCEL_REQUESTED')
