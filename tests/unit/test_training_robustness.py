@@ -88,6 +88,145 @@ def test_materialized_augmentation_preserves_negative_source_and_replays(tmp_pat
     assert [(item['image_ref'], item['content_sha256']) for item in replay['splits']['train']] == expected
 
 
+
+
+def test_positive_multiclass_train_only_augmentation_reaches_verified_bundle(tmp_path):
+    """Real person/smoke YOLO boxes survive augmentation; val/test remain isolated."""
+    import hashlib
+    import json
+    import yaml
+    from platform_core.training_tasks import (
+        materialize_portable_dataset, resolve_remote_training_bundle,
+        verify_portable_dataset,
+    )
+    from platform_core.training_robustness import augmentation_summary
+
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+    roles = {"train": ["person-train", "smoke-train"],
+             "validation": ["person-val"], "test": ["smoke-test"]}
+    colors = {"person-train": (81, 139, 207), "smoke-train": (173, 71, 92),
+              "person-val": (46, 184, 71), "smoke-test": (91, 51, 155)}
+    boxes = {
+        "person-train": [{"label": "person", "x1": 4, "y1": 2, "x2": 20, "y2": 10}],
+        "smoke-train": [{"label": "smoke", "x1": 12, "y1": 3, "x2": 28, "y2": 16}],
+        "person-val": [{"label": "person", "x1": 4, "y1": 2, "x2": 20, "y2": 10}],
+        "smoke-test": [{"label": "smoke", "x1": 12, "y1": 3, "x2": 28, "y2": 16}],
+    }
+    sources, rows, frozen = {}, [], []
+    for role, ids in roles.items():
+        for image_id in ids:
+            source = source_dir / f"{image_id}.jpg"
+            Image.new("RGB", (40, 20), colors[image_id]).save(source, format="JPEG")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            sources[image_id] = source
+            rows.append({
+                "id": image_id, "stored_name": source.name, "width": 40, "height": 20,
+                "size_bytes": source.stat().st_size, "content_sha256": digest,
+                "boxes": boxes[image_id],
+            })
+            frozen.append({
+                "image_id": image_id, "role": role, "content_sha256": digest,
+                "source_root_id": f"root-{image_id}",
+                "source_group_id": f"group-{image_id}",
+                "annotation_state": "annotated",
+                "annotation_hash": hashlib.sha256(("formal:" + image_id).encode()).hexdigest(),
+            })
+
+    policy = normalize_policy({
+        "mode": "enabled", "copies": 2,
+        "presets": ["bt601_limited", "bt709_full"], "seed": 12,
+        "selection": {"mode": "count", "count": 2},
+    })
+    snapshot = {
+        "schema_version": 3, "snapshot_id": "p" * 64, "ids": roles,
+        "label_schema": [{"code": "person", "class_id": 0},
+                         {"code": "smoke", "class_id": 1}],
+        "images": frozen, "robustness_policy": policy,
+    }
+    before = {image_id: source.read_bytes() for image_id, source in sources.items()}
+    task_root = tmp_path / "task"
+    bundle = materialize_portable_dataset(
+        task_root, snapshot, rows, lambda row: sources[row["id"]],
+        safety_reserve_bytes=0,
+    )
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    splits = manifest["splits"]
+    originals = [row for row in splits["train"] if not row.get("augmentation")]
+    derived = [row for row in splits["train"] if row.get("augmentation")]
+    assert len(originals) == 2 and len(derived) == 4
+    assert [row["image_id"] for row in splits["validation"]] == roles["validation"]
+    assert [row["image_id"] for row in splits["test"]] == roles["test"]
+    assert not any(row.get("augmentation") for role in ("validation", "test")
+                   for row in splits[role])
+    assert set(row["augmentation"]["derived_from_image_id"] for row in derived) == set(roles["train"])
+    assert len({row["image_ref"] for row in splits["train"]}) == 6
+    assert len({row["label_ref"] for row in splits["train"]}) == 6
+    assert len(list((bundle / "dataset/images/train").glob("*"))) == 6
+    assert len(list((bundle / "dataset/labels/train").glob("*.txt"))) == 6
+    assert len(list((bundle / "dataset/images/validation").glob("*"))) == 1
+    assert len(list((bundle / "dataset/images/test").glob("*"))) == 1
+
+    expected_boxes = {
+        "person-train": (0, .3, .3, .4, .4),
+        "smoke-train": (1, .5, .475, .4, .65),
+    }
+    original_by_id = {row["image_id"]: row for row in originals}
+    for member in derived:
+        origin_id = member["augmentation"]["derived_from_image_id"]
+        original = original_by_id[origin_id]
+        source_label = (bundle / original["label_ref"]).read_bytes()
+        generated_label = (bundle / member["label_ref"]).read_bytes()
+        assert source_label and generated_label == source_label
+        assert member["label_sha256"] == hashlib.sha256(generated_label).hexdigest()
+        label_values = tuple(map(float, generated_label.decode("utf-8").split()))
+        assert label_values == pytest.approx(expected_boxes[origin_id], abs=1e-8)
+        assert member["augmentation"]["source_root_id"] == f"root-{origin_id}"
+        assert member["augmentation"]["source_group_id"] == f"group-{origin_id}"
+        assert member["augmentation"]["source_training_sha256"] == original["content_sha256"]
+        with Image.open(bundle / member["image_ref"]) as augmented:
+            assert augmented.size == (40, 20)
+            assert augmented.format == "PNG"
+            with Image.open(bundle / original["image_ref"]) as source:
+                assert augmented.convert("RGB").tobytes() != source.convert("RGB").tobytes()
+
+    actual = augmentation_summary(manifest)
+    assert actual["original_train_images"] == 2
+    assert actual["augmented_images"] == 4
+    assert actual["actual_train_images"] == 6
+    assert actual["validation_images"] == 1
+    assert actual["test_images"] == 1
+    assert manifest["robustness_derived_count"] == 4
+    yaml_data = yaml.safe_load((bundle / "dataset/data.yaml").read_text(encoding="utf-8"))
+    assert yaml_data["train"] == "images/train"
+    assert yaml_data["val"] == "images/validation"
+    assert yaml_data["names"] == {0: "person", 1: "smoke"}
+    assert "test" not in yaml_data
+    assert not (bundle / "dataset/labels/test").exists()
+    assert verify_portable_dataset(manifest_path)["verified_files"] == 8
+    received = resolve_remote_training_bundle(manifest_path)
+    assert received.verified_files == 8
+    assert {key: source.read_bytes() for key, source in sources.items()} == before
+
+    # Replaying the same frozen task preserves derived identities and hashes.
+    fingerprint = sorted((row["image_ref"], row["content_sha256"], row["label_sha256"])
+                         for row in derived)
+    materialize_portable_dataset(
+        task_root, snapshot, rows, lambda row: sources[row["id"]],
+        safety_reserve_bytes=0,
+    )
+    replay = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert sorted((row["image_ref"], row["content_sha256"], row["label_sha256"])
+                  for row in replay["splits"]["train"] if row.get("augmentation")) == fingerprint
+    assert verify_portable_dataset(manifest_path)["verified_files"] == 8
+
+    # The verifier fails closed if any generated YOLO GT is changed afterwards.
+    (bundle / derived[0]["label_ref"]).write_text("1 0.5 0.5 0.5 0.5", encoding="utf-8")
+    with pytest.raises(ValueError, match="label SHA256"):
+        verify_portable_dataset(manifest_path)
+
+
 def test_noop_pixels_cannot_be_counted_as_successful_augmentation(tmp_path):
     import hashlib
     from platform_core.training_robustness import augment_bundle
