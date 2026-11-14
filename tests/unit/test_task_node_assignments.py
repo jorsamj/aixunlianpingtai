@@ -1224,6 +1224,48 @@ def test_agent_only_auto_assignment_fences_local_queue_and_requires_portable_int
     assert lease.task.task_id == local.task_id
 
 
+def test_agent_auto_preflight_does_not_hold_writer_lock_while_reading_local_payload(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    local = create_task(
+        repository, artifacts, "local-payload-probe", TaskKind.TRAINING,
+        {"epochs": 10}, priority=1,
+    )
+    create_task(
+        repository, artifacts, "remote-after-local", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    create_online_node(
+        repository, "gpu-remote", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    original_read_json = artifacts.read_json
+
+    def read_json_and_check_writer_not_held(task_id, *args, **kwargs):
+        if task_id == local.task_id:
+            # Local task inspection must not monopolize the SQLite writer.
+            # Simulate another Web/Worker request needing a write transaction.
+            with sqlite3.connect(
+                repository.path, timeout=0.05, isolation_level=None,
+            ) as other:
+                other.execute("BEGIN IMMEDIATE")
+                other.rollback()
+        return original_read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", read_json_and_check_writer_not_held)
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assigned = allocator.assign_next(agent_only=True)
+    assert assigned is not None
+    assert assigned["task_id"] == "remote-after-local"
+    assert repository.get(local.task_id).status is TaskStatus.QUEUED
+
+
 def test_agent_only_auto_assignment_has_one_real_executor_slot(tmp_path):
     repository, artifacts = runtime(tmp_path)
     for task_id in ("remote-first", "remote-second"):
