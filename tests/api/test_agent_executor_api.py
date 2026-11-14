@@ -789,10 +789,27 @@ def test_remote_agent_recovery_diagnosis_refuses_nonheld_execution(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
     create_task(repository, artifacts)
     _, token = create_node(repository)
+    allocator = AgentExecutionService(repository, artifacts).allocator
+    assert allocator.assign_next() is not None
+    claim = client.post(
+        "/api/v63/node-executor/gpu-api-agent/assignments/claim",
+        headers=auth(token),
+    ).json()
+    assert claim["claimed"]
+    started = client.post(
+        "/api/v63/node-executor/gpu-api-agent/assignments/train-api-agent/start",
+        headers=auth(token),
+        json={
+            "assignment_lease_token": claim["item"]["assignment"][
+                "assignment_lease_token"
+            ],
+        },
+    )
+    assert started.status_code == 200
     diagnosis = client.get(
         "/api/v63/node-executor/gpu-api-agent/executions/train-api-agent/recovery",
         headers=auth(token),
     )
     assert diagnosis.status_code == 409
     assert diagnosis.json()["detail"]["code"] == "REMOTE_RECOVERY_NOT_HELD"
-    assert repository.get("train-api-agent").status.value == "QUEUED"
+    assert repository.get("train-api-agent").status.value == "RUNNING"
