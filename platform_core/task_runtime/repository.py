@@ -646,6 +646,22 @@ class TaskRepository(InferenceResourceMethods):
         return int(changed)
 
     def _release_expired_in(self, database: sqlite3.Connection, now: str) -> int:
+        # Lease expiry fences writes but cannot prove a remote Agent stopped
+        # computing after a network partition. Keep its durable owner until
+        # remote process death has been independently verified.
+        database.execute(
+            """
+            UPDATE tasks
+               SET stage='recovery_blocked_remote_agent_unverified',
+                   resource_wait_reason='REMOTE_AGENT_STOP_UNVERIFIED: remote execution may still be running',
+                   updated_at=?
+             WHERE status IN ('RUNNING','CANCEL_REQUESTED')
+               AND worker_id LIKE 'agent:%'
+               AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
+               AND stage<>'recovery_blocked_remote_agent_unverified'
+            """,
+            (now, now),
+        )
         count = database.execute(
             """
             UPDATE tasks
@@ -661,10 +677,24 @@ class TaskRepository(InferenceResourceMethods):
                    lease_token=NULL, lease_expires_at=NULL, updated_at=?
              WHERE status IN ('RUNNING','CANCEL_REQUESTED')
                AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
+               AND (worker_id IS NULL OR worker_id NOT LIKE 'agent:%')
             """,
             (now, now, now),
         ).rowcount
-        database.execute("DELETE FROM gpu_reservations WHERE expires_at<=?", (now,))
+        # Retain GPU evidence for unverified remote owners. The fenced
+        # repository additionally extends held reservations exclusively.
+        database.execute(
+            """
+            DELETE FROM gpu_reservations
+             WHERE expires_at<=?
+               AND task_id NOT IN (
+                   SELECT task_id FROM tasks
+                    WHERE status IN ('RUNNING','CANCEL_REQUESTED')
+                      AND stage='recovery_blocked_remote_agent_unverified'
+               )
+            """,
+            (now,),
+        )
         return count
 
     def delete_terminal(
@@ -749,7 +779,10 @@ class TaskRepository(InferenceResourceMethods):
                        SELECT 1 FROM tasks active
                         WHERE active.resource_key=candidate.resource_key
                           AND active.status IN ('RUNNING','CANCEL_REQUESTED')
-                          AND active.lease_expires_at>?
+                          AND (
+                              active.lease_expires_at>?
+                              OR active.stage='recovery_blocked_remote_agent_unverified'
+                          )
                    ))
                  ORDER BY candidate.priority ASC, candidate.queue_rank DESC, candidate.created_at ASC,
                           candidate.task_id ASC
@@ -779,7 +812,14 @@ class TaskRepository(InferenceResourceMethods):
                     database.rollback()
                     continue
                 delegated = admission is not None and current["kind"] == "TRAINING" and not str(current["resource_key"]).startswith("training:remote:")
-                if not delegated and database.execute("SELECT 1 FROM tasks WHERE resource_key=? AND status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at>? LIMIT 1", (current["resource_key"], now_text)).fetchone():
+                if not delegated and database.execute(
+                    """SELECT 1 FROM tasks WHERE resource_key=?
+                         AND status IN ('RUNNING','CANCEL_REQUESTED')
+                         AND (lease_expires_at>?
+                              OR stage='recovery_blocked_remote_agent_unverified')
+                         LIMIT 1""",
+                    (current["resource_key"], now_text),
+                ).fetchone():
                     database.rollback()
                     continue
                 admitted = dict(current)
