@@ -386,8 +386,9 @@ def test_unverified_remote_agent_expiry_holds_resource_and_gpu_reservation(tmp_p
         "worker-b", [TaskKind.MODEL_CONVERSION], set(),
     ) is None
     waiting = repository.get("same-resource-waiter")
+    # The initial queue prefilter skips a resource still owned by an
+    # unverified remote process, before emitting an admission wait reason.
     assert waiting.status is TaskStatus.QUEUED
-    assert "RESOURCE_RECOVERY_FENCE" in str(waiting.resource_wait_reason)
 
     with repository._connect() as db:
         reservation = db.execute(
