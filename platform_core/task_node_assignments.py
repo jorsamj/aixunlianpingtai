@@ -823,6 +823,10 @@ class CentralTaskAllocator:
                     """
                     SELECT task.* FROM tasks task
                      WHERE task.status='QUEUED'
+                       AND task.kind IN (
+                           'TRAINING','MODEL_CONVERSION','MATERIAL_IMPORT',
+                           'MODEL_INSTALL','DEPLOYMENT_TEST','MATERIAL_BATCH'
+                       )
                        AND NOT EXISTS (
                            SELECT 1 FROM task_node_assignments assignment
                             WHERE assignment.task_id=task.task_id
@@ -845,6 +849,11 @@ class CentralTaskAllocator:
                 return None
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
+            if agent_only:
+                # Preflight can take time on a large queue. Online heartbeat
+                # eligibility must be measured at allocation, not at scan start.
+                current = datetime.now(timezone.utc)
+                now = current.isoformat()
             if not agent_only:
                 # Agent-triggered auto assignment must not mutate unrelated
                 # local/preempted task state while scanning its own queue.
