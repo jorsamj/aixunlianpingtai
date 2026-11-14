@@ -271,6 +271,7 @@ jobs:
           tests/unit/test_remote_training_transport.py
           tests/unit/test_task_node_assignments.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_local_auto_resource_admission.py
           tests/unit/test_gpu_node_scoped_reservations.py
           tests/unit/test_training_metrics_fd.py
           tests/unit/test_training_realtime_progress.py
