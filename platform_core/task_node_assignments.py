@@ -808,45 +808,134 @@ class CentralTaskAllocator:
             "created_at": now,
         }
 
+    def _iter_agent_candidate_batches(self):
+        """Yield ordered, bounded preflight batches without holding a writer lock.
+
+        The canonical training:auto resource is local during normal operation.
+        We examine it in a separate *legacy fallback* pass rather than dropping
+        it: old/third-party producers may have persisted a remote payload there.
+        Every page advances using the complete scheduling sort key. There is
+        deliberately no hard global LIMIT that could strand a later pinned task.
+        """
+        current = datetime.now(timezone.utc)
+        with closing(self.repository._connect()) as database:
+            online = database.execute(
+                """SELECT * FROM service_nodes
+                    WHERE enabled=1 AND connection_mode='agent'
+                      AND last_heartbeat_at IS NOT NULL"""
+            ).fetchall()
+            idle_capabilities = {}
+            for node in online:
+                heartbeat = _utc(node["last_heartbeat_at"])
+                if heartbeat is None or (current - heartbeat).total_seconds() > self.heartbeat_ttl_seconds:
+                    continue
+                node_id = str(node["node_id"])
+                if _node_active_work_count(database, node_id):
+                    continue
+                allowed = set(_loads(node["allowed_capabilities"], []))
+                reported = set(_loads(node["reported_capabilities"], []))
+                caps = allowed & reported
+                if caps:
+                    idle_capabilities[node_id] = caps
+        if not idle_capabilities:
+            return
+
+        for legacy_local_fallback in (False, True):
+            cursor_key = None
+            while True:
+                predicate = (
+                    "task.kind='TRAINING' AND task.resource_key='training:auto' "
+                    "AND task.required_capabilities NOT LIKE '%agent.remote%'"
+                    if legacy_local_fallback else
+                    "NOT (task.kind='TRAINING' AND task.resource_key='training:auto' "
+                    "AND task.required_capabilities NOT LIKE '%agent.remote%')"
+                )
+                cursor_clause = ""
+                params = []
+                if cursor_key is not None:
+                    priority, rank, created, task_id = cursor_key
+                    cursor_clause = """
+                      AND (task.priority > ?
+                        OR (task.priority = ? AND task.queue_rank < ?)
+                        OR (task.priority = ? AND task.queue_rank = ? AND task.created_at > ?)
+                        OR (task.priority = ? AND task.queue_rank = ? AND task.created_at = ?
+                            AND task.task_id > ?))
+                    """
+                    params = [
+                        priority, priority, rank, priority, rank, created,
+                        priority, rank, created, task_id,
+                    ]
+                with closing(self.repository._connect()) as preflight:
+                    rows = preflight.execute(
+                        f"""
+                        SELECT task.* FROM tasks task
+                         WHERE task.status='QUEUED'
+                           AND task.kind IN (
+                               'TRAINING','MODEL_CONVERSION','MATERIAL_IMPORT',
+                               'MODEL_INSTALL','DEPLOYMENT_TEST','MATERIAL_BATCH'
+                           )
+                           AND ({predicate})
+                           AND NOT EXISTS (
+                               SELECT 1 FROM task_node_assignments assignment
+                                WHERE assignment.task_id=task.task_id
+                                  AND assignment.state IN ('ASSIGNED','CLAIMED')
+                           )
+                           {cursor_clause}
+                         ORDER BY task.priority ASC, task.queue_rank DESC,
+                                  task.created_at ASC, task.task_id ASC
+                         LIMIT 64
+                        """,
+                        (*params,),
+                    ).fetchall()
+                if not rows:
+                    break
+                eligible_ids = []
+                for row in rows:
+                    cursor_key = (
+                        int(row["priority"]), int(row["queue_rank"]),
+                        str(row["created_at"]), str(row["task_id"]),
+                    )
+                    task = _from_row(row)
+                    if task_node_connection_mode(task, self.artifacts) != "agent":
+                        continue
+                    capability = task_node_capability(task, self.artifacts)
+                    if capability is None:
+                        continue
+                    if task_remote_execution_contract(task, self.artifacts) is None:
+                        continue
+                    pin = task_requested_node_id(task, self.artifacts)
+                    if not any(
+                        capability in caps and (not pin or pin == node_id)
+                        for node_id, caps in idle_capabilities.items()
+                    ):
+                        continue
+                    eligible_ids.append(task.task_id)
+                    if len(eligible_ids) == 8:
+                        # Only prevalidated IDs reach the canonical writer.
+                        # Do not retain a SQLite read cursor across the yield.
+                        yield tuple(eligible_ids)
+                        eligible_ids = []
+                if eligible_ids:
+                    yield tuple(eligible_ids)
+                if len(rows) < 64:
+                    break
+
     def assign_next(self, *, agent_only: bool = False) -> dict[str, Any] | None:
+        if not agent_only:
+            # The manually invoked scheduler keeps its existing full-queue
+            # policy and preemption semantics unchanged.
+            return self._assign_next_candidates(None, agent_only=False)
+        for candidate_ids in self._iter_agent_candidate_batches():
+            assigned = self._assign_next_candidates(candidate_ids, agent_only=True)
+            if assigned is not None:
+                return assigned
+        return None
+
+    def _assign_next_candidates(self, agent_candidate_ids, *, agent_only: bool):
         current = datetime.now(timezone.utc)
         now = current.isoformat()
-        # The Agent poll path can encounter many queued local-Worker jobs.
-        # Inspect their payloads outside any SQLite writer transaction, so
-        # every Agent poll cannot lock out ordinary task creation/claim.
-        # Re-read each surviving candidate inside BEGIN IMMEDIATE below:
-        # the preflight snapshot never grants assignment ownership.
-        agent_candidate_ids = None
-        if agent_only:
-            with closing(self.repository._connect()) as preflight:
-                preflight_rows = preflight.execute(
-                    """
-                    SELECT task.* FROM tasks task
-                     WHERE task.status='QUEUED'
-                       AND task.kind IN (
-                           'TRAINING','MODEL_CONVERSION','MATERIAL_IMPORT',
-                           'MODEL_INSTALL','DEPLOYMENT_TEST','MATERIAL_BATCH'
-                       )
-                       AND NOT EXISTS (
-                           SELECT 1 FROM task_node_assignments assignment
-                            WHERE assignment.task_id=task.task_id
-                              AND assignment.state IN ('ASSIGNED','CLAIMED')
-                       )
-                     ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
-                    """
-                ).fetchall()
-            agent_candidate_ids = []
-            for preflight_row in preflight_rows:
-                preflight_task = _from_row(preflight_row)
-                if task_node_connection_mode(preflight_task, self.artifacts) != "agent":
-                    continue
-                if task_node_capability(preflight_task, self.artifacts) is None:
-                    continue
-                if task_remote_execution_contract(preflight_task, self.artifacts) is None:
-                    continue
-                agent_candidate_ids.append(preflight_task.task_id)
-            if not agent_candidate_ids:
-                return None
+        # This function alone owns the canonical BEGIN IMMEDIATE assignment
+        # fence; preflight data is never sufficient to grant a reservation.
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             if agent_only:
