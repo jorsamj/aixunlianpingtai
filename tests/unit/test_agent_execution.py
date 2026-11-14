@@ -121,6 +121,70 @@ def start(service, task_id, node_id, token, claimed):
     )
 
 
+def test_agent_claim_default_off_does_not_silently_schedule_remote_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    artifacts.atomic_write_json("train-agent", "request.json", {
+        "target": "remote",
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+    service = execution_service(repository, artifacts)
+    assert service.claim_assignment("gpu-agent", token) is None
+    assert service.allocator.list(active_only=True) == []
+
+
+def test_agent_claim_opt_in_automatically_allocates_only_explicit_remote_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "local-with-portable-metadata")
+    create_task(repository, artifacts, "train-agent")
+    artifacts.atomic_write_json("train-agent", "request.json", {
+        "target": "remote", "epochs": 30,
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    claimed = service.claim_assignment("gpu-agent", token)
+    assert claimed is not None
+    assert claimed["task"]["task_id"] == "train-agent"
+    assert claimed["assignment"]["node_id"] == "gpu-agent"
+    assert claimed["assignment"]["resolved_execution_config"]["connection_mode"] == "agent"
+    assert service.claim_assignment("gpu-agent", token) is None
+    assert service.allocator.list(active_only=True)[0]["task_id"] == "train-agent"
+    assert repository.get("local-with-portable-metadata").status is TaskStatus.QUEUED
+
+    started = start(service, "train-agent", "gpu-agent", token, claimed)
+    assert started["task"]["status"] == "RUNNING"
+    assert started["task"]["attempt"] == 1
+
+
+def test_agent_claim_opt_in_rejects_wrong_token_without_allocating(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    artifacts.atomic_write_json("train-agent", "request.json", {
+        "target": "remote",
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(repository, artifacts, auto_assign_enabled=True)
+    with pytest.raises((AgentExecutionError, ServiceNodeError)):
+        service.claim_assignment("gpu-agent", "invalid-token")
+    assert service.allocator.list(active_only=True) == []
+    assert service.claim_assignment("gpu-agent", token) is not None
+
+
 def test_agent_start_is_single_atomic_queued_to_running_transition(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
