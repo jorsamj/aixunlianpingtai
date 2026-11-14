@@ -81,7 +81,7 @@ def _valid_test_intent(unit: str, root: Path) -> bool:
     """Only an exact fresh synthetic unit/manifest may reach systemd."""
     if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() == 0:
         return False
-    if not re.fullmatch(r"clpoc-[0-9a-f]{24}\\.service", unit):
+    if not re.fullmatch(r"clpoc-[0-9a-f]{24}\.service", unit):
         return False
     if not root.is_dir() or not root.name.startswith("p001c2b-"):
         return False
