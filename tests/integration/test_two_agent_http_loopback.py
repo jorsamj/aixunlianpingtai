@@ -593,15 +593,14 @@ print(json.dumps({"ok": True, "engine": "isolated-test-runner", "model": options
     assert sorted(upload_confirms) == sorted(signed_prepares)
 
 
-def test_sigkilled_real_agent_releases_expired_execution_and_fences_old_generation(
+def test_sigkilled_real_agent_does_not_trigger_unverified_remote_requeue(
     tmp_path, monkeypatch,
 ):
-    """Kill a real Node Agent while its source GET is blocked, then recover.
+    """SIGKILL is observable to the test, but not to a remote controller.
 
-    Simulate expiry deterministically after the *actual process is dead*.
-    A second real Agent executes generation 2; the stale generation cannot
-    heartbeat or finish. No GPU, model invocation or external storage occurs.
-    This does NOT model a live Agent cut off by a network partition.
+    Even after the real node_agent.py process dies, central expiry must HOLD
+    the task: remote process death has no attested proof at the control plane.
+    Node B cannot claim and old generation cannot publish. No GPU/OSS access.
     """
     import os
     from pathlib import Path
@@ -645,8 +644,7 @@ def test_sigkilled_real_agent_releases_expired_execution_and_fences_old_generati
     def portable_payload(task, _payload, assignment):
         node_id = str(assignment["node_id"])
         if node_id != "crash-agent-a":
-            # Second Agent proves retry can complete safely without touching
-            # any external inputs or launching a model subprocess.
+            # This must never be invoked: B has no right to the held task.
             return {
                 "schema_version": 1, "task_kind": "DEPLOYMENT_TEST",
                 "transport": "object-storage-v1",
@@ -746,33 +744,28 @@ def test_sigkilled_real_agent_releases_expired_execution_and_fences_old_generati
                     "UPDATE service_nodes SET last_heartbeat_at=? WHERE node_id=?",
                     (stale_heartbeat, "crash-agent-a"),
                 )
-            assert FencedTaskRepository(repo.path).release_expired() == 1
-            assert repo.get(task_id).status.value == "QUEUED"
+            # Central cannot independently inspect the crashed remote OS.
+            # Lease timeout alone must never authorize another training job.
+            assert FencedTaskRepository(repo.path).release_expired() == 0
+            held = repo.get(task_id)
+            assert held.status.value == "RUNNING"
+            assert held.stage == "recovery_blocked_remote_agent_unverified"
+            assert held.attempt == 1
+            assert held.worker_id == "agent:crash-agent-a"
 
             second_agent = start_agent("crash-agent-b", address)
-            deadline = time.monotonic() + 45
+            deadline = time.monotonic() + 12
             while time.monotonic() < deadline:
-                assert second_agent.poll() is None, "recovery Agent exited unexpectedly"
-                if repo.get(task_id).status.value == "FAILED":
+                assert second_agent.poll() is None, "second Agent exited unexpectedly"
+                if nodes.get_public("crash-agent-b")["online"]:
                     break
-                time.sleep(0.15)
-            recovered = repo.get(task_id)
-            assert recovered.status.value == "FAILED"
-            assert recovered.attempt == 2
-            with repo._connect() as db:
-                ownership = db.execute(
-                    """SELECT node_id FROM task_node_assignments
-                       WHERE task_id=? AND release_reason='execution_started'
-                       ORDER BY generation""", (task_id,),
-                ).fetchall()
-            assert [row["node_id"] for row in ownership] == [
-                "crash-agent-a", "crash-agent-b",
-            ]
-            assert recovered.worker_id is None
-            assert "portable deployment input contract is missing" in (recovered.error or "")
+                time.sleep(0.1)
+            assert nodes.get_public("crash-agent-b")["online"]
+            assert NodeExecutorClient(address, "crash-agent-b", tokens["crash-agent-b"]).claim_assignment() is None
+            assert repo.get(task_id).attempt == 1
 
-            # Node A cannot revive a previous generation even after its
-            # heartbeat reconnects: the task token and generation were fenced.
+            # Expired execution tokens cannot revive or publish success even
+            # while the safe-recovery hold remains RUNNING.
             stale = requests.post(
                 f"{address}/api/v63/node-executor/crash-agent-a/"
                 f"executions/{task_id}/heartbeat",
@@ -798,8 +791,9 @@ def test_sigkilled_real_agent_releases_expired_execution_and_fences_old_generati
             )
             assert stale_finish.status_code == 409, stale_finish.text
             assert stale_finish.json()["detail"]["code"] == "EXECUTION_FENCED"
-            assert repo.get(task_id).attempt == 2
-            assert repo.get(task_id).status.value == "FAILED"
+            assert repo.get(task_id).attempt == 1
+            assert repo.get(task_id).status.value == "RUNNING"
+            assert repo.get(task_id).stage == "recovery_blocked_remote_agent_unverified"
         finally:
             release_download.set()
             for _name, process in processes:
@@ -816,8 +810,9 @@ def test_loopback_heartbeat_partition_fences_monitor_and_stops_child_process(
 ):
     """A real HTTP 503 during lease heartbeat kills an isolated child process.
 
-    The monitor must fail closed without inventing a terminal result. Recovery
-    and generation fencing are then verified via the canonical SQLite store.
+    The monitor must fail closed without inventing a terminal result.
+    Central must hold an unverified expired remote owner even when this
+    isolated test *knows* that the local child was terminated.
     No actual inference, accelerator or external network is involved.
     """
     import subprocess
@@ -910,8 +905,9 @@ def test_loopback_heartbeat_partition_fences_monitor_and_stops_child_process(
                     "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
                     (expired, task_id),
                 )
-            assert FencedTaskRepository(repo.path).release_expired() == 1
-            assert repo.get(task_id).status.value == "QUEUED"
+            assert FencedTaskRepository(repo.path).release_expired() == 0
+            assert repo.get(task_id).status.value == "RUNNING"
+            assert repo.get(task_id).stage == "recovery_blocked_remote_agent_unverified"
             assert repo.get(task_id).attempt == 1
 
             late = requests.post(
