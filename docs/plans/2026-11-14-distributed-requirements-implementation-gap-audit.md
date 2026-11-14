@@ -72,3 +72,58 @@
 - 智能检查范围：`docs/FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md`
 - 自动参数专项：`docs/performance/2026-11-14-p0-pinned-gpu-auto-deferred-resource-resolution.md`
 - 核心代码：`platform_core/{service_nodes,task_node_assignments,agent_execution,node_agent_executor_loop,node_agent_training_runtime,remote_training_tasks,remote_training_inputs,material_batches}.py`、`platform_core/storage/`、`platform_core/smart_material_audit/`、`static/modules/service-node-runtime.js`。
+
+
+## 8. 2026-11-14 接续第一阶段源码复核（0832ac09）
+
+> 本节是对前文历史快照的增量核实；**固定审计源码 SHA** \`0832ac0940ff347d599ab2532bfb74868796b0cf\`，\`VERSION.txt=42.24.592\`。只读检查生产入口源码、现有测试和准确 SHA 的 GitHub Actions；未修改业务代码、未在本地执行测试、未接触生产环境。前文 \`dfdf6f3\` 的 20/21 CI 结果保留为历史证据，不以新状态覆盖旧状态。
+
+### 8.1 准确 HEAD/CI 与边界
+
+- GitHub \`refs/heads/feature/external-algorithm-publishing\` = \`0832ac0940ff347d599ab2532bfb74868796b0cf\`；正式分布式需求 \`docs/DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md\` 仍为需求权威。
+- GitHub Actions 查询 \`head_sha=0832ac...\` 共 **21 个 workflow runs，21 completed/success、0 failure**。其中 Central Node Assignment、Node Agent Executor、Remote Training Runtime、Remote Cleaning Runtime、Remote Material Import、Frontend Runtime Stabilization 均 success。此结论只代表该 SHA 的既有 CI，不证明所缺自动派单闭环已覆盖。
+- 早前 \`dfdf6f3\` 的 \`Frontend Runtime Stabilization\` 存在 v19 标签 GET 重复问题；当前 HEAD 通过 CI **不等于根因已经定位**。保持独立问题，不混入分布式业务修复。
+
+### 8.2 P0-01：自动分配触发确有源码缺口，尚未补 RED 测试
+
+1. \`platform_core/task_node_assignments.py:805-944\` 的 \`CentralTaskAllocator.assign_next()\` 能够持久插入 Assignment；\`:1063-1074\` 在 \`POST /api/v63/scheduler/allocate-next\` 显式调用它。
+2. \`platform_core/agent_execution.py:622-644\` 的 \`AgentExecutionService.claim_assignment()\` **只**调用 \`self.allocator.claim_for_node(node_id)\`，不调用 \`assign_next()\`；\`node_agent_executor_loop.py:184-323\` 仅轮询 Agent claim API。
+3. \`task_worker.py:210-231\` 调用的是本地 \`task_runtime.Scheduler.serve_forever()\`，其 \`task_runtime/scheduler.py:247-260\` 使用 \`TaskRepository.claim_next()\`，不是中央 \`CentralTaskAllocator\` 的自动驱动。
+4. 全文检查 \`app.py\` 入口发现 \`@app.on_event('startup')\` 的 \`_v42_source_scheduler_loop\`（\`app.py:22812-22827\`），它是历史来源处理线程，并非中央任务分配；\`training_recovery_api.py:774-796\` 仅挂载路由。现有 \`tests/unit/test_agent_execution.py:104-109\` 和 \`tests/api/test_agent_executor_api.py:104\` 先由测试人工 \`allocator.assign_next()\`，随后才模拟 Agent 领取。
+5. **结论：已检查的实际服务入口无持续自动创建 Assignment 的驱动，远程 Agent 仅能领取已有分配。** 单元/API 调度功能存在不能代替自动接单验收；有意不把“来源调度”误判为中央任务调度。
+
+**下一阶段 RED 复现：** 创建 \`execution_mode=agent\` 且有 versioned remote contract 的排队任务、健康合格 Agent；不调用 \`allocate-next\`，仅以 Agent 正常轮询/服务启动驱动，应在有界时间内产生 Assignment 并领取。再测节点上线后自动接单、当前任务结束后下一任务、并发轮询幂等、手动节点严格亲和、旧代次 fencing、断连/重启后的安全恢复。现有代码预计第一项失败；**本轮没有执行 RED，因此不得写作已经复现。**
+
+### 8.3 P0-02：TaskKind + operation + capability + Runner 真实映射
+
+| 任务 | \`task_node_capability\` / 中央映射 | Agent 实际实现 | 第一阶段判断 |
+| --- | --- | --- | --- |
+| \`TRAINING\` | \`training\` | \`AgentTrainingRunner\` | 可移植条件下有代码；真实硬件待验 |
+| \`MODEL_CONVERSION\` / \`DEPLOYMENT_TEST\` | \`conversion[.rknn]\` / \`deployment-test[.rknn]\` | 对应 Runtime Runner | 有条件支持，按实际框架/硬件验证 |
+| \`MODEL_INSTALL\` | \`model-upload\` | \`AgentModelInstallRunner\` | 有 Runner，传输/安装环境待验 |
+| \`MATERIAL_IMPORT\` | \`material-import\` | \`AgentMaterialImportRunner\` | 仅受控 portable/import 阶段；accepted 后本地正式提交 |
+| \`MATERIAL_BATCH/CLEAN\` | \`cleaning\` | \`AgentCleaningRunner\` | 仅 CLEAN 的 \`execution_mode=agent\` portable 合同可远程 |
+| \`MATERIAL_BATCH/SMART_AUDIT\` | 错误兜底 \`material-import\` | **没有 SMART_AUDIT Runner** | 必须保持本地，不能把能力名当作已实现 |
+| \`MATERIAL_BATCH/AUDIT_* / REMAP_* / REPAIR_*\` | 错误兜底 \`material-import\` | **没有对应 Runner** | 本地 \`MaterialBatchHandler\` 处理，未移植 |
+| \`MATERIAL_BATCH/AI_ANNOTATE\` | \`annotation\` | **没有对应 Runner** | 本地，不可远程派单 |
+| \`AI_ANNOTATION\` / \`VIDEO_FRAMES\` | \`annotation\` / \`video\` | **Agent 白名单/Runner 缺失** | 本地 Worker 已有，远程未实现 |
+| \`TRAINING_PREPARE\` / \`RESOURCE_DISCOVERY\` | \`None\` | 非 Agent Runner | 控制面/本地所有权；不能混同远程任务 |
+
+代码：\`task_node_assignments.py:121-175,215-282\`，\`node_agent_executor_loop.py:18-116,184-262\`，\`node_agent.py:148-235\`，\`material_batches.py:376-448,2648-2697,4805-4815\`，\`smart_material_audit/service.py:95-135\`，\`worker_registry.py:9-24\`。
+
+**高风险边界：** \`_online_nodes\` 虽过滤在线、allowed ∩ reported 和 Agent portable，但对非 Agent 的 local 节点可接受未移植任务；\`AssignmentAwareFencedTaskRepository.claim_next()\`（\`task_node_assignments.py:1027-1055\`）会拦截任何 \`ASSIGNED/CLAIMED\` 任务。若发生 local 节点错误分配，可能形成排队无法被本地 Worker 消费的组合。必须先用隔离测试证实具体触发，再改能力合同；不建议立即全局自动启用 \`assign_next()\` 放大该风险。
+
+### 8.4 P0-03：资源硬容量只有部分准入
+
+\`task_node_assignments.py:333-405,531-569,805-944\`：训练 GPU 选卡排除已预留 CUDA id，按最小空闲显存（至少 1 GiB 或 10%）、GPU 利用率阈值过滤；但并未证明所选任务的真实显存需求预算足够。CPU/RAM/磁盘/执行槽/I/O 主要进入 \`_score_node()\` 的**排序分数**而非统一拒绝门槛，非 GPU 的 CLEAN 等任务缺少一致的持久容量保留。\`NodeAgentExecutorLoop\` 仍仅单任务同步执行，故“同机双 GPU 可分配两张卡”不等于两项任务真能并行运行。P0-01 触发驱动上线前应先设计 P0-02 防误派与 P0-03 最低安全门槛的组合回归。
+
+### 8.5 已有自动训练参数及 OSS 实现边界
+
+- \`node_agent_training_runtime.py:793-1046\`：Agent 得到 \`selected_gpu\` / \`selected_device\` / \`concurrent_reservations\` 后，在 Agent 本机 Ultralytics Python 子进程调用规范资源解析器。\`training_metrics.py:301-455\` 读取实际节点 CPU/可用 RAM、本地磁盘和 \`torch.cuda.mem_get_info(index)\`，解析 Batch/Workers/Cache/Precision；UUID 及执行身份校验存在。\`remote_training_tasks.py:831-870\` 已支持 AUTO+auto GPU 和 AUTO+指定 CUDA 的延后资源决议。**代码已实现关键机制，实机 A800/双 4070、调度切换及资源骤变仍 NOT VERIFIED。**
+- \`storage/models.py:8-31\`、\`storage/factory.py:22-50\`、\`storage/manager.py:85-182\` 已有 LOCAL/OSS/S3（MinIO 别名）/REMOTE source 与读取抽象。\`remote_training_inputs.py:50-83\` 通过中央鉴权的 \`StorageManager.open_reader\` 代理向 Agent 流式传输冻结图像；可跨源工作，但 **不是 Agent 直接读取 OSS/NAS**。结果端可移植 bucket 配置、访问范围、带宽成本、节点本地缓存及真 OSS/MinIO 端到端均 NOT VERIFIED。中央正式 GT 和冻结 Snapshot 所有权保持不变。
+
+### 8.6 当前验收和后续实施边界
+
+- **本轮完成：** 需求逐项对照、当前 HEAD 与 21/21 CI 复核、生产调用链只读审计、现行 Agent 任务矩阵与 P0 优先级明确。
+- **本轮未完成：** RED/GREEN 运行、源码修复、OSS/NAS 非生产联调、GPU/CPU 压测、生产 UAT；禁止把已有 CI 记成这些场景的验收。
+- **下一步最小开发顺序：** (1) 新增无人工 allocate 的 RED 合同，并验证实际失败；(2) 在同一测试中对不支持 Agent 的 operation、local Worker 和手动亲和增加 fail-closed 用例；(3) 复用 \`CentralTaskAllocator\` 在控制端或 Agent 领取入口实现有界、幂等、无第二套队列的自动推进；(4) 然后单独推进资源硬预算、Agent 多执行槽、OSS 直连和真实环境 UAT。不可简单启动多个未经租约保护的调度线程，不可将算力评分当作硬准入。
