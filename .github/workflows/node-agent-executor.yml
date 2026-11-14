@@ -30,6 +30,7 @@ on:
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/integration/test_agent_launch_sigkill.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_agent_model_install_runtime.py'
@@ -75,6 +76,7 @@ on:
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/integration/test_agent_launch_sigkill.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_agent_model_install_runtime.py'
@@ -167,6 +169,11 @@ jobs:
           tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
+      - name: POSIX Agent crash-window SIGKILL isolation (no GPU)
+        if: runner.os == 'Linux'
+        run: >-
+          python -m pytest -q --confcutdir=tests/integration
+          tests/integration/test_agent_launch_sigkill.py
 
   api:
     runs-on: ubuntu-24.04

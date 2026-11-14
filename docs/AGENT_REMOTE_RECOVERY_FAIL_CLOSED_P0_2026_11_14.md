@@ -91,3 +91,9 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 最小修复：保留原 `list_unverified_process_launch_intents(kind)` 的按类型诊断能力，新增 `kind=None` 查看**所有**训练/转换未配对危险标志；训练和转换的恢复准入调用无类型过滤。任一未知子进程可能占用共享 GPU，两种新任务均必须 HOLD；未加数据库/新调度 owner，也不清理或假定旧进程停止。
 - 增加三类负面回归：共享 Workdir 可查询其他种类危险标志；未证实停止的历史转换阻止新训练；未证实停止的历史训练阻止新转换；保持原 task_id/generation、无结果发布/finish。
 - 该安全门槛的已知代价是不同任务类型之间也会相互阻断，这是故障防双执行的保守处理。仍缺可信 stop-proof、持久进程组身份/代数绑定、挑战防重放、中央原子解除、真实多机断网与 Windows Job Object 验收；CI 未完成前不宣称 GREEN，生产 NO-GO。
+
+## 2026-11-14 P0-01C 进程启动窗口的真实隔离 SIGKILL 负面测试
+
+- 在 Ubuntu GitHub Actions `Node Agent Executor` workflow 的独立 Linux step 中增加 `tests/integration/test_agent_launch_sigkill.py`。测试在全新临时目录中启动一个真正的 Agent 模拟进程，执行 `AgentExecutionWorkdir.prepare`、`begin_process_launch`，然后通过生产 `launch_process` 创建独立 POSIX 进程组的**纯 CPU sleep 子进程**。测试控制器确认孩子已存活后对 Agent 父进程执行真实 `SIGKILL`，因此能确定“子进程已启动、精确 PID 尚未持久化”的竞态窗口。
+- 分别验证 TRAINING、MODEL_CONVERSION 两种历史类型：Agent 被杀而模拟子进程仍活；磁盘只有 `process-launch-intent.json`、没有 `process-identity.json`；重启工作目录后**两种** Runner 都不 ready；异常工作目录不可删除，任务代数和种类可追踪；不意外杀死旧的未知子进程。进程清理由测试主管基于仅测试可见的 PID/create_time 定向完成，不生成产品 stop-proof。
+- 测试不连接控制平面、OSS、GPU，也不运行模型或实际训练/转换，因此只是 POSIX 单机故障证据，不是物理双机网络分区验收；Windows Job Object 和可靠的原机停止证明仍需专项完成。CI 完成之前不得标注通过；生产仍 NO-GO。
