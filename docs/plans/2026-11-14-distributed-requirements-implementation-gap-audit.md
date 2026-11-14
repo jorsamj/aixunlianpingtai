@@ -133,3 +133,28 @@
 
 1. \`node_agent_executor_loop.py:18-49\` 宣称支持 \`deployment-test.rknn\`，\`effective_capabilities()\` 能将其上报；但是 \`run_once():219-240\` 对 \`DEPLOYMENT_TEST\` 使用的 \`allowed_capabilities\` 只有默认 \`deployment-test\`，特殊兼容集合仅为 \`MODEL_CONVERSION\` 提供。故一旦领取要求 \`deployment-test.rknn\` 的任务，会在调用 \`start_execution()\` 前被拒为 \`UNSUPPORTED_AGENT_TASK_KIND\`。现有 \`tests/unit/test_node_agent_executor_loop.py:379-388\` 只验证能力上报，不覆盖此类真实领取执行。**确定性源码合同缺陷，尚未增加 RED 测试；按 P0-02 单独精确修复。**
 2. \`task_node_assignments.py:805-822\` 排除所有已有 \`ASSIGNED/CLAIMED\` 的排队任务；\`:971-1025\` 仅在**同一节点**调用 \`claim_for_node()\` 时将该节点过期 CLAIMED 重新变成 ASSIGNED。若节点失联且分配仍为 ASSIGNED，目前审阅的自动派发/恢复入口没有证明旧分配会在 TTL 后安全释放并重新分配。该项需按 node TTL、generation/fencing、进程清理确认补负例；不能直接按超时盲目双重分配。
+
+
+## 9. P0-02 最小修复候选：Agent TaskKind / Operation 准入收敛（2026-11-14）
+
+> **基线与开发顺序：** 从 \`de174436c32513a5beb86e94af4b771cf221800a\` 开始；先提交 RED 隔离测试 \`f906af45\`（MaterialBatch 与 local-only 任务）、\`4bc44d43\`（RKNN 部署测试 Agent claim），后提交业务补丁 \`f41ae22a\`（中央能力映射）和 \`10b880d6\`（RKNN Runner claim）。正式 VERSION 仍是 \`42.24.592\`。未修改数据库 schema、任务数据、Worker 启动入口、现有训练参数或自动派单驱动；未部署 A800/4070。由于 Actions 排队期间已有 GREEN 补丁提交，不能仅凭静态预期将 RED 测试记作已执行失败。
+
+### 9.1 已确认的根因
+
+- \`task_node_assignments.py::task_node_capability\` 原先将 \`TaskKind.CLEANING\`、\`AI_ANNOTATION\`、\`VIDEO_FRAMES\` 映射为清洗/标注/视频能力，尽管当前 \`NodeAgentExecutorLoop.SUPPORTED_AGENT_TASK_KINDS\` 没有这些 Agent Runner。它还将 \`MATERIAL_BATCH\` 除 CLEAN 和 AI_ANNOTATE 之外的所有 operation 默认映射成 \`material-import\`，其中包括 \`SMART_AUDIT\`、完整性审计、GT 标签重映射等本地正式处理任务。这样会让中央 Assignment 提前拦截本地 Worker，形成错误节点分配或长时间等待。
+- \`node_agent_executor_loop.py::run_once\` 已允许 \`conversion.rknn\`，但对 \`DEPLOYMENT_TEST\` 只允许普通 \`deployment-test\`；\`deployment-test.rknn\` 能上报却会在开始执行前被误拒绝。
+
+### 9.2 范围严格受控的修改
+
+1. 中央 \`task_node_capability\` 不再给 \`CLEANING\`、\`AI_ANNOTATION\`、\`VIDEO_FRAMES\` 分配虚假的可远程执行能力，交由原本地 Worker Owner 保持处理。不得把此举误称已实现相应远程 Runner。
+2. \`MATERIAL_BATCH\` 只有 \`operation=CLEAN + execution_mode=agent\` 返回 \`cleaning\`，其余 operation 和本地 CLEAN 均交原本地 \`MaterialBatchHandler\`；Agent CLEAN 仍需原有合法 \`remote_execution\` 可移植合同，缺失合同不向 local 回退。
+3. \`DEPLOYMENT_TEST\` Agent 领取允许 \`deployment-test\` 或 \`deployment-test.rknn\`；仍要求当前 Agent 实际 \`effective_capabilities\` 精确包含所需能力和真实 Runner ready，否则拒绝开始执行。没有把任意部署执行器提升为 RKNN 执行器。
+4. 在 \`tests/unit/test_task_node_assignments.py\` 新增参数化 local-only 任务与 operation 负例，要求未产生 Assignment，并保留原 \`AssignmentAwareFencedTaskRepository\` 本地 Worker 领取；补 Agent CLEAN 无 portable 合同不回退 local 测试。
+5. 在 \`tests/unit/test_node_agent_executor_loop.py\` 新增 RKNN 专用能力真实领取执行和 generic capability 不匹配的否定测试，避免只检查心跳能力名字。
+
+### 9.3 验收边界与风险
+
+- 本批**没有**实现 P0-01 自动派单，也没有上线更激进的 CPU/RAM/disk 资源准入或 Agent 多线程并行。当前 A800 生产环境未更改；若未来部署新版本，现有本地 Worker 应继续负责 AI 标注、视频抽帧、智能审计、标签统一等任务。
+- 当前仍存在历史前端 CI 独立问题：基线 \`de174436\` **21 workflow runs = 20 success + 1 failure**；失败分片 \`Frontend Runtime Stabilization\` 的 \`tests/browser/training-create-scroll.spec.mjs:36\`，本专项未修改该文件，也不将失败归咎于本专项。
+- 本批 RED/GREEN、新 HEAD 的定向 Python Linux/Windows、Agent 合同、全仓 CI 终态必须以**准确提交 SHA** 再查；如果未终态写 \`PENDING\`，不宣称通过；真实 A800/4070 GPU、多服务器、OSS/NAS 以及生产 UAT 仍全部 \`NOT VERIFIED\`。
+- 回滚：仅回滚 \`task_node_assignments.py\` 和 \`node_agent_executor_loop.py\` 两个业务改动到基线（并按实际依赖撤回对应测试），无需 schema 迁移或数据操作；正式上线仍需要单独的 A800 版本兼容性、备份与停机窗口验收。
