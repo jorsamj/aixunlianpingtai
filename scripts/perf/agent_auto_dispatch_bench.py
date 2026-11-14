@@ -136,10 +136,14 @@ def run_case(size, agents, repeat, profile):
         def claim(n):
             node_id, token = nodes[n % agents]
             begin = time.perf_counter()
+            initialized_at = None
+            claim_started = None
             try:
                 # FastAPI creates this service on each /assignments/claim request.
                 service = AgentExecutionService(
                     repo, artifacts, heartbeat_ttl_seconds=3600, auto_assign_enabled=True)
+                initialized_at = time.perf_counter()
+                claim_started = initialized_at
                 item = service.claim_assignment(node_id, token)
                 claim = None
                 if item:
@@ -150,17 +154,29 @@ def run_case(size, agents, repeat, profile):
                         "expires_at": assignment["lease_expires_at"],
                         "observed_at": datetime.now(timezone.utc).timestamp(),
                     }
-                return (time.perf_counter() - begin) * 1000, claim, None
+                ended = time.perf_counter()
+                return (
+                    (ended - begin) * 1000,
+                    (initialized_at - begin) * 1000,
+                    (ended - claim_started) * 1000,
+                    claim, None,
+                )
             except Exception as error:
-                return (time.perf_counter() - begin) * 1000, None, f"{type(error).__name__}: {error}"
+                ended = time.perf_counter()
+                return (
+                    (ended - begin) * 1000,
+                    ((initialized_at or ended) - begin) * 1000,
+                    (ended - claim_started) * 1000 if claim_started is not None else 0,
+                    None, f"{type(error).__name__}: {error}",
+                )
         start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=agents) as pool:
             results = list(pool.map(claim, range(agents * repeat)))
         wall_s = round(time.perf_counter() - start, 3)
         stop.set()
         watcher.join(timeout=2)
-        claims = [claim for _, claim, _ in results if claim]
-        failures = [error for _, _, error in results if error] + writer["errors"]
+        claims = [claim for _, _, _, claim, _ in results if claim]
+        failures = [error for _, _, _, _, error in results if error] + writer["errors"]
         # CLAIMED is an expiring reservation, not a started execution. A task
         # whose Agent never calls /start can be offered again with a new token
         # after its prior claim lease expires. That is not duplicate execution.
@@ -191,7 +207,12 @@ def run_case(size, agents, repeat, profile):
             "queue_profile": profile, "queued_task_count": size, "agent_count": agents,
             "polls_per_agent": repeat, "setup_seconds_excluded": setup_seconds,
             "poll_wall_s": wall_s,
-            "poll_latency": summary([ms for ms, _, _ in results]),
+            "poll_latency": summary([ms for ms, _, _, _, _ in results]),
+            # Inclusive timing split for root cause analysis: constructor
+            # includes node/assignment schema ensure and fenced repository;
+            # business includes authentication, claim, and Agent auto-assign.
+            "service_init_latency": summary([ms for _, ms, _, _, _ in results]),
+            "claim_business_latency": summary([ms for _, _, ms, _, _ in results]),
             "sqlite_writer_latency": summary(writer["latencies"]),
             "sqlite_writer_busy": writer["busy"],
             "total_claim_responses": len(claims),
