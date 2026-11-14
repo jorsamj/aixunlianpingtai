@@ -1396,6 +1396,42 @@ def test_release_allows_new_generation_assignment(tmp_path):
     assert len(allocator.list(active_only=True)) == 1
 
 
+def test_local_worker_never_claims_remote_training_before_agent_assignment(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    remote_task = create_task(
+        repository, artifacts, "train-remote-owned", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=1,
+    )
+    # The preparation owner publishes this resource_key when remote inputs
+    # become ready. It must not be claimed by the A800/local training Worker,
+    # even while an Agent is offline or before auto assignment is enabled.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET resource_key=? WHERE task_id=?",
+            ("training:remote:scheduler", remote_task.task_id),
+        )
+    local_task = create_task(
+        repository, artifacts, "train-existing-local", TaskKind.TRAINING,
+        {"epochs": 3},
+        priority=50,
+    )
+    worker = AssignmentAwareFencedTaskRepository(repository.path)
+    claimed = worker.claim_next(
+        "a800-local-worker", [TaskKind.TRAINING], [], lease_seconds=30,
+    )
+    assert claimed is not None
+    assert claimed.task.task_id == local_task.task_id
+    assert repository.get(remote_task.task_id).status is TaskStatus.QUEUED
+    assert CentralTaskAllocator(repository, artifacts).list(active_only=True) == []
+
+
 def test_central_assignment_fences_legacy_worker_until_release(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, "train-fenced", TaskKind.TRAINING)
