@@ -204,7 +204,6 @@ export function installTrainingCheckpointResumeUI({getState, notify} = {}) {
   const doc = document;
   const state = () => getState?.() || {};
   ensureStyles(doc);
-  const originalOpenDetail = window.openTrainingRecoveryDetail;
 
   function jobsById() {
     return new Map((state().jobs || []).map(job => [String(job?.id || ''), job]));
@@ -240,7 +239,7 @@ export function installTrainingCheckpointResumeUI({getState, notify} = {}) {
   function open(taskId) {
     const job = jobsById().get(String(taskId || ''));
     if (!job || !isAutomaticTrainingRecoveryJob(job)) {
-      return typeof originalOpenDetail === 'function' ? originalOpenDetail(taskId) : false;
+      return window.TrainingRecoveryRuntime?.openDetail?.(taskId) ?? false;
     }
     close();
     doc.body.insertAdjacentHTML('beforeend', detailHtml(job));
@@ -272,7 +271,11 @@ export function installTrainingCheckpointResumeUI({getState, notify} = {}) {
     destroy() {
       observer.disconnect();
       close();
-      if (window.openTrainingRecoveryDetail === open) window.openTrainingRecoveryDetail = originalOpenDetail;
+      if (window.openTrainingRecoveryDetail === open) {
+        const recoveryOpen = window.TrainingRecoveryRuntime?.openDetail;
+        if (typeof recoveryOpen === 'function') window.openTrainingRecoveryDetail = recoveryOpen;
+        else delete window.openTrainingRecoveryDetail;
+      }
       window.__trainingCheckpointResumeUIInstalled = false;
       if (window.TrainingCheckpointResumeUI === runtime) window.TrainingCheckpointResumeUI = null;
     },

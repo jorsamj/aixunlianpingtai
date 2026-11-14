@@ -1,0 +1,8 @@
+{
+  "case": "cancel",
+  "status": "CANCELLED",
+  "owned_mongo_observed": true,
+  "owned_processes_remaining": 0,
+  "formal_material_gt_unchanged": true,
+  "temporary_roots_cleaned": true
+}

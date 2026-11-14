@@ -1,0 +1,26 @@
+{
+  "environment": "isolated real Chrome with protocol fixtures; NOT production; observed includes Playwright polling",
+  "baseline_sha": "2c5311c6",
+  "results": [
+    {
+      "mode": "baseline",
+      "modal_observed_ms": 1380,
+      "controlled_resource_delay_ms": 1200,
+      "request_counts": {
+        "resources": 1,
+        "source_history": 1,
+        "catalog": 1
+      }
+    },
+    {
+      "mode": "progressive",
+      "modal_observed_ms": 36,
+      "controlled_resource_delay_ms": 1200,
+      "request_counts": {
+        "resources": 1,
+        "source_history": 1,
+        "catalog": 1
+      }
+    }
+  ]
+}

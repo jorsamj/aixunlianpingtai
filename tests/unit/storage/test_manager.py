@@ -42,6 +42,25 @@ def test_manager_materializes_legacy_local_row_and_persists_hash(tmp_path):
     assert persisted["size_bytes"] == len(content)
 
 
+def test_read_only_materialization_does_not_patch_formal_material_metadata(tmp_path):
+    data = tmp_path / 'data'
+    project = data / 'projects' / 'p1'
+    (project / 'uploads').mkdir(parents=True)
+    content = b'preview-evidence'
+    (project / 'uploads' / 'preview.jpg').write_bytes(content)
+    materials = MaterialRepository(project)
+    materials.upsert({'id': 'preview', 'filename': 'preview.jpg', 'stored_name': 'preview.jpg',
+                      'content_sha256': sha(content), 'size_bytes': 0, 'labels': []})
+    sources = StorageSourceRepository(data / 'storage' / 'sources.sqlite3')
+    manager = StorageManager(data_dir=data, project_id='p1', materials=materials, sources=sources)
+    before = materials.get('preview')
+
+    resolved = manager.materialize('preview', read_only=True)
+
+    assert resolved.path.read_bytes() == content
+    assert materials.get('preview') == before
+
+
 def test_manager_uses_content_cache_for_external_source(tmp_path):
     data = tmp_path / "data"
     project = data / "projects" / "p1"

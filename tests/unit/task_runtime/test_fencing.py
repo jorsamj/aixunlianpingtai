@@ -230,6 +230,71 @@ def test_execution_generation_fences_old_attempt_even_if_token_matches(tmp_path)
     assert finished.status is TaskStatus.SUCCEEDED
 
 
+def test_parent_training_mutations_require_current_prepare_generation(tmp_path):
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "train-parent",
+        "project-1",
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:pending",
+        required_capabilities=("training.input.ready",),
+    ))
+    repository.create(TaskRecord.new(
+        "trainprep-parent",
+        "project-1",
+        TaskKind.TRAINING_PREPARE,
+        "payload.json",
+        "training-prepare:project-1",
+        required_capabilities=("training.prepare",),
+    ))
+    first = repository.claim_next(
+        "worker-a", [TaskKind.TRAINING_PREPARE], {"training.prepare"}, lease_seconds=30,
+    )
+    assert first is not None
+    _expire(repository, "trainprep-parent")
+    assert repository.release_expired() == 1
+    second = repository.claim_next(
+        "worker-b", [TaskKind.TRAINING_PREPARE], {"training.prepare"}, lease_seconds=30,
+    )
+    assert second is not None
+
+    owner = {
+        "preparation_task_id": first.task.task_id,
+        "preparation_lease_token": first.lease_token,
+        "preparation_execution_generation": first.task.attempt,
+    }
+    with pytest.raises(PermissionError, match="preparation execution"):
+        repository.activate_prepared_training(
+            "train-parent",
+            resource_key="training:remote:scheduler",
+            required_capabilities=("training.ultralytics",),
+            **owner,
+        )
+    with pytest.raises(PermissionError, match="preparation execution"):
+        repository.fail_queued_precondition(
+            "train-parent",
+            "must-not-publish",
+            status=TaskStatus.FAILED,
+            **owner,
+        )
+    parent = repository.get("train-parent")
+    assert parent is not None and parent.status is TaskStatus.QUEUED
+    assert parent.required_capabilities == ("training.input.ready",)
+    assert parent.error is None
+
+    activated = repository.activate_prepared_training(
+        "train-parent",
+        resource_key="training:remote:scheduler",
+        required_capabilities=("training.ultralytics",),
+        preparation_task_id=second.task.task_id,
+        preparation_lease_token=second.lease_token,
+        preparation_execution_generation=second.task.attempt,
+    )
+    assert activated.status is TaskStatus.QUEUED
+    assert activated.required_capabilities == ("training.ultralytics",)
+
+
 def test_fenced_context_refuses_artifact_publication(tmp_path):
     repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "artifacts")
@@ -276,3 +341,156 @@ def test_scheduler_does_not_publish_success_after_execution_expires(tmp_path):
     recovered = repository.get("task-1")
     assert recovered.status is TaskStatus.QUEUED
     assert recovered.stage == "recovered"
+
+
+def test_unverified_remote_agent_expiry_holds_resource_and_gpu_reservation(tmp_path):
+    # Unlike a local worker, the controller has no way to inspect an Agent's
+    # remote OS process. An expired lease must never silently requeue the job.
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    for task_id in ("remote-owner", "same-resource-waiter"):
+        repository.create(TaskRecord.new(
+            task_id, "project-1", TaskKind.MODEL_CONVERSION,
+            "payload.json", "model-conversion:shared",
+        ))
+    first = repository.claim_next("agent:node-remote", [TaskKind.MODEL_CONVERSION], set())
+    assert first is not None
+    assert first.task.task_id == "remote-owner"
+    past = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    with repository._connect() as db:
+        db.execute(
+            """INSERT INTO gpu_reservations
+                (task_id,gpu_uuid,gpu_index,reserved_bytes,estimated_bytes,
+                 worker_id,worker_slot,lease_token,policy,share_eligible,
+                 sharing_evidence_at,created_at,heartbeat_at,expires_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("remote-owner", "GPU-unverified", 0, 1024, 1024,
+             "agent:node-remote", "slot-0", first.lease_token, "exclusive", 0,
+             None, past, past, past),
+        )
+        db.execute("UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+                   (past, "remote-owner"))
+
+    assert repository.release_expired() == 0
+    held = repository.get("remote-owner")
+    assert held.status is TaskStatus.RUNNING
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+    assert "REMOTE_AGENT_STOP_UNVERIFIED" in str(held.resource_wait_reason)
+    assert held.worker_id == "agent:node-remote"
+    assert held.attempt == 1
+    with pytest.raises(PermissionError, match="execution"):
+        repository.heartbeat(
+            "remote-owner", first.lease_token,
+            execution_generation=first.task.attempt,
+        )
+    assert repository.claim_next(
+        "worker-b", [TaskKind.MODEL_CONVERSION], set(),
+    ) is None
+    waiting = repository.get("same-resource-waiter")
+    # The initial queue prefilter skips a resource still owned by an
+    # unverified remote process, before emitting an admission wait reason.
+    assert waiting.status is TaskStatus.QUEUED
+
+    with repository._connect() as db:
+        reservation = db.execute(
+            "SELECT policy,share_eligible,expires_at FROM gpu_reservations WHERE task_id=?",
+            ("remote-owner",),
+        ).fetchone()
+    assert reservation is not None
+    assert reservation["policy"] == "exclusive"
+    assert reservation["share_eligible"] == 0
+    assert datetime.fromisoformat(reservation["expires_at"]) > datetime.now(timezone.utc)
+    assert repository.release_expired() == 0
+    assert repository.get("remote-owner").stage == "recovery_blocked_remote_agent_unverified"
+
+
+def test_unverified_remote_agent_cancel_does_not_claim_process_has_stopped(tmp_path):
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "remote-cancel", "project-1", TaskKind.DEPLOYMENT_TEST,
+        "request.json", "deployment:remote-cancel",
+    ))
+    lease = repository.claim_next(
+        "agent:node-remote", [TaskKind.DEPLOYMENT_TEST], set(),
+    )
+    assert lease is not None
+    current = repository.request_cancel("remote-cancel")
+    assert current.status is TaskStatus.CANCEL_REQUESTED
+    _expire(repository, "remote-cancel")
+    assert repository.release_expired() == 0
+    held = repository.get("remote-cancel")
+    assert held.status is TaskStatus.CANCEL_REQUESTED
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+    assert held.worker_id == "agent:node-remote"
+    assert held.finished_at is None
+
+
+def test_cancelling_held_remote_execution_keeps_stop_unverified_fence(tmp_path):
+    """Cancel must not temporarily erase the safety hold before next reap."""
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    for task_id in ("agent-holder", "waiting-contender"):
+        repository.create(TaskRecord.new(
+            task_id, "project-1", TaskKind.MODEL_CONVERSION,
+            "request.json", "conversion:shared-unverified-stop",
+        ))
+    first = repository.claim_next(
+        "agent:unreachable-node", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None and first.task.task_id == "agent-holder"
+    _expire(repository, "agent-holder")
+    assert repository.release_expired() == 0
+    held = repository.get("agent-holder")
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+
+    cancelled = repository.request_cancel("agent-holder")
+    assert cancelled.status is TaskStatus.CANCEL_REQUESTED
+    assert cancelled.stage == "recovery_blocked_remote_agent_unverified"
+    assert cancelled.worker_id == "agent:unreachable-node"
+    assert cancelled.finished_at is None
+
+    # The queue must remain fenced even *before* another recovery sweep.
+    assert repository.claim_next(
+        "ordinary-worker", [TaskKind.MODEL_CONVERSION], set(),
+    ) is None
+    assert repository.get("waiting-contender").status is TaskStatus.QUEUED
+    assert repository.get("agent-holder").attempt == 1
+
+
+def test_generic_stage_mutation_cannot_erase_remote_agent_stop_hold(tmp_path):
+    """Even internal stage updates cannot weaken an unresolved remote hold."""
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "remote-stage-owner", "project-1", TaskKind.MODEL_CONVERSION,
+        "request.json", "conversion:remote-stage-hold",
+    ))
+    first = repository.claim_next(
+        "agent:offline-node", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None
+    _expire(repository, "remote-stage-owner")
+    assert repository.release_expired() == 0
+    held = repository.get("remote-stage-owner")
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+
+    with pytest.raises(ValueError, match="running tasks"):
+        repository.set_stage("remote-stage-owner", "running")
+    after = repository.get("remote-stage-owner")
+    assert after.stage == "recovery_blocked_remote_agent_unverified"
+    assert after.status is TaskStatus.RUNNING
+    assert after.worker_id == "agent:offline-node"
+    assert after.attempt == 1
+
+
+def test_generic_stage_mutation_still_works_for_ordinary_running_task(tmp_path):
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "ordinary-stage-owner", "project-1", TaskKind.MODEL_CONVERSION,
+        "request.json", "conversion:ordinary-stage",
+    ))
+    first = repository.claim_next(
+        "local-worker", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None
+    assert repository.set_stage(
+        "ordinary-stage-owner", "preparing",
+    ).stage == "preparing"
+

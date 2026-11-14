@@ -1,0 +1,71 @@
+{
+  "environment": "Windows isolated SQLite issue indexes; synthetic issues, no production images or OSS; first request does not prove cold OS cache",
+  "scales": [
+    {
+      "issues": 10000,
+      "query": "first",
+      "first_request_ms": 39.261800000531366,
+      "warm_p50_ms": 32.634999999572756,
+      "warm_p95_ms": 36.082800001167925
+    },
+    {
+      "issues": 10000,
+      "query": "deep",
+      "first_request_ms": 30.152899998938665,
+      "warm_p50_ms": 36.99389999746927,
+      "warm_p95_ms": 41.153800000756746
+    },
+    {
+      "issues": 10000,
+      "query": "type",
+      "first_request_ms": 43.29370000050403,
+      "warm_p50_ms": 38.84520000065095,
+      "warm_p95_ms": 43.150000001332955
+    },
+    {
+      "issues": 100000,
+      "query": "first",
+      "first_request_ms": 56.3518999988446,
+      "warm_p50_ms": 52.68630000136909,
+      "warm_p95_ms": 59.66869999974733
+    },
+    {
+      "issues": 100000,
+      "query": "deep",
+      "first_request_ms": 58.8028000020131,
+      "warm_p50_ms": 50.551500000437954,
+      "warm_p95_ms": 65.91850000040722
+    },
+    {
+      "issues": 100000,
+      "query": "type",
+      "first_request_ms": 84.82520000325167,
+      "warm_p50_ms": 72.5512000026356,
+      "warm_p95_ms": 96.03079999942565
+    },
+    {
+      "issues": 200000,
+      "query": "first",
+      "first_request_ms": 76.84140000128536,
+      "warm_p50_ms": 74.55009999830509,
+      "warm_p95_ms": 87.42109999730019
+    },
+    {
+      "issues": 200000,
+      "query": "deep",
+      "first_request_ms": 52.49840000033146,
+      "warm_p50_ms": 71.64820000252803,
+      "warm_p95_ms": 120.38190000021132
+    },
+    {
+      "issues": 200000,
+      "query": "type",
+      "first_request_ms": 106.54240000076243,
+      "warm_p50_ms": 140.1834999996936,
+      "warm_p95_ms": 151.03719999751775
+    }
+  ],
+  "query_plan": [
+    "SEARCH issue_groups USING INDEX ix_material_integrity_groups (issue_type=? AND group_key>?)"
+  ]
+}

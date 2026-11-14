@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {diagnosticBoxes,renderAnnotationDiagnostics} from '../../static/modules/annotation-diagnostics.js';
+test('execution evidence displays actual traces and never invents backend GPU identity',()=>{
+  const html=renderAnnotationDiagnostics({request_id:'upstream-42',backend_instance_id:'instance-a',actual_model:'model-r1',execution:{platform_request_id:'platform-42',attempts:2,queue_ms:125,elapsed_ms:500}});
+  for(const value of ['upstream-42','instance-a','model-r1','platform-42','125','500'])assert.ok(html.includes(value));
+  assert.ok(!html.includes('GPU0'));
+});
+const box={label:'person',x1:100,y1:200,x2:300,y2:600};
+const d={contract:{coordinate_space:'normalized_1000'},geometry:{original_width:1920,original_height:1080},raw_candidates:[box],converted_boxes:[{...box,x1:192,y1:216,x2:576,y2:648}]};
+test('diagnostic comparison respects declared ranges and original dimensions',()=>{
+ assert.deepEqual(diagnosticBoxes(d,'raw'),[{label:'person',left:10,top:20,width:20,height:40}]);
+ assert.deepEqual(diagnosticBoxes(d,'converted'),diagnosticBoxes(d,'raw'));
+ assert.deepEqual(diagnosticBoxes({...d,contract:{coordinate_space:'normalized_1000',coordinate_order:'yxyx'},raw_candidates:[{...box,x1:200,y1:100,x2:600,y2:300}]},'raw'),diagnosticBoxes(d,'raw'));
+ assert.deepEqual(diagnosticBoxes({...d,raw_candidates:[{...box,x1:null}]},'raw'),[]);
+ assert.deepEqual(diagnosticBoxes({...d,contract:{}},'raw'),[]);
+ assert.deepEqual(diagnosticBoxes(d,'final',[]),[]);
+});
+test('diagnostics bound structured data, escape text and never expose arbitrary response fields',()=>{
+ const html=renderAnnotationDiagnostics({...d,model_name:'<script>',raw_response:'secret',token:'secret',raw_candidates:Array(120).fill(box)});
+ assert.ok(html.includes('&lt;script&gt;'));assert.ok(!html.includes('secret'));
+ assert.equal((html.match(/<tr><td>person/g)||[]).length,100);
+ assert.ok(html.includes('需人工核查'));assert.ok(html.includes('准确率'));
+});
+test('WeVisOne overlapping labels show bounded traces and require explicit human review',()=>{
+ const html=renderAnnotationDiagnostics({review_required:true,label_match_status:'cross_label_overlap',
+  conflicting_labels:['person','tangzhe'],
+  conflict_pairs:[{labels:['person','tangzhe'],box_indices:[0,1],iou:1}],
+  per_label_requests:[{label:'person',request_id:'provider-1',trace_id:'trace-1',box_count:2}]});
+ for(const value of ['必须人工消歧','person / tangzhe','provider-1','trace-1','1 / 2','跨标签冲突'])assert.ok(html.includes(value));
+ assert.ok(!html.includes('请检查模型服务配置后重试'));
+});

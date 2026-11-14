@@ -1,0 +1,4 @@
+Annotorious 3.9.5, BSD-3-Clause, Copyright (c) 2023 Rainer Simon.
+Official source: https://github.com/annotorious/annotorious/tree/f780879410ff4f2d4fd0b2cb1ae1bd596a40fe65
+Includes Svelte 4.2.20 (MIT) and additional dependency notices under licenses/.
+Source notices are retained without modification. See manifest.json for hashes and inventory.

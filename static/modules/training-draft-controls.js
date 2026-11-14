@@ -3,6 +3,7 @@ export const TRAINING_DRAFT_CONTROL_IDS = Object.freeze([
   'trV3Validation',
   'tr429Priority',
   'trV3ResourceStrategy',
+  'trV3ResourceProfile',
   'trV3Device',
   'trV3GpuPolicy',
 ]);
@@ -34,6 +35,9 @@ export function trainingDraftControlPatch(target) {
   }
   if (id === 'trV3ResourceStrategy') {
     return {resource: {strategy: String(target?.value || 'auto')}};
+  }
+  if (id === 'trV3ResourceProfile') {
+    return {resource: {profile: String(target?.value || 'balanced')}};
   }
   if (id === 'trV3Device') {
     return {resource: {device: String(target?.value || 'auto')}};
@@ -68,7 +72,7 @@ export function installTrainingDraftControls({trainingDraftRuntime} = {}) {
   document.addEventListener('change', apply);
 
   const runtime = {
-    build: 'training-draft-controls-422501',
+    build: 'training-draft-controls-422502',
     state: () => ({directWrites}),
     destroy() {
       destroyed = true;

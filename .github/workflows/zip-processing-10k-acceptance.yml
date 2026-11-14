@@ -1,11 +1,14 @@
 name: ZIP Processing 10k Acceptance
 
-# One-shot acceptance rerun after deterministic SQLite connection lifecycle closure.
+# One-shot genuine acceptance. Permanent lower-cost ZIP contracts live in
+# zip-import-durable-runtime.yml; this expensive workflow is intentionally
+# triggered only when this acceptance definition/tool changes.
 on:
   workflow_dispatch:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - .github/workflows/zip-processing-10k-acceptance.yml
       - tools/accept_zip_processing_10k.py
@@ -27,7 +30,7 @@ jobs:
       - name: Syntax and release boundary
         run: |
           python -m py_compile tools/accept_zip_processing_10k.py app.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
       - name: Real HTTP 10k YOLO processing acceptance
         run: |
@@ -57,4 +60,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Confirm formal version unchanged
-        run: test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+        run: python -m platform_core.build_identity --check-version-file VERSION.txt

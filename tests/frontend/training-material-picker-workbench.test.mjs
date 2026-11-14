@@ -1,0 +1,136 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {installTrainingMaterialPickerRuntime} from '../../static/modules/training-material-picker-runtime.js';
+
+const tick=()=>new Promise(r=>setTimeout(r,0));
+function setup(draft,fetchImpl){
+  const hosts=new Map();
+  const host=id=>{if(!hosts.has(id))hosts.set(id,{id,textContent:'',innerHTML:'',dataset:{},classList:{toggle(){}},addEventListener(){}});return hosts.get(id);};
+  globalThis.document={getElementById:host,querySelectorAll:()=>[],head:{appendChild(){}}};
+  globalThis.window={modal(){},closeModal(){},PlatformCore:{pagination:{mountPagination(){}}}};
+  let patch;
+  const runtime=installTrainingMaterialPickerRuntime({getState:()=>({labels:[]}),projectId:()=> 'p',trainingDraftRuntime:{current:()=>draft,update:v=>patch=v},fetchImpl});
+  return {runtime,get patch(){return patch;}};
+}
+const response=body=>({ok:true,json:async()=>body});
+const page=n=>({items:[{id:`i${n}`,annotation_state:'annotated'}],total:120,page:n,total_pages:2,repository_revision:1,annotation_revision:2,usage_revision:'u'});
+
+test('reopen restores draft; cache-hit cancels pending page and ignores a late response',async()=>{
+  let complete;
+  const h=setup({materialIds:['saved'],newLabelCodes:[]},async(url,options={})=>{
+    if(url.includes('/revision'))return response({repository_revision:1,annotation_revision:2,usage_revision:'u'});
+    if(new URL(url,'http://test').searchParams.get('page')==='2')return new Promise(resolve=>{complete=()=>resolve(response(page(2)));});
+    return response(page(1));
+  });
+  try{
+    await h.runtime.open('train');await tick();
+    assert.equal(h.runtime.state().selected,1);
+    const pending=h.runtime.loadPage({page:2});await tick();
+    await h.runtime.loadPage({page:1});
+    complete();await pending;
+    assert.equal(h.runtime.state().page,1);
+    await h.runtime.open('train');await tick();
+    assert.equal(h.runtime.state().selected,1);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});
+
+test('robustness picker scopes candidates and patches only its policy selection',async()=>{
+  const calls=[];
+  const policy={mode:'enabled',copies:2,selection:{mode:'manual',image_ids:['i1','outside']}};
+  const h=setup({materialIds:['i1','i2'],testMaterialIds:['t'],newLabelCodes:[],robustness_policy:policy},async(url,options={})=>{
+    calls.push({url,body:options.body?JSON.parse(options.body):null});return response(page(1));
+  });
+  try{
+    await h.runtime.open({role:'robustness'});await tick();
+    assert.equal(h.runtime.state().selected,1);
+    assert.deepEqual(calls[0].body.image_ids,['i1','i2']);
+    assert.match(calls[0].url,/\/page$/);
+    window.confirmTrainMaterialPickerV3();
+    assert.deepEqual(Object.keys(h.patch),['robustness_policy']);
+    assert.deepEqual(h.patch.robustness_policy.selection.image_ids,['i1']);
+    assert.equal(h.patch.robustness_policy.copies,2);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});
+
+test('modal close only cancels the owning picker layer',async()=>{
+  let signal;const layer={};
+  const h=setup({materialIds:['saved'],newLabelCodes:[]},async(_url,options)=>{signal=options.signal;return new Promise(()=>{});});
+  window.modal=()=>layer;
+  try{
+    await h.runtime.open('train');await tick();
+    h.runtime.beforeModalClose({});
+    assert.equal(signal.aborted,false);
+    h.runtime.beforeModalClose(layer);
+    assert.equal(signal.aborted,true);
+    assert.equal(h.runtime.state(),null);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});
+
+test('200k-pool iteration picker reads only deferred page and does not eagerly load categories or role index',async()=>{
+  const calls=[];
+  const h=setup({algorithmId:'alg',baseVersionId:'base',materialIds:[],newLabelCodes:[]},async(url,options={})=>{
+    calls.push({url,body:options.body?JSON.parse(options.body):null});
+    const pageNumber=Number(new URL(url,'http://test').searchParams.get('page')||1);
+    return response({items:[{id:`i${pageNumber}`}],total:null,page:pageNumber,page_size:60,
+      has_next:pageNumber===1,repository_revision:1,annotation_revision:1,usage_revision:'u'});
+  });
+  try{
+    await h.runtime.open('train');await tick();
+    assert.equal(calls.length,1);
+    assert.match(calls[0].url,/count_mode=deferred/);
+    assert.doesNotMatch(calls[0].url,/role-page|negative-pool\/categories/);
+    assert.equal(h.runtime.state().total,null);
+    assert.equal(h.runtime.state().totalPages,2);
+    await h.runtime.loadPage({page:2});
+    assert.equal(h.runtime.state().page,2);
+    assert.equal(h.runtime.state().totalPages,2);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});
+
+test('negative categories are loaded only after a user selects the pool filter',async()=>{
+  const calls=[];
+  const h=setup({materialIds:[],newLabelCodes:[]},async(url,options={})=>{
+    calls.push(url);
+    if(url.includes('/negative-pool/categories'))return response({items:[]});
+    return response({items:[],total:null,page:1,has_next:false,repository_revision:1,annotation_revision:1,usage_revision:'u'});
+  });
+  try{
+    await h.runtime.open('train');await tick();
+    assert.equal(calls.some(url=>url.includes('/negative-pool/categories')),false);
+    h.runtime.setFilter('negativePoolOnly','pool');await tick();
+    assert.equal(calls.filter(url=>url.includes('/negative-pool/categories')).length,1);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});
+
+
+test('small filtered selection replaces an earlier frozen train reference before confirming', async () => {
+  const frozenRef = 'trainselection_' + 'a'.repeat(32);
+  const draft = {
+    algorithmId: 'alg', materialIds: [], testMaterialIds: [], newLabelCodes: [],
+    trainSelectionRef: frozenRef, trainSelectionCount: 22015,
+  };
+  const calls = [];
+  const h = setup(draft, async (url, options = {}) => {
+    calls.push(url);
+    if (url.endsWith('/bulk-selection')) return response({
+      items: ['filtered-a', 'filtered-b'], total: 2,
+      repository_revision: 1, annotation_revision: 2, usage_revision: 'u',
+    });
+    return response(page(1));
+  });
+  try {
+    await h.runtime.open('train');
+    await tick();
+    assert.equal(h.runtime.state().selected, 0);
+    await h.runtime.bulkAction('select-filtered');
+    assert.equal(calls.filter(url => url.endsWith('/bulk-selection')).length, 1);
+    assert.equal(h.runtime.state().selected, 2);
+    assert.equal(window.confirmTrainMaterialPickerV3(), true);
+    assert.deepEqual(h.patch.materialIds, ['filtered-a', 'filtered-b']);
+    assert.equal(h.patch.trainSelectionRef, '');
+    assert.equal(h.patch.trainSelectionCount, 0);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});

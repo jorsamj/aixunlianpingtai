@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {trainingProgressView, trainingTaskRow} from '../../static/modules/training-task-runtime.js';
+import {trainingProgressView} from '../../static/modules/training-task-runtime.js';
+import {trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 test('training progress v2 renders real epoch metrics throughput and rolling ETA', () => {
   const job = {
@@ -27,9 +28,10 @@ test('training progress v2 renders real epoch metrics throughput and rolling ETA
   assert.match(view.metricLine, /LR 0\.00100/);
 
   const html = trainingTaskRow(job);
-  assert.match(html, /5\/10 · 45%/);
+  assert.match(html, /Epoch 5\/10/);
+  assert.match(html, />45%<\/b>/);
   assert.doesNotMatch(html, /45% · 5/);
-  assert.match(html, /mAP50 0\.661/);
+  assert.doesNotMatch(html, /mAP50 0\.661/, 'dense metrics belong in detail/report, not the primary task row');
   assert.match(html, />1m 1s</);
   assert.doesNotMatch(html, />16m 39s</);
 });
@@ -41,4 +43,22 @@ test('training progress v2 omits unavailable metrics instead of manufacturing ze
   assert.doesNotMatch(html, /mAP50/);
   assert.doesNotMatch(html, /box loss/);
   assert.doesNotMatch(html, /img\/s/);
+});
+
+
+test('training progress view prefers canonical display projection over stale legacy aliases', () => {
+  const view = trainingProgressView({
+    current_epoch: 3, total_epochs: 30, elapsed_seconds: 999, eta_seconds: 999,
+    training_progress: {epoch: 3, total_epochs: 30, images_per_second: 7},
+    training_display_progress: {
+      revision: 700, current_epoch: 8, total_epochs: 30,
+      current_batch: 5, total_batches: 10,
+      elapsed_seconds: 120, eta_seconds: 330, throughput: 18.5, overall_progress: 38,
+    },
+  });
+  assert.equal(view.epoch, 8);
+  assert.equal(view.currentBatch, 5);
+  assert.equal(view.elapsedSeconds, 120);
+  assert.equal(view.etaSeconds, 330);
+  assert.match(view.metricLine, /18\.5 img\/s/);
 });

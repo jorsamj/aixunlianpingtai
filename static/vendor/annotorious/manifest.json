@@ -1,0 +1,130 @@
+{
+  "package": "@annotorious/annotorious",
+  "version": "3.9.5",
+  "license": "BSD-3-Clause",
+  "upstream_git_head": "f780879410ff4f2d4fd0b2cb1ae1bd596a40fe65",
+  "method": "Exact official npm browser artifact copy; no network, compile or second bundler",
+  "files": {
+    "annotorious.js": {
+      "bytes": 116834,
+      "sha256": "66a2ac758870234b7102b5e6ad93082c4f8bb23d0d47b296df7e032f2c92a1c5"
+    },
+    "annotorious.css": {
+      "bytes": 4941,
+      "sha256": "39c60e5ca2304bd0ba4ef3274fdda5ca6fb228877c32f5f279462d968b439281"
+    },
+    "annotorious.js.map": {
+      "bytes": 448606,
+      "sha256": "2fbd0d277d71a37b2f4652ec971de7670569c5900d742343329b8737eb35a21c"
+    }
+  },
+  "dependencies": [
+    {
+      "name": "@annotorious/annotorious",
+      "version": "3.9.5",
+      "license": "BSD-3-Clause",
+      "integrity": "sha512-cKXReeqzsrh/VKLL4nVjWVaI7323OD0Tf3NN7+MTg0niTA/qqLBF7Q1/HuP8MDwDYupMi/lgLVLhCRPxoNB5iQ==",
+      "notice": "licenses/@annotorious__annotorious-3.9.5.txt",
+      "notice_sha256": "3ae9fe44013f55ecbb4732180061c6e5ada08e5bb493967cec2c03cd19a6626a"
+    },
+    {
+      "name": "@annotorious/core",
+      "version": "3.9.5",
+      "license": "BSD-3-Clause",
+      "integrity": "sha512-nTyWALQseIo8NS0OffILlGAmLJtBi0TDTAbbbaSfgDjC1duT8rdaSBLund9pMmcFCKZw9Iu4GStad2hmuTSuqQ==",
+      "notice": "licenses/@annotorious__core-3.9.5.txt",
+      "notice_sha256": "3ae9fe44013f55ecbb4732180061c6e5ada08e5bb493967cec2c03cd19a6626a"
+    },
+    {
+      "name": "dequal",
+      "version": "2.0.3",
+      "license": "MIT",
+      "integrity": "sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==",
+      "notice": "licenses/dequal-2.0.3.txt",
+      "notice_sha256": "306fa513e39b23a6e8747520de761809d206b99800ef41907b530226574c59ae"
+    },
+    {
+      "name": "nanoevents",
+      "version": "10.0.0",
+      "license": "MIT",
+      "integrity": "sha512-PmIJ3BNxOzgVgnS1r/Pvyj6eZx/xUV2JCPogh0brD6smDIwjRlr1KBl9yoRX323PlfaNrBDDnfCgC9SL00OjSg==",
+      "notice": "licenses/nanoevents-10.0.0.txt",
+      "notice_sha256": "f20adb7ae92bfb7fde52791839ff1714564b4ea60a4cd031d77208a521592a4e"
+    },
+    {
+      "name": "nanoid",
+      "version": "6.0.2",
+      "license": "MIT",
+      "integrity": "sha512-hIvVOb9Qr1p/9CNNLOe0OlWvgx/ziTsVwKN/GDSsuArN2K0wDiafP3s0SWmsm7o2BdnyS8Z9Z64NFBUbn6ziBg==",
+      "notice": "licenses/nanoid-6.0.2.txt",
+      "notice_sha256": "4383cb2c3608397ce7a4159502614ed66890f8999c2a9c056dd3b1024d6721f0"
+    },
+    {
+      "name": "nanostores",
+      "version": "1.5.5",
+      "license": "MIT",
+      "integrity": "sha512-FixtE239Gl6Gz0ZGCK0WzvNwObNCIwVT+L7zQcf1QgcA6AzBxblzqe9OT88qiucNkhsjSOqiogSaF5jVbJiqSA==",
+      "notice": "licenses/nanostores-1.5.5.txt",
+      "notice_sha256": "181bc2685f0cea9d1beb28352420e3a7fb382b38895d2b430ed1b3bc39572af6"
+    },
+    {
+      "name": "quickselect",
+      "version": "3.0.0",
+      "license": "ISC",
+      "integrity": "sha512-XdjUArbK4Bm5fLLvlm5KpTFOiOThgfWWI4axAZDWg4E/0mKdZyI9tNEfds27qCi1ze/vwTR16kvmmGhRra3c2g==",
+      "notice": "licenses/quickselect-3.0.0.txt",
+      "notice_sha256": "238ddb00e12a420a54e060afa19bdab4f70bf49e0e2a8ebb1a5e851f9ef447df"
+    },
+    {
+      "name": "rbush",
+      "version": "4.0.1",
+      "license": "MIT",
+      "integrity": "sha512-IP0UpfeWQujYC8Jg162rMNc01Rf0gWMMAb2Uxus/Q0qOFw4lCcq6ZnQEZwUoJqWyUGJ9th7JjwI4yIWo+uvoAQ==",
+      "notice": "licenses/rbush-4.0.1.txt",
+      "notice_sha256": "bf20b07b8e41f306d22b73bfa6b0e248e81ee8caaa6a04285acb0b8e963c01ec"
+    },
+    {
+      "name": "simplify-js",
+      "version": "1.2.4",
+      "license": "BSD-2-Clause",
+      "integrity": "sha512-vITfSlwt7h/oyrU42R83mtzFpwYk3+mkH9bOHqq/Qw6n8rtR7aE3NZQ5fbcyCUVVmuMJR6ynsAhOfK2qoah8Jg==",
+      "notice": "licenses/simplify-js-1.2.4.txt",
+      "notice_sha256": "a901a67db860508f95e4915c58dff092eec045b8b852d06aa0e12c7f40536d07"
+    },
+    {
+      "name": "uuid",
+      "version": "14.0.3",
+      "license": "MIT",
+      "integrity": "sha512-Sc5u1VVln93y1Xnz4R+CunOZc7R9LUcTmhj7Rc7Eg3HVcf7rVn2FOoa812fe0W8p3jD7xeoGSYbfqCGGH2B6xw==",
+      "notice": "licenses/uuid-14.0.3.txt",
+      "notice_sha256": "beaa6b04fb82e41dd2ad679e19e27953afb5999b1abbb455b6564e78ebfeb332"
+    }
+  ],
+  "embedded_svelte": {
+    "version": "4.2.20",
+    "license": "MIT",
+    "evidence": "Official source map shared/version.js",
+    "notice": "licenses/svelte-4.2.20.txt",
+    "notice_sha256": "97a941bae1c510c556c5daf017180e4939ea392357d9a7bae2657e3e20c69c42"
+  },
+  "embedded_modules": [
+    "../../../node_modules/dequal/lite/index.mjs",
+    "../../../node_modules/quickselect/index.js",
+    "../../../node_modules/rbush/index.js",
+    "../../../node_modules/simplify-js/simplify.js",
+    "../../../node_modules/svelte/src/runtime/internal/Component.js",
+    "../../../node_modules/svelte/src/runtime/internal/disclose-version/index.js",
+    "../../../node_modules/svelte/src/runtime/internal/dom.js",
+    "../../../node_modules/svelte/src/runtime/internal/each.js",
+    "../../../node_modules/svelte/src/runtime/internal/lifecycle.js",
+    "../../../node_modules/svelte/src/runtime/internal/scheduler.js",
+    "../../../node_modules/svelte/src/runtime/internal/transitions.js",
+    "../../../node_modules/svelte/src/runtime/internal/utils.js",
+    "../../../node_modules/svelte/src/runtime/store/index.js",
+    "../../../node_modules/svelte/src/shared/version.js",
+    "../../../node_modules/uuid/dist/rng.js",
+    "../../../node_modules/uuid/dist/stringify.js",
+    "../../../node_modules/uuid/dist/v4.js"
+  ],
+  "note": "Installed dependency inventory is from the lockfile; it is not a claim about every embedded dependency build version. Official artifact checksums are authoritative."
+}

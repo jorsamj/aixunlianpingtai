@@ -1,0 +1,13 @@
+{
+  "environment": "isolated real Chrome protocol fixtures; NOT production",
+  "baseline_evidence": "timing.json from prior measured run; baseline NOT rerun by this test",
+  "recorded_baseline_sha": "2c5311c6",
+  "recorded_baseline_modal_ms": 1380,
+  "current_modal_observed_ms": 79,
+  "controlled_resource_delay_ms": 1200,
+  "request_counts": {
+    "resources": 1,
+    "source_history": 1,
+    "catalog": 1
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "scope": "ISOLATED_20000_METADATA_24_RENDERED_NOT_PRODUCTION",
+  "input_to_next_frame_p50_ms": 16.59999999962747,
+  "input_to_next_frame_p95_ms": 16.90000000037253,
+  "js_heap_bytes": 7539990,
+  "js_heap_peak_observed_bytes": 7539990,
+  "long_task_count": 0,
+  "max_long_task_ms": 0,
+  "dom_identity_preserved": true
+}

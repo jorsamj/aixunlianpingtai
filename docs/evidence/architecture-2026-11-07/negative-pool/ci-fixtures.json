@@ -1,0 +1,26 @@
+{
+  "failed_sha": "04467ba2d70f2e38ab11e606f9d22ddcb3a91521",
+  "linux_failed_job": 128232256509,
+  "windows_failed_job": 128232256286,
+  "linux_result": {
+    "passed": 233,
+    "failed": 1
+  },
+  "windows_result": {
+    "passed": 232,
+    "failed": 2
+  },
+  "changed_in_559": {
+    "tests/unit/test_annotation_inference_execution.py": false,
+    "tests/unit/test_inference_resource_leases.py": false,
+    "platform_core/annotation_task_service.py": false,
+    "platform_core/annotation_inference.py": false,
+    "platform_core/task_runtime/repository.py": false
+  },
+  "test_only_verification": {
+    "targeted_passed": 16,
+    "same_ci_collection_passed": 234,
+    "seconds": 31.8
+  },
+  "no_production_source_changes": true
+}

@@ -1,0 +1,7 @@
+{
+  "url": "https://raw.githubusercontent.com/transloadit/node-sdk/6b16ad1200e356bed22e00ee5dd11b6411db63f6/LICENSE",
+  "gitHead": "6b16ad1200e356bed22e00ee5dd11b6411db63f6",
+  "package": "@transloadit/types",
+  "version": "4.5.0",
+  "license": "MIT"
+}

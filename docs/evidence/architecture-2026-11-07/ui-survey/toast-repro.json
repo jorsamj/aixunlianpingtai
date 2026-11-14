@@ -1,0 +1,69 @@
+{
+  "toasts": [
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "质量中心",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 0)\n    at async http://127.0.0.1:8047/static/app.js?v=42.25.553:2568:31"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "质量中心",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 1)\n    at async http://127.0.0.1:8047/static/app.js?v=42.25.553:2568:31"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "自动标注及清洗",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async loadVideo424 (http://127.0.0.1:8047/static/app.js?v=42.25.553:2950:20)\n    at async http://127.0.0.1:8047/static/app.js?v=42.25.553:2964:18"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "训练资源",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 0)\n    at async loadDeployData (http://127.0.0.1:8047/static/app.js?v=42.25.553:2051:25)"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "训练资源",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 1)\n    at async loadDeployData (http://127.0.0.1:8047/static/app.js?v=42.25.553:2051:25)"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "训练资源",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 2)\n    at async loadDeployData (http://127.0.0.1:8047/static/app.js?v=42.25.553:2051:25)"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "训练资源",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 3)\n    at async loadDeployData (http://127.0.0.1:8047/static/app.js?v=42.25.553:2051:25)"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "存储配置",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "存储配置",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at notify (http://127.0.0.1:8047/static/app.js?v=42.25.553:485:19)\n    at http://127.0.0.1:8047/static/modules/resource-discovery.js?v=422403:284:53"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "总览",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async Promise.all (index 1)\n    at async http://127.0.0.1:8047/static/app.js?v=42.25.553:2568:31"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "自动标注及清洗",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)\n    at async loadVideo424 (http://127.0.0.1:8047/static/app.js?v=42.25.553:2950:20)\n    at async http://127.0.0.1:8047/static/app.js?v=42.25.553:2964:18"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "存储配置",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at safe (http://127.0.0.1:8047/static/app.js?v=42.25.553:75:52)"
+    },
+    {
+      "value": "__PAGE_NAVIGATION_CANCELLED__",
+      "page": "存储配置",
+      "stack": "Error\n    at HTMLDivElement.set [as textContent] (eval at evaluate (:311:30), <anonymous>:10:18)\n    at toast (http://127.0.0.1:8047/static/app.js?v=42.25.553:74:52)\n    at notify (http://127.0.0.1:8047/static/app.js?v=42.25.553:485:19)\n    at http://127.0.0.1:8047/static/modules/resource-discovery.js?v=422403:284:53"
+    }
+  ]
+}

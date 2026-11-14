@@ -58,6 +58,41 @@ class UnsafeArchive(ServerZipImportError):
     default_solution = "Rebuild the ZIP with safe relative paths and regular files only."
 
 
+class UnsupportedZipCompression(UnsafeArchive):
+    code = "ZIP_UNSUPPORTED_COMPRESSION"
+    default_solution = "请用 7-Zip、WinRAR 或系统压缩工具重新生成 ZIP，选择标准 Deflate（普通压缩，非 Deflate64）或 Store（不压缩），关闭加密后重新导入；保留原目录和文件名。"
+
+
+def supported_zip_compressions():
+    supported = {zipfile.ZIP_STORED: True, zipfile.ZIP_DEFLATED: zipfile.zlib is not None,
+                 zipfile.ZIP_BZIP2: zipfile.bz2 is not None, zipfile.ZIP_LZMA: zipfile.lzma is not None}
+    # Python 3.14+ owns Zstandard decoding (including deprecated method 20).
+    # Installing a standalone zstd package does not add a ZIP decoder to zipfile.
+    if getattr(zipfile, "ZIP_ZSTANDARD", None) is not None:
+        import importlib
+        try:
+            importlib.import_module("compression.zstd")
+        except ImportError:
+            pass
+        else:
+            supported.update({20: True, 93: True})
+    return supported
+
+
+def inspect_zip_compression(archive):
+    """Check the entire central directory before reading any member payload."""
+    from collections import Counter
+    supported = supported_zip_compressions()
+    unsupported = Counter(member.compress_type for member in archive.infolist()
+                          if not member.is_dir() and not supported.get(member.compress_type, False))
+    if unsupported:
+        names = {0:"Store",8:"Deflate",9:"Deflate64",12:"BZIP2",14:"LZMA",20:"Zstandard（旧方法号）",93:"Zstandard",99:"AES/加密扩展"}
+        methods = "；".join(f"{names.get(method, '未知方法')}（方法号 {method}）：{count} 个文件" for method,count in sorted(unsupported.items()))
+        affected = sum(unsupported.values())
+        raise UnsupportedZipCompression(f"当前解压组件不支持此 ZIP 中的压缩方法：{methods}。共影响 {affected} 个文件，尚未导入正式素材或标注。请重新压缩为标准 Deflate 或 Store 后再导入。",
+            context={"affected_files": affected, **{f"method_{method}_files":count for method,count in unsupported.items()}})
+
+
 class ArchiveLimitExceeded(ServerZipImportError):
     code = "ZIP_LIMIT_EXCEEDED"
     default_solution = "Split the archive or ask the administrator to adjust MC_ZIP_* limits."
@@ -256,12 +291,11 @@ def _inspect_archive(archive: zipfile.ZipFile, limits: ZipImportLimits):
     planned: list[tuple[zipfile.ZipInfo, PurePosixPath, bool]] = []
     types: dict[str, bool] = {}
     total = 0
-    supported = {zipfile.ZIP_STORED: True, zipfile.ZIP_DEFLATED: zipfile.zlib is not None,
-                 zipfile.ZIP_BZIP2: zipfile.bz2 is not None, zipfile.ZIP_LZMA: zipfile.lzma is not None}
+    inspect_zip_compression(archive)
     for member in entries:
         # ZipInfo.filename truncates at NUL; orig_filename preserves it.
         path = safe_member_path(member.orig_filename)
-        if member.flag_bits & (0x01 | 0x20 | 0x40 | 0x2000) or not supported.get(member.compress_type, False):
+        if member.flag_bits & (0x01 | 0x20 | 0x40 | 0x2000):
             raise UnsafeArchive("Encrypted or unsupported ZIP member", code="ZIP_INVALID_ARCHIVE", detail=member.filename)
         kind = stat.S_IFMT(member.external_attr >> 16)
         directory = member.filename.replace("\\", "/").endswith("/") or kind == stat.S_IFDIR
@@ -287,6 +321,15 @@ def _inspect_archive(archive: zipfile.ZipFile, limits: ZipImportLimits):
         if any(types.get(_key(parent)) is False for parent in path.parents if parent.parts):
             raise UnsafeArchive("ZIP uses a file as another member's parent directory", detail=str(path))
     return planned, total
+
+
+def inspect_zip_archive(archive: zipfile.ZipFile, limits: ZipImportLimits | None = None):
+    """Preflight an open archive without reading payloads or creating outputs.
+
+    Return the existing normalized member plan and declared total so legacy
+    import callers can keep their own selection and directory lifecycle.
+    """
+    return _inspect_archive(archive, limits or read_limits())
 
 
 def _nearest_existing(path: Path) -> Path:

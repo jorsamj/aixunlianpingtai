@@ -1,0 +1,85 @@
+[
+  {
+    "package": "fiftyone",
+    "version": "1.22.1",
+    "license": "Apache",
+    "classifiers": [
+      "Development Status :: 5 - Production/Stable",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Science/Research",
+      "License :: OSI Approved :: Apache Software License",
+      "Topic :: Scientific/Engineering :: Artificial Intelligence",
+      "Topic :: Scientific/Engineering :: Image Processing",
+      "Topic :: Scientific/Engineering :: Image Recognition",
+      "Topic :: Scientific/Engineering :: Information Analysis",
+      "Topic :: Scientific/Engineering :: Visualization",
+      "Operating System :: MacOS :: MacOS X",
+      "Operating System :: POSIX :: Linux",
+      "Operating System :: Microsoft :: Windows",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.10",
+      "Programming Language :: Python :: 3.11",
+      "Programming Language :: Python :: 3.12",
+      "Programming Language :: Python :: 3.13"
+    ],
+    "license_files": [
+      "fiftyone-1.22.1.dist-info/licenses/LICENSE"
+    ],
+    "wheel_sha256": "a5a216ac6aea97fccee95e583d85ffe0de228c7dcd480bd295d3c8c637d13b3e"
+  },
+  {
+    "package": "fiftyone-brain",
+    "version": "0.25.0",
+    "license": null,
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Science/Research",
+      "Topic :: Scientific/Engineering :: Artificial Intelligence",
+      "Topic :: Scientific/Engineering :: Image Processing",
+      "Topic :: Scientific/Engineering :: Image Recognition",
+      "Topic :: Scientific/Engineering :: Information Analysis",
+      "Topic :: Scientific/Engineering :: Visualization",
+      "Operating System :: MacOS :: MacOS X",
+      "Operating System :: POSIX :: Linux",
+      "Operating System :: Microsoft :: Windows",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.10",
+      "Programming Language :: Python :: 3.11",
+      "Programming Language :: Python :: 3.12",
+      "Programming Language :: Python :: 3.13",
+      "Programming Language :: Python :: 3.14"
+    ],
+    "license_files": [
+      "fiftyone_brain-0.25.0.dist-info/licenses/LICENSE"
+    ],
+    "wheel_sha256": "b9d3037f2a829cb8da3d02e4786262b6b5af78bc8fa00fc740f14f9011d5a17d"
+  },
+  {
+    "package": "fiftyone_db",
+    "version": "1.4.1",
+    "license": "Apache",
+    "classifiers": [
+      "Development Status :: 4 - Beta",
+      "Intended Audience :: Developers",
+      "Intended Audience :: Science/Research",
+      "License :: OSI Approved :: Apache Software License",
+      "Topic :: Scientific/Engineering :: Artificial Intelligence",
+      "Topic :: Scientific/Engineering :: Image Processing",
+      "Topic :: Scientific/Engineering :: Image Recognition",
+      "Topic :: Scientific/Engineering :: Information Analysis",
+      "Topic :: Scientific/Engineering :: Visualization",
+      "Operating System :: MacOS :: MacOS X",
+      "Operating System :: POSIX :: Linux",
+      "Operating System :: Microsoft :: Windows",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.9",
+      "Programming Language :: Python :: 3.10",
+      "Programming Language :: Python :: 3.11"
+    ],
+    "license_files": [
+      "fiftyone_db-1.4.1.dist-info/licenses/LICENSE"
+    ],
+    "wheel_sha256": "8840f6c46761e20970cc3f47ee6002233417c6588b9885776e1dde06bdced9e4"
+  }
+]

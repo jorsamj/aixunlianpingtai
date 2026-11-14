@@ -11,6 +11,7 @@ from PIL import Image
 TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="xjalgo-pytest-")).resolve()
 os.environ["MC_TRAIN_DATA_DIR"] = str(TEST_DATA_DIR)
 os.environ["MC_PLATFORM_VERSION"] = "test"
+os.environ["MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS"] = "1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app import app  # noqa: E402

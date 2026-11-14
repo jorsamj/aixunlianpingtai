@@ -1,0 +1,21 @@
+{
+  "scope": "whole-page browser heap samples; fit button wall time; not an isolated editor memory or leak measurement",
+  "samples": [
+    {
+      "count": 100,
+      "fitWallMs": 76,
+      "time": 4367.29999999702,
+      "heap": 11601240,
+      "officialShapes": 100,
+      "totalNodes": 406
+    },
+    {
+      "count": 300,
+      "fitWallMs": 177,
+      "time": 1298.2000000029802,
+      "heap": 22382538,
+      "officialShapes": 300,
+      "totalNodes": 1206
+    }
+  ]
+}

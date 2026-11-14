@@ -37,7 +37,7 @@ def test_unknown_invalid_or_non_object_output_is_rejected(text):
 
 
 def test_candidate_parser_maps_unique_chinese_display_alias_to_label_code():
-    text = '{"boxes":[{"label":"火","confidence":0.9,"x1":1,"y1":2,"x2":20,"y2":30}]}'
+    text = '{"boxes":[{"label":"明火","confidence":0.9,"x1":1,"y1":2,"x2":20,"y2":30}]}'
     result = parse_candidate_response(
         text,
         width=100,

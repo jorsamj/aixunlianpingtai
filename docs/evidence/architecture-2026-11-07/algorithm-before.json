@@ -1,0 +1,72 @@
+{
+  "kind": "ISOLATED_SYNTHETIC_NOT_PRODUCTION",
+  "measurements": [
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 131.9112999990466,
+      "request_ms": 1146.5021999974851,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 988.7725999942631
+    },
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 105.40150000451831,
+      "request_ms": 1009.8015000039595,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 875.3438999920036
+    },
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 104.72730003675679,
+      "request_ms": 951.0755000010249,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 816.4742000008118
+    },
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 105.62779996689642,
+      "request_ms": 851.9343000007211,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 719.4992000368075
+    },
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 96.3235000235727,
+      "request_ms": 843.4975999989547,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 722.2837000299478
+    },
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 105.88409999763826,
+      "request_ms": 859.1687000007369,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 726.1186999967322
+    },
+    {
+      "json_bytes": 100666830,
+      "json_calls": 50,
+      "json_parse_ms": 110.7515999901807,
+      "request_ms": 931.1238000009325,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 40,
+      "sql_ms": 799.7181999744498
+    }
+  ],
+  "p50_ms": 931.1238000009325,
+  "p95_ms": 1146.5021999974851,
+  "samples": 7,
+  "version_payload_mib": 48
+}

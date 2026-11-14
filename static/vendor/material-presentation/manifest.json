@@ -1,0 +1,109 @@
+{
+  "packages": [
+    {
+      "name": "@panzoom/panzoom",
+      "version": "4.6.2",
+      "license": "MIT",
+      "integrity": "sha512-Zn3B5/hwa6eYIPRSKX0xf2clv8nviTX8AnAU5kU/EugiTDhG41ya2wlBqYrZJYCWQROr/5XkWObZhIkepi89qw=="
+    },
+    {
+      "name": "@floating-ui/dom",
+      "version": "1.8.0",
+      "license": "MIT",
+      "integrity": "sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg=="
+    },
+    {
+      "name": "@floating-ui/core",
+      "version": "1.8.0",
+      "license": "MIT",
+      "integrity": "sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ=="
+    },
+    {
+      "name": "@floating-ui/utils",
+      "version": "0.2.12",
+      "license": "MIT",
+      "integrity": "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="
+    },
+    {
+      "name": "lucide",
+      "version": "1.70.0",
+      "license": "ISC",
+      "integrity": "sha512-LxPqUjt8e5PT7JuvmnKc8ECAqgkbnLG3hIi/FV2JpqWdPWLbLCoI5P3jje/Lq84uNU2kCpe2webgyFFJJ9zPAA=="
+    }
+  ],
+  "files": {
+    "@panzoom_panzoom-LICENSE": {
+      "bytes": 1059,
+      "sha256": "db74524b3ab3853bcfc7300dade1f5e0176e59ed3c0cff43848a2c300091a22c"
+    },
+    "@floating-ui_dom-LICENSE": {
+      "bytes": 1089,
+      "sha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+    },
+    "@floating-ui_core-LICENSE": {
+      "bytes": 1089,
+      "sha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+    },
+    "@floating-ui_utils-LICENSE": {
+      "bytes": 1089,
+      "sha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+    },
+    "lucide-LICENSE": {
+      "bytes": 3208,
+      "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+    },
+    "panzoom.mjs": {
+      "bytes": 26822,
+      "sha256": "3fb2efbf08b085fc0e7b0ba7f2900142f76a762d62b6e8e37ccb7af0f5d2fe78"
+    },
+    "floating-dom.mjs": {
+      "bytes": 27958,
+      "sha256": "643229edb006d49533e50d3dec243af67b8b380bf2ad868d2330f457473dc6e9"
+    },
+    "floating-core.mjs": {
+      "bytes": 36294,
+      "sha256": "77b4383432e861017e3878d7ae59bf0604f78da1f74b923f2d3ec3245f5c021c"
+    },
+    "floating-utils.mjs": {
+      "bytes": 4435,
+      "sha256": "f53b3ea1eec15af77ca9def295b8f40f6d65706acfc5aaac4801ca3ca21ef7bd"
+    },
+    "floating-utils-dom.mjs": {
+      "bytes": 5818,
+      "sha256": "b6658b1eac47e2917e6d10ebbeefb9c4ac9a166f0052bed6e08c871ed848b680"
+    },
+    "zoom-in.mjs": {
+      "bytes": 472,
+      "sha256": "4a12f2c9c3beddd78b107a8deb40bf9361a4c151589db831a19ebd680e249162"
+    },
+    "zoom-out.mjs": {
+      "bytes": 420,
+      "sha256": "75cbd9937b532c691baf3172554815b581ef76462967b39d0164d9788ee09729"
+    },
+    "maximize.mjs": {
+      "bytes": 445,
+      "sha256": "4be185fec23d11aaa8378c06a809f0e18f0a2b86213b97964058bcc29530cbf1"
+    },
+    "ellipsis.mjs": {
+      "bytes": 396,
+      "sha256": "4c1803f22ff08260bd4e5d234f39fb3f22cccc0c8adebfa94565a24c16b1fd56"
+    },
+    "eye.mjs": {
+      "bytes": 436,
+      "sha256": "a86ec5c6666846bdb55e7545a6580860ea61bf3f05a68902c9b3690f11d9d037"
+    },
+    "pencil.mjs": {
+      "bytes": 458,
+      "sha256": "ce29831520e798ad8924dffcd634535db154db95ce7ae0dd9360e10dee8c1cab"
+    },
+    "image.mjs": {
+      "bytes": 435,
+      "sha256": "4070949f54c8481120674402076a07d6f0d26b27509e0689011d8974a5dc52ab"
+    },
+    "NOTICE.md": {
+      "bytes": 484,
+      "sha256": "c4e0408a7f773667ddee104d9e732f3e8ee1e9a4dbe0feea253a7755883a2f07"
+    }
+  },
+  "total_bytes": 112407
+}

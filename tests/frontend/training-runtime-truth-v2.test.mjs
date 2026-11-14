@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import {
   trainingProgressView,
   trainingStageView,
-  trainingTaskRow,
 } from '../../static/modules/training-task-runtime.js';
+import {trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 test('preparation stages never masquerade as Epoch 0 progress', () => {
   const html = trainingTaskRow({
@@ -18,7 +18,8 @@ test('preparation stages never masquerade as Epoch 0 progress', () => {
     framework: 'ultralytics',
   });
 
-  assert.match(html, /准备训练数据 · 14%/);
+  assert.match(html, /准备训练数据/);
+  assert.match(html, />14%<\/b>/);
   assert.match(html, /6842\/10136/);
   assert.doesNotMatch(html, /Epoch 0\/30/);
   assert.doesNotMatch(html, />0\/30 · 14%/);
@@ -96,10 +97,12 @@ test('epoch and batch truth are shown only after training actually starts', () =
 
   assert.equal(progress.currentBatch, 318);
   assert.equal(progress.totalBatches, 634);
-  assert.match(html, /Epoch 7\/30 · Batch 318\/634 · 34%/);
-  assert.match(html, /Precision 0\.817/);
-  assert.match(html, /Recall 0\.763/);
-  assert.match(html, /mAP50 0\.801/);
+  assert.match(html, /Epoch 7\/30 · Batch 318\/634/);
+  assert.match(html, />34%<\/b>/);
+  assert.match(progress.metricLine, /Precision 0\.817/);
+  assert.match(progress.metricLine, /Recall 0\.763/);
+  assert.match(progress.metricLine, /mAP50 0\.801/);
+  assert.doesNotMatch(html, /Precision 0\.817/, 'dense metrics stay out of the primary table row');
 });
 
 test('resource waiting reason stays visible and is not converted into a fake queue rank', () => {
