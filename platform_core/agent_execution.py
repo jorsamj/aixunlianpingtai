@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import re
 import secrets
 from contextlib import closing
@@ -556,6 +557,7 @@ class AgentExecutionService:
         *,
         heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS,
         execution_lease_seconds: int = DEFAULT_EXECUTION_LEASE_SECONDS,
+        auto_assign_enabled: bool = False,
         execution_payload_resolver=None,
         result_upload_preparer=None,
         result_upload_confirmer=None,
@@ -573,6 +575,7 @@ class AgentExecutionService:
         self.artifacts = artifacts
         self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
         self.execution_lease_seconds = max(5, int(execution_lease_seconds))
+        self.auto_assign_enabled = bool(auto_assign_enabled)
         self.execution_payload_resolver = execution_payload_resolver
         self.result_upload_preparer = result_upload_preparer
         self.result_upload_confirmer = result_upload_confirmer
@@ -622,6 +625,19 @@ class AgentExecutionService:
     def claim_assignment(self, node_id: str, node_token: str) -> dict[str, Any] | None:
         node = self._authenticate_node(node_id, node_token, require_online=True)
         claimed = self.allocator.claim_for_node(node_id)
+        if (
+            claimed is None
+            and self.auto_assign_enabled
+            and str(node.get("connection_mode") or "") == "agent"
+            and node.get("effective_capabilities")
+        ):
+            # Opt-in and Agent-poll driven: no second scheduler process or
+            # independent queue owner. The existing allocator serializes
+            # reservations transactionally and may select a different Agent
+            # when its capacity/strict node affinity is a better match.
+            # Never auto-reserve a local-Worker task.
+            self.allocator.assign_next(agent_only=True)
+            claimed = self.allocator.claim_for_node(node_id)
         if claimed is None:
             return None
         capability = str(claimed["capability"])
@@ -2364,6 +2380,11 @@ def agent_executor_router(
         return AgentExecutionService(
             task_repository(),
             task_artifacts(),
+            # Explicit opt-in only. Production/A800 keeps the established
+            # manual assignment and local Worker path unless intentionally set.
+            auto_assign_enabled=(
+                os.environ.get("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "") == "1"
+            ),
             execution_payload_resolver=execution_payload_resolver,
             result_upload_preparer=result_upload_preparer,
             result_upload_confirmer=result_upload_confirmer,
