@@ -116,9 +116,11 @@ class NodeAgentExecutorLoop:
         for capability in self.capabilities:
             kind = kind_by_capability.get(str(capability))
             runner = self.runners.get(kind) if kind else None
-            if runner is None and capability == "model-upload":
+            # A capability is executable only if this Agent instance actually
+            # registered a ready runner; an allow-listed name alone is not proof.
+            if runner is None or not callable(getattr(runner, "run", None)):
                 continue
-            if runner is not None and getattr(runner, "ready", True) is False:
+            if getattr(runner, "ready", True) is False:
                 continue
             effective.append(str(capability))
         return tuple(effective)
