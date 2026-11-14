@@ -1106,6 +1106,15 @@ class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
         caller = admission
 
         def assignment_guard(database, candidate, owner, token, expires_at, now):
+            if (
+                str(candidate["kind"]) == TaskKind.TRAINING.value
+                and str(candidate["resource_key"]).startswith("training:remote:")
+            ):
+                # RemoteTrainingPreparation owns the explicit remote target.
+                # It must wait for its Agent execution assignment even when
+                # no assignment has been created yet. Never let the A800/local
+                # GPU Worker claim this queue entry or bypass local GPU limits.
+                return False, "REMOTE_EXECUTION_WAITING_FOR_AGENT: remote training is Agent-owned"
             table = database.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_node_assignments'"
             ).fetchone()
