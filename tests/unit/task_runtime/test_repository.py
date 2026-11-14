@@ -817,3 +817,48 @@ def test_generic_heartbeat_cannot_resurrect_expired_remote_agent_lease(tmp_path)
     assert after.attempt == 1
     assert after.worker_id == "agent:node-a"
 
+
+def test_generic_finish_and_unversioned_finalization_cannot_publish_expired_remote_agent(tmp_path):
+    """Plain TaskRepository must not bypass remote execution finalization fencing."""
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    add(repository, "remote-finish", "project-1", 5,
+        resource="training:remote-finish", capability="cuda")
+    lease = repository.claim_next(
+        "agent:node-a", [TaskKind.TRAINING], {"cuda"},
+    )
+    assert lease is not None
+
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    with repository._connect() as db:
+        db.execute(
+            "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+            (expired, "remote-finish"),
+        )
+
+    # Neither an unversioned begin-finalization nor generic finish may
+    # declare success when a remote execution's lease has already expired.
+    with pytest.raises(PermissionError, match="execution"):
+        repository.begin_finalization("remote-finish", lease.lease_token)
+    with pytest.raises(PermissionError, match="lease"):
+        repository.finish(
+            "remote-finish", lease.lease_token, TaskStatus.SUCCEEDED,
+            result_ref="forged-result.json",
+        )
+    assert repository.release_expired() == 0
+
+    with pytest.raises(PermissionError, match="execution"):
+        repository.begin_finalization("remote-finish", lease.lease_token)
+    with pytest.raises(PermissionError, match="lease"):
+        repository.finish(
+            "remote-finish", lease.lease_token, TaskStatus.SUCCEEDED,
+            result_ref="forged-result.json",
+        )
+
+    held = repository.get("remote-finish")
+    assert held.status is TaskStatus.RUNNING
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+    assert held.lease_expires_at == expired
+    assert held.result_ref is None
+    assert held.worker_id == "agent:node-a"
+    assert held.attempt == 1
+
