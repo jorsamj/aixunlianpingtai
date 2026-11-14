@@ -201,6 +201,64 @@ class NodeExecutorClient:
             )
         return body
 
+    def recovery_diagnosis(self, task_id: str) -> dict[str, Any]:
+        """Read the original node's recovery hold without changing ownership.
+
+        In particular, the response is diagnostic metadata, NOT proof that
+        the remote child process has stopped. This never invokes release/retry.
+        """
+        key = _safe_component(task_id, "task_id")
+        try:
+            response = self.session.get(
+                self._prefix + f"/executions/{quote(key, safe='')}/recovery",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_TRANSPORT_FAILED",
+                f"{type(error).__name__}: {error}",
+                retryable=True,
+            ) from error
+        try:
+            body = response.json()
+        except ValueError as error:
+            if response.ok:
+                raise NodeExecutorHTTPError(
+                    "NODE_EXECUTOR_INVALID_RESPONSE",
+                    "control plane returned non-JSON recovery diagnosis",
+                    status_code=int(response.status_code),
+                ) from error
+            body = {}
+        if not response.ok:
+            code, message = _json_error(
+                body, f"control plane returned HTTP {response.status_code}",
+            )
+            raise NodeExecutorHTTPError(
+                code, message,
+                status_code=int(response.status_code),
+                retryable=(
+                    int(response.status_code) in {408, 425, 429}
+                    or int(response.status_code) >= 500
+                ),
+            )
+        if (
+            not isinstance(body, Mapping)
+            or str(body.get("task_id") or "") != key
+            or str(body.get("node_id") or "") != self.node_id
+            or str(body.get("recovery_state") or "") != "STOP_PROOF_REQUIRED"
+            or body.get("automatic_reassignment_allowed") is not False
+            or body.get("stop_proof_verified") is not False
+            or type(body.get("execution_generation")) is not int
+            or int(body["execution_generation"]) <= 0
+            or str(body.get("task_status") or "") not in {"RUNNING", "CANCEL_REQUESTED"}
+        ):
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_INVALID_RESPONSE",
+                "recovery diagnosis is inconsistent or implies unsafe release",
+            )
+        return dict(body)
+
     def training_inputs_manifest(self, lease: RemoteExecutionLease) -> dict[str, Any]:
         return self._post(
             f"/executions/{quote(lease.task_id, safe='')}/training-inputs/manifest",
