@@ -949,7 +949,9 @@ class TaskRepository(InferenceResourceMethods):
         now = utc_now()
         with closing(self._connect()) as database:
             changed = database.execute(
-                "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status='RUNNING'",
+                """UPDATE tasks SET stage=?, updated_at=?
+                     WHERE task_id=? AND status='RUNNING'
+                       AND stage<>'recovery_blocked_remote_agent_unverified'""",
                 (value, now, str(task_id)),
             ).rowcount
         if changed != 1:
