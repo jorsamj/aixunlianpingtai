@@ -808,7 +808,7 @@ class CentralTaskAllocator:
             "created_at": now,
         }
 
-    def assign_next(self) -> dict[str, Any] | None:
+    def assign_next(self, *, agent_only: bool = False) -> dict[str, Any] | None:
         current = datetime.now(timezone.utc)
         now = current.isoformat()
         with closing(self.repository._connect()) as database:
@@ -834,6 +834,13 @@ class CentralTaskAllocator:
                     continue
                 remote_contract = task_remote_execution_contract(task, self.artifacts)
                 required_connection_mode = task_node_connection_mode(task, self.artifacts)
+                if agent_only and (
+                    required_connection_mode != "agent"
+                    or remote_contract is None
+                ):
+                    # Automatic Agent polling must never intercept A800/local
+                    # Worker tasks, even if they carry optional portable metadata.
+                    continue
                 nodes = _online_nodes(
                     database,
                     capability,
@@ -877,6 +884,11 @@ class CentralTaskAllocator:
                 ranked = []
                 for node in nodes:
                     active = _node_active_work_count(database, str(node["node_id"]))
+                    if agent_only and active:
+                        # The current NodeAgentExecutorLoop runs one job at a
+                        # time. Reserve at most one automatic slot per Agent
+                        # until multi-slot execution is actually implemented.
+                        continue
                     selected_gpu = None
                     if capability == "training":
                         assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))
