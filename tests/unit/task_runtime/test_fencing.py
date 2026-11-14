@@ -423,3 +423,34 @@ def test_unverified_remote_agent_cancel_does_not_claim_process_has_stopped(tmp_p
     assert held.worker_id == "agent:node-remote"
     assert held.finished_at is None
 
+
+def test_cancelling_held_remote_execution_keeps_stop_unverified_fence(tmp_path):
+    """Cancel must not temporarily erase the safety hold before next reap."""
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    for task_id in ("agent-holder", "waiting-contender"):
+        repository.create(TaskRecord.new(
+            task_id, "project-1", TaskKind.MODEL_CONVERSION,
+            "request.json", "conversion:shared-unverified-stop",
+        ))
+    first = repository.claim_next(
+        "agent:unreachable-node", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None and first.task.task_id == "agent-holder"
+    _expire(repository, "agent-holder")
+    assert repository.release_expired() == 0
+    held = repository.get("agent-holder")
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+
+    cancelled = repository.request_cancel("agent-holder")
+    assert cancelled.status is TaskStatus.CANCEL_REQUESTED
+    assert cancelled.stage == "recovery_blocked_remote_agent_unverified"
+    assert cancelled.worker_id == "agent:unreachable-node"
+    assert cancelled.finished_at is None
+
+    # The queue must remain fenced even *before* another recovery sweep.
+    assert repository.claim_next(
+        "ordinary-worker", [TaskKind.MODEL_CONVERSION], set(),
+    ) is None
+    assert repository.get("waiting-contender").status is TaskStatus.QUEUED
+    assert repository.get("agent-holder").attempt == 1
+
