@@ -31,6 +31,9 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/integration/test_agent_launch_sigkill.py'
+      - 'tests/unit/test_linux_cgroup_poc_contract.py'
+      - 'tools/poc/linux_cgroup_probe.py'
+      - 'tools/poc/linux_cgroup_poc.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_agent_model_install_runtime.py'
@@ -77,6 +80,9 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/integration/test_agent_launch_sigkill.py'
+      - 'tests/unit/test_linux_cgroup_poc_contract.py'
+      - 'tools/poc/linux_cgroup_probe.py'
+      - 'tools/poc/linux_cgroup_poc.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_agent_model_install_runtime.py'
@@ -174,6 +180,11 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_agent_launch_sigkill.py
+
+      - name: P0-01C-2 portable cgroup PoC contracts (NO kernel stop proof)
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_linux_cgroup_poc_contract.py
 
   api:
     runs-on: ubuntu-24.04
