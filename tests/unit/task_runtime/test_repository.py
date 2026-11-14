@@ -741,3 +741,36 @@ def test_base_repository_cannot_bypass_remote_agent_recovery_hold(tmp_path):
     assert repository.get("second-remote").status is TaskStatus.QUEUED
     assert repository.get("first-remote").attempt == 1
 
+
+def test_delegated_training_admission_cannot_ignore_remote_owner_hold(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    for task_id in ("remote-training-owner", "local-training-contender"):
+        repository.create(TaskRecord.new(
+            task_id, "project-1", TaskKind.TRAINING,
+            "request.json", "training:shared-delegated",
+        ))
+    first = repository.claim_next("agent:node-a", [TaskKind.TRAINING], set())
+    assert first is not None and first.task.task_id == "remote-training-owner"
+    past = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+            (past, "remote-training-owner"),
+        )
+    assert repository.release_expired() == 0
+    calls = []
+
+    def permissive_gpu_admission(*_args):
+        calls.append(True)
+        return True, None
+
+    # This callback models a GPU planner that admits the queued candidate.
+    # It must not erase the stronger resource fence for a remote execution.
+    assert repository.claim_next(
+        "local-worker", [TaskKind.TRAINING], set(),
+        admission=permissive_gpu_admission,
+    ) is None
+    assert not calls
+    assert repository.get("remote-training-owner").status is TaskStatus.RUNNING
+    assert repository.get("local-training-contender").status is TaskStatus.QUEUED
+
