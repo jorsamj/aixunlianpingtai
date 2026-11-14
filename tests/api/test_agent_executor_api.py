@@ -106,6 +106,38 @@ def prepare(client, repository, artifacts):
     return nodes, token
 
 
+def test_agent_claim_http_auto_assignment_is_explicitly_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", raising=False)
+    client, repository, artifacts = client_for(tmp_path)
+    create_task(repository, artifacts)
+    artifacts.atomic_write_json("train-api-agent", "request.json", {
+        "target": "remote", "epochs": 30,
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+
+    url = "/api/v63/node-executor/gpu-api-agent/assignments/claim"
+    disabled = client.post(url, headers=auth(token))
+    assert disabled.status_code == 200
+    assert disabled.json() == {"claimed": False, "item": None}
+    assert AgentExecutionService(repository, artifacts).allocator.list(active_only=True) == []
+
+    monkeypatch.setenv("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "1")
+    claimed = client.post(url, headers=auth(token))
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["claimed"] is True
+    assert claimed.json()["item"]["task"]["task_id"] == "train-api-agent"
+    assert claimed.json()["item"]["assignment"]["resolved_execution_config"]["connection_mode"] == "agent"
+    assert len(AgentExecutionService(repository, artifacts).allocator.list(active_only=True)) == 1
+
+    again = client.post(url, headers=auth(token))
+    assert again.status_code == 200
+    assert again.json() == {"claimed": False, "item": None}
+
+
 def test_agent_executor_http_happy_flow_and_cancellation_truth(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
     _nodes, token = prepare(client, repository, artifacts)
