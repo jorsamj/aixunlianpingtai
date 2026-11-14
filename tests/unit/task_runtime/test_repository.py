@@ -708,3 +708,36 @@ def test_fail_queued_precondition_never_overwrites_running_or_cancelled_task(tmp
         status=TaskStatus.FAILED,
     )
     assert unchanged.status is TaskStatus.CANCELLED
+
+
+def test_base_repository_cannot_bypass_remote_agent_recovery_hold(tmp_path):
+    """A plain TaskRepository caller must not make an expired Agent runnable."""
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    for task_id in ("first-remote", "second-remote"):
+        repository.create(TaskRecord.new(
+            task_id, "project-1", TaskKind.MODEL_CONVERSION,
+            "payload.json", "conversion:shared-remote",
+        ))
+    first = repository.claim_next(
+        "agent:node-a", [TaskKind.MODEL_CONVERSION], set(),
+    )
+    assert first is not None and first.task.task_id == "first-remote"
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    with repository._connect() as db:
+        db.execute("UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+                   (expired, "first-remote"))
+
+    assert repository.release_expired() == 0
+    held = repository.get("first-remote")
+    assert held.status is TaskStatus.RUNNING
+    assert held.stage == "recovery_blocked_remote_agent_unverified"
+    assert held.worker_id == "agent:node-a"
+
+    # claim_next calls its own release_expired logic. This second independent
+    # entry point must also honor the hold, despite the expired lease.
+    assert repository.claim_next(
+        "local-worker", [TaskKind.MODEL_CONVERSION], set(),
+    ) is None
+    assert repository.get("second-remote").status is TaskStatus.QUEUED
+    assert repository.get("first-remote").attempt == 1
+
