@@ -571,6 +571,54 @@ def _gt_filtered_count_snapshot(
     return total
 
 
+# At most this many matching formal-GT rows may drive an ordered picker page.
+# A bounded indexed probe avoids COUNT(*) over every matching image and avoids
+# penalizing common labels with a large candidate sort.
+_SPARSE_POSITIVE_GT_LIMIT = 256
+
+
+def _sparse_positive_gt_label(database, filters, *, count_mode, include_payload):
+    """Choose a GT-first read only for a sparse, single-label positive page.
+
+    Both the bounded probe and the eventual page query run within the same
+    material/annotation SQLite read transaction. No approximate label cache or
+    material-label projection participates in this decision.
+    """
+    target = (filters or {}).get("__role_target") or {}
+    labels = list(dict.fromkeys(target.get("labels") or []))
+    if (count_mode != "deferred" or not include_payload or
+            target.get("negative") or len(labels) != 1):
+        return None
+    label = str(labels[0] or "").strip()
+    if not label:
+        return None
+    candidates = database.execute(
+        "SELECT image_id FROM annotation_gt.annotation_label_references "
+        "WHERE label_code=? AND annotation_state='annotated' AND box_count>0 "
+        "LIMIT ?",
+        (label, _SPARSE_POSITIVE_GT_LIMIT + 1),
+    ).fetchall()
+    return label if len(candidates) <= _SPARSE_POSITIVE_GT_LIMIT else None
+
+
+def _sparse_positive_gt_page_sql(clauses, *, descending, offset):
+    """Read only formal-GT candidate IDs; retain every original material filter."""
+    direction = " DESC" if descending else ""
+    # The GT table has PRIMARY KEY(image_id,label_code); a single label
+    # therefore cannot produce duplicate image IDs. CROSS JOIN fixes the
+    # driving order at the already-bounded GT candidate set.
+    return (
+        "WITH rare_positive_ids AS MATERIALIZED ("
+        "SELECT image_id FROM annotation_gt.annotation_label_references "
+        "WHERE label_code=? AND annotation_state='annotated' AND box_count>0"
+        ") SELECT m.id,m.created_at,m.payload_json "
+        "FROM rare_positive_ids candidate CROSS JOIN materials m "
+        "WHERE m.id=candidate.image_id AND " + " AND ".join(clauses)
+        + f" ORDER BY m.created_at{direction},m.id{direction} LIMIT ?"
+        + (" OFFSET ?" if offset else "")
+    )
+
+
 @stage("training.gt_page")
 def _gt_material_filter_page(
     repository: MaterialRepository,
@@ -712,11 +760,24 @@ def _gt_material_filter_page(
                 clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                 params.extend((created_at, created_at, image_id))
             where = " WHERE " + " AND ".join(clauses)
-            sql = _deferred_material_page_sql(
-                where, descending=descending,
-                include_payload=include_payload, offset=offset is not None,
+            # Only rare single-label positives benefit from starting at the
+            # formal GT index. Keep the existing material-order plan for common
+            # labels, multi-label contracts and all other roles/count modes.
+            sparse_label = _sparse_positive_gt_label(
+                database, pool_filters, count_mode=count_mode,
+                include_payload=include_payload,
             )
-            query_params = [*params, bounded + 1]
+            if sparse_label is not None:
+                sql = _sparse_positive_gt_page_sql(
+                    clauses, descending=descending, offset=offset is not None,
+                )
+                query_params = [sparse_label, *params, bounded + 1]
+            else:
+                sql = _deferred_material_page_sql(
+                    where, descending=descending,
+                    include_payload=include_payload, offset=offset is not None,
+                )
+                query_params = [*params, bounded + 1]
             if offset is not None:
                 query_params.append(offset)
             rows = database.execute(sql, query_params).fetchall()
