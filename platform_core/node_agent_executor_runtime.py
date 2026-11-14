@@ -682,6 +682,37 @@ class AgentExecutionWorkdir:
             "command_hash": command_hash,
         }
 
+    @staticmethod
+    def _sync_launch_intent_directories(marker: Path, root: Path) -> None:
+        """Persist the marker's rename and newly created task directory entries.
+
+        fsync(file) alone does not make os.replace's directory entry durable
+        across a sudden power loss. POSIX requires syncing each newly-created
+        ancestor through the stable state-root parent before spawning a child.
+        A directory fsync failure aborts launch and retains the marker.
+        Windows needs a separate durable execution-boundary implementation.
+        """
+        if os.name != "posix":
+            return
+        directory = marker.parent
+        stop = root.parent
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        while True:
+            descriptor = os.open(directory, flags)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            if directory == stop:
+                break
+            if stop not in directory.parents:
+                raise ValueError("process launch intent escaped Agent state root")
+            directory = directory.parent
+
     def begin_process_launch(self, lease: RemoteExecutionLease) -> Path:
         """Record a possible child BEFORE spawning; absence of PID is not stop proof."""
         kind = str(lease.kind)
@@ -695,6 +726,7 @@ class AgentExecutionWorkdir:
             "generation": int(lease.generation),
             "kind": kind,
         })
+        self._sync_launch_intent_directories(marker, self.root)
         return marker
 
     def read_process_launch_intent(self, lease) -> dict[str, Any] | None:

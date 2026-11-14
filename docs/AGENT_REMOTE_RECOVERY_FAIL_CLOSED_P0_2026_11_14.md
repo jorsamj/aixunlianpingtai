@@ -103,3 +103,10 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - 只读审计发现持久化 `process-identity.json` 的 `create_time` 经 `float()` 转换后只判断 `<= 0`，`NaN/Infinity` 可绕过；`ProcessController.inspect` 的 `abs(actual - expected) > 0.01` 对 `NaN` 始终为 false，可能在 PID 复用且命令 hash 一致时错误认领进程。此为确定的数值比较边界，不依赖前端浏览器偶发问题。
 - 最小防护：Agent Workdir 读写身份与进程控制器核验处都要求 `math.isfinite(create_time)`，非法 PID/时间 fail closed。引入负面单测覆盖 `NaN`、`Infinity`、`-Infinity` 及 JSON 非有限值；既验证未写入异常身份，又验证既存不合法记录仍保留且阻止恢复；真实进程 PID/命令 hash 也不能用非有限时间冒充。未新增调度 owner、没有开放 stop-proof 解除或破坏现有模型结果协议。
 - 本提交的 CI 须按准确 SHA 重新核实，不以此前 `4173375` 的 Linux SIGKILL 两项通过替代新提交的验证。Windows/Linux CI 均需通过；生产仍 NO-GO。
+
+## 2026-11-14 P0-01C POSIX 启动标志目录项的持久化加强（候选 CI 待验）
+
+- 现状 `AgentExecutionWorkdir._atomic_write_json` 对临时 JSON 文件 `fsync` 后执行 `os.replace`，但没有同步存放该文件的目录。针对运行前必须存在的 `process-launch-intent.json`，断电时只同步文件而未同步目录项可能丢失文件名，不能用作可靠的“已启动过子进程”危险证据。
+- 最小修复只在 `begin_process_launch` 之后、任何 `launch_process` 之前追加 POSIX 目录同步：依次对 generation、task、executions、Agent state root 及其上一级目录做 `fsync`，用于持久化新目录和原子重命名的目录项；同步失败直接抛异常阻止启动，并且不得删除已有危险标志。复用现有目录路径校验，没有改通用 JSON 写入路径或 SQLite。
+- 新负面测试：在 Linux 注入目录 `fsync` 异常，必须拒绝执行启动前方法、保留 task_id/generation/kind 标志且阻止无证据清理；正面测试核验所有必需目录同步发生。Windows 不提供对等的目录 `fsync` 保证，不虚称其具备断电级证明；受限文件系统/硬件缓存不遵循标准持久化合同也未在此验证。
+- 本次是“减少启动窗口危险证据因断电丢失的风险”，**并非**进程真实已停止的证据；可信 OS 级执行容器、远端挑战、防重放、中央原子解锁仍然缺失。须以新提交的精确 CI 结果验收，生产保持 NO-GO。

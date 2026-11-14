@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -781,3 +783,56 @@ def test_process_identity_rejects_nonfinite_create_time_without_dropping_evidenc
     with pytest.raises(ValueError, match="incomplete"):
         workdirs.list_process_identities()
     assert path.exists()
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory fsync contract")
+def test_launch_intent_fsyncs_directory_chain_before_return(tmp_path, monkeypatch):
+    body = start_body()
+    body["task"]["kind"] = "TRAINING"
+    current = RemoteExecutionLease.from_start_response(body)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    workdirs.prepare(current)
+
+    original_fsync = os.fsync
+    directory_syncs = []
+
+    def record_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory_syncs.append(fd)
+        return original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record_sync)
+    marker = workdirs.begin_process_launch(current)
+    assert marker.is_file()
+    # generation, task, executions, root, and root.parent entries
+    assert len(directory_syncs) >= 5
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory fsync contract")
+def test_launch_intent_directory_fsync_failure_fences_and_retains_marker(
+    tmp_path, monkeypatch,
+):
+    body = start_body()
+    body["task"]["kind"] = "MODEL_CONVERSION"
+    current = RemoteExecutionLease.from_start_response(body)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    workdirs.prepare(current)
+    original_fsync = os.fsync
+
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("injected directory fsync failure")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_sync)
+    with pytest.raises(OSError, match="directory fsync failure"):
+        workdirs.begin_process_launch(current)
+
+    marker = workdirs.path_for(current) / "process-launch-intent.json"
+    assert marker.is_file(), "uncertain durability must not erase the hazard"
+    assert workdirs.list_unverified_process_launch_intents() == [{
+        "task_id": current.task_id,
+        "generation": current.generation,
+        "kind": "MODEL_CONVERSION",
+    }]
+    with pytest.raises(ValueError, match="unverified process launch"):
+        workdirs.cleanup(current)
