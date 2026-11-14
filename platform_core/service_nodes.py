@@ -370,6 +370,16 @@ class ServiceNodeRepository:
             for row in rows
         ]
 
+    def get_execution_admission(self, node_id: str, *, now: datetime | None = None) -> dict[str, Any]:
+        """Authenticated executor admission without unrelated Worker/task scans.
+
+        Capability, enablement and heartbeat truth come from the same canonical
+        service_nodes row as get_public. Worker projections are only needed
+        when rendering the node-management view, not on every Agent poll.
+        """
+        current = now or datetime.now(timezone.utc)
+        return self._public_row(self._require_row(node_id), now=current)
+
     def get_public(self, node_id: str, *, now: datetime | None = None) -> dict[str, Any]:
         current = now or datetime.now(timezone.utc)
         row = self._require_row(node_id)
