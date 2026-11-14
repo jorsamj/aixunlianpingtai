@@ -1947,3 +1947,62 @@ def test_empty_agent_claim_preserves_ready_preemption_recovery(tmp_path):
     assert allocator.claim_for_node("unrelated-idle-agent") is None
     assert repository.get("preempted-victim").status is TaskStatus.QUEUED
     assert allocator.list_preemptions(incoming_task_id="finished-preemptor")[0]["state"] == "RESUMED"
+
+
+def test_agent_auto_stale_scan_exits_when_last_agent_slot_was_reserved(tmp_path, monkeypatch):
+    """An Agent can become busy *after* a concurrent allocator has started
+    inspecting candidates. Once the authoritative writer sees no idle Agent,
+    it must stop rather than repeatedly locking SQLite and reading payloads
+    for the rest of a large remote queue.
+    """
+    repository, artifacts = runtime(tmp_path)
+    remote = {
+        "target": "remote",
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    }
+    create_task(
+        repository, artifacts, "remote-already-reserved",
+        TaskKind.TRAINING, remote, priority=1,
+    )
+    candidate = create_task(
+        repository, artifacts, "remote-after-capacity",
+        TaskKind.TRAINING, remote, priority=50,
+    )
+    create_online_node(
+        repository, "serial-only-agent", ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    first = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert first is not None and first["task_id"] == "remote-already-reserved"
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    yield_count = []
+    def stale_preflight():
+        # Deliberately emulate the prior scan's now-stale idle-node snapshot.
+        # Multiple pages have already been prepared, but none can actually
+        # execute because another request reserved the only executor slot.
+        for index in range(24):
+            yield_count.append(index)
+            yield (candidate.task_id,)
+
+    monkeypatch.setattr(allocator, "_iter_agent_candidate_batches", stale_preflight)
+    reads = []
+    original_read = artifacts.read_json
+
+    def count_read(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return original_read(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", count_read)
+    assert allocator.assign_next(agent_only=True) is None
+    assert len(yield_count) == 1, (
+        "The first stale batch must stop scanning when no Agent has capacity"
+    )
+    assert not reads, (
+        "No payload IO is needed once the writer confirms no free Agent slot"
+    )
+    assert repository.get(candidate.task_id).status is TaskStatus.QUEUED
