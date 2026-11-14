@@ -472,6 +472,7 @@ def test_rare_positive_gt_first_preserves_filters_pages_cursors_and_usage(tmp_pa
     repo = MaterialRepository(tmp_path / "data" / "projects" / "rare-gt")
     repo.upsert_many([
         {"id": f"i{i:04d}", "filename": f"camera-{i:04d}.jpg",
+         "object_key": f"images/{i:04d}.jpg",
          "created_at": "2026-11-01T00:00:00+00:00",
          "storage_source_id": "nas" if i % 2 else "local",
          "content_sha256": f"{i+1:064x}", "processing_status": "processed"}
