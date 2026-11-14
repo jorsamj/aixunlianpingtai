@@ -130,3 +130,7 @@ P0-01B 当前止损（开发分支 HEAD 首次引入于 `a007f4c`、`6694c7c`、
 - `a4b8418` 的 Windows 新测试最初误放在共享的 `tests/unit/test_node_agent_executor_runtime.py`，使部分仅安装轻量控制面依赖的 Remote Cleaning/Portable Deployment Windows 工作流意外 import `AgentTrainingRunner`，触发缺少 `PyYAML` 的测试导入错误；另有一个训练测试漏写 `import os` 导致 Ubuntu 两个 NameError。**均为测试归属/导入问题，不应给不使用训练的工作流添加依赖，也无需改运行时代码。**
 - 随后 `e461737` 已补上训练测试的 `os` 导入。本提交进一步将 Windows 持久进程身份证据的两项回归分别迁到 `test_node_agent_training_runtime.py` 和 `test_node_agent_conversion_runtime.py`，共享 `test_node_agent_executor_runtime.py` 恢复纯轻量控制面合同。两类任务在 Windows 检查 ready=False、保留 PID+generation、拒绝无证据目录清理。
 - 代码运行时保持 `a4b8418` 的 Windows 恢复 fail-closed 策略不变；全量 Windows/Ubuntu Actions 必须以**本提交精确 SHA**重新核实。生产仍 NO-GO。
+
+## 2026-11-15 交接文档索引
+
+- **最新专项交接与下一轮实施顺序**：[`P0_01C_REMOTE_AGENT_TRUSTED_STOP_HANDOFF_2026_11_15.md`](P0_01C_REMOTE_AGENT_TRUSTED_STOP_HANDOFF_2026_11_15.md)。该交接文档以代码 HEAD `e515ce78523e76d9acf6afdc42e049993aee24ad` 作为验证基线；GitHub 文档提交 SHA 不等于已通过新版本运行时代码 CI。生产准入仍 NO-GO。
