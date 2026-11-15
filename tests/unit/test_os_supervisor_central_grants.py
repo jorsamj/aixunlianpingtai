@@ -152,3 +152,120 @@ def test_central_lease_is_not_modified_by_grant_issuance(context):
             (TASK,),
         ).fetchone()
     assert tuple(after) == tuple(prior)
+
+
+def _registered_launch_intent(context):
+    _, _, key, journal, _, _ = context
+    first = request(context)
+    intent = journal.register_intent(first, trusted_public_key=key.public_key())
+    return intent, first
+
+
+def _fresh_launch_grant(context, intent):
+    _, token, _, journal, issuer, _ = context
+    nonce = journal.issue_cpu_launch_challenge(
+        intent["handle_id"], intent["task_attempt"])
+    return issuer.issue(
+        task_id=TASK, task_attempt=3, node_id=NODE,
+        node_token=token, execution_lease_token=LEASE,
+        boot_id=BOOT, challenge=nonce)
+
+
+def test_launch_recheck_new_signed_nonce_and_one_journal_cas(context):
+    tasks, _, key, journal, _, _ = context
+    intent, first = _registered_launch_intent(context)
+    fresh = _fresh_launch_grant(context, intent)
+    handle = intent["handle_id"]
+    assert fresh["claims"]["challenge"] != first["claims"]["challenge"]
+    assert journal.issue_cpu_launch_challenge(handle, 3) == fresh["claims"]["challenge"]
+    claimed = journal.claim_cpu_launch_rechecked(
+        handle, 3, fresh, trusted_public_key=key.public_key())
+    assert claimed == {"handle_id": handle, "task_attempt": 3,
+                       "unit_name": "changlian-os-" + handle + ".service"}
+    restarted = ExecutionJournal(
+        journal.path, test_only_unprivileged=True, boot_id_for_tests=BOOT)
+    with pytest.raises(GrantRejected, match="NOT_PREPARED"):
+        restarted.claim_cpu_launch_rechecked(
+            handle, 3, fresh, trusted_public_key=key.public_key())
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute(
+            "SELECT task_id,task_attempt,state,event_seq FROM execution_intents"
+        ).fetchall() == [(TASK, 3, "STARTING", 2)]
+        assert db.execute(
+            "SELECT COUNT(*) FROM cpu_launch_challenges").fetchone()[0] == 1
+    with closing(tasks._connect()) as db:
+        record = db.execute(
+            "SELECT attempt,status,worker_id,lease_token FROM tasks WHERE task_id=?",
+            (TASK,)).fetchone()
+    assert tuple(record) == (3, "RUNNING", "agent:" + NODE, LEASE)
+
+
+@pytest.mark.parametrize("sql,values,code", [
+    ("UPDATE tasks SET status='CANCEL_REQUESTED' WHERE task_id=?",
+     (TASK,), "TASK_NOT_CPU_TRIAL"),
+    ("UPDATE tasks SET attempt=4 WHERE task_id=?",
+     (TASK,), "ATTEMPT_OR_WORKER"),
+    ("UPDATE tasks SET lease_token='rotated' WHERE task_id=?",
+     (TASK,), "EXECUTION_LEASE"),
+    ("UPDATE tasks SET lease_expires_at=? WHERE task_id=?",
+     ("2000-01-01T00:00:00+00:00", TASK), "LEASE_TOO_CLOSE"),
+    ("UPDATE service_nodes SET enabled=0 WHERE node_id=?",
+     (NODE,), "AGENT_NOT_AUTHORIZED"),
+])
+def test_recheck_fences_central_revocation_after_initial_intent(
+        context, sql, values, code):
+    tasks, _, key, journal, _, _ = context
+    intent, first = _registered_launch_intent(context)
+    journal.issue_cpu_launch_challenge(intent["handle_id"], 3)
+    with closing(tasks._connect()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(sql, values)
+        db.commit()
+    with pytest.raises(GrantRejected, match=code):
+        _fresh_launch_grant(context, intent)
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute(
+            "SELECT state FROM execution_intents").fetchone() == ("PREPARED",)
+
+
+def test_recheck_wrong_old_forged_scope_cannot_claim(context):
+    _, _, key, journal, _, _ = context
+    intent, first = _registered_launch_intent(context)
+    handle = intent["handle_id"]
+    fresh = _fresh_launch_grant(context, intent)
+    for args in (
+        (handle, 3, first),
+        ("f" * 32, 3, fresh),
+        (handle, 4, fresh),
+    ):
+        with pytest.raises(GrantRejected):
+            journal.claim_cpu_launch_rechecked(
+                *args, trusted_public_key=key.public_key())
+    forged = {"claims": fresh["claims"], "signature": "f" * 128}
+    with pytest.raises(GrantRejected, match="SIGNATURE"):
+        journal.claim_cpu_launch_rechecked(
+            handle, 3, forged, trusted_public_key=key.public_key())
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT state FROM execution_intents").fetchone() == (
+            "PREPARED",)
+
+
+def test_recheck_expired_grant_and_nonce_stay_prepared(context):
+    _, _, key, journal, _, _ = context
+    intent, first = _registered_launch_intent(context)
+    handle = intent["handle_id"]
+    fresh = _fresh_launch_grant(context, intent)
+    issued = fresh["claims"]["issued_at"]
+    with pytest.raises(GrantRejected, match="FRESHNESS"):
+        journal.claim_cpu_launch_rechecked(
+            handle, 3, fresh, trusted_public_key=key.public_key(),
+            now=issued + 4)
+    with pytest.raises(GrantRejected, match="NOT_PREPARED"):
+        journal.claim_cpu_launch_rechecked(
+            handle, 3, fresh, trusted_public_key=key.public_key(),
+            now=issued + 16)
+    with pytest.raises(GrantRejected, match="CHALLENGE_EXPIRED"):
+        journal.issue_cpu_launch_challenge(handle, 3, now=issued + 16)
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT state FROM execution_intents").fetchone() == (
+            "PREPARED",)

@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS execution_intents (
     created_at INTEGER NOT NULL,
     UNIQUE(task_id, task_attempt)
 );
+-- Single local OS-handle launch challenge, never a second central task owner.
+CREATE TABLE IF NOT EXISTS cpu_launch_challenges (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    challenge TEXT NOT NULL UNIQUE,
+    issued_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS cpu_unit_identities (
     handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
     invocation_id TEXT NOT NULL UNIQUE,
@@ -311,6 +318,111 @@ class ExecutionJournal:
             return {"handle_id": handle_id, "task_attempt": task_attempt,
                     "unit_name": row["unit_name"]}
 
+
+    def issue_cpu_launch_challenge(self, handle_id: str, task_attempt: int, *,
+                                   now: int | None = None) -> str:
+        """One post-registration challenge, tied to the original CPU OS handle.
+
+        Returning an existing nonce is idempotent. Expired nonce fails closed;
+        no new handle, scheduler or task attempt is created.
+        """
+        current = int(time.time()) if now is None else now
+        if type(current) is not int or type(task_attempt) is not int:
+            raise GrantRejected("CPU_RECHECK_REQUEST_INVALID_HOLD")
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT boot_id,state FROM execution_intents
+                   WHERE handle_id=? AND task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["boot_id"] != self.boot_id
+                    or row["state"] != "PREPARED"):
+                raise GrantRejected("CPU_RECHECK_INTENT_NOT_PREPARED_HOLD")
+            old = db.execute(
+                "SELECT challenge,expires_at FROM cpu_launch_challenges WHERE handle_id=?",
+                (handle_id,),
+            ).fetchone()
+            if old is not None:
+                if current >= old["expires_at"]:
+                    raise GrantRejected("CPU_RECHECK_CHALLENGE_EXPIRED_HOLD")
+                db.commit()
+                return old["challenge"]
+            nonce = secrets.token_hex(16)
+            db.execute(
+                """INSERT INTO cpu_launch_challenges
+                   (handle_id,challenge,issued_at,expires_at)
+                   VALUES (?,?,?,?)""",
+                (handle_id, nonce, current, current + 15),
+            )
+            db.commit()
+            return nonce
+
+    def claim_cpu_launch_rechecked(self, handle_id: str, task_attempt: int,
+                                   launch_envelope: object, *,
+                                   trusted_public_key: Ed25519PublicKey,
+                                   now: int | None = None) -> dict:
+        """Verify a newly reissued central lease grant and claim one OS launch.
+
+        This is a test-only contract and is not called by SupervisorService.
+        The trusted central signer must re-read its original tasks.attempt and
+        lease after this handle's new challenge was issued.
+        """
+        current = int(time.time()) if now is None else now
+        if (type(current) is not int or type(task_attempt) is not int
+                or not isinstance(launch_envelope, dict)
+                or not isinstance(launch_envelope.get("claims"), dict)):
+            raise GrantRejected("CPU_RECHECK_LAUNCH_REQUEST_INVALID_HOLD")
+        claims = launch_envelope["claims"]
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT * FROM execution_intents
+                   WHERE handle_id=? AND task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            nonce = db.execute(
+                """SELECT challenge,issued_at,expires_at
+                   FROM cpu_launch_challenges WHERE handle_id=?""",
+                (handle_id,),
+            ).fetchone()
+            if (row is None or nonce is None
+                    or row["state"] != "PREPARED"
+                    or row["boot_id"] != self.boot_id
+                    or current >= nonce["expires_at"]):
+                raise GrantRejected("CPU_RECHECK_LAUNCH_NOT_PREPARED_HOLD")
+            binding = {
+                "task_id": row["task_id"],
+                "task_attempt": row["task_attempt"],
+                "worker_id": row["worker_id"],
+                "node_id": row["node_id"],
+                "execution_lease_sha256": row["lease_sha256"],
+                "gpu_uuid": "CPU_ONLY",
+                "boot_id": row["boot_id"],
+                "challenge": nonce["challenge"],
+                "runner_profile": "fixed-cpu-v1",
+            }
+            grant = verify_central_execution_grant(
+                launch_envelope, trusted_public_key=trusted_public_key,
+                expected_binding=binding, now=current)
+            issued_at = claims["issued_at"]
+            if (grant.challenge == row["challenge"]
+                    or grant.grant_digest == row["grant_digest"]
+                    or type(issued_at) is not int
+                    or issued_at < nonce["issued_at"]
+                    or issued_at > current or current - issued_at > 3):
+                raise GrantRejected("CPU_RECHECK_FRESHNESS_UNVERIFIED_HOLD")
+            changed = db.execute(
+                """UPDATE execution_intents
+                   SET state='STARTING',event_seq=event_seq+1
+                   WHERE handle_id=? AND task_attempt=? AND state='PREPARED'""",
+                (handle_id, task_attempt),
+            ).rowcount
+            if changed != 1:
+                raise GrantRejected("CPU_RECHECK_CONCURRENT_START_HOLD")
+            db.commit()
+            return {"handle_id": handle_id, "task_attempt": task_attempt,
+                    "unit_name": row["unit_name"]}
 
     def starting_cpu_unit(self, handle_id: str, task_attempt: int) -> dict:
         """Read the one reserved CPU unit only during the original boot.
