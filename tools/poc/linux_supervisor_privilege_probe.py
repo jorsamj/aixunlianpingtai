@@ -253,7 +253,7 @@ def _run_trial() -> tuple[dict, int]:
                 "--property=Restart=no",
                 "--property=RuntimeMaxSec=25s",
                 "--property=TimeoutStopSec=3s",
-                sys.executable, "-c", WORKLOAD_CODE, str(work), str(keypath)
+                "/usr/bin/python3", "-c", WORKLOAD_CODE, str(work), str(keypath)
             ]
             started = _run(cmd, 10)
             if started.returncode:
@@ -292,7 +292,7 @@ def _run_trial() -> tuple[dict, int]:
                 return out, 3
             ticks = ((parent,cg.proc_start_ticks(parent)),
                      (child,cg.proc_start_ticks(child)))
-            agent = _run(["runuser","-u",agent_user,"--",sys.executable,
+            agent = _run(["runuser","-u",agent_user,"--","/usr/bin/python3",
                           "-c",AGENT_CODE,unit,str(keypath),str(parent)],12)
             if agent.returncode:
                 out["outcome"] = "UNPRIVILEGED_AGENT_PROBE_FAILED_HOLD"
