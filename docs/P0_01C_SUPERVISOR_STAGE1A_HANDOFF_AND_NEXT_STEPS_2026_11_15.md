@@ -200,3 +200,25 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 **前端最小方案已审计**：现有 `static/modules/service-node-runtime.js` 已支持展示节点连接状态、心跳、能力、GPU、Worker 与 durable tasks，因此后续只需在该页面的现有卡片/任务行增加只读 Supervisor 实例状态、`legacy/supervisor-required` 执行模式和拒绝/未知原因。先完成可信状态后端字段再开发 UI；目前不改前端，不增加恢复/释放/强停按钮。
 
 生产 A800/双4070 未接触；`legacy` 默认、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、远程自动派单 OFF、生产 **NO-GO**。
+
+## 12. 2026-11-15｜阶段 1B-2B：中央 HTTP → 受保护 Socket → durable intent（提交待 CI）
+
+**开发目标**：把阶段 1B-2A 已有的中央短时授权验证和阶段 1A 的独立 Unix Socket / 阶段 1B-1 journal 正式接成一个**可请求、可持久登记，但绝不启动工作负载**的纵向切片。不是再建立新的调度器，也不是开始系统级停机控制。
+
+### 改动范围与工作流程
+
+1. 在现有 `agent_executor_router` 中**仅装配一条隔离** `POST /api/v63/node-executor/{node_id}/executions/{task_id}/supervisor-cpu/grant`；实际实现放在 `platform_core/os_supervisor_central_api.py`，不扩充 `app.py` 的业务职责。默认返回 `CENTRAL_CPU_ISSUER_DISABLED_HOLD`，只有受信控制端部署配置 `CHANGLIAN_SUPERVISOR_CPU_GRANTS_ENABLED=1` 且已有 owner-only 固定私钥文件时才会继续；验证真正 `tasks.attempt` + execution lease + node token/worker/心跳/隔离 CPU 资源，再返回有效期 <=15 秒的签名 grant。即使 API 返回，也仅表示允许 **登记**，不是授权任意进程或 GPU 启动。
+2. 原 `os_supervisor_protocol.py` 严格新增 `challenge`、`authorize_intent` 两个动作及限定结构；继续拒绝 `start` 非空 payload 和真实 `start/stop`；拒绝任意 shell/命令、路径、unit/PID、GPU 或密钥路径，最大报文 16 KiB/严格 request_id 仍保留。
+3. 独立 `os_supervisor_service.py` 仍用内核 `SO_PEERCRED` 限制原非 root Agent UID；**只有显式** CLI `--enable-cpu-intent` 才初始化 root 私有 journal + 固定公钥、开放 challenge 与授权登记；默认 Socket 启动仍只提供 health 与拒绝。正式服务端公钥固定在 `/etc/changlian-os-supervisor/issuer.ed25519.pub`（raw 32 bytes，root 0700 目录 + 0600 文件）；控制端私钥固定在 `/etc/changlian-control/supervisor-cpu-issuer.ed25519.key`（所属服务账户 0700 + 0600）；`O_NOFOLLOW` / `fstat` 校验 owner/mode，**既不从 Agent 请求读取路径，也不在应用里生成/复制生产密钥**。密钥由获准的系统部署流程安全提供，此轮仅开发检查合同，**没有部署或启用配置**。
+4. journal 按原 `task_id + tasks.attempt` 唯一落盘；短期同一签名 grant 的丢响应重试返回原 handle，Supervisor 重启后重新打开同一 journal 仍只能报告 `UNKNOWN`；签名错、boot 不符、挑战未知/过期、租约有变化一律 HOLD，不能创建第二个执行实例。登记接口返回 `CPU_INTENT_RECORDED_NO_LAUNCH`，不对外称运行中或停机已验证。
+5. 增加 `tests/unit/test_os_supervisor_phase1b_ipc.py`：真实 FastAPI HTTP、正式中央 TaskRepository / ServiceNodeRepository / SQLite，Linux 非 root AF_UNIX Socket + SO_PEERCRED、签名验证/固定文件权限及 journal 重启/防重；Windows 仅便携合同。复用 `Node Agent Executor` 原有 Ubuntu/Windows/API CI，不新建重复工作流；额外专门修正了**默认 legacy 环境对可选 cryptography 依赖的延迟导入**，保持 Portable Deployment 的原有依赖契约。
+
+### 验收边界与剩余工作
+
+本子阶段完成后仍必须明确区分：本次是一条**真实服务请求与持久意图闭环**，并未真正启动、停止、管理 systemd 单元；`StopReceipt` 仍不存在，`central_recovery_allowed=false`，`supervisor-required` 仍禁止生产计算直启。GPU UUID 当前仅 `CPU_ONLY`；无真实 GPU 权限隔离、无正式 Runner 接入、无受控中央恢复和任务重排。签名授权有效期很短，正式 OS 启动前必须再次验证中央任务 lease、确认 journal 与实际 systemd OS identity，不能仅凭旧签名/握手允许派单。
+
+**下一步**：按本轮精确 SHA 审核 Node Agent Ubuntu/Windows/API 和 Portable Deployment 回归。绿后阶段 2 才实施固定 CPU worker 的真实 systemd system service/cgroup 托管、运行/退出码/日志/取消/进程重启核验；随后依序模型转换→训练→边缘复核。未来本机可信 signer/StopReceipt 和中央 CAS 恢复需要独立安全验收及生产授权。
+
+**前端**：阶段 1B-2B 不改现有页面。正式 Runner 灰度时只在现有 `static/modules/service-node-runtime.js` 节点卡片与任务详情新增只读 `Supervisor 状态/执行模式/证据待验证`；不提前新增强制重派/停止证明绕过/释放 GPU 操作。
+
+**生产边界**：A800 / 双4070 未连接；默认 `legacy`、自动派单 OFF，原 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD 和 GPU reservation 保持；生产 **NO-GO**。

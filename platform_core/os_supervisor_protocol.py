@@ -12,10 +12,12 @@ import re
 import socket
 import struct
 from typing import Any, Mapping
+from uuid import UUID
 
 PROTOCOL_VERSION = 1
 MAX_MESSAGE = 16 * 1024
-ALLOWED_ACTIONS = frozenset({"health", "inspect", "start", "stop", "read_log"})
+ALLOWED_ACTIONS = frozenset({"health", "inspect", "start", "stop", "read_log",
+                             "challenge", "authorize_intent"})
 _ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{7,127}$")
 
 
@@ -48,6 +50,35 @@ def validate_request(value: object) -> dict[str, Any]:
     elif action == "start":
         if payload:
             raise SupervisorProtocolError("START_NOT_IMPLEMENTED")
+    elif action == "challenge":
+        # CPU trial only. Never accept shell, executable, cwd, unit, PID, GPU
+        # device or signing-key path from a non-root Agent.
+        if set(payload) != {
+                "task_id", "task_attempt", "node_id", "worker_id",
+                "execution_lease_sha256", "gpu_uuid", "boot_id",
+                "runner_profile"}:
+            raise SupervisorProtocolError("CHALLENGE_SCOPE_INVALID")
+        if (not _valid_id(payload["task_id"])
+                or type(payload["task_attempt"]) is not int
+                or payload["task_attempt"] <= 0
+                or not isinstance(payload["node_id"], str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", payload["node_id"])
+                or payload["worker_id"] != "agent:" + payload["node_id"]
+                or not isinstance(payload["execution_lease_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["execution_lease_sha256"])
+                or payload["gpu_uuid"] != "CPU_ONLY"
+                or payload["runner_profile"] != "fixed-cpu-v1"):
+            raise SupervisorProtocolError("CHALLENGE_SCOPE_INVALID")
+        try:
+            if str(UUID(payload["boot_id"])) != payload["boot_id"]:
+                raise ValueError("noncanonical boot ID")
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise SupervisorProtocolError("CHALLENGE_BOOT_INVALID") from exc
+    elif action == "authorize_intent":
+        if (set(payload) != {"envelope"}
+                or not isinstance(payload["envelope"], dict)
+                or set(payload["envelope"]) != {"claims", "signature"}):
+            raise SupervisorProtocolError("AUTHORIZATION_ENVELOPE_INVALID")
     else:
         if set(payload) != {"handle_id", "execution_generation"}:
             raise SupervisorProtocolError("HANDLE_SCOPE_INCOMPLETE")

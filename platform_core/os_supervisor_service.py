@@ -1,8 +1,8 @@
 """Independent Linux Supervisor phase-1 Unix Socket server.
 
-REAL kernel SO_PEERCRED authentication and bounded transport, but NO process
-launch/stop/attestation. Production rollout is NOT authorized. No Agent,
-Trainer, Converter or Deployment runner imports this module today.
+REAL kernel SO_PEERCRED authentication and bounded transport. Optional
+CPU-only durable intent registration has NO process launch/stop/attestation.
+Production rollout is NOT authorized; no business runner imports this module.
 """
 from __future__ import annotations
 
@@ -12,11 +12,17 @@ import os
 from pathlib import Path
 import platform
 import socket
+import sqlite3
 import stat
 import struct
 import threading
 from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from .os_supervisor_authorization import GrantRejected
+from .os_supervisor_journal import ExecutionJournal
+from .os_supervisor_trust import load_supervisor_public_key
 from .os_supervisor_protocol import (
     PROTOCOL_VERSION, SupervisorProtocolError, encode_frame,
     receive_frame, validate_request,
@@ -27,7 +33,9 @@ class SupervisorService:
     """OS-owned socket with peer UID check; privileged actions fail closed."""
 
     def __init__(self, socket_path: Path, *, allowed_uid: int,
-                 allowed_gid: int, timeout: float = 2.0):
+                 allowed_gid: int, timeout: float = 2.0,
+                 authorization_journal: ExecutionJournal | None = None,
+                 trusted_public_key: Ed25519PublicKey | None = None):
         if not isinstance(socket_path, Path) or not socket_path.name.endswith(".sock"):
             raise ValueError("socket path must end with .sock")
         if type(allowed_uid) is not int or allowed_uid <= 0:
@@ -40,6 +48,13 @@ class SupervisorService:
         self.allowed_uid = allowed_uid
         self.allowed_gid = allowed_gid
         self.timeout = timeout
+        if (authorization_journal is None) != (trusted_public_key is None):
+            raise ValueError("Supervisor journal and pinned public key required together")
+        if (trusted_public_key is not None
+                and not isinstance(trusted_public_key, Ed25519PublicKey)):
+            raise ValueError("pinned Ed25519 public key required")
+        self.authorization_journal = authorization_journal
+        self.trusted_public_key = trusted_public_key
         self._listener: socket.socket | None = None
         self._bound_identity: tuple[int, int] | None = None
         self._stop = threading.Event()
@@ -60,7 +75,29 @@ class SupervisorService:
                 "stop_available": False,
                 "trusted_stop_receipt_available": False,
                 "central_recovery_allowed": False,
+                "cpu_intent_registration_available": (
+                    self.authorization_journal is not None),
             })
+        if action in ("challenge", "authorize_intent"):
+            if self.authorization_journal is None:
+                return self._reply(request_id, "CPU_INTENT_REGISTRATION_DISABLED_HOLD",
+                                   ok=False)
+            try:
+                if action == "challenge":
+                    nonce = self.authorization_journal.issue_challenge(
+                        request["payload"])
+                    return self._reply(request_id, "CPU_CHALLENGE_ISSUED", ok=True,
+                                       result={"challenge": nonce,
+                                               "boot_id": self.authorization_journal.boot_id})
+                intent = self.authorization_journal.register_intent(
+                    request["payload"]["envelope"],
+                    trusted_public_key=self.trusted_public_key)
+                return self._reply(request_id, "CPU_INTENT_RECORDED_NO_LAUNCH",
+                                   ok=True, result=intent)
+            except GrantRejected as exc:
+                return self._reply(request_id, str(exc), ok=False)
+            except (OSError, ValueError, sqlite3.Error):
+                return self._reply(request_id, "JOURNAL_UNAVAILABLE_HOLD", ok=False)
         if action == "start":
             return self._reply(request_id, "PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD",
                                ok=False)
@@ -68,6 +105,20 @@ class SupervisorService:
             return self._reply(request_id, "PROTECTED_STOP_NOT_IMPLEMENTED_HOLD",
                                ok=False)
         if action == "inspect":
+            if self.authorization_journal is not None:
+                try:
+                    registered = self.authorization_journal.inspect(
+                        request["payload"]["handle_id"],
+                        request["payload"]["execution_generation"])
+                    return self._reply(
+                        request_id, "OS_EXECUTION_NOT_STARTED_HOLD", ok=False,
+                        result=registered)
+                except GrantRejected:
+                    pass
+                except (OSError, ValueError, sqlite3.Error):
+                    return self._reply(
+                        request_id, "JOURNAL_UNAVAILABLE_HOLD", ok=False,
+                        result={"state": "UNKNOWN"})
             return self._reply(request_id, "OS_EXECUTION_NOT_REGISTERED_HOLD",
                                ok=False, result={"state": "UNKNOWN"})
         return self._reply(request_id, "LOG_STREAM_NOT_IMPLEMENTED_HOLD",
@@ -178,6 +229,7 @@ def main() -> int:
     parser.add_argument("--socket", type=Path)
     parser.add_argument("--agent-uid", type=int)
     parser.add_argument("--agent-gid", type=int)
+    parser.add_argument("--enable-cpu-intent", action="store_true")
     args = parser.parse_args()
     if not args.serve:
         print(json.dumps({"outcome": "INERT_OPT_IN_REQUIRED",
@@ -187,8 +239,14 @@ def main() -> int:
         print(json.dumps({"outcome": "CONFIG_MISSING_HOLD"}))
         return 2
     try:
-        service = SupervisorService(args.socket, allowed_uid=args.agent_uid,
-                                    allowed_gid=args.agent_gid)
+        # Only a root-owned fixed location is permitted in the opted-in
+        # deployment. There is no CLI/Agent-provided key/journal path.
+        journal = ExecutionJournal() if args.enable_cpu_intent else None
+        public_key = (load_supervisor_public_key()
+                      if args.enable_cpu_intent else None)
+        service = SupervisorService(
+            args.socket, allowed_uid=args.agent_uid, allowed_gid=args.agent_gid,
+            authorization_journal=journal, trusted_public_key=public_key)
         service.serve()
     except (OSError, ValueError, SupervisorProtocolError) as exc:
         print(json.dumps({"outcome": "SUPERVISOR_NOT_STARTED_HOLD",

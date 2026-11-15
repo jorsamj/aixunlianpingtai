@@ -2732,6 +2732,11 @@ def agent_executor_router(
             accepted=payload.get("accepted"),
         )
 
+    # The CPU-only grant route remains default OFF and cannot launch a process.
+    # Keep signing/authorization code outside the central Agent service module.
+    from .os_supervisor_central_api import register_supervisor_cpu_grant_route
+    register_supervisor_cpu_grant_route(router, task_repository)
+
     return router
 
 
