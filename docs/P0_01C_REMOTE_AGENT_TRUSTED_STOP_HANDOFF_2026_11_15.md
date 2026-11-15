@@ -204,3 +204,15 @@
 - **影响范围**：`tools/poc/linux_cgroup_poc.py`、`tests/unit/test_linux_cgroup_poc_contract.py`、独立 GitHub-hosted CPU 工作流，以及 docs。未改正式训练/转换/中央调度/SQLite、生产 A800/双4070 或 GPU、OSS。
 - **剩余门槛**：严格代码版 19 合同 + 内核复验；多层子孙、cgroup 外迁/进程权限、unit 重用、启动 generation/boot 证据、Windows Job Object、中央新鲜 challenge/SQLite 原子恢复，以及物理 GPU/多节点 UAT。**现阶段不可接入生产 Runner，不可解除 `REMOTE_AGENT_STOP_UNVERIFIED`，自动派单 OFF，生产 NO-GO。**
 - 详细证据、版本和下一轮最小任务见 [P0-01C-2 专项文档第 11 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。GitHub run/link 的精确 SHA 比文档 HEAD 更重要；文档提交自身须独立核验 CI。
+
+## 13. 2026-11-15 10:09+08｜多层子进程真实停机 PoC 两次成功
+
+> 本节为最新工作交接信息；不改变本项目**唯一长期分支**、中央 fail-closed HOLD 和生产 NO-GO。
+
+- 新反例不是单层 sleep：`service main → child → grandchild`，child、grandchild 分别 `start_new_session=True`；使用 `/proc/<pid>/stat` 的实际父 PID、PID 启动 ticks、`os.getsid`、原 cgroup 路径逐一校验。随后单独 SIGKILL stand-in Agent launcher，要求 child 与 grandchild **均仍在运行**，才由 systemd user unit `KillMode=control-group` 停止；所有已知进程必须退出并监听 `cgroup.events populated=0`。没有改生产 Agent。
+- **实测 Ubuntu 22.04 成功两次**：[run 43666636076](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666636076) 对应代码 `29ea40de32e2540e1433509007254445149a0c06` 和 [run 43666680688](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666680688) 对应代码 `2ff6242543e69dededbcb2eaf4ea6112256d9380`：均 **19/19 便携合同 SUCCESS**、真实内核 Job SUCCESS、`three_process_sessions_bound=true`、`both_descendants_survived_launcher=true`、`known_processes_stopped=true`、`cgroup_empty_verified=true`。均明确 `stop_proof_verified=false`，不允许中央恢复。
+- **额外严格负面合同**：防止空组后又 `populated=1` 仍判成功；校验生成的 Python 子进程脚本可编译、虚假父子关系、PID reuse、失去原 cgroup、session 不独立以及缺失孙进程身份。对应最新代码 SHA `4216be9ce011cf617e3af5ca741537386fef621e`，合同由 19 扩展至 **24 项**；其 GitHub-hosted [run 43666716976](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666716976) 在本节提交时仍 queued，**不可提前宣称最新 SHA 的 24/24 和 kernel 终态通过**。
+- 独立前端回归：`218d6c4` 的浏览器失败是 `tests/browser/annotorious-poc.spec.mjs:48`、`createAnnotation` 事件 5s 仍未观测到，已单独留痕 Issue #27；**不是 Node Agent 失败**。
+- 本轮仅改 `tools/poc/linux_cgroup_poc.py`、`tests/unit/test_linux_cgroup_poc_contract.py` 和 docs，所有系统运行命令均仅在 GitHub-hosted **临时 VM**。未操作 A800、双4070、GPU、OSS、真实训练/转换任务、生产数据库、Web/Worker。
+- **下一步**：精确读最新 24 合同与真实内核 run 的最终状态；失败只根据 Job 日志修复。通过后才进入 execution generation + boot_id + unit InvocationID 绑定以及迁移/重用反例，最后才评估 Linux Runner adapter、Windows Job Object、中央一次性 challenge 和 SQLite 原子恢复。继续 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` OFF、生产 NO-GO。
+- 全量证据与细节：[P0-01C-2 Linux systemd PoC 专项文档第 12 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)；Issue #26 为中央可信停机进度。
