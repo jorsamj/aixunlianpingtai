@@ -45,6 +45,10 @@ def _read_pinned_key(path: Path, *, required_owner: int) -> bytes:
             return key
         finally:
             os.close(fd)
+    except GrantRejected:
+        # Permission/ownership failure is already a deliberate fail-closed
+        # decision. Do not accidentally mask it as a generic OS read failure.
+        raise
     except (OSError, ValueError) as exc:
         raise GrantRejected("SUPERVISOR_KEY_UNAVAILABLE_HOLD") from exc
 
