@@ -10,7 +10,9 @@ from pathlib import Path
 import subprocess
 import sys
 
-from platform_core.os_supervisor_onnx_cpu_pilot import preflight_existing_onnx_cpu_pilot
+from platform_core.os_supervisor_onnx_cpu_pilot import (
+    preflight_existing_onnx_cpu_pilot, materialize_cpu_pilot_snapshot,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,12 +55,17 @@ def test_real_existing_onnx_cpu_provider_validation(tmp_path):
         payload, source_file=src, trusted_workdir=tmp_path)
     assert proof.source_sha256 == sha
     assert proof.production_launch_allowed is False
+    snapshot_dir = tmp_path / "snapshot"
+    snapshot_dir.mkdir()
+    frozen = materialize_cpu_pilot_snapshot(proof, destination_dir=snapshot_dir)
+    src.unlink()
+    src.write_bytes(b"original-path-replaced-after-preflight")
 
     folder = tmp_path / "conversion"
     folder.mkdir()
     (folder / "job.json").write_text(json.dumps({
         "id": "cpu-only-pilot", "status": "queued",
-        "source_path": str(src), "source_name": src.name,
+        "source_path": str(frozen), "source_name": frozen.name,
         "source_trace": payload["source_trace"],
         "target": "onnx", "params": params, "calibration_dir": "",
         "resource": {"id": "agent-onnx", "kind": "onnx", "mode": "local"},
@@ -77,7 +84,7 @@ def test_real_existing_onnx_cpu_provider_validation(tmp_path):
     job = json.loads((folder / "job.json").read_text(encoding="utf-8"))
     manifest = json.loads(
         (folder / "artifacts" / "manifest.json").read_text(encoding="utf-8"))
-    artifact = folder / "artifacts" / src.name
+    artifact = folder / "artifacts" / frozen.name
     assert job["status"] == "done"
     assert job["runtime_verified"] is True
     assert manifest["status"] == "runtime_verified"
