@@ -140,3 +140,12 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 最新阶段 1A run `43684001227` 已 **completed/failure**：Ubuntu contract success（503 passed/2 skipped + 两组专项 2/31 passed）；Windows 主合同 **502 passed/3 skipped**，Linux-only PoC **30 passed/1 failed**（`os.getsid`）；API **24 passed**，后续旧 grep guard 失败。整轮未通过，根因明确。
 
 **旧 Windows/API 问题已跨两个不同 SHA 重复出现；阶段 1A 的 start 拒绝逻辑经代码复核和 Ubuntu CI 验证是正确的，不是故障项。新会话先修真正的 CI 兼容问题，再推新功能。** 不需重复做 cgroup CPU PoC 研究。
+
+
+## 8. 2026-11-15｜阶段 1A CI 两项定点修复（待新 SHA 验收）
+
+- 修复前长期分支 HEAD：`bddb84a8a5be729626a0cf718895aeaa14e71e7d`；原 [Node Agent Executor run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 为 **completed/failure**。原始 Windows Job 132720496253：POSIX 用例 `test_three_process_tree_requires_lineage_sessions_ticks_and_cgroup` 在 Windows 缺少 `os.getsid`（30 passed / 1 failed）；原始 API Job 132720496100：过时的 `reported_capabilities = executable_agent_capabilities(requested_capabilities)` 静态守卫失败；Ubuntu Job 132720496289 成功。
+- 本次仅修改 `tests/unit/test_linux_cgroup_poc_contract.py`：对确实依赖 POSIX `os.getsid` 的单一测试标记 `pytest.mark.skipif(not hasattr(os, "getsid"))`，保证 Linux 原有父子进程/会话/cgroup 安全断言完全保留且继续执行，Windows 其它便携合同照常执行；没有跳过整个测试文件。
+- 仅修改 `.github/workflows/node-agent-executor.yml`：把旧赋值文本的静态守卫替换为实际入口 `reported_capabilities = allowed_remote_capabilities(`；已有 `test_node_agent_supervisor_gate.py` 保留默认 `legacy`、受保护能力过滤、拒绝非法配置和三 Runner 直启阻断等行为回归，不删除守卫。
+- 未改 `os_supervisor_protocol.py` 的正确 `start` 空 payload 拒绝行为；未改正式 Runner、中央任务代数/租约、GPU reservation、生产服务和配置。
+- **验收状态：新提交及其 Node Agent Executor Ubuntu/Windows/API CI 待实际终态复核，不提前宣称 1A GREEN，更不得启用中央自动恢复。** 生产依旧 `legacy`、HOLD、自动派单 OFF、NO-GO。

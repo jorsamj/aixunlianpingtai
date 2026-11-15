@@ -292,7 +292,7 @@ jobs:
           grep -Fq 'assert_direct_remote_launch_permitted()' platform_core/node_agent_conversion_runtime.py
           grep -Fq 'SO_PEERCRED' platform_core/os_supervisor_service.py
           grep -Fq 'PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD' platform_core/os_supervisor_service.py
-          grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
+          grep -Fq 'reported_capabilities = allowed_remote_capabilities(' node_agent.py
           grep -Fq 'executor.start()' node_agent.py
           grep -Fq 'executor.stop(timeout=10.0)' node_agent.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_executor_loop.py

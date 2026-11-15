@@ -1,6 +1,9 @@
 """P0-01C-2A/2B portable contracts ONLY; no real cgroup test here."""
 from pathlib import Path
+import os
 import sys
+
+import pytest
 
 # tools/poc is deliberately not imported by production runtime.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "poc"))
@@ -212,6 +215,10 @@ def test_nested_cpu_child_script_is_valid_python_and_starts_a_new_session():
     assert "leaf.wait()" in source
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "getsid"),
+    reason="POSIX session-id contract requires os.getsid; exercised on Linux",
+)
 def test_three_process_tree_requires_lineage_sessions_ticks_and_cgroup(monkeypatch):
     ids = {
         "parent_pid": 100, "parent_ticks": 11,
