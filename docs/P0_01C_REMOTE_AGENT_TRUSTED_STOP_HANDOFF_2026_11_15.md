@@ -291,3 +291,29 @@
 详细只读链路审计、Linux cgroup/systemd 官方依据、代码文件和 Run 证据见 [`P0_01C_3B_LINUX_STOP_RECEIPT_TRUST_BOUNDARY_2026_11_15.md`](P0_01C_3B_LINUX_STOP_RECEIPT_TRUST_BOUNDARY_2026_11_15.md)。
 
 **最终安全状态不变**：`REMOTE_AGENT_STOP_UNVERIFIED` HOLD，原 worker/lease/`tasks.attempt`/GPU reservation 保留，`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` OFF，生产 **NO-GO**。**本轮没有对 A800、4070、真实训练/转换任务、真实数据库或 GPU 服务执行命令。**
+
+## 17. 2026-11-15 P0-01C-3B-2 完成：Linux Supervisor 独立系统账户/签名权限隔离实验
+
+> 本节承接 3B-1 的真实 cgroup→模拟中央挑战流程。**本轮已实际通过额外的 OS 权限边界反例，但仅 GitHub 托管 VM 成功，不等于生产 StopReceipt 可用。**
+
+### 17.1 实际提交与验证
+
+- 新增 `tools/poc/linux_supervisor_privilege_probe.py`：**仅允许** `--run --github-ephemeral-only` 且 root + `SUDO_USER=runner` + `GITHUB_ACTIONS=true` + `RUNNER_ENVIRONMENT=github-hosted` + Ubuntu 22.04 + cgroup v2 才可执行。临时创建两个独立 UID（普通 Agent、受托管 CPU workload），root 持有新建 Ed25519 私钥，`0600` 文件、`0700` 目录。root 通过 systemd **SYSTEM** unit 启动 workload，属性 `User=<workload_uid>`、`KillMode=control-group`、`Delegate=no`、`ProtectControlGroups=yes`、`NoNewPrivileges=yes`、`RestrictSUIDSGID=yes`、`RuntimeMaxSec=25s`。
+- 实测非特权 Agent 不能读取 root 私钥、直接向另一 UID 的计算进程发送信号、`sudo -n` 提权或 `systemctl --system stop` 停掉 root 所属 unit。workload 真实尝试向父 cgroup 的 `cgroup.procs` 写入自己的 PID 被拒绝，私钥也不能读取。
+- root Supervisor 监听原 `cgroup.events populated=1→0`、校验 systemd unit ID、ControlGroup、InvocationID 和已知进程；真实 systemd stop 成功后使用**临时 root-only Ed25519** 对包含挑战和事件摘要的测试 payload 签名，在纯内存 SQLite 中模拟 `BEGIN IMMEDIATE` 恢复并拒绝挑战重放。所有数据仍是假任务、假 GPU reservation、测试临时私钥，**无真实 Node Agent 接口**。
+- 新增 `tools/poc/test_linux_supervisor_privilege_probe_contract.py`，提供默认入口不执行、非托管机拒绝、不同密钥验签失败、签名篡改失败、unit identity 重用拒绝等 **12 项**可执行合同。
+- 专属 `.github/workflows/linux-supervisor-privilege-probe.yml`：`ubuntu-22.04` GitHub-hosted disposable CPU VM，不使用 self-hosted，不连接生产 GPU/服务/数据库。
+- **真实 CI**：[run 43674027072](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674027072)，准确代码 SHA `c7be6e77ca44a241d72724e41947d624feb56f06`，`hosted-ubuntu22-sandbox` **SUCCESS**，`12 passed in 0.06s`，实际 `agent_denials.key_denied/signal_denied/sudo_denied/unit_stop_denied` 全 true，`workload_escape_denied=true`，`workload_key_read_denied=true`、`systemd_boundary_verified=true`、`privilege_boundary_verified=true`、`systemd_stop_returncode=0`、`cgroup_empty_verified=true`、`known_processes_stopped=true`，`test_supervisor_signature_verified=true`，`challenge_replay_denied=true`。
+- 明确 `outcome=SEPARATE_UID_SUPERVISOR_ISOLATED_PASS_NOT_PRODUCTION_ATTESTATION`、`trusted_production_stop_receipt=false`、`production_recovery_allowed=false`。
+- **首次 workflow 文件 SHA `652f58a` 在 run 43673969567 GitHub 解析失败（`runner.environment` 被放在 job-level env）**，无实际 Job；后在 `c7be6e7` 挪到 step env，真实运行全绿。该失败不能误称为 OS 负面验证不通过。
+
+### 17.2 必须保留的疑点与最小下一专项
+
+- GitHub runner 管理账户拥有 sudo，实验创建的 Agent UID 是特意限制的无 sudo 账户。**不能由这一组隔离成功断言 A800/4070 的真实 Agent 拥有相同权限边界**；生产服务账户、user-systemd、sudoers、polkit、cgroup delegation 和 `/dev/nvidia*` 权限尚未核实。
+- 当前签发者是**同一隔离脚本内以 root 执行的短命测试 signer**，没有生产独立 Supervisor 守护进程、`SO_PEERCRED` IPC 鉴权、密钥生命周期、公钥预登记/撤销、持久执行代数边界或灾难恢复协议。root-only 测试 key 和真实长期可信 StopReceipt 严格不同。
+- `cgroup.events populated=0` 只证明原 unit cgroup 空，**不证明普通 Agent 无法在 unit 之外发起另一个 GPU 程序**；未来需核对 coordinator 与 workload 的 GPU 设备访问隔离、阻止 unbound GPU spawn 的机制、实际 NVIDIA/昇腾/瑞芯微设备权限和驱动差异。
+- 只读代码审计：仓库 `node_agent.py` 仍直接启动 `NodeAgentExecutorLoop`；训练/转换仍调用现有 `launch_process`；未集成 Supervisor。仓库 `tools/install_rockchip_agent.sh` 是板端安装器，不能代表 A800/双4070 当前 service 配置。**没有生产节点系统权限的读取证据**。
+- **下一步 P0-01C-3B-3**：先只读审计真实 GPU Agent 运行账户、systemd unit、sudo/polkit/GPU device 权限（若必须访问生产服务器需用户明确授权）；同时继续 GitHub VM 隔离实验验证普通 Agent 在原 unit 外独立启动 CPU 进程的反例、最小受保护 Unix socket/peer credentials 和可信签发者边界。完成后才评估正式 Agent/Runner 适配和 P0-01C-3C 中央 API。
+- **安全基线不变：**`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、旧 owner/`tasks.attempt`/GPU reservation、自动派单 OFF、生产 **NO-GO**；没有对任何生产节点执行命令。
+
+完整实验和源码路径：[P0-01C-3B-2 Linux Supervisor 权限实测专项](P0_01C_3B_2_LINUX_SUPERVISOR_PRIVILEGE_PROBE_2026_11_15.md)。
