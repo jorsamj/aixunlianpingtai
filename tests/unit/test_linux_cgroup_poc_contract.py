@@ -154,12 +154,23 @@ def test_cgroup_zero_before_arm_does_not_count_as_stop_proof(tmp_path):
         observer = poc.CgroupEventObserver(handle.fileno())
         observer._sample("before_stop")
         assert observer.observed_empty is False
-        observer.arm_stop()
+        assert observer.arm_stop() is False
+        assert observer.observed_empty is False
+        assert observer.evidence()[-1]["after_stop_armed"] is False
+        observer.close()
+
+
+def test_cgroup_zero_observed_after_live_arm_is_only_local_evidence(tmp_path):
+    path = tmp_path / "events"
+    path.write_text("populated 1\n", encoding="ascii")
+    with path.open("rb", buffering=0) as handle:
+        observer = poc.CgroupEventObserver(handle.fileno())
+        assert observer.arm_stop() is True
+        assert observer.observed_empty is False
+        path.write_text("populated 0\n", encoding="ascii")
+        observer._sample("after_stop_armed")
         assert observer.observed_empty is True
-        events = observer.evidence()
-        assert events[0]["after_stop_armed"] is False
-        assert events[-1]["after_stop_armed"] is True
-        assert events[-1]["populated"] == 0
+        assert observer.evidence()[-1]["after_stop_armed"] is True
         observer.close()
 
 
