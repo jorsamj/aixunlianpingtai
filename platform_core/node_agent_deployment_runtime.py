@@ -17,6 +17,11 @@ from urllib.parse import urlparse
 
 import requests
 
+from .node_agent_supervisor_gate import (
+    assert_direct_remote_launch_permitted,
+    SupervisorExecutionBoundaryRequired,
+    SupervisorExecutionBoundaryInvalid,
+)
 from .node_agent_executor_runtime import (
     AgentExecutionWorkdir,
     ExecutionLeaseMonitor,
@@ -590,6 +595,11 @@ class AgentDeploymentRunner:
             runtime_phase = workdir / "runtime-phase.json"
             runtime_phase.unlink(missing_ok=True)
             with runtime_log.open("w", encoding="utf-8", errors="ignore") as log:
+                try:
+                    assert_direct_remote_launch_permitted()
+                except (SupervisorExecutionBoundaryRequired,
+                        SupervisorExecutionBoundaryInvalid) as error:
+                    raise RemoteExecutionFenced(str(error)) from error
                 launched = launch_process(
                     command,
                     cwd=self.runtime_root,
