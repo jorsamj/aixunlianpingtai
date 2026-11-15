@@ -234,3 +234,25 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 ### 12.2 修复 SHA 同版 Portable Deployment 最终终态（同日补录）
 
 针对精确功能 SHA `fe0c791fb0db447648db309d590014dc1098553b` 的 [Portable Deployment run 43691032313](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691032313) 已 **completed/success**：Ubuntu transport、Windows transport、API 三项全部成功。与 [Node Agent Executor 43691027462](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691027462) 同 SHA 的 Ubuntu/Windows/API 全绿相互印证。阶段 1B-2B **本专项关键工作流同 SHA 验收通过**，不意味着其它仓库工作流或生产部署全部完成，更不能解除 HOLD。
+
+## 13. 阶段 2A｜固定 CPU-only systemd SYSTEM service 真实执行后端（待本 SHA CI）
+
+**先决确认**：此前修复 SHA `fe0c791fb0db447648db309d590014dc1098553b` 关联 GitHub Actions 23/23 success；唯一长期分支本轮前 HEAD `ee966848124d63db08e670704c4b0490b8b1708d`。A800/双4070 不访问、不部署、不重启。这里进入真实 OS 生命周期，**不冒充为已经接入普通任务执行**。
+
+### 13.1 本轮实现
+
+- 新增 `platform_core/os_supervisor_cpu_systemd.py` 的 `FixedCpuSystemd`，仅在 Linux / root / systemd system manager 可用时才可在正常模式初始化；**此时没有任何正式 Agent/Runner 调用它**。没有公开新的 HTTP/Socket 启动接口，没有生产启动开关。单元名称只能由 Supervisor 原既定随机 handle 构成 `changlian-os-<32 hex>.service`，不能由 Agent 提供 shell、命令行、任意进程 PID、任意路径、unit 参数或 env/cwd。
+- `systemd-run --system` 创建真正独立 transient `.service`（不是 `--user` 或普通 `Popen`）。被托管进程固定为 `/usr/bin/python3 -I -u -c` 内置不接收外部参数的 CPU-only 打点/短时 sleep 小程序；`Type=exec`、`DynamicUser=yes`、`NoNewPrivileges=yes`、`PrivateDevices=yes`、`DevicePolicy=closed`、`KillMode=control-group`、`ProtectSystem=strict`、`RuntimeMaxSec=40s`、CPU/内存/PID 限额。**这不能充当 A800/4070 真机 GPU ACL 实证。**
+- 启动后通过 `systemctl show` 单独验证固定 systemd unit、`Transient`、`InvocationID`、`ControlGroup`、`MainPID`、设备隔离和子进程清理策略；属性缺失、权限错、重建新 InvocationID 均 HOLD。重新创建 backend 对象可用原 InvocationID 对同一 unit 只读重连，不会重复启动。
+- `request_stop` 在精确 InvocationID 检查通过后仅用 `systemctl --system stop` 停止该 unit，不允许任意 PID kill；如果 stop 之后 unit 立刻 GC/状态不明，返回 `UNKNOWN` 而非伪造 `EXITED` 或可信 StopReceipt。即使 systemctl 返回 0，也显式 `trusted_stop_receipt_available=false`，中央 HOLD 和自动重派不可解除。
+- `read_log` 仅能从已验证 unit 调用 systemd journald 读取最多 64 条/8192 字节的诊断字节；**尚未承诺 offset 流式日志和跨重启持久日志游标**。
+
+### 13.2 隔离真实 Linux 验证
+
+- 新增 `tests/unit/test_os_supervisor_cpu_systemd.py` 验证固定命令、严格 unit 白名单、拒绝 GPU/命令注入、OS InvocationID 不匹配无法停止和 stop 不发证明。
+- 新增 `tests/integration/test_os_supervisor_cpu_systemd_live.py`：在 GitHub 自带 **Ubuntu 24.04 隔离 Runner 的 systemd 系统服务**上，以随机 unit 启动真正固定 CPU 程序；检查 `MainPID/ControlGroup/InvocationID`、重新构造 backend 后同一身份重查、journald 诊断、真正 systemctl stop，最后只回报 UNKNOWN + 尝试清理唯一测试 unit。**没有生产任务**。这是唯一新增的真实 OS E2E，不新增 GitHub workflow，复用 `node-agent-executor.yml` 原 Ubuntu 合同 Job 的独立 step（sudo -n、超时 3 分钟）；如 runner 不支持系统级 systemd，测试会失败并阻止声称阶段 2A 已通过，而非静默跳过。Windows 只执行纯便携合同。
+- 正式旧 Supervisor Socket 的 `start/stop` **继续拒绝**、`legacy` 默认；根 journal 暂仅 PREPARED，尚未原子持久化 STARTING 与 OS InvocationID，故 backend 此阶段**不接入任何正式启动入口**，避免已启进程却丢回复后重复启动。下一子阶段在取得本轮真实 E2E 结果后接 journal CAS + Socket 的固定 CPU 启停、跨重启恢复和退出证据。
+
+### 13.3 停止条件与前端
+
+如果隔离 Ubuntu 无法启动系统服务或防护属性不满足，必须定位精确失败原因；不可直接删掉 `PrivateDevices/DevicePolicy/DynamicUser` 等保护来“修绿”。如果真实 systemd/cgroup 证据无法满足，只能报告阶段 2A 未验收。生产 GPU、训练/转换/复核 Runner、中央任务 owner/attempt/lease、自动恢复、StopReceipt、前端 UI 都不改。生产保持 **NO-GO**。
