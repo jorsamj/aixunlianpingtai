@@ -18,6 +18,9 @@ on:
       - 'platform_core/os_supervisor_trust.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
+      - 'platform_core/os_supervisor_onnx_cpu_pilot.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_pilot.py'
+      - 'tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py'
       - 'tests/unit/test_os_supervisor_phase1.py'
       - 'tests/unit/test_os_supervisor_phase1b.py'
       - 'tests/unit/test_os_supervisor_central_grants.py'
@@ -84,6 +87,9 @@ on:
       - 'platform_core/os_supervisor_trust.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
+      - 'platform_core/os_supervisor_onnx_cpu_pilot.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_pilot.py'
+      - 'tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py'
       - 'tests/unit/test_os_supervisor_phase1.py'
       - 'tests/unit/test_os_supervisor_phase1b.py'
       - 'tests/unit/test_os_supervisor_central_grants.py'
@@ -164,12 +170,16 @@ jobs:
           platform_core/os_supervisor_trust.py
           platform_core/os_supervisor_journal.py
           platform_core/os_supervisor_cpu_systemd.py
+          platform_core/os_supervisor_onnx_cpu_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_pilot.py
+          tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
           tests/unit/test_os_supervisor_central_grants.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
+          tests/unit/test_os_supervisor_onnx_cpu_pilot.py
           tests/integration/test_os_supervisor_cpu_systemd_live.py
           platform_core/node_agent_deployment_runtime.py
           platform_core/node_agent_training_runtime.py
@@ -199,6 +209,7 @@ jobs:
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
+          tests/unit/test_os_supervisor_onnx_cpu_pilot.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
@@ -225,6 +236,7 @@ jobs:
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
+          tests/unit/test_os_supervisor_onnx_cpu_pilot.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
@@ -239,6 +251,13 @@ jobs:
           tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
+      - name: Actual existing-ONNX CPU Runtime pilot (NO Supervisor launch)
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check 'onnx>=1.16,<2' 'onnxruntime>=1.18,<2' 'numpy<3'
+          python -m pytest -q --maxfail=1 --confcutdir=tests/integration tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py
       - name: POSIX Agent crash-window SIGKILL isolation (no GPU)
         if: runner.os == 'Linux'
         run: >-
