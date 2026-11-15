@@ -132,3 +132,59 @@ def test_cgroup_pinned_handle_never_infers_missing_or_corrupt_state():
     from io import StringIO
     for data in ("", "frozen 0\n", "populated unknown\n", "populated 9\n"):
         assert poc.cg_populated_from_pinned_handle(StringIO(data)) is None
+
+
+def test_cgroup_event_fd_never_infers_missing_as_empty(tmp_path):
+    import os
+    path = tmp_path / "events"
+    path.write_text("populated 1\nfrozen 0\n", encoding="ascii")
+    with path.open("rb", buffering=0) as handle:
+        assert poc.read_cgroup_events_fd(handle.fileno()) == 1
+        path.write_text("populated 0\nfrozen 0\n", encoding="ascii")
+        assert poc.read_cgroup_events_fd(handle.fileno()) == 0
+        path.write_text("populated lost\n", encoding="ascii")
+        assert poc.read_cgroup_events_fd(handle.fileno()) is None
+    assert poc.read_cgroup_events_fd(handle.fileno()) is None
+
+
+def test_cgroup_zero_before_arm_does_not_count_as_stop_proof(tmp_path):
+    path = tmp_path / "events"
+    path.write_text("populated 0\n", encoding="ascii")
+    with path.open("rb", buffering=0) as handle:
+        observer = poc.CgroupEventObserver(handle.fileno())
+        observer._sample("before_stop")
+        assert observer.observed_empty is False
+        observer.arm_stop()
+        assert observer.observed_empty is True
+        events = observer.evidence()
+        assert events[0]["after_stop_armed"] is False
+        assert events[-1]["after_stop_armed"] is True
+        assert events[-1]["populated"] == 0
+        observer.close()
+
+
+def test_cgroup_observer_post_arm_unreadable_must_hold(tmp_path):
+    path = tmp_path / "events"
+    path.write_text("populated 1\n", encoding="ascii")
+    with path.open("rb", buffering=0) as handle:
+        observer = poc.CgroupEventObserver(handle.fileno())
+        observer.arm_stop()
+        assert observer.observed_empty is False
+        observer._sample("first")
+        path.write_text("populated unexpected\n", encoding="ascii")
+        observer._sample("unreadable")
+        assert observer.observed_empty is False
+        assert observer.evidence()[-1]["populated"] is None
+        observer.close()
+
+
+def test_cgroup_observer_not_started_when_initial_state_unknown(tmp_path, monkeypatch):
+    path = tmp_path / "events"
+    path.write_text("populated 9\n", encoding="ascii")
+    with path.open("rb", buffering=0) as handle:
+        observer = poc.CgroupEventObserver(handle.fileno())
+        monkeypatch.setattr(observer._thread, "start",
+                            lambda: (_ for _ in ()).throw(AssertionError("must not start")))
+        assert observer.start() is False
+        assert observer.observed_empty is False
+        observer.close()
