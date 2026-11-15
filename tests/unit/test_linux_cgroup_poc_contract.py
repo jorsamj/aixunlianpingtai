@@ -272,3 +272,117 @@ def test_proc_parent_pid_uses_parent_field_not_process_group(monkeypatch):
     monkeypatch.setattr(poc.Path, "read_text",
                         lambda self, **kw: "321 (cpu worker) R 123 456 789 0 0 0")
     assert poc.proc_parent_pid(321) == 123
+
+
+def synthetic_identity_fixture():
+    intent = {
+        "unit": "clpoc-" + "a" * 24 + ".service",
+        "task_id": "poc-task-" + "b" * 24,
+        "execution_generation": 1,
+        "boot_id": "01234567-89ab-cdef-0123-456789abcdef",
+        "nonce": "c" * 32,
+        "purpose": "P0-01C-2B-CPU-ONLY",
+    }
+    observed = {
+        "Id": intent["unit"],
+        "ControlGroup": "/user.slice/app.slice/" + intent["unit"],
+        "InvocationID": "d" * 32,
+    }
+    ready = {k: intent[k] for k in (
+        "unit", "task_id", "execution_generation", "boot_id", "nonce")}
+    ready["invocation_id"] = observed["InvocationID"]
+    return intent, ready, observed
+
+
+def test_synthetic_generation_boot_invocation_valid_identity():
+    intent, ready, observed = synthetic_identity_fixture()
+    assert poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"]) is True
+
+
+def test_stop_identity_rejects_old_execution_generation_and_type_coercion():
+    intent, ready, observed = synthetic_identity_fixture()
+    ready["execution_generation"] = 2  # stale proof after new task generation
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    ready["execution_generation"] = True  # Python True == 1: must not bypass
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    ready["execution_generation"] = 1
+    intent["execution_generation"] = 0
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+
+
+def test_stop_identity_rejects_other_boot_and_stale_ready_boot():
+    intent, ready, observed = synthetic_identity_fixture()
+    other_boot = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    assert not poc.execution_identity_matches(intent, ready, observed, other_boot)
+    ready["boot_id"] = other_boot
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+
+
+def test_stop_identity_rejects_systemd_invocation_replay_and_missing_id():
+    intent, ready, observed = synthetic_identity_fixture()
+    observed["InvocationID"] = "e" * 32
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    observed["InvocationID"] = "0" * 32
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    observed.pop("InvocationID")
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+
+
+def test_stop_identity_rejects_changed_task_nonce_and_other_unit():
+    intent, ready, observed = synthetic_identity_fixture()
+    ready["nonce"] = "f" * 32
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    ready["nonce"] = intent["nonce"]
+    ready["task_id"] = "poc-task-" + "1" * 24
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    ready["task_id"] = intent["task_id"]
+    observed["ControlGroup"] = "/user.slice/app.slice/another.service"
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+    observed["ControlGroup"] = "/user.slice/app.slice/" + intent["unit"]
+    observed["Id"] = "clpoc-" + "f" * 24 + ".service"
+    assert not poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"])
+
+
+def test_stop_identity_snapshot_immutable_before_systemctl_stop():
+    intent, ready, observed = synthetic_identity_fixture()
+    same_intent = dict(intent)
+    same_ready = dict(ready)
+    assert poc.same_execution_snapshot(intent, same_intent, ready, same_ready)
+    same_intent["execution_generation"] = 2
+    assert not poc.same_execution_snapshot(
+        intent, same_intent, ready, same_ready)
+    same_intent["execution_generation"] = 1
+    same_ready["invocation_id"] = "f" * 32
+    assert not poc.same_execution_snapshot(
+        intent, same_intent, ready, same_ready)
+    same_ready["invocation_id"] = ready["invocation_id"]
+    same_intent["execution_generation"] = True
+    assert not poc.same_execution_snapshot(
+        intent, same_intent, ready, same_ready)
+
+
+def test_stop_identity_rejects_malformed_fields_without_exceptions():
+    intent, ready, observed = synthetic_identity_fixture()
+    assert poc.execution_identity_matches(
+        {}, ready, observed, intent["boot_id"]) is False
+    assert poc.execution_identity_matches(
+        intent, {}, observed, intent["boot_id"]) is False
+    assert poc.execution_identity_matches(
+        intent, ready, {}, intent["boot_id"]) is False
+    assert poc.execution_identity_matches(
+        intent, ready, observed, None) is False
+    intent["nonce"] = ""
+    assert poc.execution_identity_matches(
+        intent, ready, observed, intent["boot_id"]) is False
