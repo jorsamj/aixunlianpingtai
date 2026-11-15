@@ -265,8 +265,8 @@ def main(argv=None) -> int:
         print(str(error), file=sys.stderr)
         return 2
     # When a protected OS Supervisor is required but no launch-handle adapter
-    # exists yet, do not advertise remotely executable training/conversion.
-    # Other supported Agent capabilities remain unchanged.
+    # exists yet, do not advertise the unprotected training, conversion or
+    # deployment-test inference runners. Other capabilities remain unchanged.
     reported_capabilities = allowed_remote_capabilities(
         executable_agent_capabilities(requested_capabilities))
     if "model-upload" in reported_capabilities:
