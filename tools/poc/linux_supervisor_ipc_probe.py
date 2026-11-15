@@ -268,6 +268,7 @@ def _run_trial() -> tuple[dict, int]:
                 Path(f"/proc/{unbound_pid}/cgroup").read_text())
             if (cg.process_in_cgroup(unbound_pid, group) or
                     unbound_group == group or unbound_group is None or
+                    Path(f"/proc/{unbound_pid}").stat().st_uid != agent_uid or
                     cg.process_executing_by_identity(unbound_pid, unbound_ticks) is not True):
                 result["outcome"] = "UNBOUND_CPU_LINEAGE_NOT_VERIFIED_HOLD"
                 return result, 3
