@@ -33,10 +33,10 @@
 **第一步：真实 GitHub 基线与 CI 审计（先做）**
 
 - 重新读取唯一长期分支 HEAD、上面所有关键源文件和工作流；获取精确 run SHA、状态、Job 和失败日志。
-- 特别核查 [Node Agent 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)（阶段 1A、代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`），本次最后核对仍 queued；以及 [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571)，本次已 **completed/failure**：Ubuntu 成功、Windows 因 POSIX-only `os.getsid` 失败、API 因过时 grep guard 失败（主体 Windows 473 passed/2 skipped，API 24 passed）。**不能宣称已经通过**。
+- 特别核查 [Node Agent 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)（阶段 1A、代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`），最后核对已 **in_progress**：Ubuntu contract **success（503 passed / 2 skipped，另有 2+31 passed）**，API **failure（24 passed 后旧 grep）**，Windows 当时 **in_progress**，还不能宣称整轮通过。较早的 [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 已 **completed/failure**：Ubuntu 成功、Windows 的 POSIX-only `os.getsid` 失败，API 的过时 grep 失败。
 - [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) 实际已 `completed/failure`：Windows 的 Linux 专项单测 `tests/unit/test_linux_cgroup_poc_contract.py:226` 调用 `os.getsid` 导致 AttributeError；API Job 中旧 `grep 'reported_capabilities = executable_agent_capabilities(requested_capabilities)'` 已与 `node_agent.py` 的 `allowed_remote_capabilities(...)` 新写法冲突。
-- 新核实的阶段 1A 协议/测试矛盾：`os_supervisor_protocol.py` 对 start 空 payload 抛 `START_NOT_IMPLEMENTED`，但 `os_supervisor_service.py` 想返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`，`test_os_supervisor_phase1.py` 也要求后者。请复现、统一拒绝语义、保持所有实际启动动作关闭。**不可通过放开任意命令或启动后端来修测试。**
-- 只做最小修复：POSIX-only 用例明确按平台分流或跳过、API guard 更新为验证新能力过滤代码、修 start 协议与服务端拒绝码不一致。保留原有安全防线和测试，不要删掉失败用例。
+- **特别纠正：当前 start 协议没有所称的矛盾。** `os_supervisor_protocol.py` 的 `if payload: raise START_NOT_IMPLEMENTED` 仅在 start payload **非空**时拒绝；空 payload 会进入服务端并按设计返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`。Ubuntu 阶段 1A 主合同 503 passed/2 skipped。**不要为了一个不存在的错误去修改协议或开放 start。**
+- 只做最小修复：POSIX-only 用例明确按平台分流或跳过、API guard 更新为验证新能力过滤代码；以本次真实 CI 为准排查其它失败。保留原有安全防线和测试，不要删掉失败用例，也不要随意修改已通过的 start 协议。
 - 复用现有 CI，在准确提交 SHA 上确认 Ubuntu/Windows/API 状态；只记录**实际完成**的验收，排队/未运行必须继续标记 pending。
 
 **第二步：阶段 1B（必须在阶段 1A 通过后）**
