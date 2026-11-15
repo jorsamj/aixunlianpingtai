@@ -513,6 +513,41 @@ class ExecutionJournal:
                 "control_group": row["control_group"],
                 "main_pid": int(row["main_pid"])}
 
+
+    def cpu_log_identity(self, handle_id: str, task_attempt: int) -> dict:
+        """Read original journal identity during RUNNING or proven EXITED.
+
+        Logs do not confer launch, stop, or recovery authority. UNKNOWN and a
+        changed OS boot remain HOLD, even with an old InvocationID.
+        """
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT i.boot_id,i.state,i.unit_name,
+                          o.invocation_id,o.control_group,o.main_pid,
+                          t.invocation_id AS terminal_invocation_id,
+                          t.main_pid AS terminal_main_pid,
+                          t.exit_code AS terminal_exit_code
+                   FROM execution_intents i
+                   JOIN cpu_unit_identities o ON o.handle_id=i.handle_id
+                   LEFT JOIN cpu_terminal_evidence t ON t.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+        if (row is None or row["boot_id"] != self.boot_id
+                or row["state"] not in ("RUNNING", "EXITED")):
+            raise GrantRejected("CPU_LOG_IDENTITY_NOT_VERIFIED_HOLD")
+        if row["state"] == "EXITED" and (
+                row["terminal_invocation_id"] != row["invocation_id"]
+                or row["terminal_main_pid"] != row["main_pid"]
+                or type(row["terminal_exit_code"]) is not int
+                or not 0 <= row["terminal_exit_code"] <= 255):
+            raise GrantRejected("CPU_LOG_TERMINAL_IDENTITY_UNVERIFIED_HOLD")
+        return {"handle_id": handle_id, "task_attempt": task_attempt,
+                "unit_name": row["unit_name"],
+                "invocation_id": row["invocation_id"],
+                "control_group": row["control_group"],
+                "main_pid": int(row["main_pid"])}
+
     def record_cpu_exit(self, handle_id: str, task_attempt: int, *,
                         invocation_id: str, main_pid: int, exit_code: int,
                         unit_result: str,
