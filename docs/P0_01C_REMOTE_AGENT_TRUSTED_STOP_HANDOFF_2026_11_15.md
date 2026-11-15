@@ -341,3 +341,29 @@
 - 继续**默认自动派单 OFF、原 task/lease/`tasks.attempt`/GPU reservation 保留、生产 NO-GO**。本轮没有访问 A800、4070 或生产数据库、没有合并 main、发布 Release、部署/重启任何生产服务。
 
 **专项完整报告与下步建议：** [P0-01C-3B-3 独立进程与 Socket 安全验证](P0_01C_3B_3_UNBOUND_COMPUTE_AND_IPC_2026_11_15.md)。
+
+## 19. 2026-11-15 P0-01C-3B-4｜GPU 访问与 Supervisor 适配的代码审计 + 模拟权限验收
+
+**本轮仍只在唯一长期开发分支提交测试专用代码/文档。生产 A800、双4070、真实 GPU、OSS、数据库、训练/转换任务完全未触及；正式 Agent、训练/转换 Runner 没有修改；中央 HOLD/自动派单 OFF/NO-GO 不变。**
+
+### 19.1 代码只读审计的已确认事实
+
+- 实际 `platform_core/node_agent_training_runtime.py` 和 `platform_core/node_agent_conversion_runtime.py` 在持久化 launch intent 后都**直接调用 `launch_process()`**，并继承普通 Agent 的 `os.environ`；前者虽然核对 selected device、GPU UUID/worker 资源，但没有调用受保护的 OS Supervisor。转换任务要按目标 SDK 分辨是否使用 GPU，不能笼统声称全部转换占用 CUDA。
+- `platform_core/task_runtime/process_control.py` 的 POSIX session/Windows process group 与 PID/create time/hash 不是可信 systemd unit/Windows Job Object 的替代；`gpu_reservations_v2.py` 是中央逻辑 GPU 预留，**不是设备 ACL**。
+- `platform_core/node_agent_runtime.py` 直接执行 `nvidia-smi` 采集卡、进程、显存和负载；`training_devices.py` 会尝试 `torch.cuda` 探针。若下一专项禁掉普通 Agent GPU device 权限，**必须迁移相关硬件只读遥测/探测到受保护执行边界**，不能直接破坏现有多节点调度和自动资源选择。
+- 当前没有足以确认 A800/双4070 上真实 GPU Node Agent 的 service UID、sudo/polkit、`/dev/nvidia*` ACL、驱动设备访问策略、容器设备映射等的在线证据；仓库 `install_rockchip_agent.sh` 只能说明板端示例，不能推断两套 GPU 生产环境权限。
+
+### 19.2 本轮实际交付和现有验收
+
+- 新增 `tools/poc/gpu_supervisor_gate_audit.py`、`tests/unit/test_gpu_supervisor_gate_audit.py`、`.github/workflows/gpu-supervisor-source-audit.yml`。脚本只解析 GitHub 源码 AST，不 import 平台/访问数据库/启动 GPU；模拟边界合同对 task_id、真实执行代数概念、worker/node、lease token digest、GPU UUID、boot/InvocationID/unit/cgroup/challenge/nonce、7 类 OS 控制信号进行 fail-closed 匹配。**即使全部模拟输入匹配，仍 `production_gpu_launch_allowed=false`。**
+- 源码审计 GitHub-run：[43677681674](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43677681674)（准确 SHA `6279609597b77a8f395dc6e71a468c706eba0d29`）：Ubuntu 已 **65/65 passed、静态审计 `DIRECT_GPU_CAPABLE_LAUNCH_BYPASSES_SUPERVISOR_HOLD`**；Windows Job 在本节写入时仍 queued，**不可提前报跨平台全绿**。
+- 新增 `tools/poc/gpu_device_acl_shadow_probe.py`、`tools/poc/test_gpu_device_acl_shadow_probe.py`，复用严格 GitHub-hosted Ubuntu 22.04 测试环境。**仅测试临时普通文件**：root:workload-only group、0660 时 Agent UID 不可读，workload UID 可读；模式 0666 时 Agent 可读，恢复 0660 后再次不可读。这**不是 NVIDIA/昇腾 GPU 真实设备测试**。
+- [真实 GitHub-hosted Ubuntu run 43677832627](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43677832627)，准确 SHA `a82d6df04fb41add9930ccc2bac106deba86041b`：**59/59 合同通过**，旧 Supervisor/SO_PEERCRED OS 实验和新增普通文件 DAC 实验全部 SUCCESS；`fake_device_acl_separation_verified=true`、`fake_world_access_bypass_observed=true`、`restored_agent_denial_verified=true`。仍 `actual_cuda_or_gpu_device_tested=false`、`production_gpu_isolation_verified=false`、`production_recovery_allowed=false`。
+- 完整核对清单、最低限度 Supervisor adapter、GPU telemetry 兼容要求与后续只读实机验证步骤：[P0-01C-3B-4 GPU 设备访问与 Supervisor 前置审计](P0_01C_3B_4_GPU_SUPERVISOR_ACCESS_AUDIT_2026_11_15.md)。
+
+### 19.3 下一步和未完成的生产准入
+
+- **先取得用户对指定 A800 / 4070 的明确许可**，才可对真实运行用户、systemd unit、sudoers/polkit、GPU 设备节点与驱动/cgroup 权限做只读采样；本轮没有 SSH 或远程命令。
+- 得到真实硬件权限模型后再设计正式非 root Agent + 受保护 workload UID/systemd unit + GPU device 访问限额和只读遥测接口；绝不能仅设置 `CUDA_VISIBLE_DEVICES` 就声称隔离。
+- 随后在经批准的维护窗口或独立 GPU 测试机验收真实 CUDA/其他 SDK 越权启动拒绝、合法任务正常运行、所有 DataLoader/转换子进程停止、重启/网络分区/重复挑战的 StopReceipt 完整性；再决定是否进入正式中央默认 OFF 恢复 API。
+- **任何生产功能解锁都尚未授权。** `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、旧 `tasks.attempt`/owner/lease/GPU reservation、自动派单 OFF 继续。
