@@ -340,3 +340,7 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 同代码 SHA [Portable Deployment 43694657038](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694657038) 与另一轮 Node Agent [43694657064](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694657064) 在记录此节时未最终完成，不能宣称所有仓库 23 项 Actions 终态成功。后续必须核对这些 Job，必要时再补终态证据。
 
 **下一子阶段 2C-2**：只在隔离 Linux 上设计固定 CPU 的自然完成（包含 cgroup/后代完整退出、同一 InvocationID、ExecMainCode/ExecMainStatus/Result）与其持久终态记录；任何 OS 证据缺失、transient unit 被 GC、崩溃后仅剩 STARTING 时返回 UNKNOWN/HOLD，不能凭 leader exit 或 systemctl ACK 签发可信 StopReceipt。生产密钥轮换/模型转换 Runner 是再后一阶段，不与本轮安全修复混在一起。
+
+### 15.6 同一 SHA Portable Deployment 正式验收（2026-11-15）
+
+阶段 2C-1 **准确功能 SHA** `40bc388adc05ba3be05a7b986c0c89b1e3d0e423` 对应 [Portable Deployment run 43694657038](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694657038) 已 **completed/success**，Ubuntu transport、Windows transport、API 三个 Job **全部成功**。与 [Node Agent Executor run 43694652044](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694652044) 的 Ubuntu/Windows/API 核心全绿一致，**阶段 2C-1 核心代码和兼容路径可验收为 GREEN**；不得据此宣称阶段 2C 完成、StopReceipt 已可信或正式 GPU Runner 可运行。同 SHA 其它非核心工作流如未终态，以其实际结果为准。
