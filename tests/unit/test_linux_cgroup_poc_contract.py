@@ -139,12 +139,15 @@ def test_cgroup_event_fd_never_infers_missing_as_empty(tmp_path):
     path = tmp_path / "events"
     path.write_text("populated 1\nfrozen 0\n", encoding="ascii")
     with path.open("rb", buffering=0) as handle:
-        assert poc.read_cgroup_events_fd(handle.fileno()) == 1
+        fd = handle.fileno()
+        assert poc.read_cgroup_events_fd(fd) == 1
         path.write_text("populated 0\nfrozen 0\n", encoding="ascii")
-        assert poc.read_cgroup_events_fd(handle.fileno()) == 0
+        assert poc.read_cgroup_events_fd(fd) == 0
         path.write_text("populated lost\n", encoding="ascii")
-        assert poc.read_cgroup_events_fd(handle.fileno()) is None
-    assert poc.read_cgroup_events_fd(handle.fileno()) is None
+        assert poc.read_cgroup_events_fd(fd) is None
+    # Calling handle.fileno() after close raises ValueError in Python itself.
+    # Preserve the integer descriptor to exercise our actual fail-closed read.
+    assert poc.read_cgroup_events_fd(fd) is None
 
 
 def test_cgroup_zero_before_arm_does_not_count_as_stop_proof(tmp_path):
