@@ -93,6 +93,10 @@ def preflight_existing_onnx_cpu_pilot(
                 digest.update(part)
         if digest.hexdigest() != download["sha256"]:
             raise GrantRejected("CPU_ONNX_PILOT_DIGEST_MISMATCH_HOLD")
+    except GrantRejected:
+        # GrantRejected inherits PermissionError/OSError. Preserve the exact
+        # fail-closed reason instead of hiding it as an I/O fault.
+        raise
     except (OSError, RuntimeError) as exc:
         raise GrantRejected("CPU_ONNX_PILOT_FILE_UNAVAILABLE_HOLD") from exc
     return CpuOnnxPilotPreflight(digest.hexdigest(), actual_size,
