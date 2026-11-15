@@ -176,7 +176,7 @@ def test_central_cancellation_after_registration_blocks_launch(isolated_network)
         db.execute("UPDATE tasks SET status='CANCEL_REQUESTED' WHERE task_id=?",
                    (TASK,))
         db.commit()
-    with pytest.raises(SupervisorProtocolError, match="CPU_CENTRAL_GRANT_UNAVAILABLE_HOLD"):
+    with pytest.raises(SupervisorProtocolError, match="CPU_CENTRAL_GRANT_HTTP_HOLD"):
         pilot.launch_once()
     assert backend.starts == 0
     with pytest.raises(SupervisorProtocolError):
