@@ -218,3 +218,47 @@ python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
 - 上述两个真实 kernel PoC run 都是独立实验工作流；第二个**红灯是 `HOLD` 机制如实阻止虚假证明**，不是训练平台生产服务发生故障。
 - 新增 `tools/poc`、独立 workflow 和便携测试不影响应用运行时；不应将旧业务 `98f9158` 22/22 SUCCESS 借给新增 kernel PoC SHA，也不应把 PoC workflow 的研究红灯冒充业务 Agent runtime CI 失败。
 - 本次新增文档产生新 docs SHA 后也需分别核查 GitHub CI，不能推断提交结果。
+
+## 11. 2026-11-15 P0-01C-2B｜首次捕获停机前 cgroup 内核空组事件（真实 Ubuntu 22.04）
+
+### 11.1 已完成的突破：不是“路径消失就当空”
+
+以前 [run 43661539327](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661539327) 和 [run 43661732962](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661732962) 的真实 VM 试验，已证明 `systemctl --user stop` 返回 0 且已知 CPU 进程停止，但该命令**完成之后**，原 `cgroup.events` 路径和预打开的 FD 都不可读取，因此不能取得 `populated=0`，继续 HOLD。
+
+本轮查证 Linux kernel cgroup v2 文档：`cgroup.events` 的 `populated` 值在子树中全部非僵尸进程结束时置 0，支持 `poll(POLLPRI|POLLERR)` / inotify 通知。参考：
+
+- https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
+- https://man7.org/linux/man-pages/man7/cgroups.7.html
+- systemd 249 `KillMode=control-group` 文档：https://www.freedesktop.org/software/systemd/man/249/systemd.kill.html
+
+**代码** `tools/poc/linux_cgroup_poc.py` 新增 `CgroupEventObserver`：
+
+- 只持有**在 stop 之前已证实归属到随机 unit 的原 `cgroup.events` FD**，后台线程先注册 `poll(POLLPRI|POLLERR)`，并记录初始状态；
+- 仅在 `Id / ControlGroup / InvocationID` 与已核实的原 unit 一致、已知主子进程身份匹配时才进入 stop；
+- `arm_stop` 同时引入明确的**停机前仍 `populated=1`** 准入检查；已空、不明状态拒绝将后续 `0` 归因于当前 stop 请求；
+- 记录 `monotonic_ns`、`poll mask`、`after_stop_armed`、`populated`，保留原句柄不可读时的 UNKNOWN，不把路径消失改写为成功；
+- 本地 PoC 成功仍必须同时具备 `systemctl stop rc=0`、内核 FD 观察到明确 `populated=0`、已知主子 PID 启动时间核验后不再运行；**结果始终 `stop_proof_verified=false`、`central_recovery_allowed=false`**，不接中央恢复。
+
+### 11.2 首次真实 PASS：精确 GitHub SHA 与事件证据
+
+- GitHub 托管临时 VM [run 43662224850](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43662224850)，准确代码 SHA `e39d644b0acbdb36bf18faf3aa87e681367ef51a`，`linux-cgroup-22` **SUCCESS**。
+- 该运行的合同 **14/14 passed**；Ubuntu 22.04、systemd 249、非 root uid 1001，真实 `membership_verified=true`、`launcher_sigkill=true`、`compute_survived_launcher=true`、`systemd_stop_returncode=0`、`known_processes_stopped=true`、`cgroup_empty_verified=true`。
+- 关键 **`cgroup_observations` 内核事件**：首次读取 `populated=1`（类型 `armed_before_systemctl_stop`，`monotonic_ns=27349734948`），约 3.96 ms 后同一 FD 的 `poll` 得到 `mask=10`、`populated=0`（`monotonic_ns=27353693467`）。随后读取 `cgroup_path_after_stop=null` 和 `cgroup_handle_after_stop=null`，证实**必须在 stop 与 unit/cgroup 回收之间监听事件，而不是等 stop 返回后再打开路径**。
+- 结果：`outcome=LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF`；两项中央安全标识仍明确为 `false`。详细日志/证据附件在上述 GitHub Actions 运行中可核验。
+
+### 11.3 两次防误判加固与 CI 注意事项
+
+- 在首次 PASS 后的 `291791a5936f947d711ede146ce3d1ceb39f64c9`，将 `arm_stop()` 改成**停机前从原 FD 读取 `populated=1` 方允许进入**，拒绝把停机前已空当作“本次 stop 成功”。`1f607f679f568b26dc5656fd0469c63a936182db` 将负面合同扩展至 **19 项**，覆盖原 FD 不可读、解析损坏、停机前已空、停机后读 0 的区别等。
+- 中间 SHA `afc71fb1fae04e7771835edb2f016f87f490cf21` 在 [run 43662256295](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43662256295) 出现 **17 passed / 1 failed**：失败发生在测试代码 `test_cgroup_event_fd_never_infers_missing_as_empty` 最后一条断言，`with` 关闭文件后再次调用 Python `handle.fileno()`，在进入被测函数前直接 `ValueError`。这不是内核 stop 失败，该次 PoC stage 未运行。
+- 修复 `218d6c4736f387d20529e48421af22cb4c3eabca`：先保存 `fd=handle.fileno()`，文件关闭后传原整型 fd 到被测函数，由它正确返回 UNKNOWN；**只改变测试用例**，不放宽任何真实停机准入。
+- 该最新加固 SHA 的目标 [run 43662765705](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43662765705) 在写本节时尚未取得最终运行结果；**不得把较早 SHA 的首次 PASS 当成新严格版本完整 CI GREEN**。精确 SHA 必须重新检验 19 项合同和真实 Linux 内核 PoC 的终态。
+
+### 11.4 下一步验收边界：内核 PoC 成功 ≠ 中央恢复可信
+
+本次明确解决了**不购买独立实验机如何实测 Linux 进程停机与 cgroup 0 事件**的问题；方法为 GitHub-hosted `ubuntu-22.04` 临时 VM。它并不使生产 A800/4070 自动具备此执行边界：
+
+1. 最新 19 个合同和严格 `arm_stop` 的真实内核复验必须成功，不成功读取真实 Job 日志按根因精准修复。
+2. 还需独立反证：CPU 多层子孙/new session、不同 PID namespace、超时/OOM、unit identity 重用、boot ID 变化、cgroup 迁移权限、Agent 复启与错代命令，确保事件与**具体执行 generation**绑定。
+3. 不能只根据 Agent 上报字符串信任停机；将来必须设计中心下发的一次性 challenge、Node 授权、持久 OS 证据和中央 SQLite `BEGIN IMMEDIATE` 事务原子释放租约/预留。
+4. GPU SDK、DataLoader 多进程、CUDA 资源和 A800/4070 两物理节点的真实 UAT 尚未进行；**不得擅自拿生产训练任务做实验**。Windows Job Object 需要另行验证。
+5. 在此之前 `REMOTE_AGENT_STOP_UNVERIFIED` 保持 HOLD、自动派单 OFF、生产 **NO-GO**；不触碰真实任务/数据库/OSS/模型，也不把 PoC 接入现有 Runner。
