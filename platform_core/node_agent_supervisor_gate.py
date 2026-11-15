@@ -60,11 +60,12 @@ def assert_direct_remote_launch_permitted(
             "supervisor launch and lifecycle adapter are not installed; "
             "remote training/conversion must not start unsupervised")
 
-# Only execution kinds that currently launch their own compute processes.
-# Model installation, cleaning, material operations, and deployment testing
-# are separate workstreams and must not be accidentally disabled here.
+# Remote execution kinds whose current implementation can launch GPU,
+# accelerator, or model inference subprocesses outside a trusted supervisor.
+# Model installation, cleaning and material operations remain independent.
 DIRECT_COMPUTE_CAPABILITIES = frozenset({
     "training", "conversion", "conversion.rknn",
+    "deployment-test", "deployment-test.rknn",
 })
 
 
