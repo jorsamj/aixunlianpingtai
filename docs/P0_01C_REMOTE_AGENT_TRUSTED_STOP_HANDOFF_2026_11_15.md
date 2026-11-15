@@ -142,3 +142,43 @@
 - **下一步**：先取精确 SHA 的最终 CI，随后才在经确认的**非生产、非 root、有 user manager 的 Ubuntu 22.04 隔离机**做真实 CPU cgroup PoC，记录 unit GC/进程逃逸失败场景，再决定是否进入 Linux Runner adapter。Windows Job Object、中央新鲜挑战 + SQLite 原子恢复和真实两物理机 GPU UAT 继续独立待办。
 - **完整审计与手册**：[`P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md`](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。Issue #26 继续追踪可信恢复；Issue #27 仍独立追踪前端回归。
 - **生产 NO-GO**；`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` 继续 OFF；不得删除 PID/启动证据、跳过 HOLD、把 `stop_proof_verified` 改成 true、触及 A800/4070 生产服务或数据。
+
+## 10. 2026-11-15 08:50+08 续审：前端滚动 CI 精准修复、完整 22/22 验证
+
+> 本节为 **P0-01C Agent 可信停机专项的并行前端回归记录**，不是新的 Agent stop-proof 能力。早期章节中的“前端有红灯/CI 排队”是历史快照；**本节记录准确代码 SHA 的最新完整终态**。
+
+### 10.1 历史失败与只读审计
+
+- 历史仅文档 HEAD `6c97817db45855548b8cb8ddf16d3c9d7f7b7178` 的 GitHub Actions 共 **21 success / 1 failure**；唯一失败为 [Frontend Runtime Stabilization run 43654112610](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43654112610) 的 `browser-navigation (3)`；该 run 的 `frontend`、`browser-navigation (1)`、`browser-navigation (2)` 均 success。
+- 真正失败栈：`tests/browser/training-create-scroll.spec.mjs:43`，1920×1080，向 `.train-create-layout` 发送 `wheel(0,400)`，5 秒内 `scrollTop` 仍为 0，断言 `toBeGreaterThan(0)` 失败；**不是 Agent/任务调度/SQLite 的失败**。
+- 只读核对 [`static/training-create-modal.css`](../static/training-create-modal.css)：训练创建弹窗对 `.train-create-layout` 已使用 `overflow-y:auto`、有界 modal 高度、`min-height:0` 等单一滚动所有者约束；但原始测试在 7 个参数分组**折叠**的高桌面分辨率下，**没有事先检查实际 `scrollHeight > clientHeight`**。如果内容完全放入可视高度，`scrollTop=0` 是浏览器正常行为。此根因由测试前置条件和失败证据支持；无法仅凭旧失败日志反推 CSS 本身存在故障。
+
+### 10.2 唯一代码修改（不动业务 CSS/JS）
+
+- 提交 [`98f91585f2c976f9321507d6ab812796a94bbea0`](https://github.com/jorsamj/aixunlianpingtai/commit/98f91585f2c976f9321507d6ab812796a94bbea0)；GitHub commit changed files 真实核实仅 **`tests/browser/training-create-scroll.spec.mjs` 1 个文件**。
+- 测试首先采集 `clientHeight / scrollHeight / scrollTop / overflowY`。若高桌面布局暂未溢出，**实际点击可见的训练参数 `details > summary`**，逐步展开当前步骤的参数，直到确认真实可滚动；如果全部展开仍无溢出，测试继续失败而非跳过。
+- 保留原先的两项强断言：向下真实鼠标滚轮后 `scrollTop>0`、向上真实滚轮后 `scrollTop=0`；并要求 `overflowY=auto`。
+- 轮滚前记录鼠标坐标和 `document.elementFromPoint` 命中节点及其祖先的 `overflowY`，通过 Playwright `testInfo.attach` 保存 `training-scroll-<viewport>.json` 证据；回归完成后恢复本次临时展开的参数分组，再执行原有训练参数输入/状态保存断言。
+- **不涉及** `static/app.js`、`static/styles.css`、`static/training-create-modal.css`、后端进程、生产部署、Node Agent、数据库或 GPU 作业。
+
+### 10.3 精确 CI 终态：完成
+
+**针对代码 SHA `98f91585f2c976f9321507d6ab812796a94bbea0` 查询 GitHub Actions，最终结果为 `22 success / 0 failure / 0 cancelled`（22/22 GREEN）。**
+
+本轮最相关 [Frontend Runtime Stabilization Push run 43660420636](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43660420636)：
+
+| Job | 结论 |
+| --- | --- |
+| `frontend` | SUCCESS |
+| `browser-navigation (1)` | SUCCESS |
+| `browser-navigation (2)` | SUCCESS |
+| `browser-navigation (3)` | **SUCCESS**，覆盖原失败的 1920×1080 训练弹窗滚动场景 |
+
+确认范围：**代码 SHA 的整套 CI 已全绿**；并不等价于在真实 A800/4070 环境运行过 Chrome、也不等价于所有前端 UX 需求都已经完成。Issue [#27](https://github.com/jorsamj/aixunlianpingtai/issues/27) 历史记录的另一问题（项目真实清空后训练草稿未同步清空）**不在本次改动范围**，需单独按原事件时序核验，不能因本轮 CI 绿色就声称其根因已修复。
+
+### 10.4 后续专项与安全约束
+
+- **前端滚动测试本轮收口**：无失败证据不得额外修改生产 CSS；若后续 CI 再次复现，先读 `training-scroll-<viewport>.json` 和 Playwright trace，区别真实滚动故障、未溢出和滚轮命中内层元素。
+- **P0-01C 未收口**：Linux cgroup v2 / systemd user manager 的真实内核 CPU PoC 仍因当前隔离容器非 root 条件/user manager 缺失而 **BLOCKED_ENVIRONMENT**；下一步需**非生产 Ubuntu 22.04** 且可用非 root systemd user manager 测试机，先做真实进程 SIGKILL、跨进程组后代、unit 身份和停机审计，再决定是否接入 Runner。
+- **中央 fail-closed 继续**：`REMOTE_AGENT_STOP_UNVERIFIED` HOLD 不释放，旧 owner/GPU reservation 不乱动，`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` 默认 OFF，Windows Job Object、中央 challenge/SQLite 原子恢复、双物理节点 GPU UAT 继续待办。**生产 NO-GO。**
+- Issue #26 追踪 Agent stop-proof；Issue #27 追踪前端历史 CI 问题。后续文档追加会形成新的 docs SHA，其 Actions 状态必须另查；**不得把本节 22/22 自动套用于新的 docs HEAD**。
