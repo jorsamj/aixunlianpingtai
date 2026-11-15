@@ -11,7 +11,9 @@ import json
 import pytest
 
 from platform_core.os_supervisor_authorization import GrantRejected
-from platform_core.os_supervisor_cpu_systemd import FixedCpuSystemd
+from platform_core.os_supervisor_cpu_systemd import (
+    FixedCpuSystemd, _require_cgroup_exit_manager_version,
+)
 
 UNIT = "changlian-os-" + "a" * 32 + ".service"
 INVOCATION = "b" * 32
@@ -210,3 +212,46 @@ def test_fixed_cpu_natural_exit_requires_original_invocation_and_cgroup_exit_typ
         backend.verified_natural_exit(
             UNIT, INVOCATION, original_control_group="/system.slice/" + UNIT,
             original_main_pid=82340)
+
+
+@pytest.mark.parametrize("manager,allowed", [
+    ("Version=249", False),
+    ("Version=249.11-0ubuntu3.23", False),
+    ("Version=250", True),
+    ("Version=255.4-1ubuntu8", True),
+    ("Version=257.9", True),
+    ("Version=249\\nVersion=999", False),
+    ("Version=250evil", False),
+    ("Version=", False),
+    ("", False),
+    ("Version=abc", False),
+    ("Version=0", False),
+])
+def test_systemd_manager_version_requires_cgroup_exit_support(manager, allowed):
+    if allowed:
+        assert _require_cgroup_exit_manager_version(manager) >= 250
+    else:
+        with pytest.raises(GrantRejected, match="CPU_SYSTEMD_MANAGER_"):
+            _require_cgroup_exit_manager_version(manager)
+
+
+def test_real_backend_checks_running_manager_before_any_launch(monkeypatch):
+    """Ensure an unprivileged Agent cannot trigger a 249 CPU systemd unit."""
+    import platform_core.os_supervisor_cpu_systemd as cpu
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(tuple(argv))
+        assert kwargs["shell"] is False
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout="Version=249.11-ubuntu\\n")
+
+    monkeypatch.setattr(cpu.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cpu.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(cpu.os.path, "isdir", lambda path: path == "/run/systemd/system")
+    monkeypatch.setattr(cpu.subprocess, "run", fake_run)
+    with pytest.raises(GrantRejected, match="CPU_SYSTEMD_MANAGER_TOO_OLD_HOLD"):
+        cpu.FixedCpuSystemd()
+    assert calls == [(
+        "/usr/bin/systemctl", "--system", "--no-pager", "show", "-p", "Version",
+    )]

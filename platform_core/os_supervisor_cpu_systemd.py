@@ -47,6 +47,25 @@ _SHOW = (
 )
 _ALLOWED = {"active", "activating", "deactivating", "inactive", "failed"}
 
+# ExitType=cgroup was introduced in systemd 250. The production Ubuntu 22.04
+# manager is normally 249. Check the live PID1 manager, not the CLI binary:
+# a package upgrade may leave the running manager at the previous version.
+_MIN_CGROUP_EXIT_MANAGER_VERSION = 250
+_MANAGER_VERSION = re.compile(r"Version=([1-9][0-9]{1,3})(?:[.\\-+~ ][^\\r\\n]*)?\\Z")
+
+
+def _require_cgroup_exit_manager_version(value: object) -> int:
+    """Reject an unknown or pre-250 running systemd manager before CPU trial."""
+    if not isinstance(value, str):
+        raise GrantRejected("CPU_SYSTEMD_MANAGER_VERSION_UNKNOWN_HOLD")
+    found = _MANAGER_VERSION.fullmatch(value.strip())
+    if found is None:
+        raise GrantRejected("CPU_SYSTEMD_MANAGER_VERSION_UNKNOWN_HOLD")
+    version = int(found.group(1))
+    if version < _MIN_CGROUP_EXIT_MANAGER_VERSION:
+        raise GrantRejected("CPU_SYSTEMD_MANAGER_TOO_OLD_HOLD")
+    return version
+
 
 def _unit(value: object) -> str:
     if not isinstance(value, str) or not _UNIT.fullmatch(value):
@@ -64,6 +83,14 @@ class FixedCpuSystemd:
                     or not os.path.isdir("/run/systemd/system")):
                 raise GrantRejected("CPU_SYSTEMD_ROOT_MANAGER_REQUIRED_HOLD")
         self._runner = test_only_runner or subprocess.run
+        if test_only_runner is None:
+            # Query *running* systemd manager via D-Bus, not "systemctl --version".
+            # This runs before a grant can be claimed or systemd-run launched.
+            manager = self._run([
+                "/usr/bin/systemctl", "--system", "--no-pager",
+                "show", "-p", "Version",
+            ], timeout=5)
+            _require_cgroup_exit_manager_version(manager)
 
     def _run(self, argv: list[str], *, timeout: int = 7) -> str:
         try:

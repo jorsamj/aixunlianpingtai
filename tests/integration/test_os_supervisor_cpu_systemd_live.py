@@ -11,7 +11,9 @@ import secrets
 import subprocess
 import time
 
-from platform_core.os_supervisor_cpu_systemd import FixedCpuSystemd
+from platform_core.os_supervisor_cpu_systemd import (
+    FixedCpuSystemd, _require_cgroup_exit_manager_version,
+)
 
 
 def test_real_fixed_cpu_systemd_service_start_inspect_log_and_stop():
@@ -21,6 +23,10 @@ def test_real_fixed_cpu_systemd_service_start_inspect_log_and_stop():
     assert Path("/run/systemd/system").is_dir(), "system systemd manager absent"
     name = "changlian-os-" + secrets.token_hex(16) + ".service"
     backend = FixedCpuSystemd()
+    # Live PID1 manager must support the exact ExitType=cgroup contract.
+    assert _require_cgroup_exit_manager_version(backend._run([
+        "/usr/bin/systemctl", "--system", "--no-pager", "show", "-p", "Version",
+    ])) >= 250
     launched = False
     try:
         initial = backend.launch(name)
