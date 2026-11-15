@@ -11,6 +11,9 @@ on:
       - 'tools/poc/linux_cgroup_probe.py'
       - 'tools/poc/linux_cgroup_poc.py'
       - 'tests/unit/test_linux_cgroup_poc_contract.py'
+      - 'tools/poc/linux_stop_receipt_bridge.py'
+      - 'tools/poc/central_stop_recovery_contract.py'
+      - 'tests/unit/test_linux_stop_receipt_bridge_contract.py'
 permissions:
   contents: read
 concurrency:
@@ -28,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check pytest
-          python3 -m pytest -q --confcutdir=tests/unit tests/unit/test_linux_cgroup_poc_contract.py
+          python3 -m pytest -q --confcutdir=tests/unit tests/unit/test_linux_cgroup_poc_contract.py tests/unit/test_linux_stop_receipt_bridge_contract.py
       - name: Check Ubuntu 22.04 and non-root VM prerequisites
         shell: bash
         run: |
@@ -62,6 +65,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/poc/linux_cgroup_poc.py --run --isolated-test-host | tee p001c2b-kernel-result.json
+      - name: "Actual Linux cgroup stop to in-memory central challenge bridge"
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          python3 -m py_compile tools/poc/central_stop_recovery_contract.py tools/poc/linux_stop_receipt_bridge.py
+          python3 tools/poc/linux_stop_receipt_bridge.py --run --isolated-test-host | tee p001c3b-kernel-to-central.json
       - name: Retain diagnostic evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -70,5 +82,6 @@ jobs:
           path: |
             p001c2b-preflight.json
             p001c2b-kernel-result.json
+            p001c3b-kernel-to-central.json
           if-no-files-found: warn
           retention-days: 14
