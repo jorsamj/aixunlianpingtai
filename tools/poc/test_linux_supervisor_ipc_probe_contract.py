@@ -63,14 +63,14 @@ def test_scope_mismatch_or_incorrect_generation_must_hold(modification):
     assert gate.consumed is False
 
 
-@pytest.mark.parametrize("request",[
+@pytest.mark.parametrize("input_payload",[
     {},None,1,[],["request_stop_admission"],
     {"action":"request_stop_admission"},
     {"action":"request_stop_admission","unit":"any"},
 ])
-def test_missing_or_invalid_shape_must_hold(request):
+def test_missing_or_invalid_shape_must_hold(input_payload):
     gate,_=fixture()
-    assert gate.check(request,1001,101_000_000)["ok"] is False
+    assert gate.check(input_payload,1001,101_000_000)["ok"] is False
     assert gate.consumed is False
 
 
