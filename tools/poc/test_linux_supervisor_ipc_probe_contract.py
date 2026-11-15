@@ -103,6 +103,7 @@ def test_socket_real_kernel_so_peercred_current_uid_only(tmp_path,monkeypatch):
         pytest.skip("Linux SO_PEERCRED only")
     gate,request=fixture()
     gate.agent_uid=os.getuid()
+    gate.issued_ns=time.monotonic_ns()
     # Test runs without elevated privileges. Root ownership is validated
     # separately on GitHub-hosted VM, not simulated here.
     monkeypatch.setattr(ipc.os,"chown",lambda *_args:None)
