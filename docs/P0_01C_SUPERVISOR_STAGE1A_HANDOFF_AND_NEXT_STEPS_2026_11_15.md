@@ -3,8 +3,8 @@
 **交接日期**：2026-11-15  
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
-**本次只读核查的远端 HEAD**：`2584367c55cba24da8507b5fb2518d09eed6003f`（文档提交后需以新分支 HEAD 为准）。  
-**总状态**：**Supervisor 阶段 1A 代码已写入、GitHub CI 未验收、生产 NO-GO**。此处“已提交”**不等于**“业务功能可用”，更不等于“可信 StopReceipt 可用于重排”。
+**历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
+**当前优先状态（2026-11-15）**：**阶段 2C-1 已完成；阶段 2C-2 代码提交 `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 正等待同 SHA CI**。以下旧阶段标题为历史审计轨迹，以末尾第 16 节及新的 2C-2 专项文档为最新接续依据。**生产 A800/双4070 未接入，本阶段仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
@@ -344,3 +344,16 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 ### 15.6 同一 SHA Portable Deployment 正式验收（2026-11-15）
 
 阶段 2C-1 **准确功能 SHA** `40bc388adc05ba3be05a7b986c0c89b1e3d0e423` 对应 [Portable Deployment run 43694657038](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694657038) 已 **completed/success**，Ubuntu transport、Windows transport、API 三个 Job **全部成功**。与 [Node Agent Executor run 43694652044](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694652044) 的 Ubuntu/Windows/API 核心全绿一致，**阶段 2C-1 核心代码和兼容路径可验收为 GREEN**；不得据此宣称阶段 2C 完成、StopReceipt 已可信或正式 GPU Runner 可运行。同 SHA 其它非核心工作流如未终态，以其实际结果为准。
+
+
+## 16. 阶段 2C-2｜固定 CPU-only 自然退出终态与持久记录（代码已提交，CI 待终态）
+
+- 2C-1 基线：`40bc388adc05ba3be05a7b986c0c89b1e3d0e423`；当时的 23 次 CI workflow 执行均 SUCCESS，**不能替代新的 2C-2 同 SHA 验收**。
+- 新功能提交：[`6511cba9ca4e9d8a5f4ab5c2fa371ac04d6ce35f`](https://github.com/jorsamj/aixunlianpingtai/commit/6511cba9ca4e9d8a5f4ab5c2fa371ac04d6ce35f)。随后补齐旧 systemd 单元测试假的属性：[`f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b`](https://github.com/jorsamj/aixunlianpingtai/commit/f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b)。
+- 实际变更：仅固定 CPU 测试后端采用 systemd `ExitType=cgroup`、`RemainAfterExit=yes`、`Restart=no`，核查同一 InvocationID、原 ExecMainPID、终态及退出码；`ExecutionJournal` 原子记录不可覆写的 CPU-only 终态；`SupervisorService.inspect` 在证据完全满足时才报告 `EXITED`，否则继续 `UNKNOWN/HOLD`。
+- **这不是可信 StopReceipt**：CPU-only 终态报告始终 `trusted_stop_receipt_available=false`，不触发中央重新派单、不释放 GPU reservation、不迁移任何正式转换/训练/复核 Runner。
+- CPU-only 测试配置使用 systemd `ExitType=cgroup`（依赖 systemd 250+）；GitHub 24.04 的验证不能自动外推到 A800/4070 Ubuntu 22.04 systemd 环境，禁止以此提交部署生产或启用 `supervisor-required`。
+- **当前验收状态：新增提交的同 SHA Node Agent Ubuntu/Windows/API、真实 Linux systemd 自然完成 E2E、Portable Deployment 尚待最终实际核对。** 首轮 `6511cba9` 有旧 FakeSystemd 缺少新属性的单测 RED；补充测试提交 `f121d9bd` 后以其准确 CI 作为下一次核验对象，不能提前标记通过。
+- 下一步：如 CI 失败，先按原始日志定点修复；全部满足后记录真实 Job 终态，再单独研究 `STARTING` 崩溃窗口和更强 OS 退出/停机证明、密钥分发及一个非 GPU 真实模型转换 Runner 灰度适配。
+
+完整实施细节：[`P0_01C_SUPERVISOR_STAGE2C2_CPU_TERMINAL_2026_11_15.md`](P0_01C_SUPERVISOR_STAGE2C2_CPU_TERMINAL_2026_11_15.md)。
