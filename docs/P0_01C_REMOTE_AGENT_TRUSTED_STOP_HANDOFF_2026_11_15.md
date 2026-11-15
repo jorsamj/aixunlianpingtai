@@ -216,3 +216,16 @@
 - 本轮仅改 `tools/poc/linux_cgroup_poc.py`、`tests/unit/test_linux_cgroup_poc_contract.py` 和 docs，所有系统运行命令均仅在 GitHub-hosted **临时 VM**。未操作 A800、双4070、GPU、OSS、真实训练/转换任务、生产数据库、Web/Worker。
 - **下一步**：精确读最新 24 合同与真实内核 run 的最终状态；失败只根据 Job 日志修复。通过后才进入 execution generation + boot_id + unit InvocationID 绑定以及迁移/重用反例，最后才评估 Linux Runner adapter、Windows Job Object、中央一次性 challenge 和 SQLite 原子恢复。继续 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` OFF、生产 NO-GO。
 - 全量证据与细节：[P0-01C-2 Linux systemd PoC 专项文档第 12 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)；Issue #26 为中央可信停机进度。
+
+## 14. 2026-11-15 10:09+08｜防错代复用：task/generation/boot/nonce/systemd InvocationID PoC
+
+> 最新接续：独立 CPU PoC 已可以验证真实三层跨 session 后代停机，24/24 安全合同及 Ubuntu 22.04 内核 PoC 已在 [run 43666716976](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666716976) SUCCESS。本节是其后的**执行实例身份绑定**专项，状态独立。
+
+- **背景风险**：仅凭 `populated=0` 和同名 systemd unit，无法阻止把旧任务 generation 或旧 Linux boot 的停机事件挪用给新任务。
+- **只改 `tools/poc/linux_cgroup_poc.py`**：先生成随机 synthetic task ID、测试代数 `execution_generation=1`、boot ID、随机 nonce、随机 unit；systemd 服务 payload 从官方 `INVOCATION_ID` 读取每次运行独立的 128-bit hex 身份，写进 `ready.json`。只有 `intent + ready + unit_info + 实时 boot_id` 全部匹配，才会模拟 Agent 异常并执行原 unit 的 stop。发 stop 前再次核验原始和当前快照，任何跨代/重启/替换保持 HOLD。
+- **新增 7 项负面合同**，总数 **31**；覆盖旧 execution generation、bool 代数绕过、boot ID 不符、systemd InvocationID 替换/缺失、task/nonce/unit 错配、前后证据发生变更和字段损坏。代码 `7a6cbf5e85a010a0930a0a4f650c579bb5342b87` + 合同 `cad6a3365bb715794f1a30bc1429f1855293d57e`。
+- **CI 未宣告成功**：上述新代码准确 SHA 对应 [GitHub-hosted ubuntu-22.04 run 43667494312](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43667494312)，更新本节时还处于 GitHub 队列，尚未取得 31/31 和真实内核身份绑定通过。不得引用旧 24/24 成绩冒充本次结果。
+- **真实验收门槛**：31/31、`identity_binding_verified=true`、三层 CPU 后代原 cgroup 和 PID/start_ticks、启动器 SIGKILL 后继续运行、systemd stop 成功、原 FD 读到 `populated=0`、已知三进程结束。仍要求 `stop_proof_verified=false`、`central_recovery_allowed=false`、`LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF`。
+- **不是中央协议**：PoC 代数恒为 1，尚无中央真实单调 generation、挑战凭证、加签或 SQLite 原子事务；不能凭本地 PoC 的 JSON 释放真实 owner/GPU reservation。下轮先对现有中央租约与 generation 数据合同做只读审计，再设计比对与原子恢复。
+- **严格边界不变**：无生产 Agent、Remote Training/Conversion Runner、A800、双4070、GPU/OSS、用户服务/真实数据库变更；`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、生产 **NO-GO**。
+- **完整技术文档**：[P0-01C-2 Linux systemd 执行边界 PoC 第 13 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。
