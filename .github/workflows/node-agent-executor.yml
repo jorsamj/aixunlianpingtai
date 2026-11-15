@@ -331,6 +331,13 @@ jobs:
           sudo -n "$(command -v python)" -m pytest -q --maxfail=1
           --confcutdir=tests/integration
           tests/integration/test_os_supervisor_cpu_systemd_live.py
+      - name: P0-01C 2D-2C3 protected nonroot Agent HTTP Unix systemd E2E (CI ONLY)
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        shell: bash
+        run: >-
+          sudo -n "$(command -v python)" -m pytest -q --maxfail=1
+          --confcutdir=tests/integration
           tests/integration/test_os_supervisor_cpu_network_systemd_live.py
 
   api:
@@ -428,12 +435,3 @@ jobs:
           ! grep -Fq 'TaskRepository' platform_core/node_agent_executor_loop.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
-
-      - name: P0-01C 2D-2C3 real nonroot Agent HTTP Unix and protected systemd CPU (CI ONLY)
-        if: runner.os == 'Linux'
-        timeout-minutes: 3
-        shell: bash
-        run: >-
-          sudo -n "$(command -v python)" -m pytest -q --maxfail=1
-          --confcutdir=tests/integration
-          tests/integration/test_os_supervisor_cpu_network_systemd_live.py
