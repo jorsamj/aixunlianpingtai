@@ -4,7 +4,7 @@
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
 **历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
-**当前优先状态（2026-11-15）**：**2C-2 已完成（代码 `f121d9bd` 全仓 23/23 SUCCESS）；2C-3 也已完成核心 CPU-only 验收（代码 `8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`，同 SHA GitHub Actions 全仓 23/23 SUCCESS，含真实 Ubuntu systemd E2E 4/4）**。以下旧章节保留历史证据，实际接续以最新第 17 节和 2C-3 专项文档为准。**生产 A800/双4070 未接入，StopReceipt 与自动恢复仍 NO-GO。**
+**当前优先状态（2026-11-15）**：**2C-2、2C-3 和 2D-1 已完成各自准确代码 SHA 的 23/23 全仓 CI 验收**。**最新 2D-2A 功能代码 `bc67fb2a28692b56078348567599bc8cc8bdfc38` 已完成 ONNX external_data 全层拒绝、pin FD 校验、快照输入和 Windows 兼容修复；Ubuntu/Windows/API Node Agent 主合同与真实 ONNX CPU 试跑已通过，全仓仍按准确 SHA 核验最后工作流，不得提前写成 23/23**。历史章节保留审计轨迹，接续请优先阅读第 20 节与 `P0_01C_2D2_ONNX_EXTERNAL_DATA_FD_SNAPSHOT_2026_11_15.md`。**生产 A800/双4070 未接入，正式 Runner、可信 StopReceipt 与中央自动恢复仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
