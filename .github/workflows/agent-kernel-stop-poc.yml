@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/poc/linux_cgroup_probe.py | tee p001c2b-preflight.json
-      - name: Real kernel cgroup exercise: orphaned launcher + CPU descendant
+      - name: "Real kernel cgroup exercise: orphaned launcher + CPU descendant"
         shell: bash
         run: |
           set -euo pipefail
