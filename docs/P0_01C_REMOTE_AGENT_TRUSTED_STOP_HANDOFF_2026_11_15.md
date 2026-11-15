@@ -182,3 +182,14 @@
 - **P0-01C 未收口**：Linux cgroup v2 / systemd user manager 的真实内核 CPU PoC 仍因当前隔离容器非 root 条件/user manager 缺失而 **BLOCKED_ENVIRONMENT**；下一步需**非生产 Ubuntu 22.04** 且可用非 root systemd user manager 测试机，先做真实进程 SIGKILL、跨进程组后代、unit 身份和停机审计，再决定是否接入 Runner。
 - **中央 fail-closed 继续**：`REMOTE_AGENT_STOP_UNVERIFIED` HOLD 不释放，旧 owner/GPU reservation 不乱动，`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` 默认 OFF，Windows Job Object、中央 challenge/SQLite 原子恢复、双物理节点 GPU UAT 继续待办。**生产 NO-GO。**
 - Issue #26 追踪 Agent stop-proof；Issue #27 追踪前端历史 CI 问题。后续文档追加会形成新的 docs SHA，其 Actions 状态必须另查；**不得把本节 22/22 自动套用于新的 docs HEAD**。
+
+## 11. 2026-11-15｜无需额外实验服务器：GitHub-hosted Ubuntu 22.04 真实内核验证结果
+
+> **这是最新的 P0-01C-2B 实验状态**，比第 9～10 节中“仅本地合同通过 / 无独立测试机”更晚。GitHub-hosted `ubuntu-22.04` 是独立临时 VM（**不是** self-hosted 生产服务器），合成 CPU-only workload；用户没有独立非生产主机也能完成首轮 OS 行为试验。
+
+- 独立 CI：[`agent-kernel-stop-poc.yml`](../.github/workflows/agent-kernel-stop-poc.yml)，只允许 GitHub 托管 Ubuntu 22.04、`contents: read`、非 root systemd user unit、随机名/短时合成 CPU 任务、自动证据附件。**生产 A800/双4070、真实 GPU/数据库/OSS/任务一概未操作**。
+- **真实第一轮**：[run 43661539327](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661539327)：Ubuntu 22.04 / systemd 249 / cgroup v2；`membership_verified=true`、模拟 Agent launcher `SIGKILL=true`、后代进程在 launcher 消失后仍存活、`systemd_stop_returncode=0`、`known_processes_stopped=true`；但无法在 stop 后重新读取原 cgroup `populated=0`，`cgroup_empty_verified=false`，**HOLD / job failure**。
+- **真实第二轮**：[run 43661732962](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661732962)：在 stop 前预先打开并绑定原 `cgroup.events` 句柄；**14/14 合同测试通过**；相同的真实 OS 启动器崩溃、计算后代存活、systemd 停止、已知 PID 退出结果再次得到；但 stop 后 `cgroup_path_after_stop=null`、`cgroup_handle_after_stop=null`，无 `populated=0` 正向证据，故仍 **HOLD / job failure**。
+- **重要结论**：不需要另买服务器，真实 Linux 内核已开展测试；当前可证明的是“本实验中已知 CPU 进程停止”，**不能证明**所有可能的未知计算后代都停止、更不能签发可供中央解除 `REMOTE_AGENT_STOP_UNVERIFIED` 的可信证明。systemd unit/cgroup 停止后回收窗口需要事件级取证；`null`/路径消失不得转成 `True`。
+- **下一步**：优先继续用 GitHub VM 隔离复现 `cgroup.events` 停机之前的状态变化、unit D-Bus `InvocationID` 与异步 GC 时序，再增加更多反例；通过后才评估 Linux Runner adapter。Windows Job Object、中央 challenge/SQLite 原子恢复、真实双 GPU 节点 UAT 仍待验；继续自动派单 OFF、保持 HOLD 和生产 **NO-GO**。
+- 详细代码、实际输出和风险见 [`P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md`](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md) 第 10 节。
