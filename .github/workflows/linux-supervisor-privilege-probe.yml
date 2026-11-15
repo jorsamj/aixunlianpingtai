@@ -21,11 +21,11 @@ jobs:
   hosted-ubuntu22-sandbox:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    env:
-      RUNNER_ENVIRONMENT: ${{ runner.environment }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate ephemeral GitHub-hosted Ubuntu and no real GPU
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         shell: bash
         run: |
           set -euo pipefail
@@ -54,6 +54,8 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/p001c3b2-python/bin/python" -m pytest -q --confcutdir=tools/poc tools/poc/test_linux_supervisor_privilege_probe_contract.py
       - name: "Real separate UIDs, root systemd unit, cgroup escape attempts, Ed25519"
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         shell: bash
         run: |
           set -euo pipefail
