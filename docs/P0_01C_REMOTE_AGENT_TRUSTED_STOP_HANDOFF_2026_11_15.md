@@ -267,3 +267,27 @@
 - **最终上线准入**仍需 A800/双4070 真实 GPU、多节点网络分区、取消竞态和 Windows Job Object 测试；任何生产变更另请用户明确授权。
 
 继续 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、保留原 owner/GPU reservation、`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` OFF、生产 **NO-GO**。
+
+## 16. 2026-11-15 P0-01C-3B-1 已完成：真实 Linux 内核停机 + 中央挑战隔离联调
+
+**本节为最新交接**。已把 P0-01C-2B 的真实 Ubuntu 22.04 systemd/cgroup `populated=0` 实验，与 P0-01C-3A 的纯内存 SQLite 一次性挑战、CAS 恢复连接起来。未连接任何生产服务；**OS witness 的信任根仍未解决，自动恢复仍禁止**。
+
+### 16.1 范围和结果
+
+- 修改 `tools/poc/linux_cgroup_poc.py`：只给 CPU-only 实验增加可选测试 `before_stop` hook、合成 task/generation；在已知三层进程真实绑定、模拟 Agent launcher SIGKILL 之后、执行 `systemctl stop` **之前**签发中央挑战；记录 stop 请求和原 cgroup 内核空组事件单调时间戳，**先空后 stop 或时序倒置必须拒绝**。正常 CLI 不接受正式真实任务 ID，也不能操作生产机器。
+- 新增 `tools/poc/linux_stop_receipt_bridge.py`：硬限制 GitHub-hosted 非 root VM 和显式 `--run --isolated-test-host`；先在独立 SQLite `:memory:` 创建 HOLD 的 synthetic task（`attempt=3`）和假 GPU reservation；对真实原 unit 挑战→内核停机→事件归属和时间顺序核验→**模拟 HMAC 见证**→内存 `BEGIN IMMEDIATE` 消费挑战、清空模拟 GPU reservation、任务进入 QUEUED→同一挑战重放拒绝。
+- 新增 `tests/unit/test_linux_stop_receipt_bridge_contract.py`：拒绝错代、错误 boot/InvocationID、被替换的 cgroup/unit、停机前已经为空、缺少原始 `populated=1`、无正式 runner 授权、伪造 OS 证据及默认 CLI 越权执行。
+- 工作流仍是 [`agent-kernel-stop-poc.yml`](../.github/workflows/agent-kernel-stop-poc.yml)，只运行 **GitHub-hosted ubuntu-22.04 CPU 临时 VM**，原本的真实 kernel PoC 和本轮 bridge 各执行一次。不会触及 A800/4070/OSS/生产 GPU、worker、数据库。
+- **真实 GitHub CI 最终通过**：[run 43672300351](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672300351)，精确代码 SHA `341b2f73998bbd0db68cdeca72e6f1700ea26406`：**71/71 合同 SUCCESS**、真实三层进程 systemd stop SUCCESS、桥接真实 kernel → 内存 CAS SUCCESS、`challenge_replay_rejected=true`、`simulated_central_recovery_committed=true`、GitHub Job SUCCESS。原始 2B/3B JSON 工件名 `p001c2b-ubuntu22-cpu-evidence`，保留 14 天。
+- 首轮新桥接 [run 43672197474](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672197474) 有 **70 passed / 1 failed**：拒绝非 Github Runner 的代码少返回 `production_recovery_allowed=false`，因此真内核阶段跳过；已在 `341b2f7` 只修补明确的拒绝字段，不放松停机/身份断言。不能把首轮前置测试失败算作内核实验失败。
+- 正式桥接输出仍准确为 `REAL_KERNEL_TO_MEMORY_CAS_SIMULATION_PASS_NOT_TRUSTED_STOP_PROOF`，`trusted_os_witness_implemented=false`、`production_recovery_allowed=false`；**这个 PASS 只证明隔离时序及模拟协议一致性，绝不等于可用于正式任务释放 HOLD**。
+
+### 16.2 尚未完成的 P0 关键安全门槛
+
+- 独立于普通 Agent 的 OS Execution Supervisor、**启动前**注册受保护的 systemd unit/cgroup、可信地收集完整内核事件、限制 cgroup 迁出、OS 进程逃逸和单位重用；
+- 受保护的签名密钥/不同进程权限域/中央公钥信任链、一次性挑战、boot/InvocationID/真 `tasks.attempt`/原 lease 的防重放验证。**同用户进程内 HMAC 不是独立可信 witness**，就算测试成功也不能复制到正式 API；
+- 正式 Node Agent 与训练/转换 Runner 的 ExecutionBoundary 适配、Windows Job Object、GPU DataLoader 多进程、真实双节点网络分区和生产变更批准；再到 P0-01C-3C 中央持久挑战/审计事务和受控默认 OFF 的恢复 API。
+
+详细只读链路审计、Linux cgroup/systemd 官方依据、代码文件和 Run 证据见 [`P0_01C_3B_LINUX_STOP_RECEIPT_TRUST_BOUNDARY_2026_11_15.md`](P0_01C_3B_LINUX_STOP_RECEIPT_TRUST_BOUNDARY_2026_11_15.md)。
+
+**最终安全状态不变**：`REMOTE_AGENT_STOP_UNVERIFIED` HOLD，原 worker/lease/`tasks.attempt`/GPU reservation 保留，`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` OFF，生产 **NO-GO**。**本轮没有对 A800、4070、真实训练/转换任务、真实数据库或 GPU 服务执行命令。**
