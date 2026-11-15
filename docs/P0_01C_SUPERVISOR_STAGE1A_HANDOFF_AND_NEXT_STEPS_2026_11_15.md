@@ -274,3 +274,24 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 扩展原 `tests/integration/test_os_supervisor_cpu_systemd_live.py`：在**隔离 Github Ubuntu systemd 实机**上真正串联短时签名 grant→独立 SQLite journal 登记→原子 claim→固定 CPU system service→跨 Supervisor service 对象恢复原 OS identity→固定 unit stop→保持 UNKNOWN/HOLD→阻止再次启动。复用已有一个 Linux E2E step，不新增 workflow，不需要非生产 GPU 硬件。
 - **严格限制与后续**：本阶段仅固定 CPU-only 内置测试程序，签发与启动间是短 TTL 授权而非无限期中央回查；正式模型转换、训练、边缘复核尚未适配，不允许根据一份过期签名或已经失联的业务执行租约启动真实计算任务。CPU-only 固定测试通过后还必须完成真实 stop descendant/cgroup 证据、结束码/长期日志、可信 StopReceipt 及中央 CAS 恢复准入。不能让 Agent 看到 CPU trial 能力就参与生产调度，生产 `legacy` 默认、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD/自动派单 OFF/NO-GO 不变。
 - **前端**：不改。以后仅在既有 `static/modules/service-node-runtime.js` 与任务详情新增真实可靠的只读系统执行状态；不增加强制停止证明绕过、强制释放 GPU 或提前重新分配按钮。
+
+### 14.1 阶段 2B 精确代码 SHA 与真实 Linux 进程纵向 E2E 终态（2026-11-15）
+
+**功能提交**：[da73e07175073a9919207d6cb3093bba198c9b55](https://github.com/jorsamj/aixunlianpingtai/commit/da73e07175073a9919207d6cb3093bba198c9b55)（注意它不是后续独立文档提交）。
+
+**CI 完整核实**：
+- [Node Agent Executor 43693050737](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43693050737) 已 **completed/success**，Ubuntu **547 passed / 2 skipped**，POSIX SIGKILL **2 passed**，Linux cgroup 合同 **31 passed**；**隔离 Ubuntu 24.04 真 systemd 测试 2 passed**（第一条为固定 CPU unit 真启停，第二条为原 signed grant → journal PREPARED/STARTING/RUNNING CAS → 真 systemd → 重启重接管原 InvocationID → 单次运行/stop HOLD），不是模拟 backend，也未在 A800/4070 运行。Windows **544 passed / 5 skipped**，便携 cgroup **30 passed / 1 skipped**，API **success**。
+- 同 SHA [Node Agent Executor 43693054981](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43693054981) 与 [Portable Deployment 43693055055](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43693055055) 均 **completed/success**；Portable Deployment 的 Ubuntu transport、Windows transport、API 三项都成功，说明 opt-in CPU backend 未破坏 legacy 发布路径。
+- 同 SHA 其余仓库级 Actions 在此轮核实为 **23 项中 19 success、4 in_progress、0 failure**，因此只宣称以上本专项核心工作流全绿，**不宣称全仓 23/23 都已终态**。
+
+**交付的实际能力**：
+1. 固定 CPU worker 系统级 systemd service 真启动/真 stop/短诊断日志，受限资源 profile 和独立 DynamicUser；Agent 任意 shell/可执行文件/环境/GPU/PID/unit 不可输入；
+2. 原中央已签发、未过期 CPU-only grant 由原 journal 重新验签，**同任务同 attempts 先写 durable STARTING 再操作 OS**，响应丢失/服务崩溃后绝不生成第二个 unit；
+3. 已验证的 systemd InvocationID/cgroup/main PID 落本地执行身份 journal，服务进程对象重建可基于原记录只读重连，固定 CPU stop 真发送给原 unit，仍显式 `UNKNOWN` / `STOP_UNVERIFIED_HOLD`，不伪造中央可信停机证明。
+4. 服务默认 `legacy` 且新 root Supervisor CPU 启动必须**双 CLI 显式开关**加受信公钥和 journal；上述新代码未部署任何现有计算节点。
+
+**下次阶段 2C 的真正缺口，按先后顺序**：a）journal challenge 过期清理与容量/频率上界；b）systemd 故障/自然完成场景中可信绑定的退出码与 cgroup 后代证据（当前退出/stop 仍 UNKNOWN/HOLD）；c）持久日志 offset/cursor 的安全读取；d）OS 已启动而 journal 还在 STARTING 的崩溃窗口只读复核（原 InvocationID/ExecStart/cgroup 证据不足则维持 UNKNOWN）；e）root 公钥/中央私钥交付和轮换；f）再考虑单一非 GPU 模型转换 Runner 隔离适配。**以上缺口不允许以“现在 CPU 可启停”替代可信 StopReceipt/中央 CAS 恢复验收。**
+
+**前端**：没有业务必要修改，也没有本轮前端代码提交。以后只在原节点卡片/任务详情展示可验证的只读 Supervisor 运行状态；不提前提供释放 GPU/自动重派/强制声明已停按钮。
+
+**生产保持**：A800/双4070 完全未连接、未修改；`legacy` 默认、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、GPU 生产 NO-GO，不合并 main、不创建 Release。
