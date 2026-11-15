@@ -20,6 +20,9 @@ on:
       - 'platform_core/os_supervisor_cpu_systemd.py'
       - 'platform_core/os_supervisor_onnx_cpu_pilot.py'
       - 'platform_core/os_supervisor_onnx_cpu_systemd_pilot.py'
+      - 'platform_core/os_supervisor_onnx_cpu_ort_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_ort_systemd_pilot.py'
+      - 'tests/integration/test_os_supervisor_onnx_cpu_ort_systemd_pilot_live.py'
       - 'tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py'
       - 'tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py'
       - 'tests/unit/test_os_supervisor_onnx_cpu_pilot.py'
@@ -92,6 +95,9 @@ on:
       - 'platform_core/os_supervisor_cpu_systemd.py'
       - 'platform_core/os_supervisor_onnx_cpu_pilot.py'
       - 'platform_core/os_supervisor_onnx_cpu_systemd_pilot.py'
+      - 'platform_core/os_supervisor_onnx_cpu_ort_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_ort_systemd_pilot.py'
+      - 'tests/integration/test_os_supervisor_onnx_cpu_ort_systemd_pilot_live.py'
       - 'tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py'
       - 'tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py'
       - 'tests/unit/test_os_supervisor_onnx_cpu_pilot.py'
@@ -178,7 +184,10 @@ jobs:
           platform_core/os_supervisor_cpu_systemd.py
           platform_core/os_supervisor_onnx_cpu_pilot.py
           platform_core/os_supervisor_onnx_cpu_systemd_pilot.py
+          platform_core/os_supervisor_onnx_cpu_ort_systemd_pilot.py
           tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_ort_systemd_pilot.py
+          tests/integration/test_os_supervisor_onnx_cpu_ort_systemd_pilot_live.py
           tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
           tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
@@ -222,6 +231,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_journal.py
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
           tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_ort_systemd_pilot.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
@@ -289,6 +299,19 @@ jobs:
           sudo -n "$(command -v python)" -m pytest -q --maxfail=1
           --confcutdir=tests/integration
           tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py
+      - name: P0-01C 2D-2B2 real protected ONNX Runtime CPU (CI ONLY)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/python3 -m venv --without-pip /opt/changlian-onnxruntime-cpu-pilot/venv
+          python -m pip install --disable-pip-version-check --target /tmp/changlian-ort-pilot-packages 'onnxruntime==1.22.1' 'numpy==2.2.6'
+          sudo -n cp -a /tmp/changlian-ort-pilot-packages/. /opt/changlian-onnxruntime-cpu-pilot/venv/lib/python3.12/site-packages/
+          sudo -n chown -R root:root /opt/changlian-onnxruntime-cpu-pilot
+          sudo -n chmod -R go-w /opt/changlian-onnxruntime-cpu-pilot
+          sudo -n /opt/changlian-onnxruntime-cpu-pilot/venv/bin/python3 -I -c 'import numpy,onnxruntime; assert numpy.__version__=="2.2.6"; assert onnxruntime.__version__=="1.22.1"'
+          sudo -n "$(command -v python)" -m pytest -q --maxfail=1 --confcutdir=tests/integration tests/integration/test_os_supervisor_onnx_cpu_ort_systemd_pilot_live.py
       - name: P0-01C Stage-2A real fixed CPU systemd lifecycle (isolated Ubuntu ONLY)
         if: runner.os == 'Linux'
         timeout-minutes: 3
