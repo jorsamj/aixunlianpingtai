@@ -10,6 +10,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 import stat
@@ -45,6 +46,13 @@ CREATE TABLE IF NOT EXISTS execution_intents (
     event_seq INTEGER NOT NULL CHECK(event_seq > 0),
     created_at INTEGER NOT NULL,
     UNIQUE(task_id, task_attempt)
+);
+CREATE TABLE IF NOT EXISTS cpu_unit_identities (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    invocation_id TEXT NOT NULL UNIQUE,
+    control_group TEXT NOT NULL,
+    main_pid INTEGER NOT NULL CHECK(main_pid > 1),
+    recorded_at INTEGER NOT NULL
 );
 """
 
@@ -98,6 +106,7 @@ class ExecutionJournal:
         database = sqlite3.connect(str(self.path), timeout=5,
                                    isolation_level=None)
         database.row_factory = sqlite3.Row
+        database.execute("PRAGMA foreign_keys=ON")
         database.execute("PRAGMA journal_mode=DELETE")
         database.execute("PRAGMA synchronous=FULL")
         if not self.test_only_unprivileged and os.name == "posix":
@@ -197,3 +206,123 @@ class ExecutionJournal:
             raise GrantRejected("JOURNAL_EXECUTION_NOT_REGISTERED_HOLD")
         return {"handle_id": row["handle_id"], "task_attempt": row["task_attempt"],
                 "state": "UNKNOWN"}
+
+    def claim_cpu_launch(self, handle_id: str, task_attempt: int,
+                         envelope: object, *,
+                         trusted_public_key: Ed25519PublicKey,
+                         now: int | None = None) -> dict:
+        """One durable PREPARED->STARTING CAS *before* systemd-run.
+
+        A start retry, crash window, expired grant or wrong OS boot stays HOLD.
+        No second unit can be launched for this task attempt.
+        """
+        current = int(time.time()) if now is None else now
+        if type(current) is not int or not isinstance(envelope, dict):
+            raise GrantRejected("CPU_LAUNCH_REQUEST_INVALID_HOLD")
+        claims = envelope.get("claims")
+        if not isinstance(claims, dict) or not isinstance(claims.get("challenge"), str):
+            raise GrantRejected("CPU_LAUNCH_GRANT_INVALID_HOLD")
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT * FROM execution_intents
+                    WHERE handle_id=? AND task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            challenge = db.execute(
+                "SELECT * FROM challenges WHERE challenge=?",
+                (claims["challenge"],),
+            ).fetchone()
+            if row is None or challenge is None or current >= challenge["expires_at"]:
+                raise GrantRejected("CPU_LAUNCH_IDENTITY_OR_CHALLENGE_UNKNOWN_HOLD")
+            if (row["state"] != "PREPARED"
+                    or row["boot_id"] != self.boot_id):
+                raise GrantRejected("CPU_LAUNCH_ALREADY_ATTEMPTED_OR_BOOT_CHANGED_HOLD")
+            expected = json.loads(challenge["binding_json"])
+            expected["challenge"] = claims["challenge"]
+            grant = verify_central_execution_grant(
+                envelope, trusted_public_key=trusted_public_key,
+                expected_binding=expected, now=current)
+            if (grant.grant_digest != row["grant_digest"]
+                    or grant.task_id != row["task_id"]
+                    or grant.task_attempt != row["task_attempt"]
+                    or grant.node_id != row["node_id"]
+                    or grant.worker_id != row["worker_id"]
+                    or grant.execution_lease_sha256 != row["lease_sha256"]):
+                raise GrantRejected("CPU_LAUNCH_JOURNAL_SCOPE_MISMATCH_HOLD")
+            changed = db.execute(
+                """UPDATE execution_intents
+                   SET state='STARTING',event_seq=event_seq+1
+                   WHERE handle_id=? AND task_attempt=? AND state='PREPARED'""",
+                (handle_id, task_attempt),
+            ).rowcount
+            if changed != 1:
+                raise GrantRejected("CPU_LAUNCH_CONCURRENT_REPLAY_HOLD")
+            db.commit()
+            return {"handle_id": handle_id, "task_attempt": task_attempt,
+                    "unit_name": row["unit_name"]}
+
+    def record_cpu_identity(self, handle_id: str, task_attempt: int, *,
+                            invocation_id: str, control_group: str,
+                            main_pid: int) -> None:
+        """Durably bind real systemd InvocationID before reporting RUNNING."""
+        if (not isinstance(invocation_id, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", invocation_id)
+                or type(main_pid) is not int or main_pid <= 1):
+            raise GrantRejected("CPU_IDENTITY_INVALID_HOLD")
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM execution_intents WHERE handle_id=? AND task_attempt=?",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["state"] != "STARTING"
+                    or row["boot_id"] != self.boot_id
+                    or control_group != "/system.slice/" + row["unit_name"]):
+                raise GrantRejected("CPU_IDENTITY_SCOPE_UNVERIFIED_HOLD")
+            db.execute(
+                """INSERT INTO cpu_unit_identities
+                   (handle_id,invocation_id,control_group,main_pid,recorded_at)
+                   VALUES (?,?,?,?,?)""",
+                (handle_id, invocation_id, control_group, main_pid, int(time.time())),
+            )
+            changed = db.execute(
+                """UPDATE execution_intents
+                   SET state='RUNNING',event_seq=event_seq+1
+                   WHERE handle_id=? AND task_attempt=? AND state='STARTING'""",
+                (handle_id, task_attempt),
+            ).rowcount
+            if changed != 1:
+                raise GrantRejected("CPU_IDENTITY_CONCURRENT_CHANGE_HOLD")
+            db.commit()
+
+    def cpu_identity(self, handle_id: str, task_attempt: int) -> dict:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT i.*, o.invocation_id,o.control_group,o.main_pid
+                   FROM execution_intents i
+                   JOIN cpu_unit_identities o ON o.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+        if (row is None or row["boot_id"] != self.boot_id
+                or row["state"] != "RUNNING"):
+            raise GrantRejected("CPU_IDENTITY_NOT_VERIFIED_HOLD")
+        return {"handle_id": handle_id, "task_attempt": task_attempt,
+                "unit_name": row["unit_name"],
+                "invocation_id": row["invocation_id"],
+                "control_group": row["control_group"],
+                "main_pid": int(row["main_pid"])}
+
+    def mark_cpu_unknown(self, handle_id: str, task_attempt: int) -> None:
+        """Crash/launch failure is UNKNOWN, *never* recyclable PREPARED."""
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """UPDATE execution_intents
+                   SET state='UNKNOWN',event_seq=event_seq+1
+                   WHERE handle_id=? AND task_attempt=?
+                     AND state IN ('STARTING','RUNNING')""",
+                (handle_id, task_attempt),
+            )
+            db.commit()

@@ -7,6 +7,7 @@ Production rollout is NOT authorized; no business runner imports this module.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .os_supervisor_authorization import GrantRejected
 from .os_supervisor_journal import ExecutionJournal
+from .os_supervisor_cpu_systemd import FixedCpuSystemd
 from .os_supervisor_trust import load_supervisor_public_key
 from .os_supervisor_protocol import (
     PROTOCOL_VERSION, SupervisorProtocolError, encode_frame,
@@ -35,7 +37,8 @@ class SupervisorService:
     def __init__(self, socket_path: Path, *, allowed_uid: int,
                  allowed_gid: int, timeout: float = 2.0,
                  authorization_journal: ExecutionJournal | None = None,
-                 trusted_public_key: Ed25519PublicKey | None = None):
+                 trusted_public_key: Ed25519PublicKey | None = None,
+                 cpu_trial_backend: FixedCpuSystemd | None = None):
         if not isinstance(socket_path, Path) or not socket_path.name.endswith(".sock"):
             raise ValueError("socket path must end with .sock")
         if type(allowed_uid) is not int or allowed_uid <= 0:
@@ -53,8 +56,13 @@ class SupervisorService:
         if (trusted_public_key is not None
                 and not isinstance(trusted_public_key, Ed25519PublicKey)):
             raise ValueError("pinned Ed25519 public key required")
+        if cpu_trial_backend is not None and (
+                authorization_journal is None or trusted_public_key is None
+                or not isinstance(cpu_trial_backend, FixedCpuSystemd)):
+            raise ValueError("CPU trial requires journal and fixed systemd backend")
         self.authorization_journal = authorization_journal
         self.trusted_public_key = trusted_public_key
+        self.cpu_trial_backend = cpu_trial_backend
         self._listener: socket.socket | None = None
         self._bound_identity: tuple[int, int] | None = None
         self._stop = threading.Event()
@@ -77,6 +85,7 @@ class SupervisorService:
                 "central_recovery_allowed": False,
                 "cpu_intent_registration_available": (
                     self.authorization_journal is not None),
+                "cpu_trial_launch_available": self.cpu_trial_backend is not None,
             })
         if action in ("challenge", "authorize_intent"):
             if self.authorization_journal is None:
@@ -99,19 +108,82 @@ class SupervisorService:
             except (OSError, ValueError, sqlite3.Error):
                 return self._reply(request_id, "JOURNAL_UNAVAILABLE_HOLD", ok=False)
         if action == "start":
-            return self._reply(request_id, "PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD",
-                               ok=False)
+            if self.cpu_trial_backend is None or not request["payload"]:
+                return self._reply(request_id, "PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD",
+                                   ok=False)
+            payload = request["payload"]
+            claimed = None
+            try:
+                # Durable one-shot CAS happens BEFORE the first OS spawn.
+                claimed = self.authorization_journal.claim_cpu_launch(
+                    payload["handle_id"], payload["execution_generation"],
+                    payload["envelope"], trusted_public_key=self.trusted_public_key)
+                evidence = self.cpu_trial_backend.launch(claimed["unit_name"])
+                self.authorization_journal.record_cpu_identity(
+                    claimed["handle_id"], claimed["task_attempt"],
+                    invocation_id=evidence["invocation_id"],
+                    control_group=evidence["control_group"],
+                    main_pid=evidence["main_pid"])
+                return self._reply(
+                    request_id, "FIXED_CPU_TRIAL_RUNNING", ok=True,
+                    result={"handle_id": claimed["handle_id"],
+                            "task_attempt": claimed["task_attempt"],
+                            "state": "RUNNING",
+                            "trusted_stop_receipt_available": False})
+            except (GrantRejected, OSError, ValueError, sqlite3.Error):
+                # systemd-run might have started even if an ACK/evidence write
+                # was lost. Never undo STARTING into a launchable PREPARED.
+                if claimed is not None:
+                    try:
+                        self.authorization_journal.mark_cpu_unknown(
+                            claimed["handle_id"], claimed["task_attempt"])
+                    except (OSError, ValueError, sqlite3.Error):
+                        pass
+                return self._reply(request_id, "FIXED_CPU_START_UNVERIFIED_HOLD",
+                                   ok=False, result={"state": "UNKNOWN"})
         if action == "stop":
-            return self._reply(request_id, "PROTECTED_STOP_NOT_IMPLEMENTED_HOLD",
-                               ok=False)
+            if self.cpu_trial_backend is None:
+                return self._reply(request_id, "PROTECTED_STOP_NOT_IMPLEMENTED_HOLD",
+                                   ok=False)
+            payload = request["payload"]
+            try:
+                identity = self.authorization_journal.cpu_identity(
+                    payload["handle_id"], payload["execution_generation"])
+                stopped = self.cpu_trial_backend.request_stop(
+                    identity["unit_name"], identity["invocation_id"])
+                self.authorization_journal.mark_cpu_unknown(
+                    payload["handle_id"], payload["execution_generation"])
+                return self._reply(request_id, "CPU_STOP_RECEIPT_UNVERIFIED_HOLD",
+                                   ok=False,
+                                   result={"state": "UNKNOWN", **stopped})
+            except (GrantRejected, OSError, ValueError, sqlite3.Error):
+                return self._reply(request_id, "CPU_STOP_UNVERIFIED_HOLD",
+                                   ok=False, result={"state": "UNKNOWN"})
         if action == "inspect":
+            payload = request["payload"]
+            if self.cpu_trial_backend is not None:
+                try:
+                    identity = self.authorization_journal.cpu_identity(
+                        payload["handle_id"], payload["execution_generation"])
+                    evidence = self.cpu_trial_backend.inspect(
+                        identity["unit_name"], identity["invocation_id"])
+                    if (evidence["active_state"] == "active"
+                            and evidence["sub_state"] == "running"
+                            and evidence["control_group"] == identity["control_group"]
+                            and evidence["main_pid"] == identity["main_pid"]):
+                        return self._reply(
+                            request_id, "CPU_UNIT_RUNNING_VERIFIED", ok=True,
+                            result={"state": "RUNNING",
+                                    "handle_id": identity["handle_id"],
+                                    "task_attempt": identity["task_attempt"]})
+                except (GrantRejected, OSError, ValueError, sqlite3.Error):
+                    pass
             if self.authorization_journal is not None:
                 try:
                     registered = self.authorization_journal.inspect(
-                        request["payload"]["handle_id"],
-                        request["payload"]["execution_generation"])
+                        payload["handle_id"], payload["execution_generation"])
                     return self._reply(
-                        request_id, "OS_EXECUTION_NOT_STARTED_HOLD", ok=False,
+                        request_id, "OS_EXECUTION_NOT_VERIFIED_HOLD", ok=False,
                         result=registered)
                 except GrantRejected:
                     pass
@@ -121,6 +193,20 @@ class SupervisorService:
                         result={"state": "UNKNOWN"})
             return self._reply(request_id, "OS_EXECUTION_NOT_REGISTERED_HOLD",
                                ok=False, result={"state": "UNKNOWN"})
+        if action == "read_log" and self.cpu_trial_backend is not None:
+            payload = request["payload"]
+            try:
+                identity = self.authorization_journal.cpu_identity(
+                    payload["handle_id"], payload["execution_generation"])
+                data = self.cpu_trial_backend.read_log(
+                    identity["unit_name"], identity["invocation_id"])
+                return self._reply(
+                    request_id, "CPU_LOG_BOUNDED_DIAGNOSTIC", ok=True,
+                    result={"encoding": "base64",
+                            "data_base64": base64.b64encode(data).decode("ascii"),
+                            "offset_contract_available": False})
+            except (GrantRejected, OSError, ValueError, sqlite3.Error):
+                return self._reply(request_id, "CPU_LOG_UNVERIFIED_HOLD", ok=False)
         return self._reply(request_id, "LOG_STREAM_NOT_IMPLEMENTED_HOLD",
                            ok=False)
 
@@ -230,6 +316,7 @@ def main() -> int:
     parser.add_argument("--agent-uid", type=int)
     parser.add_argument("--agent-gid", type=int)
     parser.add_argument("--enable-cpu-intent", action="store_true")
+    parser.add_argument("--enable-cpu-trial-launch", action="store_true")
     args = parser.parse_args()
     if not args.serve:
         print(json.dumps({"outcome": "INERT_OPT_IN_REQUIRED",
@@ -238,15 +325,20 @@ def main() -> int:
     if args.socket is None or args.agent_uid is None or args.agent_gid is None:
         print(json.dumps({"outcome": "CONFIG_MISSING_HOLD"}))
         return 2
+    if args.enable_cpu_trial_launch and not args.enable_cpu_intent:
+        print(json.dumps({"outcome": "CPU_TRIAL_REQUIRES_TRUSTED_INTENT_HOLD"}))
+        return 2
     try:
         # Only a root-owned fixed location is permitted in the opted-in
         # deployment. There is no CLI/Agent-provided key/journal path.
         journal = ExecutionJournal() if args.enable_cpu_intent else None
         public_key = (load_supervisor_public_key()
                       if args.enable_cpu_intent else None)
+        backend = FixedCpuSystemd() if args.enable_cpu_trial_launch else None
         service = SupervisorService(
             args.socket, allowed_uid=args.agent_uid, allowed_gid=args.agent_gid,
-            authorization_journal=journal, trusted_public_key=public_key)
+            authorization_journal=journal, trusted_public_key=public_key,
+            cpu_trial_backend=backend)
         service.serve()
     except (OSError, ValueError, SupervisorProtocolError) as exc:
         print(json.dumps({"outcome": "SUPERVISOR_NOT_STARTED_HOLD",

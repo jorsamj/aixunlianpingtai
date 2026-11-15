@@ -256,3 +256,21 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 ### 13.3 停止条件与前端
 
 如果隔离 Ubuntu 无法启动系统服务或防护属性不满足，必须定位精确失败原因；不可直接删掉 `PrivateDevices/DevicePolicy/DynamicUser` 等保护来“修绿”。如果真实 systemd/cgroup 证据无法满足，只能报告阶段 2A 未验收。生产 GPU、训练/转换/复核 Runner、中央任务 owner/attempt/lease、自动恢复、StopReceipt、前端 UI 都不改。生产保持 **NO-GO**。
+
+### 13.4 阶段 2A 精确 SHA 与隔离真实 systemd E2E 验证（2026-11-15）
+
+- 功能 SHA [`b2045dd7d64460ab48ef9df2d4fd8c8e27aab990`](https://github.com/jorsamj/aixunlianpingtai/commit/b2045dd7d64460ab48ef9df2d4fd8c8e27aab990)；[Node Agent Executor 43692503127](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43692503127) 已 **completed/success**。Ubuntu 主合同 **543 passed / 2 skipped**、原 POSIX SIGKILL **2 passed**、Linux cgroup 合同 **31 passed**，此外在 GitHub Ubuntu 24.04 隔离 runner 上以 `sudo -n` **真正启动和停止系统级 transient systemd service**，E2E **1 passed**（不是 subprocess mock / CPU PoC 静态断言）；Windows 与 API Job 成功。
+- 同 SHA 另外 [Node Agent 43692512206](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43692512206) 与 [Portable Deployment 43692512254](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43692512254) 已 **completed/success**。阶段 2A 固定 CPU-only systemd 后端 + 隔离真实 OS E2E 已验收；这仅是 OS executor 部件，尚无中央授权到真实执行的一体化生产链路。
+- 真正 unit 的测试限定固定 CPU 程序、随机 `changlian-os-<handle>.service`、动态非 root workload 用户和 `PrivateDevices/DevicePolicy=closed`；断言 systemd `InvocationID`、cgroup、PID、有限日志、实际 stop 返回但 **StopReceipt=false/UNKNOWN**，从未触碰 A800/4070。
+
+## 14. 阶段 2B｜原签名授权 + journal 单次 CAS + systemd 实际执行（本轮提交待 CI）
+
+**本次专注消除最危险的重复启动窗口。** 以现有 `ExecutionJournal` 为唯一 OS 执行身份归属表（**不是新中央任务所有权**），保留 `tasks.attempt` 和原中央 execution lease；无 GPU、无正式业务 Runner。
+
+- `platform_core/os_supervisor_journal.py`：新增与既有 journal 同一 SQLite 文件里的 `cpu_unit_identities` 本机执行身份表，不改变中央调度库；`claim_cpu_launch` 在一笔 `BEGIN IMMEDIATE` 事务中重新验中央签名原绑定、boot、grant 到期、handle/attempt/lease hash，并只允许 `PREPARED→STARTING` CAS。**CAS 落盘后才能调用 systemd-run**；重试和启动丢响应永不回退 PREPARED。`record_cpu_identity` 验证实际 OS `InvocationID`、原 unit cgroup、main pid 后原子 `STARTING→RUNNING`；异常与 stop 只能转为 UNKNOWN，不允许回收执行租约或宣称 EXITED。
+- `platform_core/os_supervisor_protocol.py`：旧 `start` 空 payload 仍默认 HOLD；新增唯一允许的 CPU-only body `handle_id/execution_generation/envelope`，禁止 command、cwd、env、GPU、任意 unit/PID。`read_log` 成功只接受有界 base64、无持久 offset 承诺的已核实数据；旧失败 HOLD 行为不变。
+- `platform_core/os_supervisor_service.py`：正常模式仍不启用真实启动；只有 CPU intent 验证、固定可信公钥、独立 journal 且 CLI **同时显式** `--enable-cpu-intent --enable-cpu-trial-launch` 才能调用实际 `FixedCpuSystemd`。启动由上面 CAS 先持久化，再调用 systemd `launch`，最后写入 OS identity；启动回执丢失/进程身份不一致→UNKNOWN/HOLD 且不第二次 spawn。重建服务可从 journal 获取原 InvocationID、继续只读 `inspect`；`request_stop` 真正调用针对原 unit 的 systemctl stop，但**永远返回 StopReceipt 未验证/HOLD**，不让中央自动重派。日志只从该原 unit 的已验证身份读取有界诊断。
+- 新增 `tests/unit/test_os_supervisor_cpu_journal.py`：验证签名正确、CAS 先落盘、正常启动同代不重复、失联后不重启、服务重建仍认原 InvocationID、停止仅 UNKNOWN/HOLD、伪造 Agent/签名/任意命令无法启动。原已有各工作流和 Windows 便携合同保留。
+- 扩展原 `tests/integration/test_os_supervisor_cpu_systemd_live.py`：在**隔离 Github Ubuntu systemd 实机**上真正串联短时签名 grant→独立 SQLite journal 登记→原子 claim→固定 CPU system service→跨 Supervisor service 对象恢复原 OS identity→固定 unit stop→保持 UNKNOWN/HOLD→阻止再次启动。复用已有一个 Linux E2E step，不新增 workflow，不需要非生产 GPU 硬件。
+- **严格限制与后续**：本阶段仅固定 CPU-only 内置测试程序，签发与启动间是短 TTL 授权而非无限期中央回查；正式模型转换、训练、边缘复核尚未适配，不允许根据一份过期签名或已经失联的业务执行租约启动真实计算任务。CPU-only 固定测试通过后还必须完成真实 stop descendant/cgroup 证据、结束码/长期日志、可信 StopReceipt 及中央 CAS 恢复准入。不能让 Agent 看到 CPU trial 能力就参与生产调度，生产 `legacy` 默认、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD/自动派单 OFF/NO-GO 不变。
+- **前端**：不改。以后仅在既有 `static/modules/service-node-runtime.js` 与任务详情新增真实可靠的只读系统执行状态；不增加强制停止证明绕过、强制释放 GPU 或提前重新分配按钮。

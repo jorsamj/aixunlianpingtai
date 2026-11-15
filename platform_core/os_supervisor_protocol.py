@@ -6,6 +6,8 @@ central execution grant nor a trusted OS StopReceipt. UNKNOWN must mean HOLD.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import binascii
 import json
 import os
 import re
@@ -48,8 +50,16 @@ def validate_request(value: object) -> dict[str, Any]:
         if payload:
             raise SupervisorProtocolError("HEALTH_PAYLOAD_NOT_EMPTY")
     elif action == "start":
+        # Retain phase-1 empty start (always HOLD); the optional CPU trial
+        # requires an exact reserved handle and an unexpired signed grant.
         if payload:
-            raise SupervisorProtocolError("START_NOT_IMPLEMENTED")
+            if (set(payload) != {"handle_id", "execution_generation", "envelope"}
+                    or not _valid_id(payload.get("handle_id"))
+                    or type(payload.get("execution_generation")) is not int
+                    or payload["execution_generation"] <= 0
+                    or not isinstance(payload.get("envelope"), dict)
+                    or set(payload["envelope"]) != {"claims", "signature"}):
+                raise SupervisorProtocolError("CPU_START_SCOPE_INVALID")
     elif action == "challenge":
         # CPU trial only. Never accept shell, executable, cwd, unit, PID, GPU
         # device or signing-key path from a non-root Agent.
@@ -214,4 +224,17 @@ class SupervisedProcessHandle:
         response = self.client.call("read_log", self._scope())
         if response["ok"] is not True:
             raise SupervisorProtocolError("SUPERVISOR_LOG_UNAVAILABLE_HOLD")
-        raise SupervisorProtocolError("LOG_STREAM_NOT_IMPLEMENTED")
+        result = response.get("result")
+        if (not isinstance(result, dict)
+                or result.get("encoding") != "base64"
+                or result.get("offset_contract_available") is not False
+                or not isinstance(result.get("data_base64"), str)
+                or len(result["data_base64"]) > 12000):
+            raise SupervisorProtocolError("SUPERVISOR_LOG_EVIDENCE_INVALID_HOLD")
+        try:
+            value = base64.b64decode(result["data_base64"], validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise SupervisorProtocolError("SUPERVISOR_LOG_ENCODING_INVALID_HOLD") from exc
+        if len(value) > 8192:
+            raise SupervisorProtocolError("SUPERVISOR_LOG_SIZE_INVALID_HOLD")
+        return value
