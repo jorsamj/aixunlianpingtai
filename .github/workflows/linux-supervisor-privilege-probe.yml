@@ -12,6 +12,8 @@ on:
       - 'tools/poc/test_linux_supervisor_privilege_probe_contract.py'
       - 'tools/poc/linux_supervisor_ipc_probe.py'
       - 'tools/poc/test_linux_supervisor_ipc_probe_contract.py'
+      - 'tools/poc/gpu_device_acl_shadow_probe.py'
+      - 'tools/poc/test_gpu_device_acl_shadow_probe.py'
       - 'tools/poc/linux_cgroup_poc.py'
       - 'tools/poc/central_stop_recovery_contract.py'
 permissions:
@@ -43,7 +45,7 @@ jobs:
           command -v runuser
           command -v useradd
           command -v systemd-run
-          python3 -m py_compile tools/poc/linux_supervisor_privilege_probe.py tools/poc/linux_supervisor_ipc_probe.py
+          python3 -m py_compile tools/poc/linux_supervisor_privilege_probe.py tools/poc/linux_supervisor_ipc_probe.py tools/poc/gpu_device_acl_shadow_probe.py
       - name: Install Python contract dependencies in disposable venv
         shell: bash
         run: |
@@ -54,7 +56,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/p001c3b2-python/bin/python" -m pytest -q --confcutdir=tools/poc tools/poc/test_linux_supervisor_privilege_probe_contract.py tools/poc/test_linux_supervisor_ipc_probe_contract.py
+          "$RUNNER_TEMP/p001c3b2-python/bin/python" -m pytest -q --confcutdir=tools/poc tools/poc/test_linux_supervisor_privilege_probe_contract.py tools/poc/test_linux_supervisor_ipc_probe_contract.py tools/poc/test_gpu_device_acl_shadow_probe.py
       - name: "Real separate UIDs, root systemd unit, cgroup escape attempts, Ed25519"
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -75,6 +77,16 @@ jobs:
             "$RUNNER_TEMP/p001c3b2-python/bin/python" \
             tools/poc/linux_supervisor_ipc_probe.py \
             --run --github-ephemeral-only | tee p001c3b3-ipc-unbound-cpu.json
+      - name: "Fake device-file DAC model: agent denied, workload allowed, mode 0666 bypass"
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            "$RUNNER_TEMP/p001c3b2-python/bin/python" \
+            tools/poc/gpu_device_acl_shadow_probe.py \
+            --run --github-ephemeral-only | tee p001c3b4-regular-file-not-gpu.json
       - name: Preserve non-secret diagnostic result
         if: always()
         uses: actions/upload-artifact@v4
@@ -83,5 +95,6 @@ jobs:
           path: |
             p001c3b2-supervisor-proof.json
             p001c3b3-ipc-unbound-cpu.json
+            p001c3b4-regular-file-not-gpu.json
           if-no-files-found: warn
           retention-days: 14
