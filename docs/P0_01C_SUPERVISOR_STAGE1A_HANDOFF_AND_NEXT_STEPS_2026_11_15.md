@@ -39,7 +39,7 @@
 - `.github/workflows/node-agent-executor.yml`：已纳入上述三个文件的语法与单元测试，没有另加一套 CI。
 - 前一阶段正式保护 `CHANGLIAN_AGENT_EXECUTION_BOUNDARY`：**未设置或 `legacy` 为默认**；`supervisor-required` 则过滤 `training`、`conversion`、`conversion.rknn`、`deployment-test`、`deployment-test.rknn`，并在三个正式 Runner 中保护直接 spawn。**不可现在给生产节点设置 supervisor-required**，因为真正受保护启动后端不存在。
 
-**注意**：此前会话报告过“本地非 root Linux 31 项通过”，但本次在 GitHub 代码中直接发现协议/测试冲突；在获得可复核的正确版本、命令和 CI 之前，**不能把此口述本地结果作为阶段 1A 完成验收证据**。
+**验收补充**：阶段 1A 精确代码 SHA 的 [Ubuntu CI 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 后续已成功完成主合同 **503 passed、2 skipped**，POSIX Agent SIGKILL 集成 **2 passed**，Linux cgroup 专项 **31 passed**。这证明 Linux 方向现有协议测试通过，但 Windows/API 与整个 Workflow 尚未全绿。
 
 ## 3. 本次新核实的 CI 状态及明确缺陷（新会话先处理）
 
@@ -49,7 +49,7 @@
 |---|---|---|---|
 | [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) | `c95caed83033042b97603b410dd45970abd75f8a` | **completed / failure**。Ubuntu contract 成功；Windows contract 和 Linux API guard 失败 | **已有原始日志，原因如下** |
 | [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) | `c66ef5678c9dd86cd681c67a1623baacc5217e3d` | **completed / failure**：Ubuntu contract 成功；Windows contract、API guard 失败 | 已读取原始 Job 日志；与 43679203190 相同两类已定位问题 |
-| [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) | `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8` | **阶段 1A 对应最新功能 CI，三项 Job 均 queued** | 优先确认该准确 SHA 的全部状态；不得引用其它 SHA 的通过代替 |
+| [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) | `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8` | **in_progress**：Ubuntu contract **success**（503 passed / 2 skipped，另有 2+31 passed）；API **failure**（24 passed 后旧 grep）；Windows **in_progress** | 等 Windows 最终结果；修复已确认的 API guard 和 POSIX 测试缺陷后再整轮验收 |
 
 请注意：上述是**2026-11-15 本次只读核查时间点**的状态，新会话必须再次查看最新 HEAD、最近 CI 和确切 SHA。
 
@@ -58,14 +58,13 @@
 1. **Windows 旧 PoC 用例不兼容**：`tests/unit/test_linux_cgroup_poc_contract.py:226` 直接 `monkeypatch.setattr(poc.os, "getsid", ...)`；Windows 的 `os` 没有 `getsid`，导致 `AttributeError`。run 43679203190 的 Windows 主合同实际是 **472 passed、2 skipped**，后来 Linux 专项 PoC 合同 **30 passed、1 failed**。应仅将确实需要 POSIX 的用例作有据可查的跨平台跳过，或把它移至 Linux 专用工作流；**不能删除真实内核的安全验证**。
 2. **Node Agent API guard 为过时代码文本检查**：`.github/workflows/node-agent-executor.yml` 仍用 `grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py`；`node_agent.py` 现已使用 `reported_capabilities = allowed_remote_capabilities(...)`，因此 API 的 `Permanent Agent executor guards` 步骤退出 1。应更新为对**新安全过滤行为**的严格合同检查，而非删除守卫或回退生产实现。
 
-### 3.3 阶段 1A 还发现一个协议/测试直接矛盾（尚未修复）
+### 3.3 代码逻辑复核纠正：start 请求并无协议矛盾
 
-- `platform_core/os_supervisor_protocol.py:50` 对 `start` + 空 payload 在 `validate_request()` 直接抛 `SupervisorProtocolError("START_NOT_IMPLEMENTED")`。
-- `platform_core/os_supervisor_service.py:65` 的 `dispatch()` 却准备返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`。由于协议前置验证先拒绝，该分支无法由该请求到达。
-- `tests/unit/test_os_supervisor_phase1.py:164` 的真实 Socket 用例断言 `client.call("start")` 返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`；`test_no_privileged_action_enabled_and_unknown_never_means_stopped` 还要求所有拒绝码以 `HOLD` 结尾。这与当前 `START_NOT_IMPLEMENTED` 不一致，**预计会导致测试失败**。
-- **建议处理**：统一协议层与服务端的拒绝语义。阶段 1A 可允许 `start` 仅接受空 payload 的占位请求，再由服务返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`，且绝不执行任何命令；或者明确规定协议层直接抛异常并同步修改所有客户端/服务端合同。**不准为了通过测试而实现未授权启动。**
+先前初读时误以为 `validate_request()` 会拒绝 `start` 的空 payload。**复核准确代码发现这是误判**：在 `os_supervisor_protocol.py` 中，`if payload: raise SupervisorProtocolError("START_NOT_IMPLEMENTED")` 只有 payload **非空**才抛错；空 payload 继续进入 `os_supervisor_service.py` 的 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD` 响应，与单测一致。**不需要修改该协议来修 CI，也不得放开真正 start。**
 
-这三项是**新会话 P0 优先项**，比继续编写阶段 1B 更紧急。应在其对应 CI 完整确认并记录后，再进入新功能开发。
+阶段 1A Ubuntu 主合同 [run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 实际 **503 passed、2 skipped**，进一步证实现有逻辑在该环境下通过。此处保留本纠正记录，避免新会话重复修复不存在的缺陷。
+
+**新会话真正 P0 优先修复只有两个已复现的 CI 兼容问题**：Windows POSIX-only `os.getsid` 用例、API 工作流过期 grep 断言。若 Windows 新 Run 有其它失败，按确切新日志另外分析。
 
 ## 4. 已确定的技术路线：每次只推进一个纵向切片
 
@@ -138,6 +137,6 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - `contract (ubuntu-24.04)`：**success**；
 - `contract (windows-latest)`：主体单测 **473 passed、2 skipped**，随后 Linux cgroup PoC 专项 **30 passed、1 failed**，仍是 `tests/unit/test_linux_cgroup_poc_contract.py:226` 的 `os.getsid` 在 Windows 不存在；
 - `api`：API 测试 **24 passed**，随后 `Permanent Agent executor guards` 因旧的 `reported_capabilities = executable_agent_capabilities(requested_capabilities)` grep 文本不再存在而退出 1；
-- 最新阶段 1A run `43684001227` **在本次补充核查时仍 queued**，尚无权认定其通过。
+- 最新阶段 1A run `43684001227` 已转为 **in_progress**：Ubuntu contract **success**（503 passed/2 skipped + 两组专项 2/31 passed），API **failure**（原旧 grep），Windows **in_progress**；整轮仍未通过。
 
-**因此 Windows/API 的旧问题已至少跨两个不同 SHA 重复存在；阶段 1A 的 start 拒绝协议/测试不一致也是当前源码可直接验证的问题。新会话应先修复这些实际问题，再推新功能。** 不需再重复做 cgroup CPU PoC 研究。
+**旧 Windows/API 问题已跨两个不同 SHA 重复出现；阶段 1A 的 start 拒绝逻辑经代码复核和 Ubuntu CI 验证是正确的，不是故障项。新会话先修真正的 CI 兼容问题，再推新功能。** 不需重复做 cgroup CPU PoC 研究。
