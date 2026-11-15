@@ -105,6 +105,56 @@ def same_unit_instance(observed: dict[str, str], expected: dict[str, str]) -> bo
     return all(expected.get(key) and observed.get(key) == expected[key] for key in keys)
 
 
+def execution_identity_matches(intent: dict, ready: dict,
+                               observed: dict, current_boot_id: str) -> bool:
+    """Bind a synthetic task generation to a single systemd invocation.
+
+    Only a local CPU PoC identity check: never a signed or centrally trusted
+    stop proof. Any absent, malformed, reused, or cross-generation field HOLDs.
+    """
+    if not all(isinstance(x, dict) for x in (intent, ready, observed)):
+        return False
+    unit = intent.get("unit")
+    task = intent.get("task_id")
+    generation = intent.get("execution_generation")
+    boot = intent.get("boot_id")
+    nonce = intent.get("nonce")
+    invocation = observed.get("InvocationID")
+    if not (isinstance(unit, str) and
+            re.fullmatch(r"clpoc-[0-9a-f]{24}\.service", unit) and
+            isinstance(task, str) and re.fullmatch(r"poc-task-[0-9a-f]{24}", task) and
+            type(generation) is int and 0 < generation <= 2**63 - 1 and
+            isinstance(boot, str) and re.fullmatch(
+                r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot) and
+            boot == current_boot_id and
+            isinstance(nonce, str) and re.fullmatch(r"[0-9a-f]{32}", nonce) and
+            isinstance(invocation, str) and re.fullmatch(r"[0-9a-f]{32}", invocation) and
+            invocation != "0" * 32 and
+            observed.get("Id") == unit):
+        return False
+    group = observed.get("ControlGroup")
+    if not isinstance(group, str) or not group.startswith("/") or (
+            group.rsplit("/", 1)[-1] != unit):
+        return False
+    fields = ("unit", "task_id", "execution_generation", "boot_id", "nonce")
+    if any(ready.get(key) != intent.get(key) for key in fields):
+        return False
+    return (type(ready.get("execution_generation")) is int
+            and ready.get("invocation_id") == invocation)
+
+
+def same_execution_snapshot(expected_intent: dict, current_intent: dict,
+                            expected_ready: dict, current_ready: dict) -> bool:
+    """Recheck the immutable trial inputs before stop; changes mean HOLD."""
+    if not all(isinstance(x, dict) for x in (
+            expected_intent, current_intent, expected_ready, current_ready)):
+        return False
+    return (json.dumps(expected_intent, sort_keys=True) ==
+            json.dumps(current_intent, sort_keys=True) and
+            json.dumps(expected_ready, sort_keys=True) ==
+            json.dumps(current_ready, sort_keys=True))
+
+
 def process_in_cgroup(pid: int, group: str) -> bool:
     """Exact, current /proc binding; does not alone certify no historical escape."""
     if not group.startswith("/") or group == "/":
@@ -282,7 +332,13 @@ def _valid_test_intent(unit: str, root: Path) -> bool:
         return False
     return (isinstance(intent, dict) and intent.get("unit") == unit
             and intent.get("boot_id") == boot_id
-            and intent.get("purpose") == "P0-01C-2B-CPU-ONLY")
+            and intent.get("purpose") == "P0-01C-2B-CPU-ONLY"
+            and isinstance(intent.get("task_id"), str)
+            and bool(re.fullmatch(r"poc-task-[0-9a-f]{24}", intent["task_id"]))
+            and type(intent.get("execution_generation")) is int
+            and 0 < intent["execution_generation"] <= 2**63 - 1
+            and isinstance(intent.get("nonce"), str)
+            and bool(re.fullmatch(r"[0-9a-f]{32}", intent["nonce"])))
 
 
 def nested_child_script() -> str:
@@ -312,6 +368,9 @@ def _payload(root: Path) -> int:
             return 4
     except (OSError, ValueError):
         return 4
+    invocation_id = os.environ.get("INVOCATION_ID", "")
+    if not re.fullmatch(r"[0-9a-f]{32}", invocation_id) or invocation_id == "0" * 32:
+        return 4
     # Two independent process sessions. The child itself spawns a leaf in a
     # third session, which process-group-only cleanup cannot reliably cover.
     # Every process is CPU-only and bounded by the synthetic systemd unit.
@@ -324,7 +383,10 @@ def _payload(root: Path) -> int:
         encoding="utf-8"))["pid"])
     if proc_parent_pid(leaf_pid) != child.pid:
         return 4
-    data = {"parent_pid": os.getpid(), "parent_ticks": proc_start_ticks(os.getpid()),
+    data = {**{key: intent[key] for key in (
+                "unit", "task_id", "execution_generation", "boot_id", "nonce")},
+            "invocation_id": invocation_id,
+            "parent_pid": os.getpid(), "parent_ticks": proc_start_ticks(os.getpid()),
             "child_pid": child.pid, "child_ticks": proc_start_ticks(child.pid),
             "grandchild_pid": leaf_pid, "grandchild_ticks": proc_start_ticks(leaf_pid)}
     state = root / "ready.json"
@@ -362,7 +424,8 @@ def run_poc() -> tuple[dict, int]:
     pre = inspect()
     result = {"scope": "ISOLATED_KERNEL_POC_ONLY", "stop_proof_verified": False,
               "central_recovery_allowed": False, "preflight": pre,
-              "membership_verified": False, "cgroup_empty_verified": False}
+              "membership_verified": False, "identity_binding_verified": False,
+              "cgroup_empty_verified": False}
     if not pre["eligible_for_poc"]:
         result["outcome"] = "BLOCKED_ENVIRONMENT"
         return result, 2
@@ -371,9 +434,11 @@ def run_poc() -> tuple[dict, int]:
         unit = "clpoc-" + secrets.token_hex(12) + ".service"
         result["unit"] = unit
         # Precommit before possible start; never accept a unit from input.
-        (root / "intent.json").write_text(json.dumps({
-            "unit": unit, "boot_id": pre["boot_id"], "nonce": secrets.token_hex(16),
-            "purpose": "P0-01C-2B-CPU-ONLY"}), encoding="utf-8")
+        intent = {"unit": unit, "task_id": "poc-task-" + secrets.token_hex(12),
+                  "execution_generation": 1,  # synthetic only; NOT central generation
+                  "boot_id": pre["boot_id"], "nonce": secrets.token_hex(16),
+                  "purpose": "P0-01C-2B-CPU-ONLY"}
+        (root / "intent.json").write_text(json.dumps(intent), encoding="utf-8")
         launcher = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
                                      "--start-service", unit, str(root)],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -399,8 +464,17 @@ def run_poc() -> tuple[dict, int]:
                          and parent_pid == ids["parent_pid"]
                          and descendant_tree_bound(parent_pid, ids, group)
                          and cg_populated(mount, group) == 1)
+            bound = (bound and execution_identity_matches(
+                intent, ids, initial, pre["boot_id"]))
             result["membership_verified"] = bound
             result["three_process_sessions_bound"] = bound
+            result["identity_binding_verified"] = bound
+            if bound:
+                result["synthetic_execution_identity"] = {
+                    "task_id": intent["task_id"],
+                    "execution_generation": intent["execution_generation"],
+                    "boot_id": intent["boot_id"],
+                    "unit": unit, "invocation_id": invocation}
             if not bound:
                 result["outcome"] = "BOUNDARY_IDENTITY_UNKNOWN_HOLD"
                 return result, 3
@@ -439,6 +513,18 @@ def run_poc() -> tuple[dict, int]:
             # Recheck unit Id, ControlGroup and invocation before requesting stop.
             if not same_unit_instance(unit_info(unit), initial):
                 result["outcome"] = "UNIT_REPLACED_HOLD"
+                return result, 3
+            live_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+                encoding="utf-8").strip()
+            current_intent = json.loads((root / "intent.json").read_text(
+                encoding="utf-8"))
+            current_ready = json.loads((root / "ready.json").read_text(
+                encoding="utf-8"))
+            if not (same_execution_snapshot(intent, current_intent, ids, current_ready)
+                    and execution_identity_matches(
+                        current_intent, current_ready, unit_info(unit), live_boot_id)):
+                result["identity_binding_verified"] = False
+                result["outcome"] = "EXECUTION_GENERATION_IDENTITY_CHANGED_HOLD"
                 return result, 3
             if not cgroup_observer.arm_stop():
                 result["outcome"] = "CGROUP_NOT_LIVE_BEFORE_STOP_HOLD"
