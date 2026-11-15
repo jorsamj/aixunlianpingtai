@@ -184,3 +184,19 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - **重要边界**：签发模块未接进中央正式 FastAPI，也未配置生产私钥；Supervisor Socket 仍拒绝 `start`；root 公钥管理/轮换、challenge 来源可信验证、实际部署权限、分布式确认时序、lease 到期后的重查、systemd CPU worker 与真实 OS 恢复仍待下一子阶段。即使中央短时 grant 已签发，也**不代表**可释放任何 HOLD、可自动重新分配 GPU、可生产上线。
 - **前端判断**：阶段 1B 的签名/持久登记属于后端安全能力，前端无必需变更；进入 Runner 灰度后可以在现有节点管理与任务详情增加 Supervisor 健康、执行模式、停机证据待验证的只读状态。禁止在可信 StopReceipt 和中央 CAS 完成之前加入手动“强制释放/恢复/重派”按钮。
 - **验收状态**：阶段 1B-2A 提交后按新 SHA 核实 Node Agent + Portable Deployment 精确 Job，未完成不标记 PASS。保留 `legacy`、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、生产 NO-GO。
+
+### 11.1 阶段 1B-2A 精确 CI 终态与下一真实纵向切片
+
+**本轮功能提交**：[9808d7e3dd0a11c9b3d93df53e4a2f1197211134](https://github.com/jorsamj/aixunlianpingtai/commit/9808d7e3dd0a11c9b3d93df53e4a2f1197211134)；GitHub [Node Agent Executor run 43689407419](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43689407419) 为 **completed/success**，三个 Job 均成功：
+- Ubuntu：主合同 **529 passed / 2 skipped**；POSIX Agent SIGKILL **2 passed**；Linux cgroup 合同 **31 passed**；
+- Windows：主合同 **528 passed / 3 skipped**；cgroup 便携合同 **30 passed / 1 skipped**；
+- API：SUCCESS。
+- 同一 SHA 的 [Portable Deployment run 43689407425](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43689407425)：Ubuntu transport、Windows transport、API **全部 SUCCESS**，原过时 grep 已消除。
+
+**验收判定**：本次 1B-2A 的真实中央任务数据库只读签发逻辑及跨平台 CI **GREEN**。这不是完整阶段 1B：签发逻辑仍默认关闭、尚未挂载中央实际 API；Supervisor Socket 仍没有受保护 challenge→grant→journal 登记调用入口，亦无生产信任配置、公钥轮换、OS 启动/停止与可靠停机证据。绝不可据上述测试开启计算接单或中央自动恢复。
+
+**下一小项 1B-2B（优先实际代码而非再做 PoC）**：审计当前协议与服务，在既有 root-owned Socket 之内增加固定的 challenge/authorize_intent 严格 schema，读取由可信服务部署配置管理的 pinned issuer 公钥，调用 journal 在启动前预登记唯一 handle；Agent 无法提供公钥路径、shell/unit、root PID、任意执行 profile。中央签发路由仅在独立受限测试配置下开放，并与原 `tasks.attempt` / node token / lease 真值实时核验；服务重启、重复授权、过期/回放均保守 HOLD。**阶段 2 才允许固定 CPU workload 真正 systemd 托管，不改训练/模型转换/边缘复核正式 Runner。**
+
+**前端最小方案已审计**：现有 `static/modules/service-node-runtime.js` 已支持展示节点连接状态、心跳、能力、GPU、Worker 与 durable tasks，因此后续只需在该页面的现有卡片/任务行增加只读 Supervisor 实例状态、`legacy/supervisor-required` 执行模式和拒绝/未知原因。先完成可信状态后端字段再开发 UI；目前不改前端，不增加恢复/释放/强停按钮。
+
+生产 A800/双4070 未接触；`legacy` 默认、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、远程自动派单 OFF、生产 **NO-GO**。
