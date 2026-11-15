@@ -1,0 +1,65 @@
+# P0-01C-2B: isolated real-kernel CPU experiment on GitHub-hosted VM.
+# No services, GPUs, credentials, or data from A800 / 4070 / production.
+name: Agent Kernel Stop PoC (Ephemeral CPU)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - '.github/workflows/agent-kernel-stop-poc.yml'
+permissions:
+  contents: read
+concurrency:
+  group: agent-kernel-stop-poc-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-cgroup-22:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Ubuntu 22.04 and non-root VM prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "P0-01C-2B is ephemeral CPU-only; no remote node access."
+          . /etc/os-release
+          test "$ID" = "ubuntu"
+          test "$VERSION_ID" = "22.04"
+          test "$(id -u)" -ne 0
+          test -d /run/systemd/system
+          test -f /sys/fs/cgroup/cgroup.controllers
+          python3 -m py_compile tools/poc/linux_cgroup_probe.py tools/poc/linux_cgroup_poc.py
+          echo "Non-root runner ID: $(id -u)"
+      - name: Prepare isolated runner user manager (never on production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${uid}.service"
+          test -S "/run/user/${uid}/bus"
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+      - name: Read-only preflight (environment blocked is not proof)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/poc/linux_cgroup_probe.py | tee p001c2b-preflight.json
+      - name: Real kernel cgroup exercise: orphaned launcher + CPU descendant
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/poc/linux_cgroup_poc.py --run --isolated-test-host | tee p001c2b-kernel-result.json
+      - name: Retain diagnostic evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p001c2b-ubuntu22-cpu-evidence
+          path: |
+            p001c2b-preflight.json
+            p001c2b-kernel-result.json
+          if-no-files-found: warn
+          retention-days: 14
