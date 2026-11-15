@@ -92,3 +92,11 @@
 - 准确功能代码 SHA 4495a44fb44f6ed6903b20cd1f659263bf3aa32b：**GitHub Actions 23/23 success**，真实 Ubuntu ORT/systemd 两项、Node Agent Ubuntu/Windows/API、远程训练转换和 Chrome 三分片均成功。首轮 test-double 的 InvocationID 判断职责错误已在测试代码中修复，生产系统未改。
 - 下一阶段只允许 2D-2D2B2 在隔离环境设计**真正受中央短期授权的受限 CPU 转换 profile**；必须先划清 PT→ONNX 导出与现有 ONNX→ORT 推理校验的不同合同。不能复用 fixed-cpu-v1 生产签名授权去执行真实转换命令。可信 stopped/exited 证明、任务 lease 生命周期/输出确认、Ubuntu 22.04/systemd249 和 GPU 安全仍分别 NO-GO。
 - 本轮未改生产应用、原 Runner、前端页面、GPU 设备、中央调度与 A800/双4070 服务器。
+
+
+## 十一、2D-2D2B2A 完成后的准入结论（2026-11-16）
+
+- 功能代码 SHA d5e0dc56326d962a49861bb89e6ce93992d8589f，**本 SHA GitHub Actions 23/23 completed/success**；Node Agent Ubuntu 791 passed / 2 skipped，Windows 786 passed / 7 skipped；远程训练/转换、真实 CPU systemd、Chrome 三分片均全绿。
+- 新增 platform_core/os_supervisor_cpu_pt_export_admission.py 和配套合同测试，在不调用执行器的前提下按原 RemoteExecutionLease 固定 PT 源哈希、长度、task attempt、node/worker/lease 摘要和严格 CPU 导出参数。下载凭据与地址不进入冻结清单；**PT 是潜在 pickle，不解包、不执行**。旧 fixed-cpu-v1 签名不能用于 PT→ONNX；任何启动与发布仍 HOLD。
+- **2D-2D2B2A 的开发+隔离 CI 可关闭，但不代表 2D-2D2B2 的真实 CPU 转换受保护启动已经完成**。下一步 2B2B 需复用同一中央 authority 的 profile-specific grant、root-owned journal one-shot CAS、真实小模型 PT→ONNX systemd 隔离导出；再论证停机证据及结果上传/确认，不新增第二调度器或新代数。
+- 不改生产 AgentConversionRunner、Node Agent 执行入口、app.py、前端、GPU、在线中央任务与数据；A800、双4070 均无部署重启。生产 supervisor-required、自动恢复、GPU/Ubuntu22.04-v249 仍为 NO-GO。

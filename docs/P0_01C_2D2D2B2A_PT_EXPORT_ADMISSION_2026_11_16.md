@@ -33,3 +33,23 @@
 本轮代码的 GitHub CI 需以**本轮新 SHA** 核对 Ubuntu/Windows/API、含真实 systemd ORT E2E 和全仓浏览器回归的终态；不能继承 2B1 的 23/23。
 
 下一步 **2D-2D2B2B**：在相同中央任务发行者和 root 可信身份边界上设计 PT→ONNX 专用 Ed25519 grant（不得复用原 fixed-cpu-v1）、源 SHA 及参数绑定、挑战 nonce 及 journal CAS；然后由独立 root-owned sandbox 执行真实的小型可信 PT 模型导出，在 Ubuntu systemd250+ 隔离 CI 实证，最后考虑 StopReceipt/上传事务。所有启动权仍保持关闭直到这些证据完成。
+
+
+## 六、最终隔离 CI 验收（2026-11-16）
+
+**代码验收基线：d5e0dc56326d962a49861bb89e6ce93992d8589f。**
+GitHub Actions 按完全相同的 head_sha 核查：**23 项工作流全部 completed/success（23/23），失败 0、排队 0、运行中 0**。这是新代码本身的验证结果，不能借用此前 2D-2D2B1 的 23/23。
+
+- Node Agent Executor 主工作流：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43775716044 —— Ubuntu、Windows、API 三个 Job 全部 SUCCESS。同 SHA 第二组：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43775721751，三个 Job 也成功。
+- Ubuntu 单元/合同 **791 passed / 2 skipped**；Windows 单元/合同 **786 passed / 7 skipped**；涵盖新增 PT 冻结输入、危险参数拒绝、输入哈希/长度、下载协议与密钥剔除，以及永久禁止启动/发布。另有 Windows Portable cgroup 合同 30 passed / 1 skipped。
+- Ubuntu 真实 ORT CPU/systemd 2 passed、固定 CPU systemd 4 passed、非 root Agent→HTTP→root Supervisor→systemd 联调 1 passed；这仍是原有的固定 CPU/现成 ONNX 验证流程，**不是新的 PT→ONNX 导出执行**。
+- Remote Conversion Runtime、Remote Training Runtime、AI Annotation Recovery、Remote Cleaning Runtime、数据集/素材、调度等此 SHA 工作流全部成功。
+- Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43775716050 —— frontend + Chrome 三个分组全部成功。Chrome shard1 **128 passed**、shard2 **130 passed**、shard3 **125 passed**。本阶段未修改前端 JS 或 UI 页面。
+
+### 准入决定
+
+**2D-2D2B2A 的 PT→ONNX 原中央租约、已下载源证据、固定 CPU 参数与不可执行清单合同：PASS，关闭最小阶段。**
+
+这**不是** PT→ONNX 真实模型导出验收：request_systemd_launch 仍无条件 HOLD，现有中央签名只承认 fixed-cpu-v1，不能运行真实 PT 反序列化或取代 AgentConversionRunner。更不能以此承诺可信停止、自动重派、模型上传成功、systemd249 兼容或生产部署。
+
+下一步独立实施 2D-2D2B2B：从同一个中央 tasks.attempt/lease 权威扩展严格区分 profile 的短期签名合同与 root-owned journal 预备/启动 CAS，独立测试签名过期、撤销、source hash 不匹配及重复启动，然后在 root-owned CPU sandbox 中进行可信小模型 PT→ONNX **真实**导出；后续再做 StopReceipt 和输出事务。生产 A800/4070 禁止接管或升级。
