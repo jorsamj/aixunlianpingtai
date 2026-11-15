@@ -301,7 +301,7 @@ class SupervisorService:
         if action == "read_log" and self.cpu_trial_backend is not None:
             payload = request["payload"]
             try:
-                identity = self.authorization_journal.cpu_identity(
+                identity = self.authorization_journal.cpu_log_identity(
                     payload["handle_id"], payload["execution_generation"])
                 page = self.cpu_trial_backend.read_log_page(
                     identity["unit_name"], identity["invocation_id"],
