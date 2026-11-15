@@ -24,7 +24,10 @@ BINDING_FIELDS = frozenset({
     "runner_profile",
 })
 CLAIM_FIELDS = BINDING_FIELDS | {"purpose", "issued_at", "expires_at"}
-_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
+# Match the existing service_nodes._NODE_ID_PATTERN; do not impose a new
+# Node naming policy in the trusted Supervisor grant verifier.
+_NODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
 class GrantRejected(PermissionError):
@@ -69,9 +72,11 @@ def verify_central_execution_grant(
         raise GrantRejected("CENTRAL_GRANT_SCHEMA_INVALID_HOLD")
     if claims["purpose"] != PURPOSE:
         raise GrantRejected("CENTRAL_GRANT_PURPOSE_INVALID_HOLD")
-    for field in ("task_id", "node_id"):
-        if not isinstance(claims[field], str) or not _ID.fullmatch(claims[field]):
-            raise GrantRejected("CENTRAL_GRANT_ID_INVALID_HOLD")
+    if (not isinstance(claims["task_id"], str)
+            or not _TASK_ID.fullmatch(claims["task_id"])
+            or not isinstance(claims["node_id"], str)
+            or not _NODE_ID.fullmatch(claims["node_id"])):
+        raise GrantRejected("CENTRAL_GRANT_ID_INVALID_HOLD")
     if type(claims["task_attempt"]) is not int or claims["task_attempt"] <= 0:
         raise GrantRejected("CENTRAL_GRANT_ATTEMPT_INVALID_HOLD")
     if claims["worker_id"] != "agent:" + claims["node_id"]:

@@ -172,3 +172,15 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - API：SUCCESS（包含现行永久安全 grep 守卫）。
 
 该准确 SHA 的阶段 **1B-1 语法、权限拒绝合同、签名验签及本机 durable journal 单元回归 GREEN**；同 SHA 的其它仓库级 Actions 如仍 queued/in_progress，不据此声称全部工作流结束。当前根本门槛仍是中央真实租约原子核验后签发、公钥与 journal 接线、完整服务重启/进程身份恢复。新模块虽已存于 Git，却未被正式 Supervisor socket 或 Runner 引用；**阶段 1B 整体尚未完成、阶段 2/生产继续 NO-GO**。本次文档独立提交属于验收记录，不替代功能 SHA 的 CI。
+
+## 11. 2026-11-15｜阶段 1B-2A 中央授权签发最小链路（提交后待 CI）
+
+目标不是重新实现 TaskQueue / Scheduler，也不是目前开放 Supervisor 真实启动，而是用**现有中央 SQLite 任务真相**验证 CPU-only 执行资格，再生成 Supervisor 能独立验证的短时 Ed25519 grant。
+
+- 新建 `platform_core/os_supervisor_central_grants.py`：默认 **disabled**，只接受受信中央进程注入的 `Ed25519PrivateKey`，没有自动创建密钥、没有新 HTTP API；使用现有 `TaskRepository._connect()` 一次只读事务读取 `tasks` 与 `service_nodes`，核对任务状态 `RUNNING`、真正的 `tasks.attempt`、原 execution lease token（非 assignment lease）、原 worker/node、节点 token/可用能力/在线心跳以及执行租约到期时间。只对明确标记 `resource_key=supervisor-cpu-v1` 且 `kind=MODEL_CONVERSION` 的隔离 CPU 试验任务开放签发；15 秒上限，且绝不晚于中央 lease 到期。**普通生产转换/训练任务不能通过本阶段签发。**
+- `platform_core/os_supervisor_authorization.py` 中校正 Node ID 格式限制，与现有 `service_nodes._NODE_ID_PATTERN` 保持兼容；不放松 grant 签名验证及 `task_id` 规则。
+- 新增 `tests/unit/test_os_supervisor_central_grants.py`：通过**现有真实 TaskRepository 和 ServiceNodeRepository/SQLite**建立隔离资源记录，覆盖授权链路→原签名校验→本机 durable journal 同代幂等，过期 lease、错 attempt、错 node/token、取消中任务、非隔离 CPU profile、节点禁用等 HOLD。代码只在临时测试 DB 上执行，不触碰 A800/双4070。
+- 复用 `node-agent-executor.yml` 运行 Ubuntu/Windows/API。额外发现同一前期 1B-1 SHA 的 [Portable Deployment 43688437090](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43688437090) 的 API 主体完成后，**另一个遗留旧 grep** `reported_capabilities = executable_agent_capabilities(requested_capabilities)` 导致 API Job 失败；本次仅更新 `.github/workflows/portable-deployment.yml` 至当前安全过滤赋值文本，保留所有其它守卫。
+- **重要边界**：签发模块未接进中央正式 FastAPI，也未配置生产私钥；Supervisor Socket 仍拒绝 `start`；root 公钥管理/轮换、challenge 来源可信验证、实际部署权限、分布式确认时序、lease 到期后的重查、systemd CPU worker 与真实 OS 恢复仍待下一子阶段。即使中央短时 grant 已签发，也**不代表**可释放任何 HOLD、可自动重新分配 GPU、可生产上线。
+- **前端判断**：阶段 1B 的签名/持久登记属于后端安全能力，前端无必需变更；进入 Runner 灰度后可以在现有节点管理与任务详情增加 Supervisor 健康、执行模式、停机证据待验证的只读状态。禁止在可信 StopReceipt 和中央 CAS 完成之前加入手动“强制释放/恢复/重派”按钮。
+- **验收状态**：阶段 1B-2A 提交后按新 SHA 核实 Node Agent + Portable Deployment 精确 Job，未完成不标记 PASS。保留 `legacy`、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、生产 NO-GO。

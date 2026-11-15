@@ -13,9 +13,11 @@ on:
       - 'platform_core/os_supervisor_protocol.py'
       - 'platform_core/os_supervisor_service.py'
       - 'platform_core/os_supervisor_authorization.py'
+      - 'platform_core/os_supervisor_central_grants.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'tests/unit/test_os_supervisor_phase1.py'
       - 'tests/unit/test_os_supervisor_phase1b.py'
+      - 'tests/unit/test_os_supervisor_central_grants.py'
       - 'tests/unit/test_node_agent_supervisor_gate.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
@@ -70,9 +72,11 @@ on:
       - 'platform_core/os_supervisor_protocol.py'
       - 'platform_core/os_supervisor_service.py'
       - 'platform_core/os_supervisor_authorization.py'
+      - 'platform_core/os_supervisor_central_grants.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'tests/unit/test_os_supervisor_phase1.py'
       - 'tests/unit/test_os_supervisor_phase1b.py'
+      - 'tests/unit/test_os_supervisor_central_grants.py'
       - 'tests/unit/test_node_agent_supervisor_gate.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
@@ -141,9 +145,11 @@ jobs:
           platform_core/os_supervisor_protocol.py
           platform_core/os_supervisor_service.py
           platform_core/os_supervisor_authorization.py
+          platform_core/os_supervisor_central_grants.py
           platform_core/os_supervisor_journal.py
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
+          tests/unit/test_os_supervisor_central_grants.py
           platform_core/node_agent_deployment_runtime.py
           platform_core/node_agent_training_runtime.py
           platform_core/node_agent_model_install_runtime.py
@@ -168,6 +174,7 @@ jobs:
           tests/unit/test_node_agent_supervisor_gate.py
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
+          tests/unit/test_os_supervisor_central_grants.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
@@ -190,6 +197,7 @@ jobs:
           tests/unit/test_node_agent_supervisor_gate.py
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
+          tests/unit/test_os_supervisor_central_grants.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
