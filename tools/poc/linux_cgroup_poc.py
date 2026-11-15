@@ -297,15 +297,15 @@ def _payload(root: Path) -> int:
     # third session, which process-group-only cleanup cannot reliably cover.
     # Every process is CPU-only and bounded by the synthetic systemd unit.
     child_code = (
-        "import json,os,subprocess,sys\\n"
-        "from pathlib import Path\\n"
+        "import json,os,subprocess,sys\n"
+        "from pathlib import Path\n"
         "leaf=subprocess.Popen([sys.executable,'-c',"
-        "'import time;time.sleep(20)'],start_new_session=True)\\n"
-        "root=Path(sys.argv[1])\\n"
-        "tmp=root / '.grandchild.tmp'\\n"
-        "tmp.write_text(json.dumps({'pid':leaf.pid}),encoding='utf-8')\\n"
-        "os.replace(tmp,root / 'grandchild.json')\\n"
-        "leaf.wait()\\n"
+        "'import time;time.sleep(20)'],start_new_session=True)\n"
+        "root=Path(sys.argv[1])\n"
+        "tmp=root / '.grandchild.tmp'\n"
+        "tmp.write_text(json.dumps({'pid':leaf.pid}),encoding='utf-8')\n"
+        "os.replace(tmp,root / 'grandchild.json')\n"
+        "leaf.wait()\n"
     )
     child = subprocess.Popen([sys.executable, "-c", child_code, str(root)],
                              start_new_session=True)
