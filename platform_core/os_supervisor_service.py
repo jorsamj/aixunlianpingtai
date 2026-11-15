@@ -117,6 +117,20 @@ class SupervisorService:
                 return self._reply(request_id, str(exc), ok=False)
             except (OSError, ValueError, sqlite3.Error):
                 return self._reply(request_id, "JOURNAL_UNAVAILABLE_HOLD", ok=False)
+        if action == "launch_challenge":
+            if not self.cpu_prelaunch_recheck_enabled:
+                return self._reply(request_id, "CPU_RECHECK_LAUNCH_DISABLED_HOLD", ok=False)
+            payload = request["payload"]
+            try:
+                nonce = self.authorization_journal.issue_cpu_launch_challenge(
+                    payload["handle_id"], payload["execution_generation"])
+                return self._reply(
+                    request_id, "CPU_LAUNCH_CHALLENGE_ISSUED", ok=True,
+                    result={"challenge": nonce, "boot_id": self.authorization_journal.boot_id})
+            except GrantRejected as exc:
+                return self._reply(request_id, str(exc), ok=False)
+            except (OSError, ValueError, sqlite3.Error):
+                return self._reply(request_id, "CPU_LAUNCH_CHALLENGE_UNVERIFIED_HOLD", ok=False)
         if action == "start_rechecked":
             if not self.cpu_prelaunch_recheck_enabled:
                 return self._reply(

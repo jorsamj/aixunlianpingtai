@@ -19,7 +19,7 @@ from uuid import UUID
 PROTOCOL_VERSION = 1
 MAX_MESSAGE = 16 * 1024
 ALLOWED_ACTIONS = frozenset({"health", "inspect", "start", "start_rechecked", "stop", "read_log",
-                             "challenge", "authorize_intent"})
+                             "challenge", "authorize_intent", "launch_challenge"})
 _ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{7,127}$")
 
 
