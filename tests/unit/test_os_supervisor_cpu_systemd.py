@@ -220,7 +220,7 @@ def test_fixed_cpu_natural_exit_requires_original_invocation_and_cgroup_exit_typ
     ("Version=250", True),
     ("Version=255.4-1ubuntu8", True),
     ("Version=257.9", True),
-    ("Version=249\\nVersion=999", False),
+    ("Version=249\nVersion=999", False),
     ("Version=250evil", False),
     ("Version=", False),
     ("", False),
@@ -244,7 +244,7 @@ def test_real_backend_checks_running_manager_before_any_launch(monkeypatch):
         calls.append(tuple(argv))
         assert kwargs["shell"] is False
         from types import SimpleNamespace
-        return SimpleNamespace(returncode=0, stdout="Version=249.11-ubuntu\\n")
+        return SimpleNamespace(returncode=0, stdout="Version=249.11-ubuntu\n")
 
     monkeypatch.setattr(cpu.platform, "system", lambda: "Linux")
     monkeypatch.setattr(cpu.os, "geteuid", lambda: 0, raising=False)

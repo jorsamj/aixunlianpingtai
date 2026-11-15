@@ -51,7 +51,7 @@ _ALLOWED = {"active", "activating", "deactivating", "inactive", "failed"}
 # manager is normally 249. Check the live PID1 manager, not the CLI binary:
 # a package upgrade may leave the running manager at the previous version.
 _MIN_CGROUP_EXIT_MANAGER_VERSION = 250
-_MANAGER_VERSION = re.compile(r"Version=([1-9][0-9]{1,3})(?:[.\\-+~ ][^\\r\\n]*)?\\Z")
+_MANAGER_VERSION = re.compile(r"Version=([1-9][0-9]{1,3})(?:[-.+~ ][^\r\n]*)?\Z")
 
 
 def _require_cgroup_exit_manager_version(value: object) -> int:
