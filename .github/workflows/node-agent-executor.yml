@@ -36,6 +36,7 @@ on:
       - 'tests/unit/test_os_supervisor_cpu_systemd.py'
       - 'tests/unit/test_os_supervisor_cpu_journal.py'
       - 'tests/integration/test_os_supervisor_cpu_systemd_live.py'
+      - 'tests/integration/test_os_supervisor_cpu_network_systemd_live.py'
       - 'tests/unit/test_node_agent_supervisor_gate.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
@@ -113,6 +114,7 @@ on:
       - 'tests/unit/test_os_supervisor_cpu_systemd.py'
       - 'tests/unit/test_os_supervisor_cpu_journal.py'
       - 'tests/integration/test_os_supervisor_cpu_systemd_live.py'
+      - 'tests/integration/test_os_supervisor_cpu_network_systemd_live.py'
       - 'tests/unit/test_node_agent_supervisor_gate.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
@@ -207,6 +209,7 @@ jobs:
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
           tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
           tests/integration/test_os_supervisor_cpu_systemd_live.py
+          tests/integration/test_os_supervisor_cpu_network_systemd_live.py
           platform_core/node_agent_deployment_runtime.py
           platform_core/node_agent_training_runtime.py
           platform_core/node_agent_model_install_runtime.py
@@ -328,6 +331,7 @@ jobs:
           sudo -n "$(command -v python)" -m pytest -q --maxfail=1
           --confcutdir=tests/integration
           tests/integration/test_os_supervisor_cpu_systemd_live.py
+          tests/integration/test_os_supervisor_cpu_network_systemd_live.py
 
   api:
     runs-on: ubuntu-24.04
@@ -424,3 +428,12 @@ jobs:
           ! grep -Fq 'TaskRepository' platform_core/node_agent_executor_loop.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
+
+      - name: P0-01C 2D-2C3 real nonroot Agent HTTP Unix and protected systemd CPU (CI ONLY)
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        shell: bash
+        run: >-
+          sudo -n "$(command -v python)" -m pytest -q --maxfail=1
+          --confcutdir=tests/integration
+          tests/integration/test_os_supervisor_cpu_network_systemd_live.py
