@@ -36,3 +36,25 @@
 - 还缺测试：停止请求与中央租约失效发生在启动后的处理、Agent/OS 断线与重启后重连、StopReceipt、系统级 GPU ACL。不要把固定 CPU 自然退出当作正式计算节点可重派的可信停止。
 
 生产 A800、双4070 服务、数据、GPU、部署配置均未操作。不得开自动任务重派、自动恢复或强制释放 GPU reservation；不合并 main、不创建 Release。
+
+
+## 2026-11-15 2D-2C3B CI 实证驱动修复（尚待最终 CI）
+
+此前功能 SHA `db5e8fa409e36f9dc43db1366dec66beb3b3eaf7` 的 CI 首次显示：
+- Node Agent Ubuntu `contract`：622 passed / 2 skipped / 1 failed。失败为取消后中央已返回 409，实际 `CPU_CENTRAL_GRANT_HTTP_HOLD`，但测试断言误要求 `CPU_CENTRAL_GRANT_UNAVAILABLE_HOLD`。已调整精确断言，不修改正式中央业务授权。
+- Node Agent `api`：真实非 root Agent → HTTP → root Unix → systemd 自然终态后调用 `read_log` 失败 `SUPERVISOR_LOG_UNAVAILABLE_HOLD`。根因 `ExecutionJournal.cpu_identity()` **只允许 RUNNING**；在自然退出后 `record_cpu_exit` 已将原 OS handle 提升为 EXITED。**这是实际读日志合同缺口**，不是偶发超时。
+- 本轮在原受保护 journal 独立增加 `cpu_log_identity()`：RUNNING 只读同一持久 InvocationID；EXITED 必须验证同 boot、原 InvocationID/主 PID 与持久 `cpu_terminal_evidence` 精确吻合，才允许访问原 journald；其余 UNKNOWN/重启 boot/不一致仍 HOLD。原 `cpu_identity()` 保持 RUNNING-only，`stop`、启动、中央重派权限完全不变。
+- 增加回归：自然终态之后旧日志仍可读取；已停止而 UNKNOWN 不得读取；原中央取消的 HTTP 拒绝码匹配真实语义。
+- 修正 CI：不再在 `api` Job 中额外重复跑一次 root systemd 测试；单次受保护 E2E 在 Linux `contract` Job 单独运行。无新增工作流。
+
+本轮修复提交：
+- `cbff1846942f83818117d4f8269bf147ae3f698d`：受保护 Journal 的已验终态日志只读身份。
+- `a28d705310d82f2497e2064acfa2b67a22eb8194`：`read_log` 改用只读身份校验。
+- `c4a55d918f59eb7861b93f8623da5f911bf46870`：取消拒绝码断言。
+- `38c5e998bce60a4cfe4b2efda6f9bacdd1c3e40c`：EXITED/UNKNOWN 日志回归。
+- `12824cbf6e57ad6e434e7789f356bb493ab53a6c`：Linux Contract 只运行一次 root systemd E2E。
+
+**验收基线为 `12824cbf6e57ad6e434e7789f356bb493ab53a6c`，23 项全仓及 Windows/Ubuntu/API 终态尚未验收，仍不可宣称 23/23 或 Supervisor 已可生产接管。**
+
+### 不可误用的边界
+本次日志只读权限只证明 CPU-only、同一可信 systemd InvocationID 的自然终态日志证据；不允许据此授予 StopReceipt、释放 GPU、重新分派、发布模型转换结果或自动恢复。Ubuntu 22.04 systemd249、启动后中央取消竞态/租约持续监督仍是未解决生产阻断。
