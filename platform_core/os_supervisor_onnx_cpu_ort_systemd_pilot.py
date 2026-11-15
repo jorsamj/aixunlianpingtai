@@ -10,7 +10,7 @@ from .os_supervisor_onnx_cpu_systemd_pilot import (
     _ROOT, _handle, _sealed_bytes, _trusted_directory,
 )
 
-_RUNTIME = Path("/run/changlian-onnxruntime-cpu-pilot/venv")
+_RUNTIME = Path("/var/lib/changlian-onnxruntime-cpu-pilot/venv")
 _PYTHON = str(_RUNTIME / "bin/python3")
 _PREFIX_RESULT = "changlian-onnx-ort-result:"
 _WORKER = """
@@ -82,7 +82,8 @@ def build_fixed_onnx_ort_cpu_argv(handle):
 
 
 def _root_runtime_verified():
-    dirs = (Path("/run"), _RUNTIME.parent, _RUNTIME, _RUNTIME / "bin",
+    dirs = (Path("/var"), Path("/var/lib"), _RUNTIME.parent,
+            _RUNTIME, _RUNTIME / "bin",
             _RUNTIME / "lib", _RUNTIME / "lib/python3.12",
             _RUNTIME / "lib/python3.12/site-packages")
     try:

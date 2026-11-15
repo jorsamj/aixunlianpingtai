@@ -28,3 +28,12 @@
 本文件随 2D-2D1 代码作为同一提交。准确新 SHA 的 Ubuntu/Windows/API、前端及全仓 CI 必须另核；不能把上一阶段 2D-2C3 的 23/23 算作本轮成功。
 
 下一步 2D-2D2：由 root-owned 受信任配置建立真实 CPU-only 业务 profile、独立 OS-bound durable identity 和监控桥；对中央原任务租约、停止证明、下载 SHA、日志与原上传确认事务逐项补实测。未完成前不得启用生产执行。
+
+
+## 首轮 CI 失败与最小修复（2026-11-15）
+
+候选 SHA `a2945e0c4ec3a88dbe207f2e92604bc83a1b63ac` 的 Node Agent Ubuntu 合同测试 **656 passed / 2 skipped**，但既有 2D-2B2 真实 ONNX Runtime CPU 测试导入 `numpy._core._multiarray_umath.so` 时提示 `failed to map segment from shared object`。日志中的文件位于 `/run/changlian-onnxruntime-cpu-pilot/venv`，与挂载 `noexec` 的表现相符，但旧日志未打印实际 mount 选项，故不伪称已证明底层根因。
+
+精确修复：将**仅用于 GitHub 隔离 CI 的 root-owned ORT venv** 迁移至 `/var/lib/changlian-onnxruntime-cpu-pilot/venv`；增加 `/var`、`/var/lib` 的逐级 root owner/权限校验，并在 CI 创建前使用 `findmnt -T` 显式拒绝 noexec。固定的 ONNXRuntime/NumPy 版本、root-only 文件审核、systemd Protected/Sandbox、可信 ONNX 输入存放在 `/run` 不变。继续运行真实 native import 和原 2 条 real ORT systemd 用例，不允许 skip。
+
+本轮仅修改 CI-only runtime 配置、原 unit 断言、原 Node Agent CI 工作流及本文档；正式业务 Runner、前端、A800、4070 均未改变。**新 SHA 的全仓 CI 状态必须另核。**

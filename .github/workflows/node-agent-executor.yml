@@ -324,12 +324,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n /usr/bin/python3 -m venv --without-pip /run/changlian-onnxruntime-cpu-pilot/venv
+          # /run may be noexec; do not load native ORT .so from that mount.
+          sudo -n install -d -o root -g root -m 0755 /var/lib/changlian-onnxruntime-cpu-pilot
+          mount_opts="$(findmnt -T /var/lib/changlian-onnxruntime-cpu-pilot -no OPTIONS)"
+          case ",${mount_opts}," in
+            *,noexec,*) echo "CI ORT executable filesystem unavailable"; exit 1;;
+          esac
+          sudo -n /usr/bin/python3 -m venv --without-pip /var/lib/changlian-onnxruntime-cpu-pilot/venv
           python -m pip install --disable-pip-version-check --target /tmp/changlian-ort-pilot-packages 'onnxruntime==1.22.1' 'numpy==2.2.6'
-          sudo -n cp -a /tmp/changlian-ort-pilot-packages/. /run/changlian-onnxruntime-cpu-pilot/venv/lib/python3.12/site-packages/
+          sudo -n cp -a /tmp/changlian-ort-pilot-packages/. /var/lib/changlian-onnxruntime-cpu-pilot/venv/lib/python3.12/site-packages/
           sudo -n chown -R root:root /run/changlian-onnxruntime-cpu-pilot
           sudo -n chmod -R go-w /run/changlian-onnxruntime-cpu-pilot
-          sudo -n /run/changlian-onnxruntime-cpu-pilot/venv/bin/python3 -I -c 'import numpy,onnxruntime; assert numpy.__version__=="2.2.6"; assert onnxruntime.__version__=="1.22.1"'
+          sudo -n /var/lib/changlian-onnxruntime-cpu-pilot/venv/bin/python3 -I -c 'import numpy,onnxruntime; assert numpy.__version__=="2.2.6"; assert onnxruntime.__version__=="1.22.1"'
           sudo -n "$(command -v python)" -m pytest -q --maxfail=1 --confcutdir=tests/integration tests/integration/test_os_supervisor_onnx_cpu_ort_systemd_pilot_live.py
       - name: P0-01C Stage-2A real fixed CPU systemd lifecycle (isolated Ubuntu ONLY)
         if: runner.os == 'Linux'
