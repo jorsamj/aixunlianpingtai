@@ -420,3 +420,9 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 重要边界：这是**隔离 CPU Pilot 的字节输入保护**，`materialize_cpu_pilot_snapshot` 自身**不能阻止同 UID 用户修改**生成的文件，不能当作 root-owned 不可变输入或 OS 安全沙箱；解析 ONNX/运行 ORT 也不能作为其进程已安全退出的 StopReceipt。生产 A800/双4070、中央任务 attempt/lease、正式 Runner、GPU reservation 及自动重派均未修改。
 - 详见 [`P0_01C_2D2_ONNX_EXTERNAL_DATA_FD_SNAPSHOT_2026_11_15.md`](P0_01C_2D2_ONNX_EXTERNAL_DATA_FD_SNAPSHOT_2026_11_15.md)。
 
+
+### 20.1 首轮 Windows 文件元数据误判与新修复（2026-11-15）
+
+- 首版 SHA `cee26a5c` 的 Ubuntu 599 passed/2 skipped、真 ONNX 1 passed、systemd 4 passed，但 Windows Node Agent 有 3～4 项负例没有走到预期 external-data/protobuf 拒绝原因，因不同 API 读取的文件元数据出现差异而先返回 `FILE_IDENTITY_CHANGED_HOLD`。
+- 修复 SHA [`bc67fb2a28692b56078348567599bc8cc8bdfc38`](https://github.com/jorsamj/aixunlianpingtai/commit/bc67fb2a28692b56078348567599bc8cc8bdfc38)：仍保持原 fd 限额读取与哈希，Windows 仅依赖 FD 读取的字节长度和 SHA256 判定内容身份，Linux 继续要求 inode/device/mtime/ctime 一致；避免为通过测试而移除 ONNX external-data 防护。
+- 新 SHA 的 Windows/Ubuntu/全仓 CI **待真实结果**。版本仍 NO-GO，不接入正式 Runner、不开放生产部署。

@@ -1,7 +1,7 @@
 # 畅联云算法训练平台｜2D-2A ONNX external_data 拒绝与 pinned-FD 隔离输入
 
 > 2026-11-15 · 唯一开发分支 `feature/external-algorithm-publishing`  
-> 本轮代码 SHA：`cee26a5c2a47d706ce35548d9b6840a4fd0a674b`  
+> 本轮功能 SHA：`cee26a5c2a47d706ce35548d9b6840a4fd0a674b`；Windows 兼容修正 SHA：`bc67fb2a28692b56078348567599bc8cc8bdfc38`  
 > 状态：**CPU Pilot 安全补强；Windows/全仓 CI 终态待核，生产继续 NO-GO**
 
 ## 一、风险、依据与范围
@@ -54,3 +54,9 @@ ONNX 的 `TensorProto` 可使用 `data_location=EXTERNAL` 与 `external_data` �
 - 接通真实业务日志、产物 manifest 验证与对象存储上传/确认/中央 finish；错误和失联保持 HOLD，自动恢复及 StopReceipt 仍不上线。
 - 完成再做独立准入和可回退灰度，未经用户授权不触碰 A800/双4070。
 
+
+## 五、首轮 CI Windows RED 的实际原因与定点修复
+
+- 初稿准确 SHA `cee26a5c2a47d706ce35548d9b6840a4fd0a674b` 的 Ubuntu Node Agent 主合同 **599 passed / 2 skipped**，真 ONNX CPU **1 passed**，真 systemd **4 passed**，均成功。但 Windows Node Agent 主合同在修改模型文件后的负例中因 `lstat()/CRT fstat()` 文件元数据不同而首先报 `FILE_IDENTITY_CHANGED_HOLD`，未进入预期 `ONNX_EXTERNAL_DATA_HOLD`；Windows 两个 workflow Node Agent 失败，不能称首版全绿。
+- 已有最小修复 [`bc67fb2a28692b56078348567599bc8cc8bdfc38`](https://github.com/jorsamj/aixunlianpingtai/commit/bc67fb2a28692b56078348567599bc8cc8bdfc38)：Linux 继续比较设备、inode、文件大小、mtime、ctime 的连续性；Windows 在一个固定已打开 FD 上只用长度和完整 SHA256 比对进行内容准入，避免 CRT 文件状态快照差异。Windows 仍不获得生产运行、调度或 StopReceipt 权限。
+- **新修复代码 SHA CI 待结束**，不得把之前的 Ubuntu 成绩或首轮 Windows RED 混淆成当前全仓验收结论。
