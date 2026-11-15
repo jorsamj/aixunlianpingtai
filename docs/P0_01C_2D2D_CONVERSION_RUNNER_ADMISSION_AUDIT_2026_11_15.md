@@ -5,9 +5,9 @@
 
 ## 一、前置状态与闸口
 
-- 本文引用的 2D-2C3B 最新功能基线：12824cbf6e57ad6e434e7789f356bb493ab53a6c；针对该 SHA 的 23 项 GitHub Actions 审计时均处于 queued，**不可宣称全绿**。
+- 本文引用的 2D-2C3B 最新功能基线：12824cbf6e57ad6e434e7789f356bb493ab53a6c；此前排队的 23 项 GitHub Actions **现已全部 completed/success（23/23）**，Node Agent Windows/Ubuntu/API 及真实 systemd E2E 均 PASS。
 - 2D-2C3B 针对初次 CI 的两个可复现失败已做最小修复：取消后 HTTP 409 错误码断言；自然退出后的原始 journald 日志只读检索。新的 Ubuntu 真 systemd E2E 尚待执行。
-- **硬闸口**：在 2D-2C3B Ubuntu/Windows/API、真实 nonroot Agent→root Supervisor→systemd E2E 终态通过前，不启动正式 MODEL_CONVERSION Runner 接线或打开任何生产配置。
+- **CI 准入闸口已通过**：2D-2C3B Ubuntu/Windows/API、真实 nonroot Agent→root Supervisor→systemd E2E 已完成；允许下一步 **2D-2D1 独立受限适配开发与隔离测试**。生产配置及真实 MODEL_CONVERSION 接管仍需独立完整闭环验收和明确授权。
 - 既有 CPU Supervisor 仅允许 supervisor-cpu-v1 / fixed-cpu-v1；中央授权不承认正式业务 conversion 资源键。无论隔离 E2E 是否成功，都**不能**将当前测试 profile 当作正式转换启动器。
 
 ## 二、已核实的正式 Runner 当前合同（代码事实）
@@ -59,6 +59,14 @@
 
 ## 六、当前决策
 
-**继续 2D-2C3B 终态验收；本次仅审计并冻结 2D-2D 方案，正式 Runner 适配仍 NO-GO。**
+**2D-2C3B 已按精确 SHA 完成 23/23 CI 验收，可启动 2D-2D1 受限适配专项。正式 Runner 生产接管仍 NO-GO，不得绕过 legacy 进程租约、可信停止和结果事务。**
 首次可证明成功的 root-owned OS 守护边界也不能直接推出 GPU 空闲/StopReceipt 信任。
 在准确 2D-2C3B SHA 全绿之前，避免为了重复相同证据继续增加新 CI/PoC。
+
+
+## 七、2D-2C3B 完整通过后准入更新（2026-11-15）
+
+- 验收证据：`12824cbf6e57ad6e434e7789f356bb493ab53a6c`，全仓 23/23 SUCCESS；Node Agent 两轮 Ubuntu/Windows/API 均全绿，真正非 root Agent HTTP + root Supervisor + systemd E2E 在 Ubuntu 单独 PASS。见 `docs/P0_01C_2D2C3_REAL_HTTP_UNIX_SYSTEMD_LINK_2026_11_15.md`。
+- **下一个实际开发单元（2D-2D1）**：先定义独立 `SupervisedConversionHandle` 与受限、受信任 CPU 输入 profile 的**适配合同及离线单元测试**；不触碰当前 `AgentConversionRunner.run()` 的实际 spawn、取消或结果发布路径，不增加业务前端功能。
+- 2D-2D2 才根据 2D1 审计证据逐步接入真实 OS 执行，必须验证中央租约持续检查、原始唯一执行身份、StopReceipt 与原输出 SHA256/prepare/confirm/finalize/finish 完整链路。
+- **Ubuntu 22.04/systemd249、GPU 隔离和可信停机依旧单独 NO-GO**。不能将 fixed-cpu-v1 的成功提升为 GPU training 或 production conversion 的授权。
