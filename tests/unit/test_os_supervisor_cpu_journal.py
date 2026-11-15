@@ -33,6 +33,9 @@ class FakeRunner:
         self.launch_fails = launch_fails
         self.active = True
         self.invocation = "e" * 32
+        self.finished = False
+        self.exit_type = "cgroup"
+        self.exec_main_pid = "54321"
 
     def __call__(self, command, **kwargs):
         from types import SimpleNamespace
@@ -60,10 +63,14 @@ class FakeRunner:
         fields = {
             "Id": name, "LoadState": "loaded", "Transient": "yes",
             "ActiveState": "active" if self.active else "inactive",
-            "SubState": "running" if self.active else "dead",
+            "SubState": ("exited" if self.finished else
+                         ("running" if self.active else "dead")),
             "InvocationID": self.invocation,
             "ControlGroup": "/system.slice/" + name if self.active else "",
-            "MainPID": "54321" if self.active else "0",
+            "MainPID": "0" if self.finished else ("54321" if self.active else "0"),
+            "ExecMainPID": self.exec_main_pid,
+            "ExitType": self.exit_type, "RemainAfterExit": "yes",
+            "Restart": "no", "NRestarts": "0",
             "PrivateDevices": "yes", "DevicePolicy": "closed",
             "KillMode": "control-group", "DynamicUser": "yes",
             "NoNewPrivileges": "yes", "ExecMainCode": "1",
@@ -184,3 +191,68 @@ def test_start_contract_rejects_agent_executable_or_shell():
                "command": "/bin/sh"}
     with raises(Exception):
         validate_request(request("start", payload))
+
+
+def test_cpu_natural_exit_is_durable_and_never_relaunches(tmp_path):
+    journal, backend, fake, service, begin, scope, key = make_registered(tmp_path)
+    assert service.dispatch(begin, peer_uid=10101)["ok"] is True
+    fake.finished = True
+    observed = service.dispatch(request("inspect", scope), peer_uid=10101)
+    assert observed["ok"] is True
+    assert observed["result"]["state"] == "EXITED"
+    assert observed["result"]["exit_code"] == 0
+    assert observed["result"]["trusted_stop_receipt_available"] is False
+    assert journal.inspect(scope["handle_id"], 7)["state"] == "EXITED"
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT state,event_seq FROM execution_intents").fetchone() == (
+            "EXITED", 4)
+        assert db.execute("SELECT exit_code,unit_result FROM cpu_terminal_evidence").fetchone() == (
+            0, "success")
+    restarted = SupervisorService(
+        Path("/tmp/cpu-terminal.sock"), allowed_uid=10101, allowed_gid=10101,
+        authorization_journal=ExecutionJournal(
+            journal.path, test_only_unprivileged=True, boot_id_for_tests=BOOT),
+        trusted_public_key=key.public_key(), cpu_trial_backend=backend)
+    assert restarted.dispatch(request("inspect", scope), peer_uid=10101)["result"]["state"] == "EXITED"
+    assert restarted.dispatch(begin, peer_uid=10101)["ok"] is False
+    assert restarted.dispatch(request("stop", scope), peer_uid=10101)["ok"] is False
+    assert fake.spawn_count == 1
+
+
+def test_cpu_exit_incomplete_or_replaced_evidence_keeps_hold(tmp_path):
+    for change in ("mainpid", "exit_type", "result", "still_running"):
+        working = tmp_path / change
+        working.mkdir()
+        journal, backend, fake, service, begin, scope, key = make_registered(working)
+        assert service.dispatch(begin, peer_uid=10101)["ok"] is True
+        fake.finished = True
+        if change == "mainpid":
+            fake.exec_main_pid = "23456"
+        elif change == "exit_type":
+            fake.exit_type = "main"
+        elif change == "result":
+            fake.invocation = "d" * 32
+        elif change == "still_running":
+            fake.finished = False
+        reply = service.dispatch(request("inspect", scope), peer_uid=10101)
+        if change == "still_running":
+            assert reply["result"]["state"] == "RUNNING"
+        else:
+            assert reply["ok"] is False and reply["result"]["state"] == "UNKNOWN"
+        with sqlite3.connect(journal.path) as db:
+            assert db.execute("SELECT count(*) FROM cpu_terminal_evidence").fetchone()[0] == 0
+
+
+def test_cpu_exit_cannot_promote_unknown_or_mismatched_boot(tmp_path):
+    journal, backend, fake, service, begin, scope, key = make_registered(tmp_path)
+    assert service.dispatch(begin, peer_uid=10101)["ok"] is True
+    journal.mark_cpu_unknown(scope["handle_id"], 7)
+    with raises(GrantRejected, match="UNVERIFIED_STATE_HOLD"):
+        journal.record_cpu_exit(
+            scope["handle_id"], 7, invocation_id=fake.invocation,
+            main_pid=54321, exit_code=0, unit_result="success",
+            cgroup_exit_type_verified=True)
+    assert journal.inspect(scope["handle_id"], 7)["state"] == "UNKNOWN"
+    journal_on_new_boot = ExecutionJournal(
+        journal.path, test_only_unprivileged=True, boot_id_for_tests="new-boot")
+    assert journal_on_new_boot.inspect(scope["handle_id"], 7)["state"] == "UNKNOWN"

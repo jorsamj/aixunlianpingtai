@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS cpu_unit_identities (
     main_pid INTEGER NOT NULL CHECK(main_pid > 1),
     recorded_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cpu_terminal_evidence (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    invocation_id TEXT NOT NULL,
+    main_pid INTEGER NOT NULL CHECK(main_pid > 1),
+    exit_code INTEGER NOT NULL CHECK(exit_code BETWEEN 0 AND 255),
+    unit_result TEXT NOT NULL CHECK(unit_result IN ('success', 'exit-code')),
+    recorded_at INTEGER NOT NULL
+);
 """
 
 
@@ -229,14 +237,24 @@ class ExecutionJournal:
     def inspect(self, handle_id: str, task_attempt: int) -> dict:
         with closing(self._connect()) as db:
             row = db.execute(
-                "SELECT handle_id,task_attempt FROM execution_intents "
-                "WHERE handle_id=? AND task_attempt=?",
+                """SELECT i.handle_id,i.task_attempt,i.boot_id,i.state,
+                          t.exit_code,t.unit_result
+                     FROM execution_intents i
+                     LEFT JOIN cpu_terminal_evidence t ON t.handle_id=i.handle_id
+                     WHERE i.handle_id=? AND i.task_attempt=?""",
                 (handle_id, task_attempt),
             ).fetchone()
         if row is None:
             raise GrantRejected("JOURNAL_EXECUTION_NOT_REGISTERED_HOLD")
-        return {"handle_id": row["handle_id"], "task_attempt": row["task_attempt"],
-                "state": "UNKNOWN"}
+        result = {"handle_id": row["handle_id"],
+                  "task_attempt": row["task_attempt"], "state": "UNKNOWN"}
+        if (row["boot_id"] == self.boot_id and row["state"] == "EXITED"
+                and type(row["exit_code"]) is int
+                and row["unit_result"] in ("success", "exit-code")):
+            return {**result, "state": "EXITED",
+                    "exit_code": row["exit_code"],
+                    "trusted_stop_receipt_available": False}
+        return result
 
     def claim_cpu_launch(self, handle_id: str, task_attempt: int,
                          envelope: object, *,
@@ -344,6 +362,65 @@ class ExecutionJournal:
                 "invocation_id": row["invocation_id"],
                 "control_group": row["control_group"],
                 "main_pid": int(row["main_pid"])}
+
+    def record_cpu_exit(self, handle_id: str, task_attempt: int, *,
+                        invocation_id: str, main_pid: int, exit_code: int,
+                        unit_result: str,
+                        cgroup_exit_type_verified: bool) -> dict:
+        """Persist an exact CPU-only systemd final state atomically, no recovery.
+
+        An UNKNOWN, unbound, replaced, or cross-boot identity cannot become
+        EXITED. A second terminal observation may only repeat identical proof.
+        """
+        if (not isinstance(invocation_id, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", invocation_id)
+                or type(main_pid) is not int or main_pid <= 1
+                or type(exit_code) is not int or not 0 <= exit_code <= 255
+                or unit_result not in ("success", "exit-code")
+                or (exit_code == 0) != (unit_result == "success")
+                or cgroup_exit_type_verified is not True):
+            raise GrantRejected("CPU_EXIT_EVIDENCE_INVALID_HOLD")
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT i.state,i.boot_id,o.invocation_id,o.main_pid,
+                          t.exit_code AS saved_exit,t.unit_result AS saved_result
+                     FROM execution_intents i
+                     JOIN cpu_unit_identities o ON o.handle_id=i.handle_id
+                     LEFT JOIN cpu_terminal_evidence t ON t.handle_id=i.handle_id
+                     WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["boot_id"] != self.boot_id
+                    or row["invocation_id"] != invocation_id
+                    or row["main_pid"] != main_pid):
+                raise GrantRejected("CPU_EXIT_IDENTITY_MISMATCH_HOLD")
+            if row["state"] == "EXITED":
+                if (row["saved_exit"] != exit_code
+                        or row["saved_result"] != unit_result):
+                    raise GrantRejected("CPU_EXIT_TERMINAL_REPLAY_MISMATCH_HOLD")
+            elif row["state"] == "RUNNING":
+                db.execute(
+                    """INSERT INTO cpu_terminal_evidence
+                       (handle_id,invocation_id,main_pid,exit_code,unit_result,recorded_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (handle_id, invocation_id, main_pid, exit_code,
+                     unit_result, int(time.time())),
+                )
+                changed = db.execute(
+                    """UPDATE execution_intents
+                       SET state='EXITED',event_seq=event_seq+1
+                       WHERE handle_id=? AND task_attempt=? AND state='RUNNING'""",
+                    (handle_id, task_attempt),
+                ).rowcount
+                if changed != 1:
+                    raise GrantRejected("CPU_EXIT_CONCURRENT_CHANGE_HOLD")
+            else:
+                raise GrantRejected("CPU_EXIT_UNVERIFIED_STATE_HOLD")
+            db.commit()
+        return {"handle_id": handle_id, "task_attempt": task_attempt,
+                "state": "EXITED", "exit_code": exit_code,
+                "trusted_stop_receipt_available": False}
 
     def mark_cpu_unknown(self, handle_id: str, task_attempt: int) -> None:
         """Crash/launch failure is UNKNOWN, *never* recyclable PREPARED."""

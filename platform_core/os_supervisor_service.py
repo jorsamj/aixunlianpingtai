@@ -176,12 +176,31 @@ class SupervisorService:
                             result={"state": "RUNNING",
                                     "handle_id": identity["handle_id"],
                                     "task_attempt": identity["task_attempt"]})
+                    terminal = self.cpu_trial_backend.verified_natural_exit(
+                        identity["unit_name"], identity["invocation_id"],
+                        original_control_group=identity["control_group"],
+                        original_main_pid=identity["main_pid"])
+                    saved = self.authorization_journal.record_cpu_exit(
+                        identity["handle_id"], identity["task_attempt"],
+                        invocation_id=terminal["invocation_id"],
+                        main_pid=terminal["main_pid"],
+                        exit_code=terminal["exit_code"],
+                        unit_result=terminal["unit_result"],
+                        cgroup_exit_type_verified=terminal["cgroup_exit_type_verified"])
+                    return self._reply(
+                        request_id, "CPU_TRIAL_EXIT_RECORDED_NO_STOP_RECEIPT",
+                        ok=True, result=saved)
                 except (GrantRejected, OSError, ValueError, sqlite3.Error):
                     pass
             if self.authorization_journal is not None:
                 try:
                     registered = self.authorization_journal.inspect(
                         payload["handle_id"], payload["execution_generation"])
+                    if (registered["state"] == "EXITED"
+                            and self.cpu_trial_backend is not None):
+                        return self._reply(
+                            request_id, "CPU_TRIAL_EXIT_RECORDED_NO_STOP_RECEIPT",
+                            ok=True, result=registered)
                     return self._reply(
                         request_id, "OS_EXECUTION_NOT_VERIFIED_HOLD", ok=False,
                         result=registered)

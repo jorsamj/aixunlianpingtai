@@ -144,3 +144,66 @@ def test_real_cpu_supervisor_journal_one_shot_start_and_stop(tmp_path):
         subprocess.run(
             ["/usr/bin/systemctl", "--system", "stop", "--", os_unit],
             capture_output=True, timeout=8, check=False)
+
+
+def test_real_cpu_natural_exit_persists_without_releasing_central_hold(tmp_path):
+    """Real fixed CPU systemd cgroup completion -> durable CPU-only EXITED."""
+    import hashlib
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from platform_core.os_supervisor_authorization import PURPOSE, _claims_payload
+    from platform_core.os_supervisor_journal import ExecutionJournal
+    from platform_core.os_supervisor_service import SupervisorService
+
+    assert os.geteuid() == 0
+    key = Ed25519PrivateKey.generate()
+    journal = ExecutionJournal(tmp_path / "natural.sqlite3", test_only_unprivileged=True)
+    scope = {
+        "task_id": "conv_real_terminal123", "task_attempt": 6,
+        "node_id": "ci-agent1", "worker_id": "agent:ci-agent1",
+        "execution_lease_sha256": hashlib.sha256(b"cpu-terminal-lease").hexdigest(),
+        "gpu_uuid": "CPU_ONLY", "boot_id": journal.boot_id,
+        "runner_profile": "fixed-cpu-v1",
+    }
+    nonce = journal.issue_challenge(scope)
+    now = int(time.time())
+    claims = {**scope, "purpose": PURPOSE, "challenge": nonce,
+              "issued_at": now, "expires_at": now + 15}
+    envelope = {"claims": claims, "signature": key.sign(_claims_payload(claims)).hex()}
+    registered = journal.register_intent(envelope, trusted_public_key=key.public_key())
+    handle = registered["handle_id"]
+    unit = "changlian-os-" + handle + ".service"
+    backend = FixedCpuSystemd()
+    service = SupervisorService(
+        tmp_path / "natural.sock", allowed_uid=10102, allowed_gid=10102,
+        authorization_journal=journal, trusted_public_key=key.public_key(),
+        cpu_trial_backend=backend)
+    start = {"version": 1, "request_id": "naturalstart1234", "action": "start",
+             "payload": {"handle_id": handle, "execution_generation": 6,
+                         "envelope": envelope}}
+    inspect = {"version": 1, "request_id": "naturalinspect1234", "action": "inspect",
+               "payload": {"handle_id": handle, "execution_generation": 6}}
+    try:
+        assert service.dispatch(start, peer_uid=10102)["result"]["state"] == "RUNNING"
+        deadline = time.monotonic() + 38
+        observed = None
+        while time.monotonic() < deadline:
+            observed = service.dispatch(inspect, peer_uid=10102)
+            if observed["result"]["state"] == "EXITED":
+                break
+            time.sleep(0.4)
+        assert observed["ok"] is True, observed
+        assert observed["result"]["state"] == "EXITED"
+        assert observed["result"]["exit_code"] == 0
+        assert observed["result"]["trusted_stop_receipt_available"] is False
+        restarted = SupervisorService(
+            tmp_path / "natural-restart.sock", allowed_uid=10102, allowed_gid=10102,
+            authorization_journal=ExecutionJournal(
+                journal.path, test_only_unprivileged=True),
+            trusted_public_key=key.public_key(), cpu_trial_backend=FixedCpuSystemd())
+        again = restarted.dispatch(inspect, peer_uid=10102)
+        assert again["ok"] is True and again["result"]["state"] == "EXITED"
+        assert restarted.dispatch(start, peer_uid=10102)["ok"] is False
+        assert restarted.dispatch({**inspect, "action": "stop"}, peer_uid=10102)["ok"] is False
+    finally:
+        subprocess.run(["/usr/bin/systemctl", "--system", "stop", "--", unit],
+                       capture_output=True, timeout=8, check=False)

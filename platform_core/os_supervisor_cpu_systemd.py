@@ -27,7 +27,8 @@ _WORKER = (
     "print('changlian-fixed-cpu-trial-done', flush=True)\n"
 )
 _PROPERTIES = (
-    "Type=exec", "DynamicUser=yes", "NoNewPrivileges=yes",
+    "Type=exec", "ExitType=cgroup", "RemainAfterExit=yes", "Restart=no",
+    "DynamicUser=yes", "NoNewPrivileges=yes",
     "PrivateDevices=yes", "DevicePolicy=closed",
     "KillMode=control-group", "SendSIGKILL=yes",
     "ProtectSystem=strict", "ProtectHome=yes",
@@ -39,7 +40,8 @@ _PROPERTIES = (
 )
 _SHOW = (
     "Id", "LoadState", "Transient", "ActiveState", "SubState",
-    "InvocationID", "ControlGroup", "MainPID",
+    "InvocationID", "ControlGroup", "MainPID", "ExecMainPID",
+    "ExitType", "RemainAfterExit", "Restart", "NRestarts",
     "PrivateDevices", "DevicePolicy", "KillMode", "DynamicUser",
     "NoNewPrivileges", "ExecMainCode", "ExecMainStatus", "Result",
 )
@@ -106,6 +108,10 @@ class FixedCpuSystemd:
                 or data.get("KillMode") != "control-group"
                 or data.get("DynamicUser") != "yes"
                 or data.get("NoNewPrivileges") != "yes"
+                or data.get("ExitType") != "cgroup"
+                or data.get("RemainAfterExit") != "yes"
+                or data.get("Restart") != "no"
+                or data.get("NRestarts") != "0"
                 or data.get("ActiveState") not in _ALLOWED
                 or not _INVOCATION.fullmatch(data.get("InvocationID", ""))):
             raise GrantRejected("CPU_SYSTEMD_PROTECTION_OR_IDENTITY_UNVERIFIED_HOLD")
@@ -122,6 +128,7 @@ class FixedCpuSystemd:
             "invocation_id": data["InvocationID"],
             "control_group": data.get("ControlGroup", ""),
             "main_pid": int(data.get("MainPID") or 0),
+            "exec_main_pid": data.get("ExecMainPID", ""),
             "active_state": data["ActiveState"],
             "sub_state": data.get("SubState", ""),
             "exec_main_code": data.get("ExecMainCode", ""),
@@ -134,6 +141,45 @@ class FixedCpuSystemd:
         if snapshot["invocation_id"] != expected_invocation:
             raise GrantRejected("CPU_SYSTEMD_INVOCATION_REPLACED_HOLD")
         return snapshot
+
+    def verified_natural_exit(self, unit: str, expected_invocation: str, *,
+                              original_control_group: str,
+                              original_main_pid: int) -> dict[str, Any]:
+        """Verify a fixed CPU unit's natural terminal state, never a StopReceipt.
+
+        ExitType=cgroup ensures systemd does not enter its final state while
+        descendants are still in the controlled cgroup. RemainAfterExit keeps
+        the exact transient unit and its exit details queryable. This is NOT
+        sufficient evidence for an arbitrary GPU process or a central retry.
+        """
+        name = _unit(unit)
+        if (original_control_group != "/system.slice/" + name
+                or type(original_main_pid) is not int or original_main_pid <= 1):
+            raise GrantRejected("CPU_EXIT_ORIGINAL_BOUNDARY_INVALID_HOLD")
+        evidence = self.inspect(name, expected_invocation)
+        state = (evidence["active_state"], evidence["sub_state"])
+        if state not in (("active", "exited"), ("failed", "failed")):
+            raise GrantRejected("CPU_EXIT_NOT_TERMINAL_HOLD")
+        if (evidence["control_group"] not in ("", original_control_group)
+                or evidence["main_pid"] != 0
+                or not evidence["exec_main_pid"].isdigit()
+                or int(evidence["exec_main_pid"]) != original_main_pid
+                or evidence["exec_main_code"] != "1"
+                or not evidence["exec_main_status"].isdigit()):
+            raise GrantRejected("CPU_EXIT_IDENTITY_OR_DESCENDANTS_UNVERIFIED_HOLD")
+        exit_code = int(evidence["exec_main_status"])
+        if (exit_code < 0 or exit_code > 255
+                or (exit_code == 0 and
+                    (state != ("active", "exited") or evidence["result"] != "success"))
+                or (exit_code > 0 and
+                    (state != ("failed", "failed") or evidence["result"] != "exit-code"))):
+            raise GrantRejected("CPU_EXIT_RESULT_INCONSISTENT_HOLD")
+        return {"invocation_id": expected_invocation,
+                "main_pid": original_main_pid,
+                "exit_code": exit_code,
+                "unit_result": evidence["result"],
+                "cgroup_exit_type_verified": True,
+                "trusted_stop_receipt_available": False}
 
     def request_stop(self, unit: str, expected_invocation: str) -> dict[str, Any]:
         """Actually stop the *same* systemd cgroup, never issue StopReceipt."""
