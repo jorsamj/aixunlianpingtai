@@ -25,6 +25,9 @@ class FakeSystemd:
         self.private_devices = "yes"
         self.log_invocation = INVOCATION
         self.log_unit = UNIT
+        self.substate_override = None
+        self.exec_main_pid = "82340"
+        self.exit_type = "cgroup"
 
     def __call__(self, argv, **kwargs):
         self.calls.append((argv, kwargs))
@@ -50,10 +53,15 @@ class FakeSystemd:
         fields = {
             "Id": UNIT, "LoadState": "loaded", "Transient": "yes",
             "ActiveState": self.state,
-            "SubState": "running" if self.state == "active" else "dead",
+            "SubState": self.substate_override or (
+                "running" if self.state == "active" else "dead"),
             "InvocationID": self.invocation,
             "ControlGroup": "/system.slice/" + UNIT if self.state == "active" else "",
-            "MainPID": "82340" if self.state == "active" else "0",
+            "MainPID": "0" if self.substate_override == "exited" else (
+                "82340" if self.state == "active" else "0"),
+            "ExecMainPID": self.exec_main_pid,
+            "ExitType": self.exit_type, "RemainAfterExit": "yes",
+            "Restart": "no", "NRestarts": "0",
             "PrivateDevices": self.private_devices,
             "DevicePolicy": "closed", "KillMode": "control-group",
             "DynamicUser": "yes", "NoNewPrivileges": "yes",
@@ -80,6 +88,8 @@ def test_fixed_only_systemd_service_start_inspect_stop_log():
     assert "--property=DevicePolicy=closed" in first
     assert "--property=KillMode=control-group" in first
     assert "--property=Type=exec" in first
+    assert "--property=ExitType=cgroup" in first
+    assert "--property=RemainAfterExit=yes" in first
     assert "/usr/bin/python3" in first
     assert "/bin/sh" not in first
     assert backend.read_log(UNIT, INVOCATION) == b"cpu-trial-start\n"
@@ -176,3 +186,27 @@ def test_protocol_log_cursor_only_on_scoped_read_log():
         with pytest.raises(SupervisorProtocolError):
             validate_request({**request, "action": action,
                               "payload": {**scope, "cursor": value}})
+
+
+def test_fixed_cpu_natural_exit_requires_original_invocation_and_cgroup_exit_type():
+    fake = FakeSystemd()
+    backend = FixedCpuSystemd(test_only_runner=fake)
+    backend.launch(UNIT)
+    fake.substate_override = "exited"
+    proof = backend.verified_natural_exit(
+        UNIT, INVOCATION, original_control_group="/system.slice/" + UNIT,
+        original_main_pid=82340)
+    assert proof["exit_code"] == 0
+    assert proof["cgroup_exit_type_verified"] is True
+    assert proof["trusted_stop_receipt_available"] is False
+    fake.exec_main_pid = "77330"
+    with pytest.raises(GrantRejected, match="IDENTITY_OR_DESCENDANTS"):
+        backend.verified_natural_exit(
+            UNIT, INVOCATION, original_control_group="/system.slice/" + UNIT,
+            original_main_pid=82340)
+    fake.exec_main_pid = "82340"
+    fake.exit_type = "main"
+    with pytest.raises(GrantRejected, match="PROTECTION_OR_IDENTITY"):
+        backend.verified_natural_exit(
+            UNIT, INVOCATION, original_control_group="/system.slice/" + UNIT,
+            original_main_pid=82340)
