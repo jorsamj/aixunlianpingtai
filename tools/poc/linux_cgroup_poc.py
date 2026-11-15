@@ -93,6 +93,27 @@ def cg_populated(mount: str, group: str) -> int | None:
     return None
 
 
+def cg_populated_from_pinned_handle(handle) -> int | None:
+    """Read cgroup.events from an FD opened while the original unit lived.
+
+    The FD is bound to that original cgroup; never use missing paths as proof.
+    Failure or inaccessible/dead FD => UNKNOWN, not an empty cgroup.
+    """
+    try:
+        handle.seek(0)
+        rows = handle.read().splitlines()
+    except (OSError, ValueError):
+        return None
+    for row in rows:
+        if row.startswith("populated "):
+            try:
+                value = int(row.split()[1])
+                return value if value in (0, 1) else None
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
 def wait_for(predicate, timeout: float = 6.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -191,6 +212,7 @@ def run_poc() -> tuple[dict, int]:
         started = False
         bound = False
         initial = {}
+        original_cgroup_events = None
         try:
             started = wait_for(lambda: (root / "launched").exists() and (root / "ready.json").exists(), 8)
             if not started:
@@ -215,6 +237,16 @@ def run_poc() -> tuple[dict, int]:
             if not bound:
                 result["outcome"] = "BOUNDARY_IDENTITY_UNKNOWN_HOLD"
                 return result, 3
+            if ".." in group.split("/"):
+                result["outcome"] = "INVALID_CGROUP_PATH_HOLD"
+                return result, 3
+            # Pin a handle to the original cgroup BEFORE requesting stop.
+            # This test never infers a stopped workload from a removed path.
+            original_cgroup_events = (Path(mount) / group.lstrip("/") /
+                                      "cgroup.events").open("r", encoding="utf-8")
+            if cg_populated_from_pinned_handle(original_cgroup_events) != 1:
+                result["outcome"] = "CGROUP_PIN_UNVERIFIED_HOLD"
+                return result, 3
             # Kill just the launcher (stand-in Agent), not the systemd unit.
             launcher.kill()
             launcher.wait(timeout=3)
@@ -237,10 +269,14 @@ def run_poc() -> tuple[dict, int]:
             if stopped.returncode != 0:
                 result["outcome"] = "STOP_UNVERIFIED_HOLD"
                 return result, 3
-            # Missing cgroup is explicitly UNKNOWN; never assume proof from a
-            # removed path. systemd may GC the unit immediately after stop.
+            # The transient unit may disappear immediately after stop. The
+            # pre-opened cgroup.events FD is tied to its *original* cgroup.
+            # A removed pathname is not interpreted as empty.
+            result["cgroup_path_after_stop"] = cg_populated(mount, group)
+            result["cgroup_handle_after_stop"] = cg_populated_from_pinned_handle(
+                original_cgroup_events)
             result["cgroup_empty_verified"] = wait_for(
-                lambda: cg_populated(mount, group) == 0, 2)
+                lambda: cg_populated_from_pinned_handle(original_cgroup_events) == 0, 2)
             # cgroup.events=0 is not sufficient if a previously-bound known
             # child has moved elsewhere and is still computing.
             known = ((ids["parent_pid"], ids["parent_ticks"]),
@@ -258,6 +294,8 @@ def run_poc() -> tuple[dict, int]:
             result["error_type"] = type(error).__name__
             return result, 3
         finally:
+            if original_cgroup_events is not None:
+                original_cgroup_events.close()
             if launcher.poll() is None:
                 launcher.kill()
             launcher.wait(timeout=3)
