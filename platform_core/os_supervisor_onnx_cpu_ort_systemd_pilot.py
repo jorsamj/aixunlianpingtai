@@ -95,7 +95,12 @@ def _root_runtime_verified():
         target = py.resolve(strict=True)
         s = target.stat()
         cfg = (_RUNTIME / "pyvenv.cfg").lstat()
-        if (link.st_uid != 0 or link.st_mode & 0o022
+        if (link.st_uid != 0
+                # Linux symlink mode 0777 is ignored by the kernel. Trust only
+                # a root-owned link resolving to our exact fixed OS binary.
+                or (not stat.S_ISLNK(link.st_mode)
+                    and (not stat.S_ISREG(link.st_mode)
+                         or link.st_mode & 0o022))
                 or target != Path("/usr/bin/python3.12")
                 or not stat.S_ISREG(s.st_mode) or s.st_uid != 0
                 or s.st_mode & 0o022 or not stat.S_ISREG(cfg.st_mode)

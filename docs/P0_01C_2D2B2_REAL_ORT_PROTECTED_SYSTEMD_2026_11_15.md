@@ -10,3 +10,6 @@ Next: verify exact SHA CI, fix regressions, then separately integrate central le
 
 ## First CI RED and minimum security fix
 Initial SHA fdac051e was rejected before model launch by ORT_RUNTIME_MUTABLE_HOLD: GitHub-hosted /opt did not satisfy trusted-root directory checks. Keep fail-closed; move CI-only fixed venv to root-controlled /run, preserving owner/mode and package checks. Revalidate exact new SHA; do not infer model execution success from prior test results.
+
+## Second CI RED and targeted fix
+SHA 9fa9ef65 passed root directory checks, but the venv/bin/python3 symlink was rejected because lstat reports symlink mode 0777 (not a writable-mode permission). Reject arbitrary links, keep root owner verification and the exact resolved /usr/bin/python3.12 allowlist, and ignore only symlink mode bits. New SHA must be independently tested before acceptance.
