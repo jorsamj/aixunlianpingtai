@@ -8,9 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from urllib.error import HTTPError, URLError
+from http.client import HTTPConnection, HTTPException
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
 
 from .os_supervisor_protocol import (
     SupervisedProcessHandle, SupervisorClient, SupervisorProtocolError,
@@ -44,9 +43,10 @@ class IsolatedCpuNetworkPilot:
                 or not execution_lease_token or not isinstance(boot_id, str)):
             raise ValueError("CPU pilot fixed execution identity required")
         self.supervisor = supervisor
-        self.grant_url = (
-            f"http://127.0.0.1:{url.port}/api/v63/node-executor/"
-            f"{node_id}/executions/{task_id}/supervisor-cpu/grant")
+        self.grant_port = url.port
+        self.grant_path = (
+            f"/api/v63/node-executor/{node_id}/executions/"
+            f"{task_id}/supervisor-cpu/grant")
         self.node_id = node_id
         self.task_id = task_id
         self.generation = execution_generation
@@ -71,17 +71,22 @@ class IsolatedCpuNetworkPilot:
             "boot_id": self.boot_id,
             "challenge": challenge,
         }, separators=(",", ":")).encode("utf-8")
-        request = Request(
-            self.grant_url, data=body, method="POST",
-            headers={"Content-Type": "application/json",
-                     "Authorization": "Bearer " + self.node_token})
+        # Direct TCP connection only: never use an OS proxy or forward the
+        # bearer token to an HTTP redirect location.
+        connection = HTTPConnection("127.0.0.1", self.grant_port, timeout=3.0)
         try:
-            with urlopen(request, timeout=3.0) as response:
-                if response.status != 200:
-                    raise SupervisorProtocolError("CPU_CENTRAL_GRANT_HTTP_HOLD")
-                data = response.read(_MAX_RESPONSE + 1)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            connection.request(
+                "POST", self.grant_path, body=body,
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer " + self.node_token})
+            response = connection.getresponse()
+            if response.status != 200:
+                raise SupervisorProtocolError("CPU_CENTRAL_GRANT_HTTP_HOLD")
+            data = response.read(_MAX_RESPONSE + 1)
+        except (HTTPException, TimeoutError, OSError) as exc:
             raise SupervisorProtocolError("CPU_CENTRAL_GRANT_UNAVAILABLE_HOLD") from exc
+        finally:
+            connection.close()
         if len(data) > _MAX_RESPONSE:
             raise SupervisorProtocolError("CPU_CENTRAL_GRANT_OVERSIZE_HOLD")
         try:
