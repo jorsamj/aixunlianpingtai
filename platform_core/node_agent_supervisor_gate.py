@@ -59,3 +59,25 @@ def assert_direct_remote_launch_permitted(
             "SUPERVISOR_REQUIRED_DIRECT_LAUNCH_BLOCKED: protected process "
             "supervisor launch and lifecycle adapter are not installed; "
             "remote training/conversion must not start unsupervised")
+
+# Only execution kinds that currently launch their own compute processes.
+# Model installation, cleaning, material operations, and deployment testing
+# are separate workstreams and must not be accidentally disabled here.
+DIRECT_COMPUTE_CAPABILITIES = frozenset({
+    "training", "conversion", "conversion.rknn",
+})
+
+
+def allowed_remote_capabilities(capabilities: list[str],
+                                environ: Mapping[str, str] | None = None
+                                ) -> list[str]:
+    """Keep the protected-only Agent from claiming tasks it cannot yet run.
+
+    This is admission control, not a claim that a supervisor is running.
+    Invalid configuration raises instead of silently enabling old runners.
+    """
+    mode = execution_boundary_mode(environ)
+    if mode == REQUIRED:
+        return [value for value in capabilities
+                if value not in DIRECT_COMPUTE_CAPABILITIES]
+    return list(capabilities)
