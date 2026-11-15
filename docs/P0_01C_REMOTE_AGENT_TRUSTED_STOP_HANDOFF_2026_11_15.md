@@ -401,3 +401,24 @@
 详细阶段 0–5、每一步修改范围、单类 Runner 验收、回滚约束、常见失败模式见：[P0-01C Supervisor 渐进式实施方案](P0_01C_SUPERVISOR_INCREMENTAL_IMPLEMENTATION_PLAN_2026_11_15.md)。
 
 **本轮只写入 GitHub 方案/交接文档**，不连接 A800/4070，不操作生产数据库/训练任务，不切换默认模式，不合并 main、不 Release。生产继续 HOLD、自动派单 OFF、NO-GO。
+
+## 22. 2026-11-15｜真正进入阶段 1A：独立 OS Supervisor Socket 服务与句柄合同已提交
+
+本轮按第 21 节冻结的渐进式方案**实际新增正式模块**，不是另做纯模拟 PoC，也不变更现有训练/转换/复核 Runner。重点先建立服务通信与进程句柄**严格不可误用的边界**，不冒进启动真实进程。
+
+### 新交付
+
+- `platform_core/os_supervisor_protocol.py`：版本 1 的 16 KiB 长度帧/严格 JSON schema、动作白名单 `health/inspect/start/stop/read_log`、随机 request_id 和响应 ID 验证；Linux `SO_PEERCRED` 检查**服务端 UID**（生产默认必须 root）；`SupervisedProcessHandle` 独立于 `subprocess.Popen`，`poll()` 只能在完整 EXITED + 合法 int exit code 时返回退出码，UNKNOWN/不可信/网络断开全部 HOLD。
+- `platform_core/os_supervisor_service.py`：真实独立 AF_UNIX Socket 服务，内核 `SO_PEERCRED` 检查**调用方非 root Agent UID**；root 运行模式固定 `/run/changlian-os-supervisor/control.sock`，拒绝现存 Socket、符号链接父目录和未知所有者；受限 socket 目录权限、请求大小/超时和结束清理。没有暴露 shell、kill 或任意可执行文件接口。
+- **刻意禁用所有执行副作用**：`start` 明确 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`、`stop` 明确 `PROTECTED_STOP_NOT_IMPLEMENTED_HOLD`、`inspect` 为 `UNKNOWN` + HOLD、日志读取不可用。health 虽响应成功，但 `launch_available=false`、`stop_available=false`、`trusted_stop_receipt_available=false`、`central_recovery_allowed=false`。
+- `tests/unit/test_os_supervisor_phase1.py` 已新增必要回归，复用**现有** `.github/workflows/node-agent-executor.yml` 的 Ubuntu/Windows/API 工作流，不新建独立重复 CI；开发时本地 Linux 非 root 实测同类 Socket 协议 **31 passed**。
+- 确切 GitHub 代码/CI SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`；[Node Agent Executor run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 在此节写入时 Ubuntu/Windows/API **仍 queued**，不宣称已完成远端验收。
+
+### 还不能做什么
+
+- 这仍不是生产可用的完整 Supervisor：**没有真实 central grant 校验、启动前持久 OS boundary journal、systemd/cgroup 启动/停止、日志与退出码真实来源、root-only 长期签名密钥或 StopReceipt**；不能把已建立 Socket 误当作可运行/可恢复的任务。
+- 正式 Agent/Training/Conversion/Deployment 没有 import/使用此模块；`supervisor-required` 依旧是**拒绝普通计算直启的安全阻断**，不要现在在生产启用。
+- 下一步阶段 1B 先开发**可信任务执行授权和持久 handle 登记**，随后阶段 2 才让独立服务通过固定执行器实际启动一个隔离 CPU worker，再逐步适配模型转换→训练→复核。严禁一次重构全部 Runner。
+- 生产 A800/双4070、GPU/OSS/SQLite/真实任务未操作。继续中央 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、原 owner/lease/`tasks.attempt`/GPU reservation、自动派单 OFF、生产 NO-GO。
+
+详细代码清单、阶段差异、明示的禁区见：[P0-01C Supervisor 阶段 1A 通信服务](P0_01C_SUPERVISOR_PHASE1_TRANSPORT_2026_11_15.md)。
