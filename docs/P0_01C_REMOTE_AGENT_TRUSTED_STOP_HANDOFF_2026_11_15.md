@@ -317,3 +317,27 @@
 - **安全基线不变：**`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、旧 owner/`tasks.attempt`/GPU reservation、自动派单 OFF、生产 **NO-GO**；没有对任何生产节点执行命令。
 
 完整实验和源码路径：[P0-01C-3B-2 Linux Supervisor 权限实测专项](P0_01C_3B_2_LINUX_SUPERVISOR_PRIVILEGE_PROBE_2026_11_15.md)。
+
+## 18. 2026-11-15 P0-01C-3B-3 完成：Unix Socket / SO_PEERCRED 与 unit 外独立 CPU 存活反例
+
+> **阶段结论：隔离安全验证已成功，发现原 unit 空组并不代表节点无其他计算。生产仍 NO-GO。**
+
+### 18.1 本轮新代码和 CI 验证
+
+- 新增 `tools/poc/linux_supervisor_ipc_probe.py`：仅显式 `--run --github-ephemeral-only`、GitHub-hosted 非 self-hosted Ubuntu 22.04/root 临时机才可执行；临时创建不同的 Agent/workload UID，随机 root-owned systemd SYSTEM unit、root-only 私有目录、`AF_UNIX` socket（`root:<agent_gid>`，权限 0660），通过 Linux 内核 `SO_PEERCRED` 验证 socket 请求者 UID。服务端**只有 `request_stop_admission` 测试准入方法**，不提供直接 stop/kill/shell/签发证明的 API。
+- 测试仅接受登记过的 synthetic `task_id+generation+unit+boot_id+InvocationID+challenge_id+nonce`；拒绝错误 UID、跨代/类型欺骗、错 unit/任务/nonce、过期/重放/多余字段、非白名单方法。根私有文件只能 root 读取；禁止普通 Agent/workload 读取。
+- **关键负面反证**：普通 Agent UID 可以在原受控 unit **外**启动另一份 CPU 程序，`/proc/<pid>` UID/start_ticks 和独立 cgroup 已验证。root 关闭**原受控** systemd unit、确认原 cgroup `populated=0` 且该 unit 的原已知主进程退出后，**另一份 unit 外 CPU 程序仍在执行**。这并不是“原已登记训练子进程已成功逃出受控 unit”的证明，而是**未受管控的新计算可与受控 unit 停机并存**，提醒未来 GPU 设备访问必须有额外安全约束。
+- 新增 `tools/poc/test_linux_supervisor_ipc_probe_contract.py`，并扩展 `.github/workflows/linux-supervisor-privilege-probe.yml`；原 3B-2 Supervisor 权限分离真实实验依然执行。
+- **GitHub-hosted 真实 CI 最终 PASS**：[run 43674960801](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674960801)，精确代码 SHA `2ef3bf0b6408347f043afb006a5c63fc27c1d8df`，**54/54 合同通过**，3B-2 实际 Supervisor 阶段 SUCCESS，3B-3 真实 Socket / unbound CPU 阶段 SUCCESS。
+- 原始 3B-3 日志：`workload_socket_permission_denied=true`、`unauthorized_peer_credential_rejected=true`（短暂 chmod 0666 仍由内核 `SO_PEERCRED` 判错 UID）、`wrong_scope_denied=true`、`authorized_request_admitted_once=true`、`replay_rejected=true`、`agent_secret_read_denied=true`、`workload_secret_read_denied=true`、`controlled_unit_stopped=true`、**`unbound_cpu_spawn_possible=true`、`unbound_cpu_survived_controlled_stop=true`**。
+- 结果 `EXPECTED_ESCAPE_COUNTEREXAMPLE_AND_IPC_CONTRACT_PASS_NOT_STOP_PROOF`；依然 **`real_stop_proof_implemented=false`、`production_recovery_allowed=false`**，没有生成正式可信 OS StopReceipt，也没有改真实数据库或 GPU 预留。
+- 中间两轮 CI 历史：`c303a9c` 在 [run 43674713650](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674713650) 因测试参数名 `request` 是 pytest 保留名字而 collection ERROR（未运行 OS 阶段）；`6683b66` 在 [run 43674891679](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674891679) 为 **53/54**，真实 Socket 测试错误使用历史固定 `monotonic_ns` 导致正确拒绝过期挑战（未运行 OS 阶段）。最终代码仅精确修正测试参数和时钟，没有削弱 fail-closed 验证。
+
+### 18.2 仍欠缺的生产安全能力（不允许解锁）
+
+- **真正受保护的 OS Execution Supervisor** 还不是生产长期守护进程：缺启动前执行身份登记、系统 UID/Unix socket 信任模型落地、私钥轮换/撤销、公钥注册、独立证据持续性、boot/InvocationID/启动代数持久链、离线重启、中央挑战绑定与签发防重放。
+- GitHub VM CPU 没有证明**真实 NVIDIA/Ascend/GPU 驱动设备访问控制**；即使 unit 的 cgroup 有 `populated=0`，普通 Agent 可能继续单独执行程序，是否能占 GPU 未验收。真实设备策略要按 A800、双4070 的运行账户和 `/dev/nvidia*` 权限先只读审计、再进行受控硬件 UAT，必须事先获用户授权。
+- 当前 Agent 训练与转换的 `launch_process` 没有适配 Supervisor，Node Agent 的现有所有权约束继续 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD；不能据此接 P0-01C-3C 真实中央可恢复 API。
+- 继续**默认自动派单 OFF、原 task/lease/`tasks.attempt`/GPU reservation 保留、生产 NO-GO**。本轮没有访问 A800、4070 或生产数据库、没有合并 main、发布 Release、部署/重启任何生产服务。
+
+**专项完整报告与下步建议：** [P0-01C-3B-3 独立进程与 Socket 安全验证](P0_01C_3B_3_UNBOUND_COMPUTE_AND_IPC_2026_11_15.md)。
