@@ -451,3 +451,9 @@
 5. 每阶段更新主交接、Issue #26、代码提交 SHA、具体 CI 与已/未完成证据，禁止笼统“CI 全绿”或“生产可用”。
 
 **绝对限制不变**：不合并 main、不强推、不 Release、不访问/部署/重启 A800/双4070、不操作真实任务、GPU/数据库，默认 `legacy`，自动派单 OFF、远程 HOLD、原 worker/lease/`tasks.attempt`/GPU reservation、生产 **NO-GO**。
+
+### 23.3 同日 GitHub CI 最终追补：43679484571 现已失败，且失败原因确认重复
+
+在第 23 节写入以后，[43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 发生状态变化，已 **completed/failure**：Ubuntu contract **success**，Windows 主单元 **473 passed/2 skipped** 但后续 Linux cgroup PoC 用例调用 Windows 缺少的 `os.getsid`（1 failed/30 passed）；API 24 项测试通过但旧 `reported_capabilities = executable_agent_capabilities(...)` 的 grep guard 已落后于现有 `allowed_remote_capabilities(...)` 而失败。此前 [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) 有相同两类问题。**真正阶段 1A** [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 此时仍 queued。上述最新状态已同步到 [阶段 1A 新会话交接文档](P0_01C_SUPERVISOR_STAGE1A_HANDOFF_AND_NEXT_STEPS_2026_11_15.md) 和 [复制提示词](P0_01C_NEW_SESSION_CONTINUATION_PROMPT_2026_11_15.md)。
+
+**下一会话第一步不变**：先小范围修复确切的 Windows/CI guard/START 协议矛盾，取得现有工作流的实际结果，再进入阶段 1B；无任何生产操作授权。
