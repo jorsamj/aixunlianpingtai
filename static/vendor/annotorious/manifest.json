@@ -3,11 +3,20 @@
   "version": "3.9.5",
   "license": "BSD-3-Clause",
   "upstream_git_head": "f780879410ff4f2d4fd0b2cb1ae1bd596a40fe65",
-  "method": "Exact official npm browser artifact copy; no network, compile or second bundler",
+  "method": "Pinned official npm browser artifact plus one audited first-history guard patch; no network or new bundler",
+  "patches": {
+    "annotorious.js": {
+      "upstream_sha256": "66a2ac758870234b7102b5e6ad93082c4f8bb23d0d47b296df7e032f2c92a1c5",
+      "description": "History coalescer must append, not merge, when there is no previous change and first input arrives before 250ms",
+      "original": "if(v-r>gs)o.splice(i+1),o.push(y),i=o.length-1;else{const w=o.length-1;o[w]=fs(o[w],y)}",
+      "replacement": "if(v-r>gs||o.length===0)o.splice(i+1),o.push(y),i=o.length-1;else{const w=o.length-1;o[w]=fs(o[w],y)}",
+      "source_map_note": "Unmodified upstream source map; generated offsets after the insertion may differ"
+    }
+  },
   "files": {
     "annotorious.js": {
-      "bytes": 116834,
-      "sha256": "66a2ac758870234b7102b5e6ad93082c4f8bb23d0d47b296df7e032f2c92a1c5"
+      "bytes": 116848,
+      "sha256": "9bdfd34307d3e70bf50f4a1e338ad29018b20c562704756d14b3575ca24088f9"
     },
     "annotorious.css": {
       "bytes": 4941,
@@ -126,5 +135,5 @@
     "../../../node_modules/uuid/dist/stringify.js",
     "../../../node_modules/uuid/dist/v4.js"
   ],
-  "note": "Installed dependency inventory is from the lockfile; it is not a claim about every embedded dependency build version. Official artifact checksums are authoritative."
+  "note": "Installed dependency inventory is from the lockfile; upstream artifact checksum is verified before applying the one-site patch. The unchanged official source map may have shifted generated offsets after the patch; this is not a claim of byte-identical upstream JS."
 }

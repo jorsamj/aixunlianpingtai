@@ -84,6 +84,27 @@ test('official offline Annotorious draws, selects, moves, resizes and preserves 
   await expect.poll(() => page.evaluate(() => poc.events.filter(e => e.name === 'createAnnotation').length)).toBe(2);
 });
 
+test('first rectangle during an empty history under 250ms still emits createAnnotation', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await openPoc(page);
+  // Deterministically reproduce the official 3.9.5 history bug: its original
+  // implementation tried to merge the first change into an absent previous
+  // entry when performance.now() was below its 250ms merge window.
+  await page.evaluate(() => Object.defineProperty(performance, 'now', {
+    configurable: true, value: () => 100,
+  }));
+  try {
+    await dragPixels(page, [70, 80], [160, 150]);
+  } finally {
+    await page.evaluate(() => { delete performance.now; });
+  }
+  await expect.poll(async () => (await geometry(page))?.w).toBeCloseTo(90, 3);
+  await expect.poll(() => page.evaluate(() =>
+    poc.events.filter(e => e.name === 'createAnnotation').length)).toBe(1);
+  expect(pageErrors).toEqual([]);
+});
+
 test('official setAnnotations round trip, visible subset filtering, cancel and destroy use only public APIs', async ({page}) => {
   await openPoc(page);
   const result = await page.evaluate(() => {

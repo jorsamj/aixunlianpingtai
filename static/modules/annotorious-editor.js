@@ -19,7 +19,7 @@ export function loadAnnotorious(doc = document) {
     const loadedScript=()=>{jsReady=!!globalThis.Annotorious?.createImageAnnotator;if(jsReady)finish();else failed();};
     css.addEventListener('load',loadedCss);css.addEventListener('error',failed);signal.addEventListener('abort',aborted,{once:true});
     if(ownCss)doc.head.appendChild(css);
-    if(!jsReady){script=doc.createElement('script');script.src='/static/vendor/annotorious/annotorious.js?v=3.9.5';script.addEventListener('load',loadedScript);script.addEventListener('error',failed);doc.head.appendChild(script);}
+    if(!jsReady){script=doc.createElement('script');script.src='/static/vendor/annotorious/annotorious.js?v=3.9.5-history1';script.addEventListener('load',loadedScript);script.addEventListener('error',failed);doc.head.appendChild(script);}
     finish();
   }),{timeoutMs:30000,label:'本地标注组件加载'}).catch(error=>{assets=null;if(error.code==='REQUEST_TIMEOUT')throw Object.assign(new Error('本地标注组件加载超时，请重试'),{code:error.code});throw error;});
   return assets;

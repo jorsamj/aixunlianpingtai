@@ -42,3 +42,23 @@
 ## 第二次精确 CI 路径合同修复（2026-11-15）
 
 代码 SHA `c3062b2eeaec0ce6a9549ca0c9a06c7c19bda8a9` 的 Ubuntu CI 已通过 /var/lib 新目录创建、findmnt 挂载检查、固定版本包安装，但在 `sudo chown -R root:root /run/changlian-onnxruntime-cpu-pilot` 阶段发现两处未同步的旧 chown/chmod 目标，报文件不存在。**仍未执行原生 NumPy/ORT 导入与真实推理，不能声称迁移验收。** 本轮仅将同一步骤残留的两处权限目标修正到受信任的 /var/lib 目录，保留所有 root 权限、安全启动和真推理验证。新 SHA 再验。
+
+
+## CI 前端历史问题的真实根因与精准修复（2026-11-15）
+
+代码 SHA `4734f8e2cf3e23d3b321bf14be110b82cc9d77a9`：23 个 GitHub Actions 中 22 成功，Frontend Runtime Stabilization 唯一失败；失败 Job `132860731622`（browser-navigation shard 1）为 130 passed / 1 failed：`tests/browser/annotorious-poc.spec.mjs:48` 在 5 秒内未收到 `createAnnotation`。
+
+通过失败 Job 上传的实际 Playwright `trace.zip` 确认，在**第一次鼠标画框松开**时，浏览器发生真实 `pageError`：
+
+`TypeError: Cannot read properties of undefined (reading 'created')`
+发生在官方离线 Annotorious 3.9.5 的历史合并函数 `fs`，其调用者在 `performance.now() <= 250 ms` 且历史数组为空时，试图与不存在的历史记录合并。标注几何数据已创建、但 `createAnnotation` 事件链中断，因此不是单纯的测试等待时长问题。
+
+**处理原则：修根因，不掩盖红灯，不升级不审计的新版本。**
+
+- 保持已固定的 Annotorious 3.9.5 与许可证。仅在 `tools/vendor_annotorious.mjs` 从**精确核验上游 SHA256** 的发行文件生成本地资产时，补一条 `o.length===0` 的空历史守卫；历史非空时保持原 250 ms 合并行为。Vendor 文件变更量仅一条表达式，其他源文件及许可证原样保留。
+- `static/vendor/annotorious/manifest.json` 明确记录上游原始 SHA256、唯一 patch site、原/新表达式及补丁后文件长度/摘要；NOTICE 明示本地补丁，不再声称与官方 JS 字节完全一致。`annotorious.js.map` 保留官方原文件并明确标注补丁后的偏移可能与源映射不同。
+- `tests/frontend/annotorious-assets.test.mjs` 继续通过真实离线 `vendor_annotorious.mjs --check` 核验可重现性，并验证补丁出处、哈希、长度及新 JS 缓存键。
+- `tests/browser/annotorious-poc.spec.mjs` 新增**真实 Chrome 快速首画**回归，在独立 PoC 页面明确把第一笔历史时钟固定在 100 ms（小于 250 ms），仍通过真实鼠标事件创建矩形、要求对外 `createAnnotation` 事件且无 JS pageError。不改变业务 GT / 候选审核语义。
+- 正式浏览器入口 `static/modules/annotorious-editor.js` 的 vendor JS URL 仅变更缓存标识为 `?v=3.9.5-history1`，确保后续部署更新时不会沿用旧已缓存脚本，CSS/生产任务无变化。
+
+本修复仅涉及前端离线三方组件的**一个历史空栈边界**及回归测试；没有把测试超时改大、跳过/删除失败用例，也没有修改 `AgentConversionRunner`、GT API、中央任务、GPU、A800 或 4070。**新的完整 CI 需按实际准确 SHA 再验，不可借先前 2D-2C3 23/23 宣称本次全绿。**
