@@ -37,3 +37,8 @@
 精确修复：将**仅用于 GitHub 隔离 CI 的 root-owned ORT venv** 迁移至 `/var/lib/changlian-onnxruntime-cpu-pilot/venv`；增加 `/var`、`/var/lib` 的逐级 root owner/权限校验，并在 CI 创建前使用 `findmnt -T` 显式拒绝 noexec。固定的 ONNXRuntime/NumPy 版本、root-only 文件审核、systemd Protected/Sandbox、可信 ONNX 输入存放在 `/run` 不变。继续运行真实 native import 和原 2 条 real ORT systemd 用例，不允许 skip。
 
 本轮仅修改 CI-only runtime 配置、原 unit 断言、原 Node Agent CI 工作流及本文档；正式业务 Runner、前端、A800、4070 均未改变。**新 SHA 的全仓 CI 状态必须另核。**
+
+
+## 第二次精确 CI 路径合同修复（2026-11-15）
+
+代码 SHA `c3062b2eeaec0ce6a9549ca0c9a06c7c19bda8a9` 的 Ubuntu CI 已通过 /var/lib 新目录创建、findmnt 挂载检查、固定版本包安装，但在 `sudo chown -R root:root /run/changlian-onnxruntime-cpu-pilot` 阶段发现两处未同步的旧 chown/chmod 目标，报文件不存在。**仍未执行原生 NumPy/ORT 导入与真实推理，不能声称迁移验收。** 本轮仅将同一步骤残留的两处权限目标修正到受信任的 /var/lib 目录，保留所有 root 权限、安全启动和真推理验证。新 SHA 再验。
