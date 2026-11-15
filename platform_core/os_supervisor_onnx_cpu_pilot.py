@@ -81,6 +81,13 @@ def _pinned_source_bytes(path: Path, *, expected_size: int, sha256: str) -> byte
         try:
             start = os.fstat(fd)
             def signature(s):
+                if os.name == "nt":
+                    # Windows file metadata from lstat() and CRT fstat() can
+                    # disagree after a write/replace, even for one open handle.
+                    # The bounded bytes read from THIS fd must still match the
+                    # central frozen SHA256 and length. This pilot grants NO OS
+                    # execution authority on Windows.
+                    return (s.st_size,)
                 return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
             if not stat.S_ISREG(start.st_mode) or start.st_nlink != 1 or signature(initial) != signature(start):
                 raise GrantRejected("CPU_ONNX_PILOT_FILE_IDENTITY_CHANGED_HOLD")
