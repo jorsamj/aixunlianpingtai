@@ -422,3 +422,32 @@
 - 生产 A800/双4070、GPU/OSS/SQLite/真实任务未操作。继续中央 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、原 owner/lease/`tasks.attempt`/GPU reservation、自动派单 OFF、生产 NO-GO。
 
 详细代码清单、阶段差异、明示的禁区见：[P0-01C Supervisor 阶段 1A 通信服务](P0_01C_SUPERVISOR_PHASE1_TRANSPORT_2026_11_15.md)。
+
+## 23. 2026-11-15｜新会话正式交接：阶段 1A 代码已提交、远端验收未完成，先修三项已定位问题
+
+用户要求写好**当前进度、下一步怎么做与可复制的新会话接续提示词**。已建立一份更完整的优先接续文档，并将关键风险加入新会话工作顺序：
+
+- **主交接**：[P0-01C Supervisor 阶段 1A 完整进度/缺陷/下一步](P0_01C_SUPERVISOR_STAGE1A_HANDOFF_AND_NEXT_STEPS_2026_11_15.md)；
+- **复制提示词**：[P0-01C 新会话接续执行提示词](P0_01C_NEW_SESSION_CONTINUATION_PROMPT_2026_11_15.md)；
+- **冻结架构**：[Supervisor 渐进实施方案](P0_01C_SUPERVISOR_INCREMENTAL_IMPLEMENTATION_PLAN_2026_11_15.md)；
+- **阶段 1A 源码交付**：`platform_core/os_supervisor_protocol.py`、`platform_core/os_supervisor_service.py`、`tests/unit/test_os_supervisor_phase1.py`。真实受保护执行后端、可信中央 grant/本机 journal、StopReceipt、生产 GPU ACL 未开发。
+
+### 23.1 当前明确 CI 状态与三个有证据的问题
+
+2026-11-15 本次 GitHub 核查，原长期分支 HEAD `2584367c55cba24da8507b5fb2518d09eed6003f`；文档和提示词写入后 HEAD 将发生变化，新会话**必须重新核实**。
+
+- [Node Agent run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)：对应阶段 1A 代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`，Ubuntu/Windows/API **当时均 queued**。
+- [Node Agent run 43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571)：较早代码 SHA `c66ef5678c9dd86cd681c67a1623baacc5217e3d`，当时亦 queued。
+- [Node Agent run 43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190)：**completed/failure**，Ubuntu contract 成功，但 Windows 的 Linux 专用单测在 `tests/unit/test_linux_cgroup_poc_contract.py:226` 调用缺失的 `os.getsid` 而失败；API guard 因旧 `grep 'reported_capabilities = executable_agent_capabilities(requested_capabilities)'` 已与实际代码的 `allowed_remote_capabilities()` 不匹配而失败。Windows 主合同本身 472 passed / 2 skipped，后续 Linux 专项合同 30 passed / 1 failed，不能描述成所有 Node Agent 功能单测失败。
+- **新核实的阶段 1A 代码/测试矛盾**：`os_supervisor_protocol.py` 的 `start` 空 payload 先抛 `START_NOT_IMPLEMENTED`，而 `os_supervisor_service.py` 希望返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`，`test_os_supervisor_phase1.py` 断言后者。下轮须统一拒绝语义且**绝不能开放真实未授权进程启动**。
+- 因有上述实际代码不一致，前轮描述过的“本地 31 项通过”**不能用作准确当前代码版本的远端验收证据**。阶段 1A 正确结论是**代码已提交，CI 未放行**。
+
+### 23.2 下轮固定执行顺序
+
+1. 先核对唯一开发分支 HEAD、最新 GitHub Actions 与失败日志；
+2. **先小修 1A 回归问题**：Windows POSIX-only 单测、过时 CI grep、协议 start 拒绝路径不一致；复用原 Node Agent Ubuntu/Windows/API 工作流确认同一准确 SHA 的 CI 全结束，不删安全断言、不做无意义重复压测；
+3. 然后才进行**阶段 1B**：可信中央执行授权、受保护本机持久 journal/幂等句柄、防回复丢失后重复启动。尚不接正式训练/转换/复核 Runner；
+4. 再阶段 2 真实固定 CPU worker，阶段 3 单类转换→训练→复核，最后经用户明确批准的实机 GPU 权限验收和 StopReceipt/中央 CAS；
+5. 每阶段更新主交接、Issue #26、代码提交 SHA、具体 CI 与已/未完成证据，禁止笼统“CI 全绿”或“生产可用”。
+
+**绝对限制不变**：不合并 main、不强推、不 Release、不访问/部署/重启 A800/双4070、不操作真实任务、GPU/数据库，默认 `legacy`，自动派单 OFF、远程 HOLD、原 worker/lease/`tasks.attempt`/GPU reservation、生产 **NO-GO**。
