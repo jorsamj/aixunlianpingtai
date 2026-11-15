@@ -409,3 +409,14 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 [`4bd8d6e2701d5d597006a44c31942ab5d32224d2`](https://github.com/jorsamj/aixunlianpingtai/commit/4bd8d6e2701d5d597006a44c31942ab5d32224d2) 对应 **23/23 GitHub Actions workflows completed/success**；[Node Agent push 43712286657](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712286657) Ubuntu **591 passed/2 skipped**、实际原 `deployment_worker.py` ONNX CPU Runtime **1 passed**、真实 CPU systemd E2E **4 passed**，Windows/API 同时 SUCCESS；[Node Agent PR 43712291447](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712291447)、[Portable Deployment 43712291391](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712291391)、[Frontend Runtime Stabilization 43712286650](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712286650) 也全成功。此前第 19.1 节的「全仓仍待核实」仅是历史中间状态。
 
 **验收口径：仅 CPU-only 已有 ONNX 输入受限 preflight + 隔离环境原 Worker 真 ONNX 校验，不含生产 GPU 可信停止、正式 Supervisor Runner 接线或自动重排。下一步先做 ONNX graph external-data 与防 TOCTOU，再推进受保护 CPU-only OS 运行和中央任务 lease 的纵向验证。**
+
+## 20. P0-01C 阶段 2D-2A｜ONNX 外部数据拒绝与 pinned FD 核验快照
+
+- **已验收基线**：2D-1 功能 SHA `4bd8d6e2701d5d597006a44c31942ab5d32224d2`，GitHub Actions **23/23 SUCCESS**。
+- **本轮代码**：[`cee26a5c2a47d706ce35548d9b6840a4fd0a674b`](https://github.com/jorsamj/aixunlianpingtai/commit/cee26a5c2a47d706ce35548d9b6840a4fd0a674b)；`platform_core/os_supervisor_onnx_cpu_pilot.py`、两组测试及 Node Agent CI 依赖，**没有修改业务 Runner 和生产执行模式**。
+- 审核关键：通过 `onnx.load_model_from_string()` 对**内存内字节**解析，不调用可能读取外部文件的 `onnx.load(path)`；遍历全部 protobuf message，拒绝 TensorProto `data_location=EXTERNAL` 或任意 `external_data`，覆盖初始化权重、GRAPH 属性嵌套、Tensor 属性、SparseTensor、training graph 等，拒绝缺少 ONNX parser、错误 protobuf、过深图。
+- 在最小预检阶段对源文件采用不跟随最终 symlink 的**单一打开 FD**读取，限制 64 MiB，并核验大小、SHA256、inode/device/ctime/mtime 变化与 hardlink；隔离真实 Worker 仅读取根据这些**已校验 bytes**新生成的独占 `verified.onnx`，不重开原 source path，因此即使原路径在检查后被替换，测试执行的也是原先核验的字节。
+- [Node Agent push run 43714250767](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43714250767) Ubuntu 主合同 **599 passed / 2 skipped**、真实 ONNX CPU `1 passed`、原 Linux systemd `4 passed`，已成功；**同 SHA 的 Windows、PR 和其余 23 个工作流在首次记录时仍需最终核对，绝不能冒充全仓已绿**。
+- 重要边界：这是**隔离 CPU Pilot 的字节输入保护**，`materialize_cpu_pilot_snapshot` 自身**不能阻止同 UID 用户修改**生成的文件，不能当作 root-owned 不可变输入或 OS 安全沙箱；解析 ONNX/运行 ORT 也不能作为其进程已安全退出的 StopReceipt。生产 A800/双4070、中央任务 attempt/lease、正式 Runner、GPU reservation 及自动重派均未修改。
+- 详见 [`P0_01C_2D2_ONNX_EXTERNAL_DATA_FD_SNAPSHOT_2026_11_15.md`](P0_01C_2D2_ONNX_EXTERNAL_DATA_FD_SNAPSHOT_2026_11_15.md)。
+
