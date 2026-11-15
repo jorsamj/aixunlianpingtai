@@ -403,3 +403,9 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 
 - 新代码 [`4bd8d6e2701d5d597006a44c31942ab5d32224d2`](https://github.com/jorsamj/aixunlianpingtai/commit/4bd8d6e2701d5d597006a44c31942ab5d32224d2) 修复首轮 `16397cc0` 的 `GrantRejected` 被当成 `OSError` 二次包装问题，保留文件边界 HOLD 精确原因。首轮一项 unit RED 后新 SHA Ubuntu 主合同 **591 passed/2 skipped**，真实 ONNX CPU E2E **1 passed**，真实 systemd **4 passed**；Node Agent Windows / API 已成功。
 - **全仓 CI 当前仍按最终运行结果核实**，不得把核验中的前端/其余 workflow 当成已经通过。新增 CPU preflight 仅是本地文件条件核验，不提供中央授权、不可变输入 fd、ONNX graph `external_data` 禁止、OS Supervisor 真实业务 Runner 接线或可信 StopReceipt；全部上线仍 NO-GO。
+
+### 19.2 2D-1 准确代码 SHA 的 CI 最终结果
+
+[`4bd8d6e2701d5d597006a44c31942ab5d32224d2`](https://github.com/jorsamj/aixunlianpingtai/commit/4bd8d6e2701d5d597006a44c31942ab5d32224d2) 对应 **23/23 GitHub Actions workflows completed/success**；[Node Agent push 43712286657](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712286657) Ubuntu **591 passed/2 skipped**、实际原 `deployment_worker.py` ONNX CPU Runtime **1 passed**、真实 CPU systemd E2E **4 passed**，Windows/API 同时 SUCCESS；[Node Agent PR 43712291447](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712291447)、[Portable Deployment 43712291391](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712291391)、[Frontend Runtime Stabilization 43712286650](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712286650) 也全成功。此前第 19.1 节的「全仓仍待核实」仅是历史中间状态。
+
+**验收口径：仅 CPU-only 已有 ONNX 输入受限 preflight + 隔离环境原 Worker 真 ONNX 校验，不含生产 GPU 可信停止、正式 Supervisor Runner 接线或自动重排。下一步先做 ONNX graph external-data 与防 TOCTOU，再推进受保护 CPU-only OS 运行和中央任务 lease 的纵向验证。**
