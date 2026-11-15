@@ -83,3 +83,15 @@ GitHub-hosted disposable Ubuntu 22.04 VM
 - 在 GitHub VM 再验证**非特权 Agent 在原 unit 外启动计算进程**是否可能，作为“cgroup 空组不能代表整个节点已无计算”的反证；为未来 GPU device ACL/cgroup device policy 提供必须落地的边界。
 - 先设计 Unix socket + `SO_PEERCRED` 授权、允许的 task/generation/unit/boot/InvocationID 白名单、签名密钥隔离和崩溃恢复合同，仍仅 PoC 运行。只有全部通过后再考虑正式 Runner 适配。
 - 最终需求是中央原子恢复 + 物理 GPU UAT；当前**生产 NO-GO**，不得因本报告 SUCCESS 放开。
+
+## 六、补充只读审计：代码仓库已有 Node Agent 服务入口
+
+已检查 `node_agent.py`、`platform_core/node_agent_runtime.py`、`platform_core/node_agent_training_runtime.py`、`tools/install_rockchip_agent.sh` 和整个仓库的独立 systemd/install 相关文件清单。该核查不代表读取生产服务器当前的 systemd 服务定义。
+
+- `node_agent.py` 当前仍直接启动 `NodeAgentExecutorLoop`，并在停止时结束 executor；并未调用这次 PoC 的 root-owned Supervisor。
+- `platform_core/node_agent_training_runtime.py` 在持久化 `process-launch-intent.json` 后仍调用既有 `launch_process`，不是受保护的 supervisor API。转换执行器也是同类启动路径。因此，**正式训练/转换计算仍不能享受本次实验的系统级隔离**。
+- 仓库现有明确的 `tools/install_rockchip_agent.sh` 是针对**瑞芯微板端 Agent**的安装器，已使用 systemd SYSTEM unit、`User=$SERVICE_USER` 和 root-owned 环境文件，但其单位文件没有 `ProtectControlGroups=yes`、`Delegate=no`、独立计算 UID 或 root-owned StopReceipt signer。**不得将其直接当作 A800/4070 训练 GPU 节点的安装实况**。
+- 当前仓库未发现可据以确认 GPU Node Agent 生产 systemd 单元、真实账户 UID、`sudoers`、polkit 及 `/dev/nvidia*` 访问控制的完整现成资料。**这些需要在部署前由用户批准针对目标节点做只读状态采样**，不能根据 GitHub 的 CPU 虚拟机实验推断“4070 Agent 已安全”。
+- 本轮隔离代码仍位于 `tools/poc`；不自动部署、不被 `node_agent.py` 导入、不更改真实 Agent service 用户或系统服务属性。
+
+**专项顺序更新**：先确认生产硬件上 Node Agent 的实际权限与 GPU 设备访问模型，再决定正式 Supervisor 的 UID、socket、unit、密钥和审批策略。不能先把本试验中的 root-run 签名函数接进 `node_agent.py`，否则普通 Agent 若有 root/sudo 就能够自行签署“已停止”证明，破坏可信边界。
