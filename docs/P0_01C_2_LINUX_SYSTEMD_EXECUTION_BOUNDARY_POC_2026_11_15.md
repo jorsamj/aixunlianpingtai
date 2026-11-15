@@ -295,3 +295,43 @@ python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
 - 不修改真实 `NodeAgent`/Training Runner/Conversion Runner、不启用自动派单、不解除 `REMOTE_AGENT_STOP_UNVERIFIED`，不释放原 GPU reservation、owner、generation。
 - 仅经过 GitHub VM 的 CPU 模拟，**不能宣告 GPU 与中央恢复准入**，也不允许把 `stop_proof_verified=false` 改成 true。
 - 下一轮根据 24 合同真实结果决定是否补充执行 generation/boot_id 的严格绑定和未登记后代迁移的负面试验；此时仍**生产 NO-GO**，不得触及 A800 或双 4070。
+
+## 13. 2026-11-15 10:09+08 后续专项：Execution Identity 五元绑定 / 防跨代复用
+
+### 13.1 本轮开始前的确切基线（已实测）
+
+- 多层进程、不同 session 的 CPU-only Linux user-systemd PoC 通过 [run 43666636076](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666636076) 和 [run 43666680688](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666680688)。
+- 扩展至 24 项负面合同的准确代码 `4216be9ce011cf617e3af5ca741537386fef621e`，对应 [run 43666716976](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666716976) 已确认 **linux-cgroup-22 SUCCESS、24/24 合同通过，真实内核 PoC PASS**。该工作流仅证明**本地 CPU PoC**，并不构成中央可信证明。
+- 该 SHA 的其他全仓工作流与前端 Annotorious 历史失败需按各自 Job 单独核查，不可用本地 PoC 通过概括整个仓库质量。
+
+### 13.2 风险根因：同一个进程退出，不等于“当前代”安全退出
+
+当前单机 unit 的 `Id + ControlGroup + InvocationID` 三项约束已能判断当前 systemd 服务实例，但仍必须区分**平台 task_id、execution_generation、Linux boot_id、随机 intent_nonce**。否则可能出现：
+- 一次旧任务的 `populated=0` 证据被用于不同任务或下一次执行代数；
+- OS 重启/同名 unit 被重建后，把此前 PID/start_ticks 或原 unit 状态误用作新实例；
+- `ready.json` 与 `intent.json` 在启动和停止之间内容不一致，仍继续对旧工作负载操作；
+- Python `True == 1` 导致不严格校验的代数类型被绕过。
+
+### 13.3 本轮最小 PoC 实施：严格本地 identity binding
+
+- 源码仅 `tools/poc/linux_cgroup_poc.py` 与 `tests/unit/test_linux_cgroup_poc_contract.py`；绝不改生产 Agent、Web、Worker、SQLite、GPU 或真实调度 API。
+- 在独立 CPU transient unit 的 `intent.json` 先提交**随机 synthetic task ID**、**正整数 synthetic execution_generation（测试用固定 1，不是中央自增代数）**、`boot_id`、随机 128-bit nonce、唯一随机 unit 与固定 PoC purpose。保留原非 root/manifest/boot_id 能力前置条件。
+- `systemd.exec` 官方文档说明 `INVOCATION_ID` 是 systemd 服务**每次运行**产生的随机 128-bit ID（32 位 hex），由服务管理器传入该次服务进程；因此 CPU payload 在启动下一层子孙进程**之前**要求 `os.environ["INVOCATION_ID"]` 非空、合法、非全零，并在 `ready.json` 回填原 intent 字段和服务 InvocationID。
+- `execution_identity_matches(intent, ready, systemctl_show, live_boot_id)` 以**严格类型**核对 task_id、generation、boot_id、nonce、unit 名、`systemctl --user show` 的 `InvocationID` 与 `ControlGroup`。不允许任何缺失/跨代/跨重启/同名 unit 复用；generation 必须是真实正整数，不接受 bool。
+- 首次绑定完成后才允许模拟 launcher `SIGKILL`；在执行 `systemctl stop` 之前，再读取当前 `intent.json`、`ready.json`、实时 boot_id 和原 unit `Id/ControlGroup/InvocationID`，逐一与首次快照及服务身份对比。任一变化返回 `EXECUTION_GENERATION_IDENTITY_CHANGED_HOLD` 或 `UNIT_REPLACED_HOLD`，绝不宣称成功。
+- 返回的 synthetic identity 信息仅包括 synthetic task、generation、boot、unit 和 invocation，**不用于平台认证**；`stop_proof_verified=false`、`central_recovery_allowed=false` 保持不变。此时 `generation=1` 只是在 PoC 中演示精确身份匹配，**并不能代替中央租约代数比较、真实持久签名或原子释放**。
+
+### 13.4 负面合同与验收
+
+- 新增 7 项便携负面合同，总计**31 项**：合法身份、旧代数或 bool/零代数、boot ID 变化、InvocationID 重用/缺失/全零、task/nonce/unit 不匹配、启动与停止间的 manifest/ready 变更、malformed 字段；
+- 现有 24 项 cgroup observer / PID / session / 进程谱系合同不删除、不放宽；
+- 代码：`7a6cbf5e85a010a0930a0a4f650c579bb5342b87`；测试：`cad6a3365bb715794f1a30bc1429f1855293d57e`。准确 SHA 的 [GitHub-hosted Ubuntu 22.04 kernel workflow run 43667494312](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43667494312) 目前 **queued/pending，尚未完成**，因此不能宣称 31/31 或新身份绑定真实内核 PASS。
+- 必须读取准确 Job 终态：`31 passed`、非 root user manager preflight、kernel `membership_verified=true`、`identity_binding_verified=true`、`three_process_sessions_bound=true`、`launcher_sigkill=true`、`both_descendants_survived_launcher=true`、`systemd_stop_returncode=0`、`known_processes_stopped=true`、`cgroup_empty_verified=true`；输出仍需 `LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF` 且两项中央放行标识全为 `false`。
+- 如果失败必须先核对 GitHub Job 原始日志，不允许为了全绿删除 identity checks 或把 UNKNOWN 改 True。
+
+### 13.5 交付限制与下轮工作
+
+1. 此次仅建立**PoC 运行代数身份约束**，无真实中央 API、task lease、GPU reservation、Remote Agent PID kill 或生产行为变更。真实中心的 `execution_generation` 如何创建、递增、持久化仍需下一专项先审计现有数据库合同。
+2. 下一轮在本地 PoC 验收后，设计**中央一次性 challenge / 原子状态比较**和取消窗口，并针对已更换 InvocationID、重启 boot ID、残留真实进程做负例；不能仅凭 Agent 自报 JSON 释放旧 owner。
+3. Windows Job Object、生产 A800/4070 的真实 YOLO/Ultralytics 多进程 GPU 验收依旧独立待办。**生产 NO-GO**；`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、原 owner/GPU reservation 保持不变。
+4. 本轮工作可通过回退 `tools/poc` 与 `tests/unit` 的独立改动撤销，不触及任何生产状态。
