@@ -193,3 +193,14 @@
 - **重要结论**：不需要另买服务器，真实 Linux 内核已开展测试；当前可证明的是“本实验中已知 CPU 进程停止”，**不能证明**所有可能的未知计算后代都停止、更不能签发可供中央解除 `REMOTE_AGENT_STOP_UNVERIFIED` 的可信证明。systemd unit/cgroup 停止后回收窗口需要事件级取证；`null`/路径消失不得转成 `True`。
 - **下一步**：优先继续用 GitHub VM 隔离复现 `cgroup.events` 停机之前的状态变化、unit D-Bus `InvocationID` 与异步 GC 时序，再增加更多反例；通过后才评估 Linux Runner adapter。Windows Job Object、中央 challenge/SQLite 原子恢复、真实双 GPU 节点 UAT 仍待验；继续自动派单 OFF、保持 HOLD 和生产 **NO-GO**。
 - 详细代码、实际输出和风险见 [`P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md`](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md) 第 10 节。
+
+## 12. 2026-11-15 追加重要里程碑：GitHub VM 首次真实捕获 `cgroup.events populated=0`
+
+**本节为最新 01C-2B 内核 PoC 进展。用户不需要额外购买独立测试服务器。**
+
+- 第一、二轮真实 Ubuntu 22.04 [43661539327](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661539327)、[43661732962](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661732962) 已证明 Agent launcher SIGKILL 后，systemd 可停掉 PoC 中已知 CPU 子进程，但停机完成之后读取原 cgroup `populated=0` 因路径/FD 不可读而失败，按设计 HOLD。
+- **第三轮真正成功**：GitHub-hosted CPU-only [run 43662224850](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43662224850)；准确 SHA `e39d644b0acbdb36bf18faf3aa87e681367ef51a`，14/14 合同成功、`linux-cgroup-22` SUCCESS。新增 `CgroupEventObserver` **在 systemctl stop 之前**订阅原 cgroup.events FD 的 `poll(POLLPRI|POLLERR)`，记录先 `populated=1`，随后 mask 10 通知 `populated=0`；已知父子进程不再执行，`LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF`。停机后原 cgroup 目录和 FD 可继续不可读，**事件在回收前已被可靠采样**。
+- 因存在“停机请求发出之前 cgroup 就已为空”的误判风险，后续又收紧 `arm_stop()`：要求发出 stop 前明确 `populated=1`，否则不放行，扩展至 19 项负面合同。中间试验有单条测试错误（关闭文件后再调用 `fileno()`，属于测试代码），在最新测试提交 `218d6c4736f387d20529e48421af22cb4c3eabca` 精准修复；其目标 [run 43662765705](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43662765705) 在本节写入时尚未拿到终态，**不能声称最新版本已 GREEN**。
+- **影响范围**：`tools/poc/linux_cgroup_poc.py`、`tests/unit/test_linux_cgroup_poc_contract.py`、独立 GitHub-hosted CPU 工作流，以及 docs。未改正式训练/转换/中央调度/SQLite、生产 A800/双4070 或 GPU、OSS。
+- **剩余门槛**：严格代码版 19 合同 + 内核复验；多层子孙、cgroup 外迁/进程权限、unit 重用、启动 generation/boot 证据、Windows Job Object、中央新鲜 challenge/SQLite 原子恢复，以及物理 GPU/多节点 UAT。**现阶段不可接入生产 Runner，不可解除 `REMOTE_AGENT_STOP_UNVERIFIED`，自动派单 OFF，生产 NO-GO。**
+- 详细证据、版本和下一轮最小任务见 [P0-01C-2 专项文档第 11 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。GitHub run/link 的精确 SHA 比文档 HEAD 更重要；文档提交自身须独立核验 CI。
