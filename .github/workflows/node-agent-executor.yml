@@ -15,6 +15,7 @@ on:
       - 'platform_core/os_supervisor_authorization.py'
       - 'platform_core/os_supervisor_central_grants.py'
       - 'platform_core/os_supervisor_central_api.py'
+      - 'platform_core/os_supervisor_cpu_network_pilot.py'
       - 'platform_core/os_supervisor_trust.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
@@ -30,6 +31,7 @@ on:
       - 'tests/unit/test_os_supervisor_phase1.py'
       - 'tests/unit/test_os_supervisor_phase1b.py'
       - 'tests/unit/test_os_supervisor_central_grants.py'
+      - 'tests/unit/test_os_supervisor_cpu_network_pilot.py'
       - 'tests/unit/test_os_supervisor_phase1b_ipc.py'
       - 'tests/unit/test_os_supervisor_cpu_systemd.py'
       - 'tests/unit/test_os_supervisor_cpu_journal.py'
@@ -90,6 +92,7 @@ on:
       - 'platform_core/os_supervisor_authorization.py'
       - 'platform_core/os_supervisor_central_grants.py'
       - 'platform_core/os_supervisor_central_api.py'
+      - 'platform_core/os_supervisor_cpu_network_pilot.py'
       - 'platform_core/os_supervisor_trust.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
@@ -105,6 +108,7 @@ on:
       - 'tests/unit/test_os_supervisor_phase1.py'
       - 'tests/unit/test_os_supervisor_phase1b.py'
       - 'tests/unit/test_os_supervisor_central_grants.py'
+      - 'tests/unit/test_os_supervisor_cpu_network_pilot.py'
       - 'tests/unit/test_os_supervisor_phase1b_ipc.py'
       - 'tests/unit/test_os_supervisor_cpu_systemd.py'
       - 'tests/unit/test_os_supervisor_cpu_journal.py'
@@ -166,7 +170,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic 'onnx>=1.21,<2'
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic uvicorn 'onnx>=1.21,<2'
       - name: Python syntax check
         run: >-
           python -m py_compile
@@ -179,6 +183,7 @@ jobs:
           platform_core/os_supervisor_authorization.py
           platform_core/os_supervisor_central_grants.py
           platform_core/os_supervisor_central_api.py
+          platform_core/os_supervisor_cpu_network_pilot.py
           platform_core/os_supervisor_trust.py
           platform_core/os_supervisor_journal.py
           platform_core/os_supervisor_cpu_systemd.py
@@ -195,6 +200,7 @@ jobs:
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
           tests/unit/test_os_supervisor_central_grants.py
+          tests/unit/test_os_supervisor_cpu_network_pilot.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
@@ -226,6 +232,7 @@ jobs:
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
           tests/unit/test_os_supervisor_central_grants.py
+          tests/unit/test_os_supervisor_cpu_network_pilot.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
@@ -255,6 +262,7 @@ jobs:
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
           tests/unit/test_os_supervisor_central_grants.py
+          tests/unit/test_os_supervisor_cpu_network_pilot.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
@@ -330,7 +338,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused API dependencies
-        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic 'onnx>=1.21,<2'
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic uvicorn 'onnx>=1.21,<2'
       - name: Agent executor API contract
         run: >-
           python -m pytest -q --confcutdir=tests/api
