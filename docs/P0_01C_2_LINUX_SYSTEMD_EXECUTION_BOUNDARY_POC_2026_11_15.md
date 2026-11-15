@@ -177,3 +177,44 @@ python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
 3. **进行真实 2B CPU 内核实验**：`python tools/poc/linux_cgroup_probe.py`；仅 `eligible_for_poc=true` 且隔离环境确认后，执行 `python tools/poc/linux_cgroup_poc.py --run --isolated-test-host`，记录确切 unit identity、procfs、cgroup.events、Agent SIGKILL 和 stop/GC 时序。
 4. **不越级**：未通过以上测试，绝不把 systemd 路径接入 `launch_process` / Remote Training/Conversion Runner；不为获取 GREEN 开启自动派单，不删除遗留 PID/intent，不改中央 `REMOTE_AGENT_STOP_UNVERIFIED` 和 GPU 预留。
 5. **回退**：目前更改仅 `tools/poc`、`tests/unit`、Node Agent CI 合同和 docs，撤销这些开发分支文件不影响生产执行；若未来接入真正执行边界，须另制定状态保留和逐代回退程序。**生产 NO-GO**。
+
+## 10. 2026-11-15 09:10+08：不需要独立测试机——GitHub Actions 临时 Ubuntu VM 两轮真实内核实验
+
+**重要：本节取代第 9 节中“没有非生产主机、无法开展真实内核实验”的旧状态，但不取代 fail-closed 安全门槛。** 用户没有额外实验服务器；为避免触碰 A800、双 RTX4070、生产数据和 GPU，已利用 GitHub-hosted `ubuntu-22.04` **每 Job 独立临时虚拟机**运行独立 CPU 实验，不在任何 self-hosted/生产 Runner 上执行。
+
+### 10.1 测试工作流与安全隔离
+
+- 专用 CI：[`.github/workflows/agent-kernel-stop-poc.yml`](../.github/workflows/agent-kernel-stop-poc.yml)，名称 **Agent Kernel Stop PoC (Ephemeral CPU)**；`runs-on: ubuntu-22.04`，权限仅 `contents: read`，10 分钟硬超时，随机 `clpoc-<24 hex>.service`，合成 CPU workload 最长 25 秒，绝不需要 CUDA、训练数据、OSS、平台主机密钥。
+- GitHub VM 中用 sudo **只初始化该临时 VM 的 non-root `runner` 账号 systemd user manager**，真实合成负载和 PoC 均是 uid 1001，未以 root 运行 workload/Node Agent。
+- 仓库工具分别为 `tools/poc/linux_cgroup_probe.py`（只读）和 `tools/poc/linux_cgroup_poc.py`（需显式 `--run --isolated-test-host`）。临时系统服务由 systemd user manager 执行，采用 `Type=exec`、`KillMode=control-group`、`Restart=no`。
+- CI 附件保留 `p001c2b-preflight.json` 和 `p001c2b-kernel-result.json`（14 天）。**任何红灯按安全阻断保留**，不会把实验 `HOLD` 改成 `SUCCESS`，也不会连接中央 API。
+
+### 10.2 第一轮内核真实证据（实验已执行）
+
+- workflow 首次提交 `d892529f9f124529b86faae89c9b1ea3c2552649` 有一个 YAML step 名含未加引号的冒号，使 GitHub 直接判定 workflow invalid（run 43661498015，无 job）；**不计入内核执行失败**。随后仅修复 YAML 字符串 `bb274ff362d926cc5f8f2141ff63b1fa899adce9`，真正启动 [run 43661539327](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661539327)。
+- 该 VM 为 Ubuntu 22.04，systemd `249.11-0ubuntu3.23`，Linux `6.8.0-1070-azure`，uid 1001，cgroup v2 可读，systemd user manager 可连接；`eligible_for_poc=true`。
+- **真实内核观测**：`membership_verified=true`；`launcher_sigkill=true`；`compute_survived_launcher=true`（新 session 的子进程在模拟 Agent 启动器 SIGKILL 后存活，且仍属原 unit cgroup）；`systemd_stop_returncode=0`；`known_processes_stopped=true`。
+- **缺口**：`cgroup_empty_verified=false`，`outcome=STOP_OR_MEMBERSHIP_UNVERIFIED_HOLD`，exit 3。初始实现停止后重新打开 cgroup path 读取 `cgroup.events populated`，未能观察到 `0`；**不能从路径失效推导该 cgroup 曾安全地变空**。
+
+### 10.3 第二轮专门验证 cgroup 生命周期（实验已执行）
+
+- 代码 `18ba65bca2e17378eb62889b01b80e560d608c42`：加入 **在服务停止之前打开、绑定原 cgroup 的 `cgroup.events` 句柄**，重新读取仍要求真值 `populated=0`；任何读取异常、路径消失、无明确空组事件继续 UNKNOWN，不降低安全准入。
+- `5ab70f7291b44e33d89258d0b13ef67e8a9d40c7`：新增负面合同，总计 14 项；`5c4dc9ac4d6b18c7d7b141f56e4aeaa1c770d6b1`：工作流增加 14 合同测试和变更路径触发；[真实 Ubuntu 22.04 run 43661732962](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43661732962)。
+- **14/14 合同 SUCCESS**，non-root/systemd/cgroup v2 preflight SUCCESS；真实内核再次得到 `membership_verified=true`、`launcher_sigkill=true`、`compute_survived_launcher=true`、`systemd_stop_returncode=0` 和 `known_processes_stopped=true`。
+- 但 `cgroup_path_after_stop=null`，**`cgroup_handle_after_stop=null`**，`cgroup_empty_verified=false`，最终 `STOP_OR_MEMBERSHIP_UNVERIFIED_HOLD`、exit 3；workflow **FAILURE（被正确阻断）**。这与 transient unit/cgroup 停止后回收的行为相符，但**是否确由 systemd GC 导致句柄失效尚需事件级取证，不能从现有日志独断其根因**。
+- Linux cgroup v2 内核文档明确 `cgroup.events` 的 `populated` 是递归标识，支持 `poll/inotify` 变化通知；systemd.unit 文档记载了 unit 运行结束后的垃圾回收机制。未来可以在**单独实验**尝试在停机完成前同步采集空组通知、绑定 unit InvocationID/boot_id、持久化证据并模拟故障窗口；**即使拿到事件，也必须考虑未登记子进程迁出边界、身份重用和证据签名/中央原子准入，不能单凭事件自动释放任务**。
+- 官方设计依据（随时可能修订）：https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html 及 https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html 。
+
+### 10.4 下一步怎么做（无需用户新增测试机）
+
+1. **优先继续用 GitHub-hosted Ubuntu 22.04 临时 VM**：在当前 PoC 中精确记录 unit 启动/停止后的 D-Bus lifecycle、`cgroup.events` 事件（在 stop 与 GC 之间）、主/子进程死亡时间和原 unit 身份。任何缺失都明确标记 UNKNOWN/HOLD，禁止为了 CI 变绿自动放宽断言。
+2. 把**“实际停止了已知 CPU 测试进程”**与**“可独立验证、可持久签发的全组停机证明”**分为两项验收；目前前者两轮都观察通过，后者两轮都未通过。
+3. PoC 通过后仍需未预期的多子孙/新 session、用户 cgroup 迁移、unit 重用/重启、boot ID、PID 复用、OS kill/重启和 GPU SDK 真实进程等反证；Windows Job Object 和中央 challenge/SQLite `BEGIN IMMEDIATE` 等待独立专项。
+4. Windows 11 的 WSL2 Ubuntu 可作**补充、非必需**复现，Microsoft 官方支持在 WSL 启用 systemd；但 WSL2 不是生产裸机内核和 GPU 环境的等价替代。优先 GitHub-hosted VM，**用户目前不必配置 Windows/WSL，也不能为了实验去重启已有生产服务**。
+5. 不进入 2C 业务 Runner adapter，不释放 `REMOTE_AGENT_STOP_UNVERIFIED`，不打开 `CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM`，不修改生产 A800/4070。**生产 NO-GO。**
+
+### 10.5 当前提交/CI 的读法
+
+- 上述两个真实 kernel PoC run 都是独立实验工作流；第二个**红灯是 `HOLD` 机制如实阻止虚假证明**，不是训练平台生产服务发生故障。
+- 新增 `tools/poc`、独立 workflow 和便携测试不影响应用运行时；不应将旧业务 `98f9158` 22/22 SUCCESS 借给新增 kernel PoC SHA，也不应把 PoC workflow 的研究红灯冒充业务 Agent runtime CI 失败。
+- 本次新增文档产生新 docs SHA 后也需分别核查 GitHub CI，不能推断提交结果。
