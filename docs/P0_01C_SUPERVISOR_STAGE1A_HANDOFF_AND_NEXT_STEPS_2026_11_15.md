@@ -381,3 +381,10 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - **本次仅验收 fixed CPU-only original-STARTING os unit reattachment；不等于真实 GPU StopReceipt、自动跨节点恢复、正式模型转换/训练/推理 Runner 接线。** Windows CI 仅验证可移植合同；真实 systemd 只在隔离 Ubuntu 24.04 运行。生产 A800/双4070 没有变更。
 
 **下次专项建议**：先只读审计 CPU-only 失败/终态路径剩余边界、systemd Ubuntu 22.04 兼容差异和正式 Runner 适配合同，再选一个非 GPU 转换 Runner 的隔离集成切片。不要一次性改中央调度器、GPU reservation 或现有生产部署模式。
+
+## 18. Ubuntu 22.04 systemd 249 阻断与模型转换 Runner 接入前审计（2026-11-15）
+
+- **已核实的兼容性缺口**：Ubuntu 22.04 标准 systemd 249；固定 CPU-only Supervisor 当前 `ExitType=cgroup` 需 v250+，GitHub Ubuntu 24.04 CI 不能外推生产 Ubuntu 22.04。
+- **精准防护提交**：`228c9f3092a66699b7d9210e8420858de4beed1b`，启动 CPU-only 后端前通过 `systemctl show -p Version` 读取**运行中管理器**；不兼容或版本未知就拒绝启动，不降级退出证据。**新 SHA CI 待终态，不预告成功。**
+- **真实 Runner 审计**：`node_agent_conversion_runtime.py` 仍使用 Popen、租约监控、文件日志、产物 manifest、对象存储 SHA256 上传和中央 CAS finish；当前 Supervisor 只执行固定 CPU 测试脚本，`supervisor-required` 仅会阻断旧执行，没有可用的正式转换新链路，不能直接接入。
+- 本轮未改 A800/双4070、正式 Runner、中央所有权/租约、GPU reservation、自动恢复或前端。完整报告：[`P0_01C_SUPERVISOR_SYSTEMD249_AND_CONVERSION_RUNNER_AUDIT_2026_11_15.md`](P0_01C_SUPERVISOR_SYSTEMD249_AND_CONVERSION_RUNNER_AUDIT_2026_11_15.md)。
