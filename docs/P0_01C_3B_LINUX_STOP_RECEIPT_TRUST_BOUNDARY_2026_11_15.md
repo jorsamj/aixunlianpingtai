@@ -34,7 +34,7 @@
 - `tools/poc/linux_stop_receipt_bridge.py`：仅在 **GitHub-hosted Ubuntu 临时 VM**、非 root、明确 `--run --isolated-test-host` 时执行；先创建 **SQLite `:memory:` 的 HOLD 任务**，保留旧 lease/owner/GPU reservation；在真实 cgroup 仍 `populated=1` 时按同一 boot/InvocationID/cgroup/代数签发一次性 challenge；执行真实 stop；验证观察记录后用**测试专用 HMAC（与控制器同一进程）**模拟见证；中央 `BEGIN IMMEDIATE` 在 **仅内存 SQLite** 中完成 CAS；再证明相同 challenge 的二次提交被拒绝。输出始终包含 `trusted_os_witness_implemented=false` 和 `production_recovery_allowed=false`。
 - `tests/unit/test_linux_stop_receipt_bridge_contract.py`：验证缺失 stop 证据、错误的原始绑定、generation/boot/InvocationID/cgroup 不符、布尔伪造、空组发生于 stop 请求之前、无先前存活记录、模拟私钥不同不能验签、非 GitHub 环境及默认 CLI 必须拒绝。
 - `.github/workflows/agent-kernel-stop-poc.yml`：新增 GitHub-hosted Ubuntu 22.04 的桥接真实内核测试步骤，同时保留原 2B 单独 systemd stop 步骤和独立证据附件。
-- 本轮真实内核桥接 run：[GitHub Actions 43672300351](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672300351)。**撰写本节时 CI 仍等待最终运行**；上一轮 [43672197474](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672197474) 为 70 passed /1 failed：仅因非 GitHub 拒绝路径缺少 `production_recovery_allowed=false` 字段，真实 kernel 步骤未执行。已精准修复拒绝路径，不放宽 stop/identity 断言，不能把上一轮当作真实内核失败或成功。
+- 本轮真实内核桥接 run：[GitHub Actions 43672300351](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672300351)。**最终 CI 已核实 SUCCESS（71/71 单元合同 + 真实 OS 停机 + 模拟中央事务）**；上一轮 [43672197474](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672197474) 为 70 passed /1 failed：仅因非 GitHub 拒绝路径缺少 `production_recovery_allowed=false` 字段，真实 kernel 步骤未执行。已精准修复拒绝路径，不放宽 stop/identity 断言，不能把上一轮当作真实内核失败或成功。
 
 ### 3.1 这一步能验证 / 不能验证
 
@@ -85,3 +85,24 @@
 2. 继续在**独立** VM/容器测试 OS Supervisor 权限域、密钥隔离/签发面，先实现不能用于生产的受限 test witness，并覆盖 agent 更换 unit、跨代挑战、cgroup 迁移、OS reboot 和发证中断等反例。
 3. 只有 3B 独立可信证据来源通过后，才可进入 P0-01C-3C 正式中央 API/持久 challenge/audit 附属表（默认 OFF），必须在真实 `FencedTaskRepository` 的短事务内 compare-and-swap，继续保留旧 owner/GPU reservation 的安全保护。
 4. 最终准入：真实物理 GPU/Ultralytics DataLoader 多进程、双节点网络分区、Windows Job Object、资源回收及回滚。**未经用户明确批准，不部署或重启 A800、4070，不操作生产数据库或任务。**
+
+## 6. 2026-11-15 GitHub-hosted 真实内核端到端隔离联调最终证据
+
+**准确代码 SHA** `341b2f73998bbd0db68cdeca72e6f1700ea26406`；[GitHub Actions run 43672300351](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43672300351) **completed SUCCESS**，Job `linux-cgroup-22` 成功，没有失败步骤。
+
+| 真实 CI 阶段 | 运行结果 |
+|---|---|
+| 旧 31 项 + 新接桥负面合同 | **71 passed in 0.17s** |
+| 非 root Ubuntu 22.04 / systemd user manager / cgroup v2 | PASS |
+| 原有三层跨独立 session 的真实 systemd stop | PASS；`cgroup_empty_verified=true`、`identity_binding_verified=true` |
+| 绑定挑战后真实内核 cgroup stop → 中央内存 SQLite | PASS |
+| 同一挑战重复提交 | **`challenge_replay_rejected=true`** |
+| 模拟原子恢复 | **`simulated_central_recovery_committed=true`**；只有内存库任务发生 QUEUED |
+| 真正独立且受保护的操作系统见证 | **`trusted_os_witness_implemented=false`** |
+| 允许生产恢复 | **`production_recovery_allowed=false`** |
+
+实际桥接输出：`kernel_stop_outcome=LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF`，`outcome=REAL_KERNEL_TO_MEMORY_CAS_SIMULATION_PASS_NOT_TRUSTED_STOP_PROOF`。原始 `p001c3b-kernel-to-central.json`、`p001c2b-kernel-result.json`、预检 JSON 统一保存在该 Run 的 **`p001c2b-ubuntu22-cpu-evidence`** 工件中；GitHub 默认保留 14 天。
+
+**可作出的有限结论**：真实 Linux cgroup 空组事件、指定执行实例身份和停机前挑战**可以**按顺序连接到中央现有任务代数概念与模拟 SQLite 事务。这显著降低了方案可行性的不确定性，但**不是签名见证者可信、恶意 Agent 无法迁移进程、真实 GPU/多机已验收的证明**。
+
+**生产准入仍保持 NO-GO**。下一专项 P0-01C-3B-2 应优先在隔离 VM 中检验**不同权限域的 OS supervisor / 完整启动前身份登记 / 私钥不暴露给普通 Agent**，并核对 Agent 是否可通过 systemd 用户总线或 cgroup delegation 跳出边界；若无法证实不可迁移则继续 HOLD。不要提前做开放恢复的生产 API。
