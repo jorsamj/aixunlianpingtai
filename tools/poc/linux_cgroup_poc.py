@@ -43,6 +43,42 @@ def proc_start_ticks(pid: int) -> int:
     return int(suffix[19])
 
 
+def proc_parent_pid(pid: int) -> int:
+    """Read real /proc parent PID, not process-group membership."""
+    row = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+    fields = row.rsplit(") ", 1)[1].split()
+    return int(fields[1])
+
+
+def descendant_tree_bound(parent_pid: int, ids: dict, group: str) -> bool:
+    """Validate a live parent -> child -> grandchild in distinct sessions.
+
+    Reject reused PIDs, any migration outside the exact original cgroup, or
+    unrelated child trees. This is a local experiment, not an escape-proof
+    security guarantee or a central recovery protocol.
+    """
+    try:
+        child_pid = int(ids["child_pid"])
+        leaf_pid = int(ids["grandchild_pid"])
+        if len({parent_pid, child_pid, leaf_pid}) != 3:
+            return False
+        return (int(ids["parent_pid"]) == parent_pid
+                and proc_parent_pid(child_pid) == parent_pid
+                and proc_parent_pid(leaf_pid) == child_pid
+                and os.getsid(child_pid) == child_pid
+                and os.getsid(leaf_pid) == leaf_pid
+                and all(
+                    proc_start_ticks(pid) == int(ids[tick_name])
+                    and process_in_cgroup(pid, group)
+                    for pid, tick_name in (
+                        (parent_pid, "parent_ticks"),
+                        (child_pid, "child_ticks"),
+                        (leaf_pid, "grandchild_ticks"))
+                ))
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, IndexError):
+        return False
+
+
 def process_executing_by_identity(pid: int, expected_ticks: int) -> bool | None:
     """True=old computation alive; False=gone or zombie; None=unverifiable.
 
@@ -257,12 +293,31 @@ def _payload(root: Path) -> int:
             return 4
     except (OSError, ValueError):
         return 4
-    # Runs only inside a separate transient user service. A descendant with
-    # a *new session* must still remain in the same cgroup, unlike killpg.
-    child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(20)"],
+    # Two independent process sessions. The child itself spawns a leaf in a
+    # third session, which process-group-only cleanup cannot reliably cover.
+    # Every process is CPU-only and bounded by the synthetic systemd unit.
+    child_code = (
+        "import json,os,subprocess,sys\\n"
+        "from pathlib import Path\\n"
+        "leaf=subprocess.Popen([sys.executable,'-c',"
+        "'import time;time.sleep(20)'],start_new_session=True)\\n"
+        "root=Path(sys.argv[1])\\n"
+        "tmp=root / '.grandchild.tmp'\\n"
+        "tmp.write_text(json.dumps({'pid':leaf.pid}),encoding='utf-8')\\n"
+        "os.replace(tmp,root / 'grandchild.json')\\n"
+        "leaf.wait()\\n"
+    )
+    child = subprocess.Popen([sys.executable, "-c", child_code, str(root)],
                              start_new_session=True)
+    if not wait_for(lambda: (root / "grandchild.json").is_file(), 5):
+        return 4
+    leaf_pid = int(json.loads((root / "grandchild.json").read_text(
+        encoding="utf-8"))["pid"])
+    if proc_parent_pid(leaf_pid) != child.pid:
+        return 4
     data = {"parent_pid": os.getpid(), "parent_ticks": proc_start_ticks(os.getpid()),
-            "child_pid": child.pid, "child_ticks": proc_start_ticks(child.pid)}
+            "child_pid": child.pid, "child_ticks": proc_start_ticks(child.pid),
+            "grandchild_pid": leaf_pid, "grandchild_ticks": proc_start_ticks(leaf_pid)}
     state = root / "ready.json"
     temp = root / ".ready.tmp"
     with temp.open("w", encoding="utf-8") as file:
@@ -333,12 +388,10 @@ def run_poc() -> tuple[dict, int]:
             bound = bool(initial.get("Id") == unit and group.startswith("/") and group != "/"
                          and invocation and invocation != "0" * len(invocation)
                          and parent_pid == ids["parent_pid"]
-                         and proc_start_ticks(parent_pid) == ids["parent_ticks"]
-                         and proc_start_ticks(ids["child_pid"]) == ids["child_ticks"]
-                         and process_in_cgroup(parent_pid, group)
-                         and process_in_cgroup(ids["child_pid"], group)
+                         and descendant_tree_bound(parent_pid, ids, group)
                          and cg_populated(mount, group) == 1)
             result["membership_verified"] = bound
+            result["three_process_sessions_bound"] = bound
             if not bound:
                 result["outcome"] = "BOUNDARY_IDENTITY_UNKNOWN_HOLD"
                 return result, 3
@@ -361,11 +414,16 @@ def run_poc() -> tuple[dict, int]:
             launcher.wait(timeout=3)
             result["launcher_sigkill"] = (launcher.returncode == -signal.SIGKILL)
             try:
-                result["compute_survived_launcher"] = (
-                    proc_start_ticks(ids["child_pid"]) == ids["child_ticks"]
-                    and process_in_cgroup(ids["child_pid"], group))
-            except OSError:
+                result["compute_survived_launcher"] = all(
+                    proc_start_ticks(ids[pid_field]) == ids[tick_field]
+                    and process_in_cgroup(ids[pid_field], group)
+                    for pid_field, tick_field in (
+                        ("child_pid", "child_ticks"),
+                        ("grandchild_pid", "grandchild_ticks")))
+            except (OSError, ValueError, KeyError):
                 result["compute_survived_launcher"] = False
+            result["both_descendants_survived_launcher"] = result[
+                "compute_survived_launcher"]
             if not result["launcher_sigkill"] or not result["compute_survived_launcher"]:
                 result["outcome"] = "CRASH_BEHAVIOR_UNEXPECTED_HOLD"
                 return result, 3
@@ -393,7 +451,8 @@ def run_poc() -> tuple[dict, int]:
             # cgroup.events=0 is not sufficient if a previously-bound known
             # child has moved elsewhere and is still computing.
             known = ((ids["parent_pid"], ids["parent_ticks"]),
-                     (ids["child_pid"], ids["child_ticks"]))
+                     (ids["child_pid"], ids["child_ticks"]),
+                     (ids["grandchild_pid"], ids["grandchild_ticks"]))
             result["known_processes_stopped"] = wait_for(
                 lambda: all(process_executing_by_identity(pid, ticks) is False
                             for pid, ticks in known), 2)
