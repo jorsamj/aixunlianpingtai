@@ -335,3 +335,18 @@ python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
 2. 下一轮在本地 PoC 验收后，设计**中央一次性 challenge / 原子状态比较**和取消窗口，并针对已更换 InvocationID、重启 boot ID、残留真实进程做负例；不能仅凭 Agent 自报 JSON 释放旧 owner。
 3. Windows Job Object、生产 A800/4070 的真实 YOLO/Ultralytics 多进程 GPU 验收依旧独立待办。**生产 NO-GO**；`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、原 owner/GPU reservation 保持不变。
 4. 本轮工作可通过回退 `tools/poc` 与 `tests/unit` 的独立改动撤销，不触及任何生产状态。
+
+### 13.6 2026-11-15 中央现有代数/租约代码只读核查结论（已完成）
+
+在等待最新 PoC CI 的过程中，已经对**实际长期分支**的下列文件做了逐段只读审计：
+
+| 文件 | 核查证据与关键结论 |
+| --- | --- |
+| `platform_core/task_runtime/fenced_repository.py` | 类注释及 `_generation_clause` 明确：**`tasks.attempt` 是持久化 execution generation**；合法 claim 成功使其增加，后续按 `attempt=?` 和 lease token 防旧代写入。远程 lease 过期时，`worker_id=agent:...` 进入 `recovery_blocked_remote_agent_unverified`，并保留 GPU reservation，不自动重排 |
+| `platform_core/task_node_assignments.py` | 独立的 `task_node_assignments.generation` 是**分配 generation**，通过 `SELECT COALESCE(MAX(generation),0)+1` 更新，主键 `(task_id,generation)`；`claim_for_node` 使用该代数及 assignment lease token 进行 `BEGIN IMMEDIATE` 领取。它**不等价于**执行代数，不能用于可信进程停机证据的 execution generation |
+| `platform_core/agent_execution.py` | 执行开始时在中央 SQLite `BEGIN IMMEDIATE` 中将任务 `QUEUED -> RUNNING`、`attempt=attempt+1`，生成新的执行令牌，并将对应 assignment release；返回的 `execution.generation=int(task.attempt)` 是正确的执行代数。现有 `remote_recovery_diagnosis` 只读返回 `execution_generation=int(task.attempt)` 和 `stop_proof_verified=false`，不释放旧 owner |
+| `platform_core/node_agent_executor_runtime.py` | `RemoteExecutionLease.from_start_response` 从中央执行响应获取 `generation`、`lease_token` 等后调用训练/转换；Agent `recovery_diagnosis` 要求 `execution_generation` 是正整数且 `automatic_reassignment_allowed=false`、`stop_proof_verified=false` |
+
+**本轮重要设计裁决**：正式对接时绝不能“新建第二套执行代数”或者把 `assignment.generation` 当作 `tasks.attempt`。要沿用中央任务现有 `tasks.attempt` 作为唯一真相，把它与 Node 身份、单次执行租约、systemd InvocationID、boot ID、专属 cgroup/进程启动 ticks 绑定在新的可信停止协议里；后续恢复必须在同一个中央 `BEGIN IMMEDIATE` 比较并消费恢复挑战。现阶段这只是**核查与方案**，没有修改任何中央数据模型或生产代码。
+
+**发现需另开最小审计点**：`RemoteExecutionLease.from_start_response` 使用 `int(execution.get("generation"))`，按 Python 语言规则可能接受 `True` 被转换为 1。现有中央服务产生真实整数代数，但正式新恢复协议仍应严格验证 `type(generation) is int`，不可借普通转换的宽松行为签发 OS stop proof。该问题目前未作为业务 bug 修改，避免无实测依据扩大改动范围。
