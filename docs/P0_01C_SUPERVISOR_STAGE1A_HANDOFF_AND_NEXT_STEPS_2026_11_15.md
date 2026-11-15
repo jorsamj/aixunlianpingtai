@@ -230,3 +230,7 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 初次功能提交的 [Portable Deployment run 43690842045](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43690842045) 三 Job **completed/success**，确认中央路由延迟导入加密依赖后旧可移植部署路径不回归。修复 SHA 的 [Portable Deployment 43691032313](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691032313) 在本节写入时尚未整体 completed，不能把全部仓库工作流标记为成功。
 - **阶段 1B-2B 仅“隔离 CPU-only HTTP→Socket→durable intent 基础链路 + 核心 CI”GREEN**。这不代表生产根公钥/私钥部署、密钥轮换、真正 systemd/cgroup 执行、崩溃重接管、可信停止证明或中央自动恢复通过。后续阶段 2 的真实固定 CPU worker 应在 GitHub/其他获准隔离 Linux 环境实施一次功能 E2E；不需要 A800/4070，但绝不把普通权限 PoC 当硬件 GPU 安全证明。
 - 最小未解决的安全/运维项：正式 key provisioning / rotation 和 root-owned unit 运行审计；短期 challenge journal 的容量/清理界限；systemd unit 不可被普通 Agent 创建或越权停止；服务重启后原 OS identity 与持久 handle 绑定；确认停止的后代进程及 fail-closed STOP。全部满足并得到用户授权前，中央 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、默认 `legacy`、生产 NO-GO 不变。无真实 Worker 任务被启动。
+
+### 12.2 修复 SHA 同版 Portable Deployment 最终终态（同日补录）
+
+针对精确功能 SHA `fe0c791fb0db447648db309d590014dc1098553b` 的 [Portable Deployment run 43691032313](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691032313) 已 **completed/success**：Ubuntu transport、Windows transport、API 三项全部成功。与 [Node Agent Executor 43691027462](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691027462) 同 SHA 的 Ubuntu/Windows/API 全绿相互印证。阶段 1B-2B **本专项关键工作流同 SHA 验收通过**，不意味着其它仓库工作流或生产部署全部完成，更不能解除 HOLD。
