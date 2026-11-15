@@ -38,7 +38,8 @@ class SupervisorService:
                  allowed_gid: int, timeout: float = 2.0,
                  authorization_journal: ExecutionJournal | None = None,
                  trusted_public_key: Ed25519PublicKey | None = None,
-                 cpu_trial_backend: FixedCpuSystemd | None = None):
+                 cpu_trial_backend: FixedCpuSystemd | None = None,
+                 cpu_prelaunch_recheck_enabled: bool = False):
         if not isinstance(socket_path, Path) or not socket_path.name.endswith(".sock"):
             raise ValueError("socket path must end with .sock")
         if type(allowed_uid) is not int or allowed_uid <= 0:
@@ -62,6 +63,15 @@ class SupervisorService:
             raise ValueError("CPU trial requires journal and fixed systemd backend")
         self.authorization_journal = authorization_journal
         self.trusted_public_key = trusted_public_key
+        # Constructor-only, never enabled by production CLI or Node Agent.
+        # Isolated CPU trial must not offer legacy 'start' as a bypass.
+        if cpu_prelaunch_recheck_enabled is not False and (
+                cpu_prelaunch_recheck_enabled is not True
+                or cpu_trial_backend is None
+                or authorization_journal is None
+                or trusted_public_key is None):
+            raise ValueError("CPU rechecked launch requires trusted CPU trial")
+        self.cpu_prelaunch_recheck_enabled = cpu_prelaunch_recheck_enabled is True
         self.cpu_trial_backend = cpu_trial_backend
         self._listener: socket.socket | None = None
         self._bound_identity: tuple[int, int] | None = None
@@ -107,7 +117,49 @@ class SupervisorService:
                 return self._reply(request_id, str(exc), ok=False)
             except (OSError, ValueError, sqlite3.Error):
                 return self._reply(request_id, "JOURNAL_UNAVAILABLE_HOLD", ok=False)
+        if action == "start_rechecked":
+            if not self.cpu_prelaunch_recheck_enabled:
+                return self._reply(
+                    request_id, "CPU_RECHECK_LAUNCH_DISABLED_HOLD", ok=False)
+            payload = request["payload"]
+            claimed = None
+            try:
+                # Central signed after post-intent OS challenge; durable CAS
+                # before the first systemd spawn, no fallback to old start.
+                claimed = self.authorization_journal.claim_cpu_launch_rechecked(
+                    payload["handle_id"], payload["execution_generation"],
+                    payload["launch_envelope"],
+                    trusted_public_key=self.trusted_public_key)
+                evidence = self.cpu_trial_backend.launch(claimed["unit_name"])
+                self.authorization_journal.record_cpu_identity(
+                    claimed["handle_id"], claimed["task_attempt"],
+                    invocation_id=evidence["invocation_id"],
+                    control_group=evidence["control_group"],
+                    main_pid=evidence["main_pid"])
+                return self._reply(
+                    request_id, "CPU_RECHECKED_TRIAL_RUNNING", ok=True,
+                    result={"handle_id": claimed["handle_id"],
+                            "task_attempt": claimed["task_attempt"],
+                            "state": "RUNNING",
+                            "trusted_stop_receipt_available": False,
+                            "central_recovery_allowed": False})
+            except (GrantRejected, OSError, ValueError, sqlite3.Error):
+                # A systemd spawn may have occurred even if its ACK was lost.
+                # UNKNOWN is permanent until original identity inspection.
+                if claimed is not None:
+                    try:
+                        self.authorization_journal.mark_cpu_unknown(
+                            claimed["handle_id"], claimed["task_attempt"])
+                    except (OSError, ValueError, sqlite3.Error):
+                        pass
+                return self._reply(
+                    request_id, "CPU_RECHECKED_START_UNVERIFIED_HOLD",
+                    ok=False, result={"state": "UNKNOWN"})
         if action == "start":
+            if self.cpu_prelaunch_recheck_enabled:
+                return self._reply(
+                    request_id, "CPU_RECHECK_REQUIRED_OLD_START_DENIED_HOLD",
+                    ok=False)
             if self.cpu_trial_backend is None or not request["payload"]:
                 return self._reply(request_id, "PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD",
                                    ok=False)

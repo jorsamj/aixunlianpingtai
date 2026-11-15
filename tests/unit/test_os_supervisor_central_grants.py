@@ -269,3 +269,93 @@ def test_recheck_expired_grant_and_nonce_stay_prepared(context):
     with sqlite3.connect(journal.path) as db:
         assert db.execute("SELECT state FROM execution_intents").fetchone() == (
             "PREPARED",)
+
+
+def test_rechecked_supervisor_cpu_rpc_consumes_fresh_central_grant_once(context, tmp_path):
+    from pathlib import Path
+    from platform_core.os_supervisor_cpu_systemd import FixedCpuSystemd
+    from platform_core.os_supervisor_service import SupervisorService
+    from platform_core.os_supervisor_protocol import validate_request
+
+    class FakeOnlyCpuBackend(FixedCpuSystemd):
+        def __init__(self):
+            self.spawned = 0
+
+        def launch(self, unit):
+            self.spawned += 1
+            return {"invocation_id": "a" * 32,
+                    "control_group": "/system.slice/" + unit,
+                    "main_pid": 54567}
+
+    tasks, _, key, journal, _, _ = context
+    intent, old_grant = _registered_launch_intent(context)
+    fresh = _fresh_launch_grant(context, intent)
+    backend = FakeOnlyCpuBackend()
+    guarded = SupervisorService(
+        tmp_path / "guarded.sock", allowed_uid=7777, allowed_gid=7777,
+        authorization_journal=journal,
+        trusted_public_key=key.public_key(),
+        cpu_trial_backend=backend, cpu_prelaunch_recheck_enabled=True)
+    body = {"handle_id": intent["handle_id"],
+            "execution_generation": 3,
+            "launch_envelope": fresh}
+    rechecked = {"version": 1, "request_id": "supervisorrecheck1234",
+                 "action": "start_rechecked", "payload": body}
+    assert validate_request(rechecked) == rechecked
+    old = {"version": 1, "request_id": "supervisorrecheck1234",
+           "action": "start", "payload": {
+               "handle_id": intent["handle_id"],
+               "execution_generation": 3, "envelope": old_grant}}
+    assert guarded.dispatch(old, peer_uid=7777)["code"] == (
+        "CPU_RECHECK_REQUIRED_OLD_START_DENIED_HOLD")
+    assert backend.spawned == 0
+    assert guarded.dispatch(rechecked, peer_uid=7778)["code"] == "PEER_UID_DENIED"
+    assert backend.spawned == 0
+    first = guarded.dispatch(rechecked, peer_uid=7777)
+    assert first["ok"] is True and first["result"]["state"] == "RUNNING"
+    assert not first["result"]["trusted_stop_receipt_available"]
+    assert backend.spawned == 1
+    repeated = guarded.dispatch(rechecked, peer_uid=7777)
+    assert repeated["ok"] is False and repeated["result"]["state"] == "UNKNOWN"
+    assert backend.spawned == 1
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT state FROM execution_intents").fetchone() == (
+            "RUNNING",)
+
+
+def test_rechecked_cpu_rpc_disabled_and_no_agent_commands(context, tmp_path):
+    from platform_core.os_supervisor_service import SupervisorService
+    from platform_core.os_supervisor_protocol import (
+        SupervisorProtocolError, validate_request)
+    from platform_core.os_supervisor_cpu_systemd import FixedCpuSystemd
+
+    class FakeOnlyCpuBackend(FixedCpuSystemd):
+        def __init__(self):
+            self.spawned = 0
+        def launch(self, unit):
+            self.spawned += 1
+            raise AssertionError("must never launch without central recheck")
+
+    _, _, key, journal, _, _ = context
+    intent, old = _registered_launch_intent(context)
+    fresh = _fresh_launch_grant(context, intent)
+    backend = FakeOnlyCpuBackend()
+    ordinary = SupervisorService(
+        tmp_path / "disabled.sock", allowed_uid=7777, allowed_gid=7777,
+        authorization_journal=journal,
+        trusted_public_key=key.public_key(), cpu_trial_backend=backend)
+    body = {"handle_id": intent["handle_id"],
+            "execution_generation": 3, "launch_envelope": fresh}
+    request_obj = {"version": 1, "request_id": "supervisorrecheck1234",
+                   "action": "start_rechecked", "payload": body}
+    assert ordinary.dispatch(request_obj, peer_uid=7777)["code"] == (
+        "CPU_RECHECK_LAUNCH_DISABLED_HOLD")
+    assert backend.spawned == 0
+    for injected in ("command", "cwd", "environment", "unit", "executable"):
+        with pytest.raises(SupervisorProtocolError):
+            validate_request({**request_obj, "payload": {
+                **body, injected: "/bin/sh"}})
+    with pytest.raises(ValueError):
+        SupervisorService(
+            tmp_path / "untrusted.sock", allowed_uid=7777, allowed_gid=7777,
+            cpu_prelaunch_recheck_enabled=True)

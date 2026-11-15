@@ -18,7 +18,7 @@ from uuid import UUID
 
 PROTOCOL_VERSION = 1
 MAX_MESSAGE = 16 * 1024
-ALLOWED_ACTIONS = frozenset({"health", "inspect", "start", "stop", "read_log",
+ALLOWED_ACTIONS = frozenset({"health", "inspect", "start", "start_rechecked", "stop", "read_log",
                              "challenge", "authorize_intent"})
 _ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{7,127}$")
 
@@ -49,6 +49,16 @@ def validate_request(value: object) -> dict[str, Any]:
     if action == "health":
         if payload:
             raise SupervisorProtocolError("HEALTH_PAYLOAD_NOT_EMPTY")
+    elif action == "start_rechecked":
+        # Exact CPU trial identity and NEW centrally signed launch challenge.
+        # No arbitrary argv, cwd, unit, environment, or execution kind.
+        if (set(payload) != {"handle_id", "execution_generation", "launch_envelope"}
+                or not _valid_id(payload.get("handle_id"))
+                or type(payload.get("execution_generation")) is not int
+                or payload["execution_generation"] <= 0
+                or not isinstance(payload.get("launch_envelope"), dict)
+                or set(payload["launch_envelope"]) != {"claims", "signature"}):
+            raise SupervisorProtocolError("CPU_RECHECK_START_SCOPE_INVALID")
     elif action == "start":
         # Retain phase-1 empty start (always HOLD); the optional CPU trial
         # requires an exact reserved handle and an unexpired signed grant.
