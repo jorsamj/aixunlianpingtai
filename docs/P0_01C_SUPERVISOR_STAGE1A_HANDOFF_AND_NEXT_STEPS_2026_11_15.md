@@ -49,7 +49,7 @@
 |---|---|---|---|
 | [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) | `c95caed83033042b97603b410dd45970abd75f8a` | **completed / failure**。Ubuntu contract 成功；Windows contract 和 Linux API guard 失败 | **已有原始日志，原因如下** |
 | [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) | `c66ef5678c9dd86cd681c67a1623baacc5217e3d` | **completed / failure**：Ubuntu contract 成功；Windows contract、API guard 失败 | 已读取原始 Job 日志；与 43679203190 相同两类已定位问题 |
-| [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) | `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8` | **in_progress**：Ubuntu contract **success**（503 passed / 2 skipped，另有 2+31 passed）；API **failure**（24 passed 后旧 grep）；Windows **in_progress** | 等 Windows 最终结果；修复已确认的 API guard 和 POSIX 测试缺陷后再整轮验收 |
+| [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) | `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8` | **completed / failure**：Ubuntu contract success（503 passed / 2 skipped，另有 2+31 passed）；Windows 主合同 502 passed / 3 skipped、Linux PoC 30 passed / 1 failed（缺少 `os.getsid`）；API 24 passed 后旧 grep guard 失败 | 两项原因已核实，做最小修复并验证新 SHA 的完整 CI |
 
 请注意：上述是**2026-11-15 本次只读核查时间点**的状态，新会话必须再次查看最新 HEAD、最近 CI 和确切 SHA。
 
@@ -137,6 +137,6 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - `contract (ubuntu-24.04)`：**success**；
 - `contract (windows-latest)`：主体单测 **473 passed、2 skipped**，随后 Linux cgroup PoC 专项 **30 passed、1 failed**，仍是 `tests/unit/test_linux_cgroup_poc_contract.py:226` 的 `os.getsid` 在 Windows 不存在；
 - `api`：API 测试 **24 passed**，随后 `Permanent Agent executor guards` 因旧的 `reported_capabilities = executable_agent_capabilities(requested_capabilities)` grep 文本不再存在而退出 1；
-- 最新阶段 1A run `43684001227` 已转为 **in_progress**：Ubuntu contract **success**（503 passed/2 skipped + 两组专项 2/31 passed），API **failure**（原旧 grep），Windows **in_progress**；整轮仍未通过。
+- 最新阶段 1A run `43684001227` 已 **completed/failure**：Ubuntu contract success（503 passed/2 skipped + 两组专项 2/31 passed）；Windows 主合同 **502 passed/3 skipped**，Linux-only PoC **30 passed/1 failed**（`os.getsid`）；API **24 passed**，后续旧 grep guard 失败。整轮未通过，根因明确。
 
 **旧 Windows/API 问题已跨两个不同 SHA 重复出现；阶段 1A 的 start 拒绝逻辑经代码复核和 Ubuntu CI 验证是正确的，不是故障项。新会话先修真正的 CI 兼容问题，再推新功能。** 不需重复做 cgroup CPU PoC 研究。
