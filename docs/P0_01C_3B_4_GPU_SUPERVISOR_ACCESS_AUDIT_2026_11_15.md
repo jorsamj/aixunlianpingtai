@@ -32,7 +32,20 @@
 
 **CI 对应的精确代码 SHA 和最终结果**：
 - 源码/模拟合同（Ubuntu/Windows）：[run 43677681674](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43677681674)，触发 SHA `6279609597b77a8f395dc6e71a468c706eba0d29`。初次记录时 Ubuntu **65/65 PASS**，Windows 尚在 GitHub 队列；必须逐 Job 核实。
-- 临时文件 DAC 权限（GitHub Ubuntu root 沙盒）：[run 43677832627](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43677832627)，触发 SHA `a82d6df04fb41add9930ccc2bac106deba86041b`。初次记录时还在 GitHub 队列；不得提前宣称真实权限试验通过。若失败按日志定位，不能降低拒绝条件。
+- 临时文件 DAC 权限（GitHub Ubuntu root 沙盒）：[run 43677832627](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43677832627)，触发 SHA `a82d6df04fb41add9930ccc2bac106deba86041b`。**CI 实际 completed SUCCESS，全部 59 项测试通过**；真实 Linux 权限模拟结果见第 2.1 节。若失败按日志定位，不能降低拒绝条件。
+
+
+### 2.1 真实 GitHub-hosted Ubuntu 22.04 模拟 DAC 最终证据
+
+专用 [run 43677832627](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43677832627)，准确代码 SHA `a82d6df04fb41add9930ccc2bac106deba86041b`，**completed SUCCESS**；全部历史 Supervisor/SO_PEERCRED/新文件 DAC 合同 **`59 passed in 0.40s`**，三个隔离 OS 实测阶段均 SUCCESS。
+
+特别是本轮新增输出：
+- `fake_device_acl_separation_verified=true`：**普通临时文件** root owner + workload 专用组 + 0660 权限时，非 root Agent UID 被拒绝、独立 workload UID 被允许。
+- `fake_world_access_bypass_observed=true`：对同一**模拟普通文件**放宽到 0666 后，普通 Agent UID 可以打开；恢复 0660 后，`restored_agent_denial_verified=true`。
+- `actual_cuda_or_gpu_device_tested=false`、`actual_ascend_or_rockchip_device_tested=false`、`production_gpu_isolation_verified=false`、`production_recovery_allowed=false`。
+- 最终 `outcome=FAKE_FILE_DAC_COUNTEREXAMPLE_PASS_REAL_GPU_NOT_VERIFIED`；它不是对生产 `/dev/nvidia*` 的授权审计、不能证明 CUDA context 被拒绝，也不表示可释放中央任务的 GPU reservation。
+
+**结论仅限文件 DAC**：该实验说明“UID 分离 + 正确的文件 DAC”这一控制有效，也说明“账户分离但模拟设备节点可被任意用户读取”会失去这个控制。真正 NVIDIA/昇腾设备是否具有相同权限语义及阻断效果，必须在实际硬件上另行实测。
 
 ## 三、建议的正式架构：最小化而非重构
 
