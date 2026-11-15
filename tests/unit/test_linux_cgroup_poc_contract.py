@@ -202,3 +202,73 @@ def test_cgroup_observer_not_started_when_initial_state_unknown(tmp_path, monkey
         assert observer.start() is False
         assert observer.observed_empty is False
         observer.close()
+
+
+def test_nested_cpu_child_script_is_valid_python_and_starts_a_new_session():
+    source = poc.nested_child_script()
+    compile(source, "<isolated-cpu-descendant>", "exec")
+    assert "start_new_session=True" in source
+    assert "grandchild.json" in source
+    assert "leaf.wait()" in source
+
+
+def test_three_process_tree_requires_lineage_sessions_ticks_and_cgroup(monkeypatch):
+    ids = {
+        "parent_pid": 100, "parent_ticks": 11,
+        "child_pid": 200, "child_ticks": 22,
+        "grandchild_pid": 300, "grandchild_ticks": 33,
+    }
+    parents = {200: 100, 300: 200}
+    sessions = {200: 200, 300: 300}
+    ticks = {100: 11, 200: 22, 300: 33}
+    membership = {100: True, 200: True, 300: True}
+    monkeypatch.setattr(poc, "proc_parent_pid", lambda pid: parents[pid])
+    monkeypatch.setattr(poc.os, "getsid", lambda pid: sessions[pid])
+    monkeypatch.setattr(poc, "proc_start_ticks", lambda pid: ticks[pid])
+    monkeypatch.setattr(poc, "process_in_cgroup",
+                        lambda pid, group: group == "/test.service" and membership[pid])
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is True
+    assert poc.descendant_tree_bound(100, ids, "/other.service") is False
+    parents[300] = 999
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is False
+    parents[300] = 200
+    sessions[300] = 200
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is False
+    sessions[300] = 300
+    ticks[300] = 44
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is False
+    ticks[300] = 33
+    membership[300] = False
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is False
+
+
+def test_three_process_tree_rejects_duplicate_pid_and_missing_generation(monkeypatch):
+    ids = {"parent_pid": 100, "parent_ticks": 1,
+           "child_pid": 200, "child_ticks": 2,
+           "grandchild_pid": 200, "grandchild_ticks": 3}
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is False
+    ids["grandchild_pid"] = 300
+    ids.pop("grandchild_ticks")
+    assert poc.descendant_tree_bound(100, ids, "/test.service") is False
+
+
+def test_cgroup_event_repopulation_invalidates_earlier_empty_signal(tmp_path):
+    path = tmp_path / "events"
+    path.write_text("populated 1\n", encoding="ascii")
+    with path.open("rb", buffering=0) as handle:
+        observer = poc.CgroupEventObserver(handle.fileno())
+        assert observer.arm_stop() is True
+        path.write_text("populated 0\n", encoding="ascii")
+        observer._sample("stopped")
+        assert observer.observed_empty is True
+        path.write_text("populated 1\n", encoding="ascii")
+        observer._sample("repopulated")
+        assert observer.observed_empty is False
+        assert observer.evidence()[-1]["populated"] == 1
+        observer.close()
+
+
+def test_proc_parent_pid_uses_parent_field_not_process_group(monkeypatch):
+    monkeypatch.setattr(poc.Path, "read_text",
+                        lambda self, **kw: "321 (cpu worker) R 123 456 789 0 0 0")
+    assert poc.proc_parent_pid(321) == 123
