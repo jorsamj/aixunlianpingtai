@@ -184,6 +184,7 @@ class CgroupEventObserver:
         self._armed = False
         self._lock = threading.Lock()
         self._zero_after_arm = False
+        self._repopulated_after_zero = False
         self._events: list[dict] = []
         self._thread = threading.Thread(target=self._watch, daemon=True,
                                         name="p001c-cgroup-events")
@@ -196,6 +197,8 @@ class CgroupEventObserver:
             record["after_stop_armed"] = self._armed
             if self._armed and observed == 0:
                 self._zero_after_arm = True
+            elif self._armed and observed == 1 and self._zero_after_arm:
+                self._repopulated_after_zero = True
             if len(self._events) < 100:
                 if not self._events or self._events[-1]["populated"] != observed or (
                         self._events[-1]["after_stop_armed"] != self._armed):
@@ -242,7 +245,7 @@ class CgroupEventObserver:
     @property
     def observed_empty(self) -> bool:
         with self._lock:
-            return self._zero_after_arm
+            return self._zero_after_arm and not self._repopulated_after_zero
 
     def evidence(self) -> list[dict]:
         with self._lock:
@@ -282,6 +285,22 @@ def _valid_test_intent(unit: str, root: Path) -> bool:
             and intent.get("purpose") == "P0-01C-2B-CPU-ONLY")
 
 
+def nested_child_script() -> str:
+    """Synthetic CPU child spawning a grandchild in another session."""
+    return (
+        "import json,os,subprocess,sys\n"
+        "from pathlib import Path\n"
+        "leaf=subprocess.Popen([sys.executable,'-c',"
+        "'import time;time.sleep(20)'],start_new_session=True)\n"
+        "root=Path(sys.argv[1])\n"
+        "tmp=root / '.grandchild.tmp'\n"
+        "tmp.write_text(json.dumps({'pid':leaf.pid}),encoding='utf-8')\n"
+        "os.replace(tmp,root / 'grandchild.json')\n"
+        "leaf.wait()\n"
+    )
+
+
+
 def _payload(root: Path) -> int:
     # A direct public --payload invocation must not start any computation.
     try:
@@ -296,17 +315,7 @@ def _payload(root: Path) -> int:
     # Two independent process sessions. The child itself spawns a leaf in a
     # third session, which process-group-only cleanup cannot reliably cover.
     # Every process is CPU-only and bounded by the synthetic systemd unit.
-    child_code = (
-        "import json,os,subprocess,sys\n"
-        "from pathlib import Path\n"
-        "leaf=subprocess.Popen([sys.executable,'-c',"
-        "'import time;time.sleep(20)'],start_new_session=True)\n"
-        "root=Path(sys.argv[1])\n"
-        "tmp=root / '.grandchild.tmp'\n"
-        "tmp.write_text(json.dumps({'pid':leaf.pid}),encoding='utf-8')\n"
-        "os.replace(tmp,root / 'grandchild.json')\n"
-        "leaf.wait()\n"
-    )
+    child_code = nested_child_script()
     child = subprocess.Popen([sys.executable, "-c", child_code, str(root)],
                              start_new_session=True)
     if not wait_for(lambda: (root / "grandchild.json").is_file(), 5):
