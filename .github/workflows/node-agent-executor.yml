@@ -19,6 +19,9 @@ on:
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
       - 'platform_core/os_supervisor_onnx_cpu_pilot.py'
+      - 'platform_core/os_supervisor_onnx_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py'
+      - 'tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py'
       - 'tests/unit/test_os_supervisor_onnx_cpu_pilot.py'
       - 'tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py'
       - 'tests/unit/test_os_supervisor_phase1.py'
@@ -88,6 +91,9 @@ on:
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
       - 'platform_core/os_supervisor_onnx_cpu_pilot.py'
+      - 'platform_core/os_supervisor_onnx_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py'
+      - 'tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py'
       - 'tests/unit/test_os_supervisor_onnx_cpu_pilot.py'
       - 'tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py'
       - 'tests/unit/test_os_supervisor_phase1.py'
@@ -171,7 +177,11 @@ jobs:
           platform_core/os_supervisor_journal.py
           platform_core/os_supervisor_cpu_systemd.py
           platform_core/os_supervisor_onnx_cpu_pilot.py
+          platform_core/os_supervisor_onnx_cpu_systemd_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
+          tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
           tests/integration/test_os_supervisor_onnx_cpu_pilot_live.py
           tests/unit/test_os_supervisor_phase1.py
           tests/unit/test_os_supervisor_phase1b.py
@@ -180,6 +190,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
           tests/integration/test_os_supervisor_cpu_systemd_live.py
           platform_core/node_agent_deployment_runtime.py
           platform_core/node_agent_training_runtime.py
@@ -210,6 +221,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
@@ -237,6 +249,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
           tests/unit/test_os_supervisor_onnx_cpu_pilot.py
+          tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_agent_model_install_runtime.py
@@ -268,6 +281,14 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_linux_cgroup_poc_contract.py
+      - name: P0-01C 2D-2B1 root-owned ONNX inside true systemd CPU unit (isolated Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        shell: bash
+        run: >-
+          sudo -n "$(command -v python)" -m pytest -q --maxfail=1
+          --confcutdir=tests/integration
+          tests/integration/test_os_supervisor_onnx_cpu_systemd_pilot_live.py
       - name: P0-01C Stage-2A real fixed CPU systemd lifecycle (isolated Ubuntu ONLY)
         if: runner.os == 'Linux'
         timeout-minutes: 3
