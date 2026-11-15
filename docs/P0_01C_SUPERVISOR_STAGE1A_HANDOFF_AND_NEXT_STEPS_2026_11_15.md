@@ -163,3 +163,12 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - **阶段 1B-1 不等于 1B 完成**：尚未接入中央真实签发/原 lease 存活校验、公钥安全分发与吊销、独立 Socket 的授权流、真实 systemd 进程启动及崩溃恢复；这些仍按既定门槛逐项实施。只有中央授信和 journal 协作真实接通并验证后才能进入阶段 2 CPU worker。
 - **验收闸口**：本次阶段 1B-1 新 SHA 的 Ubuntu/Windows/API 必须独立核验；CI pending 不宣称 GREEN；未来多实例并发和 journal 文件完整性按真实代码再核查，不用重复旧 CPU PoC。
 - **生产约束不变**：`legacy` 默认、`supervisor-required` 不对生产启用；`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、生产 NO-GO。A800/双4070 未访问、未部署、未重启。
+
+### 10.1 阶段 1B-1 精确代码 SHA 的 Node Agent CI 正式验收
+
+**功能提交**：[`5b7ca69a2f109a97b37960973fb56c6d214f177b`](https://github.com/jorsamj/aixunlianpingtai/commit/5b7ca69a2f109a97b37960973fb56c6d214f177b)。主验证 [Node Agent Executor 43688432320](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43688432320) 已 **completed/success**，同 SHA 的三个 Job 均成功：
+- Ubuntu contract：**517 passed / 2 skipped**，原 POSIX SIGKILL **2 passed**、Linux cgroup 合同 **31 passed**；
+- Windows contract：**516 passed / 3 skipped**，Linux cgroup 便携合同 **30 passed / 1 skipped**；
+- API：SUCCESS（包含现行永久安全 grep 守卫）。
+
+该准确 SHA 的阶段 **1B-1 语法、权限拒绝合同、签名验签及本机 durable journal 单元回归 GREEN**；同 SHA 的其它仓库级 Actions 如仍 queued/in_progress，不据此声称全部工作流结束。当前根本门槛仍是中央真实租约原子核验后签发、公钥与 journal 接线、完整服务重启/进程身份恢复。新模块虽已存于 Git，却未被正式 Supervisor socket 或 Runner 引用；**阶段 1B 整体尚未完成、阶段 2/生产继续 NO-GO**。本次文档独立提交属于验收记录，不替代功能 SHA 的 CI。
