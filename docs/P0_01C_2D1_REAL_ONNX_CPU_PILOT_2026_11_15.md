@@ -2,7 +2,7 @@
 
 日期：2026-11-15  
 唯一开发分支：`feature/external-algorithm-publishing`  
-本轮准确功能 SHA：`16397cc04566f0570f796fee7b1129d2ae771238`  
+本轮准确代码 SHA：`4bd8d6e2701d5d597006a44c31942ab5d32224d2`（首轮 `16397cc0` 的具体拒绝码异常包装已定点修复）  
 生产部署：**NO-GO**
 
 ## 1. 背景
@@ -32,7 +32,7 @@ GitHub workflow 在 Linux 节点独立安装 ONNX 与 onnxruntime，不干扰 Wi
 
 ## 3. 本轮 CI 和安全边界
 
-本轮新准确功能 SHA `16397cc0` 已触发 GitHub 工作流，**当前状态：待最终验证**，不得提前写 GREEN。上轮 `228c9f30` 的 23/23 PASS 不可冒充新 SHA。
+本轮修复 SHA `4bd8d6e2701d5d597006a44c31942ab5d32224d2` 的 [Node Agent push run 43712286657](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43712286657) 的 Ubuntu、Windows、API 三 Job 均 SUCCESS：Ubuntu 主合同 **591 passed/2 skipped**，**真实 ONNX CPU Runtime 1/1 PASS**，真实 systemd E2E **4/4 PASS**。其余全仓工作流仍须按准确 SHA 的最终结果补录；不得提前写 23/23。上轮 `228c9f30` 的 23/23 PASS 不可冒充新 SHA。
 
 本轮不修改 `node_agent_conversion_runtime.py`、中央 `tasks.attempt` / lease / GPU reservation、Worker 授权、A800/双4070 生产环境，亦不开放 StopReceipt、自动重排或前端功能。
 
@@ -44,3 +44,9 @@ GitHub workflow 在 Linux 节点独立安装 ONNX 与 onnxruntime，不干扰 Wi
 4. Ubuntu 22.04 的 systemd 249 可用性需要独立安全实现和**真实隔离主机测试**，不可凭 Ubuntu 24.04 CI 外推。
 5. 整套集成完成后，再在用户授权下做有限非生产试验；不得先触碰 A800/双4070 的生产执行路径。
 
+
+## 5. 首轮 RED 与修复记录、不可跳过的安全准入
+
+- 首轮代码 `16397cc04566f0570f796fee7b1129d2ae771238` 的 Ubuntu Node Agent 主合同为 **590 passed / 2 skipped / 1 failed**。失败是边界文件拒绝时将 `CPU_ONNX_PILOT_FILE_BOUNDARY_HOLD` 包装成通用 `CPU_ONNX_PILOT_FILE_UNAVAILABLE_HOLD`；由于 `GrantRejected` 继承 `PermissionError/OSError`，被宽泛的 `except OSError` 捕获。即使安全上仍拒绝，也丢失了准确错误码。已在 `4bd8d6e2` 精准补 `except GrantRejected: raise`，测试均保留，没有关闭断言。
+- 目前只校验文件名、工作区、文件大小、SHA256，不解析所有 ONNX graph/subgraph 的 `external_data` 引用，也没有冻结文件描述符和完整的防 TOCTOU 保障。这些缺口在下一次正式 Supervisor OS profile 接线前 **必须单独实现并做负例实测**；不得仅凭文件 preflight 通过就认定安全可启动。
+- 此前的真实 ONNX 模型 CPU 运行已通过，但它使用标准非特权 GitHub subprocess，**不是**经 root-owned Supervisor 接管执行、也不是可信 OS cgroup StopReceipt。CPU Provider 验证不等于完全阻止系统 GPU 设备节点访问。

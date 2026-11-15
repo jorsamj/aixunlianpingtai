@@ -398,3 +398,8 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 当前 A800 / 双4070 / Node Agent 转换 Runner 的默认 `legacy` 未修改，`supervisor-required` 仍阻断正式计算；中央恢复、GPU reservation 与远程 StopReceipt 继续 HOLD。
 - 专项细节见 [`P0_01C_2D1_REAL_ONNX_CPU_PILOT_2026_11_15.md`](P0_01C_2D1_REAL_ONNX_CPU_PILOT_2026_11_15.md)。
 
+
+### 19.1 2D-1 实际业务 CPU 校验及拒绝码修复的准确 CI
+
+- 新代码 [`4bd8d6e2701d5d597006a44c31942ab5d32224d2`](https://github.com/jorsamj/aixunlianpingtai/commit/4bd8d6e2701d5d597006a44c31942ab5d32224d2) 修复首轮 `16397cc0` 的 `GrantRejected` 被当成 `OSError` 二次包装问题，保留文件边界 HOLD 精确原因。首轮一项 unit RED 后新 SHA Ubuntu 主合同 **591 passed/2 skipped**，真实 ONNX CPU E2E **1 passed**，真实 systemd **4 passed**；Node Agent Windows / API 已成功。
+- **全仓 CI 当前仍按最终运行结果核实**，不得把核验中的前端/其余 workflow 当成已经通过。新增 CPU preflight 仅是本地文件条件核验，不提供中央授权、不可变输入 fd、ONNX graph `external_data` 禁止、OS Supervisor 真实业务 Runner 接线或可信 StopReceipt；全部上线仍 NO-GO。
