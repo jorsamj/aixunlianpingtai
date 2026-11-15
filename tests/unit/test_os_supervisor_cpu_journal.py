@@ -151,6 +151,7 @@ def test_once_cas_and_restart_preserve_one_systemd_invocation(tmp_path):
     stopped = recovered.dispatch(request("stop", scope), peer_uid=10101)
     assert stopped["ok"] is False and stopped["code"].endswith("HOLD")
     assert stopped["result"]["state"] == "UNKNOWN"
+    assert recovered.dispatch(request("read_log", scope), peer_uid=10101)["ok"] is False
     assert fake.spawn_count == 1
     with sqlite3.connect(journal.path) as db:
         assert db.execute(
@@ -219,6 +220,9 @@ def test_cpu_natural_exit_is_durable_and_never_relaunches(tmp_path):
             journal.path, test_only_unprivileged=True, boot_id_for_tests=BOOT),
         trusted_public_key=key.public_key(), cpu_trial_backend=backend)
     assert restarted.dispatch(request("inspect", scope), peer_uid=10101)["result"]["state"] == "EXITED"
+    terminal_log = restarted.dispatch(request("read_log", scope), peer_uid=10101)
+    assert terminal_log["ok"] is True
+    assert terminal_log["result"]["cursor"] == "s=demo;i=1"
     assert restarted.dispatch(begin, peer_uid=10101)["ok"] is False
     assert restarted.dispatch(request("stop", scope), peer_uid=10101)["ok"] is False
     assert fake.spawn_count == 1
