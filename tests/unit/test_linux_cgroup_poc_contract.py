@@ -114,3 +114,21 @@ def test_process_identity_stop_check_missing_is_not_alive(monkeypatch):
         raise FileNotFoundError("gone")
     monkeypatch.setattr(poc.Path, "read_text", missing)
     assert poc.process_executing_by_identity(999, 12) is False
+
+
+def test_original_cgroup_pinned_handle_reads_actual_events():
+    from io import StringIO
+    handle = StringIO("populated 1\nfrozen 0\n")
+    assert poc.cg_populated_from_pinned_handle(handle) == 1
+    handle.seek(0)
+    handle.truncate(0)
+    handle.write("populated 0\nfrozen 0\n")
+    assert poc.cg_populated_from_pinned_handle(handle) == 0
+    handle.close()
+    assert poc.cg_populated_from_pinned_handle(handle) is None
+
+
+def test_cgroup_pinned_handle_never_infers_missing_or_corrupt_state():
+    from io import StringIO
+    for data in ("", "frozen 0\n", "populated unknown\n", "populated 9\n"):
+        assert poc.cg_populated_from_pinned_handle(StringIO(data)) is None
