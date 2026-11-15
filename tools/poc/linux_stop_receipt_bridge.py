@@ -113,7 +113,9 @@ def run_isolated_bridge() -> tuple[dict, int]:
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or not hasattr(os, "geteuid") or os.geteuid() == 0):
         return {"outcome": "NOT_ISOLATED_GITHUB_RUNNER_HOLD",
-                "central_recovery_allowed": False}, 2
+                "central_recovery_allowed": False,
+                "trusted_os_witness_implemented": False,
+                "production_recovery_allowed": False}, 2
     task_id = "poc-task-" + secrets.token_hex(12)
     key = secrets.token_bytes(32)  # fake, co-located signer, never persisted
     now = datetime.now(timezone.utc)
