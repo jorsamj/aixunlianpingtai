@@ -367,3 +367,17 @@
 - 得到真实硬件权限模型后再设计正式非 root Agent + 受保护 workload UID/systemd unit + GPU device 访问限额和只读遥测接口；绝不能仅设置 `CUDA_VISIBLE_DEVICES` 就声称隔离。
 - 随后在经批准的维护窗口或独立 GPU 测试机验收真实 CUDA/其他 SDK 越权启动拒绝、合法任务正常运行、所有 DataLoader/转换子进程停止、重启/网络分区/重复挑战的 StopReceipt 完整性；再决定是否进入正式中央默认 OFF 恢复 API。
 - **任何生产功能解锁都尚未授权。** `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、旧 `tasks.attempt`/owner/lease/GPU reservation、自动派单 OFF 继续。
+
+## 20. 2026-11-15｜从重复 PoC 转向正式 Agent 渐进式开发：Supervisor 强制准入保护
+
+本轮用户明确要求减少重复测试、直接推进开发。已从纯 `tools/poc` 转向**最小正式业务代码改动**，仍不动任何生产机器/任务/数据库，不解除 HOLD。
+
+- 新增 `platform_core/node_agent_supervisor_gate.py`（生产可导入的轻量策略模块）。`CHANGLIAN_AGENT_EXECUTION_BOUNDARY` **默认 `legacy`**，旧流程不变；仅在显式配置 `supervisor-required` 时，因真正受保护 launcher/进程句柄适配尚不存在，强制拒绝训练、转换和部署复核的直接进程启动，绝不静默退回旧 `subprocess.Popen`。配置非法亦拒绝启动。
+- 已修改 `node_agent.py`：在上报能力、构建 `NodeAgentExecutorLoop` 和申领任务之前过滤 `training`、`conversion`、`conversion.rknn`、`deployment-test`、`deployment-test.rknn`。模型安装、素材处理、清洗等其他能力按原规则继续，不随意扩大范围；doctor 增加执行边界模式可观察性。
+- 已修改三个正式 Runner：`node_agent_training_runtime.py`、`node_agent_conversion_runtime.py`、`node_agent_deployment_runtime.py`，在各自唯一的真正 `launch_process` 入口之前二次保护。保护拒绝会走 `RemoteExecutionFenced` 路径而不是宣称已停止旧 GPU 进程。注意部署复核也有 GPU/SDK 计算能力，不能将其漏掉。
+- 新增 `tests/unit/test_node_agent_supervisor_gate.py`，直接复用已有 `.github/workflows/node-agent-executor.yml` 回归。运行 [Node Agent Executor 43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 针对代码 SHA `c66ef5678c9dd86cd681c67a1623baacc5217e3d` 的 Ubuntu、Windows、API Jobs **首次记录仍在队列中，禁止称作通过**。每一笔中间代码提交可能触发几十项 GitHub workflow，后续要**合并变更和缩减重复运行**，不用为了测试而重复测试。
+- 新增 `tools/audit_gpu_node_access.py`：经明确许可后可在指定 Linux 节点使用的**只读权限盘点**。默认 `INERT_OPT_IN_REQUIRED`，仅 `--read-only [--unit existing.service]` 读取 systemd **允许列表内的非秘密属性**、当前 UID/GID 和设备节点 `stat` 元数据；不调用 CUDA/nvidia-smi，不打开设备节点，不读 token/ExecStart/环境变量，不修改生产。**本轮没有在 A800/4070 实际运行，也无法推断真实 GPU 授权**。
+- 当前受控配置 `supervisor-required` **不代表 Supervisor 真正可启动计算**，如果现在对生产设置它，会主动阻断远程计算任务接单；未授权、未部署、不可直接启用。默认 `legacy` 保持线上原有行为和 fail-closed 的远程租约过期 HOLD。
+- 下一阶段不再重复类似 CPU PoC，而是一个可工作的受保护 Supervisor 纵向切片：跨 UID Unix Socket 鉴权、启动前登记、实际 systemd launch、稳定异步 `poll/returncode`、日志/取消与一体化 StopReceipt，并在真实 GPU 权限/驱动 UAT 审批后替换旧启动路径。绝不能重构或另建第二套调度系统，中央 `tasks.attempt` 继续唯一执行代数。
+
+**完整记录**：[P0-01C-3B-5 渐进式接入和只读权限盘点](P0_01C_3B_5_SUPERVISOR_MIGRATION_GUARD_2026_11_15.md)。安全状态不变：`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、原 owner/lease/GPU reservation、自动派单 OFF、生产 **NO-GO**。无任何 A800/双4070/SSH/训练/部署任务动作。
