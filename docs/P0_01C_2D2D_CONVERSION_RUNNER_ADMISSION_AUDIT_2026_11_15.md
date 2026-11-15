@@ -70,3 +70,10 @@
 - **下一个实际开发单元（2D-2D1）**：先定义独立 `SupervisedConversionHandle` 与受限、受信任 CPU 输入 profile 的**适配合同及离线单元测试**；不触碰当前 `AgentConversionRunner.run()` 的实际 spawn、取消或结果发布路径，不增加业务前端功能。
 - 2D-2D2 才根据 2D1 审计证据逐步接入真实 OS 执行，必须验证中央租约持续检查、原始唯一执行身份、StopReceipt 与原输出 SHA256/prepare/confirm/finalize/finish 完整链路。
 - **Ubuntu 22.04/systemd249、GPU 隔离和可信停机依旧单独 NO-GO**。不能将 fixed-cpu-v1 的成功提升为 GPU training 或 production conversion 的授权。
+
+
+## 八、2D-2D1 完成后的准入结论（2026-11-15）
+
+- 2D-2D1 只读适配合同与输入 SHA256 预检已开发并在功能代码 SHA `aaaf108fccfc9a6cfd257e7bac98aaa02f029f41` 通过本 SHA 触发的 **22/22 CI 全绿**，含 Node Agent Windows/Ubuntu/API、真实系统 CPU+ORT 以及全部三组 Chrome。
+- 本轮另由 Playwright 真 trace 定位并修复 Annotation first-history 空栈异常，已添加 100ms 快速首画真实浏览器回归，vendor patch 精确 SHA 与许可证保留，未修改 GT/审核 API。详见 `P0_01C_2D2D1_SUPERVISED_CONVERSION_READONLY_ADAPTER_2026_11_15.md`。
+- **继续准入 2D-2D2 的隔离开发与测试，不准入生产启用。** 仍缺真实 CPU 转换执行命令信任边界、OS handle durable/reconnect、lease 持续监督、可信停止回执、正式业务结果确认与 Ubuntu 22.04/v249 支持；严禁因本次 CI 全绿而将生产 `supervisor-required` 打开。

@@ -14,7 +14,7 @@
 
 ## 前端页面结论
 
-**本阶段不修改前端**。尚没有合法可提供给用户的 Supervisor 模型转换开关、可信取消与自动重派能力；显示一个可点击但实际不安全的生产入口会误导。现有转换页继续呈现原中央任务状态，直到受保护业务链路和结果发布事务真正闭环后，再评估是否补只读执行边界状态。
+**本阶段不新增 Supervisor 生产开关或新业务页面**。现有模型转换页仍以中央任务为权威；此前不应提供可点击但无可信停止证据的生产入口。随后在全仓浏览器回归中确实定位到独立的 Annotorious 首画缺陷，因此对已有标注组件进行了范围明确的前端运行时修复与真实 Chrome 回归；未改标注 GT API、审核提交流程或任务页面状态所有权。
 
 ## 不可越过的生产准入
 
@@ -62,3 +62,17 @@
 - 正式浏览器入口 `static/modules/annotorious-editor.js` 的 vendor JS URL 仅变更缓存标识为 `?v=3.9.5-history1`，确保后续部署更新时不会沿用旧已缓存脚本，CSS/生产任务无变化。
 
 本修复仅涉及前端离线三方组件的**一个历史空栈边界**及回归测试；没有把测试超时改大、跳过/删除失败用例，也没有修改 `AgentConversionRunner`、GT API、中央任务、GPU、A800 或 4070。**新的完整 CI 需按实际准确 SHA 再验，不可借先前 2D-2C3 23/23 宣称本次全绿。**
+
+
+## 2D-2D1 最终验收决定（2026-11-15）
+
+**最终准确功能代码 SHA：`aaaf108fccfc9a6cfd257e7bac98aaa02f029f41`。** 已逐项从 GitHub Actions API 核验：本 SHA 触发的 **22 项 workflow 全部 `completed/success`（22/22，失败 0）**；不同提交的工作流触发数可因路径过滤不同，不得把之前 2D-2C3 的 23/23 当成本轮数据。
+
+- Node Agent Executor：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43731887384 — **Windows / Ubuntu / API 3 个 Job 全部成功**。Windows 651 passed / 7 skipped；Ubuntu 核心合同 **656 passed / 2 skipped**，另有实际固定 CPU systemd、真实 ORT CPU 推理、非 root Agent→HTTP→root Unix→systemd 的隔离集成测试均成功。
+- Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43731880003 — **frontend + 三个 Chrome browser-navigation Job 全部成功**。Browser shard 1：128 passed；shard 2：130 passed；shard 3：125 passed。shard 1 明确运行新增 `first rectangle during an empty history under 250ms still emits createAnnotation` 回归，且成功；旧完整画框/移动/缩放/几何像素回归也成功。
+- 远程转换业务回归：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43731887406 — SUCCESS；远程训练业务回归：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43731887387 — SUCCESS；其余本 SHA 工作流也全部成功。
+- 本轮 vendor JS 为本地**审计单点补丁**，并非完全原样的官方 dist：固定上游 SHA256 `66a2ac75...`，补丁后 SHA256 `9bdfd343...`；可通过 `tools/vendor_annotorious.mjs --check` 重建验证，完整审计字段保存在 manifest/NOTICE 中。未经审计不得引入新的第三方版本或移除这条保护。
+
+**阶段结论：2D-2D1（只读适配合同与受控输入预检）PASS，关闭。** 这是开发和 CI 验收，不是生产操作确认；`AgentConversionRunner` 仍使用既有 legacy 机制，未接入真实 Supervisor 模型转换；无 GPU StopReceipt/自动重派、无 Ubuntu 22.04/systemd249 兼容保证，`supervisor-required` 生产仍禁止打开。A800、双4070 没有操作。
+
+**下一阶段 2D-2D2：** 基于这版已通过的合同，再做独立的可信 CPU 模型执行 profile、OS handle 持久化、原中央租约与运行期停止/结果上传事务的完整真实联调；坚持最小范围修改，先验收再考虑前端可见状态或生产部署。
