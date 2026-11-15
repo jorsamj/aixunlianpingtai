@@ -25,7 +25,7 @@
 - `c0599158df8678ec5f3f11658e11613529e3d997`：E2E 纳入原 CI。
 - `db5e8fa409e36f9dc43db1366dec66beb3b3eaf7`：中央 HTTP grant 改用直连 127.0.0.1 的 HTTPConnection；禁用环境代理和外部重定向，避免携租约 token 的请求被转发。
 
-**CI：对最终代码 SHA `db5e8fa409e36f9dc43db1366dec66beb3b3eaf7` 的最终运行结果尚未核准，不能声称 23/23 已通过。**
+**历史阶段说明：SHA `db5e8fa4` 的 CI 曾出现失败，随后已在 `12824cbf` 修复并对该最终 SHA 验收；详见本文末尾最新验收结论。**
 
 ## 未解决与下一阶段
 
@@ -38,7 +38,7 @@
 生产 A800、双4070 服务、数据、GPU、部署配置均未操作。不得开自动任务重派、自动恢复或强制释放 GPU reservation；不合并 main、不创建 Release。
 
 
-## 2026-11-15 2D-2C3B CI 实证驱动修复（尚待最终 CI）
+## 2026-11-15 2D-2C3B CI 实证驱动修复（已验收）
 
 此前功能 SHA `db5e8fa409e36f9dc43db1366dec66beb3b3eaf7` 的 CI 首次显示：
 - Node Agent Ubuntu `contract`：622 passed / 2 skipped / 1 failed。失败为取消后中央已返回 409，实际 `CPU_CENTRAL_GRANT_HTTP_HOLD`，但测试断言误要求 `CPU_CENTRAL_GRANT_UNAVAILABLE_HOLD`。已调整精确断言，不修改正式中央业务授权。
@@ -54,7 +54,26 @@
 - `38c5e998bce60a4cfe4b2efda6f9bacdd1c3e40c`：EXITED/UNKNOWN 日志回归。
 - `12824cbf6e57ad6e434e7789f356bb493ab53a6c`：Linux Contract 只运行一次 root systemd E2E。
 
-**验收基线为 `12824cbf6e57ad6e434e7789f356bb493ab53a6c`，23 项全仓及 Windows/Ubuntu/API 终态尚未验收，仍不可宣称 23/23 或 Supervisor 已可生产接管。**
+**最终验收基线：`12824cbf6e57ad6e434e7789f356bb493ab53a6c`；23 项 GitHub 工作流已全部 SUCCESS。隔离 CPU Supervisor 链路验收完成，但不授权生产接管。**
 
 ### 不可误用的边界
 本次日志只读权限只证明 CPU-only、同一可信 systemd InvocationID 的自然终态日志证据；不允许据此授予 StopReceipt、释放 GPU、重新分派、发布模型转换结果或自动恢复。Ubuntu 22.04 systemd249、启动后中央取消竞态/租约持续监督仍是未解决生产阻断。
+
+
+## 最终 CI 验收记录（2026-11-15）
+
+已通过 GitHub Actions API 按**精确代码 HEAD SHA** `12824cbf6e57ad6e434e7789f356bb493ab53a6c` 核实：
+
+- **23/23 GitHub Actions 工作流：全部 `completed/success`，失败 0、排队 0、进行中 0。**
+- Node Agent Executor push：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43725810182 — `api`、`contract (windows-latest)`、`contract (ubuntu-24.04)` 三个 Job 均成功。
+- Node Agent Executor 同代码 SHA 第二次工作流：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43725816181 — 同样三个 Job 全部成功。
+- Ubuntu Job 日志证据：Agent contracts **623 passed / 2 skipped**；原固定 CPU 真实 systemd 测试 **4 passed / 25.52s**；本轮 nonroot Agent→HTTP→root Supervisor→真实 systemd 端到端专项 **1 passed / 26.41s**。Windows 合同用例和受限 CPU ONNX Runtime 真实测试亦成功。
+- 前端 Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43725810162 — frontend + browser-navigation (1)/(2)/(3) 四个 Job **全部成功**，此 SHA 不再存在历史 Annotorious 挂起项。
+- 训练、转换、素材、存储、任务调度等其他 GitHub 工作流均成功，不存在本轮遗留的失败 Job。
+
+### 验收决定
+
+**2D-2C3（包括 2C3B）隔离 CPU 网络-OS 链路专项：PASS，关闭。**
+本轮只证明固定 CPU-only、同一 `tasks.attempt`、中央重新签发授权、Unix SO_PEERCRED、真实 Ubuntu 24.04 systemd、受限日志及自然终态可可靠联调。状态 `UNKNOWN` 继续 HOLD；不存在可信 StopReceipt、正式模型转换 Runner 接管、GPU 清理/重派或 Ubuntu 22.04 systemd249 生产兼容结论。
+
+**下一阶段可以开展 2D-2D1 的独立受限转换适配实现和测试，但不能据此打开 `supervisor-required`、自动恢复或部署到 A800/4070。** 
