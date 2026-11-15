@@ -25,6 +25,11 @@ from urllib.parse import urlparse
 
 import requests
 
+from .node_agent_supervisor_gate import (
+    assert_direct_remote_launch_permitted,
+    SupervisorExecutionBoundaryRequired,
+    SupervisorExecutionBoundaryInvalid,
+)
 from .node_agent_executor_runtime import (
     AgentExecutionWorkdir,
     ExecutionLeaseMonitor,
@@ -1502,6 +1507,13 @@ class AgentTrainingRunner:
                 "PYTHONIOENCODING": "utf-8",
             }
             with runtime_log.open("ab") as log:
+                # Strict opt-in guard. No ordinary Popen fallback is permitted
+                # when the node requires a protected OS Supervisor.
+                try:
+                    assert_direct_remote_launch_permitted()
+                except (SupervisorExecutionBoundaryRequired,
+                        SupervisorExecutionBoundaryInvalid) as error:
+                    raise RemoteExecutionFenced(str(error)) from error
                 self.workdirs.begin_process_launch(lease)
                 try:
                     launched = launch_process(
