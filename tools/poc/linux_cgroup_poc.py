@@ -12,10 +12,12 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from linux_cgroup_probe import inspect, unified_path
@@ -112,6 +114,104 @@ def cg_populated_from_pinned_handle(handle) -> int | None:
             except (IndexError, ValueError):
                 return None
     return None
+
+
+def read_cgroup_events_fd(fd: int) -> int | None:
+    """Read only the original open cgroup.events FD; ENODEV => UNKNOWN."""
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = os.read(fd, 4096).decode("ascii")
+    except (OSError, UnicodeError):
+        return None
+    for line in raw.splitlines():
+        if line.startswith("populated "):
+            try:
+                value = int(line.split()[1])
+            except (ValueError, IndexError):
+                return None
+            return value if value in (0, 1) else None
+    return None
+
+
+class CgroupEventObserver:
+    """Subscribe before stopping the original unit; never infer 0 from GC.
+
+    poll(POLLPRI|POLLERR) is Linux cgroup.events' supported notification.
+    The observer captures a value only when the original FD is readable.
+    A missing read, even after a notification, remains UNKNOWN/HOLD.
+    """
+
+    def __init__(self, fd: int):
+        self.fd = fd
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._armed = False
+        self._lock = threading.Lock()
+        self._zero_after_arm = False
+        self._events: list[dict] = []
+        self._thread = threading.Thread(target=self._watch, daemon=True,
+                                        name="p001c-cgroup-events")
+
+    def _sample(self, event: str, mask: int = 0) -> None:
+        observed = read_cgroup_events_fd(self.fd)
+        record = {"type": event, "mask": mask, "populated": observed,
+                  "monotonic_ns": time.monotonic_ns()}
+        with self._lock:
+            record["after_stop_armed"] = self._armed
+            if self._armed and observed == 0:
+                self._zero_after_arm = True
+            if len(self._events) < 100:
+                if not self._events or self._events[-1]["populated"] != observed or (
+                        self._events[-1]["after_stop_armed"] != self._armed):
+                    self._events.append(record)
+
+    def _watch(self):
+        try:
+            poller = select.poll()
+            poller.register(self.fd, select.POLLPRI | select.POLLERR)
+            self._ready.set()
+            while not self._stop.is_set():
+                changes = poller.poll(10)
+                if changes:
+                    for _, mask in changes:
+                        self._sample("poll", mask)
+                    # A detached/inaccessible cgroup FD may remain readable
+                    # as an error forever. Avoid spinning and flooding evidence.
+                    time.sleep(0.002)
+                else:
+                    # During the tiny stop/GC window even a missed notification
+                    # must be diagnosed as UNKNOWN, never assumed to be empty.
+                    self._sample("interval")
+        except (OSError, ValueError) as error:
+            with self._lock:
+                self._events.append({"type": "observer_error",
+                                     "error_type": type(error).__name__})
+            self._ready.set()
+
+    def start(self) -> bool:
+        if read_cgroup_events_fd(self.fd) != 1:
+            return False
+        self._thread.start()
+        return self._ready.wait(timeout=2)
+
+    def arm_stop(self) -> None:
+        with self._lock:
+            self._armed = True
+        self._sample("armed_before_systemctl_stop")
+
+    @property
+    def observed_empty(self) -> bool:
+        with self._lock:
+            return self._zero_after_arm
+
+    def evidence(self) -> list[dict]:
+        with self._lock:
+            return list(self._events)
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2)
 
 
 def wait_for(predicate, timeout: float = 6.0) -> bool:
@@ -213,6 +313,7 @@ def run_poc() -> tuple[dict, int]:
         bound = False
         initial = {}
         original_cgroup_events = None
+        cgroup_observer = None
         try:
             started = wait_for(lambda: (root / "launched").exists() and (root / "ready.json").exists(), 8)
             if not started:
@@ -247,6 +348,10 @@ def run_poc() -> tuple[dict, int]:
             if cg_populated_from_pinned_handle(original_cgroup_events) != 1:
                 result["outcome"] = "CGROUP_PIN_UNVERIFIED_HOLD"
                 return result, 3
+            cgroup_observer = CgroupEventObserver(original_cgroup_events.fileno())
+            if not cgroup_observer.start():
+                result["outcome"] = "CGROUP_EVENT_OBSERVER_NOT_READY_HOLD"
+                return result, 3
             # Kill just the launcher (stand-in Agent), not the systemd unit.
             launcher.kill()
             launcher.wait(timeout=3)
@@ -264,6 +369,7 @@ def run_poc() -> tuple[dict, int]:
             if not same_unit_instance(unit_info(unit), initial):
                 result["outcome"] = "UNIT_REPLACED_HOLD"
                 return result, 3
+            cgroup_observer.arm_stop()
             stopped = command(["systemctl", "--user", "--no-ask-password", "stop", unit], 8)
             result["systemd_stop_returncode"] = stopped.returncode
             if stopped.returncode != 0:
@@ -276,7 +382,8 @@ def run_poc() -> tuple[dict, int]:
             result["cgroup_handle_after_stop"] = cg_populated_from_pinned_handle(
                 original_cgroup_events)
             result["cgroup_empty_verified"] = wait_for(
-                lambda: cg_populated_from_pinned_handle(original_cgroup_events) == 0, 2)
+                lambda: cgroup_observer.observed_empty, 2)
+            result["cgroup_observations"] = cgroup_observer.evidence()
             # cgroup.events=0 is not sufficient if a previously-bound known
             # child has moved elsewhere and is still computing.
             known = ((ids["parent_pid"], ids["parent_ticks"]),
@@ -294,6 +401,8 @@ def run_poc() -> tuple[dict, int]:
             result["error_type"] = type(error).__name__
             return result, 3
         finally:
+            if cgroup_observer is not None:
+                cgroup_observer.close()
             if original_cgroup_events is not None:
                 original_cgroup_events.close()
             if launcher.poll() is None:
