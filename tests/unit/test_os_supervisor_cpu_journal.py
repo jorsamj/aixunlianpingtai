@@ -36,6 +36,7 @@ class FakeRunner:
         self.finished = False
         self.exit_type = "cgroup"
         self.exec_main_pid = "54321"
+        self.control_group_override = None
 
     def __call__(self, command, **kwargs):
         from types import SimpleNamespace
@@ -61,12 +62,16 @@ class FakeRunner:
             return SimpleNamespace(returncode=0, stdout="")
         name = command[-1]
         fields = {
-            "Id": name, "LoadState": "loaded", "Transient": "yes",
+            "Id": name,
+            "LoadState": ("loaded" if self.spawn_count else "not-found"),
+            "Transient": "yes",
             "ActiveState": "active" if self.active else "inactive",
             "SubState": ("exited" if self.finished else
                          ("running" if self.active else "dead")),
             "InvocationID": self.invocation,
-            "ControlGroup": "/system.slice/" + name if self.active else "",
+            "ControlGroup": (self.control_group_override
+                             if self.control_group_override is not None else
+                             ("/system.slice/" + name if self.active else "")),
             "MainPID": "0" if self.finished else ("54321" if self.active else "0"),
             "ExecMainPID": self.exec_main_pid,
             "ExitType": self.exit_type, "RemainAfterExit": "yes",
@@ -256,3 +261,78 @@ def test_cpu_exit_cannot_promote_unknown_or_mismatched_boot(tmp_path):
     journal_on_new_boot = ExecutionJournal(
         journal.path, test_only_unprivileged=True, boot_id_for_tests="new-boot")
     assert journal_on_new_boot.inspect(scope["handle_id"], 7)["state"] == "UNKNOWN"
+
+
+def test_cpu_starting_crash_after_real_spawn_reattaches_once(tmp_path):
+    """No second OS launch after lost identity commit and Supervisor restart."""
+    journal, backend, fake, service, begin, scope, key = make_registered(tmp_path)
+    claim = journal.claim_cpu_launch(
+        scope["handle_id"], 7, begin["payload"]["envelope"],
+        trusted_public_key=key.public_key())
+    os_identity = backend.launch(claim["unit_name"])
+    assert fake.spawn_count == 1
+    assert os_identity["main_pid"] == 54321
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT state FROM execution_intents").fetchone()[0] == "STARTING"
+        assert db.execute("SELECT count(*) FROM cpu_unit_identities").fetchone()[0] == 0
+
+    journal_again = ExecutionJournal(
+        journal.path, test_only_unprivileged=True, boot_id_for_tests=BOOT)
+    restarted = SupervisorService(
+        Path("/tmp/startup-recovery.sock"), allowed_uid=10101, allowed_gid=10101,
+        authorization_journal=journal_again, trusted_public_key=key.public_key(),
+        cpu_trial_backend=backend)
+    result = restarted.dispatch(request("inspect", scope), peer_uid=10101)
+    assert result["ok"] and result["result"]["state"] == "RUNNING"
+    saved = journal.cpu_identity(scope["handle_id"], 7)
+    assert saved["invocation_id"] == os_identity["invocation_id"]
+    assert saved["main_pid"] == os_identity["main_pid"]
+    # Two concurrent observers can record only the same identity, once.
+    journal.record_cpu_identity(
+        scope["handle_id"], 7, invocation_id=os_identity["invocation_id"],
+        control_group=os_identity["control_group"], main_pid=os_identity["main_pid"])
+    with raises(GrantRejected, match="CONCURRENT_MISMATCH"):
+        journal.record_cpu_identity(
+            scope["handle_id"], 7, invocation_id="d" * 32,
+            control_group=os_identity["control_group"], main_pid=os_identity["main_pid"])
+    assert restarted.dispatch(request("inspect", scope), peer_uid=10101)["ok"]
+    assert restarted.dispatch(begin, peer_uid=10101)["ok"] is False
+    assert fake.spawn_count == 1
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute(
+            "SELECT state,event_seq FROM execution_intents").fetchone() == ("RUNNING", 3)
+
+
+def test_starting_reattach_requires_real_os_unit_original_boot_and_identity(tmp_path):
+    for mode in ("missing", "wrong_boot", "wrong_pid", "wrong_group",
+                 "wrong_protection", "unknown"):
+        folder = tmp_path / mode
+        folder.mkdir()
+        journal, backend, fake, service, begin, scope, key = make_registered(folder)
+        journal.claim_cpu_launch(
+            scope["handle_id"], 7, begin["payload"]["envelope"],
+            trusted_public_key=key.public_key())
+        if mode != "missing":
+            backend.launch("changlian-os-" + scope["handle_id"] + ".service")
+        if mode == "wrong_boot":
+            journal = ExecutionJournal(
+                journal.path, test_only_unprivileged=True,
+                boot_id_for_tests="different-linux-boot")
+        elif mode == "wrong_pid":
+            fake.exec_main_pid = "45678"
+        elif mode == "wrong_group":
+            fake.control_group_override = "/system.slice/not-the-original.service"
+        elif mode == "wrong_protection":
+            fake.exit_type = "main"
+        elif mode == "unknown":
+            journal.mark_cpu_unknown(scope["handle_id"], 7)
+        retry = SupervisorService(
+            Path("/tmp/startup-denied.sock"), allowed_uid=10101, allowed_gid=10101,
+            authorization_journal=journal, trusted_public_key=key.public_key(),
+            cpu_trial_backend=backend)
+        reply = retry.dispatch(request("inspect", scope), peer_uid=10101)
+        assert reply["ok"] is False and reply["result"]["state"] == "UNKNOWN", mode
+        assert retry.dispatch(begin, peer_uid=10101)["ok"] is False, mode
+        with sqlite3.connect(journal.path) as db:
+            assert db.execute(
+                "SELECT count(*) FROM cpu_unit_identities").fetchone()[0] == 0, mode

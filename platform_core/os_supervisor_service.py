@@ -163,8 +163,28 @@ class SupervisorService:
             payload = request["payload"]
             if self.cpu_trial_backend is not None:
                 try:
-                    identity = self.authorization_journal.cpu_identity(
-                        payload["handle_id"], payload["execution_generation"])
+                    try:
+                        identity = self.authorization_journal.cpu_identity(
+                            payload["handle_id"], payload["execution_generation"])
+                    except GrantRejected:
+                        # Crash after the one-shot journal CAS and systemd-run,
+                        # but before InvocationID was durably saved: inspect the
+                        # journal's exact unit. Never re-run systemd-run.
+                        starting = self.authorization_journal.starting_cpu_unit(
+                            payload["handle_id"], payload["execution_generation"])
+                        observed = self.cpu_trial_backend.snapshot(
+                            starting["unit_name"], require_running=True)
+                        if (str(observed["main_pid"]) != observed["exec_main_pid"]
+                                or observed["control_group"] !=
+                                "/system.slice/" + starting["unit_name"]):
+                            raise GrantRejected("CPU_REATTACH_OS_IDENTITY_UNVERIFIED_HOLD")
+                        self.authorization_journal.record_cpu_identity(
+                            starting["handle_id"], starting["task_attempt"],
+                            invocation_id=observed["invocation_id"],
+                            control_group=observed["control_group"],
+                            main_pid=observed["main_pid"])
+                        identity = self.authorization_journal.cpu_identity(
+                            payload["handle_id"], payload["execution_generation"])
                     evidence = self.cpu_trial_backend.inspect(
                         identity["unit_name"], identity["invocation_id"])
                     if (evidence["active_state"] == "active"

@@ -311,6 +311,32 @@ class ExecutionJournal:
             return {"handle_id": handle_id, "task_attempt": task_attempt,
                     "unit_name": row["unit_name"]}
 
+
+    def starting_cpu_unit(self, handle_id: str, task_attempt: int) -> dict:
+        """Read the one reserved CPU unit only during the original boot.
+
+        This is not launch authorization and supplies no trusted exit proof.
+        Missing or ambiguous OS evidence must remain HOLD.
+        """
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT handle_id,task_attempt,boot_id,state,unit_name
+                   FROM execution_intents
+                   WHERE handle_id=? AND task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["boot_id"] != self.boot_id
+                    or row["state"] != "STARTING"
+                    or row["unit_name"] != "changlian-os-" + handle_id + ".service"):
+                raise GrantRejected("CPU_STARTING_REATTACH_NOT_AUTHORIZED_HOLD")
+            existing = db.execute(
+                "SELECT 1 FROM cpu_unit_identities WHERE handle_id=?", (handle_id,),
+            ).fetchone()
+        if existing is not None:
+            raise GrantRejected("CPU_STARTING_IDENTITY_ALREADY_RECORDED_HOLD")
+        return {"handle_id": handle_id, "task_attempt": task_attempt,
+                "unit_name": row["unit_name"]}
+
     def record_cpu_identity(self, handle_id: str, task_attempt: int, *,
                             invocation_id: str, control_group: str,
                             main_pid: int) -> None:
@@ -322,12 +348,24 @@ class ExecutionJournal:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT * FROM execution_intents WHERE handle_id=? AND task_attempt=?",
+                """SELECT i.*,o.invocation_id AS saved_invocation,
+                          o.control_group AS saved_group,o.main_pid AS saved_pid
+                   FROM execution_intents i
+                   LEFT JOIN cpu_unit_identities o ON o.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
                 (handle_id, task_attempt),
             ).fetchone()
-            if (row is None or row["state"] != "STARTING"
-                    or row["boot_id"] != self.boot_id
+            if (row is None or row["boot_id"] != self.boot_id
                     or control_group != "/system.slice/" + row["unit_name"]):
+                raise GrantRejected("CPU_IDENTITY_SCOPE_UNVERIFIED_HOLD")
+            if row["state"] == "RUNNING":
+                if (row["saved_invocation"] != invocation_id
+                        or row["saved_group"] != control_group
+                        or row["saved_pid"] != main_pid):
+                    raise GrantRejected("CPU_IDENTITY_CONCURRENT_MISMATCH_HOLD")
+                db.commit()
+                return
+            if row["state"] != "STARTING" or row["saved_invocation"] is not None:
                 raise GrantRejected("CPU_IDENTITY_SCOPE_UNVERIFIED_HOLD")
             db.execute(
                 """INSERT INTO cpu_unit_identities
