@@ -23,8 +23,9 @@
 - `4ba7801c84c6e5fb64772ce43bfb26835b3d2468`：纳入 Node Agent CI。
 - `9b71b8b6385ad42b1b6320a89a53e78c40cd0522`：真实非 root Agent → 真实 systemd E2E。
 - `c0599158df8678ec5f3f11658e11613529e3d997`：E2E 纳入原 CI。
+- `db5e8fa409e36f9dc43db1366dec66beb3b3eaf7`：中央 HTTP grant 改用直连 127.0.0.1 的 HTTPConnection；禁用环境代理和外部重定向，避免携租约 token 的请求被转发。
 
-**CI：对代码 SHA `c0599158df8678ec5f3f11658e11613529e3d997` 的最终运行结果尚未核准，不能声称 23/23 已通过。**
+**CI：对最终代码 SHA `db5e8fa409e36f9dc43db1366dec66beb3b3eaf7` 的最终运行结果尚未核准，不能声称 23/23 已通过。**
 
 ## 未解决与下一阶段
 
