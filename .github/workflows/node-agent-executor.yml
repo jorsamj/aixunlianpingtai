@@ -18,6 +18,7 @@ on:
       - 'platform_core/os_supervisor_cpu_network_pilot.py'
       - 'platform_core/os_supervisor_conversion_adapter.py'
       - 'platform_core/os_supervisor_conversion_lease_guard.py'
+      - 'platform_core/os_supervisor_onnx_cpu_evidence.py'
       - 'platform_core/os_supervisor_trust.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
@@ -36,6 +37,7 @@ on:
       - 'tests/unit/test_os_supervisor_cpu_network_pilot.py'
       - 'tests/unit/test_os_supervisor_conversion_adapter.py'
       - 'tests/unit/test_os_supervisor_conversion_lease_guard.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_evidence.py'
       - 'tests/unit/test_os_supervisor_phase1b_ipc.py'
       - 'tests/unit/test_os_supervisor_cpu_systemd.py'
       - 'tests/unit/test_os_supervisor_cpu_journal.py'
@@ -100,6 +102,7 @@ on:
       - 'platform_core/os_supervisor_cpu_network_pilot.py'
       - 'platform_core/os_supervisor_conversion_adapter.py'
       - 'platform_core/os_supervisor_conversion_lease_guard.py'
+      - 'platform_core/os_supervisor_onnx_cpu_evidence.py'
       - 'platform_core/os_supervisor_trust.py'
       - 'platform_core/os_supervisor_journal.py'
       - 'platform_core/os_supervisor_cpu_systemd.py'
@@ -118,6 +121,7 @@ on:
       - 'tests/unit/test_os_supervisor_cpu_network_pilot.py'
       - 'tests/unit/test_os_supervisor_conversion_adapter.py'
       - 'tests/unit/test_os_supervisor_conversion_lease_guard.py'
+      - 'tests/unit/test_os_supervisor_onnx_cpu_evidence.py'
       - 'tests/unit/test_os_supervisor_phase1b_ipc.py'
       - 'tests/unit/test_os_supervisor_cpu_systemd.py'
       - 'tests/unit/test_os_supervisor_cpu_journal.py'
@@ -196,6 +200,7 @@ jobs:
           platform_core/os_supervisor_cpu_network_pilot.py
           platform_core/os_supervisor_conversion_adapter.py
           platform_core/os_supervisor_conversion_lease_guard.py
+          platform_core/os_supervisor_onnx_cpu_evidence.py
           platform_core/os_supervisor_trust.py
           platform_core/os_supervisor_journal.py
           platform_core/os_supervisor_cpu_systemd.py
@@ -215,6 +220,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_network_pilot.py
           tests/unit/test_os_supervisor_conversion_adapter.py
           tests/unit/test_os_supervisor_conversion_lease_guard.py
+          tests/unit/test_os_supervisor_onnx_cpu_evidence.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
@@ -250,6 +256,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_network_pilot.py
           tests/unit/test_os_supervisor_conversion_adapter.py
           tests/unit/test_os_supervisor_conversion_lease_guard.py
+          tests/unit/test_os_supervisor_onnx_cpu_evidence.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py
@@ -282,6 +289,7 @@ jobs:
           tests/unit/test_os_supervisor_cpu_network_pilot.py
           tests/unit/test_os_supervisor_conversion_adapter.py
           tests/unit/test_os_supervisor_conversion_lease_guard.py
+          tests/unit/test_os_supervisor_onnx_cpu_evidence.py
           tests/unit/test_os_supervisor_phase1b_ipc.py
           tests/unit/test_os_supervisor_cpu_systemd.py
           tests/unit/test_os_supervisor_cpu_journal.py

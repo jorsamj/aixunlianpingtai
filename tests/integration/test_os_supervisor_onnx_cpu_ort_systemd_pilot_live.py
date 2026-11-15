@@ -9,6 +9,9 @@ import numpy as np
 import onnx
 from onnx import helper, TensorProto
 from platform_core.os_supervisor_onnx_cpu_pilot import CpuOnnxPilotPreflight
+from platform_core.node_agent_executor_runtime import RemoteExecutionLease
+from platform_core.os_supervisor_conversion_adapter import FrozenOnnxInput
+from platform_core.os_supervisor_onnx_cpu_evidence import verify_isolated_onnx_cpu_evidence
 from platform_core.os_supervisor_onnx_cpu_ort_systemd_pilot import (
     IsolatedOnnxOrtSystemdPilot, parse_ort_result_log,
 )
@@ -70,6 +73,51 @@ def test_real_ort_cpu_natural_exit_and_reattach():
         else:
             raise AssertionError("ORT unit did not naturally exit")
         assert end["exit_code"]==0 and not end["trusted_stop_receipt_available"]
+        # 2D-2D2B1: real root-owned CPU runtime + original invocation +
+        # frozen ONNX digest + independent Identity graph output oracle.
+        # The lease below is CI fixture metadata, NOT a signed central grant
+        # or a live MODEL_CONVERSION task; do not promote it to production.
+        test_lease = RemoteExecutionLease(
+            task_id="ci_ort_evidence_123", kind="MODEL_CONVERSION",
+            project_id="test", generation=3, lease_token="isolated-test-only",
+            lease_expires_at="2030-01-01T00:00:00+00:00",
+            worker_id="agent:ci-root",
+            payload={
+                "schema_version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1", "target": "onnx",
+                "source": {"type": "object", "download": {
+                    "method": "GET", "file_name": "frozen.onnx",
+                    "sha256": frozen.sha256, "size_bytes": frozen.size_bytes,
+                }},
+                "source_trace": {"sha256": frozen.sha256},
+                "params": {"opset": 12},
+                "output": {"type": "object",
+                           "storage_ref": {"object_key": "ci-only"},
+                           "upload_protocol": "prepare-after-local-hash-v1"},
+            },
+            assignment={}, transport={},
+        )
+        frozen_input = FrozenOnnxInput.from_lease(test_lease)
+        verified_bytes = frozen_input.verify_source_stream(
+            [(frozen.root / "verified.onnx").read_bytes()])
+        evidence = verify_isolated_onnx_cpu_evidence(
+            frozen=frozen_input, verified=verified_bytes,
+            staged=frozen, first=first, backend=reopened.backend,
+            expected_input_sha256=digest, expected_output_sha256=digest)
+        assert evidence.task_id == test_lease.task_id
+        assert evidence.task_attempt == test_lease.generation
+        assert evidence.source_sha256 == frozen.sha256
+        assert evidence.invocation_id == first["invocation_id"]
+        assert evidence.original_main_pid == first["main_pid"]
+        assert evidence.input_sha256 == evidence.output_sha256 == digest
+        assert not evidence.model_was_converted
+        assert not evidence.central_lease_verified
+        assert not evidence.business_result_verified
+        assert not evidence.trusted_stop_receipt_available
+        assert not evidence.automatic_reassignment_allowed
+        assert not evidence.result_publish_allowed
+        assert not evidence.production_launch_allowed
     finally:
         cleanup(frozen)
 
