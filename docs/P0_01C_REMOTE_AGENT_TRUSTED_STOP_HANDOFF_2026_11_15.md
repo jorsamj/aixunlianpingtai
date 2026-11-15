@@ -465,3 +465,9 @@
 - 当前真实需修的两项是 POSIX-only `os.getsid` 测试在 Windows 不兼容、Node Agent API guard 含过时的 capabilities 赋值文本。这些才是有原始 CI 日志支持的问题。
 
 所有新结论已同步到 [专项交接](P0_01C_SUPERVISOR_STAGE1A_HANDOFF_AND_NEXT_STEPS_2026_11_15.md) 和 [新会话提示词](P0_01C_NEW_SESSION_CONTINUATION_PROMPT_2026_11_15.md)。生产 HOLD / NO-GO 不变。
+
+### 23.5 同日最终 CI 终态：阶段 1A run 43684001227 已 completed/failure
+
+在 §23.4 后再次核对 [run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)（精确功能 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`），现已 **completed/failure**：Ubuntu contract success（主合同 **503 passed/2 skipped**、POSIX SIGKILL **2 passed**、cgroup 专项 **31 passed**）；Windows 主合同 **502 passed/3 skipped**，但 Linux-only cgroup PoC **30 passed/1 failed**，唯一明确根因 `os.getsid` 在 Windows 不存在；API 测试 **24 passed**，但 `Permanent Agent executor guards` 的旧 capabilities 文本 grep 已过时而失败。阶段 1A start 空请求返回 HOLD 的实现**没有协议矛盾**，此项不应改动。
+
+因此下一会话只需先精准修**两个已复现 CI 兼容问题**，取得新提交 SHA 的 Node Agent Ubuntu/Windows/API 真实全绿，再开始阶段 1B；不要为已经通过的 Ubuntu Socket 和 start 合同重复做 PoC。更完整说明见 [专项交接](P0_01C_SUPERVISOR_STAGE1A_HANDOFF_AND_NEXT_STEPS_2026_11_15.md) 与 [复制提示词](P0_01C_NEW_SESSION_CONTINUATION_PROMPT_2026_11_15.md)。
