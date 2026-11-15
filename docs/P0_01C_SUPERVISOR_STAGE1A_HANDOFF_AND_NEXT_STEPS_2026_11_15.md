@@ -326,3 +326,17 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 首轮功能 SHA [`84875c548a9870e56b1cfd6554d5f77eb96dae75`](https://github.com/jorsamj/aixunlianpingtai/commit/84875c548a9870e56b1cfd6554d5f77eb96dae75) 对应 [Node Agent Executor 43694497312](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694497312) 的 Ubuntu 合同 **556 passed / 2 skipped / 3 failed**；API Job 成功。三个失败均是新增日志游标安全测试：原校验 `[A-Za-z0-9=;:._+/-]` 仍允许 `../secrets`、`--no-pager` 等不该出现的游标（第三项为 Socket 传入相同问题）。这是拒绝条件遗漏，不是生产发生越权。**禁止简单删除安全测试。**
 
 本轮定点修复 `platform_core/os_supervisor_cpu_systemd.py` 与 `platform_core/os_supervisor_protocol.py` 的同一个 cursor allowlist：仅接纳以 journald 的 `s=` 起始、长度有界、不可含 `/` 或任意 shell/path-like 前缀的 `s=[A-Za-z0-9=;:._+-]{1,510}` 字符串；保留 `--after-cursor=` 作为固定命令单一参数，继续按原 `InvocationID` 验每条日志。**修复提交和新精确 SHA 的 Ubuntu 实际 journald E2E 仍须通过后方可宣称此子阶段 GREEN。**
+
+### 15.5 阶段 2C-1 定点修复后的准确跨平台 CI 结果（2026-11-15）
+
+**最终功能 SHA**：[`40bc388adc05ba3be05a7b986c0c89b1e3d0e423`](https://github.com/jorsamj/aixunlianpingtai/commit/40bc388adc05ba3be05a7b986c0c89b1e3d0e423)。[Node Agent Executor run 43694652044](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694652044) 已 **completed/success**，Ubuntu、Windows、API **三个 Job 全成功**：
+
+- Ubuntu 主合同 **559 passed / 2 skipped**，POSIX SIGKILL **2 passed**，Linux cgroup **31 passed**，隔离 Ubuntu 真实 systemd + journald E2E **2 passed**；其中 log E2E 确认能读取固定 CPU worker 的原 InvocationID 日志，取得有效 cursor 并从该 cursor 继续读取而不重复旧条目。
+- Windows 主合同 **556 passed / 5 skipped**，可移植 cgroup 合同 **30 passed / 1 skipped**。
+- API：**success**。此前拒绝 `../secrets`、`--no-pager` 的新增安全测试保留并成功。
+
+**结论**：阶段 2C-1 的挑战表有界治理、按同一 systemd InvocationID 的日志读写隔离、有界 journald cursor 及跨平台核心回归已通过；**不是**全阶段 2C 完成，也不是生产系统停机证据。日志游标属于原生 journald cursor，日志留存仍由目标机 journald 配置决定，无法保证永久存在；过期或无法核验则 HOLD。
+
+同代码 SHA [Portable Deployment 43694657038](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694657038) 与另一轮 Node Agent [43694657064](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694657064) 在记录此节时未最终完成，不能宣称所有仓库 23 项 Actions 终态成功。后续必须核对这些 Job，必要时再补终态证据。
+
+**下一子阶段 2C-2**：只在隔离 Linux 上设计固定 CPU 的自然完成（包含 cgroup/后代完整退出、同一 InvocationID、ExecMainCode/ExecMainStatus/Result）与其持久终态记录；任何 OS 证据缺失、transient unit 被 GC、崩溃后仅剩 STARTING 时返回 UNKNOWN/HOLD，不能凭 leader exit 或 systemctl ACK 签发可信 StopReceipt。生产密钥轮换/模型转换 Runner 是再后一阶段，不与本轮安全修复混在一起。
