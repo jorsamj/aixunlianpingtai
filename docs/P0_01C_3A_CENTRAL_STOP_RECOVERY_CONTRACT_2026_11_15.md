@@ -84,7 +84,7 @@
 
 - 专用 [GitHub Actions run 43670649572](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43670649572)，准确代码 SHA `1714ba852abb29f3f767357197976c6e91a9385c`。
 - **Ubuntu 22.04：41/41 通过**（从 `isolated-transaction (ubuntu-22.04)` Job 原始日志核实）。
-- **Windows：本文件首次写入时仍排队**；如后续得到终态，必须用同一准确 SHA 的 Job 结果核验，不得先称跨平台全绿。
+- **Windows-latest：41/41 通过**（从 `isolated-transaction (windows-latest)` Job 原始日志核实）。
 - 主要负例：伪造/缺失独立见证、挑战过期、重复消费、篡改 nonce、任务/Node/boot/InvocationID/旧代数错配、错误 GPU reservation owner、原任务已换代/换 token/变状态、非法布尔或时序、事务审计插入异常导致的原子 rollback。
 - 专门的硬阻断：`_memory_only()` 检查 SQLite `PRAGMA database_list`，**任何文件型 SQLite 数据库均被拒绝**；测试还覆盖了文件型数据库不能进入这套逻辑。
 - **不能**把这 41 项隔离测试的通过等同于生产 Agent 安全恢复已验收。
@@ -96,3 +96,21 @@
 **3C 再接中央恢复事务**：复用 `tasks.attempt` 和现有单一中央 SQLite repository，将 challenge/audit 元数据作为必要附属表（不是任务队列），实现原节点鉴权、proof verify、CAS 原子解除、GPU reservation、审计与旧写入 fencing。先封闭默认 OFF，经多节点、网络分区、重复投递和 Windows/GPU UAT 后再考虑受控启用。
 
 任何真实生产 A800/双4070 服务、数据库、模型、作业、重启及资源变更必须另行取得明确授权。**现阶段仍是 NO-GO。**
+
+### 5.1 2026-11-15 实际 CI 终态修订
+
+针对源码/Workflow SHA `1714ba852abb29f3f767357197976c6e91a9385c` 的 [run 43670649572](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43670649572) **最终 completed SUCCESS**：
+
+| GitHub-hosted Job | 实际合同结果 | Job |
+|---|---:|---|
+| `isolated-transaction (ubuntu-22.04)` | `41 passed in 0.16s` | SUCCESS |
+| `isolated-transaction (windows-latest)` | `41 passed in 0.30s` | SUCCESS |
+
+**2/2 真实 GitHub CI Job GREEN；没有操作真实节点。** 这是内存 SQLite + 模拟独立 OS witness 的**协议单元/模拟事务测试**，绝不是恢复接口、真实 OS witness 或生产 GPU 边界的验收。先前文档中的“Windows 排队”只是更早的状态快照，此节为最新准确终态。
+
+### 5.2 风险与质量审计注记
+
+- `independent_witness_verifier` 在 PoC 中是显式注入的模拟器，**不是安全的生产依赖注入合同**：正式中心必须仅依赖自己配置、具备可信根和防重放验证能力的证明服务，不能让 Agent 或 HTTP 客户端选用任意验证函数。
+- `issue_challenge` 的原节点 Node Token 身份认证，以及 `boot_id/InvocationID/cgroup` 的可信**预登记**在当前 PoC 中未实现；正式中央不能从同一次未认证 Agent 请求直接接收这三项作为信任根。
+- 当 Windows 或 Linux 的 Agent 丢失历史 OS 进程身份时，现有 `REMOTE_AGENT_STOP_UNVERIFIED` 继续保护任务和 GPU reservation；模拟器不得越过真实 `FencedTaskRepository` 的安全保持机制。
+- 临时 challenge/audit 表仅服务于**未来附属恢复协议元数据**；本轮没有真实数据库迁移。若未来迁移，必须专门验证已有 SQLite schema 版本控制、busy_timeout、事务和人工回退方案。
