@@ -33,14 +33,60 @@ async function fixture(page,request,{labels=60,delay=0}={}){
 }
 async function capture(dialog,name){await mkdir(visualDir,{recursive:true});await expect(dialog.page().locator('#toast')).toBeHidden({timeout:5000});await dialog.screenshot({path:path.join(visualDir,name)});}
 async function shellInside(page,dialog){for(const selector of ['.modal-head','.train428-footer']){const box=await dialog.locator(selector).boundingBox();expect(box.y).toBeGreaterThanOrEqual(0);expect(box.y+box.height).toBeLessThanOrEqual(page.viewportSize().height+1)}const box=await dialog.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(page.viewportSize().width+1)}
-for(const viewport of viewports)test(`training three-step wheel and inline parameters ${viewport.width}x${viewport.height}`,async({page,request})=>{
+for(const viewport of viewports)test(`training three-step wheel and inline parameters ${viewport.width}x${viewport.height}`,async({page,request},testInfo)=>{
   await page.setViewportSize(viewport);const errors=[];page.on('pageerror',error=>errors.push(error.message));const f=await fixture(page,request),dialog=await f.open(),size=`${viewport.width}x${viewport.height}`;
   await expect(dialog.locator('.train-ui-submit')).toBeHidden();await shellInside(page,dialog);await capture(dialog,`after-${size}-step1.png`);
   await expect(dialog.locator('#trainUiSummary')).toContainText('640');
   await dialog.locator('#trainUiLabelSearch').fill('target_59');await dialog.locator('[data-training-label-code="target_59"]').check();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('target_59');
   await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('[data-training-step-panel="1"]')).toBeHidden();await expect(dialog.locator('[data-training-step-panel="2"]')).toBeVisible();await expect(dialog.locator('.training-parameter-group')).toHaveCount(7);await expect(dialog.locator('#trV3ManualPrecision')).toHaveCount(1);await expect(dialog.locator('#ts428Precision')).toHaveCount(0);await capture(dialog,`after-${size}-step2-basic.png`);
   for(const mode of ['quick','full','complex','custom']){await dialog.locator(`[data-mode="${mode}"]`).click();await expect(dialog.locator(`[data-mode="${mode}"]`)).toHaveAttribute('aria-pressed','true');await shellInside(page,dialog)}
-  const layout=dialog.locator('.train-create-layout'),bounds=await layout.boundingBox();await layout.evaluate(node=>node.scrollTop=0);await page.mouse.move(bounds.x+bounds.width/3,bounds.y+Math.min(120,bounds.height/2));await page.mouse.wheel(0,400);await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);await page.mouse.wheel(0,-2000);await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBe(0);await shellInside(page,dialog);
+  // A tall desktop viewport can fit all collapsed configuration panels, so
+  // scrollTop > 0 is meaningful only after proving actual scroll overflow.
+  // Open real user-facing parameter groups as needed; keep the wheel assertion.
+  const layout=dialog.locator('.train-create-layout');
+  const getScrollMetrics=()=>layout.evaluate(node=>({
+    scrollHeight:node.scrollHeight,clientHeight:node.clientHeight,
+    scrollTop:node.scrollTop,overflowY:getComputedStyle(node).overflowY,
+  }));
+  const initialScroll=await getScrollMetrics();
+  const groups=dialog.locator('#trainWorkbenchParameters .training-parameter-group');
+  const temporarilyExpanded=[];
+  let scrollMetrics=initialScroll;
+  for(let i=0;i<await groups.count()&&scrollMetrics.scrollHeight<=scrollMetrics.clientHeight+4;i++){
+    const group=groups.nth(i);
+    if(!await group.evaluate(node=>node.open)){
+      await group.locator('summary').click();
+      temporarilyExpanded.push(i);
+    }
+    scrollMetrics=await getScrollMetrics();
+  }
+  const bounds=await layout.boundingBox();
+  const point={x:bounds.x+bounds.width/3,y:bounds.y+Math.min(120,bounds.height/2)};
+  const hit=await page.evaluate(({x,y})=>{
+    let node=document.elementFromPoint(x,y),depth=0;
+    const ancestors=[];
+    while(node&&depth++<6){
+      ancestors.push({tag:node.tagName,id:node.id,className:String(node.className||'').slice(0,120),
+        overflowY:getComputedStyle(node).overflowY});
+      node=node.parentElement;
+    }
+    return ancestors;
+  },point);
+  await testInfo.attach(`training-scroll-${size}.json`,{
+    body:JSON.stringify({viewport,initialScroll,scrollMetrics,temporarilyExpanded,hit},null,2),
+    contentType:'application/json',
+  });
+  expect(scrollMetrics.overflowY).toBe('auto');
+  expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight+4);
+  await layout.evaluate(node=>{node.scrollTop=0});
+  await page.mouse.move(point.x,point.y);
+  await page.mouse.wheel(0,400);
+  await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
+  await page.mouse.wheel(0,-2000);
+  await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBe(0);
+  // Restore original configuration before validating editable field hydration.
+  for(const index of temporarilyExpanded.reverse())await groups.nth(index).locator('summary').click();
+  await shellInside(page,dialog);
   const parameters=dialog.locator('#trainWorkbenchParameters');await parameters.locator('details').filter({has:page.locator('#ts428Epoch')}).locator('summary').click();await dialog.locator('#ts428Epoch').fill('37');await dialog.locator('#trV3ManualPrecision').selectOption('fp32');await dialog.locator('#trainRobustnessMode').selectOption('enabled');await dialog.locator('#trainRobustnessSelection').selectOption('count');await dialog.locator('#trainRobustnessCount').fill('12');await capture(dialog,`after-${size}-step2-custom.png`);await dialog.locator('#trainRobustnessMode').scrollIntoViewIfNeeded();await capture(dialog,`after-${size}-step2-robustness.png`);
   await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('.train-ui-submit')).toBeVisible();await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('尚未分配');await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('37');await dialog.locator('.train-ui-submit').click();
   const blockers=page.getByRole('dialog',{name:'训练暂不可开始'});if(await blockers.isVisible())await blockers.getByRole('button',{name:'返回训练配置',exact:true}).click();await expect(dialog.locator('[data-training-submit-feedback]')).toBeVisible();await capture(dialog,`after-${size}-step3-feedback.png`);
