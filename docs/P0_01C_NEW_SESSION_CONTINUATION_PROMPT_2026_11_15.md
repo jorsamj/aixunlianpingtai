@@ -33,7 +33,7 @@
 **第一步：真实 GitHub 基线与 CI 审计（先做）**
 
 - 重新读取唯一长期分支 HEAD、上面所有关键源文件和工作流；获取精确 run SHA、状态、Job 和失败日志。
-- 特别核查 [Node Agent 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)（阶段 1A、代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`）及 [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571)，在上轮核查时三项 Job 均还 queued；**不能宣称已经通过**。
+- 特别核查 [Node Agent 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)（阶段 1A、代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`），本次最后核对仍 queued；以及 [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571)，本次已 **completed/failure**：Ubuntu 成功、Windows 因 POSIX-only `os.getsid` 失败、API 因过时 grep guard 失败（主体 Windows 473 passed/2 skipped，API 24 passed）。**不能宣称已经通过**。
 - [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) 实际已 `completed/failure`：Windows 的 Linux 专项单测 `tests/unit/test_linux_cgroup_poc_contract.py:226` 调用 `os.getsid` 导致 AttributeError；API Job 中旧 `grep 'reported_capabilities = executable_agent_capabilities(requested_capabilities)'` 已与 `node_agent.py` 的 `allowed_remote_capabilities(...)` 新写法冲突。
 - 新核实的阶段 1A 协议/测试矛盾：`os_supervisor_protocol.py` 对 start 空 payload 抛 `START_NOT_IMPLEMENTED`，但 `os_supervisor_service.py` 想返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`，`test_os_supervisor_phase1.py` 也要求后者。请复现、统一拒绝语义、保持所有实际启动动作关闭。**不可通过放开任意命令或启动后端来修测试。**
 - 只做最小修复：POSIX-only 用例明确按平台分流或跳过、API guard 更新为验证新能力过滤代码、修 start 协议与服务端拒绝码不一致。保留原有安全防线和测试，不要删掉失败用例。
