@@ -102,7 +102,7 @@ def validate_request(value: object) -> dict[str, Any]:
             raise SupervisorProtocolError("INVALID_EXECUTION_GENERATION")
         if "cursor" in payload and (
                 not isinstance(payload["cursor"], str)
-                or not re.fullmatch(r"[A-Za-z0-9=;:._+/-]{1,512}",
+                or not re.fullmatch(r"s=[A-Za-z0-9=;:._+-]{1,510}",
                                     payload["cursor"])):
             raise SupervisorProtocolError("LOG_CURSOR_SCOPE_INVALID")
     return value
@@ -243,7 +243,7 @@ class SupervisedProcessHandle:
                 or len(result["data_base64"]) > 12000
                 or (result.get("cursor") is not None and (
                     not isinstance(result["cursor"], str)
-                    or not re.fullmatch(r"[A-Za-z0-9=;:._+/-]{1,512}",
+                    or not re.fullmatch(r"s=[A-Za-z0-9=;:._+-]{1,510}",
                                         result["cursor"])))):
             raise SupervisorProtocolError("SUPERVISOR_LOG_EVIDENCE_INVALID_HOLD")
         try:

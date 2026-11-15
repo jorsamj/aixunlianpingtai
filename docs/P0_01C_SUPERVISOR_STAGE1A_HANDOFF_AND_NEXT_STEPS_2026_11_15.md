@@ -320,3 +320,9 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 阶段 2B 准确功能 SHA `da73e07175073a9919207d6cb3093bba198c9b55` 的 Node Agent、Portable Deployment 核心 CI 已双绿，但复核其**全部** 23 项 GitHub Actions 最终状态是 **22 successful、1 failure**：失败的 [Frontend Runtime Stabilization 43693050722](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43693050722) 属于浏览器导航分片（`createAnnotation` 事件等待 5 秒超时），而非 Node Agent 安全合同。保留明确 RED，不把前端失败美化为 23/23，也不为此在本阶段修改前端。
     
 本轮阶段 2C-1 功能提交应以**精确新 SHA** 的 Node Agent Ubuntu/Windows/API 与 Portable Deployment 审核为准，特别是 Ubuntu 上新 journalctl 字段/游标真实测试；若未到终态，不得宣称 2C-1 通过。A800 / 双4070 从未接触，默认 `legacy`、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、远程自动派单 OFF、生产 NO-GO 保持。
+
+### 15.4 本轮阶段 2C-1 真实 CI 首轮 RED：日志 cursor 安全校验修复
+
+首轮功能 SHA [`84875c548a9870e56b1cfd6554d5f77eb96dae75`](https://github.com/jorsamj/aixunlianpingtai/commit/84875c548a9870e56b1cfd6554d5f77eb96dae75) 对应 [Node Agent Executor 43694497312](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43694497312) 的 Ubuntu 合同 **556 passed / 2 skipped / 3 failed**；API Job 成功。三个失败均是新增日志游标安全测试：原校验 `[A-Za-z0-9=;:._+/-]` 仍允许 `../secrets`、`--no-pager` 等不该出现的游标（第三项为 Socket 传入相同问题）。这是拒绝条件遗漏，不是生产发生越权。**禁止简单删除安全测试。**
+
+本轮定点修复 `platform_core/os_supervisor_cpu_systemd.py` 与 `platform_core/os_supervisor_protocol.py` 的同一个 cursor allowlist：仅接纳以 journald 的 `s=` 起始、长度有界、不可含 `/` 或任意 shell/path-like 前缀的 `s=[A-Za-z0-9=;:._+-]{1,510}` 字符串；保留 `--after-cursor=` 作为固定命令单一参数，继续按原 `InvocationID` 验每条日志。**修复提交和新精确 SHA 的 Ubuntu 实际 journald E2E 仍须通过后方可宣称此子阶段 GREEN。**

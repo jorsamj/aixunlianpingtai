@@ -17,7 +17,7 @@ from .os_supervisor_authorization import GrantRejected
 
 _UNIT = re.compile(r"changlian-os-[0-9a-f]{32}\.service\Z")
 _INVOCATION = re.compile(r"[0-9a-f]{32}\Z")
-_CURSOR = re.compile(r"^[A-Za-z0-9=;:._+/-]{1,512}$")
+_CURSOR = re.compile(r"^s=[A-Za-z0-9=;:._+-]{1,510}$")
 # No child processes, external I/O, GPU, or uncontrolled work. Hard-coded code
 # is *not* provided by an Agent, model converter, or task payload.
 _WORKER = (
