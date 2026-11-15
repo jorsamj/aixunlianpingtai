@@ -555,6 +555,16 @@ def run_poc(*, synthetic_task_id: str | None = None,
             if not cgroup_observer.arm_stop():
                 result["outcome"] = "CGROUP_NOT_LIVE_BEFORE_STOP_HOLD"
                 return result, 3
+            # Record a readable original-FD populated=1 *after* arming and
+            # before invoking stop: necessary for strict stop-event ordering.
+            cgroup_observer._sample("ready_before_stop_request")
+            if not any(
+                    event.get("after_stop_armed") is True and
+                    event.get("populated") == 1 and
+                    type(event.get("monotonic_ns")) is int
+                    for event in cgroup_observer.evidence()):
+                result["outcome"] = "CGROUP_NOT_LIVE_AT_STOP_REQUEST_HOLD"
+                return result, 3
             result["stop_requested_ns"] = time.monotonic_ns()
             stopped = command(["systemctl", "--user", "--no-ask-password", "stop", unit], 8)
             result["systemd_stop_returncode"] = stopped.returncode
