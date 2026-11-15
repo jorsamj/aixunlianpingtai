@@ -22,8 +22,8 @@ from platform_core.node_agent_executor_runtime import (
     NodeExecutorClient,
 )
 from platform_core.node_agent_supervisor_gate import (
-    REQUIRED as SUPERVISOR_REQUIRED,
     SupervisorExecutionBoundaryInvalid,
+    allowed_remote_capabilities,
     execution_boundary_mode,
 )
 from platform_core.node_agent_runtime import (
@@ -264,15 +264,11 @@ def main(argv=None) -> int:
     except SupervisorExecutionBoundaryInvalid as error:
         print(str(error), file=sys.stderr)
         return 2
-    reported_capabilities = executable_agent_capabilities(requested_capabilities)
-    if boundary_mode == SUPERVISOR_REQUIRED:
-        # A protected launcher/handle adapter has not been installed yet.
-        # Do not advertise remote training/conversion tasks that this Agent
-        # cannot safely execute; other remote capabilities remain unchanged.
-        reported_capabilities = [
-            capability for capability in reported_capabilities
-            if capability not in {"training", "conversion", "conversion.rknn"}
-        ]
+    # When a protected OS Supervisor is required but no launch-handle adapter
+    # exists yet, do not advertise remotely executable training/conversion.
+    # Other supported Agent capabilities remain unchanged.
+    reported_capabilities = allowed_remote_capabilities(
+        executable_agent_capabilities(requested_capabilities))
     if "model-upload" in reported_capabilities:
         from platform_core.node_agent_model_install_runtime import AgentModelInstallRunner
         install_dir = str(args.mother_model_install_dir or "").strip()
