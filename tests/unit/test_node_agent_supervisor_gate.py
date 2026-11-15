@@ -24,10 +24,11 @@ def test_unset_mode_preserves_existing_agent_and_runners(monkeypatch):
 
 def test_required_mode_hides_only_direct_compute_capabilities():
     source = {gate.ENV_KEY: gate.REQUIRED}
-    original = ["training", "conversion", "conversion.rknn", "cleaning",
-                "material-import", "model-upload", "deployment-test"]
+    original = ["training", "conversion", "conversion.rknn",
+                "deployment-test", "deployment-test.rknn", "cleaning",
+                "material-import", "model-upload"]
     output = gate.allowed_remote_capabilities(original, source)
-    assert output == ["cleaning", "material-import", "model-upload", "deployment-test"]
+    assert output == ["cleaning", "material-import", "model-upload"]
     assert original[0] == "training"  # no caller data mutation
 
 
@@ -65,6 +66,17 @@ def test_actual_runner_blocks_before_durable_launch_intent_and_popen(path):
     intent = source.index("self.workdirs.begin_process_launch(lease)", guard)
     spawn = source.index("launched = launch_process(", intent)
     assert guard < intent < spawn
+    assert "raise RemoteExecutionFenced(str(error)) from error" in source
+
+
+def test_deployment_verification_is_also_guarded_before_popen():
+    source = (ROOT / "platform_core/node_agent_deployment_runtime.py").read_text(
+        encoding="utf-8")
+    assert "from .node_agent_supervisor_gate import (" in source
+    anchor = source.index('with runtime_log.open("w"')
+    guard = source.index("assert_direct_remote_launch_permitted()", anchor)
+    spawn = source.index("launched = launch_process(", guard)
+    assert anchor < guard < spawn
     assert "raise RemoteExecutionFenced(str(error)) from error" in source
 
 
