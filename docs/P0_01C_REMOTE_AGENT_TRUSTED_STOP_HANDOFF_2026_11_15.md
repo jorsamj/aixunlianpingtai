@@ -229,3 +229,14 @@
 - **不是中央协议**：PoC 代数恒为 1，尚无中央真实单调 generation、挑战凭证、加签或 SQLite 原子事务；不能凭本地 PoC 的 JSON 释放真实 owner/GPU reservation。下轮先对现有中央租约与 generation 数据合同做只读审计，再设计比对与原子恢复。
 - **严格边界不变**：无生产 Agent、Remote Training/Conversion Runner、A800、双4070、GPU/OSS、用户服务/真实数据库变更；`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、生产 **NO-GO**。
 - **完整技术文档**：[P0-01C-2 Linux systemd 执行边界 PoC 第 13 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。
+
+### 14.1 本会话追加：中央现有 generation/lease 真相已只读核实
+
+前述“下轮审计中央代数”已完成一轮只读代码核查（无生产数据库读取/写入）：
+- **真执行代数** = `tasks.attempt`，由 `platform_core/agent_execution.py` 在中央 `BEGIN IMMEDIATE` 执行 `QUEUED -> RUNNING` 时 `attempt=attempt+1`；`FencedTaskRepository` 会按 `attempt` 和执行 lease token 拒绝旧代写入。
+- **节点分配代数** = `task_node_assignments.generation`，另由 `MAX(generation)+1` 分配，保护 assignment lease；与执行代数**不是同一个值、不可互换**。
+- Agent 正式 `RemoteExecutionLease` 里的 `generation` 来自中央 `execution.generation`，代表前述任务 `attempt`；远程失联仍有 `REMOTE_AGENT_STOP_UNVERIFIED` 的 fail-closed hold 和 GPU reservation 保护。
+- 后续可信 OS Stop Proof 应只复用**中央 `task_id + tasks.attempt + 原 worker/node 身份 + execution lease + boot_id + InvocationID`**，并在中央同一事务中处理一次性 challenge。PoC 的 `execution_generation=1` 是独立模拟，不可当真实代数。**不需要新增第二套中央调度代数或业务数据库表。**
+- 正式恢复协议需注意对代数严格类型判断，不能把 `True` 通过 Python `int()` 转换误当代数 1。当前只是未来协议风险提示，未改业务代码。
+
+具体证据与对照见 [专项文档第 13.6 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。**新身份绑定 31 合同 + GitHub 托管 VM 的 kernel run 43667494312 在本段落撰写时仍排队**，不宣告该 SHA 已通过。生产 NO-GO 和中央 HOLD 不变。
