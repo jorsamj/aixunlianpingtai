@@ -36,3 +36,8 @@
 ## 6. 仓库级 CI 非核心失败单独追踪
 
 准确功能 SHA `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 的 [Frontend Runtime Stabilization run 43706274712](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706274712) 初次完成结果包含 **browser-navigation (1) FAILED**，根因为已在历史前端分支复现的 `tests/browser/annotorious-poc.spec.mjs:42` 创建 `createAnnotation` 事件等待 5 秒超时；该分片 130 个浏览器用例通过、1 个失败。该测试不调用本轮 Supervisor 的 CPU 执行逻辑。本轮没有为此修改 Annotorious 或前端测试，已在同 SHA 的失败 Job 上发起一次定向 rerun。**重跑仍需以 GitHub 最终状态为准，不预判 GREEN。**
+
+
+## 7. 2C-2 全仓同 SHA 最终验收补录（2026-11-15）
+
+功能代码 `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 对应 **23/23 GitHub workflow runs 全部 SUCCESS**。历史 Frontend Runtime Stabilization [run 43706274712](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706274712) 的 browser-navigation (1) 初次失败在 GitHub Actions **run_attempt=2** 的定向 Job 重跑通过；故上一段关于“重跑待核实”的记录仅为历史执行过程，不代表最终状态。该 SHA 是 2C-2 版本的完成基线，不替代后续 2C-3 新代码 CI。

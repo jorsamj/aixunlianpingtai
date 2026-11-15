@@ -4,7 +4,7 @@
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
 **历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
-**当前优先状态（2026-11-15）**：**阶段 2C-1 已完成；阶段 2C-2 功能提交 `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 的 Node Agent Ubuntu/Windows/API、真实 Linux CPU E2E 和 Portable Deployment 核心验收 GREEN；整个仓库仍需按前端失败 Job 的定向重跑终态另行判定**。以下旧阶段标题为历史审计轨迹，以末尾第 16 节及新的 2C-2 专项文档为最新接续依据。**生产 A800/双4070 未接入，本阶段仍 NO-GO。**
+**当前优先状态（2026-11-15）**：**阶段 2C-2 完整仓库 23/23 CI 已最终 GREEN**（准确代码 SHA `f121d9bd`，前端 Annotorious 失败 Job attempt 2 SUCCESS）；**阶段 2C-3 STARTING 失联原 CPU unit 身份回查已提交 `8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`，Ubuntu Node Agent 主合同及真实 systemd E2E 已通过，Windows/全仓结果仍待终态**。以下旧章节保留历史证据，实际接续以最新第 17 节和 2C-3 专项文档为准。**生产 A800/双4070 未接入，StopReceipt 与自动恢复仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
@@ -358,3 +358,16 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 下一步：如 CI 失败，先按原始日志定点修复；全部满足后记录真实 Job 终态，再单独研究 `STARTING` 崩溃窗口和更强 OS 退出/停机证明、密钥分发及一个非 GPU 真实模型转换 Runner 灰度适配。
 
 完整实施细节：[`P0_01C_SUPERVISOR_STAGE2C2_CPU_TERMINAL_2026_11_15.md`](P0_01C_SUPERVISOR_STAGE2C2_CPU_TERMINAL_2026_11_15.md)。
+
+
+## 17. 阶段 2C-3｜STARTING 崩溃窗口原 OS unit 身份重连（2026-11-15，代码提交与核心验收）
+
+- 先对上一轮 2C-2 **精确代码 SHA `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b`** 重新核实：GitHub 该 SHA 全部 **23/23 workflow runs SUCCESS**。原 Frontend Runtime Stabilization [43706274712](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706274712) 的失败 browser-navigation Job 在 **attempt 2** 定向重跑通过，不再把上一轮标记为 pending。
+- 本轮开发提交：[`8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`](https://github.com/jorsamj/aixunlianpingtai/commit/8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da)。仅调整原 Supervisor journal 的 STARTING 原 unit 查询、同 OS 身份幂等写入、inspect 中安全回查，并增加模拟/真实 Linux E2E；**没有新增任务 owner/attempt/队列或 Agent 可控 shell**。
+- 正确行为：仅原 boot、原 handle+task attempt、原本已执行 `PREPARED→STARTING` CAS 的固定 CPU unit 可被查询；要求真实 systemd `Transient=yes`、`ExitType=cgroup`、`Restart=no`、`NRestarts=0`、现存 RUNNING 服务、匹配原 unit 的 cgroup、`ExecMainPID==MainPID` 等 OS 保护证据；随后复用既有 journal 事务，将同一 `InvocationID` 记录为 RUNNING；绝不再次调用 `systemd-run`。
+- 错误行为仍 HOLD：缺 OS 服务、boot 已变、原记录已经 UNKNOWN/EXITED、保护配置不一致、OS PID 不可信、OS 单元被清理、进程自然退出发生在原身份未写入之前；后续阶段才能单独考虑这些难场景。
+- 保证并发幂等：若首次 launch 路径和崩溃恢复 inspect 同时保存**相同** OS 身份，原 journal 接受同证据重复请求且不增加 `event_seq`；身份不一致则拒绝，不再引入“明明已经回查成功但正常 start 返回异常又标记 UNKNOWN”的竞争副作用。
+- 新准确 SHA 的 [Node Agent Executor push 43708219773](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708219773)：Ubuntu 主合同 **565 passed / 2 skipped**、POSIX SIGKILL **2 passed**、cgroup **31 passed**、真实 systemd E2E **4 passed**；这些 Job 已成功。**Windows、另一轮 Node Agent、Portable Deployment 和其它全仓 CI 必须以确切完成结果补录，不能提前全绿。**
+- A800/4070、正式 GPU训练/转换/边缘复核仍旧 `legacy`，`supervisor-required` 下无正式执行 Runner；不能发布 StopReceipt，不能重派旧任务/解锁 GPU reservation。
+
+完整细节：[`P0_01C_SUPERVISOR_STAGE2C3_STARTING_REATTACH_2026_11_15.md`](P0_01C_SUPERVISOR_STAGE2C3_STARTING_REATTACH_2026_11_15.md)。
