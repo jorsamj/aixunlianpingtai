@@ -18,3 +18,9 @@
 
 ## 下一步
 准确代码 SHA 的 Windows/Ubuntu/API/全仓 CI 终态审计；后续在独立 CPU 测试链路使用这份授权，验证真实网络时序、OS launch、取消、日志和结果 SHA，正式接线仍需单独准入。
+
+## Accurate CI closure
+Functional commit 7a91c0934faaf54995ea298a92151093680ba85a:
+- Two Node Agent workflows Ubuntu/Windows/API SUCCESS; Ubuntu contract 618 passed, 2 skipped.
+- All 23 workflows reached terminal state: 22 SUCCESS / 1 FAILURE. Frontend Runtime Stabilization run https://github.com/jorsamj/aixunlianpingtai/actions/runs/43721022844 failed the independent browser-navigation (3) job, training-admission-governance.spec.mjs:132; selected count expected 0, observed 40 after project clear. This is not a Supervisor execution assertion and was not modified here. No claim of all-green.
+- Isolated start recheck is not production approval. No A800/4070 action.
