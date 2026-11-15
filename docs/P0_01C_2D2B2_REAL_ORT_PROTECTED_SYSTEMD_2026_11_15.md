@@ -7,3 +7,6 @@ A new isolated CI-only root-owned ONNX systemd profile executes real ORT CPUExec
 Not wired to Node Agent, existing SupervisorService grant, central tasks.attempt / lease, original MODEL_CONVERSION Runner, output prepare/upload/confirm/finish or GPU. Ubuntu 22.04 systemd 249 is still incompatible with ExitType=cgroup; CI Ubuntu 24.04 cannot certify production. Frozen dependency versions and root-only permissions are not complete package supply-chain attestation. Existing legacy execution and front end unchanged. A800/4070 not touched.
 
 Next: verify exact SHA CI, fix regressions, then separately integrate central lease, durable identity and complete result lifecycle without making a new scheduler or enabling supervisor-required.
+
+## First CI RED and minimum security fix
+Initial SHA fdac051e was rejected before model launch by ORT_RUNTIME_MUTABLE_HOLD: GitHub-hosted /opt did not satisfy trusted-root directory checks. Keep fail-closed; move CI-only fixed venv to root-controlled /run, preserving owner/mode and package checks. Revalidate exact new SHA; do not infer model execution success from prior test results.

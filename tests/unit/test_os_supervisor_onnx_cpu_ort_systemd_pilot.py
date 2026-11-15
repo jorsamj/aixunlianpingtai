@@ -14,7 +14,7 @@ def test_fixed_argv():
     for key in ("DynamicUser=yes", "PrivateDevices=yes", "DevicePolicy=closed",
                 "PrivateNetwork=yes", "ProtectSystem=strict", "MemoryMax=768M"):
         assert "--property="+key in argv
-    assert argv[argv.index("--")+1] == "/opt/changlian-onnxruntime-cpu-pilot/venv/bin/python3"
+    assert argv[argv.index("--")+1] == "/run/changlian-onnxruntime-cpu-pilot/venv/bin/python3"
     assert "CPUExecutionProvider" in argv[argv.index("-c")+1]
     for bad in ("../h", h+"0", "", None):
         with pytest.raises(GrantRejected):
