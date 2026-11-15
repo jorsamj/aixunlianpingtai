@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Callable, Mapping, Any
 
 from linux_cgroup_probe import inspect, unified_path
 
@@ -420,7 +421,10 @@ def _start_service(unit: str, root: Path) -> int:
     return 0
 
 
-def run_poc() -> tuple[dict, int]:
+def run_poc(*, synthetic_task_id: str | None = None,
+            synthetic_generation: int = 1,
+            before_stop: Callable[[dict[str, Any]], bool] | None = None
+            ) -> tuple[dict, int]:
     pre = inspect()
     result = {"scope": "ISOLATED_KERNEL_POC_ONLY", "stop_proof_verified": False,
               "central_recovery_allowed": False, "preflight": pre,
@@ -429,13 +433,21 @@ def run_poc() -> tuple[dict, int]:
     if not pre["eligible_for_poc"]:
         result["outcome"] = "BLOCKED_ENVIRONMENT"
         return result, 2
+    if ((synthetic_task_id is not None and
+         (not isinstance(synthetic_task_id, str) or
+          not re.fullmatch(r"poc-task-[a-f0-9]{24}", synthetic_task_id)))
+        or type(synthetic_generation) is not int
+        or not 1 <= synthetic_generation <= 2**63 - 1):
+        result["outcome"] = "INVALID_SYNTHETIC_EXECUTION_HOLD"
+        return result, 3
     with tempfile.TemporaryDirectory(prefix="p001c2b-") as directory:
         root = Path(directory)
         unit = "clpoc-" + secrets.token_hex(12) + ".service"
         result["unit"] = unit
         # Precommit before possible start; never accept a unit from input.
-        intent = {"unit": unit, "task_id": "poc-task-" + secrets.token_hex(12),
-                  "execution_generation": 1,  # synthetic only; NOT central generation
+        intent = {"unit": unit, "task_id": (
+                      synthetic_task_id or "poc-task-" + secrets.token_hex(12)),
+                  "execution_generation": synthetic_generation,  # synthetic CPU only
                   "boot_id": pre["boot_id"], "nonce": secrets.token_hex(16),
                   "purpose": "P0-01C-2B-CPU-ONLY"}
         (root / "intent.json").write_text(json.dumps(intent), encoding="utf-8")
@@ -510,6 +522,20 @@ def run_poc() -> tuple[dict, int]:
             if not result["launcher_sigkill"] or not result["compute_survived_launcher"]:
                 result["outcome"] = "CRASH_BEHAVIOR_UNEXPECTED_HOLD"
                 return result, 3
+            # CI bridge only: central challenge is issued while the REAL
+            # workload is still alive, strictly BEFORE the stop request.
+            # This hook is never used by the production Node Agent.
+            if before_stop is not None:
+                allowed = before_stop({
+                    "task_id": intent["task_id"],
+                    "execution_generation": intent["execution_generation"],
+                    "boot_id": pre["boot_id"], "invocation_id": invocation,
+                    "unit": unit, "cgroup": group, "worker_id": "agent:isolated-poc-node",
+                })
+                if allowed is not True:
+                    result["outcome"] = "ISOLATED_CHALLENGE_NOT_ISSUED_HOLD"
+                    return result, 3
+                result["isolated_challenge_issued_before_stop"] = True
             # Recheck unit Id, ControlGroup and invocation before requesting stop.
             if not same_unit_instance(unit_info(unit), initial):
                 result["outcome"] = "UNIT_REPLACED_HOLD"
@@ -529,6 +555,7 @@ def run_poc() -> tuple[dict, int]:
             if not cgroup_observer.arm_stop():
                 result["outcome"] = "CGROUP_NOT_LIVE_BEFORE_STOP_HOLD"
                 return result, 3
+            result["stop_requested_ns"] = time.monotonic_ns()
             stopped = command(["systemctl", "--user", "--no-ask-password", "stop", unit], 8)
             result["systemd_stop_returncode"] = stopped.returncode
             if stopped.returncode != 0:
@@ -543,6 +570,25 @@ def run_poc() -> tuple[dict, int]:
             result["cgroup_empty_verified"] = wait_for(
                 lambda: cgroup_observer.observed_empty, 2)
             result["cgroup_observations"] = cgroup_observer.evidence()
+            # Require the original FD's empty event to occur AFTER the actual
+            # stop request; an early empty group is never evidence of this stop.
+            early_zero = any(
+                event.get("after_stop_armed") is True
+                and event.get("populated") == 0
+                and type(event.get("monotonic_ns")) is int
+                and event["monotonic_ns"] < result["stop_requested_ns"]
+                for event in result["cgroup_observations"])
+            post_stop_zero_events = [
+                event["monotonic_ns"]
+                for event in result["cgroup_observations"]
+                if event.get("after_stop_armed") is True
+                and event.get("populated") == 0
+                and type(event.get("monotonic_ns")) is int
+                and event["monotonic_ns"] >= result["stop_requested_ns"]
+            ]
+            result["empty_observed_ns"] = (
+                min(post_stop_zero_events) if post_stop_zero_events else None)
+            result["empty_before_stop_requested"] = early_zero
             # cgroup.events=0 is not sufficient if a previously-bound known
             # child has moved elsewhere and is still computing.
             known = ((ids["parent_pid"], ids["parent_ticks"]),
@@ -552,7 +598,9 @@ def run_poc() -> tuple[dict, int]:
                 lambda: all(process_executing_by_identity(pid, ticks) is False
                             for pid, ticks in known), 2)
             local_pass = (result["cgroup_empty_verified"] and
-                          result["known_processes_stopped"])
+                          result["known_processes_stopped"] and
+                          result["empty_observed_ns"] is not None and
+                          not result["empty_before_stop_requested"])
             result["outcome"] = ("LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF"
                                  if local_pass else "STOP_OR_MEMBERSHIP_UNVERIFIED_HOLD")
             return result, 0 if local_pass else 3
