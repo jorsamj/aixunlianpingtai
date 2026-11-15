@@ -423,7 +423,7 @@
 
 详细代码清单、阶段差异、明示的禁区见：[P0-01C Supervisor 阶段 1A 通信服务](P0_01C_SUPERVISOR_PHASE1_TRANSPORT_2026_11_15.md)。
 
-## 23. 2026-11-15｜新会话正式交接：阶段 1A 代码已提交、远端验收未完成，先修三项已定位问题
+## 23. 2026-11-15｜新会话正式交接：阶段 1A 代码已提交、远端验收未完成，先修已定位的 CI 兼容问题
 
 用户要求写好**当前进度、下一步怎么做与可复制的新会话接续提示词**。已建立一份更完整的优先接续文档，并将关键风险加入新会话工作顺序：
 
@@ -439,13 +439,13 @@
 - [Node Agent run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)：对应阶段 1A 代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`，Ubuntu/Windows/API **当时均 queued**。
 - [Node Agent run 43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571)：较早代码 SHA `c66ef5678c9dd86cd681c67a1623baacc5217e3d`，当时亦 queued。
 - [Node Agent run 43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190)：**completed/failure**，Ubuntu contract 成功，但 Windows 的 Linux 专用单测在 `tests/unit/test_linux_cgroup_poc_contract.py:226` 调用缺失的 `os.getsid` 而失败；API guard 因旧 `grep 'reported_capabilities = executable_agent_capabilities(requested_capabilities)'` 已与实际代码的 `allowed_remote_capabilities()` 不匹配而失败。Windows 主合同本身 472 passed / 2 skipped，后续 Linux 专项合同 30 passed / 1 failed，不能描述成所有 Node Agent 功能单测失败。
-- **新核实的阶段 1A 代码/测试矛盾**：`os_supervisor_protocol.py` 的 `start` 空 payload 先抛 `START_NOT_IMPLEMENTED`，而 `os_supervisor_service.py` 希望返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`，`test_os_supervisor_phase1.py` 断言后者。下轮须统一拒绝语义且**绝不能开放真实未授权进程启动**。
-- 因有上述实际代码不一致，前轮描述过的“本地 31 项通过”**不能用作准确当前代码版本的远端验收证据**。阶段 1A 正确结论是**代码已提交，CI 未放行**。
+- **纠正早期误判**：`os_supervisor_protocol.py` 的 `if payload: raise START_NOT_IMPLEMENTED` 只在 start payload 非空时拒绝；空 payload 会按设计由服务端返回 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`。阶段 1A Ubuntu CI 主合同已 **503 passed、2 skipped**。此处**不存在 start 协议/测试矛盾，不应为它改业务代码**。
+- 阶段 1A **Ubuntu 相关合同已通过**，但整个 Node Agent Workflow 尚未全绿（API guard 已失败、Windows 当时仍在执行）。正确结论是**代码已提交，部分 CI 成功、全套 CI 未放行**。
 
 ### 23.2 下轮固定执行顺序
 
 1. 先核对唯一开发分支 HEAD、最新 GitHub Actions 与失败日志；
-2. **先小修 1A 回归问题**：Windows POSIX-only 单测、过时 CI grep、协议 start 拒绝路径不一致；复用原 Node Agent Ubuntu/Windows/API 工作流确认同一准确 SHA 的 CI 全结束，不删安全断言、不做无意义重复压测；
+2. **先小修 1A 回归问题**：Windows POSIX-only 单测、过时 CI grep；复用原 Node Agent Ubuntu/Windows/API 工作流确认同一准确 SHA 的 CI 全结束，不删安全断言、不做无意义重复压测；
 3. 然后才进行**阶段 1B**：可信中央执行授权、受保护本机持久 journal/幂等句柄、防回复丢失后重复启动。尚不接正式训练/转换/复核 Runner；
 4. 再阶段 2 真实固定 CPU worker，阶段 3 单类转换→训练→复核，最后经用户明确批准的实机 GPU 权限验收和 StopReceipt/中央 CAS；
 5. 每阶段更新主交接、Issue #26、代码提交 SHA、具体 CI 与已/未完成证据，禁止笼统“CI 全绿”或“生产可用”。
@@ -456,4 +456,12 @@
 
 在第 23 节写入以后，[43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 发生状态变化，已 **completed/failure**：Ubuntu contract **success**，Windows 主单元 **473 passed/2 skipped** 但后续 Linux cgroup PoC 用例调用 Windows 缺少的 `os.getsid`（1 failed/30 passed）；API 24 项测试通过但旧 `reported_capabilities = executable_agent_capabilities(...)` 的 grep guard 已落后于现有 `allowed_remote_capabilities(...)` 而失败。此前 [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) 有相同两类问题。**真正阶段 1A** [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 此时仍 queued。上述最新状态已同步到 [阶段 1A 新会话交接文档](P0_01C_SUPERVISOR_STAGE1A_HANDOFF_AND_NEXT_STEPS_2026_11_15.md) 和 [复制提示词](P0_01C_NEW_SESSION_CONTINUATION_PROMPT_2026_11_15.md)。
 
-**下一会话第一步不变**：先小范围修复确切的 Windows/CI guard/START 协议矛盾，取得现有工作流的实际结果，再进入阶段 1B；无任何生产操作授权。
+**下一会话第一步不变**：先小范围修复确切的 Windows POSIX-only 用例 / 过时 API guard，取得现有工作流的实际结果，再进入阶段 1B；start 协议按现有行为保留，无任何生产操作授权。
+
+### 23.4 2026-11-15 最终复核纠正：阶段 1A Ubuntu CI 已通过，start 不存在协议不一致
+
+- [run 43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) 对准确代码 SHA `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8`：本轮后续 GitHub 运行结果更新为 **Ubuntu contract success**（503 passed/2 skipped，POSIX SIGKILL 2 passed，Linux cgroup 31 passed）；API Job **failure**（24 passed，旧 `grep` guard）；Windows Job 在最后观察时 **in_progress**。整轮仍不可称全绿，新会话必须再次查询最新结果。
+- 协议误判已纠正：`validate_request()` 中 `if payload:` 表示非空 payload 才抛 `START_NOT_IMPLEMENTED`；空请求不会抛异常，而是被 Supervisor 按设计明确拒绝 `PROTECTED_LAUNCH_NOT_IMPLEMENTED_HOLD`。对这条路径**不应再进行无意义修改**。
+- 当前真实需修的两项是 POSIX-only `os.getsid` 测试在 Windows 不兼容、Node Agent API guard 含过时的 capabilities 赋值文本。这些才是有原始 CI 日志支持的问题。
+
+所有新结论已同步到 [专项交接](P0_01C_SUPERVISOR_STAGE1A_HANDOFF_AND_NEXT_STEPS_2026_11_15.md) 和 [新会话提示词](P0_01C_NEW_SESSION_CONTINUATION_PROMPT_2026_11_15.md)。生产 HOLD / NO-GO 不变。
