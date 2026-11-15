@@ -381,3 +381,23 @@
 - 下一阶段不再重复类似 CPU PoC，而是一个可工作的受保护 Supervisor 纵向切片：跨 UID Unix Socket 鉴权、启动前登记、实际 systemd launch、稳定异步 `poll/returncode`、日志/取消与一体化 StopReceipt，并在真实 GPU 权限/驱动 UAT 审批后替换旧启动路径。绝不能重构或另建第二套调度系统，中央 `tasks.attempt` 继续唯一执行代数。
 
 **完整记录**：[P0-01C-3B-5 渐进式接入和只读权限盘点](P0_01C_3B_5_SUPERVISOR_MIGRATION_GUARD_2026_11_15.md)。安全状态不变：`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、原 owner/lease/GPU reservation、自动派单 OFF、生产 **NO-GO**。无任何 A800/双4070/SSH/训练/部署任务动作。
+
+## 21. 2026-11-15｜冻结 OS Supervisor 渐进式实施路线（只读审计/方案，不提前改业务）
+
+用户要求“先确定怎么做，然后渐进实施”。本轮已只读核对 GitHub 最新长期分支 `3e411fa12df02cd7acac1889b9299ef8f3eff97d` 下的真实 `process_control.py`、远程 Training/Conversion/Deployment Runner、Node Agent Executor 与上轮 CI；正式业务逻辑**未改动**。
+
+**核心决策与不可破坏的合同：**
+
+- 旧 `LaunchedProcess` 中 `process: subprocess.Popen`，三个 Runner 都依赖 `poll/returncode`、现有日志及结束/取消清理；不能将 Supervisor 的 Socket JSON 直接冒充 Popen。必须设计独立 `SupervisedProcessHandle`，状态、退出码、日志、stop 和恢复语义清晰。
+- **先独立 Linux OS Supervisor 服务，再做进程句柄 CPU 纵向闭环，随后“模型转换 → 训练 → 边缘模型复核”逐个迁移**；模型转换已有启动前 intent/进程身份持久化，适合首个灰度。边缘复核进程恢复机制与前两类不同，要另行适配。
+- Linux 服务采用不同 UID/系统管理的受保护 unit/cgroup，Unix Socket 的 `SO_PEERCRED` 只能认证本机身份，中央原任务授权必须额外核验；固定命令和路径白名单，绝不接收任意 shell/PID/unit。重复 start/超时/重启必须 fail-closed 且不可形成第二个真实执行实例。
+- 中央 `tasks.attempt`、旧 owner/lease 和 GPU reservation 是执行归属唯一真相；Supervisor 本地持久数据只记录 OS 边界，不创建第二套调度系统；正式 StopReceipt 尚未实现，不能启用中央自动恢复。
+- 原 `CHANGLIAN_AGENT_EXECUTION_BOUNDARY=legacy` 默认保持线上业务行为；`supervisor-required` 目前仍是拒绝训练/转换/复核旧直启的保护开关，**不可在生产启用**。迁移需使用独立隔离 Node Agent，一个能力通过后才开放下一个。
+- 真正 GPU 设备 ACL 和专用运行账户、systemd、polkit/sudoers 必须在用户明确许可下对 A800/4070 只读审计，再经维护窗口或独立 GPU 环境验收。不能把 CPU PoC / 文件 DAC 结果当 CUDA/Ascend 真相。
+- 测试原则：每一阶段只做必要单元合同、一次真实隔离 E2E、复用既有 CI；不再为相似证明增加多个 GitHub Actions 工作流。
+
+**当前 CI 未关闭风险**：[Node Agent Executor run 43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 对 `c66ef5678c9dd86cd681c67a1623baacc5217e3d` 的 Ubuntu/Windows/API 三项 Job 在本轮核查时**仍排队**，不得写成全绿。正式下一步先锁定这一基线结果，再做阶段 1 的独立 Supervisor 服务/句柄合同。
+
+详细阶段 0–5、每一步修改范围、单类 Runner 验收、回滚约束、常见失败模式见：[P0-01C Supervisor 渐进式实施方案](P0_01C_SUPERVISOR_INCREMENTAL_IMPLEMENTATION_PLAN_2026_11_15.md)。
+
+**本轮只写入 GitHub 方案/交接文档**，不连接 A800/4070，不操作生产数据库/训练任务，不切换默认模式，不合并 main、不 Release。生产继续 HOLD、自动派单 OFF、NO-GO。
