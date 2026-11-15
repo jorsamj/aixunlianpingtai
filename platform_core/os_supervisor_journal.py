@@ -25,6 +25,11 @@ from .os_supervisor_authorization import (
 
 PROTECTED_PATH = Path("/var/lib/changlian-os-supervisor/executions.sqlite3")
 _CHALLENGE_FIELDS = BINDING_FIELDS - {"challenge"}
+# Limit simultaneously valid challenges; expired nonce rows are pruned before
+# quota checks. Avoid a second queue or scheduler in this local OS journal.
+_MAX_ACTIVE_CHALLENGES = 512
+_MAX_NODE_CHALLENGES = 64
+_MAX_ATTEMPT_CHALLENGES = 4
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS challenges (
     challenge TEXT PRIMARY KEY,
@@ -131,6 +136,32 @@ class ExecutionJournal:
         challenge = secrets.token_hex(16)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
+            # Only expired challenges may be deleted. Durable execution intent
+            # and OS identities are never garbage-collected by this cleanup.
+            db.execute("DELETE FROM challenges WHERE expires_at<=?", (current,))
+            active = db.execute(
+                "SELECT binding_json FROM challenges WHERE expires_at>?",
+                (current,),
+            ).fetchall()
+            if len(active) >= _MAX_ACTIVE_CHALLENGES:
+                raise GrantRejected("JOURNAL_CHALLENGE_GLOBAL_CAPACITY_HOLD")
+            node_count = attempt_count = 0
+            try:
+                for row in active:
+                    old = json.loads(row["binding_json"])
+                    if not isinstance(old, dict):
+                        raise ValueError("invalid challenge binding")
+                    if old.get("node_id") == binding["node_id"]:
+                        node_count += 1
+                    if (old.get("task_id") == binding["task_id"]
+                            and old.get("task_attempt") == binding["task_attempt"]):
+                        attempt_count += 1
+            except (TypeError, ValueError, KeyError) as exc:
+                raise GrantRejected("JOURNAL_CHALLENGE_STORE_UNVERIFIED_HOLD") from exc
+            if node_count >= _MAX_NODE_CHALLENGES:
+                raise GrantRejected("JOURNAL_CHALLENGE_NODE_CAPACITY_HOLD")
+            if attempt_count >= _MAX_ATTEMPT_CHALLENGES:
+                raise GrantRejected("JOURNAL_CHALLENGE_ATTEMPT_CAPACITY_HOLD")
             db.execute("INSERT INTO challenges VALUES (?,?,?)", (
                 challenge, json.dumps(dict(binding), sort_keys=True),
                 current + 90,

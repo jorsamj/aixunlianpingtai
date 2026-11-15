@@ -6,6 +6,7 @@ This module does not authorize central task ownership or issue StopReceipts.
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -16,6 +17,7 @@ from .os_supervisor_authorization import GrantRejected
 
 _UNIT = re.compile(r"changlian-os-[0-9a-f]{32}\.service\Z")
 _INVOCATION = re.compile(r"[0-9a-f]{32}\Z")
+_CURSOR = re.compile(r"^[A-Za-z0-9=;:._+/-]{1,512}$")
 # No child processes, external I/O, GPU, or uncontrolled work. Hard-coded code
 # is *not* provided by an Agent, model converter, or task payload.
 _WORKER = (
@@ -156,11 +158,59 @@ class FixedCpuSystemd:
             "active_state": active_state,
         }
 
-    def read_log(self, unit: str, expected_invocation: str) -> bytes:
-        """Bounded diagnostics only; never a stable global log offset contract."""
-        self.inspect(unit, expected_invocation)
-        value = self._run([
+    def read_log_page(self, unit: str, expected_invocation: str,
+                      *, cursor: str | None = None) -> dict[str, Any]:
+        """Read only the original systemd invocation; return an opaque journal cursor.
+
+        Every decoded journal entry must match both the exact unit AND the
+        recorded invocation. A replaced unit cannot leak another worker's log.
+        No log data is accepted from the Agent, and the cursor is never a path.
+        """
+        name = _unit(unit)
+        if not isinstance(expected_invocation, str) or not _INVOCATION.fullmatch(
+                expected_invocation):
+            raise GrantRejected("CPU_LOG_INVOCATION_INVALID_HOLD")
+        if cursor is not None and (not isinstance(cursor, str)
+                                   or not _CURSOR.fullmatch(cursor)):
+            raise GrantRejected("CPU_LOG_CURSOR_INVALID_HOLD")
+        self.inspect(name, expected_invocation)
+        args = [
             "/usr/bin/journalctl", "--system", "--no-pager",
-            "--output=cat", "--lines=64", "--unit", _unit(unit),
-        ])
-        return value.encode("utf-8", errors="replace")[:8192]
+            "--output=json", "--lines=+64", "--unit", name,
+            "_SYSTEMD_INVOCATION_ID=" + expected_invocation,
+        ]
+        if cursor is not None:
+            args.append("--after-cursor=" + cursor)
+        raw = self._run(args)
+        lines: list[bytes] = []
+        result_cursor = cursor
+        size = 0
+        try:
+            for line in raw.splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if (not isinstance(item, dict)
+                        or item.get("_SYSTEMD_INVOCATION_ID") != expected_invocation
+                        or item.get("_SYSTEMD_UNIT") != name
+                        or not isinstance(item.get("MESSAGE"), str)
+                        or not isinstance(item.get("__CURSOR"), str)
+                        or not _CURSOR.fullmatch(item["__CURSOR"])):
+                    raise GrantRejected("CPU_LOG_ENTRY_SCOPE_UNVERIFIED_HOLD")
+                content = (item["MESSAGE"] + "\n").encode("utf-8")
+                if size + len(content) > 8192:
+                    if not lines:
+                        raise GrantRejected("CPU_LOG_ENTRY_TOO_LARGE_HOLD")
+                    break
+                size += len(content)
+                lines.append(content)
+                result_cursor = item["__CURSOR"]
+        except (ValueError, TypeError) as exc:
+            raise GrantRejected("CPU_LOG_JSON_UNVERIFIED_HOLD") from exc
+        return {"data": b"".join(lines), "cursor": result_cursor,
+                "offset_contract_available": True,
+                "trusted_stop_receipt_available": False}
+
+    def read_log(self, unit: str, expected_invocation: str) -> bytes:
+        """Backward-compatible bounded diagnostic read, same invocation only."""
+        return self.read_log_page(unit, expected_invocation)["data"]

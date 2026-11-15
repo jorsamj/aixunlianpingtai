@@ -11,6 +11,7 @@ from platform_core.os_supervisor_authorization import (
     verify_central_execution_grant,
 )
 from platform_core.os_supervisor_journal import ExecutionJournal
+import platform_core.os_supervisor_journal as journal_module
 
 BOOT = "65ad39e5-7bfa-4b46-9b1e-7f1f0d0d6c8a"
 
@@ -151,3 +152,56 @@ def test_root_owned_path_is_required_outside_test_only_mode(tmp_path):
     with pytest.raises(GrantRejected, match="PROTECTED_OS_IDENTITY"):
         ExecutionJournal(tmp_path / "execution.sqlite3",
                          boot_id_for_tests=BOOT)
+
+
+def test_challenge_quota_prunes_only_expired_nonces(tmp_path):
+    journal = ExecutionJournal(
+        tmp_path / "bound.sqlite3", test_only_unprivileged=True,
+        boot_id_for_tests=BOOT)
+    scope = binding()
+    nonces = [journal.issue_challenge(scope, now=1000) for _ in range(4)]
+    assert len(set(nonces)) == 4
+    with pytest.raises(GrantRejected, match="ATTEMPT_CAPACITY_HOLD"):
+        journal.issue_challenge(scope, now=1000)
+    # The old nonce may never authorize a new launch after expiry, but
+    # garbage collection may reclaim its storage.
+    fresh = journal.issue_challenge(scope, now=1091)
+    assert fresh not in nonces
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM challenges").fetchone()[0] == 1
+
+
+def test_challenge_per_node_and_global_quota_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(journal_module, "_MAX_ACTIVE_CHALLENGES", 3)
+    monkeypatch.setattr(journal_module, "_MAX_NODE_CHALLENGES", 2)
+    monkeypatch.setattr(journal_module, "_MAX_ATTEMPT_CHALLENGES", 4)
+    journal = ExecutionJournal(
+        tmp_path / "quota.sqlite3", test_only_unprivileged=True,
+        boot_id_for_tests=BOOT)
+    a = binding(task_id="train_batch00001")
+    b = binding(task_id="train_batch00002")
+    journal.issue_challenge(a, now=1000)
+    journal.issue_challenge(b, now=1000)
+    with pytest.raises(GrantRejected, match="NODE_CAPACITY_HOLD"):
+        journal.issue_challenge(binding(task_id="train_batch00003"), now=1000)
+    c = {**binding(task_id="train_batch00003"),
+         "node_id": "anothernode1", "worker_id": "agent:anothernode1"}
+    journal.issue_challenge(c, now=1000)
+    d = {**binding(task_id="train_batch00004"),
+         "node_id": "thirdnode1", "worker_id": "agent:thirdnode1"}
+    with pytest.raises(GrantRejected, match="GLOBAL_CAPACITY_HOLD"):
+        journal.issue_challenge(d, now=1000)
+    with sqlite3.connect(journal.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM challenges").fetchone()[0] == 3
+
+
+def test_corrupt_unexpired_challenge_binding_fails_closed(tmp_path):
+    journal = ExecutionJournal(
+        tmp_path / "broken.sqlite3", test_only_unprivileged=True,
+        boot_id_for_tests=BOOT)
+    with sqlite3.connect(journal.path) as db:
+        db.execute("INSERT INTO challenges VALUES (?,?,?)",
+                   ("a" * 32, "{invalid JSON", 1200))
+        db.commit()
+    with pytest.raises(GrantRejected, match="STORE_UNVERIFIED_HOLD"):
+        journal.issue_challenge(binding(), now=1000)

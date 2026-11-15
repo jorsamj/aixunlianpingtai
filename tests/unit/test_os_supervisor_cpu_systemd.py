@@ -6,6 +6,7 @@ runs a *real systemd system service*, with no GPU, on an isolated CI runner.
 from __future__ import annotations
 
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -22,6 +23,8 @@ class FakeSystemd:
         self.state = "active"
         self.invocation = INVOCATION
         self.private_devices = "yes"
+        self.log_invocation = INVOCATION
+        self.log_unit = UNIT
 
     def __call__(self, argv, **kwargs):
         self.calls.append((argv, kwargs))
@@ -31,7 +34,15 @@ class FakeSystemd:
             self.state = "active"
             return SimpleNamespace(returncode=0, stdout=f"Running as unit: {UNIT}")
         if "journalctl" in argv[0]:
-            return SimpleNamespace(returncode=0, stdout="cpu-trial-start\n")
+            if "--after-cursor=s=one;i=1" in argv:
+                return SimpleNamespace(returncode=0, stdout="")
+            record = {
+                "__CURSOR": "s=one;i=1",
+                "_SYSTEMD_INVOCATION_ID": self.log_invocation,
+                "_SYSTEMD_UNIT": self.log_unit,
+                "MESSAGE": "cpu-trial-start",
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(record) + "\n")
         if argv[3] == "stop":
             self.state = "inactive"
             return SimpleNamespace(returncode=0, stdout="")
@@ -109,3 +120,59 @@ def test_systemd_device_isolation_missing_is_hold():
     stub.private_devices = "no"
     with pytest.raises(GrantRejected, match="PROTECTION_OR_IDENTITY"):
         backend.snapshot(UNIT, require_running=True)
+
+
+def test_invocation_cursor_log_page_is_bounded_and_verified():
+    fake = FakeSystemd()
+    systemd = FixedCpuSystemd(test_only_runner=fake)
+    page = systemd.read_log_page(UNIT, INVOCATION)
+    assert page["data"] == b"cpu-trial-start\n"
+    assert page["cursor"] == "s=one;i=1"
+    assert page["offset_contract_available"] is True
+    next_page = systemd.read_log_page(UNIT, INVOCATION, cursor=page["cursor"])
+    assert next_page["data"] == b""
+    assert next_page["cursor"] == page["cursor"]
+    assert fake.calls[-1][0][-1] == "--after-cursor=s=one;i=1"
+
+
+@pytest.mark.parametrize("cursor", [
+    "", "../secrets", "--no-pager", "s=one\\nwrong", "a" * 513,
+])
+def test_log_cursor_rejects_unsafe_values(cursor):
+    fake = FakeSystemd()
+    backend = FixedCpuSystemd(test_only_runner=fake)
+    with pytest.raises(GrantRejected, match="LOG_CURSOR_INVALID_HOLD"):
+        backend.read_log_page(UNIT, INVOCATION, cursor=cursor)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("log_invocation", "f" * 32),
+    ("log_unit", "another.service"),
+])
+def test_log_must_belong_to_exact_unit_and_invocation(field, value):
+    fake = FakeSystemd()
+    setattr(fake, field, value)
+    backend = FixedCpuSystemd(test_only_runner=fake)
+    with pytest.raises(GrantRejected, match="LOG_ENTRY_SCOPE_UNVERIFIED_HOLD"):
+        backend.read_log_page(UNIT, INVOCATION)
+
+
+def test_protocol_log_cursor_only_on_scoped_read_log():
+    from platform_core.os_supervisor_protocol import (
+        SupervisorProtocolError, validate_request,
+    )
+    scope = {"handle_id": "a" * 32, "execution_generation": 3}
+    request = {"version": 1, "request_id": "cursorrequest1234",
+               "action": "read_log",
+               "payload": {**scope, "cursor": "s=one;i=1"}}
+    assert validate_request(request) == request
+    for action, value in (
+        ("read_log", "../secrets"),
+        ("read_log", ""),
+        ("inspect", "s=one;i=1"),
+        ("stop", "s=one;i=1"),
+    ):
+        with pytest.raises(SupervisorProtocolError):
+            validate_request({**request, "action": action,
+                              "payload": {**scope, "cursor": value}})

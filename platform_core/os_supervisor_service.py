@@ -198,13 +198,15 @@ class SupervisorService:
             try:
                 identity = self.authorization_journal.cpu_identity(
                     payload["handle_id"], payload["execution_generation"])
-                data = self.cpu_trial_backend.read_log(
-                    identity["unit_name"], identity["invocation_id"])
+                page = self.cpu_trial_backend.read_log_page(
+                    identity["unit_name"], identity["invocation_id"],
+                    cursor=payload.get("cursor"))
                 return self._reply(
-                    request_id, "CPU_LOG_BOUNDED_DIAGNOSTIC", ok=True,
+                    request_id, "CPU_LOG_INVOCATION_CURSOR_PAGE", ok=True,
                     result={"encoding": "base64",
-                            "data_base64": base64.b64encode(data).decode("ascii"),
-                            "offset_contract_available": False})
+                            "data_base64": base64.b64encode(page["data"]).decode("ascii"),
+                            "cursor": page["cursor"],
+                            "offset_contract_available": True})
             except (GrantRejected, OSError, ValueError, sqlite3.Error):
                 return self._reply(request_id, "CPU_LOG_UNVERIFIED_HOLD", ok=False)
         return self._reply(request_id, "LOG_STREAM_NOT_IMPLEMENTED_HOLD",

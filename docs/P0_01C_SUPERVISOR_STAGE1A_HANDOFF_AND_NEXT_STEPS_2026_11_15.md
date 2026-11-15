@@ -295,3 +295,28 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 **前端**：没有业务必要修改，也没有本轮前端代码提交。以后只在原节点卡片/任务详情展示可验证的只读 Supervisor 运行状态；不提前提供释放 GPU/自动重派/强制声明已停按钮。
 
 **生产保持**：A800/双4070 完全未连接、未修改；`legacy` 默认、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、GPU 生产 NO-GO，不合并 main、不创建 Release。
+
+## 15. 阶段 2C-1｜挑战容量治理与 InvocationID 严格日志游标（2026-11-15，待本轮 CI）
+
+阶段 2B 已具备固定 CPU-only systemd 真启停与原 `tasks.attempt`/执行 lease 签名→独立 journal `PREPARED→STARTING→RUNNING` 的一体化隔离运行能力，但**没有**可供生产自动释放资源的可信 StopReceipt、最终退出证明或正式 Runner。阶段 2C 先处理能安全、低风险闭环的日志与请求表容量，再单独处理自然退出与崩溃时身份核验。
+
+### 15.1 已审计问题及本子阶段修改
+
+1. `platform_core/os_supervisor_journal.py` 原 `challenges` 仅追加不清理，Agent 可制造大量未过期记录，SQLite journal 长期膨胀；新实现每次在同一 `BEGIN IMMEDIATE` 事务中清理**仅到期 nonce**，继续保留全部 `execution_intents` 和 `cpu_unit_identities` 永久身份记录。设置未到期挑战全局 512、每节点 64、每一原任务/原 attempt 4 的软配额，达到上限明确 `*_CAPACITY_HOLD`，不回收原执行身份，不创建第二套 scheduler。对损坏 JSON 绑定 fail closed；90 秒短期 TTL 仍不改变。
+2. 原 `FixedCpuSystemd.read_log` 只按 `--unit` 查询 journald，可能混入同名 systemd unit 的历史其它 InvocationID。修复为固定 CPU-only `read_log_page`：先核对原 `systemctl show` unit/InvocationID/隔离合同，再通过 `journalctl --output=json --lines=+64 --unit NAME _SYSTEMD_INVOCATION_ID=ORIGINAL` 查询；**每一条** JSON 消息还必须同时核对 `_SYSTEMD_UNIT` 和 `_SYSTEMD_INVOCATION_ID` 与 journal 保留的原值。只接受有限长度、字符集受限且无文件路径语义的 journal cursor；`--after-cursor` 仅由已验证 cursor 组成。一次返回 <= 8192 bytes、最多 64 条，过大单条消息、错误元数据、解析失败及串线日志全部 HOLD。
+3. 原 Socket `read_log` 严格支持可选 `cursor` 参数（`inspect/stop` 不接受）；响应包含有界 base64、同一日志游标和 `offset_contract_available=true`，旧 `SupervisedProcessHandle.read_log()` 保留无 cursor 的兼容接口，新 `read_log_page(cursor)` 可以精确继续读取。这里的 offset 是 journald **原生 cursor**，不是业务日志磁盘字节偏移；journald 日志轮转、缺失日志或 systemd unit 被 GC 时，必须 HOLD 或返回空页，不保证任意时长保留。
+4. 在原 `tests/unit/test_os_supervisor_phase1b.py`、`tests/unit/test_os_supervisor_cpu_systemd.py`、`tests/unit/test_os_supervisor_cpu_journal.py` 追加定向测试，覆盖容量限制/过期清理、同调用多代不混淆、无效游标/跨 InvocationID 或跨 unit 日志拒绝、重连后一致游标、原 `inspect/stop` 不接纳 cursor。原 `tests/integration/test_os_supervisor_cpu_systemd_live.py` 只扩展现有 Ubuntu 真 systemd E2E，**实际**校验 stdout 日志含固定 CPU 程序启动标记、原 journal cursor 与二次读取不重复，不新建相似 workflow。
+
+### 15.2 不变更/后续必须做
+
+- 没有增加生产 Agent 接单能力、GPU 资源访问、模型转换/训练/边缘复核 Runner 适配，也没有修改中央任务代数/租约/设备 reservation。
+- **本子阶段不承诺自然退出码/可信 StopReceipt**：原 systemd transient service 在进程自然退出后可能被立即 GC；若 unit/InvocationID/cgroup/后代核验不完整，只能 UNKNOWN/HOLD。下一子阶段 2C-2 应在隔离 Linux 下验证真实自然退出、子孙进程空组、系统运行身份/ExecMainCode/ExecMainStatus 的同代持久性，再决定能否有条件登记固定 CPU 的 EXITED（不等于生产 GPU 停机证明）。
+- `STARTING` 在 journal CAS 已写入、但 systemd 已启动却尚未写入 `InvocationID` 时的故障窗口，仍**不得**自动二次启动；可读回查方案需在独立根身份核验完整后再开放。
+- 生产根公钥/中央私钥轮换、业务 Runner、GPU 设备权限和安全停机证明仍待后续阶段/现场审批。
+- 前端不修改；将来仅现有节点管理/任务详情显示只读、可信的状态和原因，不增强停/重派按钮。
+
+### 15.3 本轮 CI 审计口径
+
+阶段 2B 准确功能 SHA `da73e07175073a9919207d6cb3093bba198c9b55` 的 Node Agent、Portable Deployment 核心 CI 已双绿，但复核其**全部** 23 项 GitHub Actions 最终状态是 **22 successful、1 failure**：失败的 [Frontend Runtime Stabilization 43693050722](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43693050722) 属于浏览器导航分片（`createAnnotation` 事件等待 5 秒超时），而非 Node Agent 安全合同。保留明确 RED，不把前端失败美化为 23/23，也不为此在本阶段修改前端。
+    
+本轮阶段 2C-1 功能提交应以**精确新 SHA** 的 Node Agent Ubuntu/Windows/API 与 Portable Deployment 审核为准，特别是 Ubuntu 上新 journalctl 字段/游标真实测试；若未到终态，不得宣称 2C-1 通过。A800 / 双4070 从未接触，默认 `legacy`、`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、远程自动派单 OFF、生产 NO-GO 保持。

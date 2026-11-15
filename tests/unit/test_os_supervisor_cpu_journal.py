@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
 import time
@@ -41,7 +42,17 @@ class FakeRunner:
                 returncode=1 if self.launch_fails else 0,
                 stdout="", stderr="systemd unavailable" if self.launch_fails else "")
         if command[0].endswith("journalctl"):
-            return SimpleNamespace(returncode=0, stdout="fixed-cpu-log\n")
+            name = command[command.index("--unit") + 1]
+            record = {
+                "__CURSOR": "s=demo;i=1",
+                "_SYSTEMD_INVOCATION_ID": self.invocation,
+                "_SYSTEMD_UNIT": name,
+                "MESSAGE": "fixed-cpu-log",
+            }
+            if any(arg.startswith("--after-cursor=") for arg in command):
+                return SimpleNamespace(returncode=0, stdout="")
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps(record) + "\n")
         if command[3] == "stop":
             self.active = False
             return SimpleNamespace(returncode=0, stdout="")
@@ -117,7 +128,14 @@ def test_once_cas_and_restart_preserve_one_systemd_invocation(tmp_path):
     assert observed["ok"] and observed["result"]["state"] == "RUNNING"
     read_log = recovered.dispatch(request("read_log", scope), peer_uid=10101)
     assert read_log["ok"] is True
-    assert read_log["result"]["offset_contract_available"] is False
+    assert read_log["result"]["offset_contract_available"] is True
+    assert read_log["result"]["cursor"] == "s=demo;i=1"
+    next_log = recovered.dispatch(
+        request("read_log", {**scope, "cursor": "s=demo;i=1"}),
+        peer_uid=10101)
+    assert next_log["ok"] is True
+    assert next_log["result"]["cursor"] == "s=demo;i=1"
+    assert next_log["result"]["data_base64"] == ""
     stopped = recovered.dispatch(request("stop", scope), peer_uid=10101)
     assert stopped["ok"] is False and stopped["code"].endswith("HOLD")
     assert stopped["result"]["state"] == "UNKNOWN"

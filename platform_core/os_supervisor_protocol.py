@@ -90,13 +90,21 @@ def validate_request(value: object) -> dict[str, Any]:
                 or set(payload["envelope"]) != {"claims", "signature"}):
             raise SupervisorProtocolError("AUTHORIZATION_ENVELOPE_INVALID")
     else:
-        if set(payload) != {"handle_id", "execution_generation"}:
+        expected = {"handle_id", "execution_generation"}
+        if (set(payload) != expected
+                and not (action == "read_log"
+                         and set(payload) == expected | {"cursor"})):
             raise SupervisorProtocolError("HANDLE_SCOPE_INCOMPLETE")
         if not _valid_id(payload["handle_id"]):
             raise SupervisorProtocolError("INVALID_HANDLE_ID")
         if (type(payload["execution_generation"]) is not int or
                 payload["execution_generation"] <= 0):
             raise SupervisorProtocolError("INVALID_EXECUTION_GENERATION")
+        if "cursor" in payload and (
+                not isinstance(payload["cursor"], str)
+                or not re.fullmatch(r"[A-Za-z0-9=;:._+/-]{1,512}",
+                                    payload["cursor"])):
+            raise SupervisorProtocolError("LOG_CURSOR_SCOPE_INVALID")
     return value
 
 
@@ -220,16 +228,23 @@ class SupervisedProcessHandle:
             raise SupervisorProtocolError("SUPERVISOR_STOP_UNVERIFIED_HOLD")
         # ACK alone is NOT a verified StopReceipt.
 
-    def read_log(self) -> bytes:
-        response = self.client.call("read_log", self._scope())
+    def read_log_page(self, cursor: str | None = None) -> dict[str, Any]:
+        payload = self._scope()
+        if cursor is not None:
+            payload["cursor"] = cursor
+        response = self.client.call("read_log", payload)
         if response["ok"] is not True:
             raise SupervisorProtocolError("SUPERVISOR_LOG_UNAVAILABLE_HOLD")
         result = response.get("result")
         if (not isinstance(result, dict)
                 or result.get("encoding") != "base64"
-                or result.get("offset_contract_available") is not False
+                or result.get("offset_contract_available") is not True
                 or not isinstance(result.get("data_base64"), str)
-                or len(result["data_base64"]) > 12000):
+                or len(result["data_base64"]) > 12000
+                or (result.get("cursor") is not None and (
+                    not isinstance(result["cursor"], str)
+                    or not re.fullmatch(r"[A-Za-z0-9=;:._+/-]{1,512}",
+                                        result["cursor"])))):
             raise SupervisorProtocolError("SUPERVISOR_LOG_EVIDENCE_INVALID_HOLD")
         try:
             value = base64.b64decode(result["data_base64"], validate=True)
@@ -237,4 +252,8 @@ class SupervisedProcessHandle:
             raise SupervisorProtocolError("SUPERVISOR_LOG_ENCODING_INVALID_HOLD") from exc
         if len(value) > 8192:
             raise SupervisorProtocolError("SUPERVISOR_LOG_SIZE_INVALID_HOLD")
-        return value
+        return {"data": value, "cursor": result.get("cursor")}
+
+    def read_log(self) -> bytes:
+        """Compatibility: read the bounded first page, without a cursor."""
+        return self.read_log_page()["data"]

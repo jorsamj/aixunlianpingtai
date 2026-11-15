@@ -33,9 +33,21 @@ def test_real_fixed_cpu_systemd_service_start_inspect_log_and_stop():
         # unit is launched; the OS InvocationID is the same.
         resumed = FixedCpuSystemd().inspect(name, initial["invocation_id"])
         assert resumed["invocation_id"] == initial["invocation_id"]
-        # Bounded actual journald read; start log can be slightly delayed.
-        log = backend.read_log(name, initial["invocation_id"])
-        assert isinstance(log, bytes) and len(log) <= 8192
+        # Exercise actual invocation-filtered journald cursor pagination.
+        # Journald may receive service stdout slightly after systemd-run.
+        page = None
+        for _ in range(30):
+            page = backend.read_log_page(name, initial["invocation_id"])
+            if b"changlian-fixed-cpu-trial-start" in page["data"]:
+                break
+            time.sleep(0.1)
+        assert b"changlian-fixed-cpu-trial-start" in page["data"], page
+        assert page["cursor"]
+        assert len(page["data"]) <= 8192
+        next_page = backend.read_log_page(
+            name, initial["invocation_id"], cursor=page["cursor"])
+        assert b"changlian-fixed-cpu-trial-start" not in next_page["data"]
+        assert next_page["offset_contract_available"] is True
 
         result = backend.request_stop(name, initial["invocation_id"])
         assert result["stop_requested"] is True
