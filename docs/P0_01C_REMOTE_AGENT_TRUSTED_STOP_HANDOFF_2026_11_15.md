@@ -240,3 +240,30 @@
 - 正式恢复协议需注意对代数严格类型判断，不能把 `True` 通过 Python `int()` 转换误当代数 1。当前只是未来协议风险提示，未改业务代码。
 
 具体证据与对照见 [专项文档第 13.6 节](P0_01C_2_LINUX_SYSTEMD_EXECUTION_BOUNDARY_POC_2026_11_15.md)。**新身份绑定 31 合同 + GitHub 托管 VM 的 kernel run 43667494312 在本段落撰写时仍排队**，不宣告该 SHA 已通过。生产 NO-GO 和中央 HOLD 不变。
+
+## 15. 2026-11-15 P0-01C-3A 已完成：中央可信恢复事务**隔离协议合同**（非生产接口）
+
+在此前 **31/31** 合同与真实 Ubuntu systemd/cgroup 多子孙 CPU 停机、boot/InvocationID 绑定 PoC 成功的基础上，本轮将中央恢复协议先落为**纯隔离验证**，仍不对任何线上或本地真实平台数据库执行变更。
+
+### 15.1 真实代码和验收
+
+- `tools/poc/central_stop_recovery_contract.py`：新增测试专用中央挑战 + 消费 + 事务合同；`_memory_only()` 强制主数据库必须为 SQLite `:memory:`，任何文件型数据库均抛 `ISOLATED_MEMORY_DATABASE_REQUIRED`，故**不能对生产 SQLite 发起恢复**。
+- `tests/unit/test_central_stop_recovery_contract_poc.py`：正向仅模拟 `RUNNING -> QUEUED` 或 `CANCEL_REQUESTED -> CANCELLED`；旧 `attempt` 不在恢复时递增，真实新执行开始才允许增加代数。
+- 校验：真实字段名 `tasks.attempt`、旧 worker/token、远端 lease 已过期、HOLD stage、GPU reservation owner、一次性挑战过期/消费、boot ID、InvocationID、unit/cgroup、模拟 OS 见证签名与空组/已知 PID 停止严格标记；`BEGIN IMMEDIATE` 原子恢复并在同事务消费 challenge、清理 GPU reservation、插入审计。重放、伪造、错代、租约/节点变更、审计冲突导致的事务回滚均有负面回归。
+- 提交：模块 `a2ef6048c42aafee8b1abc6f36648e86042ff63f`、合同 `37af8c9ceac8d473c0044f365feafa65227ab2cc`、专用跨平台 GitHub CI `1714ba852abb29f3f767357197976c6e91a9385c`。
+- [GitHub-hosted run 43670649572](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43670649572)：**Ubuntu 22.04 41/41 passed、Windows-latest 41/41 passed，两项 Job 都 SUCCESS**。此结果仅授权说明“隔离合同通过”，不授权生产使用。
+- 全量设计、测试用例、失效路径、下一步参考：[P0-01C-3A 中央停机挑战与恢复事务隔离合同](P0_01C_3A_CENTRAL_STOP_RECOVERY_CONTRACT_2026_11_15.md)。
+
+### 15.2 未解决且绝不可越过的安全边界
+
+**真正的可信 OS 见证尚未实现**。本轮 HMAC 使用测试模拟独立见证，不能由普通 Agent 持有密钥并通过自报 JSON 来宣称停机。未来必须具备独立可信边界/密钥保护、服务节点身份认证、预登记 boot/InvocationID/cgroup/执行代数、跨节点故障反例，才能把可信 StopReceipt 提交中央。
+
+本轮 challenge/audit 是隔离测试数据，不是生产数据库 schema，也**不是第二套任务调度所有权**。未来正式接口还需单独审计现有单一 `TaskRepository` 的 WAL/锁、GPU reservation、持久审计、并发取消/上传竞赛；不得直接把 PoC 的 `commit_test_recovery()` 复制进生产服务。
+
+### 15.3 下一专项建议
+
+- **P0-01C-3B：可信 OS StopReceipt 合同**。只读梳理真实 Node Agent 现有 `process-launch-intent.json` / `process-identity.json` 和 `launch_process` 路径。定义正确的 `task_id + tasks.attempt + lease/node + boot_id + InvocationID + cgroup` 预登记、见证权限、事件持久化和挑战响应。先独立验证、不要改生产 Runner。
+- **P0-01C-3C：中央真实 API（继续默认 OFF）**。只有具备可信 OS 见证及负面验收后，才能在保留现有 `FencedTaskRepository` 逻辑下新增附属 challenge/audit 持久表和中央原子恢复接口。
+- **最终上线准入**仍需 A800/双4070 真实 GPU、多节点网络分区、取消竞态和 Windows Job Object 测试；任何生产变更另请用户明确授权。
+
+继续 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、保留原 owner/GPU reservation、`CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM` OFF、生产 **NO-GO**。
