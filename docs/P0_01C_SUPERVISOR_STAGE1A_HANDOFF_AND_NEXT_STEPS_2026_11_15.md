@@ -4,7 +4,7 @@
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
 **历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
-**当前优先状态（2026-11-15）**：**阶段 2C-2 完整仓库 23/23 CI 已最终 GREEN**（准确代码 SHA `f121d9bd`，前端 Annotorious 失败 Job attempt 2 SUCCESS）；**阶段 2C-3 STARTING 失联原 CPU unit 身份回查已提交 `8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`，Ubuntu Node Agent 主合同及真实 systemd E2E 已通过，Windows/全仓结果仍待终态**。以下旧章节保留历史证据，实际接续以最新第 17 节和 2C-3 专项文档为准。**生产 A800/双4070 未接入，StopReceipt 与自动恢复仍 NO-GO。**
+**当前优先状态（2026-11-15）**：**2C-2 已完成（代码 `f121d9bd` 全仓 23/23 SUCCESS）；2C-3 也已完成核心 CPU-only 验收（代码 `8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`，同 SHA GitHub Actions 全仓 23/23 SUCCESS，含真实 Ubuntu systemd E2E 4/4）**。以下旧章节保留历史证据，实际接续以最新第 17 节和 2C-3 专项文档为准。**生产 A800/双4070 未接入，StopReceipt 与自动恢复仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
@@ -371,3 +371,13 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - A800/4070、正式 GPU训练/转换/边缘复核仍旧 `legacy`，`supervisor-required` 下无正式执行 Runner；不能发布 StopReceipt，不能重派旧任务/解锁 GPU reservation。
 
 完整细节：[`P0_01C_SUPERVISOR_STAGE2C3_STARTING_REATTACH_2026_11_15.md`](P0_01C_SUPERVISOR_STAGE2C3_STARTING_REATTACH_2026_11_15.md)。
+
+
+### 17.1 阶段 2C-3 准确代码 SHA GitHub CI 最终终态（2026-11-15）
+
+- **代码 SHA**：[`8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`](https://github.com/jorsamj/aixunlianpingtai/commit/8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da)；**23 次 Actions workflow runs 全部 completed/success（23/23）**，无失败、取消或待执行。
+- [Node Agent Executor push run 43708219773](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708219773) 与 [PR run 43708221724](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708221724) 均 completed/success。push Ubuntu 主合同 **565 passed/2 skipped**，SIGKILL **2 passed**，cgroup **31 passed**，固定 CPU **真实 Linux systemd E2E 4 passed**；Windows / API 成功。
+- [Portable Deployment run 43708221554](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708221554) Ubuntu/Windows/API 成功；[Frontend Runtime Stabilization run 43708219738](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708219738) 第 1 次运行直接 success（4/4 Job），没有沿用 2C-2 之前的前端 RED 状态。
+- **本次仅验收 fixed CPU-only original-STARTING os unit reattachment；不等于真实 GPU StopReceipt、自动跨节点恢复、正式模型转换/训练/推理 Runner 接线。** Windows CI 仅验证可移植合同；真实 systemd 只在隔离 Ubuntu 24.04 运行。生产 A800/双4070 没有变更。
+
+**下次专项建议**：先只读审计 CPU-only 失败/终态路径剩余边界、systemd Ubuntu 22.04 兼容差异和正式 Runner 适配合同，再选一个非 GPU 转换 Runner 的隔离集成切片。不要一次性改中央调度器、GPU reservation 或现有生产部署模式。

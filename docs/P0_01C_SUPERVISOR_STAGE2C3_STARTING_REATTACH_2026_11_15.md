@@ -23,7 +23,7 @@
 ## 3. CI 证据与准确口径
 
 - 2C-2 基线：`f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 已证实 23/23 workflows 成功，包括历史前端失败 Job 的 attempt 2 成功。
-- 本轮功能 SHA：[`8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`](https://github.com/jorsamj/aixunlianpingtai/commit/8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da)。[Node Agent push run 43708219773](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708219773)：Ubuntu 主合同 **565 passed / 2 skipped**，POSIX SIGKILL **2 passed**，cgroup **31 passed**，真实 systemd E2E **4 passed**。Windows/其它 Job 在首次记录时尚未全部完成；最终验收须再核实精确 SHA。
+- 本轮功能 SHA：[`8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da`](https://github.com/jorsamj/aixunlianpingtai/commit/8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da)。GitHub 同 SHA **23/23 次工作流最终成功**。[Node Agent push 43708219773](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708219773) Ubuntu 主合同 **565 passed / 2 skipped**，POSIX SIGKILL **2 passed**，cgroup **31 passed**，真实 systemd E2E **4 passed**；Windows 和 API Job 成功。Node Agent [PR run 43708221724](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708221724)、[Portable Deployment 43708221554](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708221554)、[Frontend Runtime Stabilization 43708219738](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708219738) 也均 completed/success。以上只表明本轮代码在隔离 CPU 系统级/可移植合同的验收完成，不代表生产 GPU 可信停机。
 - 其它核对入口：[Node Agent PR run 43708221724](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708221724)、[Portable Deployment 43708221554](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43708221554)。
 
 ## 4. 不可越过的生产准入
@@ -36,3 +36,8 @@
 ## 5. 仍待开展
 
 完成本 SHA Ubuntu/Windows/Portable/全仓 CI 核对；之后专项审核 OS 启动异常/日志缺失与短期授权过期的竞争、单独编制 Supervisor 真实硬件适配的安全设计，最后才考虑**一个非 GPU 模型转换 Runner**灰度接线。绝不可把单测、CPU E2E、远端 Agent 生产认证和自动恢复混为一谈。
+
+
+## 6. 本阶段最终验收及交接
+
+2C-3 准确代码 SHA `8d3140d1c91e26f18d26c0668c2f3e1ae7c2f5da` 的 **23/23 workflows 全部 success**（包括 Node Agent push/PR、Portable Deployment、Frontend Runtime Stabilization）。版本 `legacy` 默认不变，OS 信任范围仅固定 CPU，尚无真实业务 Runner 接线、可供中央资源释放的 StopReceipt 或生产 GPU 隔离凭据。请将这份功能提交作为下一轮的已验收代码基线，文档 HEAD 只记录结果，不能冒充重跑过业务代码的 CI。
