@@ -21,7 +21,7 @@
 | 值 | 实际效果 |
 |---|---|
 | 未设置或 `legacy`（默认） | 按现有行为申领远程任务，并保留原 `launch_process`；**没有**新增可信停机证明 |
-| `supervisor-required` | **不再上报 `training`、`conversion`、`conversion.rknn` 能力**，不创建这些 Runner；即使已有 Runner 对象被直接调用，真正 `begin_process_launch` / `launch_process` 前也会 fail-closed，绝不静默退回普通 Popen |
+| `supervisor-required` | **不再上报 `training`、`conversion`、`conversion.rknn`、`deployment-test`、`deployment-test.rknn` 能力**，不申领这些任务；即使已有 Runner 对象被直接调用，真正 `begin_process_launch` / `launch_process` 前也会 fail-closed，绝不静默退回普通 Popen |
 | 任何其他字符串 | 配置无效，必须拒绝启动；不猜测为 `legacy` |
 
 **严禁现在对生产节点设置 `supervisor-required`**：真实 supervisor launcher/handle adapter 尚未安装，开启后远程训练和转换会被停止接单，这是预期的**安全阻断**而不是业务功能已上线。生产默认不变。
@@ -29,9 +29,9 @@
 ### 2.2 具体代码和影响面
 
 - `platform_core/node_agent_supervisor_gate.py`：新增独立轻量策略模块，统一解析执行边界模式和可广告的远程计算能力，提供 `assert_direct_remote_launch_permitted()`。不 import 中央数据库、GPU 或服务协议。
-- `node_agent.py`：获取可执行 capabilities 后先由统一策略过滤，`supervisor-required` 下训练/转换不进入 `reported_capabilities`；相应 `NodeAgentExecutorLoop` 不创建 TRAINING 和 MODEL_CONVERSION Runner。原本 cleaning、material-import、model-upload、deployment-test 等能力仍按既有规则判定。doctor 的 executor 诊断增加 `execution_boundary_mode`。
-- `platform_core/node_agent_training_runtime.py` / `node_agent_conversion_runtime.py`：在各自唯一的远程训练/转换 `begin_process_launch(lease)` **之前**追加严格入口保护；启用强制 Supervisor 模式而尚未实现真正保护进程句柄时，抛出 `RemoteExecutionFenced`，不能直接 Popen，也不会把可能存在的进程臆断为已停止。异常配置同样拒绝。
-- `tests/unit/test_node_agent_supervisor_gate.py`：少量必要回归，包括 legacy 默认不变、required 隐藏计算能力、非法值 fail-closed、真实 Runner 保护点位次序、原入口能力过滤与 doctor 可观察性。
+- `node_agent.py`：获取可执行 capabilities 后先由统一策略过滤，`supervisor-required` 下训练/转换不进入 `reported_capabilities`；相应 `NodeAgentExecutorLoop` 不创建 TRAINING 和 MODEL_CONVERSION Runner，也不会根据已过滤的能力分配 DEPLOYMENT_TEST。其他非上述计算启动链路的 cleaning、material-import、model-upload 等能力仍按既有规则判定。doctor 的 executor 诊断增加 `execution_boundary_mode`。
+- `platform_core/node_agent_training_runtime.py` / `node_agent_conversion_runtime.py` / `node_agent_deployment_runtime.py`：在远程训练/转换各自 `begin_process_launch(lease)` **之前**，以及部署复核的 `launch_process()` **之前**追加严格入口保护；启用强制 Supervisor 模式而尚未实现真正保护进程句柄时，抛出 `RemoteExecutionFenced`，不能直接 Popen，也不会把可能存在的进程臆断为已停止。异常配置同样拒绝。
+- `tests/unit/test_node_agent_supervisor_gate.py`：少量必要回归，包括 legacy 默认不变、required 隐藏训练/转换/部署复核计算能力、非法值 fail-closed、三个真实 Runner 保护点位次序、原入口能力过滤与 doctor 可观察性。
 - `.github/workflows/node-agent-executor.yml`：复用已有 Node Agent 全套回归 CI，增加新配置和入口保护检查。**只复用已有 CI，不再增设独立的数十轮 CPU PoC**。
 
 **当前提交 SHA 按 GitHub 分支实际提交记录校验；准确代码/工作流初次验收 run**：
@@ -67,3 +67,11 @@ python3 tools/audit_gpu_node_access.py --read-only --unit <actual-node-agent.ser
 5. 再做 StopReceipt 独立公钥信任/挑战防重放和中央默认 OFF 恢复 API；不重新实现现有 `tasks.attempt` 或调度队列。
 
 **重要安全限制**：现在的 `supervisor-required` 只保护不安全的直接启动路径，**尚不能运行受保护的训练任务，也不能签发生产可信 StopReceipt**。保留 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、GPU reservation 以及自动派单 OFF；任何上线、systemd 配置变更、真实任务迁移、生产权限审计/设备操作均先获得明确授权。
+
+### 2.3 2026-11-15 精准审计补充：DEPLOYMENT_TEST 也可启动计算
+
+在训练/转换防护后，额外只读核查 `platform_core/node_agent_deployment_runtime.py`，发现 **Ultralytics/Paddle/RKNN 模型复核同样使用 `launch_process(command, env={**os.environ,...})`**，部分模型可能使用 CUDA/板端推理 SDK。若只禁止训练/转换而不管部署复核，将留下未经 Supervisor 约束的另一条计算启动链路。因此已将 `deployment-test`、`deployment-test.rknn` 加入同一能力过滤，并在其唯一直接启动点加上相同 fail-closed 阻断；**legacy 默认完全不变**。
+
+此举意味着未来真正部署 `supervisor-required` 前，不只是训练和转换需要新的受控 launcher，还必须覆盖模型复核。不能把功能无声下线后宣称“Supervisor 已上线”。新增保护仅在该配置被显式设置时生效。
+
+**精确 CI 说明**：本轮修改 `node_agent.py` 及三类 Runner 后 GitHub 会触发广泛的仓库工作流，但只将 [Node Agent Executor](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 的 Ubuntu / Windows / API 回归作为本功能主要证据，该准确源码 SHA 为 `c66ef5678c9dd86cd681c67a1623baacc5217e3d`；更新本节时仍排队，不能宣称已验收通过。由于仓库 push 会触发大量 unrelated 工作流，后续应**合并小改动再提交、控制重复 CI、只对失败项定向处理**，避免无效反复压测。
