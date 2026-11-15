@@ -262,3 +262,36 @@ python tools/poc/linux_cgroup_poc.py --run --isolated-test-host
 3. 不能只根据 Agent 上报字符串信任停机；将来必须设计中心下发的一次性 challenge、Node 授权、持久 OS 证据和中央 SQLite `BEGIN IMMEDIATE` 事务原子释放租约/预留。
 4. GPU SDK、DataLoader 多进程、CUDA 资源和 A800/4070 两物理节点的真实 UAT 尚未进行；**不得擅自拿生产训练任务做实验**。Windows Job Object 需要另行验证。
 5. 在此之前 `REMOTE_AGENT_STOP_UNVERIFIED` 保持 HOLD、自动派单 OFF、生产 **NO-GO**；不触碰真实任务/数据库/OSS/模型，也不把 PoC 接入现有 Runner。
+
+## 12. 2026-11-15 10:09+08｜CPU 多层子孙及独立进程会话的真实反证实验
+
+> 本节承接第 11 节的成功 `populated=0` 事件监听，验证“仅 kill 启动器/进程组无法清理所有计算后代”这一边界。实验仍局限 **GitHub-hosted Ubuntu 22.04 临时 VM**，不使用生产 A800、4070、GPU、SSH、OSS 或平台任务。
+
+### 12.1 已执行：三层进程树、跨 session，仍可由 unit cgroup 整组停止
+
+- 在 `tools/poc/linux_cgroup_poc.py` 的临时 systemd user service 内创建 **`service main -> child -> grandchild`**。child 和 grandchild 分别通过 `start_new_session=True` 创建独立的 session。单靠对其中一个进程组 `killpg` 无法被本实验接受为全组停止证明。
+- 在 service 启动阶段真实验证：`/proc/<pid>/stat` 的 parent PID、PID + start_ticks、`os.getsid(pid)==pid`，且 **三者均位于首次观测的同一原始 cgroup**。若任一不符直接 `BOUNDARY_IDENTITY_UNKNOWN_HOLD`，不继续推断。
+- 独立启动器（stand-in Agent）遭 SIGKILL 后，要求 child 和 grandchild 都仍以原 start_ticks 存活且仍位于原 cgroup，才允许发出 `systemctl --user stop`。
+- 停机时沿用此前已验证的 `Id / ControlGroup / InvocationID` 三重原 unit 实例检查，`cgroup.events` 的 FD 在停机前注册 `poll(POLLPRI|POLLERR)`；本地 PoC 的 PASS 同时需要**监听到真实 `populated=0`**和三者 **PID+start_ticks 均不再执行**。
+- **真实 PASS #1**：[GitHub Actions run 43666636076](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666636076)，精确代码 SHA `29ea40de32e2540e1433509007254445149a0c06`，Ubuntu 22.04 临时 VM，合同 `19/19 passed`、kernel Job SUCCESS；日志 `membership_verified=true`、`three_process_sessions_bound=true`、`launcher_sigkill=true`、`both_descendants_survived_launcher=true`、`systemd_stop_returncode=0`、`known_processes_stopped=true`、`cgroup_empty_verified=true`、`LOCAL_CGROUP_POC_PASS_NOT_CENTRAL_STOP_PROOF`。
+- **真实 PASS #2**：[GitHub Actions run 43666680688](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666680688)，精确代码 SHA `2ff6242543e69dededbcb2eaf4ea6112256d9380`，同样 `19/19 passed`、kernel Job SUCCESS、两位后代存活和全部退出、原 cgroup 确认空组。
+- 因此 **三层 CPU 多 session 子孙停机**的实际 Linux kernel PoC 已通过两轮；但仍**未覆盖未知后代迁移、不同 PID namespace、超时/OOM、GPU SDK，也不是能被中央调度信任的恢复证明**。
+
+### 12.2 新增 fail-closed 负面合同与最新 CI
+
+- 最后进一步加固 `CgroupEventObserver`：一旦 `populated=0` 之后又收到 `populated=1`，历史曾经见到过空组也**不再算作当前空组成功**；未知值仍 UNKNOWN/HOLD。
+- 新增 `nested_child_script()`，使生成的子进程脚本可以直接通过 `compile(..., 'exec')` 做静态合同检查，避免 Python 子进程的换行字符串配置错误。
+- `descendant_tree_bound` 加入真实 parent PID、session ID、start_ticks、三进程 cgroup membership 校验。新增五类便携负面合同：Python 子进程源码语法；伪造父子关系；进程 session 不独立 / PID 重用 / 脱离 cgroup；缺少合法孙进程身份字段；空组后重新 `populated=1` 不可继续返回成功。
+- 对应代码提交：`4053dcb3a37ac758e0bcb10e5d08b5a037d86226`（多层进程）、`29ea40de32e2540e1433509007254445149a0c06`（修正子进程源码换行）、`2ff6242543e69dededbcb2eaf4ea6112256d9380`（可测试的源码 helper 与拒绝 repopulation），`4216be9ce011cf617e3af5ca741537386fef621e`（补充到 **24 项便携合同**）。
+- 最新精确代码 SHA `4216be9ce011cf617e3af5ca741537386fef621e` 对应 [run 43666716976](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43666716976) 在本节编写时仍 **queued**，不可借用前两个 SHA 的 SUCCESS 断言最新 24 项已通过；必须取得同一 SHA 的 24/24 及真实内核终态才可最终验收。
+
+### 12.3 与其他 CI 红灯必须区分
+
+- 之前精确 SHA `218d6c4736f387d20529e48421af22cb4c3eabca`，CPU kernel run `43662765705` **19/19 成功、内核 PASS**；其全仓有 `Remote Material Import` cancelled 和**前端 Annotorious** 的独立浏览器失败，不能误称为 Agent/cgroup 失败。
+- 前端独立失败证据：`browser-navigation (1)` [run 43662765671](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43662765671)，`tests/browser/annotorious-poc.spec.mjs:48` 的 `createAnnotation` 事件 5 秒内仍是 0；已在 Issue #27 留痕，不为本项修改前端或放宽断言。
+
+### 12.4 仍然不允许做的事
+
+- 不修改真实 `NodeAgent`/Training Runner/Conversion Runner、不启用自动派单、不解除 `REMOTE_AGENT_STOP_UNVERIFIED`，不释放原 GPU reservation、owner、generation。
+- 仅经过 GitHub VM 的 CPU 模拟，**不能宣告 GPU 与中央恢复准入**，也不允许把 `stop_proof_verified=false` 改成 true。
+- 下一轮根据 24 合同真实结果决定是否补充执行 generation/boot_id 的严格绑定和未登记后代迁移的负面试验；此时仍**生产 NO-GO**，不得触及 A800 或双 4070。
