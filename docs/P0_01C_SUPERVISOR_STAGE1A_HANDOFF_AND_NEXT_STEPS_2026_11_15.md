@@ -4,7 +4,7 @@
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
 **历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
-**当前优先状态（2026-11-15）**：**阶段 2C-1 已完成；阶段 2C-2 代码提交 `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 正等待同 SHA CI**。以下旧阶段标题为历史审计轨迹，以末尾第 16 节及新的 2C-2 专项文档为最新接续依据。**生产 A800/双4070 未接入，本阶段仍 NO-GO。**
+**当前优先状态（2026-11-15）**：**阶段 2C-1 已完成；阶段 2C-2 功能提交 `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 的 Node Agent Ubuntu/Windows/API、真实 Linux CPU E2E 和 Portable Deployment 核心验收 GREEN；整个仓库仍需按前端失败 Job 的定向重跑终态另行判定**。以下旧阶段标题为历史审计轨迹，以末尾第 16 节及新的 2C-2 专项文档为最新接续依据。**生产 A800/双4070 未接入，本阶段仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
@@ -353,7 +353,8 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 实际变更：仅固定 CPU 测试后端采用 systemd `ExitType=cgroup`、`RemainAfterExit=yes`、`Restart=no`，核查同一 InvocationID、原 ExecMainPID、终态及退出码；`ExecutionJournal` 原子记录不可覆写的 CPU-only 终态；`SupervisorService.inspect` 在证据完全满足时才报告 `EXITED`，否则继续 `UNKNOWN/HOLD`。
 - **这不是可信 StopReceipt**：CPU-only 终态报告始终 `trusted_stop_receipt_available=false`，不触发中央重新派单、不释放 GPU reservation、不迁移任何正式转换/训练/复核 Runner。
 - CPU-only 测试配置使用 systemd `ExitType=cgroup`（依赖 systemd 250+）；GitHub 24.04 的验证不能自动外推到 A800/4070 Ubuntu 22.04 systemd 环境，禁止以此提交部署生产或启用 `supervisor-required`。
-- **当前验收状态：新增提交的同 SHA Node Agent Ubuntu/Windows/API、真实 Linux systemd 自然完成 E2E、Portable Deployment 尚待最终实际核对。** 首轮 `6511cba9` 有旧 FakeSystemd 缺少新属性的单测 RED；补充测试提交 `f121d9bd` 后以其准确 CI 作为下一次核验对象，不能提前标记通过。
+- **2C-2 核心验收：GREEN（准确代码 SHA `f121d9bd`）。** Node Agent [run 43706279911](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706279911)：Ubuntu 主合同 563 passed/2 skipped，Linux SIGKILL 2 passed、cgroup 31 passed、真 systemd 生命周期 3 passed；Windows 主合同 560 passed/5 skipped、可移植 cgroup 30 passed/1 skipped；API 24 passed。Portable Deployment [run 43706279826](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706279826)：Ubuntu/Windows/API 3 Job 成功。首轮 `6511cba9` 缺少测试模拟属性导致 RED，已由 `f121d9bd` 修正，**不将旧 RED 归因为系统级启动失败**。
+- **仓库级验收不能误报全绿**：同 SHA Frontend Runtime Stabilization [run 43706274712](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706274712) 首轮 browser-navigation (1) 发生历史 Annotorious `createAnnotation` 5 秒超时，分片 130/131 PASS；其它 3 个前端 Job 均成功。已提交该失败 Job 的针对性重跑请求，最终是否通过必须再次核实，不能修改 Supervisor 逻辑替前端修绿。
 - 下一步：如 CI 失败，先按原始日志定点修复；全部满足后记录真实 Job 终态，再单独研究 `STARTING` 崩溃窗口和更强 OS 退出/停机证明、密钥分发及一个非 GPU 真实模型转换 Runner 灰度适配。
 
 完整实施细节：[`P0_01C_SUPERVISOR_STAGE2C2_CPU_TERMINAL_2026_11_15.md`](P0_01C_SUPERVISOR_STAGE2C2_CPU_TERMINAL_2026_11_15.md)。

@@ -19,7 +19,7 @@
 
 - 前一完成的 2C-1 代码 SHA：`40bc388adc05ba3be05a7b986c0c89b1e3d0e423`，历史 23/23 workflows SUCCESS。
 - 本轮首次功能 SHA：`6511cba9ca4e9d8a5f4ab5c2fa371ac04d6ce35f`，旧 FakeSystemd 缺新属性导致部分新约束单测 RED；不是 OS 真实启停验收结果。
-- 修正单元测试 fake 的提交：`f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b`。**新的同 SHA Node Agent、Portable Deployment 与真实 Ubuntu systemd E2E 目前待最终运行结果核实；不能写“2C-2 已验收”。**
+- 修正单元测试 fake 的提交：`f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b`。该 SHA [Node Agent Executor 43706279911](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706279911) Ubuntu/Windows/API 三 Job 完成 SUCCESS；Ubuntu 563 passed/2 skipped + 2 POSIX + 31 cgroup + 3 项**真实系统级 systemd E2E PASS**，Windows 560 passed/5 skipped + 30 cgroup/1 skipped，API 24 PASS。同 SHA [Portable Deployment 43706279826](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706279826) Ubuntu/Windows/API 全成功。**2C-2 核心 CPU-only 代码和 CI 正式 GREEN；不代表 GPU 可信停机、真实 Runner 或仓库所有工作流已绿。**
 
 ## 4. 必须保留的剩余风险
 
@@ -30,4 +30,9 @@
 
 ## 5. 下一动作
 
-先等同 SHA GitHub Actions **实际终态**；出现 RED 则在原文件精准修复并保留测试；同 SHA Ubuntu/Windows/API 和 Linux systemd E2E 全绿后才更新本文结论。随后继续异常恢复窗口、信任材料管理及首个非 GPU 转换 Runner 隔离适配，不能先改生产执行开关。
+2C-2 核心 Node Agent 和 Portable Deployment 已按准确 SHA 验收通过；下一步优先核实独立前端失败 Job 的定向重跑终态，之后再审核 STARTING 崩溃窗口与实际 Runner 适配。随后继续异常恢复窗口、信任材料管理及首个非 GPU 转换 Runner 隔离适配，不能先改生产执行开关。
+
+
+## 6. 仓库级 CI 非核心失败单独追踪
+
+准确功能 SHA `f121d9bdee6f2fc3b5e918dc73bc6a15a3f5bc3b` 的 [Frontend Runtime Stabilization run 43706274712](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43706274712) 初次完成结果包含 **browser-navigation (1) FAILED**，根因为已在历史前端分支复现的 `tests/browser/annotorious-poc.spec.mjs:42` 创建 `createAnnotation` 事件等待 5 秒超时；该分片 130 个浏览器用例通过、1 个失败。该测试不调用本轮 Supervisor 的 CPU 执行逻辑。本轮没有为此修改 Annotorious 或前端测试，已在同 SHA 的失败 Job 上发起一次定向 rerun。**重跑仍需以 GitHub 最终状态为准，不预判 GREEN。**
