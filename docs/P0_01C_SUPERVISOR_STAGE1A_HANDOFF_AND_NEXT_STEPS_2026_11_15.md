@@ -222,3 +222,11 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 **前端**：阶段 1B-2B 不改现有页面。正式 Runner 灰度时只在现有 `static/modules/service-node-runtime.js` 节点卡片与任务详情新增只读 `Supervisor 状态/执行模式/证据待验证`；不提前新增强制重派/停止证明绕过/释放 GPU 操作。
 
 **生产边界**：A800 / 双4070 未连接；默认 `legacy`、自动派单 OFF，原 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD 和 GPU reservation 保持；生产 **NO-GO**。
+
+### 12.1 阶段 1B-2B 定点 RED/GREEN 与真实 CI 验收结论（同日）
+
+- 首次功能提交 [`1fe3f71f6a0002db422cc026cc7a4b0e999fdbde`](https://github.com/jorsamj/aixunlianpingtai/commit/1fe3f71f6a0002db422cc026cc7a4b0e999fdbde) 的 [Node Agent 43690842053](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43690842053) Ubuntu 新合同 **534 passed / 2 skipped / 1 failed**：`test_trusted_control_signer_file_requires_private_mode_and_no_symlink` 本来已拒绝权限错误，但由于 `GrantRejected` 继承 `PermissionError` / `OSError`，被通用 `except OSError` 再包装成 `SUPERVISOR_KEY_UNAVAILABLE_HOLD`，丢失专门的 `FILE_UNTRUSTED` 错误码。没有错误放行权限。只在 `platform_core/os_supervisor_trust.py` 增加 `except GrantRejected: raise`，后续 OS 异常仍按通用 HOLD，绝不改安全判定。
+- 精确修复 SHA [`fe0c791fb0db447648db309d590014dc1098553b`](https://github.com/jorsamj/aixunlianpingtai/commit/fe0c791fb0db447648db309d590014dc1098553b)；[Node Agent Executor run 43691027462](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691027462) **completed/success**，三个 Job 全部成功：Ubuntu **535 passed / 2 skipped**（POSIX SIGKILL **2 passed**，Linux cgroup **31 passed**），Windows **532 passed / 5 skipped**（便携 cgroup **30 passed / 1 skipped**），API **SUCCESS**。
+- 初次功能提交的 [Portable Deployment run 43690842045](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43690842045) 三 Job **completed/success**，确认中央路由延迟导入加密依赖后旧可移植部署路径不回归。修复 SHA 的 [Portable Deployment 43691032313](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43691032313) 在本节写入时尚未整体 completed，不能把全部仓库工作流标记为成功。
+- **阶段 1B-2B 仅“隔离 CPU-only HTTP→Socket→durable intent 基础链路 + 核心 CI”GREEN**。这不代表生产根公钥/私钥部署、密钥轮换、真正 systemd/cgroup 执行、崩溃重接管、可信停止证明或中央自动恢复通过。后续阶段 2 的真实固定 CPU worker 应在 GitHub/其他获准隔离 Linux 环境实施一次功能 E2E；不需要 A800/4070，但绝不把普通权限 PoC 当硬件 GPU 安全证明。
+- 最小未解决的安全/运维项：正式 key provisioning / rotation 和 root-owned unit 运行审计；短期 challenge journal 的容量/清理界限；systemd unit 不可被普通 Agent 创建或越权停止；服务重启后原 OS identity 与持久 handle 绑定；确认停止的后代进程及 fail-closed STOP。全部满足并得到用户授权前，中央 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、默认 `legacy`、生产 NO-GO 不变。无真实 Worker 任务被启动。
