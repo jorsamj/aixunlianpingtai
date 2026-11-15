@@ -21,6 +21,11 @@ from platform_core.node_agent_executor_runtime import (
     AgentExecutionWorkdir,
     NodeExecutorClient,
 )
+from platform_core.node_agent_supervisor_gate import (
+    REQUIRED as SUPERVISOR_REQUIRED,
+    SupervisorExecutionBoundaryInvalid,
+    execution_boundary_mode,
+)
 from platform_core.node_agent_runtime import (
     build_heartbeat_payload,
     collect_local_snapshot,
@@ -254,7 +259,20 @@ def main(argv=None) -> int:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
+    try:
+        boundary_mode = execution_boundary_mode()
+    except SupervisorExecutionBoundaryInvalid as error:
+        print(str(error), file=sys.stderr)
+        return 2
     reported_capabilities = executable_agent_capabilities(requested_capabilities)
+    if boundary_mode == SUPERVISOR_REQUIRED:
+        # A protected launcher/handle adapter has not been installed yet.
+        # Do not advertise remote training/conversion tasks that this Agent
+        # cannot safely execute; other remote capabilities remain unchanged.
+        reported_capabilities = [
+            capability for capability in reported_capabilities
+            if capability not in {"training", "conversion", "conversion.rknn"}
+        ]
     if "model-upload" in reported_capabilities:
         from platform_core.node_agent_model_install_runtime import AgentModelInstallRunner
         install_dir = str(args.mother_model_install_dir or "").strip()
@@ -321,6 +339,7 @@ def main(argv=None) -> int:
             },
             "executor": {
                 "enabled": bool(reported_capabilities),
+                "execution_boundary_mode": boundary_mode,
                 "supported_task_kinds": sorted(
                     kind
                     for kind in SUPPORTED_AGENT_TASK_KINDS
