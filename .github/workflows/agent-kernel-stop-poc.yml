@@ -8,6 +8,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - '.github/workflows/agent-kernel-stop-poc.yml'
+      - 'tools/poc/linux_cgroup_probe.py'
+      - 'tools/poc/linux_cgroup_poc.py'
+      - 'tests/unit/test_linux_cgroup_poc_contract.py'
 permissions:
   contents: read
 concurrency:
@@ -20,6 +23,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Portable cgroup contract checks (not stop proof)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check pytest
+          python3 -m pytest -q --confcutdir=tests/unit tests/unit/test_linux_cgroup_poc_contract.py
       - name: Check Ubuntu 22.04 and non-root VM prerequisites
         shell: bash
         run: |
