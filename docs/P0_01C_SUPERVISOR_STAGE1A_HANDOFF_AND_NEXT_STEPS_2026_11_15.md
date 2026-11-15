@@ -149,3 +149,17 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 仅修改 `.github/workflows/node-agent-executor.yml`：把旧赋值文本的静态守卫替换为实际入口 `reported_capabilities = allowed_remote_capabilities(`；已有 `test_node_agent_supervisor_gate.py` 保留默认 `legacy`、受保护能力过滤、拒绝非法配置和三 Runner 直启阻断等行为回归，不删除守卫。
 - 未改 `os_supervisor_protocol.py` 的正确 `start` 空 payload 拒绝行为；未改正式 Runner、中央任务代数/租约、GPU reservation、生产服务和配置。
 - **验收状态：新提交及其 Node Agent Executor Ubuntu/Windows/API CI 待实际终态复核，不提前宣称 1A GREEN，更不得启用中央自动恢复。** 生产依旧 `legacy`、HOLD、自动派单 OFF、NO-GO。
+
+## 9. 2026-11-15｜阶段 1A 正式验收结论
+
+代码 SHA [`1a1eb411144104ddc0464bfe0b133ce3ae5b77e4`](https://github.com/jorsamj/aixunlianpingtai/commit/1a1eb411144104ddc0464bfe0b133ce3ae5b77e4) 的 [Node Agent Executor run 43687654179](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43687654179) 已取得 `completed/success`：Ubuntu、Windows、API 三个 Job 均 `SUCCESS`。此前 Linux-only `os.getsid` Windows 崩溃及旧 Agent capabilities grep 两项已消除。**阶段 1A 代码/跨平台 CI 正式通过；仅授权继续开发阶段 1B，不代表生产可用。**
+
+## 10. 阶段 1B-1｜受限授权校验与本地执行意图 journal（提交后待 CI）
+
+**本次开发边界**：新增 `platform_core/os_supervisor_authorization.py`、`platform_core/os_supervisor_journal.py`、`tests/unit/test_os_supervisor_phase1b.py`；把新的语法检查和单元合同接入原 `node-agent-executor.yml`，不创建重复 workflow，不动正式 Node Agent/训练/转换/边缘复核 Runner，也不改变旧 Supervisor Socket `start` 的禁止运行语义。
+
+- **授权验证仅供正式 Supervisor 后续集成**：Ed25519 固定签名算法、域隔离、严格 schema、90 秒内有效期；绑定 `task_id`、原中央 `tasks.attempt`（字段 `task_attempt`）、`worker_id` / `node_id`、执行 lease SHA-256、`boot_id`、本地挑战与固定 CPU profile。当前只允许 `gpu_uuid=CPU_ONLY`、`runner_profile=fixed-cpu-v1`；其它 GPU/任意执行内容全部 HOLD。**中央的真实任务租约原子校验及可信签发 API 尚未接入**；测试签名不能冒充中央授权。
+- **本机持久执行意图**：独立 SQLite FULL-sync（非中央任务数据库），按 `task_id + task_attempt` 唯一持久登记 `handle_id` / grant digest / challenge / boot / 预留 systemd unit / event_seq；对相同有效 grant 的重复请求及响应丢失返回同一 handle，对不同 grant 的同代请求拒绝。root 模式只允许 `/var/lib/changlian-os-supervisor/executions.sqlite3`、root 私有目录/文件；隔离测试有显式 test-only 路径。查询在 OS identity 未核验前始终为 `UNKNOWN`，不得视为 EXITED。
+- **阶段 1B-1 不等于 1B 完成**：尚未接入中央真实签发/原 lease 存活校验、公钥安全分发与吊销、独立 Socket 的授权流、真实 systemd 进程启动及崩溃恢复；这些仍按既定门槛逐项实施。只有中央授信和 journal 协作真实接通并验证后才能进入阶段 2 CPU worker。
+- **验收闸口**：本次阶段 1B-1 新 SHA 的 Ubuntu/Windows/API 必须独立核验；CI pending 不宣称 GREEN；未来多实例并发和 journal 文件完整性按真实代码再核查，不用重复旧 CPU PoC。
+- **生产约束不变**：`legacy` 默认、`supervisor-required` 不对生产启用；`REMOTE_AGENT_STOP_UNVERIFIED` HOLD、自动派单 OFF、生产 NO-GO。A800/双4070 未访问、未部署、未重启。
