@@ -4,7 +4,7 @@
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
 **历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
-**当前优先状态（2026-11-15）**：**2C-2、2C-3 和 2D-1 各自代码已通过对应 23/23 CI**；2D-2A 功能 `bc67fb2a` 的 Node Agent 核心验证 GREEN、全仓 22/23（此前 Annotorious 前端单 Job RED，已定向重跑，结果另行核实）。**当前开发：2D-2B1 功能 `c865fbdb457221444c643a377272a85ae45b668f` 已在独立 GitHub Ubuntu 真实 root/systemd 单元运行并通过新增的受保护 ONNX 输入测试，准确 SHA 全仓 CI 仍需核对**。最新进度以末尾第 21 节及 2D-2B1 专项文档为准。**生产 A800/双4070 未接入，中央授权、正式 Runner、可信 StopReceipt、自动恢复仍 NO-GO。**
+**当前优先状态（2026-11-15）**：**2C-2、2C-3、2D-1 和 2D-2A 各自代码 SHA 均已达到全仓 23/23 CI SUCCESS**（2D-2A `bc67fb2a` 的 Annotorious Job 重跑 attempt 2 成功）。**当前开发：2D-2B1 首版 `c865fbdb` 在真实 Ubuntu root/systemd E2E 成功；Windows 合同发现 `ReadOnlyPaths` 被 Windows Path 格式化，已在准确修复 SHA `5ff0d81ed7e0c6c7e3247fc0f7707738548bbb74` 固定 POSIX 路径，仍须以新 SHA 的 CI 完整终态验收**。最新进度以末尾第 21 节及 2D-2B1 专项文档为准。**生产 A800/双4070 未接入，中央授权、正式 Runner、可信 StopReceipt、自动恢复仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
@@ -437,3 +437,9 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - [Node Agent push CI 43716594457](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43716594457) Ubuntu 已确认新真实 OS E2E 成功；**准确 SHA 23 项仓库工作流仍按最终终态验收**。此前 2D-2A 前端失败 Job 重跑状态另行跟踪。
 - 完整限制/测试/后续见 [`P0_01C_2D2B1_ROOT_OWNED_ONNX_SYSTEMD_PILOT_2026_11_15.md`](P0_01C_2D2B1_ROOT_OWNED_ONNX_SYSTEMD_PILOT_2026_11_15.md)。
 
+
+### 21.1 2D-2B1 真实 OS E2E 成功、Windows 合同修正（2026-11-15）
+
+- 2D-2A 正式收尾：代码 SHA `bc67fb2a28692b56078348567599bc8cc8bdfc38` 全仓 **23/23 SUCCESS**。此前 [Frontend Runtime Stabilization 43714754146](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43714754146) 的 `annotorious-poc.spec.mjs:42` 超时在失败 Job 的 attempt **2** 定向重跑后成功，不需前端业务改动。
+- 2D-2B1 初版 `c865fbdb457221444c643a377272a85ae45b668f` [Node Agent push 43716594457](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43716594457) Ubuntu：主合同、受限真 ONNX CPU test、**真实 root-owned 动态 UID systemd 新增 E2E** 与此前真实 systemd E2E 均成功；Windows 单测因 `Path('/run')` 按 Windows 格式生成了反斜杠 `ReadOnlyPaths` 参数，导致断言 RED。
+- 修正代码 [`5ff0d81ed7e0c6c7e3247fc0f7707738548bbb74`](https://github.com/jorsamj/aixunlianpingtai/commit/5ff0d81ed7e0c6c7e3247fc0f7707738548bbb74)：该固定 Linux profile 的 systemd `ReadOnlyPaths` 现在始终输出严格 POSIX `/run/...`，不依赖测试执行平台的 `Path` 分隔符；本轮不修改 root、systemd、权限、业务启动或签名合同。**准确新 SHA 的 CI 待结束，不能提前全绿。**

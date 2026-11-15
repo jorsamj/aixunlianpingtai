@@ -2,7 +2,7 @@
 
 日期：2026-11-15（Asia/Singapore）  
 唯一长期开发分支：`feature/external-algorithm-publishing`  
-准确代码 SHA：`c865fbdb457221444c643a377272a85ae45b668f`  
+首版功能 SHA：`c865fbdb457221444c643a377272a85ae45b668f`；当前修复代码 SHA：`5ff0d81ed7e0c6c7e3247fc0f7707738548bbb74`  
 状态：**隔离 CI 的 root/systemd 功能验证已通过；准确 SHA 全仓 CI 待终态；生产继续 NO-GO**
 
 ## 1. 背景与为什么不直接改正式 Runner
@@ -39,3 +39,9 @@
 4. 必须真正验证 cgroup 后代、失联、异常、短时授权过期、GPU 设备隔离、OOM、产物 SHA256 和原对象存储上传 CAS 语义；证据不足仍 `UNKNOWN/HOLD`，StopReceipt 禁止开放。
 5. 正式接线与 Ubuntu 22.04 兼容性必须各自独立准入；**未经授权不部署 A800/双4070，不触碰生产文件、数据库或服务**。
 
+
+## 5. 真实 CI 初版 RED 与定点修复
+
+- 初版 `c865fbdb` 在真实 Ubuntu 24.04 root/systemd 的新增 **root-owned ONNX model + DynamicUser** 测试已成功；文件非特权修改拒绝、systemd unit 原日志/identity/自然终态均验证。Windows `tests/unit/test_os_supervisor_onnx_cpu_systemd_pilot.py::test_fixed_root_owned_cpu_systemd_only` 失败，原因为 `build_fixed_onnx_cpu_argv` 内 Linux 路径被 Windows 的 `pathlib.Path` 重新格式化成 Windows 分隔符；没有修改生产业务代码，没有错误开放 GPU/任务执行权限。
+- [`5ff0d81ed7e0c6c7e3247fc0f7707738548bbb74`](https://github.com/jorsamj/aixunlianpingtai/commit/5ff0d81ed7e0c6c7e3247fc0f7707738548bbb74) 将 `ReadOnlyPaths` 的 systemd 单元值固定为 POSIX `/run/changlian-os-onnx-pilot-<handle>`，保留单元测试和真 systemd E2E。**需要新的同 SHA Node Agent Windows、Ubuntu 和所有工作流最终 CI，不能把初版 Windows RED 忽略。**
+- 上一阶段 2D-2A 功能 SHA `bc67fb2a` 23/23 CI **已最终全绿**（Annotorious 前端失败 Job 定向重跑在 attempt 2 成功）。
