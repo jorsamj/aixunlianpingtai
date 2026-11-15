@@ -388,3 +388,13 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - **精准防护提交**：`228c9f3092a66699b7d9210e8420858de4beed1b`，启动 CPU-only 后端前通过 `systemctl show -p Version` 读取**运行中管理器**；不兼容或版本未知就拒绝启动，不降级退出证据。**新 SHA CI 待终态，不预告成功。**
 - **真实 Runner 审计**：`node_agent_conversion_runtime.py` 仍使用 Popen、租约监控、文件日志、产物 manifest、对象存储 SHA256 上传和中央 CAS finish；当前 Supervisor 只执行固定 CPU 测试脚本，`supervisor-required` 仅会阻断旧执行，没有可用的正式转换新链路，不能直接接入。
 - 本轮未改 A800/双4070、正式 Runner、中央所有权/租约、GPU reservation、自动恢复或前端。完整报告：[`P0_01C_SUPERVISOR_SYSTEMD249_AND_CONVERSION_RUNNER_AUDIT_2026_11_15.md`](P0_01C_SUPERVISOR_SYSTEMD249_AND_CONVERSION_RUNNER_AUDIT_2026_11_15.md)。
+
+## 19. P0-01C 阶段 2D-1｜真实已有 ONNX 的 CPU 校验切片（2026-11-15）
+
+- 上轮兼容修复准确 SHA `228c9f3092a66699b7d9210e8420858de4beed1b` 经重新核实 **23/23 workflows SUCCESS**，此前“前端仍在运行”仅为历史检查时点，不是最终状态。
+- 本轮代码提交 [`16397cc04566f0570f796fee7b1129d2ae771238`](https://github.com/jorsamj/aixunlianpingtai/commit/16397cc04566f0570f796fee7b1129d2ae771238)：新建 **ONNX 已有原文件** CPU-only 准入 preflight，严格限制任务类型、参数、存储哈希及源文件工作区，明确不得发起正式进程、提交任务终态或授予 StopReceipt。
+- 新增隔离真实业务 E2E，使用真实 ONNX identity 图运行原 `deployment_worker.py --job-dir`，验证 `onnxruntime` CPUExecutionProvider、生成 ONNX 产物和 runtime_verified manifest。**不是 Supervisor 发起的真实转换**，也不是生产训练/模型转换任务；仍缺可信 OS 边界与中央 lease 纵向接线。
+- 本提交准确 SHA GitHub Actions 正在执行，暂不宣称通过。任何红灯首先定点定位，不能通过跳过真实 ONNX 来伪造通过率。
+- 当前 A800 / 双4070 / Node Agent 转换 Runner 的默认 `legacy` 未修改，`supervisor-required` 仍阻断正式计算；中央恢复、GPU reservation 与远程 StopReceipt 继续 HOLD。
+- 专项细节见 [`P0_01C_2D1_REAL_ONNX_CPU_PILOT_2026_11_15.md`](P0_01C_2D1_REAL_ONNX_CPU_PILOT_2026_11_15.md)。
+
