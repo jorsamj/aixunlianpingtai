@@ -48,7 +48,7 @@
 | Run | 所对应提交 | 本次核查 | 处理 |
 |---|---|---|---|
 | [43679203190](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679203190) | `c95caed83033042b97603b410dd45970abd75f8a` | **completed / failure**。Ubuntu contract 成功；Windows contract 和 Linux API guard 失败 | **已有原始日志，原因如下** |
-| [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) | `c66ef5678c9dd86cd681c67a1623baacc5217e3d` | Ubuntu/Windows/API 均 **queued**，尚无结果 | 下轮重新读取，不能预判 |
+| [43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) | `c66ef5678c9dd86cd681c67a1623baacc5217e3d` | **completed / failure**：Ubuntu contract 成功；Windows contract、API guard 失败 | 已读取原始 Job 日志；与 43679203190 相同两类已定位问题 |
 | [43684001227](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227) | `2ab61ce6fe6d6c8a09e5fc8d9723672d92c5f5f8` | **阶段 1A 对应最新功能 CI，三项 Job 均 queued** | 优先确认该准确 SHA 的全部状态；不得引用其它 SHA 的通过代替 |
 
 请注意：上述是**2026-11-15 本次只读核查时间点**的状态，新会话必须再次查看最新 HEAD、最近 CI 和确切 SHA。
@@ -130,3 +130,14 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - [Node Agent CI 阶段 1A](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43684001227)
 
 **本文件是新会话的优先上下文。其他历史报告仅作为原始证据，不能覆盖本文件记录的 CI 和生产 NO-GO 条件。**
+
+### 3.4 交接提交后的 CI 状态更新（同日补充）
+
+在写入初版交接文档后，GitHub [run 43679484571](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43679484571) 从 queued 变为 **completed/failure**。原始日志已再次核对：
+
+- `contract (ubuntu-24.04)`：**success**；
+- `contract (windows-latest)`：主体单测 **473 passed、2 skipped**，随后 Linux cgroup PoC 专项 **30 passed、1 failed**，仍是 `tests/unit/test_linux_cgroup_poc_contract.py:226` 的 `os.getsid` 在 Windows 不存在；
+- `api`：API 测试 **24 passed**，随后 `Permanent Agent executor guards` 因旧的 `reported_capabilities = executable_agent_capabilities(requested_capabilities)` grep 文本不再存在而退出 1；
+- 最新阶段 1A run `43684001227` **在本次补充核查时仍 queued**，尚无权认定其通过。
+
+**因此 Windows/API 的旧问题已至少跨两个不同 SHA 重复存在；阶段 1A 的 start 拒绝协议/测试不一致也是当前源码可直接验证的问题。新会话应先修复这些实际问题，再推新功能。** 不需再重复做 cgroup CPU PoC 研究。
