@@ -77,3 +77,10 @@
 - 2D-2D1 只读适配合同与输入 SHA256 预检已开发并在功能代码 SHA `aaaf108fccfc9a6cfd257e7bac98aaa02f029f41` 通过本 SHA 触发的 **22/22 CI 全绿**，含 Node Agent Windows/Ubuntu/API、真实系统 CPU+ORT 以及全部三组 Chrome。
 - 本轮另由 Playwright 真 trace 定位并修复 Annotation first-history 空栈异常，已添加 100ms 快速首画真实浏览器回归，vendor patch 精确 SHA 与许可证保留，未修改 GT/审核 API。详见 `P0_01C_2D2D1_SUPERVISED_CONVERSION_READONLY_ADAPTER_2026_11_15.md`。
 - **继续准入 2D-2D2 的隔离开发与测试，不准入生产启用。** 仍缺真实 CPU 转换执行命令信任边界、OS handle durable/reconnect、lease 持续监督、可信停止回执、正式业务结果确认与 Ubuntu 22.04/v249 支持；严禁因本次 CI 全绿而将生产 `supervisor-required` 打开。
+
+
+## 九、2D-2D2A 完成、2D-2D2B 准入说明（2026-11-16）
+
+- 已新增独立 platform_core/os_supervisor_conversion_lease_guard.py，复用既有 ExecutionLeaseMonitor.beat()，把原中央租约与只读 OS handle 观察逐次绑定；拒绝取消、撤销、状态未知、失联与跨任务代数。永久 HOLD 仅限本 Guard 实例；**未改变原 AgentConversionRunner 的生产调用链**。
+- 功能代码 SHA 5aa7af6b38672647de7599f41823853ff8c2e22a：本 SHA **23/23 GitHub Actions success**。Node Agent Ubuntu 685 passed / 2 skipped，Windows 680 passed / 7 skipped；三 Chrome shard 128/130/125 passed，远程转换与训练也成功。详见 docs/P0_01C_2D2D2A_LEASE_BOUND_OS_OBSERVATION_2026_11_16.md。
+- **准入下一步仅限 2D-2D2B 隔离设计/开发**：实际 CPU 模型转换可信命令、OS-side root profile、唯一执行身份重连、租约失效的可信停机及原结果 prepare/upload/confirm/finish 需逐项证明。GPU 设备约束、Ubuntu 22.04/systemd249 兼容与生产部署为独立 NO-GO；无新的生产启用授权。不得重复造独立调度器或第二套 attempt。

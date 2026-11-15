@@ -38,3 +38,19 @@
 ## 下一最小阶段（2D-2D2B）
 
 在独立 CI-only root-owned CPU sandbox 中，审计并补齐：执行前再次读取当前中央租约、受限 ONNX 业务 worker profile 的不可变输入证据、实际 OS handle 原身份日志及重连、失败/中断后的可信停止和结果事务。真实 MODEL_CONVERSION 不能直接复用 fixed-cpu-v1 签名授权，也不能将原 ONNX 推理 PoC 视为 PT→ONNX 业务转换。待可信停止与事务闭环验收后，再评估生产开关及页面可见状态。
+
+
+## 最终准确 SHA 验收记录（2026-11-16）
+
+**2D-2D2A 功能代码提交：5aa7af6b38672647de7599f41823853ff8c2e22a。**
+GitHub Actions 精确按 head_sha=5aa7af6b38672647de7599f41823853ff8c2e22a 核对：**23 个工作流全部 completed/success（23/23，失败 0）**。这是本次代码 SHA 自身的验收，不借用上一阶段 22/22。
+
+- Node Agent Executor：两个 push/PR 工作流均成功。主工作流 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43751965134 ，Windows/Ubuntu/API Job 全部 SUCCESS。
+- Ubuntu 核心合同 **685 passed, 2 skipped**；Windows 核心合同 **680 passed, 7 skipped**，含新增租约/OS 观察合同。原 Ubuntu CI 真实 ONNX Runtime、root-owned CPU systemd、CPU natural-exit 及 non-root Agent → HTTP → root Supervisor → systemd E2E 继续 PASS。
+- Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43751965109 ，frontend + Chrome 三个 shard 全 SUCCESS。Chrome shard1 **128 passed**、shard2 **130 passed**、shard3 **125 passed**。本轮没有修改正式页面。
+- Remote Training Runtime、Remote Conversion Runtime、AI Annotation Recovery、Central Node Assignment、GPU Runtime Truth 等该 SHA 其他工作流均 SUCCESS。
+
+**2D-2D2A 判定：开发与隔离 CI PASS，可以关闭此最小阶段；生产仍 NO-GO。**
+本轮只是逐次中央租约 + 只读 OS 状态之间的 fail-closed 合同。它不能停止原 OS 任务、不能授予自动重派权、不能认为 exit_code=0 是转换成功，也不代表正式 MODEL_CONVERSION/PT→ONNX 已接入 Supervisor；Guard 的永久 HOLD 仅对当前实例生效，不能冒充跨进程永久可信 StopReceipt。
+
+**下一步实际交付 2D-2D2B**：在受保护 CI-only CPU 环境验证 OS-side 可信 profile 的模型转换输入/输出、原 handle 持久身份与崩溃重连；启动前和运行中任务权威必须来自现有中央 tasks.attempt/lease，再设计可信 StopReceipt 和原结果事务。没有这些证据不部署或打开 supervisor-required。A800、双4070 本轮未操作。
