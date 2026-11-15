@@ -84,3 +84,11 @@
 - 已新增独立 platform_core/os_supervisor_conversion_lease_guard.py，复用既有 ExecutionLeaseMonitor.beat()，把原中央租约与只读 OS handle 观察逐次绑定；拒绝取消、撤销、状态未知、失联与跨任务代数。永久 HOLD 仅限本 Guard 实例；**未改变原 AgentConversionRunner 的生产调用链**。
 - 功能代码 SHA 5aa7af6b38672647de7599f41823853ff8c2e22a：本 SHA **23/23 GitHub Actions success**。Node Agent Ubuntu 685 passed / 2 skipped，Windows 680 passed / 7 skipped；三 Chrome shard 128/130/125 passed，远程转换与训练也成功。详见 docs/P0_01C_2D2D2A_LEASE_BOUND_OS_OBSERVATION_2026_11_16.md。
 - **准入下一步仅限 2D-2D2B 隔离设计/开发**：实际 CPU 模型转换可信命令、OS-side root profile、唯一执行身份重连、租约失效的可信停机及原结果 prepare/upload/confirm/finish 需逐项证明。GPU 设备约束、Ubuntu 22.04/systemd249 兼容与生产部署为独立 NO-GO；无新的生产启用授权。不得重复造独立调度器或第二套 attempt。
+
+
+## 十、2D-2D2B1 CPU-only 原 OS 证据联调完成（2026-11-16）
+
+- 新模块 platform_core/os_supervisor_onnx_cpu_evidence.py 通过类型/输入哈希限制、原 InvocationID/MainPID/cgroup、真实自然退出、最多 8 页原 journald cursor 和独立 CPU Identity ONNX 输出 oracle 联合检查；失败全部 HOLD。**不是新的执行器或可信 StopReceipt**。
+- 准确功能代码 SHA 4495a44fb44f6ed6903b20cd1f659263bf3aa32b：**GitHub Actions 23/23 success**，真实 Ubuntu ORT/systemd 两项、Node Agent Ubuntu/Windows/API、远程训练转换和 Chrome 三分片均成功。首轮 test-double 的 InvocationID 判断职责错误已在测试代码中修复，生产系统未改。
+- 下一阶段只允许 2D-2D2B2 在隔离环境设计**真正受中央短期授权的受限 CPU 转换 profile**；必须先划清 PT→ONNX 导出与现有 ONNX→ORT 推理校验的不同合同。不能复用 fixed-cpu-v1 生产签名授权去执行真实转换命令。可信 stopped/exited 证明、任务 lease 生命周期/输出确认、Ubuntu 22.04/systemd249 和 GPU 安全仍分别 NO-GO。
+- 本轮未改生产应用、原 Runner、前端页面、GPU 设备、中央调度与 A800/双4070 服务器。

@@ -40,3 +40,26 @@
 ## 首轮 CI 审计修正（2026-11-16）
 
 提交 `62e1d747c6550a7fbaa9871824e4a893e00ea6d9` 的首次 Ubuntu 合同测试给出 **729 passed / 2 skipped、1 failed**。失败仅为新增模拟 OS 的负向测试对“替换成合法格式的 InvocationID”的期望不正确：调用应进入原 root/systemd backend，由其检查是否等于真实 InvocationID，而不能凭 `[0-9a-f]{32}` 格式直接判断身份。修复针对 CI test double：替换合法但不属于原 OS 的 InvocationID 必须由 FakeRootOS 返回 `CPU_SYSTEMD_INVOCATION_REPLACED_HOLD`；该用例断言**确实触发精确原单位核验、且不读取任何日志、不签发业务结果**。其余明显非法的字段仍要求在调用 OS 前拒绝。生产 root backend 原有 `inspect(unit, expected_invocation)` 已执行真实比对，**没有修改或放宽任何业务安全校验**。新 SHA 必须再次单独验收。
+
+
+## 最终 GitHub Actions 验收记录（2026-11-16）
+
+**准确代码 SHA：4495a44fb44f6ed6903b20cd1f659263bf3aa32b。**
+已按此 SHA 调取 GitHub Actions 结果，**23/23 个工作流全部 completed/success，失败 0、取消 0、排队 0、运行中 0**；没有复用上阶段成功记录。
+
+- Node Agent Executor 主工作流：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43773436439 —— Ubuntu、Windows、API 三个 Job 全 SUCCESS；另一次同 SHA 工作流 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43773430818 同样全绿。
+- Ubuntu 合同 730 passed / 2 skipped；Windows 合同 725 passed / 7 skipped。新增 OS 身份、冻结模型、日志游标、自然退出、CPU ORT 输出 oracle 等正反用例纳入上述合同。
+- Ubuntu **真实 ONNX Runtime CPU/systemd：2 passed**，包括真实 Identity ONNX 推理与联合证据核查（根侧再开 backend、调用原 InvocationID 的真实自然退出及日志核验）；原 root systemd 生命周期 4 passed，非 root Agent → HTTP → root Unix Supervisor → systemd 1 passed。
+- 远程模型转换业务回归：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43773436563 —— SUCCESS；远程训练：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43773436451 —— SUCCESS；其余工作流全部成功。
+- 前端：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43773430821 —— frontend + Chrome 三组全部通过：shard 1 为 **128 passed**，shard 2 为 **130 passed**，shard 3 为 **125 passed**。本轮无前端页面或资源修改。
+
+### 初次失败与最终修复
+
+首轮 SHA 62e1d747c6550a7fbaa9871824e4a893e00ea6d9 的 Ubuntu 单测出现 1 failed / 729 passed / 2 skipped。原因：测试桩错误假定另一个**格式有效**的 InvocationID 应直接在本地拒绝。真实系统只有 root-owned systemd 后端才能证明是否为原 InvocationID，不能靠正则格式识别身份。
+修复 SHA 4495a44f 在**测试桩**中模拟真实后端的 InvocationID 比对和 HOLD，测试仍要求不读取他人日志。没有修改生产代码权限、没有跳过负向测试。该 SHA 的真实 E2E 和全仓 CI 已完整通过。
+
+### 阶段关闭判定
+
+**2D-2D2B1：隔离 root-owned 固定 CPU ONNX 推理联合证据验收 PASS。** 可进入下一阶段 2D-2D2B2 的隔离研发，**但正式业务转换、可信停机与自动恢复仍 NO-GO**。
+
+这不是 PT→ONNX 模型转换，也不是受中央授权的真实生产任务。CI 中用于关联冻结模型的 RemoteExecutionLease 仅为显式测试夹具；返回的 central_lease_verified、business_result_verified、model_was_converted、trusted_stop_receipt_available、automatic_reassignment_allowed、result_publish_allowed、production_launch_allowed 均为 false。未完成真正受保护 profile + 启动前中央 regrant + durable handle + 可信 stop + 原始结果上传事务前，禁止开启 supervisor-required 或进行线上 A800/双4070 改动。
