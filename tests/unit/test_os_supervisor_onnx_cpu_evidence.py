@@ -71,7 +71,11 @@ class FakeRootOS(FixedCpuSystemd):
             self, unit, invocation, *,
             original_control_group, original_main_pid):
         self.calls.append(("terminal", unit, invocation, original_main_pid))
-        assert unit == UNIT and invocation == INVOCATION
+        assert unit == UNIT
+        # A syntactically valid but replaced InvocationID can be rejected only
+        # by the OS backend. The observer has no independent OS identity.
+        if invocation != INVOCATION:
+            raise GrantRejected("CPU_SYSTEMD_INVOCATION_REPLACED_HOLD")
         assert original_control_group == "/system.slice/" + UNIT
         assert original_main_pid == 1234
         return {
@@ -182,12 +186,20 @@ def test_staged_scope_mismatch_blocks_before_any_os_call(field, value):
     ("production_launch_allowed", True),
     ("central_recovery_allowed", True),
 ])
-def test_original_os_identity_tamper_blocks_without_query(field, value):
+def test_original_os_identity_tamper_requires_original_invocation(field, value):
     kw = approved_args()
     kw["first"][field] = value
     with pytest.raises(GrantRejected, match="HOLD"):
         verify_isolated_onnx_cpu_evidence(**kw)
-    assert kw["backend"].calls == []
+    if field == "invocation_id":
+        # This value has a legal format, but only the trusted backend knows
+        # which InvocationID actually belongs to the original OS execution.
+        assert kw["backend"].calls == [
+            ("terminal", UNIT, value, 1234),
+        ]
+    else:
+        assert kw["backend"].calls == []
+    assert all(item[0] != "log" for item in kw["backend"].calls)
 
 
 @pytest.mark.parametrize("field,value", [

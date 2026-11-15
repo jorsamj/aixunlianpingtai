@@ -35,3 +35,8 @@
 ## 下一个阶段
 
 2D-2D2B2：明确由可信中央生成、root 侧受保护的 CPU-only 真实模型转换 profile（区别于原 `fixed-cpu-v1`）；先证明单次 OS handle 持久身份、启动前中央授权重检和取消后的真实停机证明，再逐步桥接原上传/结果事务。未经独立硬件/OS 验收不得接管 GPU 转换、自动重派或生产部署。
+
+
+## 首轮 CI 审计修正（2026-11-16）
+
+提交 `62e1d747c6550a7fbaa9871824e4a893e00ea6d9` 的首次 Ubuntu 合同测试给出 **729 passed / 2 skipped、1 failed**。失败仅为新增模拟 OS 的负向测试对“替换成合法格式的 InvocationID”的期望不正确：调用应进入原 root/systemd backend，由其检查是否等于真实 InvocationID，而不能凭 `[0-9a-f]{32}` 格式直接判断身份。修复针对 CI test double：替换合法但不属于原 OS 的 InvocationID 必须由 FakeRootOS 返回 `CPU_SYSTEMD_INVOCATION_REPLACED_HOLD`；该用例断言**确实触发精确原单位核验、且不读取任何日志、不签发业务结果**。其余明显非法的字段仍要求在调用 OS 前拒绝。生产 root backend 原有 `inspect(unit, expected_invocation)` 已执行真实比对，**没有修改或放宽任何业务安全校验**。新 SHA 必须再次单独验收。
