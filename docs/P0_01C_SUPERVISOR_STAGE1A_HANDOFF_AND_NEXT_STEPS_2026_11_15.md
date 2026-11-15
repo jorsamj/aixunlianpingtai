@@ -4,7 +4,7 @@
 **仓库**：https://github.com/jorsamj/aixunlianpingtai  
 **唯一允许开发、提交和推送的分支**：`feature/external-algorithm-publishing`  
 **历史交接基线**：`2584367c55cba24da8507b5fb2518d09eed6003f`（阶段 1A 初稿，不能作为最新 HEAD）。  
-**当前优先状态（2026-11-15）**：**2C-2、2C-3 和 2D-1 已完成各自准确代码 SHA 的 23/23 全仓 CI 验收**。**最新 2D-2A 功能代码 `bc67fb2a28692b56078348567599bc8cc8bdfc38` 已完成 ONNX external_data 全层拒绝、pin FD 校验、快照输入和 Windows 兼容修复；Ubuntu/Windows/API Node Agent 主合同与真实 ONNX CPU 试跑已通过，全仓仍按准确 SHA 核验最后工作流，不得提前写成 23/23**。历史章节保留审计轨迹，接续请优先阅读第 20 节与 `P0_01C_2D2_ONNX_EXTERNAL_DATA_FD_SNAPSHOT_2026_11_15.md`。**生产 A800/双4070 未接入，正式 Runner、可信 StopReceipt 与中央自动恢复仍 NO-GO。**
+**当前优先状态（2026-11-15）**：**2C-2、2C-3 和 2D-1 各自代码已通过对应 23/23 CI**；2D-2A 功能 `bc67fb2a` 的 Node Agent 核心验证 GREEN、全仓 22/23（此前 Annotorious 前端单 Job RED，已定向重跑，结果另行核实）。**当前开发：2D-2B1 功能 `c865fbdb457221444c643a377272a85ae45b668f` 已在独立 GitHub Ubuntu 真实 root/systemd 单元运行并通过新增的受保护 ONNX 输入测试，准确 SHA 全仓 CI 仍需核对**。最新进度以末尾第 21 节及 2D-2B1 专项文档为准。**生产 A800/双4070 未接入，中央授权、正式 Runner、可信 StopReceipt、自动恢复仍 NO-GO。**
 
 ## 1. 业务背景及真正要解决的问题
 
@@ -426,3 +426,14 @@ A800/双4070 的 systemd Agent UID、sudo/polkit、`/dev/nvidia*`、UVM、驱动
 - 首版 SHA `cee26a5c` 的 Ubuntu 599 passed/2 skipped、真 ONNX 1 passed、systemd 4 passed，但 Windows Node Agent 有 3～4 项负例没有走到预期 external-data/protobuf 拒绝原因，因不同 API 读取的文件元数据出现差异而先返回 `FILE_IDENTITY_CHANGED_HOLD`。
 - 修复 SHA [`bc67fb2a28692b56078348567599bc8cc8bdfc38`](https://github.com/jorsamj/aixunlianpingtai/commit/bc67fb2a28692b56078348567599bc8cc8bdfc38)：仍保持原 fd 限额读取与哈希，Windows 仅依赖 FD 读取的字节长度和 SHA256 判定内容身份，Linux 继续要求 inode/device/mtime/ctime 一致；避免为通过测试而移除 ONNX external-data 防护。
 - 新 SHA 的 Windows/Ubuntu/全仓 CI **待真实结果**。版本仍 NO-GO，不接入正式 Runner、不开放生产部署。
+
+## 21. 2D-2B1｜root-owned 冻结 ONNX 输入 + 真 systemd 非特权服务（隔离 CI 专项）
+
+- 本轮准确功能 SHA：[`c865fbdb457221444c643a377272a85ae45b668f`](https://github.com/jorsamj/aixunlianpingtai/commit/c865fbdb457221444c643a377272a85ae45b668f)；**与 2D-2A 的 `bc67fb2a` CI 不混淆**。
+- 代码范围仅新增 `platform_core/os_supervisor_onnx_cpu_systemd_pilot.py`、单元/真实 root+systemd E2E 和 Node Agent CI 配置；**没有修改 SupervisorService、中央 grant、任务数据库、训练/转换 Runner、生产部署或前端**。
+- 由隔离 Ubuntu CI 的 root 独立生成随机 32 位十六进制执行标识，在固定根目录 `/run/changlian-os-onnx-pilot-<id>` 建立 root-owned 0755 目录、root-owned 0444 的 `verified.onnx` 与 `evidence.json`，写入前再次解析 ONNX external_data，写入后重新核验哈希、owner、文件类型和 mode。独占创建、重新打开也不信任路径被替换。
+- **实际 systemd**：通过现有 `FixedCpuSystemd` 的 PID1 v250+ 检查与 OS identity/journald/terminal helpers，以固定 `/usr/bin/python3 -I -u -c` 读取 root-owned ONNX 文件，验证字节 SHA256；采用 `DynamicUser=yes`、`PrivateDevices=yes`、`DevicePolicy=closed`、`PrivateNetwork=yes`、`ProtectSystem=strict`、`ReadOnlyPaths=/run/...<id>`、`ExitType=cgroup` 及有界 CPU/内存/进程数量；实际非 root `nobody` 覆写模型失败，读取日志和原 InvocationID、自然退出证据均通过。
+- **严格口径**：systemd 内只执行**真实 ONNX 字节哈希核验**，不运行 ONNX Runtime、YOLO 转换、推理或外部 SDK。真正 ORT CPU runtime 的既有隔离 E2E 仍是另一条独立测试；此轮没有将二者通过中央原任务租约贯通。没有签发真实业务 grant、StopReceipt，不能自动重派、释放 GPU reservation 或启用 `supervisor-required`。
+- [Node Agent push CI 43716594457](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43716594457) Ubuntu 已确认新真实 OS E2E 成功；**准确 SHA 23 项仓库工作流仍按最终终态验收**。此前 2D-2A 前端失败 Job 重跑状态另行跟踪。
+- 完整限制/测试/后续见 [`P0_01C_2D2B1_ROOT_OWNED_ONNX_SYSTEMD_PILOT_2026_11_15.md`](P0_01C_2D2B1_ROOT_OWNED_ONNX_SYSTEMD_PILOT_2026_11_15.md)。
+
