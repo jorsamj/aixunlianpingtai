@@ -194,10 +194,14 @@ class CgroupEventObserver:
         self._thread.start()
         return self._ready.wait(timeout=2)
 
-    def arm_stop(self) -> None:
+    def arm_stop(self) -> bool:
+        # Do not accept a zero observed *before* a stop request as proof
+        # of that request. The same bound FD must still report a live group.
+        if read_cgroup_events_fd(self.fd) != 1:
+            return False
         with self._lock:
             self._armed = True
-        self._sample("armed_before_systemctl_stop")
+        return True
 
     @property
     def observed_empty(self) -> bool:
@@ -369,7 +373,9 @@ def run_poc() -> tuple[dict, int]:
             if not same_unit_instance(unit_info(unit), initial):
                 result["outcome"] = "UNIT_REPLACED_HOLD"
                 return result, 3
-            cgroup_observer.arm_stop()
+            if not cgroup_observer.arm_stop():
+                result["outcome"] = "CGROUP_NOT_LIVE_BEFORE_STOP_HOLD"
+                return result, 3
             stopped = command(["systemctl", "--user", "--no-ask-password", "stop", unit], 8)
             result["systemd_stop_returncode"] = stopped.returncode
             if stopped.returncode != 0:
