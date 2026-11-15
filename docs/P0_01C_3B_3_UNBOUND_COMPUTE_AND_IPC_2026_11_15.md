@@ -38,7 +38,7 @@ root 通过 `systemctl --system stop` 停止受管理 unit，并从预打开的�
 | `.github/workflows/linux-supervisor-privilege-probe.yml` | 保留前一轮 3B-2 系统权限反例，再追加 3B-3 Socket + unbound CPU 真实实验；仍严格 `runs-on: ubuntu-22.04` GitHub-hosted，`contents:read` |
 | `docs/P0_01C_3B_3_UNBOUND_COMPUTE_AND_IPC_2026_11_15.md` | 本文：实际证据、风险及接续闸口 |
 
-**待核实 CI**：[GitHub Actions run 43674713650](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674713650)，精确触发源码 SHA `c303a9c164d8ca8068a3237dc31350c74bf27577`；本文件初次创建时该运行仍在 GitHub 队列中，**不得提前宣称通过**。
+**最终通过 CI**：[GitHub Actions run 43674960801](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674960801)，准确代码 SHA `2ef3bf0b6408347f043afb006a5c63fc27c1d8df`，**completed SUCCESS**。前述中间失败及诊断见文末第六节，不能用它们冒充真实 OS 反例结果。
 
 ### 验收与失败分级
 
@@ -55,3 +55,32 @@ root 通过 `systemctl --system stop` 停止受管理 unit，并从预打开的�
 3. **防止原 Agent 绕过受控进程**：GPU 访问必须受约束，且任何未登记的进程不能冒用原任务身份。需按实际 NVIDIA/Ascend/ARM/Windows 设备与安全策略分别验收；不能以 CPU-only GitHub VM 代替真实 GPU UAT。
 4. 只有可信 OS 见证和权限/重启/网络分区 UAT 满足条件，才考虑 P0-01C-3C 中央真实 API、附属 challenge/audit 元数据及持久事务；默认 OFF，不替换旧 `tasks.attempt`。
 5. **生产继续 `REMOTE_AGENT_STOP_UNVERIFIED` HOLD、原 worker/lease/GPU reservation 保留、自动派单 OFF、NO-GO**。
+
+## 六、2026-11-15 最终 GitHub 实测结果（正式验收依据）
+
+**实际 GitHub Actions**：[Linux Supervisor Permission Boundary run 43674960801](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674960801)；精确代码 SHA `2ef3bf0b6408347f043afb006a5c63fc27c1d8df`；GitHub-hosted `ubuntu-22.04`，`hosted-ubuntu22-sandbox` **SUCCESS**，全部步骤成功。
+
+- **合并合同：`54 passed in 0.35s`**。涵盖先前独立 Supervisor 12 项合同及新增 Unix Socket 鉴权、错 UID、错代数、nonce/任务/unit 错配、过期、重放及真实 Linux `SO_PEERCRED` 本地验证。新增测试源 `tools/poc/test_linux_supervisor_ipc_probe_contract.py`。
+- 前一轮 3B-2 真实 Linux Supervisor 权限隔离实验**再次成功**（独立测试阶段）。
+- 3B-3 的真实 Linux 系统账户/Unix Socket 测试完成，原始 JSON 逐项记录：
+  - `workload_socket_permission_denied=true`：文件 DAC 0660 对无授权 UID 生效。
+  - `unauthorized_peer_credential_rejected=true`：即使暂时放宽 socket 文件访问到 0666，仍按 **Linux kernel `SO_PEERCRED` 提供的实际 UID** 拒绝陌生客户端；随后恢复 0660。
+  - `wrong_scope_denied=true`，`authorized_request_admitted_once=true`，`replay_rejected=true`：仅特定 task/generation/unit/boot/InvocationID/challenge/nonce 可以执行**模拟准入检查**，且只准一次。
+  - `agent_secret_read_denied=true`、`workload_secret_read_denied=true`：root-only 临时私有文件不可直接读取。
+  - **`controlled_unit_stopped=true`**：root 在本试验中实际停止系统 unit，原 unit cgroup 监听到了停机后的空组事件。
+  - **`unbound_cpu_spawn_possible=true` 和 `unbound_cpu_survived_controlled_stop=true`**：普通 Agent 作为独立非 root UID 启动了**另一个、没有注册到原 unit 的 CPU 进程**，它与原 unit 不同 cgroup，受控 unit 被停止之后仍存活。这是**预期的安全反例**；不代表原受托管进程逃逸成功，也不代表另一进程就是原训练任务的残留。
+  - `supervisor_socket_admission_verified=true`、`original_cgroup_only_is_not_global_stop_proof=true`、**`real_stop_proof_implemented=false`、`production_recovery_allowed=false`**。
+  - 精确最终结果：`EXPECTED_ESCAPE_COUNTEREXAMPLE_AND_IPC_CONTRACT_PASS_NOT_STOP_PROOF`。此处“escape counterexample”指**原 unit 之外仍可启动独立进程**，而非证明从受保护 unit 内越权迁出了原有进程。
+- JSON 工件 [GitHub run 43674960801](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674960801) 的 `p001c3b2-root-supervisor-isolated-evidence`，包含 3B-2 和 3B-3 两份非秘密诊断结果，默认保留 14 天。
+
+### 6.1 前两轮真实 GitHub CI 为什么红
+
+- [run 43674713650](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674713650)，SHA `c303a9c164d8ca8068a3237dc31350c74bf27577`：新测试用 `@pytest.mark.parametrize("request", ...)`，pytest 对保留参数名 `request` 抛收集错误，**真实系统权限与停机阶段均未运行**。在 `6683b667fa0c996bcfbe0aa4483b9e00554aa70a` 仅修正测试形参。
+- [run 43674891679](https://github.com/jorsamj/aixunlianpingtai/actions/runs/43674891679)，SHA `6683b667fa0c996bcfbe0aa4483b9e00554aa70a`：`53 passed / 1 failed`。真实 Unix Socket 的单元测试把合成历史单调时钟 `issued_ns=100000000` 用于当前 OS 时间，协议按设计拒绝过期挑战 `CHALLENGE_EXPIRED_OR_CLOCK_INVALID`，**root/systemd 阶段跳过**。在 `2ef3bf0b6408347f043afb006a5c63fc27c1d8df` 将这一真实 socket 用例改为 `time.monotonic_ns()`，没有延长/放宽实际挑战有效期或身份核验。
+- 以上两次失败均有原始 GitHub Job 日志和独立 SHA，不能称为内核攻击通过/失败；**最终真实 OS 实测的唯一准确基线是 run 43674960801**。
+
+### 6.2 接续要求和后续数据边界
+
+**项目产品层面最重要的结论**：即使管理好一棵系统级 cgroup，仍必须约束普通 Agent 的**另开计算**权限。需要区分普通 Agent **进程创建能力**与真实 GPU 设备访问/占用能力，避免因原 unit 空组就宣称“整个节点没有任何其他作业”。本轮只测 CPU，不声称已验证 CUDA /dev/nvidia 设备访问限制。
+
+生产执行仍按原 `tasks.attempt`、原 owner/GPU reservation、`REMOTE_AGENT_STOP_UNVERIFIED` fail-closed HOLD；**不可接入 `NodeAgentExecutorLoop` 或中央真实恢复 API，也不可擅自修改 A800/4070 的服务配置**。下一轮先做 GPU 设备权限和最小受保护 Supervisor 预登记/证据签发设计，并将 CPU-only 反例纳入安全验收清单。
