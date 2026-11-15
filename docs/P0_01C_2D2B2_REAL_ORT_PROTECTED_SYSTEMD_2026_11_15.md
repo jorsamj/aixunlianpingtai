@@ -13,3 +13,10 @@ Initial SHA fdac051e was rejected before model launch by ORT_RUNTIME_MUTABLE_HOL
 
 ## Second CI RED and targeted fix
 SHA 9fa9ef65 passed root directory checks, but the venv/bin/python3 symlink was rejected because lstat reports symlink mode 0777 (not a writable-mode permission). Reject arbitrary links, keep root owner verification and the exact resolved /usr/bin/python3.12 allowlist, and ignore only symlink mode bits. New SHA must be independently tested before acceptance.
+
+## Verified code SHA and CI evidence (as of 2026-11-15 21:38 +08:00)
+- Final candidate code SHA: 51e7acc132029d7a421626ba60e31f57ab2fb944. First code fdac051e and root-path fix 9fa9ef65 had actual integration REDs, both diagnosed; never count their CI as a pass for 51e7acc1.
+- Node Agent push workflow: https://github.com/jorsamj/aixunlianpingtai/actions/runs/43719324711 — Ubuntu/Windows/API jobs all success.
+- Ubuntu 24.04 main contract: 610 passed, 2 skipped, 1 warning; actual protected ORT systemd E2E: 2 passed in 6.98s, including deterministic SHA, original InvocationID, natural exit/re-attach and cancellation UNKNOWN. Existing fixed CPU systemd E2E 4 passed.
+- New code SHA had 23 GitHub Actions total: 22 completed success, Frontend Runtime Stabilization still in progress at this checkpoint; do not claim 23/23 until terminal status is confirmed.
+- Trust boundary remains CI-only: no central grants/lease, result publishing, GPU hardware, 22.04 systemd249, StopReceipt or production release acceptance.
