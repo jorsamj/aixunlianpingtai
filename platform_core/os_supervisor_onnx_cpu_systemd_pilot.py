@@ -64,7 +64,8 @@ def build_fixed_onnx_cpu_argv(handle: object) -> tuple[str, ...]:
         "/usr/bin/systemd-run", "--system", "--no-ask-password",
         "--unit=changlian-os-" + h + ".service",
         *("--property=" + p for p in _PROPERTIES),
-        "--property=ReadOnlyPaths=" + str(_ROOT / (_PREFIX + h)),
+        # systemd syntax is POSIX even when pure contract tests run on Windows.
+        "--property=ReadOnlyPaths=/run/" + _PREFIX + h,
         "--", "/usr/bin/python3", "-I", "-u", "-c", _WORKER, h,
     )
 
