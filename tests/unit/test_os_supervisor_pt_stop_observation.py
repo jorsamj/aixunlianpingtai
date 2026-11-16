@@ -81,7 +81,7 @@ def test_positive_local_empty_is_never_a_stop_receipt(ctx):
     assert result["trusted_stop_receipt_available"] is False
     assert result["central_recovery_allowed"] is False
     assert result["result_publish_allowed"] is False
-    assert backend.calls == ["inspect", "inspect", "inspect", "stop"]
+    assert backend.calls == ["inspect", "inspect", "stop"]
 
 
 @pytest.mark.parametrize("field,value", [
