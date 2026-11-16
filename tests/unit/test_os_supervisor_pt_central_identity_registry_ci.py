@@ -16,7 +16,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_os_supervisor_pt_export_launch import TASK, NODE, BOOT
+from test_os_supervisor_pt_export_launch import TASK, NODE, BOOT, stage
 from test_os_supervisor_pt_stop_grant import original_running
 
 from platform_core.os_supervisor_authorization import GrantRejected
