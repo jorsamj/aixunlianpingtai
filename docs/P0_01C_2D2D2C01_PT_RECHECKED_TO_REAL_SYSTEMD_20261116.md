@@ -49,3 +49,23 @@ https://github.com/jorsamj/aixunlianpingtai/actions/runs/43790234946 —— **SU
 此阶段的 CiOnlyPtExportRecheckedBridge 仍须 `isolated_ci_only=True` 与原测试 journal，并未接入中央生产 API/Agent/SupervisorService。该桥不接收业务上传的任意 PT、用户命令或环境变量；测试工作负载仅接受由已固定 Ultralytics YAML 在可信 CI 内生成的 PT。普通转换任务、AgentConversionRunner、正式生产发布均不经过桥。
 
 即便单个真实 OS unit 结束，**没有可信停止回执、没有受控失败后新 attempt 的中央恢复权、没有结果 upload/finalize/finish**。新 E2E 的成功也不解决 Ubuntu22.04 systemd249 与 A800/双4070 现场差异。生产仍 NO-GO，未修改任何生产服务器。
+
+## 2C-01 全仓最终验收（2026-11-16）
+
+**最终功能代码 SHA：27875df1fabfa2bb10dd62d9c08c53ebc181980a。** 以此 SHA 查询 GitHub Actions 的 head_sha 列表确认：**24/24 workflows completed/success，失败 0，运行中/排队 0**。不借用 2C-01 之前的基线 24/24。
+
+- 真实中央授权 → 原 journal CAS → 受保护 systemd → YOLO11n PT→ONNX：
+  https://github.com/jorsamj/aixunlianpingtai/actions/runs/43790234946 ；**8/8 Ubuntu systemd 集成测试成功、16/16 快速安全合同测试成功**。新连接器的真实最大数值误差为 **1.52587890625e-05**。
+- 第一组 Node Agent Executor：
+  https://github.com/jorsamj/aixunlianpingtai/actions/runs/43790234920 ；Ubuntu **851 passed、2 skipped**；Windows **846 passed、7 skipped**；portable cgroup **30 passed、1 skipped**；API 工作流成功。
+- 第二组 Node Agent、远程训练、远程转换、远程素材、算法发布、资源调度、RKNN 和 AI 标注等原有工作流均以同一代码 SHA 完成成功。
+- 前端完整工作流：
+  https://github.com/jorsamj/aixunlianpingtai/actions/runs/43790235000 ；frontend 构建与单测成功，Chrome 三组分别为 **128 passed、130 passed、125 passed**，共 **383 passed**，均首次成功。本轮未改任何前端业务文件。
+
+### 2C-01 最终工程判定
+
+**PASS：** 在隔离的可信小 PT 用例中，中央 task/attempt/lease/source、独立挑战与新鲜签名、原 root-owned journal 单次 CAS、同一 OS handle、非 root systemd 真实执行、实际 ONNX 产物与 ORT 数值校验、真实身份持久落盘和反例拒绝均已接线并完成测试。
+
+**仍 NO-GO：** 业务真实 PT 模型的来源可信性与受控下载 staging、生产中央 HTTP/Agent 接口接线、取消/StopReceipt/失联处理及中央恢复、原 publish 上传事务、Ubuntu22.04/systemd249 或生产 GPU 场景。Pilot 明确只能在 CI 信任条件下运行，不能据此替换正式模型转换 Runner。
+
+下一步按既定渐进方案进入 **2C-02：可信实际业务权重来源和冻结输入合同**，优先做只读审计、输入可信边界及无副作用预检；保留原生产 Runner，禁止未授权部署和切换。
