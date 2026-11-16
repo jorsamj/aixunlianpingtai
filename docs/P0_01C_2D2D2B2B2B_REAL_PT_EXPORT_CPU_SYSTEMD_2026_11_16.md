@@ -42,3 +42,21 @@
 ### 缺口仍然必须明确
 
 此阶段只对**CI 自身生成、来源可信的测试权重**实现了隔离 systemd PT→ONNX 真实转换。PT 专用中央 challenge/lease/recheck/journal CAS **尚未与本探针连接为一个不可绕过的端到端受保护业务执行器**；真实模型输入下载与对象存储、Runner 生命周期、取消/超时/失联、日志重连、可信 StopReceipt、结果 prepare/upload/confirm/finalize/finish、CPU↔GPU 真实调度、Ubuntu 22.04/systemd249 及 A800/双4070 生产验证仍不可宣称完成。未授权任何生产部署、重启或任务数据修改。
+
+## 最终重跑验收与本阶段结论（2026-11-16）
+
+### 准确的 GitHub Actions 终态
+
+- 本阶段**功能代码 SHA**：3b81f10438f3ddb9865e66d30d10918ec5e80f5c。
+- 已按此 SHA 的 GitHub Actions head_sha 独立查询：**24/24 workflows completed / success；0 failure；0 pending**。其中包含专用 PT 导出、两组 Node Agent、远程训练/转换、素材、RKNN、浏览器等工作流。
+- 唯一曾失败的 Frontend Runtime Stabilization 工作流 https://github.com/jorsamj/aixunlianpingtai/actions/runs/43783699967 首次执行在浏览器分组 3 的训练创建弹窗 1920×1080 滚轮测试断言处失败，分组初次 **124 passed、1 failed**；其余分组和前端构建成功。该失败 Job 单独重跑（GitHub run_attempt=2，job_id=133029333027），**125 passed（7.5m），结论 success**；整个 workflow 终态 success。**没有为这项测试修改前端业务代码，历史首次失败证据保留，不称为“首次 24/24”。**
+- 真实隔离 PT→ONNX 验收：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43783700467 ：**3/3** Ubuntu systemd 真实集成、**11/11** 安全合同通过，实际 PT→ONNX 与 ORT CPU 数值验证通过（最大绝对误差 2.288818359375e-05）；带原 systemd 单元/InvocationID，自然退出；源文件哈希、大小、ONNX 数据结构及 SHA256 校验通过。
+- 跨平台 Node Agent 验收：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43783699942 ：Ubuntu **846 passed/2 skipped**、Windows **841 passed/7 skipped**、API 与 OS CPU 隔离测试成功。
+
+### 阶段验收及生产禁用界限
+
+**2D-2D2B2B-2B 的独立可信 PT 导出 pilot、源输入篡改拒绝、ONNX Runtime 一致性及相应回归测试：PASS。**
+
+**正式业务端到端受保护转换：未完成、NO-GO。** 中央 PT admission/launch CAS 尚未与此可信 PT systemd pilot 整合为不可绕过的完整业务执行器；未知来源 PT pickle 无法仅凭 SHA256 证明可信；尚缺业务真实模型来源与对象存储、租约中断/超时/取消/失联、可信 StopReceipt、持久日志重连以及原始 prepare/upload/confirm/finalize/finish 事务完整验证。CI Ubuntu 24.04/systemd255 的成功不能替代 Ubuntu 22.04/systemd249、A800 或双4070 的实际兼容与生产验收。
+
+全过程仅修改允许的唯一长期开发分支；**没有部署/重启 A800 与双4070，没有改生产任务和数据，也没有切换任何正式转换执行开关。**
