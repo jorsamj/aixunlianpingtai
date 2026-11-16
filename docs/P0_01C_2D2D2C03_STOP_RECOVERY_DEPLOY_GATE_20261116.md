@@ -108,6 +108,14 @@
 - 中央登记库**严格仅是单独的 SQLite `:memory:` 临时试验库**；密钥仅在进程内临时生成，测试 root euid 环境可由 monkeypatch 模拟。登记尚**未进入真实 TaskRepository schema**，没有 Node Token 认证的生产接线、公钥运维注册与轮换、中心重启持久恢复、中央持久挑战及 STOP 回执消费。不可据此释放生产 GPU。
 - 不修改现有中央任务代数、原 Agent/Runner 业务路径，也不添加第二调度器。最新 2C-03E SHA 的 CI 结果需另行核实；旧的 24/24 不可冒充新提交全绿。
 
+## 2C-03E1：已登记原 OS 身份接入真实 systemd 隔离联调（2026-11-16，待验收）
+
+- 2C-03E 初次轻量 CI 首轮因跨文件 fixture 依赖未显式引入而失败；补充原 `stage` fixture 后，又发现“取消后补登记”违反了原先的运行中预登记安全合同。将其改为独立的**取消后必须拒绝登记**负例，并保留错 Node 拒绝测试，未放宽应用安全约束。
+- 本轮修复提交 `437670cbb92a889dcedbd71de74e1343bd0f7d02` 的 Ubuntu22.04 轻量合同实测 **76 passed**；Windows 尚须核查最终结果。完整 run：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43821558837>。
+- `tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py` 新增真实原 OS 身份预登记：原 TaskRepository 仍 RUNNING 时，由 CI-only root journal 读取并签名 boot/InvocationID/cgroup/PID，测试中央验证已配置的 root 公钥及原任务 lease 后登记；后续 CANCEL_REQUESTED 时中央只可按该登记签发 STOP。保留后续原 root CAS、真实 systemd 停止、原 cgroup 事件和 root 签名 witness 验证。
+- `.github/workflows/isolated-pt-export-cpu.yml` 为新模块增加路径触发与 `py_compile`，真实集成测试仍复用既有 Ubuntu24.04 CPU/systemd 环境，不新增生产入口。
+- **重大限制保持**：该临时中央登记在 SQLite 内存库，密钥在测试进程内生成，没有生产可信公钥配置、持久中央 challenge、Root StopReceipt 与中央恢复提交，不能认为这条联调就具备真实服务器断线重派条件。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。

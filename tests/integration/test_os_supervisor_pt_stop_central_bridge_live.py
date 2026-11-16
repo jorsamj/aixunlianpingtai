@@ -20,7 +20,10 @@ from test_os_supervisor_pt_export_rechecked_bridge_live import (
 )
 
 from platform_core.os_supervisor_authorization import GrantRejected
-from platform_core.os_supervisor_pt_stop_grant import CentralPtStopTrialIssuer
+from platform_core.os_supervisor_pt_central_identity_registry_ci import (
+    CiOnlyCentralPtOriginalRegistry,
+    CiOnlyRootPtOriginalIdentityRegistration,
+)
 from platform_core.os_supervisor_pt_stop_observation import IsolatedPtStopObserver
 from platform_core.os_supervisor_pt_stop_rechecked_bridge import (
     CiOnlyPtStopRecheckedBridge,
@@ -59,20 +62,38 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
         assert observed["main_pid"] == started["main_pid"]
         assert observed["control_group"] == started["control_group"]
         original = ctx["journal"].verified_pt_identity(handle, 3)
+        # Register ORIGINAL OS identity while the CENTRAL task is RUNNING.
+        # Central later signs STOP using ONLY this pre-registered scope, not
+        # boot/InvocationID/PID supplied by an unprivileged Node Agent.
+        original_signer = CiOnlyRootPtOriginalIdentityRegistration(
+            ctx["journal"], isolated_ci_only=True,
+        )
+        central_registry = CiOnlyCentralPtOriginalRegistry(
+            ctx["repo"], root_public_key=original_signer.public_key,
+            central_key=ctx["key"], isolated_ci_only=True,
+        )
+        recorded = central_registry.register(
+            original_signer.sign_original(handle, 3),
+        )
+        assert recorded["original_identity_registered_for_ci"] is True
+        assert recorded["production_recovery_allowed"] is False
         with closing(ctx["repo"]._connect()) as db:
             db.execute("UPDATE tasks SET status='CANCEL_REQUESTED' WHERE task_id=?",
                        (_TASK,))
         nonce = ctx["journal"].issue_pt_stop_challenge(handle, 3)
         assert nonce == ctx["journal"].issue_pt_stop_challenge(handle, 3)
-        central = CentralPtStopTrialIssuer(
-            ctx["repo"], ctx["key"], isolated_test_only=True,
-        )
-        envelope = central.issue(
+        envelope = central_registry.issue_original_stop(
             task_id=_TASK, task_attempt=3, node_id=_NODE,
-            boot_id=ctx["root"].boot_id, handle_id=handle,
-            invocation_id=original["invocation_id"],
-            main_pid=original["main_pid"], challenge=nonce,
+            root_stop_challenge=nonce,
         )
+        assert envelope["claims"]["boot_id"] == original["boot_id"]
+        assert envelope["claims"]["invocation_id"] == original["invocation_id"]
+        assert envelope["claims"]["main_pid"] == original["main_pid"]
+        with pytest.raises(GrantRejected, match="UNREGISTERED_OR_STOP_REPLAY"):
+            central_registry.issue_original_stop(
+                task_id=_TASK, task_attempt=3, node_id=_NODE,
+                root_stop_challenge=nonce,
+            )
         claimed = ctx["journal"].claim_pt_stop_rechecked(
             handle, 3, envelope, trusted_public_key=ctx["key"].public_key(),
         )
