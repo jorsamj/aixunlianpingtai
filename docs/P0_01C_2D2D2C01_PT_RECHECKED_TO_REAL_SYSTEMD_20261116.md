@@ -30,3 +30,22 @@
 ## 下一步
 
 2C-02 可信业务模型来源与固定转换资源合同，之后 2C-03 停止/取消/失联与 StopReceipt，2C-04 原上传发布事务、Ubuntu22.04 系统适配与受控生产灰度。任何生产环境操作需另外授权。
+
+## 2C-01 真实隔离端到端验收证据（代码 SHA 27875df1）
+
+**准确原始代码 SHA：27875df1fabfa2bb10dd62d9c08c53ebc181980a**。GitHub CI 真实 isolated-pt-export-cpu workflow run：
+https://github.com/jorsamj/aixunlianpingtai/actions/runs/43790234946 —— **SUCCESS**。
+
+- 快速 CPU/security 合同 **16 passed**，包括 CI-only bridge 默认关闭/无业务上传参数、原导出器不可自定义任意 argv/env。
+- 真正 systemd / Ubuntu24.04 / CPU 运行 **8 passed**，包括旧固定 PT demo 3 项和新增中央授权 + journal 一次性 CAS + 真实 YOLO11n PT→ONNX 的完整 E2E 5 项。
+- 新增一体化 E2E 样本独立日志：CENTRAL_CAS_REAL_PT_EXPORT_PROOF；CPUExecutionProvider；固定输入 [1,3,32,32]；输出 [1,84,21]；**max_abs_error=1.52587890625e-05**；ONNX 产物 SHA256 **d12bf3a9d429859cdbddb741fd86e62c091e8f0e48d84950219f53baab211a9b**；大小 **10,506,760 bytes**；opset12；ONNX checker 通过。
+- 反例实测均成功：签名篡改、中央冻结尺寸640不匹配 CI 固定导出32、中央租约取消/轮换不能签发、注入 systemd 启动失败后旧 journal 保留 STARTING/CAS 且不可二次启动。PT handle 不能由旧 fixed CPU identity API 转换为 RUNNING。
+- 同一提交的第一组 Node Agent Executor：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43790234920 ，Ubuntu **851 passed/2 skipped**；Windows **846 passed/7 skipped**；Windows portable cgroup **30 passed/1 skipped**；API 全部成功。
+
+以上为可复核的实际日志，不是源代码推测。全仓其他 CI 要以最终准确 SHA 工作流终态回填，**不能仅凭以上结果宣称全仓已完成**。
+
+### 工程约束
+
+此阶段的 CiOnlyPtExportRecheckedBridge 仍须 `isolated_ci_only=True` 与原测试 journal，并未接入中央生产 API/Agent/SupervisorService。该桥不接收业务上传的任意 PT、用户命令或环境变量；测试工作负载仅接受由已固定 Ultralytics YAML 在可信 CI 内生成的 PT。普通转换任务、AgentConversionRunner、正式生产发布均不经过桥。
+
+即便单个真实 OS unit 结束，**没有可信停止回执、没有受控失败后新 attempt 的中央恢复权、没有结果 upload/finalize/finish**。新 E2E 的成功也不解决 Ubuntu22.04 systemd249 与 A800/双4070 现场差异。生产仍 NO-GO，未修改任何生产服务器。
