@@ -53,6 +53,15 @@
 - CI 工作流 <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43808785894>，Ubuntu24.04 隔离主机。**验收结果待实际终态，禁止提前标 PASS**。
 - 尚未覆盖 Ubuntu22.04 上的真实 PT systemd 执行（249 无 `ExitType=cgroup`）、生产级 root 保密签名和独立中央 StopReceipt 验签；这些仍是生产硬门槛。
 
+## 2C-03C2 停止授权不可绕过（已提交、待 CI）
+
+- 审计发现前一版 2C-03C 真实停止联调直接调用 `IsolatedPtStopObserver.request_and_observe`，虽有 CI-only 禁用门槛，却未在**执行停止前**强制读取中央签名停止意图，属于潜在的授权绕过接口。现已新增 `CiOnlyPtStopRecheckedBridge`，禁止这条联调通过未授权直达 systemd。
+- 同一 `PtExportJournal` 受保护 SQLite 中新增 `pt_export_stop_observation_claims`，外键仍关联**原** `execution_intents.handle_id`，不创建第二调度器。检查原签名 STOP claim 的 InvocationID、PID、原 boot/unit、年龄（12 秒上限），然后在 `BEGIN IMMEDIATE` 中唯一领取 OS probe。任意一次进程崩溃/超时之后**不得自动二次 stop**，状态保持 UNKNOWN/HOLD。
+- `tests/unit/test_os_supervisor_pt_stop_grant.py` 新增：无中央签名不得领取、原 OS 身份变化不得领取、boot 更改拒绝、签名时间过期拒绝、相同 handle 重放、root journal 重启后重放均拒绝；对应真实 systemd 联调改为通过 `CiOnlyPtStopRecheckedBridge` 启动。
+- 联调断言也已纠正：`CiOnlyPtExportRecheckedBridge.start` 不提供 `ActiveState/SubState`，必须经 OS backend 的 live `inspect` 获取，避免错误字段导致假失败。
+- 关键提交 `26c8b7a15a2a43c396db20d968658642d9e382a4`（状态接口测试修正）、`d09ed5c5f5955c7545f78c8dd3210d6121064286`（原 journal OS probe CAS）、`153d7b4f308d67f5b46da408bc9d070191270ef7`（CI-only 止损桥）及后续集成/负面测试。由于真实停止 CI 仍在队列中，2C-03C2 **未验收**，禁止修改部署准入结论。
+- **仍缺的关键证据**：已停止后代进程跨 cgroup 的存活核验、签名者 root 私钥隔离、真实生产 StopReceipt、原中央数据库的消费事务、Agent 失联/重启重入控制、systemd249 上真实 PT→ONNX 生产级隔离以及正式 Runner 接管。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
