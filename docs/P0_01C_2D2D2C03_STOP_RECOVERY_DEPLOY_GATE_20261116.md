@@ -26,7 +26,7 @@
 - 同一次 Ubuntu24.04：23/23 合同通过；真实系统级 systemd stop 在发出停止请求前打开原始 `cgroup.events` 并订阅内核事件；真实检查结果 `original_cgroup_became_empty=True`、`state=LOCAL_EMPTY_OBSERVED_NO_RECEIPT`；实际集成测试 1/1 成功。
 - 2C-03A 判定：**PASS（仅隔离停止观察边界）**。没有签发受生产信任的 StopReceipt。
 
-## 2C-03B Ed25519 测试见证与中央一次性 CAS（开发中）
+## 2C-03B Ed25519 测试见证与中央一次性 CAS（隔离试验 PASS）
 
 - 新增 `tools/poc/pt_stop_receipt_ed25519_contract.py`，独立的 Ed25519 域分离测试签名/验签合同，封闭 payload 字段、任务/boot/invocation/cgroup/时间顺序和布尔证据，测试-only 显式许可。
 - 复用已有 `central_stop_recovery_contract.py` 的内存 SQLite 原始 tasks.attempt、lease 与资源占用事务 CAS；不新增调度器、生产数据表或生产恢复 API。
@@ -73,5 +73,5 @@
 - 2C-03A 首轮根因已修正（早期文件依赖不足与非法 unit 验证顺序）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800361441>
 - 2C-03A 首轮 24.04 真实停止测试 UNKNOWN（正确拒绝假停止证明）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800546470>
 - 2C-03A 修复版 Ubuntu22.04/Ubuntu24.04 均成功：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800970138>
-- 2C-03B 签名/内存 CAS 跨平台待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807294738>
-- 2C-03B Ubuntu249 真实内核/Ed25519 模拟中央 CAS 最新待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807711658>（较早运行被 GitHub 同工作流并发策略取消，不算测试失败）
+- 2C-03B 签名/内存 CAS 跨平台成功（Ubuntu 69 + Windows 69）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807294738>
+- 2C-03B Ubuntu249 真实内核/Ed25519 模拟中央 CAS 成功，77 项合同 + 真实 kernel：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807711658>
