@@ -37,4 +37,5 @@
 
 - 2C-02 已验收：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371849>
 - 2C-03A 首轮根因已修正（早期文件依赖不足与非法 unit 验证顺序）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800361441>
-- 2C-03A 最后一次待核验运行：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800546470>
+- 2C-03A 首轮 24.04 真实停止测试 UNKNOWN（正确拒绝假停止证明）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800546470>
+- 2C-03A 修复版 Ubuntu22.04 成功、Ubuntu24.04 待完成：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800970138>
