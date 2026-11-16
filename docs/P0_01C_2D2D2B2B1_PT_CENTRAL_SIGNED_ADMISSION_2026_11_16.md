@@ -41,3 +41,17 @@
 ## 六、本轮验收结果
 
 待按新提交 SHA 与实际 GitHub CI 工作流填写；不得沿用 2B2A 的 23/23。
+
+
+### 最终独立 CI 验收（2026-11-16）
+
+- **准确功能代码 SHA：208231675582076937096aba1a3970d2ec111140。**
+- 本 SHA 对应 GitHub Actions **23/23 completed/success，0 failure、0 pending**；核查的是此提交自身的 head_sha，不借用前一阶段测试结果。
+- Node Agent Executor 工作流第一组：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43777908697 ，Ubuntu **816 passed / 2 skipped**，Windows **811 passed / 7 skipped**，API job PASS；Windows portable cgroup **30 passed / 1 skipped**。
+- Node Agent Executor 第二组：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43777914599 ，Ubuntu、Windows 与 API 三项全部成功。
+- Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43777908769 ，frontend job 与三组 Chrome 回归全部成功，Chrome shard1 **128 passed**、shard2 **130 passed**、shard3 **125 passed**。
+- 同 SHA 的 Remote Conversion、Remote Training、Material Import、RKNN、Central Node Assignment、登录与其他工作流均成功，无本轮全仓回归。
+- **准入决定：2D-2D2B2B-1 中央短期 PT admission 签名、服务端源证据绑定、隔离验签/安全拒绝合同 PASS。**
+- **严格不包含：journal PT one-shot launch CAS、实际可信 PT→ONNX 导出、可信 StopReceipt、结果上传事务、systemd249 支持、GPU 隔离与生产启用。** 新签名 purpose 仅为 admission，SupervisorService 未接入；旧 fixed-cpu-v1 不可被提升为 PT 执行授权。A800/双4070 未操作，生产仍 NO-GO。
+
+下一开发单元为 2D-2D2B2B-2：基于原中央任务权威和 root-owned journal，新增独立的启动前 fresh challenge / recheck 签名 / one-shot CAS（且与 fixed CPU 互斥），然后在 CPU-only systemd >=250 隔离环境验收**可信小 PT 权重的真实 ONNX 导出**；未经验证，不启用正式 Runner。
