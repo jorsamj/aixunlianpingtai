@@ -208,6 +208,10 @@ class CentralPtStopTrialIssuer:
                     _hold("PAYLOAD_OVERSIZED")
                 signature = self.key.sign(signed).hex()
                 db.commit()
+        except GrantRejected:
+            # GrantRejected is PermissionError -> OSError. Preserve explicit
+            # security HOLD reasons rather than rewrapping them as I/O errors.
+            raise
         except (OSError, sqlite3.Error, TypeError, ValueError, KeyError) as exc:
             raise GrantRejected("PT_STOP_GRANT_CENTRAL_LOOKUP_UNVERIFIED_HOLD") from exc
         return {"claims": claims, "signature": signature}
