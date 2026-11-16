@@ -117,7 +117,7 @@ def test_cannot_issue_stop_for_caller_supplied_os_identity(registration):
     assert signed["claims"]["invocation_id"] == "b" * 32
 
 
-def test_no_registration_or_wrong_node_must_hold(registration):
+def test_unregistered_original_cannot_get_stop_after_cancel(registration):
     stage, handle, signer, central = registration
     nonce = _cancel_and_challenge(registration)
     with pytest.raises(GrantRejected, match="UNREGISTERED"):
@@ -125,7 +125,16 @@ def test_no_registration_or_wrong_node_must_hold(registration):
             task_id=TASK, task_attempt=3, node_id=NODE,
             root_stop_challenge=nonce,
         )
+    # Late registration is deliberately prohibited: original identity must
+    # have been root-signed while the central task was still RUNNING.
+    with pytest.raises(GrantRejected, match="ORIGINAL_TASK_OR_LEASE_CHANGED"):
+        central.register(signer.sign_original(handle, 3))
+
+
+def test_registered_original_denies_another_node(registration):
+    stage, handle, signer, central = registration
     central.register(signer.sign_original(handle, 3))
+    nonce = _cancel_and_challenge(registration)
     with pytest.raises(GrantRejected, match="REGISTERED_NODE"):
         central.issue_original_stop(
             task_id=TASK, task_attempt=3, node_id="different-node",
