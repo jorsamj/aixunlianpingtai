@@ -319,6 +319,36 @@ def _page_usage_facts(repository, body, rows):
         rows,exclude_used=body.get("history_policy","new_for_algorithm")=="new_for_algorithm",role=str(body.get("role") or "train"))
 
 
+def _validate_explicit_selection(repository, annotations, image_ids, payload):
+    """Bounded validation using the original picker GT and history predicates."""
+    from .training_material_usage import TrainingMaterialUsage
+    if len(image_ids) > 2000:
+        raise ValueError('selection validation supports at most 2000 explicit images')
+    role = str(payload.get('role') or 'train')
+    if role not in {'train', 'test'}:
+        raise ValueError('role must be train or test')
+    body = {key:payload[key] for key in ('algorithm_asset_id', 'history_policy') if key in payload}
+    body.update(role=role, image_ids=image_ids)
+    usage_owner = TrainingMaterialUsage(repository.project_path.parent.parent/'task_runtime'/'tasks.sqlite3')
+    def revisions():
+        return dict(repository_revision=repository.current_revision(), annotation_revision=annotations.current_revision(),
+                    usage_revision=usage_owner.read_revision(), negative_pool_revision=NegativePool(repository).revision(),
+                    negative_confirmation_revision=annotations.task_negative_confirmation_revision())
+    before = revisions()
+    filters, _ = _usage_filters(repository, {**body, 'browse_only':False})
+    candidates = _gt_material_filter_page(repository, annotations, filters=filters, limit=2000,
+                                         require_ground_truth=role=='test')['items']
+    facts = _page_usage_facts(repository, body, repository.get_many(image_ids))
+    unknown = set(facts['unknown_image_ids'])
+    eligible = set(candidates) - set(facts['excluded_image_ids'])
+    if role == 'test':
+        eligible -= unknown
+    if before != revisions() or facts['revision'] != before['usage_revision']:
+        raise ValueError('素材或训练历史已变化，请重新核验选择')
+    return dict(requested_count=len(image_ids), eligible_count=len(eligible),
+                excluded_count=len(image_ids)-len(eligible), unknown_count=len(unknown), **before)
+
+
 def _public_usage_fact(fact, algorithm_id=""):
     """Count consumed training tasks for the current algorithm, not the gallery."""
     all_details=fact.get("history_details") or []
@@ -2215,6 +2245,8 @@ def training_material_picker_router(
     @router.post("/selection-summary")
     def training_material_selection_summary(project_id: str, payload: dict):
         try:
+            if 'validate_selection' in payload and type(payload['validate_selection']) is not bool:
+                raise ValueError('validate_selection must be boolean')
             reference = str(payload.get('train_selection_ref') or '').strip()
             if reference:
                 if payload.get('image_ids'):
@@ -2223,6 +2255,8 @@ def training_material_picker_router(
                 image_ids=read_selection(data_dir(),reference,selection_context(data_dir(),project_id,payload,'train'))
             else:
                 image_ids = _normalize_selection_ids(payload.get("image_ids"))
+                if payload.get('validate_selection') and len(image_ids) > 2000:
+                    raise ValueError('selection validation supports at most 2000 explicit images')
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         repository = materials(project_id)
@@ -2232,6 +2266,9 @@ def training_material_picker_router(
                 repository, annotations, image_ids,
                 include_pool_totals=payload.get("summary_only") is not True,
             )
+            if payload.get('validate_selection'):
+                summary['selection_validation'] = ({'reference_validated':True, 'requested_count':len(image_ids)} if reference else
+                    _validate_explicit_selection(repository, annotations, image_ids, payload))
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         # Previewing an empty selection is not a training submission. In

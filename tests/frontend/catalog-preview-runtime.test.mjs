@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {installCatalogPreview, PREVIEW_PAGE, MANAGEMENT_PAGE, NODES_PAGE, ASSETS_PAGE, HISTORY_PAGE, TASKS_PAGE, REPORT_PAGE} from '../../static/modules/catalog-preview-runtime.js';
+import {installCatalogPreview, PREVIEW_PAGE, MANAGEMENT_PAGE, NODES_PAGE, ASSETS_PAGE, HISTORY_PAGE, TASKS_PAGE, REPORT_PAGE, POOL_PAGE} from '../../static/modules/catalog-preview-runtime.js';
 
 test('algorithm capability cannot mutate versions and tasks/report remain GET-only',async()=>{
  const owners=new Map(),contexts=[],calls=[],state={page:ASSETS_PAGE,project:{id:'p'}};
@@ -96,4 +96,12 @@ test('project change discards a late POST reply and keeps the exact pending pack
  document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},deadline:(fn,{signal})=>fn(signal),request:()=>new Promise(done=>resolve=done),load:async()=>({mountCatalogPreview:async(_host,context)=>{contexts.push(context);return ()=>{}}})});
  await owners.get(MANAGEMENT_PAGE)();const context=contexts[0],packet={operation_id:'same-request',entity:'vendors'};context.pending.save(packet);
  const response=context.post('/api/v39/deploy/catalog/operations',packet);state.project.id='next-project';resolve({ok:true});await assert.rejects(()=>response,/项目或页面/);assert.equal(context.signal.aborted,true);assert.deepEqual(context.pending.value,packet);runtime.destroy();
+});
+
+
+test('pool journal fails closed when browser persistence is unavailable',async()=>{
+ const previous=globalThis.sessionStorage,owners=new Map();let context;
+ globalThis.sessionStorage={getItem:()=>null,setItem(){throw new Error('storage full')},removeItem(){throw new Error('storage full')}};
+ const runtime=installCatalogPreview({poolEnabled:true,navigation:{registerPageOwner(p,fn){owners.set(p,fn);return()=>{}}},getState:()=>({page:POOL_PAGE,project:{id:'p'}}),document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountNegativePool:async(_host,c)=>{context=c;return()=>{}}})});
+ try{await owners.get(POOL_PAGE)();assert.throws(()=>context.poolPending.save({operation_id:'original'}),/storage full/);assert.equal(context.poolPending.value,null)}finally{runtime.destroy();if(previous===undefined)delete globalThis.sessionStorage;else globalThis.sessionStorage=previous}
 });

@@ -12,6 +12,8 @@ on:
       - tests/unit/test_model_asset_views.py
       - tests/api/test_model_asset_views.py
       - tests/api/test_core_productization_views.py
+      - tests/api/test_material_reader_views.py
+      - platform_core/material_reader_views.py
       - platform_core/training_reader_views.py
       - tests/unit/test_training_reader_views.py
       - tests/unit/test_training_report_reader.py
@@ -153,7 +155,7 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
           boto3 oss2 cryptography pydantic
       - name: Read-only model HTTP projection contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/api tests/api/test_model_asset_views.py tests/api/test_core_productization_views.py
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/api tests/api/test_model_asset_views.py tests/api/test_core_productization_views.py tests/api/test_material_reader_views.py
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome algorithm version lineage

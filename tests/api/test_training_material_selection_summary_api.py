@@ -86,6 +86,36 @@ def _client(tmp_path):
     return TestClient(app)
 
 
+def test_opt_in_selection_validation_checks_offpage_history_and_test_unknown(tmp_path):
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    client = _client(tmp_path)
+    repository = MaterialRepository(tmp_path/'data'/'projects'/'p1')
+    path = tmp_path/'data'/'task_runtime'/'tasks.sqlite3'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+    sqlite3.connect(path).close()
+    usage = TrainingMaterialUsage(path)
+    source = repository.get('s00000')
+    usage.record_selected('p1','a','executed', {'snapshot_id':'snap','images':[{'image_id':'s00000','role':'train','content_sha256':source['content_sha256']}]}, source_images=[source])
+    usage.record_execution('executed', completed_epoch=True)
+    endpoint = '/api/v62/projects/p1/training-materials/selection-summary'
+    payload = {'image_ids':['s00000','s00001'], 'algorithm_asset_id':'a','summary_only':True,'validate_selection':True}
+    result = client.post(endpoint, json=payload)
+    assert result.status_code == 200
+    validation = result.json()['selection_validation']
+    assert validation['requested_count'] == 2
+    assert validation['eligible_count'] == 1
+    assert validation['excluded_count'] == 1
+    assert 'image_ids' not in validation
+    included = client.post(endpoint, json={**payload,'history_policy':'include_history'}).json()['selection_validation']
+    assert included['eligible_count'] == 2
+    tested = client.post(endpoint, json={**payload,'role':'test','history_policy':'include_history'}).json()['selection_validation']
+    assert tested['eligible_count'] == 0
+    assert tested['unknown_count'] >= 1
+    assert 'selection_validation' not in client.post(endpoint, json={'image_ids':['s00001'],'summary_only':True}).json()
+    assert client.post(endpoint, json={**payload,'image_ids':[f'id{i}' for i in range(2001)]}).status_code == 422
+
+
 def test_selection_summary_aggregates_selected_ids_without_returning_material_rows(tmp_path):
     client = _client(tmp_path)
     requested = [f"s{index:05d}" for index in range(1100)] + ["missing-material", "s00001"]

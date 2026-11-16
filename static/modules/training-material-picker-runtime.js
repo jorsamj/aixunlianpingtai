@@ -147,7 +147,106 @@ export function installTrainingMaterialPickerRuntime({
   let activeController = null;
   let imageScrollFrame = null;
   let modalLayer = null;
+  let vuePresenter = null;
   const pageCache = new Map();
+
+  function taskIdentity() {
+    const context=taskPayload(),current=draft();
+    return JSON.stringify({project:projectId(),algorithm:context.algorithm_asset_id,base:context.base_version_id,
+      model:context.model,framework:context.framework,labels:uniqueIds(context.train_labels).sort(),
+      history:context.history_policy,split:current.splitMode,trainSelectionRef:current.trainSelectionRef || '',trainSelectionCount:current.trainSelectionCount || 0,blocked:[...blockedIds(picker?.role)].sort()});
+  }
+  function vueSnapshot(owner=picker) {
+    if(!owner)return null;
+    const blocked=blockedIds(owner.role),selectedPreview=[];
+    // Iterate at most 100 selected IDs; never expose the owner's potentially huge Set.
+    for(const id of owner.selected){selectedPreview.push({id,name:owner.items.find(row=>String(row.id)===id)?.filename || id});if(selectedPreview.length>=100)break;}
+    return {role:owner.role,items:owner.items.slice(0,120).map(row=>({id:String(row.id),filename:String(row.filename || ''),
+      thumbnail_url:row.thumbnail_url || row.content_url || '',content_url:row.content_url || '',annotation_state:row.annotation_state,sample_role:row.sample_role,
+      labels:(row.labels || []).slice(0,100),width:row.width,height:row.height,
+      boxes:(row.boxes || []).slice(0,12).map(box=>({x1:box.x1,y1:box.y1,x2:box.x2,y2:box.y2,label:box.label,code:box.code})),boxes_preview_only:row.boxes_preview_only,box_count:row.box_count,
+      training_usage:row.training_usage?{state:row.training_usage.state,excluded:Boolean(row.training_usage.excluded),training_task_count:row.training_usage.training_task_count}:null,
+      selected:owner.reference?Boolean(row.selection_member):owner.selected.has(String(row.id)),selectable:trainingMaterialSelectable(row,owner.role,blocked)})),
+      selectedPreview,selectedCount:owner.reference?.count ?? owner.selected.size,
+      reference:owner.reference?{selection_ref:owner.reference.selection_ref,count:owner.reference.count}:null,
+      total:owner.total,page:owner.page,pageSize:owner.pageSize,totalPages:owner.totalPages,hasNext:owner.hasNext,
+      query:owner.query,sortOrder:owner.sortOrder,labels:[...owner.labels].slice(0,100),
+      labelOptions:(state().labels || []).slice(0,100).map(row=>({code:String(row.code),display_name:String(row.display_name || row.name || row.code),name:String(row.display_name || row.name || row.code)})),
+      filters:{...owner.filters},sampleRole:owner.sampleRole,historyPolicy:taskPayload().history_policy,view:owner.view,
+      loading:Boolean(owner.loading),bulkPending:Boolean(owner.bulkPending),confirmPending:Boolean(owner.confirmPending),error:owner.error || '',summary:owner.summary || null,
+      revisions:{repository:owner.repositoryRevision,annotation:owner.annotationRevision,usage:owner.usageRevision,negativePool:owner.negativePoolRevision,negativeConfirmation:owner.negativeConfirmationRevision},
+      taskIdentity:{projectId:owner.projectId,algorithmId:taskPayload().algorithm_asset_id,baseVersionId:taskPayload().base_version_id,model:taskPayload().model,framework:taskPayload().framework,historyPolicy:taskPayload().history_policy,splitMode:draft().splitMode,blockedCount:blocked.size}};
+  }
+  function emitVue(){
+    if(!picker?.vue)return false;
+    const snapshot=vueSnapshot();for(const listener of picker.vue.listeners)listener(snapshot);return true;
+  }
+  function disposeVue(owner){
+    if(!owner?.vue)return;const view=owner.vue;owner.vue=null;view.controller.abort();view.listeners.clear();view.dispose?.();
+  }
+  function vueError(message){if(picker){picker.error=String(message);emitVue();}notify(message);return false;}
+  async function confirmVue(commit=true){
+    const owner=picker;if(!owner?.vue || owner.loading || owner.bulkPending || owner.confirmPending)return false;
+    if(taskIdentity()!==owner.expectedIdentity)return vueError('任务身份或独立 Test 隔离范围已变化，请关闭后重新选择');
+    if(!owner.reference && owner.selected.size>2000)return vueError('显式选择超过2000张，请减少选择；大范围训练选择请清空后冻结，Test 不支持大范围冻结');
+    const pid=projectId(),identity=taskIdentity(),selection=JSON.stringify([owner.reference?.selection_ref,[...owner.selected]]);
+    owner.confirmPending=true;owner.error='';emitVue();
+    try{
+      const revision=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/revision?algorithm_asset_id=${encodeURIComponent(taskPayload().algorithm_asset_id || '')}`,{signal}),'素材版本核验失败'),{signal:owner.vue.controller.signal,label:'素材版本核验'});
+      if(picker!==owner || !owner.vue || projectId()!==pid)return false;
+      const expected={repository_revision:owner.repositoryRevision,annotation_revision:owner.annotationRevision,usage_revision:owner.usageRevision,negative_pool_revision:owner.negativePoolRevision,negative_confirmation_revision:owner.negativeConfirmationRevision};
+      if(Object.entries(expected).some(([key,value])=>value!=null && revision[key]!==value))return vueError('素材证据版本已变化，请刷新后重新选择');
+      const summary=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-summary`,{
+        method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({...taskPayload(),summary_only:true,validate_selection:!owner.reference,role:owner.role,
+          ...(owner.reference?{train_selection_ref:owner.reference.selection_ref}:{image_ids:[...owner.selected]})})}),'选择核验失败'),{signal:owner.vue.controller.signal,label:'素材选择核验'});
+      if(picker!==owner || !owner.vue || projectId()!==pid)return false;
+      if(taskIdentity()!==identity || identity!==owner.expectedIdentity || selection!==JSON.stringify([owner.reference?.selection_ref,[...owner.selected]]))return vueError('核验期间任务或选择已变化，请重新核验');
+      const count=owner.reference?.count ?? owner.selected.size;
+      if(summary.requested_count!==count || summary.matched_count!==count ||
+        (owner.repositoryRevision!=null && summary.repository_revision!==owner.repositoryRevision) ||
+        (owner.annotationRevision!=null && summary.annotation_revision!==owner.annotationRevision))return vueError('素材数量或版本已变化，请刷新后重新选择');
+      if(owner.reference && summary.selection_reference!==true)return vueError('服务器未确认冻结选择，请重新选择');
+      if(!owner.reference){
+        const validation=summary.selection_validation;
+        if(!validation || validation.requested_count!==count || validation.eligible_count!==count || validation.excluded_count!==0 ||
+          (owner.role==='test' && validation.unknown_count!==0))return vueError('所选素材训练或独立 Test 资格未通过，请刷新并重新选择');
+        if(Object.keys(expected).some(key=>validation[key]!==revision[key]))return vueError('素材资格核验版本已变化，请刷新后重新选择');
+      }
+      const after=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/revision?algorithm_asset_id=${encodeURIComponent(taskPayload().algorithm_asset_id || '')}`,{signal}),'素材版本复核失败'),{signal:owner.vue.controller.signal,label:'素材版本复核'});
+      if(picker!==owner || !owner.vue || projectId()!==pid)return false;
+      if(taskIdentity()!==identity || selection!==JSON.stringify([owner.reference?.selection_ref,[...owner.selected]]))return vueError('核验期间任务或选择已变化，请重新核验');
+      if(Object.keys(expected).some(key=>after[key]!==revision[key]))return vueError('素材证据在核验期间已变化，请刷新后重新选择');
+      owner.summary=Object.fromEntries(['requested_count','matched_count','eligible_count','pending_annotation_count','selectable_count','box_count','repository_revision','annotation_revision'].map(key=>[key,summary[key] ?? null]));
+      owner.summary.positive_label_codes=(summary.positive_label_codes || []).slice(0,100);
+      owner.summary.label_codes=(summary.label_codes || []).slice(0,100);
+      if(!commit){emitVue();return owner.summary;}
+      // read_selection in the original summary owner validates reference TTL/context/revisions.
+      return window.confirmTrainMaterialPickerV3();
+    }catch(error){if(picker===owner && owner.vue && error?.name!=='AbortError')vueError(error.message || '选择核验失败');return false;}
+    finally{owner.confirmPending=false;if(picker===owner)emitVue();}
+  }
+  function startVue(owner){
+    if(!vuePresenter || owner.role==='robustness')return;
+    const host=document.getElementById('trV3VueHost');if(!host)return;
+    const view={controller:new AbortController(),listeners:new Set(),dispose:null};owner.vue=view;
+    const guarded=fn=>(...args)=>{if(picker!==owner || owner.vue!==view || view.controller.signal.aborted || projectId()!==owner.projectId)return false;if(owner.confirmPending)return false;return fn(...args)};
+    const context={projectId:owner.projectId,signal:view.controller.signal,snapshot:()=>vueSnapshot(owner),
+      subscribe(fn){view.listeners.add(fn);fn(vueSnapshot(owner));return()=>view.listeners.delete(fn)},actions:{
+      search:guarded(setSearch),sort:guarded(setSortOrder),filter:guarded((...args)=>runtime.setFilter(...args)),toggleLabel:guarded(toggleLabel),clearLabels:guarded(clearLabels),
+      sampleRole:guarded(value=>runtime.setSampleRole(value)),historyPolicy:guarded(value=>runtime.setHistoryPolicy(value)),view:guarded(value=>runtime.setView(value)),
+      page:guarded(page),reload:guarded(()=>{owner.error='';pageCache.clear();return loadPage()}),bulk:guarded(bulkAction),toggle:guarded(toggle),
+      removeSelected:guarded(id=>runtime.removeSelected(id)),confirm:guarded(()=>confirmVue()),summary:guarded(()=>confirmVue(false)),close:()=>{if(picker===owner)runtime.close()},legacy:guarded(()=>{
+        disposeVue(owner);const container=host.parentElement || host;container.innerHTML=modalHtml(owner.role);renderPage();
+      })}};
+    const presenter=vuePresenter;
+    Promise.resolve().then(()=>{if(view.controller.signal.aborted)return;return presenter(host,context)}).then(dispose=>{
+      if(picker!==owner || owner.vue!==view || view.controller.signal.aborted || projectId()!==owner.projectId){dispose?.();return;}view.dispose=dispose;
+    }).catch(error=>{if(picker===owner && owner.vue===view){
+      owner.error=error?.message || 'Vue 显示加载失败，请使用原素材选择';emitVue();notify(owner.error);
+      host.textContent='素材显示加载失败，可保留选择并切回原界面。';
+      if(document.createElement){const back=document.createElement('button');back.type='button';back.className='btn';back.textContent='使用原素材选择';back.onclick=context.actions.legacy;host.appendChild(back);}
+    }});
+  }
 
   function injectStyles() {
     if (document.getElementById('training-material-picker-runtime-style')) return;
@@ -874,6 +973,7 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   function renderSkeleton() {
+    if(typeof emitVue==='function' && emitVue())return;
     cancelViewportFrame();
     const grid = document.getElementById('trV3Grid');
     if (!grid) return;
@@ -883,6 +983,7 @@ export function installTrainingMaterialPickerRuntime({
   // Keep the modal's batch and confirm actions disabled until the current read settles.
   function syncPickerActions(owner = picker) {
     if (!owner || picker !== owner) return;
+    if(typeof emitVue==='function' && emitVue())return;
     const disabled = Boolean(owner.loading || owner.bulkPending || owner.reviewPending);
     const buttons = modalLayer?.querySelectorAll?.('[data-picker-action], [data-picker-confirm]')
       || document.querySelectorAll('[data-picker-action], [data-picker-confirm]');
@@ -937,6 +1038,8 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   function updateCounts() {
+    if(picker?.vue)picker.summary=null;
+    if(typeof emitVue==='function' && emitVue())return;
     renderSelectedList();
     if (!picker) return;
     const count = document.getElementById('trV3PickerCount');
@@ -1012,6 +1115,7 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   function renderPager() {
+    if(typeof emitVue==='function' && emitVue())return;
     if (!picker) return;
     const pager = document.getElementById('trV3Pager');
     window.PlatformCore?.pagination?.mountPagination?.(pager, {
@@ -1037,6 +1141,8 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   function renderPage() {
+    if(picker?.vue)picker.summary=null;
+    if(typeof emitVue==='function' && emitVue())return;
     if (!picker) return;
     syncPickerActions();
     const grid = document.getElementById('trV3Grid');
@@ -1093,8 +1199,8 @@ export function installTrainingMaterialPickerRuntime({
     activeController = new AbortController();
     const controller=activeController;
     activePageKey = key;
-    const current=()=>picker===owner && projectId()===pid && sequence===requestSequence && signature()===contextKey && Boolean(document.getElementById('trV3Grid'));
-    picker.loading = true;
+    const current=()=>picker===owner && projectId()===pid && sequence===requestSequence && signature()===contextKey && Boolean(owner.vue || document.getElementById('trV3Grid'));
+    picker.loading = true;picker.error='';
     syncPickerActions(owner);
     const cached = pageCache.get(key);
     if (cached) {
@@ -1102,7 +1208,7 @@ export function installTrainingMaterialPickerRuntime({
         const revision=await withRequestDeadline(async signal=>{const r=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/revision?algorithm_asset_id=${encodeURIComponent(taskPayload().algorithm_asset_id || '')}`,{signal});return readJson(r,'素材版本读取失败');},{signal:controller.signal,label:'素材版本读取'});
         if(!current())return;
         if(revisionKey(revision)!==cached.versionKey){pageCache.clear();activePageKey=null;return loadPage({page:requestedPage});}
-      } catch(error) {if(current()){notify(error.code==='REQUEST_TIMEOUT'?'素材读取超时，请重试':error.message); const grid=document.getElementById('trV3Grid');if(grid)grid.innerHTML='<button class="btn" onclick="TrainingMaterialPickerRuntime.loadPage()">读取失败 · 重试</button>';}return;}
+      } catch(error) {if(current()){owner.error=error.message;syncPickerActions(owner);notify(error.code==='REQUEST_TIMEOUT'?'素材读取超时，请重试':error.message); const grid=document.getElementById('trV3Grid');if(grid)grid.innerHTML='<button class="btn" onclick="TrainingMaterialPickerRuntime.loadPage()">读取失败 · 重试</button>';}return;}
       finally {if(activeController===controller){activePageKey=null;owner.loading=false;syncPickerActions(owner);}}
       picker.effectiveLabels = cached.effective_label_codes || [];
       picker.roleCounts = cached.sample_role_counts || null;
@@ -1186,7 +1292,8 @@ export function installTrainingMaterialPickerRuntime({
       if (!current()) return;
       const grid = document.getElementById('trV3Grid');
       if (grid) grid.innerHTML = `<div class="empty">${esc(error?.code==='REQUEST_TIMEOUT'?'素材读取超时，请重试':error?.message || '训练素材读取失败')}<button class="btn" onclick="TrainingMaterialPickerRuntime.loadPage()">重试</button></div>`;
-      notify(error?.message || '训练素材读取失败');
+      owner.error=error?.message || '训练素材读取失败';
+      notify(owner.error);
     } finally {
       if(activeController===controller)activePageKey=null;
       if (current()) {
@@ -1262,9 +1369,14 @@ export function installTrainingMaterialPickerRuntime({
   async function bulkAction(action) {
     if (!picker || picker.bulkPending || picker.reviewing) return;
     if (picker.loading) return notify('当前筛选结果尚未加载完成，请稍后重试选择');
+    if(picker.vue && picker.reference && action!=='clear-all')return vueError('冻结选择不能合并或逐项修改，请先全部不选');
+    if(picker.vue && picker.selected.size && !['clear-all','select-page'].includes(action))return vueError('当前已有逐张选择，不能安全合并全范围；请先清除选择再冻结范围');
+    if(picker.vue && picker.role==='test' && !['clear-all','select-page'].includes(action))return vueError('独立 Test 仅支持逐张或本页有界选择，请回原选择器处理其他范围');
+    if(picker.vue && picker.role==='test' && action!=='clear-all' && action!=='select-page' && (picker.total==null || picker.total>2000))return vueError('Test仅支持不超过2000张的有界显式选择，请缩小筛选范围或逐页选择');
     if(picker.reference && !['select-filtered','select-all','clear-all'].includes(action)){picker.reference=null;picker.selected.clear();notify('已解除服务器冻结范围，改为显式选择');}
     if (action === 'select-page') {
       const blocked=blockedIds(picker.role);
+      if(picker.vue && picker.role==='test' && new Set([...picker.selected,...picker.items.filter(row=>trainingMaterialSelectable(row,picker.role,blocked)).map(row=>String(row.id))]).size>2000)return vueError('Test显式选择最多2000张，请缩小范围');
       picker.items.forEach(row=>{if(trainingMaterialSelectable(row,picker.role,blocked))picker.selected.add(String(row.id));});renderPage();return;
     }
     if (action === 'clear-all') {
@@ -1300,6 +1412,7 @@ export function installTrainingMaterialPickerRuntime({
         return;
       }
       const blocked = blockedIds(picker.role);
+      if(picker.vue && picker.role==='test' && new Set([...picker.selected,...result.ids]).size>2000)return vueError('Test显式选择最多2000张，请缩小范围');
       const eligible = result.ids.filter(id => !blocked.has(id));
       if (picker.reference) {
         // This successful explicit batch supersedes the previous frozen scope.
@@ -1324,6 +1437,8 @@ export function installTrainingMaterialPickerRuntime({
   async function open(role) {
     const pid = projectId();
     if (!pid) return notify('当前项目不存在');
+    if(typeof vuePresenter==='function' && (typeof role==='object'?role?.role:role)==='test' && draft().trainSelectionRef)return notify('训练素材已冻结，当前无法安全核验独立 Test 隔离；请先选择独立 Test，再冻结训练范围，或返回原界面处理');
+    if(typeof disposeVue==='function')disposeVue(picker);
     cancelViewportFrame();
     activeController?.abort();activePageKey=null;picker?.bulkController?.abort();picker?.historyControllers?.forEach(c=>c.abort());++requestSequence;clearTimeout(searchTimer);
     injectStyles();
@@ -1341,7 +1456,7 @@ export function installTrainingMaterialPickerRuntime({
     picker = {
       reference:selectedRole==='train' && currentDraft.trainSelectionRef?{selection_ref:currentDraft.trainSelectionRef,count:currentDraft.trainSelectionCount}:null,
       sampleRole:'', effectiveLabels:[], roleCounts:null, reviewing:false, reviewSelected:new Set(),
-      role: selectedRole,
+      role: selectedRole,projectId:pid,expectedIdentity:'',
       filters:{}, view:'grid', historyControllers:new Set(), scopeIds,
       query: '', labels: new Set(), sortOrder: 'newest', selected: new Set(initialIds),
       pageSize: DEFAULT_PAGE_SIZE, page: 1, totalPages: 1,
@@ -1351,7 +1466,10 @@ export function installTrainingMaterialPickerRuntime({
     };
     state().trainMaterialPickerV3 = picker;
     const title = picker.role === 'robustness' ? '选择增强训练素材' : picker.role === 'train' ? '选择本次训练素材' : '选择独立试验素材';
-    modalLayer=window.modal?.(title, modalHtml(picker.role), true);
+    if(typeof taskIdentity==='function')picker.expectedIdentity=taskIdentity();
+    const useVue=typeof vuePresenter==='function' && picker.role!=='robustness';
+    modalLayer=window.modal?.(title, useVue?'<div id="trV3VueHost" class="train-v3-picker"></div>':modalHtml(picker.role), true);
+    if(useVue && typeof startVue==='function')startVue(picker);
     const details=modalLayer?.querySelector?.('.train-v3-selected') || document.querySelector?.('.train-v3-selected');
     const owner=picker;
     details?.addEventListener?.('toggle',()=>{if(picker===owner && details.open)renderSelectedList();});
@@ -1442,6 +1560,8 @@ export function installTrainingMaterialPickerRuntime({
       if (checkbox) checkbox.checked = false;
       return;
     }
+    if(picker.vue && picker.reference){if(checkbox)checkbox.checked=Boolean(row?.selection_member);return typeof vueError==='function'?vueError('冻结选择不能逐项修改，请先全部不选'):false;}
+    if(picker.vue && picker.role==='test' && on && picker.selected.size>=2000)return typeof vueError==='function'?vueError('Test显式选择最多2000张'):false;
     if(picker.reference){picker.reference=null;picker.selected.clear();notify('已解除服务器冻结选择，改为逐张选择');}
     on ? picker.selected.add(value) : picker.selected.delete(value);
     checkbox?.closest('.train-v3-card')?.classList.toggle('on', Boolean(on));
@@ -1484,7 +1604,8 @@ export function installTrainingMaterialPickerRuntime({
       materialIds: current.materialIds || [],
       testMaterialIds: current.testMaterialIds || [],
     });
-    trainingDraftRuntime.update({...patch,trainSelectionRef:'',trainSelectionCount:0});
+    if(picker.role==='train')trainingDraftRuntime.update({...patch,trainSelectionRef:'',trainSelectionCount:0});
+    else trainingDraftRuntime.update(patch);
     window.closeModal?.();
     window.refreshTrainingMaterialSelectionUiV3?.();
     return true;
@@ -1492,10 +1613,12 @@ export function installTrainingMaterialPickerRuntime({
 
   const runtime = {
     build: 'training-material-picker-runtime-422616',
+    setVuePresenter(presenter){vuePresenter=typeof presenter==='function'?presenter:null;},
     open,
     searchSelected(value) {if(picker){picker.selectedQuery=String(value || '');renderSelectedList();}},
     removeSelected(id) {
       if(!picker || picker.bulkPending || picker.reviewPending)return;
+      if(picker.vue && picker.reference)return vueError('冻结选择不能逐项修改，请先全部不选');
       picker.selected.delete(String(id));
       const card=[...document.querySelectorAll('#trV3Grid [data-material-id]')].find(row=>row.dataset.materialId===String(id));
       if(card){card.classList.remove('on');const checkbox=card.querySelector('input');if(checkbox)checkbox.checked=false;}
@@ -1524,8 +1647,11 @@ export function installTrainingMaterialPickerRuntime({
     setHistoryPolicy(value) {
       if (!picker || picker.loading || picker.bulkPending || picker.reviewPending) return;
       if (!['new_for_algorithm','include_history'].includes(value)) return;
+      if(picker.vue && taskIdentity()!==picker.expectedIdentity)return vueError('任务身份已变化，请关闭后重新选择，不能仅变更策略继续');
+      if(picker.vue && picker.reference)return vueError('请先全部不选以解除冻结，再变更使用策略');
       if(picker.reference){picker.reference=null;picker.selected.clear();notify('使用策略变化，已解除旧的服务器冻结选择，请重新选择');}
       trainingDraftRuntime.update({history_policy:value});
+      if(picker.vue)picker.expectedIdentity=taskIdentity();
       notify('使用策略已更新；已选素材保留，确认时将校验资格');
       return resetFiltersAndLoad();
     },
@@ -1586,6 +1712,7 @@ export function installTrainingMaterialPickerRuntime({
     },
     beforeModalClose(layer) {
       if(!picker || (modalLayer && layer!==modalLayer))return;
+      disposeVue(picker);
       activeController?.abort();activePageKey=null;picker.bulkController?.abort();picker.historyControllers?.forEach(c=>c.abort());++requestSequence;cancelViewportFrame();clearTimeout(searchTimer);picker=null;modalLayer=null;
     },
     async loadHistory(id,host,page=1) {
@@ -1624,7 +1751,7 @@ export function installTrainingMaterialPickerRuntime({
       sidebar.querySelector('.train-v3-mobile-toggle')?.setAttribute('aria-expanded',String(expanded));
     },
     setView(value) {if(picker){picker.view=value==='list'?'list':'grid';renderPage();}},
-    close() {activeController?.abort();activePageKey=null;picker?.bulkController?.abort();picker?.historyControllers?.forEach(c=>c.abort());++requestSequence;cancelViewportFrame();clearTimeout(searchTimer);picker=null;window.closeModal?.();},
+    close() {disposeVue(picker);activeController?.abort();activePageKey=null;picker?.bulkController?.abort();picker?.historyControllers?.forEach(c=>c.abort());++requestSequence;cancelViewportFrame();clearTimeout(searchTimer);picker=null;window.closeModal?.();},
     loadPage,
     bulkAction,
     state() {

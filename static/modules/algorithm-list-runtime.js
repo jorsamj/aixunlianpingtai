@@ -429,7 +429,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     return `<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">
       <header class="algorithm-list-hero">
         <div><span class="algorithm-list-eyebrow">ALGORITHM REGISTRY</span><h2>算法列表</h2><p>以算法为单位查看训练状态、当前版本和核心指标；点击卡片空白区域即可展开版本。</p></div>
-        <div class="entity-page-actions">${new URLSearchParams(window.location?.search||'').get('vue_algorithm_manage')==='1'?'<button class="btn" data-vue-model-assets>Vue 算法管理</button>':new URLSearchParams(window.location?.search||'').get('vue_model_assets')==='1'?'<button class="btn" data-vue-model-assets>Vue 模型资产</button>':''}${new URLSearchParams(window.location?.search||'').get('vue_training_tasks')==='1'?'<button class="btn" data-vue-training-tasks>Vue 训练任务中心</button>':''}<button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建本地算法</button></div>
+        <div class="entity-page-actions">${new URLSearchParams(window.location?.search||'').get('vue_algorithm_manage')==='1'?'<button class="btn" data-vue-model-assets>Vue 算法管理</button>':new URLSearchParams(window.location?.search||'').get('vue_model_assets')==='1'?'<button class="btn" data-vue-model-assets>Vue 模型资产</button>':''}${new URLSearchParams(window.location?.search||'').get('vue_training_tasks')==='1'?'<button class="btn" data-vue-training-tasks>Vue 训练任务中心</button>':''}${new URLSearchParams(window.location?.search||'').get('vue_material_library')==='1'?'<button class="btn" data-vue-material-library>Vue 素材库</button>':''}<button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建本地算法</button></div>
       </header>
       <section class="entity-query-surface algorithm-filter-surface">
         <div class="algorithm-filter-primary">
@@ -689,6 +689,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       const categoryRow = event.target.closest('[data-category-row]');
       if (categoryRow) return activateCategoryRow(categoryRow.dataset.categoryRow);
       if(event.target.closest('[data-vue-training-tasks]'))return window.setPage?.('训练任务只读中心');
+      if(event.target.closest('[data-vue-material-library]'))return window.setPage?.('素材库正式浏览');
       if(event.target.closest('[data-vue-model-assets]'))return window.setPage?.('模型资产只读浏览');
       const vueHistory=event.target.closest('[data-vue-version-history]');if(vueHistory)return window.PlatformCore?.runtime?.catalogPreviewRuntime?.openHistory(vueHistory.dataset.vueAlgorithm,vueHistory.dataset.vueVersion);
       if (event.target.closest('[data-algorithm-sync]')) return void externalProvider?.sync?.();

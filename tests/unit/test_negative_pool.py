@@ -4,6 +4,121 @@ from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import NegativePool
 
 
+def test_member_receipt_replay_cas_and_scope(tmp_path):
+    _, pool = setup(tmp_path)
+    packet = dict(algorithm_id='a', expected_revision='0', operation_id='member-test')
+    result = pool.members(['0'], **packet)
+    assert result['added'] == 1
+    assert result['negative_pool_revision'] == '1'
+    assert pool.members(['0'], **packet) == result
+    assert pool.revision() == '1'
+    assert pool.member_operation('member-test', algorithm_id='a') == result
+    with pytest.raises(ValueError):
+        pool.member_operation('member-test', algorithm_id='b')
+    with pytest.raises(ValueError):
+        pool.members(['1'], **packet)
+    with pytest.raises(ValueError):
+        pool.members(['1'], algorithm_id='a', expected_revision='0', operation_id='stale')
+    assert pool.member_operation('stale', algorithm_id='a') is None
+    assert pool.revision() == '1'
+    with pytest.raises(ValueError):
+        pool.members(['missing'], algorithm_id='a', expected_revision='1', operation_id='failed')
+    assert pool.member_operation('failed', algorithm_id='a') is None
+    removed = pool.members(['0', '1'], action='remove', algorithm_id='a', expected_revision='1', operation_id='remove')
+    assert (removed['removed'], removed['already_absent']) == (1, 1)
+    assert pool.members(['0', '1'], action='remove', algorithm_id='a', expected_revision='1', operation_id='remove') == removed
+    assert pool.revision() == '2'
+
+
+@pytest.mark.parametrize('options', [
+    {'operation_id':'one'}, {'expected_revision':'0'},
+    {'operation_id':'one','expected_revision':'0','algorithm_id':''},
+    {'operation_id':'one','expected_revision':'0','category_ids':['c']},
+])
+def test_member_receipt_rejects_incomplete_or_classification_packet(tmp_path, options):
+    _, pool = setup(tmp_path)
+    with pytest.raises(ValueError):
+        pool.members(['0'], **options)
+    assert pool.revision() == '0'
+
+
+def test_member_receipt_api_authorization_scope_and_recovery(tmp_path):
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool_api import create_negative_pool_router
+    from platform_core.algorithms import create_algorithm
+    repo, pool = setup(tmp_path)
+    path = repo.project_path/'algorithms.json'
+    a = create_algorithm(path, {'name':'A'}, '2026-11-17T00:00:00Z')['id']
+    b = create_algorithm(path, {'name':'B'}, '2026-11-17T00:00:00Z')['id']
+    def authorize(project_id):
+        if project_id != 'p':
+            raise HTTPException(403, 'forbidden')
+        return {}
+    app = FastAPI()
+    app.include_router(create_negative_pool_router(lambda _:repo, authorize, lambda _,row:row))
+    with TestClient(app) as client:
+        base = '/api/v61/projects/p/negative-pool'
+        assert client.get(base+'/operations/op', params={'algorithm_id':a}).status_code == 404
+        packet = dict(image_ids=['0'], algorithm_id=a, expected_revision='0', operation_id='op')
+        response = client.post(base+'/members', json=packet)
+        assert response.status_code == 200
+        receipt = response.json()
+        assert receipt['project_id'] == 'p'
+        assert receipt['added'] == 1
+        assert client.post(base+'/members', json=packet).json() == receipt
+        assert client.get(base+'/operations/op', params={'algorithm_id':a}).json() == receipt
+        assert client.get(base+'/operations/op', params={'algorithm_id':b}).status_code == 404
+        assert client.get(base+'/operations/op').status_code == 400
+        assert client.get('/api/v61/projects/denied/negative-pool/operations/op', params={'algorithm_id':a}).status_code == 403
+        assert client.post(base+'/members', json={**packet, 'image_ids':['1']}).status_code == 409
+        assert client.post(base+'/members', json={**packet, 'operation_id':'stale'}).status_code == 409
+        assert client.get(base+'/operations/stale', params={'algorithm_id':a}).status_code == 404
+        assert client.post(base+'/members', json={**packet, 'operation_id':None}).status_code == 400
+        assert pool.revision() == '1'
+
+
+def test_member_receipt_atomic_rollback_and_concurrent_replay(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    repo, pool = setup(tmp_path)
+    pool.members(['2'])
+    with repo._connect() as db:
+        db.execute("CREATE TRIGGER reject_receipt BEFORE INSERT ON negative_pool_algorithm_members WHEN NEW.material_id='1' BEGIN SELECT RAISE(ABORT, 'injected failure'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        pool.members(['0','1'], algorithm_id='a', expected_revision='1', operation_id='failed')
+    assert pool.member_operation('failed', algorithm_id='a') is None
+    assert pool.candidate_ids(algorithm_id='a') == []
+    assert pool.revision() == '1'
+    packet = dict(algorithm_id='a', expected_revision='1', operation_id='parallel')
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(pool.members, ['0'], **packet) for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+    assert results[0] == results[1]
+    assert results[0]['added'] == 1
+    assert pool.revision() == '2'
+
+
+def test_pool_reader_view_does_not_expose_raw_paths_and_is_bounded(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool_api import create_negative_pool_router
+    repo, pool = setup(tmp_path)
+    pool.members(['0'])
+    app = FastAPI()
+    app.include_router(create_negative_pool_router(lambda _:repo, lambda _: {}, lambda _,row:{**row, 'local_path':'SECRET_PATH'},
+        usage_for_page=lambda _,rows:{'0':{'state':'used','local_path':'SECRET_USAGE','current_algorithm_trained':True}}))
+    with TestClient(app) as client:
+        base = '/api/v61/projects/p/negative-pool'
+        assert client.get(base).json()['items'][0]['local_path'] == 'SECRET_PATH'
+        response = client.get(base, params={'reader_view':'true'})
+        assert response.status_code == 200
+        assert 'SECRET' not in response.text
+        row = response.json()['items'][0]
+        assert row['negative_pool']['training_usage'] == {'state':'used','current_algorithm_trained':True}
+        assert row['content_url'].startswith('/api/v61/projects/p/materials/')
+        assert client.get(base, params={'reader_view':'true','page_size':121}).status_code == 400
+
+
 def test_opt_in_member_counts_preserve_legacy_and_scope(tmp_path):
     repo, pool = setup(tmp_path)
     assert pool.members(['0']) == {'affected': 1}

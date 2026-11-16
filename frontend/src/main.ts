@@ -23,6 +23,12 @@ import 'element-plus/theme-chalk/el-dropdown-menu.css';
 import 'element-plus/theme-chalk/el-dropdown-item.css';
 import CatalogPreview from './views/CatalogPreview.vue';
 import ServiceNodesOverview from './views/ServiceNodesOverview.vue';
+import MaterialLibrary from './views/MaterialLibrary.vue';
+import NegativePool from './views/NegativePool.vue';
+import TrainingMaterialPicker from './views/TrainingMaterialPicker.vue';
+import type {PoolContext} from './types/negative-pool';
+import type {PickerContext} from './types/training-picker';
+import type {MaterialContext} from './types/materials';
 import TrainingTasks from './views/TrainingTasks.vue';
 import TrainingReport from './views/TrainingReport.vue';
 import ModelAssets from './views/ModelAssets.vue';
@@ -41,7 +47,10 @@ export async function mountModelAssets(host:HTMLElement,context:BrowseContext){r
 export async function mountConversionHistory(host:HTMLElement,context:BrowseContext){return mountView(host,context,ConversionHistory)}
 export async function mountTrainingTasks(host:HTMLElement,context:BrowseContext){return mountView(host,context,TrainingTasks)}
 export async function mountTrainingReport(host:HTMLElement,context:BrowseContext){return mountView(host,context,TrainingReport)}
-async function mountView(host:HTMLElement,context:PreviewContext,component:Component){
+export async function mountMaterialLibrary(host:HTMLElement,context:MaterialContext){return mountView(host,context,MaterialLibrary)}
+export async function mountNegativePool(host:HTMLElement,context:PoolContext){return mountView(host,context,NegativePool)}
+export async function mountTrainingMaterialPicker(host:HTMLElement,context:PickerContext){return mountView(host,context,TrainingMaterialPicker)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext,component:Component){
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});
   app.use(createPinia()).use(router);

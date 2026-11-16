@@ -7,7 +7,7 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1hj2';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1kn1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -20,13 +20,13 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.611';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.613';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
 import {installLazyChangLianDataBrowserRuntime} from './modules/lazy-changlian-data-browser.js?v=20261113-13c03';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226511';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.606';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.613';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.582';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
@@ -533,10 +533,13 @@ const catalogPreviewRuntime = installCatalogPreview({
   algorithmEnabled: new URLSearchParams(location.search).get('vue_algorithm_manage') === '1',
   tasksEnabled: new URLSearchParams(location.search).get('vue_training_tasks') === '1',
   reportsEnabled: new URLSearchParams(location.search).get('vue_training_report') === '1',
+  materialsEnabled: new URLSearchParams(location.search).get('vue_material_library') === '1',
+  poolEnabled: new URLSearchParams(location.search).get('vue_negative_pool') === '1',
   createOperationId: () => catalogOperationId(window.crypto),
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
+if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
 window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
 window.AiReviewRouteRuntime = installAiReviewRoute({
   getReview: () => state.ai60Review,

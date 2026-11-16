@@ -1,3 +1,5 @@
+> **2026-11-17 P1K–P1N 本地交付，准确提交CI/制品待核**：Vue素材分页/详情、算法级负池普通成员CAS/同库回执、原Picker展示适配和原Draft集成；GT审核/训练提交/Worker保持原Owner，默认旧页面。开关vue_material_library / vue_negative_pool / vue_training_picker。隔离真实入口125图、两张跨页与冻结引用→原Submit请求体，原20k HTTP/Prepare guard定向通过，无GPU/生产部署。Test大引用/不安全并集明确拒绝；未来异构约束保留。见[本轮合同、证据、离线方式与限制](docs/PRODUCTIZATION_P1K_P1N_20261117.md)。完成后停止。
+
 > **2026-11-17 P1H–P1J 本地交付 / 准确收尾SHA CI待核对**：复用ModelAssets增量实现本地算法新增/基本编辑和写后GET核验；v62训练任务只读游标列表/详情、v44 finalized优先报告摘要（Val/Test独立），复杂报告回原Owner。新开关vue_algorithm_manage / vue_training_tasks / vue_training_report；旧默认保留。仅原算法POST/PUT，无新执行写端点/调度/GT/schema改动。Python41、Node77、Vue Chrome14及真实入口临时库/桌面平板已验；生产/硬件/完整离线安装未验。入口缓存612，VERSION保持。见[本轮合同、写入边界、证据及后端拆分建议](docs/PRODUCTIZATION_P1H_P1J_20261117.md)。完成后停止。
 
 > **2026-11-17 P1E–P1G 本地交付 / 准确修正SHA CI待核对**：模型资产/版本与转换历史只读页已接通，vue_model_assets opt-in；原v12/v42新增asset_view有界安全投影，复用AlgorithmSqlStore/ModelArtifact/历史及durable Owner，原默认响应/执行/GT不变。类型构建、Python36/Node73/Chrome11、真实入口临时库及桌面平板已验；未生产/SDK/数值/硬件/现场离线验收。版本号42.24.592保持，入口缓存609。见[本轮合同、入口、测试、证据与离线方式](docs/PRODUCTIZATION_P1E_P1G_20261117.md)。本轮结束停止。

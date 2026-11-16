@@ -1,7 +1,7 @@
 """Routes use the host application's existing project/session authorization."""
 import sqlite3
 from fastapi import APIRouter, Body, HTTPException, Query
-from .negative_pool import NegativePool
+from .negative_pool import NegativePool, MemberOperationConflict, MemberOperationScopeError
 
 
 def create_negative_pool_router(material_store, get_project, public_material, usage_for_page=None):
@@ -27,6 +27,10 @@ def create_negative_pool_router(material_store, get_project, public_material, us
     def invoke(call):
         try:
             return call()
+        except MemberOperationConflict as error:
+            raise HTTPException(409, str(error)) from error
+        except MemberOperationScopeError as error:
+            raise HTTPException(404, str(error)) from error
         except (ValueError, sqlite3.IntegrityError) as error:
             raise HTTPException(400, str(error)) from error
 
@@ -36,8 +40,10 @@ def create_negative_pool_router(material_store, get_project, public_material, us
     from fastapi import Depends
 
     @router.get('')
-    def listing(project_id: str, page: int = 1, page_size: int = 50, target_label: list[str] = Query(default=[]), selected: dict = Depends(filters)):
+    def listing(project_id: str, page: int = 1, page_size: int = 50, target_label: list[str] = Query(default=[]), selected: dict = Depends(filters), reader_view: bool = False):
         get_project(project_id)
+        if reader_view and page_size > 120:
+            raise HTTPException(400, 'reader view page_size must not exceed 120')
         invoke(lambda: algorithm_scope(project_id, selected.get('algorithm_id')))
         store = material_store(project_id)
         from .annotation_repository import AnnotationRepository
@@ -79,7 +85,21 @@ def create_negative_pool_router(material_store, get_project, public_material, us
             usage = usage_for_page(project_id, result['items'])
             for row in result['items']:
                 row['negative_pool']['training_usage'] = usage.get(row['id'], 'unknown')
-        result['items']=[{**public_material(project_id,row),'negative_pool':row['negative_pool']} for row in result['items']]
+        if reader_view:
+            from .material_reader_views import material_display
+            from .model_asset_views import fields
+            def display(row):
+                source = row['negative_pool']
+                negative = fields(source, ('joined_at', 'review_status', 'algorithm_id', 'qualification', 'role',
+                    'scope_kind', 'algorithm_qualification', 'effective_label_codes', 'expected_version',
+                    'annotation_digest', 'source_content_sha256', 'annotation_revision'))
+                negative['categories'] = [fields(category, ('id', 'name', 'enabled')) for category in source.get('categories', [])]
+                usage = source.get('training_usage', 'unknown')
+                negative['training_usage'] = fields(usage, ('state', 'current_algorithm_trained', 'other_algorithm_trained')) if isinstance(usage, dict) else usage
+                return {**material_display(project_id, row), 'negative_pool':negative}
+            result['items'] = [display(row) for row in result['items']]
+        else:
+            result['items']=[{**public_material(project_id,row),'negative_pool':row['negative_pool']} for row in result['items']]
         if revisions != (store.current_revision(), annotations.current_revision(), pool(project_id).revision()):
             raise HTTPException(409, 'material, annotation or pool changed; refresh before retry')
         result.update(material_revision=revisions[0], annotation_revision=revisions[1], negative_pool_revision=revisions[2])
@@ -109,7 +129,18 @@ def create_negative_pool_router(material_store, get_project, public_material, us
 
     @router.post('/members')
     def members(project_id: str, body: dict = Body(...)):
-        return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),algorithm_id=algorithm_scope(project_id,body.get('algorithm_id')),report_counts=body.get('report_counts',False),require_empty_gt=body.get('require_empty_gt',False)))
+        if ('expected_revision' in body or 'operation_id' in body) and (body.get('expected_revision') is None or body.get('operation_id') is None):
+            raise HTTPException(400, 'member operation requires paired revision/id')
+        return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),algorithm_id=algorithm_scope(project_id,body.get('algorithm_id')),report_counts=body.get('report_counts',False),require_empty_gt=body.get('require_empty_gt',False),expected_revision=body.get('expected_revision'),operation_id=body.get('operation_id'),project_id=project_id))
+
+    @router.get('/operations/{operation_id}')
+    def member_operation(project_id: str, operation_id: str, algorithm_id: str = ''):
+        get_project(project_id)
+        scope = invoke(lambda: algorithm_scope(project_id, algorithm_id))
+        result = invoke(lambda: pool(project_id).member_operation(operation_id, algorithm_id=scope, project_id=project_id))
+        if result is None:
+            raise HTTPException(404, 'member operation receipt not found')
+        return result
 
     @router.post('/upload-intent')
     def upload_intent(project_id: str, body: dict = Body(...)):

@@ -5,8 +5,19 @@ These attributes never certify absence of a training target and never write GT.
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import uuid
+import hashlib
+import json
+import re
 
 from .material_repository import material_annotation_lifecycle_fence
+
+
+class MemberOperationConflict(ValueError):
+    """Opt-in membership packet conflicts with durable state."""
+
+
+class MemberOperationScopeError(ValueError):
+    """Receipt does not belong to the requested membership scope."""
 
 
 _DDL = (
@@ -41,16 +52,33 @@ class NegativePool:
             raise ValueError('invalid identity')
         return result
 
-    def _mutate(self, operation, *, initialize_pool=True):
+    def _mutate(self, operation, *, initialize_pool=True, member_receipt=None):
         with material_annotation_lifecycle_fence(self.materials.project_path), closing(self.materials._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
+                if member_receipt:
+                    exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_operations'").fetchone()
+                    prior = db.execute('SELECT identity,result_json FROM negative_pool_operations WHERE operation_id=?', (member_receipt['operation_id'],)).fetchone() if exists else None
+                    if prior:
+                        if prior[0] != member_receipt['identity']:
+                            raise MemberOperationConflict('member operation identity mismatch')
+                        db.commit()
+                        return json.loads(prior[1])
                 if initialize_pool:
                     for sql in _DDL:
                         db.execute(sql)
+                if member_receipt:
+                    revision = str(db.execute('SELECT revision FROM negative_pool_meta WHERE id=1').fetchone()[0])
+                    if revision != member_receipt['expected_revision']:
+                        raise MemberOperationConflict('negative pool revision changed; refresh before retry')
                 result = operation(db)
                 if initialize_pool:
                     db.execute('UPDATE negative_pool_meta SET revision=revision+1 WHERE id=1')
+                if member_receipt:
+                    result.update({key: member_receipt[key] for key in ('operation_id', 'operation_kind', 'project_id', 'algorithm_id', 'action')})
+                    result.update(previous_revision=revision, negative_pool_revision=str(int(revision)+1))
+                    db.execute('CREATE TABLE IF NOT EXISTS negative_pool_operations(operation_id TEXT PRIMARY KEY,identity TEXT NOT NULL,result_json TEXT NOT NULL)')
+                    db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)', (member_receipt['operation_id'], member_receipt['identity'], json.dumps(result)))
                 db.commit()
                 return result
             except Exception:
@@ -152,10 +180,38 @@ class NegativePool:
             return dict(db.execute('SELECT * FROM negative_pool_categories WHERE id=?', (identity,)).fetchone())
         return self._mutate(write)
 
-    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False):
+    def member_operation(self, operation_id, *, algorithm_id, project_id=None):
+        if not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id) or not algorithm_id:
+            raise ValueError('invalid member operation identity')
+        with closing(self.materials._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_operations'").fetchone():
+                return None
+            row = db.execute('SELECT result_json FROM negative_pool_operations WHERE operation_id=?', (operation_id,)).fetchone()
+            if not row:
+                return None
+            result = json.loads(row[0])
+            if (result.get('operation_kind') != 'negative_pool.members.v1' or result.get('algorithm_id') != str(algorithm_id)
+                    or result.get('project_id') != str(project_id if project_id is not None else self.materials.project_path.name)):
+                raise MemberOperationScopeError('member operation receipt not found')
+            return result
+
+    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False, expected_revision=None, operation_id=None, project_id=None):
         if type(report_counts) is not bool or type(require_empty_gt) is not bool:
             raise ValueError('report_counts/require_empty_gt must be boolean')
         ids, categories = self._ids(image_ids), self._ids(category_ids)
+        receipt = None
+        if expected_revision is not None or operation_id is not None:
+            if (not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id)
+                    or not isinstance(expected_revision, str) or not re.fullmatch(r'0|[1-9][0-9]{0,18}', expected_revision)
+                    or not algorithm_id or not ids or len(ids) > 200 or categories or categories_only
+                    or action not in ('add', 'remove') or require_empty_gt):
+                raise ValueError('member operation requires paired revision/id, algorithm scope and 1-200 ordinary membership identities')
+            report_counts = True
+            receipt = dict(operation_kind='negative_pool.members.v1', operation_id=operation_id,
+                           project_id=str(project_id if project_id is not None else self.materials.project_path.name),
+                           algorithm_id=str(algorithm_id), action=action, expected_revision=expected_revision)
+            identity = {**receipt, 'image_ids': sorted(ids)}
+            receipt['identity'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         if action not in ('add','remove','set') or (action == 'set' and not categories_only):
             raise ValueError('invalid action')
         if require_empty_gt and (action != 'add' or categories_only or len(ids) > 200):
@@ -205,7 +261,7 @@ class NegativePool:
                 if conflicts:
                     raise ValueError('素材 ' + '、'.join(conflicts[:10]) + ' 存在正式GT目标框；本批未更改，请先处理冲突')
                 return self._mutate(write)
-        return self._mutate(write)
+        return self._mutate(write, member_receipt=receipt) if receipt else self._mutate(write)
 
     def set_positive_upload_intent(self, image_ids, label_codes):
         """Record labels the uploader plans to annotate, never formal GT.

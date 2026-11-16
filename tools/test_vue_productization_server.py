@@ -77,6 +77,37 @@ for i in range(25):
     api.write_json(directory/'job.json',{'id':task_id,'status':'done' if i%2==0 else 'failed','framework':'ultralytics',
         'asset_algorithm_id':'acceptance-algorithm','epochs':50,'batch':4,'imgsz':640,'metrics':{'map50':.99}})
 
+# P1K–P1N: real local bytes and formal GT in the same temporary repository.
+# No training runner is started. All image/algorithm identities are synthetic.
+import io,hashlib
+from PIL import Image,ImageDraw
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.algorithms import list_algorithms
+api.add_label(project_id,api.AddLabelReq(label='smoke'))
+algorithms=list_algorithms(api.algorithms_file(project_id))
+algorithms.append({'id':'acceptance-material-algorithm','name':'素材选材隔离验收算法',
+    'algorithm_type':'yolo_ultralytics','source_type':'LOCAL','versions':[],'created_at':'2026-11-17'})
+save_algorithms(api.algorithms_file(project_id),algorithms)
+manager=api.storage_manager(project_id)
+materials=[];annotations=[]
+for index in range(125):
+    image=Image.new('RGB',(640,480),(225,index%120+100,235));draw=ImageDraw.Draw(image)
+    draw.rectangle((64,48,320,240),outline=(40,80,140),width=5);draw.text((20,400),f'ISOLATED {index}',fill=(20,30,40))
+    stream=io.BytesIO();image.save(stream,format='JPEG');data=stream.getvalue();image_id=f'acceptance-material-{index:03}'
+    key=f'uploads/{image_id}.jpg';manager.upload_object('default_local',key,io.BytesIO(data),content_type='image/jpeg')
+    sha=hashlib.sha256(data).hexdigest()
+    materials.append({'id':image_id,'filename':f'隔离合成素材 {index:03}.jpg','storage_source_id':'default_local',
+        'storage_type':'local','object_key':key,'content_sha256':sha,'size_bytes':len(data),'width':640,'height':480,
+        'processing_status':'processed','source_available':True,'import_batch_id':'isolated-p1kn','created_at':f'2026-11-17T00:{index//60:02}:{index%60:02}Z'})
+    annotations.append({'image_id':image_id,'annotation_state':'annotated','annotation_scope':['smoke'],
+        'reviewed_label_codes':['smoke'],'source_content_sha256':sha,
+        'boxes':[{'class_id':0,'label':'smoke','x1':64,'y1':48,'x2':320,'y2':240}]})
+api.material_store(project_id).upsert_many(materials)
+AnnotationRepository(api.project_dir(project_id)).upsert_many(annotations)
+# A fixture mother file only prevents automatic network acquisition; no trainer reads it.
+mother=api.DATA_DIR/'models'/'yolo11n.pt';mother.parent.mkdir(parents=True,exist_ok=True)
+mother.write_bytes(b'isolated-non-executable-fixture-model'*128)
+
 registry = ServiceNodeRepository(api.shared_task_repository())
 _, token = registry.create({'node_id': 'acceptance-arm64', 'display_name': 'ARM64 测试快照节点', 'connection_mode': 'agent', 'allowed_capabilities': ['training', 'conversion']})
 registry.heartbeat('acceptance-arm64', token, {

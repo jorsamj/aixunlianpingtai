@@ -1,0 +1,9 @@
+import type {BrowseContext} from './model-browse';
+export interface MaterialBox {label?:string;class_id?:string|number;x1:number;y1:number;x2:number;y2:number;confidence?:number|null}
+export interface MaterialRow {id:string;filename:string;width?:number;height?:number;size_bytes?:number;storage_source_id?:string;source_batch_id?:string;import_batch_id?:string;storage_type?:string;annotation_issue_type?:string;processing_status?:string;annotation_state?:string;quality_status?:string;source_available?:boolean;content_sha256?:string;created_at?:string;labels?:string[];annotation_preview?:MaterialBox[];box_count?:number;thumbnail_url?:string;content_url?:string}
+export interface MaterialFilters {query:string;label:string;annotation_state:string;quality_status:string;storage_source_id:string;source_batch_id:string;created_from:string;created_to:string}
+export interface MaterialMemory {filters:MaterialFilters;page:number;layout:'grid'|'list';selectedItems:string[]}
+export interface MaterialHistory {items:{task_id:string;algorithm_name?:string;role?:string;status?:string;evidence?:number;finished_at?:string}[];page:number;page_size:number;total:number;coverage?:string|Record<string,unknown>;state?:string}
+export interface MaterialContext extends BrowseContext {memory:BrowseContext['memory']&{materials?:MaterialMemory};openMaterials?():void;openNegativePool?():void;legacyMaterials?(action?:'manage'|'upload'|'annotate',id?:string):void;history?(id:string,page:number,signal:AbortSignal):Promise<MaterialHistory>}
+export interface MaterialPage {ok:boolean;project_id:string;items:MaterialRow[];total:number;page:number;page_size:number;total_pages:number;has_next:boolean}
+export interface MaterialDetail {ok:boolean;project_id:string;image:MaterialRow;annotation:{boxes:MaterialBox[];annotation_state:string;annotation_version?:number;reviewed_label_codes?:string[];source_content_sha256?:string};boxes_total:number;boxes_truncated:boolean}

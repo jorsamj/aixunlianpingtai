@@ -3066,11 +3066,13 @@ def list_materials_v61(
     annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial", "needs_review"]] = None,
     source_batch_id: Optional[str] = None, quality_status: Optional[Literal["pending_decision", "processed", "issue"]] = None,
     created_from: Optional[str] = None, created_to: Optional[str] = None,
+    reader_view: bool = False,
 ):
     get_project(project_id)
     numbered = page is not None or page_size is not None
     requested_page = int(1 if page is None else page) if numbered else None
     requested_size = int(page_size if page_size is not None else limit)
+    if reader_view and requested_size>120:raise HTTPException(422,detail='素材浏览每页最多120条')
     if numbered and (requested_page is None or requested_page < 1):
         raise HTTPException(status_code=422, detail="page must be at least 1")
     if requested_size < 1 or requested_size > 1000:
@@ -3107,6 +3109,10 @@ def list_materials_v61(
             "has_previous": requested_page > 1,
             "has_next": requested_page < total_pages,
         })
+    if reader_view:
+        from platform_core.material_reader_views import material_display
+        response.update(ok=True,project_id=project_id)
+        response['items']=[material_display(project_id,item) for item in material_page.items]
     return response
 
 
@@ -5821,13 +5827,16 @@ async def import_voc_zip(project_id: str, file: UploadFile = File(...), dataset_
     return {"ok": True, "imported_images": len(imported), "annotated_images": annotated, "boxes": boxes_total, "labels": get_project(project_id).get("labels", []), "message": "已导入 Pascal VOC 数据集并转换为平台内部标注。"}
 
 @app.get("/api/projects/{project_id}/annotations/{image_id}")
-def get_annotation(project_id: str, image_id: str):
+def get_annotation(project_id: str, image_id: str, reader_view: bool=False):
     get_project(project_id)
     rows = material_store(project_id).get_many([str(image_id)])
     img = rows[0] if rows else None
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
     ann = read_annotation(project_id, image_id)
+    if reader_view:
+        from platform_core.material_reader_views import annotation_display
+        return annotation_display(project_id,img,ann)
     return {"ok": True, **ann, "image": img, "annotation": ann}
 
 
