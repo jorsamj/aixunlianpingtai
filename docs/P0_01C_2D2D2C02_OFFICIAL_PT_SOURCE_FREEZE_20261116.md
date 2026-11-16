@@ -24,3 +24,21 @@
 ## CI 验收记录
 
 待填：本轮代码 SHA、实测官方 release SHA/size、systemd E2E 运行、CPU/ORT 差值、失败边界测试、全仓各 CI 最终结果。不得沿用上一阶段的 24/24。
+
+
+## 真实官方权重已验收的完整证据
+
+**代码 SHA：373466e8b1b34b9276ffdf06ac339426b65fbf81**。
+
+独立 Ubuntu24.04/systemd255 实际运行（不是 mock）：
+https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371849 —— **SUCCESS**。
+
+- 旧平台已有的 Ultralytics 官方来源白名单：v8.4.0 / yolo11n.pt，源字节数 **5,613,764**，SHA256 **0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1**。代码 SHA/size 白名单与本次真实 GitHub Release 下载内容完全一致；源码在 Web/Supervisor root 中绝未 pickle 反序列化。
+- 官方文件经过 O_NOFOLLOW 和大小/SHA/ZIP 预检、root-owned staged source 0444+fsync、manifest 和 source 重读核验、原中央存储任务 request 与 task/lease/attempt 新签名、原 journal 一次性 CAS、非 root systemd unit（network off、GPU device off）执行真实 PT→ONNX。
+- 实际 ONNX **10,534,119 bytes**；SHA256 **87cadf21a519912dd549780c7c837d1b207adee43b8418002d76db2981bf98f3**，opset 12，输入 [1,3,32,32]、输出 [1,84,21]，ORT **CPUExecutionProvider**；与原 PyTorch 输出最大绝对误差 **1.9073486328125e-05**。ONNX checker 验证和 original systemd invocation 绑定通过。
+- **29/29 纯安全合同测试通过；10/10 真实 systemd 集成测试通过**，包括源文件内容修改、原文件/软链接替换、固定 central contract 错误、原租约撤销、CAS 后 OS 故障不能再次启动等拒绝验证。
+- 失败修复保留：第一次 CI 真实隔离测试因 sudo 清除指定 CI 下载路径环境变量拒绝启动；第二次因重绑定后没有携带官方来源身份，安全检查正确拒绝启动。两项均最小修复，未改动任何生产执行接口或放宽来源校验。当前代码提交在相同真实测试场景通过。
+
+**这个 SUCCESS 只证明官方固定 SHA 白名单模型的隔离执行路径；平台自行训练的用户 PT（包括 registry VERIFIED）仍不能安全地采用同样的直接受保护反序列化信任级别。**
+
+其他 24 项全仓 CI 的最终终态尚需以代码 SHA 373466e8 的实际查询结果核实。
