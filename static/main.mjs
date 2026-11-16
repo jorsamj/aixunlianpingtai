@@ -7,7 +7,8 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1kn1';
+import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1or1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1or1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -535,12 +536,14 @@ const catalogPreviewRuntime = installCatalogPreview({
   reportsEnabled: new URLSearchParams(location.search).get('vue_training_report') === '1',
   materialsEnabled: new URLSearchParams(location.search).get('vue_material_library') === '1',
   poolEnabled: new URLSearchParams(location.search).get('vue_negative_pool') === '1',
+  aiTasksEnabled: new URLSearchParams(location.search).get('vue_ai_tasks') === '1',
   createOperationId: () => catalogOperationId(window.crypto),
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
 if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
 window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
+window.AiReviewVueRuntime=installAiReviewVueRuntime({enabled:new URLSearchParams(location.search).get('vue_ai_review')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiReview(host,context)});
 window.AiReviewRouteRuntime = installAiReviewRoute({
   getReview: () => state.ai60Review,
   open: (id, options) => window.reviewAiLabel427?.(id, options),

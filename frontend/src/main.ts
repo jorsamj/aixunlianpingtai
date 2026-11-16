@@ -30,6 +30,10 @@ import type {PoolContext} from './types/negative-pool';
 import type {PickerContext} from './types/training-picker';
 import type {MaterialContext} from './types/materials';
 import TrainingTasks from './views/TrainingTasks.vue';
+import AiAnnotationTasks from './views/AiAnnotationTasks.vue';
+import AiReviewWorkbench from './views/AiReviewWorkbench.vue';
+import type {AiReviewContext} from './types/ai-review';
+import type {AiTaskContext} from './types/ai-tasks';
 import TrainingReport from './views/TrainingReport.vue';
 import ModelAssets from './views/ModelAssets.vue';
 import ConversionHistory from './views/ConversionHistory.vue';
@@ -50,7 +54,9 @@ export async function mountTrainingReport(host:HTMLElement,context:BrowseContext
 export async function mountMaterialLibrary(host:HTMLElement,context:MaterialContext){return mountView(host,context,MaterialLibrary)}
 export async function mountNegativePool(host:HTMLElement,context:PoolContext){return mountView(host,context,NegativePool)}
 export async function mountTrainingMaterialPicker(host:HTMLElement,context:PickerContext){return mountView(host,context,TrainingMaterialPicker)}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext,component:Component){
+export async function mountAiAnnotationTasks(host:HTMLElement,context:AiTaskContext){return mountView(host,context,AiAnnotationTasks)}
+export async function mountAiReviewWorkbench(host:HTMLElement,context:AiReviewContext){return mountView(host,context,AiReviewWorkbench)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext,component:Component){
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});
   app.use(createPinia()).use(router);

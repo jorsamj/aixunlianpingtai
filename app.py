@@ -25988,7 +25988,7 @@ def _start_annotation_statistics_backfill(project_id: str, task_ids: list[str], 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
 def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None,
-                          status: str = "", q: str = "", retry_index: bool = False):
+                          status: str = "", q: str = "", retry_index: bool = False, reader_view: bool = False):
     get_project(project_id)
     selected_status = str(status or "").strip().upper()
     if selected_status and selected_status not in {item.value for item in TaskStatus}:
@@ -26011,11 +26011,13 @@ def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str
         with _annotation_search_worker_lock:
             error = _annotation_search_worker_errors.get(project_id)
         if error:
-            return JSONResponse(status_code=503, content={"detail": error, "index_failed": True})
+            from platform_core.training_reader_views import text
+            return JSONResponse(status_code=503, content={"detail": text(error) if reader_view else error, "index_failed": True})
         if progress["pending"]:
             _start_annotation_search_backfill(project_id)
             return JSONResponse(status_code=202, content={
                 "indexing": True,
+                **({"ok":True,"project_id":project_id} if reader_view else {}),
                 "indexed": progress["total"] - progress["pending"],
                 "total": progress["total"],
                 "remaining": progress["pending"],
@@ -26046,7 +26048,7 @@ def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str
         if any(task.status is TaskStatus.QUEUED for task in page.items)
         else ()
     )
-    return {
+    response = {
         "items": [
             public_annotation_task(
                 task,
@@ -26060,6 +26062,13 @@ def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str
         "next_cursor": page.next_cursor,
         "statistics_indexing": bool(missing_statistics),
     }
+
+
+    if reader_view:
+        from platform_core.annotation_reader_views import task_display
+        response.update(ok=True, project_id=project_id)
+        response["items"]=[task_display(row) for row in response["items"]]
+    return response
 
 
 def _require_annotation_review_task(project_id: str, task_id: str):
@@ -26076,7 +26085,7 @@ def _require_annotation_review_task(project_id: str, task_id: str):
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}")
-def get_annotation_task(project_id: str, task_id: str):
+def get_annotation_task(project_id: str, task_id: str, reader_view: bool = False):
     task = _require_annotation_review_task(project_id, task_id)
     summary = _annotation_summary(task)
     if summary and task.kind is TaskKind.AI_ANNOTATION:
@@ -26094,6 +26103,9 @@ def get_annotation_task(project_id: str, task_id: str):
                 result["generation_failure_codes"] = generation["failure_codes"][:5]
             if isinstance(generation.get("execution"), dict):
                 result["generation_execution"] = generation["execution"]
+    if reader_view:
+        from platform_core.annotation_reader_views import task_display
+        return {"ok":True,"project_id":project_id,"task":task_display(result)}
     return result
 
 
@@ -26209,14 +26221,20 @@ def annotation_material_states(project_id: str, image_ids: str = ""):
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates")
-def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None, filter: str = "all"):
+def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None, filter: str = "all", reader_view: bool = False):
     task = _require_annotation_review_task(project_id, task_id)
+    if reader_view and filter != "failed":
+        raise HTTPException(422, detail="只读诊断仅支持失败图片分页")
     if not task.result_ref and not shared_task_artifacts().artifact_path(task_id, "candidates/manifest.json").is_file():
-        return {"items": [], "next_cursor": None, "total": 0, "summary": {},
+        response = {"items": [], "next_cursor": None, "total": 0, "summary": {},
                 "review_revision": 0, "task": public_annotation_task(task),
                 "task_error": {"stage": str(task.stage or "generation"),
                                "message": str(task.error or "任务尚未生成候选结果，可检查任务状态后重试"),
                                "code": "CANDIDATES_NOT_GENERATED"}}
+        if reader_view:
+            from platform_core.annotation_reader_views import failure_page
+            return failure_page(project_id,task_id,response)
+        return response
     store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
     try:
         page = store.read_page(
@@ -26251,6 +26269,9 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
                    if any(item.get("review_scope_policy") == "per_image_required" for item in items) else {})}
     if cursor in {None, "", "0"}:
         response["label_summary"] = store.label_summary()
+    if reader_view:
+        from platform_core.annotation_reader_views import failure_page
+        return failure_page(project_id,task_id,response)
     return response
 
 

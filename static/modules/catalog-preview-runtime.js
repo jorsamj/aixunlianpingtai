@@ -5,22 +5,23 @@ export const NODES_PAGE = '服务节点只读总览';
 export const ASSETS_PAGE = '模型资产只读浏览';
 export const MATERIALS_PAGE = '素材库正式浏览';
 export const POOL_PAGE = '算法负样本池正式管理';
+export const AI_TASKS_PAGE = 'AI标注任务正式浏览';
 export const TASKS_PAGE = '训练任务只读中心';
 export const REPORT_PAGE = '训练报告只读阅读';
 export const HISTORY_PAGE = '版本转换只读历史';
-export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, poolEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
+export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
   load = async () => {
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1kn1'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1or1'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1kn1')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1or1')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
@@ -72,7 +73,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
       const module = await load();
       if (!active()) return;
       const managed=page===MANAGEMENT_PAGE&&managementEnabled;
-      const browsing=assetsEnabled&&[ASSETS_PAGE,HISTORY_PAGE].includes(page)||tasksEnabled&&page===TASKS_PAGE||reportsEnabled&&page===REPORT_PAGE||materialsEnabled&&page===MATERIALS_PAGE||poolEnabled&&page===POOL_PAGE;
+      const browsing=assetsEnabled&&[ASSETS_PAGE,HISTORY_PAGE].includes(page)||tasksEnabled&&page===TASKS_PAGE||reportsEnabled&&page===REPORT_PAGE||materialsEnabled&&page===MATERIALS_PAGE||poolEnabled&&page===POOL_PAGE||aiTasksEnabled&&page===AI_TASKS_PAGE;
       const browse=memory(project),query=new URLSearchParams(globalThis.location?.search||'');
       if(browsing&&!browse.selection&&query.get('asset_algorithm')&&query.get('asset_version'))browse.selection={algorithmId:query.get('asset_algorithm'),versionId:query.get('asset_version')};
       const scopeError=browsing&&query.get('asset_project')&&query.get('asset_project')!==String(project)?'链接项目与当前项目身份不一致，请从当前项目重新选择。':'';
@@ -111,12 +112,14 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           const report=page===REPORT_PAGE&&url.startsWith('/api/v44/')&&parsed.searchParams.get('reader_view')==='true'&&parsed.pathname===`/api/v44/projects/${encodeURIComponent(project||'')}/jobs/${encodeURIComponent(browse.report?.jobId||'')}/report`;
           const materialRoot=`/api/v61/projects/${encodeURIComponent(project||'')}/materials`,annotationRoot=`/api/projects/${encodeURIComponent(project||'')}/annotations/`;
           const materialReads=page===MATERIALS_PAGE&&parsed.searchParams.get('reader_view')==='true'&&((url.startsWith('/api/v61/')&&parsed.pathname===materialRoot)||(url.startsWith('/api/projects/')&&parsed.pathname.startsWith(annotationRoot)&&parsed.pathname.slice(annotationRoot.length).split('/').length===1));
+          const aiRoot=`/api/v60/projects/${encodeURIComponent(project||'')}/annotation-tasks`;
+          const aiRead=page===AI_TASKS_PAGE&&url.startsWith('/api/v60/')&&parsed.searchParams.get('reader_view')==='true'&&(parsed.pathname===aiRoot||parsed.pathname.startsWith(aiRoot+'/')&&parsed.pathname.slice(aiRoot.length+1).split('/').length===1||parsed.pathname.startsWith(aiRoot+'/')&&parsed.pathname.slice(aiRoot.length+1).split('/').length===2&&parsed.pathname.endsWith('/candidates')&&parsed.searchParams.get('filter')==='failed');
           const poolRoot=`/api/v61/projects/${encodeURIComponent(project||'')}/negative-pool`;
           const poolRead=page===POOL_PAGE&&url.startsWith('/api/v61/')&&((parsed.pathname===poolRoot&&parsed.searchParams.get('reader_view')==='true')||parsed.pathname===poolRoot+'/categories'||new RegExp('^'+poolRoot+'/operations/[A-Za-z0-9_-]{1,128}$').test(parsed.pathname));
           const history=local&&page===HISTORY_PAGE&&parsed.searchParams.get('asset_view')==='true'&&parsed.pathname===`/api/v42/projects/${encodeURIComponent(project||'')}/algorithms/${encodeURIComponent(historySelection?.algorithmId||'')}/versions/${encodeURIComponent(historySelection?.versionId||'')}/deployments`;
           if(browsing&&!project)throw new Error('当前项目尚未就绪');
           if(browsing&&scopeError)throw new Error(scopeError);
-          if(!(page!==NODES_PAGE&&!browsing&&records||receipt||nodes||browsing&&(assets||history||tasks||report||materialReads||poolRead)))throw new Error('只读或管理页面不允许该请求');
+          if(!(page!==NODES_PAGE&&!browsing&&records||receipt||nodes||browsing&&(assets||history||tasks||report||materialReads||poolRead||aiRead)))throw new Error('只读或管理页面不允许该请求');
           return call(url,{...options,method:'GET'});
         },
         ...(managed?{post(url,body){
@@ -129,6 +132,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           const root=`/api/v12/projects/${encodeURIComponent(project)}/algorithms`;
           return call(root+(id?'/'+encodeURIComponent(id):'')+'?asset_view=true',{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         }}:{}),
+        ...(aiTasksEnabled?{openAiReview:async(id)=>{if(!active()||!/^[-A-Za-z0-9_]{1,128}$/.test(String(id)))return;await Promise.resolve(globalThis.window.setPage('自动标注及清洗'));if(getState().project?.id===project&&getState().page==='自动标注及清洗')return globalThis.window.reviewAiLabel427?.(id)},legacyAi:async(action,id)=>{if(!active())return;await Promise.resolve(globalThis.window.setPage('自动标注及清洗'));if(getState().project?.id!==project||getState().page!=='自动标注及清洗')return;if(action==='create')return globalThis.window.createAiLabel427?.();if(id)return globalThis.window.showAiTask60?.(id)}}:{}),
         ...(poolEnabled?{openNegativePool:()=>{if(active())return globalThis.window.setPage(POOL_PAGE)}}:{}),
         ...(poolEnabled&&page===POOL_PAGE?{poolPending:poolPending(),createOperationId,poolWrite(packet){
           if(packet.project_id!==String(project)||!packet.algorithm_id||!['add','remove'].includes(packet.action)||!Array.isArray(packet.image_ids)||packet.image_ids.length<1||packet.image_ids.length>200||!/^[-A-Za-z0-9_]{1,128}$/.test(packet.operation_id))throw new Error('负样本成员操作身份无效');
@@ -153,20 +157,20 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
         ...(browsing?{projectId:String(project||''),memory:browse,scopeError,openHistory(selection){
           if(!active())return;const identity=JSON.stringify([selection.algorithmId,selection.versionId]);if(browse.historyIdentity!==identity)browse.history={page:1};browse.historyIdentity=identity;browse.selection={...selection};return globalThis.window.setPage(HISTORY_PAGE);
         },returnToAssets:()=>globalThis.window.setPage(ASSETS_PAGE),openLegacy:legacy}:{}),
-        returnToManagement: () => globalThis.window.setPage(browsing?([MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':'算法列表'):page===NODES_PAGE?'服务节点':'部署资源'),
+        returnToManagement: () => globalThis.window.setPage(browsing?(page===AI_TASKS_PAGE?'自动标注及清洗':[MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':'算法列表'):page===NODES_PAGE?'服务节点':'部署资源'),
       };
-      const mount=page===POOL_PAGE?module.mountNegativePool:page===MATERIALS_PAGE?module.mountMaterialLibrary:page===TASKS_PAGE?module.mountTrainingTasks:page===REPORT_PAGE?module.mountTrainingReport:page===NODES_PAGE?module.mountServiceNodes:page===ASSETS_PAGE?module.mountModelAssets:page===HISTORY_PAGE?module.mountConversionHistory:module.mountCatalogPreview;
+      const mount=page===AI_TASKS_PAGE?module.mountAiAnnotationTasks:page===POOL_PAGE?module.mountNegativePool:page===MATERIALS_PAGE?module.mountMaterialLibrary:page===TASKS_PAGE?module.mountTrainingTasks:page===REPORT_PAGE?module.mountTrainingReport:page===NODES_PAGE?module.mountServiceNodes:page===ASSETS_PAGE?module.mountModelAssets:page===HISTORY_PAGE?module.mountConversionHistory:module.mountCatalogPreview;
       const dispose = await mount(host,context);
       if (!active()) dispose(); else unmount = dispose;
     } catch (error) {
       if (active() && !signal.aborted) {
         host.textContent = 'Vue 页面未能打开。请确认已构建离线静态资源，或返回完整管理页面。';
         const back = document.createElement('button'); back.textContent = '返回完整管理';
-        back.addEventListener('click', () => globalThis.window.setPage([MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':[ASSETS_PAGE,HISTORY_PAGE,REPORT_PAGE].includes(page)?'算法列表':page===NODES_PAGE?'服务节点':'部署资源'), {signal}); host.append(back);
+        back.addEventListener('click', () => globalThis.window.setPage(page===AI_TASKS_PAGE?'自动标注及清洗':[MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':[ASSETS_PAGE,HISTORY_PAGE,REPORT_PAGE].includes(page)?'算法列表':page===NODES_PAGE?'服务节点':'部署资源'), {signal}); host.append(back);
       }
     }
   }
   const unregister=[];
-  for(const [allowed,page] of [[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
-  return {leave,openHistory,async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
+  for(const [allowed,page] of [[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE],[aiTasksEnabled,AI_TASKS_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
+  return {leave,openHistory,aiTasksEnabled,openAiTasks(){if(aiTasksEnabled)return globalThis.window.setPage(AI_TASKS_PAGE)},async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},async mountAiReview(host,context){const module=await load();return module.mountAiReviewWorkbench(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
 }
