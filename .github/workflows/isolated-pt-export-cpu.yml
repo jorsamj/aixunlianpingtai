@@ -10,6 +10,7 @@ on:
       - 'platform_core/os_supervisor_pt_official_source.py'
       - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
       - 'platform_core/os_supervisor_pt_stop_grant.py'
+      - 'platform_core/os_supervisor_pt_stop_rechecked_bridge.py'
       - 'platform_core/os_supervisor_pt_export_launch.py'
       - 'tests/unit/test_os_supervisor_pt_stop_grant.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
@@ -27,6 +28,7 @@ on:
       - 'platform_core/os_supervisor_pt_official_source.py'
       - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
       - 'platform_core/os_supervisor_pt_stop_grant.py'
+      - 'platform_core/os_supervisor_pt_stop_rechecked_bridge.py'
       - 'platform_core/os_supervisor_pt_export_launch.py'
       - 'tests/unit/test_os_supervisor_pt_stop_grant.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
@@ -104,6 +106,7 @@ jobs:
             platform_core/os_supervisor_pt_official_source.py \
             platform_core/os_supervisor_pt_export_rechecked_bridge.py \
             platform_core/os_supervisor_pt_stop_grant.py \
+            platform_core/os_supervisor_pt_stop_rechecked_bridge.py \
             platform_core/os_supervisor_pt_export_launch.py \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
             tests/unit/test_os_supervisor_pt_official_source.py \
