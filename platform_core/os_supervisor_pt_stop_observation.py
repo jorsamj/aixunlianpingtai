@@ -8,6 +8,8 @@ process membership must remain UNKNOWN (never successful cancellation).
 from __future__ import annotations
 
 import os
+import select
+import threading
 from pathlib import Path
 import re
 import time
@@ -68,6 +70,75 @@ def _scope(identity: Mapping[str, Any], snapshot: Mapping[str, Any],
         _hold("ORIGINAL_IDENTITY_UNVERIFIED")
 
 
+class _PinnedCgroupObserver:
+    """Arm poll(POLLPRI) BEFORE systemctl stop or kernel GC can erase evidence."""
+
+    def __init__(self, pinned):
+        self.pinned = pinned
+        self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._closed = threading.Event()
+        self._thread = threading.Thread(target=self._watch, daemon=True,
+                                        name="pt-stop-ci-cgroup-events")
+        self._request_ns: int | None = None
+        self._saw_zero = False
+        self._repopulated = False
+        self._observer_error = False
+
+    def _watch(self) -> None:
+        try:
+            poller = select.poll()
+            poller.register(self.pinned.fileno(), select.POLLPRI | select.POLLERR)
+            self._ready.set()
+            while not self._closed.is_set():
+                # Poll subscriptions observe the cgroup.events transition even
+                # when systemctl stop returns only after the unit was GC'd.
+                poller.poll(10)
+                with self._lock:
+                    value = _populated(self.pinned)
+                    if self._request_ns is not None:
+                        if value == 0 and time.monotonic_ns() >= self._request_ns:
+                            self._saw_zero = True
+                        elif value == 1 and self._saw_zero:
+                            self._repopulated = True
+        except (OSError, ValueError):
+            with self._lock:
+                self._observer_error = True
+            self._ready.set()
+
+    def start(self) -> None:
+        self._thread.start()
+        if not self._ready.wait(timeout=1.0):
+            _hold("CGROUP_OBSERVER_NOT_READY")
+
+    def arm(self) -> int:
+        with self._lock:
+            if self._observer_error or _populated(self.pinned) != 1:
+                _hold("CGROUP_CHANGED_BEFORE_STOP")
+            self._request_ns = time.monotonic_ns()
+            return self._request_ns
+
+    def empty_observed(self) -> bool:
+        with self._lock:
+            return self._saw_zero and not self._repopulated and not self._observer_error
+
+    def sample_after_stop(self) -> None:
+        # Also read synchronously in case fake regular-file tests have no poll
+        # notifications. Real cgroup events can be captured by the watcher.
+        with self._lock:
+            value = _populated(self.pinned)
+            if self._request_ns is not None:
+                if value == 0 and time.monotonic_ns() >= self._request_ns:
+                    self._saw_zero = True
+                elif value == 1 and self._saw_zero:
+                    self._repopulated = True
+
+    def close(self) -> None:
+        self._closed.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+
 class IsolatedPtStopObserver:
     """No production API; root CI only; no StopReceipt or task state update."""
 
@@ -120,27 +191,27 @@ class IsolatedPtStopObserver:
             with os.fdopen(fd, "r", encoding="ascii") as pinned:
                 if _populated(pinned) != 1:
                     _hold("CGROUP_NOT_LIVE")
-                # Recheck immediately before making an irreversible stop call.
-                newest = self.backend.inspect(identity["unit_name"], identity["invocation_id"])
-                _scope(identity, newest, current_boot=boot)
-                if _populated(pinned) != 1:
-                    _hold("CGROUP_CHANGED_BEFORE_STOP")
-                requested_ns = time.monotonic_ns()
-                response = self.backend.request_stop(identity["unit_name"],
-                                                     identity["invocation_id"])
-                if (not isinstance(response, Mapping)
-                        or response.get("stop_requested") is not True
-                        or response.get("trusted_stop_receipt_available") is not False):
-                    _hold("STOP_RESPONSE_INVALID")
-                # A lost kernel event is UNKNOWN. This remains conservative
-                # on systemd 249 where an already-unloaded unit is not proof.
-                seen_zero = False
-                deadline = time.monotonic() + 2.0
-                while time.monotonic() < deadline:
-                    if _populated(pinned) == 0:
-                        seen_zero = True
-                        break
-                    time.sleep(0.02)
+                watcher = _PinnedCgroupObserver(pinned)
+                watcher.start()
+                try:
+                    # Recheck before dispatch; no external process can choose
+                    # the target unit, and the observer is already subscribed.
+                    newest = self.backend.inspect(unit, invocation)
+                    _scope(identity, newest, current_boot=boot)
+                    requested_ns = watcher.arm()
+                    response = self.backend.request_stop(unit, invocation)
+                    if (not isinstance(response, Mapping)
+                            or response.get("stop_requested") is not True
+                            or response.get("trusted_stop_receipt_available") is not False):
+                        _hold("STOP_RESPONSE_INVALID")
+                    deadline = time.monotonic() + 2.0
+                    watcher.sample_after_stop()
+                    while time.monotonic() < deadline and not watcher.empty_observed():
+                        time.sleep(0.02)
+                        watcher.sample_after_stop()
+                    seen_zero = watcher.empty_observed()
+                finally:
+                    watcher.close()
         except GrantRejected:
             raise
         except (OSError, UnicodeError) as exc:
