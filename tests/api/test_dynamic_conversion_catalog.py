@@ -133,6 +133,21 @@ def test_catalog_management_never_admits_jobs_without_verified_sdk_evidence(tmp_
     assert error.value.status_code==400
 
 
+def test_catalog_observe_only_reads_never_trigger_resource_detection(tmp_path, monkeypatch):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(api, "DATA_DIR", tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog(catalog(), expected_revision=0)
+    calls = []
+    def resources(*, detect_missing=True):
+        calls.append(detect_missing)
+        assert detect_missing is False
+        return {"items": []}
+    monkeypatch.setattr(api, "v39_list_deploy_resources", resources)
+    assert api.v39_catalog_records(entity="chips", observe_only=True)["items"]
+    assert api.v39_catalog_record("chips", "chip-84", observe_only=True)["item"]["id"] == "chip-84"
+    assert calls == [False, False]
+
+
 def test_catalog_crud_api_uses_one_record_operations_and_authoritative_query(tmp_path,monkeypatch):
     monkeypatch.setattr(api,"DATA_DIR",tmp_path)
     monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})

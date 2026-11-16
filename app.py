@@ -20591,19 +20591,20 @@ def v39_save_conversion_catalog(payload: Dict[str, Any]):
 
 
 @app.get("/api/v39/deploy/catalog/records")
-def v39_catalog_records(entity: str="vendors", query: str="", vendor_id: str="", template_id: str="", enabled: str="", page: int=1, page_size: int=20, sort: str="name"):
+def v39_catalog_records(entity: str="vendors", query: str="", vendor_id: str="", template_id: str="", enabled: str="", page: int=1, page_size: int=20, sort: str="name", observe_only: bool=False):
     from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
     catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
     try: result=conversion_catalog_records(catalog,entity=entity,query=query,vendor_id=vendor_id,template_id=template_id,enabled=enabled,page=page,page_size=page_size,sort=sort)
     except ValueError as error: raise PlatformError("CATALOG_INVALID_QUERY",str(error),"",status_code=422) from error
     if entity=="chips":
-        facts=conversion_catalog_metadata({**catalog,"chips":result["items"]},resources=v39_list_deploy_resources()["items"])
+        resources = v39_list_deploy_resources(detect_missing=False) if observe_only else v39_list_deploy_resources()
+        facts=conversion_catalog_metadata({**catalog,"chips":result["items"]},resources=resources["items"])
         result["items"]=[{**r,"capability":facts["chip_capabilities"][r["id"]]} for r in result["items"]]
     return {"ok":True,**result}
 
 
 @app.get("/api/v39/deploy/catalog/records/{entity}/{identity}")
-def v39_catalog_record(entity: str, identity: str):
+def v39_catalog_record(entity: str, identity: str, observe_only: bool=False):
     from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
     if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_QUERY","字典类型非法",entity,status_code=422)
     repository=_conversion_catalog_repository(DATA_DIR)
@@ -20612,7 +20613,9 @@ def v39_catalog_record(entity: str, identity: str):
     catalog=repository.conversion_catalog()
     rows=conversion_catalog_records({**catalog,entity:[row]},entity=entity)["items"]
     item=rows[0]
-    if entity=="chips": item["capability"]=conversion_catalog_metadata({**catalog,"chips":[row]},resources=v39_list_deploy_resources()["items"])["chip_capabilities"][identity]
+    if entity=="chips":
+        resources = v39_list_deploy_resources(detect_missing=False) if observe_only else v39_list_deploy_resources()
+        item["capability"]=conversion_catalog_metadata({**catalog,"chips":[row]},resources=resources["items"])["chip_capabilities"][identity]
     return {"ok":True,"item":item,"revision":references["revision"],"references":references}
 
 

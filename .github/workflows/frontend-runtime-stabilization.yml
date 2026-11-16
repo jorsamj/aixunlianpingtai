@@ -443,6 +443,21 @@ jobs:
           grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
+      - name: Build opt-in Vue catalog preview
+        run: npm ci --prefix frontend && npm run build --prefix frontend
+      - name: Focused Vue preview Chrome interactions
+        working-directory: frontend
+        run: npm run test:browser
+      - name: Preserve offline preview assets and isolated screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vue-catalog-preview-${{ github.sha }}
+          path: |
+            static/vue-catalog/
+            test-results/vue-catalog/
+          if-no-files-found: ignore
+          retention-days: 14
 
   browser-navigation:
     runs-on: ubuntu-24.04

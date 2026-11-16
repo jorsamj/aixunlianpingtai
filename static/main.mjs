@@ -6,7 +6,8 @@ import {installLazyQualityDetectionWorkbench} from './modules/lazy-quality-detec
 import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.js?v=20261113-13c02';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
-import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=4';
+import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=5';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261116';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -502,6 +503,7 @@ const navigationStabilityRuntime = installNavigationStability({
   beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();if(page!=='质量中心')advancedEvaluation.deactivate();},
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
+    catalogPreviewRuntime?.leave();
     conversionCatalogRuntime.leave();
     changLianDataBrowserRuntime.leave();
     window.NegativePoolRuntime?.beforeNavigate?.(page);
@@ -523,6 +525,12 @@ const navigationStabilityRuntime = installNavigationStability({
   },
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
+const catalogPreviewRuntime = installCatalogPreview({
+  enabled: new URLSearchParams(location.search).get('vue_catalog_preview') === '1',
+  navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
+});
+window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
+window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
 window.AiReviewRouteRuntime = installAiReviewRoute({
   getReview: () => state.ai60Review,
   open: (id, options) => window.reviewAiLabel427?.(id, options),
