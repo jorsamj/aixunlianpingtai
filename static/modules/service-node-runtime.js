@@ -303,7 +303,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   }
 
   function pageHtml() {
-    return `<section class="node633-shell" data-service-node-page="1"><div class="node633-page-head"><div><h2>服务节点</h2><p>统一查看各节点实时资源、Agent/Worker 状态和可执行能力。节点启停只改变中央允许状态，不会绕过现有任务 lease/fencing。</p></div><div class="row"><button class="btn" data-node-page-refresh>刷新</button><button class="btn primary" data-node-page-create>＋ 新增服务节点</button></div></div><div class="node633-list">${nodeListHtml()}</div></section>`;
+    return `<section class="node633-shell" data-service-node-page="1"><div class="node633-page-head"><div><h2>服务节点</h2><p>统一查看各节点实时资源、Agent/Worker 状态和可执行能力。节点启停只改变中央允许状态，不会绕过现有任务 lease/fencing。</p></div><div class="row">${new URLSearchParams(window.location?.search||'').get('vue_service_nodes')==='1'?'<button class="btn" data-node-vue-overview>Vue 只读总览</button>':''}<button class="btn" data-node-page-refresh>刷新</button><button class="btn primary" data-node-page-create>＋ 新增服务节点</button></div></div><div class="node633-list">${nodeListHtml()}</div></section>`;
   }
 
   function createNodeCardElement(list, node) {
@@ -386,6 +386,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     if (!shell || shell.dataset.serviceNodeBound === '1') return;
     shell.dataset.serviceNodeBound = '1';
     shell.addEventListener('click', event => {
+      if(event.target.closest?.('[data-node-vue-overview]')){window.setPage?.('服务节点只读总览');return}
       const refreshButton = event.target.closest?.('[data-node-page-refresh]');
       if (refreshButton) {
         void refresh({paint: true});

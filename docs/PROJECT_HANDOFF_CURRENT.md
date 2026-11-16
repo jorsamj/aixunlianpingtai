@@ -1,3 +1,5 @@
+> **2026-11-17 P1B–P1D 本地完成 / 准确SHA CI待推送核验**：Vue正式字典CRUD及节点只读总览，默认旧页面；开关vue_catalog_manage / vue_service_nodes。复用原API/revision/operation_id/回执/导航，全局未知packet跨项目与刷新保留；原Repository/调度/后端业务不变。真实临时库入口验收、Node/Chrome及构建已验；未部署/真实SDK/离线现场。见[本轮交付、入口、证据和后端建议](PRODUCTIZATION_P1B_P1D_20261116.md)。
+
 > **2026-11-16 P0/P1 精准收尾**：入口三资源统一缓存607，状态复用后端status/label；44项定向Node、3项Chrome及真实入口隔离冒烟通过。准确新SHA CI/上传制品推送后核对；真实离线部署未验证，不进入P2。见[收尾证据与离线打包方法](PRODUCTIZATION_P0_P1_CLOSEOUT_20261116.md)。
 
 > **2026-11-16 产品化 P0/P1（本批精确 SHA CI 待核）**：用户已授权 Vue3/TS/Vite + Element Plus 厂商/芯片只读预览，原登录/API/导航/Task/GT Owner 保留。默认关闭，`?vue_catalog_preview=1` 可进入；已有GET新增 `observe_only` 避免SDK检测，旧管理完整保留。VERSION.txt 实际42.24.592保持，不按旧文档回退42.24.0。详见[本批范围、20域索引、测试与回退](PRODUCTIZATION_P0_P1_20261116.md)。未生产部署，历史“不改Vue”仅为旧阶段限制。

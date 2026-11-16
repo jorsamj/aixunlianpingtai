@@ -6,8 +6,8 @@ import {installLazyQualityDetectionWorkbench} from './modules/lazy-quality-detec
 import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.js?v=20261113-13c02';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
-import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=5';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261116';
+import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261116p1d';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -58,7 +58,7 @@ import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=4226570';
-import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422551';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226491';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';
 import {installSmartMaterialAudit} from './modules/smart-material-audit.js?v=20261026';
@@ -527,6 +527,9 @@ const navigationStabilityRuntime = installNavigationStability({
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
 const catalogPreviewRuntime = installCatalogPreview({
   enabled: new URLSearchParams(location.search).get('vue_catalog_preview') === '1',
+  managementEnabled: new URLSearchParams(location.search).get('vue_catalog_manage') === '1',
+  nodesEnabled: new URLSearchParams(location.search).get('vue_service_nodes') === '1',
+  createOperationId: () => catalogOperationId(window.crypto),
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;

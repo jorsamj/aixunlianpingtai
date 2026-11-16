@@ -149,6 +149,7 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
     const {catalogAction:action,entity,id}=button.dataset;
     if(action==='select'){opening=null;selected=id;slot('vendor-title').textContent=rows.vendors.find(v=>v.id===id)?.name||'';root.querySelectorAll('[data-catalog-vendor]').forEach(row=>row.classList.toggle('selected',row.dataset.catalogVendor===id));queries.chips={page:1};return load('chips')}
     if(action==='preview')return win.setPage('厂商芯片只读预览');
+    if(action==='manage')return win.setPage('厂商芯片正式管理');
     if(action==='refresh'){status('');return load('vendors',{selectFirst:true})}
     if(action==='page'){queries[entity].page=Number(button.dataset.page);return load(entity)}
     if(action==='new')return open(entity,'','edit');
@@ -163,6 +164,9 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
     host.addEventListener('click',onClick,{signal:life.signal});
     if(new URLSearchParams(win.location?.search || '').get('vue_catalog_preview')==='1'){
       const preview=doc.createElement('button');preview.className='btn';preview.type='button';preview.textContent='只读预览';preview.dataset.catalogAction='preview';host.querySelector('.panel-head').append(preview);
+    }
+    if(new URLSearchParams(win.location?.search || '').get('vue_catalog_manage')==='1'){
+      const manage=doc.createElement('button');manage.className='btn';manage.type='button';manage.textContent='Vue 正式管理';manage.dataset.catalogAction='manage';host.querySelector('.panel-head').append(manage);
     }
     host.addEventListener('click',event=>{
       if(!event.target.closest('.catalog-more'))host.querySelectorAll('.catalog-more[open]').forEach(menu=>{menu.open=false});

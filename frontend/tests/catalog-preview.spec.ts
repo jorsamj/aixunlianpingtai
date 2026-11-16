@@ -1,25 +1,5 @@
 import {test,expect} from '@playwright/test';
-import {readFileSync} from 'node:fs';
-// Existing API owner, session, navigation and complete legacy dictionary runtime.
-// Only HTTP data is synthetic; no FastAPI startup, SDK scan or business database.
-const originalApi=readFileSync('../static/app.js','utf8').split('// Shared request identity')[0];
-const fixture=`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="/static/styles.css"><style>body{background:#f5f7fb;margin:0}#view{padding:24px;max-width:1640px;margin:auto}</style></head><body><span id="authUsername"></span><main id="view"></main><script src="/static/auth-session.js"></script><script type="module">
-import {installNavigationStability} from '/static/modules/navigation-stability.js';
-import {installPageRequestScope} from '/static/modules/page-request-scope.js';
-import {installPollRegistry} from '/static/modules/poll-registry.js';
-import {installConversionCatalogRuntime} from '/static/modules/conversion-catalog-runtime.js';
-import {installCatalogPreview,PREVIEW_PAGE} from '/static/modules/catalog-preview-runtime.js';
-${originalApi}
-const state={page:'部署资源',project:{id:'p'}};window.state=state;
-const scope=installPageRequestScope({getPage:()=>state.page});
-const polls=installPollRegistry({getState:()=>state});
-const old=installConversionCatalogRuntime({api,getState:()=>state,modal(){},closeModal(){}});
-let preview;
-function legacy(){document.querySelector('#view').innerHTML='<div id="conversion-catalog-host"></div>';return old.mount(document.querySelector('#conversion-catalog-host'))}
-const nav=installNavigationStability({getState:()=>state,requestScope:scope,pollRegistry:polls,knownPages:['部署资源',PREVIEW_PAGE],performNavigation:page=>{preview?.leave();old.leave();state.page=page;return page===PREVIEW_PAGE?nav.renderPage(page):legacy()}});
-preview=installCatalogPreview({enabled:new URLSearchParams(location.search).get('vue_catalog_preview')==='1',navigation:nav,getState:()=>state,request:api,deadline:(await import('/static/modules/api.js')).withRequestDeadline});
-window.preview=preview;await legacy();
-</script></body></html>`;
+import {fixture} from './fixture';
 const vendors=Array.from({length:12},(_,i)=>({id:`vendor-${i}`,name:i===0?'瑞芯微视觉计算':`计算厂商 ${String(i).padStart(2,'0')}`,template_id:'rknn',template_name:'RKNN Toolkit2',enabled:true,implemented:true,chip_count:2,enabled_chip_count:1}));
 async function setup(page:any){
   const requests:{method:string;url:string}[]=[];let fail=false,hold=false;
