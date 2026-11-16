@@ -116,6 +116,13 @@
 - `.github/workflows/isolated-pt-export-cpu.yml` 为新模块增加路径触发与 `py_compile`，真实集成测试仍复用既有 Ubuntu24.04 CPU/systemd 环境，不新增生产入口。
 - **重大限制保持**：该临时中央登记在 SQLite 内存库，密钥在测试进程内生成，没有生产可信公钥配置、持久中央 challenge、Root StopReceipt 与中央恢复提交，不能认为这条联调就具备真实服务器断线重派条件。
 
+## 2C-03E1 专项 CI 终态证据更新（2026-11-16）
+
+- 准确测试修复 SHA：`437670cbb92a889dcedbd71de74e1343bd0f7d02`；专用 Fast Contract run <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43821558837> **completed SUCCESS**：Ubuntu 22.04 `76 passed`；Windows `52 passed, 24 skipped`（root/Linux-only 测试按环境跳过）。
+- 初轮真实接口测试中，测试曾试图在 CANCEL_REQUESTED 后才做原身份注册；该顺序被新增代码**正确拒绝**，现有两条独立测试确保“取消后补登记 HOLD、已登记但错 Node HOLD”，不修改安全合同。
+- 真实 OS 身份预登记加入 Ubuntu24.04 systemd 联调代码 SHA `06d35355a802c4056111636a58d2c9b549efd74b`，专项 run <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43821959937> 截至记录仍排队，**不得宣称完成**。
+- 生产还欠：中央可信持久身份登记、经认证的一次性挑战与消费、私钥管理/轮换、root-only StopReceipt、原 TaskRepository/GPU reservation 原子恢复、Ubuntu22.04/systemd249 原路径和正式 Runner 结果闭环。CI 环境不连接生产。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
