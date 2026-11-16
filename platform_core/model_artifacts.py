@@ -577,6 +577,17 @@ class ModelArtifactRepository:
             temporary.replace(self.config_path)
         return self.config()
 
+    def version_display(self, project_id: str, algorithm_id: str, version_id: str) -> dict:
+        """Existing registrations only; no discovery, uploads, file hashing or probes."""
+        from .model_asset_views import filename, text
+        args=(str(project_id),str(algorithm_id),str(version_id))
+        with closing(self._connect()) as database:
+            database.execute('BEGIN')
+            total=database.execute('SELECT COUNT(*) FROM model_artifacts WHERE project_id=? AND algorithm_id=? AND version_id=?',args).fetchone()[0]
+            rows=database.execute('SELECT artifact_id,artifact_kind,target,chip_code,conversion_job_id,file_name,sha256,size_bytes,storage_source_id,storage_status,uploaded_at,created_at,updated_at FROM model_artifacts WHERE project_id=? AND algorithm_id=? AND version_id=? ORDER BY created_at DESC,artifact_id LIMIT 20',args).fetchall()
+            database.commit()
+        return {'items':[{**{key:text(value) for key,value in dict(row).items()},'file_name':filename(row['file_name'])} for row in rows],'total':total,'truncated':total>len(rows)}
+
     def get(self, artifact_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as database:
             row = database.execute("SELECT * FROM model_artifacts WHERE artifact_id = ?", (str(artifact_id),)).fetchone()

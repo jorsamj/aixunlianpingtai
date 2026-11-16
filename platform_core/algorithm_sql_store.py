@@ -217,6 +217,51 @@ class AlgorithmSqlStore:
             conn.commit()
         return [dict(row, versions=[], versions_deferred=True) for row in rows], total, revision
 
+    def asset_algorithms(self, *, page=1, page_size=20, query='', algorithm_type='', industry='', source_type='', status='', sort='updated'):
+        from .model_asset_views import text
+        self._asset_page(page,page_size)
+        sorts={'updated':'a.updated_at DESC,a.id','created':'a.created_at DESC,a.id','name':'a.name,a.id','name_desc':'a.name DESC,a.id'}
+        if sort not in sorts:raise PlatformError('ASSET_INVALID_QUERY','排序参数非法','',status_code=422)
+        self.ensure_ready()
+        condition=['a.project_id=?'];args=[self.project_id]
+        if query.strip():condition.append('instr(lower(a.name),lower(?))>0');args.append(query.strip()[:120])
+        expressions={'algorithm_type':'a.algorithm_type','industry':'a.industry','source_type':'a.source_type','status':"json_extract(a.payload_json,'$.status')"}
+        for key,value in [('algorithm_type',algorithm_type),('industry',industry),('source_type',source_type),('status',status)]:
+            if value:condition.append(expressions[key]+'=?');args.append(value)
+        where=' AND '.join(condition)
+        with closing(self._connect()) as conn:
+            conn.execute('BEGIN')
+            revision=int(self._meta(conn,'algorithm_revision') or 0)
+            total=conn.execute('SELECT COUNT(*) FROM algorithms a WHERE '+where,args).fetchone()[0]
+            rows=conn.execute("SELECT a.id,a.name,a.algorithm_type,a.industry,a.source_type,a.current_version_id,a.created_at,a.updated_at,json_extract(a.payload_json,'$.status') AS status,(SELECT COUNT(*) FROM algorithm_versions v WHERE v.algorithm_id=a.id) AS version_count,(SELECT version_name FROM algorithm_versions v WHERE v.algorithm_id=a.id AND v.id=a.current_version_id) AS current_version_name FROM algorithms a WHERE "+where+' ORDER BY '+sorts[sort]+' LIMIT ? OFFSET ?',args+[page_size,(page-1)*page_size]).fetchall()
+            options={key:[text(row[0]) for row in conn.execute('SELECT DISTINCT '+expression+' FROM algorithms a WHERE a.project_id=? AND '+expression+" IS NOT NULL AND "+expression+"<>'' ORDER BY 1 LIMIT 100",(self.project_id,)).fetchall()] for key,expression in expressions.items()}
+            conn.commit()
+        return {'project_id':self.project_id,'items':[{**{key:text(value) for key,value in dict(row).items()},'versions_deferred':True,'current_version':{'id':row['current_version_id'],'version_name':text(row['current_version_name'])} if row['current_version_id'] else None} for row in rows],'total':total,'page':page,'page_size':page_size,'algorithm_revision':revision,'filter_options':options}
+
+    @staticmethod
+    def _asset_page(page,page_size):
+        if type(page) is not int or page<1 or type(page_size) is not int or not 1<=page_size<=50:raise PlatformError('ASSET_INVALID_QUERY','分页范围非法','',status_code=422)
+
+    def asset_versions(self, algorithm_id, *, page=1, page_size=20):
+        from .model_asset_views import version_columns,version_record,text
+        self._asset_page(page,page_size);self.ensure_ready()
+        with closing(self._connect()) as conn:
+            conn.execute('BEGIN')
+            row=conn.execute('SELECT id,name,current_version_id,algorithm_type,source_type FROM algorithms WHERE project_id=? AND id=?',(self.project_id,str(algorithm_id))).fetchone()
+            if row is None:raise PlatformError('ALGORITHM_NOT_FOUND','算法不存在','',status_code=404)
+            total=conn.execute('SELECT COUNT(*) FROM algorithm_versions WHERE algorithm_id=?',(str(algorithm_id),)).fetchone()[0]
+            rows=conn.execute('SELECT '+version_columns()+' FROM algorithm_versions v WHERE v.algorithm_id=? ORDER BY v.created_at DESC,v.sort_index,v.id LIMIT ? OFFSET ?',(str(algorithm_id),page_size,(page-1)*page_size)).fetchall()
+            revision=int(self._meta(conn,'algorithm_revision') or 0);conn.commit()
+        return {'project_id':self.project_id,'algorithm':{key:text(value) for key,value in dict(row).items()},'items':[version_record(row,self._json_object) for row in rows],'total':total,'page':page,'page_size':page_size,'algorithm_revision':revision,'versions_deferred':False}
+
+    def asset_version(self, algorithm_id, version_id, *, detail=True):
+        from .model_asset_views import version_columns,version_record
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            row=conn.execute('SELECT '+version_columns(detail)+' FROM algorithm_versions v JOIN algorithms a ON a.id=v.algorithm_id WHERE a.project_id=? AND a.id=? AND v.id=?',(self.project_id,str(algorithm_id),str(version_id))).fetchone()
+        if row is None:raise PlatformError('ALGORITHM_VERSION_NOT_FOUND','算法版本不存在或不属于当前算法','',status_code=404)
+        return version_record(row,self._json_object)
+
     def read_all(self, *, summary_only: bool = False) -> list[dict]:
         self.ensure_ready()
         with self._connect() as conn:

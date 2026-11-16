@@ -58,7 +58,7 @@ class ConversionHistoryProjection:
 
     def query(self, jobs_dir, *, read_json, overlay=None, algorithm_id='', version_id='',
               status='', target='', chip='', precision='', csc='', created_from='',
-              created_to='', page=1, page_size=20, force=False, csc_value=None):
+              created_to='', page=1, page_size=20, force=False, csc_value=None, include_facets=False):
         if type(page) is not int or page < 1 or type(page_size) is not int or not 1 <= page_size <= 100:
             raise ValueError('conversion history page/page_size invalid')
         lower, upper = _time(created_from), _time(created_to)
@@ -83,6 +83,7 @@ class ConversionHistoryProjection:
                 stats['cache_hits'] = len(state['files'])
             diagnostics = list(state['scan_errors'])
             matches = []
+            facets={key:set() for key in ('status','target','chip','precision','csc')}
             for name, record in state['files'].items():
                 raw = record['job']
                 if raw is None:
@@ -107,6 +108,10 @@ class ConversionHistoryProjection:
                         if status:
                             continue
                 params = job.get('params') or {}
+                if include_facets:
+                    values={'status':job.get('status'),'target':job.get('target'),'chip':params.get('chip') or params.get('soc_version'),'precision':params.get('precision'),'csc':(csc_value or _default_csc)(job)}
+                    for key,value in values.items():
+                        if isinstance(value,str) and value and len(value)<=120 and len(facets[key])<100:facets[key].add(value)
                 if status and str(job.get('status') or '').lower() != str(status).lower():
                     continue
                 if target and str(job.get('target') or '') != str(target):
@@ -131,7 +136,8 @@ class ConversionHistoryProjection:
             return dict(items=items, total=total, page=page, page_size=page_size,
                         total_pages=max(1, (total+page_size-1)//page_size), complete=not diagnostics,
                         unreadable_count=sum(r['job'] is None for r in state['files'].values()),
-                        diagnostics=diagnostics[:20], stats=stats)
+                        diagnostics=diagnostics[:20], stats=stats,
+                        **({'filter_options':{key:sorted(values) for key,values in facets.items()}} if include_facets else {}))
 
     @staticmethod
     def _refresh(root, state, read_json, stats):

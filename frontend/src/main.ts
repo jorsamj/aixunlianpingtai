@@ -23,6 +23,9 @@ import 'element-plus/theme-chalk/el-dropdown-menu.css';
 import 'element-plus/theme-chalk/el-dropdown-item.css';
 import CatalogPreview from './views/CatalogPreview.vue';
 import ServiceNodesOverview from './views/ServiceNodesOverview.vue';
+import ModelAssets from './views/ModelAssets.vue';
+import ConversionHistory from './views/ConversionHistory.vue';
+import type {BrowseContext} from './types/model-browse';
 import type {Component} from 'vue';
 import './styles/theme.css';
 import type {PreviewContext} from './types/catalog';
@@ -32,6 +35,8 @@ export async function mountCatalogPreview(host:HTMLElement,context:PreviewContex
 export async function mountServiceNodes(host:HTMLElement,context:PreviewContext){
   return mountView(host,context,ServiceNodesOverview);
 }
+export async function mountModelAssets(host:HTMLElement,context:BrowseContext){return mountView(host,context,ModelAssets)}
+export async function mountConversionHistory(host:HTMLElement,context:BrowseContext){return mountView(host,context,ConversionHistory)}
 async function mountView(host:HTMLElement,context:PreviewContext,component:Component){
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});

@@ -29,6 +29,33 @@ api._detect_local_deploy_resource = forbidden
 api._v53_bootstrap_worker()
 assert api._V53_BOOTSTRAP_STATUS['status'] == 'ready'
 
+# Saved synthetic version/job records only: never create or execute a training or
+# conversion task. Exercise the original SQL and history owners through HTTP.
+from platform_core.algorithms import save_algorithms
+project_id=api.read_json(api.PROJECTS_FILE,[])[0]['id']
+save_algorithms(api.algorithms_file(project_id),[{
+    'id':'acceptance-algorithm','name':'隔离验收模型（合成数据）',
+    'algorithm_type':'yolo_ultralytics','industry':'验收','source_type':'LOCAL',
+    'current_version_id':'acceptance-v0','created_at':'2026-11-01',
+    'versions':[{'id':f'acceptance-v{i}','version_name':f'合成版本 {i}',
+        'framework':'ultralytics','training_status':'SUCCEEDED',
+        'created_at':'2026-11-15','stored_path':'/isolated/private/best.pt',
+        'sha256':'synthetic-source-sha','metrics':{'map50':None},
+        'val_metrics':{'map50':0},'evaluation':{'metrics':{'map50':.72},'samples':['FROZEN_GT_SENTINEL']},
+        'label_codes':['smoke'],'training_lineage':{'parameters':{'actual':{'epochs':50,'imgsz':640}}}}
+        for i in range(22)]}])
+for i in range(25):
+    directory=api.deploy_root(project_id)/'jobs'/f'acceptance-conversion-{i:02}'
+    directory.mkdir(parents=True,exist_ok=True)
+    api.write_json(directory/'job.json',{'id':f'acceptance-conversion-{i:02}',
+        'source_id':'version::acceptance-algorithm::acceptance-v0',
+        'source_trace':{'algorithm_id':'acceptance-algorithm','version_id':'acceptance-v0','sha256':'synthetic-source-sha'},
+        'status':'failed' if i%2 else 'done','target':'onnx',
+        'created_at':f'2026-11-15T12:{i:02}:00Z','finished_at':f'2026-11-15T12:{i:02}:30Z',
+        'params':{'precision':'fp16','chip':'fixture-chip','csc':{'preset':'none'}},
+        'outputs':[{'name':'model.onnx','path':str(directory/'missing.onnx')}],
+        'error':'合成诊断：依赖缺失 token=PRIVATE_SENTINEL /isolated/private/file' if i%2 else ''})
+
 registry = ServiceNodeRepository(api.shared_task_repository())
 _, token = registry.create({'node_id': 'acceptance-arm64', 'display_name': 'ARM64 测试快照节点', 'connection_mode': 'agent', 'allowed_capabilities': ['training', 'conversion']})
 registry.heartbeat('acceptance-arm64', token, {

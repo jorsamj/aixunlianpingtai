@@ -12966,8 +12966,14 @@ def v12_delete_job(project_id: str, job_id: str):
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms")
-def v12_list_algorithms(project_id: str, summary_only: bool = False):
+def v12_list_algorithms(project_id: str, summary_only: bool = False, asset_view: bool = False,
+    page: int=1, page_size: int=20, query: str='', algorithm_type: str='', industry: str='', source_type: str='', status: str='', sort: str='updated'):
     global _V53_BOOTSTRAP_SNAPSHOT
+    if asset_view:
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        get_project(project_id)
+        if not summary_only:raise PlatformError('ASSET_INVALID_QUERY','模型浏览列表必须使用摘要模式','',status_code=422)
+        return {'ok':True,**AlgorithmSqlStore(algorithms_file(project_id)).asset_algorithms(page=page,page_size=page_size,query=query,algorithm_type=algorithm_type,industry=industry,source_type=source_type,status=status,sort=sort)}
     if summary_only:
         # Reuse the existing process-local bootstrap snapshot for the compact
         # catalog. F5 should not deserialize every version again when the SQL
@@ -13011,8 +13017,15 @@ def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
-def v12_get_algorithm(project_id: str, algorithm_id: str):
+def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False, version_id: str='', page: int=1, page_size: int=20):
     get_project(project_id)
+    if asset_view:
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        store=AlgorithmSqlStore(algorithms_file(project_id))
+        if version_id:
+            version=store.asset_version(algorithm_id,version_id)
+            return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version':version,'artifacts':_conversion_catalog_repository(DATA_DIR).version_display(project_id,algorithm_id,version_id)}
+        return {'ok':True,**store.asset_versions(algorithm_id,page=page,page_size=page_size)}
     item = next(
         (row for row in list_algorithms_internal(project_id, algorithm_id=algorithm_id) if str(row.get("id") or "") == str(algorithm_id)),
         None,
@@ -22518,8 +22531,18 @@ def _version_deploy_conversion_defaults(project_id: str, version: Mapping[str, A
 @app.get('/api/v42/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/deployments')
 def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str,
     page: int=1, page_size: int=100, status: str='', target: str='', chip: str='',
-    precision: str='', csc: str='', created_from: str='', created_to: str='', force: bool=False):
+    precision: str='', csc: str='', created_from: str='', created_to: str='', force: bool=False, asset_view: bool=False):
     get_project(project_id)
+    if asset_view:
+        from platform_core.model_asset_views import conversion_record, text
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        store=AlgorithmSqlStore(algorithms_file(project_id))
+        version=store.asset_version(algorithm_id,version_id,detail=False)
+        history=_conversion_history_page(project_id,algorithm_id=algorithm_id,version_id=version_id,page=page,page_size=page_size,status=status,target=target,chip=chip,precision=precision,csc=csc,created_from=created_from,created_to=created_to,force=force,include_facets=True)
+        rows=[conversion_record(job,deploy_root(project_id)) for job in history['items']]
+        for row in rows:row['target_name']=V423_DEPLOY_TARGET_NAMES.get(row.get('target'),row.get('target'))
+        history['filter_options']={key:[value for value in values if isinstance(value,str) and text(value)==value] for key,values in history.get('filter_options',{}).items()}
+        return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version_id':version_id,'version':version,**{key:value for key,value in history.items() if key not in ('items','diagnostics')},'diagnostics':[{'error':text(row.get('error'))} for row in history.get('diagnostics',[])],'items':rows}
     # Conversion history is scoped to one algorithm. Hydrating the full project
     # algorithm graph also deserializes unrelated versions and frozen evidence.
     algo = next(iter(list_algorithms_internal(

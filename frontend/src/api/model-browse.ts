@@ -1,0 +1,15 @@
+import type {Paged,AlgorithmSummary,VersionPage,VersionDetail,ConversionPage} from '../types/model-browse';
+interface ReadOwner {projectId:string;get<T>(url:string,options?:{signal?:AbortSignal}):Promise<T>}
+export function shownValue(value:unknown):string{return value===null||value===undefined||typeof value==='boolean'||value===''?'未提供':Array.isArray(value)?value.map(shownValue).join(' × '):String(value)}
+export function browseError(error:unknown){return (error instanceof Error?error.message:'读取失败，请重试').replace(/https?:\/\/\S+/g,'[地址已隐藏]').replace(/\\\\[^\s,;"']+|[A-Za-z]:[\\/][^\s,;]*|(?:\/[\w.\-]+){2,}/g,'[路径已隐藏]').replace(/(token|password|secret|api[_-]?key|authorization)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,'$1=[已隐藏]').slice(0,600)}
+export function modelBrowseApi(context:ReadOwner){
+ const base=`/api/v12/projects/${encodeURIComponent(context.projectId)}/algorithms`;
+ const query=(values:Record<string,string|number|boolean>)=>new URLSearchParams(Object.entries(values).map(([key,value])=>[key,String(value)]));
+ function paged<T>(value:Paged<T>){if(value?.ok!==true||value.project_id!==context.projectId)throw new Error('项目响应身份不一致');if(!Array.isArray(value.items)||!Number.isInteger(value.total)||value.total<0||!Number.isInteger(value.page)||!Number.isInteger(value.page_size))throw new Error('分页响应格式无效');return value}
+ return {
+  async algorithms(filters:Record<string,string|number>,signal:AbortSignal){return paged(await context.get<Paged<AlgorithmSummary>>(`${base}?${query({...filters,summary_only:true,asset_view:true,page_size:20})}`,{signal}))},
+  async versions(id:string,page:number,signal:AbortSignal){const result=paged(await context.get<VersionPage>(`${base}/${encodeURIComponent(id)}?${query({asset_view:true,page,page_size:20})}`,{signal})) as VersionPage;if(result.algorithm?.id!==id||result.items.some(row=>row.algorithm_id!==id))throw new Error('算法响应身份不一致');return result},
+  async detail(aid:string,vid:string,signal:AbortSignal){const result=await context.get<VersionDetail>(`${base}/${encodeURIComponent(aid)}?${query({asset_view:true,version_id:vid})}`,{signal});if(result?.ok!==true||result.project_id!==context.projectId||result.algorithm_id!==aid||result.version?.id!==vid||result.version?.algorithm_id!==aid||!Array.isArray(result.artifacts?.items))throw new Error('版本详情响应身份不一致');return result},
+  async history(aid:string,vid:string,filters:Record<string,string|number>,signal:AbortSignal){const result=paged(await context.get<ConversionPage>(`/api/v42/projects/${encodeURIComponent(context.projectId)}/algorithms/${encodeURIComponent(aid)}/versions/${encodeURIComponent(vid)}/deployments?${query({...filters,asset_view:true,page_size:20})}`,{signal})) as ConversionPage;if(result.algorithm_id!==aid||result.version_id!==vid||result.version?.id!==vid||result.items.some(row=>(row.source_identity?.algorithm_id&&row.source_identity.algorithm_id!==aid)||(row.source_identity?.version_id&&row.source_identity.version_id!==vid)))throw new Error('转换历史响应身份不一致');return result},
+ };
+}

@@ -8,6 +8,9 @@ on:
       - feature/external-algorithm-publishing-sql-crud
     paths:
       - app.py
+      - platform_core/model_asset_views.py
+      - tests/unit/test_model_asset_views.py
+      - tests/api/test_model_asset_views.py
       - platform_core/algorithm_sql_store.py
       - platform_core/negative_pool_api.py
       - tests/performance/test_negative_pool_algorithm_queries.py
@@ -61,6 +64,8 @@ jobs:
           node --check static/modules/training-submit.js
       - name: SQL migration and row CRUD contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+      - name: Read-only model and conversion display contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_model_asset_views.py tests/unit/test_conversion_history.py tests/api/test_model_asset_views.py
       - name: Negative pool query contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_negative_pool.py
       - name: Synthetic heavy-report read bounds

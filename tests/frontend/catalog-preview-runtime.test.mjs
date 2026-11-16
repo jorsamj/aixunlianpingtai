@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {installCatalogPreview, PREVIEW_PAGE, MANAGEMENT_PAGE, NODES_PAGE} from '../../static/modules/catalog-preview-runtime.js';
+import {installCatalogPreview, PREVIEW_PAGE, MANAGEMENT_PAGE, NODES_PAGE, ASSETS_PAGE, HISTORY_PAGE} from '../../static/modules/catalog-preview-runtime.js';
+
+test('model browsing is GET-only and history cannot read another project, algorithm or version',async()=>{
+ const owners=new Map(),contexts=[],calls=[],state={page:ASSETS_PAGE,project:{id:'p'}};
+ const runtime=installCatalogPreview({assetsEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return ()=>{}}},getState:()=>state,
+ document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},deadline:(fn,{signal})=>fn(signal),request:async(url,options)=>{calls.push({url,options});return {ok:true}},
+ load:async()=>({mountModelAssets:async(_host,context)=>{contexts.push(context);return ()=>{}},mountConversionHistory:async(_host,context)=>{contexts.push(context);return ()=>{}}})});
+ await owners.get(ASSETS_PAGE)();const assets=contexts[0];assert.equal(assets.post,undefined);
+ await assets.get('/api/v12/projects/p/algorithms?summary_only=true&asset_view=true');
+ for(const url of ['/api/v12/projects/q/algorithms?summary_only=true&asset_view=true','/api/v12/projects/p/algorithms/a','https://other.test/api/v12/projects/p/algorithms?summary_only=true&asset_view=true'])await assert.rejects(()=>assets.get(url),/不允许/);
+ assets.memory.selection={algorithmId:'a',versionId:'v'};state.page=HISTORY_PAGE;await owners.get(HISTORY_PAGE)();const history=contexts[1];assert.equal(assets.signal.aborted,true);assert.equal(history.post,undefined);
+ await history.get('/api/v42/projects/p/algorithms/a/versions/v/deployments?asset_view=true');
+ for(const url of ['/api/v42/projects/q/algorithms/a/versions/v/deployments?asset_view=true','/api/v42/projects/p/algorithms/b/versions/v/deployments?asset_view=true','/api/v42/projects/p/algorithms/a/versions/other/deployments?asset_view=true','/api/v39/projects/p/deploy/jobs'])await assert.rejects(()=>history.get(url),/不允许/);
+ assert.equal(calls.length,2);assert.ok(calls.every(call=>call.options.method==='GET'));runtime.leave();assert.equal(history.signal.aborted,true);runtime.destroy();
+});
 
 function harness(enabled = true) {
   const owners = new Map(), calls = [], mounts = [], hosts = [];

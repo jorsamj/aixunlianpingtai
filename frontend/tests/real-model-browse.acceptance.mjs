@@ -1,0 +1,25 @@
+// Explicit loopback-only acceptance against the temporary server in tools/.
+import {chromium,expect} from '@playwright/test';
+import {mkdir,writeFile} from 'node:fs/promises';
+const base='http://127.0.0.1:8028',output='../test-results/p1eg-real-entry';
+await mkdir(output,{recursive:true});
+const browser=await chromium.launch({channel:'chrome'}),page=await browser.newPage({viewport:{width:1600,height:1000}});
+const errors=[],assets=[],reads=[],writes=[];
+page.on('pageerror',error=>errors.push(error.message));
+page.on('response',response=>{if(response.url().includes('/static/vue-catalog/'))assets.push({path:new URL(response.url()).pathname,status:response.status()})});
+page.on('request',request=>{if(request.url().includes('asset_view=true'))reads.push(request.url());if(request.method()!=='GET'&&request.url().includes('/api/'))writes.push(new URL(request.url()).pathname)});
+async function screenshot(name){for(const width of [1600,768]){await page.setViewportSize({width,height:1000});await page.mouse.move(0,0);await page.evaluate(()=>{document.scrollingElement.scrollTop=0;for(let node=document.querySelector('#view');node;node=node.parentElement)node.scrollTop=0});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:`${output}/${name}-${width}.png`,fullPage:true,animations:'disabled'})}}
+try{
+ await page.goto(base+'/');await expect(page).toHaveURL(/\/login/);await page.locator('#loginUsername').fill('vue-acceptance');await page.locator('#loginPassword').fill('isolated-test-only');await page.locator('#loginSubmit').click();await expect(page.locator('#authUsername')).toHaveText('vue-acceptance');
+ await page.goto(base+'/?vue_model_assets=1&vue_catalog_manage=1&vue_service_nodes=1');await expect.poll(()=>page.evaluate(()=>state.uiReady&&!!window.PlatformCore?.navigation)).toBe(true);
+ await page.evaluate(()=>window.setPage('算法列表'));await page.getByRole('button',{name:'Vue 模型资产',exact:true}).click();await expect(page.getByRole('heading',{name:'模型资产与算法版本',exact:true})).toBeVisible();expect(reads.filter(url=>url.includes('version_id=')).length).toBe(0);
+ await page.getByRole('button',{name:'选择算法隔离验收模型（合成数据）',exact:true}).click();await expect(page.getByText('共 22 个版本',{exact:true})).toBeVisible();await screenshot('real-model-assets');
+ await page.getByRole('button',{name:'查看版本acceptance-v0详情',exact:true}).click();await expect(page.getByRole('heading',{name:'Val 指标',exact:true})).toBeVisible();await expect(page.getByText('未核验，请使用原授权入口',{exact:true})).toBeVisible();await page.screenshot({path:`${output}/real-version-details-768.png`,fullPage:true,animations:'disabled'});
+ await page.getByRole('button',{name:'查看转换历史',exact:true}).click();await expect(page.getByText('共 25 条 · 当前版本范围',{exact:true})).toBeVisible();await page.getByRole('region',{name:'版本转换记录列表',exact:true}).locator('.btn-next').click();await expect(page.getByRole('button',{name:'查看转换acceptance-conversion-04详情',exact:true})).toBeVisible();await screenshot('real-conversion-history');
+ await page.getByRole('button',{name:'查看转换acceptance-conversion-04详情',exact:true}).click();await expect(page.getByText('未提供数值验证证据',{exact:true})).toBeVisible();await expect(page.getByText('文件不存在',{exact:true})).toBeVisible();await page.screenshot({path:`${output}/real-conversion-diagnostics-768.png`,fullPage:true,animations:'disabled'});await page.getByRole('button',{name:'返回当前记录列表',exact:true}).click();
+ await page.getByRole('button',{name:'返回版本浏览',exact:true}).click();await page.getByRole('button',{name:'查看版本acceptance-v0转换历史',exact:true}).click();await expect(page.getByRole('button',{name:'查看转换acceptance-conversion-04详情',exact:true})).toBeVisible();
+ const historyUrl=reads.filter(url=>url.includes('/deployments')).at(-1);expect(historyUrl).toContain('page=2');const response=await page.request.get(historyUrl);const body=await response.text();expect(response.status()).toBe(200);for(const forbidden of ['FROZEN_GT_SENTINEL','PRIVATE_SENTINEL','/isolated/private','source_path'])expect(body).not.toContain(forbidden);
+ await page.getByRole('button',{name:'原版本转换 / 验证',exact:true}).click();await expect(page.getByText('Vue 模型资产',{exact:true})).toBeVisible();await expect(page.locator('[data-version-conversion-aid="acceptance-algorithm"][data-version-conversion-vid="acceptance-v0"]')).toBeVisible();await page.evaluate(()=>window.closeModal());
+ const receipt={scope:'real static/index.html + original login/API/navigation, temporary SQL and saved synthetic jobs; lifespan/SDK disabled',summaryLazy:true,versionPagination:22,historyPagination:25,backPreservesPage:true,originalVersionDialog:true,redaction:true,assets,errors,reads,writes};
+ expect(errors).toEqual([]);expect(assets.length).toBeGreaterThanOrEqual(2);expect(assets.every(row=>row.status===200)).toBe(true);expect(writes.filter(path=>!path.includes('/auth/'))).toEqual([]);await writeFile(`${output}/receipt.json`,JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt));
+}catch(error){await page.screenshot({path:`${output}/failure.png`,fullPage:true});throw error}finally{await browser.close()}
