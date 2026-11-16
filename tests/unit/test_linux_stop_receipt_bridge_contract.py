@@ -164,3 +164,38 @@ def test_synthetic_kernel_cannot_bypass_central_independent_witness():
     # absolutely does not identify the caller as a trusted real OS authority.
     assert not central.test_only_witness_verifier(b"other-key")(receipt)
     assert bridge.observation_is_usable(challenge, result, scope)
+
+
+def test_ed25519_bridge_requires_the_exact_real_kernel_observation_fixture():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    import pt_stop_receipt_ed25519_contract as signed
+    challenge, result, scope = fixture()
+    private = Ed25519PrivateKey.generate()
+    envelope = bridge.make_ed25519_simulated_receipt(
+        challenge, result, scope, private,
+    )
+    assert envelope["payload"]["stop_requested_ns"] == 110
+    assert envelope["payload"]["empty_observed_ns"] == 120
+    assert signed.isolated_test_witness_verifier(
+        private.public_key(), isolated_test_only=True,
+    )(envelope)
+    assert not signed.isolated_test_witness_verifier(
+        Ed25519PrivateKey.generate().public_key(), isolated_test_only=True,
+    )(envelope)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("known_processes_stopped", False),
+    ("cgroup_empty_verified", False),
+    ("identity_binding_verified", False),
+    ("stop_requested_ns", 0),
+    ("empty_observed_ns", 109),
+])
+def test_ed25519_bridge_never_signs_invalid_kernel_evidence(field, value):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    challenge, result, scope = fixture()
+    result[field] = value
+    with pytest.raises(central.RecoveryRejected, match="KERNEL_EVIDENCE"):
+        bridge.make_ed25519_simulated_receipt(
+            challenge, result, scope, Ed25519PrivateKey.generate(),
+        )
