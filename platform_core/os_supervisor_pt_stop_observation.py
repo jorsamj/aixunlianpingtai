@@ -93,9 +93,22 @@ class IsolatedPtStopObserver:
             _hold("ARGUMENTS_INVALID")
         identity = self.journal.verified_pt_identity(handle_id, task_attempt)
         boot = str(self.journal.journal.boot_id)
+        if not isinstance(identity, Mapping):
+            _hold("ORIGINAL_IDENTITY_UNVERIFIED")
+        # Refuse malformed journal targets BEFORE passing anything to systemd.
+        unit = "changlian-os-" + handle_id + ".service"
+        invocation = identity.get("invocation_id")
+        if (identity.get("handle_id") != handle_id
+                or identity.get("unit_name") != unit
+                or identity.get("control_group") != "/system.slice/" + unit
+                or not isinstance(invocation, str)
+                or not _INVOCATION.fullmatch(invocation)
+                or type(identity.get("main_pid")) is not int
+                or identity["main_pid"] <= 1):
+            _hold("ORIGINAL_IDENTITY_UNVERIFIED")
         if identity.get("boot_id") != boot:
             _hold("BOOT_MISMATCH")
-        before = self.backend.inspect(identity["unit_name"], identity["invocation_id"])
+        before = self.backend.inspect(unit, invocation)
         _scope(identity, before, current_boot=boot)
         group = identity["control_group"]
         # The cgroup name is derived from the original journal, never from a
