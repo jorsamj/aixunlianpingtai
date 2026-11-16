@@ -10,9 +10,11 @@ on:
       - 'platform_core/os_supervisor_pt_stop_grant.py'
       - 'platform_core/os_supervisor_pt_stop_rechecked_bridge.py'
       - 'platform_core/os_supervisor_pt_stop_root_witness_ci.py'
+      - 'platform_core/os_supervisor_pt_central_identity_registry_ci.py'
       - 'platform_core/os_supervisor_pt_export_launch.py'
       - 'tests/unit/test_os_supervisor_pt_stop_grant.py'
       - 'tests/unit/test_os_supervisor_pt_stop_root_witness_ci.py'
+      - 'tests/unit/test_os_supervisor_pt_central_identity_registry_ci.py'
       - '.github/workflows/pt-stop-grant-fast-contract.yml'
 permissions:
   contents: read
@@ -35,6 +37,6 @@ jobs:
       - name: Install lean contract dependencies; no Torch or Ultralytics
         run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic uvicorn onnx
       - name: Compile root journal, stop grant and CI-only bridge
-        run: python -m py_compile platform_core/os_supervisor_pt_stop_grant.py platform_core/os_supervisor_pt_stop_rechecked_bridge.py platform_core/os_supervisor_pt_stop_root_witness_ci.py platform_core/os_supervisor_pt_export_launch.py tests/unit/test_os_supervisor_pt_stop_grant.py tests/unit/test_os_supervisor_pt_stop_root_witness_ci.py
+        run: python -m py_compile platform_core/os_supervisor_pt_stop_grant.py platform_core/os_supervisor_pt_stop_rechecked_bridge.py platform_core/os_supervisor_pt_stop_root_witness_ci.py platform_core/os_supervisor_pt_central_identity_registry_ci.py platform_core/os_supervisor_pt_export_launch.py tests/unit/test_os_supervisor_pt_stop_grant.py tests/unit/test_os_supervisor_pt_stop_root_witness_ci.py tests/unit/test_os_supervisor_pt_central_identity_registry_ci.py
       - name: Run original central signer, PT admission and stop one-shot contracts
-        run: python -m pytest -q --maxfail=1 --confcutdir=tests/unit tests/unit/test_os_supervisor_pt_export_launch.py tests/unit/test_os_supervisor_pt_stop_grant.py tests/unit/test_os_supervisor_pt_stop_root_witness_ci.py
+        run: python -m pytest -q --maxfail=1 --confcutdir=tests/unit tests/unit/test_os_supervisor_pt_export_launch.py tests/unit/test_os_supervisor_pt_stop_grant.py tests/unit/test_os_supervisor_pt_stop_root_witness_ci.py tests/unit/test_os_supervisor_pt_central_identity_registry_ci.py

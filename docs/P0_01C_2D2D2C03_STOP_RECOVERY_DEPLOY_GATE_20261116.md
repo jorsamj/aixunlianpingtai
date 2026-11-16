@@ -94,6 +94,20 @@
 - 该修复仍然**不能替代生产中央先前注册的可信 boot/InvocationID 公钥和中央签发的持久 challenge**：临时 root 见证使用 CI 常量 challenge_id/nonce，尚无原中央挑战表与一次性消费事务。生产接入必须先补齐这些事实，不能依据 CI 中同一个 root journal 自证独立信任。
 - 以上变更仅限隔离集成/单元测试，**没有启用生产停止、任务恢复或 GPU 释放**，待新 SHA 专项 CI 验收。
 
+## 2C-03D 验收终态与 2C-03E 原中央 OS 身份预登记隔离合同（2026-11-16）
+
+**2C-03D 真实验收结果：** 准确代码 SHA `b8e54b489f062dcd7bf3197228e95ecf6ae405fc` 的全部 **24/24 GitHub Actions 工作流 success**。其中：
+- <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43815087420>：Ubuntu22.04 59/59，Windows 52/52 + 7 项按 OS 条件跳过；
+- <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43815087396>：69/69 本地合同及 11/11 真 Ubuntu24.04 systemd/PT→ONNX 集成测试成功，包含原中央签名 STOP 到原始 cgroup 清空的 root CI 临时签名见证；
+- <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43813415185>：Ubuntu22.04 和 Ubuntu24.04 原 cgroup 观察运行最终成功（此项是较早 SHA 的纯观察合同，不作为新 SHA 的完整验收替代）。
+
+**2C-03E 本轮正在开发 / 待 CI：**
+- 新增 `platform_core/os_supervisor_pt_central_identity_registry_ci.py`：测试 root 在 `PtExportJournal.verified_pt_identity` 读取原始 RUNNING 进程身份并签出独立 Ed25519 登记；测试中央持有**预配置的** root 公钥核验，以既有 `TaskRepository.tasks` 独立确认原 task_id、attempt、worker_id、lease SHA256、固定 PT 资源合同后，一次性保存登记的 boot/InvocationID/cgroup/PID。
+- 在中央取消时，新的 `CiOnlyCentralPtOriginalRegistry.issue_original_stop` **不接受调用方传入 boot_id、InvocationID、PID、handle_id**，只能使用提前登记的身份签发既有 `CentralPtStopTrialIssuer` grant。仍需经过原 root `PtExportJournal.claim_pt_stop_rechecked`，且中央注册状态内只能签发一次。
+- 负面测试覆盖：未登记或错节点、原任务 status 非取消、租约/attempt/worker/kind/resource 变化、签名错误、登记重放/过期、两线程同时申请停止、默认生产禁用。
+- 中央登记库**严格仅是单独的 SQLite `:memory:` 临时试验库**；密钥仅在进程内临时生成，测试 root euid 环境可由 monkeypatch 模拟。登记尚**未进入真实 TaskRepository schema**，没有 Node Token 认证的生产接线、公钥运维注册与轮换、中心重启持久恢复、中央持久挑战及 STOP 回执消费。不可据此释放生产 GPU。
+- 不修改现有中央任务代数、原 Agent/Runner 业务路径，也不添加第二调度器。最新 2C-03E SHA 的 CI 结果需另行核实；旧的 24/24 不可冒充新提交全绿。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
