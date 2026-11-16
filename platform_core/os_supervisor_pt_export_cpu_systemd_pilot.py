@@ -252,6 +252,53 @@ class IsolatedPtExportCpuPilot:
             raise GrantRejected("PT_CPU_GENERATOR_FAILED_HOLD") from exc
         return StagedPtCpuFixture(handle, path, sha, len(raw))
 
+    def rebind_trusted_fixture(
+        self, staged: StagedPtCpuFixture, journal_handle: str,
+    ) -> StagedPtCpuFixture:
+        """Move a locally GENERATED fixture onto the original OS journal handle.
+
+        This is an isolated CI-only staging action. Never load or copy an
+        Agent-supplied pickle; both directories are root-only /run paths.
+        Original fixture handle is invalid after the atomic rename.
+        """
+        if (type(staged) is not StagedPtCpuFixture
+                or staged.trusted_ci_generated is not True
+                or staged.production_launch_allowed is not False
+                or staged.result_publish_allowed is not False
+                or staged.trusted_stop_receipt_available is not False):
+            _hold("REBOUND_FIXTURE_NOT_TRUSTED")
+        old = _handle(staged.handle)
+        new = _handle(journal_handle)
+        if old == new or staged.root != _ROOT / (_PREFIX + old):
+            _hold("REBOUND_HANDLE_NOT_INDEPENDENT")
+        _trusted_directory(staged.root)
+        _sealed_bytes(
+            staged.root / _SOURCE, digest=staged.source_sha256,
+            length=staged.source_size_bytes,
+        )
+        manifest = json.dumps(
+            {"sha256": staged.source_sha256, "size_bytes": staged.source_size_bytes,
+             "origin": "trusted-ci-generated-yolo11n"},
+            separators=(",", ":"), sort_keys=True,
+        ).encode("ascii")
+        _sealed_bytes(
+            staged.root / _MANIFEST, digest=hashlib.sha256(manifest).hexdigest(),
+            length=len(manifest),
+        )
+        target = _ROOT / (_PREFIX + new)
+        if target.exists() or target.is_symlink():
+            _hold("REBOUND_TARGET_ALREADY_PRESENT")
+        try:
+            os.rename(staged.root, target)
+        except OSError as exc:
+            raise GrantRejected("PT_CPU_REBOUND_RENAME_UNVERIFIED_HOLD") from exc
+        _trusted_directory(target)
+        return StagedPtCpuFixture(
+            handle=new, root=target,
+            source_sha256=staged.source_sha256,
+            source_size_bytes=staged.source_size_bytes,
+        )
+
     def launch(self, staged: StagedPtCpuFixture) -> dict:
         if (type(staged) is not StagedPtCpuFixture
                 or staged.trusted_ci_generated is not True

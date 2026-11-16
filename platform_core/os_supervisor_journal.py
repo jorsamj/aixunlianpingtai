@@ -479,6 +479,7 @@ class ExecutionJournal:
             raise GrantRejected("CPU_IDENTITY_INVALID_HOLD")
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             row = db.execute(
                 """SELECT i.*,o.invocation_id AS saved_invocation,
                           o.control_group AS saved_group,o.main_pid AS saved_pid
@@ -517,6 +518,7 @@ class ExecutionJournal:
 
     def cpu_identity(self, handle_id: str, task_attempt: int) -> dict:
         with closing(self._connect()) as db:
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             row = db.execute(
                 """SELECT i.*, o.invocation_id,o.control_group,o.main_pid
                    FROM execution_intents i
@@ -541,6 +543,7 @@ class ExecutionJournal:
         changed OS boot remain HOLD, even with an old InvocationID.
         """
         with closing(self._connect()) as db:
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             row = db.execute(
                 """SELECT i.boot_id,i.state,i.unit_name,
                           o.invocation_id,o.control_group,o.main_pid,
@@ -587,6 +590,7 @@ class ExecutionJournal:
             raise GrantRejected("CPU_EXIT_EVIDENCE_INVALID_HOLD")
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             row = db.execute(
                 """SELECT i.state,i.boot_id,o.invocation_id,o.main_pid,
                           t.exit_code AS saved_exit,t.unit_result AS saved_result

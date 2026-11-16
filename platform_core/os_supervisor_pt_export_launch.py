@@ -61,6 +61,14 @@ CREATE TABLE IF NOT EXISTS pt_export_claims (
     launch_grant_digest TEXT NOT NULL,
     claimed_at INTEGER NOT NULL
 );
+-- OS identity lives in SAME root journal and is NOT a second task owner.
+CREATE TABLE IF NOT EXISTS pt_export_unit_identities (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    invocation_id TEXT NOT NULL UNIQUE,
+    control_group TEXT NOT NULL,
+    main_pid INTEGER NOT NULL CHECK(main_pid>1),
+    recorded_at INTEGER NOT NULL
+);
 """
 _MAX_ACTIVE_CHALLENGES = 512
 _MAX_NODE_CHALLENGES = 64
@@ -410,4 +418,94 @@ class PtExportJournal:
             "state": "UNKNOWN", "launch_authorized": False,
             "os_executor_connected": False, "replayed": False,
             "launch_grant_digest": verified_digest,
+        }
+
+    def record_pt_systemd_identity(
+        self, handle_id: str, task_attempt: int, *,
+        invocation_id: str, control_group: str, main_pid: int,
+    ) -> None:
+        """Record systemd identity after one-shot CAS and a live OS snapshot.
+
+        Missing OS confirmation keeps STARTING/UNKNOWN; NEVER starts again.
+        The receipt carries no trusted stop, publish, or recovery permission.
+        """
+        if (not isinstance(handle_id, str)
+                or not isinstance(invocation_id, str)
+                or len(invocation_id) != 32
+                or any(x not in "0123456789abcdef" for x in invocation_id)
+                or type(task_attempt) is not int
+                or type(main_pid) is not int or main_pid <= 1
+                or control_group != "/system.slice/changlian-os-" + handle_id + ".service"):
+            _hold("IDENTITY_FORMAT_UNVERIFIED")
+        with closing(self.journal._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT i.boot_id,i.state,i.task_attempt,i.unit_name,
+                          c.launch_grant_digest,
+                          o.invocation_id,o.control_group,o.main_pid
+                   FROM execution_intents i
+                   JOIN pt_export_bound_inputs p ON p.handle_id=i.handle_id
+                   JOIN pt_export_claims c ON c.handle_id=i.handle_id
+                   LEFT JOIN pt_export_unit_identities o ON o.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["boot_id"] != self.journal.boot_id
+                    or row["unit_name"] != "changlian-os-" + handle_id + ".service"
+                    or row["task_attempt"] != task_attempt):
+                _hold("IDENTITY_JOURNAL_SCOPE_MISMATCH")
+            if row["state"] == "RUNNING":
+                if (row["invocation_id"] != invocation_id
+                        or row["control_group"] != control_group
+                        or row["main_pid"] != main_pid):
+                    _hold("IDENTITY_ALREADY_DIFFERENT")
+                db.commit()
+                return
+            if row["state"] != "STARTING" or row["invocation_id"] is not None:
+                _hold("IDENTITY_REPLAY_OR_NOT_STARTING")
+            db.execute(
+                """INSERT INTO pt_export_unit_identities
+                   (handle_id,invocation_id,control_group,main_pid,recorded_at)
+                   VALUES (?,?,?,?,?)""",
+                (handle_id, invocation_id, control_group, main_pid,
+                 int(time.time())),
+            )
+            changed = db.execute(
+                """UPDATE execution_intents SET state='RUNNING',event_seq=event_seq+1
+                   WHERE handle_id=? AND task_attempt=? AND state='STARTING'""",
+                (handle_id, task_attempt),
+            ).rowcount
+            if changed != 1:
+                _hold("IDENTITY_CONCURRENT_CHANGE")
+            db.commit()
+
+    def verified_pt_identity(self, handle_id: str, task_attempt: int) -> dict:
+        """Read only exact original PT systemd identity, not stop evidence."""
+        if not isinstance(handle_id, str) or type(task_attempt) is not int:
+            _hold("IDENTITY_READ_SCOPE_INVALID")
+        with closing(self.journal._connect()) as db:
+            row = db.execute(
+                """SELECT i.boot_id,i.state,i.unit_name,c.launch_grant_digest,
+                          o.invocation_id,o.control_group,o.main_pid
+                   FROM execution_intents i
+                   JOIN pt_export_bound_inputs p ON p.handle_id=i.handle_id
+                   JOIN pt_export_claims c ON c.handle_id=i.handle_id
+                   JOIN pt_export_unit_identities o ON o.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+        if (row is None or row["boot_id"] != self.journal.boot_id
+                or row["state"] != "RUNNING"
+                or row["unit_name"] != "changlian-os-" + handle_id + ".service"
+                or row["control_group"] != "/system.slice/" + row["unit_name"]):
+            _hold("IDENTITY_UNVERIFIED")
+        return {
+            "handle_id": handle_id, "task_attempt": task_attempt,
+            "unit_name": row["unit_name"],
+            "invocation_id": row["invocation_id"],
+            "control_group": row["control_group"],
+            "main_pid": int(row["main_pid"]),
+            "launch_grant_digest": row["launch_grant_digest"],
+            "trusted_stop_receipt_available": False,
+            "result_publish_allowed": False,
         }

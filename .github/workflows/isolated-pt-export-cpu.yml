@@ -7,16 +7,22 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
+      - 'tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py'
       - '.github/workflows/isolated-pt-export-cpu.yml'
   pull_request:
     branches:
       - main
     paths:
       - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
+      - 'tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py'
       - '.github/workflows/isolated-pt-export-cpu.yml'
 
 # This workflow is entirely separate from production task dispatch.
@@ -83,10 +89,14 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py \
+            platform_core/os_supervisor_pt_export_rechecked_bridge.py \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
-            tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py
+            tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
+            tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
+            tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py
           python -m pytest -q --maxfail=1 --confcutdir=tests/unit \
-            tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py
+            tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
+            tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py
       - name: Real trusted YOLO11n PT to ONNX in systemd DynamicUser
         shell: bash
         timeout-minutes: 7
@@ -95,4 +105,5 @@ jobs:
           sudo -n "$(command -v python)" -m pytest -vv --maxfail=1 \
             --confcutdir=tests/integration \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
+            tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py \
             -s
