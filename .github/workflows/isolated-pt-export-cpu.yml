@@ -134,7 +134,8 @@ jobs:
         timeout-minutes: 7
         run: |
           set -euo pipefail
-          sudo -n "$(command -v python)" -m pytest -vv --maxfail=1 \
+          sudo -n env CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N="${CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N:?}" \
+            "$(command -v python)" -m pytest -vv --maxfail=1 \
             --confcutdir=tests/integration \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
             tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py \
