@@ -17,6 +17,7 @@ on:
       - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
       - 'tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py'
+      - 'tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py'
       - '.github/workflows/isolated-pt-export-cpu.yml'
   pull_request:
     branches:
@@ -33,6 +34,7 @@ on:
       - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
       - 'tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py'
+      - 'tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py'
       - '.github/workflows/isolated-pt-export-cpu.yml'
 
 # This workflow is entirely separate from production task dispatch.
@@ -108,7 +110,8 @@ jobs:
             tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
             tests/unit/test_os_supervisor_pt_stop_grant.py \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
-            tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py
+            tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py \
+            tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py
           python -m pytest -q --maxfail=1 --confcutdir=tests/unit \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
             tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
@@ -144,9 +147,10 @@ jobs:
         timeout-minutes: 7
         run: |
           set -euo pipefail
-          sudo -n env CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N="${CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N:?}" \
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N="${CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N:?}" \
             "$(command -v python)" -m pytest -vv --maxfail=1 \
             --confcutdir=tests/integration \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
             tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py \
+            tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py \
             -s
