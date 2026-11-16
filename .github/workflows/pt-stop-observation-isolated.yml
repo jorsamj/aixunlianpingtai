@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check pytest cryptography
+          python -m pip install --disable-pip-version-check pytest cryptography filelock
           python -m py_compile platform_core/os_supervisor_pt_stop_observation.py tests/unit/test_os_supervisor_pt_stop_observation.py
           python -m pytest -vv --maxfail=1 --confcutdir=tests/unit tests/unit/test_os_supervisor_pt_stop_observation.py
       - name: Real isolated Ubuntu 24.04 root systemd stop (no model, no GPU)
