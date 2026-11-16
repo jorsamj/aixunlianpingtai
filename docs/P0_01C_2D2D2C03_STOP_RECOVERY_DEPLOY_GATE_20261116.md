@@ -35,6 +35,16 @@
 - 真实内核+测试签名专项在 `agent-kernel-stop-poc.yml` 新增 step；原 249 CPU 工作流与额外跨平台验证完成前，不得宣布 2C-03B PASS。
 - 此签名**只证明测试密钥持有权**，绝不证明签名者是隔离 root Supervisor。测试签名仅可由内存 CAS 消费，不允许作为正式 StopReceipt 或恢复/资源释放授权。生产仍 NO-GO。
 
+## 2C-03C 中央原任务签名停止授权与 root journal 一次性意图（已提交、待验收）
+
+- 新增 `platform_core/os_supervisor_pt_stop_grant.py`：独立 STOP 域的 Ed25519 中央试验签名，默认关闭。只读取**原 TaskRepository** 的 MODEL_CONVERSION、原 `tasks.attempt`、原 worker、原 lease；仅当 `CANCEL_REQUESTED`，或 `RUNNING` 且 `recovery_blocked_remote_agent_unverified` 并已过租约有效期时签发。普通运行中的任务不能随意获得 STOP 授权。
+- 授权完整绑定任务、执行代数、节点/worker、原 lease SHA256、boot、OS handle、unit、InvocationID、cgroup、主 PID、一次性挑战、停止原因和短时 TTL。Root 只认可原 journal 中的身份，不接受 Agent 任意 unit/PID。
+- `PtExportJournal` 原 protected SQLite 增加两张**附属证据表** `pt_export_stop_challenges`、`pt_export_stop_claims`，均通过原 execution_intents.handle_id 关联，单次 nonce、一张停止意图、签名校验后 `BEGIN IMMEDIATE` CAS；不增加中央调度器、第二任务表或任务执行代数。
+- 新增 `tests/unit/test_os_supervisor_pt_stop_grant.py`，覆盖正常运行不得停、真实取消、原租约超时、签名伪造、错误任务/代数/boot、租约/worker 改动、重复停止、原 journal 重开和挑战超时等。
+- **特别注意**：这阶段只完成 `STOP_INTENT_CLAIMED_OS_UNVERIFIED` 的持久意图，不真正执行 stop，也不签发 StopReceipt。返回 `os_stopped=false`、`trusted_stop_receipt_available=false`、`central_recovery_allowed=false`。与 2C-03A 内核观察器联动、原执行后代全部停止证明和恢复消费事务仍需独立验收。
+- 功能提交 `b7caab7cff38f8ebab50b76c102cd3fae1ff358c` 起，陆续增加 root journal、测试和微小修复； CI 工作流更新提交 `bd5229a19d4333c0e375a1693b187657f1e0b434`。**尚无最终 CI PASS，继续 NO-GO**。
+- CI：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43808456054>（原官方 PT CPU systemd 隔离工作流，包含新增 STOP 合同测试）。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
