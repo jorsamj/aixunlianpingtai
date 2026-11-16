@@ -43,8 +43,14 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
             trusted_fixture=ctx["fixture"],
         )
         assert started["unit_name"] == unit
-        assert started["active_state"] == "active"
-        assert started["sub_state"] == "running"
+        assert started["state"] == "RUNNING"
+        # Bridge.start deliberately returns a narrow receipt; live unit
+        # ActiveState/SubState belong to the systemd backend inspection API.
+        observed = ctx["pilot"].backend.inspect(unit, started["invocation_id"])
+        assert observed["active_state"] == "active"
+        assert observed["sub_state"] == "running"
+        assert observed["main_pid"] == started["main_pid"]
+        assert observed["control_group"] == started["control_group"]
         original = ctx["journal"].verified_pt_identity(handle, 3)
         with closing(ctx["repo"]._connect()) as db:
             db.execute("UPDATE tasks SET status='CANCEL_REQUESTED' WHERE task_id=?",
