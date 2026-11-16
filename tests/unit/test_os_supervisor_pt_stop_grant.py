@@ -162,7 +162,6 @@ def test_expired_held_original_lease_allows_stop_not_recovery(original_running):
 @pytest.mark.parametrize("sql", [
     "UPDATE tasks SET status='RUNNING'",
     "UPDATE tasks SET attempt=4",
-    "UPDATE tasks SET lease_token='new-remote-lease'",
     "UPDATE tasks SET worker_id='agent:elsewhere'",
     "UPDATE tasks SET kind='TRAINING'",
 ])
@@ -181,6 +180,46 @@ def test_central_original_task_change_fences_stop_grant(original_running, sql):
         )
     with closing(root._connect()) as db:
         assert db.execute("SELECT COUNT(*) FROM pt_export_stop_claims").fetchone()[0] == 0
+
+
+def test_rotated_original_lease_is_rejected_at_root_not_assumed_at_issuer(
+    original_running,
+):
+    # Central sees ONLY the current original task snapshot. When the current
+    # token has changed, a newly signed grant may be well-formed, but the
+    # immutable original OS journal carries the OLD lease digest and MUST
+    # refuse the stop. No systemd operation or central release follows.
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    with closing(repo._connect()) as db:
+        db.execute(
+            "UPDATE tasks SET status='CANCEL_REQUESTED',lease_token=? WHERE task_id=?",
+            ("new-original-task-lease-" + "z" * 32, TASK),
+        )
+    nonce = pt.issue_pt_stop_challenge(handle, 3)
+    grant = CentralPtStopTrialIssuer(
+        repo, key, isolated_test_only=True,
+    ).issue(
+        task_id=TASK, task_attempt=3, node_id=NODE, boot_id=BOOT,
+        handle_id=handle, invocation_id=INV, main_pid=PID,
+        challenge=nonce,
+    )
+    assert grant["claims"]["execution_lease_sha256"] != scope[
+        "execution_lease_sha256"
+    ]
+    with pytest.raises(GrantRejected, match="ORIGINAL_SCOPE_OR_NONCE_STALE"):
+        pt.claim_pt_stop_rechecked(
+            handle, 3, grant, trusted_public_key=key.public_key(),
+        )
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        pt.claim_pt_os_stop_observation(handle, 3)
+    with closing(root._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_claims",
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_observation_claims",
+        ).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("field,value", [
