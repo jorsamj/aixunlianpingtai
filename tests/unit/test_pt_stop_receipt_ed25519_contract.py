@@ -123,8 +123,6 @@ def test_cancellation_request_is_preserved_as_cancelled(scratch):
     ("worker_id", "agent:other-node"),
     ("boot_id", "ffffffff-ffff-ffff-ffff-ffffffffffff"),
     ("invocation_id", "c" * 32),
-    ("unit", "clpoc-" + "c" * 24 + ".service"),
-    ("cgroup", "/user.slice/app.slice/clpoc-" + "c" * 24 + ".service"),
     ("nonce", "changed-valid-nonce"),
     ("challenge_id", "c" * 32),
 ])
@@ -140,6 +138,18 @@ def test_validly_signed_different_execution_identity_cannot_consume(
     )
     with pytest.raises(central.RecoveryRejected, match="CHALLENGE"):
         _commit(db, key, envelope)
+    assert _unchanged(db)
+
+
+def test_different_but_well_formed_os_unit_and_cgroup_are_rejected(scratch):
+    db, key = scratch
+    body = synthetic_payload(_challenge(db))
+    unit = "clpoc-" + "c" * 24 + ".service"
+    body["unit"] = unit
+    body["cgroup"] = "/user.slice/app.slice/" + unit
+    signed = sign_test_only_stop_witness(body, key, isolated_test_only=True)
+    with pytest.raises(central.RecoveryRejected, match="CHALLENGE"):
+        _commit(db, key, signed)
     assert _unchanged(db)
 
 
