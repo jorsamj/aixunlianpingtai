@@ -9,6 +9,9 @@ on:
       - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
       - 'platform_core/os_supervisor_pt_official_source.py'
       - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
+      - 'platform_core/os_supervisor_pt_stop_grant.py'
+      - 'platform_core/os_supervisor_pt_export_launch.py'
+      - 'tests/unit/test_os_supervisor_pt_stop_grant.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
       - 'tests/unit/test_os_supervisor_pt_official_source.py'
       - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
@@ -22,6 +25,9 @@ on:
       - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
       - 'platform_core/os_supervisor_pt_official_source.py'
       - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
+      - 'platform_core/os_supervisor_pt_stop_grant.py'
+      - 'platform_core/os_supervisor_pt_export_launch.py'
+      - 'tests/unit/test_os_supervisor_pt_stop_grant.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
       - 'tests/unit/test_os_supervisor_pt_official_source.py'
       - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
@@ -95,14 +101,18 @@ jobs:
             platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py \
             platform_core/os_supervisor_pt_official_source.py \
             platform_core/os_supervisor_pt_export_rechecked_bridge.py \
+            platform_core/os_supervisor_pt_stop_grant.py \
+            platform_core/os_supervisor_pt_export_launch.py \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
             tests/unit/test_os_supervisor_pt_official_source.py \
             tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
+            tests/unit/test_os_supervisor_pt_stop_grant.py \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
             tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py
           python -m pytest -q --maxfail=1 --confcutdir=tests/unit \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
             tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
+            tests/unit/test_os_supervisor_pt_stop_grant.py \
             tests/unit/test_os_supervisor_pt_official_source.py
       - name: Retrieve exact code-pinned official YOLO11n checkpoint without loading PT
         shell: bash
