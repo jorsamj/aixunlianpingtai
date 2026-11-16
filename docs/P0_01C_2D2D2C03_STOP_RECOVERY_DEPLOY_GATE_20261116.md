@@ -70,6 +70,13 @@
 - 代码提交 `0f9b0b01c29bab111d2b1d677710533fab35eec5`（租约轮换语义修正）及 `5dc2b08f81c6f76092d7e5860c23747c5725e84d`（并发/代数安全合同）；轻量 CI 最新运行：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43811499594>。
 - 最新慢速真实 PT systemd/STOP 联调追踪：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43810072981>。上述 CI 截至本次更新仍处于排队/未验收，**不得宣称 2C-03C 通过**。
 
+## 2C-03C4 快速 CI 首轮缺陷闭环（2026-11-16）
+
+- 真实 CI `43811499594` 初次在 20 项成功后失败：`test_non_cancelled_live_lease_cannot_get_signed_stop` 预期 `CENTRAL_STOP_REASON`，但实际被包装为 `CENTRAL_LOOKUP_UNVERIFIED`。原因已核实：`GrantRejected(PermissionError)` 属于 `OSError`，新 STOP issuer 的宽泛异常处理捕获了其自身安全拒绝。
+- 修复 `platform_core/os_supervisor_pt_stop_grant.py`：显式 `except GrantRejected: raise` 优先于通用 `OSError/sqlite3.Error`，确保拒绝取消不成立、任务/lease 不匹配等条件能传递原始 HOLD 机器码；不会导致错停放行。
+- 修复提交 `b4195341038ce91be1df5ec6c015123bfbedbe51`，复测 <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43811735889>：**Ubuntu22.04 51/51 单元合同已成功**；Windows 截至核查仍排队，真实 Ubuntu24.04 systemd 停止专项仍未终态。**不得将部分成功当作全流程 PASS**。
+- 部署准备独立文档 `docs/DEPLOYMENT_TWO_TRACK_READINESS_20261116.md`：业务原 Runner 的可部署轨道与未完成的 Supervisor 轨道严格分开；A800/4070 现场只读核查仍未执行，禁止未经授权操作生产。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
