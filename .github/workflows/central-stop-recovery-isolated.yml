@@ -10,6 +10,8 @@ on:
       - '.github/workflows/central-stop-recovery-isolated.yml'
       - 'tools/poc/central_stop_recovery_contract.py'
       - 'tests/unit/test_central_stop_recovery_contract_poc.py'
+      - 'tools/poc/pt_stop_receipt_ed25519_contract.py'
+      - 'tests/unit/test_pt_stop_receipt_ed25519_contract.py'
 permissions:
   contents: read
 concurrency:
@@ -29,8 +31,8 @@ jobs:
         with:
           python-version: '3.11'
       - name: "Ensure isolated test-only module is syntactically valid"
-        run: python -m py_compile tools/poc/central_stop_recovery_contract.py
+        run: python -m py_compile tools/poc/central_stop_recovery_contract.py tools/poc/pt_stop_receipt_ed25519_contract.py
       - name: "Install test runner"
-        run: python -m pip install --disable-pip-version-check pytest
+        run: python -m pip install --disable-pip-version-check pytest cryptography
       - name: "Assert transaction and fail-closed recovery contracts"
-        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_central_stop_recovery_contract_poc.py
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_central_stop_recovery_contract_poc.py tests/unit/test_pt_stop_receipt_ed25519_contract.py
