@@ -563,6 +563,7 @@ class PtExportJournal:
             if row["challenge"] is not None:
                 if current >= row["expires_at"]:
                     _hold("STOP_CHALLENGE_EXPIRED_NO_REISSUE")
+                db.commit()
                 return row["challenge"]
             challenge = secrets.token_hex(16)
             db.execute(
