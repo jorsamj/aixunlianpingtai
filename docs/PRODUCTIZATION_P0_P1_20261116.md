@@ -9,7 +9,7 @@
 ## 开启、共存和回退
 
 1. Node **22+**，项目根执行 `npm ci --prefix frontend`、`npm run build --prefix frontend`。
-2. 构建输出为 `static/vue-catalog/catalog-preview.js` 和 `.css`，所有依赖打包本地，无 CDN。目录不入 Git，CI 提供可下载离线制品；发布打包时必须带上它。未构建时错误页允许返回原管理。
+2. 构建输出为 `static/vue-catalog/catalog-preview.js` 和 `.css`，所有依赖打包本地，无 CDN。目录不入 Git，CI 配置上传离线制品，必须核对准确SHA的实际Artifacts条目；发布打包时必须带上它。未构建时错误页允许返回原管理。
 3. 正常登录原系统，URL 加 `?vue_catalog_preview=1`，进入「部署资源」的原厂商/芯片区域，点击「只读预览」。默认无预览按钮，不加载 Vue 制品。
 4. 「返回完整管理」走原 `window.setPage('部署资源')`；保留原新增/编辑/停用/删除/检测/转换功能。回退只需移除 query 开关并刷新，不涉及数据回退。
 
@@ -71,3 +71,5 @@ CI复用原 Frontend Runtime 工作流，增加试点构建/两条Chrome及离�
 官方选型参考：[Element Plus按需使用](https://element-plus.org/en-US/guide/quickstart.html)、[Vite静态构建](https://vite.dev/guide/build.html)。根package/lock未修改，新增工程有独立精确版本lock，不安装或修改生产环境。
 
 下一批建议只审核本试点的真实部署形态、视觉和API证据；通过后选一个字典交互进行Owner交接，不自动扩展训练/GT/数据库迁移。
+
+本批后续精准收尾、状态语义修正、真实入口隔离冒烟和离线包含方法见 [收尾记录](PRODUCTIZATION_P0_P1_CLOSEOUT_20261116.md)。历史首批验证结果保留，新结果以收尾记录为准。

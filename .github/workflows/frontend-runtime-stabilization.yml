@@ -456,7 +456,7 @@ jobs:
           path: |
             static/vue-catalog/
             test-results/vue-catalog/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
 
   browser-navigation:

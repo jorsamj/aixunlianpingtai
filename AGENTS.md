@@ -1,3 +1,5 @@
+> **2026-11-16 P0/P1 精准收尾**：入口三资源统一缓存607，状态复用后端status/label；44项定向Node、3项Chrome及真实入口隔离冒烟通过。准确新SHA CI/上传制品推送后核对；真实离线部署未验证，不进入P2。见[收尾证据与离线打包方法](docs/PRODUCTIZATION_P0_P1_CLOSEOUT_20261116.md)。
+
 > **2026-11-16 产品化 P0/P1（本批精确 SHA CI 待核）**：用户已授权 Vue3/TS/Vite + Element Plus 厂商/芯片只读预览，原登录/API/导航/Task/GT Owner 保留。默认关闭，`?vue_catalog_preview=1` 可进入；已有GET新增 `observe_only` 避免SDK检测，旧管理完整保留。VERSION.txt 实际42.24.592保持，不按旧文档回退42.24.0。详见[本批范围、20域索引、测试与回退](docs/PRODUCTIZATION_P0_P1_20261116.md)。未生产部署，历史“不改Vue”仅为旧阶段限制。
 
 > **2026-11-11 / 42.24.587 前端 CI 缓存标识跟进**：初始 587 提交训练素材专项绿，但 Frontend Runtime 1604/1605，唯一失败为 AI 审核 CSS 引用仍旧 586；仅同步 index 缓存标识到 587，不改原测试校验/GT/Worker/生产，准确新 SHA CI 待核。见 [专项](docs/TRAIN_PICKER_UNKNOWN_TOTAL_BULK_P0_2026_11_11.md)。

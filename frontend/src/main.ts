@@ -13,6 +13,7 @@ import 'element-plus/theme-chalk/el-table-column.css';
 import 'element-plus/theme-chalk/el-tag.css';
 import 'element-plus/theme-chalk/el-pagination.css';
 import 'element-plus/theme-chalk/el-drawer.css';
+import 'element-plus/theme-chalk/el-overlay.css';
 import 'element-plus/theme-chalk/el-alert.css';
 import 'element-plus/theme-chalk/el-empty.css';
 import 'element-plus/theme-chalk/el-skeleton.css';

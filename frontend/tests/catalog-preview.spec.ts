@@ -86,3 +86,27 @@ test('failed reads can retry and navigation aborts pending preview reads',async(
   await expect(page.getByRole('button',{name:'+ 新增厂商'})).toBeVisible();await expect.poll(()=>aborted).toBe(true);
   await expect(page.locator('.catalog-preview')).toHaveCount(0);expect(h.requests.every(r=>r.method==='GET')).toBe(true);
 });
+
+
+test('backend status labels survive false SDK readiness in list and resource details',async({page})=>{
+  await setup(page);
+  const statuses=[['pending_configuration','待配置'],['pending_detection','待检测'],['detection_in_progress','检测中'],['detection_expired','检测已过期'],['detection_failed','检测失败'],['not_convertible','不兼容'],['not_adapted','暂未适配'],['service_unavailable','转换资源不可用'],['convertible','可转换']];
+  const chips=statuses.map(([status,status_label],i)=>({id:`chip-${i}`,name:`证据芯片 ${i}`,enabled:true,capability:{sdk_ready:false,status,status_label,resources:[{resource_id:`resource-${i}`,resource_name:'原资源证据',ready:false,status,status_label}]}}));
+  const raw={id:'chip-raw',name:'原始状态芯片',enabled:true,capability:{sdk_ready:false,status:'future_backend_status',status_label:'',resources:[]}};
+  await page.route('**/api/v39/deploy/catalog/records**',route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname.endsWith('/records')&&url.searchParams.get('entity')==='chips')return route.fulfill({json:{ok:true,items:[...chips,raw],page:1,page_size:10,total:10,revision:7,templates:[]}});
+    const chip=chips.find(item=>url.pathname.endsWith('/'+item.id));
+    if(chip)return route.fulfill({json:{ok:true,item:chip,revision:7,references:{check_status:'UNVERIFIED'}}});
+    return route.fallback();
+  });
+  await page.getByRole('button',{name:'只读预览',exact:true}).click();
+  const list=page.getByRole('region',{name:'芯片列表',exact:true});
+  for(const [i,[,label]] of statuses.entries()){
+    await expect(list.getByText(label,{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:`查看证据芯片 ${i}详情`,exact:true}).click();
+    await expect(page.locator('.preview-resource').getByText(label,{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'关闭详情'}).click();
+  }
+  await expect(list.getByText('future_backend_status',{exact:true})).toBeVisible();
+});

@@ -6,8 +6,9 @@ const props=defineProps<{context:PreviewContext}>();
 const view=useCatalogView();
 const entities:Entity[]=['vendors','chips'];
 const names={vendors:'厂商',chips:'芯片'};
-const readiness=(value:unknown)=>value===true?'已确认可用':value===false?'不可用':'未核验';
-const tone=(value:unknown)=>value===true?'success':value===false?'danger':'info';
+// Status and its label are backend evidence, never inferred from templates or SDK booleans.
+const readiness=(fact?:{status?:string;status_label?:string})=>fact?.status_label || fact?.status || '未核验';
+const tone=(fact?:{status?:string})=>fact?.status==='convertible'?'success':['not_convertible','detection_failed','service_unavailable'].includes(fact?.status || '')?'danger':'info';
 function search(entity:Entity){view.filters[entity].page=1;void view.load(entity)}
 function page(entity:Entity,value:number){view.filters[entity].page=value;void view.load(entity)}
 onMounted(()=>void view.initialize(props.context));
@@ -41,7 +42,7 @@ onUnmounted(()=>{view.dispose();view.$dispose()});
         <el-table v-else :data="view.pages[entity]?.items || []" row-key="id" :row-class-name="({row}:any)=>entity==='vendors'&&row.id===view.selected?'preview-selected':''" empty-text="暂无匹配记录" table-layout="auto">
           <el-table-column :label="names[entity]+'名称'" min-width="150"><template #default="{row}"><el-button v-if="entity==='vendors'" link type="primary" class="preview-record-name" @click="view.choose(row.id,row.name)">{{ row.name }}</el-button><strong v-else>{{ row.name }}</strong><small class="preview-record-id">{{ entity==='vendors'?row.template_name || '未声明模板':row.sdk_code || 'SDK 目标未声明' }}</small></template></el-table-column>
           <el-table-column v-if="entity==='vendors'" label="芯片" width="70"><template #default="{row}">{{ row.chip_count ?? '—' }}</template></el-table-column>
-          <el-table-column v-else label="能力证据" min-width="120"><template #default="{row}"><el-tag :type="tone(row.capability?.sdk_ready)" effect="plain">{{ readiness(row.capability?.sdk_ready) }}</el-tag><small class="preview-record-id">{{ row.capability?.allowed_precisions?.join(' / ') || '精度未确认' }}</small></template></el-table-column>
+          <el-table-column v-else label="能力证据" min-width="120"><template #default="{row}"><el-tag :type="tone(row.capability)" effect="plain">{{ readiness(row.capability) }}</el-tag><small class="preview-record-id">{{ row.capability?.allowed_precisions?.join(' / ') || '精度未确认' }}</small></template></el-table-column>
           <el-table-column label="状态" width="85"><template #default="{row}"><el-tag :type="row.enabled===true?'success':'info'" effect="plain">{{ row.enabled===true?'已启用':row.enabled===false?'已停用':'未知' }}</el-tag></template></el-table-column>
           <el-table-column label="" width="65"><template #default="{row}"><el-button link type="primary" :aria-label="`查看${row.name}详情`" @click="view.showDetail(entity,row.id)">详情</el-button></template></el-table-column>
         </el-table>
@@ -54,7 +55,7 @@ onUnmounted(()=>{view.dispose();view.$dispose()});
       <template v-else-if="view.detail"><h2>{{ view.detail.item.name }}</h2><dl class="preview-details"><dt>稳定 ID</dt><dd>{{ view.detail.item.id }}</dd><dt>SDK / 模板</dt><dd>{{ view.detail.item.sdk_code || view.detail.item.template_name || '未声明' }}</dd><dt>业务引用</dt><dd>{{ view.detail.references?.reference_count ?? '未核验' }}</dd><dt>引用核验</dt><dd>{{ view.detail.references?.check_status || '未核验' }}</dd><dt>字典修订</dt><dd>{{ view.detail.revision }}</dd></dl>
         <el-alert v-if="view.detail.references?.check_status==='UNVERIFIED'" title="历史引用未核验，不能据此判断可删除或改挂。" type="warning" :closable="false"/>
         <h3>已有资源证据</h3><p v-if="!view.detail.item.capability?.resources?.length" class="preview-muted">没有匹配的资源证据。本页不会启动检测。</p>
-        <article v-for="resource in view.detail.item.capability?.resources || []" :key="resource.resource_id" class="preview-resource"><strong>{{ resource.resource_name }}</strong><el-tag :type="tone(resource.ready)">{{ readiness(resource.ready) }}</el-tag><p>SDK {{ resource.sdk_version || '版本未知' }} · {{ resource.allowed_precisions?.join(' / ') || '精度未确认' }}</p><p>{{ resource.message }}</p><small>检测时间：{{ resource.last_checked_at || '未记录' }}</small></article>
+        <article v-for="resource in view.detail.item.capability?.resources || []" :key="resource.resource_id" class="preview-resource"><strong>{{ resource.resource_name }}</strong><el-tag :type="tone(resource)">{{ readiness(resource) }}</el-tag><p>SDK {{ resource.sdk_version || '版本未知' }} · {{ resource.allowed_precisions?.join(' / ') || '精度未确认' }}</p><p>{{ resource.message }}</p><small>检测时间：{{ resource.last_checked_at || '未记录' }}</small></article>
       </template>
       <template #footer><el-button @click="view.closeDetail">关闭详情</el-button></template>
     </el-drawer>
