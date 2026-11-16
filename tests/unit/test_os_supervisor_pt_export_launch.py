@@ -164,6 +164,8 @@ def test_one_registered_original_attempt_one_claim_even_after_restart(stage):
     assert claimed["os_executor_connected"] is False
     assert claimed["launch_authorized"] is False
     assert not hasattr(pt, "launch")
+    with pytest.raises(GrantRejected, match="CPU_PT_HANDLE_PROFILE_MISMATCH_HOLD"):
+        root.starting_cpu_unit(first["handle_id"], 3)
     with closing(root._connect()) as db:
         assert tuple(db.execute(
             "SELECT state,event_seq FROM execution_intents WHERE task_id=?",
@@ -171,6 +173,11 @@ def test_one_registered_original_attempt_one_claim_even_after_restart(stage):
         assert db.execute(
             "SELECT count(*) FROM execution_intents WHERE task_id=?",
             (TASK,)).fetchone()[0] == 1
+        audit = db.execute(
+            "SELECT launch_grant_digest,claimed_at FROM pt_export_claims"
+        ).fetchone()
+        assert audit["launch_grant_digest"] == claimed["launch_grant_digest"]
+        assert type(audit["claimed_at"]) is int
     reopened = PtExportJournal(ExecutionJournal(
         root.path, test_only_unprivileged=True, boot_id_for_tests=BOOT))
     with pytest.raises(GrantRejected, match="HOLD"):
@@ -184,6 +191,8 @@ def test_one_registered_original_attempt_one_claim_even_after_restart(stage):
 def test_original_fixed_cpu_and_pt_intents_share_attempt_uniqueness(stage):
     repo, artifacts, key, token, issuer, root, pt, scope = stage
     first, signed = registered(stage)
+    with pytest.raises(GrantRejected, match="CPU_PT_HANDLE_PROFILE_MISMATCH_HOLD"):
+        root.issue_cpu_launch_challenge(first["handle_id"], 3)
     old_scope = {
         "task_id": TASK, "task_attempt": 3,
         "node_id": NODE, "worker_id": "agent:" + NODE,

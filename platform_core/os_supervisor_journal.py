@@ -133,6 +133,23 @@ class ExecutionJournal:
             os.chmod(self.path, 0o600)
         return database
 
+    @staticmethod
+    def _reject_pt_handle_in_fixed_cpu(db: sqlite3.Connection, handle_id: str) -> None:
+        """Never promote a PT-bound handle into the old fixed-CPU launcher.
+
+        The PT evidence table is optional, created only by the isolated PT
+        journal. Fixed-CPU journals without that table stay compatible.
+        """
+        present = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='pt_export_bound_inputs'"
+        ).fetchone()
+        if present is not None and db.execute(
+            "SELECT 1 FROM pt_export_bound_inputs WHERE handle_id=?",
+            (handle_id,),
+        ).fetchone() is not None:
+            raise GrantRejected("CPU_PT_HANDLE_PROFILE_MISMATCH_HOLD")
+
     def issue_challenge(self, binding: Mapping[str, object], *,
                         now: int | None = None) -> str:
         """Persist a fresh OS-bound nonce. A nonce alone cannot start a worker."""
@@ -339,6 +356,7 @@ class ExecutionJournal:
             if (row is None or row["boot_id"] != self.boot_id
                     or row["state"] != "PREPARED"):
                 raise GrantRejected("CPU_RECHECK_INTENT_NOT_PREPARED_HOLD")
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             old = db.execute(
                 "SELECT challenge,expires_at FROM cpu_launch_challenges WHERE handle_id=?",
                 (handle_id,),
@@ -391,6 +409,7 @@ class ExecutionJournal:
                     or row["boot_id"] != self.boot_id
                     or current >= nonce["expires_at"]):
                 raise GrantRejected("CPU_RECHECK_LAUNCH_NOT_PREPARED_HOLD")
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             binding = {
                 "task_id": row["task_id"],
                 "task_attempt": row["task_attempt"],
@@ -441,6 +460,7 @@ class ExecutionJournal:
                     or row["state"] != "STARTING"
                     or row["unit_name"] != "changlian-os-" + handle_id + ".service"):
                 raise GrantRejected("CPU_STARTING_REATTACH_NOT_AUTHORIZED_HOLD")
+            self._reject_pt_handle_in_fixed_cpu(db, handle_id)
             existing = db.execute(
                 "SELECT 1 FROM cpu_unit_identities WHERE handle_id=?", (handle_id,),
             ).fetchone()

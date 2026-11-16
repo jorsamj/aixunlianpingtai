@@ -33,3 +33,13 @@
 ## CI 状态
 
 待新功能 SHA 工作流真实结束后回填，不能预先填写“全部成功”。
+
+## 交叉 profile 隔离补充审计
+
+在功能提交后的交叉入口审计发现：原 FixedCPU 的 issue_cpu_launch_challenge / claim_cpu_launch_rechecked / starting_cpu_unit 原本只依赖 execution_intents 的 task/attempt/boot/state，不显式区分该行最初由 fixed-cpu-v1 还是新 PT profile 登记。虽然原中央资源键与签名目的不同，仍应从 OS 边界防止通过改动中心资源字段将 PT handle 用旧 CPU 入口处理。
+
+本轮补充在原 ExecutionJournal 内添加小型 profile fence：只在 PT 证据表存在时检查同 handle 是否已被 PT 绑定，发现即 CPU_PT_HANDLE_PROFILE_MISMATCH_HOLD；旧单 profile journal 没有此表时逻辑不变。PT handle 亦不能经由旧 starting_cpu_unit 提取固定 CPU unit。测试新增明确断言。
+
+同时 PT one-shot CAS 事务内另存 launch_grant_digest / claimed_at 到同一 root-owned SQLite 的 pt_export_claims 附表，重启后可追查究竟哪份 fresh grant 消耗启动窗口；不改变原 tasks.attempt 或 execution_intents 唯一约束。
+
+这仍然不是可信 StopReceipt，也未启动任何 PT 模型导出进程。修正后的 CI 必须以新 SHA 单独核验。

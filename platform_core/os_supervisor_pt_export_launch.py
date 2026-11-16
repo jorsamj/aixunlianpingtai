@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS pt_export_launch_challenges (
     issued_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
+-- Immutable audit of the exact rechecked signature consumed by the one CAS.
+CREATE TABLE IF NOT EXISTS pt_export_claims (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    launch_grant_digest TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL
+);
 """
 _MAX_ACTIVE_CHALLENGES = 512
 _MAX_NODE_CHALLENGES = 64
@@ -392,6 +398,12 @@ class PtExportJournal:
             ).rowcount
             if changed != 1:
                 _hold("CLAIM_CONCURRENT_REPLAY")
+            db.execute(
+                """INSERT INTO pt_export_claims
+                   (handle_id,launch_grant_digest,claimed_at)
+                   VALUES (?,?,?)""",
+                (handle_id, verified_digest, current),
+            )
             db.commit()
         return {
             "handle_id": handle_id, "task_attempt": task_attempt,
