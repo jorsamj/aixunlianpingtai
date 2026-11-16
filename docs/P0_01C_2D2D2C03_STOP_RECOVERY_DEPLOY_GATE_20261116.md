@@ -19,6 +19,22 @@
 - 核查过程中发现并修复 unit 在本地验证之前传给 backend.inspect 的拒绝顺序问题（提交 `6984897501994aac06ff5016fc26a7f9adee9243`）。
 - CI 状态：**当前仍待最终复核**。本文件不得把队列、早期失败或中间测试写成 PASS。
 
+## 2C-03A 已完成的真实 CI 证据（已核对 2026-11-16）
+
+- 代码 `09a042d535aa0520acea4d3c0d7892c037163dda` 在 GitHub Actions 同 head SHA 的 23/23 个工作流 **completed/success**；不能代替 2C-03B 之后的新代码 CI。
+- <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800970138> Ubuntu22.04/systemd 249：23/23 合同及真实用户 cgroup kernel-to-memory CAS PoC 成功。此 PoC 见证由同一测试上下文模拟，不是生产独立 StopReceipt。
+- 同一次 Ubuntu24.04：23/23 合同通过；真实系统级 systemd stop 在发出停止请求前打开原始 `cgroup.events` 并订阅内核事件；真实检查结果 `original_cgroup_became_empty=True`、`state=LOCAL_EMPTY_OBSERVED_NO_RECEIPT`；实际集成测试 1/1 成功。
+- 2C-03A 判定：**PASS（仅隔离停止观察边界）**。没有签发受生产信任的 StopReceipt。
+
+## 2C-03B Ed25519 测试见证与中央一次性 CAS（开发中）
+
+- 新增 `tools/poc/pt_stop_receipt_ed25519_contract.py`，独立的 Ed25519 域分离测试签名/验签合同，封闭 payload 字段、任务/boot/invocation/cgroup/时间顺序和布尔证据，测试-only 显式许可。
+- 复用已有 `central_stop_recovery_contract.py` 的内存 SQLite 原始 tasks.attempt、lease 与资源占用事务 CAS；不新增调度器、生产数据表或生产恢复 API。
+- 新增 `tests/unit/test_pt_stop_receipt_ed25519_contract.py` 验证错签、篡改、错误任务代数、租约轮换、过期挑战及重放必须拒绝；跨平台测试由 `central-stop-recovery-isolated.yml` 触发。
+- 原 `linux_stop_receipt_bridge.py` 增加 `--ed25519-test-only` 独立模式；实际 Ubuntu22.04 cgroup 内核证据验证后，使用共同驻留在测试进程的测试私钥签名并提交到**纯内存**中央 CAS；旧 HMAC 测试路径保留。
+- 真实内核+测试签名专项在 `agent-kernel-stop-poc.yml` 新增 step；原 249 CPU 工作流与额外跨平台验证完成前，不得宣布 2C-03B PASS。
+- 此签名**只证明测试密钥持有权**，绝不证明签名者是隔离 root Supervisor。测试签名仅可由内存 CAS 消费，不允许作为正式 StopReceipt 或恢复/资源释放授权。生产仍 NO-GO。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
@@ -38,4 +54,6 @@
 - 2C-02 已验收：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371849>
 - 2C-03A 首轮根因已修正（早期文件依赖不足与非法 unit 验证顺序）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800361441>
 - 2C-03A 首轮 24.04 真实停止测试 UNKNOWN（正确拒绝假停止证明）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800546470>
-- 2C-03A 修复版 Ubuntu22.04 成功、Ubuntu24.04 待完成：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800970138>
+- 2C-03A 修复版 Ubuntu22.04/Ubuntu24.04 均成功：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800970138>
+- 2C-03B 签名/内存 CAS 跨平台待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807294738>
+- 2C-03B Ubuntu249 真实内核/Ed25519 模拟中央 CAS 待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807401163>
