@@ -19,7 +19,7 @@
 - [x] B：原v61/annotation安全投影、Vue素材网格/列表/筛选/分页/详情/预览/当前页选择；必要API和Chrome定向合同。
 - [x] C：原负样本成员事务/CAS/回执、Vue算法级成员浏览与加入/移出；网络未知复用原packet查回执，不篡改GT或其他算法。
 - [x] D：原Picker展示适配、Vue完整选材、冻结数量/summary、原Draft交接；逐张/跨页/大引用→原提交请求→原Worker校验隔离证据。
-- [ ] E：桌面/平板真实截图、布局/请求生命周期/有界性能核验、离线构建/制品包含与交接。
+- [x] E：桌面/平板真实截图、布局/请求生命周期/有界性能核验、离线构建/制品包含与交接。
 - [ ] F：合理分阶段普通提交推送，准确SHA自动CI和实际artifact下载比对，最终列明未验现场与停止边界。
 
 ## 尚未改变的边界
@@ -65,3 +65,9 @@ TypeScript/Vite通过，最终构建尺寸和SHA制品回执另存`test-results/
 素材HTTP读投影可沿原MaterialRepository/AnnotationRepository注入拆小Router；负池成员回执服务可留原同库事务单独封装，审核与资格继续独立Owner；Picker只读投影与manifest/训练准入分别标明依赖后再评估Router抽取。不拆新Repository，不机械拆app.py，不改Worker/lease/GT/frozen snapshot。linux/amd64、linux/arm64、CUDA/Ascend及其他硬件维持服务端能力事实约束，本轮没有硬件适配。
 
 完成P1K–P1N后停止。素材上传/删除、AI审核、训练执行/新调度、全面后端重构和数据库迁移不自动接续。
+
+## 精确SHA CI收尾修正
+
+ecf93ddb8f96c04f0d9e263f5381137d6d087ebd的Frontend Runtime单元1706项中1703通过、3失败，均为lazy-advanced-evaluation/modal-style-scope/navigation-presentation的正则版本期望仍612，实际三入口统一613。同步这三个旧测试为613，保留完整scope/Owner/同版本断言；本地先RED后11/11 GREEN，无业务或缓存再变动。修正SHA另核CI及制品，不引用ecf失败结果为验收成功。
+
+本地源码+Vue ZIP包含校验已通过：JS883902字节、CSS122311字节，ZIP CRC及两个成员字节一致；最终准确SHA离线包和CI artifact实物比对回执位于test-results/p1kn-real-entry。生产/现场离线状态仍未验证。
