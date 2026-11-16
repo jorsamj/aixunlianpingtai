@@ -9,6 +9,7 @@ CONVERSION_PARAMS=('precision','chip','soc_version','batch','input_size','input_
 def text(value,limit=512):
     if not isinstance(value,str):return value if type(value) in (int,float,bool) or value is None else None
     value=re.sub(r'https?://\S+','[地址已隐藏]',value)
+    value=re.sub(r'(?i)\bBearer\s+[^\s,;}"\']+','Bearer [已隐藏]',value)
     value=re.sub(r'''(?i)(token|password|secret|api[_-]?key|authorization)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)''',r'\1=[已隐藏]',value)
     value=re.sub(r'\\\\[^\s,;"\']+','[路径已隐藏]',value)
     value=re.sub(r'[A-Za-z]:[\\/][^\s,;]*|(?<!\w)/(?:[\w.\-]+/)*[\w.\-]+','[路径已隐藏]',value)

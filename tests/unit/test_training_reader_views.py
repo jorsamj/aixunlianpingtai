@@ -12,13 +12,16 @@ def test_training_query_filters_before_cursor_pagination_without_other_projects(
     assert not repo.list(project_id='p',task_query='other').items
 
 def test_bounded_artifact_and_task_display_preserve_truth_and_hide_secrets(tmp_path):
+    from dataclasses import replace
     from platform_core.training_reader_views import bounded_json,task_display
     from platform_core.task_runtime.artifacts import ArtifactStore
     store=ArtifactStore(tmp_path/'artifacts')
     store.atomic_write_json('t','payload.json',{'asset_algorithm_id':'a','version_id':'v','epochs':50,'token':'PRIVATE','dataset_selected_ids':['GT_SENTINEL']})
     task=TaskRecord.new('t','p',TaskKind.TRAINING,'payload.json','training:auto')
+    task=replace(task,error='Authorization: Bearer SECRET_SENTINEL')
     result=task_display(task,store,detail=True)
     assert result['status']=='QUEUED' and result['algorithm_id']=='a' and result['configuration']['epochs']==50
     assert 'PRIVATE' not in json.dumps(result) and 'GT_SENTINEL' not in json.dumps(result)
+    assert 'SECRET_SENTINEL' not in json.dumps(result)
     path=tmp_path/'large.json';path.write_text('x'*30)
     assert bounded_json(path,limit=10)[1]=='DEFERRED'
