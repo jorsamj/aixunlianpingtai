@@ -56,4 +56,4 @@
 - 2C-03A 首轮 24.04 真实停止测试 UNKNOWN（正确拒绝假停止证明）：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800546470>
 - 2C-03A 修复版 Ubuntu22.04/Ubuntu24.04 均成功：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43800970138>
 - 2C-03B 签名/内存 CAS 跨平台待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807294738>
-- 2C-03B Ubuntu249 真实内核/Ed25519 模拟中央 CAS 待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807401163>
+- 2C-03B Ubuntu249 真实内核/Ed25519 模拟中央 CAS 最新待验：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43807711658>（较早运行被 GitHub 同工作流并发策略取消，不算测试失败）
