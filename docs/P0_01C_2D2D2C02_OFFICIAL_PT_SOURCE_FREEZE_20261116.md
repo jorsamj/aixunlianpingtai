@@ -42,3 +42,24 @@ https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371849 —— **SU
 **这个 SUCCESS 只证明官方固定 SHA 白名单模型的隔离执行路径；平台自行训练的用户 PT（包括 registry VERIFIED）仍不能安全地采用同样的直接受保护反序列化信任级别。**
 
 其他 24 项全仓 CI 的最终终态尚需以代码 SHA 373466e8 的实际查询结果核实。
+
+
+## 2C-02 全仓最终验收与交付（2026-11-16）
+
+**最终功能代码 SHA：373466e8b1b34b9276ffdf06ac339426b65fbf81**。对该 SHA 查询 GitHub Actions 的 head_sha 结果：**24/24 completed / success、0 failure、0 pending**。不能拿前阶段的 24/24 替代本轮验证。
+
+- 真实官方 PT/systemd CI：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371849 —— **SUCCESS**；29/29 快速安全合同、10/10 Ubuntu24.04/systemd255 真实集成测试全部通过。
+- 官方 yolo11n.pt（Ultralytics assets v8.4.0）：5,613,764 bytes，SHA256 **0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1**，与母模型既有编译白名单完全一致。
+- 官方 PT 通过 root-owned 只读冻结、原中央任务 source/attempt/lease 新鲜签名、唯一原 OS journal CAS、nonroot systemd 真正加载和导出，ONNX 产物 **10,534,119 bytes**，SHA256 **87cadf21a519912dd549780c7c837d1b207adee43b8418002d76db2981bf98f3**；opset12，输入 [1,3,32,32]，输出 [1,84,21]，ONNX checker 和 CPUExecutionProvider 通过；PyTorch/ORT 最大绝对误差 **1.9073486328125e-05**。
+- 真正验证了固定中央签名错误、租约撤销、输入变更、PT 文件篡改、符号链接替换、CAS 已消费不可重启等阻断条件。两次早期 CI 失败分别来自 sudo 没传出已验证的 CI 文件位置，以及从临时 fixture 绑定到原 OS handle 时丢失了官方来源标识。均最小范围修复，源安全检查未降低；最终功能 SHA 的同一路径已通过。
+- Node Agent Executor：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371817 —— Ubuntu 864 passed/2 skipped；Windows 859 passed/7 skipped；Portable cgroup 30 passed/1 skipped；API SUCCESS。第二组 Node Agent 同样 SUCCESS。
+- Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43793371805 —— 前端 SUCCESS；Chrome 分片 **128 + 130 + 125 = 383 passed**，无业务前端改动。
+- 全仓其余远程训练/转换、素材导入与清洗、RKNN、AI 标注恢复、中央节点分配、资源治理等工作流均 SUCCESS。
+
+### 工程判定及下一步
+
+**2C-02 官方发行权重固定白名单与 root-owned 冻结：PASS**。但模型来源证明只覆盖代码签入的官方 YOLO11n/s/m 白名单（实际转换用 YOLO11n）；平台自训练和用户上传 PT 仅靠 SHA、ZIP 结构、沙箱模型探测或数据库 VERIFIED 标记不够获得直接执行权限。
+
+正式生产 Supervisor 模型转换仍 NO-GO：缺少可信内部训练来源签发、原任务取消/超时/失联/StopReceipt、原结果 prepare/upload/confirm/finalize/finish 与 Ubuntu22.04/systemd249 现场验证。没有启用任何生产开关；A800、双4070、数据、原 Runner、前端均不受影响。
+
+下一阶段进入 2C-03：根据信任边界逐项完成真实停止/取消、失联与可信 StopReceipt 的独立测试；实现前先核对原 Runner 和现有 systemd249 兼容差异，保留中央原任务所有权。
