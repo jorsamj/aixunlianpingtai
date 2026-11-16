@@ -11,14 +11,14 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1hj'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1hj2'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1hj')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1hj2')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
@@ -113,8 +113,8 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
         }}:{}),
         ...(tasksEnabled?{openTasks:(query)=>{if(!active())return;if(query)browse.tasks={filters:{query,status:'',kind:''},cursors:[''],index:0};return globalThis.window.setPage(TASKS_PAGE)}}:{}),
         ...(reportsEnabled?{openReport(selection){if(!active())return;browse.report={...selection};return globalThis.window.setPage(REPORT_PAGE)},async legacyReport(selection){
-          if(!active())return;await Promise.resolve(globalThis.window.setPage(selection.returnPage==='tasks'?'训练任务':'算法列表'));
-          if(getState().project?.id!==project)return;
+          if(!active())return;const destination=selection.returnPage==='tasks'?'训练任务':'算法列表';await Promise.resolve(globalThis.window.setPage(destination));
+          if(getState().project?.id!==project||getState().page!==destination)return;
           if(selection.algorithmId&&selection.versionId)return globalThis.window.openVersionReport429?.(selection.algorithmId,selection.versionId);
           return globalThis.window.openJobReport429?.(selection.jobId);
         }}:{}),

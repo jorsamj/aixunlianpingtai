@@ -38,6 +38,14 @@ function harness(enabled = true) {
   return {runtime, owners, state, calls, mounts, hosts};
 }
 
+test('late legacy report navigation cannot open a modal on another page',async()=>{
+ const owners=new Map(),contexts=[],state={page:REPORT_PAGE,project:{id:'p'}};let complete,opened=0;
+ const previous=globalThis.window;globalThis.window={setPage:()=>new Promise(resolve=>complete=resolve),openJobReport429:()=>opened++};
+ const runtime=installCatalogPreview({reportsEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return ()=>{}}},getState:()=>state,
+ document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountTrainingReport:async(_host,context)=>{contexts.push(context);return ()=>{}}})});
+ try{await owners.get(REPORT_PAGE)();const navigation=contexts[0].legacyReport({jobId:'t',returnPage:'tasks'});state.page='服务节点';complete();await navigation;assert.equal(opened,0)}finally{runtime.destroy();globalThis.window=previous}
+});
+
 test('preview is opt-in and registers no owner when disabled', () => {
   const h = harness(false); assert.equal(h.owners.size, 0); h.runtime.leave();
 });

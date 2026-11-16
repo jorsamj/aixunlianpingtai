@@ -7,7 +7,7 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1hj';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1hj2';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';

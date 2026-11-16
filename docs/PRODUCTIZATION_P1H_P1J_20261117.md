@@ -48,9 +48,9 @@
 ## 测试与真实入口证据
 
 - 定向Python **41/41**：新API/任务查询/报告4单测+2API，原模型投影/API与AlgorithmSqlStore回归。无全仓Python、训练或硬件测试。
-- Node24 **76/76**：算法管理写后读取/未知结果、原桥接能力/身份、原算法列表、入口缓存等13个直接相关文件。新增业务先观察缺失合同失败再实现；不删除原断言。
+- Node24 **77/77**：算法管理写后读取/未知结果、原桥接能力/身份、原算法列表、入口缓存等13个直接相关文件。新增业务先观察缺失合同失败再实现；不删除原断言。
 - 前端原11+新增3项Chrome **14/14**。新三例：本地算法新增/编辑/外部只读、任务游标/报告来源和返回/403、创建未知结果跨导航防重复。无全仓浏览器本地重复运行。
-- TypeScript/Vite构建通过，所有运行依赖本地打包。缓存styles/app/main统一611，仅改变的algorithm-list-runtime和Vue桥接更新自身标识；VERSION.txt保持42.24.592。
+- TypeScript/Vite构建通过，所有运行依赖本地打包。缓存styles/app/main统一612，仅改变的algorithm-list-runtime和Vue桥接更新自身标识；VERSION.txt保持42.24.592。
 - 真实入口脚本：根目录 `python tools/test_vue_productization_server.py`；frontend目录 `node tests/real-core-productization.acceptance.mjs`。强制全新临时DATA_DIR、固定loopback8028、原登录/API/SQL/TaskArtifactStore，lifespan off，禁止SDK探测，不运行Worker。25个保存的合成终态Task及报告；它们不代表实际训练/硬件质量。只在隔离数据中新建/编辑本地算法。
 - 真实入口通过算法新增后GET确认/编辑、Task游标分页、任务节点证据、finalized优先、Val/Test独立、报告脱敏、返回保留页码和原完整报告/管理入口。JS/CSS200，pageerror=[]。回原训练页面时原Owner有既有POST recovery-query（代码已核实只读取≤100条恢复证据），不等于新增恢复写入；本轮新页面业务写请求仅原算法POST+PUT，无训练/转换/发布执行。
 - 桌面/平板真实截图及receipt.json位于 `test-results/p1hj-real-entry/`；HTTP夹具截图在 `test-results/vue-catalog/`，二者区分。最终SHA CI/上传制品在推送后读取，并保存独立回执，避免自引用SHA产生新的未验提交。
@@ -77,3 +77,7 @@
 ## 精确SHA CI反馈修正
 
 3b6609d的External Algorithm Platform合同job通过，Chrome的旧外部算法保护场景失败：本轮插入opt-in按钮时误改原同步按钮文案为“同步外部算法”，原断言要求“同步畅联云”。恢复原文案，不改断言/旧业务。该原Chrome失败用例本地定向1/1、缓存及原算法列表60/60通过；补齐原锁定npm依赖后使用Node24运行，没有执行训练提交。入口三资源及改变的算法列表模块缓存顺延611，其他模块和正式VERSION不变。最终修正SHA CI重新核对，不借用前一提交结果。
+
+## 原报告导航迟到回调保护
+
+最终导航回归构造“从Vue打开原任务页尚未完成时又切到服务节点”，先复现迟到回调仍调用openJobReport429。现恢复原报告前同时核验project和目标page，与既有转换返回约束一致；新增回归通过，相关Node共77项。只改桥接委托，不改变原报告/任务生命周期。入口缓存612，桥接静态标识p1hj2，算法列表自身仍611（未再改动）。最终准确SHA重新核对CI。
