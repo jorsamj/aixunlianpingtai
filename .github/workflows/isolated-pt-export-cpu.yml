@@ -44,7 +44,7 @@ jobs:
           python -m pip install --disable-pip-version-check \
             'ultralytics==8.4.127' 'numpy==2.2.6' \
             'onnx==1.19.0' 'onnxruntime==1.22.1' \
-            'pytest' 'cryptography' 'fastapi' 'httpx' 'filelock' \
+            'pytest' 'python-multipart' 'cryptography' 'fastapi' 'httpx' 'filelock' \
             'psutil' 'requests' 'keyring' 'pydantic' 'pyyaml'
           python - <<'PY'
           import torch, torchvision, ultralytics, onnx, onnxruntime, numpy
@@ -85,7 +85,7 @@ jobs:
             platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py
-          python -m pytest -q --maxfail=1 \
+          python -m pytest -q --maxfail=1 --confcutdir=tests/unit \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py
       - name: Real trusted YOLO11n PT to ONNX in systemd DynamicUser
         shell: bash
@@ -93,5 +93,6 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n "$(command -v python)" -m pytest -vv --maxfail=1 \
+            --confcutdir=tests/integration \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
             -s
