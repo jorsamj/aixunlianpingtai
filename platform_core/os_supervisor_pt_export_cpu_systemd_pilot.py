@@ -19,6 +19,9 @@ import stat
 import subprocess
 
 from .os_supervisor_authorization import GrantRejected
+from .os_supervisor_pt_official_source import (
+    pinned_official_pt_binding, verify_local_pinned_official_pt,
+)
 from .os_supervisor_cpu_systemd import FixedCpuSystemd
 from .os_supervisor_onnx_cpu_systemd_pilot import (
     _handle, _sealed_bytes, _trusted_directory, _write_once,
@@ -202,6 +205,32 @@ class StagedPtCpuFixture:
     production_launch_allowed: bool = False
     result_publish_allowed: bool = False
     trusted_stop_receipt_available: bool = False
+    origin: str = "trusted-ci-generated-yolo11n"
+    source_name: str = "source.pt"
+
+
+def _trusted_fixture_manifest(staged: StagedPtCpuFixture) -> bytes:
+    if type(staged) is not StagedPtCpuFixture:
+        _hold("FIXTURE_TYPE_INVALID")
+    if staged.origin == "trusted-ci-generated-yolo11n":
+        if staged.source_name != "source.pt":
+            _hold("GENERATED_ORIGIN_NAME_MISMATCH")
+    elif staged.origin == "ultralytics-assets-v8.4.0-pinned-sha256":
+        pinned = pinned_official_pt_binding(
+            source_name=staged.source_name,
+            source_sha256=staged.source_sha256,
+            source_size_bytes=staged.source_size_bytes,
+        )
+        if pinned.origin != staged.origin:
+            _hold("OFFICIAL_ORIGIN_MISMATCH")
+    else:
+        _hold("SOURCE_ORIGIN_UNTRUSTED")
+    return json.dumps(
+        {"sha256": staged.source_sha256,
+         "size_bytes": staged.source_size_bytes,
+         "origin": staged.origin},
+        separators=(",", ":"), sort_keys=True,
+    ).encode("ascii")
 
 
 class IsolatedPtExportCpuPilot:
@@ -252,6 +281,93 @@ class IsolatedPtExportCpuPilot:
             raise GrantRejected("PT_CPU_GENERATOR_FAILED_HOLD") from exc
         return StagedPtCpuFixture(handle, path, sha, len(raw))
 
+    def stage_pinned_official_checkpoint(
+        self, source: Path, *, source_name: str, source_sha256: str,
+        source_size_bytes: int,
+    ) -> StagedPtCpuFixture:
+        """Freeze ONLY code-pinned official weights into root-only /run.
+
+        Source can be downloaded by an unprivileged CI step, but it is never
+        deserialized until BOTH central-bound SHA and compiled official SHA
+        are verified. A changed download is rejected even across copy.
+        """
+        pinned = verify_local_pinned_official_pt(
+            source, source_name=source_name, source_sha256=source_sha256,
+            source_size_bytes=source_size_bytes,
+        )
+        if pinned.size_bytes > _MAX_BYTES:
+            _hold("OFFICIAL_MODEL_OVER_PILOT_LIMIT")
+        handle = secrets.token_hex(16)
+        root = _ROOT / (_PREFIX + handle)
+        try:
+            os.mkdir(root, mode=0o755)
+            _trusted_directory(root)
+            source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            src_fd = os.open(str(source), source_flags)
+            try:
+                src = os.fstat(src_fd)
+                if (not stat.S_ISREG(src.st_mode)
+                        or src.st_size != pinned.size_bytes
+                        or src.st_nlink != 1):
+                    _hold("OFFICIAL_COPY_SOURCE_NOT_UNIQUE")
+                target_fd = os.open(
+                    str(root / _SOURCE),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                    | getattr(os, "O_NOFOLLOW", 0), 0o600,
+                )
+                try:
+                    digest = hashlib.sha256()
+                    length = 0
+                    while part := os.read(src_fd, 1024 * 1024):
+                        length += len(part)
+                        if length > pinned.size_bytes:
+                            _hold("OFFICIAL_COPY_OVER_SIZE")
+                        digest.update(part)
+                        written = 0
+                        while written < len(part):
+                            n = os.write(target_fd, part[written:])
+                            if n <= 0:
+                                _hold("OFFICIAL_COPY_SHORT_WRITE")
+                            written += n
+                    new_source = os.fstat(src_fd)
+                    if (new_source.st_size != src.st_size
+                            or new_source.st_mtime_ns != src.st_mtime_ns
+                            or new_source.st_ctime_ns != src.st_ctime_ns):
+                        _hold("OFFICIAL_SOURCE_CHANGED_DURING_COPY")
+                    if (length != pinned.size_bytes
+                            or digest.hexdigest() != pinned.source_sha256):
+                        _hold("OFFICIAL_COPY_DIGEST_MISMATCH")
+                    os.fchmod(target_fd, 0o444)
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+            finally:
+                os.close(src_fd)
+            frozen = StagedPtCpuFixture(
+                handle=handle, root=root,
+                source_sha256=pinned.source_sha256,
+                source_size_bytes=pinned.size_bytes,
+                trusted_ci_generated=False,
+                origin=pinned.origin, source_name=pinned.source_name,
+            )
+            manifest = _trusted_fixture_manifest(frozen)
+            _write_once(root / _MANIFEST, manifest)
+            _sealed_bytes(
+                root / _SOURCE, digest=pinned.source_sha256,
+                length=pinned.size_bytes,
+            )
+            _sealed_bytes(
+                root / _MANIFEST, digest=hashlib.sha256(manifest).hexdigest(),
+                length=len(manifest),
+            )
+        except (OSError, GrantRejected) as exc:
+            if root.is_dir():
+                shutil.rmtree(root)
+            if isinstance(exc, GrantRejected):
+                raise
+            raise GrantRejected("PT_CPU_OFFICIAL_STAGING_UNVERIFIED_HOLD") from exc
+        return frozen
+
     def rebind_trusted_fixture(
         self, staged: StagedPtCpuFixture, journal_handle: str,
     ) -> StagedPtCpuFixture:
@@ -262,7 +378,8 @@ class IsolatedPtExportCpuPilot:
         Original fixture handle is invalid after the atomic rename.
         """
         if (type(staged) is not StagedPtCpuFixture
-                or staged.trusted_ci_generated is not True
+                or staged.trusted_ci_generated is not (
+                    staged.origin == "trusted-ci-generated-yolo11n")
                 or staged.production_launch_allowed is not False
                 or staged.result_publish_allowed is not False
                 or staged.trusted_stop_receipt_available is not False):
@@ -276,11 +393,7 @@ class IsolatedPtExportCpuPilot:
             staged.root / _SOURCE, digest=staged.source_sha256,
             length=staged.source_size_bytes,
         )
-        manifest = json.dumps(
-            {"sha256": staged.source_sha256, "size_bytes": staged.source_size_bytes,
-             "origin": "trusted-ci-generated-yolo11n"},
-            separators=(",", ":"), sort_keys=True,
-        ).encode("ascii")
+        manifest = _trusted_fixture_manifest(staged)
         _sealed_bytes(
             staged.root / _MANIFEST, digest=hashlib.sha256(manifest).hexdigest(),
             length=len(manifest),
@@ -297,11 +410,13 @@ class IsolatedPtExportCpuPilot:
             handle=new, root=target,
             source_sha256=staged.source_sha256,
             source_size_bytes=staged.source_size_bytes,
+            origin=staged.origin, source_name=staged.source_name,
         )
 
     def launch(self, staged: StagedPtCpuFixture) -> dict:
         if (type(staged) is not StagedPtCpuFixture
-                or staged.trusted_ci_generated is not True
+                or staged.trusted_ci_generated is not (
+                    staged.origin == "trusted-ci-generated-yolo11n")
                 or staged.production_launch_allowed is not False
                 or staged.result_publish_allowed is not False):
             _hold("STAGED_SCOPE_INVALID")
@@ -313,11 +428,7 @@ class IsolatedPtExportCpuPilot:
         _sealed_bytes(root / _SOURCE,
                       digest=staged.source_sha256,
                       length=staged.source_size_bytes)
-        manifest = json.dumps(
-            {"sha256": staged.source_sha256,
-             "size_bytes": staged.source_size_bytes,
-             "origin": "trusted-ci-generated-yolo11n"},
-            separators=(",", ":"), sort_keys=True).encode("ascii")
+        manifest = _trusted_fixture_manifest(staged)
         _sealed_bytes(root / _MANIFEST, digest=hashlib.sha256(manifest).hexdigest(),
                       length=len(manifest))
         # Durable one-shot marker BEFORE any systemd-run. A lost response never

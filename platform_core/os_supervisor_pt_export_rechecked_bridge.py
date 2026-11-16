@@ -104,7 +104,7 @@ class CiOnlyPtExportRecheckedBridge:
                 or binding["worker_id"] != row["worker_id"]
                 or binding["execution_lease_sha256"] != row["lease_sha256"]
                 or binding["runner_profile"] != PT_PROFILE
-                or binding["source_name"] != "source.pt"
+                or binding["source_name"] != trusted_fixture.source_name
                 or binding["output_name"] != "source.onnx"
                 or binding["params"] != _FIXED_PARAMS):
             _hold("PILOT_FIXED_CONTRACT_MISMATCH")

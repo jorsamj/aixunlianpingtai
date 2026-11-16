@@ -7,8 +7,10 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'platform_core/os_supervisor_pt_official_source.py'
       - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_pt_official_source.py'
       - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
       - 'tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py'
@@ -18,8 +20,10 @@ on:
       - main
     paths:
       - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'platform_core/os_supervisor_pt_official_source.py'
       - 'platform_core/os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_pt_official_source.py'
       - 'tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py'
       - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
       - 'tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py'
@@ -89,14 +93,42 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py \
+            platform_core/os_supervisor_pt_official_source.py \
             platform_core/os_supervisor_pt_export_rechecked_bridge.py \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
+            tests/unit/test_os_supervisor_pt_official_source.py \
             tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
             tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
             tests/integration/test_os_supervisor_pt_export_rechecked_bridge_live.py
           python -m pytest -q --maxfail=1 --confcutdir=tests/unit \
             tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
-            tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py
+            tests/unit/test_os_supervisor_pt_export_rechecked_bridge.py \
+            tests/unit/test_os_supervisor_pt_official_source.py
+      - name: Retrieve exact code-pinned official YOLO11n checkpoint without loading PT
+        shell: bash
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ci-pinned-model
+          curl --fail --location --silent --show-error \
+            --retry 3 --retry-delay 2 --max-time 120 \
+            --output /tmp/ci-pinned-model/yolo11n.pt \
+            https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt
+          python - <<'PY'
+          from pathlib import Path
+          from platform_core.mother_model_assets import _OFFICIAL_YOLO11_DETECT
+          from platform_core.os_supervisor_pt_official_source import verify_local_pinned_official_pt
+          length, sha = _OFFICIAL_YOLO11_DETECT["yolo11n.pt"]
+          result = verify_local_pinned_official_pt(
+              Path("/tmp/ci-pinned-model/yolo11n.pt"),
+              source_name="yolo11n.pt", source_sha256=sha,
+              source_size_bytes=length,
+          )
+          assert result.launch_authorized is False
+          assert result.result_publish_allowed is False
+          print("CI_PINNED_OFFICIAL_PT_VERIFIED", result.source_sha256, result.size_bytes)
+          PY
+          echo "CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N=/tmp/ci-pinned-model/yolo11n.pt" >> "$GITHUB_ENV"
       - name: Real trusted YOLO11n PT to ONNX in systemd DynamicUser
         shell: bash
         timeout-minutes: 7

@@ -69,10 +69,19 @@ def _cleanup(staged, rebound_handle=None):
             shutil.rmtree(private)
 
 
-def _environment(tmp_path, *, input_size=32):
+def _environment(tmp_path, *, input_size=32, official_path=None):
     assert os.geteuid() == 0
     pilot = IsolatedPtExportCpuPilot(isolated_ci_only=True)
-    fixture = pilot.generate_trusted_fixture()
+    if official_path is None:
+        fixture = pilot.generate_trusted_fixture()
+    else:
+        from platform_core.mother_model_assets import _OFFICIAL_YOLO11_DETECT
+        name = "yolo11n.pt"
+        size, digest = _OFFICIAL_YOLO11_DETECT[name]
+        fixture = pilot.stage_pinned_official_checkpoint(
+            official_path, source_name=name, source_sha256=digest,
+            source_size_bytes=size,
+        )
     repo = TaskRepository(tmp_path / "db" / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "db" / "artifacts")
     params = {**_PARAMS, "input_size": input_size}
@@ -83,7 +92,7 @@ def _environment(tmp_path, *, input_size=32):
             "conversion": {
                 "schema_version": 1, "target": "onnx",
                 "source": {
-                    "type": "object", "file_name": "source.pt",
+                    "type": "object", "file_name": fixture.source_name,
                     "storage_source_id": "ci-original-remote-store",
                     "object_key": "models/ci/source.pt",
                     "sha256": fixture.source_sha256,
@@ -137,7 +146,7 @@ def _environment(tmp_path, *, input_size=32):
         execution_lease_sha256=hashlib.sha256(_LEASE.encode()).hexdigest(),
         source_sha256=fixture.source_sha256,
         source_size_bytes=fixture.source_size_bytes,
-        source_name="source.pt", output_name="source.onnx",
+        source_name=fixture.source_name, output_name="source.onnx",
         **params,
     )
     manifest = frozen.freeze_nonexecutable_manifest(
@@ -151,7 +160,7 @@ def _environment(tmp_path, *, input_size=32):
         "gpu_uuid": "CPU_ONLY",
         "source_sha256": fixture.source_sha256,
         "source_size_bytes": fixture.source_size_bytes,
-        "source_name": "source.pt", "output_name": "source.onnx",
+        "source_name": fixture.source_name, "output_name": "source.onnx",
         "params": params,
         "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
     }
@@ -364,3 +373,74 @@ def test_crash_after_cas_is_unknown_and_does_not_spawn_twice(tmp_path, monkeypat
         assert invoked == [True]
     finally:
         _cleanup(ctx["fixture"], ctx["handle"])
+
+
+
+def test_real_code_pinned_official_yolo11n_central_cas_pt_to_onnx(tmp_path):
+    """Real downloaded *and code-pinned* official PT, never an arbitrary file."""
+    import os
+    path = os.environ.get("CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N")
+    assert path, "CI requires a verified local official source"
+    downloaded = Path(path)
+    ctx = _environment(tmp_path, official_path=downloaded)
+    try:
+        assert ctx["fixture"].source_name == "yolo11n.pt"
+        assert ctx["fixture"].origin == "ultralytics-assets-v8.4.0-pinned-sha256"
+        fresh = _fresh_launch(ctx)
+        started = ctx["bridge"].start(
+            handle_id=ctx["handle"], task_attempt=3,
+            central_launch_envelope=fresh,
+            trusted_fixture=ctx["fixture"],
+        )
+        os_identity = ctx["journal"].verified_pt_identity(ctx["handle"], 3)
+        assert os_identity["unit_name"] == started["unit_name"]
+        assert os_identity["invocation_id"] == started["invocation_id"]
+        assert os_identity["main_pid"] == started["main_pid"]
+        assert started["production_launch_allowed"] is False
+        assert started["result_publish_allowed"] is False
+        proof = _evidence(ctx, started)
+        assert proof["source_sha256"] == ctx["fixture"].source_sha256
+        assert proof["max_abs_error"] < .001
+        target = Path("/run/changlian-pt-output-" + ctx["handle"]) / "source.onnx"
+        assert target.is_file()
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == proof["onnx_sha256"]
+        onnx.checker.check_model(onnx.load(str(target)))
+        assert _exit(ctx, started)["exit_code"] == 0
+        with pytest.raises(GrantRejected, match="HOLD"):
+            ctx["bridge"].start(
+                handle_id=ctx["handle"], task_attempt=3,
+                central_launch_envelope=fresh,
+                trusted_fixture=ctx["fixture"],
+            )
+        print("OFFICIAL_PINNED_YOLO_PT_ONNX_EVIDENCE", proof, flush=True)
+    finally:
+        _cleanup(ctx["fixture"], ctx["handle"])
+
+
+def test_official_pinned_download_is_never_authorized_after_mutation(tmp_path):
+    import os
+    from platform_core.mother_model_assets import _OFFICIAL_YOLO11_DETECT
+    source = Path(os.environ["CHANGLIAN_CI_PINNED_OFFICIAL_YOLO11N"])
+    local = tmp_path / "yolo11n.pt"
+    shutil.copyfile(source, local)
+    original = local.stat().st_size
+    with local.open("r+b") as out:
+        out.seek(17)
+        out.write(b"tamper")
+    assert local.stat().st_size == original
+    pilot = IsolatedPtExportCpuPilot(isolated_ci_only=True)
+    size, sha = _OFFICIAL_YOLO11_DETECT["yolo11n.pt"]
+    with pytest.raises(GrantRejected, match="HOLD"):
+        pilot.stage_pinned_official_checkpoint(
+            local, source_name="yolo11n.pt", source_sha256=sha,
+            source_size_bytes=size,
+        )
+    symlink = tmp_path / "linked"
+    symlink.mkdir()
+    linked = symlink / "yolo11n.pt"
+    linked.symlink_to(source)
+    with pytest.raises(GrantRejected, match="HOLD"):
+        pilot.stage_pinned_official_checkpoint(
+            linked, source_name="yolo11n.pt", source_sha256=sha,
+            source_size_bytes=size,
+        )
