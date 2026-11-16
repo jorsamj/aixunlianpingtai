@@ -102,7 +102,9 @@ class IsolatedPtStopObserver:
         # client-controlled path. Reject symlinks in the terminal component.
         path = self.cgroup_root / group.lstrip("/") / "cgroup.events"
         try:
-            with path.open("r", encoding="ascii") as pinned:
+            flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            with os.fdopen(fd, "r", encoding="ascii") as pinned:
                 if _populated(pinned) != 1:
                     _hold("CGROUP_NOT_LIVE")
                 # Recheck immediately before making an irreversible stop call.
