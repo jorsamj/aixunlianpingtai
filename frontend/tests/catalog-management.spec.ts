@@ -59,7 +59,7 @@ test('formal catalog CRUD uses original operations, filtering and explicit detec
  await menu(page,'未知芯片改名','停用');await page.getByRole('button',{name:'确认停用芯片',exact:true}).click();await expect(page.getByRole('region',{name:'芯片列表',exact:true}).getByText('已停用',{exact:true})).toBeVisible();
  await menu(page,'未知芯片改名','启用');await page.getByRole('button',{name:'确认启用芯片',exact:true}).click();
  await menu(page,'未知芯片改名','检测 SDK 能力');await expect.poll(()=>h.detections.length).toBe(1);await expect(page.getByText('检测请求已完成，状态以最新资源证据为准')).toBeVisible();
- for(const width of [1366,768]){await page.setViewportSize({width,height:1000});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:`../test-results/vue-catalog/catalog-management-${width}.png`,fullPage:true})}
+ for(const width of [1366,768]){await page.setViewportSize({width,height:1000});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:`../test-results/vue-catalog/catalog-management-${width}.png`,fullPage:true,animations:'disabled'})}
  const before=h.packets.length;await menu(page,'未知芯片改名','删除');expect(h.packets.length).toBe(before);await page.getByRole('button',{name:'确认删除',exact:true}).click();await expect.poll(()=>h.chips.length).toBe(0);
  await menu(page,'000正式厂商','删除');await page.getByRole('button',{name:'确认删除',exact:true}).click();await expect.poll(()=>h.vendors.length).toBe(12);
  const list=page.getByRole('region',{name:'厂商列表',exact:true});await list.locator('.btn-next').click();await expect.poll(()=>h.reads.some(x=>x.includes('page=2'))).toBe(true);

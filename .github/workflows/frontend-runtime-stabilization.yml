@@ -445,6 +445,10 @@ jobs:
         run: node --test tests/frontend/*.test.mjs
       - name: Build opt-in Vue catalog preview
         run: npm ci --prefix frontend && npm run build --prefix frontend
+      - name: Install Chinese font for Vue acceptance screenshots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Focused Vue preview Chrome interactions
         working-directory: frontend
         run: npm run test:browser

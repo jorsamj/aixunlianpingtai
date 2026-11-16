@@ -82,3 +82,8 @@ python -c "from pathlib import Path; from zipfile import ZipFile; p=Path('static
 ## 下一阶段建议（未实施）
 
 建议优先评估“模型资产只读列表/详情”：与本轮厂商/芯片证据关联紧密，可复用分页、详情、只读生命周期；先确认已有ModelArtifact Owner与产物下载授权，避免立即触及训练、GT或转换执行器。该建议不构成迁移授权。全面后端拆分、训练页面迁移及数据库迁移均未启动。
+
+
+## 首次准确SHA CI反馈收口
+
+`8dc75226289be767aa918c7a343bbe843eca8a57` 的 frontend 单测1675/1675，构建通过，Chrome 8通过1失败：CRUD已通过，失败点为1366→768 viewport切换后立即读取横向宽度。已下载检查失败截图/trace，断言在resize后约28ms执行；Element Plus表格的ResizeObserver布局尚在更新，截图最终无持续横向溢出。将同一 `scrollWidth <= innerWidth` 断言改为等待异步布局收敛，并对截图禁用过渡动画；不改阈值、不删除用例或放宽最终布局要求。CI截图还缺中文字体出现方框，因此复用原browser job的fonts-noto-cjk安装方式到Vue定向截图所在frontend job。仅复验直接相关CRUD/节点用例，之后核对准确修正SHA既有CI，不借用首提交结果。
