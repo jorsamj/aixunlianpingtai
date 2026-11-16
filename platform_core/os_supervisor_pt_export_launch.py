@@ -501,6 +501,7 @@ class PtExportJournal:
             _hold("IDENTITY_UNVERIFIED")
         return {
             "handle_id": handle_id, "task_attempt": task_attempt,
+            "boot_id": row["boot_id"],
             "unit_name": row["unit_name"],
             "invocation_id": row["invocation_id"],
             "control_group": row["control_group"],
