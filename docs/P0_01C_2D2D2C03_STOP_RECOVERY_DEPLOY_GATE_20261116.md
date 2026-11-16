@@ -62,6 +62,14 @@
 - 关键提交 `26c8b7a15a2a43c396db20d968658642d9e382a4`（状态接口测试修正）、`d09ed5c5f5955c7545f78c8dd3210d6121064286`（原 journal OS probe CAS）、`153d7b4f308d67f5b46da408bc9d070191270ef7`（CI-only 止损桥）及后续集成/负面测试。由于真实停止 CI 仍在队列中，2C-03C2 **未验收**，禁止修改部署准入结论。
 - **仍缺的关键证据**：已停止后代进程跨 cgroup 的存活核验、签名者 root 私钥隔离、真实生产 StopReceipt、原中央数据库的消费事务、Agent 失联/重启重入控制、systemd249 上真实 PT→ONNX 生产级隔离以及正式 Runner 接管。
 
+## 2C-03C3 轻量验收与原租约竞争防护（2026-11-16）
+
+- 原慢速 Ubuntu24.04 workflow 在合同测试之前下载 CPU PyTorch、Ultralytics 和 ONNX，无法快速反馈停止授权错误。新增 `.github/workflows/pt-stop-grant-fast-contract.yml`：Ubuntu22.04/Windows、无模型/GPU/systemd、仅测试原 TaskRepository→STOP 签名→root OS journal 的关键合同，快速验证 2C-03C 类代码；**不替代真实 systemd 联调**。
+- 对原有拒绝用例进行安全修正：中央签名者只能读取**当前中央租约**，不能仅因租约已轮换就由签名者拒绝；需要 root journal 将当前签名中的 lease SHA256 与**原 OS 启动的 lease SHA256**比较并拒绝旧身份停止。本次增加了“当前租约能签名、原 root CAS 必须拒绝”的真实跨库测试，防止错误测试假设遮蔽安全边界。
+- 额外加入争抢同一 OS stop probe 的双线程 CAS 与不同任务 attempt 拒绝测试，要求不同时签发两份停止执行资格。
+- 代码提交 `0f9b0b01c29bab111d2b1d677710533fab35eec5`（租约轮换语义修正）及 `5dc2b08f81c6f76092d7e5860c23747c5725e84d`（并发/代数安全合同）；轻量 CI 最新运行：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43811499594>。
+- 最新慢速真实 PT systemd/STOP 联调追踪：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43810072981>。上述 CI 截至本次更新仍处于排队/未验收，**不得宣称 2C-03C 通过**。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
