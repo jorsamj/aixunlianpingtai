@@ -1,4 +1,4 @@
-> **2026-11-17 P1E–P1G 本地交付 / 准确SHA CI待推送核对**：模型资产/版本与转换历史只读页已接通，vue_model_assets opt-in；原v12/v42新增asset_view有界安全投影，复用AlgorithmSqlStore/ModelArtifact/历史及durable Owner，原默认响应/执行/GT不变。类型构建、Python36/Node73/Chrome11、真实入口临时库及桌面平板已验；未生产/SDK/数值/硬件/现场离线验收。版本号42.24.592保持，入口缓存609。见[本轮合同、入口、测试、证据与离线方式](docs/PRODUCTIZATION_P1E_P1G_20261117.md)。本轮结束停止。
+> **2026-11-17 P1E–P1G 本地交付 / 准确修正SHA CI待核对**：模型资产/版本与转换历史只读页已接通，vue_model_assets opt-in；原v12/v42新增asset_view有界安全投影，复用AlgorithmSqlStore/ModelArtifact/历史及durable Owner，原默认响应/执行/GT不变。类型构建、Python36/Node73/Chrome11、真实入口临时库及桌面平板已验；未生产/SDK/数值/硬件/现场离线验收。版本号42.24.592保持，入口缓存609。见[本轮合同、入口、测试、证据与离线方式](docs/PRODUCTIZATION_P1E_P1G_20261117.md)。本轮结束停止。
 
 > **2026-11-17 P1B–P1D 本地完成 / 准确SHA CI待推送核验**：Vue正式字典CRUD及节点只读总览，默认旧页面；开关vue_catalog_manage / vue_service_nodes。复用原API/revision/operation_id/回执/导航，全局未知packet跨项目与刷新保留；原Repository/调度/后端业务不变。真实临时库入口验收、Node/Chrome及构建已验；未部署/真实SDK/离线现场。见[本轮交付、入口、证据和后端建议](docs/PRODUCTIZATION_P1B_P1D_20261116.md)。
 

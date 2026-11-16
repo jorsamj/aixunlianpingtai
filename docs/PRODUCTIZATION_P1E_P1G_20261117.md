@@ -69,3 +69,7 @@
 ## 边界
 
 无生产/真实SDK/训练/转换执行/发布/GT操作；无新数据库、调度、Worker/Agent/Supervisor改动。控制端可部署、Agent通信、设备确认、现场训练/转换验收是不同证据层。保留linux/amd64、linux/arm64、CUDA、Ascend和其他可信设备扩展，不实施硬件适配。完成后停止，不启动后续专项。
+
+## 首次准确SHA CI依赖修正
+
+首提交bb081b99d5bb883778112c755eb2e1c3c714b164的Algorithm SQL Store轻量contracts job原99项通过，但新增API测试import app时因该job未安装cv2而收集失败。将相同API测试移到同工作流原real-chrome-lineage job（已具备完整FastAPI/图像依赖），仅补pytest；纯投影/历史单测仍在轻量job。没有删除或跳过测试、没有修改断言；不为轻量job重复安装整套应用依赖。最终修正SHA的CI与制品必须重新核对。
