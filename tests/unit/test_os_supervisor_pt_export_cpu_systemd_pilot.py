@@ -75,3 +75,14 @@ def test_result_log_parser_fails_closed():
     for invalid in invalids:
         with pytest.raises(GrantRejected, match="HOLD"):
             parse_pt_export_log(invalid, sha)
+
+
+def test_proof_log_identity_rejects_forged_unit_before_any_os_call():
+    instance = object.__new__(IsolatedPtExportCpuPilot)
+    for invalid in (
+        {}, {"unit_name": "../../etc/passwd", "invocation_id": "a" * 32},
+        {"unit_name": "changlian-os-" + "a" * 32 + ".service",
+         "invocation_id": "not-an-invocation"},
+    ):
+        with pytest.raises(GrantRejected, match="HOLD"):
+            instance.read_export_proof_log(invalid)

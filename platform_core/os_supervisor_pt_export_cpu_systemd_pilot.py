@@ -292,6 +292,47 @@ class IsolatedPtExportCpuPilot:
         }
 
 
+    def read_export_proof_log(self, first: dict) -> bytes:
+        """Read ONLY exact-prefix result records from the original InvocationID.
+
+        The generic journal parser would also encounter a giant systemd
+        ExecStart line containing the multi-line fixed Python program; that
+        untrusted diagnostic entry can break line-oriented JSON parsing.
+        Filtering by proof prefix avoids treating it as model evidence.
+        """
+        if not isinstance(first, dict):
+            _hold("PROOF_ORIGINAL_IDENTITY_MISSING")
+        unit, invocation = first.get("unit_name"), first.get("invocation_id")
+        if (not isinstance(unit, str)
+                or not re.fullmatch(r"changlian-os-[0-9a-f]{32}\.service", unit)
+                or not isinstance(invocation, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", invocation)):
+            _hold("PROOF_ORIGINAL_IDENTITY_INVALID")
+        self.backend.inspect(unit, invocation)
+        raw = self.backend._run([
+            "/usr/bin/journalctl", "--system", "--quiet", "--no-pager",
+            "--output=json", "--lines=+32", "--unit", unit,
+            "_SYSTEMD_INVOCATION_ID=" + invocation,
+            "--grep=^changlian-pt-export-proof:",
+        ])
+        records = []
+        try:
+            for line in raw.splitlines():
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if (not isinstance(entry, dict)
+                        or entry.get("_SYSTEMD_UNIT") != unit
+                        or entry.get("_SYSTEMD_INVOCATION_ID") != invocation
+                        or not isinstance(entry.get("MESSAGE"), str)
+                        or not entry["MESSAGE"].startswith(_PROOF_PREFIX)):
+                    _hold("PROOF_JOURNAL_IDENTITY_MISMATCH")
+                records.append(entry["MESSAGE"])
+        except (ValueError, TypeError) as exc:
+            raise GrantRejected("PT_CPU_PROOF_JOURNAL_INVALID_HOLD") from exc
+        return ("\n".join(records)).encode("utf-8")
+
+
 def parse_pt_export_log(data: bytes, source_sha: str) -> dict:
     if not isinstance(data, bytes) or not re.fullmatch(r"[0-9a-f]{64}", source_sha):
         _hold("LOG_SCOPE_INVALID")

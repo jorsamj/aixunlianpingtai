@@ -33,20 +33,33 @@ def _cleanup(staged):
     assert staged.root.name == "changlian-os-pt-pilot-" + staged.handle
     shutil.rmtree(staged.root)
     output = Path("/run/changlian-pt-output-" + staged.handle)
-    if output.is_dir():
-        # The isolated unit owns its private test output; cleanup only the
-        # exact random RuntimeDirectory after the unit has been stopped.
+    if output.is_symlink():
+        # DynamicUser=yes uses a symlink to /run/private: never rmtree links.
+        output.unlink()
+    elif output.is_dir():
         shutil.rmtree(output)
+    private = Path("/run/private") / ("changlian-pt-output-" + staged.handle)
+    if private.is_dir() and not private.is_symlink():
+        shutil.rmtree(private)
 
 
 def _wait_result(pilot, first, expected_source_sha):
     deadline = time.monotonic() + 150
     while time.monotonic() < deadline:
-        page = pilot.backend.read_log_page(
-            first["unit_name"], first["invocation_id"])
+        proof_log = pilot.read_export_proof_log(first)
         try:
-            return parse_pt_export_log(page["data"], expected_source_sha)
+            return parse_pt_export_log(proof_log, expected_source_sha)
         except GrantRejected:
+            snapshot = pilot.backend.inspect(
+                first["unit_name"], first["invocation_id"])
+            if snapshot["active_state"] == "failed":
+                diagnostic = pilot.backend._run([
+                    "/usr/bin/journalctl", "--system", "--no-pager",
+                    "--output=cat", "--lines=20", "--unit",
+                    first["unit_name"],
+                ])
+                raise AssertionError(
+                    "PT worker failed in original cgroup: " + diagnostic[-3000:])
             time.sleep(.6)
     raise AssertionError("trusted PT export proof not found in original systemd invocation")
 
