@@ -86,6 +86,13 @@ CREATE TABLE IF NOT EXISTS pt_export_stop_claims (
     reason TEXT NOT NULL,
     claimed_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pt_export_stop_observation_claims (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    stop_grant_digest TEXT NOT NULL,
+    invocation_id TEXT NOT NULL,
+    main_pid INTEGER NOT NULL CHECK(main_pid>1),
+    claimed_at INTEGER NOT NULL
+);
 """
 _MAX_ACTIVE_CHALLENGES = 512
 _MAX_NODE_CHALLENGES = 64
@@ -649,4 +656,72 @@ class PtExportJournal:
             "trusted_stop_receipt_available": False,
             "central_recovery_allowed": False,
             "result_publish_allowed": False,
+        }
+
+    def claim_pt_os_stop_observation(
+        self, handle_id: str, task_attempt: int, *,
+        now: int | None = None,
+    ) -> dict:
+        """CI-only one-shot OS stop probe CAS AFTER signed central STOP intent.
+
+        A lost observer after this CAS is UNKNOWN/HOLD. Never retry OS stop by
+        replaying this claim. The call itself does not touch systemd or release
+        the central task; production paths must never use this test-only API.
+        """
+        if (not isinstance(handle_id, str) or len(handle_id) != 32
+                or any(c not in "0123456789abcdef" for c in handle_id)
+                or type(task_attempt) is not int or task_attempt <= 0):
+            _hold("OS_STOP_OBSERVATION_SCOPE_INVALID")
+        current = _now(now)
+        with closing(self.journal._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT i.handle_id,i.task_attempt,i.state,i.boot_id,
+                          i.unit_name,o.invocation_id,o.control_group,
+                          o.main_pid,c.stop_grant_digest,c.invocation_id
+                          AS stop_invocation,c.main_pid AS stop_pid,
+                          c.reason,c.claimed_at,
+                          p.handle_id AS already_claimed
+                   FROM execution_intents i
+                   JOIN pt_export_bound_inputs b ON b.handle_id=i.handle_id
+                   JOIN pt_export_unit_identities o ON o.handle_id=i.handle_id
+                   JOIN pt_export_stop_claims c ON c.handle_id=i.handle_id
+                   LEFT JOIN pt_export_stop_observation_claims p
+                     ON p.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["state"] != "RUNNING"
+                    or row["boot_id"] != self.journal.boot_id
+                    or row["unit_name"] != "changlian-os-" + handle_id + ".service"
+                    or row["control_group"] != "/system.slice/" + row["unit_name"]
+                    or row["invocation_id"] != row["stop_invocation"]
+                    or row["main_pid"] != row["stop_pid"]
+                    or not isinstance(row["stop_grant_digest"], str)
+                    or len(row["stop_grant_digest"]) != 64
+                    or row["reason"] not in ("CANCEL_REQUESTED", "LEASE_EXPIRED_HELD")
+                    or type(row["claimed_at"]) is not int
+                    or not 0 <= current - row["claimed_at"] <= 12
+                    or row["already_claimed"] is not None):
+                _hold("OS_STOP_OBSERVATION_NOT_AUTHORIZED")
+            db.execute(
+                """INSERT INTO pt_export_stop_observation_claims
+                   (handle_id,stop_grant_digest,invocation_id,main_pid,claimed_at)
+                   VALUES (?,?,?,?,?)""",
+                (handle_id, row["stop_grant_digest"], row["invocation_id"],
+                 row["main_pid"], current),
+            )
+            db.commit()
+        return {
+            "handle_id": handle_id,
+            "task_attempt": task_attempt,
+            "unit_name": row["unit_name"],
+            "invocation_id": row["invocation_id"],
+            "control_group": row["control_group"],
+            "main_pid": int(row["main_pid"]),
+            "stop_grant_digest": row["stop_grant_digest"],
+            "state": "OS_STOP_OBSERVATION_CLAIMED_NO_RECEIPT",
+            "os_stopped": False,
+            "central_recovery_allowed": False,
+            "trusted_stop_receipt_available": False,
         }
