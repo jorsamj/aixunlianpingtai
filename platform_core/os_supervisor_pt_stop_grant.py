@@ -75,6 +75,7 @@ def _check(claims: object) -> None:
             or claims["main_pid"] <= 1
             or not isinstance(claims["challenge"], str)
             or not _NONCE.fullmatch(claims["challenge"])
+            or not isinstance(claims["reason"], str)
             or claims["reason"] not in _STOP_REASONS
             or type(claims["issued_at"]) is not int
             or type(claims["expires_at"]) is not int
