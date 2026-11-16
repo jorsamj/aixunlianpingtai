@@ -21,6 +21,8 @@ from typing import Any, Mapping
 
 import central_stop_recovery_contract as central
 import linux_cgroup_poc as kernel
+import pt_stop_receipt_ed25519_contract as signed_poc
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 TEST_NODE = "isolated-poc-node"
@@ -103,7 +105,24 @@ def make_simulated_receipt(challenge: dict, result: dict, scope: dict,
     return central.test_only_sign_witness(payload, simulator_key)
 
 
-def run_isolated_bridge() -> tuple[dict, int]:
+def make_ed25519_simulated_receipt(
+    challenge: dict, result: dict, scope: dict, test_key: Ed25519PrivateKey,
+) -> dict:
+    """Real PoC kernel observations, still co-located TEST-ONLY signing key."""
+    if not observation_is_usable(challenge, result, scope):
+        raise central.RecoveryRejected("KERNEL_EVIDENCE_OR_CHALLENGE_UNVERIFIED")
+    # Never sign a caller-supplied success flag. Derive timestamps from the
+    # validated, original-FD kernel observation and exact central challenge.
+    payload = signed_poc.synthetic_payload(
+        challenge, stop_requested_ns=result["stop_requested_ns"],
+        empty_observed_ns=result["empty_observed_ns"],
+    )
+    return signed_poc.sign_test_only_stop_witness(
+        payload, test_key, isolated_test_only=True,
+    )
+
+
+def run_isolated_bridge(*, use_ed25519_test_only: bool = False) -> tuple[dict, int]:
     """Carry one real Linux cgroup stop through a separate in-memory CAS.
 
     Challenge is created from the live-bound unit BEFORE systemd stop, never
@@ -117,7 +136,10 @@ def run_isolated_bridge() -> tuple[dict, int]:
                 "trusted_os_witness_implemented": False,
                 "production_recovery_allowed": False}, 2
     task_id = "poc-task-" + secrets.token_hex(12)
-    key = secrets.token_bytes(32)  # fake, co-located signer, never persisted
+    # Both keys live in the test Agent's own process: neither is a trusted
+    # root-owned OS StopReceipt signer.
+    key = secrets.token_bytes(32)
+    ed25519_key = Ed25519PrivateKey.generate() if use_ed25519_test_only else None
     now = datetime.now(timezone.utc)
     token = secrets.token_urlsafe(32)
     db = sqlite3.connect(":memory:", isolation_level=None)
@@ -169,10 +191,20 @@ def run_isolated_bridge() -> tuple[dict, int]:
         if code != 0:
             evidence["outcome"] = "KERNEL_STOP_HOLD"
             return evidence, 3
-        receipt = make_simulated_receipt(challenge, result, scope, key)
+        if ed25519_key is None:
+            receipt = make_simulated_receipt(challenge, result, scope, key)
+            verifier = central.test_only_witness_verifier(key)
+        else:
+            receipt = make_ed25519_simulated_receipt(
+                challenge, result, scope, ed25519_key,
+            )
+            verifier = signed_poc.isolated_test_witness_verifier(
+                ed25519_key.public_key(), isolated_test_only=True,
+            )
+            evidence["witness_scheme"] = "ed25519-ci-co-located-only"
         committed = central.commit_test_recovery(
             db, attestation=receipt, now=datetime.now(timezone.utc),
-            independent_witness_verifier=central.test_only_witness_verifier(key))
+            independent_witness_verifier=verifier)
         task = db.execute(
             "SELECT status,attempt,worker_id,lease_token FROM tasks WHERE task_id=?",
             (task_id,)).fetchone()
@@ -187,7 +219,7 @@ def run_isolated_bridge() -> tuple[dict, int]:
         try:
             central.commit_test_recovery(
                 db, attestation=receipt, now=datetime.now(timezone.utc),
-                independent_witness_verifier=central.test_only_witness_verifier(key))
+                independent_witness_verifier=verifier)
         except central.RecoveryRejected:
             evidence["challenge_replay_rejected"] = True
         else:
@@ -203,7 +235,8 @@ def run_isolated_bridge() -> tuple[dict, int]:
             "REAL_KERNEL_TO_MEMORY_CAS_SIMULATION_PASS_NOT_TRUSTED_STOP_PROOF"
             if consistent else "CENTRAL_SIMULATION_INVARIANT_FAILED_HOLD")
         return evidence, 0 if consistent else 3
-    except (central.RecoveryRejected, ValueError, sqlite3.Error, OSError, KeyError) as exc:
+    except (central.RecoveryRejected, signed_poc.IsolatedWitnessRejected,
+            ValueError, sqlite3.Error, OSError, KeyError) as exc:
         return {"scope": "GITHUB_VM_CPU_BRIDGE_WITH_SIMULATED_WITNESS",
                 "outcome": "UNKNOWN_OR_UNTRUSTED_HOLD",
                 "error_type": type(exc).__name__,
@@ -218,6 +251,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--isolated-test-host", action="store_true")
+    parser.add_argument("--ed25519-test-only", action="store_true")
     args = parser.parse_args()
     if not (args.run and args.isolated_test_host):
         print(json.dumps({"outcome": "NOT_EXECUTED",
@@ -225,7 +259,9 @@ def main() -> int:
                           "trusted_os_witness_implemented": False,
                           "production_recovery_allowed": False}))
         return 2
-    result, code = run_isolated_bridge()
+    result, code = run_isolated_bridge(
+        use_ed25519_test_only=args.ed25519_test_only,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     return code
 
