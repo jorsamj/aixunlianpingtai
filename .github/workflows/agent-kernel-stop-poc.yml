@@ -14,6 +14,8 @@ on:
       - 'tools/poc/linux_stop_receipt_bridge.py'
       - 'tools/poc/central_stop_recovery_contract.py'
       - 'tests/unit/test_linux_stop_receipt_bridge_contract.py'
+      - 'tools/poc/pt_stop_receipt_ed25519_contract.py'
+      - 'tests/unit/test_pt_stop_receipt_ed25519_contract.py'
 permissions:
   contents: read
 concurrency:
@@ -30,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check pytest
+          python3 -m pip install --disable-pip-version-check pytest cryptography
           python3 -m pytest -q --confcutdir=tests/unit tests/unit/test_linux_cgroup_poc_contract.py tests/unit/test_linux_stop_receipt_bridge_contract.py
       - name: Check Ubuntu 22.04 and non-root VM prerequisites
         shell: bash
@@ -74,6 +76,14 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
           python3 -m py_compile tools/poc/central_stop_recovery_contract.py tools/poc/linux_stop_receipt_bridge.py
           python3 tools/poc/linux_stop_receipt_bridge.py --run --isolated-test-host | tee p001c3b-kernel-to-central.json
+      - name: "Actual original 249 kernel stop to Ed25519-signed isolated central CAS"
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          python3 tools/poc/linux_stop_receipt_bridge.py --run --isolated-test-host --ed25519-test-only | tee p001c3b-ed25519-kernel-to-central.json
       - name: Retain diagnostic evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -83,5 +93,6 @@ jobs:
             p001c2b-preflight.json
             p001c2b-kernel-result.json
             p001c3b-kernel-to-central.json
+            p001c3b-ed25519-kernel-to-central.json
           if-no-files-found: warn
           retention-days: 14
