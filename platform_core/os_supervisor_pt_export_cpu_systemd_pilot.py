@@ -410,6 +410,7 @@ class IsolatedPtExportCpuPilot:
             handle=new, root=target,
             source_sha256=staged.source_sha256,
             source_size_bytes=staged.source_size_bytes,
+            trusted_ci_generated=staged.trusted_ci_generated,
             origin=staged.origin, source_name=staged.source_name,
         )
 
@@ -418,7 +419,8 @@ class IsolatedPtExportCpuPilot:
                 or staged.trusted_ci_generated is not (
                     staged.origin == "trusted-ci-generated-yolo11n")
                 or staged.production_launch_allowed is not False
-                or staged.result_publish_allowed is not False):
+                or staged.result_publish_allowed is not False
+                or staged.trusted_stop_receipt_available is not False):
             _hold("STAGED_SCOPE_INVALID")
         h = _handle(staged.handle)
         root = _ROOT / (_PREFIX + h)
