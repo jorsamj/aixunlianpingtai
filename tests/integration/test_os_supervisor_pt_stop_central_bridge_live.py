@@ -7,6 +7,7 @@ No production stop API, StopReceipt, result upload or task release exists.
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -91,15 +92,68 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
         signer = CiOnlyRootPtStopWitnessSigner(
             ctx["journal"], stopped, isolated_ci_only=True,
         )
+        # In this disposable CI the challenge is a TEST constant. A real
+        # central-issued, previously registered challenge is still absent:
+        # therefore this test cannot authorize production recovery.
+        witness_challenge_id = "f" * 32
+        witness_nonce = "preissued-isolated-central-nonce-" + "a" * 24
+        with closing(ctx["repo"]._connect()) as db:
+            owner = db.execute(
+                "SELECT task_id,attempt,worker_id,lease_token FROM tasks WHERE task_id=?",
+                (_TASK,),
+            ).fetchone()
+        with closing(ctx["root"]._connect()) as db:
+            original_intent = db.execute(
+                """SELECT boot_id,unit_name FROM execution_intents
+                   WHERE handle_id=? AND task_attempt=?""",
+                (handle, 3),
+            ).fetchone()
+            original_os = db.execute(
+                """SELECT invocation_id,control_group,main_pid
+                   FROM pt_export_unit_identities WHERE handle_id=?""",
+                (handle,),
+            ).fetchone()
+            stop_claim = db.execute(
+                """SELECT stop_grant_digest,reason FROM pt_export_stop_claims
+                   WHERE handle_id=?""",
+                (handle,),
+            ).fetchone()
+        assert all(record is not None for record in (
+            owner, original_intent, original_os, stop_claim,
+        ))
+        # Independent scope never derived from the signed witness body.
+        expected = {
+            "challenge_id": witness_challenge_id,
+            "nonce": witness_nonce,
+            "handle_id": handle,
+            "task_id": owner["task_id"],
+            "task_attempt": owner["attempt"],
+            "worker_id": owner["worker_id"],
+            "execution_lease_sha256": hashlib.sha256(
+                owner["lease_token"].encode("utf-8")
+            ).hexdigest(),
+            "boot_id": original_intent["boot_id"],
+            "unit": original_intent["unit_name"],
+            "invocation_id": original_os["invocation_id"],
+            "cgroup": original_os["control_group"],
+            "main_pid": original_os["main_pid"],
+            "stop_grant_digest": stop_claim["stop_grant_digest"],
+            "stop_reason": stop_claim["reason"],
+        }
+        assert set(expected) == _BIND
         receipt = signer.stop_and_sign(
-            handle, 3, challenge_id="f" * 32,
-            nonce="preissued-isolated-central-nonce-" + "a" * 24,
+            handle, 3, challenge_id=witness_challenge_id,
+            nonce=witness_nonce,
         )
         proof = receipt["payload"]
-        expected = {name: proof[name] for name in _BIND}
         assert verify_ci_root_stop_witness(
             receipt, public_key=signer.public_key,
             expected_original=expected, now=proof["issued_at"],
+        )
+        assert not verify_ci_root_stop_witness(
+            receipt, public_key=signer.public_key,
+            expected_original={**expected, "worker_id": "agent:wrong-node"},
+            now=proof["issued_at"],
         )
         assert proof["purpose"] == "changlian-ci-root-pt-stop-witness-v1"
         assert proof["test_only_no_production_recovery"] is True

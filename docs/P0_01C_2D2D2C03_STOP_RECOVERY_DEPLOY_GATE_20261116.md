@@ -87,6 +87,13 @@
 - **重大限制**：这里的 root 私钥只存在于 CI 进程内，未持久化、未与生产中央系统建立独立公钥注册和身份确认；验证者可以在同一 CI 主机拿到测试公钥。此结果只是 root 对 CI cgroup 观察的一次签名，**不是**生产可信 StopReceipt。生产仍缺可信密钥封装/轮换/撤销、原中央数据库一次性消费、后代进程逃逸核验、systemd249 安全执行及 Runner 全链路。
 - 此段的新 CI 尚未跑完，**不得标为 PASS**；Ubuntu22.04 之前的 51/51 STOP grant 单测只能作为旧版本参考，不能代替新 SHA 的验收。
 
+## 2C-03D1 验签测试必须采用原始独立身份（待 CI）
+
+- 独立安全审计发现，初版 CI root witness 的成功测试使用 `expected_original={key: signed_payload[key]}`，形成了**验证期望值取自被验证消息**的循环论证。签名只能说明测试私钥持有者，不能因此认定原中央任务、lease 和 OS 实例已经独立核实。
+- 测试现已改为在签发之前分别读取既有 `TaskRepository.tasks`、原 `ExecutionJournal.execution_intents`、`pt_export_unit_identities` 和原 STOP claim，独立计算真实 lease SHA256 并构造验证范围。伪造的合法二次签名（改变 worker_id）也必须因独立作用域不匹配而拒绝。
+- 该修复仍然**不能替代生产中央先前注册的可信 boot/InvocationID 公钥和中央签发的持久 challenge**：临时 root 见证使用 CI 常量 challenge_id/nonce，尚无原中央挑战表与一次性消费事务。生产接入必须先补齐这些事实，不能依据 CI 中同一个 root journal 自证独立信任。
+- 以上变更仅限隔离集成/单元测试，**没有启用生产停止、任务恢复或 GPU 释放**，待新 SHA 专项 CI 验收。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。

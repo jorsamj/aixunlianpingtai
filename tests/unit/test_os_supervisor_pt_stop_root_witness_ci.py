@@ -6,6 +6,7 @@ and systemd path are covered by the separate Ubuntu24.04 integration workflow.
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -99,6 +100,59 @@ def _sign(signer, handle):
     )
 
 
+def _independently_bound_scope(root_ci):
+    """Build CI verifier input from ORIGINAL task DB + root-owned journal.
+
+    Deliberately never read or copy a signed witness payload. In production
+    boot/OS scope must instead come from prior CENTRAL trusted registration.
+    """
+    stage_data, handle, pt, backend, signer = root_ci
+    repo, artifacts, key, token, issuer, root, journal, scope = stage_data
+    with closing(repo._connect()) as db:
+        task = db.execute(
+            "SELECT task_id,attempt,worker_id,lease_token FROM tasks WHERE task_id=?",
+            (TASK,),
+        ).fetchone()
+    with closing(root._connect()) as db:
+        execution = db.execute(
+            """SELECT boot_id,unit_name FROM execution_intents
+               WHERE handle_id=? AND task_attempt=?""",
+            (handle, 3),
+        ).fetchone()
+        os_identity = db.execute(
+            """SELECT invocation_id,control_group,main_pid
+               FROM pt_export_unit_identities WHERE handle_id=?""",
+            (handle,),
+        ).fetchone()
+        stop = db.execute(
+            """SELECT stop_grant_digest,reason FROM pt_export_stop_claims
+               WHERE handle_id=?""",
+            (handle,),
+        ).fetchone()
+    assert task is not None and execution is not None
+    assert os_identity is not None and stop is not None
+    expected = {
+        "challenge_id": "f" * 32,
+        "nonce": "an-isolated-central-challenge-" + "z" * 24,
+        "handle_id": handle,
+        "task_id": task["task_id"],
+        "task_attempt": task["attempt"],
+        "worker_id": task["worker_id"],
+        "execution_lease_sha256": hashlib.sha256(
+            task["lease_token"].encode("utf-8")
+        ).hexdigest(),
+        "boot_id": execution["boot_id"],
+        "unit": execution["unit_name"],
+        "invocation_id": os_identity["invocation_id"],
+        "cgroup": os_identity["control_group"],
+        "main_pid": os_identity["main_pid"],
+        "stop_grant_digest": stop["stop_grant_digest"],
+        "stop_reason": stop["reason"],
+    }
+    assert set(expected) == _BIND
+    return expected
+
+
 def test_root_signs_only_after_original_claim_and_kernel_empty(root_ci):
     stage_data, handle, pt, backend, signer = root_ci
     _claim_root_stop(root_ci)
@@ -115,7 +169,7 @@ def test_root_signs_only_after_original_claim_and_kernel_empty(root_ci):
     assert body["task_id"] == TASK
     assert body["task_attempt"] == 3
     assert backend.calls.count("stop") == 1
-    expected = {key: body[key] for key in _BIND}
+    expected = _independently_bound_scope(root_ci)
     assert verify_ci_root_stop_witness(
         envelope, public_key=signer.public_key,
         expected_original=expected, now=body["issued_at"],
@@ -186,7 +240,7 @@ def test_wrong_key_trusted_scope_and_replay_time_cannot_verify(root_ci):
     _claim_root_stop(root_ci)
     receipt = _sign(signer, handle)
     body = receipt["payload"]
-    expected = {k: body[k] for k in _BIND}
+    expected = _independently_bound_scope(root_ci)
     assert not verify_ci_root_stop_witness(
         receipt, public_key=Ed25519PrivateKey.generate().public_key(),
         expected_original=expected, now=body["issued_at"],
@@ -208,6 +262,18 @@ def test_wrong_key_trusted_scope_and_replay_time_cannot_verify(root_ci):
     assert not verify_ci_root_stop_witness(
         receipt, public_key=signer.public_key,
         expected_original=expected, now=body["expires_at"],
+    )
+    # Even with a syntactically valid new signature (a deliberately exposed
+    # TEST key), a scope claiming another worker must fail independent
+    # CENTRAL+root identity verification.
+    forged_body = {**body, "worker_id": "agent:unregistered-node"}
+    forged_signed = {
+        "payload": forged_body,
+        "signature": signer._key.sign(_canonical(forged_body)).hex(),
+    }
+    assert not verify_ci_root_stop_witness(
+        forged_signed, public_key=signer.public_key,
+        expected_original=expected, now=body["issued_at"],
     )
     changed = {**body, "empty_observed_ns": body["empty_observed_ns"] + 4}
     assert not verify_ci_root_stop_witness(
