@@ -7,7 +7,7 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1g';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1hj';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -20,7 +20,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.609';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.610';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
 import {installLazyChangLianDataBrowserRuntime} from './modules/lazy-changlian-data-browser.js?v=20261113-13c03';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
@@ -530,6 +530,9 @@ const catalogPreviewRuntime = installCatalogPreview({
   managementEnabled: new URLSearchParams(location.search).get('vue_catalog_manage') === '1',
   nodesEnabled: new URLSearchParams(location.search).get('vue_service_nodes') === '1',
   assetsEnabled: new URLSearchParams(location.search).get('vue_model_assets') === '1',
+  algorithmEnabled: new URLSearchParams(location.search).get('vue_algorithm_manage') === '1',
+  tasksEnabled: new URLSearchParams(location.search).get('vue_training_tasks') === '1',
+  reportsEnabled: new URLSearchParams(location.search).get('vue_training_report') === '1',
   createOperationId: () => catalogOperationId(window.crypto),
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });

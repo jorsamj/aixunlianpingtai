@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {installCatalogPreview, PREVIEW_PAGE, MANAGEMENT_PAGE, NODES_PAGE, ASSETS_PAGE, HISTORY_PAGE} from '../../static/modules/catalog-preview-runtime.js';
+import {installCatalogPreview, PREVIEW_PAGE, MANAGEMENT_PAGE, NODES_PAGE, ASSETS_PAGE, HISTORY_PAGE, TASKS_PAGE, REPORT_PAGE} from '../../static/modules/catalog-preview-runtime.js';
+
+test('algorithm capability cannot mutate versions and tasks/report remain GET-only',async()=>{
+ const owners=new Map(),contexts=[],calls=[],state={page:ASSETS_PAGE,project:{id:'p'}};
+ const runtime=installCatalogPreview({algorithmEnabled:true,tasksEnabled:true,reportsEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return ()=>{}}},getState:()=>state,
+ document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},deadline:(fn,{signal})=>fn(signal),request:async(url,options)=>{calls.push({url,options});return {ok:true}},
+ load:async()=>({mountModelAssets:async(_host,context)=>{contexts.push(context);return ()=>{}},mountTrainingTasks:async(_host,context)=>{contexts.push(context);return ()=>{}},mountTrainingReport:async(_host,context)=>{contexts.push(context);return ()=>{}}})});
+ await owners.get(ASSETS_PAGE)();const algorithm=contexts[0];await algorithm.writeAlgorithm('POST','',{name:'A'});assert.equal(calls[0].url,'/api/v12/projects/p/algorithms?asset_view=true');
+ assert.throws(()=>algorithm.writeAlgorithm('PUT','a/versions/v',{remark:'x'}),/稳定算法ID/);assert.throws(()=>algorithm.writeAlgorithm('DELETE','a',{}),/不允许/);
+ state.page=TASKS_PAGE;await owners.get(TASKS_PAGE)();const tasks=contexts[1];assert.equal(tasks.writeAlgorithm,undefined);assert.equal(tasks.post,undefined);await tasks.get('/api/v62/projects/p/tasks?reader_view=true');await assert.rejects(()=>tasks.get('/api/v62/projects/q/tasks?reader_view=true'),/不允许/);
+ tasks.memory.report={jobId:'t',returnPage:'tasks'};state.page=REPORT_PAGE;await owners.get(REPORT_PAGE)();const report=contexts[2];assert.equal(report.post,undefined);assert.equal(report.writeAlgorithm,undefined);await report.get('/api/v44/projects/p/jobs/t/report?reader_view=true');await assert.rejects(()=>report.get('/api/v44/projects/p/jobs/other/report?reader_view=true'),/不允许/);runtime.destroy();
+});
 
 test('model browsing is GET-only and history cannot read another project, algorithm or version',async()=>{
  const owners=new Map(),contexts=[],calls=[],state={page:ASSETS_PAGE,project:{id:'p'}};

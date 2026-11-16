@@ -242,6 +242,27 @@ class AlgorithmSqlStore:
     def _asset_page(page,page_size):
         if type(page) is not int or page<1 or type(page_size) is not int or not 1<=page_size<=50:raise PlatformError('ASSET_INVALID_QUERY','分页范围非法','',status_code=422)
 
+    def asset_algorithm_basic(self, algorithm_id):
+        from .model_asset_views import text
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            row=conn.execute("SELECT id,name,remark,industry,algorithm_type,source_type,current_version_id,created_at,updated_at,json_extract(payload_json,'$.master_data_readonly') AS master_data_readonly FROM algorithms WHERE project_id=? AND id=?",(self.project_id,str(algorithm_id))).fetchone()
+        if row is None:raise PlatformError('ALGORITHM_NOT_FOUND','算法不存在','',status_code=404)
+        result={key:text(value) for key,value in dict(row).items()}
+        # The authorized editor must receive faithful business text. A display
+        # sanitizer must never become the value written back on a name edit.
+        clipped=[]
+        for key in ('name','remark','industry','algorithm_type'):
+            value=str(row[key] or '')
+            result[key]=value[:16384]
+            if len(value)>16384:clipped.append(key)
+        # Same external-master predicate as the existing write owner; never grants authorization.
+        result['editable']=not (str(row['source_type'] or '').upper()=='EXTERNAL' and row['master_data_readonly']==1)
+        # Do not let a name-only edit overwrite redacted original text.
+        result['deferred_fields']=clipped
+        if clipped:result['editable']=False
+        return result
+
     def asset_versions(self, algorithm_id, *, page=1, page_size=20):
         from .model_asset_views import version_columns,version_record,text
         self._asset_page(page,page_size);self.ensure_ready()
@@ -408,6 +429,17 @@ class AlgorithmSqlStore:
         self.ensure_ready()
         with self._connect() as conn:
             return self._read_one_conn(conn, str(algorithm_id))
+
+    def training_display_refs(self, task_ids):
+        """One bounded index query for visible tasks; no version/report hydration."""
+        ids=list(dict.fromkeys(str(value) for value in task_ids))
+        if not ids:return {}
+        if len(ids)>100:raise ValueError('task reference page too large')
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            rows=conn.execute("SELECT v.training_job_id AS task_id,COUNT(*) AS reference_count,MIN(a.id) AS algorithm_id,MIN(a.name) AS algorithm_name,MIN(v.id) AS version_id FROM algorithm_versions v JOIN algorithms a ON a.id=v.algorithm_id WHERE a.project_id=? AND v.training_job_id IN ("+','.join('?' for _ in ids)+") GROUP BY v.training_job_id",[self.project_id,*ids]).fetchall()
+        from .model_asset_views import text
+        return {row['task_id']:{key:text(value) for key,value in dict(row).items()} for row in rows}
 
     def training_version_refs(self, task_id: str) -> list[tuple[str, str]]:
         """Find a training task's version owners without reading large JSON payloads.

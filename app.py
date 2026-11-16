@@ -733,8 +733,21 @@ def list_unified_runtime_tasks(
     kind: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     cursor: Optional[str] = Query(default=None),
+    reader_view: bool = False, status: str = '', query: str = '',
 ):
     get_project(project_id)
+    if reader_view:
+        from platform_core.training_reader_views import task_display,attach_version_refs
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        try:
+            kinds=(TaskKind.TRAINING,TaskKind.TRAINING_PREPARE) if not kind else (TaskKind(str(kind).upper()),)
+            if any(item not in (TaskKind.TRAINING,TaskKind.TRAINING_PREPARE) for item in kinds):raise ValueError('只读训练中心仅支持训练及准备任务')
+            statuses=(TaskStatus(status),) if status else None
+            page=shared_task_repository().list(project_id=project_id,kinds=kinds,statuses=statuses,task_query=query,limit=limit,cursor=cursor)
+        except ValueError as error:raise HTTPException(422,detail=str(error)) from error
+        rows=[task_display(task,shared_task_artifacts()) for task in page.items]
+        refs=AlgorithmSqlStore(algorithms_file(project_id)).training_display_refs([task.task_id for task in page.items])
+        return {'ok':True,'project_id':project_id,'items':attach_version_refs(rows,refs),'next_cursor':page.next_cursor,'filter_options':{'status':[item.value for item in TaskStatus],'kind':[TaskKind.TRAINING.value,TaskKind.TRAINING_PREPARE.value]}}
     kinds = None
     if kind:
         try:
@@ -762,7 +775,14 @@ def list_unified_runtime_tasks(
 
 
 @app.get("/api/v62/projects/{project_id}/tasks/{task_id}")
-def get_unified_runtime_task(project_id: str, task_id: str):
+def get_unified_runtime_task(project_id: str, task_id: str, reader_view: bool=False):
+    if reader_view:
+        from platform_core.training_reader_views import task_display,attach_version_refs
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        task=_runtime_task_for_project(project_id,task_id)
+        if task.kind not in (TaskKind.TRAINING,TaskKind.TRAINING_PREPARE):raise HTTPException(404,detail='训练任务不存在')
+        rows=attach_version_refs([task_display(task,shared_task_artifacts(),detail=True)],AlgorithmSqlStore(algorithms_file(project_id)).training_display_refs([task_id]))
+        return {'ok':True,'project_id':project_id,'task':rows[0]}
     repository = shared_task_repository()
     return task_to_public(_runtime_task_for_project(project_id, task_id), repository)
 
@@ -13008,20 +13028,21 @@ def v12_list_algorithms(project_id: str, summary_only: bool = False, asset_view:
 
 
 @app.post("/api/v12/projects/{project_id}/algorithms")
-def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
+def v12_create_algorithm(project_id: str, payload: AlgorithmReq, asset_view: bool=False):
     get_project(project_id)
     # External products remain read-only, but users can always create a new
     # independent local algorithm in the same project and canonical SQL store.
     item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
-    return {"ok": True, "algorithm": item}
+    return {"ok": True, "algorithm": {'id':item['id']} if asset_view else item}
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
-def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False, version_id: str='', page: int=1, page_size: int=20):
+def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False, version_id: str='', page: int=1, page_size: int=20, basic_only: bool=False):
     get_project(project_id)
     if asset_view:
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
         store=AlgorithmSqlStore(algorithms_file(project_id))
+        if basic_only:return {'ok':True,'project_id':project_id,'algorithm':store.asset_algorithm_basic(algorithm_id)}
         if version_id:
             version=store.asset_version(algorithm_id,version_id)
             return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version':version,'artifacts':_conversion_catalog_repository(DATA_DIR).version_display(project_id,algorithm_id,version_id)}
@@ -13036,10 +13057,10 @@ def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
-def v12_update_algorithm(project_id: str, algorithm_id: str, payload: AlgorithmReq):
+def v12_update_algorithm(project_id: str, algorithm_id: str, payload: AlgorithmReq, asset_view: bool=False):
     assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     item = update_algorithm_asset(algorithms_file(project_id), algorithm_id, payload.model_dump(), now_iso())
-    return {"ok": True, "algorithm": item}
+    return {"ok": True, "algorithm": {'id':item['id']} if asset_view else item}
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
@@ -23300,7 +23321,27 @@ def v44_test_saved_model_config(config_id: str):
     return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(cfg) else v35_test_model_config(V35ModelConfigReq(**cfg))
 
 @app.get('/api/v44/projects/{project_id}/jobs/{job_id}/report')
-def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = ''):
+def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = '', reader_view: bool=False):
+    if reader_view:
+        from platform_core.training_reader_views import report_display
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        get_project(project_id)
+        try:ArtifactStore._validate_task_id(job_id)
+        except ValueError as error:raise HTTPException(422,detail='报告任务ID无效') from error
+        task=shared_task_repository().get(job_id)
+        if task and (task.project_id!=project_id or task.kind is not TaskKind.TRAINING):raise HTTPException(404,detail='训练任务不存在')
+        store=AlgorithmSqlStore(algorithms_file(project_id))
+        if algorithm_id or version_id:
+            if not (algorithm_id and version_id):raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: 须同时指定算法与版本')
+            version=store.asset_version(algorithm_id,version_id,detail=False)
+            if str(version.get('training_job_id') or '')!=job_id:raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: 版本与训练任务不一致')
+        else:
+            refs=store.training_version_refs(job_id)
+            if len(refs)>1:raise HTTPException(409,detail='REPORT_IDENTITY_AMBIGUOUS: 请从具体版本进入')
+            if refs:algorithm_id,version_id=refs[0]
+        result=report_display(job_id,task,shared_task_artifacts(),project_dir(project_id)/'jobs'/job_id/'job.json',algorithm_id=algorithm_id,version_id=version_id)
+        if result['state']=='IDENTITY_CONFLICT':raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: '+result['message'])
+        return {'ok':True,'project_id':project_id,'job_id':job_id,'algorithm_id':algorithm_id,'version_id':version_id,**result}
     get_project(project_id);jf=project_dir(project_id)/'jobs'/job_id/'job.json'
     if not jf.exists(): raise HTTPException(status_code=404,detail='训练任务不存在')
     job=enrich_job_runtime(project_id,read_json(jf,{}),allow_version_archive=False);report=job.get('training_report') or {}

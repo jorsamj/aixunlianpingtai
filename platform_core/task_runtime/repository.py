@@ -545,6 +545,7 @@ class TaskRepository(InferenceResourceMethods):
         limit: int = 50,
         cursor: str | None = None,
         annotation_query: str = "",
+        task_query: str = "",
     ) -> TaskPage:
         bounded_limit = max(1, min(100, int(limit)))
         clauses: list[str] = []
@@ -569,6 +570,10 @@ class TaskRepository(InferenceResourceMethods):
                            "LOWER(COALESCE(annotation_model_name,'')) LIKE ? ESCAPE '\\' OR "
                            "LOWER(COALESCE(annotation_model_id,'')) LIKE ? ESCAPE '\\')")
             parameters.extend([pattern] * 4)
+        if task_query:
+            escaped=str(task_query)[:120].lower().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+            clauses.append("(LOWER(task_id) LIKE ? ESCAPE '\\' OR LOWER(stage) LIKE ? ESCAPE '\\')")
+            parameters.extend(['%'+escaped+'%']*2)
         if cursor:
             created_at, task_id = _decode_cursor(cursor)
             clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")

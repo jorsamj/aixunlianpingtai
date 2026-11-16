@@ -40,6 +40,7 @@ save_algorithms(api.algorithms_file(project_id),[{
     'versions':[{'id':f'acceptance-v{i}','version_name':f'合成版本 {i}',
         'framework':'ultralytics','training_status':'SUCCEEDED',
         'created_at':'2026-11-15','stored_path':'/isolated/private/best.pt',
+        'job_id':'acceptance-train-00' if i==0 else '',
         'sha256':'synthetic-source-sha','metrics':{'map50':None},
         'val_metrics':{'map50':0},'evaluation':{'metrics':{'map50':.72},'samples':['FROZEN_GT_SENTINEL']},
         'label_codes':['smoke'],'training_lineage':{'parameters':{'actual':{'epochs':50,'imgsz':640}}}}
@@ -55,6 +56,26 @@ for i in range(25):
         'params':{'precision':'fp16','chip':'fixture-chip','csc':{'preset':'none'}},
         'outputs':[{'name':'model.onnx','path':str(directory/'missing.onnx')}],
         'error':'合成诊断：依赖缺失 token=PRIVATE_SENTINEL /isolated/private/file' if i%2 else ''})
+
+from dataclasses import replace
+from platform_core.task_runtime import TaskRecord,TaskKind,TaskStatus
+for i in range(25):
+    task_id=f'acceptance-train-{i:02}'
+    task=TaskRecord.new(task_id,project_id,TaskKind.TRAINING,'payload.json','training:auto')
+    api.shared_task_repository().create(replace(task,status=TaskStatus.SUCCEEDED if i%2==0 else TaskStatus.FAILED,
+        progress=100,stage='finished',worker_id='synthetic-worker',finished_at='2026-11-17T00:00:00Z'))
+    api.shared_task_artifacts().atomic_write_json(task_id,'payload.json',{'asset_algorithm_id':'acceptance-algorithm',
+        'asset_algorithm_name':'隔离验收模型（合成数据）','epochs':50,'batch':4,'imgsz':640,
+        'dataset_selected_ids':['FROZEN_GT_SENTINEL'],'token':'PRIVATE_SENTINEL'})
+    api.shared_task_artifacts().atomic_write_json(task_id,'result.json',{
+        'training_report':{'metrics':{'precision':0,'recall':None,'map50':None,'map50_95':.5},
+            'history':[{'epoch':j,'map50':j/100,'box_loss':1-j/50,'val_box_loss':.8} for j in range(1,15)]},
+        'evaluation':{'status':'succeeded','metrics':{'map50':.72},'error_samples':['FROZEN_GT_SENTINEL']},
+        'execution':{'node_id':'synthetic-node','worker_id':'synthetic-worker','started_at':'2026-11-16T23:00:00Z'},
+        'metric_credibility':{'status':'unavailable','message':'合成数据，仅验展示，不代表现场质量'}})
+    directory=api.project_dir(project_id)/'jobs'/task_id;directory.mkdir(parents=True,exist_ok=True)
+    api.write_json(directory/'job.json',{'id':task_id,'status':'done' if i%2==0 else 'failed','framework':'ultralytics',
+        'asset_algorithm_id':'acceptance-algorithm','epochs':50,'batch':4,'imgsz':640,'metrics':{'map50':.99}})
 
 registry = ServiceNodeRepository(api.shared_task_repository())
 _, token = registry.create({'node_id': 'acceptance-arm64', 'display_name': 'ARM64 测试快照节点', 'connection_mode': 'agent', 'allowed_capabilities': ['training', 'conversion']})
