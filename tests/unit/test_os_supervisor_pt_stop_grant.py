@@ -16,7 +16,12 @@ from platform_core.os_supervisor_pt_stop_grant import (
 
 # Reuse the EXISTING original central TaskRepository, Agent node and root
 # PT journal fixture. No new scheduler, synthetic second attempt or OS launch.
-from tests.unit.test_os_supervisor_pt_export_launch import (
+# The test tree has no __init__.py; force this sibling path to the front rather
+# than accidentally importing an unrelated installed "tests" package.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_os_supervisor_pt_export_launch import (
     BOOT, NODE, TASK, LEASE, stage, registered, launch_grant,
 )
 
