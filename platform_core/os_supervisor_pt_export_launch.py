@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from .os_supervisor_authorization import GrantRejected
 from .os_supervisor_journal import ExecutionJournal
+from .os_supervisor_pt_stop_grant import verify_pt_stop_grant
 from .os_supervisor_pt_export_grant import (
     CentralPtExportAdmissionIssuer, PT_PROFILE, PT_PURPOSE, _BINDING,
     _check_binding, _canonical, _hold, verify_pt_export_admission_grant,
@@ -68,6 +69,22 @@ CREATE TABLE IF NOT EXISTS pt_export_unit_identities (
     control_group TEXT NOT NULL,
     main_pid INTEGER NOT NULL CHECK(main_pid>1),
     recorded_at INTEGER NOT NULL
+);
+-- Stop challenge and claim are in the SAME protected OS journal.
+-- Neither table is an independent stop/recovery task owner.
+CREATE TABLE IF NOT EXISTS pt_export_stop_challenges (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    challenge TEXT NOT NULL UNIQUE,
+    issued_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pt_export_stop_claims (
+    handle_id TEXT PRIMARY KEY REFERENCES execution_intents(handle_id),
+    stop_grant_digest TEXT NOT NULL,
+    invocation_id TEXT NOT NULL,
+    main_pid INTEGER NOT NULL CHECK(main_pid>1),
+    reason TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL
 );
 """
 _MAX_ACTIVE_CHALLENGES = 512
@@ -508,5 +525,127 @@ class PtExportJournal:
             "main_pid": int(row["main_pid"]),
             "launch_grant_digest": row["launch_grant_digest"],
             "trusted_stop_receipt_available": False,
+            "result_publish_allowed": False,
+        }
+
+    def issue_pt_stop_challenge(self, handle_id: str, task_attempt: int, *,
+                                now: int | None = None) -> str:
+        """CI-only original PT journal nonce; does NOT authorize an OS stop.
+
+        An expired nonce is never reissued while the intent may be in flight.
+        Only the protected original OS journal can create a challenge, and
+        the same handle can consume only one stop grant.
+        """
+        if not isinstance(handle_id, str) or type(task_attempt) is not int:
+            _hold("STOP_CHALLENGE_SCOPE_INVALID")
+        identity = self.verified_pt_identity(handle_id, task_attempt)
+        current = _now(now)
+        with closing(self.journal._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT i.boot_id,i.state,i.task_attempt,
+                          o.invocation_id,o.main_pid,
+                          c.challenge,c.expires_at,
+                          s.stop_grant_digest
+                   FROM execution_intents i
+                   JOIN pt_export_unit_identities o ON o.handle_id=i.handle_id
+                   LEFT JOIN pt_export_stop_challenges c ON c.handle_id=i.handle_id
+                   LEFT JOIN pt_export_stop_claims s ON s.handle_id=i.handle_id
+                   WHERE i.handle_id=?""", (handle_id,),
+            ).fetchone()
+            if (row is None or row["boot_id"] != self.journal.boot_id
+                    or row["state"] != "RUNNING"
+                    or row["task_attempt"] != task_attempt
+                    or row["invocation_id"] != identity["invocation_id"]
+                    or row["main_pid"] != identity["main_pid"]
+                    or row["stop_grant_digest"] is not None):
+                _hold("STOP_CHALLENGE_ORIGINAL_SCOPE_UNVERIFIED")
+            if row["challenge"] is not None:
+                if current >= row["expires_at"]:
+                    _hold("STOP_CHALLENGE_EXPIRED_NO_REISSUE")
+                return row["challenge"]
+            challenge = secrets.token_hex(16)
+            db.execute(
+                """INSERT INTO pt_export_stop_challenges
+                   (handle_id,challenge,issued_at,expires_at)
+                   VALUES (?,?,?,?)""",
+                (handle_id, challenge, current, current + 30),
+            )
+            db.commit()
+        return challenge
+
+    def claim_pt_stop_rechecked(
+        self, handle_id: str, task_attempt: int, envelope: object, *,
+        trusted_public_key: Ed25519PublicKey,
+        now: int | None = None,
+    ) -> dict:
+        """Consume one centrally signed STOP intent, never stop or release.
+
+        The same root-owned journal remains authoritative; no Agent-provided
+        unit, PID, launch or result-publish privilege can be introduced.
+        """
+        if not isinstance(handle_id, str) or type(task_attempt) is not int:
+            _hold("STOP_CLAIM_ARGUMENTS_INVALID")
+        current = _now(now)
+        with closing(self.journal._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT i.handle_id,i.task_id,i.task_attempt,i.node_id,
+                          i.worker_id,i.lease_sha256,i.boot_id,i.state,
+                          i.unit_name,o.invocation_id,o.control_group,
+                          o.main_pid,c.challenge,c.issued_at,c.expires_at,
+                          p.stop_grant_digest
+                   FROM execution_intents i
+                   JOIN pt_export_bound_inputs b ON b.handle_id=i.handle_id
+                   JOIN pt_export_unit_identities o ON o.handle_id=i.handle_id
+                   JOIN pt_export_stop_challenges c ON c.handle_id=i.handle_id
+                   LEFT JOIN pt_export_stop_claims p ON p.handle_id=i.handle_id
+                   WHERE i.handle_id=? AND i.task_attempt=?""",
+                (handle_id, task_attempt),
+            ).fetchone()
+            if (row is None or row["state"] != "RUNNING"
+                    or row["boot_id"] != self.journal.boot_id
+                    or row["unit_name"] != "changlian-os-" + handle_id + ".service"
+                    or row["control_group"] != "/system.slice/" + row["unit_name"]
+                    or row["stop_grant_digest"] is not None
+                    or not row["issued_at"] <= current < row["expires_at"]):
+                _hold("STOP_CLAIM_ORIGINAL_UNVERIFIED")
+            origin = {
+                "handle_id": row["handle_id"],
+                "task_id": row["task_id"],
+                "task_attempt": row["task_attempt"],
+                "node_id": row["node_id"],
+                "worker_id": row["worker_id"],
+                "execution_lease_sha256": row["lease_sha256"],
+                "boot_id": row["boot_id"],
+                "unit_name": row["unit_name"],
+                "invocation_id": row["invocation_id"],
+                "control_group": row["control_group"],
+                "main_pid": int(row["main_pid"]),
+            }
+            digest = verify_pt_stop_grant(
+                envelope, trusted_public_key=trusted_public_key,
+                original_identity=origin, challenge=row["challenge"],
+                challenge_issued_at=row["issued_at"], now=current,
+            )
+            # The transaction commits only the *intent*. The OS has not been
+            # asked to stop yet. Crash/replay cannot create another claim.
+            db.execute(
+                """INSERT INTO pt_export_stop_claims
+                   (handle_id,stop_grant_digest,invocation_id,
+                    main_pid,reason,claimed_at) VALUES (?,?,?,?,?,?)""",
+                (handle_id, digest, origin["invocation_id"],
+                 origin["main_pid"], envelope["claims"]["reason"], current),
+            )
+            db.commit()
+        return {
+            "handle_id": handle_id,
+            "task_attempt": task_attempt,
+            "state": "STOP_INTENT_CLAIMED_OS_UNVERIFIED",
+            "stop_grant_digest": digest,
+            "stop_authorized_for_production": False,
+            "os_stopped": False,
+            "trusted_stop_receipt_available": False,
+            "central_recovery_allowed": False,
             "result_publish_allowed": False,
         }
