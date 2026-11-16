@@ -1,0 +1,97 @@
+name: Isolated Trusted PT to ONNX CPU Export
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
+      - '.github/workflows/isolated-pt-export-cpu.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py'
+      - 'tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py'
+      - '.github/workflows/isolated-pt-export-cpu.yml'
+
+# This workflow is entirely separate from production task dispatch.
+# It runs only in an ephemeral Ubuntu 24.04 GitHub-hosted VM.
+permissions:
+  contents: read
+
+jobs:
+  pt-export-cpu-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pin CPU-only PyTorch and production-compatible Ultralytics
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            'torch==2.5.0+cpu' 'torchvision==0.20.0+cpu' \
+            --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check \
+            'ultralytics==8.4.127' 'numpy==2.2.6' \
+            'onnx==1.19.0' 'onnxruntime==1.22.1' \
+            'pytest' 'cryptography' 'fastapi' 'httpx' 'filelock' \
+            'psutil' 'requests' 'keyring' 'pydantic' 'pyyaml'
+          python - <<'PY'
+          import torch, torchvision, ultralytics, onnx, onnxruntime, numpy
+          assert torch.__version__ == '2.5.0+cpu', torch.__version__
+          assert ultralytics.__version__ == '8.4.127'
+          assert onnx.__version__ == '1.19.0'
+          assert onnxruntime.__version__ == '1.22.1'
+          assert numpy.__version__ == '2.2.6'
+          assert not torch.cuda.is_available()
+          print('TRUSTED_CPU_RUNTIME_PINNED', torch.__version__, ultralytics.__version__)
+          PY
+      - name: Install immutable root-owned isolated CPU runtime
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          test -d /run/systemd/system
+          test -x /usr/bin/systemd-run
+          test "$(id -u)" != '0'
+          systemctl --version | head -1
+          sudo -n install -d -o root -g root -m 0755 \
+            /var/lib/changlian-pt-export-cpu-pilot
+          sudo -n /usr/bin/python3 -m venv --without-pip \
+            /var/lib/changlian-pt-export-cpu-pilot/venv
+          source_site="$(python -c 'import site; print(site.getsitepackages()[0])')"
+          runtime_site="/var/lib/changlian-pt-export-cpu-pilot/venv/lib/python3.12/site-packages"
+          sudo -n cp -a "$source_site/." "$runtime_site/"
+          sudo -n chown -R root:root /var/lib/changlian-pt-export-cpu-pilot
+          sudo -n chmod -R go-w /var/lib/changlian-pt-export-cpu-pilot
+          sudo -n /var/lib/changlian-pt-export-cpu-pilot/venv/bin/python3 -I -c \
+            'import ultralytics,torch,onnx,onnxruntime,numpy; assert ultralytics.__version__=="8.4.127"; assert torch.__version__=="2.5.0+cpu"'
+      - name: Offline fixed-argv contracts and forged evidence rejection
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            platform_core/os_supervisor_pt_export_cpu_systemd_pilot.py \
+            tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py \
+            tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py
+          python -m pytest -q --maxfail=1 \
+            tests/unit/test_os_supervisor_pt_export_cpu_systemd_pilot.py
+      - name: Real trusted YOLO11n PT to ONNX in systemd DynamicUser
+        shell: bash
+        timeout-minutes: 7
+        run: |
+          set -euo pipefail
+          sudo -n "$(command -v python)" -m pytest -vv --maxfail=1 \
+            tests/integration/test_os_supervisor_pt_export_cpu_systemd_live.py \
+            -s
