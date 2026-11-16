@@ -43,3 +43,22 @@
 同时 PT one-shot CAS 事务内另存 launch_grant_digest / claimed_at 到同一 root-owned SQLite 的 pt_export_claims 附表，重启后可追查究竟哪份 fresh grant 消耗启动窗口；不改变原 tasks.attempt 或 execution_intents 唯一约束。
 
 这仍然不是可信 StopReceipt，也未启动任何 PT 模型导出进程。修正后的 CI 必须以新 SHA 单独核验。
+
+## 最终独立 CI 验收（2026-11-16）
+
+**准确最终功能代码 SHA：cedd4198b903a4d09d6abad9012c1b19608bba1e。**  
+GitHub Actions 按该 SHA 的 head_sha 核对：**23/23 completed/success、失败 0、排队 0、运行中 0**。不借用初次提交 8f05987c 或上一阶段的工作流。
+
+- Node Agent Executor 第一组：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43780315832 —— Ubuntu **835 passed / 2 skipped**、Windows **830 passed / 7 skipped**、API job 成功；Windows portable cgroup **30 passed / 1 skipped**。
+- Node Agent Executor 第二组：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43780321876 —— Ubuntu/Windows/API 全部成功。
+- Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43780315780 —— frontend 和 Chrome 三分组全部成功，shard1 **128 passed**、shard2 **130 passed**、shard3 **125 passed**。
+- Remote Training Runtime：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43780321900 —— 包含 Ubuntu、Windows、API 和 Ultralytics loader 验证成功；远程转换、RKNN、素材导入、调度等其余同 SHA 工作流均成功。
+- 本轮实际修改文件仅 platform_core/os_supervisor_pt_export_launch.py（新增）、platform_core/os_supervisor_journal.py（小幅 profile fence）、tests/unit/test_os_supervisor_pt_export_launch.py（新增）、既有 Node Agent CI 工作流（登记模块与测试）和本文档。未改变生产 app.py / AgentConversionRunner / SupervisorService / 前端。
+
+### 验收结论与仍需禁止的能力
+
+**2D-2D2B2B-2A：中央 fresh PT launch 签名、root-owned 统一 journal 冻结证据、交叉 profile 拒绝、单任务同代数唯一 OS handle、一致性 CAS 与签名审计持久化——PASS。**
+
+**绝不能称为“真实 PT→ONNX 转换已通过”**：当前 CAS 实际返回 UNKNOWN、launch_authorized=false、os_executor_connected=false；未解包任何 PT，也未触发 PT 转换 systemd/Ultralytics。已通过的真实 ORT/systemd 是之前的现成 ONNX 和固定 CPU worker，不是 PT 导出。StopReceipt、原结果 prepare/upload/confirm/finalize/finish、Ubuntu22.04/systemd249、GPU、生产自动恢复与切换仍 NO-GO。A800/双4070 未部署、未重启、未改业务任务或数据。
+
+**下一阶段 2D-2D2B2B-2B**：基于可信来源的最小 PT 权重，先证明 root-owned 文件/运行时、非 root CPU/systemd 真正导出 ONNX、模型源/产物 SHA 与 ONNXRuntime 数值一致；独立验证失败/取消及在途租约。只有完成这类新证据后，再讨论正式受保护 Runner 的生命周期/上传事务，不启用现有生产开关。
