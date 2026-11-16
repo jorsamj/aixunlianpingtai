@@ -309,12 +309,27 @@ class IsolatedPtExportCpuPilot:
                 or not re.fullmatch(r"[0-9a-f]{32}", invocation)):
             _hold("PROOF_ORIGINAL_IDENTITY_INVALID")
         self.backend.inspect(unit, invocation)
-        raw = self.backend._run([
+        args = [
             "/usr/bin/journalctl", "--system", "--quiet", "--no-pager",
             "--output=json", "--lines=+32", "--unit", unit,
             "_SYSTEMD_INVOCATION_ID=" + invocation,
             "--grep=^changlian-pt-export-proof:",
-        ])
+        ]
+        try:
+            outcome = subprocess.run(
+                args, shell=False, capture_output=True, text=True,
+                timeout=7, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GrantRejected("PT_CPU_PROOF_JOURNAL_UNAVAILABLE_HOLD") from exc
+        # journalctl --grep has exit status 1 when no matching message has
+        # arrived YET; this is not proof of success or failure.
+        if outcome.returncode == 1 and not outcome.stdout.strip() and not outcome.stderr.strip():
+            return b""
+        if (outcome.returncode != 0
+                or len(outcome.stdout.encode("utf-8")) > 16384):
+            _hold("PROOF_JOURNAL_COMMAND_FAILED")
+        raw = outcome.stdout
         records = []
         try:
             for line in raw.splitlines():
