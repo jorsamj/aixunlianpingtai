@@ -258,3 +258,109 @@ def test_stop_grant_disabled_default_and_original_boot_fenced(original_running):
     ))
     with pytest.raises(GrantRejected, match="HOLD"):
         wrong_boot.issue_pt_stop_challenge(handle, 3)
+
+
+def test_cannot_probe_os_without_signed_central_stop_claim(original_running):
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        pt.claim_pt_os_stop_observation(handle, 3)
+    with closing(root._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_observation_claims",
+        ).fetchone()[0] == 0
+
+
+def test_one_signed_stop_can_claim_only_one_os_probe_even_after_restart(original_running):
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    envelope, nonce = stop_scope(original_running)
+    claimed = pt.claim_pt_stop_rechecked(
+        handle, 3, envelope, trusted_public_key=key.public_key(),
+    )
+    probe = pt.claim_pt_os_stop_observation(handle, 3)
+    assert probe["stop_grant_digest"] == claimed["stop_grant_digest"]
+    assert probe["invocation_id"] == INV
+    assert probe["main_pid"] == PID
+    assert probe["state"] == "OS_STOP_OBSERVATION_CLAIMED_NO_RECEIPT"
+    assert probe["trusted_stop_receipt_available"] is False
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        pt.claim_pt_os_stop_observation(handle, 3)
+    reopened = PtExportJournal(ExecutionJournal(
+        root.path, test_only_unprivileged=True, boot_id_for_tests=BOOT,
+    ))
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        reopened.claim_pt_os_stop_observation(handle, 3)
+    with closing(root._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_observation_claims",
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT state FROM execution_intents WHERE handle_id=?",
+            (handle,),
+        ).fetchone()[0] == "RUNNING"
+
+
+@pytest.mark.parametrize("column,value", [
+    ("invocation_id", "c" * 32),
+    ("main_pid", 56789),
+])
+def test_changed_original_os_identity_after_stop_grant_never_probes(
+    original_running, column, value,
+):
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    envelope, nonce = stop_scope(original_running)
+    pt.claim_pt_stop_rechecked(
+        handle, 3, envelope, trusted_public_key=key.public_key(),
+    )
+    with closing(root._connect()) as db:
+        db.execute(
+            f"UPDATE pt_export_unit_identities SET {column}=? WHERE handle_id=?",
+            (value, handle),
+        )
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        pt.claim_pt_os_stop_observation(handle, 3)
+    with closing(root._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_observation_claims",
+        ).fetchone()[0] == 0
+
+
+def test_stale_stop_grant_never_allows_delayed_os_probe(original_running):
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    envelope, nonce = stop_scope(original_running)
+    pt.claim_pt_stop_rechecked(
+        handle, 3, envelope, trusted_public_key=key.public_key(),
+    )
+    with closing(root._connect()) as db:
+        claimed_at = db.execute(
+            "SELECT claimed_at FROM pt_export_stop_claims WHERE handle_id=?",
+            (handle,),
+        ).fetchone()[0]
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        pt.claim_pt_os_stop_observation(handle, 3, now=claimed_at + 13)
+
+
+def test_wrong_boot_cannot_claim_original_os_probe(original_running):
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    envelope, nonce = stop_scope(original_running)
+    pt.claim_pt_stop_rechecked(
+        handle, 3, envelope, trusted_public_key=key.public_key(),
+    )
+    changed_boot = PtExportJournal(ExecutionJournal(
+        root.path, test_only_unprivileged=True,
+        boot_id_for_tests="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    ))
+    with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+        changed_boot.claim_pt_os_stop_observation(handle, 3)
+
+
+def test_stop_bridge_is_inaccessible_by_default():
+    from platform_core.os_supervisor_pt_stop_rechecked_bridge import (
+        CiOnlyPtStopRecheckedBridge,
+    )
+    with pytest.raises(GrantRejected, match="PRODUCTION_DISABLED"):
+        CiOnlyPtStopRecheckedBridge(None, None)
