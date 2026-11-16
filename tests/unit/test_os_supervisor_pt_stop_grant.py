@@ -403,3 +403,49 @@ def test_stop_bridge_is_inaccessible_by_default():
     )
     with pytest.raises(GrantRejected, match="PRODUCTION_DISABLED"):
         CiOnlyPtStopRecheckedBridge(None, None)
+
+
+def test_competing_os_stop_observers_cannot_both_claim_same_invocation(original_running):
+    from concurrent.futures import ThreadPoolExecutor
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    envelope, nonce = stop_scope(original_running)
+    pt.claim_pt_stop_rechecked(
+        handle, 3, envelope, trusted_public_key=key.public_key(),
+    )
+
+    def compete():
+        try:
+            claim = pt.claim_pt_os_stop_observation(handle, 3)
+            return ("claim", claim["stop_grant_digest"])
+        except GrantRejected:
+            return ("rejected", None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: compete(), range(2)))
+    assert sorted(kind for kind, _ in outcomes) == ["claim", "rejected"]
+    with closing(root._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_observation_claims",
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT state FROM execution_intents WHERE handle_id=?", (handle,),
+        ).fetchone()[0] == "RUNNING"
+
+
+@pytest.mark.parametrize("wrong_attempt", [0, 2, 4, True])
+def test_os_stop_observation_never_crosses_original_task_attempt(
+    original_running, wrong_attempt,
+):
+    stage, handle = original_running
+    repo, artifacts, key, token, issuer, root, pt, scope = stage
+    grant, nonce = stop_scope(original_running)
+    pt.claim_pt_stop_rechecked(
+        handle, 3, grant, trusted_public_key=key.public_key(),
+    )
+    with pytest.raises(GrantRejected, match="PT_GRANT_|PT_STOP_GRANT_"):
+        pt.claim_pt_os_stop_observation(handle, wrong_attempt)
+    with closing(root._connect()) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM pt_export_stop_observation_claims",
+        ).fetchone()[0] == 0
