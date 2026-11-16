@@ -21,6 +21,9 @@ from test_os_supervisor_pt_export_rechecked_bridge_live import (
 from platform_core.os_supervisor_authorization import GrantRejected
 from platform_core.os_supervisor_pt_stop_grant import CentralPtStopTrialIssuer
 from platform_core.os_supervisor_pt_stop_observation import IsolatedPtStopObserver
+from platform_core.os_supervisor_pt_stop_rechecked_bridge import (
+    CiOnlyPtStopRecheckedBridge,
+)
 
 
 def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path, monkeypatch):
@@ -79,8 +82,15 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
             journal=ctx["journal"], backend=ctx["pilot"].backend,
             isolated_ci_only=True,
         )
-        proof = observer.request_and_observe(handle, 3)
+        stopped = CiOnlyPtStopRecheckedBridge(
+            ctx["journal"], observer, isolated_ci_only=True,
+        )
+        proof = stopped.stop_original_after_central_cas(handle, 3)
         assert proof["state"] == "LOCAL_EMPTY_OBSERVED_NO_RECEIPT", proof
+        assert proof["os_probe_claimed_once"] is True
+        assert proof["stop_grant_digest"] == claimed["stop_grant_digest"]
+        with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
+            stopped.stop_original_after_central_cas(handle, 3)
         assert proof["original_invocation_id"] == started["invocation_id"]
         assert proof["original_main_pid"] == started["main_pid"]
         assert proof["original_cgroup_became_empty"] is True
@@ -94,6 +104,10 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
             ).fetchone()[0] == "RUNNING"
             assert db.execute(
                 "SELECT COUNT(*) FROM pt_export_stop_claims WHERE handle_id=?",
+                (handle,),
+            ).fetchone()[0] == 1
+            assert db.execute(
+                "SELECT COUNT(*) FROM pt_export_stop_observation_claims WHERE handle_id=?",
                 (handle,),
             ).fetchone()[0] == 1
         with closing(ctx["repo"]._connect()) as db:
