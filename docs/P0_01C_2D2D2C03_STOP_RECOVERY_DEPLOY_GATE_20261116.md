@@ -45,6 +45,14 @@
 - 功能提交 `b7caab7cff38f8ebab50b76c102cd3fae1ff358c` 起，陆续增加 root journal、测试和微小修复； CI 工作流更新提交 `bd5229a19d4333c0e375a1693b187657f1e0b434`。**尚无最终 CI PASS，继续 NO-GO**。
 - CI：<https://github.com/jorsamj/aixunlianpingtai/actions/runs/43808456054>（原官方 PT CPU systemd 隔离工作流，包含新增 STOP 合同测试）。
 
+## 2C-03C-联调：原中央签名→root CAS→真实 cgroup 停止（已提交、待 CI）
+
+- 新增 `tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py`：复用原 `TaskRepository` / `PtExportJournal` / `CiOnlyPtExportRecheckedBridge` 的签名启动身份，**只用已存在的固定 25 秒 CPU worker 作为 OS 执行替身**，不将 PT 反序列化和停止安全混在一个不稳定测试里。
+- 测试原中央 `CANCEL_REQUESTED` → 新 STOP 签名 → 原 root journal stop challenge/claim 单次消费 → 原 `InvocationID`+cgroup 的 systemd 真实停止 → 原始 `cgroup.events` 内核空进程证据；复用同一任务代数和原 lease，无第二次启动。
+- 预期整个链路仍 `trusted_stop_receipt_available=false`、`central_recovery_allowed=false`，中央原任务保留 `CANCEL_REQUESTED`，journal 暂维持 `RUNNING` 待后续可信终态证明；不能误认为已经完成生产恢复。
+- CI 工作流 <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43808785894>，Ubuntu24.04 隔离主机。**验收结果待实际终态，禁止提前标 PASS**。
+- 尚未覆盖 Ubuntu22.04 上的真实 PT systemd 执行（249 无 `ExitType=cgroup`）、生产级 root 保密签名和独立中央 StopReceipt 验签；这些仍是生产硬门槛。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。
