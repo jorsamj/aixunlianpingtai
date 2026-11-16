@@ -11,7 +11,7 @@ test('the final AI annotation override uses the persistent v60 task API', () => 
   const marker = source.lastIndexOf('Persistent v60 AI annotation UI');
   assert.ok(marker > 0);
   const finalLayer = source.slice(marker);
-  assert.match(finalLayer, /\/api\/v60\/projects\/\$\{pid\(\)\}\/annotation-tasks/);
+  assert.match(finalLayer, /const taskApi=\(id,project=pid\(\)\)=>`\/api\/v60\/projects\/\$\{encodeURIComponent\(project\)\}\/annotation-tasks/);
   assert.doesNotMatch(finalLayer, /\/api\/v47\/projects\/.*ai-label-tasks/);
   assert.match(finalLayer, /waitForTaskTerminal/);
   assert.match(finalLayer, /registry:window\.PollRegistryRuntime/);
@@ -22,7 +22,7 @@ test('the final AI annotation override uses the persistent v60 task API', () => 
 
 test('the stable annotation layer is after all legacy renderer overrides', () => {
   assert.ok(source.lastIndexOf('Stable single-instance manual/batch annotation workbench') > source.lastIndexOf('renderAnnotator=function'));
-  assert.ok(source.lastIndexOf('/api/v60/projects/${pid()}/annotation-tasks') > source.lastIndexOf('/api/v47/projects/${pid()}/ai-label-tasks'));
+  assert.ok(source.lastIndexOf('/api/v60/projects/${encodeURIComponent(project)}/annotation-tasks') > source.lastIndexOf('/api/v47/projects/${pid()}/ai-label-tasks'));
 });
 
 

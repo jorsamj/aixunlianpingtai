@@ -148,10 +148,17 @@ test('single-image retry closes its original modal before reopening the same pol
     calls.push('post:'+url);
     assert.deepEqual(JSON.parse(options.body).image_ids,['image/id']);
   };
-  new Function('window','api','taskApi','toast','decodeURIComponent',source.slice(start,stop))(
-    window,api,id=>'/tasks/'+id,message=>calls.push('toast:'+message),decodeURIComponent);
+  let project='project-original';
+  new Function('window','api','taskApi','toast','decodeURIComponent','pid',source.slice(start,stop))(
+    window,api,(id,ownerProject)=>{assert.equal(ownerProject,'project-original');return '/tasks/'+id},message=>calls.push('toast:'+message),decodeURIComponent,()=>project);
   await window.retryAiFailureImage60('task-1',encodeURIComponent('image/id'));
   assert.deepEqual(calls,['post:/tasks/task-1/retry','toast:已提交此图重试','close','show:task-1']);
+  // A late response belongs to the captured project and must not close/reopen the new project's modal.
+  calls.length=0;currentLayer={id:'new-project-modal'};
+  new Function('window','api','taskApi','toast','decodeURIComponent','pid',source.slice(start,stop))(
+    window,async(url,options)=>{await api(url,options);project='project-new'},(id,ownerProject)=>{assert.equal(ownerProject,'project-original');return '/tasks/'+id},message=>calls.push('toast:'+message),decodeURIComponent,()=>project);
+  await window.retryAiFailureImage60('task-1',encodeURIComponent('image/id'));
+  assert.deepEqual(calls,['post:/tasks/task-1/retry']);assert.equal(currentLayer.id,'new-project-modal');
 });
 
 test('WeVisOne create confirmation presents native detection, not the unused JSON prompt', () => {

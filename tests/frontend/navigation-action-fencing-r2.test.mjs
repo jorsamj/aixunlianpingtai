@@ -42,7 +42,7 @@ test('final clean confirmation alias owner fences stale completion and stays loc
 });
 
 test('v60 review completion is the final AI commit owner and fences stale UI effects', () => {
-  const taskApi = liveOwner("const taskApi=id=>`/api/v60/projects/${pid()}/annotation-tasks", 800);
+  const taskApi = liveOwner("const taskApi=(id,project=pid())=>`/api/v60/projects/${encodeURIComponent(project)}/annotation-tasks", 800);
   assert.match(taskApi, /annotation-tasks/, 'v60 taskApi must keep the durable annotation-task endpoint');
 
   const owner = liveOwner('window.completeAiReview60=async mode=>', 4200);
@@ -54,7 +54,7 @@ test('v60 review completion is the final AI commit owner and fences stale UI eff
   const closer = app.slice(app.lastIndexOf('window.closeAiReview60='), app.lastIndexOf('window.reviewPageSelect60='));
   assert.match(closer, /review\?\.submitting&&!afterCommit/, 'ordinary navigation must remain blocked until a receipt is verified');
   assert.match(owner, /finishAiReview60\(review,result,mode,ownerPage,action\)/);
-  assert.match(owner, /taskApi\(review\.id\)\}\/decisions/, 'v60 review completion must commit through the durable task decisions endpoint');
+  assert.match(owner, /taskApi\(review\.id,review\.projectId\)\}\/decisions/, 'v60 review completion must commit through the durable task decisions endpoint');
   assert.match(owner, /commit:true/, 'v60 review completion must preserve explicit commit semantics');
   assert.match(app, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\);/, 'legacy confirmAiLabel427 must remain only as a v60 compatibility alias');
 });

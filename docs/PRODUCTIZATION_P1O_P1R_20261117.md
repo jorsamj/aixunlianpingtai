@@ -78,3 +78,9 @@ UI为可收起检查区、稳定网格key、底部固定操作及中性灰层次
 - 原 `/retry`、任务创建、完整诊断导出继续交旧任务详情Owner，Vue不新增执行接口。原图仍走v61授权content/thumbnail与原MaterialPresentation。
 
 没有新增服务端写路由或数据源。原浏览器ai-review-operation记录增加kind/project/task/expected_count和写后回读；原ai-review-transfer记录同样失败即阻断POST。它们是原未知操作恢复键的强化，不是第二个草稿库。Vue新增Owner限于组件展示与DOM实例资源；选择、草稿、撤销、正式入库和任务执行的业务Owner均未转移。
+
+## 首次准确SHA CI反馈及定向修正
+
+业务提交d984eff3372176728dee6f5ec4f1a589aeec2dcf：Algorithm SQL Store两个job成功；Frontend Runtime1721项中1717通过、4失败。四项均来自3个已有测试文件对旧taskApi(id)/动态pid语法及执行夹具的依赖：新版原Owner捕获project并显式taskApi(id,project)，一个retry执行夹具缺少pid。按实际新合同改成精确project语法断言，原v60唯一Owner、polling、stale fencing与先关闭旧弹窗再打开任务断言全部保留，并在同retry用例增加切项目迟到不关闭/重开新弹窗证明。该3文件定向34/34通过；未改业务代码、未删除/屏蔽用例或放宽断言。
+
+最终业务源码真实入口复验通过，独立回执test-results/p1or-real-entry/receipt-final-d984eff.json明确HTTP200入口614及p1or1，官方插件7阶段errors=[]；workflow最终四链路passed，截图已刷新。8030/8031临时服务均停止。源码+本地Vue构建ZIP CRC通过，原Annotorious16件及三个原adapter均包含；JS933623字节、SHA256 84c261b2c8c86b4904c79c30b513dcbb7af8a341e67b229dc7fe22fe16a28244，CSS133372字节、SHA256 a9bb59bb790ae50a2e24a0995b14d19c4fa75f4aa6c7bf1976da3a60ce848672。后续仅测试/交接修正不改变该业务构建。最终准确HEAD自动CI与下载制品回执在交付时单独核对，不能将首次失败SHA描述为全绿。
