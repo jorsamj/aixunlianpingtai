@@ -26,3 +26,19 @@
 ## CI 状态
 
 待按照新代码 SHA 的运行日志和现场输出填写，不能沿用前序 23/23。
+
+
+## 真实代码提交与 CI 证据（2026-11-16）
+
+- **真实功能验收代码 SHA：3b81f10438f3ddb9865e66d30d10918ec5e80f5c**（POSIX 命令路径、专用 journal 证据读取、动态用户输出目录清理、跨平台固定合同均已修正）。
+- 该 SHA 的独立真实 PT/systemd 工作流：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43783700467 ，**SUCCESS**，11 个快速安全合同 **11/11 passed**，三个真实 Linux/systemd 集成 **3/3 passed**。
+- 证据来自 **Ubuntu 24.04、systemd 255**，Torch 2.5.0+cpu、Ultralytics 8.4.127、ONNX 1.19.0、ONNX Runtime 1.22.1、NumPy 2.2.6；不是 mock、现成 ONNX Identity 图，也不是外部下载 PT。
+- 随机初始化的可信 CI YOLO11n 模型源码 SHA256：e3dfbfc1b8aa7ded97c0235495752a0fd43c51a6536c489db701048045fb2106；实际 ONNX SHA256：2d39a84297d552ac3b6754a4155cc0073cee4a67180b9e8ee54814c817df07b5；大小 10,506,760 bytes；opset12；输入 [1,3,32,32]；输出 [1,84,21]。
+- **同张量 PyTorch→ONNX Runtime 最大绝对差：2.288818359375e-05**，全部数值在 rtol=1e-3, atol=1e-3 下通过；ORT provider=CPUExecutionProvider，ONNX checker、无 external data、完整产物 SHA256/长度均通过。
+- 记录了原始 systemd InvocationID、CPU cgroup/main PID、成功自然退出与重建 client 后复核；直接重放单位启动拒绝，篡改输入/PT 符号链接替换均拒绝。**正常退出不等于用于中央自动恢复的可信 StopReceipt**。
+- 同 SHA Node Agent Executor：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43783699942 ，Ubuntu **846 passed / 2 skipped**、Windows **841 passed / 7 skipped**，API PASS；Windows portable cgroup 30 passed / 1 skipped。第二组 Node Agent、远程训练/转换等后端工作流也通过。
+- 同 SHA 的 Frontend Runtime Stabilization：https://github.com/jorsamj/aixunlianpingtai/actions/runs/43783699967 ，初次 3/3 浏览器分片的第 3 组在训练任务弹窗 1920×1080 wheel-scroll 断言失败：**124 passed / 1 failed**；其他分片及 frontend PASS。此失败与本轮 PT 模块没有代码修改依赖，**但全仓初次 CI 只能记为 23/24 SUCCESS、1 failure**；已单独重跑该失败 Job，结果须以新 attempt 实际状态核对，不能先宣称 24/24。
+
+### 缺口仍然必须明确
+
+此阶段只对**CI 自身生成、来源可信的测试权重**实现了隔离 systemd PT→ONNX 真实转换。PT 专用中央 challenge/lease/recheck/journal CAS **尚未与本探针连接为一个不可绕过的端到端受保护业务执行器**；真实模型输入下载与对象存储、Runner 生命周期、取消/超时/失联、日志重连、可信 StopReceipt、结果 prepare/upload/confirm/finalize/finish、CPU↔GPU 真实调度、Ubuntu 22.04/systemd249 及 A800/双4070 生产验证仍不可宣称完成。未授权任何生产部署、重启或任务数据修改。
