@@ -77,6 +77,16 @@
 - 修复提交 `b4195341038ce91be1df5ec6c015123bfbedbe51`，复测 <https://github.com/jorsamj/aixunlianpingtai/actions/runs/43811735889>：**Ubuntu22.04 51/51 单元合同已成功**；Windows 截至核查仍排队，真实 Ubuntu24.04 systemd 停止专项仍未终态。**不得将部分成功当作全流程 PASS**。
 - 部署准备独立文档 `docs/DEPLOYMENT_TWO_TRACK_READINESS_20261116.md`：业务原 Runner 的可部署轨道与未完成的 Supervisor 轨道严格分开；A800/4070 现场只读核查仍未执行，禁止未经授权操作生产。
 
+## 2C-03D 临时 root 进程签名的原 cgroup 停止见证（隔离开发，尚未验收）
+
+- 在原 2C-03C 的中央 STOP 预授权和一次性 OS probe CAS 之后，新增 `platform_core/os_supervisor_pt_stop_root_witness_ci.py`：签发者必须在 GitHub-hosted Linux disposable VM 的 root 进程中执行，且强制 `isolated_ci_only=True`；内部临时生成 Ed25519 密钥，不允许 Agent 提供私钥、系统进程身份或“已停止”的 JSON 成功标记。
+- 真正调用 `CiOnlyPtStopRecheckedBridge.stop_original_after_central_cas`，使用 `IsolatedPtStopObserver` 原始 FD 的 `populated 1→0` 事件及单调时间戳；仅在 root journal 原始 STOP grant/OS probe 唯一消费记录仍与任务 attempt、lease 摘要、boot、unit、InvocationID、主 PID 完全一致，且 `LOCAL_EMPTY_OBSERVED_NO_RECEIPT` 成立时签发隔离测试见证。
+- 此签名绑定事先给出的测试中央 challenge_id、nonce 和原执行身份；验证者需提供**独立来源**的原任务/OS 身份和原挑战，并验签、核对签名 TTL。无授权/跨世代/错密钥/篡改/过期/重复 stop/无 `populated=0` 必须 fail closed。
+- `platform_core/os_supervisor_pt_stop_observation.py` 为原 FD 成功观察新增 `empty_observed_monotonic_ns`，不改变原先的 `trusted_stop_receipt_available=false` 与 `central_recovery_allowed=false` 语义。
+- 新增 root-only 合同与 Windows 纯验签单测 `tests/unit/test_os_supervisor_pt_stop_root_witness_ci.py`；Ubuntu24.04 systemd 真实集成 `tests/integration/test_os_supervisor_pt_stop_central_bridge_live.py` 将直接调用 root 见证签发，不接受 Agent 自述停止结果。
+- **重大限制**：这里的 root 私钥只存在于 CI 进程内，未持久化、未与生产中央系统建立独立公钥注册和身份确认；验证者可以在同一 CI 主机拿到测试公钥。此结果只是 root 对 CI cgroup 观察的一次签名，**不是**生产可信 StopReceipt。生产仍缺可信密钥封装/轮换/撤销、原中央数据库一次性消费、后代进程逃逸核验、systemd249 安全执行及 Runner 全链路。
+- 此段的新 CI 尚未跑完，**不得标为 PASS**；Ubuntu22.04 之前的 51/51 STOP grant 单测只能作为旧版本参考，不能代替新 SHA 的验收。
+
 ## 上生产前仍必须完成（硬门槛）
 
 1. **中央原任务取消授权**：不可凭 Agent 自述“取消”就释放资源；签名授权需绑定 task_id、原 `tasks.attempt`、原 lease、node、boot、原 OS unit/InvocationID、请求时间/有效期及一次性 nonce；源任务/租约撤销要中央原有 API 核验，禁止第二调度器。

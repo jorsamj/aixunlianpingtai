@@ -78,6 +78,9 @@ def test_positive_local_empty_is_never_a_stop_receipt(ctx):
     observer, journal, backend, path = ctx
     result = observer.request_and_observe(HANDLE, 7)
     assert result["state"] == "LOCAL_EMPTY_OBSERVED_NO_RECEIPT"
+    assert type(result["empty_observed_monotonic_ns"]) is int
+    assert (result["empty_observed_monotonic_ns"]
+            >= result["stop_requested_monotonic_ns"])
     assert result["trusted_stop_receipt_available"] is False
     assert result["central_recovery_allowed"] is False
     assert result["result_publish_allowed"] is False
@@ -149,6 +152,7 @@ def test_unobserved_stop_is_unknown_and_never_recovery(ctx, monkeypatch):
     result = observer.request_and_observe(HANDLE, 7)
     assert result["state"] == "UNKNOWN"
     assert result["original_cgroup_became_empty"] is False
+    assert result["empty_observed_monotonic_ns"] is None
     assert result["central_recovery_allowed"] is False
 
 

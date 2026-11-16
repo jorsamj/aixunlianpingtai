@@ -82,6 +82,7 @@ class _PinnedCgroupObserver:
                                         name="pt-stop-ci-cgroup-events")
         self._request_ns: int | None = None
         self._saw_zero = False
+        self._zero_observed_ns: int | None = None
         self._repopulated = False
         self._observer_error = False
 
@@ -97,8 +98,12 @@ class _PinnedCgroupObserver:
                 with self._lock:
                     value = _populated(self.pinned)
                     if self._request_ns is not None:
-                        if value == 0 and time.monotonic_ns() >= self._request_ns:
-                            self._saw_zero = True
+                        if value == 0:
+                            observed_at = time.monotonic_ns()
+                            if observed_at >= self._request_ns:
+                                self._saw_zero = True
+                                if self._zero_observed_ns is None:
+                                    self._zero_observed_ns = observed_at
                         elif value == 1 and self._saw_zero:
                             self._repopulated = True
         except (OSError, ValueError):
@@ -122,14 +127,24 @@ class _PinnedCgroupObserver:
         with self._lock:
             return self._saw_zero and not self._repopulated and not self._observer_error
 
+    def empty_observed_ns(self) -> int | None:
+        with self._lock:
+            if not self._saw_zero or self._repopulated or self._observer_error:
+                return None
+            return self._zero_observed_ns
+
     def sample_after_stop(self) -> None:
         # Also read synchronously in case fake regular-file tests have no poll
         # notifications. Real cgroup events can be captured by the watcher.
         with self._lock:
             value = _populated(self.pinned)
             if self._request_ns is not None:
-                if value == 0 and time.monotonic_ns() >= self._request_ns:
-                    self._saw_zero = True
+                if value == 0:
+                    observed_at = time.monotonic_ns()
+                    if observed_at >= self._request_ns:
+                        self._saw_zero = True
+                        if self._zero_observed_ns is None:
+                            self._zero_observed_ns = observed_at
                 elif value == 1 and self._saw_zero:
                     self._repopulated = True
 
@@ -210,6 +225,7 @@ class IsolatedPtStopObserver:
                         time.sleep(0.02)
                         watcher.sample_after_stop()
                     seen_zero = watcher.empty_observed()
+                    empty_observed_ns = watcher.empty_observed_ns()
                 finally:
                     watcher.close()
         except GrantRejected:
@@ -224,6 +240,9 @@ class IsolatedPtStopObserver:
             "original_main_pid": identity["main_pid"],
             "stop_requested_monotonic_ns": requested_ns,
             "original_cgroup_became_empty": seen_zero,
+            "empty_observed_monotonic_ns": (
+                empty_observed_ns if seen_zero else None
+            ),
             "state": "LOCAL_EMPTY_OBSERVED_NO_RECEIPT" if seen_zero else "UNKNOWN",
             "trusted_stop_receipt_available": False,
             "central_recovery_allowed": False,

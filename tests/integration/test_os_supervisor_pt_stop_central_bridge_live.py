@@ -24,6 +24,9 @@ from platform_core.os_supervisor_pt_stop_observation import IsolatedPtStopObserv
 from platform_core.os_supervisor_pt_stop_rechecked_bridge import (
     CiOnlyPtStopRecheckedBridge,
 )
+from platform_core.os_supervisor_pt_stop_root_witness_ci import (
+    CiOnlyRootPtStopWitnessSigner, _BIND, verify_ci_root_stop_witness,
+)
 
 
 def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path, monkeypatch):
@@ -85,18 +88,32 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
         stopped = CiOnlyPtStopRecheckedBridge(
             ctx["journal"], observer, isolated_ci_only=True,
         )
-        proof = stopped.stop_original_after_central_cas(handle, 3)
-        assert proof["state"] == "LOCAL_EMPTY_OBSERVED_NO_RECEIPT", proof
-        assert proof["os_probe_claimed_once"] is True
+        signer = CiOnlyRootPtStopWitnessSigner(
+            ctx["journal"], stopped, isolated_ci_only=True,
+        )
+        receipt = signer.stop_and_sign(
+            handle, 3, challenge_id="f" * 32,
+            nonce="preissued-isolated-central-nonce-" + "a" * 24,
+        )
+        proof = receipt["payload"]
+        expected = {name: proof[name] for name in _BIND}
+        assert verify_ci_root_stop_witness(
+            receipt, public_key=signer.public_key,
+            expected_original=expected, now=proof["issued_at"],
+        )
+        assert proof["purpose"] == "changlian-ci-root-pt-stop-witness-v1"
+        assert proof["test_only_no_production_recovery"] is True
         assert proof["stop_grant_digest"] == claimed["stop_grant_digest"]
+        assert proof["unit"] == started["unit_name"]
+        assert proof["invocation_id"] == started["invocation_id"]
+        assert proof["main_pid"] == started["main_pid"]
+        assert proof["os_cgroup_empty"] is True
+        assert proof["stop_requested_ns"] <= proof["empty_observed_ns"]
         with pytest.raises(GrantRejected, match="OS_STOP_OBSERVATION_NOT_AUTHORIZED"):
-            stopped.stop_original_after_central_cas(handle, 3)
-        assert proof["original_invocation_id"] == started["invocation_id"]
-        assert proof["original_main_pid"] == started["main_pid"]
-        assert proof["original_cgroup_became_empty"] is True
-        assert proof["trusted_stop_receipt_available"] is False
-        assert proof["central_recovery_allowed"] is False
-        assert proof["result_publish_allowed"] is False
+            signer.stop_and_sign(
+                handle, 3, challenge_id="f" * 32,
+                nonce="preissued-isolated-central-nonce-" + "a" * 24,
+            )
         with closing(ctx["root"]._connect()) as db:
             assert db.execute(
                 "SELECT state FROM execution_intents WHERE handle_id=?",
@@ -115,9 +132,9 @@ def test_actual_fixed_cpu_unit_central_cancel_to_original_cgroup_empty(tmp_path,
                 "SELECT status FROM tasks WHERE task_id=?", (_TASK,),
             ).fetchone()[0] == "CANCEL_REQUESTED"
         print("PT_SIGNED_CENTRAL_STOP_TO_ORIGINAL_CGROUP_NO_RECEIPT", {
-            "invocation_id": proof["original_invocation_id"],
-            "original_cgroup_became_empty": proof["original_cgroup_became_empty"],
-            "central_recovery_allowed": proof["central_recovery_allowed"],
+            "invocation_id": proof["invocation_id"],
+            "original_cgroup_became_empty": proof["os_cgroup_empty"],
+            "test_only_no_production_recovery": proof["test_only_no_production_recovery"],
         }, flush=True)
     finally:
         _cleanup(ctx["fixture"], handle)
