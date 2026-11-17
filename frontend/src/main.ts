@@ -22,6 +22,8 @@ import 'element-plus/theme-chalk/el-dropdown.css';
 import 'element-plus/theme-chalk/el-dropdown-menu.css';
 import 'element-plus/theme-chalk/el-dropdown-item.css';
 import CatalogPreview from './views/CatalogPreview.vue';
+import TrainingCreate from './views/TrainingCreate.vue';
+import type {TrainingCreateContext} from './types/training-create';
 import ServiceNodesOverview from './views/ServiceNodesOverview.vue';
 import MaterialLibrary from './views/MaterialLibrary.vue';
 import NegativePool from './views/NegativePool.vue';
@@ -56,7 +58,8 @@ export async function mountNegativePool(host:HTMLElement,context:PoolContext){re
 export async function mountTrainingMaterialPicker(host:HTMLElement,context:PickerContext){return mountView(host,context,TrainingMaterialPicker)}
 export async function mountAiAnnotationTasks(host:HTMLElement,context:AiTaskContext){return mountView(host,context,AiAnnotationTasks)}
 export async function mountAiReviewWorkbench(host:HTMLElement,context:AiReviewContext){return mountView(host,context,AiReviewWorkbench)}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext,component:Component){
+export async function mountTrainingCreate(host:HTMLElement,context:TrainingCreateContext){return mountView(host,context,TrainingCreate)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext,component:Component){
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});
   app.use(createPinia()).use(router);

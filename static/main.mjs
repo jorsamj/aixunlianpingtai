@@ -7,8 +7,9 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
-import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1or1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1or1';
+import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
+import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1s1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1s1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -32,7 +33,7 @@ import {installTrainingMaterialSummaryRuntime} from './modules/training-material
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
-import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.582';
+import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.615';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
 import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=42.25.592';
@@ -543,6 +544,8 @@ const catalogPreviewRuntime = installCatalogPreview({
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
 if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
 window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
+window.TrainingCreateVueRuntime=installTrainingCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_training_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountTrainingCreate(host,context)});
+window.addEventListener('pagehide',()=>window.TrainingCreateVueRuntime?.leave());
 window.AiReviewVueRuntime=installAiReviewVueRuntime({enabled:new URLSearchParams(location.search).get('vue_ai_review')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiReview(host,context)});
 window.AiReviewRouteRuntime = installAiReviewRoute({
   getReview: () => state.ai60Review,

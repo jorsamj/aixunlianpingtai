@@ -89,3 +89,8 @@
    Keep only these shared semantic states here to avoid competing overrides. */
 .train-v3-picker .train-v3-card input:disabled{cursor:not-allowed}
 .train-v3-picker .train-v3-history-blocked{color:var(--text-secondary,#4e5969);line-height:1.5}
+
+/* Opt-in Vue presentation: existing sub-owners retain their live controls. */
+.training-create-modal-card [data-vue-training-create]>.training-workbench-steps{display:none}
+.training-create-modal-card [data-vue-training-create]>.train-create-layout{display:block;padding:0;overflow:hidden}
+[data-vue-training-create-host]{height:100%;min-height:0;display:flex;flex-direction:column}

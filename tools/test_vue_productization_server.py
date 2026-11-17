@@ -104,6 +104,13 @@ for index in range(125):
         'boxes':[{'class_id':0,'label':'smoke','x1':64,'y1':48,'x2':320,'y2':240}]})
 api.material_store(project_id).upsert_many(materials)
 AnnotationRepository(api.project_dir(project_id)).upsert_many(annotations)
+# Explicit P1S-only fixture: this newly created algorithm has no execution
+# history to reconcile. Use the original maintenance Owner to certify coverage,
+# preserving the default fixture's conservative unknown-history behavior.
+if os.environ.get('MC_VUE_TRAINING_CREATE_COVERAGE') == '1':
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    TrainingMaterialUsage(api.DATA_DIR/'task_runtime'/'tasks.sqlite3').mark_coverage(
+        project_id, 'acceptance-material-algorithm', complete=True)
 # A fixture mother file only prevents automatic network acquisition; no trainer reads it.
 mother=api.DATA_DIR/'models'/'yolo11n.pt';mother.parent.mkdir(parents=True,exist_ok=True)
 mother.write_bytes(b'isolated-non-executable-fixture-model'*128)

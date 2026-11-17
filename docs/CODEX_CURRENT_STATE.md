@@ -1,3 +1,5 @@
+> 2026-11-17 P1S–P1Z新授权：从P1S接续，历史“完成后停止”由新授权取代。P1S新增Vue三步展示，原Draft/Label/Picker/Submit子树单一DOM归属，opt-in vue_training_create=1，旧默认及回退保留。当前代码/隔离验收与准确SHA CI状态见[专项](PRODUCTIZATION_P1S_20261117.md)。
+
 > 2026-11-17 P1O–P1R：Vue AI任务/审核与Annotorious薄适配已交付代码；原CandidateStore/GT/负样本/任务Owner保持，旧页默认，使用vue_ai_tasks=1及vue_ai_review=1按需启用。第三方优先复用规则见[规范](FRONTEND_THIRD_PARTY_REUSE_POLICY.md)，业务/API/验收边界见[本轮交接](PRODUCTIZATION_P1O_P1R_20261117.md)。准确SHA CI与制品核验以本轮交付回执为准，生产未部署。
 
 > **2026-11-17 P1K–P1N 本地交付，准确提交CI/制品待核**：Vue素材分页/详情、算法级负池普通成员CAS/同库回执、原Picker展示适配和原Draft集成；GT审核/训练提交/Worker保持原Owner，默认旧页面。开关vue_material_library / vue_negative_pool / vue_training_picker。隔离真实入口125图、两张跨页与冻结引用→原Submit请求体，原20k HTTP/Prepare guard定向通过，无GPU/生产部署。Test大引用/不安全并集明确拒绝；未来异构约束保留。见[本轮合同、证据、离线方式与限制](PRODUCTIZATION_P1K_P1N_20261117.md)。完成后停止。

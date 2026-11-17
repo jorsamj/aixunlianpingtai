@@ -221,3 +221,12 @@ test('20k explicit train and independent Test selections validate overlap withou
     testMaterialIds:[...testMaterialIds,'train-19999'],splitMode:'independent_test_set',
   })),/不能重复/);
 });
+
+
+test('returning from independent Test restores the original random Test default without accepting explicit zero',()=>{
+ const independent=createTrainingDraft({splitMode:'independent_test_set',experimentPercent:20});
+ assert.equal(independent.experimentPercent,null);
+ const random=createTrainingDraft({...independent,splitMode:'random_test_from_training_pool',testMaterialIds:[]});
+ assert.equal(random.experimentPercent,createTrainingDraft().experimentPercent);
+ assert.equal(createTrainingDraft({experimentPercent:0}).experimentPercent,0);
+});

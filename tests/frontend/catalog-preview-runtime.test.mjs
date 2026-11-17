@@ -105,3 +105,12 @@ test('pool journal fails closed when browser persistence is unavailable',async()
  const runtime=installCatalogPreview({poolEnabled:true,navigation:{registerPageOwner(p,fn){owners.set(p,fn);return()=>{}}},getState:()=>({page:POOL_PAGE,project:{id:'p'}}),document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountNegativePool:async(_host,c)=>{context=c;return()=>{}}})});
  try{await owners.get(POOL_PAGE)();assert.throws(()=>context.poolPending.save({operation_id:'original'}),/storage full/);assert.equal(context.poolPending.value,null)}finally{runtime.destroy();if(previous===undefined)delete globalThis.sessionStorage;else globalThis.sessionStorage=previous}
 });
+
+
+test('training operations delegate only to the original project-owned detail and log owner',async()=>{
+ const owners=new Map(),contexts=[],calls=[],state={page:TASKS_PAGE,project:{id:'p'}};
+ const previous=globalThis.window;
+ globalThis.window={setPage:async page=>{state.page=page},openTrainingRecoveryDetail:id=>calls.push(['detail',id]),showTrainLog423:id=>calls.push(['log',id])};
+ const runtime=installCatalogPreview({tasksEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return()=>{}}},getState:()=>state,document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountTrainingTasks:async(_host,context)=>{contexts.push(context);return()=>{}}})});
+ try{await owners.get(TASKS_PAGE)();await contexts[0].legacyTask('train_a','log');assert.deepEqual(calls,[['log','train_a']]);state.page=TASKS_PAGE;await owners.get(TASKS_PAGE)();const context=contexts.at(-1);state.project={id:'other'};await context.legacyTask('train_a','detail');assert.equal(calls.length,1);assert.equal(context.post,undefined)}finally{runtime.destroy();globalThis.window=previous}
+});

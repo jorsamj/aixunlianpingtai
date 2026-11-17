@@ -96,7 +96,7 @@ export function createTrainingDraft(values = {}) {
     }} : {}),
     splitMode,
     experimentPercent: splitMode === 'random_test_from_training_pool'
-      ? numberOr(values.experimentPercent, 20)
+      ? numberOr(values.experimentPercent ?? 20, 20)
       : null,
     validationPercent: numberOr(values.validationPercent, 20),
     newLabelCodes: unique(values.newLabelCodes),
