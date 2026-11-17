@@ -428,7 +428,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   function shellHtml() {
     return `<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">
       <header class="algorithm-list-hero">
-        <div><span class="algorithm-list-eyebrow">ALGORITHM REGISTRY</span><h2>算法列表</h2><p>以算法为单位查看训练状态、当前版本和核心指标；点击卡片空白区域即可展开版本。</p></div>
+        <div><span class="algorithm-list-eyebrow">ALGORITHM REGISTRY</span><h2>算法库</h2><p>以算法为单位查看训练状态、当前版本和核心指标；点击卡片空白区域即可展开版本。</p></div>
         <div class="entity-page-actions">${new URLSearchParams(window.location?.search||'').get('vue_algorithm_manage')==='1'?'<button class="btn" data-vue-model-assets>Vue 算法管理</button>':new URLSearchParams(window.location?.search||'').get('vue_model_assets')==='1'?'<button class="btn" data-vue-model-assets>Vue 模型资产</button>':''}${new URLSearchParams(window.location?.search||'').get('vue_training_tasks')==='1'?'<button class="btn" data-vue-training-tasks>Vue 训练任务中心</button>':''}${new URLSearchParams(window.location?.search||'').get('vue_material_library')==='1'?'<button class="btn" data-vue-material-library>Vue 素材库</button>':''}<button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建本地算法</button></div>
       </header>
       <section class="entity-query-surface algorithm-filter-surface">
@@ -735,7 +735,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   toggle.__algorithmListOriginal = originalToggle412;
 
   async function refresh({render = true, minAgeMs = 0} = {}) {
-    if (destroyed) throw new Error('算法列表模块已销毁');
+    if (destroyed) throw new Error('算法库模块已销毁');
     const now = Date.now();
     if (minAgeMs > 0 && now - lastRefreshAt < minAgeMs) {
       if (render) renderPage();
@@ -795,7 +795,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       return await task;
     } catch (error) {
       if (controller.signal.aborted) return {algorithms: state().algorithms || [], jobs: state().jobs || [], stale: true};
-      refreshError = String(error?.message || error || '算法列表刷新失败');
+      refreshError = String(error?.message || error || '算法库刷新失败');
       if (render && String(state().page || '') === ALGORITHM_PAGE) renderPage();
       throw error;
     } finally {
@@ -827,7 +827,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     target.disabled = true;
     void refresh({render: true}).then(
       result => {
-        if (!result?.stale) notify?.('算法列表已刷新');
+        if (!result?.stale) notify?.('算法库已刷新');
       },
       error => notify?.(error?.message || error),
     ).finally(() => { target.disabled = false; });

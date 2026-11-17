@@ -1,3 +1,5 @@
+> **当前保护约束**：P2A/P2B 代码保留；P1Z 菜单替代已按用户确认局部修复，工作台与业务试点开关独立，原正式菜单/Owner 不替换。[当前功能保留台账与审批规则](architecture/EXISTING_FEATURE_PRESERVATION.md) 优先于历史工作台描述；本轮完成后停止。
+
 # P2 技术底座实施与回退
 
 起点：远端/本地 5e9ae26548c07bbff91b37d703d2bf4a8be0b446，唯一 feature/external-algorithm-publishing，工作区干净。

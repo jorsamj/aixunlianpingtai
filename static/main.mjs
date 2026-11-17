@@ -1,4 +1,4 @@
-import {installProductWorkbenchRuntime} from './modules/product-workbench-runtime.js?v=20261117p1z1';
+import {installProductWorkbenchRuntime} from './modules/product-workbench-runtime.js?v=20261117p2preserve1';
 import {createNavigationPresentation} from './modules/navigation-presentation.js?v=20261117p1z1';
 import {installMaterialPresentation} from './modules/material-presentation.js?v=42.24.549';
 import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=42.25.562';
@@ -13,7 +13,7 @@ import {installMaterialImportVueRuntime} from './modules/material-import-vue-run
 import {installConversionCreateVueRuntime} from './modules/conversion-create-vue-runtime.js?v=20261117p1u1';
 import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
 import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1u1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1z1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p2preserve1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -26,7 +26,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=20261117p1z1';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.613';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.624';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
 import {installLazyChangLianDataBrowserRuntime} from './modules/lazy-changlian-data-browser.js?v=20261113-13c03';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=20261117p1x1';
@@ -76,8 +76,9 @@ installRowActionMenu();
 const modalPresentation = installModalPresentation();
 
 const vueProductFlags=new URLSearchParams(location.search);
-const vueFeatureEnabled=name=>vueProductFlags.get(name)==='1'||vueProductFlags.get('vue_workbench')==='1';
-const productWorkbenchRuntime=installProductWorkbenchRuntime({enabled:vueProductFlags.get('vue_workbench')==='1'});
+const vueFeatureEnabled=name=>vueProductFlags.get(name)==='1';
+const vueTrialPages=[['vue_catalog_preview','厂商芯片只读预览'],['vue_catalog_manage','厂商芯片正式管理'],['vue_service_nodes','服务节点只读总览'],['vue_configuration','统一配置中心'],['vue_model_assets','模型资产只读浏览'],['vue_model_assets','版本转换只读历史'],['vue_algorithm_manage','模型资产只读浏览'],['vue_training_tasks','训练任务只读中心'],['vue_training_report','训练报告只读阅读'],['vue_material_library','素材库正式浏览'],['vue_material_import','素材上传与治理'],['vue_negative_pool','算法负样本池正式管理'],['vue_ai_tasks','AI标注任务正式浏览']].filter(([flag])=>vueFeatureEnabled(flag)).map(([,page])=>page);
+const productWorkbenchRuntime=installProductWorkbenchRuntime({enabled:vueProductFlags.get('vue_workbench')==='1',trialPages:vueTrialPages});
 window.ProductWorkbenchRuntime=productWorkbenchRuntime;
 if(productWorkbenchRuntime)window.PlatformCore.navigation.knownPages=Object.freeze([...new Set([...(window.PlatformCore.navigation.knownPages||[]),...productWorkbenchRuntime.knownPages])]);
 

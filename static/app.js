@@ -5823,7 +5823,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  renderTop=function renderTopCanonical413(){
    const crumb=document.getElementById('crumb'),title=document.getElementById('title'),desc=document.getElementById('pageDesc');
    if(crumb)crumb.textContent=TOP_CRUMB413[state.page]||'算法训练';
-   if(title)title.textContent=window.PlatformCore?.navigation?.advancedPageInfo?.(state.page)?.title||state.page;
+   if(title)title.textContent=state.page==='算法列表'?'算法库':window.PlatformCore?.navigation?.advancedPageInfo?.(state.page)?.title||state.page;
    if(desc)desc.textContent=window.PlatformCore?.navigation?.advancedPageInfo?.(state.page)?.description||'';
 
    const v=document.getElementById('versionBadge');
@@ -5934,7 +5934,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const product=window.ProductWorkbenchRuntime;
     if(product)groups=product.navigation(groups,!!state.v427Advanced);
     const navActive=window.ProductWorkbenchRuntime?.navigationOwner?.(state.page)||window.PlatformCore?.navigation?.advancedPageInfo?.(state.page)?.title||state.page;
-    document.getElementById('nav').innerHTML=`${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button data-nav-page="${esc(n)}" class="nav-btn ${navActive===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${esc(product?.navigationLabel(n)||n)}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-night-isolated"><button type="button" class="nav-btn nav-night-isolated-btn ${state.page==='AI算法底座'?'active':''}" onclick="if(!this.classList.contains('active'))setPage('AI算法底座')" title="AI算法底座 · 独立演示模块"><span class="nav-night-isolated-main"><span class="nav-left"><i aria-hidden="true">◈</i><b>AI算法底座</b></span><small>独立业务演示系统</small></span><span class="nav-arrow" aria-hidden="true">›</span></button></div><div class="nav-footer"><span>Version</span><b>v${esc(state.versionInfo?.version||'—')}</b></div>`;
+    document.getElementById('nav').innerHTML=`${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button data-nav-page="${esc(n)}" class="nav-btn ${navActive===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${esc(n==='算法列表'?'算法库':product?.navigationLabel(n)||n)}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-night-isolated"><button type="button" class="nav-btn nav-night-isolated-btn ${state.page==='AI算法底座'?'active':''}" onclick="if(!this.classList.contains('active'))setPage('AI算法底座')" title="AI算法底座 · 独立演示模块"><span class="nav-night-isolated-main"><span class="nav-left"><i aria-hidden="true">◈</i><b>AI算法底座</b></span><small>独立业务演示系统</small></span><span class="nav-arrow" aria-hidden="true">›</span></button></div><div class="nav-footer"><span>Version</span><b>v${esc(state.versionInfo?.version||'—')}</b></div>`;
   };
 
   function activeLabelRemap414(task){

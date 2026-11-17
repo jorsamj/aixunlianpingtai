@@ -17,14 +17,14 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1z1'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p2preserve1'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1z1')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p2preserve1')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
@@ -121,18 +121,18 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
         {id:'catalog',title:'厂商与芯片',description:'正式字典、引用保护与历史绑定。',group:'基础字典',enabled:true},
         {id:'algorithms',title:'训练与转换参数',description:'从算法和版本进入，保持实际模型与任务上下文。',group:'计算资源',enabled:true},
       ];
-      const workbenchPages={assets:ASSETS_PAGE,materials:MATERIALS_PAGE,imports:'素材上传与治理',ai:AI_TASKS_PAGE,training:TASKS_PAGE,nodes:NODES_PAGE,configuration:CONFIGURATION_PAGE};
+      const workbenchPages={assets:'算法列表',materials:'数据集',imports:'数据集',ai:'自动标注及清洗',training:'训练任务',nodes:'服务节点',configuration:'模型配置'};
       const context={signal,management:managed,
         ...(workbenchEnabled?{openWorkbench:()=>{if(active())return globalThis.window.setPage(WORKBENCH_PAGE)}}:{}),
         ...(page===WORKBENCH_PAGE&&workbenchEnabled?{entries:[
-          {id:'assets',title:'算法与模型',description:'算法管理、模型版本、训练报告、转换与交付。'},
-          {id:'materials',title:'素材管理',description:'素材筛选、历史使用、标注详情与负样本。'},
+          {id:'assets',title:'算法库',description:'算法管理、模型版本、训练报告、转换与交付。'},
+          {id:'materials',title:'素材库',description:'素材筛选、历史使用、标注详情与负样本。'},
           {id:'imports',title:'上传与治理',description:'图片与 ZIP 上传、入库确认和清洗治理。'},
           {id:'ai',title:'AI 标注',description:'创建配置、任务进度、失败诊断与人工审核。'},
           {id:'training',title:'训练中心',description:'训练与准备任务、执行证据和报告。'},
           {id:'nodes',title:'资源管理',description:'节点、Worker 与上报资源，分别核对执行资格。'},
           {id:'configuration',title:'配置中心',description:'模型服务、存储、平台对接与正式字典。'},
-        ],open:id=>{if(active()&&Object.hasOwn(workbenchPages,id))return globalThis.window.setPage(workbenchPages[id])},async legacyWorkbench(){
+        ],async open(id){if(!active()||!Object.hasOwn(workbenchPages,id))return;const destination=workbenchPages[id];await Promise.resolve(globalThis.window.setPage(destination));if(id==='imports'&&getState().project?.id===project&&getState().page===destination)return globalThis.window.openDataUpload426?.()},async legacyWorkbench(){
           if(!active())return;await Promise.resolve(globalThis.window.setPage('总览'));
           if(getState().project?.id!==project||getState().page!=='总览')return;
           const target=new URL(globalThis.window.location.href);target.searchParams.delete('vue_workbench');globalThis.window.location.assign(target.href);
@@ -193,8 +193,9 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           return call(`/api/v62/projects/${encodeURIComponent(project)}/training-materials/history`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_id:id,algorithm_asset_id:browse.selection?.algorithmId||'',page,page_size:20}),signal:childSignal});
         }}:{}),
         ...(tasksEnabled?{openTasks:(query)=>{if(!active())return;if(query)browse.tasks={filters:{query,status:'',kind:''},cursors:[''],index:0};return globalThis.window.setPage(TASKS_PAGE)}}:{}),
+        ...(workbenchEnabled&&page===WORKBENCH_PAGE?{async openTasks(id){if(!active()||!/^[-A-Za-z0-9_]{1,128}$/.test(String(id)))return;await Promise.resolve(globalThis.window.setPage('训练任务'));if(getState().project?.id===project&&getState().page==='训练任务')return globalThis.window.openTrainingRecoveryDetail?.(id)}}:{}),
         ...(tasksEnabled?{async legacyTask(id,action){if(!active()||!/^[-A-Za-z0-9_]{1,128}$/.test(String(id))||!['detail','log'].includes(action))return;await Promise.resolve(globalThis.window.setPage('训练任务'));if(getState().project?.id!==project||getState().page!=='训练任务')return;return action==='log'?globalThis.window.showTrainLog423?.(id):globalThis.window.openTrainingRecoveryDetail?.(id)}}:{}),
-        ...(reportsEnabled?{openReport(selection){if(!active())return;browse.report={...selection};return globalThis.window.setPage(REPORT_PAGE)},async legacyReport(selection){
+        ...(reportsEnabled||workbenchEnabled?{async openReport(selection){if(!active())return;if(reportsEnabled){browse.report={...selection};return globalThis.window.setPage(REPORT_PAGE)}await Promise.resolve(globalThis.window.setPage('训练任务'));if(getState().project?.id!==project||getState().page!=='训练任务')return;if(selection.algorithmId&&selection.versionId)return globalThis.window.openVersionReport429?.(selection.algorithmId,selection.versionId);return globalThis.window.openJobReport429?.(selection.jobId)},async legacyReport(selection){
           if(!active())return;const destination=selection.returnPage==='tasks'?'训练任务':'算法列表';await Promise.resolve(globalThis.window.setPage(destination));
           if(getState().project?.id!==project||getState().page!==destination)return;
           if(selection.algorithmId&&selection.versionId)return globalThis.window.openVersionReport429?.(selection.algorithmId,selection.versionId);

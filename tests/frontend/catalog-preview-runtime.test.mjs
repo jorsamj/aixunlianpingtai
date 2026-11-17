@@ -148,3 +148,21 @@ test('workbench GET capability is project-bound and limited to five recent tasks
  const runtime=installCatalogPreview({workbenchEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return()=>{}}},getState:()=>state,deadline:(fn,{signal})=>fn(signal),request:async(url,options)=>{calls.push({url,options});return {ok:true,project_id:'p',items:[]}},document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountProductWorkbench:async(_host,context)=>{contexts.push(context);return()=>{}}})});
  try{await owners.get('统一工作台')();const context=contexts[0];await context.get('/api/v62/projects/p/tasks?reader_view=true&limit=5');await context.get('/api/v60/projects/p/annotation-tasks?reader_view=true&limit=5');for(const path of ['/api/v62/projects/p/tasks?reader_view=true&limit=20','/api/v62/projects/q/tasks?reader_view=true&limit=5','/api/v60/projects/p/annotation-tasks/task/candidates?reader_view=true&limit=5','/api/v12/projects/p/algorithms?summary_only=true&asset_view=true'])await assert.rejects(()=>context.get(path),/不允许|只允许/);assert.equal(calls.length,2);assert.ok(calls.every(x=>x.options.method==='GET'));runtime.leave();assert.equal(context.signal.aborted,true)}finally{runtime.destroy()}
 });
+
+
+test('workbench keeps formal owners, direct upload/task/report actions and only its own registered page',async()=>{
+ const owners=new Map(),state={page:'统一工作台',project:{id:'p'}},calls=[];let context;
+ const previous=globalThis.window;
+ globalThis.window={setPage:async page=>{state.page=page;calls.push(['navigate',page])},openDataUpload426:()=>calls.push(['upload']),openTrainingRecoveryDetail:id=>calls.push(['detail',id]),openJobReport429:id=>calls.push(['report',id])};
+ const runtime=installCatalogPreview({workbenchEnabled:true,navigation:{registerPageOwner(page,render){owners.set(page,render);return()=>owners.delete(page)}},getState:()=>state,document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountProductWorkbench:async(_host,c)=>{context=c;return()=>{}}})});
+ try{
+  assert.deepEqual([...owners.keys()],['统一工作台']);
+  for(const [entry,destination]of [['assets','算法列表'],['materials','数据集'],['ai','自动标注及清洗'],['training','训练任务'],['nodes','服务节点'],['configuration','模型配置']]){
+   state.page='统一工作台';await owners.get('统一工作台')();await context.open(entry);assert.equal(state.page,destination);assert.deepEqual(calls.at(-1),['navigate',destination]);
+  }
+  state.page='统一工作台';await owners.get('统一工作台')();await context.open('imports');assert.deepEqual(calls.slice(-2),[['navigate','数据集'],['upload']]);
+  state.page='统一工作台';await owners.get('统一工作台')();await context.openTasks('task-a');assert.deepEqual(calls.slice(-2),[['navigate','训练任务'],['detail','task-a']]);
+  state.page='统一工作台';await owners.get('统一工作台')();await context.openReport({jobId:'job-a'});assert.deepEqual(calls.slice(-2),[['navigate','训练任务'],['report','job-a']]);
+  state.page='统一工作台';await owners.get('统一工作台')();const before=calls.length;state.project.id='q';await context.open('assets');assert.equal(calls.length,before,'stale project cannot navigate');
+ }finally{runtime.destroy();if(previous===undefined)delete globalThis.window;else globalThis.window=previous}
+});
