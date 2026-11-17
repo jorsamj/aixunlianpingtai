@@ -12,7 +12,7 @@
 
 | 功能 | 原入口 / 页面 Owner | API / Repository 权威 | 本轮改动与授权 | 结论 / 证据 |
 |---|---|---|---|---|
-| 工作台/导航/登录/项目 | 总览、NavigationStability、原 Session、PageRequestScope/PollRegistry | 原 auth/session、v53；原持久导航 | 已授权取消 P1Z 别名替代；工作台不隐式启用 Vue 业务页，保留原菜单分组顺序，不藏入高级菜单 | 发现差异→局部修复；19 项导航/身份/取消定向 Node 通过；准确修复 SHA CI 待核 |
+| 工作台/导航/登录/项目 | 总览、NavigationStability、原 Session、PageRequestScope/PollRegistry | 原 auth/session、v53；原持久导航 | 已授权取消 P1Z 别名替代；工作台不隐式启用 Vue 业务页，保留原菜单分组顺序，不藏入高级菜单 | 发现差异→局部修复；首批 19 项导航/身份/取消定向 Node 通过，另补独立试点刷新单例（已复现原失败，修复后交 CI）；准确修复 SHA CI 待核 |
 | 算法库 | 内部 算法列表；AlgorithmListRuntime | v12 / algorithms.py / AlgorithmSqlStore | 已授权用户可见名称统一算法库；卡片/信息/版本/操作不改，工作台卡片回原入口 | 保持一致（恢复后）；原 card-grid 和创建按钮/事件 Owner 仍在；真实入口 CI 补卡片检查 |
 | 素材库 | 数据集；原 renderDatasets424 / MaterialPaginationRuntime | v61 / MaterialRepository / StorageManager | 原分组和完整工作台恢复直达；未改素材列表、批选、上传、ZIP、清洗、负池、训练关联 | 保持一致（恢复后）；原素材卡片/批量操作源码不变；CI 补直接人工标注按钮 |
 | 人工标注/正式 GT/标签 | 素材卡片“标注/编辑标注”→openAnnotation；annotation-workbench、annotorious-editor、几何适配 | 原 annotations API / AnnotationRepository；CAS/源 SHA | 无编辑/保存 Owner 改动；不把 Vue 只读详情当作完整标注台 | 保持一致；原 saveAnn/AnnotationRepository 不变，真实离线 Annotorious 打开在隔离 CI 验证，不写 GT |
@@ -32,6 +32,7 @@
 - **发现差异：P1Z** `5e9ae265` product-workbench-runtime 的 aliases/primary 菜单及 main.mjs `vueFeatureEnabled` OR 工作台开关，试点时把原算法卡片、完整素材/训练/AI入口导向功能较窄的 Vue 页面。默认未带开关的旧页仍存在，不能称 P2 删除了这些页面。本轮按明确授权局部取消替代；正式菜单不因任何 Vue 试点被改绑。
 - **发现差异：历史 P1** ModelAssets 表格/左右分栏来自 P1E/P1H，MaterialLibrary 为 P1K 只读浏览且标注交回原 Owner；二者没有完整业务等价证据，只能独立显式试点。保留其代码，不重写或冒充全功能迁移。
 - **用户确认的名称变更**：基线源码菜单/卡片标题实为“算法列表”；本轮用户明确指定显示为“算法库”，仅改可见名称，内部 ID、卡片信息及事件不变。不把这一授权改名说成对基线文字的逐字恢复。
+- **发现差异：历史 P1 刷新**：没有工作台时，单独启用的 Vue 页面不在旧固定恢复白名单，刷新丢失当前页。新增单例确认后，原启动恢复仅额外询问 NavigationStability 已注册 Owner；未启用试点仍不恢复。没有新建恢复注册表或 Owner。
 - **P2A/P2B** 未引入上述菜单/布局差异；18 页动态 import、取消冗余 Memory Router、共享 Chunk、离线闭包校验及 v39 工厂/原 Repo 注入均保留。
 - **尚未核实**：所有 Vue 页与旧完整业务页面逐项产品等价、现场硬件、真实发布/训练/GT写入和完整目标机离线部署。本轮不扩大开发来填平这些差距；没有其他已确认缺失的正式 Owner，不以“未发现”冒充全平台逐项现场验收。
 

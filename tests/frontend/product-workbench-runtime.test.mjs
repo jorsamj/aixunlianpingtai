@@ -50,3 +50,12 @@ test('startup restoration keeps original pages and rejects trials not independen
  }
  const context={state:{page:'总览'},window:{},RESTORABLE_PAGES413:new Set(['总览']),localStorage:{getItem:()=>JSON.stringify({page:'总览'}),setItem(){}},Date};vm.createContext(context);vm.runInContext(restore,context);assert.equal(context.state.page,'总览');
 });
+
+
+test('independent Vue refresh restores only a currently registered original navigation owner',()=>{
+ const start=source.indexOf("try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')"),end=source.indexOf('   if(state.uiReady)rememberCoreView413();',start),restore=source.slice(start,end);
+ for(const enabled of [true,false]){
+  const context={state:{page:'总览'},window:{PlatformCore:{runtime:{navigationStabilityRuntime:{hasPageOwner:page=>enabled&&page===catalog.ASSETS_PAGE}}}},RESTORABLE_PAGES413:new Set(['总览']),localStorage:{getItem:()=>JSON.stringify({page:catalog.ASSETS_PAGE}),setItem(){}},Date};
+  vm.createContext(context);vm.runInContext(restore,context);assert.equal(context.state.page,enabled?catalog.ASSETS_PAGE:'总览');
+ }
+});
