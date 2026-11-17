@@ -625,6 +625,9 @@ jobs:
           tests/browser/upload-task-center-performance.spec.mjs
           tests/browser/video-task-performance.spec.mjs
           tests/browser/component-scan-performance.spec.mjs
+      - name: Diagnose only the failed original manual annotation acceptance
+        if: failure() && matrix.shard == 2 && hashFiles('test-results/material-workflows-manual*/trace.zip') != ''
+        run: node tools/diagnose_material_overlay.mjs
       - name: Preserve AI annotation screenshots and browser failure traces
         if: always()
         uses: actions/upload-artifact@v4
