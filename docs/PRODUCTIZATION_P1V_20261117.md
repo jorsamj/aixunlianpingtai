@@ -28,4 +28,6 @@ S/T/U此前test-results被一次默认Playwright输出清理，截图文件未�
 
 准确新SHA GitHub Actions、CI资源上传与离线包含待推送后核实。真实畅联/OSS/硬件/生产部署和现场完整离线安装未验证。本阶段仅隔离合同和UI验收，不将模拟回执当现场交付。未来linux/amd64/arm64及CUDA/Ascend扩展保持，无新硬件适配；无app.py机械拆分。下一P1W继续Uppy上传/ZIP/原治理Owner，再P1X/P1Y/P1Z，尚未完成的阶段不记为交付。
 
-最终布局补取：仅GET与被拦截的原模式PUT，发布POST0；新增两个真实原配置入口及挂载abort检查后的六宽PARTIAL截图补验。UNKNOWN截图保留前次完整路径证据，未重复提交链。最终JS995565/CSS148399字节，以build-receipt实际记录为准。
+最终布局补取：仅GET与被拦截的原模式PUT，发布POST0；新增两个真实原配置入口及挂载abort检查后的六宽PARTIAL截图补验。UNKNOWN截图保留前次完整路径证据，未重复提交链。最终JS995572/CSS148399字节，以build-receipt实际记录为准。
+
+CI收尾：准确业务d9b3ff2的External Algorithm Publish两条自动工作流各同一旧Chrome文件2失败，其余3通过。原因是本轮新增明示confirm后，旧用例未处理原生对话框，Playwright默认dismiss，因此POST0正确被阻断。仅给两条原用例加入显式confirm类型/文案核对及接受；optional先dismiss并严格确认POST0，再接受并维持原POST1/GET读回/所有身份元数据断言。定向原2用例通过9.2秒，无业务准入更改，无真实发布。修正新SHA仍待CI，不能把d9b3ff2记作全绿。

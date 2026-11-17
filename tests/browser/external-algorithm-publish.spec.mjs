@@ -156,6 +156,10 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
     await technical.locator('summary').first().click();
     const details=technical.locator('[data-weight-publication-details]');
     await expect(details).toBeVisible();
+    page.once('dialog',async confirmation=>{expect(confirmation.type()).toBe('confirm');expect(confirmation.message()).toBe('确认将此版本及预检可同步的权重同步到新畅联吗？');await confirmation.dismiss()});
+    await dialog.getByRole('button',{name:'确认同步到新畅联'}).click();
+    expect(publishWrites).toBe(0);
+    page.once('dialog',async confirmation=>{expect(confirmation.type()).toBe('confirm');await confirmation.accept()});
     await dialog.getByRole('button',{name:'确认同步到新畅联'}).click();
     await expect.poll(()=>publishWrites).toBe(1);
     for(const text of ['部分扩展信息未提供：yoloVersion、tags','RK3576','rk-child','640','384','YOLOv11s','123','a'.repeat(64),'smoke, fire','同步成功','自动当前交付','远端读回已确认','current-rk-weight'])
@@ -279,6 +283,7 @@ test('changlian manual publish succeeds through the canonical algorithm version 
   await expect(dialog).toBeVisible();
   await expect.poll(() => statusReads).toBe(1);
   expect(publishWrites).toBe(0);
+  page.once('dialog',async confirmation=>{expect(confirmation.type()).toBe('confirm');expect(confirmation.message()).toBe('确认将此版本及预检可同步的权重同步到新畅联吗？');await confirmation.accept()});
   await dialog.getByRole('button',{name:'确认同步到新畅联'}).click();
 
   await expect.poll(() => statusReads).toBe(2);
