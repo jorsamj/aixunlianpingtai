@@ -15,7 +15,7 @@
 | 工作台/导航/登录/项目 | 总览、NavigationStability、原 Session、PageRequestScope/PollRegistry | 原 auth/session、v53；原持久导航 | 已授权取消 P1Z 别名替代；工作台不隐式启用 Vue 业务页，保留原菜单分组顺序，不藏入高级菜单 | 发现差异→局部修复；首批 19 项导航/身份/取消定向 Node 通过，另补独立试点刷新单例（已复现原失败，修复后交 CI）；准确修复 SHA CI 待核 |
 | 算法库 | 内部 算法列表；AlgorithmListRuntime | v12 / algorithms.py / AlgorithmSqlStore | 已授权用户可见名称统一算法库；卡片/信息/版本/操作不改，工作台卡片回原入口 | 保持一致（恢复后）；原 card-grid 和创建按钮/事件 Owner 仍在；真实入口 CI 补卡片检查 |
 | 素材库 | 数据集；原 renderDatasets424 / MaterialPaginationRuntime | v61 / MaterialRepository / StorageManager | 原分组和完整工作台恢复直达；未改素材列表、批选、上传、ZIP、清洗、负池、训练关联 | 保持一致（恢复后）；原素材卡片/批量操作源码不变；CI 补直接人工标注按钮 |
-| 人工标注/正式 GT/标签 | 素材卡片“标注/编辑标注”→openAnnotation；annotation-workbench、annotorious-editor、几何适配 | 原 annotations API / AnnotationRepository；CAS/源 SHA | 无编辑/保存 Owner 改动；不把 Vue 只读详情当作完整标注台 | 保持一致；原 saveAnn/AnnotationRepository 不变，真实离线 Annotorious 打开在隔离 CI 验证，不写 GT |
+| 人工标注/正式 GT/标签 | 素材卡片“标注/编辑标注”→openAnnotation；annotation-workbench、annotorious-editor、几何适配 | 原 annotations API / AnnotationRepository；CAS/源 SHA | 仅修原读取合并丢失图片 URL，并核验图片 ID；编辑/保存 Owner 不变；不把 Vue 只读详情当作完整标注台 | 保持一致；原 saveAnn/AnnotationRepository 不变，真实离线 Annotorious 打开在隔离 CI 验证，不写 GT |
 | AI 自动标注/审核 | 自动标注及清洗；createAiLabel427/showAiTask60/reviewAiLabel427 | v60 / TaskRepository / CandidateStore / 原正式 GT 提交 | 工作台回原入口；Vue AI 页面需各自开关；Provider/候选/失败/人工审核提交未改 | 保持一致（源码合同）；复用 P1O–R/X 及既有 AI/editor CI；真实推理和生产入库未验 |
 | 训练创建/任务/取消恢复 | 算法卡片、训练任务；TrainingDraft/TrainingSubmit/TrainingRecoveryRuntime | 原 train/start、v62 / TaskRepository / Frozen selection | 工作台任务卡片及查看详情交回原 Owner；无训练、调度、取消执行代码修改 | 保持一致（源码合同）；复用原训练 CI，不执行训练 |
 | 训练/评测报告 | 原版本报告、任务报告；openVersionReport429/openJobReport429、原 ECharts/Panzoom | v44/原版本 evaluation API；原 finalized/report Owner | 工作台默认走原报告；Vue 报告仅显式开关启用，不替换正式菜单 | 保持一致（源码合同）；既有报告隔离测试和原 P1T 合同；真实质量未验 |
@@ -33,6 +33,7 @@
 - **发现差异：历史 P1** ModelAssets 表格/左右分栏来自 P1E/P1H，MaterialLibrary 为 P1K 只读浏览且标注交回原 Owner；二者没有完整业务等价证据，只能独立显式试点。保留其代码，不重写或冒充全功能迁移。
 - **用户确认的名称变更**：基线源码菜单/卡片标题实为“算法列表”；本轮用户明确指定显示为“算法库”，仅改可见名称，内部 ID、卡片信息及事件不变。不把这一授权改名说成对基线文字的逐字恢复。
 - **发现差异：历史 P1 刷新**：没有工作台时，单独启用的 Vue 页面不在旧固定恢复白名单，刷新丢失当前页。新增单例确认后，原启动恢复仅额外询问 NavigationStability 已注册 Owner；未启用试点仍不恢复。没有新建恢复注册表或 Owner。
+- **发现差异：原标注读取**：在 5e9ae265 基线已存在 `response.image || image` 覆盖已有素材记录的问题。真实 CI 收到 HTTP 200、image/jpeg、8671 字节及正确 JPEG 头，但详情未带 url，覆盖后 annImg.src 变成 undefined，Annotorious 因解码失败无法创建。仅在原 ensureWorkbench.load 合并素材/服务端详情，保留可信 URL，并拒绝不同图片 ID；不改 API、编辑器、GT 保存/CAS/Repository。新增单例先复现缺 URL，修复后验证 URL 保留、服务端字段优先及跨图拒绝；真实离线插件仍由原 CI 验证。首次引入提交受浅历史限制尚未核实，不能归因于 P2。
 - **P2A/P2B** 未引入上述菜单/布局差异；18 页动态 import、取消冗余 Memory Router、共享 Chunk、离线闭包校验及 v39 工厂/原 Repo 注入均保留。
 - **尚未核实**：所有 Vue 页与旧完整业务页面逐项产品等价、现场硬件、真实发布/训练/GT写入和完整目标机离线部署。本轮不扩大开发来填平这些差距；没有其他已确认缺失的正式 Owner，不以“未发现”冒充全平台逐项现场验收。
 

@@ -8475,7 +8475,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         const labelsStale=!(state.labels||[]).length||Date.now()-Number(state.label414LoadedAt||0)>LABEL_SCHEMA_CACHE_TTL_MS;
         const labelsPromise=labelsStale&&typeof refreshLabels414==='function'?refreshLabels414(false):Promise.resolve();
         const [response]=await Promise.all([apiRequestAnnotation420(id),labelsPromise]);
-        return {image:response?.image||image,annotation:response?.annotation||{boxes:[]}};
+        const detailedImage=response?.image;
+        if(detailedImage&&String(detailedImage.id)!==String(id))throw new Error('标注图片身份不一致');
+        return {image:detailedImage?{...image,...detailedImage,url:detailedImage.url||image.url}:image,annotation:response?.annotation||{boxes:[]}};
       },
       save:async()=>window.saveAnn(true),
       apply:value=>{

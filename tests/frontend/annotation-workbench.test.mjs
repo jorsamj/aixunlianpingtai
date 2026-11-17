@@ -173,3 +173,17 @@ test('closing the workbench can cancel pending apply without throwing away the s
   assert.equal(loads, 1);
   assert.deepEqual(applied, ['one', 'one']);
 });
+
+
+test('original annotation load preserves the trusted source URL when detail omits it and rejects another image',async()=>{
+ const {readFileSync}=await import('node:fs');const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+ const start=source.indexOf('      load:async id=>{',source.indexOf('  function ensureWorkbench(){')),end=source.indexOf('\n      save:',start);
+ assert.ok(start>0&&end>start);
+ const expression=source.slice(start,end).trim().replace(/^load:/,'').replace(/,$/,'');
+ const image={id:'img',url:'/api/v61/projects/p/materials/img/content',filename:'indexed.jpg',width:640},annotation={boxes:[]};
+ let response={image:{id:'img',filename:'authoritative.jpg',width:640},annotation};
+ const load=new Function('imageById','state','LABEL_SCHEMA_CACHE_TTL_MS','apiRequestAnnotation420',`return (${expression})`)(()=>image,{labels:[{code:'smoke'}],label414LoadedAt:Date.now()},60000,async()=>response);
+ const result=await load('img');assert.equal(result.image.url,image.url);assert.equal(result.image.filename,'authoritative.jpg');assert.equal(result.annotation,annotation);
+ response={image:{id:'img',url:'/api/v61/projects/p/materials/img/content?revision=9'},annotation};assert.equal((await load('img')).image.url,response.image.url);
+ response={image:{id:'other'},annotation};await assert.rejects(()=>load('img'),/图片身份/);
+});
