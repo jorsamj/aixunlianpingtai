@@ -2,7 +2,7 @@
   "name": "changlian-catalog-preview",
   "private": true,
   "type": "module",
-  "scripts": {"build": "vue-tsc --noEmit && vite build", "test:browser": "playwright test"},
+  "scripts": {"build": "vue-tsc --noEmit && vite build && node ../tools/verify_vue_offline.mjs", "test:browser": "playwright test"},
   "dependencies": {"vue": "3.5.45", "vue-router": "4.6.5", "pinia": "4.1.0", "element-plus": "2.14.8"},
   "devDependencies": {"vite": "6.4.6", "@vitejs/plugin-vue": "5.2.4", "typescript": "5.9.3", "vue-tsc": "3.2.5", "@playwright/test": "1.58.2"},
   "engines": {"node": ">=22"}
