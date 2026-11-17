@@ -70,7 +70,9 @@ def test_suspend_resume_and_terminate_real_process_tree(tmp_path):
     assert psutil.pid_exists(child_pid)
 
     controller.suspend_tree(handle.identity)
-    assert psutil.Process(handle.identity.pid).status() == psutil.STATUS_STOPPED
+    # Signal delivery is asynchronous; observe the same exact state using the
+    # existing deadline also used by resume and termination below.
+    assert wait_until(lambda: psutil.Process(handle.identity.pid).status() == psutil.STATUS_STOPPED)
     controller.resume_tree(handle.identity)
     assert wait_until(lambda: psutil.Process(handle.identity.pid).status() != psutil.STATUS_STOPPED)
 

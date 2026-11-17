@@ -23,3 +23,7 @@ TrainingReport增量Tab：训练过程有界history分页，原ECharts曲线；�
 真实入口脚本frontend/tests/real-report-detail.acceptance.mjs复用原8034临时fixture：原登录→任务第二页acceptance-train-00→真实v44 finalized摘要（Val Precision0/map50缺失、Test.72）→history offset1/limit5（5/14）→原ECharts→返回保留任务游标→原报告回退。JS/CSS/ECharts200、pageerrors=[]。六宽1920/1600/1440/1366/1024/768截图及receipt在test-results/p1t-real-entry；布局修正后摘要只在summary，history/classes四组列保留原值，六宽测量均无内部横向溢出，1920/768实际查看；8034停止。
 
 证据限制：真实入口fixture没有正式独立evaluation与冻结错误样本，因此PR/混淆/FPFN/比较目前仅HTTP隔离数据+原真实ECharts+Python原Owner投影合同验证，不称生产评测验收。正式历史坏文件/超2MiB仍DEFERRED，现场报告/冻结图片权限和目标断网部署未验证。准确本提交CI及最终离线下载制品待推送后核验，不能以旧SHA绿色代替。本阶段无新写API、数据库结构、GT或执行Owner；不拆app.py，因变更只是4GET投影且无证明收益，不按行数机械分拆。下一阶段P1U转换创建工作台。
+
+## 准确SHA首轮CI与信号观测修复
+
+业务SHA7865d08294e82488c81f0864f4ec29a57ef5edf3的原前端job已成功，其Release Regression再次仅在未改生产代码的test_process_control.py:73挂起后立即观察running/stopped失败（与P1S同一位置）。SIGSTOP状态需异步送达；同用例resume/terminate已用原wait_until。仅将挂起也使用同一个既有5秒wait_until，最终条件仍严格STATUS_STOPPED；没有删除断言、跳过、延长既有helper截止或修改进程控制/Worker/Agent。单个失败用例定向1通过（既有8个FastAPI弃用告警）。本地Windows观测不代替LinuxCI；测试修复独立提交，准确新SHA CI继续核查，不把第一次失败描述成全绿。
