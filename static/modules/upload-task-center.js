@@ -354,6 +354,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-4') return window.UploadTaskCenterRuntime;
 
+  const listeners=new Set();
   let rows = [];
   let expanded = false;
   let lastProjectId = '';
@@ -558,6 +559,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
 
   function render() {
     if (destroyed) return;
+    for(const listener of listeners){try{listener()}catch(_){/* Presentation cannot interrupt original upload rendering. */}}
     for (const detail of document.querySelectorAll?.('.utc-upload-details[data-utc-detail-id]') || []) {
       if (detail.dataset.utcProject !== pid()) continue;
       const task = rows.find(row => row.id === detail.dataset.utcDetailId);
@@ -768,10 +770,11 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     clearCompleted,
     clearInvalid,
     list:() => rows.map(row => ({...row})),
+    subscribe(listener){listeners.add(listener);return ()=>listeners.delete(listener)},
     refresh:() => poll(),
     switchProject,
     destroy() {
-      persist(); destroyed=true;
+      persist(); destroyed=true;listeners.clear();
       window.cancelAnimationFrame(renderFrame); renderFrame=0;
       window.removeEventListener?.('pagehide', onPageHide);
       registry?.clear?.(POLL_KEY);

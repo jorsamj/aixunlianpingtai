@@ -25,6 +25,8 @@ import CatalogPreview from './views/CatalogPreview.vue';
 import TrainingCreate from './views/TrainingCreate.vue';
 import ConversionCreate from './views/ConversionCreate.vue';
 import ModelDelivery from './views/ModelDelivery.vue';
+import MaterialImportGovernance from './views/MaterialImportGovernance.vue';
+import type {MaterialImportGovernanceContext} from './types/material-import-governance';
 import type {ModelDeliveryContext} from './types/model-delivery';
 import type {ConversionCreateContext} from './types/conversion-create';
 import type {TrainingCreateContext} from './types/training-create';
@@ -65,7 +67,8 @@ export async function mountAiReviewWorkbench(host:HTMLElement,context:AiReviewCo
 export async function mountTrainingCreate(host:HTMLElement,context:TrainingCreateContext){return mountView(host,context,TrainingCreate)}
 export async function mountConversionCreate(host:HTMLElement,context:ConversionCreateContext){return mountView(host,context,ConversionCreate)}
 export async function mountModelDelivery(host:HTMLElement,context:ModelDeliveryContext){return mountView(host,context,ModelDelivery)}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext,component:Component){
+export async function mountMaterialImportGovernance(host:HTMLElement,context:MaterialImportGovernanceContext){return mountView(host,context,MaterialImportGovernance)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext,component:Component){
   if('signal' in context&&context.signal.aborted)return ()=>{};
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});

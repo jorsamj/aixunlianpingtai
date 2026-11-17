@@ -1,3 +1,5 @@
+> 2026-11-17 P1W：Vue素材上传与治理、原Uppy6.0.5/ZIP/确认/任务Owner复用；原TaskCenter订阅，不加轮询。opt-in vue_material_import=1，旧素材源管理保留。隔离真实图片上传1、ZIP界面及回退已验，ZIP导入/治理执行未验；准确CI/离线范围见[专项](PRODUCTIZATION_P1W_20261117.md)。下一P1X。
+
 > 2026-11-17 P1V：单版本Vue模型交付展示、原预检/显式确认/UNKNOWN持久读回、原配置及交付回退；opt-in vue_model_delivery=1。无真实外部/OSS操作；准确CI与离线范围见[专项](PRODUCTIZATION_P1V_20261117.md)。S/T/U旧本地截图丢失已如实记录，CI制品准确SHA恢复。下一P1W继续。
 
 > 2026-11-17 P1O–P1R：Vue AI任务/审核与Annotorious薄适配已交付代码；原CandidateStore/GT/负样本/任务Owner保持，旧页默认，使用vue_ai_tasks=1及vue_ai_review=1按需启用。第三方优先复用规则见[规范](FRONTEND_THIRD_PARTY_REUSE_POLICY.md)，业务/API/验收边界见[本轮交接](PRODUCTIZATION_P1O_P1R_20261117.md)。准确SHA CI与制品核验以本轮交付回执为准，生产未部署。

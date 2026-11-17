@@ -9,19 +9,19 @@ export const AI_TASKS_PAGE = 'AI标注任务正式浏览';
 export const TASKS_PAGE = '训练任务只读中心';
 export const REPORT_PAGE = '训练报告只读阅读';
 export const HISTORY_PAGE = '版本转换只读历史';
-export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
+export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, importsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
   load = async () => {
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1v1'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1w1'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1v1')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1w1')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
@@ -142,6 +142,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           if(packet.project_id!==String(project)||!packet.algorithm_id||!['add','remove'].includes(packet.action)||!Array.isArray(packet.image_ids)||packet.image_ids.length<1||packet.image_ids.length>200||!/^[-A-Za-z0-9_]{1,128}$/.test(packet.operation_id))throw new Error('负样本成员操作身份无效');
           const {project_id,...body}=packet;return call(`/api/v61/projects/${encodeURIComponent(project)}/negative-pool/members`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         },async legacyPool(){if(!active())return;await Promise.resolve(globalThis.window.setPage('数据集'));if(getState().project?.id===project&&getState().page==='数据集')return globalThis.window.NegativePoolRuntime?.open?.()}}:{}),
+        ...(importsEnabled?{openImports:()=>{if(active())return globalThis.window.setPage('素材上传与治理')}}:{}),
         ...(materialsEnabled?{openMaterials:()=>{if(active())return globalThis.window.setPage(MATERIALS_PAGE)},async legacyMaterials(action='manage',id){
           if(!active())return;await Promise.resolve(globalThis.window.setPage('数据集'));
           if(getState().project?.id!==project||getState().page!=='数据集')return;
@@ -177,5 +178,5 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
   }
   const unregister=[];
   for(const [allowed,page] of [[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE],[aiTasksEnabled,AI_TASKS_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
-  return {leave,openHistory,aiTasksEnabled,openAiTasks(){if(aiTasksEnabled)return globalThis.window.setPage(AI_TASKS_PAGE)},async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},async mountModelDelivery(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountModelDelivery(host,context)},async mountConversionCreate(host,context){const module=await load();return module.mountConversionCreate(host,context)},async mountTrainingCreate(host,context){const module=await load();return module.mountTrainingCreate(host,context)},async mountAiReview(host,context){const module=await load();return module.mountAiReviewWorkbench(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
+  return {leave,openHistory,aiTasksEnabled,openAiTasks(){if(aiTasksEnabled)return globalThis.window.setPage(AI_TASKS_PAGE)},async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},async mountMaterialImportGovernance(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountMaterialImportGovernance(host,context)},async mountModelDelivery(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountModelDelivery(host,context)},async mountConversionCreate(host,context){const module=await load();return module.mountConversionCreate(host,context)},async mountTrainingCreate(host,context){const module=await load();return module.mountTrainingCreate(host,context)},async mountAiReview(host,context){const module=await load();return module.mountAiReviewWorkbench(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
 }

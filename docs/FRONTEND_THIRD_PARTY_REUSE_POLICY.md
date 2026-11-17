@@ -1,3 +1,5 @@
+> 2026-11-17 P1W：Vue素材上传与治理、原Uppy6.0.5/ZIP/确认/任务Owner复用；原TaskCenter订阅，不加轮询。opt-in vue_material_import=1，旧素材源管理保留。隔离真实图片上传1、ZIP界面及回退已验，ZIP导入/治理执行未验；准确CI/离线范围见[专项](PRODUCTIZATION_P1W_20261117.md)。下一P1X。
+
 > 2026-11-17 P1U：Vue转换创建外层接入，原完整动态参数/字典SDK合同/持久请求与原任务日志验证Owner保留，opt-in vue_conversion_create=1；UNKNOWN恢复只释放原owned层，零真实SDK/转换。代码、隔离证据和准确CI边界见[专项](PRODUCTIZATION_P1U_20261117.md)。旧默认及回退保留，下一P1V。
 
 > 2026-11-17 P1T：原报告Owner有界只读投影、Vue详细Tab、原ECharts/Panzoom复用；P1S准确e83a60c已36/36 CI成功，BF16仍受固定运行时阻断。报告实际证据及未验范围见[专项](PRODUCTIZATION_P1T_20261117.md)；P1U尚待开发，旧默认不变。

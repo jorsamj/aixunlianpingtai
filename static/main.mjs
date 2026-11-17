@@ -7,10 +7,11 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
+import {installMaterialImportVueRuntime} from './modules/material-import-vue-runtime.js?v=20261117p1w1';
 import {installConversionCreateVueRuntime} from './modules/conversion-create-vue-runtime.js?v=20261117p1u1';
 import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
 import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1u1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1v1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1w1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -57,7 +58,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=42.25.568';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
-import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
+import {installUploadTaskCenter} from './modules/upload-task-center.js?v=20261117p1w1';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=4226570';
@@ -373,7 +374,7 @@ const uploadTaskCenterRuntime = installUploadTaskCenter({
   projectId: () => state.project?.id,
   notify,
   pollRegistry,
-  ownerPages: window.PlatformCore?.navigation?.knownPages || [],
+  ownerPages: [...(window.PlatformCore?.navigation?.knownPages || []),...(new URLSearchParams(location.search).get('vue_material_import')==='1'?['素材上传与治理']:[])],
 });
 window.PlatformCore.runtime.uploadTaskCenterRuntime = uploadTaskCenterRuntime;
 const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
@@ -506,6 +507,7 @@ const navigationStabilityRuntime = installNavigationStability({
   beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();if(page!=='质量中心')advancedEvaluation.deactivate();},
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
+    window.MaterialImportVueRuntime?.leave();
     catalogPreviewRuntime?.leave();
     conversionCatalogRuntime.leave();
     changLianDataBrowserRuntime.leave();
@@ -537,12 +539,16 @@ const catalogPreviewRuntime = installCatalogPreview({
   tasksEnabled: new URLSearchParams(location.search).get('vue_training_tasks') === '1',
   reportsEnabled: new URLSearchParams(location.search).get('vue_training_report') === '1',
   materialsEnabled: new URLSearchParams(location.search).get('vue_material_library') === '1',
+  importsEnabled: new URLSearchParams(location.search).get('vue_material_import') === '1',
   poolEnabled: new URLSearchParams(location.search).get('vue_negative_pool') === '1',
   aiTasksEnabled: new URLSearchParams(location.search).get('vue_ai_tasks') === '1',
   createOperationId: () => catalogOperationId(window.crypto),
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
+window.MaterialImportVueRuntime=installMaterialImportVueRuntime({enabled:new URLSearchParams(location.search).get('vue_material_import')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountMaterialImportGovernance(host,context)});
+if(new URLSearchParams(location.search).get('vue_material_import')==='1')navigationStabilityRuntime.registerPageOwner('素材上传与治理',()=>{const view=document.getElementById('view');if(!view)return false;const host=document.createElement('div');view.replaceChildren(host);return window.MaterialImportVueRuntime.render(host)});
+window.addEventListener('pagehide',()=>window.MaterialImportVueRuntime?.leave());
 if(new URLSearchParams(location.search).get('vue_model_delivery')==='1')externalAlgorithmPublishRuntime.setDeliveryPresenter((host,context)=>catalogPreviewRuntime.mountModelDelivery(host,context));
 if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
 window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
