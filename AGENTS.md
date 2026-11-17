@@ -1,3 +1,5 @@
+> 2026-11-17 P1Y：节点有效/可调度证据分离，统一配置9个可信原入口，原AdvancedNavigation/SecretStore/资源Owner保留。opt-in vue_configuration=1；隔离节点/Prompt/存储/旧管理已验，配置写入/探测0；准确CI/离线与未验见[专项](docs/PRODUCTIZATION_P1Y_20261117.md)。下一P1Z最后整合。
+
 > 2026-11-17 P1X：Vue AI创建三步、原选择/Provider/确认/Submit独占节点，project/request_id-only UNKNOWN恢复、原by-request GET。opt-in vue_ai_create=1；隔离125冻结/唯一拦截POST/刷新GET/原回退已验，真实推理/GT0。准确CI与P1V/W旧用例收尾见[专项](docs/PRODUCTIZATION_P1X_20261117.md)。下一P1Y。
 
 > 2026-11-17 P1W：Vue素材上传与治理、原Uppy6.0.5/ZIP/确认/任务Owner复用；原TaskCenter订阅，不加轮询。opt-in vue_material_import=1，旧素材源管理保留。隔离真实图片上传1、ZIP界面及回退已验，ZIP导入/治理执行未验；准确CI/离线范围见[专项](docs/PRODUCTIZATION_P1W_20261117.md)。下一P1X。

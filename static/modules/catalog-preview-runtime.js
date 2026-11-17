@@ -2,6 +2,7 @@
 export const PREVIEW_PAGE = '厂商芯片只读预览';
 export const MANAGEMENT_PAGE = '厂商芯片正式管理';
 export const NODES_PAGE = '服务节点只读总览';
+export const CONFIGURATION_PAGE = '统一配置中心';
 export const ASSETS_PAGE = '模型资产只读浏览';
 export const MATERIALS_PAGE = '素材库正式浏览';
 export const POOL_PAGE = '算法负样本池正式管理';
@@ -9,22 +10,23 @@ export const AI_TASKS_PAGE = 'AI标注任务正式浏览';
 export const TASKS_PAGE = '训练任务只读中心';
 export const REPORT_PAGE = '训练报告只读阅读';
 export const HISTORY_PAGE = '版本转换只读历史';
-export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, importsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
+export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, configurationEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, importsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
   load = async () => {
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1x1'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1y1'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1x1')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1y1')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
+  nodesEnabled=nodesEnabled||configurationEnabled;
   let generation = 0, controller, unmount;
   const browseMemories=new Map();
   const memory=project=>{if(!browseMemories.has(project))browseMemories.set(project,{});return browseMemories.get(project)};
@@ -98,7 +100,27 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           }
           finally {signal.removeEventListener('abort',abort);options.signal?.removeEventListener('abort',abort);}
       }
+      const configurationPages={nodes:NODES_PAGE,trainingResources:'训练资源',conversionResources:'部署资源',models:'模型配置',prompts:'模型配置',storage:'存储配置',platform:'平台对接',catalog:managementEnabled?MANAGEMENT_PAGE:'部署资源',algorithms:assetsEnabled?ASSETS_PAGE:'算法列表',legacyNodes:'服务节点'};
+      const openConfigurationEntry=async id=>{
+        if(!active()||!Object.hasOwn(configurationPages,id))return;
+        const destination=configurationPages[id];await Promise.resolve(globalThis.window.setPage(destination));
+        if(getState().project?.id!==project||getState().page!==destination)return;
+        const section={prompts:'prompts',models:'models',trainingResources:'training',conversionResources:'resources',storage:'resources',legacyNodes:'nodes',...(destination==='部署资源'?{catalog:'catalog'}:{})}[id];
+        if(section)return globalThis.window.PlatformCore?.navigation?.selectAdvancedSection?.(section);
+      };
+      const configurationEntries=[
+        {id:'nodes',title:'服务节点与设备',description:'心跳、资源上报、能力与任务占用。',group:'计算资源',enabled:true},
+        {id:'trainingResources',title:'训练资源与环境',description:'GPU、训练服务器与已有资源配置。',group:'计算资源',enabled:true},
+        {id:'conversionResources',title:'转换资源与环境',description:'转换节点、SDK 与环境配置。检测由原页面显式操作。',group:'计算资源',enabled:true},
+        {id:'models',title:'模型服务与 AI Provider',description:'视觉模型、服务连接、坐标协议与现有测试入口。',group:'模型与标注',enabled:true},
+        {id:'prompts',title:'Prompt 与模板',description:'查看模型配置页中的提示词模板与版本。',group:'模型与标注',enabled:true},
+        {id:'storage',title:'存储与模型归档',description:'OSS、S3、NAS 及模型和转换结果的存储配置。',group:'模型交付与存储',enabled:true},
+        {id:'platform',title:'畅联云对接',description:'平台模式、主数据同步、映射与交付记录。',group:'模型交付与存储',enabled:true},
+        {id:'catalog',title:'厂商与芯片',description:'正式字典、引用保护与历史绑定。',group:'基础字典',enabled:true},
+        {id:'algorithms',title:'训练与转换参数',description:'从算法和版本进入，保持实际模型与任务上下文。',group:'计算资源',enabled:true},
+      ];
       const context={signal,management:managed,
+        ...(configurationEnabled?{projectId:String(project||''),entries:configurationEntries,open:openConfigurationEntry,back:()=>{if(active())return globalThis.window.setPage(NODES_PAGE)},openConfiguration:()=>{if(active())return globalThis.window.setPage(CONFIGURATION_PAGE)},openResource:kind=>openConfigurationEntry({training:'trainingResources',conversion:'conversionResources',models:'models',nodes:'legacyNodes'}[kind]),}:{}),
         async get(url, options = {}) {
           const parsed=new URL(url,'http://localhost');
           const records=/^\/api\/v39\/deploy\/catalog\/records(?:\?|\/(?:vendors|chips)\/[^/?#]+\?)/.test(url)&&parsed.searchParams.get('observe_only')==='true';
@@ -165,7 +187,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
         },async openDelivery(selection){if(!active()||!selection?.algorithmId||!selection?.versionId)return;await Promise.resolve(globalThis.window.setPage('算法列表'));if(getState().project?.id===project&&getState().page==='算法列表')return globalThis.window.ExternalAlgorithmPublishRuntime?.publishVersion?.(selection.algorithmId,selection.versionId)},async openConversionLog(id){if(!active()||!/^[-A-Za-z0-9_.]{1,128}$/.test(String(id)))return;await Promise.resolve(globalThis.window.setPage('算法列表'));if(getState().project?.id===project&&getState().page==='算法列表')return globalThis.window.openDeployLog?.(id)},async openConversionCreate(selection){if(!active()||!selection?.algorithmId||!selection?.versionId)return;await Promise.resolve(globalThis.window.setPage('算法列表'));if(getState().project?.id===project&&getState().page==='算法列表')return globalThis.window.openNewConvert428?.(selection.algorithmId,selection.versionId)},returnToAssets:()=>globalThis.window.setPage(ASSETS_PAGE),openLegacy:legacy}:{}),
         returnToManagement: () => globalThis.window.setPage(browsing?(page===AI_TASKS_PAGE?'自动标注及清洗':[MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':'算法列表'):page===NODES_PAGE?'服务节点':'部署资源'),
       };
-      const mount=page===AI_TASKS_PAGE?module.mountAiAnnotationTasks:page===POOL_PAGE?module.mountNegativePool:page===MATERIALS_PAGE?module.mountMaterialLibrary:page===TASKS_PAGE?module.mountTrainingTasks:page===REPORT_PAGE?module.mountTrainingReport:page===NODES_PAGE?module.mountServiceNodes:page===ASSETS_PAGE?module.mountModelAssets:page===HISTORY_PAGE?module.mountConversionHistory:module.mountCatalogPreview;
+      const mount=page===CONFIGURATION_PAGE?module.mountConfigurationCenter:page===AI_TASKS_PAGE?module.mountAiAnnotationTasks:page===POOL_PAGE?module.mountNegativePool:page===MATERIALS_PAGE?module.mountMaterialLibrary:page===TASKS_PAGE?module.mountTrainingTasks:page===REPORT_PAGE?module.mountTrainingReport:page===NODES_PAGE?module.mountServiceNodes:page===ASSETS_PAGE?module.mountModelAssets:page===HISTORY_PAGE?module.mountConversionHistory:module.mountCatalogPreview;
       const dispose = await mount(host,context);
       if (!active()) dispose(); else unmount = dispose;
     } catch (error) {
@@ -177,6 +199,6 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
     }
   }
   const unregister=[];
-  for(const [allowed,page] of [[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE],[aiTasksEnabled,AI_TASKS_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
+  for(const [allowed,page] of [[configurationEnabled,CONFIGURATION_PAGE],[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE],[aiTasksEnabled,AI_TASKS_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
   return {leave,openHistory,aiTasksEnabled,openAiTasks(){if(aiTasksEnabled)return globalThis.window.setPage(AI_TASKS_PAGE)},async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},async mountAiAnnotationCreate(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountAiAnnotationCreate(host,context)},async mountMaterialImportGovernance(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountMaterialImportGovernance(host,context)},async mountModelDelivery(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountModelDelivery(host,context)},async mountConversionCreate(host,context){const module=await load();return module.mountConversionCreate(host,context)},async mountTrainingCreate(host,context){const module=await load();return module.mountTrainingCreate(host,context)},async mountAiReview(host,context){const module=await load();return module.mountAiReviewWorkbench(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
 }

@@ -136,3 +136,9 @@ test('delivery import completing after legacy fallback never replaces its host',
  controller.abort();complete({mountModelDelivery(){mounts++;return ()=>{}}});
  const dispose=await pending;dispose();assert.equal(mounts,0);runtime.destroy();
 });
+
+test('configuration navigation is opt-in, allowlisted and rejects stale project actions without reading secrets',async()=>{
+ const owners=new Map(),contexts=[],opened=[],calls=[],state={page:'统一配置中心',project:{id:'p'}};const previous=globalThis.window;globalThis.window={setPage:page=>opened.push(page)};
+ const runtime=installCatalogPreview({configurationEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return()=>owners.delete(name)}},getState:()=>state,request:async(...args)=>calls.push(args),document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountConfigurationCenter:async(_host,context)=>{contexts.push(context);return()=>{}}})});
+ try{await owners.get('统一配置中心')();const context=contexts[0];assert.equal(context.entries.length,9);assert.equal(calls.length,0);context.open('storage');assert.deepEqual(opened,['存储配置']);context.open('toString');assert.equal(opened.length,1);state.project.id='q';context.open('platform');assert.equal(opened.length,1);runtime.leave();assert.equal(context.signal.aborted,true)}finally{runtime.destroy();globalThis.window=previous}
+});

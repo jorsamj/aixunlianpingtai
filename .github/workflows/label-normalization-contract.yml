@@ -291,7 +291,7 @@ jobs:
                   'function explicitCanonicalAiLabelText(value)',
                   '中文名、别名、历史 alias 不会自动转换',
                   'window.submitAiLabel429=async function(ids=[])',
-                  'const task=await api(taskApi(),',
+                  'const task=await api(taskApi(null,ownerProject),',
                   '候选结果不会自动写入正式标注',
                   "window.manageLabels=()=>{closeModal();setPage('标签管理')};",
                   'window.ZipImportRuntime?.upload',

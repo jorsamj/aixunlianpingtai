@@ -27,6 +27,8 @@ import ConversionCreate from './views/ConversionCreate.vue';
 import ModelDelivery from './views/ModelDelivery.vue';
 import MaterialImportGovernance from './views/MaterialImportGovernance.vue';
 import AiAnnotationCreate from './views/AiAnnotationCreate.vue';
+import ConfigurationCenter from './views/ConfigurationCenter.vue';
+import type {ConfigurationCenterContext} from './types/configuration-center';
 import type {AiAnnotationCreateContext} from './types/ai-annotation-create';
 import type {MaterialImportGovernanceContext} from './types/material-import-governance';
 import type {ModelDeliveryContext} from './types/model-delivery';
@@ -71,7 +73,8 @@ export async function mountConversionCreate(host:HTMLElement,context:ConversionC
 export async function mountModelDelivery(host:HTMLElement,context:ModelDeliveryContext){return mountView(host,context,ModelDelivery)}
 export async function mountMaterialImportGovernance(host:HTMLElement,context:MaterialImportGovernanceContext){return mountView(host,context,MaterialImportGovernance)}
 export async function mountAiAnnotationCreate(host:HTMLElement,context:AiAnnotationCreateContext){return mountView(host,context,AiAnnotationCreate)}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext|AiAnnotationCreateContext,component:Component){
+export async function mountConfigurationCenter(host:HTMLElement,context:ConfigurationCenterContext){return mountView(host,context,ConfigurationCenter)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext|AiAnnotationCreateContext|ConfigurationCenterContext,component:Component){
   if('signal' in context&&context.signal.aborted)return ()=>{};
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});

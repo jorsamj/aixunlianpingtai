@@ -12,7 +12,7 @@ import {installMaterialImportVueRuntime} from './modules/material-import-vue-run
 import {installConversionCreateVueRuntime} from './modules/conversion-create-vue-runtime.js?v=20261117p1u1';
 import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
 import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1u1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1x1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1y1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -535,6 +535,7 @@ const catalogPreviewRuntime = installCatalogPreview({
   enabled: new URLSearchParams(location.search).get('vue_catalog_preview') === '1',
   managementEnabled: new URLSearchParams(location.search).get('vue_catalog_manage') === '1',
   nodesEnabled: new URLSearchParams(location.search).get('vue_service_nodes') === '1',
+  configurationEnabled: new URLSearchParams(location.search).get('vue_configuration') === '1',
   assetsEnabled: new URLSearchParams(location.search).get('vue_model_assets') === '1',
   algorithmEnabled: new URLSearchParams(location.search).get('vue_algorithm_manage') === '1',
   tasksEnabled: new URLSearchParams(location.search).get('vue_training_tasks') === '1',
