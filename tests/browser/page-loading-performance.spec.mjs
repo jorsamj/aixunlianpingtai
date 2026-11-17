@@ -244,7 +244,7 @@ test('dashboard revisit reuses focused source and quality extras', async ({page}
   const firstVisit = {sourceGets, qualityGets};
 
   await page.evaluate(() => window.setPage('算法列表'));
-  await expect(page.locator('#title')).toContainText('算法列表');
+  await expect(page.locator('#title')).toContainText('算法库');
   await page.evaluate(() => window.setPage('工作台'));
   await expect(page.locator('#title')).toContainText('总览');
   await expect(page.locator('[data-dashboard-source-count]')).toHaveText('1');

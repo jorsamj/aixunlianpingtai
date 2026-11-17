@@ -236,7 +236,7 @@ test('version conversion shows configured compiler resources and their readiness
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(async () => { if (window.__clInit) await window.__clInit(); });
-  await expect(page.getByRole('button', {name: /算法列表/})).toBeVisible();
+  await expect(page.getByRole('button', {name: /算法库/})).toBeVisible();
   await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
   const historyDialog = page.getByRole('dialog', {name: '版本转换'});
   await expect(historyDialog).toBeVisible();

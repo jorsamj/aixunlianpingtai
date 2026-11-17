@@ -152,7 +152,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await waitForCanonicalApp(page);
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   const algorithmCard = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await expect(algorithmCard.getByRole('button', {name: '报告', exact: true})).toBeVisible({timeout: 20_000});
   await algorithmCard.getByRole('button', {name: '训练'}).click();
@@ -220,7 +220,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await waitForCanonicalApp(page);
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
@@ -282,7 +282,7 @@ test('training material selection does not depend on dataset groups and supports
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await waitForCanonicalApp(page);
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   await page.evaluate(async algorithmId => {
     state.datasets = [];
     await window.startAlgorithmTraining429(algorithmId);
@@ -380,7 +380,7 @@ test('versioned training locks the latest version and projects the current rando
   });
   await page.goto('/');
   await waitForCanonicalApp(page);
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});

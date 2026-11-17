@@ -153,7 +153,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     submitOwnsNetwork: true,
   });
 
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
@@ -326,7 +326,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.ai_intervention_enabled).toBe(false);
   await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
 
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   const secondCard = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await secondCard.getByRole('button', {name: '训练'}).click();
   const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});

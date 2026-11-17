@@ -89,7 +89,7 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
   await expect.poll(async () => page.evaluate(() => typeof window.ExternalAlgorithmPublishRuntime?.publishVersion))
     .toBe('function');
 
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   await expect(page.locator('#alg412List')).toBeVisible();
   await page.evaluate(({algorithmId, versionId}) => {
     const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));
@@ -241,7 +241,7 @@ test('changlian manual publish succeeds through the canonical algorithm version 
   await expect.poll(async () => page.evaluate(() => typeof window.ExternalAlgorithmPublishRuntime?.publishVersion))
     .toBe('function');
 
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   await expect(page.locator('#alg412List')).toBeVisible();
   await page.evaluate(({algorithmId, versionId}) => {
     const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));

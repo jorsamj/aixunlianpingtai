@@ -64,7 +64,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
-  await expect(page.locator('#title')).toContainText('算法列表');
+  await expect(page.locator('#title')).toContainText('算法库');
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))

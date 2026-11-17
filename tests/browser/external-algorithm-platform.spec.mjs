@@ -419,7 +419,7 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect.poll(async () => page.evaluate(() => window.ExternalAlgorithmPlatformRuntime?.config?.()?.mode || ''))
     .toBe('external');
 
-  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.getByRole('button', {name: /算法库/}).click();
   await expect(page.locator('#alg412List')).toBeVisible();
   await page.evaluate(({algorithmId}) => {
     const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));

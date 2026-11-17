@@ -601,7 +601,7 @@ for (const frozenCount of [20_000, 30_000]) {
     });
     await page.goto('/');
     await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
-    await page.getByRole('button', {name: /算法列表/}).click();
+    await page.getByRole('button', {name: /算法库/}).click();
     const card = page.locator('.alg428-card', {hasText: '冻结浏览器训练算法'});
     await card.getByRole('button', {name: '训练'}).click();
     const dialog = page.getByRole('dialog', {name: '创建训练任务'});

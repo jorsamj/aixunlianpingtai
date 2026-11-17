@@ -224,7 +224,7 @@ test('quality refresh cancellation cannot repaint the next canonical page',async
   });
   await started;
   await page.evaluate(()=>window.setPage('算法列表'));
-  await expect(page.locator('#title')).toContainText('算法列表');
+  await expect(page.locator('#title')).toContainText('算法库');
   await expect(page.locator('#view .quality411-tabs')).toHaveCount(0);
   releaseResponse();
   await expect(page.locator('#view .quality411-tabs')).toHaveCount(0);
@@ -246,7 +246,7 @@ test('13C-03 provider page is fetched on first entry, reused, and retains manual
   expect(await moduleCount()).toBe(1);
   expect(providerReads).toBe(0);
   await page.evaluate(()=>{void window.setPage('算法列表')});
-  await expect(page.locator('#title')).toContainText('算法列表');
+  await expect(page.locator('#title')).toContainText('算法库');
   await page.evaluate(()=>{void window.setPage('畅联云数据')});
   await expect(page.locator('[data-changlian-data-browser="1"]')).toBeVisible();
   expect(await moduleCount()).toBe(1);
