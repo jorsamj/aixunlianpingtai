@@ -2844,6 +2844,7 @@ window.installUsability417=function(){
   };
   window.modal=modal;
   function beforeCloseModal424(layer){
+    window.ExternalAlgorithmPublishRuntime?.beforeModalClose?.(layer);
     if(layer?.querySelector('[data-vue-conversion-create]'))window.ConversionCreateVueRuntime?.leave?.();
     if(layer?.querySelector('[data-vue-training-create]'))window.TrainingCreateVueRuntime?.leave?.();
     window.beforeCloseAiTask60?.(layer);

@@ -228,7 +228,7 @@ test('manual publish fetches read-only status before write request', () => {
   const readBlock = source.slice(statusStart, syncStart);
   const syncBlock = source.slice(syncStart, dialogStart);
   const dialogBlock = source.slice(dialogStart, end);
-  assert.ok(readBlock.includes('await requestJson(deliveryEndpoint(context))'));
+  assert.ok(readBlock.includes('await requestJson(deliveryEndpoint(context), {signal:context.controller.signal})'));
   assert.ok(!readBlock.includes("method:'POST'"));
   assert.ok(syncBlock.includes('publicationPreflight(context.status)'));
   assert.ok(syncBlock.includes("deliveryEndpoint(context) + '/publish'"));
@@ -349,4 +349,41 @@ test('superseded same-name ONNX is retained only under collapsed history',()=>{
   const details=publicationWeightDetails(status);
   assert.match(details,/历史成果/);
   assert.doesNotMatch(details,/自动发布异常，请管理员核对：旧ONNX分类冲突/);
+});
+
+import {installExternalAlgorithmPublishRuntime,deliveryPresentationSnapshot} from '../../static/modules/external-algorithm-publish.js';
+const deliveryTick=()=>new Promise(resolve=>setTimeout(resolve,0));
+function deliveryFixture(storage=new Map()){
+ const readSignals=[];let bridge,postCount=0,status={publication:{status:'UNKNOWN'},requires_sync:true,publish_ready:true,mapped_artifact_count:1,discovered:[{target:'original'}]},failStorage=false;
+ const root={isConnected:true,addEventListener(){},innerHTML:''},layer={querySelector:()=>root};
+ globalThis.document={body:{},getElementById:()=>({}),querySelector:()=>root};globalThis.MutationObserver=class{observe(){}disconnect(){}};
+ globalThis.window={confirm:()=>true,modal:()=>layer,ModalContentRuntime:{captureOwner:()=>({isCurrent:()=>true,layer})},localStorage:{getItem:key=>storage.get(key)??null,setItem(key,value){if(failStorage)throw new Error('quota');storage.set(key,value)},removeItem:key=>storage.delete(key)},fetch:async(_url,options)=>{if(options.method==='POST'){postCount++;throw new Error('network lost')}readSignals.push(options.signal);return {ok:true,text:async()=>JSON.stringify(status)}}};
+ const runtime=installExternalAlgorithmPublishRuntime({getState:()=>({page:'算法列表',algorithms:[{id:'a',versions:[{id:'v'}]}]}),projectId:()=> 'p'});
+ runtime.setDeliveryPresenter(async(_host,context)=>{bridge=context;return()=>{}});
+ return {runtime,storage,readSignals,setStatus:value=>status=value,failStorage:()=>failStorage=true,get bridge(){return bridge},get posts(){return postCount}};
+}
+test('delivery unknown survives a new owner and only authoritative completed GET clears journal',async()=>{
+ const first=deliveryFixture();await first.runtime.publishVersion('a','v');await deliveryTick();await first.bridge.actions.publish();assert.equal(first.posts,1);assert.equal(first.storage.size,1);assert.equal(first.bridge.snapshot().uncertain,true);first.runtime.destroy();
+ const reopened=deliveryFixture(first.storage);await reopened.runtime.publishVersion('a','v');await deliveryTick();assert.equal(reopened.bridge.snapshot().uncertain,true);await reopened.bridge.actions.publish();assert.equal(reopened.posts,0);reopened.setStatus({publication:{status:'PUBLISHED'},requires_sync:false});await reopened.bridge.actions.refresh();assert.equal(reopened.storage.size,0);assert.equal(reopened.bridge.snapshot().uncertain,false);reopened.runtime.destroy();
+});
+test('delivery cannot POST if durable prewrite/readback fails',async()=>{
+ const h=deliveryFixture();await h.runtime.publishVersion('a','v');await deliveryTick();h.failStorage();await h.bridge.actions.publish();assert.equal(h.posts,0);assert.match(h.bridge.snapshot().error,/本次未提交/);h.runtime.destroy();
+});
+test('delivery presentation uses bounded safe facts rather than raw artifact objects',()=>{
+ assert.match(publicationResultMessage({publication:{status:'PUBLISHED'},weight_delivery_status:'UNKNOWN'}),/仍待核验/);
+ assert.match(publicationResultMessage({publication:{status:'UNKNOWN'}}),/不能确认/);
+ const value=deliveryPresentationSnapshot({status:{artifacts:[{file_name:'C:/private/best.pt',source_path:'/private/raw',last_error:'token=SECRET https://secret/key',metadata:{source_path:'/private/raw',tags:['smoke']}}]},projectId:'p',algorithmId:'a',versionId:'v'});
+ assert.equal(value.current[0].fileName,'best.pt');assert.equal(value.current[0].metadata.tags[0],'smoke');assert.doesNotMatch(JSON.stringify(value),/SECRET|https:\/\/secret|source_path|\/private/);
+});
+
+// A pending owned GET must release its transport when its modal leaves.
+test('delivery owner abort releases its status read transport',async()=>{
+ const h=deliveryFixture();await h.runtime.publishVersion('a','v');await deliveryTick();
+ assert.equal(h.readSignals.length,1);assert.equal(h.readSignals[0].aborted,false);
+ h.runtime.destroy();assert.equal(h.bridge.signal.aborted,true);
+ // Completed requests remove their parent listener; a pending read remains linked.
+ const pending=deliveryFixture();await pending.runtime.publishVersion('a','v');await deliveryTick();
+ let signal;window.fetch=async(_url,options)=>{signal=options.signal;return new Promise(()=>{})};
+ const reading=pending.bridge.actions.refresh();await deliveryTick();assert.equal(signal.aborted,false);
+ pending.runtime.destroy();await reading;assert.equal(signal.aborted,true);assert.equal(pending.posts,0);
 });

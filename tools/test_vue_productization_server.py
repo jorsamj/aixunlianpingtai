@@ -88,6 +88,27 @@ algorithms=list_algorithms(api.algorithms_file(project_id))
 algorithms.append({'id':'acceptance-material-algorithm','name':'素材选材隔离验收算法',
     'algorithm_type':'yolo_ultralytics','source_type':'LOCAL','versions':[],'created_at':'2026-11-17'})
 save_algorithms(api.algorithms_file(project_id),algorithms)
+# P1V opt-in identity fixture. These are saved synthetic identity/version
+# descriptors only; publication, storage and external HTTP must be intercepted
+# by the acceptance browser. Existing LOCAL records remain unchanged.
+if os.environ.get('MC_VUE_DELIVERY_FIXTURE') == '1':
+    from platform_core.external_algorithm_platform import PROVIDER_CHANGLIAN
+    algorithms=list_algorithms(api.algorithms_file(project_id))
+    algorithms.append({
+        'id':'acceptance-external-delivery','name':'隔离新畅联交付算法（合成身份）',
+        'algorithm_type':'yolo_ultralytics','source_type':'EXTERNAL','provider_type':PROVIDER_CHANGLIAN,
+        'source_name':'新畅联（隔离合成）','external_product_id':'isolated-product',
+        'external_product_code':'isolated-product-code','external_analysis_id':'isolated-analysis',
+        'external_analysis_ids':['isolated-analysis'],
+        'external_analyses':[{'analysis_id':'isolated-analysis','analysis_name':'隔离合成分析'}],
+        'external_active':True,'external_deletion_status':'NORMAL',
+        'current_version_id':'acceptance-delivery-v1','created_at':'2026-11-17',
+        'versions':[{'id':'acceptance-delivery-v1','version_name':'隔离交付版本（非真实模型验收）',
+            'framework':'ultralytics','training_status':'SUCCEEDED','artifact_verified':True,
+            'trainable':True,'model_name':'isolated-fixture.pt','stored_path':'/isolated/non-executable/delivery-fixture.pt',
+            'external_analysis_id':'isolated-analysis','label_codes':['smoke']}],
+    })
+    save_algorithms(api.algorithms_file(project_id),algorithms)
 manager=api.storage_manager(project_id)
 materials=[];annotations=[]
 for index in range(125):

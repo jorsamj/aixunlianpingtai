@@ -128,3 +128,11 @@ test('report evidence reads stay in the resolved algorithm and version and requi
  assert.equal(context.post,undefined);assert.equal(calls.length,4);assert.ok(calls.every(row=>row.method==='GET'));
  }finally{runtime.destroy()}
 });
+
+test('delivery import completing after legacy fallback never replaces its host',async()=>{
+ let complete,mounts=0;const controller=new AbortController();
+ const runtime=installCatalogPreview({load:()=>new Promise(resolve=>complete=resolve)});
+ const pending=runtime.mountModelDelivery({}, {signal:controller.signal});
+ controller.abort();complete({mountModelDelivery(){mounts++;return ()=>{}}});
+ const dispose=await pending;dispose();assert.equal(mounts,0);runtime.destroy();
+});

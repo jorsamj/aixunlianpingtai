@@ -1,3 +1,5 @@
+> 2026-11-17 P1V：单版本Vue模型交付展示、原预检/显式确认/UNKNOWN持久读回、原配置及交付回退；opt-in vue_model_delivery=1。无真实外部/OSS操作；准确CI与离线范围见[专项](docs/PRODUCTIZATION_P1V_20261117.md)。S/T/U旧本地截图丢失已如实记录，CI制品准确SHA恢复。下一P1W继续。
+
 > 2026-11-17 P1U：Vue转换创建外层接入，原完整动态参数/字典SDK合同/持久请求与原任务日志验证Owner保留，opt-in vue_conversion_create=1；UNKNOWN恢复只释放原owned层，零真实SDK/转换。代码、隔离证据和准确CI边界见[专项](docs/PRODUCTIZATION_P1U_20261117.md)。旧默认及回退保留，下一P1V。
 
 > 2026-11-17 P1T：原报告Owner有界只读投影、Vue详细Tab、原ECharts/Panzoom复用；P1S准确e83a60c已36/36 CI成功，BF16仍受固定运行时阻断。报告实际证据及未验范围见[专项](docs/PRODUCTIZATION_P1T_20261117.md)；P1U尚待开发，旧默认不变。

@@ -24,6 +24,8 @@ import 'element-plus/theme-chalk/el-dropdown-item.css';
 import CatalogPreview from './views/CatalogPreview.vue';
 import TrainingCreate from './views/TrainingCreate.vue';
 import ConversionCreate from './views/ConversionCreate.vue';
+import ModelDelivery from './views/ModelDelivery.vue';
+import type {ModelDeliveryContext} from './types/model-delivery';
 import type {ConversionCreateContext} from './types/conversion-create';
 import type {TrainingCreateContext} from './types/training-create';
 import ServiceNodesOverview from './views/ServiceNodesOverview.vue';
@@ -62,12 +64,15 @@ export async function mountAiAnnotationTasks(host:HTMLElement,context:AiTaskCont
 export async function mountAiReviewWorkbench(host:HTMLElement,context:AiReviewContext){return mountView(host,context,AiReviewWorkbench)}
 export async function mountTrainingCreate(host:HTMLElement,context:TrainingCreateContext){return mountView(host,context,TrainingCreate)}
 export async function mountConversionCreate(host:HTMLElement,context:ConversionCreateContext){return mountView(host,context,ConversionCreate)}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext,component:Component){
+export async function mountModelDelivery(host:HTMLElement,context:ModelDeliveryContext){return mountView(host,context,ModelDelivery)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext,component:Component){
+  if('signal' in context&&context.signal.aborted)return ()=>{};
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});
   app.use(createPinia()).use(router);
   for(const [name,component] of Object.entries({ElButton,ElInput,ElSelect,ElOption,ElTable,ElTableColumn,ElTag,ElPagination,ElDrawer,ElAlert,ElEmpty,ElSkeleton,ElCheckbox,ElDropdown,ElDropdownMenu,ElDropdownItem}))app.component(name,component);
   await router.push('/');await router.isReady();
+  if('signal' in context&&context.signal.aborted){router.options.history.destroy();return ()=>{}}
   host.textContent='';app.mount(host);
   return ()=>{app.unmount();router.options.history.destroy()};
 }

@@ -10,7 +10,7 @@ import {installConversionCatalogRuntime,catalogOperationId} from './modules/conv
 import {installConversionCreateVueRuntime} from './modules/conversion-create-vue-runtime.js?v=20261117p1u1';
 import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
 import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1u1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1u1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1v1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -26,7 +26,7 @@ import {installPollRegistry} from './modules/poll-registry.js?v=422522';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.613';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63026';
 import {installLazyChangLianDataBrowserRuntime} from './modules/lazy-changlian-data-browser.js?v=20261113-13c03';
-import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
+import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=20261117p1v1';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226511';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.613';
@@ -63,7 +63,7 @@ import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=4226570';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422551';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226491';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=20261117callback1';
 import {installSmartMaterialAudit} from './modules/smart-material-audit.js?v=20261026';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=4226509';
 
@@ -543,6 +543,7 @@ const catalogPreviewRuntime = installCatalogPreview({
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
+if(new URLSearchParams(location.search).get('vue_model_delivery')==='1')externalAlgorithmPublishRuntime.setDeliveryPresenter((host,context)=>catalogPreviewRuntime.mountModelDelivery(host,context));
 if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
 window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
 window.ConversionCreateVueRuntime=installConversionCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_conversion_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountConversionCreate(host,context)});

@@ -22,7 +22,7 @@ async function requestJson(url, options = {}) {
     throw Object.assign(new Error(String(body.message || body.detail || `请求失败（HTTP ${response.status}）`)), {httpStatus: response.status});
   }
   return body;
-  }, {label: '发布接口'});
+  }, {label: '发布接口', signal:options.signal, mutation:options.method==='POST'});
 }
 
 function escapeHtml(value) {
@@ -62,6 +62,7 @@ export function publicationDeliveryRows(status={}) {
 }
 
 export function publicationResultMessage(result={}) {
+  if(result.publication?.status==='UNKNOWN'||result.weight_delivery_status==='UNKNOWN'||(result.artifacts||[]).some(row=>row.sync_status==='UNKNOWN'))return '发布结果仍待核验，请查询原发布状态；当前不能确认版本和全部权重已同步';
   if(result.publication?.status==='PARTIAL'||result.conversion_failures?.length)
     return '部分权重尚未完整同步，请查看权重发布状态中的具体原因';
   if(result.deferred_conversions?.length)return '原始模型已同步；部分转换权重等待配置，请查看发布状态';
@@ -200,6 +201,14 @@ export function publicationPreflight(status = {}) {
     ready: true,
     message: `发布预检通过：将先同步原始模型及当前已映射权重${deferred ? `；另有 ${deferred} 个转换权重待映射后自动追加` : ''}${ignored ? `；${ignored} 个转换目标已明确关闭发布` : ''}。`,
   };
+}
+
+const safeDeliveryText=value=>typeof value==='string'?value.replace(/https?:\/\/\S+/g,'[地址已隐藏]').replace(/(?:Bearer\s+)[^\s,;]+/gi,'Bearer [已隐藏]').replace(/(token|password|secret|api[_-]?key|authorization)["']?\s*[:=]\s*[^\s,;}]+/gi,'$1=[已隐藏]').replace(/[A-Za-z]:[\\/][^\s,;]+|(?:\/[\w.\-]+){2,}/g,'[路径已隐藏]').slice(0,800):(value===null||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value)?value:undefined);
+export function deliveryPresentationSnapshot(context){
+ const status=context.status||{},rows=publicationDeliveryRows(status),tags=value=>Array.isArray(value)?value.slice(0,100).filter(x=>typeof x==='string').map(safeDeliveryText):null;
+ const asset=row=>{const meta=row.metadata||row.weight_metadata||{};return {fileName:String(row.file_name||'').split(/[\\/]/).pop(),target:safeDeliveryText(row.target),artifactId:safeDeliveryText(row.artifact_id),weightId:safeDeliveryText(row.external_weight_id),status:safeDeliveryText(row.sync_status),storageStatus:safeDeliveryText(row.storage_status),role:safeDeliveryText(row.delivery_role),reviewRequired:row.review_required===true,identityStatus:safeDeliveryText(row.remote_identity_status),sizeBytes:safeDeliveryText(row.size_bytes),sha256:safeDeliveryText(row.sha256),computePlatformId:safeDeliveryText(row.compute_platform_id),chipCode:safeDeliveryText(row.remote_chip_code||row.mapped_chip_code||row.chip_code),metadataStatus:safeDeliveryText(row.metadata_sync_status),note:safeDeliveryText(row.metadata_note),lastError:safeDeliveryText(row.last_error),metadata:{width:safeDeliveryText(meta.image_width),height:safeDeliveryText(meta.image_height),yoloVersion:safeDeliveryText(meta.yolo_version),tags:tags(meta.tags)},frozenTags:tags(row.frozen_tags),localTags:tags(row.local_tags??meta.tags),preparedTags:tags(row.prepared_tags),requestTags:tags(row.request_tags),confirmedTags:tags(row.confirmed_tags),remoteTags:tags(row.remote_tags),remoteTagsStatus:safeDeliveryText(row.remote_tags_status)};};
+ const preflight=publicationPreflight(status);
+ return {projectId:context.projectId,algorithmId:context.algorithmId,versionId:context.versionId,algorithmName:safeDeliveryText(context.algorithmName),versionName:safeDeliveryText(context.versionName),mode:safeDeliveryText(context.platformMode),busy:context.busy,error:safeDeliveryText(context.error),message:safeDeliveryText(context.message),uncertain:!!context.uncertain,awaitingReadback:!!context.awaitingReadback,preflight:{ready:preflight.ready,message:safeDeliveryText(preflight.message)},canPublish:!!context.status&&preflight.ready&&status.requires_sync!==false&&!context.busy&&!context.uncertain&&!context.awaitingReadback,requiresSync:status.requires_sync,versionStatus:safeDeliveryText(status.publication?.status),weightStatus:safeDeliveryText(status.weight_delivery_status),current:rows.current.slice(0,100).map(asset),historical:rows.historical.slice(0,100).map(asset),currentTotal:rows.current.length,historicalTotal:rows.historical.length,truncated:rows.current.length>100||rows.historical.length>100};
 }
 
 export function installExternalAlgorithmPublishRuntime({getState, projectId, notify, algorithmListRuntime} = {}) {
@@ -370,7 +379,27 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   }
 
   const publicationRequests = new Map();
-  let activeDeliveryDialog = null;
+  let activeDeliveryDialog = null,deliveryPresenter=null;
+  const deliveryJournalKey=context=>'cl_external_delivery_pending_v1:'+context.key;
+  function restoreDeliveryJournal(context){
+    const raw=window.localStorage?.getItem(deliveryJournalKey(context));if(!raw)return false;
+    const saved=JSON.parse(raw);if(saved.projectId!==context.projectId||saved.algorithmId!==context.algorithmId||saved.versionId!==context.versionId)throw new Error('发布恢复记录身份异常，请核查原版本');
+    publicationRequests.set(context.key,'uncertain');return true;
+  }
+  function saveDeliveryJournal(context){
+    const raw=JSON.stringify({projectId:context.projectId,algorithmId:context.algorithmId,versionId:context.versionId,state:'UNKNOWN'});
+    const storage=window.localStorage;if(!storage)throw new Error('发布请求恢复存储不可用，本次未提交');storage.setItem(deliveryJournalKey(context),raw);if(storage.getItem(deliveryJournalKey(context))!==raw)throw new Error('发布请求恢复记录未保存，本次未提交');
+  }
+  function clearDeliveryJournal(context){
+    const storage=window.localStorage;if(!storage)throw new Error('发布恢复存储不可用');storage.removeItem(deliveryJournalKey(context));if(storage.getItem(deliveryJournalKey(context))!==null)throw new Error('发布结果已确认，恢复记录尚未清除');publicationRequests.delete(context.key);
+  }
+  function releaseDeliveryPresenter(context){if(!context)return;context.controller?.abort();context.listeners?.clear();context.dispose?.();context.dispose=null;}
+  function mountDeliveryPresenter(context){
+    if(!deliveryPresenter)return false;
+    const configure=async(page=PLATFORM_PAGE)=>{if(!deliveryIsCurrent(context))return;const result=window.closeModalLayer424?.(context.layer),after=window.ModalContentRuntime?.activeLayer?.();if(result===false)return;await Promise.resolve(result);if(currentProjectId()!==context.projectId||window.ModalContentRuntime?.activeLayer?.()!==after)return;return window.setPage?.(page)};
+    context.vue=true;const bridge={signal:context.controller.signal,snapshot:()=>deliveryPresentationSnapshot(context),subscribe(fn){context.listeners.add(fn);fn(deliveryPresentationSnapshot(context));return()=>context.listeners.delete(fn)},actions:{refresh:()=>readDeliveryStatus(context),publish:()=>executeDeliverySync(context),configure:()=>configure(),storage:()=>configure('存储配置'),close(){if(deliveryIsCurrent(context))window.closeModalLayer424?.(context.layer)},legacy(){if(!deliveryIsCurrent(context))return;releaseDeliveryPresenter(context);context.controller=new AbortController();context.vue=false;paintDeliveryDialog(context)}}};
+    Promise.resolve().then(()=>{if(!deliveryIsCurrent(context))return;return deliveryPresenter(context.root,bridge)}).then(dispose=>{if(!deliveryIsCurrent(context)||!context.vue){dispose?.();return}context.dispose=dispose}).catch(()=>{if(deliveryIsCurrent(context))bridge.actions.legacy()});return true;
+  }
 
   function installDeliveryDialogStyles() {
     if (document.getElementById('external-delivery-dialog-styles')) return;
@@ -419,7 +448,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   }
 
   function deliveryIsCurrent(context) {
-    return Boolean(context?.root?.isConnected) && currentProjectId() === context.projectId
+    return activeDeliveryDialog===context&&!context?.controller?.signal.aborted&&(!context.owner||context.owner.isCurrent())&&Boolean(context?.root?.isConnected) && currentProjectId() === context.projectId
       && String(state().page || '') === '算法列表';
   }
 
@@ -477,7 +506,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   }
 
   function paintDeliveryDialog(context) {
-    if (deliveryIsCurrent(context)) context.root.innerHTML = deliveryDialogBody(context);
+    if(!deliveryIsCurrent(context))return;if(context.vue){const snapshot=deliveryPresentationSnapshot(context);for(const listener of context.listeners)listener(snapshot)}else context.root.innerHTML=deliveryDialogBody(context);
   }
 
   async function readDeliveryStatus(context) {
@@ -486,13 +515,14 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     context.error = '';
     paintDeliveryDialog(context);
     try {
-      const status = await requestJson(deliveryEndpoint(context));
+      const status = await requestJson(deliveryEndpoint(context), {signal:context.controller.signal});
       if (!deliveryIsCurrent(context)) return;
       context.status = status;
+      context.platformMode = state().externalAlgorithmPlatformConfig?.mode;
       context.awaitingReadback = false;
       if (context.uncertain && status.publication?.status === 'PUBLISHED' && status.requires_sync === false) {
+        clearDeliveryJournal(context);
         context.uncertain = false;
-        publicationRequests.delete(context.key);
       }
     } catch (error) {
       if (deliveryIsCurrent(context)) context.error = String(error?.message || error);
@@ -505,6 +535,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   async function executeDeliverySync(context) {
     if (!deliveryIsCurrent(context) || context.busy || context.uncertain || publicationRequests.get(context.key) === 'pending') return;
     if (!context.status || context.status.requires_sync === false || !publicationPreflight(context.status).ready) return;
+    if(!window.confirm('确认将此版本及预检可同步的权重同步到新畅联吗？'))return;
+    try{saveDeliveryJournal(context)}catch(error){context.error='无法保存发布恢复记录，本次未提交。 '+String(error.message||error);paintDeliveryDialog(context);return}
     publicationRequests.set(context.key, 'pending');
     context.busy = 'publishing';
     context.error = '';
@@ -513,7 +545,9 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     try {
       const result = await requestJson(deliveryEndpoint(context) + '/publish', {method:'POST'});
       requestConfirmed = true;
-      context.uncertain = false;
+      context.uncertain = true;
+      publicationRequests.set(context.key,'uncertain');
+      if(!deliveryIsCurrent(context))return;
       context.awaitingReadback = true;
       context.message = publicationResultMessage(result);
       notify?.(context.message);
@@ -521,7 +555,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       context.busy = '';
       await readDeliveryStatus(context);
     } catch (error) {
-      context.uncertain = !requestConfirmed && !(Number(error?.httpStatus) >= 400 && Number(error?.httpStatus) < 500);
+      context.uncertain = true;
       if (deliveryIsCurrent(context)) {
         context.error = context.uncertain
           ? `发布结果待确认，请先查询状态；系统不会自动再次提交。 ${String(error?.message || error)}`
@@ -529,7 +563,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       }
       if (context.uncertain) publicationRequests.set(context.key, 'uncertain');
     } finally {
-      if (!context.uncertain) publicationRequests.delete(context.key);
+      if(context.uncertain)publicationRequests.set(context.key,'uncertain');
       context.busy = '';
       paintDeliveryDialog(context);
     }
@@ -553,10 +587,14 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       uncertain:publicationRequests.get(key) === 'uncertain',
     };
     if (typeof window.modal !== 'function') return notify?.('当前弹窗组件不可用，请刷新后重试');
+    context.controller=new AbortController();context.listeners=new Set();
+    try{context.uncertain=restoreDeliveryJournal(context)||context.uncertain}catch(error){context.uncertain=true;context.error=String(error.message||error)}
+    releaseDeliveryPresenter(activeDeliveryDialog);
     context.layer = window.modal('新畅联模型交付', '<div data-external-delivery-dialog="1"></div>', true);
     context.root = context.layer?.querySelector('[data-external-delivery-dialog]')
       || document.querySelector('[data-external-delivery-dialog]');
     if (!context.root) return notify?.('交付窗口创建失败，请重试');
+    context.owner=window.ModalContentRuntime?.captureOwner?.();
     activeDeliveryDialog = context;
     context.root.addEventListener('click', event => {
       const action = event.target.closest('[data-delivery-action]')?.dataset.deliveryAction;
@@ -568,7 +606,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       if (action === 'refresh') void readDeliveryStatus(context);
       if (action === 'sync') void executeDeliverySync(context);
     });
-    paintDeliveryDialog(context);
+    if(!mountDeliveryPresenter(context))paintDeliveryDialog(context);
     void readDeliveryStatus(context);
   }
 
@@ -591,9 +629,12 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     saveConfig,
     runAutoOnce,
     publishVersion,
+    setDeliveryPresenter(mount){deliveryPresenter=typeof mount==='function'?mount:null;},
+    beforeModalClose(layer){if(activeDeliveryDialog?.layer===layer)releaseDeliveryPresenter(activeDeliveryDialog);},
     decoratePlatformPage,
     config: () => config,
     destroy() {
+      releaseDeliveryPresenter(activeDeliveryDialog);
       observer.disconnect();
       window.__externalAlgorithmPublishRuntimeInstalled = false;
       if (window.ExternalAlgorithmPublishRuntime === runtime) window.ExternalAlgorithmPublishRuntime = null;
