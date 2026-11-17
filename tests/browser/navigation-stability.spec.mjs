@@ -1270,7 +1270,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
       if (result && typeof result.then === 'function') await result;
     }, legacy);
     await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(canonical);
-    await expect(page.locator('#title')).toHaveText(canonical==='模型配置'?'AI 辅助配置':canonical);
+    await expect(page.locator('#title')).toHaveText(canonical==='算法列表'?'算法库':canonical==='模型配置'?'AI 辅助配置':canonical);
   }
 
   expect(pageErrors).toEqual([]);
