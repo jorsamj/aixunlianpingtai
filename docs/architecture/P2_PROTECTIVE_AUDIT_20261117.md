@@ -111,3 +111,14 @@ CI历史Trace已经证明权威数据正确、checkbox=true、旧签名null，�
 - 诊断改用 test-results/material-overlay-diagnostic 独立输出、强制保留本次诊断 Trace、overlay.jsonl 和 integrity.json；既有工作流上传该目录，原失败 Trace 不再被同目录重跑清除。临时测试 finally 删除，并校验原测试/app.js/分页 JS SHA256；任何字节变化报错。当前临时文件不存在。
 - 本地仅执行 --verify-only（15 处匹配、两份注入 JS 语法检查）、4 项零匹配/重复匹配拒绝检查和 git diff --check；未重复运行已通过原浏览器用例。原测试和两份业务 JS 对 919cd393 零差异。
 - **根因仍未证实，未修改业务链路，未完成恢复验收。** 本次成功运行没有最后成功函数/首个异常函数证据。需要保留原失败证据，在同一原始用例下一次真实失败时采集函数级链路；不靠增加随机重复次数定位，也不因成功运行关闭问题。开/关/再开及分页重绘完整闭环仍未验收。未改 GT/API/数据库/Worker/分页业务规则，未部署或合并 PR。
+
+
+## 已证实素材摘要覆盖缺陷最小修复（2026-11-17）
+
+用户已授权修复 apply(s) 的素材赋值。修复前 `state.images=s.images||[]` 会将同项目 core_only 且不含 images 的摘要解释为清空素材；定向 B 实验已证明素材先应用、摘要后应用时原人工标注断言失败。现复用 sameProject，以 Object.hasOwn 区分缺字段与显式空数组：同项目缺字段保留原列表，显式 images=[] 仍清空；跨项目缺字段和初次加载缺字段为空，不保留旧项目素材。只改这一赋值及局部注释，不改 GT/保存/分页 API/Repository/Worker/数据库/版本号/入口。
+
+验证：新增 bootstrap-material-ownership.test.mjs 直接执行原 apply 函数，修复前4/5、修复后5/5（缺字段保留、显式空、跨项目、初次加载、显式列表更新）。历史点击屏障 B 修复前原 toHaveCount(1) 失败，修复后 A/B 各一次1/1通过；两组 natural503=true、complete=true，交付顺序分别 bootstrap→materials、materials→bootstrap。B同次验证on/off/on及原renderer局部重绘，框数量与状态一致；两次读取正式合成GT响应完全相同。另直接运行未经注入的原 material-workflows 用例1/1通过。原测试文件及分页JS SHA256保持不变；诊断运行期间 app.js 哈希前后相同，临时文件已删除。
+
+命令：`node --test tests/frontend/bootstrap-material-ownership.test.mjs`；`node tools/diagnose_material_overlay.mjs --scenario=A/B`（独立执行各一次，输出根目录另设以保护旧证据，B启用OVERLAY_VALIDATE_TOGGLES=1）；`npx playwright test tests/browser/material-workflows.spec.mjs -g "manual annotation saves, survives reload, and updates the thumbnail"`。两个诊断工具的现有未提交修改仍保留，不混入此修复提交；CI原工作流及原用例不改。不做全仓测试/新工作流/生产操作。离线前端/Vue无变更，不重复构建。
+
+证据：本机 delivery-evidence/20261117/material-response-barrier-af659bd 保留修复前A/B日志和Trace；material-overlay-minimal-fix 保留修复后A/B overlay.jsonl、integrity.json、Trace、原用例日志和诊断工具未提交diff。响应时间差受隔离浏览器交付开销影响，两组合成项目ID不同；不将此对照描述为历史时序逐字节重放。已修复这一具体覆盖缺陷，但历史CI末尾仍留旧卡片等表现不等同于B清空卡片，不能宣称历史所有症状已解释。准确提交CI推送后只查一次，待异步结果；未生产验收或部署。
