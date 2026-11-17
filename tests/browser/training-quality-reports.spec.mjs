@@ -527,8 +527,8 @@ test('training precision remains visible and canonical across all four modes',as
     expect(await page.evaluate(()=>state.trainingDraft.config.precision)).toBe('fp32');
     expect(await page.evaluate(()=>state.trainingDraft.config.amp)).toBe(false);
   }
-  await expect(precision.locator('option')).toHaveText(['自动 AMP（推荐）','FP16 AMP','BF16','FP32 全精度']);
-  await precision.selectOption('bf16');expect(await page.evaluate(()=>state.trainingDraft.config.precision)).toBe('bf16');expect(await page.evaluate(()=>state.trainingDraft.config.amp)).toBe(true);
+  await expect(precision.locator('option')).toHaveText(['自动 AMP（推荐）','FP16 AMP','FP32 全精度']);
+  await expect(precision.locator('option[value=bf16]')).toHaveCount(0);
   await precision.scrollIntoViewIfNeeded();
   await page.screenshot({path:testInfo.outputPath('training-precision.png')});
 });

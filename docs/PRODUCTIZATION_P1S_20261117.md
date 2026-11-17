@@ -22,7 +22,7 @@ Vue TrainingCreate负责三步导航、单滚动布局、事实摘要和原节�
 
 TrainingTasks只新增原日志/操作诊断公开入口；进入旧任务详情后才能按原权限执行取消/恢复，未在Vue复制无回执的控制POST，不建立第二状态机。原TrainingRecoveryRuntime仍管日志、checkpoint资格、取消/恢复。
 
-新增只读参数快照排除内部路径字符串，模型仅basename。设备读取失败明示error，UNKNOWN不能当已创建。bf16在后端Schema已有支持，原precision下拉补齐选项；模式与默认值继续原Submit。时长原normalizeTrainingTimeLimit(0)确实返回null（留空/0不限），0.05原拒绝；本轮不改这一既有业务合同，不由Vue自行放行。
+新增只读参数快照排除内部路径字符串，模型仅basename。设备读取失败明示error，UNKNOWN不能当已创建。HTTP Schema列出bf16但固定训练运行时明确拒绝，最终precision下拉保持auto/fp16/fp32；BF16受原运行时合同阻断，模式与默认值继续原Submit。时长原normalizeTrainingTimeLimit(0)确实返回null（留空/0不限），0.05原拒绝；本轮不改这一既有业务合同，不由Vue自行放行。
 
 真实浏览器发现原独立Test切回random后null经Number(null)变0，导致Submit拒绝。新定向RED证明0!=原默认20，最小修原training-draft.js只对null/undefined复用原20默认，显式0仍保持0并由原校验拒绝，不放宽测试。draft/runtime26通过；原Submit/Draft/桥接/新适配器此前95通过，入口和最新适配器/路径保护29通过（含重叠，不叠加宣称总覆盖）。TypeScript/Vite1704模块通过，入口三资源统一615，改变的draft模块缓存615；未改VERSION或未变业务模块缓存。
 
@@ -35,3 +35,7 @@ TrainingTasks只新增原日志/操作诊断公开入口；进入旧任务详情
 业务SHA0f81ce9f3be5c2fb15bae42627a458748bd28b41：Frontend job1724/1724、VueChrome19/19，制品14292334712已实物下载CRC正确，JS944393/CSS137541字节与本地构建一致；源码+Vue ZIP也通过CRC。该SHA的Training Create First Open发现旧浏览器断言仅允许3个precision选项，实际新增Schema已有BF16共4项；更新为精确4项并补BF16/AMP canonical验证，单条真实Chrome1/1通过，没有删除或放宽断言。
 
 同SHA的Release Regression另在未改动test_process_control.py:73立即观察suspend后状态偶得running而非stopped。原代码/断言不变，已仅重跑失败runtime-contracts job，结果以远端实际回执为准，未改进程/Worker/Agent逻辑，未本地扩大该无关测试。最终收尾SHA仍须独立CI验收，禁止将首次红灯写成全绿。
+
+## 精度运行时合同纠正
+
+Remote Training Runtime CI的Permanent guard揭示：HTTP TrainReq Schema虽然列出bf16，但实际platform_core/training_precision.py的SUPPORTED_TRAINING_PRECISIONS只有auto/fp16/fp32，normalize_training_precision明确拒绝BF16。先前只核对Schema便增加BF16可选项是本轮判断错误，已撤回；不是修改/放宽CI guard。恢复精确三个可用选项，浏览器额外验证BF16选项不存在。前文“补齐BF16”及第二次四项断言是被纠正的中间过程，不代表最终交付。用户要求的BF16目前受原运行时合同阻断，不能通过前端假装支持；本轮不升级Ultralytics或实施硬件适配。最终收尾SHA重新核验所有被触发的CI，首次红灯不冒充成功。
