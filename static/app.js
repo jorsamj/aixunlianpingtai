@@ -4806,7 +4806,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function disposeAiCreateRequests429(draft){draft?.previewDispose?.();
     if(!draft)return;
     clearTimeout(draft.searchTimer);clearTimeout(draft.referenceSearchTimer);clearTimeout(aiPromptPreviewTimer429);
-    for(const key of ['materialController','referenceController','bulkController','hydrationController','previewController','summaryController'])draft[key]?.abort?.();
+    for(const key of ['materialController','referenceController','bulkController','hydrationController','previewController','summaryController','createReceiptController'])draft[key]?.abort?.();
     draft.materialRequestEpoch=(draft.materialRequestEpoch||0)+1;
     draft.referenceRequestEpoch=(draft.referenceRequestEpoch||0)+1;
     draft.bulkEpoch=(draft.bulkEpoch||0)+1;
@@ -4815,6 +4815,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.beforeCloseAiCreate429=function(layer){
     const root=layer?.querySelector?.('.ai-create-workbench'),draft=aiCreateCurrent429();
     if(!root||!draft||Number(root.dataset.aiCreateEpoch)!==Number(draft.epoch))return;
+    window.AiCreateVueRuntime?.leave?.();
     disposeAiCreateRequests429(draft);
     state.ai429Create=null;
   };
@@ -5024,7 +5025,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const sourceBatchId=String(opts.source_batch_id||'').trim();
     const initial=explicit;
     state.ai429RefLabels=new Set();state.ai429RefSelected=new Set();
-    state.ai429Create={epoch,images:new Set(initial),selectionRef:'',selectionCount:0,excluded:new Set(),pageMembers:new Set(),sourceBatchId,labels:new Set(),modelId:'',templateId:'',taskName:`AI自动标注-${new Date().toLocaleString()}`,confirmationSnapshot:'',submitting:false,page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0||!!sourceBatchId,referencePage:1,referencePageSize:8,referenceRequestEpoch:0,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:'',hydrationEpoch:0,previewEpoch:0};
+    state.ai429Create={epoch,projectId:String(pid()),images:new Set(initial),selectionRef:'',selectionCount:0,excluded:new Set(),pageMembers:new Set(),sourceBatchId,labels:new Set(),modelId:'',templateId:'',taskName:`AI自动标注-${new Date().toLocaleString()}`,confirmationSnapshot:'',submitting:false,page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0||!!sourceBatchId,referencePage:1,referencePageSize:8,referenceRequestEpoch:0,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:'',hydrationEpoch:0,previewEpoch:0};
     modal('创建AI自动标注任务',`<div class="ailabel427 ai429 ai-create-workbench" data-ai-create-epoch="${epoch}"><div id="ai429Hydration" class="ai-create-hydration"><span class="loading-line">正在同步模型、模板与标签；可先选择素材…</span></div><section class="ai-create-section"><header><div><b>1. 选择待标注素材</b><span>分页读取全部状态素材；旧 GT 保留，AI 结果进入待审核候选。</span></div><strong id="ai429MaterialCount">已选 ${initial.length} 张</strong></header><div class="ai-create-toolbar"><select class="select" aria-label="标注状态" onchange="aiCreateStateChanged429(this.value)"><option value="">全部素材</option><option value="unannotated">未标注</option><option value="annotated">已标注</option><option value="partial">部分标注（未覆盖全部标签审核）</option><option value="confirmed_empty">已确认无目标</option></select><select id="ai429MaterialLabel" class="select" aria-label="素材标签筛选" onchange="aiCreateMaterialLabelChanged429(this.value)"><option value="">全部标签</option></select><input id="ai429MaterialQ" class="input" placeholder="搜索素材名称" oninput="searchAiCreateMaterials429()"></div><div id="ai429MaterialGrid" class="ai-create-material-grid"><div class="ai-create-loading"><i></i><span>准备素材分页…</span></div></div><div id="ai429MaterialPager" class="ai-create-pager"></div></section><section class="ai-create-section"><header><div><b>2. 选择视觉模型</b><span>只展示已配置模型；任务创建时冻结模型版本与安全凭据引用。</span></div></header><input id="ai429Model" type="hidden"><div id="ai429Models" class="ai-create-models"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>3. 选择有效标签</b><span>必须显式选择当前标签库英文 code；中文名、别名、历史 alias 不会自动转换。</span></div><strong id="ai429LabelCount">已选 0 个</strong></header><input id="ai429Labels" type="hidden"><input id="ai429LabelQ" class="input" placeholder="搜索标签中文名或 code" oninput="aiCreateRenderLabels429()"><div id="ai429LabelGrid" class="ai-create-label-grid"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>4. 提示词</b><span>模板是起点；当前任务可独立编辑，提交后冻结，不受模板后续修改影响。</span></div></header><div class="form two"><div class="field"><label>提示词模板</label><select id="ai429Template" class="select" onchange="aiCreateTemplateChanged429()"><option>正在读取…</option></select></div><div class="field"><label>业务补充说明</label><input id="ai429Instruction" class="input" maxlength="2000" placeholder="例如：只标注清晰可见且面积大于 20px 的目标" oninput="scheduleAiPromptPreview429()"></div></div><div class="field"><div class="row between"><label>本任务完整提示词</label><button type="button" class="btn mini" onclick="restoreAiPrompt429()">恢复模板原文</button></div><textarea id="ai429Prompt" class="input ai-create-prompt" rows="7" maxlength="12000" placeholder="正在读取提示词…" oninput="this.dataset.userEdited='1';scheduleAiPromptPreview429()"></textarea><small>允许变量：labels_json、image_width、image_height、business_instruction、output_schema。</small></div><details class="ai-create-preview"><summary>预览最终提示词</summary><div id="ai429PromptPreview"><span>选择标签后生成预览</span></div></details></section><details class="advanced427-box ai-create-advanced"><summary>高级设置</summary><div class="form two"><div class="field"><label>置信度阈值</label><input id="ai429Threshold" class="input" type="number" min="0" max="1" step="0.01" value="0.45"></div><div class="field check"><label><input id="ai429Overwrite" type="checkbox"> 覆盖相同标签旧标注</label></div></div></details><div class="ai-create-footer"><span>候选结果仍须人工审核后才写入正式标注。</span><div class="row"><button class="btn" onclick="closeModal()">取消</button><button id="ai429Submit" class="btn primary" onclick="submitAiLabel429()">创建AI标注任务</button></div></div></div>`,true);
     const workbench=document.querySelector(`.ai-create-workbench[data-ai-create-epoch="${epoch}"]`);
     const sections=[...workbench.querySelectorAll(':scope > .ai-create-section')];
@@ -5061,6 +5062,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       const pager=document.getElementById('ai429MaterialPager');if(pager)pager.replaceChildren();
       const count=document.getElementById('ai429MaterialCount');if(count)count.textContent='批次选择 · 服务端冻结';
     }else{aiCreateRenderMaterials429();loadAiCreateMaterials429()}
+    window.renderAiCreateRecovery429?.();
+    window.AiCreateVueRuntime?.render?.(createRoot);
     return epoch;
   };
 
@@ -8880,9 +8883,76 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
     return `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
   }
+  // The original create Owner persists only its recovery identity, never inference input.
+  const aiCreatePendingMemory429=new Map();
+  const aiCreateJournalKey429=project=>'ai-create-operation:'+encodeURIComponent(project);
+  window.pendingAiCreate429=function(project=pid()){
+    project=String(project||'');if(!project)return null;
+    try{
+      const storage=window.localStorage;if(!storage)throw new Error('storage unavailable');
+      const raw=storage.getItem(aiCreateJournalKey429(project));
+      if(!raw)return aiCreatePendingMemory429.get(project)||null;
+      const saved=JSON.parse(raw);
+      if(saved.project_id!==project||typeof saved.request_id!=='string'||!/^[A-Za-z0-9_-]{12,80}$/.test(saved.request_id))throw new Error('invalid recovery identity');
+      const pending={project_id:project,request_id:saved.request_id,state:'UNKNOWN'};
+      aiCreatePendingMemory429.set(project,pending);return pending;
+    }catch(_error){return {...(aiCreatePendingMemory429.get(project)||{project_id:project,request_id:''}),state:'UNKNOWN',error:'创建恢复记录暂时不可读取或身份异常；禁止重复创建，请恢复浏览器存储后查询。'}}
+  };
+  function persistAiCreate429(project,requestId){
+    const raw=JSON.stringify({project_id:project,request_id:requestId}),storage=window.localStorage;
+    if(!storage)throw new Error('恢复存储不可用');
+    storage.setItem(aiCreateJournalKey429(project),raw);
+    aiCreatePendingMemory429.set(project,{project_id:project,request_id:requestId,state:'UNKNOWN'});
+    if(storage.getItem(aiCreateJournalKey429(project))!==raw)throw new Error('恢复记录写后校验失败');
+  }
+  function clearAiCreate429(pending){
+    const current=window.pendingAiCreate429(pending.project_id);
+    if(!current||current.error||current.request_id!==pending.request_id)return false;
+    const storage=window.localStorage;storage.removeItem(aiCreateJournalKey429(pending.project_id));
+    if(storage.getItem(aiCreateJournalKey429(pending.project_id))!==null)return false;
+    aiCreatePendingMemory429.delete(pending.project_id);return true;
+  }
+  window.renderAiCreateRecovery429=function(){
+    const root=document.querySelector('.ai429[data-ai-create-epoch]');if(!root)return;
+    let panel=document.getElementById('ai429Recovery');
+    if(!panel){panel=document.createElement('section');panel.id='ai429Recovery';panel.className='inline-error';panel.setAttribute('aria-live','polite');const footer=root.querySelector('.ai-create-footer');if(footer)footer.before(panel);else root.append(panel)}
+    const pending=window.pendingAiCreate429();panel.hidden=!pending;
+    const submit=document.getElementById('ai429Submit');if(pending&&submit){submit.textContent='查询原创建回执';submit.disabled=!!state.ai429Create?.receiptLoading;}
+    if(!pending){panel.innerHTML='';return}
+    panel.innerHTML=`<strong>UNKNOWN · 创建结果尚未确认</strong><p>${esc(pending.error||'已保存原创建请求编号。当前禁止新建或重发，只能查询原任务回执。')}</p>${pending.request_id?'<button type="button" class="btn" data-ai-create-lookup>查询原创建回执</button>':''}`;
+    panel.querySelector('[data-ai-create-lookup]')?.addEventListener('click',()=>void window.queryAiCreateReceipt429());
+  };
+  function captureAiCreateOwner429(){
+    const draft=state.ai429Create,project=String(pid()),epoch=draft?.epoch;
+    const root=document.querySelector(`.ai429[data-ai-create-epoch="${epoch}"]`),owner=window.ModalContentRuntime?.captureOwner?.();
+    return {project,draft,current:()=>state.ai429Create===draft&&!!root?.isConnected&&String(pid())===project&&(!draft?.projectId||String(draft.projectId)===project)&&(!owner||owner.isCurrent()),owner};
+  }
+  async function showAiCreateReceipt429(task,captured){
+    if(!captured.current())return;
+    if(captured.owner?.layer)await window.closeModalLayer424?.(captured.owner.layer);else await closeModal();
+    if(String(pid())!==captured.project||window.ModalContentRuntime?.activeLayer?.())return;
+    void showAiTask60(task.id,{initialTask:task});
+  }
+  window.queryAiCreateReceipt429=async function(){
+    const captured=captureAiCreateOwner429(),pending=window.pendingAiCreate429(captured.project);
+    if(!captured.current()||captured.draft.receiptLoading)return null;
+    if(!pending||!pending.request_id||pending.error){window.renderAiCreateRecovery429();return null}
+    const controller=new AbortController();captured.draft.createReceiptController=controller;captured.draft.receiptLoading=true;window.renderAiCreateRecovery429();
+    try{
+      const receipt=await api(`${taskApi(null,pending.project_id)}/by-request/${encodeURIComponent(pending.request_id)}`,{signal:controller.signal});
+      if(typeof receipt?.id!=='string'||!receipt.id.trim()||(receipt.project_id!=null&&String(receipt.project_id)!==pending.project_id))throw new Error('缺少匹配任务回执');
+      // A stale GET may clear its exact identity but never close a replacement modal.
+      if(!clearAiCreate429(pending))return null;
+      await showAiCreateReceipt429(receipt,captured);return receipt;
+    }catch(_error){if(captured.current()){window.renderAiCreateRecovery429();toast('尚未确认原创建回执；保留 UNKNOWN，请稍后再次查询，勿重复提交。')}return null}
+    finally{if(captured.draft.createReceiptController===controller){captured.draft.createReceiptController=null;captured.draft.receiptLoading=false;if(captured.current())window.renderAiCreateRecovery429()}}
+  };
   window.submitAiLabel429=async function(ids=[]){
+    const captured=captureAiCreateOwner429();
+    if(!captured.current())return false;
+    if(window.pendingAiCreate429(captured.project)){window.renderAiCreateRecovery429();return window.queryAiCreateReceipt429()}
     const submit=document.getElementById('ai429Submit');if(submit?.disabled)return false;
-    const draft=state.ai429Create||{};if(draft.submitting||draft.summaryLoading)return false;
+    const draft=state.ai429Create||{};if(draft.submitting||draft.summaryLoading)return false;draft.createError='';
     if(draft.bulkLoading)return toast('请等待当前筛选结果解析完成后再创建任务');
     if(!ids.length)ids=[...(draft.images||new Set())];
     if(!ids.length&&!draft.sourceBatchId&&!draft.selectionRef)return toast('没有需要标注的图片');
@@ -8910,9 +8980,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       const summarySnapshot=JSON.stringify({image_ids:body.image_ids,previous_ref:draft.selectionRef||null,excluded_image_ids:[...(draft.excluded||[])]});
       if(draft.summarySnapshot!==summarySnapshot){
         draft.summaryLoading=true;draft.summaryController?.abort();draft.summaryController=new AbortController();if(submit)submit.disabled=true;
-        try{const summary=await api(`/api/v60/projects/${pid()}/annotation-selections/summary`,{method:'POST',signal:draft.summaryController.signal,headers:{'Content-Type':'application/json'},body:summarySnapshot});if(state.ai429Create!==draft)return false;draft.selectionSummary=summary;draft.summarySnapshot=summarySnapshot}catch(error){if(state.ai429Create===draft)return toast(error.message||'素材状态统计失败');return false}finally{draft.summaryLoading=false;draft.summaryController=null;if(submit?.isConnected)submit.disabled=false}
+        try{const summary=await api(`/api/v60/projects/${encodeURIComponent(captured.project)}/annotation-selections/summary`,{method:'POST',signal:draft.summaryController.signal,headers:{'Content-Type':'application/json'},body:summarySnapshot});if(!captured.current())return false;draft.selectionSummary=summary;draft.summarySnapshot=summarySnapshot}catch(error){if(state.ai429Create===draft)return toast(error.message||'素材状态统计失败');return false}finally{draft.summaryLoading=false;draft.summaryController=null;if(submit?.isConnected)submit.disabled=false}
       }
     }
+    if(!captured.current())return false;
     const snapshot=JSON.stringify(body);
     if(draft.confirmationSnapshot!==snapshot){
       draft.confirmationSnapshot=snapshot;
@@ -8923,37 +8994,38 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
     body.request_id=draft.createRequestId||newAiCreateRequestId429();
     draft.createRequestId=body.request_id;
-    const ownerEpoch=draft.epoch,ownerProject=String(pid());
+    const ownerEpoch=draft.epoch,ownerProject=captured.project;
     const ownerRoot=document.querySelector(`.ai429[data-ai-create-epoch="${ownerEpoch}"]`);
-    const current=()=>state.ai429Create===draft&&!!ownerRoot?.isConnected&&String(pid())===ownerProject;
+    const current=()=>captured.current()&&!!ownerRoot?.isConnected;
+    if(!current()||window.pendingAiCreate429(ownerProject))return false;
+    try{persistAiCreate429(ownerProject,body.request_id)}catch(_error){window.renderAiCreateRecovery429();toast('无法保存创建恢复记录，本次未提交。请恢复浏览器存储后再核查。');return false}
     draft.submitting=true;
     try{
       if(submit){submit.disabled=true;submit.textContent='正在创建…'}
-      const task=await api(taskApi(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if(!task?.id)throw new Error('创建请求缺少任务回执，请到任务列表核实，勿重复提交');
+      const task=await api(taskApi(null,ownerProject),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(typeof task?.id!=='string'||!task.id.trim()||(task.project_id!=null&&String(task.project_id)!==ownerProject))throw new Error('创建请求缺少匹配任务回执');
+      if(!clearAiCreate429({project_id:ownerProject,request_id:body.request_id}))throw new Error('创建回执恢复记录尚未清除');
       if(!current())return true;
-      await closeModal();
-      // The durable 202 response already is the receipt; detail refresh must
-      // not delay it or turn a successful create into a creation error.
-      void showAiTask60(task.id,{initialTask:task});
+      await showAiCreateReceipt429(task,captured);
       return true;
     }catch(error){
-      // A broken connection may hide a durable 202 response. Resolve the
-      // original operation ID before offering a retry; never mint a new one.
-      if(current()&&!error.httpStatus){
-        try{
-          const receipt=await api(`${taskApi()}/by-request/${encodeURIComponent(body.request_id)}`);
-          if(receipt?.id&&current()){
-            await closeModal();
-            void showAiTask60(receipt.id,{initialTask:receipt});
-            return true;
-          }
-        }catch(_lookupError){/* Same ID remains available for a safe retry. */}
+      // This route validates the payload before writing request.json or a task.
+      // Explicit 400/422 rejects can be corrected; conflict/timeout/transport remain UNKNOWN.
+      if([400,422].includes(Number(error.httpStatus))&&clearAiCreate429({project_id:ownerProject,request_id:body.request_id})){
+        if(current()){
+          draft.confirmationSnapshot='';
+          draft.createError=String(error.message||'创建配置未通过服务端校验').replace(/https?:\/\/\S+/g,'[地址已隐藏]').replace(/(token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;}]+/gi,'$1=[已隐藏]').replace(/[A-Za-z]:[\\/][^\s,;]+|(?:\/[\w.\-]+){2,}/g,'[路径已隐藏]').slice(0,600);
+          if(submit){submit.disabled=false;submit.textContent='核对并创建'}
+          window.renderAiCreateRecovery429();toast(draft.createError);
+        }
+        return false;
       }
+      // Recovery of an uncertain acceptance is an explicit original-request GET.
       if(current()){
         const button=document.getElementById('ai429Submit');
-        if(button){button.disabled=false;button.textContent='确认创建任务'}
-        toast(`${error.message||error}。如需重试将沿用本次请求编号，避免重复创建`);
+        if(button){button.disabled=false;button.textContent='查询原创建回执'}
+        window.renderAiCreateRecovery429();
+        toast('创建结果尚未确认。已保留原请求编号，请查询原创建回执，勿重复提交。');
       }
       return false;
     }

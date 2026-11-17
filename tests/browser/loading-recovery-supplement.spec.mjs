@@ -42,6 +42,7 @@ for(const flow of ['clean','convert','publish','annotation'])for(const outcome o
  },{flow});
  const button=page.locator('#supplement-loading-fixture button').first();await button.click();
  if(flow==='publish'){
+   page.on('dialog',async confirmation=>{expect(confirmation.type()).toBe('confirm');expect(confirmation.message()).toBe('确认将此版本及预检可同步的权重同步到新畅联吗？');await confirmation.accept()});
    const dialog=page.locator('[data-external-delivery-dialog]');
    await expect(dialog).toBeVisible();
    const sync=dialog.locator('[data-delivery-action="sync"]');

@@ -29,7 +29,7 @@ test('final AI annotation owner uses durable v60 candidate review flow', () => {
   const submitEnd = source.indexOf('\n\n  function taskRow', finalSubmit);
   assert.ok(submitEnd > finalSubmit, 'final v60 submit block must remain bounded');
   const finalSubmitBody = source.slice(finalSubmit, submitEnd);
-  assert.match(finalSubmitBody, /const task=await api\(taskApi\(\),/);
+  assert.match(finalSubmitBody, /const task=await api\(taskApi\(null,ownerProject\),/);
   assert.doesNotMatch(finalSubmitBody, /\/api\/v3[35]\/projects/);
 
   const finalPage = source.lastIndexOf('function renderAiTaskPage60');
@@ -97,7 +97,7 @@ test('retired AI submit compatibility entrypoint delegates to the v60 owner', ()
   const finalLayer = source.slice(marker, end);
   assert.match(finalLayer, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
   assert.doesNotMatch(finalLayer, /\/api\/v47\/projects\/.*ai-label-tasks/);
-  assert.match(finalLayer, /const task=await api\(taskApi\(\),/);
+  assert.match(finalLayer, /const task=await api\(taskApi\(null,ownerProject\),/);
 });
 
 
@@ -154,7 +154,7 @@ test('AI create requires an effective-configuration review before its only durab
   assert.match(submit, /const snapshot=JSON\.stringify\(body\)/);
   assert.match(submit, /if\(draft\.confirmationSnapshot!==snapshot\)/);
   assert.match(submit, /renderAiCreateConfirmation429\(body\)/);
-  assert.ok(submit.indexOf('renderAiCreateConfirmation429(body)') < submit.indexOf('const task=await api(taskApi(),'));
+  assert.ok(submit.indexOf('renderAiCreateConfirmation429(body)') < submit.indexOf('const task=await api(taskApi(null,ownerProject),'));
   assert.match(submit, /catch\(error\)\{draft\.confirmationSnapshot='';return toast\('本次配置概览渲染失败/);
   assert.match(submit, /if\(draft\.submitting\|\|draft\.summaryLoading\)return false/);
   assert.match(submit, /draft\.submitting=true/);
@@ -164,7 +164,9 @@ test('AI create requires an effective-configuration review before its only durab
   assert.doesNotMatch(submit, /aiCreateIsCurrent429|aiCreateLabelName429/);
   assert.match(submit, /draft\.createRequestId=newAiCreateRequestId429\(\)/);
   assert.match(submit, /body\.request_id=draft\.createRequestId/);
-  assert.match(submit, /by-request\/\$\{encodeURIComponent\(body\.request_id\)\}/);
+  assert.match(submit, /persistAiCreate429\(ownerProject,body\.request_id\)/);
+  assert.match(submit, /return window\.queryAiCreateReceipt429\(\)/);
+  assert.match(source, /taskApi\(null,pending\.project_id\)\}\/by-request\/\$\{encodeURIComponent\(pending\.request_id\)\}/);
 });
 
 test('AI create initializes every asynchronous request counter before incrementing it', () => {

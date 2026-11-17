@@ -555,7 +555,10 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       context.busy = '';
       await readDeliveryStatus(context);
     } catch (error) {
-      context.uncertain = true;
+      // This route has no execution-time 422 response: schema rejection precedes
+      // the publish owner. Conflicts, transport loss and post-success reads stay UNKNOWN.
+      context.uncertain = requestConfirmed || Number(error?.httpStatus)!==422;
+      if(!context.uncertain){try{clearDeliveryJournal(context)}catch(_){context.uncertain=true}}
       if (deliveryIsCurrent(context)) {
         context.error = context.uncertain
           ? `发布结果待确认，请先查询状态；系统不会自动再次提交。 ${String(error?.message || error)}`

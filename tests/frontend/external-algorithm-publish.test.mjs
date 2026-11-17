@@ -354,13 +354,13 @@ test('superseded same-name ONNX is retained only under collapsed history',()=>{
 import {installExternalAlgorithmPublishRuntime,deliveryPresentationSnapshot} from '../../static/modules/external-algorithm-publish.js';
 const deliveryTick=()=>new Promise(resolve=>setTimeout(resolve,0));
 function deliveryFixture(storage=new Map()){
- const readSignals=[];let bridge,postCount=0,status={publication:{status:'UNKNOWN'},requires_sync:true,publish_ready:true,mapped_artifact_count:1,discovered:[{target:'original'}]},failStorage=false;
+ const readSignals=[];let postStatus=0,bridge,postCount=0,status={publication:{status:'UNKNOWN'},requires_sync:true,publish_ready:true,mapped_artifact_count:1,discovered:[{target:'original'}]},failStorage=false;
  const root={isConnected:true,addEventListener(){},innerHTML:''},layer={querySelector:()=>root};
  globalThis.document={body:{},getElementById:()=>({}),querySelector:()=>root};globalThis.MutationObserver=class{observe(){}disconnect(){}};
- globalThis.window={confirm:()=>true,modal:()=>layer,ModalContentRuntime:{captureOwner:()=>({isCurrent:()=>true,layer})},localStorage:{getItem:key=>storage.get(key)??null,setItem(key,value){if(failStorage)throw new Error('quota');storage.set(key,value)},removeItem:key=>storage.delete(key)},fetch:async(_url,options)=>{if(options.method==='POST'){postCount++;throw new Error('network lost')}readSignals.push(options.signal);return {ok:true,text:async()=>JSON.stringify(status)}}};
+ globalThis.window={confirm:()=>true,modal:()=>layer,ModalContentRuntime:{captureOwner:()=>({isCurrent:()=>true,layer})},localStorage:{getItem:key=>storage.get(key)??null,setItem(key,value){if(failStorage)throw new Error('quota');storage.set(key,value)},removeItem:key=>storage.delete(key)},fetch:async(_url,options)=>{if(options.method==='POST'){postCount++;throw Object.assign(new Error('network lost'),postStatus?{httpStatus:postStatus}:{})}readSignals.push(options.signal);return {ok:true,text:async()=>JSON.stringify(status)}}};
  const runtime=installExternalAlgorithmPublishRuntime({getState:()=>({page:'算法列表',algorithms:[{id:'a',versions:[{id:'v'}]}]}),projectId:()=> 'p'});
  runtime.setDeliveryPresenter(async(_host,context)=>{bridge=context;return()=>{}});
- return {runtime,storage,readSignals,setStatus:value=>status=value,failStorage:()=>failStorage=true,get bridge(){return bridge},get posts(){return postCount}};
+ return {runtime,storage,readSignals,reject:code=>postStatus=code,setStatus:value=>status=value,failStorage:()=>failStorage=true,get bridge(){return bridge},get posts(){return postCount}};
 }
 test('delivery unknown survives a new owner and only authoritative completed GET clears journal',async()=>{
  const first=deliveryFixture();await first.runtime.publishVersion('a','v');await deliveryTick();await first.bridge.actions.publish();assert.equal(first.posts,1);assert.equal(first.storage.size,1);assert.equal(first.bridge.snapshot().uncertain,true);first.runtime.destroy();
@@ -386,4 +386,9 @@ test('delivery owner abort releases its status read transport',async()=>{
  let signal;window.fetch=async(_url,options)=>{signal=options.signal;return new Promise(()=>{})};
  const reading=pending.bridge.actions.refresh();await deliveryTick();assert.equal(signal.aborted,false);
  pending.runtime.destroy();await reading;assert.equal(signal.aborted,true);assert.equal(pending.posts,0);
+});
+
+test('delivery pre-handler schema rejection is correctable while conflict stays uncertain',async()=>{
+ const rejected=deliveryFixture();await rejected.runtime.publishVersion('a','v');await deliveryTick();rejected.reject(422);await rejected.bridge.actions.publish();assert.equal(rejected.posts,1);assert.equal(rejected.storage.size,0);assert.equal(rejected.bridge.snapshot().uncertain,false);assert.equal(rejected.bridge.snapshot().canPublish,true);rejected.runtime.destroy();
+ const conflict=deliveryFixture();await conflict.runtime.publishVersion('a','v');await deliveryTick();conflict.reject(409);await conflict.bridge.actions.publish();assert.equal(conflict.posts,1);assert.equal(conflict.storage.size,1);assert.equal(conflict.bridge.snapshot().uncertain,true);await conflict.bridge.actions.publish();assert.equal(conflict.posts,1);conflict.runtime.destroy();
 });

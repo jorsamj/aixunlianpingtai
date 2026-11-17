@@ -1,3 +1,5 @@
+> 2026-11-17 P1X：Vue AI创建三步、原选择/Provider/确认/Submit独占节点，project/request_id-only UNKNOWN恢复、原by-request GET。opt-in vue_ai_create=1；隔离125冻结/唯一拦截POST/刷新GET/原回退已验，真实推理/GT0。准确CI与P1V/W旧用例收尾见[专项](PRODUCTIZATION_P1X_20261117.md)。下一P1Y。
+
 > 2026-11-17 P1W：Vue素材上传与治理、原Uppy6.0.5/ZIP/确认/任务Owner复用；原TaskCenter订阅，不加轮询。opt-in vue_material_import=1，旧素材源管理保留。隔离真实图片上传1、ZIP界面及回退已验，ZIP导入/治理执行未验；准确CI/离线范围见[专项](PRODUCTIZATION_P1W_20261117.md)。下一P1X。
 
 > 2026-11-17 P1U：Vue转换创建外层接入，原完整动态参数/字典SDK合同/持久请求与原任务日志验证Owner保留，opt-in vue_conversion_create=1；UNKNOWN恢复只释放原owned层，零真实SDK/转换。代码、隔离证据和准确CI边界见[专项](PRODUCTIZATION_P1U_20261117.md)。旧默认及回退保留，下一P1V。

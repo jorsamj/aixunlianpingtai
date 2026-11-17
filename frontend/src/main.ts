@@ -26,6 +26,8 @@ import TrainingCreate from './views/TrainingCreate.vue';
 import ConversionCreate from './views/ConversionCreate.vue';
 import ModelDelivery from './views/ModelDelivery.vue';
 import MaterialImportGovernance from './views/MaterialImportGovernance.vue';
+import AiAnnotationCreate from './views/AiAnnotationCreate.vue';
+import type {AiAnnotationCreateContext} from './types/ai-annotation-create';
 import type {MaterialImportGovernanceContext} from './types/material-import-governance';
 import type {ModelDeliveryContext} from './types/model-delivery';
 import type {ConversionCreateContext} from './types/conversion-create';
@@ -68,7 +70,8 @@ export async function mountTrainingCreate(host:HTMLElement,context:TrainingCreat
 export async function mountConversionCreate(host:HTMLElement,context:ConversionCreateContext){return mountView(host,context,ConversionCreate)}
 export async function mountModelDelivery(host:HTMLElement,context:ModelDeliveryContext){return mountView(host,context,ModelDelivery)}
 export async function mountMaterialImportGovernance(host:HTMLElement,context:MaterialImportGovernanceContext){return mountView(host,context,MaterialImportGovernance)}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext,component:Component){
+export async function mountAiAnnotationCreate(host:HTMLElement,context:AiAnnotationCreateContext){return mountView(host,context,AiAnnotationCreate)}
+async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext|AiAnnotationCreateContext,component:Component){
   if('signal' in context&&context.signal.aborted)return ()=>{};
   const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component,props:{context}}]});
   const app=createApp({render:()=>h(ElConfigProvider,{locale:zhCn},()=>h(RouterView))});
