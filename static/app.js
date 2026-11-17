@@ -2844,6 +2844,7 @@ window.installUsability417=function(){
   };
   window.modal=modal;
   function beforeCloseModal424(layer){
+    if(layer?.querySelector('[data-vue-conversion-create]'))window.ConversionCreateVueRuntime?.leave?.();
     if(layer?.querySelector('[data-vue-training-create]'))window.TrainingCreateVueRuntime?.leave?.();
     window.beforeCloseAiTask60?.(layer);
     window.TrainingMaterialSummaryRuntime?.beforeModalClose?.(layer);
@@ -3859,28 +3860,48 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function savePendingConversion428(project,aid,vid,value){try{localStorage.setItem(conversionRequestKey428(project,aid,vid),JSON.stringify(value))}catch(_){}}
   function clearPendingConversion428(project,aid,vid){conversionUnknown428.delete(`${project}:${aid}:${vid}`);try{localStorage.removeItem(conversionRequestKey428(project,aid,vid))}catch(_){}}
   function newConversionRequestId428(){return `conv_${window.crypto?.randomUUID?.().replace(/-/g,'')||`${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`}`}
+  function conversionRecoveryOwner428(project,aid,vid,pending){
+    const owner=window.ModalContentRuntime?.captureOwner?.(),layer=owner?.layer;
+    const candidate=document.querySelector('.convert428-create'),source=`version::${aid}::${vid}`;
+    const form=candidate&&state.conv428SourceId===source&&(!layer||layer.contains(candidate))?candidate:null;
+    const panel=layer?.querySelector?.('[data-conversion-pending]');
+    const pendingPanel=panel?.dataset?.conversionPending===pending.request_id?panel:null;
+    const current=()=>project===pid()&&(!owner||owner.isCurrent())&&(!form||(document.querySelector('.convert428-create')===form&&state.conv428SourceId===source));
+    const buttons=`<div class="row end"><button class="btn" onclick="verifyPendingConversion428('${esc(aid)}','${esc(vid)}')">再次核验</button><button class="btn primary" onclick="retryPendingConversion428('${esc(aid)}','${esc(vid)}')">按原请求安全重试</button></div>`;
+    return {current,show(message){if(!current())return;const html=`<div class="alert warn">${esc(message)}</div>${buttons}`,warn=form?.querySelector('#conv428Warn');if(warn){warn.innerHTML=html;return}if(pendingPanel){pendingPanel.innerHTML=html;return}modal('转换结果待确认',`<div data-conversion-pending="${esc(pending.request_id)}">${html}</div>`,true)},async release(){
+      if(!current())return false;
+      if(form||pendingPanel){
+        const result=layer?window.closeModalLayer424?.(layer):window.closeModal?.();
+        const after=window.ModalContentRuntime?.activeLayer?.();
+        if(result===false)return false;await Promise.resolve(result);
+        if(project!==pid()||(window.ModalContentRuntime?.activeLayer?.()!==after))return false;
+      }
+      return project===pid();
+    }};
+  }
   window.verifyPendingConversion428=async function(aid,vid){
     const project=pid(),pending=pendingConversion428(project,aid,vid);
-    if(!pending)return false;
+    if(!pending||pending.payload.source_id!==`version::${aid}::${vid}`)return false;
+    const owned=conversionRecoveryOwner428(project,aid,vid,pending);
     try{
       const result=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs/by-request/${encodeURIComponent(pending.request_id)}`,{signal}),{label:'核验转换创建结果'});
-      if(project!==pid())return true;
-      if(result.found&&result.job?.id){clearPendingConversion428(project,aid,vid);toast('已确认原转换任务创建成功，不会重复创建');return window.openVersionConvert428(aid,vid)}
-      const message=result.pending?'服务器正在准备原转换请求，请稍后继续核验。':'尚未查到原转换任务；可按相同请求 ID 安全重试，不会创建第二份。';
-      modal('转换结果待确认',`<div class="alert warn">${esc(message)}</div><div class="row end"><button class="btn" onclick="verifyPendingConversion428('${esc(aid)}','${esc(vid)}')">再次核验</button><button class="btn primary" onclick="retryPendingConversion428('${esc(aid)}','${esc(vid)}')">按原请求安全重试</button></div>`,true);
-    }catch(error){if(project===pid())modal('转换结果待确认',`<div class="alert warn">核验失败：${esc(error.message||error)}。原请求可能仍在执行，请勿以新请求创建。</div><div class="row end"><button class="btn" onclick="verifyPendingConversion428('${esc(aid)}','${esc(vid)}')">再次核验</button><button class="btn primary" onclick="retryPendingConversion428('${esc(aid)}','${esc(vid)}')">按原请求安全重试</button></div>`,true)}
+      if(!owned.current())return true;
+      if(result.found&&result.job?.id){if(!await owned.release())return true;clearPendingConversion428(project,aid,vid);toast('已确认原转换任务创建成功，不会重复创建');return window.openVersionConvert428(aid,vid)}
+      owned.show(result.pending?'服务器正在准备原转换请求，请稍后继续核验。':'尚未查到原转换任务；可按相同请求 ID 安全重试，不会创建第二份。');
+    }catch(error){owned.show('核验失败：'+(error.message||error)+'。原请求可能仍在执行，请勿以新请求创建。')}
     return true;
   };
   window.retryPendingConversion428=async function(aid,vid){
     const project=pid(),key=`${project}:${aid}:${vid}`,pending=pendingConversion428(project,aid,vid);
-    if(!pending||conversionPending428.has(key))return;
+    if(!pending||pending.payload.source_id!==`version::${aid}::${vid}`||conversionPending428.has(key))return;
+    const owned=conversionRecoveryOwner428(project,aid,vid,pending);
     conversionPending428.add(key);
     try{
       await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(pending.payload)}),{label:'原转换请求重试',mutation:true});
-      if(project!==pid())return;
+      if(!owned.current()||!await owned.release())return;
       clearPendingConversion428(project,aid,vid);
       await window.openVersionConvert428(aid,vid);
-    }catch(error){if(project===pid())toast('原请求结果仍需核验：'+(error.message||error));}
+    }catch(error){if(owned.current())toast('原请求结果仍需核验：'+(error.message||error));}
     finally{conversionPending428.delete(key)}
   };
   window.submitConvert428=async function(aid,vid){
@@ -7736,6 +7757,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       };
       window.retryConversionSection428=key=>{if(live()&&loaders[key])return loaders[key]()};
       window.refreshConvertResource428();
+      window.ConversionCreateVueRuntime?.render?.(form,{algorithmId:aid,versionId:vid});
       await Promise.allSettled(Object.values(loaders).map(run=>run()));
 
     }catch(e){if(project!==pid()||ticket!==conversionOpenTicket416)return;conversionResourcesLoading416=false;state.conv428ResourcesCurrent=false;toast('转换资源加载失败：'+(e.message||e))}

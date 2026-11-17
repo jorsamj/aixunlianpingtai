@@ -425,3 +425,10 @@
   .conversion-ui-filter-button{padding:7px 9px}
   #conversion-catalog-host .catalog-section{padding:10px}
 }
+
+/* Vue owns the outer layout; original conversion controls stay uniquely owned. */
+.conversion560-create[data-vue-conversion-create]{display:block!important}
+[data-vue-conversion-create-host]{min-width:0;width:100%}
+[data-vue-conversion-create] .owner-footer-slot{position:static;flex:0 0 auto}
+
+[data-vue-conversion-create]>.conversion560-aside[hidden]{display:none!important}

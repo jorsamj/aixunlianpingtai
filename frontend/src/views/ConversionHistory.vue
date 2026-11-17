@@ -10,6 +10,8 @@ const selection=props.context.memory.selection;
 const filters=reactive<Record<string,string|number>>({page:1,status:'',target:'',chip:'',precision:'',csc:'',created_from:'',created_to:'',...props.context.memory.history});
 const history=ref<ConversionPage|null>(null),record=ref<ConversionRecord|null>(null);
 const filterFields=[['status','状态'],['target','目标'],['chip','芯片'],['precision','精度'],['csc','颜色配置']];
+function log(){const id=record.value?.id;if(!id)return;close();props.context.openConversionLog?.(id)}
+function manage(){close();if(selection)props.context.openLegacy(selection)}
 function close(){record.value=null}
 function load(force=false){if(!selection?.algorithmId||!selection.versionId)return;close();props.context.memory.history={...filters};return reads.run('history',signal=>api.history(selection.algorithmId,selection.versionId,{...filters,...(force?{force:'true'}:{})},signal),value=>{history.value=value})}
 function search(){filters.page=1;void load()}
@@ -19,7 +21,7 @@ onMounted(()=>void load());
 </script>
 <template><section class="catalog-preview conversion-history" aria-label="版本转换历史与诊断只读中心">
  <PageHeader title="转换记录与诊断" eyebrow="模型管理 / 版本转换历史" description="只读取选中版本的转换记录与已有证据。" badge="只读历史" @back="context.returnToManagement"/>
- <div class="browse-context"><div><strong>{{ selection?.algorithmName||selection?.algorithmId||'尚未选择算法' }}</strong><span>{{ selection?.versionName||selection?.versionId||'尚未选择版本' }}</span><small>项目 {{ context.projectId }}</small></div><div class="preview-actions"><el-button @click="context.returnToAssets">返回版本浏览</el-button><el-button v-if="selection?.versionId" @click="context.openLegacy(selection)">原版本转换 / 验证</el-button></div></div>
+ <div class="browse-context"><div><strong>{{ selection?.algorithmName||selection?.algorithmId||'尚未选择算法' }}</strong><span>{{ selection?.versionName||selection?.versionId||'尚未选择版本' }}</span><small>项目 {{ context.projectId }}</small></div><div class="preview-actions"><el-button @click="context.returnToAssets">返回版本浏览</el-button><el-button v-if="selection?.versionId&&context.openConversionCreate" type="primary" @click="context.openConversionCreate(selection)">创建版本转换</el-button><el-button v-if="selection?.versionId" @click="context.openLegacy(selection)">原版本转换 / 验证</el-button></div></div>
  <el-empty v-if="!selection?.versionId" description="尚未选择版本，请从模型资产页进入"/>
  <template v-else><form class="browse-filters history-filters" @submit.prevent="search"><el-select v-for="[key,label] in filterFields" :key="key" v-model="filters[key]" :aria-label="'转换'+label" :placeholder="'全部'+label"><el-option :label="'全部'+label" value=""/><el-option v-for="value in history?.filter_options?.[key]||[]" :key="value" :label="value" :value="value"/></el-select><el-input v-model="filters.created_from" type="date" aria-label="转换开始日期"/><el-input v-model="filters.created_to" type="date" aria-label="转换结束日期"/><el-button native-type="submit" type="primary" :disabled="reads.busy.history">查询记录</el-button><el-button :disabled="reads.busy.history" @click="load(true)">刷新记录</el-button></form>
  <el-alert v-if="reads.errors.history" :title="reads.errors.history" type="error" :closable="false"/><p v-if="reads.errors.history&&history" class="evidence-note">以下为上次成功读取的快照，不能作为最新状态。</p><el-alert v-if="history?.complete===false" title="历史投影不完整，部分任务状态或记录未能核验。" type="warning" :closable="false"/>
@@ -37,5 +39,5 @@ onMounted(()=>void load());
   <h3>执行信息</h3><ReadOnlyFacts :fields="[['任务状态',record.task_status],['Durable 状态',record.durable_status],['当前阶段',record.stage],['进度',record.progress],['执行资源',record.resource_name],['Worker',record.worker_id],['创建',record.created_at],['开始',record.started_at],['完成',record.finished_at]]"/><ReadOnlyFacts :fields="Object.entries(record.execution_evidence||{})"/>
   <h3>输出产物</h3><p v-if="!record.outputs?.length" class="evidence-note">没有提供产物证据，不能据此生成下载链接。</p><article v-for="(output,index) in record.outputs||[]" :key="index" class="artifact-evidence"><strong>{{ output.file_name||'文件名未提供' }}</strong><ReadOnlyFacts :fields="[['文件存在',output.exists===true?'文件存在（不代表完整性通过）':output.exists===false?'文件不存在':'未核验'],['SHA256',output.sha256],['大小（MB）',output.size_mb],['大小（字节）',output.size_bytes],['完整性记录',output.validation_status]]"/></article><p v-if="record.outputs_truncated">仅展示前20个输出，完整记录请使用原管理入口。</p>
   <h3>诊断</h3><ReadOnlyFacts :fields="[['错误代码',record.error_code],['错误',record.error],['消息',record.message],['建议',record.solution],['等待原因',record.resource_wait_reason]]"/><ReadOnlyFacts :fields="Object.entries(record.hardware_verification||{})"/>
- </div><template #footer><el-button @click="close">返回当前记录列表</el-button></template></el-drawer>
+ </div><template #footer><el-button @click="close">返回当前记录列表</el-button><el-button v-if="record&&context.openConversionLog" @click="log">原任务日志</el-button><el-button @click="manage">原任务操作与验证</el-button></template></el-drawer>
 </section></template>

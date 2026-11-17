@@ -194,7 +194,7 @@
   }
 
   function decorateCreate(form) {
-    if (form.dataset.conversionWorkbenchReady === '1') return;
+    if (form.dataset.vueConversionCreate || form.dataset.conversionWorkbenchReady === '1') return;
     form.dataset.conversionWorkbenchReady = '1';
     form.classList.add('conversion560-create');
     const allChildren = [...form.children];
@@ -273,6 +273,7 @@
     for(const root of document.querySelectorAll('.convert428-v2:not([data-conversion-workbench-ready])'))decorateHistory(root);
     for(const form of document.querySelectorAll('.convert428-create:not([data-conversion-workbench-ready])'))decorateCreate(form);
     for(const form of document.querySelectorAll('.convert428-create[data-conversion-workbench-ready]')){
+      if(form.dataset.vueConversionCreate)continue;
       const main=form.querySelector('.conversion560-main');
       // Source/catalog loader inserts into the editor asynchronously.
       for(const id of ['conv428SourceLoad','conv428CatalogLoad']){

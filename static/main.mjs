@@ -7,9 +7,10 @@ import {installLazyAdvancedEvaluation} from './modules/lazy-advanced-evaluation.
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime,catalogOperationId} from './modules/conversion-catalog-runtime.js?v=6';
+import {installConversionCreateVueRuntime} from './modules/conversion-create-vue-runtime.js?v=20261117p1u1';
 import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
-import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1t1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1t1';
+import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1u1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1u1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -544,6 +545,8 @@ const catalogPreviewRuntime = installCatalogPreview({
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
 if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
 window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
+window.ConversionCreateVueRuntime=installConversionCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_conversion_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountConversionCreate(host,context)});
+window.addEventListener('pagehide',()=>window.ConversionCreateVueRuntime?.leave());
 window.TrainingCreateVueRuntime=installTrainingCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_training_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountTrainingCreate(host,context)});
 window.addEventListener('pagehide',()=>window.TrainingCreateVueRuntime?.leave());
 window.AiReviewVueRuntime=installAiReviewVueRuntime({enabled:new URLSearchParams(location.search).get('vue_ai_review')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiReview(host,context)});

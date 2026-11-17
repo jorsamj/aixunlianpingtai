@@ -1,3 +1,5 @@
+> 2026-11-17 P1U：Vue转换创建外层接入，原完整动态参数/字典SDK合同/持久请求与原任务日志验证Owner保留，opt-in vue_conversion_create=1；UNKNOWN恢复只释放原owned层，零真实SDK/转换。代码、隔离证据和准确CI边界见[专项](docs/PRODUCTIZATION_P1U_20261117.md)。旧默认及回退保留，下一P1V。
+
 > 2026-11-17 P1T：原报告Owner有界只读投影、Vue详细Tab、原ECharts/Panzoom复用；P1S准确e83a60c已36/36 CI成功，BF16仍受固定运行时阻断。报告实际证据及未验范围见[专项](docs/PRODUCTIZATION_P1T_20261117.md)；P1U尚待开发，旧默认不变。
 
 > 2026-11-17 P1S–P1Z新授权：从P1S接续，历史“完成后停止”由新授权取代。P1S新增Vue三步展示，原Draft/Label/Picker/Submit子树单一DOM归属，opt-in vue_training_create=1，旧默认及回退保留。当前代码/隔离验收与准确SHA CI状态见[专项](docs/PRODUCTIZATION_P1S_20261117.md)。
