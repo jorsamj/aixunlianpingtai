@@ -54,7 +54,7 @@ def metrics(value):
              'map50':('map50','mAP50','metrics/mAP50(B)'), 'map50_95':('map50_95','mAP50_95','metrics/mAP50-95(B)')}
     return {key:next((value[name] for name in names if type(value.get(name)) in (int,float) and math.isfinite(value[name])),None) for key,names in aliases.items()}
 
-def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=''):
+def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id='',history_offset=None,history_limit=200):
     from .reports import build_version_report,diagnose_training_history
     legacy,legacy_state=bounded_json(legacy_path)
     finalized,final_state=bounded_json(artifacts.artifact_path(job_id,'result.json')) if task else ({},'MISSING')
@@ -72,9 +72,12 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
     evaluation=finalized.get('evaluation') if isinstance(finalized.get('evaluation'),dict) else legacy.get('evaluation') or report.get('test_result') or {}
     canonical=build_version_report({**legacy,'training_report':report,'evaluation':evaluation,
         'metric_credibility':finalized.get('metric_credibility') if task else None})
-    history=report.get('history') or []
-    history=[fields(row,('epoch','map50','precision','recall','box_loss','val_box_loss','cls_loss','val_cls_loss','dfl_loss','val_dfl_loss')) for row in history[-200:] if isinstance(row,dict)] if isinstance(history,list) else []
-    quality=diagnose_training_history(history)
+    original_history=report.get('history') or []
+    original_history=original_history if isinstance(original_history,list) else []
+    history_total=len(original_history)
+    history_start=max(0,history_total-200) if history_offset is None else history_offset
+    history=[fields(row,('epoch','map50','map50_95','mAP50_95','map5095','precision','recall','f1','F1','box_loss','val_box_loss','cls_loss','val_cls_loss','dfl_loss','val_dfl_loss','learning_rate','duration_seconds','images_per_second')) for row in original_history[history_start:history_start+history_limit] if isinstance(row,dict)]
+    quality=diagnose_training_history([fields(row,('epoch','map50','precision','recall','box_loss','val_box_loss','cls_loss','val_cls_loss','dfl_loss','val_dfl_loss')) for row in original_history[-200:] if isinstance(row,dict)])
     warnings=[text(row.get('phenomenon'))+'；'+text(row.get('action')) for row in quality['findings']]
     gates=report.get('gate_events') or legacy.get('gate_events') or []
     warnings.extend(text(row if isinstance(row,str) else row.get('message') or row.get('reason') or row.get('code')) for row in gates[:20] if isinstance(row,(str,dict)))
@@ -92,4 +95,4 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
         'test_status':text(evaluation.get('status')) if isinstance(evaluation,dict) else None,
         'credibility':fields(canonical.get('metric_credibility'),('status','level','message','reason','note','source')),
         'warnings':[value for value in warnings if value], 'quality_status':quality['status'],
-        'history':history,'history_truncated':isinstance(report.get('history'),list) and len(report['history'])>200}
+        'history':history,'history_truncated':history_start>0 or history_start+history_limit<history_total,'history_total':history_total,'history_offset':history_start,'history_limit':history_limit,'history_has_next':history_start+history_limit<history_total}

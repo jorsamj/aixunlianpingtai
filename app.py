@@ -11948,7 +11948,7 @@ def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: st
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/samples')
 def evaluation_sample_page(project_id: str, algorithm_id: str, version_id: str,
                            offset: int = 0, limit: int = 24, issue: str = '', class_id: Optional[int] = None,
-                           sort: str = 'severity'):
+                           sort: str = 'severity', reader_view: bool=False):
     from platform_core.evaluation_analysis import evaluation_samples
     if (offset < 0 or not 1 <= limit <= 50 or issue not in {'', 'tp', 'fp', 'fn', 'wrong_class',
             'localization', 'low_confidence', 'duplicate'} or sort not in {'severity', 'high_confidence_fp'}
@@ -11957,12 +11957,19 @@ def evaluation_sample_page(project_id: str, algorithm_id: str, version_id: str,
     version, _ = _advanced_evaluation_context(project_id, algorithm_id, version_id)
     evaluation = version.get('evaluation') or {}
     result = evaluation_samples(evaluation, offset=offset, limit=limit, issue=issue, class_id=class_id, sort=sort)
+    if reader_view:
+        from platform_core.evaluation_reader_views import samples_display
+        result=samples_display(project_id,algorithm_id,version_id,result)
     return {'ok': True, 'project_id': project_id, 'algorithm_id': algorithm_id, 'version_id': version_id, **result}
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/report')
-def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: str):
+def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: str, reader_view: bool=False, section: str="summary", offset: int=0, limit: int=20, class_id: Optional[int]=None):
     version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    if reader_view:
+        if section not in {'summary','classes','curves','confusion'} or offset<0 or not 1<=limit<=100 or class_id is not None and class_id<0:raise HTTPException(422,detail='评测报告分段范围无效')
+        from platform_core.evaluation_reader_views import report_section
+        return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version_id':version_id,**report_section(version.get('evaluation') or {},section,offset,limit,class_id)}
     # All-cohort outcomes are available only via the paged sample endpoint.
     evaluation = {key: value for key, value in (version.get('evaluation') or {}).items()
                   if key not in {'sample_outcomes', 'sample_evidence'}}
@@ -11973,7 +11980,7 @@ def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: s
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')
-def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str):
+def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str, reader_view: bool=False, offset: int=0, limit: int=20):
     from platform_core.training_evaluation import compare_evaluations
     _, current = _algorithm_version_for_action(project_id, algorithm_id, version_id)
     _, previous = _algorithm_version_for_action(project_id, algorithm_id, other_version_id)
@@ -11987,6 +11994,10 @@ def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: s
     result['parameter_differences'] = {key: {'before': before.get(key), 'after': after.get(key)}
                                        for key in allowed if before.get(key) != after.get(key)}
     result.update(source_version_id=other_version_id, current_version_id=version_id)
+    if reader_view:
+        if offset<0 or not 1<=limit<=100:raise HTTPException(422,detail='版本比较分页范围无效')
+        from platform_core.evaluation_reader_views import comparison_display
+        return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version_id':version_id,'comparison':comparison_display(result,offset,limit)}
     return {'ok': True, 'comparison': result}
 
 
@@ -23330,8 +23341,9 @@ def v44_test_saved_model_config(config_id: str):
     return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(cfg) else v35_test_model_config(V35ModelConfigReq(**cfg))
 
 @app.get('/api/v44/projects/{project_id}/jobs/{job_id}/report')
-def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = '', reader_view: bool=False):
+def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = '', reader_view: bool=False, history_offset: Optional[int]=None, history_limit: int=200):
     if reader_view:
+        if history_offset is not None and history_offset<0 or not 1<=history_limit<=200:raise HTTPException(422,detail='报告历史分页范围无效')
         from platform_core.training_reader_views import report_display
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
         get_project(project_id)
@@ -23348,7 +23360,7 @@ def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', ve
             refs=store.training_version_refs(job_id)
             if len(refs)>1:raise HTTPException(409,detail='REPORT_IDENTITY_AMBIGUOUS: 请从具体版本进入')
             if refs:algorithm_id,version_id=refs[0]
-        result=report_display(job_id,task,shared_task_artifacts(),project_dir(project_id)/'jobs'/job_id/'job.json',algorithm_id=algorithm_id,version_id=version_id)
+        result=report_display(job_id,task,shared_task_artifacts(),project_dir(project_id)/'jobs'/job_id/'job.json',algorithm_id=algorithm_id,version_id=version_id,history_offset=history_offset,history_limit=history_limit)
         if result['state']=='IDENTITY_CONFLICT':raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: '+result['message'])
         return {'ok':True,'project_id':project_id,'job_id':job_id,'algorithm_id':algorithm_id,'version_id':version_id,**result}
     get_project(project_id);jf=project_dir(project_id)/'jobs'/job_id/'job.json'

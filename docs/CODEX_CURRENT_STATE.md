@@ -1,3 +1,5 @@
+> 2026-11-17 P1T：原报告Owner有界只读投影、Vue详细Tab、原ECharts/Panzoom复用；P1S准确e83a60c已36/36 CI成功，BF16仍受固定运行时阻断。报告实际证据及未验范围见[专项](PRODUCTIZATION_P1T_20261117.md)；P1U尚待开发，旧默认不变。
+
 > 2026-11-17 P1S–P1Z新授权：从P1S接续，历史“完成后停止”由新授权取代。P1S新增Vue三步展示，原Draft/Label/Picker/Submit子树单一DOM归属，opt-in vue_training_create=1，旧默认及回退保留。当前代码/隔离验收与准确SHA CI状态见[专项](PRODUCTIZATION_P1S_20261117.md)。
 
 > 2026-11-17 P1O–P1R：Vue AI任务/审核与Annotorious薄适配已交付代码；原CandidateStore/GT/负样本/任务Owner保持，旧页默认，使用vue_ai_tasks=1及vue_ai_review=1按需启用。第三方优先复用规则见[规范](FRONTEND_THIRD_PARTY_REUSE_POLICY.md)，业务/API/验收边界见[本轮交接](PRODUCTIZATION_P1O_P1R_20261117.md)。准确SHA CI与制品核验以本轮交付回执为准，生产未部署。

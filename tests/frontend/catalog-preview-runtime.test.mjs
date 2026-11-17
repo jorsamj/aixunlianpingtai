@@ -114,3 +114,17 @@ test('training operations delegate only to the original project-owned detail and
  const runtime=installCatalogPreview({tasksEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return()=>{}}},getState:()=>state,document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},load:async()=>({mountTrainingTasks:async(_host,context)=>{contexts.push(context);return()=>{}}})});
  try{await owners.get(TASKS_PAGE)();await contexts[0].legacyTask('train_a','log');assert.deepEqual(calls,[['log','train_a']]);state.page=TASKS_PAGE;await owners.get(TASKS_PAGE)();const context=contexts.at(-1);state.project={id:'other'};await context.legacyTask('train_a','detail');assert.equal(calls.length,1);assert.equal(context.post,undefined)}finally{runtime.destroy();globalThis.window=previous}
 });
+
+
+test('report evidence reads stay in the resolved algorithm and version and require safe projections',async()=>{
+ const owners=new Map(),contexts=[],calls=[],state={page:REPORT_PAGE,project:{id:'p'}};
+ const runtime=installCatalogPreview({reportsEnabled:true,navigation:{registerPageOwner(name,fn){owners.set(name,fn);return()=>{}}},getState:()=>state,document:{getElementById:()=>({replaceChildren(){}}),createElement:()=>({setAttribute(){}})},deadline:(fn,{signal})=>fn(signal),request:async(url,options)=>{calls.push({url,method:options.method});return{ok:true}},load:async()=>({mountTrainingReport:async(_host,context)=>{contexts.push(context);return()=>{}}})});
+ try{await owners.get(REPORT_PAGE)();const context=contexts[0];context.memory.report={jobId:'train_a',algorithmId:'a',versionId:'v',returnPage:'tasks'};
+ await context.get('/api/v12/projects/p/algorithms/a/versions/v/evaluation/report?reader_view=true&section=classes');
+ await context.get('/api/v12/projects/p/algorithms/a/versions/v/evaluation/samples?reader_view=true&offset=24');
+ await context.get('/api/v12/projects/p/algorithms/a/versions/v/evaluation/compare/other?reader_view=true');
+ await context.get('/api/v12/projects/p/algorithms/a?asset_view=true');
+ for(const url of ['/api/v12/projects/q/algorithms/a/versions/v/evaluation/report?reader_view=true','/api/v12/projects/p/algorithms/a/versions/old/evaluation/report?reader_view=true','/api/v12/projects/p/algorithms/a/versions/v/evaluation/report','/api/v12/projects/p/algorithms/a/versions/v/evaluation/execute?reader_view=true'])await assert.rejects(()=>context.get(url),/不允许/);
+ assert.equal(context.post,undefined);assert.equal(calls.length,4);assert.ok(calls.every(row=>row.method==='GET'));
+ }finally{runtime.destroy()}
+});

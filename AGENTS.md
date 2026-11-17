@@ -1,3 +1,5 @@
+> 2026-11-17 P1T：原报告Owner有界只读投影、Vue详细Tab、原ECharts/Panzoom复用；P1S准确e83a60c已36/36 CI成功，BF16仍受固定运行时阻断。报告实际证据及未验范围见[专项](docs/PRODUCTIZATION_P1T_20261117.md)；P1U尚待开发，旧默认不变。
+
 > 2026-11-17 P1S–P1Z新授权：从P1S接续，历史“完成后停止”由新授权取代。P1S新增Vue三步展示，原Draft/Label/Picker/Submit子树单一DOM归属，opt-in vue_training_create=1，旧默认及回退保留。当前代码/隔离验收与准确SHA CI状态见[专项](docs/PRODUCTIZATION_P1S_20261117.md)。
 
 > **长期强制约束：成熟组件优先复用**。Vue仅组织界面与生命周期，Annotorious3.9.5/原几何适配、Uppy/原上传、Panzoom/FloatingUI/ECharts等已有组件与原业务Owner保持唯一；禁止第二套SVG/Canvas/Pointer编辑内核、坐标、草稿库及重复运行时。离线vendor/许可证/map/校验保留，不擅自升级或用CDN。详见[前端第三方组件复用规范](docs/FRONTEND_THIRD_PARTY_REUSE_POLICY.md)。

@@ -39,3 +39,7 @@ TrainingTasks只新增原日志/操作诊断公开入口；进入旧任务详情
 ## 精度运行时合同纠正
 
 Remote Training Runtime CI的Permanent guard揭示：HTTP TrainReq Schema虽然列出bf16，但实际platform_core/training_precision.py的SUPPORTED_TRAINING_PRECISIONS只有auto/fp16/fp32，normalize_training_precision明确拒绝BF16。先前只核对Schema便增加BF16可选项是本轮判断错误，已撤回；不是修改/放宽CI guard。恢复精确三个可用选项，浏览器额外验证BF16选项不存在。前文“补齐BF16”及第二次四项断言是被纠正的中间过程，不代表最终交付。用户要求的BF16目前受原运行时合同阻断，不能通过前端假装支持；本轮不升级Ultralytics或实施硬件适配。最终收尾SHA重新核验所有被触发的CI，首次红灯不冒充成功。
+
+## 准确P1S收尾SHA验收
+
+e83a60c807fdd09081c079245d1fd630c76e5c75最终36/36自动工作流成功。原进程挂起观测及导航清空回调失败均在不改原代码/断言的失败job复验后成功，保留原失败记录，不称首次全绿。下载该SHA制品14294007527，ZIP3176002字节、CRC正确，JS/CSS逐字节匹配本地；源码+Vue包source-with-vue-e83a60c.zip通过CRC。回执在test-results/p1s-delivery。正式训练、BF16运行时支持、现场节点性能及断网目标安装仍未验证；BF16明确受固定运行时阻断。后续P1T接续，不改上述已验业务。

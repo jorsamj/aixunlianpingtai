@@ -14,14 +14,14 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1s1'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1t1'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1s1')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1t1')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
@@ -110,6 +110,10 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           const taskRoot=`/api/v62/projects/${encodeURIComponent(project||'')}/tasks`;
           const tasks=page===TASKS_PAGE&&url.startsWith('/api/v62/')&&parsed.searchParams.get('reader_view')==='true'&&(parsed.pathname===taskRoot||(parsed.pathname.startsWith(taskRoot+'/')&&parsed.pathname.slice(taskRoot.length+1).split('/').length===1));
           const report=page===REPORT_PAGE&&url.startsWith('/api/v44/')&&parsed.searchParams.get('reader_view')==='true'&&parsed.pathname===`/api/v44/projects/${encodeURIComponent(project||'')}/jobs/${encodeURIComponent(browse.report?.jobId||'')}/report`;
+          const reportAlgorithm=String(browse.report?.algorithmId||''),reportVersion=String(browse.report?.versionId||'');
+          const evaluationRoot=`${assetRoot}/${encodeURIComponent(reportAlgorithm)}/versions/${encodeURIComponent(reportVersion)}/evaluation`;
+          const evaluation=page===REPORT_PAGE&&reportAlgorithm&&reportVersion&&url.startsWith('/api/v12/')&&parsed.searchParams.get('reader_view')==='true'&&([evaluationRoot+'/report',evaluationRoot+'/samples'].includes(parsed.pathname)||(parsed.pathname.startsWith(evaluationRoot+'/compare/')&&/^[-A-Za-z0-9_]{1,128}$/.test(parsed.pathname.slice((evaluationRoot+'/compare/').length))));
+          const reportVersions=page===REPORT_PAGE&&reportAlgorithm&&url.startsWith('/api/v12/')&&parsed.searchParams.get('asset_view')==='true'&&parsed.pathname===assetRoot+'/'+encodeURIComponent(reportAlgorithm);
           const materialRoot=`/api/v61/projects/${encodeURIComponent(project||'')}/materials`,annotationRoot=`/api/projects/${encodeURIComponent(project||'')}/annotations/`;
           const materialReads=page===MATERIALS_PAGE&&parsed.searchParams.get('reader_view')==='true'&&((url.startsWith('/api/v61/')&&parsed.pathname===materialRoot)||(url.startsWith('/api/projects/')&&parsed.pathname.startsWith(annotationRoot)&&parsed.pathname.slice(annotationRoot.length).split('/').length===1));
           const aiRoot=`/api/v60/projects/${encodeURIComponent(project||'')}/annotation-tasks`;
@@ -119,7 +123,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           const history=local&&page===HISTORY_PAGE&&parsed.searchParams.get('asset_view')==='true'&&parsed.pathname===`/api/v42/projects/${encodeURIComponent(project||'')}/algorithms/${encodeURIComponent(historySelection?.algorithmId||'')}/versions/${encodeURIComponent(historySelection?.versionId||'')}/deployments`;
           if(browsing&&!project)throw new Error('当前项目尚未就绪');
           if(browsing&&scopeError)throw new Error(scopeError);
-          if(!(page!==NODES_PAGE&&!browsing&&records||receipt||nodes||browsing&&(assets||history||tasks||report||materialReads||poolRead||aiRead)))throw new Error('只读或管理页面不允许该请求');
+          if(!(page!==NODES_PAGE&&!browsing&&records||receipt||nodes||browsing&&(assets||history||tasks||report||evaluation||reportVersions||materialReads||poolRead||aiRead)))throw new Error('只读或管理页面不允许该请求');
           return call(url,{...options,method:'GET'});
         },
         ...(managed?{post(url,body){
