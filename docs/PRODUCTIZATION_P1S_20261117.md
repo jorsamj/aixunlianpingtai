@@ -29,3 +29,9 @@ TrainingTasks只新增原日志/操作诊断公开入口；进入旧任务详情
 隔离fixture复用原tools/test_vue_productization_server.py，仅新增MC_VUE_TRAINING_CREATE_COVERAGE=1的合成新算法无历史覆盖，调用原TrainingMaterialUsage.mark_coverage，默认行为不变。真实Chrome原登录/项目/算法入口、Vue3steps、Train2/Test1互斥、125真实JPEG及正式合成GT经原Picker服务器冻结（无ID数组）、原标签、quick/full/complex/custom30/150/250/手动、FP32、time合同通过。原train/start全部在浏览器abort，捕获仅1POST，未知404GET不清回执、不第二POST，再以明确合成QUEUED回执验证恢复。新脚本frontend/tests/real-training-create.acceptance.mjs可复现。6宽×3步共18图/receipt在test-results/p1s-training-create，已查看768截图，无横溢/底栏遮挡；fixture资源展示未提供不假装现场可用。8032临时服务停止。真实训练、checkpoint执行、资源分配和生产效果未验证。
 
 后端无业务修改/Router抽取：本阶段关键依赖是原浏览器DOM与业务Owner，抽app.py无证明收益，故不拆。未来linux/amd64、linux/arm64、CUDA/Ascend等由原后端能力证据决定，本轮无硬件适配。P1T–P1Z尚未实施；准确新SHA CI/下载制品与最终离线ZIP尚待提交后核验，不能将本地测试当生产验收。
+
+## 首轮准确SHA反馈
+
+业务SHA0f81ce9f3be5c2fb15bae42627a458748bd28b41：Frontend job1724/1724、VueChrome19/19，制品14292334712已实物下载CRC正确，JS944393/CSS137541字节与本地构建一致；源码+Vue ZIP也通过CRC。该SHA的Training Create First Open发现旧浏览器断言仅允许3个precision选项，实际新增Schema已有BF16共4项；更新为精确4项并补BF16/AMP canonical验证，单条真实Chrome1/1通过，没有删除或放宽断言。
+
+同SHA的Release Regression另在未改动test_process_control.py:73立即观察suspend后状态偶得running而非stopped。原代码/断言不变，已仅重跑失败runtime-contracts job，结果以远端实际回执为准，未改进程/Worker/Agent逻辑，未本地扩大该无关测试。最终收尾SHA仍须独立CI验收，禁止将首次红灯写成全绿。
