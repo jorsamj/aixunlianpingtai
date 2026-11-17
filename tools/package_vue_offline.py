@@ -3,12 +3,15 @@ import argparse
 import hashlib
 import io
 import json
+import re
 from pathlib import Path, PurePosixPath
 import subprocess
 import zipfile
 
 
 def package(sha, artifact, metadata, output):
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("A full exact commit SHA is required")
     info = json.loads(Path(metadata).read_text(encoding="utf-8"))
     raw = Path(artifact).read_bytes()
     digest = hashlib.sha256(raw).hexdigest()

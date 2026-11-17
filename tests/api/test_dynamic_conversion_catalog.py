@@ -4,6 +4,10 @@ from fastapi import HTTPException
 from tests.unit.test_dynamic_conversion_catalog import catalog, live as _live
 
 
+def catalog_endpoint(name):
+    return next(route.endpoint for route in api._conversion_catalog_api_router.routes if route.name == name)
+
+
 def live():
     from datetime import datetime, timezone
     return {**_live(),'last_checked_at':datetime.now(timezone.utc).isoformat()}
@@ -101,14 +105,14 @@ def test_catalog_management_metadata_does_not_change_saved_identities_or_externa
     external=tmp_path/"external_algorithm_publish"/"config.json"
     external.parent.mkdir();external.write_text('{"keep":"mapping"}')
     before=repo.conversion_catalog()
-    result=api.v39_conversion_catalog()
+    result=catalog_endpoint("v39_conversion_catalog")()
     assert result["chip_suggestions"] and result["chip_capabilities"]["chip-84"]["sdk_ready"]
     assert repo.conversion_catalog()==before
     changed={**before,"chips":[{**c,"name":"renamed"} if c["id"]=="chip-84" else c for c in before["chips"]]}
-    saved=api.v39_save_conversion_catalog({**changed,"expected_revision":before["revision"]})
+    saved=catalog_endpoint("v39_save_conversion_catalog")({**changed,"expected_revision":before["revision"]})
     assert saved["chips"][0]["id"]=="chip-84" and saved["chips"][0]["sdk_code"]=="bm1684"
     with pytest.raises(HTTPException) as error:
-        api.v39_save_conversion_catalog({**before,"expected_revision":before["revision"]})
+        catalog_endpoint("v39_save_conversion_catalog")({**before,"expected_revision":before["revision"]})
     assert error.value.status_code==409 and "刷新" in str(error.value.detail)
     assert external.read_text()=='{"keep":"mapping"}'
 
@@ -143,8 +147,8 @@ def test_catalog_observe_only_reads_never_trigger_resource_detection(tmp_path, m
         assert detect_missing is False
         return {"items": []}
     monkeypatch.setattr(api, "v39_list_deploy_resources", resources)
-    assert api.v39_catalog_records(entity="chips", observe_only=True)["items"]
-    assert api.v39_catalog_record("chips", "chip-84", observe_only=True)["item"]["id"] == "chip-84"
+    assert catalog_endpoint("v39_catalog_records")(entity="chips", observe_only=True)["items"]
+    assert catalog_endpoint("v39_catalog_record")("chips", "chip-84", observe_only=True)["item"]["id"] == "chip-84"
     assert calls == [False, False]
 
 
@@ -152,14 +156,14 @@ def test_catalog_crud_api_uses_one_record_operations_and_authoritative_query(tmp
     monkeypatch.setattr(api,"DATA_DIR",tmp_path)
     monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})
     body={"entity":"vendors","action":"create","operation_id":"api-create","expected_revision":0,"record":{"name":"vendor","template_id":"rknn"}}
-    result=api.v39_catalog_operation(body)
-    replay=api.v39_catalog_operation(body)
+    result=catalog_endpoint("v39_catalog_operation")(body)
+    replay=catalog_endpoint("v39_catalog_operation")(body)
     assert result["id"]==replay["id"] and replay["replayed"]
-    page=api.v39_catalog_records(entity="vendors",query="vendor",template_id="rknn",enabled="true",page=1,page_size=10,sort="name",vendor_id="")
+    page=catalog_endpoint("v39_catalog_records")(entity="vendors",query="vendor",template_id="rknn",enabled="true",page=1,page_size=10,sort="name",vendor_id="")
     assert page["total"]==1 and page["items"][0]["chip_count"]==0
-    detail=api.v39_catalog_record("vendors",result["id"])
+    detail=catalog_endpoint("v39_catalog_record")("vendors",result["id"])
     assert detail["references"]["can_delete"]
-    assert api.v39_catalog_operation_result("api-create")["after"]["id"]==result["id"]
+    assert catalog_endpoint("v39_catalog_operation_result")("api-create")["after"]["id"]==result["id"]
 
 
 def test_original_conversion_admission_holds_catalog_fence_until_durable_acceptance(tmp_path,monkeypatch):
@@ -188,18 +192,18 @@ def test_chip_detection_reuses_resource_owner_once_and_keeps_each_sdk_fact(tmp_p
     def detect(identity):
         seen.append(identity);return next(r for r in resources if r["id"]==identity)
     monkeypatch.setattr(api,"v39_detect_deploy_resource",detect)
-    result=api.v39_catalog_detect_chip("chip-84",{})
+    result=catalog_endpoint("v39_catalog_detect_chip")("chip-84",{})
     assert seen==["good","bad"] and result["capability"]["sdk_ready"]
     facts={f["resource_id"]:f for f in result["capability"]["resources"]}
     assert facts["good"]["ready"] and not facts["bad"]["ready"]
     assert facts["good"]["mode"]=="remote" and facts["bad"]["mode"]=="local"
     assert facts["bad"]["message"]==bad["message"]
     assert facts["good"]["sdk_version"]!=facts["bad"]["sdk_version"]
-    seen.clear();api.v39_catalog_detect_chip("chip-84",{"resource_ids":["good","good"]});assert seen==["good"]
-    with pytest.raises(PlatformError) as error: api.v39_catalog_detect_chip("chip-84",{"resource_ids":["missing"]})
+    seen.clear();catalog_endpoint("v39_catalog_detect_chip")("chip-84",{"resource_ids":["good","good"]});assert seen==["good"]
+    with pytest.raises(PlatformError) as error: catalog_endpoint("v39_catalog_detect_chip")("chip-84",{"resource_ids":["missing"]})
     assert error.value.code=="CATALOG_RESOURCE_MISMATCH"
     resources.clear()
-    with pytest.raises(PlatformError) as error: api.v39_catalog_detect_chip("chip-84",{})
+    with pytest.raises(PlatformError) as error: catalog_endpoint("v39_catalog_detect_chip")("chip-84",{})
     assert error.value.code=="CATALOG_RESOURCE_UNAVAILABLE"
 
 
@@ -668,3 +672,39 @@ def test_version_history_paginates_its_full_legacy_scope_without_global_truncati
     assert result['items'][0]['execution_evidence']['csc']['applied'] is False
     legacy=api.v423_version_deployments('p','a','old',csc='legacy_unknown')
     assert legacy['total']==2
+
+
+def test_catalog_router_http_and_original_auth_guard(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(api, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(api, "_auth_test_bypass_enabled", lambda: False)
+    monkeypatch.setattr(api, "_verify_browser_session", lambda token: None)
+    client = TestClient(api.app, follow_redirects=False)
+    try:
+        response = client.get("/api/v39/deploy/catalog/records?observe_only=true")
+        assert response.status_code == 401
+        monkeypatch.setattr(api, "_verify_browser_session", lambda token: {"username": "isolated"})
+        monkeypatch.setattr(api, "v39_list_deploy_resources", lambda **kwargs: {"items": []})
+        response = client.get("/api/v39/deploy/catalog/records?entity=chips&observe_only=true&page_size=2")
+        assert response.status_code == 200
+        assert len(response.json()["items"]) <= 2
+        invalid = client.get("/api/v39/deploy/catalog/records?entity=unknown")
+        assert invalid.status_code == 422
+        assert invalid.json()["code"] == "CATALOG_INVALID_QUERY"
+        invalid_body = client.post("/api/v39/deploy/catalog/operations", json=[])
+        assert invalid_body.status_code == 422
+    finally:
+        client.close()
+
+
+def test_catalog_factory_is_independent_and_registers_original_seven_routes():
+    from platform_core.deployment.catalog_api import create_conversion_catalog_router
+    router = create_conversion_catalog_router(lambda: None, lambda **kwargs: {"items": []}, lambda identity: {})
+    assert {(next(iter(route.methods)), route.path) for route in router.routes} == {
+        ("GET", "/api/v39/deploy/catalog"), ("PUT", "/api/v39/deploy/catalog"),
+        ("GET", "/api/v39/deploy/catalog/records"),
+        ("GET", "/api/v39/deploy/catalog/records/{entity}/{identity}"),
+        ("POST", "/api/v39/deploy/catalog/operations"),
+        ("GET", "/api/v39/deploy/catalog/operations/{operation_id}"),
+        ("POST", "/api/v39/deploy/catalog/chips/{identity}/detect"),
+    }

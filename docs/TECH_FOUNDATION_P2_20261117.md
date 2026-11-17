@@ -27,3 +27,21 @@ P2C/P2D 独立源码依据文档：只做数据 Owner/迁移门槛和异构能�
 本轮不修改 VERSION、默认入口、生产环境、训练/GT/Worker/Agent/Supervisor/租约或发布写入逻辑。准确新 SHA CI 和产物状态以交付记录为准，不借用起点 CI。
 
 回退按相反顺序 git revert P2B 提交、P2A 提交；离线包必须整包恢复同 SHA 源码与全部 Vue 资源，不混用 Chunk。无数据库迁移，无数据回滚步骤。
+
+## 实际变更与验证边界
+
+P2A 独立提交 3a4d76e；一次本地 vue-tsc/Vite 构建成功，30 个 manifest 闭包文件，18 个业务页动态入口。稳定入口约 0.73 KB、共享 main runtime 650.86 KB，工作台业务 Chunk 13.63 KB；原单 JS 1041.657 KB，CSS 163.751 KB 不变。首屏还需共享依赖，不能只用入口 0.73 KB 宣称整体性能；生产 P95 未测。
+
+P2B 七个函数 AST 在仅替换注入依赖后与原函数完全一致；没有修改算法/素材/GT/候选/模型/发布/Task Repository。既有测试从 app 全局函数转为原注册 Router.endpoint，断言保留。补实际 HTTP 401/200/422 与独立 Router 路径集合检查；TestClient 不启动 lifespan，SDK 通过替身保持隔离。
+
+后续 Router 顺序：第二批 v12 算法管理、v62 训练任务只读、v44 报告只读；第三批素材查询、AI 读取、模型资产及转换历史。优先现有模块工厂，尚未新增 platform_api 或 application/domain 空目录，不创建无意义转发 Service。
+
+离线组合（不构建）命令：
+
+```text
+python tools/package_vue_offline.py --sha <准确SHA> --artifact <该SHA制品ZIP> --metadata <官方artifact元数据JSON> --output <新交付ZIP>
+```
+
+工具先核 workflow_run.head_sha、制品名称、官方摘要、ZIP CRC、CI 构建来源和每个 Chunk SHA/大小，拒绝其他 SHA、本地构建和缺失文件；git archive 同 SHA 源码包含原 vendor/LICENSE/NOTICE/map，附完整 Vue 目录和元数据。既有 Frontend Runtime CI 继续上传整个 static/vue-catalog（manifest 非隐藏文件）；不新建重复 workflow。新构建必须整个目录同 SHA 交付，并完整刷新页面后使用；不在正在打开的旧页面混装新 Chunk。
+
+准确最终提交的 Frontend Runtime/Remote Conversion CI、官方制品下载与完整包校验推送后填写，不将本地构建等同于 CI/现场离线安装。

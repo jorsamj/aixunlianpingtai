@@ -1,3 +1,5 @@
+> **2026-11-17 P2A/P2B 技术底座（准确新 SHA CI 待核）**：18 页动态 Chunk/取消后不挂载、单页直接挂载而不建立重复导航；离线 manifest+逐文件 SHA/完整 CI 资产组合工具。v39 catalog 七端点迁至 platform_core/deployment/catalog_api.py，原 Repository/资源函数 DI，Session middleware/URL/SDK 显式检测/revision/幂等回执不变。P2C/P2D 仅设计，不添加 PostgreSQL/驱动/新硬件适配。VERSION/默认入口/生产 A800 与 4070 未改。[实施与回退](TECH_FOUNDATION_P2_20261117.md) · [数据迁移准备](architecture/P2_DATA_OWNERS_AND_POSTGRESQL_PREPARATION_20261117.md) · [异构基线](architecture/P2_HETEROGENEOUS_RUNTIME_BASELINE_20261117.md)。本轮完成后停止。
+
 > 2026-11-17 P1O–P1R：Vue AI任务/审核与Annotorious薄适配已交付代码；原CandidateStore/GT/负样本/任务Owner保持，旧页默认，使用vue_ai_tasks=1及vue_ai_review=1按需启用。第三方优先复用规则见[规范](FRONTEND_THIRD_PARTY_REUSE_POLICY.md)，业务/API/验收边界见[本轮交接](PRODUCTIZATION_P1O_P1R_20261117.md)。准确SHA CI与制品核验以本轮交付回执为准，生产未部署。
 
 > **2026-11-17 P1K–P1N 本地交付，准确提交CI/制品待核**：Vue素材分页/详情、算法级负池普通成员CAS/同库回执、原Picker展示适配和原Draft集成；GT审核/训练提交/Worker保持原Owner，默认旧页面。开关vue_material_library / vue_negative_pool / vue_training_picker。隔离真实入口125图、两张跨页与冻结引用→原Submit请求体，原20k HTTP/Prepare guard定向通过，无GPU/生产部署。Test大引用/不安全并集明确拒绝；未来异构约束保留。见[本轮合同、证据、离线方式与限制](PRODUCTIZATION_P1K_P1N_20261117.md)。完成后停止。

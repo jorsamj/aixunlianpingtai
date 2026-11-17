@@ -1,3 +1,5 @@
+> **2026-11-17 P2A/P2B 技术底座（准确新 SHA CI 待核）**：18 页动态 Chunk/取消后不挂载、单页直接挂载而不建立重复导航；离线 manifest+逐文件 SHA/完整 CI 资产组合工具。v39 catalog 七端点迁至 platform_core/deployment/catalog_api.py，原 Repository/资源函数 DI，Session middleware/URL/SDK 显式检测/revision/幂等回执不变。P2C/P2D 仅设计，不添加 PostgreSQL/驱动/新硬件适配。VERSION/默认入口/生产 A800 与 4070 未改。[实施与回退](TECH_FOUNDATION_P2_20261117.md) · [数据迁移准备](architecture/P2_DATA_OWNERS_AND_POSTGRESQL_PREPARATION_20261117.md) · [异构基线](architecture/P2_HETEROGENEOUS_RUNTIME_BASELINE_20261117.md)。本轮完成后停止。
+
 > 2026-11-17 P1Z收尾：vue_workbench=1统一原导航元数据/当前项目工作台，近期任务各服务端5条、刷新报告身份/退出取消/原导航回退。**用户最新要求：优先现有GitHub CI，不反复本地浏览器/截图/全量测试。**仅追加一个P1Z定向Job复用同SHA构建；准确CI与未验边界见[专项](PRODUCTIZATION_P1Z_20261117.md)。不默认替换旧入口，不自动扩展新开发。
 
 > 2026-11-17 P1Y：节点有效/可调度证据分离，统一配置9个可信原入口，原AdvancedNavigation/SecretStore/资源Owner保留。opt-in vue_configuration=1；隔离节点/Prompt/存储/旧管理已验，配置写入/探测0；准确CI/离线与未验见[专项](PRODUCTIZATION_P1Y_20261117.md)。下一P1Z最后整合。

@@ -20622,86 +20622,14 @@ def _conversion_catalog_repository(data_dir):
     return ModelArtifactRepository(data_dir)
 
 
-@app.get("/api/v39/deploy/catalog")
-def v39_conversion_catalog():
-    from platform_core.compute_platform_catalog import conversion_templates, conversion_catalog_metadata
-    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
-    metadata=conversion_catalog_metadata(catalog,resources=v39_list_deploy_resources(detect_missing=False)["items"])
-    from platform_core.conversion_csc import CONTRACT_TARGETS, csc_capabilities
-    return {"ok":True, **catalog, **metadata, "templates":conversion_templates(),
-            "csc_capabilities_by_target":{target:csc_capabilities(target) for target in CONTRACT_TARGETS},
-            "constraint_ids":["tpu-mlir-1.30.2","sophon-fp16-verified","rknn-verified","atc-detected"]}
+from platform_core.deployment.catalog_api import create_conversion_catalog_router
 
-
-@app.put("/api/v39/deploy/catalog")
-def v39_save_conversion_catalog(payload: Dict[str, Any]):
-    try:
-        saved=_conversion_catalog_repository(DATA_DIR).save_conversion_catalog(
-            {k:v for k,v in payload.items() if k!="expected_revision"}, expected_revision=payload.get("expected_revision"))
-        from platform_core.compute_platform_catalog import conversion_catalog_metadata
-        return {"ok":True, **saved, **conversion_catalog_metadata(saved,resources=v39_list_deploy_resources()["items"])}
-    except ValueError as error:
-        raise HTTPException(status_code=409 if "revision" in str(error) else 400,detail=str(error)) from error
-
-
-@app.get("/api/v39/deploy/catalog/records")
-def v39_catalog_records(entity: str="vendors", query: str="", vendor_id: str="", template_id: str="", enabled: str="", page: int=1, page_size: int=20, sort: str="name", observe_only: bool=False):
-    from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
-    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
-    try: result=conversion_catalog_records(catalog,entity=entity,query=query,vendor_id=vendor_id,template_id=template_id,enabled=enabled,page=page,page_size=page_size,sort=sort)
-    except ValueError as error: raise PlatformError("CATALOG_INVALID_QUERY",str(error),"",status_code=422) from error
-    if entity=="chips":
-        resources = v39_list_deploy_resources(detect_missing=False) if observe_only else v39_list_deploy_resources()
-        facts=conversion_catalog_metadata({**catalog,"chips":result["items"]},resources=resources["items"])
-        result["items"]=[{**r,"capability":facts["chip_capabilities"][r["id"]]} for r in result["items"]]
-    return {"ok":True,**result}
-
-
-@app.get("/api/v39/deploy/catalog/records/{entity}/{identity}")
-def v39_catalog_record(entity: str, identity: str, observe_only: bool=False):
-    from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
-    if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_QUERY","字典类型非法",entity,status_code=422)
-    repository=_conversion_catalog_repository(DATA_DIR)
-    references=repository.conversion_catalog_references(entity,identity,diagnostic=True)
-    row=references.pop("record")
-    catalog=repository.conversion_catalog()
-    rows=conversion_catalog_records({**catalog,entity:[row]},entity=entity)["items"]
-    item=rows[0]
-    if entity=="chips":
-        resources = v39_list_deploy_resources(detect_missing=False) if observe_only else v39_list_deploy_resources()
-        item["capability"]=conversion_catalog_metadata({**catalog,"chips":[row]},resources=resources["items"])["chip_capabilities"][identity]
-    return {"ok":True,"item":item,"revision":references["revision"],"references":references}
-
-
-@app.post("/api/v39/deploy/catalog/operations")
-def v39_catalog_operation(payload: Dict[str, Any]):
-    return _conversion_catalog_repository(DATA_DIR).mutate_conversion_catalog(payload)
-
-
-@app.get("/api/v39/deploy/catalog/operations/{operation_id}")
-def v39_catalog_operation_result(operation_id: str):
-    return _conversion_catalog_repository(DATA_DIR).conversion_catalog_operation(operation_id)
-
-
-@app.post("/api/v39/deploy/catalog/chips/{identity}/detect")
-def v39_catalog_detect_chip(identity: str, payload: Dict[str, Any]):
-    from platform_core.compute_platform_catalog import conversion_templates, conversion_catalog_metadata
-    if set(payload)-{"resource_ids"}: raise PlatformError("CATALOG_INVALID_REQUEST","检测参数非法","",status_code=422)
-    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
-    chip=next((c for c in catalog["chips"] if c["id"]==identity),None)
-    if not chip: raise PlatformError("CATALOG_NOT_FOUND","芯片不存在",identity,status_code=404)
-    vendor=next(v for v in catalog["vendors"] if v["id"]==chip["vendor_id"])
-    adapter=next(t["adapter"] for t in conversion_templates() if t["id"]==vendor["template_id"])
-    resources=[r for r in v39_list_deploy_resources()["items"] if r.get("kind")==adapter]
-    ids=payload.get("resource_ids")
-    if ids is not None:
-        if not isinstance(ids,list) or any(not isinstance(i,str) for i in ids): raise PlatformError("CATALOG_INVALID_REQUEST","资源ID必须为数组","",status_code=422)
-        if set(ids)-{r["id"] for r in resources}: raise PlatformError("CATALOG_RESOURCE_MISMATCH","资源不存在或不属于该SDK模板","",status_code=422)
-        resources=[r for r in resources if r["id"] in ids]
-    if not resources: raise PlatformError("CATALOG_RESOURCE_UNAVAILABLE","暂无该模板的可检测资源","", "请先登记本机、远程或Agent部署资源。",409)
-    checked=[v39_detect_deploy_resource(r["id"]) for r in resources]
-    facts=conversion_catalog_metadata({**catalog,"chips":[chip]},resources=checked)["chip_capabilities"][identity]
-    return {"ok":True,"id":identity,"revision":catalog["revision"],"capability":facts,"detected_resource_ids":[r["id"] for r in checked]}
+_conversion_catalog_api_router = create_conversion_catalog_router(
+    repository_provider=lambda: _conversion_catalog_repository(DATA_DIR),
+    list_resources=lambda **kwargs: v39_list_deploy_resources(**kwargs),
+    detect_resource=lambda identity: v39_detect_deploy_resource(identity),
+)
+app.include_router(_conversion_catalog_api_router)
 
 
 from functools import lru_cache as _conversion_lru_cache
