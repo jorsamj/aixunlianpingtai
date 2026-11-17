@@ -43,3 +43,10 @@ test('persistUiState recovers from malformed historical storage', () => {
   assert.equal(saved.imageFilter, 'all');
   assert.equal(saved.ts, 7);
 });
+
+import {readVueNavigation} from '../../static/modules/ui-state.js';
+test('Vue navigation persists only matching project and identity, never model data or secrets',()=>{
+ const storage=memoryStorage();persistUiState({page:'训练报告只读浏览',project:{id:'p'}},{storage,vueNavigation:{project_id:'p',selection:{algorithmId:'a',versionId:'v',secret:'DO_NOT_STORE'},report:{jobId:'j',returnPage:'workbench',algorithmId:'a',versionId:'v',metrics:{map50:1},token:'DO_NOT_STORE'},payload:'DO_NOT_STORE'}});
+ const saved=readVueNavigation('p',{storage});assert.deepEqual(saved,{project_id:'p',selection:{algorithmId:'a',versionId:'v'},report:{jobId:'j',returnPage:'workbench',algorithmId:'a',versionId:'v'}});assert.equal(storage.value(UI_STATE_STORAGE_KEY).includes('DO_NOT_STORE'),false);assert.equal(readVueNavigation('q',{storage}),null);
+ persistUiState({page:'总览',project:{id:'q'}},{storage,vueNavigation:{project_id:'p',selection:{algorithmId:'a',versionId:'v'}}});assert.equal(readVueNavigation('p',{storage}),null);
+});

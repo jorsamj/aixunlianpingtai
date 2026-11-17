@@ -1,8 +1,10 @@
+import {readVueNavigation} from './ui-state.js?v=20261117p1z1';
 // Optional presentation owner. All requests use the original session/API owner.
 export const PREVIEW_PAGE = '厂商芯片只读预览';
 export const MANAGEMENT_PAGE = '厂商芯片正式管理';
 export const NODES_PAGE = '服务节点只读总览';
 export const CONFIGURATION_PAGE = '统一配置中心';
+export const WORKBENCH_PAGE = '统一工作台';
 export const ASSETS_PAGE = '模型资产只读浏览';
 export const MATERIALS_PAGE = '素材库正式浏览';
 export const POOL_PAGE = '算法负样本池正式管理';
@@ -10,26 +12,26 @@ export const AI_TASKS_PAGE = 'AI标注任务正式浏览';
 export const TASKS_PAGE = '训练任务只读中心';
 export const REPORT_PAGE = '训练报告只读阅读';
 export const HISTORY_PAGE = '版本转换只读历史';
-export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, configurationEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, importsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
+export function installCatalogPreview({enabled, managementEnabled=false, nodesEnabled=false, configurationEnabled=false, workbenchEnabled=false, assetsEnabled=false, algorithmEnabled=false, tasksEnabled=false, reportsEnabled=false, materialsEnabled=false, importsEnabled=false, poolEnabled=false, aiTasksEnabled=false, createOperationId, navigation, getState, request, deadline, document = globalThis.document,
   load = async () => {
     let style=document.getElementById('catalog-preview-style');
     if(style?.dataset.failed){style.remove();style=null}
     const fresh=!style;
-    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1y1'}
+    if(fresh){style=document.createElement('link');style.id='catalog-preview-style';style.rel='stylesheet';style.href='/static/vue-catalog/catalog-preview.css?v=20261117p1z1'}
     const css=style.sheet?Promise.resolve():new Promise((resolve,reject)=>{
       const loaded=()=>{style.removeEventListener('error',failed);resolve()};
       const failed=()=>{style.removeEventListener('load',loaded);style.dataset.failed='true';reject(new Error('Vue 样式未能加载'))};
       style.addEventListener('load',loaded,{once:true});style.addEventListener('error',failed,{once:true});
     });
     if(fresh)document.head.append(style);
-    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1y1')]);
+    const [,module]=await Promise.all([css,import('/static/vue-catalog/catalog-preview.js?v=20261117p1z1')]);
     return module;
   }}) {
   assetsEnabled=assetsEnabled||algorithmEnabled;
   nodesEnabled=nodesEnabled||configurationEnabled;
   let generation = 0, controller, unmount;
   const browseMemories=new Map();
-  const memory=project=>{if(!browseMemories.has(project))browseMemories.set(project,{});return browseMemories.get(project)};
+  const memory=project=>{if(!browseMemories.has(project)){const saved=readVueNavigation(project);browseMemories.set(project,{...(saved?.selection?{selection:saved.selection}:{}),...(saved?.report?{report:saved.report}:{})})}return browseMemories.get(project)};
   function openHistory(algorithmId,versionId){
     if(!assetsEnabled||!algorithmId||!versionId)return;
     const project=getState().project?.id;if(!project)return;
@@ -75,7 +77,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
       const module = await load();
       if (!active()) return;
       const managed=page===MANAGEMENT_PAGE&&managementEnabled;
-      const browsing=assetsEnabled&&[ASSETS_PAGE,HISTORY_PAGE].includes(page)||tasksEnabled&&page===TASKS_PAGE||reportsEnabled&&page===REPORT_PAGE||materialsEnabled&&page===MATERIALS_PAGE||poolEnabled&&page===POOL_PAGE||aiTasksEnabled&&page===AI_TASKS_PAGE;
+      const browsing=workbenchEnabled&&page===WORKBENCH_PAGE||assetsEnabled&&[ASSETS_PAGE,HISTORY_PAGE].includes(page)||tasksEnabled&&page===TASKS_PAGE||reportsEnabled&&page===REPORT_PAGE||materialsEnabled&&page===MATERIALS_PAGE||poolEnabled&&page===POOL_PAGE||aiTasksEnabled&&page===AI_TASKS_PAGE;
       const browse=memory(project),query=new URLSearchParams(globalThis.location?.search||'');
       if(browsing&&!browse.selection&&query.get('asset_algorithm')&&query.get('asset_version'))browse.selection={algorithmId:query.get('asset_algorithm'),versionId:query.get('asset_version')};
       const scopeError=browsing&&query.get('asset_project')&&query.get('asset_project')!==String(project)?'链接项目与当前项目身份不一致，请从当前项目重新选择。':'';
@@ -119,8 +121,23 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
         {id:'catalog',title:'厂商与芯片',description:'正式字典、引用保护与历史绑定。',group:'基础字典',enabled:true},
         {id:'algorithms',title:'训练与转换参数',description:'从算法和版本进入，保持实际模型与任务上下文。',group:'计算资源',enabled:true},
       ];
+      const workbenchPages={assets:ASSETS_PAGE,materials:MATERIALS_PAGE,imports:'素材上传与治理',ai:AI_TASKS_PAGE,training:TASKS_PAGE,nodes:NODES_PAGE,configuration:CONFIGURATION_PAGE};
       const context={signal,management:managed,
-        ...(configurationEnabled?{projectId:String(project||''),entries:configurationEntries,open:openConfigurationEntry,back:()=>{if(active())return globalThis.window.setPage(NODES_PAGE)},openConfiguration:()=>{if(active())return globalThis.window.setPage(CONFIGURATION_PAGE)},openResource:kind=>openConfigurationEntry({training:'trainingResources',conversion:'conversionResources',models:'models',nodes:'legacyNodes'}[kind]),}:{}),
+        ...(workbenchEnabled?{openWorkbench:()=>{if(active())return globalThis.window.setPage(WORKBENCH_PAGE)}}:{}),
+        ...(page===WORKBENCH_PAGE&&workbenchEnabled?{entries:[
+          {id:'assets',title:'算法与模型',description:'算法管理、模型版本、训练报告、转换与交付。'},
+          {id:'materials',title:'素材管理',description:'素材筛选、历史使用、标注详情与负样本。'},
+          {id:'imports',title:'上传与治理',description:'图片与 ZIP 上传、入库确认和清洗治理。'},
+          {id:'ai',title:'AI 标注',description:'创建配置、任务进度、失败诊断与人工审核。'},
+          {id:'training',title:'训练中心',description:'训练与准备任务、执行证据和报告。'},
+          {id:'nodes',title:'资源管理',description:'节点、Worker 与上报资源，分别核对执行资格。'},
+          {id:'configuration',title:'配置中心',description:'模型服务、存储、平台对接与正式字典。'},
+        ],open:id=>{if(active()&&Object.hasOwn(workbenchPages,id))return globalThis.window.setPage(workbenchPages[id])},async legacyWorkbench(){
+          if(!active())return;await Promise.resolve(globalThis.window.setPage('总览'));
+          if(getState().project?.id!==project||getState().page!=='总览')return;
+          const target=new URL(globalThis.window.location.href);target.searchParams.delete('vue_workbench');globalThis.window.location.assign(target.href);
+        }}:{}),
+        ...(configurationEnabled&&page!==WORKBENCH_PAGE?{projectId:String(project||''),entries:configurationEntries,open:openConfigurationEntry,back:()=>{if(active())return globalThis.window.setPage(NODES_PAGE)},openConfiguration:()=>{if(active())return globalThis.window.setPage(CONFIGURATION_PAGE)},openResource:kind=>openConfigurationEntry({training:'trainingResources',conversion:'conversionResources',models:'models',nodes:'legacyNodes'}[kind]),}:{}),
         async get(url, options = {}) {
           const parsed=new URL(url,'http://localhost');
           const records=/^\/api\/v39\/deploy\/catalog\/records(?:\?|\/(?:vendors|chips)\/[^/?#]+\?)/.test(url)&&parsed.searchParams.get('observe_only')==='true';
@@ -130,7 +147,7 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           const local=/^\/api\/(?:v12|v42)\/projects\//.test(url);
           const assets=local&&[ASSETS_PAGE,POOL_PAGE].includes(page)&&parsed.searchParams.get('asset_view')==='true'&&((parsed.pathname===assetRoot&&parsed.searchParams.get('summary_only')==='true')||(parsed.pathname.startsWith(assetRoot+'/')&&parsed.pathname.slice(assetRoot.length+1).split('/').length===1));
           const taskRoot=`/api/v62/projects/${encodeURIComponent(project||'')}/tasks`;
-          const tasks=page===TASKS_PAGE&&url.startsWith('/api/v62/')&&parsed.searchParams.get('reader_view')==='true'&&(parsed.pathname===taskRoot||(parsed.pathname.startsWith(taskRoot+'/')&&parsed.pathname.slice(taskRoot.length+1).split('/').length===1));
+          const tasks=[TASKS_PAGE,WORKBENCH_PAGE].includes(page)&&url.startsWith('/api/v62/')&&parsed.searchParams.get('reader_view')==='true'&&(parsed.pathname===taskRoot||(parsed.pathname.startsWith(taskRoot+'/')&&parsed.pathname.slice(taskRoot.length+1).split('/').length===1));
           const report=page===REPORT_PAGE&&url.startsWith('/api/v44/')&&parsed.searchParams.get('reader_view')==='true'&&parsed.pathname===`/api/v44/projects/${encodeURIComponent(project||'')}/jobs/${encodeURIComponent(browse.report?.jobId||'')}/report`;
           const reportAlgorithm=String(browse.report?.algorithmId||''),reportVersion=String(browse.report?.versionId||'');
           const evaluationRoot=`${assetRoot}/${encodeURIComponent(reportAlgorithm)}/versions/${encodeURIComponent(reportVersion)}/evaluation`;
@@ -139,10 +156,11 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
           const materialRoot=`/api/v61/projects/${encodeURIComponent(project||'')}/materials`,annotationRoot=`/api/projects/${encodeURIComponent(project||'')}/annotations/`;
           const materialReads=page===MATERIALS_PAGE&&parsed.searchParams.get('reader_view')==='true'&&((url.startsWith('/api/v61/')&&parsed.pathname===materialRoot)||(url.startsWith('/api/projects/')&&parsed.pathname.startsWith(annotationRoot)&&parsed.pathname.slice(annotationRoot.length).split('/').length===1));
           const aiRoot=`/api/v60/projects/${encodeURIComponent(project||'')}/annotation-tasks`;
-          const aiRead=page===AI_TASKS_PAGE&&url.startsWith('/api/v60/')&&parsed.searchParams.get('reader_view')==='true'&&(parsed.pathname===aiRoot||parsed.pathname.startsWith(aiRoot+'/')&&parsed.pathname.slice(aiRoot.length+1).split('/').length===1||parsed.pathname.startsWith(aiRoot+'/')&&parsed.pathname.slice(aiRoot.length+1).split('/').length===2&&parsed.pathname.endsWith('/candidates')&&parsed.searchParams.get('filter')==='failed');
+          const aiRead=[AI_TASKS_PAGE,WORKBENCH_PAGE].includes(page)&&url.startsWith('/api/v60/')&&parsed.searchParams.get('reader_view')==='true'&&(parsed.pathname===aiRoot||parsed.pathname.startsWith(aiRoot+'/')&&parsed.pathname.slice(aiRoot.length+1).split('/').length===1||parsed.pathname.startsWith(aiRoot+'/')&&parsed.pathname.slice(aiRoot.length+1).split('/').length===2&&parsed.pathname.endsWith('/candidates')&&parsed.searchParams.get('filter')==='failed');
           const poolRoot=`/api/v61/projects/${encodeURIComponent(project||'')}/negative-pool`;
           const poolRead=page===POOL_PAGE&&url.startsWith('/api/v61/')&&((parsed.pathname===poolRoot&&parsed.searchParams.get('reader_view')==='true')||parsed.pathname===poolRoot+'/categories'||new RegExp('^'+poolRoot+'/operations/[A-Za-z0-9_-]{1,128}$').test(parsed.pathname));
           const history=local&&page===HISTORY_PAGE&&parsed.searchParams.get('asset_view')==='true'&&parsed.pathname===`/api/v42/projects/${encodeURIComponent(project||'')}/algorithms/${encodeURIComponent(historySelection?.algorithmId||'')}/versions/${encodeURIComponent(historySelection?.versionId||'')}/deployments`;
+          if(page===WORKBENCH_PAGE&&(!(parsed.pathname===taskRoot||parsed.pathname===aiRoot)||Number(parsed.searchParams.get('limit'))!==5))throw new Error('工作台只允许有界近期任务读取');
           if(browsing&&!project)throw new Error('当前项目尚未就绪');
           if(browsing&&scopeError)throw new Error(scopeError);
           if(!(page!==NODES_PAGE&&!browsing&&records||receipt||nodes||browsing&&(assets||history||tasks||report||evaluation||reportVersions||materialReads||poolRead||aiRead)))throw new Error('只读或管理页面不允许该请求');
@@ -187,18 +205,18 @@ export function installCatalogPreview({enabled, managementEnabled=false, nodesEn
         },async openDelivery(selection){if(!active()||!selection?.algorithmId||!selection?.versionId)return;await Promise.resolve(globalThis.window.setPage('算法列表'));if(getState().project?.id===project&&getState().page==='算法列表')return globalThis.window.ExternalAlgorithmPublishRuntime?.publishVersion?.(selection.algorithmId,selection.versionId)},async openConversionLog(id){if(!active()||!/^[-A-Za-z0-9_.]{1,128}$/.test(String(id)))return;await Promise.resolve(globalThis.window.setPage('算法列表'));if(getState().project?.id===project&&getState().page==='算法列表')return globalThis.window.openDeployLog?.(id)},async openConversionCreate(selection){if(!active()||!selection?.algorithmId||!selection?.versionId)return;await Promise.resolve(globalThis.window.setPage('算法列表'));if(getState().project?.id===project&&getState().page==='算法列表')return globalThis.window.openNewConvert428?.(selection.algorithmId,selection.versionId)},returnToAssets:()=>globalThis.window.setPage(ASSETS_PAGE),openLegacy:legacy}:{}),
         returnToManagement: () => globalThis.window.setPage(browsing?(page===AI_TASKS_PAGE?'自动标注及清洗':[MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':'算法列表'):page===NODES_PAGE?'服务节点':'部署资源'),
       };
-      const mount=page===CONFIGURATION_PAGE?module.mountConfigurationCenter:page===AI_TASKS_PAGE?module.mountAiAnnotationTasks:page===POOL_PAGE?module.mountNegativePool:page===MATERIALS_PAGE?module.mountMaterialLibrary:page===TASKS_PAGE?module.mountTrainingTasks:page===REPORT_PAGE?module.mountTrainingReport:page===NODES_PAGE?module.mountServiceNodes:page===ASSETS_PAGE?module.mountModelAssets:page===HISTORY_PAGE?module.mountConversionHistory:module.mountCatalogPreview;
+      const mount=page===WORKBENCH_PAGE?module.mountProductWorkbench:page===CONFIGURATION_PAGE?module.mountConfigurationCenter:page===AI_TASKS_PAGE?module.mountAiAnnotationTasks:page===POOL_PAGE?module.mountNegativePool:page===MATERIALS_PAGE?module.mountMaterialLibrary:page===TASKS_PAGE?module.mountTrainingTasks:page===REPORT_PAGE?module.mountTrainingReport:page===NODES_PAGE?module.mountServiceNodes:page===ASSETS_PAGE?module.mountModelAssets:page===HISTORY_PAGE?module.mountConversionHistory:module.mountCatalogPreview;
       const dispose = await mount(host,context);
       if (!active()) dispose(); else unmount = dispose;
     } catch (error) {
       if (active() && !signal.aborted) {
         host.textContent = 'Vue 页面未能打开。请确认已构建离线静态资源，或返回完整管理页面。';
         const back = document.createElement('button'); back.textContent = '返回完整管理';
-        back.addEventListener('click', () => globalThis.window.setPage(page===AI_TASKS_PAGE?'自动标注及清洗':[MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':[ASSETS_PAGE,HISTORY_PAGE,REPORT_PAGE].includes(page)?'算法列表':page===NODES_PAGE?'服务节点':'部署资源'), {signal}); host.append(back);
+        back.addEventListener('click', () => globalThis.window.setPage(page===WORKBENCH_PAGE?'总览':page===AI_TASKS_PAGE?'自动标注及清洗':[MATERIALS_PAGE,POOL_PAGE].includes(page)?'数据集':page===TASKS_PAGE?'训练任务':[ASSETS_PAGE,HISTORY_PAGE,REPORT_PAGE].includes(page)?'算法列表':page===NODES_PAGE?'服务节点':'部署资源'), {signal}); host.append(back);
       }
     }
   }
   const unregister=[];
-  for(const [allowed,page] of [[configurationEnabled,CONFIGURATION_PAGE],[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE],[aiTasksEnabled,AI_TASKS_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
-  return {leave,openHistory,aiTasksEnabled,openAiTasks(){if(aiTasksEnabled)return globalThis.window.setPage(AI_TASKS_PAGE)},async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},async mountAiAnnotationCreate(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountAiAnnotationCreate(host,context)},async mountMaterialImportGovernance(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountMaterialImportGovernance(host,context)},async mountModelDelivery(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountModelDelivery(host,context)},async mountConversionCreate(host,context){const module=await load();return module.mountConversionCreate(host,context)},async mountTrainingCreate(host,context){const module=await load();return module.mountTrainingCreate(host,context)},async mountAiReview(host,context){const module=await load();return module.mountAiReviewWorkbench(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
+  for(const [allowed,page] of [[workbenchEnabled,WORKBENCH_PAGE],[configurationEnabled,CONFIGURATION_PAGE],[enabled,PREVIEW_PAGE],[managementEnabled,MANAGEMENT_PAGE],[nodesEnabled,NODES_PAGE],[assetsEnabled,ASSETS_PAGE],[assetsEnabled,HISTORY_PAGE],[tasksEnabled,TASKS_PAGE],[reportsEnabled,REPORT_PAGE],[materialsEnabled,MATERIALS_PAGE],[poolEnabled,POOL_PAGE],[aiTasksEnabled,AI_TASKS_PAGE]])if(allowed)unregister.push(navigation.registerPageOwner(page,()=>render(page)));
+  return {leave,openHistory,navigationContext(){const project=getState().project?.id,saved=browseMemories.get(project);return project&&saved?{project_id:project,selection:saved.selection,report:saved.report}:null},aiTasksEnabled,openAiTasks(){if(aiTasksEnabled)return globalThis.window.setPage(AI_TASKS_PAGE)},async mountTrainingPicker(host,context){const module=await load();return module.mountTrainingMaterialPicker(host,context)},async mountAiAnnotationCreate(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountAiAnnotationCreate(host,context)},async mountMaterialImportGovernance(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountMaterialImportGovernance(host,context)},async mountModelDelivery(host,context){if(context.signal.aborted)return ()=>{};const module=await load();if(context.signal.aborted)return ()=>{};return module.mountModelDelivery(host,context)},async mountConversionCreate(host,context){const module=await load();return module.mountConversionCreate(host,context)},async mountTrainingCreate(host,context){const module=await load();return module.mountTrainingCreate(host,context)},async mountAiReview(host,context){const module=await load();return module.mountAiReviewWorkbench(host,context)},destroy(){leave();unregister.forEach(dispose=>dispose());}};
 }

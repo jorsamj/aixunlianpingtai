@@ -137,7 +137,8 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await page.route('**/api/v60/projects/*/annotation-selections/summary',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({count:1,state_counts:{unannotated:1}})}));
   let modelReads = 0;
   let submitCount = 0;
-  const submitRequestIds = [];
+  const submitRequestIds = [],receiptRequestIds=[];
+  page.on('request',request=>{if(request.url().includes('/annotation-tasks/by-request/')){expect(request.method()).toBe('GET');receiptRequestIds.push(decodeURIComponent(new URL(request.url()).pathname.split('/').at(-1)))}});
   await page.route('**/api/v35/model-configs', async route => {
     modelReads += 1;
     if (modelReads === 1) {
@@ -202,9 +203,12 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await expect(page.locator('#ai429Labels')).toHaveValue('fire');
   await expect(page.locator('#ai429Submit')).toBeEnabled();
   await page.locator('#ai429Submit').click();
-  await expect.poll(() => submitCount).toBe(2);
+  await expect.poll(() => receiptRequestIds.length).toBe(1);
+  expect(submitCount).toBe(1);
+  expect(submitRequestIds).toHaveLength(1);
   expect(submitRequestIds[0]).toMatch(/^ai-[0-9a-f]{32}$/);
-  expect(submitRequestIds[1]).toBe(submitRequestIds[0]);
+  expect(receiptRequestIds[0]).toBe(submitRequestIds[0]);
+  await expect(page.locator('#ai429Recovery')).toContainText('UNKNOWN');
   await expect(page.locator('#ai429Submit')).toBeEnabled();
 });
 

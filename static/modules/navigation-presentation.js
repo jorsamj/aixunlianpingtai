@@ -13,9 +13,9 @@ export function createNavigationPresentation({
     if (!nav || !buttons.length) {
       window.renderNav?.();
     } else {
-      const currentPage = String(state.page || '');
+      const currentPage = window.ProductWorkbenchRuntime?.navigationOwner?.(state.page) || String(state.page || '');
       buttons.forEach(button => {
-        const label = String(button.querySelector('.nav-left b')?.textContent || '').trim();
+        const label = String(button.dataset?.navPage || button.querySelector('.nav-left b')?.textContent || '').trim();
         button.classList.toggle('active', label === (advancedPageInfo(currentPage)?.title || currentPage));
       });
       const version = nav.querySelector('.nav-footer b');

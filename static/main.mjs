@@ -1,4 +1,5 @@
-import {createNavigationPresentation} from './modules/navigation-presentation.js?v=42.25.594-13a1';
+import {installProductWorkbenchRuntime} from './modules/product-workbench-runtime.js?v=20261117p1z1';
+import {createNavigationPresentation} from './modules/navigation-presentation.js?v=20261117p1z1';
 import {installMaterialPresentation} from './modules/material-presentation.js?v=42.24.549';
 import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=42.25.562';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
@@ -12,7 +13,7 @@ import {installMaterialImportVueRuntime} from './modules/material-import-vue-run
 import {installConversionCreateVueRuntime} from './modules/conversion-create-vue-runtime.js?v=20261117p1u1';
 import {installTrainingCreateVueRuntime} from './modules/training-create-vue-runtime.js?v=20261117p1s1';
 import {installAiReviewVueRuntime} from './modules/ai-review-vue-runtime.js?v=20261117p1u1';
-import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1y1';
+import {installCatalogPreview} from './modules/catalog-preview-runtime.js?v=20261117p1z1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -22,7 +23,7 @@ import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annot
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=42.25.582';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261102-lifecycle491';
-import {persistUiState} from './modules/ui-state.js?v=422500';
+import {persistUiState} from './modules/ui-state.js?v=20261117p1z1';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.25.613';
@@ -73,6 +74,12 @@ const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
 installRowActionMenu();
 const modalPresentation = installModalPresentation();
+
+const vueProductFlags=new URLSearchParams(location.search);
+const vueFeatureEnabled=name=>vueProductFlags.get(name)==='1'||vueProductFlags.get('vue_workbench')==='1';
+const productWorkbenchRuntime=installProductWorkbenchRuntime({enabled:vueProductFlags.get('vue_workbench')==='1'});
+window.ProductWorkbenchRuntime=productWorkbenchRuntime;
+if(productWorkbenchRuntime)window.PlatformCore.navigation.knownPages=Object.freeze([...new Set([...(window.PlatformCore.navigation.knownPages||[]),...productWorkbenchRuntime.knownPages])]);
 
 function fallbackToast(message) {
   const element = document.getElementById('toast');
@@ -375,7 +382,7 @@ const uploadTaskCenterRuntime = installUploadTaskCenter({
   projectId: () => state.project?.id,
   notify,
   pollRegistry,
-  ownerPages: [...(window.PlatformCore?.navigation?.knownPages || []),...(new URLSearchParams(location.search).get('vue_material_import')==='1'?['素材上传与治理']:[])],
+  ownerPages: [...(window.PlatformCore?.navigation?.knownPages || []),...(vueFeatureEnabled('vue_material_import')?['素材上传与治理']:[])],
 });
 window.PlatformCore.runtime.uploadTaskCenterRuntime = uploadTaskCenterRuntime;
 const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
@@ -385,6 +392,7 @@ window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 
 const advancedNavigation = installAdvancedNavigation({getState:()=>state,navigate:page=>window.setPage(page)});
 Object.assign(window.PlatformCore.navigation,{advancedMenus:ADVANCED_MENUS,advancedPageInfo,selectAdvancedSection:advancedNavigation.select});
+if(productWorkbenchRuntime)window.renderNav?.();
 
 const navigationPresentation = createNavigationPresentation({getState:()=>state,advancedPageInfo,advancedNavigation});
 
@@ -499,7 +507,7 @@ const navigationStabilityRuntime = installNavigationStability({
   notify,
   requestScope: pageRequestScope,
   pollRegistry,
-  persistNavigationState: currentState => persistUiState(currentState),
+  persistNavigationState: currentState => persistUiState(currentState,{vueNavigation:catalogPreviewRuntime?.navigationContext?.()}),
   waitForNavigationReady: () => {
     if (!state.uiReady && window.__v53InitPromise) return Promise.resolve(window.__v53InitPromise).then(() => state.uiReady === true);
     return null;
@@ -532,35 +540,36 @@ const navigationStabilityRuntime = installNavigationStability({
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
 const catalogPreviewRuntime = installCatalogPreview({
-  enabled: new URLSearchParams(location.search).get('vue_catalog_preview') === '1',
-  managementEnabled: new URLSearchParams(location.search).get('vue_catalog_manage') === '1',
-  nodesEnabled: new URLSearchParams(location.search).get('vue_service_nodes') === '1',
-  configurationEnabled: new URLSearchParams(location.search).get('vue_configuration') === '1',
-  assetsEnabled: new URLSearchParams(location.search).get('vue_model_assets') === '1',
-  algorithmEnabled: new URLSearchParams(location.search).get('vue_algorithm_manage') === '1',
-  tasksEnabled: new URLSearchParams(location.search).get('vue_training_tasks') === '1',
-  reportsEnabled: new URLSearchParams(location.search).get('vue_training_report') === '1',
-  materialsEnabled: new URLSearchParams(location.search).get('vue_material_library') === '1',
-  importsEnabled: new URLSearchParams(location.search).get('vue_material_import') === '1',
-  poolEnabled: new URLSearchParams(location.search).get('vue_negative_pool') === '1',
-  aiTasksEnabled: new URLSearchParams(location.search).get('vue_ai_tasks') === '1',
+  enabled: vueFeatureEnabled('vue_catalog_preview'),
+  managementEnabled: vueFeatureEnabled('vue_catalog_manage'),
+  nodesEnabled: vueFeatureEnabled('vue_service_nodes'),
+  configurationEnabled: vueFeatureEnabled('vue_configuration'),
+  workbenchEnabled: vueProductFlags.get('vue_workbench')==='1',
+  assetsEnabled: vueFeatureEnabled('vue_model_assets'),
+  algorithmEnabled: vueFeatureEnabled('vue_algorithm_manage'),
+  tasksEnabled: vueFeatureEnabled('vue_training_tasks'),
+  reportsEnabled: vueFeatureEnabled('vue_training_report'),
+  materialsEnabled: vueFeatureEnabled('vue_material_library'),
+  importsEnabled: vueFeatureEnabled('vue_material_import'),
+  poolEnabled: vueFeatureEnabled('vue_negative_pool'),
+  aiTasksEnabled: vueFeatureEnabled('vue_ai_tasks'),
   createOperationId: () => catalogOperationId(window.crypto),
   navigation: navigationStabilityRuntime, getState: () => state, request: api, deadline: withRequestDeadline,
 });
 window.PlatformCore.runtime.catalogPreviewRuntime = catalogPreviewRuntime;
-window.MaterialImportVueRuntime=installMaterialImportVueRuntime({enabled:new URLSearchParams(location.search).get('vue_material_import')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountMaterialImportGovernance(host,context)});
-if(new URLSearchParams(location.search).get('vue_material_import')==='1')navigationStabilityRuntime.registerPageOwner('素材上传与治理',()=>{const view=document.getElementById('view');if(!view)return false;const host=document.createElement('div');view.replaceChildren(host);return window.MaterialImportVueRuntime.render(host)});
+window.MaterialImportVueRuntime=installMaterialImportVueRuntime({enabled:vueFeatureEnabled('vue_material_import'),getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountMaterialImportGovernance(host,context)});
+if(vueFeatureEnabled('vue_material_import'))navigationStabilityRuntime.registerPageOwner('素材上传与治理',()=>{const view=document.getElementById('view');if(!view)return false;const host=document.createElement('div');view.replaceChildren(host);return window.MaterialImportVueRuntime.render(host)});
 window.addEventListener('pagehide',()=>window.MaterialImportVueRuntime?.leave());
-window.AiCreateVueRuntime=installAiCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_ai_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiAnnotationCreate(host,context)});
+window.AiCreateVueRuntime=installAiCreateVueRuntime({enabled:vueFeatureEnabled('vue_ai_create'),getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiAnnotationCreate(host,context)});
 window.addEventListener('pagehide',()=>window.AiCreateVueRuntime?.leave());
-if(new URLSearchParams(location.search).get('vue_model_delivery')==='1')externalAlgorithmPublishRuntime.setDeliveryPresenter((host,context)=>catalogPreviewRuntime.mountModelDelivery(host,context));
-if(new URLSearchParams(location.search).get('vue_training_picker')==='1')window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
-window.addEventListener('pagehide', () => catalogPreviewRuntime.leave());
-window.ConversionCreateVueRuntime=installConversionCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_conversion_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountConversionCreate(host,context)});
+if(vueFeatureEnabled('vue_model_delivery'))externalAlgorithmPublishRuntime.setDeliveryPresenter((host,context)=>catalogPreviewRuntime.mountModelDelivery(host,context));
+if(vueFeatureEnabled('vue_training_picker'))window.TrainingMaterialPickerRuntime?.setVuePresenter((host,context)=>catalogPreviewRuntime.mountTrainingPicker(host,context));
+window.addEventListener('pagehide', () => {persistUiState(state,{vueNavigation:catalogPreviewRuntime.navigationContext()});catalogPreviewRuntime.leave()});
+window.ConversionCreateVueRuntime=installConversionCreateVueRuntime({enabled:vueFeatureEnabled('vue_conversion_create'),getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountConversionCreate(host,context)});
 window.addEventListener('pagehide',()=>window.ConversionCreateVueRuntime?.leave());
-window.TrainingCreateVueRuntime=installTrainingCreateVueRuntime({enabled:new URLSearchParams(location.search).get('vue_training_create')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountTrainingCreate(host,context)});
+window.TrainingCreateVueRuntime=installTrainingCreateVueRuntime({enabled:vueFeatureEnabled('vue_training_create'),getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountTrainingCreate(host,context)});
 window.addEventListener('pagehide',()=>window.TrainingCreateVueRuntime?.leave());
-window.AiReviewVueRuntime=installAiReviewVueRuntime({enabled:new URLSearchParams(location.search).get('vue_ai_review')==='1',getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiReview(host,context)});
+window.AiReviewVueRuntime=installAiReviewVueRuntime({enabled:vueFeatureEnabled('vue_ai_review'),getState:()=>state,projectId:()=>state.project?.id,load:(host,context)=>catalogPreviewRuntime.mountAiReview(host,context)});
 window.AiReviewRouteRuntime = installAiReviewRoute({
   getReview: () => state.ai60Review,
   open: (id, options) => window.reviewAiLabel427?.(id, options),

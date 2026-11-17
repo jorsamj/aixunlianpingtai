@@ -463,6 +463,69 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  workbench-acceptance:
+    name: P1Z isolated real-entry acceptance
+    needs: frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Reuse this SHA built Vue assets
+        uses: actions/download-artifact@v4
+        with:
+          name: vue-catalog-preview-${{ github.sha }}
+          path: .
+      - name: Install existing isolated browser dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install workbench browser dependencies
+        run: npm ci --prefix frontend
+      - name: Install existing screenshot font
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - name: One isolated P1Z real-entry acceptance
+        env:
+          MC_VUE_ACCEPTANCE_PORT: '8042'
+          MC_WORKBENCH_ORIGIN: http://127.0.0.1:8042
+        run: |
+          test -s static/vue-catalog/catalog-preview.js
+          test -s static/vue-catalog/catalog-preview.css
+          mkdir -p test-results/p1z-workbench
+          python tools/test_vue_productization_server.py > test-results/p1z-workbench/server.log 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          python - <<'PY'
+          import time, urllib.request
+          for attempt in range(120):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8042/api/health', timeout=1) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  pass
+              time.sleep(.25)
+          else:
+              raise SystemExit('Isolated P1Z fixture did not become ready')
+          PY
+          node frontend/tests/real-product-workbench.acceptance.mjs
+      - name: Preserve exact SHA workbench receipt and six viewport evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1z-workbench-${{ github.sha }}
+          path: test-results/p1z-workbench/
+          if-no-files-found: error
+          retention-days: 14
+
   browser-navigation:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

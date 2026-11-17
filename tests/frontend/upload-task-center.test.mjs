@@ -214,7 +214,7 @@ test('task center durable polling is PollRegistry-owned and hidden tabs do not k
   assert.doesNotMatch(runtime, /setInterval\(/);
   assert.match(runtime, /window\.setTimeout\(\(\) => persist\(\), 500\)/);
   assert.match(runtime, /window\.clearTimeout\(persistTimer\)/);
-  assert.match(main, /pollRegistry,[\s\S]*ownerPages: \[\.\.\.\(window\.PlatformCore\?\.navigation\?\.knownPages \|\| \[\]\),\.\.\.\(new URLSearchParams\(location\.search\)\.get\('vue_material_import'\)===\x271\x27\?\['素材上传与治理'\]:\[\]\)\]/);
+  assert.match(main, /pollRegistry,[\s\S]*ownerPages: \[\.\.\.\(window\.PlatformCore\?\.navigation\?\.knownPages \|\| \[\]\),\.\.\.\(vueFeatureEnabled\('vue_material_import'\)\?\['素材上传与治理'\]:\[\]\)\]/);
 });
 
 
