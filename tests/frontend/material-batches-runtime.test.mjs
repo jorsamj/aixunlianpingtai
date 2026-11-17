@@ -6,6 +6,24 @@ import {installMaterialBatchRuntime} from '../../static/modules/material-batches
 const source = readFileSync(new URL('../../static/modules/material-batches.js', import.meta.url), 'utf8');
 const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
+test('DELETE_INDEX applies guarded deletion results before generic refresh can clear selected labels', async () => {
+  const previous={window:globalThis.window,localStorage:globalThis.localStorage,fetch:globalThis.fetch};
+  const calls=[];let labels=['smoke'],selected=40;
+  globalThis.localStorage={getItem:()=>null,setItem:()=>{}};
+  globalThis.window={TrainingMaterialSummaryRuntime:{onMaterialBatchCompleted:async()=>{
+    calls.push('delete-results');await new Promise(resolve=>setImmediate(resolve));
+    if(labels.join(',')==='smoke')selected=0; // Original owner retains its signature guard.
+  }}};
+  globalThis.fetch=async()=>new Response(JSON.stringify({task_id:'project-clear',project_id:'p',operation:'DELETE_INDEX',status:'SUCCEEDED'}));
+  try{
+    installMaterialBatchRuntime({projectId:()=> 'p',notify:()=>{},refresh:async()=>{calls.push('refresh');labels=[]},pollRegistry:{clear:()=>{},startTimeout:()=>{}}});
+    window.MaterialBatchRuntime62.poll('project-clear');
+    for(let i=0;i<4;i++)await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(selected,0);
+    assert.deepEqual(calls,['delete-results','refresh']);
+  }finally{Object.assign(globalThis,previous)}
+});
+
 test('ordinary DELETE_INDEX completion invalidates the old integrity audit, not only dedup plans', async () => {
   const previous={window:globalThis.window,localStorage:globalThis.localStorage,fetch:globalThis.fetch};
   const calls=[];

@@ -122,6 +122,10 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
           else registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
         } else {
           stopPolling(id);
+          // Reconcile the frozen draft before a general refresh can remove
+          // labels whose last formal positive image was just deleted.
+          if(task.operation==='DELETE_INDEX')await window.TrainingMaterialSummaryRuntime?.onMaterialBatchCompleted?.(task);
+          if (pid() !== projectAtStart) return;
           if (task.operation !== 'SMART_AUDIT') {
             try {await refresh?.();} catch(error) {tell('素材任务已结束，列表刷新失败，可手动刷新：'+(error.message||error));}
           }
@@ -129,7 +133,6 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
           if (task.operation === 'DELETE_INDEX' && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
             await window.invalidateMaterialIntegrityGovernance47(task);
           }
-          if(task.operation==='DELETE_INDEX')await window.TrainingMaterialSummaryRuntime?.onMaterialBatchCompleted?.(task);
           if (foreground && task.operation === 'AI_ANNOTATE' && task.review_required && typeof window.reviewAiLabel427 === 'function') {
             await window.reviewAiLabel427(task.task_id);
           }
