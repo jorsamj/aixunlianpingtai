@@ -99,3 +99,15 @@
 CI历史Trace已经证明权威数据正确、checkbox=true、旧签名null，但没有内部调用日志，不能反推toggle是否执行。已在原Frontend Runtime的失败分片中追加精确条件：只有该原用例失败并留下trace时，运行同一用例的临时因果探针，保留原断言；不重跑其他成功用例，不新建工作流、不轮询。探针仅变换测试浏览器收到的JS以记录事件、真实state、渲染函数、节点身份/签名/框数及请求顺序；原生产文件和原测试字节不变，临时文件finally清理。
 
 尚未取得失败路径的函数级证据，故本轮未提交任何猜测性业务修复，问题保持开放；不得宣称已恢复或验收通过。下一次检查准确SHA的失败Job因果输出后才能确定最小修复点。
+
+
+## 919cd393 CI 后续诊断核验（2026-11-17）
+
+- Run 44065564960 已完成，准确 head_sha 为 919cd39355add275c6d8ffaaaf795db437a74c0f。browser-navigation (2) Job 133978239864 为 success，日志明确列出原 manual annotation 用例并汇总 130 passed (4.7m)。条件诊断步骤 skipped，未产生 OVERLAY 日志；不能据此宣布原回归修复。
+- shard-2 制品 14320013078 已上传（ai-annotation-ui-919cd39355add275c6d8ffaaaf795db437a74c0f-shard-2）。本次没有诊断执行产物，不能把成功上传步骤描述为已保留函数级失败证据。历史 da23f503 失败 Trace 继续有效。
+- frontend Job 独立失败（用户已定位 tests/service-nodes.spec.ts）；本轮只记录，不修改服务节点页面，不扩大日志分析或测试。
+- 发现并补齐诊断工具缺陷：旧 replace 静默失配；旧输出目录可能在二次 Playwright 执行时清除原失败 Trace。现 15 处合同/注入匹配均要求恰好一次，失配或重复立即 OVERLAY_INJECTION_FAILED；响应路由未命中也由 afterEach 报错。只变换隔离浏览器响应，不写业务 JS。
+- 新增签名输入、签名比较（计算值/旧值）、节点 ID/替换前后、materialMedia raw 参数、分页调用/捕获原函数/抑制状态、素材请求与响应、列表应用前后、数据集重绘、change 冒泡和测试结束日志。checkbox 选择器 .material-box-toggle input 与原 label/input/onchange 合同逐项匹配。
+- 诊断改用 test-results/material-overlay-diagnostic 独立输出、强制保留本次诊断 Trace、overlay.jsonl 和 integrity.json；既有工作流上传该目录，原失败 Trace 不再被同目录重跑清除。临时测试 finally 删除，并校验原测试/app.js/分页 JS SHA256；任何字节变化报错。当前临时文件不存在。
+- 本地仅执行 --verify-only（15 处匹配、两份注入 JS 语法检查）、4 项零匹配/重复匹配拒绝检查和 git diff --check；未重复运行已通过原浏览器用例。原测试和两份业务 JS 对 919cd393 零差异。
+- **根因仍未证实，未修改业务链路，未完成恢复验收。** 本次成功运行没有最后成功函数/首个异常函数证据。需要保留原失败证据，在同一原始用例下一次真实失败时采集函数级链路；不靠增加随机重复次数定位，也不因成功运行关闭问题。开/关/再开及分页重绘完整闭环仍未验收。未改 GT/API/数据库/Worker/分页业务规则，未部署或合并 PR。

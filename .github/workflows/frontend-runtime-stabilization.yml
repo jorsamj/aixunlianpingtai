@@ -634,6 +634,7 @@ jobs:
         with:
           name: ai-annotation-ui-${{ github.event.pull_request.head.sha || github.sha }}-shard-${{ matrix.shard }}
           path: |
+            test-results/material-overlay-diagnostic/**
             test-results/**/ai-create-*.png
             test-results/**/ai-inline-review-*.png
             test-results/**/ai-review-*.png
