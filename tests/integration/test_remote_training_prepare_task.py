@@ -59,7 +59,7 @@ def test_explicit_history_policy_rechecks_usage_and_freezes_robustness(tmp_path,
     updated = handler._freeze_request_contract(SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda operation: operation()),
         repository.get(target_id), payload)
     assert 'image-0' not in updated['train_image_ids']
-    frozen = artifacts.read_json(target_id, 'input-freeze.json')
+    frozen = artifacts.read_json(target_id, updated['input_freeze_ref'])
     assert frozen['history_admission']['excluded_train_image_ids'] == ['image-0']
     assert frozen['robustness_policy']['enabled'] is True
     assert index.query_filter(project_id, 'algorithm-fire', [MaterialRepository(project).get('image-1')])['by_image_id']['image-1']['state'] == 'selected'
@@ -79,7 +79,7 @@ def test_usage_maintenance_dry_run_interrupt_and_resume_preserves_owners(tmp_pat
     updated = RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(
         SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn()),
         repository.get(target_id), payload)
-    frozen = artifacts.read_json(target_id, 'input-freeze.json')
+    frozen = artifacts.read_json(target_id, updated['input_freeze_ref'])
     split = frozen['split']
     _rows, _schema, _manifest, snapshot = resolve_training_input_freeze(frozen, SplitRequest(
         mode=SplitMode(split['mode']), train_image_ids=tuple(split['train_image_ids']),
@@ -129,7 +129,7 @@ def test_historical_test_observation_survives_removed_training_work_directory(tm
     updated = RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(
         SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn()),
         repository.get(task_id), payload)
-    frozen = artifacts.read_json(task_id, 'input-freeze.json')
+    frozen = artifacts.read_json(task_id, updated['input_freeze_ref'])
     split = frozen['split']
     _, _, _, snapshot = resolve_training_input_freeze(frozen, SplitRequest(
         mode=SplitMode(split['mode']), train_image_ids=tuple(split['train_image_ids']),
@@ -426,7 +426,7 @@ def test_remote_training_prepare_handler_freezes_indices_and_activates_target(tm
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
     if schema_version == 4:
-        payload = artifacts.read_json(target_id, "payload.json")
+        payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
         payload.update(schema_version=4, training_input_state="PREPARING", train_labels=["fire"])
         artifacts.atomic_write_json(target_id, "payload.json", payload)
     source = _remote_source()
@@ -495,7 +495,7 @@ def test_remote_training_prepare_handler_freezes_indices_and_activates_target(tm
     assert not artifacts.artifact_path(target_id, "remote-training/training-bundle.zip").exists()
     assert not any(key.startswith("training-bundles/") for key, _ in provider.upload_calls)
 
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     assert payload["remote_input_state"] == "READY"
     remote = payload["remote_execution"]
     assert remote["version"] == 1
@@ -547,7 +547,7 @@ def test_remote_training_prepare_handler_freezes_indices_and_activates_target(tm
     from platform_core.remote_training_inputs import training_inputs
     transport = SimpleNamespace(data_dir=data_dir, task_artifacts=artifacts,
         storage_credentials_factory=lambda: FakeCredentials())
-    frozen_gt = artifacts.read_json(target_id, "input-freeze.json")["images"][0]["boxes"]
+    frozen_gt = artifacts.read_json(target_id, artifacts.read_json(target_id, repository.get(target_id).payload_ref).get("input_freeze_ref") or "input-freeze.json")["images"][0]["boxes"]
     AnnotationRepository(data_dir / "projects" / project_id).upsert("image-0", [], "unannotated")
     manifest = training_inputs(transport, target, payload)
     assert manifest["freeze"]["images"][0]["boxes"] == frozen_gt
@@ -594,7 +594,7 @@ def test_remote_training_prepare_failure_blocks_target_instead_of_leaving_it_que
     assert target.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
     assert target.stage == "training_input_preparation_failed"
     assert "REMOTE_TRAINING_STORAGE_REQUIRED" in str(target.error)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     assert payload["remote_input_state"] == "PREPARING"
     assert "remote_execution" not in payload
 
@@ -622,7 +622,7 @@ def test_training_prepare_persists_all_scope_drift_issues_before_failure(tmp_pat
         annotation_scope=["fire", "smoke"],
     )
     repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     payload["schema_version"] = 4
     payload["training_input_state"] = "PREPARING"
     payload["train_labels"] = ["fire", "smoke"]
@@ -659,7 +659,7 @@ def test_queued_prepare_refreezes_remaining_original_scope_and_archives_request(
     repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
     materials = MaterialRepository(project)
     annotations = AnnotationRepository(project)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     original = list(payload["train_image_ids"])
     payload.update(schema_version=4, train_labels=["fire"],
         expected_material_revision=materials.current_revision(),
@@ -677,7 +677,7 @@ def test_queued_prepare_refreezes_remaining_original_scope_and_archives_request(
     assert updated["input_selection_recheck"]["requested_train_count"] == 4
     request = artifacts.read_json(target_id, "input-request-selection.json")
     assert request["train_image_ids"] == original
-    frozen = artifacts.read_json(target_id, "input-freeze.json")
+    frozen = artifacts.read_json(target_id, updated['input_freeze_ref'])
     assert frozen["input_freeze_id"] == updated["input_freeze_id"]
     assert "outside" not in updated["train_image_ids"]
     assert (project / "uploads/image-1.jpg").is_file()
@@ -687,7 +687,7 @@ def test_training_prepare_persists_revision_drift_error_without_creating_freeze(
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     payload.update(schema_version=4, expected_material_revision=0, expected_annotation_revision=0)
     artifacts.atomic_write_json(target_id, "payload.json", payload)
     scheduler = Scheduler(repository, artifacts, "prep-revision-drift",
@@ -706,18 +706,17 @@ def test_prepare_never_overwrites_freeze_published_before_payload_crash(tmp_path
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     payload.update(schema_version=4, train_labels=["fire"])
     handler = RemoteTrainingPrepareHandler(data_dir)
     context = SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn())
-    handler._freeze_request_contract(context, repository.get(target_id), payload)
-    path = artifacts.artifact_path(target_id, "input-freeze.json")
-    original = path.read_bytes()
+    first = handler._freeze_request_contract(context, repository.get(target_id), payload)
+    original = artifacts.read_json(target_id,first['input_freeze_ref'])
     MaterialRepository(data_dir / "projects" / project_id).remove_many(["image-1"])
-    with pytest.raises(RemoteTrainingPreparationError) as caught:
-        handler._freeze_request_contract(context, repository.get(target_id), payload)
-    assert caught.value.code == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
-    assert path.read_bytes() == original
+    resumed = handler._freeze_request_contract(context, repository.get(target_id), payload)
+    assert resumed == first
+    assert artifacts.read_json(target_id,first['input_freeze_ref']) == original
+    assert repository.get(target_id).payload_ref == 'payload.json'  # receipt is not a Task commit
 
 
 def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):
@@ -788,7 +787,7 @@ def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_
 
     assert scheduler.run_once() is True
     assert repository.get(prep_id).status is TaskStatus.SUCCEEDED
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     remote_training = payload["remote_execution"]["training"]
     provenance = remote_training["supplement_provenance"]
     assert provenance["candidate_set_id"] == candidate_set["candidate_set_id"]
@@ -845,7 +844,7 @@ def test_reclaimed_training_prepare_attempt_validates_and_activates_once(tmp_pat
     assert prep.attempt == 2
     assert target is not None and target.status is TaskStatus.QUEUED
     assert target.required_capabilities == ("training.ultralytics",)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     assert payload["training_input_state"] == "READY"
     assert payload["remote_prepare_task_id"] == prep_id
     assert artifacts.read_json(prep_id, "result.json")["status"] == "ready"
@@ -932,9 +931,15 @@ def test_recovery_rejects_corrupted_ready_freeze_instead_of_reusing_it(tmp_path)
     assert first is not None
     context = WorkerContext(first.task, first, repository, artifacts, lease_seconds=30)
     assert handler.run(context)[0] is TaskStatus.SUCCEEDED
-    frozen = artifacts.read_json(target_id, "input-freeze.json")
+    frozen = artifacts.read_json(target_id, artifacts.read_json(target_id, repository.get(target_id).payload_ref).get("input_freeze_ref") or "input-freeze.json")
     frozen["images"][0]["boxes"][0]["x1"] = 0
-    artifacts.atomic_write_json(target_id, "input-freeze.json", frozen)
+    # Deliberate out-of-protocol corruption must fail SHA verification, never
+    # fall back to the legacy mirror or rewind an already committed READY.
+    import os
+    frozen_ref = artifacts.read_json(target_id, repository.get(target_id).payload_ref)['input_freeze_ref']
+    corrupt_path = artifacts.root / target_id / frozen_ref
+    if os.name == 'nt': corrupt_path = Path('\\\\?\\' + str(corrupt_path))
+    corrupt_path.write_text(json.dumps(frozen), encoding='utf-8')
     assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
 
     Scheduler(
@@ -948,9 +953,9 @@ def test_recovery_rejects_corrupted_ready_freeze_instead_of_reusing_it(tmp_path)
     recovered = repository.get(prep_id)
     parent = repository.get(target_id)
     assert recovered is not None and recovered.status is TaskStatus.FAILED
-    assert "prepared training frozen input is invalid" in str(recovered.error)
-    assert parent is not None and parent.status is TaskStatus.FAILED
-    assert "TRAINING_PREPARED_OUTPUT_INVALID" in str(parent.error)
+    assert "PAYLOAD_INTEGRITY_ERROR" in str(recovered.error)
+    assert parent is not None and parent.status is TaskStatus.QUEUED
+    assert parent.error is None
 
 
 def test_fenced_training_preparer_cannot_fail_queued_parent(tmp_path):
@@ -1039,7 +1044,7 @@ def test_cancelled_training_parent_is_not_reactivated_by_prepare_recovery(tmp_pa
     target = repository.get(target_id)
     assert target is not None and target.status is TaskStatus.CANCELLED
     assert target.required_capabilities == ("training.ultralytics",)
-    payload = artifacts.read_json(target_id, "payload.json")
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
     assert payload["remote_input_state"] == "PREPARING"
 
 
@@ -1090,7 +1095,7 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     annotations.upsert('image-2',[person],annotation_state='annotated',annotation_scope=['person'])
     annotations.upsert('image-3',[person,dict(person,label='fire')],annotation_state='annotated',annotation_scope=['person','fire'])
     repository,artifacts,target_id,_=_runtime(data_dir,pid)
-    payload=artifacts.read_json(target_id,'payload.json');payload.update(schema_version=4,train_labels=['fire'],validation_percent=50,seed=1)
+    payload=artifacts.read_json(target_id,repository.get(target_id).payload_ref);payload.update(schema_version=4,train_labels=['fire'],validation_percent=50,seed=1)
     algorithm={'id':'algorithm-fire','versions':[]}
     contract=resolve_training_label_contract(data_dir,project,payload,algorithm,require_positive_evidence=False)
     originals=_ORIGINAL_SELECTED_PROJECT_IMAGES(MaterialRepository(project),project,payload['train_image_ids'])
@@ -1100,7 +1105,7 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     assert not evaluate_training_compatibility(data_dir,project,payload,algorithm).issues
     before=annotations.get_many(payload['train_image_ids']);source_bytes={r['id']:(project/'uploads'/r['stored_name']).read_bytes() for r in originals}
     updated=RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(SimpleNamespace(artifacts=artifacts,repository=repository,run_owned=lambda operation:operation()),repository.get(target_id),payload)
-    frozen=artifacts.read_json(target_id,'input-freeze.json');split=frozen['split']
+    frozen=artifacts.read_json(target_id,updated['input_freeze_ref']);split=frozen['split']
     rows,schema,manifest,snapshot=resolve_training_input_freeze(frozen,SplitRequest(mode=SplitMode(split['mode']),train_image_ids=tuple(split['train_image_ids']),test_image_ids=tuple(split['test_image_ids']),validation_percent=split['validation_percent'],experiment_percent=split['experiment_percent']),seed=split['seed'])
     assert {r['id'] for r in rows} >= {'image-1','image-2','image-3'}
     snapshot_by_id={r['image_id']:r for r in snapshot['images']}

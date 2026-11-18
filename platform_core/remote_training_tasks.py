@@ -9,6 +9,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from .task_runtime.preparation_publication import ensure_preparation_input, publish_training, publication
+from .task_runtime.payload_publications import VERSION_REF, PayloadPublicationError
+
 from .algorithms import choose_algorithm_iteration_base, list_algorithms, resolve_current_version_id
 from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
@@ -261,6 +264,8 @@ class TrainingPrepareHandler:
         context.assert_current_execution()
         current = context.repository.get(training_task_id)
         if current is None or current.status is not TaskStatus.QUEUED:
+            return
+        if VERSION_REF.fullmatch(current.payload_ref) and 'training.input.ready' not in current.required_capabilities:
             return
         try:
             context.repository.fail_queued_precondition(
@@ -526,6 +531,15 @@ class TrainingPrepareHandler:
         return dict(candidate)
 
     def _freeze_request_contract(self, context, target, payload: Mapping[str, Any]):
+        from .task_runtime.payload_publications import PayloadPublicationIdentity
+        intent = {'source_ref':target.payload_ref}
+        identity=PayloadPublicationIdentity(task_id=target.task_id,project_id=target.project_id,kind='TRAINING',
+            phase='training.freeze',expected_ref=target.payload_ref,expected_parent_attempt=target.attempt,intent=intent)
+        try:
+            return context.artifacts.payload_reader.read_payload_publication_receipt(target.task_id,identity.operation_id,identity=identity).version.data
+        except PayloadPublicationError as missing:
+            if missing.code != 'PUBLICATION_RECEIPT_MISSING':
+                raise
         project = self.data_dir / "projects" / target.project_id
         algorithms = list_algorithms(project / "algorithms.json")
         algorithm = next(
@@ -697,7 +711,7 @@ class TrainingPrepareHandler:
                 robustness_policy=payload.get('robustness_policy'),
                 history_admission=history_admission,
             )
-            context.artifacts.atomic_write_json(target.task_id, "input-freeze.json", frozen)
+            frozen_ref = context.artifacts.write_evidence_json(target.task_id, frozen)
             from .training_material_usage import record_context_snapshot
             _rows, _schema, _manifest, usage_snapshot = resolve_training_input_freeze(
                 frozen, split, seed=int(payload.get('seed') or 0), supplement_candidate_set=supplement)
@@ -726,7 +740,7 @@ class TrainingPrepareHandler:
                 "external_analysis_id": external_analysis_id,
                 "supplement_candidate_set": supplement,
                 "benchmark_reuse": benchmark_reuse,
-                "input_freeze_ref": "input-freeze.json",
+                "input_freeze_ref": frozen_ref,
                 "input_freeze_id": frozen["input_freeze_id"],
                 "snapshot_id": frozen["snapshot_id"],
                 "dataset_revision_id": frozen["dataset_revision_id"],
@@ -740,7 +754,9 @@ class TrainingPrepareHandler:
                 "base_model_size_bytes": int(label_contract.get("base_model_size_bytes") or 0),
                 "base_selection_reason": label_contract.get("base_selection_reason") or "",
             }
-            return updated
+            updated['snapshot_ref']=context.artifacts.write_evidence_json(target.task_id,usage_snapshot)
+            updated['dataset_revision_ref']=context.artifacts.write_evidence_json(target.task_id,dataset_revision_document(usage_snapshot))
+            return publication(context.artifacts,target,'training.freeze',intent,updated).version.data
 
     def _publish_prepared_job(self, target, payload: Mapping[str, Any]) -> None:
         job_file = (
@@ -1065,13 +1081,13 @@ class TrainingPrepareHandler:
                     frozen, split_request, seed=seed,
                     supplement_candidate_set=payload.get("supplement_candidate_set"),
                 )
-                context.artifacts.atomic_write_json(training_task.task_id, "input-freeze.json", frozen)
-                context.artifacts.atomic_write_json(training_task.task_id, training_task.payload_ref, {
-                    **payload, "input_freeze_ref": "input-freeze.json",
-                    "input_freeze_id": frozen["input_freeze_id"],
-                    "snapshot_id": frozen["snapshot_id"], "dataset_revision_id": frozen["dataset_revision_id"],
-                })
+                frozen_ref = context.artifacts.write_evidence_json(training_task.task_id, frozen)
+                payload.update({"input_freeze_ref": frozen_ref, "input_freeze_id": frozen["input_freeze_id"],
+                    "snapshot_id": snapshot["snapshot_id"], "dataset_revision_id": snapshot["dataset_revision_id"]})
         if indices_only:
+            payload['input_freeze_ref'] = context.artifacts.write_evidence_json(training_task.task_id, frozen)
+            payload['snapshot_ref'] = context.artifacts.write_evidence_json(training_task.task_id, snapshot)
+            payload['dataset_revision_ref'] = context.artifacts.write_evidence_json(training_task.task_id, dataset_revision_document(snapshot))
             # Preparation has its own lease, not ownership of the assigned training
             # device. Persist only input identity and budget metadata until the
             # TRAINING owner starts materialization under its execution lease.
@@ -1433,8 +1449,8 @@ class TrainingPrepareHandler:
                 target_status=TaskStatus.FAILED,
             )
         prepared = context.artifacts.read_json(target.task_id, "prepared-input.json", default={})
-        snapshot = context.artifacts.read_json(target.task_id, "snapshot.json", default={})
-        revision = context.artifacts.read_json(target.task_id, "dataset-revision.json", default={})
+        snapshot = context.artifacts.read_json(target.task_id, payload.get("snapshot_ref") or "snapshot.json", default={})
+        revision = context.artifacts.read_json(target.task_id, payload.get("dataset_revision_ref") or "dataset-revision.json", default={})
         freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
         frozen = context.artifacts.read_json(target.task_id, freeze_ref, default={}) if freeze_ref else {}
         remote = payload.get("remote_execution")
@@ -1585,7 +1601,14 @@ class TrainingPrepareHandler:
         self._heartbeat(context, 94, "validating_prepared_input", "核验已生成的训练输入")
         result = self._validate_ready_publication(context, target, payload)
         current = context.repository.get(target.task_id)
-        if current is not None and current.status is TaskStatus.QUEUED:
+        if current is not None and VERSION_REF.fullmatch(current.payload_ref):
+            match = VERSION_REF.fullmatch(current.payload_ref)
+            proposal = context.artifacts.payload_reader.read_payload_publication_receipt(current.task_id, match['operation'])
+            context.repository.publish_training_payload(current.task_id, artifacts=context.artifacts, publication=proposal,
+                child_task_id=context.task.task_id, child_lease_token=context.lease.lease_token,
+                child_attempt=context.execution_generation, child_worker_id=context.lease.worker_id,
+                child_payload_ref=context.task.payload_ref)
+        elif current is not None and current.status is TaskStatus.QUEUED:
             expected_resource_key = str(
                 payload.get("target_resource_key")
                 or (
@@ -1628,7 +1651,7 @@ class TrainingPrepareHandler:
             raise
         except InterruptedError:
             raise
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, PayloadPublicationError):
             raise
         except RemoteTrainingPreparationError as error:
             self._fail_target_if_owned(
@@ -1690,6 +1713,8 @@ class TrainingPrepareHandler:
 
         try:
             target = self._target(context, training_task_id)
+            ensure_preparation_input(context, target)
+            target = context.repository.get(training_task_id)
             payload = context.artifacts.read_json(
                 training_task_id,
                 target.payload_ref,
@@ -1723,12 +1748,8 @@ class TrainingPrepareHandler:
             ):
                 self._heartbeat(context, 2, "resolving_training_contract", "核验训练素材与标签合同")
                 payload = self._freeze_request_contract(context, target, payload)
-                context.artifacts.atomic_write_json(
-                    training_task_id,
-                    target.payload_ref,
-                    payload,
-                )
-                self._publish_prepared_job(target, payload)
+            if str(payload.get("training_input_state") or "").upper() == "READY":
+                return self._complete_ready_recovery(context, target, payload)
             existing = payload.get("remote_execution")
             if (
                 isinstance(existing, Mapping)
@@ -1741,7 +1762,14 @@ class TrainingPrepareHandler:
             bundle, snapshot, split_manifest, images = self._prepare_bundle(
                 context, target, payload, indices_only=True,
             )
+            match = VERSION_REF.fullmatch(target.payload_ref)
+            prior = context.artifacts.payload_reader.read_payload_publication_receipt(training_task_id,match['operation']) if match else None
+            if prior is None or prior.identity.data['phase']=='create':
+                target = publish_training(context, target, 'training.freeze', payload).task
+            elif prior.identity.data['phase']!='training.freeze':
+                raise ValueError('TRAINING_FREEZE_REQUIRED: unexpected publication phase')
             payload = context.artifacts.read_json(training_task_id, target.payload_ref)
+            self._publish_prepared_job(target, payload)
             prepared_input = {
                 "schema_version": 1,
                 "training_task_id": training_task_id,
@@ -1772,12 +1800,8 @@ class TrainingPrepareHandler:
                     "training_prepare_task_id": context.task.task_id,
                     "prepared_input_ref": "prepared-input.json",
                 }
-                context.artifacts.atomic_write_json(
-                    training_task_id,
-                    target.payload_ref,
-                    updated_payload,
-                )
-                self._activate_target(context, training_task_id, updated_payload)
+                target = publish_training(context, target, 'training.ready', updated_payload).task
+                self._publish_prepared_job(target, updated_payload)
                 result = {**prepared_input, "status": "ready", "target": "local"}
                 context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
                 self._heartbeat(context, 100, "ready", "训练索引已就绪，等待执行 Worker 准备图片")
@@ -1887,12 +1911,8 @@ class TrainingPrepareHandler:
                 "supplement_provenance": snapshot.get("supplement_provenance"),
                 "remote_execution": remote_execution,
             }
-            context.artifacts.atomic_write_json(
-                training_task_id,
-                target.payload_ref,
-                updated_payload,
-            )
-            self._activate_target(context, training_task_id, updated_payload)
+            target = publish_training(context, target, 'training.ready', updated_payload).task
+            self._publish_prepared_job(target, updated_payload)
             result = {
                 "training_task_id": training_task_id,
                 "status": "ready",
@@ -1912,7 +1932,7 @@ class TrainingPrepareHandler:
             raise
         except InterruptedError:
             raise
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, PayloadPublicationError):
             # Scheduler owns retry classification. A temporary SQLite outage
             # must not be converted into a terminal parent business failure.
             raise

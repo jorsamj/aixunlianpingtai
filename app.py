@@ -9037,14 +9037,17 @@ def _enqueue_explicit_training_locked(
             from platform_core.training_selection_reference import mark_selection_submitted
             for reference in (payload.train_selection_ref,payload.test_selection_ref):
                 if reference:mark_selection_submitted(DATA_DIR,reference,task_id)
-            shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
+            from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity
+            initial_payload = shared_task_artifacts().prepare_payload_publication(PayloadPublicationIdentity(
+                task_id=task_id,project_id=project_id,kind='TRAINING',phase='create',expected_ref='',
+                expected_parent_attempt=0,intent={'request_id':task_id}),request_payload)
             record = shared_task_repository().create(
                 replace(
                     TaskRecord.new(
                         task_id,
                         project_id,
                         TaskKind.TRAINING,
-                        "payload.json",
+                        initial_payload.version.payload_ref,
                         resource_key,
                         priority=int(payload.queue_priority),
                         required_capabilities=("training.input.ready",),

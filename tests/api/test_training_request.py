@@ -76,6 +76,12 @@ def _upload_training_ready(client, project_id: str, name: str, color: tuple[int,
     return _mark_training_ready(client, project_id, image)
 
 
+def _frozen_input_ref(platform, task_id):
+    record=platform.shared_task_repository().get(task_id)
+    payload=platform.shared_task_artifacts().read_json(task_id,record.payload_ref if record else 'payload.json',default={})
+    return payload.get('input_freeze_ref') or 'input-freeze.json'
+
+
 def _freeze_admitted_training(app_module, task_id: str):
     """Run only the TRAINING_PREPARE contract phase, without trainer startup."""
     from platform_core.remote_training_tasks import TrainingPrepareHandler
@@ -84,17 +90,27 @@ def _freeze_admitted_training(app_module, task_id: str):
     assert target is not None
     payload = app_module.shared_task_artifacts().read_json(task_id, target.payload_ref)
     handler = TrainingPrepareHandler(app_module.DATA_DIR)
-    context = SimpleNamespace(
-        artifacts=app_module.shared_task_artifacts(),
-        repository=app_module.shared_task_repository(),
-        # This helper executes only the pre-execution contract, without a Worker lease.
-        run_owned=lambda operation: operation(),
-    )
-    frozen_payload = handler._freeze_request_contract(context, target, payload)
-    app_module.shared_task_artifacts().atomic_write_json(
-        task_id, target.payload_ref, frozen_payload,
-    )
-    handler._publish_prepared_job(target, frozen_payload)
+    from platform_core.task_runtime import TaskKind, WorkerContext
+    from platform_core.task_runtime.preparation_publication import publish_training
+    repository=app_module.shared_task_repository()
+    lease=None
+    for _ in range(100):
+        lease=repository.claim_next('contract-freezer',[TaskKind.TRAINING_PREPARE],{'training.prepare'},
+            admission=lambda database,candidate,*args:(candidate['task_id']==f'trainprep_{task_id}','test target'))
+        if lease is not None:
+            break
+    assert lease is not None and lease.task.task_id==f'trainprep_{task_id}'
+    context=WorkerContext(lease.task,lease,repository,app_module.shared_task_artifacts())
+    try:
+        frozen_payload=handler._freeze_request_contract(context,target,payload)
+        published=publish_training(context,target,'training.freeze',frozen_payload)
+        handler._publish_prepared_job(published.task,frozen_payload)
+    finally:
+        # Isolated contract fixture yields its lease on success and rejection.
+        # No trainer/OS process was started; later API tests see a queued child.
+        with repository._connect() as database:
+            database.execute("UPDATE tasks SET status='QUEUED',stage='queued',worker_id=NULL,lease_token=NULL,lease_expires_at=NULL WHERE task_id=? AND lease_token=?",
+                             (lease.task.task_id,lease.lease_token))
     return frozen_payload
 
 
@@ -320,7 +336,7 @@ def test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_v
     }
     response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
     assert response.status_code == 202, response.text
-    saved = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    saved = app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref)
     consent = saved["training_background_confirmation"]
     assert consent["task_id"] == request["task_id"]
     assert consent["actor_id"]
@@ -329,7 +345,7 @@ def test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_v
     assert re.fullmatch(r"[0-9a-f]{64}", consent["selected_input_fingerprint"])
     replay = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
     assert replay.status_code == 202 and replay.json()["idempotent"] is True
-    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == saved
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref) == saved
 
     prepared = _freeze_admitted_training(app_module, request["task_id"])
     receipt_scope = task_negative_context(prepared["label_contract"])
@@ -900,8 +916,7 @@ def test_product_training_submit_freezes_server_authoritative_label_contract(
     assert accepted.status_code == 202, accepted.text
     task = accepted.json()["task"]
     _freeze_admitted_training(app_module, task["id"])
-    frozen = app_module.shared_task_artifacts().read_json(
-        task["id"], "input-freeze.json", default={}
+    frozen = app_module.shared_task_artifacts().read_json(task["id"],_frozen_input_ref(app_module,task["id"]), default={}
     )
     assert [row["code"] for row in frozen["label_schema"]] == ["fire"]
     assert frozen["label_contract"]["requested_label_codes"] == ["fire"]
@@ -992,7 +1007,7 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert persisted.kind is TaskKind.TRAINING
     assert persisted.status is TaskStatus.QUEUED
     assert persisted.priority == 7
-    payload = app_module.shared_task_artifacts().read_json(task["id"], "payload.json")
+    payload = app_module.shared_task_artifacts().read_json(task["id"], app_module.shared_task_repository().get(task["id"]).payload_ref)
     assert payload["schema_version"] == 4
     assert payload["training_input_state"] == "PREPARING"
     assert payload["asset_algorithm_name"] == "异步训练请求"
@@ -1056,12 +1071,12 @@ def test_explicit_remote_training_enqueues_durable_input_preparation_without_leg
     assert prep.required_capabilities == ("training.prepare",)
     assert prep.resource_key == f"training-prepare:{project_id}"
 
-    payload = app_module.shared_task_artifacts().read_json(training["id"], "payload.json")
+    payload = app_module.shared_task_artifacts().read_json(training["id"], app_module.shared_task_repository().get(training["id"]).payload_ref)
     assert payload["target"] == "remote"
     assert payload["remote_input_state"] == "PREPARING"
     assert payload["remote_prepare_task_id"] == prep_id
     assert "remote_execution" not in payload
-    prep_payload = app_module.shared_task_artifacts().read_json(prep_id, "payload.json")
+    prep_payload = app_module.shared_task_artifacts().read_json(prep_id, app_module.shared_task_repository().get(prep_id).payload_ref)
     assert prep_payload == {
         "schema_version": 2,
         "training_task_id": training["id"],
@@ -1528,8 +1543,7 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     payload = _freeze_admitted_training(app_module, task_id)
     assert payload["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
     assert payload["supplement_candidate_set"]["candidate_set_id"] == candidate_set["candidate_set_id"]
-    frozen = app_module.shared_task_artifacts().read_json(
-        task_id, "input-freeze.json", default={},
+    frozen = app_module.shared_task_artifacts().read_json(task_id,_frozen_input_ref(app_module,task_id), default={},
     )
     frozen_candidate = next(
         row for row in frozen["images"]
@@ -1709,7 +1723,7 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
         # Worker re-runs the real frozen Benchmark resolver and must reject
         # these reviews even if a caller bypasses final API admission.
         from platform_core.remote_training_tasks import TrainingPrepareHandler
-        target = SimpleNamespace(task_id=f"invalid-benchmark-{review_case}", project_id=project_id)
+        target = SimpleNamespace(task_id=f"invalid-benchmark-{review_case}", project_id=project_id, payload_ref="payload.json", attempt=0)
         with pytest.raises(ValueError):
             TrainingPrepareHandler(app_module.DATA_DIR)._freeze_request_contract(
                 SimpleNamespace(artifacts=app_module.shared_task_artifacts()), target, request,
@@ -1733,7 +1747,7 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     assert payload["benchmark_reuse"]["reserved_training_candidate_count"] == int(includes_reserved)
     assert payload["benchmark_reuse"]["effective_training_candidate_count"] == 2
     if review_case != "none":
-        frozen = app_module.shared_task_artifacts().read_json(task_id, "input-freeze.json")
+        frozen = app_module.shared_task_artifacts().read_json(task_id,_frozen_input_ref(app_module,task_id))
         assert frozen["duplicate_review"]["excluded_image_ids"] == [duplicate["id"]]
         assert frozen["duplicate_review"]["original_test_image_ids"] == [benchmark_image["id"]]
         assert frozen["duplicate_review"]["material_revision"] == request["duplicate_review"]["material_revision"]
@@ -2073,7 +2087,7 @@ def test_concurrent_same_training_id_does_not_overwrite_winner_immutable_payload
 
     assert accepted.status_code == 202, accepted.text
     assert conflicting.status_code == 409, conflicting.text
-    stored = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    stored = app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref)
     assert stored["queue_priority"] == 7
     assert stored["admission_request"]["queue_priority"] == 7
     assert stored["training_prepare_task_id"] == f"trainprep_{request['task_id']}"
@@ -2083,7 +2097,7 @@ def test_concurrent_same_training_id_does_not_overwrite_winner_immutable_payload
     repeated = client.post(url, json=request)
     assert repeated.status_code == 202, repeated.text
     assert repeated.json()["idempotent"] is True
-    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == stored
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref) == stored
 
 
 def test_training_prepare_child_creation_failure_recovers_with_same_task_id(
@@ -2114,7 +2128,7 @@ def test_training_prepare_child_creation_failure_recovers_with_same_task_id(
     assert parent.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
     assert parent.stage == "training_input_preparation_failed"
     assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}") is None
-    before = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    before = app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref)
     assert (app_module.project_dir(project_id) / "jobs" / request["task_id"] / "job.json").is_file()
 
     monkeypatch.setattr(TaskRepository, "create", original_create)
@@ -2126,8 +2140,8 @@ def test_training_prepare_child_creation_failure_recovers_with_same_task_id(
     assert parent.status is TaskStatus.QUEUED
     assert child.kind is TaskKind.TRAINING_PREPARE
     assert child.status is TaskStatus.QUEUED
-    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == before
-    assert app_module.shared_task_artifacts().read_json(child.task_id, "payload.json") == {
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref) == before
+    assert app_module.shared_task_artifacts().read_json(child.task_id, app_module.shared_task_repository().get(child.task_id).payload_ref) == {
         "schema_version": 2,
         "training_task_id": request["task_id"],
         "project_id": project_id,
@@ -2162,7 +2176,7 @@ def test_training_parent_insert_crash_recovers_missing_job_and_prepare_child(
     assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}") is None
     job_path = app_module.project_dir(project_id) / "jobs" / request["task_id"] / "job.json"
     assert not job_path.is_file()
-    frozen = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    frozen = app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref)
 
     monkeypatch.setattr(TaskRepository, "create", original_create)
     replay = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
@@ -2170,7 +2184,7 @@ def test_training_parent_insert_crash_recovers_missing_job_and_prepare_child(
     assert replay.json()["idempotent"] is True
     assert job_path.is_file()
     assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}").status is TaskStatus.QUEUED
-    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == frozen
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], app_module.shared_task_repository().get(request["task_id"]).payload_ref) == frozen
 
 
 def test_training_create_lock_timeout_has_uncertain_machine_code(client, seeded_project, monkeypatch):
@@ -2229,14 +2243,14 @@ def test_training_task_freezes_global_robustness_before_queue_and_replay(client,
         response=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
         assert response.status_code==202,response.text
         task=response.json()['task'];task_id=task.get('id') or task['task_id']
-        payload=platform.shared_task_artifacts().read_json(task_id,'payload.json')
+        payload=platform.shared_task_artifacts().read_json(task_id, platform.shared_task_repository().get(task_id).payload_ref)
         assert payload['robustness_policy']['global_revision']==enabled['revision']
         assert payload['robustness_policy']['enabled'] is True
         save_global_policy(platform.DATA_DIR,{'mode':'disabled'},enabled['revision'])
         replay=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
         assert replay.status_code==202,replay.text
         frozen_payload=_freeze_admitted_training(platform,task_id)
-        frozen=platform.shared_task_artifacts().read_json(task_id,'input-freeze.json')
+        frozen=platform.shared_task_artifacts().read_json(task_id,_frozen_input_ref(platform,task_id))
         assert frozen['robustness_policy']['enabled'] is True
         assert frozen['robustness_policy']['global_revision']==enabled['revision']
         assert frozen_payload['history_admission']['policy']=='new_for_algorithm'
@@ -2366,7 +2380,7 @@ def test_frozen_20000_http_parent_reaches_real_prepare_worker_reference_guard(
     prepare = platform.shared_task_repository().get(prepare_id)
     assert parent.kind is TaskKind.TRAINING and parent.status is TaskStatus.QUEUED
     assert prepare.kind is TaskKind.TRAINING_PREPARE
-    persisted = platform.shared_task_artifacts().read_json(parent_id, "payload.json")
+    persisted = platform.shared_task_artifacts().read_json(parent_id, platform.shared_task_repository().get(parent_id).payload_ref)
     assert persisted["train_selection_ref"] == receipt["selection_ref"]
     assert persisted["train_image_ids"] == image_ids
     assert len(persisted["requested_split"]["train_image_ids"]) == len(image_ids)
@@ -2455,7 +2469,7 @@ def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
     response = client.post(f"/api/v12/projects/{project_id}/train/start", json=frozen_request)
     assert response.status_code == 202, response.text
     task_id = response.json()["task"]["id"]
-    persisted = platform.shared_task_artifacts().read_json(task_id, "payload.json")
+    persisted = platform.shared_task_artifacts().read_json(task_id, platform.shared_task_repository().get(task_id).payload_ref)
     assert sorted(persisted["train_image_ids"]) == sorted(expected_train)
     assert persisted["test_image_ids"] == expected_test
     validate_payload_references(platform.DATA_DIR, project_id, persisted)
@@ -2463,7 +2477,7 @@ def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
     prepared = _freeze_admitted_training(platform, task_id)
     assert sorted(prepared["train_image_ids"]) == sorted(expected_train)
     assert prepared["test_image_ids"] == expected_test
-    frozen = platform.shared_task_artifacts().read_json(task_id, "input-freeze.json")
+    frozen = platform.shared_task_artifacts().read_json(task_id,_frozen_input_ref(platform,task_id))
     assert frozen["snapshot_id"]
     assert {row["id"] for row in frozen["images"]} == set(expected_train + expected_test)
     assert not platform.shared_task_artifacts().artifact_path(

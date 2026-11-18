@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .task_runtime import TaskKind, TaskRecord
+from .task_runtime.preparation_publication import preparation_input
 
 
 def ensure_training_prepare_child(repository, artifacts, project_id: str,
@@ -19,10 +20,9 @@ def ensure_training_prepare_child(repository, artifacts, project_id: str,
     orphan = artifacts.read_json(prepare_task_id, "payload.json", default=None)
     if orphan is not None and orphan != expected:
         raise ValueError("训练准备任务残留载荷与当前父任务冲突")
-    if orphan is None:
-        artifacts.atomic_write_json(prepare_task_id, "payload.json", expected)
+    proposal = preparation_input(artifacts, prepare_task_id, project_id, "TRAINING_PREPARE", task_id)
     return repository.create(TaskRecord.new(
         prepare_task_id, project_id, TaskKind.TRAINING_PREPARE,
-        "payload.json", f"training-prepare:{project_id}",
+        proposal.version.payload_ref, f"training-prepare:{project_id}",
         priority=int(priority), required_capabilities=("training.prepare",),
     ))

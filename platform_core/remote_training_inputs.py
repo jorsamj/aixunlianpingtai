@@ -28,10 +28,15 @@ def _load(service, task, payload):
     ref = str(payload.get("input_freeze_ref") or "")
     if not ref:
         raise ValueError("remote frozen input is missing")
-    path = service.task_artifacts.artifact_path(task.task_id, ref)
-    info = path.stat()
-    frozen, index = _verified_freeze(str(path),
-        (info.st_ino, info.st_mtime_ns, info.st_size), str(payload.get("input_freeze_id") or ""))
+    if ref.startswith('evidence-versions/'):
+        frozen = service.task_artifacts.read_json(task.task_id, ref)
+        if frozen.get('input_freeze_id') != payload.get('input_freeze_id') or _training_input_freeze_digest(frozen) != payload.get('input_freeze_id'):
+            raise ValueError('remote frozen input digest mismatch')
+        index = {str(row['id']): row for row in frozen['images']}
+    else:
+        path = service.task_artifacts.artifact_path(task.task_id, ref)
+        info = path.stat()
+        frozen, index = _verified_freeze(str(path), (info.st_ino, info.st_mtime_ns, info.st_size), str(payload.get('input_freeze_id') or ''))
     training = (payload.get("remote_execution") or {}).get("training") or {}
     if (training.get("schema_version") != 3
             or (training.get("inputs") or {}).get("input_freeze_id") != frozen["input_freeze_id"]
