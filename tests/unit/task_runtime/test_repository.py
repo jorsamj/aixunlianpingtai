@@ -911,3 +911,378 @@ def test_batch_positions_use_one_snapshot_during_concurrent_change(tmp_path, mon
     monkeypatch.setattr(repo, '_connect', original)
     assert repo.resource_queue_position('29') == 1
     assert repo.resource_queue_positions(ids) == {key: repo.resource_queue_position(key) for key in ids}
+
+# P2A immutable Payload reference publication; production handlers are not migrated.
+def _publication_setup(tmp_path, *, deployment=False, phase=None, repository_type=TaskRepository):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity
+    repository = repository_type(tmp_path / 'publication.sqlite3')
+    store = ArtifactStore(tmp_path / 'artifacts')
+    parent_kind = TaskKind.DEPLOYMENT_TEST if deployment else TaskKind.TRAINING
+    child_kind = TaskKind.DEPLOYMENT_PREPARE if deployment else TaskKind.TRAINING_PREPARE
+    child_id = 'parent-prepare' if deployment else 'trainprep_parent'
+    parent = replace(TaskRecord.new('parent', 'project', parent_kind, 'payload.json', 'pending',
+        required_capabilities=('deployment.input.pending' if deployment else 'training.input.ready',)),
+        stage='PREPARING_MODEL' if deployment else 'training_input_pending')
+    repository.create(parent)
+    child_identity = PayloadPublicationIdentity(task_id=child_id, project_id='project', kind=child_kind.value,
+        phase='create', expected_ref='', expected_parent_attempt=0, intent={'request_id':'original'})
+    child_payload = {'parent_task_id':'parent'} if deployment else {'training_task_id':'parent','project_id':'project'}
+    child_publication = store.prepare_payload_publication(child_identity, child_payload)
+    repository.create(TaskRecord.new(child_id, 'project', child_kind, child_publication.version.payload_ref, 'prep'))
+    lease = repository.claim_next('worker', [child_kind], set(), lease_seconds=120)
+    assert lease is not None
+    publication_identity = PayloadPublicationIdentity(task_id='parent', project_id='project', kind=parent_kind.value,
+        phase=phase or ('deployment.ready' if deployment else 'training.ready'),
+        expected_ref=parent.payload_ref, expected_parent_attempt=parent.attempt, intent={'request_id':'r'})
+    activation = {} if publication_identity.data['phase']=='training.freeze' else {
+        'resource_key':'deployment-runtime:.pt' if deployment else 'training:auto',
+        'required_capabilities':['deployment.runtime' if deployment else 'training.ultralytics'], 'stage':'queued'}
+    publication = store.prepare_payload_publication(publication_identity, {'prepared':True}, activation=activation)
+    kwargs=dict(artifacts=store, publication=publication, child_task_id=child_id, child_lease_token=lease.lease_token,
+                child_attempt=lease.task.attempt, child_worker_id=lease.worker_id,
+                child_payload_ref=lease.task.payload_ref)
+    method=repository.publish_deployment_payload if deployment else repository.publish_training_payload
+    return repository, store, lease, kwargs, method
+
+
+@pytest.mark.parametrize('deployment,phase', [(False,'training.freeze'), (False,'training.ready'), (True,'deployment.ready')])
+def test_payload_publish_applied_and_idempotent(tmp_path, deployment, phase):
+    repo, store, lease, kwargs, publish = _publication_setup(tmp_path, deployment=deployment, phase=phase)
+    result=publish('parent', **kwargs)
+    assert result.outcome=='APPLIED'
+    assert result.task.payload_ref==kwargs['publication'].version.payload_ref
+    assert result.task.attempt==0
+    if phase=='training.freeze':
+        assert result.task.required_capabilities==('training.input.ready',)
+        assert result.task.stage=='training_input_pending'
+    else:
+        assert result.task.stage=='queued'
+        assert result.task.resource_key==kwargs['publication'].metadata['activation']['resource_key']
+    again=publish('parent', **kwargs)
+    assert again.outcome=='ALREADY_APPLIED'
+    assert again.task==result.task
+
+
+@pytest.mark.parametrize('field,value,code', [
+    ('child_task_id','another','PARENT_CHILD'), ('child_lease_token','wrong','LEASE_INVALID'),
+    ('child_attempt',0,'LEASE_INVALID'), ('child_worker_id','foreign','LEASE_INVALID'),
+    ('child_payload_ref','payload.json','CONTENT'),
+    ('child_lease_token',None,'LEASE_INVALID'), ('child_worker_id','', 'LEASE_INVALID'),
+])
+def test_payload_publish_wrong_owner(tmp_path, field, value, code):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, lease, kwargs, publish = _publication_setup(tmp_path)
+    kwargs[field]=value
+    with pytest.raises(PayloadPublicationError, match=code):
+        publish('parent', **kwargs)
+    assert repo.get('parent').payload_ref=='payload.json'
+
+
+@pytest.mark.parametrize('target,column,value,code', [
+    ('parent','status','CANCELLED','NOT_ELIGIBLE'), ('child','status','CANCEL_REQUESTED','LEASE_INVALID'),
+    ('child','lease_expires_at','2000-01-01T00:00:00Z','LEASE_INVALID'),
+    ('parent','project_id','foreign','IDENTITY'), ('child','project_id','foreign','PARENT_CHILD'),
+    ('parent','kind','MODEL_CONVERSION','IDENTITY'), ('child','kind','VIDEO_FRAMES','PARENT_CHILD'),
+    ('parent','attempt',1,'NOT_ELIGIBLE'), ('parent','stage','other','NOT_ELIGIBLE'),
+    ('parent','payload_ref','successor.json','EXPECTED_REF_CONFLICT'),
+])
+def test_payload_publish_rechecks_database(tmp_path, target, column, value, code):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, lease, kwargs, publish = _publication_setup(tmp_path)
+    task_id='parent' if target=='parent' else lease.task.task_id
+    with repo._connect() as database:
+        database.execute(f'UPDATE tasks SET {column}=? WHERE task_id=?', (value, task_id))
+    with pytest.raises(PayloadPublicationError, match=code):
+        publish('parent', **kwargs)
+    assert repo.get('parent').payload_ref != kwargs['publication'].version.payload_ref
+
+
+def test_payload_publish_missing_owner_never_uses_legacy_fallback(tmp_path):
+    repo, store, lease, kwargs, publish = _publication_setup(tmp_path)
+    del kwargs['child_worker_id']
+    with pytest.raises(TypeError):
+        publish('parent', **kwargs)
+
+
+def test_payload_publish_already_claimed_parent_and_old_worker(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    assert publish('parent', **kwargs).outcome=='APPLIED'
+    parent=repo.claim_next('training-worker', [TaskKind.TRAINING], {'training.ultralytics'})
+    assert parent is not None and parent.task.attempt==1
+    assert publish('parent', **kwargs).outcome=='ALREADY_APPLIED'
+    assert repo.get('parent')==parent.task
+    with repo._connect() as database:
+        database.execute('UPDATE tasks SET lease_token=? WHERE task_id=?', ('replacement',child.task.task_id))
+    with pytest.raises(PayloadPublicationError, match='LEASE_INVALID'):
+        publish('parent', **kwargs)
+
+
+def test_payload_publish_legacy_child_not_a_frozen_binding(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, lease, kwargs, publish = _publication_setup(tmp_path)
+    store.atomic_write_json(lease.task.task_id, 'payload.json', {'training_task_id':'parent'})
+    with repo._connect() as database:
+        database.execute('UPDATE tasks SET payload_ref=? WHERE task_id=?', ('payload.json',lease.task.task_id))
+    kwargs['child_payload_ref']='payload.json'
+    with pytest.raises(PayloadPublicationError, match='CONTENT'):
+        publish('parent', **kwargs)
+
+
+
+def test_payload_publish_parent_and_interface_binding(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    with pytest.raises(PayloadPublicationError, match='IDENTITY'):
+        publish('different', **kwargs)
+    with pytest.raises(PayloadPublicationError, match='IDENTITY'):
+        repo.publish_deployment_payload('parent', **kwargs)
+
+
+def test_payload_publish_child_content_binding(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity, PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    different=store.prepare_payload_publication(PayloadPublicationIdentity(task_id=child.task.task_id,
+        project_id='project', kind='TRAINING_PREPARE', phase='create', expected_ref='',
+        expected_parent_attempt=0, intent={'request_id':'different'}),
+        {'training_task_id':'another-parent', 'project_id':'project'})
+    with repo._connect() as database:
+        database.execute('UPDATE tasks SET payload_ref=? WHERE task_id=?', (different.version.payload_ref,child.task.task_id))
+    kwargs['child_payload_ref']=different.version.payload_ref
+    with pytest.raises(PayloadPublicationError, match='PARENT_CHILD'):
+        publish('parent', **kwargs)
+
+
+@pytest.mark.parametrize('failure', ['receipt_missing','content_mismatch','forged_descriptor'])
+def test_payload_publish_file_precondition_failure_never_opens_writer(tmp_path, monkeypatch, failure):
+    from pathlib import Path
+    import os
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    publication=kwargs['publication']
+    if failure=='receipt_missing':
+        path=store.root/'parent'/'payload-publications'/'v1'/(publication.operation_id+'.json')
+        path.unlink()
+    elif failure=='content_mismatch':
+        path=store.root/'parent'/publication.version.payload_ref
+        if os.name=='nt': path=Path('\\\\?\\'+str(path))
+        path.write_bytes(b'{}')
+    else:
+        kwargs['publication']=replace(publication,version=replace(publication.version,raw=b'{}'))
+    monkeypatch.setattr(repo,'_connect',lambda:pytest.fail('file failure must not open Task writer'))
+    with pytest.raises(PayloadPublicationError):
+        publish('parent', **kwargs)
+
+
+def test_payload_publish_same_operation_different_content_rejected(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    with pytest.raises(PayloadPublicationError, match='OPERATION_CONFLICT'):
+        store.prepare_payload_publication(kwargs['publication'].identity, {'other':True},
+            activation=kwargs['publication'].metadata['activation'])
+    assert repo.get('parent').payload_ref=='payload.json'
+
+
+def test_payload_publish_concurrent_proposals_have_one_winner(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity, PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    second=store.prepare_payload_publication(PayloadPublicationIdentity(task_id='parent',project_id='project',
+        kind='TRAINING', phase='training.ready', expected_ref='payload.json', expected_parent_attempt=0,
+        intent={'request_id':'other-intent'}),{'different':True},activation=kwargs['publication'].metadata['activation'])
+    barrier=Barrier(2)
+    def execute(publication):
+        barrier.wait(timeout=10)
+        try:
+            return publish('parent', **{**kwargs,'publication':publication}).outcome
+        except PayloadPublicationError as error:
+            return error.code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results=list(pool.map(execute,[kwargs['publication'],second]))
+    assert sorted(results)==['APPLIED','PAYLOAD_PUBLICATION_EXPECTED_REF_CONFLICT']
+    assert repo.get('parent').payload_ref in {kwargs['publication'].version.payload_ref,second.version.payload_ref}
+
+
+@pytest.mark.parametrize('after_commit', [False,True])
+def test_payload_publish_commit_failure_or_lost_ack_is_recoverable(tmp_path, monkeypatch, after_commit):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    connect=repo._connect
+    class Connection:
+        def __init__(self): self.actual=connect()
+        def execute(self,*args): return self.actual.execute(*args)
+        def close(self): self.actual.close()
+        def commit(self):
+            if after_commit: self.actual.commit()
+            raise sqlite3.DatabaseError('commit response failed')
+    with monkeypatch.context() as patch:
+        patch.setattr(repo,'_connect',Connection)
+        with pytest.raises(PayloadPublicationError, match='COMMIT_FAILED'):
+            publish('parent', **kwargs)
+    assert repo.get('parent').payload_ref==(kwargs['publication'].version.payload_ref if after_commit else 'payload.json')
+    assert store.read_payload_publication_receipt('parent',kwargs['publication'].operation_id)==kwargs['publication']
+    assert publish('parent', **kwargs).outcome==('ALREADY_APPLIED' if after_commit else 'APPLIED')
+
+
+@pytest.mark.parametrize('already', [False,True])
+def test_payload_publish_new_worker_can_resume_but_old_worker_cannot(tmp_path, already):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    if already: publish('parent', **kwargs)
+    with repo._connect() as database:
+        database.execute('UPDATE tasks SET lease_expires_at=? WHERE task_id=?',
+                         ('2000-01-01T00:00:00+00:00',child.task.task_id))
+    repo.release_expired()
+    successor=repo.claim_next('next-worker',[TaskKind.TRAINING_PREPARE],set(),lease_seconds=120)
+    assert successor is not None and successor.task.attempt==2
+    with pytest.raises(PayloadPublicationError, match='LEASE_INVALID'):
+        publish('parent', **kwargs)
+    fresh={**kwargs,'child_lease_token':successor.lease_token,'child_attempt':successor.task.attempt,
+           'child_worker_id':successor.worker_id}
+    assert publish('parent', **fresh).outcome==('ALREADY_APPLIED' if already else 'APPLIED')
+
+
+def test_payload_publish_child_reference_change_between_read_and_commit(tmp_path, monkeypatch):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    commit=repo._commit_payload_publication
+    def change_then_commit(*args):
+        with repo._connect() as database:
+            database.execute('UPDATE tasks SET payload_ref=? WHERE task_id=?',('changed.json',child.task.task_id))
+        return commit(*args)
+    monkeypatch.setattr(repo,'_commit_payload_publication',change_then_commit)
+    with pytest.raises(PayloadPublicationError, match='CONTENT'):
+        publish('parent', **kwargs)
+
+
+@pytest.mark.parametrize('deployment', [False,True])
+def test_payload_publish_legacy_activation_cannot_mutate_new_protocol_parent(tmp_path, deployment):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path,deployment=deployment,
+        phase=None if deployment else 'training.freeze')
+    publish('parent', **kwargs)
+    before=repo.get('parent')
+    with pytest.raises(PayloadPublicationError, match='NOT_ELIGIBLE'):
+        if deployment:
+            repo.settle_deployment_preparation('parent',child,prepared_ref=f'scenario/prepared-{child.task.attempt}.json')
+        else:
+            repo.activate_prepared_training('parent',resource_key='bypass',required_capabilities=('training.ultralytics',))
+    assert repo.get('parent')==before
+
+
+def test_payload_publish_fenced_repository_inherits_strict_contract(tmp_path):
+    from platform_core.task_runtime import FencedTaskRepository
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path,repository_type=FencedTaskRepository)
+    assert publish('parent', **kwargs).outcome=='APPLIED'
+    assert publish('parent', **kwargs).outcome=='ALREADY_APPLIED'
+
+
+def test_payload_publish_busy_keeps_retryable_sqlite_error(tmp_path, monkeypatch):
+    from platform_core.task_runtime.sqlite_busy import run_with_busy_retry, is_sqlite_busy
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    connect=repo._connect
+    def short_connect():
+        connection=connect()
+        connection.execute('PRAGMA busy_timeout=1')
+        return connection
+    monkeypatch.setattr(repo,'_connect',short_connect)
+    blocker=connect()
+    try:
+        blocker.execute('BEGIN IMMEDIATE')
+        with pytest.raises(sqlite3.OperationalError) as error:
+            run_with_busy_retry(lambda:publish('parent', **kwargs),timeout=.05)
+        assert is_sqlite_busy(error.value)
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert repo.get('parent').payload_ref=='payload.json'
+    assert publish('parent', **kwargs).outcome=='APPLIED'
+
+
+def test_payload_publish_verification_and_hash_outside_writer(tmp_path, monkeypatch):
+    from platform_core.task_runtime import payload_publications
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    active=False
+    connect=repo._connect
+    def trace(statement):
+        nonlocal active
+        if statement.startswith('BEGIN'): active=True
+        if statement.startswith(('COMMIT','ROLLBACK')): active=False
+    def traced_connect():
+        connection=connect()
+        connection.set_trace_callback(trace)
+        return connection
+    read_version=store.read_payload_version
+    def read(*args):
+        assert not active
+        return read_version(*args)
+    encode=payload_publications._json_bytes
+    def serialize(*args):
+        assert not active
+        return encode(*args)
+    monkeypatch.setattr(repo,'_connect',traced_connect)
+    monkeypatch.setattr(store,'read_payload_version',read)
+    monkeypatch.setattr(payload_publications,'_json_bytes',serialize)
+    assert publish('parent', **kwargs).outcome=='APPLIED'
+
+
+@pytest.mark.parametrize('activation', [
+    {'stage':'queued'},
+    {'resource_key':'training:auto','stage':'other','required_capabilities':['training.ultralytics']},
+    {'resource_key':'training:auto','stage':'queued','required_capabilities':[]},
+    {'resource_key':'training:auto','stage':'queued','required_capabilities':['training.input.ready']},
+])
+def test_payload_publish_ready_requires_complete_activation(tmp_path, activation):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity, PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    identity=PayloadPublicationIdentity(task_id='parent',project_id='project',kind='TRAINING',phase='training.ready',
+        expected_ref='payload.json',expected_parent_attempt=0,intent={'request_id':'invalid-activation'})
+    kwargs['publication']=store.prepare_payload_publication(identity, {}, activation=activation)
+    with pytest.raises(PayloadPublicationError,match='NOT_ELIGIBLE'):
+        publish('parent', **kwargs)
+    assert repo.get('parent').payload_ref=='payload.json'
+
+
+def test_payload_publish_gate_cannot_be_replaced_by_queued_status(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    with repo._connect() as database:
+        database.execute("UPDATE tasks SET required_capabilities='[]' WHERE task_id='parent'")
+    with pytest.raises(PayloadPublicationError,match='NOT_ELIGIBLE'):
+        publish('parent', **kwargs)
+
+
+def test_payload_publish_lease_uses_aware_utc_instants(tmp_path):
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    # +08:00 representation of an expired instant must not pass string ordering.
+    with repo._connect() as database:
+        expired=(datetime.now(timezone.utc)-timedelta(seconds=10)).astimezone(timezone(timedelta(hours=8))).isoformat()
+        database.execute('UPDATE tasks SET lease_expires_at=? WHERE task_id=?',(expired,child.task.task_id))
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    with pytest.raises(PayloadPublicationError,match='LEASE_INVALID'):
+        publish('parent', **kwargs)
+
+
+def test_payload_publish_freeze_then_ready_and_superseded_freeze(tmp_path):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity, PayloadPublicationError
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path,phase='training.freeze')
+    frozen=publish('parent', **kwargs)
+    ready=store.prepare_payload_publication(PayloadPublicationIdentity(task_id='parent',project_id='project',
+        kind='TRAINING',phase='training.ready',expected_ref=frozen.task.payload_ref,
+        expected_parent_attempt=frozen.task.attempt,intent={'request_id':'ready-after-freeze'}),
+        {'prepared':True,'frozen':True},activation={'resource_key':'training:auto',
+        'required_capabilities':['training.ultralytics'],'stage':'queued'})
+    assert publish('parent', **{**kwargs,'publication':ready}).outcome=='APPLIED'
+    with pytest.raises(PayloadPublicationError,match='EXPECTED_REF_CONFLICT'):
+        publish('parent', **kwargs)
+    assert repo.get('parent').payload_ref==ready.version.payload_ref
+
+
+def test_payload_publish_unmigrated_deployment_settlement_still_works(tmp_path):
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path,deployment=True)
+    ref=f'scenario/prepared-{child.task.attempt}.json'
+    store.atomic_write_json('parent',ref,{'legacy':True})
+    repo.settle_deployment_preparation('parent',child,prepared_ref=ref)
+    parent=repo.get('parent')
+    assert parent.payload_ref==ref
+    assert parent.required_capabilities==('deployment.runtime',)
+    assert parent.stage=='queued'

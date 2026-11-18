@@ -17,7 +17,11 @@ from filelock import FileLock
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
-from .sqlite_busy import busy_timeout_ms, retry_busy
+from .sqlite_busy import busy_timeout_ms, is_sqlite_busy, retry_busy
+from .payload_publications import (
+    VERSION_REF, PayloadPublicationError, PayloadPublicationIdentity,
+    PayloadPublicationResult, PreparedPayloadPublication,
+)
 from ..gpu_resources import ensure_gpu_runtime_schema
 from .inference_resources import InferenceResourceMethods, ensure_inference_runtime_schema
 
@@ -382,6 +386,7 @@ class TaskRepository(InferenceResourceMethods):
             parent = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(parent_id),)).fetchone()
             if parent is None or parent["kind"] != 'DEPLOYMENT_TEST' or parent["project_id"] != child["project_id"]:
                 raise PermissionError("deployment preparation parent mismatch")
+            self._reject_legacy_payload_mutation(parent["payload_ref"])
             if parent["status"] != 'QUEUED':
                 raise InterruptedError("deployment parent is no longer queued")
             if error is None:
@@ -393,6 +398,138 @@ class TaskRepository(InferenceResourceMethods):
                 database.execute("UPDATE tasks SET status='FAILED',stage='preparation_failed',error=?,finished_at=?,updated_at=? WHERE task_id=?",
                                  (str(error)[:8000], now, now, str(parent_id)))
             database.commit()
+
+    @staticmethod
+    def _reject_legacy_payload_mutation(payload_ref):
+        if VERSION_REF.fullmatch(str(payload_ref)):
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_NOT_ELIGIBLE",
+                                          "versioned parents require the strict publication interface")
+
+    def publish_training_payload(self, parent_id, *, artifacts, publication,
+                                 child_task_id, child_lease_token, child_attempt,
+                                 child_worker_id, child_payload_ref) -> PayloadPublicationResult:
+        return self._publish_payload(parent_id, TaskKind.TRAINING, TaskKind.TRAINING_PREPARE,
+            artifacts=artifacts, publication=publication, child_task_id=child_task_id,
+            child_lease_token=child_lease_token, child_attempt=child_attempt,
+            child_worker_id=child_worker_id, child_payload_ref=child_payload_ref)
+
+    def publish_deployment_payload(self, parent_id, *, artifacts, publication,
+                                   child_task_id, child_lease_token, child_attempt,
+                                   child_worker_id, child_payload_ref) -> PayloadPublicationResult:
+        return self._publish_payload(parent_id, TaskKind.DEPLOYMENT_TEST, TaskKind.DEPLOYMENT_PREPARE,
+            artifacts=artifacts, publication=publication, child_task_id=child_task_id,
+            child_lease_token=child_lease_token, child_attempt=child_attempt,
+            child_worker_id=child_worker_id, child_payload_ref=child_payload_ref)
+
+    def _publish_payload(self, parent_id, parent_kind, child_kind, *, artifacts, publication,
+                         child_task_id, child_lease_token, child_attempt, child_worker_id, child_payload_ref):
+        # All filesystem reads, hashing and potentially large JSON parsing are
+        # outside the retryable writer transaction. A descriptor is not trusted
+        # merely because it is an instance of a public dataclass.
+        if not isinstance(publication, PreparedPayloadPublication):
+            raise PayloadPublicationError("PUBLICATION_INVALID_RECEIPT", "prepared proposal required")
+        identity = publication.identity
+        if not isinstance(identity, PayloadPublicationIdentity):
+            raise PayloadPublicationError("PUBLICATION_INVALID_IDENTITY", "typed publication identity required")
+        fields = identity.data
+        phases = {"training.freeze", "training.ready"} if parent_kind is TaskKind.TRAINING else {"deployment.ready"}
+        if fields["task_id"] != parent_id or fields["parent_kind"] != parent_kind.value or fields["phase"] not in phases:
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_IDENTITY_MISMATCH", "parent identity or phase mismatch")
+        expected_child = f"trainprep_{parent_id}" if parent_kind is TaskKind.TRAINING else f"{parent_id}-prepare"
+        if child_task_id != expected_child:
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_CHILD_MISMATCH", "associated preparation child required")
+        if (not isinstance(child_lease_token, str) or not child_lease_token
+                or type(child_attempt) is not int or child_attempt < 1
+                or not isinstance(child_worker_id, str) or not child_worker_id):
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "complete execution ownership required")
+        # Preserve P1's precise file/receipt/integrity error codes.
+        verified = artifacts.read_payload_publication_receipt(parent_id, identity.operation_id, identity=identity)
+        if verified != publication:
+            raise PayloadPublicationError("PUBLICATION_OPERATION_CONFLICT", "proposal differs from the immutable receipt")
+        try:
+            child_input = artifacts.read_payload_version(child_task_id, child_payload_ref).data
+        except PayloadPublicationError as error:
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_CONTENT_MISMATCH", "immutable verified child input required") from error
+        binding = "training_task_id" if parent_kind is TaskKind.TRAINING else "parent_task_id"
+        if (not isinstance(child_input, dict) or child_input.get(binding) != parent_id
+                or (parent_kind is TaskKind.TRAINING and child_input.get("project_id") != fields["project_id"])
+                or ("project_id" in child_input and child_input["project_id"] != fields["project_id"])):
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_CHILD_MISMATCH", "child input binds another parent/project")
+        activation = verified.metadata["activation"]
+        if fields["phase"] == "training.freeze":
+            if activation:
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_NOT_ELIGIBLE", "freeze cannot activate the parent")
+        else:
+            capabilities = activation.get("required_capabilities", [])
+            if (set(activation) != {"resource_key", "required_capabilities", "stage"}
+                    or activation["stage"] != "queued" or not capabilities
+                    or {"training.input.ready", "deployment.input.pending", "training.prepare", "deployment.prepare"}.intersection(capabilities)
+                    or (parent_kind is TaskKind.DEPLOYMENT_TEST and capabilities != ["deployment.runtime"])):
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_NOT_ELIGIBLE", "READY requires complete execution activation")
+        capabilities_json = json.dumps(sorted(set(activation.get("required_capabilities", []))), separators=(",", ":"))
+        return self._commit_payload_publication(fields, verified.version.payload_ref, identity.operation_id,
+            parent_kind, child_kind, child_task_id, child_lease_token, child_attempt,
+            child_worker_id, child_payload_ref, activation, capabilities_json)
+
+    @retry_busy
+    def _commit_payload_publication(self, fields, new_ref, operation_id, parent_kind, child_kind,
+                                    child_id, token, attempt, worker_id, child_ref, activation, capabilities_json):
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            now = datetime.now(timezone.utc)
+            parent = database.execute("SELECT * FROM tasks WHERE task_id=?", (fields["task_id"],)).fetchone()
+            child = database.execute("SELECT * FROM tasks WHERE task_id=?", (child_id,)).fetchone()
+            if parent is None or parent["kind"] != parent_kind.value or parent["project_id"] != fields["project_id"]:
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_IDENTITY_MISMATCH", "current parent identity mismatch")
+            expected_child = f"trainprep_{parent['task_id']}" if parent_kind is TaskKind.TRAINING else f"{parent['task_id']}-prepare"
+            if (child is None or child["task_id"] != expected_child or child["kind"] != child_kind.value
+                    or child["project_id"] != parent["project_id"]):
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_CHILD_MISMATCH", "current child identity mismatch")
+            if child["payload_ref"] != child_ref:
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_CONTENT_MISMATCH", "child input reference changed")
+            try:
+                expires = datetime.fromisoformat(str(child["lease_expires_at"]).replace("Z", "+00:00"))
+                valid_time = expires.tzinfo is not None and expires.astimezone(timezone.utc) > now
+            except (ValueError, TypeError, OverflowError):
+                valid_time = False
+            if (child["status"] != "RUNNING" or child["lease_token"] != token or child["attempt"] != attempt
+                    or child["worker_id"] != worker_id or not valid_time):
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "preparation execution is fenced")
+            if parent["payload_ref"] == new_ref:
+                # Parent may already be RUNNING/terminal with a higher attempt.
+                # Confirmation never re-applies activation or changes ownership.
+                outcome = "ALREADY_APPLIED"
+            else:
+                if parent["payload_ref"] != fields["expected_payload_ref"]:
+                    raise PayloadPublicationError("PAYLOAD_PUBLICATION_EXPECTED_REF_CONFLICT", "current reference superseded this proposal")
+                pending = "training.input.ready" if parent_kind is TaskKind.TRAINING else "deployment.input.pending"
+                stages = {"training_input_pending", "queued"} if parent_kind is TaskKind.TRAINING else {"PREPARING_MODEL"}
+                if (parent["status"] != "QUEUED" or parent["attempt"] != fields["expected_parent_attempt"]
+                        or json.loads(parent["required_capabilities"]) != [pending] or parent["stage"] not in stages):
+                    raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_NOT_ELIGIBLE", "parent no longer has its preparation gate")
+                updates = "payload_ref=?,updated_at=?"
+                parameters = [new_ref, now.isoformat()]
+                if activation:
+                    updates += ",resource_key=?,required_capabilities=?,stage=?"
+                    parameters.extend([activation["resource_key"], capabilities_json, activation["stage"]])
+                parameters.extend([fields["task_id"], fields["project_id"], parent_kind.value,
+                                   fields["expected_payload_ref"], fields["expected_parent_attempt"],
+                                   parent["required_capabilities"], parent["stage"]])
+                changed = database.execute(f"""UPDATE tasks SET {updates}
+                    WHERE task_id=? AND project_id=? AND kind=? AND status='QUEUED'
+                      AND payload_ref=? AND attempt=? AND required_capabilities=? AND stage=?""", parameters).rowcount
+                if changed != 1:
+                    raise PayloadPublicationError("PAYLOAD_PUBLICATION_EXPECTED_REF_CONFLICT", "conditional publication lost")
+                parent = database.execute("SELECT * FROM tasks WHERE task_id=?", (fields["task_id"],)).fetchone()
+                outcome = "APPLIED"
+            result = PayloadPublicationResult(outcome, _from_row(parent), operation_id)
+            try:
+                database.commit()
+            except sqlite3.Error as error:
+                if is_sqlite_busy(error):
+                    raise
+                raise PayloadPublicationError("PAYLOAD_PUBLICATION_COMMIT_FAILED", "commit not confirmed; retry the same operation to inspect its outcome") from error
+        return result
 
     def get(self, task_id: str) -> TaskRecord | None:
         with closing(self._connect()) as database:
@@ -1066,6 +1203,7 @@ class TaskRepository(InferenceResourceMethods):
             if current.kind is not TaskKind.TRAINING:
                 database.rollback()
                 raise ValueError("only TRAINING tasks can be activated after preparation")
+            self._reject_legacy_payload_mutation(current.payload_ref)
             if current.status is not TaskStatus.QUEUED:
                 database.rollback()
                 raise ValueError("training task is no longer queued")

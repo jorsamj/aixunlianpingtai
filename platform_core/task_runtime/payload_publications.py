@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping
 
-from .models import TaskKind
+from .models import TaskKind, TaskRecord
 
 PROTOCOL = "task-payload-publication-v1"
 DEFAULT_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
@@ -166,6 +166,14 @@ class PreparedPayloadPublication:
     @property
     def metadata(self) -> dict:
         return json.loads(self.receipt_bytes)
+
+
+@dataclass(frozen=True)
+class PayloadPublicationResult:
+    """Returned only after the Repository transaction commits successfully."""
+    outcome: str
+    task: TaskRecord
+    operation_id: str
 
 
 class PayloadVersionStore:
