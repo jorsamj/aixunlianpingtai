@@ -4,7 +4,7 @@
 
 ## HEAD 与阶段
 
-执行基线：`e639bb12585a79556b7a5fd703205368720265c3`。M0 记录：`5aaf29686faddb5cdf335e0a866515d4809f57e9`；M1 实现：`4865bea70941443b5a62e56b5c90eca5e6c92aef`；离线校验元数据修正：`97ae3a517f9e3d98e58e114515cf88647b4a8129`，本地不把脏工作树产物绑定到旧提交。末次功能修正：`dc1f2b19c9066e02419f40dfc54223ca132b945d`，编辑成功后刷新当前算法详情标题并避免重复列表请求。其后本文件所在提交只更新文档。**当前交付 HEAD 是本文件所在的分支提交**，接续先 `git rev-parse HEAD`、fetch 并比较 `origin/feature/external-algorithm-publishing`，不要把实现 SHA 当作后续文档提交 SHA。最终推送准确 SHA 与一次 CI 快照见本批交付消息。原三份未提交 Payload 设计保留，不混入提交。
+执行基线：`e639bb12585a79556b7a5fd703205368720265c3`。M0 记录：`5aaf29686faddb5cdf335e0a866515d4809f57e9`；M1 实现：`4865bea70941443b5a62e56b5c90eca5e6c92aef`；离线校验元数据修正：`97ae3a517f9e3d98e58e114515cf88647b4a8129`，本地不把脏工作树产物绑定到旧提交。末次功能修正：`dc1f2b19c9066e02419f40dfc54223ca132b945d`，编辑成功后刷新当前算法详情标题并避免重复列表请求。上一批交付提交为 `65ae81372555786b78284a1bc62608703c1c40d6`。本轮收尾实现提交为 `daa5534606379db83df12e9f076c61bc8cd55821`，其后的本文件所在提交仅更新本轮接续文档。**当前交付 HEAD 是本文件所在的分支提交**，接续先 `git rev-parse HEAD`、fetch 并比较 `origin/feature/external-algorithm-publishing`，不要把实现 SHA 当作后续文档提交 SHA。最终推送准确 SHA 与一次 CI 快照见本批交付消息。原三份未提交 Payload 设计保留，不混入提交。
 
 目标是逐步完整替换旧前端，不长期双写。当前 FastAPI 模块化单体 + SQLite + 各原 Repository + ArtifactStore + Worker/Agent/Supervisor 已有成熟执行安全。新目标为现有 frontend 工程双构建：库模式继续服务旧视图，独立 `/app/` 使用 Vue Root / Hash Router / Pinia / Element Plus；新应用不加载 app.js，不移入旧表单，不创建第二 API/任务 Owner。
 
@@ -16,7 +16,17 @@ M0 已建立[功能/API矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md)，单独�
 
 构建：`npm ci --prefix frontend && npm run build --prefix frontend`，同时保留 `static/vue-catalog` 和新增 `static/vue-app`。Node 使用项目要求的 >=22（本地最终 Node 24.21.0）。`tools/verify_vue_app_offline.mjs` 核原生构建依赖闭包/文件 SHA 与 checkout SHA，现有 CI artifact 增带新目录；`tools/package_vue_offline.py` 对新源码强制校验双构建同 SHA，仍兼容历史单目录包。不得混装 Chunk 或把 local-check 清单当官方 CI 制品。
 
-## 当前验证与 CI
+## 2026-11-19 精准收尾（当前）
+
+- 基线/远端核对：`65ae81372555786b78284a1bc62608703c1c40d6`，无新增远端提交。GPT独立审计反馈该SHA的50个工作流48成功、2失败：[Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/44344576655)、[Material Upload Chunking](https://github.com/jorsamj/aixunlianpingtai/actions/runs/44344576624)。原SHA并未全绿。
+- 两个失败断言已本地复现：main.mjs缓存键含`-m1-shell`且不等于app.js/styles.css。仅将static/index.html三者统一为数字缓存键`42.25.626`，顺序、业务脚本和测试断言不变；这不是VERSION升级。
+- Algorithms.vue复用既有`cl_vue_algorithm_pending_v1:{projectId}` sessionStorage格式`{algorithmId,body}`，写前保存四个原表单字段与已知ID；确认拒绝清除、写后正式GET身份/字段核验成功清除，网络或GET失败/字段不符保留，刷新和同标签页重新进入仍阻止重复提交。创建回执丢失无ID时，用户须在原管理页核对对应ID再发GET，不按名称猜测、不自动重发POST；返回ID但GET失败则自动保留该ID。存储无法使用时不发新写请求。无新后端幂等或业务状态Owner。
+- 唯一新增Chrome用例覆盖：模拟已提交但响应丢失→刷新→项目隔离→GET失败/字段不符仍阻止→GET核验一致清除→刷新保持清除；明确400拒绝不留下待核状态。原代码先红，修正后1/1通过（5.1秒含启动）。未重跑原3项或全量Playwright。
+- 本轮必要命令（仓库根，Chrome命令在frontend/）：`node --test --test-name-pattern="browser wiring loads chunk runtime|沉浸式审核仅在原任务工作台内加载" tests/frontend/material-upload-runtime.test.mjs tests/frontend/ai-review-immersive-workbench.test.mjs`：2/2通过；`node --check static/main.mjs`、`node --check static/app.js`：通过；`node frontend/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p frontend/tsconfig.json`：通过；`npm run build:app --prefix frontend`：通过，6项本地资源闭包核验；`node node_modules/@playwright/test/cli.js test tests/app-shell.spec.ts --grep "unknown algorithm writes"`：1/1通过；`git diff --check`：通过。Node24.21.0，未跑全仓或修改CI。
+- 代码提交`daa5534606379db83df12e9f076c61bc8cd55821`仅3文件：Algorithms.vue、新增单项app-shell.spec.ts、static/index.html；本轮最终提交补本入口及功能矩阵。最终交付HEAD用上方分支核对方法获取，准确完整SHA与一次CI快照见交付消息。新SHA验收`CI_PENDING`，不借用原SHA的48项成功；已知本地阻断无，待异步CI/GPT复核。
+- 边界：sessionStorage只保证当前浏览器标签页会话内刷新/重入，不提供跨会话、跨设备幂等；无创建回执ID或权威记录已变化时，需人工核对，不提供无依据“已确认”按钮。原算法字段、业务规则、全部API/后端执行安全、三份设计及VERSION42.24.592均保留。剩余迁移功能如下；本轮停止扩展。
+
+## 上一批本地验证记录
 
 必要本地验证：全 frontend 类型检查、两种 Vite 构建及离线闭包（旧30、新6资源）；原 API/静态挂载鉴权3项；相关 Node 合同12项、离线/打包2项；新 Shell Chrome3项。末次只补测真实新增的“关闭待加载编辑→新增”竞态：先复现旧字段污染新表单，再复用 `useReadScope.cancel('basic')` 修正，定向1项通过；详情标题刷新后再次仅运行受影响的首项Chrome用例，1项通过。未重跑无关绿色测试。
 
@@ -28,7 +38,7 @@ M0 已建立[功能/API矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md)，单独�
 
 ## 下一步与禁止事项
 
-M1 本批代码和必要验证已完成；正常推送本批后只查最终 SHA CI 一次，停止跨领域开发，等 GPT 审查独立结构。下一步：先按准确 SHA 定位实际失败 Job（若有），否则核对算法原完整卡片的品目/训练状态/综合排序/当前版本等剩余对照，再安排训练完整模式迁移；修改仍围绕 `frontend/src/app/Algorithms.vue`、原 AlgorithmListRuntime/API合同及矩阵，不重审全仓，不动执行核心。
+M1底座已获GPT原则认可；本轮仅修上述两处缺口。代码、必要验证和接续文档完成后推送，只查准确最终SHA CI一次并停止，等GPT复核；不重做M0–M1。下一步：先按准确 SHA 定位实际失败 Job（若有），否则核对算法原完整卡片的品目/训练状态/综合排序/当前版本等剩余对照，再安排训练完整模式迁移；修改仍围绕 `frontend/src/app/Algorithms.vue`、原 AlgorithmListRuntime/API合同及矩阵，不重审全仓，不动执行核心。
 
 已知未完成：其他业务域未原生迁移；原登录/项目创建管理仍复用原页；非 canonical 项目的旧系统跳转不变更策略；新旧入口暂并存且未切换 `/` 默认；未做生产/GPU/现场离线安装或完整业务验收。回退：直接访问 `/` 使用原完整界面，新App按钮经整页交接使用原 Owner，原页有“返回新版算法库”；构建资源异常时 HTML 初始提供原系统链接。旧界面/适配器未退役。
 
