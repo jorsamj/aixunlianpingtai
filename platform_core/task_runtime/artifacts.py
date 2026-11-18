@@ -8,7 +8,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 from .payload_publications import (
-    DEFAULT_MAX_PAYLOAD_BYTES, PayloadPublicationError, PayloadPublicationIdentity,
+    DEFAULT_MAX_PAYLOAD_BYTES, VERSION_REF, EVIDENCE_REF, PayloadPublicationError, PayloadPublicationIdentity,
     PayloadVersionStore, PreparedPayloadPublication, VerifiedPayload, is_reserved_path,
 )
 
@@ -20,6 +20,11 @@ class ArtifactStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._payload_versions = PayloadVersionStore(self.root, max_payload_bytes, max_receipt_bytes)
 
+    @property
+    def payload_reader(self):
+        """Evidence reads confer no Task mutation or execution authority."""
+        return self._payload_versions
+
     def prepare_payload_publication(
         self, identity: PayloadPublicationIdentity, payload: Any, *, activation: dict | None = None,
         _before_publish: Callable[[], None] = lambda: None,
@@ -30,6 +35,15 @@ class ArtifactStore:
 
     def read_payload_version(self, task_id: str, payload_ref: str) -> VerifiedPayload:
         return self._payload_versions.read_payload_version(task_id, payload_ref)
+
+    def write_evidence_json(self, task_id, value, *, _before_publish=lambda: None):
+        return self._payload_versions.write_evidence_json(task_id, value, before_publish=_before_publish)
+
+    def write_execution_anchor(self, task_id, attempt, value, *, _before_publish=lambda: None):
+        return self._payload_versions.write_execution_anchor(task_id, attempt, value, before_publish=_before_publish)
+
+    def read_execution_anchor(self, task_id, attempt):
+        return self._payload_versions.read_execution_anchor(task_id, attempt)
 
     def read_payload_publication_receipt(
         self, task_id: str, operation_id: str, *, identity: PayloadPublicationIdentity | None = None,
@@ -97,6 +111,10 @@ class ArtifactStore:
             temp_path.unlink(missing_ok=True)
 
     def read_json(self, task_id: str, relative_path: str, default: Any = None) -> Any:
+        if VERSION_REF.fullmatch(str(relative_path)):
+            return self.read_payload_version(task_id, relative_path).data
+        if EVIDENCE_REF.fullmatch(str(relative_path)):
+            return self._payload_versions.read_evidence_json(task_id, relative_path)
         path = self.artifact_path(task_id, relative_path)
         if not path.exists():
             return default

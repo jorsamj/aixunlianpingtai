@@ -22,9 +22,10 @@ from .models import TaskKind, TaskRecord
 
 PROTOCOL = "task-payload-publication-v1"
 DEFAULT_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
-RESERVED_NAMES = frozenset({"payload-versions", "payload-publications", ".payload-staging-v1"})
+RESERVED_NAMES = frozenset({"payload-versions", "payload-publications", ".payload-staging-v1", "evidence-versions", "execution-inputs"})
 HEX = r"[0-9a-f]{64}"
 VERSION_REF = re.compile(rf"(?P<prefix>scenario/)?payload-versions/v1/(?P<operation>{HEX})/sha256-(?P<digest>{HEX})\.json\Z")
+EVIDENCE_REF = re.compile(rf"evidence-versions/v1/sha256-(?P<digest>{HEX})\.json\Z")
 PHASE_KINDS = {"training.freeze": "TRAINING", "training.ready": "TRAINING", "deployment.ready": "DEPLOYMENT_TEST"}
 
 
@@ -338,6 +339,33 @@ class PayloadVersionStore:
             _fail("PAYLOAD_INTEGRITY_ERROR", str(error))
         return VerifiedPayload(task_id, payload_ref, raw)
 
+    def write_evidence_json(self, task_id, value, *, before_publish=lambda: None):
+        raw = _json_bytes(value)
+        ref = f"evidence-versions/v1/sha256-{hashlib.sha256(raw).hexdigest()}.json"
+        self._publish(task_id, ref, raw, before_publish, limit=512 * 1024 * 1024)
+        return ref
+
+    def read_evidence_json(self, task_id, ref):
+        match = EVIDENCE_REF.fullmatch(str(ref))
+        if not match:
+            _fail("PAYLOAD_INVALID_REF", "immutable evidence reference required")
+        raw = self._read(self._path(task_id, ref), limit=512 * 1024 * 1024)
+        if hashlib.sha256(raw).hexdigest() != match["digest"]:
+            _fail("PAYLOAD_INTEGRITY_ERROR", "evidence digest mismatch")
+        return json.loads(raw)
+
+    def write_execution_anchor(self, task_id, attempt, value, *, before_publish=lambda: None):
+        if type(attempt) is not int or attempt < 1:
+            _fail("PUBLICATION_INVALID_IDENTITY", "claimed execution attempt required")
+        ref = f"execution-inputs/v1/attempt-{attempt}.json"
+        self._publish(task_id, ref, _json_bytes(value), before_publish)
+        return ref
+
+    def read_execution_anchor(self, task_id, attempt):
+        if type(attempt) is not int or attempt < 1:
+            _fail("PUBLICATION_INVALID_IDENTITY", "claimed execution attempt required")
+        return json.loads(self._read(self._path(task_id, f"execution-inputs/v1/attempt-{attempt}.json")))
+
     def read_payload_publication_receipt(self, task_id: str, operation_id: str, *, identity=None) -> PreparedPayloadPublication:
         if not isinstance(operation_id, str) or re.fullmatch(HEX, operation_id) is None:
             _fail("PUBLICATION_INVALID_IDENTITY", "invalid operation id")
@@ -350,7 +378,7 @@ class PayloadVersionStore:
             if os.path.lexists(_native_name(path)):
                 found.append((prefix, self._read(path, limit=self.receipt_limit)))
         if len(found) != 1:
-            _fail("PAYLOAD_VERSION_MISSING" if not found else "PUBLICATION_INVALID_RECEIPT", "expected one immutable receipt")
+            _fail("PUBLICATION_RECEIPT_MISSING" if not found else "PUBLICATION_INVALID_RECEIPT", "expected one immutable receipt")
         prefix, raw = found[0]
         try:
             receipt = json.loads(raw)

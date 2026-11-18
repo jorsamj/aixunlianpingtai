@@ -2,6 +2,7 @@
 from dataclasses import replace
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 import re
 
@@ -9,6 +10,7 @@ from filelock import FileLock, Timeout
 
 from ..algorithms import list_algorithms
 from ..task_runtime import TaskKind, TaskRecord, TaskStatus
+from ..task_runtime.payload_publications import PayloadPublicationIdentity, PayloadPublicationError, VERSION_REF
 
 
 def creation_task_id(project, creation_id):
@@ -56,11 +58,13 @@ def _accept_locked(repository, artifacts, project, creation_id, request, image, 
     payload["input_image_url"] = request["input_url_template"].format(task_id=task_id, extension=extension)
     payload["image_url"] = request["output_url_template"].format(task_id=task_id)
     artifacts.atomic_write_json(task_id, "scenario/request.json", payload)
-    artifacts.atomic_write_json(task_id + "-prepare", "request.json", {"parent_task_id": task_id})
+    child_publication = artifacts.prepare_payload_publication(PayloadPublicationIdentity(
+        task_id=task_id + "-prepare", project_id=project, kind="DEPLOYMENT_PREPARE", phase="create",
+        expected_ref="", expected_parent_attempt=0, intent={"parent_task_id": task_id}), {"parent_task_id": task_id})
     parent = replace(TaskRecord.new(task_id, project, TaskKind.DEPLOYMENT_TEST, "scenario/request.json",
                                    "deployment-runtime:.pt", required_capabilities=("deployment.input.pending",)),
                      stage="PREPARING_MODEL")
-    child = TaskRecord.new(task_id + "-prepare", project, TaskKind.DEPLOYMENT_PREPARE, "request.json",
+    child = TaskRecord.new(task_id + "-prepare", project, TaskKind.DEPLOYMENT_PREPARE, child_publication.version.payload_ref,
                            "deployment-prepare:" + task_id, required_capabilities=("deployment.prepare",))
     return repository.create_deployment_pair(parent, child)
 
@@ -152,7 +156,13 @@ class ScenarioPreparationHandler:
             if parent is None or parent.project_id != context.task.project_id:
                 raise PermissionError("检测准备项目不匹配")
             if "deployment.input.pending" not in parent.required_capabilities:
-                return TaskStatus.SUCCEEDED, None  # activation committed before a Worker restart
+                match = VERSION_REF.fullmatch(parent.payload_ref)
+                if match:
+                    proposal = context.artifacts.payload_reader.read_payload_publication_receipt(target, match["operation"])
+                    self._publish(context, target, proposal)
+                return TaskStatus.SUCCEEDED, None
+            from ..task_runtime.preparation_publication import ensure_preparation_input
+            ensure_preparation_input(context, parent)
             link = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
             if link.get("parent_task_id") != target:
                 raise PermissionError("检测准备任务关联错误")
@@ -182,9 +192,19 @@ class ScenarioPreparationHandler:
                      "model_identity": {**identity, "model_sha256": model["model_sha256"]}}
             if remote is not None:
                 ready["remote_execution"] = remote
-            prepared_ref = f"scenario/prepared-{context.task.attempt}.json"
-            context.artifacts.atomic_write_json(target, prepared_ref, ready)
-            context.run_owned(lambda: context.repository.settle_deployment_preparation(target, context.lease, prepared_ref=prepared_ref))
+            publication_identity = PayloadPublicationIdentity(task_id=target, project_id=parent.project_id,
+                kind="DEPLOYMENT_TEST", phase="deployment.ready", expected_ref=parent.payload_ref,
+                expected_parent_attempt=parent.attempt, intent={"creation_digest": request["creation_digest"]})
+            try:
+                proposal = context.artifacts.payload_reader.read_payload_publication_receipt(
+                    target, publication_identity.operation_id, identity=publication_identity)
+            except PayloadPublicationError as missing:
+                if missing.code != "PUBLICATION_RECEIPT_MISSING":
+                    raise
+                proposal = context.artifacts.prepare_payload_publication(publication_identity, ready,
+                    activation={"resource_key":parent.resource_key,
+                        "required_capabilities":["deployment.runtime"], "stage":"queued"})
+            self._publish(context, target, proposal)
             return TaskStatus.SUCCEEDED, None
         except InterruptedError:
             raise
@@ -192,8 +212,22 @@ class ScenarioPreparationHandler:
             from ..task_runtime import ExecutionFencedError
             if isinstance(error, ExecutionFencedError) or context.lease_lost:
                 raise
+            current = context.repository.get(target)
+            if current is not None and VERSION_REF.fullmatch(current.payload_ref):
+                # A confirmed/uncertain publication must never be rewound by
+                # the legacy failure path. Recovery validates its receipt.
+                raise
+            if isinstance(error, PayloadPublicationError) or isinstance(error, sqlite3.OperationalError):
+                raise
             message = f"{getattr(error, 'code', type(error).__name__)}: {error}"
             context.run_owned(lambda: context.repository.settle_deployment_preparation(target, context.lease, error=message))
             raise
+
+    @staticmethod
+    def _publish(context, parent_id, proposal):
+        return context.repository.publish_deployment_payload(parent_id, artifacts=context.artifacts,
+            publication=proposal, child_task_id=context.task.task_id,
+            child_lease_token=context.lease.lease_token, child_attempt=context.execution_generation,
+            child_worker_id=context.lease.worker_id, child_payload_ref=context.task.payload_ref)
 
     recover = run

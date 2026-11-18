@@ -91,7 +91,7 @@ def test_prepare_is_fenced_and_publishes_original_remote_task_only_after_io(clie
     handler.run(ctx)
     parent = ctx.repository.get(task_id)
     assert parent.required_capabilities == ("deployment.runtime",)
-    assert parent.payload_ref == "scenario/prepared-1.json"
+    assert parent.payload_ref.startswith("scenario/payload-versions/v1/")
     assert task_node_capability(parent, ctx.artifacts) == "deployment-test"
     stored = ctx.artifacts.read_json(task_id, parent.payload_ref)
     assert stored["remote_execution"]["task_kind"] == "DEPLOYMENT_TEST"
@@ -265,7 +265,7 @@ def test_worker_restart_reprepares_same_parent_and_fences_late_first_generation(
     assert recovered.lease.lease_token != first.lease.lease_token
     assert handler.recover(recovered)[0] is TaskStatus.SUCCEEDED
     parent = recovered.repository.get(task_id)
-    assert parent.payload_ref == 'scenario/prepared-2.json'
+    assert parent.payload_ref.startswith('scenario/payload-versions/v1/')
     assert staged == [task_id, task_id]
     assert len(recovered.repository.list(project_id=project, kinds=[TaskKind.DEPLOYMENT_TEST]).items) == 1
     recovered.finish(TaskStatus.SUCCEEDED)
@@ -305,3 +305,56 @@ def test_missing_parent_with_committed_child_is_unknown_not_safe_to_recreate(cli
     assert found["creation_state"] == "UNKNOWN"
     assert post(client, project).status_code == 409
     assert repo.get(task_id + "-prepare") is not None
+
+
+def test_immutable_creation_preparation_to_canonical_parent_claim(client, seeded_project, tmp_path, monkeypatch):
+    from platform_core.deployment.scenario_preparation import ScenarioPreparationHandler
+    from platform_core.task_runtime import TaskKind, TaskStatus
+    from platform_core.task_runtime.payload_publications import VERSION_REF, PayloadPublicationError
+    import platform_core.scenario_models as models
+    import os
+
+    project = seed(seeded_project)
+    response = post(client, project)
+    assert response.status_code == 202, response.text
+    task_id = response.json()['id']
+    ctx = child_context(project, task_id)
+    model = tmp_path / 'e2e-model.pt'
+    model.write_bytes(b'isolated-model')
+    monkeypatch.setattr(models, 'resolve_scenario_model', lambda *args, **kwargs: {
+        'path': str(model), 'model_sha256': 'a' * 64})
+
+    class LocalTransport:
+        def stage_deployment_test(self, **kwargs):
+            assert kwargs['task_id'] == task_id
+            return None
+
+    status, result = ScenarioPreparationHandler(
+        app_module.DATA_DIR, transport_factory=LocalTransport).run(ctx)
+    assert status is TaskStatus.SUCCEEDED and result is None
+    ctx.finish(status)
+    artifacts = app_module.shared_task_artifacts()
+    parent = ctx.repository.get(task_id)
+    assert VERSION_REF.fullmatch(parent.payload_ref)
+    version = artifacts.read_payload_version(task_id, parent.payload_ref)
+    assert version.data['preparation_state'] == 'READY'
+    assert version.digest in parent.payload_ref
+    assert artifacts.read_json(task_id, parent.payload_ref) == version.data
+    assert post(client, project).json()['id'] == task_id
+    lookup = client.get(f'/api/v61/projects/{project}/deployment-test-creations/stable-creation')
+    assert lookup.json()['task']['id'] == task_id
+    lease = ctx.repository.claim_next('detection-worker', [TaskKind.DEPLOYMENT_TEST],
+                                      {'deployment.runtime'}, 30)
+    assert lease is not None and lease.task.task_id == task_id
+    assert lease.task.payload_ref == parent.payload_ref
+    assert ctx.repository.claim_next('second-worker', [TaskKind.DEPLOYMENT_TEST],
+                                      {'deployment.runtime'}, 30) is None
+
+    # A verified reference must fail closed even if an old request is available.
+    artifacts.atomic_write_json(task_id, 'scenario/request.json', {'legacy': True})
+    path = artifacts.root / task_id / parent.payload_ref
+    if os.name == 'nt':
+        path = Path('\\\\?\\' + str(path))
+    path.write_bytes(b'{}')
+    with pytest.raises(PayloadPublicationError, match='INTEGRITY'):
+        artifacts.read_json(task_id, parent.payload_ref, default={'legacy': True})

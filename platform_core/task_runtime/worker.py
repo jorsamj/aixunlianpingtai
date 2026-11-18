@@ -64,6 +64,29 @@ class FencedArtifactStore:
     def root(self):
         return self._store.root
 
+    @property
+    def payload_reader(self):
+        return self._store.payload_reader
+
+    def assert_publication_execution(self):
+        self._context.assert_current_execution()
+
+    def write_evidence_json(self, task_id, value):
+        self._context.assert_current_execution()
+        result = self._store.write_evidence_json(task_id, value, _before_publish=self._context.assert_current_execution)
+        self._context.assert_current_execution()
+        return result
+
+    def write_execution_anchor(self, task_id, attempt, value):
+        self._context.assert_current_execution()
+        result = self._store.write_execution_anchor(task_id, attempt, value, _before_publish=self._context.assert_current_execution)
+        self._context.assert_current_execution()
+        return result
+
+    def read_execution_anchor(self, task_id, attempt):
+        self._context.assert_current_execution()
+        return self._store.read_execution_anchor(task_id, attempt)
+
     def prepare_payload_publication(self, identity, payload, *, activation=None):
         self._context.assert_current_execution()
         return self._store.prepare_payload_publication(

@@ -405,6 +405,42 @@ class TaskRepository(InferenceResourceMethods):
             raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_NOT_ELIGIBLE",
                                           "versioned parents require the strict publication interface")
 
+    def bind_preparation_input(self, lease, parent_id, proposal, artifacts):
+        """Explicit owned upgrade of deterministic legacy child associations."""
+        kind = lease.task.kind
+        expected_id = f"trainprep_{parent_id}" if kind is TaskKind.TRAINING_PREPARE else f"{parent_id}-prepare"
+        parent_kind = TaskKind.TRAINING if kind is TaskKind.TRAINING_PREPARE else TaskKind.DEPLOYMENT_TEST
+        if kind not in {TaskKind.TRAINING_PREPARE, TaskKind.DEPLOYMENT_PREPARE} or lease.task.task_id != expected_id:
+            raise PermissionError("preparation association mismatch")
+        verified = artifacts.payload_reader.read_payload_publication_receipt(expected_id, proposal.operation_id, identity=proposal.identity)
+        if verified != proposal or proposal.identity.data['phase'] != 'create':
+            raise PermissionError("preparation association proposal mismatch")
+        expected = ({'schema_version':2,'training_task_id':parent_id,'project_id':lease.task.project_id}
+                    if kind is TaskKind.TRAINING_PREPARE else {'parent_task_id':parent_id})
+        if verified.version.data != expected:
+            raise PermissionError("preparation association content mismatch")
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            parent=database.execute("SELECT * FROM tasks WHERE task_id=?",(parent_id,)).fetchone()
+            if parent is None or parent['kind']!=parent_kind.value or parent['project_id']!=lease.task.project_id:
+                raise PermissionError("preparation project mismatch")
+            changed=database.execute("""UPDATE tasks SET payload_ref=? WHERE task_id=? AND project_id=?
+                AND kind=? AND status='RUNNING' AND lease_token=? AND attempt=? AND worker_id=?
+                AND lease_expires_at>? AND payload_ref=?""",(proposal.version.payload_ref,expected_id,
+                lease.task.project_id,kind.value,lease.lease_token,lease.task.attempt,lease.worker_id,
+                utc_now(),lease.task.payload_ref)).rowcount
+            if changed!=1:
+                raise PermissionError("preparation input binding is fenced")
+            if (parent_kind is TaskKind.TRAINING and parent['status']=='QUEUED'
+                    and not VERSION_REF.fullmatch(parent['payload_ref'])):
+                # Explicit owned migration of old unprepared requests. Never
+                # rewind a RUNNING parent or change an execution's resources.
+                database.execute("UPDATE tasks SET required_capabilities=?,stage='training_input_pending' WHERE task_id=?",
+                    (json.dumps(['training.input.ready']),parent_id))
+            row=database.execute("SELECT * FROM tasks WHERE task_id=?",(expected_id,)).fetchone()
+            database.commit()
+        return _from_row(row)
+
     def publish_training_payload(self, parent_id, *, artifacts, publication,
                                  child_task_id, child_lease_token, child_attempt,
                                  child_worker_id, child_payload_ref) -> PayloadPublicationResult:
@@ -443,11 +479,12 @@ class TaskRepository(InferenceResourceMethods):
                 or not isinstance(child_worker_id, str) or not child_worker_id):
             raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "complete execution ownership required")
         # Preserve P1's precise file/receipt/integrity error codes.
-        verified = artifacts.read_payload_publication_receipt(parent_id, identity.operation_id, identity=identity)
+        reader = getattr(artifacts, "payload_reader", artifacts)
+        verified = reader.read_payload_publication_receipt(parent_id, identity.operation_id, identity=identity)
         if verified != publication:
             raise PayloadPublicationError("PUBLICATION_OPERATION_CONFLICT", "proposal differs from the immutable receipt")
         try:
-            child_input = artifacts.read_payload_version(child_task_id, child_payload_ref).data
+            child_input = reader.read_payload_version(child_task_id, child_payload_ref).data
         except PayloadPublicationError as error:
             raise PayloadPublicationError("PAYLOAD_PUBLICATION_CONTENT_MISMATCH", "immutable verified child input required") from error
         binding = "training_task_id" if parent_kind is TaskKind.TRAINING else "parent_task_id"
@@ -471,6 +508,9 @@ class TaskRepository(InferenceResourceMethods):
                                                        parent_kind, child_kind, child_task_id)
         if confirmed is not None:
             return confirmed
+        assert_active = getattr(artifacts, "assert_publication_execution", None)
+        if callable(assert_active):
+            assert_active()
         return self._commit_payload_publication(fields, verified.version.payload_ref, identity.operation_id,
             parent_kind, child_kind, child_task_id, child_lease_token, child_attempt,
             child_worker_id, child_payload_ref, activation, capabilities_json)
