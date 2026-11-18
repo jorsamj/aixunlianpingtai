@@ -86,3 +86,61 @@ def test_task_query_registered_http_contract(tmp_path, monkeypatch):
     assert before == [(t.task_id, t.status, t.updated_at) for t in repo.list(project_id='p').items if t.task_id == 'visible']
     assert len(api._task_query_router.routes) == 2
     assert all(r.methods == {'GET'} for r in api._task_query_router.routes)
+
+
+@pytest.mark.parametrize('case', [
+    'empty', 'terminal', 'training', 'TRAINING_PREPARE', 'AI_ANNOTATION',
+    'MODEL_CONVERSION', 'DEPLOYMENT_TEST', 'mixed', 'cross_project',
+])
+def test_task_list_reads_queue_evidence_only_when_needed(tmp_path, monkeypatch, case):
+    from dataclasses import replace
+    from platform_core.task_runtime import TaskRepository, TaskRecord, TaskKind, TaskStatus, task_to_public
+    from platform_core.task_runtime.query_api import WorkerInstanceService
+
+    repo = TaskRepository(tmp_path / 'tasks.sqlite3')
+    def add(task_id, kind, status=TaskStatus.QUEUED, project='p', resource='cpu:test'):
+        task = TaskRecord.new(task_id, project, kind, 'payload.json', resource,
+                              required_capabilities=('test',))
+        repo.create(replace(task, status=status))
+    if case == 'terminal':
+        for status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            add(status.value, TaskKind.TRAINING_PREPARE, status)
+    elif case == 'training':
+        add('train', TaskKind.TRAINING)
+    elif case in ('mixed', 'cross_project'):
+        add('train', TaskKind.TRAINING, resource='training:auto')
+        add('prepare', TaskKind.TRAINING_PREPARE)
+        if case == 'cross_project':
+            add('foreign', TaskKind.TRAINING_PREPARE, project='other', resource='cpu:other')
+    elif case != 'empty':
+        add('queued', TaskKind(case))
+    workers = [{'online': True, 'task_kinds': [k.value for k in TaskKind if k is not TaskKind.TRAINING],
+                'capabilities': ['test']}]
+    candidates = repo.queued_candidates()
+    page = repo.list(project_id='p', limit=50)
+    expected = {'items': [task_to_public(t, repo, worker_runtime=workers, queued_candidates=candidates)
+                          for t in page.items], 'next_cursor': page.next_cursor}
+    calls = {'worker': 0, 'queue': 0}
+    original_candidates = repo.queued_candidates
+    def runtime(service, *args, **kwargs):
+        assert service.repository is repo
+        calls['worker'] += 1
+        return workers
+    def queue():
+        calls['queue'] += 1
+        return original_candidates()
+    monkeypatch.setattr(WorkerInstanceService, 'list_runtime', runtime)
+    monkeypatch.setattr(repo, 'queued_candidates', queue)
+    monkeypatch.setattr(api, 'get_project', lambda p: {'id': p})
+    monkeypatch.setattr(api, 'shared_task_repository', lambda: repo)
+    endpoint = next(r.endpoint for r in api._task_query_router.routes if r.name == 'list_unified_runtime_tasks')
+    result = endpoint('p', kind=None, limit=50, cursor=None)
+    needs = case not in ('empty', 'terminal', 'training')
+    assert calls == {'worker': int(needs), 'queue': int(needs)}
+    assert result == expected
+    for item in result['items']:
+        if item['persisted_status'] == 'QUEUED':
+            assert item['resource_queue_position'] == repo.resource_queue_position(item['task_id'])
+            assert item['resource_queue_position_exact'] is (
+                item['kind'] != 'TRAINING' and case != 'cross_project')
+    assert repo.list(project_id='p', limit=50) == page

@@ -81,3 +81,14 @@ GET 仍可能触发原 Repository 构造、SQLite/历史兼容初始化及原产
 一次 AST 对照和实际路由递归核验成功，git diff --check 通过。首次测试因本机 FastAPI 使用 _IncludedRouter，直接平铺 app.routes 未找到端点；修正测试定位后通过，未改产品或削弱断言。复用既有 Algorithm SQL Store CI 执行该 API 测试，不增加工作流。
 
 未跑全仓、浏览器、真实训练/转换/硬件，不接触生产。当前改动准确 SHA CI 推送后只取一次状态，未完成不能称验收通过；生产/离线现场未验。回退：在唯一长期分支对本次提交执行普通 git revert，再正常推送；无数据迁移或回滚步骤。P2C/P2D 仅设计，未实施。
+
+
+## P2B-3A：普通任务列表证据按需读取（2026-11-18）
+
+基线/远端核实为82b7a10805ecb1e592769e77736e43a361dddfef，隔离副本干净，其他工作树和诊断工具不动。仅在query_api.py普通列表取页后判断：有QUEUED且非TRAINING任务时，才各读取一次原Worker快照与完整全局队列；否则传None。空页、仅终态页、仅QUEUED TRAINING页跳过两项读取；TRAINING_PREPARE、AI_ANNOTATION、MODEL_CONVERSION、DEPLOYMENT_TEST及混合页保留完整证据。没有项目过滤/LIMIT，没有替换原投影或修改队列精确性定义、队列位置、排序、游标、Session、项目隔离、reader_view或任务状态；原Repository/Worker/public.py/app.py均未改。
+
+定向测试：`python -m pytest -q --confcutdir=tests/api tests/api/test_core_productization_views.py --disable-warnings --tb=short`，12 passed（既有3项+新增9个参数场景）。新增测试先在旧实现复现空页/终态/TRAINING三项不必要读取，再实施优化后全绿；完整响应与原task_to_public显式传入完整证据的结果一致，并核验次数、队列位置及持久记录不变。TRAINING_PREPARE精确性仍可由兼容在线测试Worker证明；跨项目其他资源候选仍使原证明为false。混合场景训练与准备使用各自资源队列，不将同资源但不可领取任务导致的原保守false误判为缺陷。
+
+另运行原tests/api/test_unified_task_runtime.py的3项合同，3 passed。通过仓库外临时pytest插件提供临时SQLite、项目和TestClient夹具，不启动lifespan/真实Worker；原测试代码/断言未改。首次临时夹具数据库路径与原Repository重开路径不一致导致重开用例404，改为原Provider在临时DATA_DIR初始化后3项通过，临时插件自动删除。测试涵盖原队列/提权、持久重开运行态和取消合同，仅隔离测试状态写入。
+
+git diff --check通过；仅query_api.py、既有API测试、本记录和功能保护台账变更。不建新CI、缓存或Owner，不改Schema/版本/前端/生产。准确提交CI推送后只查询一次，不借旧绿；无生产P95或百分比收益声明，真实现场性能未测。回退对本次提交普通git revert后正常推送，无Schema或业务数据迁移。完成后停止，不进入P2B-3B及其他阶段。

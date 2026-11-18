@@ -46,8 +46,16 @@ def create_task_query_router(
             page = repository.list(project_id=project_id, kinds=kinds, limit=limit, cursor=cursor)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        worker_runtime = WorkerInstanceService(repository).list_runtime()
-        queued_candidates = repository.queued_candidates()
+        needs_queue_evidence = any(
+            task.status is TaskStatus.QUEUED
+            and task.kind is not TaskKind.TRAINING
+            for task in page.items
+        )
+        worker_runtime = None
+        queued_candidates = None
+        if needs_queue_evidence:
+            worker_runtime = WorkerInstanceService(repository).list_runtime()
+            queued_candidates = repository.queued_candidates()
         return {
             "items": [
                 task_to_public(
