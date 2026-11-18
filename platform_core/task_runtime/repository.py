@@ -7,6 +7,7 @@ from contextlib import closing, contextmanager
 import base64
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Iterable
 
 from filelock import FileLock
+
+from .claim_candidates import prepare_candidates, SEMANTIC_FIELDS, key as candidate_key
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
@@ -26,7 +29,7 @@ from ..gpu_resources import ensure_gpu_runtime_schema
 from .inference_resources import InferenceResourceMethods, ensure_inference_runtime_schema
 
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _INIT_LOCK_TIMEOUT = 30
 
 
@@ -34,6 +37,12 @@ def admission_preparer(admission):
     return getattr(admission, "prepare", None) or getattr(getattr(admission, "__self__", None), "prepare_admission", None)
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS task_tombstones (
+    task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL,
+    payload_ref TEXT, attempt INTEGER NOT NULL DEFAULT 0, deleted_at TEXT NOT NULL,
+    task_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_tombstone_project ON task_tombstones(project_id,task_id);
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -221,6 +230,8 @@ class TaskRepository(InferenceResourceMethods):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self._claim_cursors = {}
+        self._claim_cursor_lock = threading.Lock()
 
     def _connect(self) -> sqlite3.Connection:
         database = connect_sqlite(self.path, timeout=5, isolation_level=None)
@@ -304,6 +315,7 @@ class TaskRepository(InferenceResourceMethods):
                     _add_column_if_missing(
                         database, "worker_instances", worker_columns, name, definition
                     )
+                database.execute('CREATE INDEX IF NOT EXISTS idx_task_claim_pipeline ON tasks(status,priority,queue_rank DESC,created_at,task_id)')
                 ensure_gpu_runtime_schema(database)
                 ensure_inference_runtime_schema(database)
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
@@ -316,6 +328,8 @@ class TaskRepository(InferenceResourceMethods):
         from .artifacts import ArtifactStore
         from .task_logs import create_task_log
 
+        if self.is_deleted(record.task_id):
+            raise ValueError('TASK_ID_RETIRED: deleted task identities cannot be reused')
         # Persist the real artifact before exposing its reference in a task row.
         artifact_store = artifacts or ArtifactStore(self.path.parent / "artifacts")
         create_task_log(artifact_store, record.task_id, record.log_ref)
@@ -337,6 +351,8 @@ class TaskRepository(InferenceResourceMethods):
         placeholders = ",".join("?" for _ in values)
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
+            if database.execute('SELECT 1 FROM task_tombstones WHERE task_id=?',(record.task_id,)).fetchone():
+                raise ValueError('TASK_ID_RETIRED: deleted task identities cannot be reused')
             database.execute(
                 f"INSERT INTO tasks ({columns}) VALUES ({placeholders})",
                 tuple(values.values()),
@@ -364,6 +380,8 @@ class TaskRepository(InferenceResourceMethods):
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             for record in (parent, child):
+                if database.execute('SELECT 1 FROM task_tombstones WHERE task_id=?',(record.task_id,)).fetchone():
+                    raise ValueError('TASK_ID_RETIRED: deleted task identities cannot be reused')
                 values = _to_values(record)
                 database.execute(f"INSERT INTO tasks ({','.join(values)}) VALUES ({','.join('?' for _ in values)})", tuple(values.values()))
             database.commit()
@@ -474,10 +492,6 @@ class TaskRepository(InferenceResourceMethods):
         expected_child = f"trainprep_{parent_id}" if parent_kind is TaskKind.TRAINING else f"{parent_id}-prepare"
         if child_task_id != expected_child:
             raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_CHILD_MISMATCH", "associated preparation child required")
-        if (not isinstance(child_lease_token, str) or not child_lease_token
-                or type(child_attempt) is not int or child_attempt < 1
-                or not isinstance(child_worker_id, str) or not child_worker_id):
-            raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "complete execution ownership required")
         # Preserve P1's precise file/receipt/integrity error codes.
         reader = getattr(artifacts, "payload_reader", artifacts)
         verified = reader.read_payload_publication_receipt(parent_id, identity.operation_id, identity=identity)
@@ -508,6 +522,10 @@ class TaskRepository(InferenceResourceMethods):
                                                        parent_kind, child_kind, child_task_id)
         if confirmed is not None:
             return confirmed
+        if (not isinstance(child_lease_token, str) or not child_lease_token
+                or type(child_attempt) is not int or child_attempt < 1
+                or not isinstance(child_worker_id, str) or not child_worker_id):
+            raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "complete execution ownership required")
         assert_active = getattr(artifacts, "assert_publication_execution", None)
         if callable(assert_active):
             assert_active()
@@ -520,10 +538,12 @@ class TaskRepository(InferenceResourceMethods):
         # One read snapshot. No writer reservation, UPDATE, lease revival or
         # inference of history from an orphan receipt.
         with closing(self._connect()) as database:
-            row = database.execute("""SELECT parent.* FROM tasks parent JOIN tasks child
-                ON child.task_id=? AND child.kind=? AND child.project_id=parent.project_id
+            row = database.execute("""SELECT parent.* FROM tasks parent JOIN (
+                    SELECT task_id,kind,project_id FROM tasks WHERE task_id=?
+                    UNION ALL SELECT task_id,kind,project_id FROM task_tombstones WHERE task_id=?
+                ) child ON child.kind=? AND child.project_id=parent.project_id
                 WHERE parent.task_id=? AND parent.project_id=? AND parent.kind=? AND parent.payload_ref=?""",
-                (child_id, child_kind.value, fields["task_id"], fields["project_id"], parent_kind.value, new_ref)).fetchone()
+                (child_id, child_id, child_kind.value, fields["task_id"], fields["project_id"], parent_kind.value, new_ref)).fetchone()
         return None if row is None else PayloadPublicationResult("ALREADY_APPLIED", _from_row(row), operation_id)
 
     @retry_busy
@@ -534,6 +554,8 @@ class TaskRepository(InferenceResourceMethods):
             now = datetime.now(timezone.utc)
             parent = database.execute("SELECT * FROM tasks WHERE task_id=?", (fields["task_id"],)).fetchone()
             child = database.execute("SELECT * FROM tasks WHERE task_id=?", (child_id,)).fetchone()
+            if child is None and parent is not None and parent['payload_ref']==new_ref:
+                child=database.execute('SELECT task_id,kind,project_id FROM task_tombstones WHERE task_id=?',(child_id,)).fetchone()
             if parent is None or parent["kind"] != parent_kind.value or parent["project_id"] != fields["project_id"]:
                 raise PayloadPublicationError("PAYLOAD_PUBLICATION_IDENTITY_MISMATCH", "current parent identity mismatch")
             expected_child = f"trainprep_{parent['task_id']}" if parent_kind is TaskKind.TRAINING else f"{parent['task_id']}-prepare"
@@ -938,6 +960,42 @@ class TaskRepository(InferenceResourceMethods):
         )
         return count
 
+    def is_deleted(self, task_id, *, project_id=None):
+        with closing(self._connect()) as database:
+            row=database.execute('SELECT project_id FROM task_tombstones WHERE task_id=?',(str(task_id),)).fetchone()
+        return row is not None and (project_id is None or row['project_id']==str(project_id))
+
+    def deleted_task_identity(self, task_id):
+        """Explicit audit lookup; never returned as a schedulable current Task."""
+        with closing(self._connect()) as database:
+            row=database.execute('SELECT task_id,project_id,kind,payload_ref,attempt FROM task_tombstones WHERE task_id=?',
+                                 (str(task_id),)).fetchone()
+        return dict(row) if row is not None else None
+
+    def deleted_task_ids(self, task_ids, *, project_id):
+        identities=list(dict.fromkeys(str(value) for value in task_ids))
+        result=set()
+        with closing(self._connect()) as database:
+            for start in range(0,len(identities),500):
+                batch=identities[start:start+500]
+                placeholders=','.join('?' for _ in batch)
+                result.update(str(row[0]) for row in database.execute(
+                    f'SELECT task_id FROM task_tombstones WHERE project_id=? AND task_id IN ({placeholders})',
+                    (str(project_id),*batch)))
+        return result
+
+    def record_legacy_deletion(self, task_id, project_id):
+        with closing(self._connect()) as database:
+            database.execute('BEGIN IMMEDIATE')
+            if database.execute('SELECT 1 FROM tasks WHERE task_id=?',(str(task_id),)).fetchone():
+                raise ValueError('task appeared during legacy deletion; reload its state')
+            database.execute("INSERT OR IGNORE INTO task_tombstones(task_id,project_id,kind,deleted_at) VALUES (?,?,'TRAINING',?)",
+                (str(task_id),str(project_id),utc_now()))
+            row=database.execute('SELECT project_id FROM task_tombstones WHERE task_id=?',(str(task_id),)).fetchone()
+            if row['project_id']!=str(project_id):
+                raise ValueError('task project mismatch')
+            database.commit()
+
     def delete_terminal(
         self,
         task_id: str,
@@ -954,7 +1012,7 @@ class TaskRepository(InferenceResourceMethods):
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT task_id,project_id,kind,status FROM tasks WHERE task_id=?",
+                "SELECT * FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
             if row is None:
@@ -970,6 +1028,8 @@ class TaskRepository(InferenceResourceMethods):
             if status not in TERMINAL_STATUSES:
                 database.rollback()
                 raise ValueError("only terminal tasks can be deleted")
+            database.execute("INSERT INTO task_tombstones(task_id,project_id,kind,payload_ref,attempt,deleted_at,task_json) VALUES (?,?,?,?,?,?,?)",
+                (row['task_id'],row['project_id'],row['kind'],row['payload_ref'],row['attempt'],utc_now(),json.dumps(dict(row))))
             database.execute("DELETE FROM gpu_reservations WHERE task_id=?", (str(task_id),))
             changed = database.execute(
                 "DELETE FROM tasks WHERE task_id=?",
@@ -988,69 +1048,33 @@ class TaskRepository(InferenceResourceMethods):
         return count
 
     @retry_busy
-    def claim_next(
-        self,
-        worker_id: str,
-        kinds: Iterable[TaskKind | str],
-        capabilities: Iterable[str],
-        lease_seconds: int = 30,
-        admission=None,
-    ) -> TaskLease | None:
-        kind_values = tuple(
-            item.value if isinstance(item, TaskKind) else str(item) for item in kinds
-        )
+    def claim_next(self, worker_id: str, kinds: Iterable[TaskKind | str], capabilities: Iterable[str],
+                   lease_seconds: int = 30, admission=None, *, candidate_budget: int = 256) -> TaskLease | None:
+        kind_values=tuple(item.value if isinstance(item,TaskKind) else str(item) for item in kinds)
         if not kind_values:
             return None
-        available = set(capabilities)
-        now = datetime.now(timezone.utc)
-        now_text = now.isoformat()
-        expires_at = (now + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
-        token = uuid.uuid4().hex
-        placeholders = ",".join("?" for _ in kind_values)
+        available=set(capabilities)
+        context_key=(str(worker_id),kind_values,tuple(sorted(available)))
+        with self._claim_cursor_lock:
+            cursor=self._claim_cursors.get(context_key)
+        prepare=admission_preparer(admission)
+        # No writer lock, artifact I/O or payload preparation in this connection.
+        with closing(self._connect()) as reader:
+            candidates,next_cursor=prepare_candidates(reader,kind_values,available,prepare,cursor,
+                                                      utc_now(),candidate_budget)
+        token=uuid.uuid4().hex
+        claimed=None
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
-            self._release_expired_in(database, now_text)
-            rows = database.execute(
-                f"""
-                SELECT candidate.* FROM tasks candidate
-                 WHERE candidate.status='QUEUED'
-                   AND candidate.kind IN ({placeholders})
-                   AND ((? AND candidate.kind='TRAINING'
-                         AND candidate.resource_key NOT LIKE 'training:remote:%') OR NOT EXISTS (
-                       SELECT 1 FROM tasks active
-                        WHERE active.resource_key=candidate.resource_key
-                          AND active.status IN ('RUNNING','CANCEL_REQUESTED')
-                          AND (
-                              active.lease_expires_at>?
-                              OR active.stage='recovery_blocked_remote_agent_unverified'
-                          )
-                   ))
-                 ORDER BY candidate.priority ASC, candidate.queue_rank DESC, candidate.created_at ASC,
-                          candidate.task_id ASC
-                """,
-                (*kind_values, int(admission is not None), now_text),
-            ).fetchall()
-            database.commit()
-        prepare = admission_preparer(admission)
-        for candidate in rows:
-            if not set(json.loads(candidate["required_capabilities"] or "[]")) <= available:
-                continue
-            # Only this candidate's immutable payload is read, outside a writer
-            # transaction. Do not preload every queued task or duplicate a queue.
-            prepared = prepare(candidate) if callable(prepare) else None
-            with closing(self._connect()) as database:
-                database.execute("BEGIN IMMEDIATE")
-                now = datetime.now(timezone.utc)
-                now_text = now.isoformat()
-                expires_at = (now + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
-                # A lease may have expired while payload I/O was in progress.
-                # Fenced repositories conservatively hold uninspected processes.
-                self._release_expired_in(database, now_text)
+            now=datetime.now(timezone.utc)
+            now_text=now.isoformat()
+            expires_at=(now+timedelta(seconds=max(1,int(lease_seconds)))).isoformat()
+            self._release_expired_in(database,now_text)
+            for candidate,prepared in candidates:
                 current = database.execute("SELECT * FROM tasks WHERE task_id=? AND status='QUEUED'", (candidate["task_id"],)).fetchone()
                 if current is None or any(current[key] != candidate[key] for key in (
-                    "kind", "payload_ref", "resource_key", "required_capabilities",
+                    *SEMANTIC_FIELDS,
                 )):
-                    database.rollback()
                     continue
                 delegated = admission is not None and current["kind"] == "TRAINING" and not str(current["resource_key"]).startswith("training:remote:")
                 # A delegated local training admission policy may reason about
@@ -1063,7 +1087,6 @@ class TaskRepository(InferenceResourceMethods):
                          LIMIT 1""",
                     (current["resource_key"],),
                 ).fetchone():
-                    database.rollback()
                     continue
                 if not delegated and database.execute(
                     """SELECT 1 FROM tasks WHERE resource_key=?
@@ -1073,7 +1096,6 @@ class TaskRepository(InferenceResourceMethods):
                          LIMIT 1""",
                     (current["resource_key"], now_text),
                 ).fetchone():
-                    database.rollback()
                     continue
                 admitted = dict(current)
                 if callable(prepare):
@@ -1085,7 +1107,6 @@ class TaskRepository(InferenceResourceMethods):
                         database.execute("UPDATE tasks SET stage='resource_waiting', resource_wait_reason=?, updated_at=? "
                                          "WHERE task_id=? AND (stage<>'resource_waiting' OR resource_wait_reason IS NOT ?)",
                                          (reason, now_text, candidate["task_id"], reason))
-                        database.commit()
                         continue
                 changed = database.execute(
                     """
@@ -1103,15 +1124,18 @@ class TaskRepository(InferenceResourceMethods):
                     (worker_id, token, expires_at, now_text, current["task_id"]),
                 ).rowcount
                 if changed != 1:
-                    database.rollback()
                     continue
                 row = database.execute(
                     "SELECT * FROM tasks WHERE task_id=?",
                     (current["task_id"],),
                 ).fetchone()
-                database.commit()
-            task = _from_row(row)
-            return TaskLease(task, token, str(worker_id), expires_at)
+                claimed = (row, expires_at, candidate_key(candidate))
+                break
+            database.commit()
+        with self._claim_cursor_lock:
+            self._claim_cursors[context_key]=claimed[2] if claimed else next_cursor
+        if claimed:
+            return TaskLease(_from_row(claimed[0]),token,str(worker_id),claimed[1])
         return None
 
     def heartbeat(

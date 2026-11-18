@@ -343,12 +343,16 @@ def test_immutable_creation_preparation_to_canonical_parent_claim(client, seeded
     assert post(client, project).json()['id'] == task_id
     lookup = client.get(f'/api/v61/projects/{project}/deployment-test-creations/stable-creation')
     assert lookup.json()['task']['id'] == task_id
+    # The API fixture shares its temporary queue across projects/tests. Select
+    # this parent's turn explicitly; other ready projects remain legitimate work.
+    ctx.repository.promote(task_id)
     lease = ctx.repository.claim_next('detection-worker', [TaskKind.DEPLOYMENT_TEST],
                                       {'deployment.runtime'}, 30)
     assert lease is not None and lease.task.task_id == task_id
     assert lease.task.payload_ref == parent.payload_ref
-    assert ctx.repository.claim_next('second-worker', [TaskKind.DEPLOYMENT_TEST],
-                                      {'deployment.runtime'}, 30) is None
+    second = ctx.repository.claim_next('second-worker', [TaskKind.DEPLOYMENT_TEST],
+                                       {'deployment.runtime'}, 30)
+    assert second is None or second.task.task_id != task_id
 
     # A verified reference must fail closed even if an old request is available.
     artifacts.atomic_write_json(task_id, 'scenario/request.json', {'legacy': True})

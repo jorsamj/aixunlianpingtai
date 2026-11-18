@@ -100,7 +100,7 @@ def test_annotation_search_schema_migrates_v1_in_place_without_dropping_tasks(tm
         "total": 1, "pending": 1, "failed": 0,
     }
     with sqlite3.connect(path) as database:
-        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 4
+        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 5
         assert database.execute("SELECT COUNT(*) FROM inference_permits").fetchone()[0] == 0
 
 
@@ -128,7 +128,7 @@ def test_annotation_statistics_migrate_from_v2_and_batch_scope_exactly(tmp_path)
     with pytest.raises(ValueError):
         migrated.set_annotation_statistics("ai-real", {**counts, "gt_committed": 2})
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute("SELECT COUNT(*) FROM inference_domain_state").fetchone()[0] == 0
 
 
@@ -149,7 +149,7 @@ def test_inference_schema_migrates_v3_preserving_tasks_and_candidate_statistics(
     assert migrated.get(task.task_id) == before
     assert migrated.annotation_statistics_many('p', [task.task_id])[task.task_id]['counts'] == counts
     with sqlite3.connect(path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 5
         assert db.execute('SELECT COUNT(*) FROM inference_permits').fetchone()[0] == 0
         assert db.execute('SELECT COUNT(*) FROM inference_domain_state').fetchone()[0] == 0
 
@@ -1314,3 +1314,186 @@ def test_payload_publish_confirmation_has_no_write_authority(tmp_path, monkeypat
     assert publish('parent', **kwargs).outcome=='ALREADY_APPLIED'
     assert repo.get('parent')==before
     assert not any(sql.startswith(('UPDATE','BEGIN IMMEDIATE')) for sql in statements)
+
+# Bounded Claim pipeline fairness and semantic recheck contracts.
+def _claim_seed(repository,count,*,missing=True,tail=True):
+    from platform_core.task_runtime.repository import _to_values
+    template=_to_values(TaskRecord.new('seed','p',TaskKind.VIDEO_FRAMES,'payload.json','cpu',required_capabilities=('missing',) if missing else ()))
+    columns=list(template)
+    values=[]
+    for i in range(count):
+        row={**template,'task_id':f'q-{i:06d}','resource_key':f'cpu:{i}'}
+        if tail and i==count-1:row['required_capabilities']='[]'
+        values.append(tuple(row[key] for key in columns))
+    with repository._connect() as database:
+        database.executemany(f"INSERT INTO tasks ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",values)
+
+
+@pytest.mark.parametrize('budget',[64,128,256])
+def test_claim_pipeline_bounded_cursor_reaches_tail(tmp_path,monkeypatch,budget):
+    from platform_core.task_runtime import claim_candidates
+    repository=TaskRepository(tmp_path/'bounded.sqlite3')
+    _claim_seed(repository,1000)
+    scans=[]
+    actual=claim_candidates.page
+    def counted(*args,**kwargs):
+        rows=actual(*args,**kwargs)
+        scans.append(len(rows))
+        return rows
+    monkeypatch.setattr(claim_candidates,'page',counted)
+    lease=None
+    for cycle in range(1000):
+        scans.clear()
+        lease=repository.claim_next('one-worker',[TaskKind.VIDEO_FRAMES],set(),candidate_budget=budget)
+        assert sum(scans)<=budget
+        if lease:break
+    assert lease is not None and lease.task.task_id=='q-000999'
+    assert cycle<1000//max(1,budget-min(64,budget//2))+5
+    # A new high-priority task is rediscovered in the window, not after wrap.
+    repository.create(TaskRecord.new('urgent','p',TaskKind.VIDEO_FRAMES,'payload.json','urgent',priority=1))
+    assert repository.claim_next('one-worker',[TaskKind.VIDEO_FRAMES],set(),candidate_budget=budget).task.task_id=='urgent'
+
+
+def test_claim_pipeline_prepared_limit_does_not_starve_other_resources(tmp_path):
+    repository=TaskRepository(tmp_path/'resources.sqlite3')
+    _claim_seed(repository,128,missing=False,tail=False)
+    with repository._connect() as database:
+        database.execute("UPDATE tasks SET resource_key='blocked' WHERE task_id<>'q-000127'")
+    active=repository.create(TaskRecord.new('active','p',TaskKind.VIDEO_FRAMES,'payload.json','blocked',priority=1))
+    owner=repository.claim_next('owner',[TaskKind.VIDEO_FRAMES],set())
+    assert owner.task.task_id=='active'
+    for cycle in range(12):
+        result=repository.claim_next('other',[TaskKind.VIDEO_FRAMES],set())
+        if result:break
+    assert result is not None and result.task.task_id=='q-000127'
+
+
+@pytest.mark.parametrize('field,value,allowed',[
+    ('progress',50,True),('current_item','display',True),('updated_at','display-timestamp',True),
+    ('priority',2,False),('queue_rank',99,False),('stage','changed-admission-stage',False),
+    ('attempt',1,False),('project_id','another',False),('payload_ref','changed.json',False),
+])
+def test_claim_pipeline_rechecks_semantics_not_display(tmp_path,field,value,allowed):
+    repository=TaskRepository(tmp_path/'semantic.sqlite3')
+    repository.create(TaskRecord.new('candidate','p',TaskKind.VIDEO_FRAMES,'payload.json','cpu'))
+    def admit(*args):return True,None
+    def prepare(candidate):
+        # This connection must obtain writer while preparation runs.
+        with repository._connect() as database:
+            database.execute('BEGIN IMMEDIATE')
+            database.execute(f'UPDATE tasks SET {field}=? WHERE task_id=?',(value,candidate['task_id']))
+            database.commit()
+    admit.prepare=prepare
+    result=repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set(),admission=admit)
+    assert (result is not None)==allowed
+
+
+def test_claim_pipeline_one_recovery_and_no_cursor_advance_on_failure(tmp_path,monkeypatch):
+    repository=TaskRepository(tmp_path/'transaction.sqlite3')
+    _claim_seed(repository,1000,tail=False)
+    actual=repository._release_expired_in
+    calls=[]
+    def fail(*args):
+        calls.append(1)
+        raise sqlite3.OperationalError('injected non-busy transaction failure')
+    with monkeypatch.context() as patch:
+        patch.setattr(repository,'_release_expired_in',fail)
+        with pytest.raises(sqlite3.OperationalError):
+            repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set())
+    assert repository._claim_cursors=={}
+    def recovery(*args):
+        calls.append(1)
+        return actual(*args)
+    monkeypatch.setattr(repository,'_release_expired_in',recovery)
+    repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set())
+    assert len(calls)==2  # one per call, not one per candidate
+
+
+def test_claim_pipeline_aligned_incremental_index_has_no_temp_sort(tmp_path):
+    repository=TaskRepository(tmp_path/'plan.sqlite3')
+    with repository._connect() as database:
+        plan=database.execute("EXPLAIN QUERY PLAN SELECT task_id FROM tasks candidate WHERE status='QUEUED' ORDER BY priority ASC,queue_rank DESC,created_at ASC,task_id ASC LIMIT 64").fetchall()
+        text=' '.join(str(row[3]) for row in plan)
+        assert 'idx_task_claim_pipeline' in text
+        assert 'TEMP B-TREE' not in text
+        assert database.execute("SELECT 1 FROM sqlite_master WHERE name='idx_task_claim'").fetchone()
+
+
+def test_preparation_helper_does_not_hide_changed_proposals(tmp_path):
+    from platform_core.task_runtime.preparation_publication import publication
+    from platform_core.task_runtime.payload_publications import PayloadPublicationError
+    store=ArtifactStore(tmp_path/'artifacts')
+    parent=TaskRecord.new('parent','p',TaskKind.TRAINING,'payload.json','cpu')
+    publication(store,parent,'training.freeze',{'source_ref':'payload.json'},{'frozen':1})
+    with pytest.raises(PayloadPublicationError,match='OPERATION_CONFLICT'):
+        publication(store,parent,'training.freeze',{'source_ref':'payload.json'},{'frozen':2})
+
+
+def test_confirm_publication_after_child_finish_needs_no_live_owner_values(tmp_path):
+    repo,store,child,kwargs,publish=_publication_setup(tmp_path)
+    publish('parent',**kwargs)
+    repo.finish(child.task.task_id,child.lease_token,TaskStatus.SUCCEEDED)
+    readonly={**kwargs,'child_lease_token':None,'child_attempt':None,'child_worker_id':None}
+    assert publish('parent',**readonly).outcome=='ALREADY_APPLIED'
+    repo.delete_terminal(child.task.task_id)
+    assert publish('parent',**readonly).outcome=='ALREADY_APPLIED'
+
+
+def test_claim_priority_window_is_scoped_to_worker_kinds(tmp_path):
+    repository=TaskRepository(tmp_path/'kind-window.sqlite3')
+    _claim_seed(repository,1000,missing=False,tail=False)
+    with repository._connect() as database:
+        database.execute("UPDATE tasks SET kind='MATERIAL_IMPORT',priority=1")
+    repository.create(TaskRecord.new('video','p',TaskKind.VIDEO_FRAMES,'payload.json','cpu:video',priority=2))
+    lease=repository.claim_next('video-worker',[TaskKind.VIDEO_FRAMES],set(),candidate_budget=64)
+    assert lease is not None and lease.task.task_id=='video'
+
+
+def test_claim_pipeline_stable_task_id_tie_and_descending_rank(tmp_path):
+    repository=TaskRepository(tmp_path/'ties.sqlite3')
+    _claim_seed(repository,4,missing=False,tail=False)
+    with repository._connect() as database:
+        database.execute("UPDATE tasks SET queue_rank=7 WHERE task_id IN ('q-000001','q-000003')")
+    actual=[]
+    for i in range(4):
+        lease=repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set())
+        actual.append(lease.task.task_id)
+    assert actual==['q-000001','q-000003','q-000000','q-000002']
+
+
+def test_claim_pipeline_wrap_rediscovers_changed_capability(tmp_path):
+    repository=TaskRepository(tmp_path/'wrap.sqlite3')
+    _claim_seed(repository,128,tail=False)
+    for i in range(10):
+        assert repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set(),candidate_budget=64) is None
+    with repository._connect() as database:
+        database.execute("UPDATE tasks SET required_capabilities='[]' WHERE task_id='q-000080'")
+    for i in range(8):
+        lease=repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set(),candidate_budget=64)
+        if lease is not None:
+            break
+    assert lease is not None and lease.task.task_id=='q-000080'
+
+
+def test_claim_pipeline_denied_candidates_use_one_bounded_transaction(tmp_path,monkeypatch):
+    repository=TaskRepository(tmp_path/'denied.sqlite3')
+    _claim_seed(repository,1000,missing=False,tail=False)
+    statements=[]
+    connect=repository._connect
+    def traced():
+        database=connect()
+        database.set_trace_callback(statements.append)
+        return database
+    monkeypatch.setattr(repository,'_connect',traced)
+    prepared=[]
+    def prepare(candidate):
+        with sqlite3.connect(repository.path,timeout=0.1) as database:
+            database.execute('BEGIN IMMEDIATE')
+            database.rollback()
+        prepared.append(candidate['task_id'])
+    def admission(*args):
+        return False,'injected capacity denial'
+    admission.prepare=prepare
+    assert repository.claim_next('worker',[TaskKind.VIDEO_FRAMES],set(),admission=admission) is None
+    assert len(prepared)==32
+    assert sum(sql.startswith('BEGIN IMMEDIATE') for sql in statements)==1

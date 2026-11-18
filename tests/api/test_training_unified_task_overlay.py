@@ -447,3 +447,53 @@ def test_training_job_detail_projects_control_plane_runtime_resources(client, se
     assert body["runtime_resources"]["actual_precision"] == "fp16"
     assert body["runtime_resources"]["actual_device"] == "cuda:0"
 
+
+
+def test_delete_versioned_training_is_logical_and_retains_audit_inputs(client,seeded_project):
+    from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity
+    import app as platform
+    project_id,_=seeded_project
+    task_id='retained-'+uuid.uuid4().hex
+    repository=platform.shared_task_repository()
+    artifacts=platform.shared_task_artifacts()
+    publication=artifacts.prepare_payload_publication(PayloadPublicationIdentity(task_id=task_id,
+        project_id=project_id,kind='TRAINING',phase='create',expected_ref='',expected_parent_attempt=0,
+        intent={'request_id':task_id}),{'task_id':task_id})
+    repository.create(TaskRecord.new(task_id,project_id,TaskKind.TRAINING,publication.version.payload_ref,'cpu'))
+    repository.request_cancel(task_id)
+    job_dir=platform.project_dir(project_id)/'jobs'/task_id
+    job_dir.mkdir(parents=True,exist_ok=True)
+    platform.write_json(job_dir/'job.json',{'id':task_id,'task_id':task_id,'status':'stopped'})
+    response=client.post(f'/api/v48/projects/{project_id}/jobs/batch-delete',json={'job_ids':[task_id]})
+    assert response.status_code==200 and response.json()['failed']==0
+    assert task_id in response.json()['audit_retained_ids']
+    assert repository.get(task_id) is None and repository.is_deleted(task_id,project_id=project_id)
+    assert job_dir.exists()
+    assert artifacts.read_payload_version(task_id,publication.version.payload_ref)==publication.version
+    assert client.get(f'/api/projects/{project_id}/jobs/{task_id}').status_code==404
+    assert task_id not in {row.get('task_id') or row.get('id') for row in platform.list_jobs(project_id)}
+    import pytest
+    with pytest.raises(ValueError,match='TASK_ID_RETIRED'):
+        repository.create(TaskRecord.new(task_id,project_id,TaskKind.TRAINING,'payload.json','cpu'))
+
+
+def test_cleanup_failure_after_logical_delete_is_reported_as_retained(client,seeded_project,monkeypatch):
+    import app as platform
+    project_id,_=seeded_project
+    task_id='cleanup-failure-'+uuid.uuid4().hex
+    repository=platform.shared_task_repository()
+    repository.create(TaskRecord.new(task_id,project_id,TaskKind.TRAINING,'payload.json','cpu'))
+    repository.request_cancel(task_id)
+    job_dir=platform.project_dir(project_id)/'jobs'/task_id
+    job_dir.mkdir(parents=True,exist_ok=True)
+    platform.write_json(job_dir/'job.json',{'id':task_id,'status':'stopped'})
+    original=ArtifactStore.delete_task
+    def fail(store,identity):
+        if identity==task_id:raise OSError('simulated filesystem permission failure')
+        return original(store,identity)
+    monkeypatch.setattr(ArtifactStore,'delete_task',fail)
+    response=client.post(f'/api/v48/projects/{project_id}/jobs/batch-delete',json={'job_ids':[task_id]})
+    assert response.status_code==200 and response.json()['failed']==0
+    assert task_id in response.json()['deleted_ids']
+    assert task_id in response.json()['audit_retained_ids']
+    assert repository.get(task_id) is None and job_dir.exists()

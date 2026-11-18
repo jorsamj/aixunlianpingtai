@@ -8811,6 +8811,8 @@ def _enqueue_explicit_training(
 def _enqueue_explicit_training_locked(
     project_id: str, payload: TrainReq, task_id: str, *, review_actor_id: str = "",
 ) -> JSONResponse:
+    if shared_task_repository().is_deleted(task_id):
+        raise HTTPException(status_code=409,detail="TASK_ID_RETIRED: 已删除任务身份不能重新创建")
     if payload.review_all_training_backgrounds and (
         payload.admission_mode != "background" or not review_actor_id.strip()
     ):
@@ -9311,6 +9313,8 @@ async def v64_training_events(project_id: str, request: Request):
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}")
 def job_status(project_id: str, job_id: str, include_history: bool = False):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     get_project(project_id)
     job_file = project_dir(project_id) / "jobs" / job_id / "job.json"
     if not job_file.exists():
@@ -9366,6 +9370,8 @@ def _tail_training_log_text(path: Path, max_chars: int = 120000) -> str:
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}/log", response_class=PlainTextResponse)
 def job_log(project_id: str, job_id: str):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     get_project(project_id)
     job = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
@@ -9397,6 +9403,8 @@ def job_log(project_id: str, job_id: str):
 
 @app.post("/api/projects/{project_id}/jobs/{job_id}/stop")
 def stop_job(project_id: str, job_id: str):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     get_project(project_id)
     job_file = project_dir(project_id) / "jobs" / job_id / "job.json"
     job = read_json(job_file, {})
@@ -9543,6 +9551,8 @@ def _training_history_context(project_id: str):
         project_dir(project_id) / "jobs", lambda path: read_json(path, {}),
     )
     repository = shared_task_repository()
+    retired=repository.deleted_task_ids((row.get('task_id') or row.get('id') for row in rows),project_id=project_id)
+    rows=[row for row in rows if str(row.get('task_id') or row.get('id')) not in retired]
     durable = {}
     cursor = None
     while True:
@@ -12376,7 +12386,8 @@ def _v48_resource_key(job: Dict[str, Any]) -> str:
 
 def _v48_all_job_files(project_id: str) -> List[Path]:
     root = project_dir(project_id) / "jobs"
-    return [x / "job.json" for x in root.iterdir() if x.is_dir() and (x / "job.json").exists()] if root.exists() else []
+    retired=shared_task_repository().deleted_task_ids((x.name for x in root.iterdir() if x.is_dir()),project_id=project_id) if root.exists() else set()
+    return [x / "job.json" for x in root.iterdir() if x.is_dir() and x.name not in retired and (x / "job.json").exists()] if root.exists() else []
 
 
 def _v48_launch_saved_job(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
@@ -12635,6 +12646,8 @@ def _v48_stop_legacy_training_maintenance() -> None:
 
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/promote")
 def v48_promote_job(project_id: str, job_id: str):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     durable = _durable_training_task(project_id, job_id)
@@ -12688,6 +12701,8 @@ def _durable_process_identity(task: TaskRecord) -> ProcessIdentity:
 
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/pause")
 def v48_pause_job(project_id: str, job_id: str):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     durable = _durable_training_task(project_id, job_id)
@@ -12723,6 +12738,8 @@ def v48_pause_job(project_id: str, job_id: str):
 
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/resume")
 def v48_resume_job(project_id: str, job_id: str):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     durable = _durable_training_task(project_id, job_id)
@@ -12762,6 +12779,8 @@ def v48_resume_job(project_id: str, job_id: str):
 
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/stop")
 def v48_stop_job(project_id: str, job_id: str):
+    if shared_task_repository().is_deleted(job_id,project_id=project_id):
+        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     durable = _durable_training_task(project_id, job_id)
@@ -12866,16 +12885,27 @@ def _purge_terminal_training_job_record(project_id: str, job_id: str) -> Dict[st
     if proc and proc.poll() is None:
         return {"status": "active", "job_id": job_id}
 
+    repository=shared_task_repository()
+    artifacts=shared_task_artifacts()
+    retained=artifacts.retention_required(job_id) or bool(durable and durable.attempt>0) or bool(job.get('snapshot_id') or job.get('models'))
+    retained=retained or any((artifacts.root/job_id/name).exists() for name in ('input-freeze.json','snapshot.json','dataset-revision.json'))
     if durable is not None:
-        shared_task_repository().delete_terminal(
-            job_id,
-            project_id=project_id,
-            kind=TaskKind.TRAINING,
-        )
-    shared_task_artifacts().delete_task(job_id)
-    shutil.rmtree(job_dir, ignore_errors=True)
-    PROCESS_REGISTRY.pop(job_id, None)
-    return {"status": "deleted", "job_id": job_id}
+        removed=repository.delete_terminal(job_id,project_id=project_id,kind=TaskKind.TRAINING)
+        if not removed and not repository.is_deleted(job_id,project_id=project_id):
+            raise ValueError('task changed during deletion')
+    else:
+        repository.record_legacy_deletion(job_id,project_id)
+    if not retained:
+        try:
+            artifacts.delete_task(job_id)
+            shutil.rmtree(job_dir)
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            retained=True  # Logical deletion committed; report deferred cleanup.
+    PROCESS_REGISTRY.pop(job_id,None)
+    return {'status':'deleted','job_id':job_id,'artifacts_retained':retained}
+
 
 
 @app.post("/api/v48/projects/{project_id}/jobs/batch-delete")
@@ -12888,6 +12918,7 @@ def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
         raise HTTPException(status_code=400, detail="单次最多批量删除 200 条训练记录")
 
     deleted_ids: List[str] = []
+    retained_ids: List[str] = []
     skipped_active_ids: List[str] = []
     missing_ids: List[str] = []
     failures: List[Dict[str, str]] = []
@@ -12897,6 +12928,8 @@ def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
             status = str(result.get("status") or "")
             if status == "deleted":
                 deleted_ids.append(job_id)
+                if result.get('artifacts_retained'):
+                    retained_ids.append(job_id)
             elif status == "active":
                 skipped_active_ids.append(job_id)
             else:
@@ -12914,6 +12947,7 @@ def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
         "requested": len(job_ids),
         "deleted": len(deleted_ids),
         "deleted_ids": deleted_ids,
+        "audit_retained_ids": retained_ids,
         "skipped_active": len(skipped_active_ids),
         "skipped_active_ids": skipped_active_ids,
         "missing": len(missing_ids),
@@ -28106,6 +28140,8 @@ def _v53_fast_jobs_summary(project_id: str) -> List[Dict[str, Any]]:
     } if isinstance(snapshot, list) else {}
     try:
         repository = shared_task_repository()
+        retired=repository.deleted_task_ids(indexed,project_id=project_id)
+        indexed={identity:row for identity,row in indexed.items() if identity not in retired}
         recent = repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=50)
         durable = {task.task_id: task for task in recent.items}
         cursor = None

@@ -441,3 +441,17 @@ def test_read_only_historical_evaluation_trust_flags_exposure_and_unknown(tmp_pa
     assert third['checks'][0]['status'] == 'insufficient_evidence'
 
 # Picker SQL tests stay in the API suite, which includes the FastAPI dependency.
+
+
+def test_deleted_execution_is_not_reclassified_as_empty_history(tmp_path):
+    from platform_core.task_runtime import TaskRepository, TaskRecord, TaskKind, TaskStatus
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    repository=TaskRepository(tmp_path/'task_runtime'/'tasks.sqlite3')
+    repository.create(TaskRecord.new('historical','project',TaskKind.TRAINING,'payload.json','cpu'))
+    lease=repository.claim_next('worker',[TaskKind.TRAINING],set())
+    assert lease is not None
+    repository.finish('historical',lease.lease_token,TaskStatus.FAILED)
+    repository.delete_terminal('historical')
+    index=TrainingMaterialUsage(repository)
+    with index._connect() as database:
+        assert index._empty_project_history(database,'project') is False

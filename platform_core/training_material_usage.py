@@ -234,6 +234,10 @@ class TrainingMaterialUsage:
             return False
         if db.execute("SELECT 1 FROM tasks WHERE project_id=? AND kind='TRAINING' LIMIT 1", (str(project_id),)).fetchone():
             return False
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='task_tombstones'").fetchone():
+            if db.execute("SELECT 1 FROM task_tombstones WHERE project_id=? AND kind='TRAINING' AND (attempt>0 OR task_json IS NULL) LIMIT 1",
+                          (str(project_id),)).fetchone():
+                return False
         project = self.path.parent.parent / 'projects' / str(project_id)
         if project.parent.resolve() != (self.path.parent.parent / 'projects').resolve():
             return False
@@ -587,6 +591,9 @@ def assert_frozen_formal_test(project_dir, task_id, snapshot_id, *, execution_at
         repository=TaskRepository(data_dir / 'task_runtime' / 'tasks.sqlite3')
         current=repository.get(task_id)
         if current is not None and VERSION_REF.fullmatch(current.payload_ref):
+            raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: new execution anchor required')
+        archived=repository.deleted_task_identity(task_id)
+        if archived and VERSION_REF.fullmatch(str(archived.get('payload_ref'))):
             raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: new execution anchor required')
         if (artifacts.root / task_id / 'execution-inputs').exists():
             raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: new execution anchor required')

@@ -127,8 +127,19 @@ class ArtifactStore:
             stream.write(str(text))
             stream.flush()
 
+    def retention_required(self, task_id):
+        lexical=self.root/self._validate_task_id(task_id)
+        if lexical.is_symlink() or getattr(lexical,'is_junction',lambda:False)():
+            raise ValueError('task artifact root link is unsafe for deletion')
+        task_root=self.artifact_path(task_id,'.')
+        return any(parent.is_dir() and any(is_reserved_path((child.name,)) for child in parent.iterdir())
+                   for parent in (task_root,task_root/'scenario'))
+
     def delete_task(self, task_id: str) -> bool:
         safe_task_id = self._validate_task_id(task_id)
+        lexical=self.root/safe_task_id
+        if lexical.is_symlink() or getattr(lexical,'is_junction',lambda:False)():
+            raise ValueError('task artifact root link is unsafe for deletion')
         task_root = (self.root / safe_task_id).resolve()
         if task_root.parent != self.root:
             raise ValueError("task artifact root escaped")

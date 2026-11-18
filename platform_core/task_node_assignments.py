@@ -1308,7 +1308,7 @@ class CentralTaskAllocator:
 class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
     """Production Worker repository that refuses centrally assigned tasks."""
 
-    def claim_next(self, worker_id, kinds, capabilities, lease_seconds: int = 30, admission=None):
+    def claim_next(self, worker_id, kinds, capabilities, lease_seconds: int = 30, admission=None, *, candidate_budget=256):
         caller = admission
 
         def assignment_guard(database, candidate, owner, token, expires_at, now):
@@ -1341,7 +1341,7 @@ class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
             kinds,
             capabilities,
             lease_seconds,
-            admission=assignment_guard,
+            admission=assignment_guard, candidate_budget=candidate_budget,
         )
 
 

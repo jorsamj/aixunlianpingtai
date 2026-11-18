@@ -46,6 +46,7 @@ class FencedTaskRepository(TaskRepository):
         capabilities: Iterable[str],
         lease_seconds: int = 30,
         admission=None,
+        *, candidate_budget=256,
     ):
         caller_admission = admission
 
@@ -98,7 +99,7 @@ class FencedTaskRepository(TaskRepository):
         fenced_admission.prepare = admission_preparer(caller_admission)
         token = _PROCESS_OBSERVATIONS.set(self._inspect_expired_processes(_iso()))
         try:
-            return super().claim_next(worker_id, kinds, capabilities, lease_seconds, admission=fenced_admission)
+            return super().claim_next(worker_id, kinds, capabilities, lease_seconds, admission=fenced_admission,candidate_budget=candidate_budget)
         finally:
             _PROCESS_OBSERVATIONS.reset(token)
 
