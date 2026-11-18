@@ -19,6 +19,7 @@ def task_to_public(
     task: TaskRecord,
     repository: TaskRepository | None = None,
     *,
+    queue_positions: dict[str, int | None] | None = None,
     now=None,
     worker_runtime: list[dict[str, Any]] | None = None,
     queued_candidates: tuple[TaskRecord, ...] | None = None,
@@ -26,7 +27,8 @@ def task_to_public(
     queue_position = None
     queue_position_exact = False
     if repository is not None and task.status is TaskStatus.QUEUED:
-        queue_position = repository.resource_queue_position(task.task_id)
+        queue_position = (repository.resource_queue_position(task.task_id)
+                          if queue_positions is None else queue_positions.get(task.task_id))
         if task.kind is not TaskKind.TRAINING:
             queue_position_exact = _non_training_queue_position_exact(
                 task,

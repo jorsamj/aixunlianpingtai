@@ -144,3 +144,17 @@ def test_task_list_reads_queue_evidence_only_when_needed(tmp_path, monkeypatch, 
             assert item['resource_queue_position_exact'] is (
                 item['kind'] != 'TRAINING' and case != 'cross_project')
     assert repo.list(project_id='p', limit=50) == page
+
+
+def test_task_list_batch_positions_avoid_scalar_reads(tmp_path, monkeypatch):
+    from platform_core.task_runtime import TaskRepository, TaskRecord, TaskKind
+    repo = TaskRepository(tmp_path / 'tasks.sqlite3')
+    for i in range(10):
+        repo.create(TaskRecord.new(str(i), 'p', TaskKind.TRAINING, 'payload.json', 'training:auto'))
+    monkeypatch.setattr(api, 'get_project', lambda p: {'id': p})
+    monkeypatch.setattr(api, 'shared_task_repository', lambda: repo)
+    monkeypatch.setattr(repo, 'resource_queue_position', lambda *a: pytest.fail('per-task queue read'))
+    endpoint = next(r.endpoint for r in api._task_query_router.routes if r.name == 'list_unified_runtime_tasks')
+    body = endpoint('p', kind=None, limit=10, cursor=None)
+    assert sorted(row['resource_queue_position'] for row in body['items']) == list(range(1, 11))
+    assert all(row['resource_queue_position_exact'] is False for row in body['items'])

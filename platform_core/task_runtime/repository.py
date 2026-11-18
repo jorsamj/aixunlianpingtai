@@ -520,6 +520,46 @@ class TaskRepository(InferenceResourceMethods):
             ).fetchone()[0]
         return int(ahead) + 1
 
+    def resource_queue_positions(self, task_ids: Iterable[str]) -> dict[str, int | None]:
+        """Read at most 100 resource ranks in one statement's SQLite snapshot.
+
+        Missing IDs raise KeyError; non-queued IDs map to None, like the scalar API.
+        All projects remain part of each resource queue. No window SQL is required.
+        """
+        from itertools import islice
+
+        values = list(islice(iter(task_ids), 101))
+        if len(values) > 100:
+            raise ValueError("resource queue positions accept at most 100 task IDs")
+        ids = list(dict.fromkeys(str(value) for value in values))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                f"""
+                SELECT t.task_id,
+                       CASE WHEN t.status='QUEUED' THEN 1 + (
+                           SELECT COUNT(*) FROM tasks AS peer
+                            WHERE peer.status='QUEUED' AND peer.resource_key=t.resource_key
+                              AND (
+                                  peer.priority < t.priority
+                                  OR (peer.priority=t.priority AND peer.queue_rank>t.queue_rank)
+                                  OR (peer.priority=t.priority AND peer.queue_rank=t.queue_rank
+                                      AND peer.created_at<t.created_at)
+                                  OR (peer.priority=t.priority AND peer.queue_rank=t.queue_rank
+                                      AND peer.created_at=t.created_at AND peer.task_id<t.task_id)
+                              )
+                       ) ELSE NULL END AS position
+                  FROM tasks AS t WHERE t.task_id IN ({placeholders})
+                """, ids,
+            ).fetchall()
+        positions = {str(row["task_id"]): row["position"] for row in rows}
+        for task_id in ids:
+            if task_id not in positions:
+                raise KeyError(task_id)
+        return {task_id: positions[task_id] for task_id in ids}
+
     def queued_candidates(self) -> tuple[TaskRecord, ...]:
         """Return the current durable claim-order candidates for read projections.
 

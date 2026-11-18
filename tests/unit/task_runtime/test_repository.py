@@ -862,3 +862,52 @@ def test_generic_finish_and_unversioned_finalization_cannot_publish_expired_remo
     assert held.worker_id == "agent:node-a"
     assert held.attempt == 1
 
+
+
+def test_batch_resource_queue_positions_match_scalar_and_are_bounded(tmp_path):
+    repo = TaskRepository(tmp_path / 'batch.sqlite3')
+    for i in range(18):
+        task = TaskRecord.new(str(i), 'p' if i % 2 else 'other', TaskKind.TRAINING,
+                              'request.json', 'cpu:' + str(i % 3), priority=1 + i % 4)
+        repo.create(replace(task, created_at='2026-11-18T00:00:00+00:00', queue_rank=i % 5,
+                            status=TaskStatus.CANCELLED if i == 3 else TaskStatus.QUEUED))
+    ids = [str(i) for i in range(18)]
+    expected = {key: repo.resource_queue_position(key) for key in ids}
+    assert repo.resource_queue_positions(ids) == expected
+    assert repo.resource_queue_positions([]) == {}
+    assert repo.resource_queue_positions(['1', '1']) == {'1': expected['1']}
+    with pytest.raises(KeyError): repo.resource_queue_positions(['missing'])
+    with pytest.raises(ValueError): repo.resource_queue_positions(str(i) for i in range(101))
+    repo.request_cancel('1')
+    assert repo.resource_queue_positions(ids) == {key: repo.resource_queue_position(key) for key in ids}
+
+
+def test_batch_positions_use_one_snapshot_during_concurrent_change(tmp_path, monkeypatch):
+    repo = TaskRepository(tmp_path / 'snapshot.sqlite3')
+    for i in range(30):
+        repo.create(TaskRecord.new(str(i), 'p', TaskKind.TRAINING, 'request.json', 'cpu:test', priority=50))
+    ids = [str(i) for i in range(30)]
+    before = {key: repo.resource_queue_position(key) for key in ids}
+    original = repo._connect
+    connections = []
+    statements = []
+    changed = []
+    def connect():
+        db = original()
+        connections.append(db)
+        db.set_trace_callback(statements.append)
+        def change_during_scan():
+            if not changed:
+                changed.append(True)
+                with sqlite3.connect(repo.path) as writer:
+                    writer.execute("UPDATE tasks SET priority=1 WHERE task_id='29'")
+            return 0
+        db.set_progress_handler(change_during_scan, 100)
+        return db
+    monkeypatch.setattr(repo, '_connect', connect)
+    result = repo.resource_queue_positions(ids)
+    assert changed and len(connections) == 1 and len(statements) == 1
+    assert result == before
+    monkeypatch.setattr(repo, '_connect', original)
+    assert repo.resource_queue_position('29') == 1
+    assert repo.resource_queue_positions(ids) == {key: repo.resource_queue_position(key) for key in ids}
