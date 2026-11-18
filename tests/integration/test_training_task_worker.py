@@ -12,6 +12,7 @@ from platform_core.storage import StorageSourceRepository
 from platform_core.remote_training_tasks import TrainingPrepareHandler, RemoteTrainingPreparationError
 import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
+from platform_core.task_runtime.payload_publications import VERSION_REF, EVIDENCE_REF
 
 
 @pytest.mark.parametrize('selection_reference',[False,True])
@@ -245,10 +246,44 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert prepare_scheduler.run_once() is True
     prepared = repository.get("task-one")
     assert prepared is not None and prepared.status is TaskStatus.QUEUED, prepared.error if prepared else "missing parent"
-    prepared_payload = artifacts.read_json("task-one", "payload.json")
+    ready_match = VERSION_REF.fullmatch(prepared.payload_ref)
+    assert ready_match is not None
+    prepared_payload = artifacts.read_json(prepared.task_id, prepared.payload_ref)
     assert prepared_payload["training_input_state"] == "READY"
-    assert (artifacts.artifact_path("task-one", "input-freeze.json")).is_file()
-    assert (artifacts.artifact_path("task-one", "snapshot.json")).is_file()
+    # READY must extend the committed freeze, never the mutable creation input.
+    ready_receipt = artifacts.read_payload_publication_receipt(prepared.task_id, ready_match['operation'])
+    assert ready_receipt.identity.data['phase'] == 'training.ready'
+    assert ready_receipt.version.payload_ref == prepared.payload_ref
+    freeze_ref = ready_receipt.identity.data['expected_payload_ref']
+    freeze_match = VERSION_REF.fullmatch(freeze_ref)
+    assert freeze_match is not None
+    freeze_receipt = artifacts.read_payload_publication_receipt(prepared.task_id, freeze_match['operation'])
+    assert freeze_receipt.identity.data['phase'] == 'training.freeze'
+    assert freeze_receipt.version.payload_ref == freeze_ref
+    assert freeze_receipt.identity.data['expected_payload_ref'] == 'payload.json'
+    frozen_payload = artifacts.read_json(prepared.task_id, freeze_ref)
+    for field in ('input_freeze_id', 'snapshot_id', 'dataset_revision_id', 'input_freeze_ref',
+                  'snapshot_ref', 'dataset_revision_ref', 'history_admission', 'label_contract',
+                  'train_image_ids', 'test_image_ids'):
+        assert prepared_payload[field] == frozen_payload[field]
+    evidence_refs = {field: prepared_payload[field] for field in
+                     ('input_freeze_ref', 'snapshot_ref', 'dataset_revision_ref')}
+    assert all(EVIDENCE_REF.fullmatch(ref) for ref in evidence_refs.values())
+    frozen = artifacts.read_json(prepared.task_id, evidence_refs['input_freeze_ref'])
+    prepared_snapshot = artifacts.read_json(prepared.task_id, evidence_refs['snapshot_ref'])
+    prepared_revision = artifacts.read_json(prepared.task_id, evidence_refs['dataset_revision_ref'])
+    assert training_tasks_module._training_input_freeze_digest(frozen) == prepared_payload['input_freeze_id']
+    assert frozen['snapshot_id'] == prepared_snapshot['snapshot_id'] == prepared_payload['snapshot_id']
+    assert frozen['dataset_revision_id'] == prepared_snapshot['dataset_revision_id'] == prepared_revision['dataset_revision_id'] == prepared_payload['dataset_revision_id']
+    assert frozen['history_admission'] == prepared_payload['history_admission']
+    assert frozen['label_contract'] == prepared_payload['label_contract']
+    assert prepared_payload['label_contract']['effective_label_codes'] == payload['label_contract']['effective_label_codes']
+    for field in ('algorithm_id', 'base_training_mode', 'strict_resume', 'optimizer_state_resumed'):
+        assert prepared_payload['label_contract'][field] == payload['label_contract'][field]
+    assert prepared_snapshot['label_schema'] == prepared_revision['label_schema'] == frozen['label_schema']
+    assert prepared_snapshot['counts'] == {'train': 4, 'validation': 1, 'test': 2, 'total': 7}
+    assert set(sum(prepared_snapshot['ids'].values(), [])) == set(payload['train_image_ids'])
+    assert artifacts.read_json('task-one', 'payload.json') == payload  # Legacy creation evidence stays original.
     assert (artifacts.artifact_path("task-one", "resolved-resources.json")).is_file()
 
     # A claimable queued task freezes indices, not a complete image/YOLO copy.
@@ -261,7 +296,7 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
         SimpleNamespace(artifacts=artifacts, task=SimpleNamespace(task_id="trainprep_task-one")),
         prepared, prepared_payload,
     )
-    assert recovered["snapshot_id"] == artifacts.read_json("task-one", "snapshot.json")["snapshot_id"]
+    assert recovered["snapshot_id"] == prepared_snapshot["snapshot_id"]
     plan = artifacts.read_json("task-one", "input-plan/manifest.json")
     for changed in ({"snapshot_id": "wrong"}, {"counts": {}}, {"materialization_state": "READY"}):
         artifacts.atomic_write_json("task-one", "input-plan/manifest.json", {**plan, **changed})
@@ -291,7 +326,15 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert resource_context["decoded_dataset_bytes"] == 7 * (64 ** 2) * 3
     result = artifacts.read_json("task-one", task.result_ref)
     assert result["counts"] == {"train": 4, "validation": 1, "test": 2, "total": 7}
-    snapshot = artifacts.read_json("task-one", "snapshot.json")
+    snapshot = artifacts.read_json(task.task_id, evidence_refs['snapshot_ref'])
+    assert snapshot == prepared_snapshot
+    assert result['snapshot_id'] == snapshot['snapshot_id']
+    assert result['dataset_revision_id'] == prepared_revision['dataset_revision_id']
+    # The execution cache and project snapshot remain supported outputs, while
+    # historical truth comes from the immutable evidence selected by READY.
+    runtime_snapshot = artifacts.read_json(task.task_id, 'snapshot.json')
+    assert {k: v for k, v in runtime_snapshot.items() if k != 'created_at'} == {
+        k: v for k, v in snapshot.items() if k != 'created_at'}
     project_snapshot = project / "snapshots" / (snapshot["snapshot_id"] + ".json")
     assert project_snapshot.is_file()
     project_truth = json.loads(project_snapshot.read_text(encoding="utf-8"))
@@ -352,14 +395,27 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     lifecycle = TrainingWorkspaceLifecycle(data_dir, repository, artifacts)
     protected = [*project.glob("uploads/*"), *external_root.glob("incoming/*"),
                  *project.glob("annotations/*"), archived_model,
-                 artifacts.artifact_path("task-one", "snapshot.json"), project_snapshot]
+                 artifacts.artifact_path("task-one", "snapshot.json"), project_snapshot,
+                 artifacts.root / task.task_id / 'payload.json']
     before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected}
+    from platform_core.training_material_usage import assert_frozen_formal_test
+    gate_args = dict(execution_attempt=task.attempt, execution_payload_ref=task.payload_ref,
+                     execution_anchor_ref=f'execution-inputs/v1/attempt-{task.attempt}.json')
+    assert assert_frozen_formal_test(project, task.task_id, snapshot['snapshot_id'], **gate_args)['test_count'] == 2
     assert lifecycle.inspect(project_id, "task-one")["eligible"] is True
     cleaned = lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")
     assert cleaned["status"] == "deleted"
     assert not artifacts.artifact_path("task-one", "work/bundle").exists()
     assert artifacts.read_json("task-one", "evidence/bundle/manifest.json") == bundle_manifest
     assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected} == before
+    assert artifacts.read_json(task.task_id, prepared.payload_ref) == prepared_payload
+    assert artifacts.read_json(task.task_id, freeze_ref) == frozen_payload
+    assert artifacts.read_payload_publication_receipt(task.task_id, ready_match['operation']) == ready_receipt
+    assert artifacts.read_payload_publication_receipt(task.task_id, freeze_match['operation']) == freeze_receipt
+    assert artifacts.read_json(task.task_id, evidence_refs['input_freeze_ref']) == frozen
+    assert artifacts.read_json(task.task_id, evidence_refs['snapshot_ref']) == prepared_snapshot
+    assert artifacts.read_json(task.task_id, evidence_refs['dataset_revision_ref']) == prepared_revision
+    assert assert_frozen_formal_test(project, task.task_id, snapshot['snapshot_id'], **gate_args)['status'] == 'passed'
     assert repository.get("task-one").status is TaskStatus.SUCCEEDED
     assert lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")["status"] == "already_clean"
 

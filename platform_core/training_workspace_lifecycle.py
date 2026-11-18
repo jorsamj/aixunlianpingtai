@@ -26,6 +26,7 @@ from filelock import FileLock, Timeout
 from .algorithm_sql_store import AlgorithmSqlStore
 from .task_runtime.models import TaskKind, TaskStatus, utc_now
 from .task_runtime.repository import TERMINAL_STATUSES
+from .task_runtime.payload_publications import VERSION_REF, _native_name
 from .task_runtime.process_control import ProcessController
 from .training_bundle_cache import _is_link_like, _resolve_relative
 from .training_prepare_child import ensure_training_prepare_child
@@ -533,7 +534,12 @@ class TrainingWorkspaceLifecycle:
         if isinstance(result, dict):
             refs.update(str(model.get("ref")) for model in result.get("verified_models") or []
                         if isinstance(model, dict) and model.get("ref"))
-        paths = [self.artifacts.artifact_path(task.task_id, ref) for ref in sorted(refs)]
+        # Metadata-only read of the version store's checked path. Keep the
+        # mutable artifact_path API blocked for this namespace; _inspect verifies
+        # the actual version bytes before cleanup and again before detach.
+        paths = [Path(_native_name(self.artifacts.payload_reader._path(task.task_id, ref)))
+                 if VERSION_REF.fullmatch(ref) else self.artifacts.artifact_path(task.task_id, ref)
+                 for ref in sorted(refs)]
         stamp = []
         for path in paths:
             if _is_link_like(path):
