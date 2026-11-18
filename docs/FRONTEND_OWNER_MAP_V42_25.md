@@ -1,3 +1,5 @@
+> 当前独立Vue迁移请先读 [AI接续入口](architecture/AI_DEVELOPMENT_HANDOFF.md) 与 [M0功能/API矩阵](architecture/VUE_M0_FUNCTION_API_MATRIX_20261118.md)。下方是旧运行时Owner及历史阶段记录，重要业务/安全约束继续有效；旧opt-in-only/阶段停止要求不覆盖已批准M0–M1。
+
 > **当前优先：既有功能保护与导航一致性（2026-11-17 用户确认）**。P1Z 的替代别名/工作台联动开关局部修复：原菜单分组顺序、正式业务入口及 AlgorithmListRuntime 卡片保留，用户可见“算法库”/内部算法列表；素材页直接 openAnnotation/原 Annotorious/GT 保留。工作台只启用自身，快捷卡片到原完整页，其他 Vue 页独立显式试点。P2A/P2B 成果保留，未改训练/GT/任务/数据库/Worker/生产；准确修复 SHA CI 待核。长期规则见根 AGENTS.md，范围/Owner/已知差异/验收/审批/回退见[功能保留台账](architecture/EXISTING_FEATURE_PRESERVATION.md)。未授权产品变化须 AWAITING_USER_APPROVAL；完成本轮后停止。下方 P1/P2 条目是历史快照，不能覆盖当前约束。
 
 > 2026-11-17 P1Z收尾：vue_workbench=1统一原导航元数据/当前项目工作台，近期任务各服务端5条、刷新报告身份/退出取消/原导航回退。**用户最新要求：优先现有GitHub CI，不反复本地浏览器/截图/全量测试。**仅追加一个P1Z定向Job复用同SHA构建；准确CI与未验边界见[专项](PRODUCTIZATION_P1Z_20261117.md)。不默认替换旧入口，不自动扩展新开发。

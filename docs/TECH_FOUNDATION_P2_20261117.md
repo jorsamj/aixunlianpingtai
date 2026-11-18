@@ -1,4 +1,4 @@
-> **当前保护约束**：P2A/P2B 代码保留；P1Z 菜单替代已按用户确认局部修复，工作台与业务试点开关独立，原正式菜单/Owner 不替换。[当前功能保留台账与审批规则](architecture/EXISTING_FEATURE_PRESERVATION.md) 优先于历史工作台描述；本轮完成后停止。
+> **当前入口**：[AI 接续入口](architecture/AI_DEVELOPMENT_HANDOFF.md)。P2A/P2B 成果和所有业务安全合同保留；用户已批准独立 Vue M0–M1，以下旧阶段的 opt-in-only/停止条目是历史范围，不能用来阻止已批准迁移。
 
 # 当前架构与独立 Vue 迁移（2026-11-18）
 
@@ -9,6 +9,27 @@
 目标为同一 frontend/ 的独立 /app/ SPA，以 Hash 路由避免服务器 rewrite，Router 管新应用页面、Pinia 只存会话/项目和展示态。保留原库构建与旧系统地址；卡片算法库是第一条原生业务链，其他域整页交给原系统，功能等价后再逐个切换，不能删除未替代的旧操作。后端只增必要静态挂载，不顺便拆 app.py 或创建新 Repository/调度器/数据库。
 
 安全边界不变：正式 GT 源 SHA/version CAS、任务 attempt/token/lease/fencing、进程 PID/create_time/command_hash、GPU reservation、远程停止未确认保护、不可变 Payload/收据/Repository CAS/执行锚点、产物身份、删除保护及外部发布 UNKNOWN 回执。普通 UI 不另建安全状态机。
+
+### M0–M1 实际交付
+
+基线 e639bb12585a79556b7a5fd703205368720265c3；M0 5aaf29686faddb5cdf335e0a866515d4809f57e9；M1 4865bea70941443b5a62e56b5c90eca5e6c92aef；本地/CI元数据区分修正 97ae3a517f9e3d98e58e114515cf88647b4a8129；编辑后选中算法详情刷新修正 dc1f2b19c9066e02419f40dfc54223ca132b945d。后续仅文档提交的准确 HEAD 在分支/Git交付记录核验，不将实现 SHA 当作最终 CI SHA。
+
+- `frontend/index.html` + `vite.app.config.ts` 输出 `/app/`；`src/app/` 为真正 Root、Hash Router、Pinia 会话/项目展示态、原生卡片/版本/CRUD。旧 `src/main.ts` 库模式及18个试点保留，彼此整页切换，不同时装载旧 app.js 或移入表单。
+- 复用 `api/model-browse.ts`、`algorithm-management.ts`、`useReadScope`、原 api.js deadline/error 和 session 续期。新卡片保留10条/页，旧试点20条不改；写后以原 basic GET 核验，外部只读由原 API/Owner 决定。没有新 Task/GT/算法 Repo、持久业务缓存或回执系统。
+- app.py 只有1行静态挂载；原 `/api`、Session中间件和 startup/shutdown 不改。`vue-app-handoff.js` 是旧系统的显式整页交接消费者，原项目/算法/版本核验后调用原训练/转换/发布入口。新App不调用旧全局函数。原root仍默认，不提前宣称全域等价。
+- 原FrontEnd CI build脚本在同工程构建两套产物；现有同SHA artifact 加 `static/vue-app/`，无新增 Job/Workflow。新校验器检查 HTML/manifest/依赖/字节 SHA 与 checkout；打包器按源码版本要求两套 CI receipt，拒绝跨SHA/缺新构建，历史只含旧目录的包仍兼容。正式离线安装和官方最终artifact下载未验。
+
+验证与实际功能证据见[接续入口](architecture/AI_DEVELOPMENT_HANDOFF.md)和[矩阵](architecture/VUE_M0_FUNCTION_API_MATRIX_20261118.md)。本地 Node24类型/双构建、API3、Node14、新App Chrome3及真实临时FastAPI创建编辑/旧流程返回已验；旧节点CI失败本地1次通过未复现，未修改其超时或断言。审查发现编辑GET迟到污染新建表单，已先复现再用已有取消机制修复，关键用例补测通过。所有结果均非生产验收；新SHA CI_PENDING。
+
+已知下一步：算法第一批范围之外的原品目/训练状态/综合排序/删除回退仍旧页，其他域 NOT_STARTED；GPT复核底座后才扩展。旧页面、默认训练全参数、专业插件、Task/Agent执行权不退役。原生共享入口约1.08MB（未压缩）为实测构建大小，性能优化列后续，不为本批引入缓存/预加载架构。
+
+|实际问题/未完成|业务影响与位置|优先级/是否需确认|下一步最小处理|
+|---|---|---|---|
+|算法首批之外功能未原生迁移|Algorithms.vue / AlgorithmListRuntime；原品目、训练状态、综合排序及删除/回退等须去旧完整页，不能正式替代整个算法库|P1；等价迁移不改需求，改变规则先确认|按矩阵逐动作补原生能力，真正缺API再做最小适配，不重建Repository|
+|其余业务域未迁移|frontend/src/views/原Owner；新Shell目前是受控旧页入口，不是原生训练/素材/AI闭环|P1；下一阶段由GPT安排，业务需求仍不变|批准底座后按完整业务链迁移，禁止拆掉原参数/GT/回执合同|
+|旧节点标题CI失败未稳定复现|frontend/tests/service-nodes.spec.ts、fixture.ts、catalog-preview-runtime.js；本地一次通过，不声称已修复|P1（若新SHA再现）；无需新业务决策|只检查失败Job trace/截图/导航时序，不加timeout或无穷重跑|
+|SPA共享入口构建约1.08MB|frontend/src/app/main.ts ElementPlus共享包；可能影响首次下载，但未测生产P95|P2；技术优化无需业务变更|后续有实际网络/首屏证据再按需组件或拆共享包，不新增持久缓存体系|
+|旧系统canonical项目交接限制|vue-app-handoff.js / 原bootstrap；隔离多项目访问非canonical旧项目会明确拒绝，生产原单项目不改|P2（测试兼容边界）；改项目策略须确认|保留fail-closed，不用localStorage伪造项目；后续若获批多项目需求再统一处理|
 
 ## 历史 P2 技术底座实施与回退
 
