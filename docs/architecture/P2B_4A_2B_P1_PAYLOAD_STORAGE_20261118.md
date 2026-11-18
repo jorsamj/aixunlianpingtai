@@ -9,7 +9,7 @@
 - `task_runtime/payload_publications.py`：确定性JSON、独立hash验证、无覆盖文件发布、业务意图身份及不可变收据。
 - `task_runtime/artifacts.py`：三个受控接口、保留区隔离、删除前完整检查；没有版本/收据/暂存目录的legacy删除行为保留。
 - `task_runtime/worker.py`：Fenced统一入口；准备前、版本link前、收据link前及返回前检查执行权，读取前后也检查。旧checkpoint/result/log仍使用原接口。
-- `tests/unit/task_runtime/test_artifact_fencing.py`：保留原有fencing测试，新增P1定向回归，纳入现有Release Regression已执行的测试入口；不修改工作流或既有断言。
+- `tests/unit/task_runtime/test_fencing.py`：保留原有fencing测试，新增test_payload_p1_*定向回归，纳入既有Agent Two Node自动触发与执行入口；不修改工作流或既有断言。
 
 三份原有未提交的2A/2B架构设计文档留在工作区，不混入P1提交。本说明记录本轮审批对原设计的修正；不会拿早期设计中“整行Claim比较”作为后续默认合同。
 
@@ -77,16 +77,17 @@ Linux实际烟测：本机WSL Ubuntu-22.04/Python3.10.12，将本次models/artif
 ## 定向验证记录
 
 ```powershell
-python -m pytest -q --tb=short --confcutdir=tests/unit tests/unit/task_runtime/test_artifact_fencing.py tests/unit/task_runtime/test_artifacts.py
-python -m py_compile platform_core/task_runtime/artifacts.py platform_core/task_runtime/payload_publications.py platform_core/task_runtime/worker.py tests/unit/task_runtime/test_artifact_fencing.py
+python -m pytest -q --tb=short --confcutdir=tests/unit tests/unit/task_runtime/test_fencing.py -k payload_p1
+python -m pytest -q --confcutdir=tests/unit tests/unit/task_runtime/test_artifact_fencing.py tests/unit/task_runtime/test_artifacts.py
+python -m py_compile platform_core/task_runtime/artifacts.py platform_core/task_runtime/payload_publications.py platform_core/task_runtime/worker.py tests/unit/task_runtime/test_fencing.py
 git diff --check
 ```
 
-Windows：35 passed、1 skipped；skip为符号链接创建权限。编译/最终Diff检查结果以提交前实际输出为准。覆盖确定性字节、跨进程独立读取、并发竞争、同op冲突、版本/收据link失败、文件写失败、fsync失败、进程在版本后退出、重启恢复、大小限制与真实请求量级、保留区、Fenced失效和删除完整性。
+Windows：P1用例28 passed、1 skipped，原Artifact/Fenced直接相关回归7 passed，合计35 passed、1 skipped；skip为符号链接创建权限。编译/最终Diff检查结果以提交前实际输出为准。覆盖确定性字节、跨进程独立读取、并发竞争、同op冲突、版本/收据link失败、文件写失败、fsync失败、进程在版本后退出、重启恢复、大小限制与真实请求量级、保留区、Fenced失效和删除完整性。
 
 序列化/hash/fsync测试替身期间，另一个SQLite连接实际取得BEGIN IMMEDIATE；存储实现本身无sqlite引用。此证明基础层不持Task writer，不证明尚未实现的Repository发布事务正确。
 
-新增用例放在既有`test_artifact_fencing.py`，已有`.github/workflows/v42.25-release-regression.yml`的Runtime, resource and conversion contracts会执行它；未手动重跑其他工作流。按AGENTS.md异步验收规则，推送后仅查询准确SHA的实际CI状态，不循环轮询；运行中不得认定通过。
+初次提交后核对发现：Release Regression虽执行test_artifact_fencing.py，但本次文件不满足其push路径过滤。因此后续提交将P1新增用例移至既有`test_fencing.py`；`.github/workflows/agent-two-node-http-integration.yml`同时将该文件列入触发路径与执行命令，可自动覆盖P1，无需修改CI。旧Artifact/Fencing断言不变；未手动重跑其他工作流。按AGENTS.md异步验收规则，推送后仅查询准确SHA的实际CI状态，不循环轮询；运行中不得认定通过。
 
 ## 必须保留的后续问题
 
