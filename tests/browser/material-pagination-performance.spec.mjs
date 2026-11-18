@@ -428,6 +428,19 @@ test('v19 background import completion uses scoped labels and material refresh w
     });
   });
 
+  // Opening the ZIP dialog also loads the hidden source-import task panel.
+  // Release its empty response after ZIP start to exercise the CI ordering.
+  let releaseSourceRead;
+  const sourceReadGate = new Promise(resolve => { releaseSourceRead = resolve; });
+  page.on('request', request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname ===
+        `/api/v19/projects/${projectId}/import/jobs/${importJobId}/start`) releaseSourceRead();
+  });
+  await page.route(`**/api/v36/projects/${encodedProject}/datasets/${encodedDataset}/source-import/jobs`, async route => {
+    await sourceReadGate;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: []})});
+  });
+
   await page.evaluate(() => window.importData());
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle')).toContainText('导入素材 / 标注');

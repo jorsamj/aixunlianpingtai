@@ -27,3 +27,28 @@ test('source-import terminal completion refreshes only labels and current paged 
   assert.match(body, /Promise\.allSettled\(localRefreshes\.filter\(Boolean\)\)/, 'label and paged-material refreshes must run independently without serial blocking');
   assert.doesNotMatch(body, /await window\.(?:refreshLabels414|reloadMaterialPage61)/, 'terminal scoped refreshes must not block each other');
 });
+import {runInNewContext} from 'node:vm';
+
+test('empty source task discovery is not completion; real terminal jobs still refresh', async () => {
+  const start = app.indexOf('window.refreshSourceImportTasksV36=async function(){');
+  const end = app.indexOf('\n  };', start) + '\n  };'.length;
+  const source = app.slice(start, end);
+  for (const status of [null, 'queued', 'running', 'done', 'failed']) {
+    const calls = [];
+    const state = {project: {id: 'p'}, datasetId: 'default', page: '数据集'};
+    const window = {
+      PollRegistryRuntime: {clear: () => calls.push('clear')},
+      refreshLabels414: async () => calls.push('labels'),
+      reloadMaterialPage61: async () => calls.push('materials'),
+    };
+    runInNewContext(source, {
+      SOURCE_IMPORT_POLL_KEY_V36: 'source-import-v36',
+      state, window, $: () => ({innerHTML: ''}), pid: () => 'p', esc: value => String(value || ''),
+      safe: value => value, api: async () => ({items: status ? [{id: 'source', status}] : []}),
+      scheduleSourceImportRefreshV36: () => calls.push('schedule'), toast: () => {},
+    });
+    await window.refreshSourceImportTasksV36();
+    assert.deepEqual(calls, status === null ? ['clear'] : ['queued', 'running'].includes(status)
+      ? ['schedule'] : ['clear', 'labels', 'materials']);
+  }
+});

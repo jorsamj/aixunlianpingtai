@@ -1906,6 +1906,9 @@ window.installUsability417=function(){
       scheduleSourceImportRefreshV36();
     }else{
       window.PollRegistryRuntime?.clear?.(SOURCE_IMPORT_POLL_KEY_V36);
+      // Opening the ZIP dialog also reads this hidden panel; an empty list
+      // is not a source-import completion and must not refresh ZIP labels.
+      if(!state.sourceImportTasks.length)return;
       const localRefreshes=[window.refreshLabels414?.(false)];
       if(state.page==='数据集')localRefreshes.push(window.reloadMaterialPage61?.());
       const settled=await Promise.allSettled(localRefreshes.filter(Boolean));
