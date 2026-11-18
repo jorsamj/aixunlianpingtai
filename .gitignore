@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 node_modules/
 /static/vue-catalog/
+/static/vue-app/
 test-results/
 playwright-report/
 .superpowers/

@@ -492,6 +492,7 @@ jobs:
           name: vue-catalog-preview-${{ github.sha }}
           path: |
             static/vue-catalog/
+            static/vue-app/
             test-results/vue-catalog/
           if-no-files-found: error
           retention-days: 14

@@ -755,10 +755,15 @@ window.PlatformCore.runtime.renderRouter = {
 
 const algorithmStartupBeganAt = Date.now();
 const canonicalStartupPromise = window.__clInit?.();
+let vueHandoffStarted = false;
 function finishCanonicalStartup() {
   // __clInit handles failure locally so that its retry UI remains actionable.
   // A resolved promise is not evidence that the core snapshot succeeded.
   if (state.uiReady !== true || !state.__startupCanonicalPainted) return;
+  if(!vueHandoffStarted&&new URLSearchParams(location.search).get('spa_handoff')==='1'){
+    vueHandoffStarted=true;
+    void import('./modules/vue-app-handoff.js').then(module=>module.resumeVueHandoff({state,navigate:page=>window.setPage(page),request:api})).catch(error=>window.toast(error.message));
+  }
   const owner=window.__v53SnapshotSequence||1;
   if(state.__startupExtrasOwner===owner)return;state.__startupExtrasOwner=owner;
   // The task center is installed before bootstrap project truth is available.

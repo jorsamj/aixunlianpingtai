@@ -32,3 +32,17 @@ def test_artifact_display_is_existing_registration_only_and_scope_bounded(tmp_pa
     assert result['total']==1 and result['items'][0]['artifact_kind']=='converted'
     assert result['items'][0]['storage_status']=='PENDING' and 'source_path' not in json.dumps(result)
     assert repo.version_display('other','a','v')['total']==0
+
+
+def test_independent_spa_static_entry_keeps_existing_api_authentication(tmp_path,monkeypatch):
+    from fastapi.testclient import TestClient
+    mount=next(route for route in api.app.routes if getattr(route,'path',None)=='/app')
+    (tmp_path/'index.html').write_text('<main>independent Vue shell</main>',encoding='utf-8')
+    monkeypatch.setattr(mount.app,'directory',str(tmp_path))
+    monkeypatch.setattr(mount.app,'all_directories',[str(tmp_path)])
+    monkeypatch.setattr(api,'_auth_test_bypass_enabled',lambda:False)
+    client=TestClient(api.app)
+    assert client.get('/app/').text=='<main>independent Vue shell</main>'
+    assert client.get('/app/').status_code==200
+    assert client.get('/api/projects').status_code==401
+    assert client.get('/api/auth/session').json()['authenticated'] is False

@@ -66,7 +66,11 @@
       });
       const body = await readJson(response);
       if (!response.ok || !body.authenticated) {
-        if (redirectOnFailure) window.location.replace('/login?next=%2F');
+        if (redirectOnFailure) {
+          const next = window.location.pathname.startsWith('/app/')
+            ? window.location.pathname + window.location.search + window.location.hash : '/';
+          window.location.replace('/login?next=' + encodeURIComponent(next));
+        }
         return null;
       }
       return applyIdentity(body);

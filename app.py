@@ -315,6 +315,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Request-ID"],
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/app", StaticFiles(directory=str(STATIC_DIR / "vue-app"), html=True, check_dir=False), name="vue_application")
 
 _CHANGLIAN_LOGIN_BASE_URL = os.environ.get(
     "MC_CHANGLIAN_LOGIN_BASE_URL",

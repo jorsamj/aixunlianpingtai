@@ -23,33 +23,39 @@ def package(sha, artifact, metadata, output):
     with zipfile.ZipFile(io.BytesIO(raw)) as built, zipfile.ZipFile(io.BytesIO(source)) as original:
         if built.testzip() or original.testzip() or original.comment.decode() != sha:
             raise ValueError("ZIP CRC/source SHA mismatch")
+        prefixes = ["static/vue-catalog/"]
+        if "frontend/vite.app.config.ts" in original.namelist():
+            prefixes.append("static/vue-app/")
         assets = {}
         for item in built.infolist():
             name = item.filename
-            if item.is_dir() or not name.startswith("static/vue-catalog/"):
+            if item.is_dir() or not name.startswith(tuple(prefixes)):
                 continue
             if ".." in PurePosixPath(name).parts or "\\" in name:
                 raise ValueError("Unsafe artifact path")
             if name in assets:
                 raise ValueError("Duplicate artifact file")
             assets[name] = built.read(item)
-        prefix = "static/vue-catalog/"
-        receipt = json.loads(assets[prefix + "offline-assets.json"])
-        if receipt["sha"] != sha or receipt["build_origin"] != "github-actions":
-            raise ValueError("Assets are not this SHA's CI build")
-        expected = {prefix + name for name in receipt["assets"]} | {prefix + "offline-assets.json"}
+        expected = set()
+        for prefix in prefixes:
+            if prefix + "offline-assets.json" not in assets:
+                raise ValueError("Missing required build: " + prefix)
+            receipt = json.loads(assets[prefix + "offline-assets.json"])
+            if receipt["sha"] != sha or receipt["build_origin"] != "github-actions":
+                raise ValueError("Assets are not this SHA's CI build")
+            expected.update({prefix + name for name in receipt["assets"]} | {prefix + "offline-assets.json"})
+            for name, record in receipt["assets"].items():
+                data = assets[prefix + name]
+                if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                    raise ValueError("Asset hash mismatch: " + prefix + name)
         if set(assets) != expected:
             raise ValueError("Unexpected or missing dynamic/shared asset")
-        for name, record in receipt["assets"].items():
-            data = assets[prefix + name]
-            if len(data) != record["bytes"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
-                raise ValueError("Asset hash mismatch: " + name)
         output = Path(output)
         if output.exists():
             raise FileExistsError(output)
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as result:
             for item in original.infolist():
-                if not item.filename.startswith(prefix):
+                if not item.filename.startswith(tuple(prefixes)):
                     result.writestr(item, original.read(item))
             for name, data in assets.items():
                 result.writestr(name, data)
