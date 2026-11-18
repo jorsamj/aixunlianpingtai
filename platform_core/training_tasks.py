@@ -2296,7 +2296,8 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
     artifact_log.parent.mkdir(parents=True, exist_ok=True)
     log_path = job_file.parent / "train.log"
     root = Path(__file__).resolve().parent.parent
-    snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+    snapshot = context.artifacts.read_json(context.task.task_id,
+        (context.artifacts.read_json(context.task.task_id,context.task.payload_ref,default={}) or {}).get('snapshot_ref') or 'snapshot.json',default={})
     expected_snapshot_id = (
         str(snapshot.get("snapshot_id") or "").strip()
         if isinstance(snapshot, Mapping)
@@ -2628,7 +2629,8 @@ class TrainingHandler:
         *,
         recovered: bool = False,
     ):
-        snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+        snapshot = context.artifacts.read_json(context.task.task_id,
+        (context.artifacts.read_json(context.task.task_id,context.task.payload_ref,default={}) or {}).get('snapshot_ref') or 'snapshot.json',default={})
         if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
@@ -3054,6 +3056,8 @@ class TrainingHandler:
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
         if not isinstance(payload, dict):
             raise ValueError("training payload is invalid")
+        from .training_execution_inputs import anchor_execution
+        execution_anchor_ref = anchor_execution(context,payload)
         if str(payload.get("training_input_state") or "").upper() != "READY":
             raise ValueError("TRAINING_PREPARE_REQUIRED: training input is not ready")
         deferred_resource_resolution = payload.get("resource_resolution_deferred") is True
@@ -3526,6 +3530,9 @@ class TrainingHandler:
             model,
             python_executable=python_executable,
         )
+        if execution_anchor_ref:
+            argv.extend(['--execution-attempt',str(context.task.attempt),
+                '--execution-payload-ref',context.task.payload_ref,'--execution-anchor-ref',execution_anchor_ref])
         context.heartbeat(
             progress=20,
             stage="starting_trainer",

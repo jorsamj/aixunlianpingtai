@@ -1123,6 +1123,61 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     assert 'test' not in exported
 
 
+def test_training_publication_claim_anchor_and_historical_formal_test(tmp_path, monkeypatch):
+    from platform_core.training_execution_inputs import anchor_execution, read_execution_inputs
+    from platform_core.training_material_usage import assert_frozen_formal_test
+    from platform_core.task_runtime.payload_publications import VERSION_REF
+    data_dir=tmp_path/'data'
+    project_id=_build_project(data_dir)
+    repository,artifacts,target_id,prep_id=_runtime(data_dir,project_id,repository_type=FencedTaskRepository)
+    request=artifacts.read_json(target_id,'payload.json')
+    request.update(schema_version=4,training_input_state='PREPARING',train_labels=['fire'])
+    artifacts.atomic_write_json(target_id,'payload.json',request)
+    source=_remote_source()
+    provider=FakeObjectProvider()
+    handler=RemoteTrainingPrepareHandler(data_dir,sources=FakeSources(source),credentials=FakeCredentials(),
+        provider_factory=lambda *_:provider,model_artifacts=FakeModelArtifacts(source.id))
+    phases=[]
+    actual_publish=repository.publish_training_payload
+    def record_phase(parent_id, **kwargs):
+        phase=kwargs['publication'].identity.data['phase']
+        if phase=='training.ready':
+            current=repository.get(parent_id)
+            prior=artifacts.read_payload_publication_receipt(parent_id,VERSION_REF.fullmatch(current.payload_ref)['operation'])
+            assert prior.identity.data['phase']=='training.freeze'
+        result=actual_publish(parent_id,**kwargs)
+        phases.append(phase)
+        if phase=='training.freeze':
+            assert result.task.required_capabilities==('training.input.ready',)
+        return result
+    monkeypatch.setattr(repository,'publish_training_payload',record_phase)
+    assert Scheduler(repository,artifacts,'preparer',{TaskKind.TRAINING_PREPARE:handler},{'training.prepare'}).run_once()
+    assert phases==['training.freeze','training.ready']
+    assert repository.get(prep_id).status is TaskStatus.SUCCEEDED
+    lease=repository.claim_next('trainer',[TaskKind.TRAINING],{'training.ultralytics'})
+    assert lease is not None and lease.task.attempt==1
+    context=WorkerContext(lease.task,lease,repository,artifacts)
+    payload=artifacts.read_payload_version(target_id,lease.task.payload_ref).data
+    anchor_ref=anchor_execution(context,payload)
+    anchor,bound,docs=read_execution_inputs(artifacts,project_id,target_id,1,lease.task.payload_ref,anchor_ref)
+    assert bound==payload and anchor['attempt']==lease.task.attempt
+    assert_frozen_formal_test(data_dir/'projects'/project_id,target_id,payload['snapshot_id'],
+        execution_attempt=1,execution_payload_ref=lease.task.payload_ref,execution_anchor_ref=anchor_ref)
+    with repository._connect() as database:
+        database.execute("UPDATE tasks SET attempt=2,payload_ref='future-input.json' WHERE task_id=?",(target_id,))
+    assert_frozen_formal_test(data_dir/'projects'/project_id,target_id,payload['snapshot_id'],
+        execution_attempt=1,execution_payload_ref=lease.task.payload_ref,execution_anchor_ref=anchor_ref)
+    with pytest.raises((ValueError,FileNotFoundError)):
+        assert_frozen_formal_test(data_dir/'projects'/project_id,target_id,payload['snapshot_id'],
+            execution_attempt=2,execution_payload_ref=lease.task.payload_ref,
+            execution_anchor_ref='execution-inputs/v1/attempt-2.json')
+    with pytest.raises(ValueError,match='execution anchor required'):
+        assert_frozen_formal_test(data_dir/'projects'/project_id,target_id,payload['snapshot_id'])
+    with repository._connect() as database:
+        database.execute("UPDATE tasks SET status='FAILED' WHERE task_id=?",(target_id,))
+    assert repository.delete_terminal(target_id,project_id=project_id,kind=TaskKind.TRAINING)
+    assert_frozen_formal_test(data_dir/'projects'/project_id,target_id,payload['snapshot_id'],
+        execution_attempt=1,execution_payload_ref=lease.task.payload_ref,execution_anchor_ref=anchor_ref)
 
 
 

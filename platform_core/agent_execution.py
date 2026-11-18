@@ -915,6 +915,14 @@ class AgentExecutionService:
                     409,
                 )
 
+            latest = _from_row(task_row)
+            if any(getattr(latest, field) != getattr(preflight_task, field) for field in (
+                'project_id','kind','payload_ref','resource_key','required_capabilities',
+                'priority','queue_rank','attempt','stage','accepted',
+            )):
+                raise AgentExecutionError('TASK_CHANGED_RETRY',
+                    'task inputs changed during transport preparation; retry assignment start',409)
+
             changed = database.execute(
                 """
                 UPDATE tasks
@@ -973,6 +981,11 @@ class AgentExecutionService:
             database.commit()
 
         task = _from_row(started_row)
+        if task.kind is TaskKind.TRAINING:
+            from .task_runtime import TaskLease, WorkerContext
+            from .training_execution_inputs import anchor_execution
+            anchor_execution(WorkerContext(task,TaskLease(task,execution_token,worker_id,execution_expires),
+                self.repository,self.artifacts),payload)
         return {
             "task": _task_public(task),
             "execution": {
@@ -1203,7 +1216,26 @@ class AgentExecutionService:
         return result
 
     def training_inputs_manifest(self, node_id, node_token, task_id,
-                                 execution_lease_token, execution_generation):
+                                 execution_lease_token, execution_generation, *, formal_test_gate=False):
+        if formal_test_gate:
+            task=self._owned_execution(node_id,node_token,task_id,execution_lease_token,execution_generation)
+            if task.kind is not TaskKind.TRAINING:
+                raise AgentExecutionError('REMOTE_TRAINING_INPUTS_INVALID','training execution required',409)
+            from .training_material_usage import assert_frozen_formal_test
+            from .task_runtime.payload_publications import VERSION_REF
+            payload=self._read_task_payload(task)
+            project=self.artifacts.root.parent.parent / 'projects' / task.project_id
+            kwargs={}
+            if VERSION_REF.fullmatch(task.payload_ref):
+                kwargs=dict(execution_attempt=task.attempt,execution_payload_ref=task.payload_ref,
+                    execution_anchor_ref=f'execution-inputs/v1/attempt-{task.attempt}.json')
+            try:
+                assert_frozen_formal_test(project,task.task_id,payload.get('snapshot_id'),**kwargs)
+            except (ValueError, OSError) as error:
+                raise AgentExecutionError('REMOTE_TRAINING_HISTORY_GATE_REJECTED',str(error),409) from error
+            self._owned_execution(node_id,node_token,task_id,execution_lease_token,execution_generation)
+            return {'allowed':True,'task_id':task.task_id,'attempt':task.attempt,
+                'payload_ref':task.payload_ref,'snapshot_id':payload.get('snapshot_id')}
         return self._training_inputs(node_id, node_token, task_id,
                                      execution_lease_token, execution_generation)
 
@@ -2534,7 +2566,8 @@ def agent_executor_router(
                                  authorization: str | None = Header(default=None)):
         return invoke(service().training_inputs_manifest, node_id, token(authorization), task_id,
                       str(payload.get("execution_lease_token") or ""),
-                      invoke(_execution_generation, payload.get("execution_generation")))
+                      invoke(_execution_generation, payload.get("execution_generation")),
+                      formal_test_gate=payload.get('formal_test_gate') is True)
 
     @router.post("/executions/{task_id}/training-inputs/read")
     def training_source_read(node_id: str, task_id: str, payload: dict = Body(...),

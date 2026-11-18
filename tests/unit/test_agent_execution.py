@@ -883,3 +883,42 @@ def test_training_consumption_evidence_survives_transport_normalization():
     assert _sanitize_runtime_result_metadata(facts)==facts
     with pytest.raises(AgentExecutionError,match='boolean'):
         _sanitize_runtime_result_metadata({'usage_completed_epoch':'true'})
+
+
+def test_formal_history_gate_is_lease_fenced_and_central(tmp_path,monkeypatch):
+    import platform_core.training_material_usage as history
+    repository,artifacts=runtime(tmp_path)
+    create_task(repository,artifacts)
+    _nodes,token=create_node(repository)
+    service=execution_service(repository,artifacts)
+    claimed=allocate_claim(service,'train-agent','gpu-agent',token)
+    started=start(service,'train-agent','gpu-agent',token,claimed)
+    execution=started['execution']
+    calls=[]
+    monkeypatch.setattr(history,'assert_frozen_formal_test',lambda *args,**kwargs:calls.append((args,kwargs)))
+    permit=service.training_inputs_manifest('gpu-agent',token,'train-agent',execution['lease_token'],
+        execution['generation'],formal_test_gate=True)
+    assert permit['allowed'] is True and permit['attempt']==1 and permit['payload_ref']=='request.json'
+    assert len(calls)==1
+    with pytest.raises(AgentExecutionError):
+        service.training_inputs_manifest('gpu-agent',token,'train-agent','wrong-token',1,formal_test_gate=True)
+    assert len(calls)==1
+    def refuse(*args,**kwargs):raise ValueError('historical evidence changed')
+    monkeypatch.setattr(history,'assert_frozen_formal_test',refuse)
+    with pytest.raises(AgentExecutionError,match='historical evidence changed'):
+        service.training_inputs_manifest('gpu-agent',token,'train-agent',execution['lease_token'],1,formal_test_gate=True)
+
+
+def test_agent_start_rechecks_payload_after_transport_preparation(tmp_path):
+    repository,artifacts=runtime(tmp_path)
+    create_task(repository,artifacts)
+    _nodes,token=create_node(repository)
+    def change(task,payload,assignment):
+        with repository._connect() as database:
+            database.execute("UPDATE tasks SET payload_ref='successor.json' WHERE task_id=?",(task.task_id,))
+        return safe_remote_payload(task,payload,assignment)
+    service=AgentExecutionService(repository,artifacts,execution_payload_resolver=change)
+    claimed=allocate_claim(service,'train-agent','gpu-agent',token)
+    with pytest.raises(AgentExecutionError,match='task inputs changed'):
+        start(service,'train-agent','gpu-agent',token,claimed)
+    assert repository.get('train-agent').status is TaskStatus.QUEUED

@@ -416,6 +416,8 @@ def build_checkpoint_validation_argv(
     checkpoint: Mapping[str, Any],
     recovery: bool,
     profile: Mapping[str, Any] | None = None,
+    execution_attempt: int | None = None,
+    execution_payload_ref: str = "",
 ) -> list[str]:
     root = Path(__file__).resolve().parent.parent
     script = root / "checkpoint_validation_worker.py"
@@ -462,6 +464,14 @@ def build_checkpoint_validation_argv(
     resource_context = _argv_value(training_argv, "--resource-context")
     if resource_context:
         argv.extend(["--resource-context", resource_context])
+    from .task_runtime.payload_publications import VERSION_REF
+    if VERSION_REF.fullmatch(execution_payload_ref):
+        argv.extend([
+            "--execution-attempt", str(execution_attempt),
+            "--execution-payload-ref", execution_payload_ref,
+            "--execution-anchor-ref",
+            f"execution-inputs/v1/attempt-{execution_attempt}.json",
+        ])
     if recovery:
         argv.append("--recovery")
     return argv
@@ -526,6 +536,8 @@ def _run_checkpoint_validation(
         checkpoint=checkpoint,
         recovery=recovery,
         profile=profile,
+        execution_attempt=context.task.attempt,
+        execution_payload_ref=context.task.payload_ref,
     )
     root = Path(__file__).resolve().parent.parent
     log_path = job_file.parent / "final-validation.log"

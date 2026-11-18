@@ -1055,6 +1055,9 @@ def main():
     parser.add_argument("--assigned-device", required=True)
     parser.add_argument("--requested-device", default="auto")
     parser.add_argument("--job-id", required=True)
+    parser.add_argument("--execution-attempt", type=int, default=None)
+    parser.add_argument("--execution-payload-ref", default="")
+    parser.add_argument("--execution-anchor-ref", default="")
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--patience", type=int, default=40)
     parser.add_argument("--early-stopping-enabled", default="false")
@@ -1535,7 +1538,10 @@ def main():
                 from platform_core.training_material_usage import assert_frozen_formal_test
                 current_job=read_json(job_file,{})
                 assert_frozen_formal_test(project_dir, args.job_id,
-                    str(current_job.get('snapshot_id') or ''))
+                    str(current_job.get('snapshot_id') or ''),
+                    execution_attempt=args.execution_attempt,
+                    execution_payload_ref=args.execution_payload_ref,
+                    execution_anchor_ref=args.execution_anchor_ref)
                 update_job(
                     job_file,
                     progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),

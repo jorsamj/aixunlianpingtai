@@ -83,6 +83,8 @@ on:
       - 'tools/poc/linux_cgroup_poc.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_training_history_gate.py'
+      - 'platform_core/training_history_gate.py'
       - 'tests/unit/test_agent_model_install_runtime.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
@@ -179,6 +181,8 @@ on:
       - 'tools/poc/linux_cgroup_poc.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_training_history_gate.py'
+      - 'platform_core/training_history_gate.py'
       - 'tests/unit/test_agent_model_install_runtime.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
@@ -307,6 +311,7 @@ jobs:
           tests/unit/test_os_supervisor_onnx_cpu_ort_systemd_pilot.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_training_history_gate.py
           tests/unit/test_agent_model_install_runtime.py
           tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_node_agent_material_runtime.py

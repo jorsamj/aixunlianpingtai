@@ -5,6 +5,8 @@ coverage complete. Neither terminal failure nor process launch erases exposure.
 """
 from __future__ import annotations
 
+import os
+
 from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
 
 import json
@@ -566,23 +568,46 @@ def require_formal_history_admission(admission):
     return admission
 
 
-def assert_frozen_formal_test(project_dir, task_id, snapshot_id):
+def assert_frozen_formal_test(project_dir, task_id, snapshot_id, *, execution_attempt=None,
+                              execution_payload_ref='', execution_anchor_ref=''):
     """Local checkpoint/scoring worker late gate; original Task controls scope."""
     from .task_runtime.artifacts import ArtifactStore
     project = Path(project_dir).resolve()
     data_dir = project.parent.parent
     artifacts = ArtifactStore(data_dir / 'task_runtime' / 'artifacts')
-    snapshot = artifacts.read_json(task_id, 'snapshot.json', default={})
-    if not isinstance(snapshot, dict) or snapshot.get('snapshot_id') != snapshot_id:
+    from .task_runtime.payload_publications import VERSION_REF
+    if os.environ.get('MC_REMOTE_TRAINING_HISTORY_GATE_DIR'):
+        from .training_history_gate import request_history_gate
+        return request_history_gate(os.environ['MC_REMOTE_TRAINING_HISTORY_GATE_DIR'],task_id=task_id,
+            attempt=execution_attempt,snapshot_id=snapshot_id,payload_ref=execution_payload_ref)
+    versioned = VERSION_REF.fullmatch(str(execution_payload_ref)) is not None
+    if not versioned:
+        # Detection only; never obtain historical inputs from the latest Task.
+        from .task_runtime.repository import TaskRepository
+        repository=TaskRepository(data_dir / 'task_runtime' / 'tasks.sqlite3')
+        current=repository.get(task_id)
+        if current is not None and VERSION_REF.fullmatch(current.payload_ref):
+            raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: new execution anchor required')
+        if (artifacts.root / task_id / 'execution-inputs').exists():
+            raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: new execution anchor required')
+    if versioned:
+        from .training_execution_inputs import read_execution_inputs
+        _anchor,payload,documents=read_execution_inputs(artifacts,project.name,task_id,execution_attempt,
+                                                       execution_payload_ref,execution_anchor_ref)
+        snapshot=documents['snapshot_ref']
+        frozen=documents['input_freeze_ref']
+    else:
+        snapshot=artifacts.read_json(task_id,'snapshot.json',default={})
+        payload=artifacts.read_json(task_id,'payload.json',default={})
+        frozen=artifacts.read_json(task_id,payload.get('input_freeze_ref') or 'input-freeze.json',default={}) if isinstance(payload,dict) else {}
+    if not isinstance(snapshot,dict) or snapshot.get('snapshot_id')!=snapshot_id:
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: original frozen Test snapshot missing or changed')
-    payload = artifacts.read_json(task_id, 'payload.json', default={})
-    if not isinstance(payload, dict) or str(payload.get('snapshot_id') or '') != snapshot_id:
+    if not isinstance(payload,dict) or str(payload.get('snapshot_id') or '')!=snapshot_id:
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: original Task payload does not bind Test snapshot')
     algorithm_id = str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or '')
     if not algorithm_id:
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal Test algorithm identity missing')
     admission = require_formal_history_admission(payload.get('history_admission'))
-    frozen = artifacts.read_json(task_id, payload.get('input_freeze_ref') or 'input-freeze.json', default={})
     if (not isinstance(frozen, dict) or frozen.get('snapshot_id') != snapshot_id
             or frozen.get('history_admission') != admission):
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: frozen input history identity does not match Task')

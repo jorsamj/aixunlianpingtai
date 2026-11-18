@@ -1223,6 +1223,9 @@ class AgentTrainingRunner:
             "--ai-intervention",
             "false",
         ]
+        if lease.payload_ref:
+            command.extend(['--execution-attempt',str(lease.generation),'--execution-payload-ref',
+                lease.payload_ref,'--execution-anchor-ref',f'execution-inputs/v1/attempt-{lease.generation}.json'])
         return project, job_dir / "job.json", worker, command
 
     def _upload_result(
@@ -1506,6 +1509,9 @@ class AgentTrainingRunner:
                 "PYTHONUTF8": "1",
                 "PYTHONIOENCODING": "utf-8",
             }
+            if lease.payload_ref:
+                env['MC_REMOTE_TRAINING_HISTORY_GATE_DIR']=str(workdir / 'formal-history-gate')
+
             with runtime_log.open("ab") as log:
                 # Strict opt-in guard. No ordinary Popen fallback is permitted
                 # when the node requires a protected OS Supervisor.
@@ -1571,6 +1577,16 @@ class AgentTrainingRunner:
                 try:
                     while launched.process.poll() is None:
                         self._assert_active(monitor)
+                        if lease.payload_ref:
+                            from .training_history_gate import service_history_gate
+                            def check_history():
+                                self._assert_active(monitor)
+                                result=self.client.formal_test_gate(lease)
+                                self._assert_active(monitor)
+                                return result
+                            service_history_gate(workdir / 'formal-history-gate', task_id=lease.task_id,
+                                attempt=lease.generation,snapshot_id=payload['snapshot_id'],
+                                payload_ref=lease.payload_ref,check_callback=check_history)
                         now = time.monotonic()
                         if now >= next_projection:
                             job = _read_json(job_file, {})

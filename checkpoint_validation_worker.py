@@ -156,6 +156,9 @@ def main() -> int:
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)
     parser.add_argument("--task-id", required=True)
+    parser.add_argument("--execution-attempt", type=int, default=None)
+    parser.add_argument("--execution-payload-ref", default="")
+    parser.add_argument("--execution-anchor-ref", default="")
     parser.add_argument("--snapshot-id", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--checkpoint", required=True)
@@ -259,7 +262,10 @@ def main() -> int:
         )
         try:
             from platform_core.training_material_usage import assert_frozen_formal_test
-            assert_frozen_formal_test(project_dir, args.task_id, args.snapshot_id)
+            assert_frozen_formal_test(project_dir, args.task_id, args.snapshot_id,
+                execution_attempt=args.execution_attempt,
+                execution_payload_ref=args.execution_payload_ref,
+                execution_anchor_ref=args.execution_anchor_ref)
             blind_result = _blind_test(best_model, data_yaml, runtime_device, args.imgsz)
             training_report["test_result"] = blind_result
             training_report["test_metrics"] = blind_result.get("metrics") or {}

@@ -91,6 +91,7 @@ class RemoteExecutionLease:
     payload: dict[str, Any]
     assignment: dict[str, Any]
     transport: dict[str, Any]
+    payload_ref: str = ""
 
     @classmethod
     def from_start_response(cls, body: Mapping[str, Any]) -> "RemoteExecutionLease":
@@ -126,6 +127,7 @@ class RemoteExecutionLease:
             payload=dict(payload),
             assignment=dict(assignment) if isinstance(assignment, Mapping) else {},
             transport=dict(transport) if isinstance(transport, Mapping) else {},
+            payload_ref=str(task.get('payload_ref') or ''),
         )
 
 
@@ -266,6 +268,10 @@ class NodeExecutorClient:
             f"/executions/{quote(lease.task_id, safe='')}/training-inputs/manifest",
             {"execution_lease_token": lease.lease_token, "execution_generation": lease.generation},
         )
+
+    def formal_test_gate(self, lease):
+        return self._post(f"/executions/{quote(lease.task_id, safe='')}/training-inputs/manifest",
+            {'execution_lease_token':lease.lease_token,'execution_generation':lease.generation,'formal_test_gate':True})
 
     def open_training_source(self, lease: RemoteExecutionLease, image_id: str) -> requests.Response:
         try:
@@ -652,6 +658,7 @@ class AgentExecutionWorkdir:
             "kind": lease.kind,
             "project_id": lease.project_id,
             "generation": lease.generation,
+            "payload_ref": lease.payload_ref,
             "worker_id": lease.worker_id,
             "lease_expires_at": lease.lease_expires_at,
             "assignment": lease.assignment,
