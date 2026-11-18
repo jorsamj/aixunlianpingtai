@@ -58,3 +58,18 @@ def test_stale_or_future_request_rejected(tmp_path, offset):
     (tmp_path / "request.json").write_text(json.dumps(dict(B, nonce="a" * 32, timestamp=time.time()+offset)))
     with pytest.raises(ValueError, match="expired"):
         service_history_gate(tmp_path, **B, check_callback=lambda: pytest.fail("called"))
+
+
+def test_completed_request_does_not_expire_monitor_or_authorize_replay(tmp_path,monkeypatch):
+    import platform_core.training_history_gate as gate
+    from types import SimpleNamespace
+    monkeypatch.setattr(gate.time,'time',lambda:1000)
+    (tmp_path/'request.json').write_text(json.dumps(dict(B,nonce='a'*32,timestamp=1000)))
+    response=service_history_gate(tmp_path,**B,check_callback=lambda:dict(B,allowed=True))
+    monkeypatch.setattr(gate.time,'time',lambda:1090)
+    assert service_history_gate(tmp_path,**B,check_callback=lambda:pytest.fail('re-authorized'))==response
+    # Even a forced nonce collision cannot make the consumer accept an expired
+    # response: skipping completed monitor work does not confer fresh authority.
+    monkeypatch.setattr(gate,'uuid4',lambda:SimpleNamespace(hex='a'*32))
+    with pytest.raises(ValueError,match='expired'):
+        request_history_gate(tmp_path,**B,timeout=.1)

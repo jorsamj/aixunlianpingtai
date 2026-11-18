@@ -1,5 +1,6 @@
 """Bounded, credential-free worker/Agent history authorization handshake."""
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -49,14 +50,15 @@ def _binding(task_id, attempt, snapshot_id, payload_ref):
     return dict(task_id=task_id, attempt=attempt, snapshot_id=snapshot_id, payload_ref=payload_ref)
 
 
-def _validate(value, binding):
+def _validate(value, binding, *, fresh=True):
     if any(value.get(k) != v or type(value.get(k)) is not type(v) for k, v in binding.items()):
         raise ValueError("history gate binding mismatch")
     nonce = value.get("nonce")
     if not isinstance(nonce, str) or len(nonce) != 32 or any(c not in "0123456789abcdef" for c in nonce):
         raise ValueError("invalid history gate nonce")
     timestamp = value.get("timestamp")
-    if type(timestamp) not in (int, float) or not (-5 <= time.time() - timestamp <= 60):
+    if (type(timestamp) not in (int, float) or not math.isfinite(timestamp)
+            or (fresh and not (-5 <= time.time() - timestamp <= 60))):
         raise ValueError("expired history gate message")
 
 
@@ -91,11 +93,15 @@ def service_history_gate(gate_dir, *, task_id, attempt, snapshot_id, payload_ref
     request = _read(directory / "request.json")
     if request is None:
         return None
-    _validate(request, binding)
+    _validate(request, binding, fresh=False)
     previous = _read(directory / "response.json")
     if previous is not None and previous.get("nonce") == request["nonce"]:
-        _validate(previous, binding)
+        # Already serviced work may remain while scoring/finalization continues.
+        # Returning its record is not fresh authorization: the consumer always
+        # validates response age and uses a fresh nonce for each new request.
+        _validate(previous, binding, fresh=False)
         return previous
+    _validate(request, binding)
     result = check_callback()
     if not isinstance(result, dict) or any(result.get(k) != v or type(result.get(k)) is not type(v) for k, v in binding.items()):
         raise ValueError("history gate callback binding mismatch")
