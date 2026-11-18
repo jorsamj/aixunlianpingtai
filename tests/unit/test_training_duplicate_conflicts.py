@@ -203,14 +203,16 @@ def test_failed_task_current_diagnosis_never_pretends_to_be_historical_truth(tmp
 def test_prepare_conflicting_gt_persists_structured_failure_evidence(tmp_path):
     from types import SimpleNamespace
     from platform_core.remote_training_tasks import TrainingPrepareHandler, RemoteTrainingPreparationError
-    from platform_core.task_runtime import ArtifactStore
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord
     project = seed(tmp_path, [row("a"), row("b", x=3), row("c", sha="b" * 64)])
     (project / "algorithms.json").write_text(json.dumps([{"id": "alg"}]), encoding="utf-8")
     artifacts = ArtifactStore(tmp_path / "tasks")
     payload = request(("a", "b", "c"), algorithm_asset_id="alg")
+    target = TaskRecord.new('target', 'p', TaskKind.TRAINING, 'payload.json', 'cpu')
+    artifacts.atomic_write_json(target.task_id, target.payload_ref, payload)
     with pytest.raises(RemoteTrainingPreparationError) as error:
         TrainingPrepareHandler(tmp_path)._freeze_request_contract(SimpleNamespace(artifacts=artifacts),
-            SimpleNamespace(task_id="target", project_id="p"), payload)
+            target, payload)
     assert error.value.code == "DUPLICATE_ANNOTATION_CONFLICT"
     evidence = artifacts.read_json("target", "input-preparation-error.json")
     assert evidence["code"] == "DUPLICATE_ANNOTATION_CONFLICT"
@@ -268,15 +270,17 @@ def test_preflight_reports_cross_role_sha_before_unannotated_test_gate(tmp_path)
 def test_prepare_records_leakage_before_unannotated_test_gate(tmp_path):
     from types import SimpleNamespace
     from platform_core.remote_training_tasks import TrainingPrepareHandler, RemoteTrainingPreparationError
-    from platform_core.task_runtime import ArtifactStore
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord
     project = seed(tmp_path, [row("a"), row("b", state="unannotated"), row("c", sha="b" * 64)])
     (project / "algorithms.json").write_text(json.dumps([{"id": "alg"}]), encoding="utf-8")
     artifacts = ArtifactStore(tmp_path / "tasks")
     payload = request(("a", "c"), split_mode="independent_test_set", test_image_ids=["b"],
         experiment_percent=None, algorithm_asset_id="alg")
+    target = TaskRecord.new('target', 'p', TaskKind.TRAINING, 'payload.json', 'cpu')
+    artifacts.atomic_write_json(target.task_id, target.payload_ref, payload)
     with pytest.raises(RemoteTrainingPreparationError) as error:
         TrainingPrepareHandler(tmp_path)._freeze_request_contract(SimpleNamespace(artifacts=artifacts),
-            SimpleNamespace(task_id="target", project_id="p"), payload)
+            target, payload)
     assert error.value.code == "CONTENT_HASH_LEAKAGE"
     assert artifacts.read_json("target", "input-preparation-error.json")["code"] == "CONTENT_HASH_LEAKAGE"
 

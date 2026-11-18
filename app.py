@@ -28141,7 +28141,10 @@ def _v53_fast_jobs_summary(project_id: str) -> List[Dict[str, Any]]:
     try:
         repository = shared_task_repository()
         retired=repository.deleted_task_ids(indexed,project_id=project_id)
-        indexed={identity:row for identity,row in indexed.items() if identity not in retired}
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="TRAINING_TASK_DELETE_STATE_UNAVAILABLE: 任务删除身份暂时无法核验，请重试") from error
+    indexed={identity:row for identity,row in indexed.items() if identity not in retired}
+    try:
         recent = repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=50)
         durable = {task.task_id: task for task in recent.items}
         cursor = None
@@ -28188,8 +28191,8 @@ def _v53_fast_jobs_summary(project_id: str) -> List[Dict[str, Any]]:
             row.setdefault("created_at", task.created_at)
             indexed[task_id] = row
     except Exception:
-        # Temporary Task DB unavailability must not mutate or discard the last
-        # known index; callers can explicitly retry for newer task truth.
+        # Only deletion-verified index rows may survive enrichment failure.
+        # A tombstone lookup failure above must never reach this fallback.
         pass
     return [_v53_job_summary(row) for row in _training_job_index_rows(list(indexed.values()))]
 
@@ -28198,15 +28201,20 @@ def _v53_live_jobs(project_id: str, *, history_context=None) -> List[Dict[str, A
     """Overlay volatile training truth without rebuilding the whole bootstrap snapshot."""
     try:
         current = sync_jobs_index(project_id, history_context=history_context, read_only=True)
-        if isinstance(current, list):
-            return [_v53_job_summary(row) for row in current]
     except Exception:
         # A bootstrap response may still use the last durable index if one job
         # cannot be enriched temporarily; never fall back to an older in-memory
         # snapshot merely because the live overlay failed.
-        pass
-    jobs = read_json(project_dir(project_id) / "jobs" / "index.json", [])
-    return [_v53_job_summary(row) for row in jobs] if isinstance(jobs, list) else []
+        current = None
+    if not isinstance(current, list):
+        current = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    jobs = current if isinstance(current, list) else []
+    try:
+        retired = shared_task_repository().deleted_task_ids(
+            (row.get('task_id') or row.get('id') for row in jobs), project_id=project_id)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="TRAINING_TASK_DELETE_STATE_UNAVAILABLE: 任务删除身份暂时无法核验，请重试") from error
+    return [_v53_job_summary(row) for row in jobs if str(row.get('task_id') or row.get('id')) not in retired]
 
 
 def _v53_algorithms_with_revision(project_id: str) -> tuple[List[Dict[str, Any]], int]:
