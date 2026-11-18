@@ -5,13 +5,36 @@ import os
 import shutil
 import tempfile
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Callable
+
+from .payload_publications import (
+    DEFAULT_MAX_PAYLOAD_BYTES, PayloadPublicationError, PayloadPublicationIdentity,
+    PayloadVersionStore, PreparedPayloadPublication, VerifiedPayload, is_reserved_path,
+)
 
 
 class ArtifactStore:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+                 max_receipt_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES):
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._payload_versions = PayloadVersionStore(self.root, max_payload_bytes, max_receipt_bytes)
+
+    def prepare_payload_publication(
+        self, identity: PayloadPublicationIdentity, payload: Any, *, activation: dict | None = None,
+        _before_publish: Callable[[], None] = lambda: None,
+    ) -> PreparedPayloadPublication:
+        """Prepare immutable files only; this does not publish a Task reference."""
+        return self._payload_versions.prepare_payload_publication(
+            identity, payload, activation=activation, before_publish=_before_publish)
+
+    def read_payload_version(self, task_id: str, payload_ref: str) -> VerifiedPayload:
+        return self._payload_versions.read_payload_version(task_id, payload_ref)
+
+    def read_payload_publication_receipt(
+        self, task_id: str, operation_id: str, *, identity: PayloadPublicationIdentity | None = None,
+    ) -> PreparedPayloadPublication:
+        return self._payload_versions.read_payload_publication_receipt(task_id, operation_id, identity=identity)
 
     @staticmethod
     def _validate_task_id(task_id: str) -> str:
@@ -46,9 +69,13 @@ class ArtifactStore:
             raise ValueError("relative task artifact path required")
 
         task_root = (self.root / safe_task_id).resolve()
+        if self.root not in task_root.parents:
+            raise ValueError("task artifact root escaped")
         resolved = (task_root / candidate).resolve()
         if resolved != task_root and task_root not in resolved.parents:
             raise ValueError("relative task artifact path required")
+        if is_reserved_path(candidate.parts) or is_reserved_path(resolved.relative_to(self.root).parts):
+            raise ValueError("PAYLOAD_RESERVED_NAMESPACE: use controlled Payload interfaces")
         return resolved
 
     def atomic_write_json(self, task_id: str, relative_path: str, value: Any) -> None:
@@ -92,5 +119,10 @@ class ArtifactStore:
             return True
         if not task_root.exists():
             return False
+        # Check all protected roots BEFORE deleting anything. Legacy tasks with
+        # no P1 namespace retain their existing deletion behavior.
+        for parent in (task_root, task_root / "scenario"):
+            if parent.is_dir() and any(is_reserved_path((child.name,)) for child in parent.iterdir()):
+                raise PayloadPublicationError("ARTIFACT_RETENTION_REQUIRED", "immutable Payload artifacts retained; no P1 GC")
         shutil.rmtree(task_root)
         return True

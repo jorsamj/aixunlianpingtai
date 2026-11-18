@@ -64,6 +64,24 @@ class FencedArtifactStore:
     def root(self):
         return self._store.root
 
+    def prepare_payload_publication(self, identity, payload, *, activation=None):
+        self._context.assert_current_execution()
+        return self._store.prepare_payload_publication(
+            identity, payload, activation=activation,
+            _before_publish=self._context.assert_current_execution)
+
+    def read_payload_version(self, task_id: str, payload_ref: str):
+        self._context.assert_current_execution()
+        result = self._store.read_payload_version(task_id, payload_ref)
+        self._context.assert_current_execution()
+        return result
+
+    def read_payload_publication_receipt(self, task_id: str, operation_id: str, *, identity=None):
+        self._context.assert_current_execution()
+        result = self._store.read_payload_publication_receipt(task_id, operation_id, identity=identity)
+        self._context.assert_current_execution()
+        return result
+
     def artifact_path(self, task_id: str, relative_path: str):
         self._context.assert_current_execution()
         return self._store.artifact_path(task_id, relative_path)
