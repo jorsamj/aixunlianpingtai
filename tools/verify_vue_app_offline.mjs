@@ -24,5 +24,5 @@ for(const name of [...files].sort()){
  if(/\.(?:js|css)$/.test(name)&&/(?:from\s*|import\s*\(|url\(\s*)['"]?https?:\/\//.test(bytes.toString()))throw new Error(`Remote runtime dependency in ${name}`);
  assets[name]={bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
 }
-await writeFile(resolve(directory,'offline-assets.json'),JSON.stringify({sha:head,build_origin:process.env.GITHUB_ACTIONS==='true'?'github-actions':'local-check',assets},null,2)+'\n');
-console.log(`Verified independent SPA: ${Object.keys(assets).length} local resources; source ${head}`);
+await writeFile(resolve(directory,'offline-assets.json'),JSON.stringify({sha:process.env.GITHUB_SHA||null,checkout_sha:head,build_origin:process.env.GITHUB_ACTIONS==='true'?'github-actions':'local-check',assets},null,2)+'\n');
+console.log(`Verified independent SPA: ${Object.keys(assets).length} local resources; checkout ${head}; ${process.env.GITHUB_ACTIONS==='true'?'CI-bound':'local-check'}`);
