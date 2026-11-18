@@ -16,3 +16,45 @@ test('legacy handoff refuses a foreign project before loading data or opening a 
 test('legacy handoff refuses a missing selected version',async()=>{
  const c=context();c.request=async()=>({algorithm:{id:'a',versions:[]}});await assert.rejects(resumeVueHandoff(c),/版本已不存在/);assert.deepEqual(c.calls,[]);
 });
+
+for(const [action,owner,version] of [['report','openVersionReport429',true],['lineage','openVersionLineage429',true],['evaluation','openVersionEvaluation429',true],['algorithm-report','algorithmReport429',false],['delete-algorithm','delAlgorithm',false],['delete-version','delVersion',true],['rollback','openVersionRollback',true]]){
+ test(`handoff dispatches ${action} to its existing owner`,async()=>{
+  const c=context('p',action);c.request=async()=>({algorithm:{id:'a',current_version_id:'current',versions:[{id:'v'},{id:'current'}]}});
+  c.windowRoot[owner]=(...args)=>c.calls.push(args);await resumeVueHandoff(c);
+  assert.deepEqual(c.calls,['算法列表','consume',version?['a','v']:['a']]);
+ });
+}
+for(const action of ['delete-algorithm','delete-version','rollback']){
+ test(`${action} refuses external identity before navigation`,async()=>{
+  const c=context('p',action);c.request=async()=>({algorithm:{id:'a',source_type:'EXTERNAL',provider_type:'CHANG_LIAN',versions:[{id:'v'}]}});
+  await assert.rejects(resumeVueHandoff(c),/外部算法/);assert.deepEqual(c.calls,[]);
+ });
+}
+for(const current of [undefined,'v','missing']){
+ test(`rollback refuses invalid current ${current}`,async()=>{
+  const c=context('p','rollback');c.request=async()=>({algorithm:{id:'a',current_version_id:current,versions:[{id:'v'}]}});
+  await assert.rejects(resumeVueHandoff(c),/回退目标无效/);assert.deepEqual(c.calls,[]);
+ });
+}
+test('handoff rejects foreign algorithm identity',async()=>{
+ const c=context('p','report');c.request=async()=>({algorithm:{id:'foreign',versions:[{id:'v'}]}});
+ await assert.rejects(resumeVueHandoff(c),/版本已不存在/);assert.deepEqual(c.calls,[]);
+});
+test('download uses only the validated scoped endpoint',async()=>{
+ const c=context('p','download');c.request=async()=>({algorithm:{id:'a',versions:[{id:'v',stored_path:'model.pt'}]}});c.windowRoot.location.assign=url=>c.calls.push(url);
+ await resumeVueHandoff(c);assert.equal(c.calls.at(-1),'/api/v12/projects/p/algorithms/a/versions/v/download');
+});
+
+for(const action of ['delete-version','rollback'])test(`other external provider permits ${action}`,async()=>{
+ const c=context('p',action);c.request=async()=>({algorithm:{id:'a',source_type:'EXTERNAL',provider_type:'OTHER',current_version_id:'current',versions:[{id:'v'},{id:'current'}]}});
+ c.windowRoot[action==='rollback'?'openVersionRollback':'delVersion']=(...args)=>c.calls.push(args);await resumeVueHandoff(c);assert.deepEqual(c.calls.at(-1),['a','v']);
+});
+test('delivery refuses pending external deletion',async()=>{
+ const c=context('p','delivery');c.request=async()=>({algorithm:{id:'a',external_deletion_status:'PENDING',versions:[{id:'v'}]}});await assert.rejects(resumeVueHandoff(c),/新发布暂缓/);assert.deepEqual(c.calls,[]);
+});
+test('download refuses missing stored artifact',async()=>{
+ const c=context('p','download');await assert.rejects(resumeVueHandoff(c),/没有可下载模型/);assert.deepEqual(c.calls,[]);
+});
+test('report fails explicitly when legacy owner is unavailable',async()=>{
+ const c=context('p','report');await assert.rejects(resumeVueHandoff(c),/操作入口未就绪/);
+});

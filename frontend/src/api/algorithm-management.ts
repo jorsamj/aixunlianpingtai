@@ -1,5 +1,5 @@
 export interface AlgorithmForm {name:string;remark:string;industry:string;algorithm_type:string}
-export interface AlgorithmBasic extends AlgorithmForm {id:string;source_type?:string;editable:boolean;current_version_id?:string}
+export interface AlgorithmBasic extends AlgorithmForm {id:string;source_type?:string;editable:boolean;current_version_id?:string;created_at?:string;updated_at?:string;provider_type?:string;external_product_id?:string;external_product_code?:string;external_category_id?:string;external_analysis_id?:string;external_active?:number|null;external_last_synced_at?:string;external_master_data_digest?:string}
 interface Owner {projectId:string;get<T>(url:string,options?:{signal?:AbortSignal}):Promise<T>;writeAlgorithm?(method:'POST'|'PUT',id:string,body:AlgorithmForm):Promise<{ok:boolean;algorithm:{id:string}}>}
 export function algorithmManagementApi(context:Owner){
  const root=`/api/v12/projects/${encodeURIComponent(context.projectId)}/algorithms`;

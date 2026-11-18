@@ -327,7 +327,7 @@ class AlgorithmSqlStore:
         from .model_asset_views import text
         self.ensure_ready()
         with closing(self._connect()) as conn:
-            row=conn.execute("SELECT id,name,remark,industry,algorithm_type,source_type,current_version_id,created_at,updated_at,json_extract(payload_json,'$.master_data_readonly') AS master_data_readonly FROM algorithms WHERE project_id=? AND id=?",(self.project_id,str(algorithm_id))).fetchone()
+            row=conn.execute("SELECT id,name,remark,industry,algorithm_type,source_type,current_version_id,created_at,updated_at,provider_type,external_product_id,external_product_code,external_category_id,external_analysis_id,external_active,external_last_synced_at,json_extract(payload_json,'$.external_master_data_digest') AS external_master_data_digest,json_extract(payload_json,'$.master_data_readonly') AS master_data_readonly FROM algorithms WHERE project_id=? AND id=?",(self.project_id,str(algorithm_id))).fetchone()
         if row is None:raise PlatformError('ALGORITHM_NOT_FOUND','算法不存在','',status_code=404)
         result={key:text(value) for key,value in dict(row).items()}
         # The authorized editor must receive faithful business text. A display

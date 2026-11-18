@@ -69,6 +69,8 @@ def test_library_global_filters_sort_and_current_version_are_sql_paged(tmp_path,
     assert [r['id'] for r in page(training_state='training')['items']]==['a03']
     assert page(training_state='trainable')['total']==25
     assert page(training_state='blocked')['items'][0]['id']=='ext'
+    external_basic=store.asset_algorithm_basic('ext')
+    assert external_basic['external_category_id']=='leaf' and external_basic['external_master_data_digest']=='old'
     assert page(source_type='external',category_ids='root')['total']==1
     assert page(source_type='internal',category_ids='leaf')['total']==0
     assert page(training_state='trained')['total']==25 and page(training_state='untrained')['total']==1
