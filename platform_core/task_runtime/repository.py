@@ -209,6 +209,10 @@ def _add_column_if_missing(
 
 
 class TaskRepository(InferenceResourceMethods):
+    # Non-empty claim_next performs expiry recovery inside its claim transaction.
+    # Subclasses replacing that contract must explicitly opt out.
+    claim_recovers_expired = True
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

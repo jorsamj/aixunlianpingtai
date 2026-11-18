@@ -110,7 +110,10 @@ class Scheduler:
         reaper = getattr(self.repository, "reap_expired_processes", None)
         if callable(reaper):
             reaper()
-        self.repository.release_expired()
+        # Empty kind sets return before claim recovery; legacy repositories may
+        # not recover on claim at all. Keep their explicit maintenance path.
+        if not self.handlers or getattr(self.repository, "claim_recovers_expired", False) is not True:
+            self.repository.release_expired()
 
     @staticmethod
     def _finish_if_owned(

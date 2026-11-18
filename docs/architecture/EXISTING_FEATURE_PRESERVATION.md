@@ -79,3 +79,8 @@
 ## P2B-3B（2026-11-18）
 
 保持一致：菜单、页面、按钮和业务操作链路无改动；仅普通任务列表批量位置读取，原TaskRepository/投影/队列精确性/跨项目全局证据保留。定向54项通过，详情及其他调用方保持scalar；未操作生产。尚未核实：准确新SHA CI最终结果和生产性能。详见[P2B-3B专项](P2B_3B_TASK_READ_PERFORMANCE_20261118.md)。
+
+
+## P2B-4A-1A（2026-11-18）
+
+保持一致：菜单/页面/按钮/业务入口无改动；仅显式具备claim内恢复能力且Handler非空的Scheduler跳过外层恢复，空Handler与旧Repository保留。reaper、进程身份/Agent/GPU/代数与事务内复核保留；专项67通过，补强测试后Scheduler11通过（不累计）。尚未核实：新SHA最终CI和生产性能。[专项记录](P2B_4A_1A_SCHEDULER_EXPIRY_20261118.md)。

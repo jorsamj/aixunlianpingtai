@@ -400,3 +400,53 @@ def test_lease_renewal_failure_logs_non_secret_diagnostics(tmp_path, caplog):
     assert "OperationalError" in message
     assert "database is locked" in message
     assert "lease_token" not in message
+
+
+def test_scheduler_claim_recovery_capability_and_empty_handlers(tmp_path, monkeypatch):
+    from platform_core.task_node_assignments import AssignmentAwareFencedTaskRepository
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+    for cls in (TaskRepository, FencedTaskRepository, AssignmentAwareFencedTaskRepository):
+        for empty in (False, True):
+            repo = cls(tmp_path / f'{cls.__name__}-{empty}.sqlite3')
+            repo.create(TaskRecord.new('expired', 'p', TaskKind.DEPLOYMENT_TEST, 'payload.json', 'cpu:test'))
+            lease = repo.claim_next('old', [TaskKind.DEPLOYMENT_TEST], set())
+            assert lease is not None
+            with repo._connect() as db:
+                db.execute("UPDATE tasks SET lease_expires_at='2000-01-01T00:00:00+00:00' WHERE task_id='expired'")
+            calls = []
+            original = repo.release_expired
+            def release(*a, **kw):
+                calls.append('release')
+                return original(*a, **kw)
+            monkeypatch.setattr(repo, 'release_expired', release)
+            if hasattr(repo, 'reap_expired_processes'):
+                reaper = repo.reap_expired_processes
+                def reap(*a, **kw):
+                    calls.append('reap')
+                    return reaper(*a, **kw)
+                monkeypatch.setattr(repo, 'reap_expired_processes', reap)
+            scheduler = Scheduler(repo, ArtifactStore(tmp_path / 'artifacts'), 'new',
+                                  {} if empty else {TaskKind.VIDEO_FRAMES: RecordingHandler()}, set())
+            assert scheduler.run_once() is False  # No matching queued candidate.
+            assert calls.count('release') == int(empty)
+            if hasattr(repo, 'reap_expired_processes'):
+                assert calls[0] == 'reap'
+            assert repo.get('expired').status is TaskStatus.QUEUED
+            handler = SimpleNamespace(run=lambda c: (TaskStatus.SUCCEEDED, None),
+                                      recover=lambda c: (TaskStatus.SUCCEEDED, None))
+            scheduler.handlers = {TaskKind.DEPLOYMENT_TEST: handler}
+            assert scheduler.run_once() is True
+            assert repo.get('expired').status is TaskStatus.SUCCEEDED
+            assert repo.get('expired').attempt == 2
+            assert calls.count('release') == int(empty)
+
+
+def test_scheduler_legacy_repository_keeps_outer_recovery(tmp_path):
+    calls = []
+    repo = SimpleNamespace(reap_expired_processes=lambda: calls.append('reap'),
+                           release_expired=lambda: calls.append('release'),
+                           claim_next=lambda *a, **kw: calls.append('claim'))
+    scheduler = Scheduler(repo, ArtifactStore(tmp_path / 'artifacts'), 'legacy',
+                          {TaskKind.VIDEO_FRAMES: RecordingHandler()}, set())
+    assert scheduler.run_once() is False
+    assert calls == ['reap', 'release', 'claim']
