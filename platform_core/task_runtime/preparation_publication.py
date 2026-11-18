@@ -28,12 +28,10 @@ def ensure_preparation_input(context, parent):
 def publication(store, task, phase, intent, payload, activation=None):
     identity=PayloadPublicationIdentity(task_id=task.task_id,project_id=task.project_id,kind=task.kind.value,
         phase=phase,expected_ref=task.payload_ref,expected_parent_attempt=task.attempt,intent=intent)
-    try:
-        return store.payload_reader.read_payload_publication_receipt(task.task_id,identity.operation_id,identity=identity)
-    except PayloadPublicationError as error:
-        if error.code!='PUBLICATION_RECEIPT_MISSING':
-            raise
+    # A fresh proposal is strict: P1 rejects changed bytes/activation under the
+    # same operation. Business recovery must explicitly validate/reuse receipts.
     return store.prepare_payload_publication(identity,payload,activation=activation)
+
 
 
 def publish_training(context, parent, phase, payload):

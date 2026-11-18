@@ -70,7 +70,7 @@ def _accept_locked(repository, artifacts, project, creation_id, request, image, 
 
 
 def committed_evidence(repository, artifacts, task_id):
-    return (repository.get(task_id + "-prepare") is not None
+    return (repository.is_deleted(task_id) or repository.get(task_id + "-prepare") is not None
             or artifacts.artifact_path(task_id, "result.json").exists()
             or any(artifacts.artifact_path(task_id, "scenario").glob("prepared-*.json")))
 
@@ -204,6 +204,12 @@ class ScenarioPreparationHandler:
                 proposal = context.artifacts.prepare_payload_publication(publication_identity, ready,
                     activation={"resource_key":parent.resource_key,
                         "required_capabilities":["deployment.runtime"], "stage":"queued"})
+            stored_ready=proposal.version.data
+            if (stored_ready.get('creation_digest')!=request.get('creation_digest')
+                    or stored_ready.get('input_sha256')!=request.get('input_sha256')
+                    or stored_ready.get('model_identity')!=ready.get('model_identity')
+                    or stored_ready.get('model_path')!=ready.get('model_path')):
+                raise PayloadPublicationError('PUBLICATION_OPERATION_CONFLICT','stored deployment proposal no longer matches verified inputs')
             self._publish(context, target, proposal)
             return TaskStatus.SUCCEEDED, None
         except InterruptedError:

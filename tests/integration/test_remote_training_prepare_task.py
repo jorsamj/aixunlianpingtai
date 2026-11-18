@@ -1121,3 +1121,40 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     assert exported['names']=={0:'fire'}
     assert exported['train']=='images/train' and exported['val']=='images/validation'
     assert 'test' not in exported
+
+
+
+
+
+def test_ready_receipt_before_database_commit_resumes_in_new_preparation_lease(tmp_path,monkeypatch):
+    data_dir=tmp_path/'data'
+    project_id=_build_project(data_dir)
+    repository,artifacts,target_id,prep_id=_runtime(data_dir,project_id,repository_type=FencedTaskRepository)
+    source=_remote_source()
+    provider=FakeObjectProvider()
+    handler=RemoteTrainingPrepareHandler(data_dir,sources=FakeSources(source),credentials=FakeCredentials(),
+        provider_factory=lambda *_:provider,model_artifacts=FakeModelArtifacts(source.id))
+    first=repository.claim_next('first',[TaskKind.TRAINING_PREPARE],{'training.prepare'})
+    context=WorkerContext(first.task,first,repository,artifacts)
+    actual=repository.publish_training_payload
+    proposals=[]
+    def fail_ready(parent_id,**kwargs):
+        if kwargs['publication'].identity.data['phase']=='training.ready':
+            proposals.append(kwargs['publication'])
+            raise sqlite3.OperationalError('database is locked')
+        return actual(parent_id,**kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(repository,'publish_training_payload',fail_ready)
+        with pytest.raises(sqlite3.OperationalError):handler.run(context)
+    parent=repository.get(target_id)
+    assert parent.required_capabilities==('training.input.ready',)
+    assert parent.status is TaskStatus.QUEUED and len(proposals)==1
+    uploads=list(provider.upload_calls)
+    repository.release_expired('2999-01-01T00:00:00+00:00')
+    second=repository.claim_next('second',[TaskKind.TRAINING_PREPARE],{'training.prepare'})
+    assert second is not None and second.task.attempt==2
+    successor=WorkerContext(second.task,second,repository,artifacts)
+    assert handler.recover(successor)[0] is TaskStatus.SUCCEEDED
+    assert repository.get(target_id).payload_ref==proposals[0].version.payload_ref
+    assert provider.upload_calls==uploads
+    with pytest.raises(ExecutionFencedError):handler.run(context)

@@ -1085,9 +1085,20 @@ class TrainingPrepareHandler:
                 payload.update({"input_freeze_ref": frozen_ref, "input_freeze_id": frozen["input_freeze_id"],
                     "snapshot_id": snapshot["snapshot_id"], "dataset_revision_id": snapshot["dataset_revision_id"]})
         if indices_only:
-            payload['input_freeze_ref'] = context.artifacts.write_evidence_json(training_task.task_id, frozen)
-            payload['snapshot_ref'] = context.artifacts.write_evidence_json(training_task.task_id, snapshot)
-            payload['dataset_revision_ref'] = context.artifacts.write_evidence_json(training_task.task_id, dataset_revision_document(snapshot))
+            from .task_runtime.payload_publications import EVIDENCE_REF
+            for evidence_key,evidence in (('input_freeze_ref',frozen),('snapshot_ref',snapshot),
+                                          ('dataset_revision_ref',dataset_revision_document(snapshot))):
+                existing_ref=payload.get(evidence_key)
+                if EVIDENCE_REF.fullmatch(str(existing_ref)):
+                    # Canonical identities exclude creation timestamps. Reuse
+                    # the original byte version, never regenerate its reference.
+                    original=context.artifacts.read_json(training_task.task_id,existing_ref)
+                    identity_key={'input_freeze_ref':'input_freeze_id','snapshot_ref':'snapshot_id',
+                                  'dataset_revision_ref':'dataset_revision_id'}[evidence_key]
+                    if original.get(identity_key)!=evidence.get(identity_key):
+                        raise ValueError('frozen input evidence changed during preparation')
+                else:
+                    payload[evidence_key]=context.artifacts.write_evidence_json(training_task.task_id,evidence)
             # Preparation has its own lease, not ownership of the assigned training
             # device. Persist only input identity and budget metadata until the
             # TRAINING owner starts materialization under its execution lease.
@@ -1770,6 +1781,25 @@ class TrainingPrepareHandler:
                 raise ValueError('TRAINING_FREEZE_REQUIRED: unexpected publication phase')
             payload = context.artifacts.read_json(training_task_id, target.payload_ref)
             self._publish_prepared_job(target, payload)
+            # Resume a prepared-but-uncommitted READY proposal explicitly. Do
+            # not silently replace it with fresh timestamps/resource evidence.
+            from .task_runtime.payload_publications import PayloadPublicationIdentity
+            ready_identity=PayloadPublicationIdentity(task_id=target.task_id,project_id=target.project_id,
+                kind='TRAINING',phase='training.ready',expected_ref=target.payload_ref,
+                expected_parent_attempt=target.attempt,intent={'input_freeze_id':payload['input_freeze_id'],
+                    'snapshot_id':payload['snapshot_id'],'dataset_revision_id':payload['dataset_revision_id']})
+            try:
+                pending_ready=context.artifacts.payload_reader.read_payload_publication_receipt(target.task_id,
+                    ready_identity.operation_id,identity=ready_identity)
+            except PayloadPublicationError as missing:
+                if missing.code!='PUBLICATION_RECEIPT_MISSING':
+                    raise
+                pending_ready=None
+            if pending_ready is not None:
+                restored=pending_ready.version.data
+                self._validate_ready_publication(context,target,restored)
+                target=publish_training(context,target,'training.ready',restored).task
+                return self._complete_ready_recovery(context,target,restored)
             prepared_input = {
                 "schema_version": 1,
                 "training_task_id": training_task_id,
