@@ -29,7 +29,7 @@ async function save(){
  if(saving.value||unconfirmed.value)return;
  if(!form.name.trim()){writeError.value='请填写算法名称';return}
  saving.value=true;writeError.value='';
- try{const saved=await management.save(editingId.value,{...form,name:form.name.trim(),industry:form.industry.trim(),algorithm_type:form.algorithm_type.trim()},scope.signal);if(scope.signal.aborted)return;editing.value=false;load();choose(saved.id)}
+ try{const saved=await management.save(editingId.value,{...form,name:form.name.trim(),industry:form.industry.trim(),algorithm_type:form.algorithm_type.trim()},scope.signal);if(scope.signal.aborted)return;editing.value=false;if(selected.value===saved.id){load();loadVersions()}else choose(saved.id)}
  catch(cause){if(scope.signal.aborted)return;writeError.value=browseError(cause);unconfirmed.value=!(cause as {writeRejected?:boolean}).writeRejected}
  finally{saving.value=false}
 }
