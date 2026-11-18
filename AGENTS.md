@@ -1,5 +1,19 @@
 > **CI 长期规则：异步验收**。提交推送后只获取准确SHA工作流并报告当前状态，立即结束，不循环/持续等待/自动取消Actions。后续用户要求检查时一次性查询；失败只分析失败Job。未完成或失败不得宣称验收通过。
 
+## 当前开发规则：全面 Vue 迁移（2026-11-18 用户批准）
+
+- 先读 [AI 接续入口](docs/architecture/AI_DEVELOPMENT_HANDOFF.md)，再按对应模块文档工作，不重复全仓审计。该入口、现有技术架构文档、功能矩阵和功能保留台账须随实际代码更新，分清实现、本地验证、CI 与生产验收。
+- 最终目标是同一 frontend 工程中的独立 Vue 3 / TypeScript / Vite / Vue Router / Pinia / Element Plus 应用，逐步替代旧前端；不长期扩展 vue_*=1 试点，不另建 npm 工程。历史“只允许试点/完成当前试点后停止”不限制已批准迁移，本批边界 M0–M1，完成后停止跨领域扩展。
+- 技术与统一黑白中性 UI/UX 已获授权；功能需求、菜单名称/分组/操作能力、算法卡片、业务默认值、训练全参数/Train-Val-Test/历史、素材跨页选择、人工 GT 确认、权限与 API 不能擅改。必要业务变化仍先取得用户明确批准。
+- 复用原 API、错误/取消工具及专业组件；独立 /app 不加载 static/app.js，不调用旧全局渲染/移入旧表单。未迁移模块仅受控整页跳转原系统；一个页面一个提交 Owner，不能把兼容入口当原生功能完成。
+- 不过度设计、防御、测试；不为普通 UI 建新状态机/回执/持久缓存，不创建空转发层，不为无证据风险扩大范围。最小正确修改→必要类型/编译/定向验证→现有 GitHub CI，不默认全仓 pytest/Node/Playwright，不重复无关绿色用例或新增重复 Workflow。
+- 提交推送后按准确最终 SHA 查询 CI 一次；可立即报告 CI_PENDING，不持续轮询/等待/手动重跑。仅剩 CI 时允许结束的前提是代码、必要验证、Git、文档均完成且无已知代码阻断。已知失败只分析实际失败 Job。
+- 开发状态 NOT_STARTED / IN_PROGRESS / FUNCTIONAL_COMPLETE 与验收 CI_PENDING / ACCEPTED / BLOCKED / AWAITING_USER_APPROVAL 分列；未实施不能提前标为等待 CI。接续入口记录实现 SHA、验证边界、已知问题及下一步，不复制全部历史。
+- TaskRepository、GT、模型、存储和发布各自唯一数据 Owner；lease/attempt/fencing/CAS/不可变 Payload/执行锚点/删除及外部发布幂等不弱化。不重写稳定 Scheduler/Worker/Agent/Supervisor/GPU，不改变数据库方案或重要 Schema。
+- 唯一开发分支 feature/external-algorithm-publishing；保留已有未提交文件和三份设计；不改 VERSION、不强推、不 merge main、不发布 Release/Tag；不操作 A800/4070/生产服务、正式数据或权重。
+
+下方重要安全要求继续有效；与当前已批准迁移范围冲突的历史阶段性停止/试点限制以本节和最新用户指令为准，不删除历史记录。
+
 ## 长期强制约束：既有功能和产品合同保护（2026-11-17 用户确认）
 
 默认保留所有既有菜单、分组/顺序、页面布局、按钮、业务流程/字段/默认值/权限/API、数据与任务 Owner、历史身份和第三方组件；用户未要求改变的功能维持原样。技术实现权不等于产品决策权，不完整 Vue 页面只能是独立显式 opt-in 试点，不能替代正式入口；vue_workbench 只启用工作台，其快捷卡片必须进入原完整业务页。算法库用户可见名称为“算法库”，内部算法列表及 AlgorithmListRuntime 卡片合同不变；素材库保留直接 openAnnotation、原 Annotorious/GT/审核/治理 Owner。

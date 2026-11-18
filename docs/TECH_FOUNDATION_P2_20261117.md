@@ -1,6 +1,16 @@
 > **当前保护约束**：P2A/P2B 代码保留；P1Z 菜单替代已按用户确认局部修复，工作台与业务试点开关独立，原正式菜单/Owner 不替换。[当前功能保留台账与审批规则](architecture/EXISTING_FEATURE_PRESERVATION.md) 优先于历史工作台描述；本轮完成后停止。
 
-# P2 技术底座实施与回退
+# 当前架构与独立 Vue 迁移（2026-11-18）
+
+下方 P2/P1 段落保留为历史实施记录。用户现已批准全面迁移，先做 M0–M1；过往“只允许 opt-in / 完成试点后停止”不再约束本轮。当前状态与后续接续以 [AI 入口](architecture/AI_DEVELOPMENT_HANDOFF.md)、[功能/API矩阵](architecture/VUE_M0_FUNCTION_API_MATRIX_20261118.md) 和[功能保留台账](architecture/EXISTING_FEATURE_PRESERVATION.md)为准。
+
+平台服务算法、素材、GT、训练、评测、转换、发布和节点管理。当前旧正式前端 static/main.mjs + app.js 与18个渐进Vue视图并存；后端 FastAPI 模块化单体，AlgorithmSqlStore/MaterialRepository/AnnotationRepository/TaskRepository 等拥有原领域事实；SQLite 持久化、ArtifactStore 持久证据；Scheduler/Worker 领取执行，中央 Assignment 与 Agent Execution Lease 分离，Supervisor 管进程身份。新 Vue 只能使用原会话/API，不获得执行权。
+
+目标为同一 frontend/ 的独立 /app/ SPA，以 Hash 路由避免服务器 rewrite，Router 管新应用页面、Pinia 只存会话/项目和展示态。保留原库构建与旧系统地址；卡片算法库是第一条原生业务链，其他域整页交给原系统，功能等价后再逐个切换，不能删除未替代的旧操作。后端只增必要静态挂载，不顺便拆 app.py 或创建新 Repository/调度器/数据库。
+
+安全边界不变：正式 GT 源 SHA/version CAS、任务 attempt/token/lease/fencing、进程 PID/create_time/command_hash、GPU reservation、远程停止未确认保护、不可变 Payload/收据/Repository CAS/执行锚点、产物身份、删除保护及外部发布 UNKNOWN 回执。普通 UI 不另建安全状态机。
+
+## 历史 P2 技术底座实施与回退
 
 起点：远端/本地 5e9ae26548c07bbff91b37d703d2bf4a8be0b446，唯一 feature/external-algorithm-publishing，工作区干净。
 
