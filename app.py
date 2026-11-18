@@ -12995,10 +12995,47 @@ def v12_delete_job(project_id: str, job_id: str):
     return {"ok": True}
 
 
+def _algorithm_library_statistics(project_id):
+    # One shared history read/overlay per request, never one scan per card.
+    # Lifetime counts deliberately reuse their established evidence contract.
+    history = _training_history_context(project_id)
+    rows, repository, durable = history
+    counts = _successful_training_counts(project_id, history_context=history)
+    statistics = {identity: {'algorithm_id': identity, 'count': count} for identity, count in counts.items()}
+    by_task = {str(row.get('task_id') or row.get('id') or ''): row for row in rows}
+    active = {'queued','waiting','pending','starting','running','pausing','paused','resuming'}
+    filter_active = {'queued','running','starting','preparing','paused'}
+    for identity, task in durable.items():
+        if identity not in by_task and task.status in {TaskStatus.QUEUED,TaskStatus.RUNNING,TaskStatus.CANCEL_REQUESTED}:
+            payload = shared_task_artifacts().read_json(identity, task.payload_ref, default={})
+            by_task[identity] = payload if isinstance(payload,dict) else {}
+    for identity, row in by_task.items():
+        if row.get('project_id') and str(row['project_id']) != str(project_id):continue
+        algorithm = str(row.get('asset_algorithm_id') or row.get('algorithm_asset_id') or row.get('algorithm_id') or '')
+        if not algorithm:continue
+        status = str(row.get('status') or '').lower()
+        task = durable.get(identity)
+        if task is not None:
+            status = {TaskStatus.QUEUED:'queued',TaskStatus.RUNNING:'paused' if task.stage=='paused' else 'running',TaskStatus.CANCEL_REQUESTED:'running'}.get(task.status,'terminal')
+        item = statistics.setdefault(algorithm,{'algorithm_id':algorithm,'count':counts.get(algorithm,0)})
+        if status in active:item.setdefault('active',status)
+        if status in filter_active:item['filter_active']=1
+    return list(statistics.values())
+
+
 @app.get("/api/v12/projects/{project_id}/algorithms")
 def v12_list_algorithms(project_id: str, summary_only: bool = False, asset_view: bool = False,
-    page: int=1, page_size: int=20, query: str='', algorithm_type: str='', industry: str='', source_type: str='', status: str='', sort: str='updated'):
+    page: int=1, page_size: int=20, query: str='', algorithm_type: str='', industry: str='', source_type: str='', status: str='', sort: str='updated', library_view: bool=False, training_state: str='', category_ids: str=''):
     global _V53_BOOTSTRAP_SNAPSHOT
+    if library_view:
+        from platform_core.algorithm_sql_store import AlgorithmSqlStore
+        from platform_core.external_algorithm_platform import ExternalPlatformRepository
+        get_project(project_id)
+        if not summary_only or not asset_view:raise PlatformError('ASSET_INVALID_QUERY','算法库必须使用只读摘要投影','',status_code=422)
+        cache=ExternalPlatformRepository(DATA_DIR).cache()
+        return {'ok':True,**AlgorithmSqlStore(algorithms_file(project_id)).library_algorithms(
+            statistics=_algorithm_library_statistics(project_id),master_digest=cache.get('master_data_digest') or '',categories=cache.get('categories') or [],
+            page=page,page_size=page_size,query=query,algorithm_type=algorithm_type,industry=industry,source_type=source_type,training_state=training_state,category_ids=category_ids,sort=sort)}
     if asset_view:
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
         get_project(project_id)
@@ -13103,14 +13140,16 @@ def v12_assign_version(project_id: str, algorithm_id: str, payload: AlgorithmVer
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
-def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payload: VersionPatchReq):
+def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payload: VersionPatchReq, asset_view: bool=False):
     # v42.8 起版本号由训练结束时间唯一生成，不允许人工改写。
     patch: Dict[str, Any] = {}
     if payload.remark is not None:
         patch["remark"] = payload.remark or ""
-    return update_algorithm_version(
+    result = update_algorithm_version(
         algorithms_file(project_id), algorithm_id, version_id, patch, now=now_iso(),
     )
+
+    return {"ok":True} if asset_view else result
 
 
 def _safe_launch_reject_external_version_retirement(project_id: str, algorithm_id: str) -> None:

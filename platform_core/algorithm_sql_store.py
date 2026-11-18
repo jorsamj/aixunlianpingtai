@@ -238,6 +238,87 @@ class AlgorithmSqlStore:
             conn.commit()
         return {'project_id':self.project_id,'items':[{**{key:text(value) for key,value in dict(row).items()},'versions_deferred':True,'current_version':{'id':row['current_version_id'],'version_name':text(row['current_version_name'])} if row['current_version_id'] else None} for row in rows],'total':total,'page':page,'page_size':page_size,'algorithm_revision':revision,'filter_options':options}
 
+    def library_algorithms(self, *, statistics, master_digest='', categories=(), page=1, page_size=10,
+                           query='', algorithm_type='', industry='', source_type='', training_state='', category_ids='', sort='comprehensive'):
+        """Opt-in library semantics; SQL filters/sorts the whole project before LIMIT.
+
+        Statistics are a per-request projection of the existing training owner,
+        never stored here. Version/report payloads are not hydrated for cards.
+        """
+        import math
+        self._asset_page(page, page_size)
+        sorts={'comprehensive':'(training_status IS NOT NULL) DESC,sort_index,created_at DESC,id',
+               'updated':"COALESCE(NULLIF(updated_at,''),created_at) DESC,sort_index,id",
+               'training':'successful_training_count DESC,sort_index,id','metric':'map50_percent DESC,sort_index,id',
+               'created':'created_at DESC,id','name':'name,id','name_desc':'name DESC,id'}
+        if sort not in sorts or training_state not in ('','all','trainable','training','trained','untrained','blocked') or source_type not in ('','all','internal','external'):
+            raise PlatformError('ASSET_INVALID_QUERY','算法库查询参数非法','',status_code=422)
+        def metric(raw):
+            for value in json.loads(raw).values():
+                if value is None or isinstance(value,bool) or not isinstance(value,(str,int,float)) or str(value).strip()=='':continue
+                try:number=float(value)
+                except (ValueError,TypeError):continue
+                if math.isfinite(number):return number if number>1 else number*100
+            return None
+        self.ensure_ready()
+        external="upper(COALESCE(a.source_type,''))='EXTERNAL'"
+        ready=f"CASE WHEN NOT ({external}) THEN a.algorithm_type IN ('yolo_ultralytics','paddle_detection') WHEN upper(COALESCE(a.provider_type,''))<>'CHANG_LIAN' THEN 1 WHEN a.external_active=0 THEN 0 WHEN NOT EXISTS (SELECT 1 FROM algorithm_external_analyses x WHERE x.algorithm_id=a.id AND x.analysis_type='1' AND CAST(json_extract(x.payload_json,'$.status') AS TEXT)='1') THEN 0 WHEN ?='' OR COALESCE(json_extract(a.payload_json,'$.external_master_data_digest'),'')<>? THEN 0 ELSE 1 END"
+        cte=f"""WITH stats AS (SELECT json_extract(value,'$.algorithm_id') AS algorithm_id,
+                   json_extract(value,'$.count') AS count,json_extract(value,'$.active') AS active,
+                   json_extract(value,'$.filter_active') AS filter_active FROM json_each(?)),
+          cards AS (SELECT a.id,a.name,a.remark,a.industry,a.algorithm_type,a.source_type,a.provider_type,
+            a.external_category_id,a.external_product_id,a.external_active,a.current_version_id,a.created_at,a.updated_at,a.sort_index,
+            json_extract(a.payload_json,'$.source_name') AS source_name,
+            json_extract(a.payload_json,'$.external_deletion_status') AS external_status,
+            {ready} AS trainable,COALESCE(stats.count,0) AS successful_training_count,
+            stats.active AS training_status,COALESCE(stats.filter_active,0) AS filter_active,
+            (SELECT COUNT(*) FROM algorithm_versions n WHERE n.algorithm_id=a.id) AS version_count,
+            v.id AS current_record_id,v.version_name AS current_version_name,
+            library_map50(json_object('map50',json_extract(v.payload_json,'$.map50'),'mAP50',json_extract(v.payload_json,'$.mAP50'),
+              'metric1',json_extract(v.payload_json,'$.metrics.map50'),'metric2',json_extract(v.payload_json,'$.metrics.mAP50'),
+              'metric3',json_extract(v.payload_json,'$.metrics."metrics/mAP50(B)"'),
+              'eval1',json_extract(v.payload_json,'$.evaluation.metrics.map50'),'eval2',json_extract(v.payload_json,'$.evaluation.metrics.mAP50'),
+              'eval3',json_extract(v.payload_json,'$.evaluation.metrics."metrics/mAP50(B)"'))) AS map50_percent
+          FROM algorithms a LEFT JOIN algorithm_versions v ON v.algorithm_id=a.id AND v.id=a.current_version_id
+          LEFT JOIN stats ON stats.algorithm_id=a.id WHERE a.project_id=?) """
+        args=[self._dumps(statistics),str(master_digest),str(master_digest),self.project_id]
+        conditions=['1=1']
+        if query.strip():conditions.append('(instr(lower(name),lower(?))>0 OR instr(lower(id),lower(?))>0)');args.extend([query.strip()]*2)
+        for field,value in [('algorithm_type',algorithm_type),('industry',industry)]:
+            if value:conditions.append(field+'=?');args.append(value)
+        if source_type in ('internal','external'):conditions.append("upper(COALESCE(source_type,''))"+('=' if source_type=='external' else '<>')+"'EXTERNAL'")
+        selected=[v for v in category_ids.split(',') if v]
+        if len(selected)>100:raise PlatformError('ASSET_INVALID_QUERY','品目选择超限','',status_code=422)
+        if selected:
+            # The Vue selector accepts leaves only; matching retains official ancestor identity.
+            parents={str(c.get('id',c.get('categoryId',''))):str(c.get('parentId') or '') for c in categories}
+            matched=set(selected)
+            for category in parents:
+                ancestor=category;seen=set()
+                while ancestor and ancestor not in seen:
+                    if ancestor in selected:matched.add(category);break
+                    seen.add(ancestor);ancestor=parents.get(ancestor,'')
+            conditions.append('external_category_id IN (SELECT value FROM json_each(?))');args.append(self._dumps(sorted(matched)))
+        conditions.extend({'trainable':['trainable=1'],'blocked':['trainable=0'],'training':['filter_active=1'],
+                           'trained':['version_count>0'],'untrained':['version_count=0']}.get(training_state,[]))
+        where=' WHERE '+' AND '.join(conditions)
+        with closing(self._connect()) as conn:
+            conn.create_function('library_map50',1,metric,deterministic=True)
+            conn.execute('BEGIN')
+            total=conn.execute(cte+'SELECT COUNT(*) FROM cards'+where,args).fetchone()[0]
+            rows=conn.execute(cte+'SELECT * FROM cards'+where+' ORDER BY '+sorts[sort]+' LIMIT ? OFFSET ?',args+[page_size,(page-1)*page_size]).fetchall()
+            options={key:[r[0] for r in conn.execute('SELECT DISTINCT '+key+" FROM algorithms WHERE project_id=? AND "+key+"<>'' ORDER BY 1",(self.project_id,))] for key in ('industry','algorithm_type')}
+            revision=int(self._meta(conn,'algorithm_revision') or 0);conn.commit()
+        items=[]
+        for row in rows:
+            item=dict(row);item.pop('sort_index');item.pop('filter_active');item['trainable']=bool(item['trainable']);item['external_active']=None if item['external_active'] is None else bool(item['external_active'])
+            item['trainability_message']='' if item['trainable'] else ('外部主数据下架、视觉分析缺失或同步版本过期，请到平台对接核对' if str(item['source_type']).upper()=='EXTERNAL' else '当前算法类型暂不支持直接训练')
+            item['current_version']={'id':item['current_version_id'],'version_name':item.pop('current_version_name')} if item.pop('current_record_id') is not None else None
+            item.pop('current_version_name',None);item['versions_deferred']=True;items.append(item)
+        return {'project_id':self.project_id,'items':items,'total':total,'page':page,'page_size':page_size,
+                'algorithm_revision':revision,'filter_options':options,
+                'categories':[{'id':str(c.get('categoryId',c.get('id',''))),'name':str(c.get('categoryName',c.get('name',''))),'parentId':str(c.get('parentId') or '')} for c in categories]}
+
     @staticmethod
     def _asset_page(page,page_size):
         if type(page) is not int or page<1 or type(page_size) is not int or not 1<=page_size<=50:raise PlatformError('ASSET_INVALID_QUERY','分页范围非法','',status_code=422)
@@ -268,7 +349,7 @@ class AlgorithmSqlStore:
         self._asset_page(page,page_size);self.ensure_ready()
         with closing(self._connect()) as conn:
             conn.execute('BEGIN')
-            row=conn.execute('SELECT id,name,current_version_id,algorithm_type,source_type FROM algorithms WHERE project_id=? AND id=?',(self.project_id,str(algorithm_id))).fetchone()
+            row=conn.execute('SELECT id,name,current_version_id,algorithm_type,source_type,provider_type FROM algorithms WHERE project_id=? AND id=?',(self.project_id,str(algorithm_id))).fetchone()
             if row is None:raise PlatformError('ALGORITHM_NOT_FOUND','算法不存在','',status_code=404)
             total=conn.execute('SELECT COUNT(*) FROM algorithm_versions WHERE algorithm_id=?',(str(algorithm_id),)).fetchone()[0]
             rows=conn.execute('SELECT '+version_columns()+' FROM algorithm_versions v WHERE v.algorithm_id=? ORDER BY v.created_at DESC,v.sort_index,v.id LIMIT ? OFFSET ?',(str(algorithm_id),page_size,(page-1)*page_size)).fetchall()

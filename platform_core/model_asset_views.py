@@ -29,7 +29,8 @@ def json_fields(path,keys,column='v.payload_json'):
 
 def version_columns(detail=False):
     base='v.id,v.algorithm_id,v.version_name,v.version_no,v.training_job_id,v.framework,v.training_status,v.artifact_verified,v.trainable,v.external_publish_status,v.created_at,v.finished_at,v.stored_path,v.model_name'
-    extra=json_fields('',('size_bytes','size_mb','sha256','model_sha256','format','source_type','status','parent_version_id','base_version_id','artifact_id','map50','mAP50'))
+    base+=",CASE WHEN trim(COALESCE(v.stored_path,''))<>'' THEN 1 ELSE 0 END AS has_model,CASE WHEN json_type(v.payload_json,'$.training_lineage')='object' THEN 1 ELSE 0 END AS has_lineage,CASE WHEN json_type(v.payload_json,'$.evaluation')='object' THEN 1 ELSE 0 END AS has_evaluation"
+    extra=json_fields('',('size_bytes','size_mb','sha256','model_sha256','format','source_type','status','parent_version_id','base_version_id','artifact_id','map50','mAP50','remark'))
     cols=base+','+extra+' AS display_json'
     cols+=','+json_fields('metrics.',METRICS)+' AS metrics_json'
     cols+=','+json_fields('evaluation.metrics.',METRICS)+' AS test_metrics_json'
@@ -46,6 +47,8 @@ def version_record(row,decode):
     row=dict(row);payload=decode(row.pop('display_json'))
     name=filename(row.pop('stored_path',None) or row.get('model_name'))
     result={key:text(value) for key,value in row.items() if key not in ('metrics_json','test_metrics_json','val_metrics_json','parameters_json','lineage_json','metadata_json','classes_json','class_count')}
+    for flag in ('has_model','has_lineage','has_evaluation'):result[flag]=bool(row.get(flag))
+    result['remark']=str(payload.get('remark') or '')
     result.update(fields(payload,('source_type','status','parent_version_id','base_version_id','artifact_id','map50','mAP50')))
     result['artifact_verified']=None if row.get('artifact_verified') is None else bool(row['artifact_verified'])
     result['trainable']=None if row.get('trainable') is None else bool(row['trainable'])
