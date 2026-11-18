@@ -467,9 +467,24 @@ class TaskRepository(InferenceResourceMethods):
                     or (parent_kind is TaskKind.DEPLOYMENT_TEST and capabilities != ["deployment.runtime"])):
                 raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_NOT_ELIGIBLE", "READY requires complete execution activation")
         capabilities_json = json.dumps(sorted(set(activation.get("required_capabilities", []))), separators=(",", ":"))
+        confirmed = self._confirm_payload_publication(fields, verified.version.payload_ref, identity.operation_id,
+                                                       parent_kind, child_kind, child_task_id)
+        if confirmed is not None:
+            return confirmed
         return self._commit_payload_publication(fields, verified.version.payload_ref, identity.operation_id,
             parent_kind, child_kind, child_task_id, child_lease_token, child_attempt,
             child_worker_id, child_payload_ref, activation, capabilities_json)
+
+    @retry_busy
+    def _confirm_payload_publication(self, fields, new_ref, operation_id, parent_kind, child_kind, child_id):
+        # One read snapshot. No writer reservation, UPDATE, lease revival or
+        # inference of history from an orphan receipt.
+        with closing(self._connect()) as database:
+            row = database.execute("""SELECT parent.* FROM tasks parent JOIN tasks child
+                ON child.task_id=? AND child.kind=? AND child.project_id=parent.project_id
+                WHERE parent.task_id=? AND parent.project_id=? AND parent.kind=? AND parent.payload_ref=?""",
+                (child_id, child_kind.value, fields["task_id"], fields["project_id"], parent_kind.value, new_ref)).fetchone()
+        return None if row is None else PayloadPublicationResult("ALREADY_APPLIED", _from_row(row), operation_id)
 
     @retry_busy
     def _commit_payload_publication(self, fields, new_ref, operation_id, parent_kind, child_kind,
@@ -485,21 +500,21 @@ class TaskRepository(InferenceResourceMethods):
             if (child is None or child["task_id"] != expected_child or child["kind"] != child_kind.value
                     or child["project_id"] != parent["project_id"]):
                 raise PayloadPublicationError("PAYLOAD_PUBLICATION_PARENT_CHILD_MISMATCH", "current child identity mismatch")
-            if child["payload_ref"] != child_ref:
-                raise PayloadPublicationError("PAYLOAD_PUBLICATION_CONTENT_MISMATCH", "child input reference changed")
-            try:
-                expires = datetime.fromisoformat(str(child["lease_expires_at"]).replace("Z", "+00:00"))
-                valid_time = expires.tzinfo is not None and expires.astimezone(timezone.utc) > now
-            except (ValueError, TypeError, OverflowError):
-                valid_time = False
-            if (child["status"] != "RUNNING" or child["lease_token"] != token or child["attempt"] != attempt
-                    or child["worker_id"] != worker_id or not valid_time):
-                raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "preparation execution is fenced")
             if parent["payload_ref"] == new_ref:
                 # Parent may already be RUNNING/terminal with a higher attempt.
                 # Confirmation never re-applies activation or changes ownership.
                 outcome = "ALREADY_APPLIED"
             else:
+                if child["payload_ref"] != child_ref:
+                    raise PayloadPublicationError("PAYLOAD_PUBLICATION_CONTENT_MISMATCH", "child input reference changed")
+                try:
+                    expires = datetime.fromisoformat(str(child["lease_expires_at"]).replace("Z", "+00:00"))
+                    valid_time = expires.tzinfo is not None and expires.astimezone(timezone.utc) > now
+                except (ValueError, TypeError, OverflowError):
+                    valid_time = False
+                if (child["status"] != "RUNNING" or child["lease_token"] != token or child["attempt"] != attempt
+                        or child["worker_id"] != worker_id or not valid_time):
+                    raise PayloadPublicationError("PAYLOAD_PUBLICATION_LEASE_INVALID", "preparation execution is fenced")
                 if parent["payload_ref"] != fields["expected_payload_ref"]:
                     raise PayloadPublicationError("PAYLOAD_PUBLICATION_EXPECTED_REF_CONFLICT", "current reference superseded this proposal")
                 pending = "training.input.ready" if parent_kind is TaskKind.TRAINING else "deployment.input.pending"

@@ -1014,8 +1014,7 @@ def test_payload_publish_already_claimed_parent_and_old_worker(tmp_path):
     assert repo.get('parent')==parent.task
     with repo._connect() as database:
         database.execute('UPDATE tasks SET lease_token=? WHERE task_id=?', ('replacement',child.task.task_id))
-    with pytest.raises(PayloadPublicationError, match='LEASE_INVALID'):
-        publish('parent', **kwargs)
+    assert publish('parent', **kwargs).outcome=='ALREADY_APPLIED'
 
 
 def test_payload_publish_legacy_child_not_a_frozen_binding(tmp_path):
@@ -1134,8 +1133,11 @@ def test_payload_publish_new_worker_can_resume_but_old_worker_cannot(tmp_path, a
     repo.release_expired()
     successor=repo.claim_next('next-worker',[TaskKind.TRAINING_PREPARE],set(),lease_seconds=120)
     assert successor is not None and successor.task.attempt==2
-    with pytest.raises(PayloadPublicationError, match='LEASE_INVALID'):
-        publish('parent', **kwargs)
+    if already:
+        assert publish('parent', **kwargs).outcome=='ALREADY_APPLIED'
+    else:
+        with pytest.raises(PayloadPublicationError, match='LEASE_INVALID'):
+            publish('parent', **kwargs)
     fresh={**kwargs,'child_lease_token':successor.lease_token,'child_attempt':successor.task.attempt,
            'child_worker_id':successor.worker_id}
     assert publish('parent', **fresh).outcome==('ALREADY_APPLIED' if already else 'APPLIED')
@@ -1286,3 +1288,29 @@ def test_payload_publish_unmigrated_deployment_settlement_still_works(tmp_path):
     assert parent.payload_ref==ref
     assert parent.required_capabilities==('deployment.runtime',)
     assert parent.stage=='queued'
+
+
+@pytest.mark.parametrize('child_state', ['SUCCEEDED','expired','taken_over'])
+@pytest.mark.parametrize('parent_state', ['RUNNING','SUCCEEDED'])
+def test_payload_publish_confirmation_has_no_write_authority(tmp_path, monkeypatch, child_state, parent_state):
+    repo, store, child, kwargs, publish = _publication_setup(tmp_path)
+    publish('parent', **kwargs)
+    with repo._connect() as database:
+        database.execute("UPDATE tasks SET status=?,attempt=attempt+1 WHERE task_id='parent'",(parent_state,))
+        if child_state=='SUCCEEDED':
+            database.execute("UPDATE tasks SET status='SUCCEEDED',lease_token=NULL,worker_id=NULL WHERE task_id=?",(child.task.task_id,))
+        elif child_state=='expired':
+            database.execute("UPDATE tasks SET lease_expires_at='2000-01-01T00:00:00Z' WHERE task_id=?",(child.task.task_id,))
+        else:
+            database.execute("UPDATE tasks SET attempt=attempt+1,worker_id='successor',lease_token='next' WHERE task_id=?",(child.task.task_id,))
+    before=repo.get('parent')
+    statements=[]
+    connect=repo._connect
+    def trace_connect():
+        database=connect()
+        database.set_trace_callback(statements.append)
+        return database
+    monkeypatch.setattr(repo,'_connect',trace_connect)
+    assert publish('parent', **kwargs).outcome=='ALREADY_APPLIED'
+    assert repo.get('parent')==before
+    assert not any(sql.startswith(('UPDATE','BEGIN IMMEDIATE')) for sql in statements)
