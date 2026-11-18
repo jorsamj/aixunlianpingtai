@@ -51,3 +51,27 @@ test('project switch aborts old reads and rejects an unlisted project',async({pa
 test('anonymous shell returns to the existing login with its route preserved',async({page})=>{
  await assets(page);await page.route('**/api/auth/session',route=>route.fulfill({json:{authenticated:false}}));await page.goto('/app/#/projects/p/algorithms');await expect(page).toHaveURL(/\/login\?next=.*app/);
 });
+
+
+test('unknown algorithm writes survive refresh, stay project scoped and clear only after authoritative verification',async({page})=>{
+ await assets(page);let writes=0,failRead=true,rejectWrite=false;
+ const record={id:'committed',name:'待核算法',remark:'',industry:'',algorithm_type:'',editable:true,source_type:'local'};
+ await page.route('**/api/**',async route=>{
+  const request=route.request(),url=new URL(request.url()),path=url.pathname;
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'同源会话'}}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'},{id:'q',name:'项目 Q'}]});
+  if(request.method()==='POST'){writes++;if(rejectWrite)return route.fulfill({status:400,json:{detail:'明确拒绝'}});Object.assign(record,request.postDataJSON());return route.abort('failed')}
+  if(url.searchParams.has('basic_only'))return failRead?route.fulfill({status:503,json:{detail:'读取暂不可用'}}):route.fulfill({json:{ok:true,project_id:'p',algorithm:record}});
+  return route.fulfill({json:{ok:true,project_id:path.includes('/projects/p/')?'p':'q',algorithm:record,items:[],total:0,page:1,page_size:10}});
+ });
+ await page.goto('/app/#/projects/p/algorithms');await page.getByRole('button',{name:'新增本地算法',exact:true}).click();await page.getByRole('textbox',{name:'算法名称',exact:true}).fill(record.name);await page.getByRole('button',{name:'保存并核验',exact:true}).click();
+ await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeDisabled();expect(writes).toBe(1);
+ await page.reload();await expect(page.getByText('保存结果尚未核验，请先核对，勿重复提交。',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeDisabled();
+ await page.goto('/app/#/projects/q/algorithms');await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeEnabled();
+ await page.goto('/app/#/projects/p/algorithms');await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeDisabled();
+ await page.getByRole('textbox',{name:'待核算法 ID',exact:true}).fill(record.id);await page.getByRole('button',{name:'核对保存结果',exact:true}).click();await expect(page.getByText('读取暂不可用',{exact:true})).toBeVisible();expect(writes).toBe(1);
+ failRead=false;record.name='不匹配的记录';await page.getByRole('button',{name:'核对保存结果',exact:true}).click();await expect(page.getByText('权威记录与待核内容不同，请到原完整算法管理核对。',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeDisabled();
+ record.name='待核算法';await page.getByRole('button',{name:'核对保存结果',exact:true}).click();await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeEnabled();expect(writes).toBe(1);
+ await page.reload();await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeEnabled();
+ rejectWrite=true;await page.getByRole('button',{name:'新增本地算法',exact:true}).click();await page.getByRole('textbox',{name:'算法名称',exact:true}).fill('拒绝提交');await page.getByRole('button',{name:'保存并核验',exact:true}).click();await expect(page.getByText('明确拒绝',{exact:true})).toBeVisible();await page.reload();await expect(page.getByRole('button',{name:'新增本地算法',exact:true})).toBeEnabled();expect(writes).toBe(2);
+});

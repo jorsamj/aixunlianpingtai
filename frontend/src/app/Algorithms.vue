@@ -10,12 +10,18 @@ import {request} from './http';
 import {legacyUrl} from './navigation';
 const route=useRoute(),router=useRouter(),projectId=String(route.params.projectId),scope=new AbortController();
 onUnmounted(()=>scope.abort());
+// Reuse the existing project-scoped algorithm journal format; it is not business truth.
+type PendingWrite={algorithmId:string;body:AlgorithmForm};
+const pendingKey='cl_vue_algorithm_pending_v1:'+projectId,pending=ref<PendingWrite|null>(null),pendingError=ref(''),checking=ref(false),checkId=ref('');
+try{pending.value=JSON.parse(sessionStorage.getItem(pendingKey)||'null');if(pending.value&&(typeof pending.value.algorithmId!=='string'||!pending.value.body||!['name','remark','industry','algorithm_type'].every(key=>typeof pending.value!.body[key as keyof AlgorithmForm]==='string')))throw new Error('待核记录无效');checkId.value=pending.value?.algorithmId||''}catch{pendingError.value='待核记录无法读取，请到原完整算法管理核对；本页暂不提交。'}
+const unconfirmed=computed(()=>!!pending.value||!!pendingError.value);
+function savePending(value:PendingWrite|null){pending.value=value;if(value)sessionStorage.setItem(pendingKey,JSON.stringify(value));else sessionStorage.removeItem(pendingKey)}
 const owner={projectId,algorithmPageSize:10,get:<T,>(url:string,options?:{signal?:AbortSignal})=>request<T>(url,options),
- writeAlgorithm:(method:'POST'|'PUT',id:string,body:AlgorithmForm)=>request<{ok:boolean;algorithm:{id:string}}>(`/api/v12/projects/${encodeURIComponent(projectId)}/algorithms${id?'/'+encodeURIComponent(id):''}?asset_view=true`,{method,body:JSON.stringify(body)})};
+ async writeAlgorithm(method:'POST'|'PUT',id:string,body:AlgorithmForm){const result=await request<{ok:boolean;algorithm:{id:string}}>(`/api/v12/projects/${encodeURIComponent(projectId)}/algorithms${id?'/'+encodeURIComponent(id):''}?asset_view=true`,{method,body:JSON.stringify(body)});if(result.ok&&result.algorithm?.id&&(!id||id===result.algorithm.id)){savePending({algorithmId:result.algorithm.id,body});checkId.value=result.algorithm.id}return result}};
 const api=modelBrowseApi(owner),management=algorithmManagementApi(owner),reads=useReadScope(scope);
 const filters=reactive({query:String(route.query.query||''),algorithm_type:String(route.query.algorithm_type||''),industry:String(route.query.industry||''),source_type:String(route.query.source_type||''),status:String(route.query.status||''),sort:String(route.query.sort||'updated'),page:Number(route.query.page)||1});
 const algorithms=ref<Paged<AlgorithmSummary>|null>(null),versions=ref<VersionPage|null>(null),detail=ref<VersionDetail|null>(null),basic=ref<AlgorithmBasic|null>(null);
-const selected=computed(()=>String(route.query.algorithm||'')),versionPage=ref(1),drawer=ref(false),editing=ref(false),editingId=ref(''),saving=ref(false),writeError=ref(''),unconfirmed=ref(false);
+const selected=computed(()=>String(route.query.algorithm||'')),versionPage=ref(1),drawer=ref(false),editing=ref(false),editingId=ref(''),saving=ref(false),writeError=ref('');
 const form=reactive<AlgorithmForm>({name:'',remark:'',industry:'',algorithm_type:''});
 function load(){void reads.run('algorithms',signal=>api.algorithms(filters,signal),value=>{algorithms.value=value})}
 function search(page=1){void router.push({query:{...route.query,...filters,page}})}
@@ -28,10 +34,17 @@ function edit(id=''){reads.cancel('basic');editing.value=true;editingId.value=id
 async function save(){
  if(saving.value||unconfirmed.value)return;
  if(!form.name.trim()){writeError.value='请填写算法名称';return}
+ const body={...form,name:form.name.trim(),industry:form.industry.trim(),algorithm_type:form.algorithm_type.trim()};
+ try{savePending({algorithmId:editingId.value,body});checkId.value=editingId.value}catch{pendingError.value='待核记录无法保存，本次未提交。';return}
  saving.value=true;writeError.value='';
- try{const saved=await management.save(editingId.value,{...form,name:form.name.trim(),industry:form.industry.trim(),algorithm_type:form.algorithm_type.trim()},scope.signal);if(scope.signal.aborted)return;editing.value=false;if(selected.value===saved.id){load();loadVersions()}else choose(saved.id)}
- catch(cause){if(scope.signal.aborted)return;writeError.value=browseError(cause);unconfirmed.value=!(cause as {writeRejected?:boolean}).writeRejected}
+ try{const saved=await management.save(editingId.value,body,scope.signal);savePending(null);if(scope.signal.aborted)return;editing.value=false;if(selected.value===saved.id){load();loadVersions()}else choose(saved.id)}
+ catch(cause){if((cause as {writeRejected?:boolean}).writeRejected){try{savePending(null)}catch{pendingError.value='待核记录无法清除，请核对后再操作。'}}if(!scope.signal.aborted)writeError.value=browseError(cause)}
  finally{saving.value=false}
+}
+async function verifyPending(){
+ const savedPending=pending.value,id=savedPending?.algorithmId||checkId.value.trim();if(!savedPending||!id||checking.value)return;
+ checking.value=true;pendingError.value='';
+ try{const saved=await management.basic(id,scope.signal);if(scope.signal.aborted)return;if(Object.keys(savedPending.body).some(key=>saved[key as keyof AlgorithmForm]!==savedPending.body[key as keyof AlgorithmForm]))throw new Error('权威记录与待核内容不同，请到原完整算法管理核对。');savePending(null);editing.value=false;load();choose(saved.id)}catch(cause){if(!scope.signal.aborted)pendingError.value=browseError(cause)}finally{checking.value=false}
 }
 watch(()=>route.query,()=>{
  Object.assign(filters,{query:String(route.query.query||''),page:Number(route.query.page)||1,algorithm_type:String(route.query.algorithm_type||''),industry:String(route.query.industry||''),source_type:String(route.query.source_type||''),status:String(route.query.status||''),sort:String(route.query.sort||'updated')});
@@ -44,7 +57,7 @@ watch(()=>route.query,()=>{
   <el-select v-for="[key,label] in [['algorithm_type','算法类型'],['industry','分类'],['source_type','来源'],['status','状态']] as const" :key="key" v-model="filters[key]" :aria-label="label" :placeholder="label" clearable><el-option label="全部" value=""/><el-option v-for="value in algorithms?.filter_options?.[key]||[]" :key="value" :label="value" :value="value"/></el-select>
   <el-select v-model="filters.sort" aria-label="排序"><el-option label="最近更新" value="updated"/><el-option label="最近创建" value="created"/><el-option label="名称升序" value="name"/><el-option label="名称降序" value="name_desc"/></el-select><el-button native-type="submit" :loading="reads.busy.algorithms">查询</el-button><el-button @click="load">刷新</el-button>
  </form>
- <el-alert v-if="unconfirmed" title="保存结果尚未核验，请先到原完整算法管理核对，勿重复提交。" type="warning" :closable="false"/>
+ <div v-if="unconfirmed"><el-alert title="保存结果尚未核验，请先核对，勿重复提交。" type="warning" :closable="false"/><p v-if="pending">{{ pending.algorithmId?'编辑或创建回执已记录，将读取该算法核对。':'创建回执未返回算法 ID，请从原完整算法管理核对后填写对应 ID。' }}</p><el-input v-if="pending" v-model="checkId" aria-label="待核算法 ID" placeholder="待核算法 ID" :disabled="!!pending.algorithmId||checking"/><el-button v-if="pending" :loading="checking" :disabled="!(pending.algorithmId||checkId.trim())" @click="verifyPending">核对保存结果</el-button><el-alert v-if="pendingError" :title="pendingError" type="error" :closable="false"/></div>
  <el-alert v-if="reads.errors.algorithms" :title="reads.errors.algorithms" type="error" :closable="false"/>
  <el-skeleton v-if="!algorithms&&reads.busy.algorithms" :rows="6" animated/>
  <div v-else class="algorithm-cards"><article v-for="algorithm in algorithms?.items||[]" :key="algorithm.id" class="algorithm-card" :class="{selected:selected===algorithm.id}">
