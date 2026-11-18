@@ -1,4 +1,6 @@
-# M0 功能/API迁移矩阵（2026-11-18）
+# 功能/API迁移矩阵（M0基线2026-11-18，当前M2）
+
+当前以文末M2功能对照及[接续入口](AI_DEVELOPMENT_HANDOFF.md)为准；M1段落为历史范围，不代表M2仍缺少已实现功能。
 
 本表是有界源码盘点，不是运行验收。用户新授权独立 `/app` Vue SPA；历史 opt-in-only 与完成后停止限制由本次授权覆盖。保持菜单、字段、权限、状态机、API、GT、任务、Repository唯一Owner及离线组件合同；不删能力、不操作生产/GPU、不改VERSION。P2A按需加载和P2B路由拆分成果保留。
 
@@ -19,7 +21,7 @@ API中的{p}/{a}/{v}/{t}/{j}/{i}为原项目/算法/版本/任务/训练job/图�
 |旧菜单/页/按钮|前端Owner|API|后端服务/Repository|状态/错误合同|既有Vue试点覆盖|缺口/文件|覆盖性质|独立SPA开发|验收|证据|
 |---|---|---|---|---|---|---|---|---|---|---|
 |登录/项目/总览|static/app.js；static/main.mjs；frontend/src/app/App.vue|POST /api/auth/login；GET /api/auth/session；POST /api/auth/logout；GET/POST /api/projects；PUT/DELETE /api/projects/{p}；POST /api/v53/bootstrap/start；GET /api/v53/bootstrap/status、/snapshot|app.py auth/projects路由；platform_core/bootstrap.py|401/项目身份/退出取消|ProductWorkbench|M1 Shell会话/项目选择已原生；登录/项目创建与总览业务仍旧页|部分原生/LEGACY_BRIDGE|IN_PROGRESS|CI_PENDING（仅M1 Shell）|src/app/App.vue/main.ts；app-shell.spec.ts；API鉴权及真实临时FastAPI联调|
-|算法库卡片/筛选/新增编辑删除/详情版本|frontend/src/app/Algorithms.vue；原AlgorithmListRuntime|/api/v12/projects/{p}/algorithms[/{a}]|AlgorithmSqlStore|写后GET/只读主数据/引用约束；删除不可按编辑覆盖推断|ModelAssets + AlgorithmEditor + ModelVersionDetails|M1卡片/资产筛选分页/详情版本/创建基本编辑已原生；品目/训练状态/综合与训练次数排序、删除回退仍旧页|部分原生/LEGACY_BRIDGE|IN_PROGRESS|CI_PENDING（仅M1首批）|新App Chrome卡片/分页/CRUD/刷新/返回；原v12与AlgorithmSqlStore实际读写|
+|算法库卡片/筛选/新增编辑删除/详情版本|frontend/src/app/Algorithms.vue；原动作Owner|v12 algorithms的library_view/asset_view/basic_only；原版本API|AlgorithmSqlStore；原训练历史/TaskRepository|全局筛选排序后分页；外部只读；当前版本；写后GET；原退役保护|原ModelAssets试点保留；独立App原生列表/详情/备注|删除回退及其他工作台整页交给原Owner，不是原生执行工作台|原生列表版本 + LEGACY_BRIDGE动作|FUNCTIONAL_COMPLETE（列表/版本页面）|CI_PENDING|M2-A 280ed4cf；M2-B/C c83c1142；文末精确对照与验证|
 |素材库分页/详情/标注/GT|MaterialPaginationRuntime；openAnnotation|/api/v61/projects/{p}/materials；/api/projects/{p}/annotations/{i}|MaterialRepository；AnnotationRepository|源SHA/正式GT version CAS/隐藏框保全|MaterialLibrary + MaterialPreview；人工标注回原Owner|完整编辑继续原Owner|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/MaterialLibrary.vue；本行Owner/API源码|
 |图片上传/ZIP/清洗治理|原Uppy/ZIP/TaskCenter|v19 ZIP；v61 storage-imports/{t}/confirm|原导入Handler；MaterialRepository；TaskRepository|AWAITING_CONFIRMATION非终态/取消fencing/单调进度|MaterialImportGovernance|ZIP/治理真实执行未验|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/MaterialImportGovernance.vue；本行Owner/API源码|
 |算法负池/标签管理|static/modules/labels.js；frontend/src/views/NegativePool.vue|/api/v61/projects/{p}/negative-pool；GET /api/v12/projects/{p}/labels；POST /api/projects/{p}/labels；PUT/DELETE /api/v12/projects/{p}/labels/{class_id}；GET /api/v54/projects/{p}/label-schema|platform_core/negative_pool_api.py；platform_core/annotation_repository.py；app.py标签路由|revision/operation_id/CAS/未知回执先读回|NegativePool；标签完整页仍旧|标签完整CRUD不因负池组件存在视为完成|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/NegativePool.vue；本行Owner/API源码|
@@ -81,3 +83,26 @@ API中的{p}/{a}/{v}/{t}/{j}/{i}为原项目/算法/版本/任务/训练job/图�
 新增且仅运行一项Chrome刷新恢复用例：1/1通过；包含项目隔离、GET失败与内容不符不解除、GET一致后解除，以及400明确拒绝清除。两个原失败Node用例2/2通过；类型检查、SPA构建/6资源离线闭包、原app.js/main.mjs语法及diff检查通过。没有修改素材/AI/训练/执行核心、CI或既有断言，未运行全量测试。本轮最终提交仅再更新本矩阵及AI入口，准确最终HEAD/异步CI见[接续入口](AI_DEVELOPMENT_HANDOFF.md)及交付消息；新SHA验收为CI_PENDING。
 
 开发覆盖未扩大：M1限定首批FUNCTIONAL_COMPLETE，整个算法域仍IN_PROGRESS；剩余筛选/排序/删除回退及其他业务原生化继续列未完成，不切换默认入口，不进入下一阶段。
+
+## M2 完整功能等价对照（2026-11-19）
+
+基线`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`；只读投影`280ed4cfb21f80e0980c03ace18aa70877a41706`；Vue/操作入口`c83c114230873f57ae9d0f9a348ffc17f9cc4307`。最后文档提交作为最终交付HEAD，准确SHA/CI快照见交付消息；验收CI_PENDING，不借其他SHA结论。
+
+|原算法库能力|独立App对应|Owner/API与合同|开发/验证边界|
+|---|---|---|---|
+|卡片、展开收起、当前版本、训练次数/状态/指标|原生卡片、独立版本展开区；不因展开重读列表|SQL精确current_version_id；原成功训练历史Owner+Durable状态；指标真实0/未知分离|FUNCTIONAL_COMPLETE；API/Chrome已验|
+|搜索、来源、行业、类型、训练状态、仅看可训练|原生紧凑筛选、标签移除/清空|新training_state与旧asset status不同；后端同一SQL范围筛选排序分页|FUNCTIONAL_COMPLETE；25算法跨页及状态API已验|
+|外部多级品目|ElementPlus多选叶子Cascader|原ExternalPlatformRepository缓存ID/parentId；无新分类真相|FUNCTIONAL_COMPLETE；API父子过滤和浏览器精确query已验|
+|综合/最近更新/训练次数/mAP50|原生全局排序|SQL排序后LIMIT，非当前10条排序；综合保留原active状态集合及稳定基础顺序|FUNCTIONAL_COMPLETE；队尾最高计数/指标进入第一页已验|
+|刷新、返回、项目切换、重入|URL+按项目sessionStorage筛选；原请求取消机制|不共享项目状态；原同源Session及项目Guard|原M1合同保留；本轮受影响刷新/恢复通过|
+|本地创建/编辑及结果未知|原生四字段表单，原v12 POST/PUT/basic GET|同项目待核记录写前保存；拒绝/GET成功清除；未知不重发|FUNCTIONAL_COMPLETE；原CRUD与未知结果Chrome通过|
+|算法详情/外部只读信息|四原字段+身份/来源/时间/产品/品目/分析/摘要|basic_only扩只读列，不拉版本全文；外部主数据编辑禁用|FUNCTIONAL_COMPLETE；只读API及Chrome禁用通过|
+|历史分页、当前指针、版本元数据/产物/任务|原生分页及ModelVersionDetails|原asset_versions/asset_version与已登记模型资产；has_model仅原路径记录，不冒称文件已核验|FUNCTIONAL_COMPLETE；API详情与Chrome通过|
+|版本编辑|原生版本备注编辑；版本号不可改|原PUT只提交remark；asset_view轻量回执+GET身份/原文核验；待核共用journal|FUNCTIONAL_COMPLETE；真实临时库PUT/GET、浏览器通过|
+|算法/版本删除及回退|明确标“原流程”的受控入口|delAlgorithm/delVersion/openVersionRollback；原确认/引用保护/expected_current_version_id；畅联版本退役仍禁用，其他提供方不被额外禁止|入口FUNCTIONAL_COMPLETE，执行工作台LEGACY_BRIDGE；Node分发/保护通过，真实物理删除未验|
+|算法/训练报告、溯源、已有独立评测|每版本/算法真实入口|algorithmReport429/openVersionReport429/openVersionLineage429/openVersionEvaluation429|入口FUNCTIONAL_COMPLETE；相应工作台LEGACY_BRIDGE|
+|训练、转换、下载、交付、同步|真实身份受控整页入口；平台对接原页同步|原训练/转换/发布Owner；下载原授权API；清理状态不放行交付；不自动同步|入口FUNCTIONAL_COMPLETE；工作台LEGACY_BRIDGE，未跑真实训练/外部发布|
+
+本轮API测试：原文件初始5通过，新增备注后仅library相关3通过；handoff Node23通过；原生浏览器受影响CRUD/未知恢复2项通过，M2新增单项最终通过（5.0秒含启动）。类型/双构建、旧30/新6离线资源、缓存键2项、编译及diff检查通过。没有全仓pytest、完整Playwright或新CI。
+
+剩余实际边界：统计仍复用每请求一次历史上下文，不能宣称全历史固定成本；官方CI制品/现场离线安装、生产/GPU、真实删除回退与外部发布未验。旧canonical项目限制及本标签页待核存储边界不变。GPT复核后建议M3完整训练创建/选材/准备/报告，保留全部模式/默认参数/GT/Payload/执行权；本批不自动开始。

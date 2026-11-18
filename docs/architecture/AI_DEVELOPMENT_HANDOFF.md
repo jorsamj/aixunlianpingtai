@@ -1,54 +1,64 @@
 # AI 开发接续入口
 
-畅联云算法训练平台；仓库 `jorsamj/aixunlianpingtai`；唯一分支 `feature/external-algorithm-publishing`。
+项目：畅联云算法训练平台；仓库 `jorsamj/aixunlianpingtai`；唯一分支 `feature/external-algorithm-publishing`。
 
-## HEAD 与阶段
+## 当前阶段与准确提交
 
-执行基线：`e639bb12585a79556b7a5fd703205368720265c3`。M0 记录：`5aaf29686faddb5cdf335e0a866515d4809f57e9`；M1 实现：`4865bea70941443b5a62e56b5c90eca5e6c92aef`；离线校验元数据修正：`97ae3a517f9e3d98e58e114515cf88647b4a8129`，本地不把脏工作树产物绑定到旧提交。末次功能修正：`dc1f2b19c9066e02419f40dfc54223ca132b945d`，编辑成功后刷新当前算法详情标题并避免重复列表请求。上一批交付提交为 `65ae81372555786b78284a1bc62608703c1c40d6`。本轮收尾实现提交为 `daa5534606379db83df12e9f076c61bc8cd55821`，其后的本文件所在提交仅更新本轮接续文档。**当前交付 HEAD 是本文件所在的分支提交**，接续先 `git rev-parse HEAD`、fetch 并比较 `origin/feature/external-algorithm-publishing`，不要把实现 SHA 当作后续文档提交 SHA。最终推送准确 SHA 与一次 CI 快照见本批交付消息。原三份未提交 Payload 设计保留，不混入提交。
+M2 算法库列表、详情与版本管理已实现，必要本地验证通过；验收 **CI_PENDING**，等待 GPT 独立审计，不自动进入 M3。本文件所属的最后文档提交是本批交付 HEAD；接续执行 `git rev-parse HEAD`，fetch 后比较 `origin/feature/external-algorithm-publishing`。准确最终完整 SHA 和一次 CI 快照在交付消息中，不能把下面实现 SHA 冒充最终文档提交 SHA。
 
-目标是逐步完整替换旧前端，不长期双写。当前 FastAPI 模块化单体 + SQLite + 各原 Repository + ArtifactStore + Worker/Agent/Supervisor 已有成熟执行安全。新目标为现有 frontend 工程双构建：库模式继续服务旧视图，独立 `/app/` 使用 Vue Root / Hash Router / Pinia / Element Plus；新应用不加载 app.js，不移入旧表单，不创建第二 API/任务 Owner。
+- M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
+- M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
+- M2-B/C 实现：`c83c114230873f57ae9d0f9a348ffc17f9cc4307`，完整 Vue 列表/版本 UI、备注编辑、受控操作入口及定向回归；最后仅补本入口、矩阵、功能保护与当前 AGENTS 阶段说明。
+- M1 原 `65ae81372555786b78284a1bc62608703c1c40d6` 的 GPT 审计结果是50工作流48成功、2失败（Frontend Runtime Stabilization 44344576655、Material Upload Chunking 44344576624），不是验收通过；已在4c7a6d1f修复。该修复 SHA 的最终 CI 本轮未查询，不借旧结果验收新代码。
 
-## 本批实现与限制
+## 架构与唯一 Owner
 
-M0 已建立[功能/API矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md)，单独列开发与验收状态。M1 第一批已实现独立 Shell + 原生算法卡片、资产字段筛选/分页、详情/版本、本地创建/基本编辑；类型、构建、定向验证完成，验收 **CI_PENDING**。**算法整个业务域仍 IN_PROGRESS**：品目/训练状态筛选、综合/训练次数排序、删除/回退及完整训练、转换、交付仍由原系统承担。没有把基础资产投影等同完整算法库替代。
+业务目标是素材/GT、算法训练评测、转换交付、外部平台与算力管理。当前 FastAPI 模块化单体 + SQLite，各既有 Repository 拥有领域数据；ArtifactStore保存不可变证据；Scheduler/Worker、中央Assignment、Agent Execution Lease、Supervisor负责执行。新Vue只读写原同源Session/API，不取得执行权。
 
-新 SPA 源码 `frontend/src/app/`，真实入口 `/app/#/projects/{projectId}/algorithms`；原库 `frontend/src/main.ts` 不迁走。后端仅新增 `/app` 静态挂载，静态壳不含授权数据，Session 由原 API 核验、401 回原登录；复用原 session 续期，不新建登录后端或轮询器。旧系统仅通过显式 allowlist 消费交接参数，先核验 canonical 项目与算法/版本；不把 localStorage 当项目权威。生产旧系统仍为原默认单项目，隔离多项目场景交接到非 canonical 项目会明确拒绝，不能顺便改项目策略。
+最终目标为完整独立 Vue 3 / TS / Vite / Router / Pinia / Element Plus，逐步退役旧前端；当前同一frontend工程保留库构建并新增独立 `/app/#/projects/{projectId}/algorithms`，原 `/` 仍可用。新应用不加载app.js、不调用window.setPage、不移入旧DOM表单。其他工作台暂以整页交给唯一原Owner，不能宣称原生迁移完成。
 
-构建：`npm ci --prefix frontend && npm run build --prefix frontend`，同时保留 `static/vue-catalog` 和新增 `static/vue-app`。Node 使用项目要求的 >=22（本地最终 Node 24.21.0）。`tools/verify_vue_app_offline.mjs` 核原生构建依赖闭包/文件 SHA 与 checkout SHA，现有 CI artifact 增带新目录；`tools/package_vue_offline.py` 对新源码强制校验双构建同 SHA，仍兼容历史单目录包。不得混装 Chunk 或把 local-check 清单当官方 CI 制品。
+## M2 已完成及接口
 
-## 2026-11-19 精准收尾（当前）
+- 算法卡片：名称/ID、来源、行业类型、说明、当前版本、版本数、训练状态/可训练性、成功训练次数、当前mAP50、更新时间、外部产品/品目/状态；点击展开/收起不重读列表，选中项不在筛选页时仍保留独立版本详情区。
+- 搜索名称/ID；来源、行业、类型、训练状态、仅可训练、多级官方品目叶子选择；组合、标签移除、重置、分页；URL为当前条件，sessionStorage按项目保存重入条件，不跨项目混用。
+- 综合/最近更新/训练次数/mAP50全局排序：新 `library_view=true&asset_view=true&summary_only=true` 的v12 GET在SQL过滤排序后LIMIT/OFFSET，新App显式请求10、服务端最大50；HTTP未带page_size仍保留v12原20默认。旧asset_view的status及原默认响应行为不改，新训练语义使用training_state，浏览器不拉全算法或全历史。
+- 统计从 `_training_history_context` 一次读取既有历史上下文，`_successful_training_counts`保持成功/证据/去重口径，Durable状态覆盖旧job状态；综合用旧activeJob集合，训练筛选沿原provider集合。它们存在不同的原状态集合，未擅自合并。没有新统计存储/任务权威。
+- 当前指标按精确current_version_id关联，不把最新创建版本当当前；保留原指标字段优先序、比例/百分数转换，缺失/布尔/非数值不伪造0，真实0保留。
+- 普通详情复用原basic_only，外部主数据只读；补充产品/品目/分析ID、同步时间/摘要等只读字段；写后GET核验、局部更新。
+- 历史版本分页、当前指针、训练任务关联、配置/指标/血缘与登记产物详情；版本只可编辑原API允许的remark，版本号不变。PUT新增asset_view=true只返回确认，原默认响应不改，再用身份验证的GET核对；备注返回业务原文，不把脱敏显示值写回。
+- 新建/编辑/版本备注共用原按项目sessionStorage待核格式，版本操作增versionId与remark；写前记录，确认拒绝或GET一致才清除。未知结果跨刷新/重入阻止重复写；没有创建回执ID则人工核对ID后GET，不按名字猜测。仅覆盖本标签页会话，不提供跨设备/跨会话后端幂等。
+- 原Owner整页动作：训练、算法/版本报告、已有独立评测、溯源、转换、授权下载、交付、算法/版本删除、回退。先GET核验项目/算法/版本，再进入原确认；回退仍由原Owner提交expected_current_version_id并执行引用保护。外部算法删除/主数据编辑禁用；版本退役限制准确保留EXTERNAL + CHANG_LIAN，未扩大到其他提供方。交付待清理状态拦截，下载标记仅代表原stored_path记录，真实文件由下载API核验。
+- 外部同步去原“平台对接”页，不自动触发同步。旧页保留“返回新版算法库”，刷新不重放交接动作。旧canonical项目限制不变，不伪造项目切换。
 
-- 基线/远端核对：`65ae81372555786b78284a1bc62608703c1c40d6`，无新增远端提交。GPT独立审计反馈该SHA的50个工作流48成功、2失败：[Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/44344576655)、[Material Upload Chunking](https://github.com/jorsamj/aixunlianpingtai/actions/runs/44344576624)。原SHA并未全绿。
-- 两个失败断言已本地复现：main.mjs缓存键含`-m1-shell`且不等于app.js/styles.css。仅将static/index.html三者统一为数字缓存键`42.25.626`，顺序、业务脚本和测试断言不变；这不是VERSION升级。
-- Algorithms.vue复用既有`cl_vue_algorithm_pending_v1:{projectId}` sessionStorage格式`{algorithmId,body}`，写前保存四个原表单字段与已知ID；确认拒绝清除、写后正式GET身份/字段核验成功清除，网络或GET失败/字段不符保留，刷新和同标签页重新进入仍阻止重复提交。创建回执丢失无ID时，用户须在原管理页核对对应ID再发GET，不按名称猜测、不自动重发POST；返回ID但GET失败则自动保留该ID。存储无法使用时不发新写请求。无新后端幂等或业务状态Owner。
-- 唯一新增Chrome用例覆盖：模拟已提交但响应丢失→刷新→项目隔离→GET失败/字段不符仍阻止→GET核验一致清除→刷新保持清除；明确400拒绝不留下待核状态。原代码先红，修正后1/1通过（5.1秒含启动）。未重跑原3项或全量Playwright。
-- 本轮必要命令（仓库根，Chrome命令在frontend/）：`node --test --test-name-pattern="browser wiring loads chunk runtime|沉浸式审核仅在原任务工作台内加载" tests/frontend/material-upload-runtime.test.mjs tests/frontend/ai-review-immersive-workbench.test.mjs`：2/2通过；`node --check static/main.mjs`、`node --check static/app.js`：通过；`node frontend/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p frontend/tsconfig.json`：通过；`npm run build:app --prefix frontend`：通过，6项本地资源闭包核验；`node node_modules/@playwright/test/cli.js test tests/app-shell.spec.ts --grep "unknown algorithm writes"`：1/1通过；`git diff --check`：通过。Node24.21.0，未跑全仓或修改CI。
-- 代码提交`daa5534606379db83df12e9f076c61bc8cd55821`仅3文件：Algorithms.vue、新增单项app-shell.spec.ts、static/index.html；本轮最终提交补本入口及功能矩阵。最终交付HEAD用上方分支核对方法获取，准确完整SHA与一次CI快照见交付消息。新SHA验收`CI_PENDING`，不借用原SHA的48项成功；已知本地阻断无，待异步CI/GPT复核。
-- 边界：sessionStorage只保证当前浏览器标签页会话内刷新/重入，不提供跨会话、跨设备幂等；无创建回执ID或权威记录已变化时，需人工核对，不提供无依据“已确认”按钮。原算法字段、业务规则、全部API/后端执行安全、三份设计及VERSION42.24.592均保留。剩余迁移功能如下；本轮停止扩展。
+## 必要验证与 CI
 
-## 上一批本地验证记录
+本地 Node24.21.0 / Python3.12 / Chrome：
 
-必要本地验证：全 frontend 类型检查、两种 Vite 构建及离线闭包（旧30、新6资源）；原 API/静态挂载鉴权3项；相关 Node 合同12项、离线/打包2项；新 Shell Chrome3项。末次只补测真实新增的“关闭待加载编辑→新增”竞态：先复现旧字段污染新表单，再复用 `useReadScope.cancel('basic')` 修正，定向1项通过；详情标题刷新后再次仅运行受影响的首项Chrome用例，1项通过。未重跑无关绿色测试。
+- `python -m pytest tests/api/test_model_asset_views.py -q`：初始5项通过；新增备注用例后仅`-k library`3项通过、3项未选。后续只对补充只读字段/原文备注分别补测受影响项，均通过。覆盖25个算法全局分页/排序、当前与较新版本区分、品目/状态组合、一次历史读取、旧asset响应兼容、真实备注PUT/GET与版本身份不变；不调用全算法hydration。
+- `node --test tests/frontend/vue-app-handoff.test.mjs`：23/23，覆盖真实函数分发、项目/版本身份、外部限制、回退目标、清理状态、下载及缺Owner失败。未实际删除训练/模型或调用外部发布。
+- `node node_modules/@playwright/test/cli.js test tests/app-shell.spec.ts --grep "independent cards|unknown algorithm writes|library filters"`（frontend目录）：M1 CRUD及未知恢复2项通过；M2单项修正ElementPlus选中标签的定位后通过。最终M2单项5.0秒含启动，含无列表重读、精确参数、备注核验、刷新重置与外部禁用。未全量跑Playwright。
+- `node frontend/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p frontend/tsconfig.json`；`npm run build --prefix frontend`（双构建）及后续受影响SPA构建：通过；旧30、新6资源闭包。原Node缓存键失败用例2/2通过；语法、Python编译与`git diff --check`通过。构建大chunk警告仍存在，不冒称首屏性能验收。
+- 新最终SHA只查询一次现有Actions；未完成时CI_PENDING，不新增Workflow/Job、不手动重跑、不持续等待。正式官方制品下载、现场离线安装、生产/GPU及真实删除/回退/外部交付端到端本轮未验。
 
-真实临时 FastAPI/AlgorithmSqlStore 联调另已通过：原生创建→PUT编辑→权威GET核对→整页进入原训练创建表单→返回新App；无训练提交/GT/权重或生产操作。旧 service-nodes 首项本地单次通过，无法稳定复现旧 CI 的标题缺失，未放宽断言或 timeout，仍待准确新 SHA CI 观察。
+## 未完成、实际风险与下一步
 
-本批只复用现有 Frontend Runtime Job；没有新增 Workflow/矩阵。最终 SHA CI 异步验收，未完成时 CI_PENDING，不冒称全平台/生产已验收。SPA 初始共享 JS 约1.08 MB未压缩（gzip约356 KB），不是性能专项，不能宣称已完成首屏性能验收。自动截图仅测试失败制品；本轮没有反复全页面截图回归。
+|项目|影响/优先级|下一步与确认边界|
+|---|---|---|
+|训练/评测/转换/交付等仍LEGACY_BRIDGE|尚非全平台Vue原生，P1|GPT复核M2后建议M3完整训练创建/标签选材/全参数/准备取消/报告；先按矩阵定位，不重审全仓，不缩减模式或默认值|
+|精确历史统计仍有历史规模成本|每请求一次既有历史上下文，不逐卡扫描；SQL卡片/版本输出有界，但全历史聚合不是固定成本，P2|若真实数据证明慢，后续专项设计正式Owner上的增量投影，不能用窗口估计或新计数真相替代|
+|旧canonical项目限制|非canonical旧项目交接会明确拒绝，P2|保留原政策，改变项目策略先确认|
+|初始共享JS约1.08MB未压缩|首次下载成本，尚无生产P95，P2|后续有实测再按需拆包，不本轮扩大性能架构|
+|待核保护只在当前标签页会话内|无ID/记录改变时须人工核对|保持明确提示，不自动重发、不过期解除保护；后端幂等另行批准|
 
-实际协作：gpt-6.1-sol 完成有界 M0 源码台账及只读 M1 审查；主模型独立检查实际Diff、决定架构与状态Owner、修复已确认竞态、运行必要验证并统一提交推送。未让Agent提交、部署或修改核心安全。
+算法库列表/版本页面开发FUNCTIONAL_COMPLETE、验收CI_PENDING；其他业务域NOT_STARTED或原试点覆盖，均不冒称ACCEPTED。原 `/` 可回退，新SPA尚不接管默认入口。保留三份原未提交Payload设计、VERSION42.24.592及所有训练/GT/lease/attempt/fencing/CAS/不可变Payload/执行锚点/删除/发布安全；不操作A800/4070/生产，不强推/合并/Release，不自动开始M3。
 
-## 下一步与禁止事项
+实际协作：gpt-6.1-sol有界核对旧动作并实现受控交接、只读复核SQL；gpt-6.2-sol实现指定Vue/API类型文件。主模型决定语义/事务边界，独立审查实际Diff，修正外部限制、当前版本/只读详情/备注原文及待核行为，统一验证、Git和交付。
 
-M1底座已获GPT原则认可；本轮仅修上述两处缺口。代码、必要验证和接续文档完成后推送，只查准确最终SHA CI一次并停止，等GPT复核；不重做M0–M1。下一步：先按准确 SHA 定位实际失败 Job（若有），否则核对算法原完整卡片的品目/训练状态/综合排序/当前版本等剩余对照，再安排训练完整模式迁移；修改仍围绕 `frontend/src/app/Algorithms.vue`、原 AlgorithmListRuntime/API合同及矩阵，不重审全仓，不动执行核心。
+## 按需必读
 
-已知未完成：其他业务域未原生迁移；原登录/项目创建管理仍复用原页；非 canonical 项目的旧系统跳转不变更策略；新旧入口暂并存且未切换 `/` 默认；未做生产/GPU/现场离线安装或完整业务验收。回退：直接访问 `/` 使用原完整界面，新App按钮经整页交接使用原 Owner，原页有“返回新版算法库”；构建资源异常时 HTML 初始提供原系统链接。旧界面/适配器未退役。
-
-保留唯一数据 Owner、既有训练/GT/Task/Lease/Payload/模型/发布安全；普通 UI 不过度封装、防御、测试。不得操作 A800/4070/生产数据、改 VERSION、强推、merge main、Release。业务需求/默认值/权限变更先确认。自动化通过不等于生产或硬件验收。
-
-## 必需文档
-
-- [当前技术架构及历史实施](../TECH_FOUNDATION_P2_20261117.md)
-- [功能/API矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md)
-- [功能保留台账](EXISTING_FEATURE_PRESERVATION.md)
-- [旧前端 Owner 地图](../FRONTEND_OWNER_MAP_V42_25.md)
-- [第三方组件合同](../FRONTEND_THIRD_PARTY_REUSE_POLICY.md)
-- [Payload 连续交付与已知边界](P2B_4A_2B_CONTINUOUS_DELIVERY_20261118.md)
+- [功能/API迁移矩阵与历史阶段](VUE_M0_FUNCTION_API_MATRIX_20261118.md)
+- [功能保留与差异](EXISTING_FEATURE_PRESERVATION.md)
+- [整体技术架构/历史实施](../TECH_FOUNDATION_P2_20261117.md)
+- [原前端Owner地图](../FRONTEND_OWNER_MAP_V42_25.md)
+- [专业组件复用合同](../FRONTEND_THIRD_PARTY_REUSE_POLICY.md)
+- [Payload协议与边界](P2B_4A_2B_CONTINUOUS_DELIVERY_20261118.md)
