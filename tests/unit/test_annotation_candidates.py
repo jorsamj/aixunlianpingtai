@@ -700,7 +700,9 @@ def test_transfer_cannot_be_accepted_by_explicit_or_implicit_decision(tmp_path):
         store.apply_decisions([CandidateDecision('a',True)])
     assert store.review_counts()['remaining_reviewable']==1
     assert store.read_page(cursor=None,filter='transferred').items[0]['image_id']=='a'
-    assert list(store.iter_selected_ids(filter='zero'))==['b','c']
+    assert list(store.iter_selected_ids(filter='zero'))==['c']
+    assert list(store.iter_selected_ids(filter='zero', purpose='transfer'))==['b','c']
+    assert store.selection_counts('zero', 'gt') == {'total': 2, 'eligible': 1, 'excluded': 1, 'reasons': {'rejected': 1}}
 
 def test_draft_retry_and_pending_transfer_preserve_human_work(tmp_path):
     store=CandidateStore(ArtifactStore(tmp_path),task_id='retry-safe')

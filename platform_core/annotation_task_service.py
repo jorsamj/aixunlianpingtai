@@ -719,6 +719,29 @@ def _canonical_review_scope(
     return resolved
 
 
+def candidate_commit_operation_id(kind: str, request_id: str, identity: str = "") -> str:
+    return hashlib.sha256(json.dumps([kind, request_id, identity]).encode()).hexdigest()
+
+
+def read_candidate_commit_receipts(project_id, task_id, operation_id, image_ids):
+    from app import _v50_annotation_repository
+
+    return _v50_annotation_repository(project_id).candidate_commit_receipts(task_id, operation_id, image_ids)
+
+
+def candidate_commit_summary(evidence):
+    return {
+        **evidence["summary"],
+        "gt_snapshot_version": evidence["version"],
+        "gt_snapshot_digest": evidence["content_digest"],
+    }
+
+
+def _candidate_commit_digest(item):
+    content = {key: item.get(key) for key in ("status", "boxes", "review_scope")}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def commit_candidate_decisions(
     project_id: str,
     task_id: str,
@@ -733,6 +756,7 @@ def commit_candidate_decisions(
     frozen_missing_review_scopes: dict[str, list[str]] | None = None,
     frozen_material_hashes: dict[str, str] | None = None,
     selected_image_ids: Iterable[str] | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
@@ -782,6 +806,8 @@ def commit_candidate_decisions(
 
         committed = store.get_commit_summaries(image_ids)
         pending_ids = [image_id for image_id in image_ids if image_id not in committed]
+        durable = (read_candidate_commit_receipts(project_id, task_id, operation_id, pending_ids)
+                   if operation_id and pending_ids else {})
         if pending_ids:
             # Annotation version CAS does not fence Material content changes.
             # Fail closed for pre-fix candidate rows with no trustworthy source
@@ -821,6 +847,7 @@ def commit_candidate_decisions(
         to_journal = []
         batch_summaries: dict[str, dict[str, Any]] = dict(committed)
         batch_boxes_added = 0
+        recovered = []
 
         for item in items:
             assert_not_cancelled()
@@ -854,6 +881,23 @@ def commit_candidate_decisions(
                 if not isinstance(expected_scope, list) or not image_scope.issubset(set(expected_scope)):
                     raise ValueError("AI candidate review exceeded frozen per-image missing labels")
             previous_row = previous_by_id.get(image_id) or {}
+            evidence = durable.get(image_id)
+            if evidence:
+                if (evidence["project_id"] != project_id
+                        or evidence["source_sha256"] != current_hashes.get(image_id)
+                        or evidence["candidate_digest"] != _candidate_commit_digest(item)
+                        or evidence["summary"]["review_scope"] != sorted(image_scope)
+                        or evidence["version"] != int(previous_row.get("version") or 0)
+                        or evidence["content_digest"] != previous_row.get("content_digest")
+                        or (frozen_annotation_versions is not None
+                            and evidence["expected_version"] != frozen_annotation_versions.get(image_id))):
+                    raise ValueError("AI_SUPPLEMENT_GT_CHANGED: formal GT or review evidence changed after commit")
+                summary = candidate_commit_summary(evidence)
+                recovered.append(evidence)
+                to_journal.append(summary)
+                batch_summaries[image_id] = summary
+                batch_boxes_added += evidence["boxes_added"]
+                continue
             previous = list(previous_row.get("boxes") or [])
             expected_version = int(previous_row.get("version") or 0)
             if frozen_annotation_versions is not None:
@@ -917,10 +961,6 @@ def commit_candidate_decisions(
             task_boxes_present = any(
                 str(box.get("source_task_id") or "") == task_id for box in final_boxes
             )
-            # Re-write an idempotent task-owned projection after a crash between
-            # formal GT commit and CandidateStore journaling. AnnotationRepository
-            # will keep the same content digest, while MaterialRepository projection
-            # is repaired in the same batch helper.
             # An accepted, human-reviewed empty AI candidate may extend the
             # review scope of a historical positive GT without adding boxes.
             # Persist that explicit scope change; otherwise the task is
@@ -930,7 +970,10 @@ def commit_candidate_decisions(
             scope_reviewed_now = "*" not in recorded_scope and bool(
                 image_scope - recorded_scope
             )
-            if incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now:
+            write_gt = bool(incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now)
+            if operation_id and expected_version == 0:
+                write_gt = True  # Establish versioned evidence for legacy GT.
+            if write_gt or operation_id:
                 to_write.append({
                     "image_id": image_id,
                     "boxes": final_boxes,
@@ -952,6 +995,21 @@ def commit_candidate_decisions(
                 "review_scope": sorted(image_scope),
                 "review_scope_source": scope_source,
             }
+            summary["gt_write_performed"] = write_gt
+            if operation_id:
+                to_write[-1].update(
+                    candidate_proof_only=not write_gt,
+                    candidate_commit={
+                        "project_id": project_id, "task_id": task_id,
+                        "operation_id": operation_id, "image_id": image_id,
+                        "source_sha256": current_hashes[image_id],
+                        "candidate_digest": _candidate_commit_digest(item),
+                        "boxes_added": len(incoming), "summary": summary,
+                    },
+                )
+                if not write_gt:
+                    summary["gt_snapshot_version"] = expected_version
+                    summary["gt_snapshot_digest"] = previous_row["content_digest"]
             to_journal.append(summary)
             batch_summaries[image_id] = summary
 
@@ -965,10 +1023,8 @@ def commit_candidate_decisions(
         # Future journal rows can prove an unchanged formal GT revision. Older
         # journals deliberately stay unknown when no durable revision evidence
         # exists; do not invent it during a later read-only audit.
-        written_ids = {str(row["image_id"]) for row in to_write}
         for summary in to_journal:
             image_id = str(summary["image_id"])
-            summary["gt_write_performed"] = image_id in written_ids
             saved = written_by_id.get(image_id)
             if saved and int(saved.get("version") or 0) > 0:
                 digest = str(saved.get("content_digest") or "")
@@ -980,6 +1036,10 @@ def commit_candidate_decisions(
         # do not observe a newly-arrived user cancellation between these two commits.
         # The next batch boundary will observe cancellation. This prevents the task
         # from becoming CANCELLED with durable Ground Truth but no replay journal.
+        if recovered:
+            from app import _v50_annotation_repository
+
+            _v50_annotation_repository(project_id).repair_candidate_commit_projections(recovered)
         if to_journal:
             store.record_commit_summaries(to_journal)
         boxes_added += batch_boxes_added
@@ -1119,6 +1179,9 @@ def commit_confirmed_review(context):
         frozen_annotation_versions=frozen_versions,
         frozen_missing_review_scopes=frozen_missing_scopes,
         frozen_material_hashes=frozen_material_hashes,
+        operation_id=candidate_commit_operation_id(
+            "worker", str(confirmation.get("review_request_id") or context.task.task_id),
+        ),
     )
     sync_annotation_statistics(context.repository, context.task, store)
     if mapping:

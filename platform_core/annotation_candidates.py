@@ -858,15 +858,43 @@ class CandidateStore:
         with closing(self._connect()) as db:
             return int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
 
-    def iter_selected_ids(self, filter='all'):
+    @staticmethod
+    def _selection_reason_sql(purpose):
+        if purpose not in ('gt', 'transfer', 'ambiguity'):
+            raise ValueError('unknown selection purpose')
+        clauses = [
+            ("committed", "image_id IN (SELECT image_id FROM commits)"),
+            ("unavailable", "review_state!='active'"),
+            ("failed", "status NOT IN ('success','empty')"),
+        ]
+        ambiguous = "COALESCE(json_extract(item_json,'$.manual_review_required'),0)=1"
+        if purpose != 'transfer':
+            clauses.append(("rejected", "accepted=0"))
+        if purpose == 'gt':
+            clauses.append(("requires_review", f"{ambiguous} AND (draft_revision=0 OR json_extract(draft_json,'$.auto_resolution')=1)"))
+        elif purpose == 'ambiguity':
+            clauses.append(("not_ambiguous", f"NOT ({ambiguous})"))
+        return 'CASE ' + ' '.join(f"WHEN {condition} THEN '{name}'" for name, condition in clauses) + ' ELSE NULL END'
+
+    def selection_counts(self, filter='all', purpose='gt'):
         self._ready()
-        # A frozen bulk selection is an action scope, never a read-only GT audit.
-        # Keep committed rows in list filters, but exclude them from all selection scopes.
-        where = f"({self._filter_sql(filter)}) AND image_id NOT IN (SELECT image_id FROM commits)"
+        where = self._filter_sql(filter)
+        reason = self._selection_reason_sql(purpose)
+        with closing(self._connect()) as db:
+            rows = db.execute(f'SELECT {reason} AS reason, COUNT(*) AS n FROM candidates WHERE ({where}) GROUP BY reason').fetchall()
+        reasons = {str(row['reason']): int(row['n']) for row in rows if row['reason'] is not None}
+        eligible = sum(int(row['n']) for row in rows if row['reason'] is None)
+        excluded = sum(reasons.values())
+        return {'total': eligible + excluded, 'eligible': eligible, 'excluded': excluded, 'reasons': reasons}
+
+    def iter_selected_ids(self, filter='all', *, purpose='gt'):
+        self._ready()
+        where = self._filter_sql(filter)
+        reason = self._selection_reason_sql(purpose)
         with closing(self._connect()) as db:
             ordinal = 0
             while True:
-                rows = db.execute(f'SELECT ordinal,image_id FROM candidates WHERE ordinal>? AND ({where}) ORDER BY ordinal LIMIT 200', (ordinal,)).fetchall()
+                rows = db.execute(f'SELECT ordinal,image_id FROM candidates WHERE ordinal>? AND ({where}) AND ({reason}) IS NULL ORDER BY ordinal LIMIT 200', (ordinal,)).fetchall()
                 if not rows:
                     break
                 for row in rows:

@@ -1,4 +1,4 @@
-# 功能/API迁移矩阵（M0基线2026-11-18，当前M4-C2）
+# 功能/API迁移矩阵（M0基线2026-11-18，当前M4-D0）
 
 M4-B1 的项目公共负样本池和训练正负样本选择复用 v61 负样本池、v62 训练选材及原冻结服务。历史算法级操作保留 v1，项目级成员操作使用 v2 回执，恢复状态按登录账号和项目隔离。冻结合并复用原引用幂等机制并校验提交时的证据修订。真实训练、现场和生产验收待确认。详见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m4-b1-项目公共负样本池)。
 
@@ -144,3 +144,11 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 | 入口 | 功能 | API 与权威 | 状态 |
 |---|---|---|---|
 | 原生训练创建与报告 | ZIP 来源分页、固定 Train/Val/Test 核验、三组冻结、正式创建与原任务恢复、报告来源与实际统计 | v62 训练选材、v12 训练创建、原 TrainingPrepare、Task ArtifactStore、MaterialRepository、AnnotationRepository、SplitManifest | 功能实现，本地隔离验收。CI 以准确 SHA 为准，真实 GPU 与现场待验。 |
+
+### M4-D0 AI 标注审核
+
+| 功能 | 页面与 API | 正式 Owner | 功能状态 | 验收 |
+| --- | --- | --- | --- | --- |
+| AI 候选与审核 | 原「自动标注及清洗」和 Vue 审核投影；v60 审核选择与候选分页 | CandidateStore 与原审核操作 Owner | 现有入口可用，三种批量范围分别核验，仍可查看失败和历史记录。独立 SPA 审核迁移 `NOT_STARTED` | M4-D0 定向验证完成，`CI_PENDING` |
+| 部分及逐图正式 GT | 原确认、入库与按原编号查询回执 | AnnotationRepository、原确认 Worker | 写入和凭据同一事务；中断后补 CandidateStore 日志 | 隔离恢复已验证，`CI_PENDING` |
+| 候选转池与撤销 | v60 预检、执行与原请求撤销 | NegativePool、CandidateStore | 快照验证操作者和当前修订，按原身份恢复成员写入和撤销 | 隔离恢复已验证，`CI_PENDING` |

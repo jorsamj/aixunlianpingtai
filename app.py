@@ -21,9 +21,10 @@ import sqlite3
 import mimetypes
 import logging
 from urllib.parse import quote
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from itertools import islice
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
@@ -3735,6 +3736,8 @@ def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
             "expected_version": row.get("expected_version"),
             "source_content_sha256": row.get("source_content_sha256"),
             "annotation_origin": origins[image_id],
+            "candidate_commit": row.get("candidate_commit"),
+            "candidate_proof_only": row.get("candidate_proof_only"),
         })
     saved_rows = _v50_annotation_repository(project_id).upsert_many(
         prepared,
@@ -26520,7 +26523,11 @@ def annotation_material_states(project_id: str, image_ids: str = ""):
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates")
-def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None, filter: str = "all", reader_view: bool = False):
+def get_annotation_candidates(
+    project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None,
+    filter: str = "all", reader_view: bool = False, selection_id: Optional[str] = None,
+    request: Request = None,
+):
     task = _require_annotation_review_task(project_id, task_id)
     if reader_view and filter != "failed":
         raise HTTPException(422, detail="只读诊断仅支持失败图片分页")
@@ -26566,6 +26573,20 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
                 "summary": {**store.summary(), **store.review_counts()}, "review_revision": store.review_revision(),
                 **({"review_scope_policy": "per_image_required"}
                    if any(item.get("review_scope_policy") == "per_image_required" for item in items) else {})}
+    if selection_id and not reader_view:
+        actor = _material_governance_actor(request, project_id)['actor_id']
+        try:
+            selection = _load_annotation_review_selection(
+                store, project_id, task_id, selection_id, actor, response["review_revision"],
+            )
+        except HTTPException as error:
+            if error.status_code != 409:
+                raise
+            response["selection_stale"] = True
+        else:
+            selected = set(selection['image_ids'])
+            for item in items:
+                item["selection_member"] = item["image_id"] in selected
     if cursor in {None, "", "0"}:
         response["label_summary"] = store.label_summary()
     if reader_view:
@@ -26670,6 +26691,7 @@ def save_annotation_review_drafts_batch(
 
 class AnnotationSelectionReq(BaseModel):
     filter: str = 'all'
+    purpose: Literal['gt', 'transfer', 'ambiguity'] = 'gt'
     review_revision: Optional[int] = None
 
 
@@ -26684,15 +26706,51 @@ def create_annotation_review_selection(project_id: str, task_id: str, payload: A
         if payload.review_revision is not None and payload.review_revision != revision:
             raise HTTPException(409, detail='审核范围已变化，请刷新后重新选择')
         try:
-            ids = list(store.iter_selected_ids(filter=payload.filter))
+            counts = store.selection_counts(payload.filter, payload.purpose)
+            ids = list(islice(store.iter_selected_ids(filter=payload.filter, purpose=payload.purpose), 50001))
         except ValueError as error:
             raise HTTPException(422, detail=str(error)) from error
         if len(ids) > 50000:
             raise HTTPException(422, detail='筛选范围超过50000张，请缩小筛选')
+        if payload.purpose == 'transfer':
+            ids, metrics = _annotation_transfer_eligible_selection(project_id, store, ids)
+            if metrics['conflicts']:
+                counts['reasons']['formal_or_source_conflict'] = metrics['conflicts']
+        else:
+            annotations = _v50_annotation_repository(project_id)
+            durable = set()
+            for offset in range(0, len(ids), 200):
+                durable.update(annotations.candidate_committed_ids(task_id, ids[offset:offset + 200]))
+            if durable:
+                ids = [image_id for image_id in ids if image_id not in durable]
+                counts['reasons']['committed'] = counts['reasons'].get('committed', 0) + len(durable)
         identity = uuid.uuid4().hex
         artifacts.atomic_write_json(task_id, f'review/selections/{identity}.json', {
-            'image_ids':ids, 'filter':payload.filter, 'revision':revision, 'actor':actor, 'created_at':now_iso()})
-        return {'selection_id':identity, 'total':len(ids), 'count':len(ids), 'filter':payload.filter, 'review_revision':revision}
+            'selection_id': identity, 'project_id': project_id, 'task_id': task_id,
+            'image_ids': ids, 'filter': payload.filter, 'purpose': payload.purpose,
+            'revision': revision, 'actor': actor, 'expires_at': time.time() + 3600,
+        })
+        return {
+            'selection_id': identity, 'total': len(ids), 'count': len(ids),
+            'filtered_total': counts['total'], 'excluded': counts['total'] - len(ids), 'reasons': counts['reasons'],
+            'filter': payload.filter, 'purpose': payload.purpose, 'review_revision': revision,
+        }
+
+
+def _load_annotation_review_selection(store, project_id, task_id, selection_id, actor, revision):
+    if not re.fullmatch(r'[a-f0-9]{32}', selection_id):
+        raise HTTPException(422, detail='筛选快照编号无效')
+    selection = store.artifacts.read_json(task_id, f'review/selections/{selection_id}.json', default=None)
+    if (not isinstance(selection, dict) or selection.get('actor') != actor
+            or selection.get('project_id') != project_id or selection.get('task_id') != task_id
+            or selection.get('selection_id') != selection_id):
+        raise HTTPException(404, detail='筛选快照不存在或无访问权限')
+    if selection.get('revision') != revision or float(selection.get('expires_at') or 0) <= time.time():
+        raise HTTPException(409, detail='筛选快照已变化或过期，请重新选择')
+    ids = selection.get('image_ids')
+    if not isinstance(ids, list) or len(ids) > 50000:
+        raise HTTPException(409, detail='筛选快照数据无效，请重新选择')
+    return selection
 
 
 
@@ -26703,22 +26761,13 @@ def get_annotation_review_selection_candidates(
 ):
     """Bounded read of the already frozen selection; no second cache or GT write."""
     _require_annotation_review_task(project_id, task_id)
-    if not re.fullmatch(r'[a-f0-9]{32}', selection_id):
-        raise HTTPException(422, detail='筛选快照编号无效')
     if cursor < 0 or limit < 1 or limit > 200:
         raise HTTPException(422, detail='筛选分页参数无效')
     actor = _material_governance_actor(request, project_id)['actor_id']
-    artifacts = shared_task_artifacts()
-    selection = artifacts.read_json(task_id, f'review/selections/{selection_id}.json', default=None)
-    if not isinstance(selection, dict) or selection.get('actor') != actor:
-        raise HTTPException(404, detail='筛选快照不存在或无访问权限')
-    ids = selection.get('image_ids')
-    if not isinstance(ids, list) or len(ids) > 50000:
-        raise HTTPException(409, detail='筛选快照数据无效，请重新选择')
-    store = CandidateStore(artifacts, task_id=task_id)
+    store = CandidateStore(shared_task_artifacts(), task_id=task_id)
     revision = store.review_revision()
-    if selection.get('revision') != revision:
-        raise HTTPException(409, detail='审核数据已变化，请重新冻结筛选范围')
+    selection = _load_annotation_review_selection(store, project_id, task_id, selection_id, actor, revision)
+    ids = selection['image_ids']
     batch = ids[cursor:cursor + limit]
     entries = store.get_many(batch)
     if len(entries) != len(batch):
@@ -26745,6 +26794,73 @@ class AnnotationTransferReq(BaseModel):
     review_revision: Optional[int] = None
 
 
+def _annotation_transfer_ids(store, project_id, task_id, payload, actor, revision):
+    if payload.review_revision is not None and payload.review_revision != revision:
+        raise HTTPException(409, detail={'code': 'REVIEW_REVISION_CONFLICT',
+                                         'message': '候选范围已变化，请重新确认', 'review_revision': revision})
+    ids = list(dict.fromkeys(payload.image_ids))
+    if not payload.selection_id:
+        return ids
+    if ids:
+        raise HTTPException(422, detail='不能同时提交显式图片和筛选快照')
+    selection = _load_annotation_review_selection(store, project_id, task_id, payload.selection_id, actor, revision)
+    if selection.get('purpose') == 'ambiguity':
+        raise HTTPException(422, detail='消歧选择不能用于转池，请重新选择')
+    excluded = set(payload.excluded_image_ids)
+    if not excluded.issubset(selection['image_ids']):
+        raise HTTPException(422, detail='排除范围不属于筛选快照')
+    return [image_id for image_id in selection['image_ids'] if image_id not in excluded]
+
+
+def _annotation_transfer_ineligibility(item, material, formal, *, operation_id=None):
+    if not item or item.get('status') not in {'success', 'empty'} or not material:
+        return '候选不可审核或素材不存在'
+    if item.get('gt_committed') or formal.get('boxes'):
+        return '已有正式GT，必须在正式标注流程显式处理冲突'
+    if (item.get('review_state', 'active') != 'active'
+            and (not operation_id or item.get('review_operation_id') != operation_id)):
+        return '图片已被其他转移操作占用或不可审核'
+    source_hash = item.get('source_content_sha256') or item.get('content_sha256')
+    if (material.get('source_available') is False or material.get('_dataset_delete_claim')
+            or material.get('_material_batch_delete_claim')
+            or (source_hash and source_hash != material.get('content_sha256'))):
+        return '源素材已变化或不可用，请重新审核'
+    return None
+
+
+def _annotation_transfer_eligible_selection(project_id, store, ids):
+    eligible = []
+    metrics = {'with_boxes': 0, 'zero': 0, 'discarded_boxes': 0}
+    materials = material_store(project_id)
+    for offset in range(0, len(ids), 200):
+        part = ids[offset:offset + 200]
+        candidates = store.get_many(part)
+        formal = read_annotations_many(project_id, part)
+        durable = _v50_annotation_repository(project_id).candidate_committed_ids(store.task_id, part)
+        rows = {str(row['id']): row for row in materials.get_many(part)}
+        for image_id in part:
+            item = candidates.get(image_id)
+            if not item:
+                continue
+            boxes = item.get('boxes') or []
+            metrics['with_boxes'] += int(bool(boxes))
+            metrics['zero'] += int(not boxes and item.get('status') in {'success', 'empty'})
+            metrics['discarded_boxes'] += len(boxes)
+            if image_id not in durable and not _annotation_transfer_ineligibility(
+                    item, rows.get(image_id), formal.get(image_id) or {}):
+                eligible.append(image_id)
+    return eligible, {**metrics, 'conflicts': len(ids) - len(eligible)}
+
+
+def _annotation_transfer_identity(payload):
+    body = payload.model_dump(mode='json', exclude={'review_revision'})
+    return body, hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+
+
+def _annotation_transfer_preview_path(request_id):
+    return _annotation_review_operation_path(request_id).replace('review/operations/', 'review/transfer-previews/')
+
+
 def _load_annotation_transfer(artifacts, task_id, path, store):
     """Migrate old JSON progress once; keep its original bytes as audit evidence."""
     receipt=artifacts.read_json(task_id,path,default=None)
@@ -26763,21 +26879,22 @@ def _load_annotation_transfer(artifacts, task_id, path, store):
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer")
 def transfer_annotation_candidates(project_id: str, task_id: str, payload: AnnotationTransferReq, request: Request):
-    from platform_core.negative_pool import NegativePool
+    from platform_core.negative_pool import MemberOperationConflict, NegativePool
     task = _require_annotation_review_task(project_id, task_id)
     actor = _material_governance_actor(request, project_id)['actor_id']
     artifacts = shared_task_artifacts()
     path = _annotation_review_operation_path(payload.request_id).replace('review/operations/', 'review/transfers/')
-    body = payload.model_dump(mode='json', exclude={'review_revision'})
-    identity = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    body, identity = _annotation_transfer_identity(payload)
     with FileLock(str(artifacts.artifact_path(task_id, 'review.lock')), timeout=30):
+        task = _require_annotation_review_task(project_id, task_id)
         store = CandidateStore(artifacts, task_id=task_id)
         receipt = _load_annotation_transfer(artifacts, task_id, path, store)
         if receipt:
             if task.status is not TaskStatus.AWAITING_CONFIRMATION and receipt.get('status') != 'completed':
                 raise HTTPException(409,detail='任务已离开审核阶段，不能继续转移')
-            if receipt['identity'] != identity or receipt['actor'] != actor:
-                raise HTTPException(409, detail='同一操作编号的范围或操作者不一致')
+            if (receipt['identity'] != identity or receipt['actor'] != actor
+                    or ('requested_revision' in receipt and receipt['requested_revision'] != payload.review_revision)):
+                raise HTTPException(409, detail='同一操作编号的范围、操作者或审核修订不一致')
             if receipt.get('status') == 'completed':
                 return {'request_id':payload.request_id,'status':'completed','succeeded':len(receipt['image_ids']),
                         'failed':0,'conflicts':0,'total':len(receipt['image_ids']),
@@ -26790,17 +26907,11 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
             if task.status is not TaskStatus.AWAITING_CONFIRMATION:
                 raise HTTPException(409, detail='任务当前不可转池，请先恢复审核')
             revision = store.review_revision()
-            if payload.review_revision is not None and revision != payload.review_revision:
-                raise HTTPException(409, detail={'code':'REVIEW_REVISION_CONFLICT','message':'候选范围已变化，请重新确认','review_revision':revision})
-            ids = list(dict.fromkeys(payload.image_ids))
-            if payload.selection_id:
-                if ids or not re.fullmatch(r'[a-f0-9]{32}', payload.selection_id):
-                    raise HTTPException(422, detail='选择范围格式无效')
-                selection = artifacts.read_json(task_id, f'review/selections/{payload.selection_id}.json', default={})
-                if selection.get('revision') != revision or selection.get('actor') != actor:
-                    raise HTTPException(409, detail='筛选快照已变化，请重新确认')
-                excluded = set(payload.excluded_image_ids)
-                ids = [value for value in selection['image_ids'] if value not in excluded]
+            ids = _annotation_transfer_ids(store, project_id, task_id, payload, actor, revision)
+            preview = artifacts.read_json(task_id, _annotation_transfer_preview_path(payload.request_id), default=None)
+            intent = {'actor': actor, 'identity': identity, 'revision': revision}
+            if preview is not None and preview != intent:
+                raise HTTPException(409, detail='转移范围、操作者或审核修订已变化，请重新预检')
             if not ids:
                 raise HTTPException(422, detail='请选择图片')
             if payload.algorithm_id and not any(str(row.get('id')) == payload.algorithm_id for row in list_algorithm_assets(project_dir(project_id)/'algorithms.json')):
@@ -26809,7 +26920,7 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
                 raise HTTPException(422, detail='确认无目标必须指定算法范围')
             receipt = {'identity':identity,'actor':actor,'request_id':payload.request_id,'image_ids':ids,
                        'receipt_storage':'candidate_sqlite_v1','pool_revision_base':NegativePool(material_store(project_id)).revision(),
-                       'body':body,'status':'pending','created_at':now_iso()}
+                       'body':body,'requested_revision':payload.review_revision,'status':'pending','created_at':now_iso()}
             artifacts.atomic_write_json(task_id, path, receipt)
         # At most 200 images per call. Reposting the same identity continues the
         # original durable receipt; a lost reply never creates a second transfer.
@@ -26821,36 +26932,60 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
             pending = [value for value in receipt['image_ids'] if statuses.get(value) != 'transferred'][:200]
         batch_receipts=store.read_transfer_receipts(payload.request_id,image_ids=pending)
         pool = NegativePool(material_store(project_id))
+        project_path = project_dir(project_id)
         for image_id in pending:
             try:
-                with material_annotation_lifecycle_fence(project_dir(project_id)):
+                # Formal absence saves acquire label governance before Material lifecycle.
+                label_fence = label_governance_fence(project_path) if payload.confirm_absent else nullcontext()
+                with label_fence, material_annotation_lifecycle_fence(project_path):
                     item = store.get(image_id)
                     material = material_store(project_id).get(image_id)
                     formal = read_annotation(project_id, image_id)
-                    if not item or item.get('status') not in {'success','empty'} or not material:
-                        raise ValueError('候选不可审核或素材不存在')
-                    if formal.get('boxes'):
-                        raise ValueError('已有正式正样本GT，必须在正式标注流程显式处理冲突')
-                    if item.get('review_state') in {'transferred','pending_transfer'} and item.get('review_operation_id') not in {None,payload.request_id}:
-                        raise ValueError('图片已被其他转移操作占用')
-                    digest=str(material.get('content_sha256') or '')
-                    frozen_digest=str(item.get('source_content_sha256') or item.get('content_sha256') or '')
-                    if (material.get('source_available') is False or material.get('_dataset_delete_claim')
-                            or material.get('_material_batch_delete_claim') or (frozen_digest and digest != frozen_digest)):
-                        raise ValueError('源素材已变化或不可用，请重新审核')
-                    categories = {row['id']:row for row in pool.categories()}
-                    if any(value not in categories or not categories[value]['enabled'] for value in payload.category_ids):
-                        raise ValueError('目标分类不存在或已停用')
+                    reason = _annotation_transfer_ineligibility(item, material, formal, operation_id=payload.request_id)
+                    if reason:
+                        raise ValueError(reason)
+                    if _v50_annotation_repository(project_id).candidate_committed_ids(task_id, [image_id]):
+                        raise ValueError('已有正式GT提交凭据，请先核验原入库操作')
                     existing = batch_receipts.get(image_id) or {}
+                    intent = existing.get('pool_intent')
+                    pool_before = pool.member_snapshot(image_id)
+                    if 'pool_before' in existing and not intent and pool_before != existing['pool_before']:
+                        raise ValueError('旧转移记录缺少池提交凭据，请显式核对成员冲突')
                     if 'pool_before' not in existing:
-                        existing = {**existing,'status':'pending','filename':material.get('filename') or item.get('filename') or image_id, 'pool_before':pool.member_snapshot(image_id),
-                                    'annotation_version':int(formal.get('version') or 0)}
+                        existing = {**existing, 'status': 'pending',
+                                    'filename': material.get('filename') or item.get('filename') or image_id,
+                                    'pool_before': pool_before, 'annotation_version': int(formal.get('version') or 0)}
+                    source_sha256 = str(material.get('content_sha256') or '')
+                    pool_identity = {
+                        'project_id': project_id, 'task_id': task_id, 'actor': actor,
+                        'request_id': payload.request_id, 'image_id': image_id, 'action': 'add',
+                        'algorithm_id': payload.algorithm_id, 'category_ids': sorted(set(payload.category_ids)),
+                        'confirm_absent': payload.confirm_absent, 'annotation_version': existing['annotation_version'],
+                        'source_sha256': source_sha256,
+                    }
+                    operation_id = hashlib.sha256(json.dumps(pool_identity, sort_keys=True).encode()).hexdigest()
+                    if intent is None:
+                        intent = {**pool_identity, 'operation_id': operation_id, 'expected_revision': pool.revision()}
+                    elif intent.get('operation_id') != operation_id:
+                        raise ValueError('原转移意图或素材身份已变化，请核对冲突')
+                    if not payload.confirm_absent and int(formal.get('version') or 0) != existing['annotation_version']:
+                        raise ValueError('正式GT已发生变化，请核对转移冲突')
+                    existing = {**existing, 'pool_intent': intent}
                     batch_receipts[image_id] = existing
                     # Write-ahead evidence plus exclusion precede pool mutation.
                     store.write_transfer_receipts(payload.request_id,{image_id:existing})
-                    store.set_review_exclusion(image_id, 'pending_transfer', operation_id=payload.request_id, actor=actor,
-                                               details={'algorithm_id':payload.algorithm_id,'category_ids':payload.category_ids,'confirm_absent':payload.confirm_absent})
-                    if payload.confirm_absent:
+                    if item.get('review_state', 'active') == 'active':
+                        store.set_review_exclusion(
+                            image_id, 'pending_transfer', operation_id=payload.request_id, actor=actor,
+                            details={'algorithm_id': payload.algorithm_id, 'category_ids': payload.category_ids,
+                                     'confirm_absent': payload.confirm_absent},
+                        )
+                    operation_scope = dict(project_id=project_id, algorithm_id=payload.algorithm_id,
+                                           operation_kind='negative_pool.ai_transfer.v1')
+                    if payload.confirm_absent and not existing.get('annotation_after'):
+                        if (pool.revision() != intent['expected_revision']
+                                and not pool.member_operation(operation_id, **operation_scope)):
+                            raise MemberOperationConflict('负样本池修订已变化，请核对后再确认无目标')
                         frozen = artifacts.read_json(task_id, task.payload_ref, default={})
                         codes = list(frozen.get('labels') or [])
                         algorithm = next(row for row in list_algorithm_assets(project_dir(project_id)/'algorithms.json') if str(row.get('id')) == payload.algorithm_id)
@@ -26862,17 +26997,44 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
                             raise ValueError('任务标签必须覆盖完整算法范围，请重新核查')
                         _review_training_negative(project_id, {'image_id':image_id,
                             'expected_version':existing['annotation_version'], 'source_content_sha256':material.get('content_sha256')}, codes, {'actor_id':actor})
-                    pool.members([image_id], category_ids=payload.category_ids, algorithm_id=payload.algorithm_id)
+                        formal = read_annotation(project_id, image_id)
+                        existing = {**existing, 'annotation_after': {
+                            'version': formal.get('version'), 'content_digest': formal.get('content_digest'),
+                        }}
+                        batch_receipts[image_id] = existing
+                        store.write_transfer_receipts(payload.request_id, {image_id: existing})
+                    after = existing.get('annotation_after')
+                    if after and any(formal.get(key) != value for key, value in after.items()):
+                        raise ValueError('确认无目标的正式GT已变化，请核对转移冲突')
+                    try:
+                        pool_receipt = pool.members(
+                            [image_id], category_ids=payload.category_ids,
+                            expected_revision=intent['expected_revision'], operation_id=operation_id, **operation_scope,
+                        )
+                    except ValueError as error:
+                        # A rejected transaction has no durable side effect. A saved
+                        # receipt or revision conflict must retain the exact intent.
+                        if (not isinstance(error, MemberOperationConflict)
+                                and not pool.member_operation(operation_id, **operation_scope)):
+                            existing = {**existing, 'pool_intent': None}
+                            batch_receipts[image_id] = existing
+                        raise
+                    transferred = {**existing, 'image_id': image_id, 'status': 'transferred', 'at': now_iso(),
+                                   'pool_operation_revision': pool_receipt['negative_pool_revision']}
+                    transferred.pop('error', None)
                     store.set_review_exclusion(image_id, 'transferred', operation_id=payload.request_id, actor=actor,
-                                               details={'algorithm_id':payload.algorithm_id,'category_ids':payload.category_ids,'confirm_absent':payload.confirm_absent})
-                    batch_receipts[image_id] = {**existing,'image_id':image_id,'status':'transferred','at':now_iso()}
+                                               details={'algorithm_id':payload.algorithm_id,'category_ids':payload.category_ids,'confirm_absent':payload.confirm_absent},
+                                               transfer_receipt=transferred)
+                    batch_receipts[image_id] = transferred
             except (ValueError, HTTPException, PlatformError, OSError, sqlite3.Error) as error:
                 message = str(error.detail if isinstance(error, HTTPException) else error)
                 batch_receipts[image_id] = {**batch_receipts.get(image_id,{}),'image_id':image_id,'status':'failed','error':message}
                 failed_item = store.get(image_id)
-                if failed_item and failed_item.get('status') in {'success','empty'} and failed_item.get('review_operation_id') in {None, '', payload.request_id}:
+                if (failed_item and failed_item.get('status') in {'success','empty'}
+                        and not failed_item.get('gt_committed') and failed_item.get('review_state') in {'active', 'pending_transfer'}
+                        and failed_item.get('review_operation_id') in {None, '', payload.request_id}):
                     store.set_review_exclusion(image_id, 'blocked', operation_id=payload.request_id, actor=actor, details={'error':message})
-            store.write_transfer_receipts(payload.request_id,{image_id:batch_receipts[image_id]})
+                store.write_transfer_receipts(payload.request_id, {image_id: batch_receipts[image_id]})
         counts=store.transfer_receipt_counts(payload.request_id)
         succeeded = counts.get('transferred',0)
         failed = counts.get('failed',0)
@@ -26955,34 +27117,31 @@ def undo_annotation_transfer(project_id: str, task_id: str, request_id: str, req
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer-preview")
 def preview_annotation_transfer(project_id: str, task_id: str, payload: AnnotationTransferReq, request: Request):
-    _require_annotation_review_task(project_id,task_id)
-    _material_governance_actor(request,project_id)
-    store=CandidateStore(shared_task_artifacts(),task_id=task_id)
-    revision=store.review_revision()
-    if payload.review_revision is not None and payload.review_revision != revision:
-        raise HTTPException(409,detail='审核范围已变化，请重新选择')
-    ids=list(dict.fromkeys(payload.image_ids))
-    if payload.selection_id:
-        if not re.fullmatch(r'[a-f0-9]{32}',payload.selection_id):
-            raise HTTPException(422,detail='筛选快照无效')
-        selection=shared_task_artifacts().read_json(task_id,f'review/selections/{payload.selection_id}.json',default={})
-        if selection.get('revision') != revision:
-            raise HTTPException(409,detail='筛选快照已过期')
-        ids=[value for value in selection['image_ids'] if value not in set(payload.excluded_image_ids)]
-    result={'total':len(ids),'with_boxes':0,'zero':0,'discarded_boxes':0,'conflicts':0,'review_revision':revision}
-    for offset in range(0,len(ids),200):
-        part=ids[offset:offset+200]
-        items=store.get_many(part);formal=read_annotations_many(project_id,part)
-        for image_id in part:
-            item=items.get(image_id) or {};boxes=item.get('boxes') or []
-            conflict=not item or item.get('status') not in {'success','empty'} or item.get('review_state','active')!='active' or bool((formal.get(image_id) or {}).get('boxes'))
-            result['conflicts']+=int(conflict)
-            result['with_boxes']+=int(bool(boxes));result['zero']+=int(not boxes and item.get('status') in {'success','empty'})
-            result['discarded_boxes']+=len(boxes)
-    if revision != store.review_revision():
-        raise HTTPException(409,detail='候选范围已变化，请重新预览')
-    result['eligible']=result['total']-result['conflicts']
-    return result
+    task = _require_annotation_review_task(project_id, task_id)
+    actor = _material_governance_actor(request, project_id)['actor_id']
+    artifacts = shared_task_artifacts()
+    with FileLock(str(artifacts.artifact_path(task_id, 'review.lock')), timeout=30):
+        task = _require_annotation_review_task(project_id, task_id)
+        if task.status is not TaskStatus.AWAITING_CONFIRMATION:
+            raise HTTPException(409, detail='任务当前不可转池')
+        store = CandidateStore(artifacts, task_id=task_id)
+        revision = store.review_revision()
+        ids = _annotation_transfer_ids(store, project_id, task_id, payload, actor, revision)
+        if not ids:
+            raise HTTPException(422, detail='请选择图片')
+        _, identity = _annotation_transfer_identity(payload)
+        intent = {'actor': actor, 'identity': identity, 'revision': revision}
+        path = _annotation_transfer_preview_path(payload.request_id)
+        prior = artifacts.read_json(task_id, path, default=None)
+        if prior is not None and prior != intent:
+            raise HTTPException(409, detail='转移范围、操作者或审核修订已变化，请使用新的操作编号')
+        eligible, metrics = _annotation_transfer_eligible_selection(project_id, store, ids)
+        result = {**metrics, 'total': len(ids), 'eligible': len(eligible), 'review_revision': revision}
+        if revision != store.review_revision():
+            raise HTTPException(409, detail='候选范围已变化，请重新预览')
+        if prior is None:
+            artifacts.atomic_write_json(task_id, path, intent)
+        return result
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/{image_id}/diagnostics")
@@ -27005,6 +27164,8 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
     from filelock import FileLock
     _require_annotation_review_task(project_id, task_id)
     request_id = str(payload.request_id or "").strip()
+    if payload.commit_selected and not request_id:
+        raise HTTPException(422, detail="部分正式入库必须提供审核操作编号")
     if request_id:
         _annotation_review_operation_path(request_id)
     with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=30):
@@ -27023,27 +27184,40 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
                 raise HTTPException(previous["status_code"], detail=previous["detail"])
             if previous.get("status") == "completed" and isinstance(previous.get("result"), dict):
                 return {**previous["result"], "idempotent": True}
-            # A process may have stopped after mutating candidates but before
-            # acknowledging review. Never blindly execute such a POST again.
+            resolved = _annotation_review_resolve_receipt(
+                _require_annotation_review_task(project_id, task_id), previous,
+            )
+            if resolved != previous:
+                artifacts.atomic_write_json(task_id, path, resolved)
+            if resolved.get("status") == "completed":
+                return {**resolved["result"], "idempotent": True}
+            if resolved.get("status") == "rejected":
+                raise HTTPException(resolved["status_code"], detail=resolved["detail"])
+            # Candidate changes alone cannot prove that a formal batch committed.
             return JSONResponse(status_code=202, content={
                 "status": "pending", "request_id": request_id,
                 "message": "审核结果尚待核验，请查询原操作编号，勿再次提交",
             })
-        artifacts.atomic_write_json(task_id, path, {
-            "request_id": request_id, "project_id": project_id,
+        pending = {
+            "request_id": request_id, "project_id": project_id, "task_id": task_id,
             "identity": identity, "status": "pending", "created_at": now_iso(),
-        })
+        }
+        if payload.commit_selected and 1 <= len(payload.decisions) <= 100:
+            pending["selected_image_ids"] = [str(item.image_id) for item in payload.decisions]
+        artifacts.atomic_write_json(task_id, path, pending)
         try:
             result = _decide_annotation_candidates(project_id, task_id, payload)
         except HTTPException as error:
-            artifacts.atomic_write_json(task_id,path,{'request_id':request_id,'project_id':project_id,
-                'identity':identity,'status':'rejected','status_code':error.status_code,'detail':error.detail,'created_at':now_iso()})
-            raise
-        artifacts.atomic_write_json(task_id, path, {
-            "request_id": request_id, "project_id": project_id,
-            "identity": identity, "status": "completed", "created_at": now_iso(),
-            "result": result,
-        })
+            recovered = _annotation_review_resolve_receipt(
+                _require_annotation_review_task(project_id, task_id), pending, reject_unwritten=False,
+            ) if payload.commit_selected else pending
+            result = recovered.get("result")
+            if result is None:
+                artifacts.atomic_write_json(task_id, path, {
+                    **pending, "status": "rejected", "status_code": error.status_code, "detail": error.detail,
+                })
+                raise
+        artifacts.atomic_write_json(task_id, path, {**pending, "status": "completed", "result": result})
         return result
 
 
@@ -27071,12 +27245,55 @@ def _annotation_review_operation_identity(payload: AnnotationDecisionReq) -> str
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _annotation_review_recover_completed(task: TaskRecord, receipt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Recover a lost reply only from a durable Task transition, never from candidate edits alone."""
-    if task.status is TaskStatus.AWAITING_CONFIRMATION:
-        return None
+def _annotation_review_resolve_receipt(task: TaskRecord, receipt: Dict[str, Any], *, reject_unwritten=True):
+    if receipt.get("status") != "pending":
+        return receipt
     artifacts = shared_task_artifacts()
     request_id = str(receipt.get("request_id") or "")
+    ids = receipt.get("selected_image_ids")
+    if ids is not None:
+        from platform_core.annotation_task_service import (
+            candidate_commit_operation_id, candidate_commit_summary, read_candidate_commit_receipts,
+        )
+        if (receipt.get("project_id") != task.project_id or receipt.get("task_id") != task.task_id
+                or not 1 <= len(ids) <= 100 or len(set(ids)) != len(ids)):
+            return receipt
+        operation_id = candidate_commit_operation_id("partial", request_id, receipt["identity"])
+        evidence = read_candidate_commit_receipts(task.project_id, task.task_id, operation_id, ids)
+        if not evidence and reject_unwritten:
+            # The HTTP selected batch uses one atomic formal write under the
+            # same review lock. Zero receipts prove that no formal batch landed.
+            return {**receipt, "status": "rejected", "status_code": 409, "detail": {
+                "code": "REVIEW_NOT_COMMITTED", "message": "原操作未写入正式GT，请刷新后重新核对候选",
+            }}
+        if set(evidence) != set(ids):
+            return receipt
+        store = CandidateStore(artifacts, task_id=task.task_id)
+        journal = store.get_commit_summaries(ids)
+        summaries = [candidate_commit_summary(evidence[image_id]) for image_id in ids]
+        missing = [summary for summary in summaries if summary["image_id"] not in journal]
+        if missing:
+            _v50_annotation_repository(task.project_id).repair_candidate_commit_projections(
+                [evidence[summary["image_id"]] for summary in missing],
+            )
+            store.record_commit_summaries(missing)
+        result = _annotation_selected_commit_response(task, store, {
+            "applied_images": len(ids), "applied_image_ids": ids, "completed_image_ids": ids,
+            "boxes_added": sum(row["boxes_added"] for row in evidence.values()),
+            "image_summaries": [
+                {key: summary.get(key) for key in ("image_id", "box_count", "labels", "annotation_state", "annotation_origin")}
+                for summary in summaries
+            ],
+            "image_summaries_truncated": False, "commit_journal_ref": "candidates/items.sqlite3",
+        })
+        return {**receipt, "status": "completed", "result": result}
+    if task.status is TaskStatus.AWAITING_CONFIRMATION:
+        return receipt
+    result = _annotation_review_recover_task_transition(task, artifacts, request_id)
+    return {**receipt, "status": "completed", "result": result} if result is not None else receipt
+
+
+def _annotation_review_recover_task_transition(task, artifacts, request_id):
     final = artifacts.read_json(task.task_id, "review/result.json", default=None)
     if (isinstance(final, dict) and final.get("review_request_id") == request_id
             and task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}):
@@ -27105,25 +27322,37 @@ def get_annotation_review_operation(project_id: str, task_id: str, request_id: s
     )
     if not isinstance(receipt, dict) or receipt.get("request_id") != request_id or receipt.get("project_id") != project_id:
         raise HTTPException(status_code=404, detail="尚无该审核操作的持久回执")
-    if receipt.get("status") != "completed":
+    if receipt.get("status") == "pending":
         try:
             with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=5):
                 receipt = shared_task_artifacts().read_json(task_id, path, default=receipt)
-                if receipt.get("status") != "completed":
-                    task = _require_annotation_review_task(project_id, task_id)
-                    recovered = _annotation_review_recover_completed(task, receipt)
-                    if recovered is not None:
-                        receipt = {**receipt, "status": "completed", "result": recovered}
-                        shared_task_artifacts().atomic_write_json(task_id, path, receipt)
+                task = _require_annotation_review_task(project_id, task_id)
+                resolved = _annotation_review_resolve_receipt(task, receipt)
+                if resolved != receipt:
+                    shared_task_artifacts().atomic_write_json(task_id, path, resolved)
+                receipt = resolved
         except Timeout:
             pass  # The original POST still owns the review lock; expose pending.
     if receipt.get("status") == "completed" and isinstance(receipt.get("result"), dict):
         return {"status": "completed", "request_id": request_id, "result": receipt["result"]}
+    if receipt.get("status") == "rejected":
+        return {"status": "rejected", "request_id": request_id, "detail": receipt["detail"]}
     return JSONResponse(status_code=202, content={
         "status": "pending", "request_id": request_id,
         "task": public_annotation_task(task),
         "message": "审核结果尚待核验，请不要重复提交；可查看任务当前状态",
     })
+
+
+def _annotation_selected_commit_response(task, store, committed):
+    summary = sync_annotation_statistics(shared_task_repository(), task, store)
+    return {
+        **committed,
+        "ok": True, "committed_selected": True, "queued_for_commit": False,
+        "task": public_annotation_task(task, summary=summary),
+        "review": summary, "summary": {**summary, **store.review_counts()},
+        "review_revision": store.review_revision(), "label_summary": store.label_summary(),
+    }
 
 
 def _decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):
@@ -27152,6 +27381,9 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
                 or len(decided_ids) != len(decisions)
                 or any(not decision.accepted for decision in decisions)):
             raise HTTPException(status_code=422, detail="仅已选正式入库要求 1～100 张唯一且明确通过的候选，禁止更改未选择范围")
+        if (store.get_commit_summaries(decided_ids)
+                or _v50_annotation_repository(project_id).candidate_committed_ids(task_id, decided_ids)):
+            raise HTTPException(409, detail="已正式入库的图片不可再次提交")
     if payload.reject_unmentioned and payload.accept_unmentioned:
         raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
 
@@ -27259,7 +27491,7 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         store.decide_unmentioned(False, exclude=decided_ids)
     if payload.commit_selected:
         from platform_core.annotation_task_service import (
-            commit_candidate_decisions, _canonical_review_scope,
+            commit_candidate_decisions, _canonical_review_scope, candidate_commit_operation_id,
         )
         candidate_request = (
             (frozen or {}).get("options") or {}
@@ -27288,18 +27520,13 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
                 frozen_missing_review_scopes=frozen_scopes,
                 frozen_material_hashes=frozen_hashes,
                 selected_image_ids=[decision.image_id for decision in decisions],
+                operation_id=candidate_commit_operation_id(
+                    "partial", payload.request_id.strip(), _annotation_review_operation_identity(payload),
+                ),
             )
         except (ValueError, RuntimeError) as error:
             raise HTTPException(status_code=409, detail="已选正式 GT 提交失败，请核对素材与已入库审计："+str(error)) from error
-        summary = sync_annotation_statistics(shared_task_repository(), task, store)
-        return {
-            "ok": True, "committed_selected": True, "queued_for_commit": False,
-            "task": public_annotation_task(task, summary=summary),
-            "review": summary, "summary": {**summary, **store.review_counts()},
-            "review_revision": store.review_revision(),
-            "label_summary": store.label_summary(),
-            **committed,
-        }
+        return _annotation_selected_commit_response(task, store, committed)
     summary = sync_annotation_statistics(shared_task_repository(), task, store)
     if store.review_counts()["unreviewed_reviewable"] or not payload.commit:
         return {

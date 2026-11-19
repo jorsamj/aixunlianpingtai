@@ -1149,6 +1149,107 @@ class AnnotationRepository:
         counts.update({row['annotation_state']: int(row['total']) for row in rows})
         return {**counts, 'total': sum(counts.values())}
 
+    @staticmethod
+    def _material_projection(decoded, material, origin, now):
+        projection = annotation_summary(
+            decoded['boxes'], decoded['annotation_state'],
+        )
+        origin = str(origin or '').strip()
+        if origin:
+            projection['annotation_origin'] = origin
+        projection.update({
+            'annotation_version': int(decoded.get('version') or 0),
+            'annotation_scope': list(decoded.get('annotation_scope') or []),
+            'annotation_hash': str(decoded.get('content_digest') or ''),
+            'annotation_summary_at': str(decoded.get('updated_at') or now),
+        })
+        if decoded['annotation_state'] in {'annotated', 'confirmed_empty'}:
+            projection.update(
+                processing_status='processed',
+                annotated_at=str(decoded.get('updated_at') or now),
+            )
+            source_hash = str(
+                material.get('content_sha256') or ''
+            ).strip().lower()
+            if source_hash:
+                projection['annotation_source_content_sha256'] = source_hash
+                if str(material.get('annotation_review_reason') or '') == 'SOURCE_CONTENT_CHANGED':
+                    projection.update(
+                        annotation_needs_review=False,
+                        annotation_review_reason='',
+                        needs_review=False,
+                    )
+        return projection
+
+    def repair_candidate_commit_projections(self, receipts):
+        from .material_repository import MaterialRepository, material_annotation_lifecycle_fence
+
+        writes = {row['image_id']: row for row in receipts if row['summary']['gt_write_performed']}
+        if not writes or not (self.project_path / 'materials.sqlite3').is_file():
+            return
+        materials = MaterialRepository(self.project_path)
+        with material_annotation_lifecycle_fence(self.project_path):
+            annotations = self.get_many(writes)
+            patches = {}
+            for material in materials.get_many(list(writes)):
+                image_id = str(material['id'])
+                receipt = writes[image_id]
+                annotation = annotations.get(image_id) or {}
+                if (annotation.get('version') != receipt['version']
+                        or annotation.get('content_digest') != receipt['content_digest']
+                        or material.get('content_sha256') != receipt['source_sha256']
+                        or material.get('source_available') is False
+                        or material.get('_dataset_delete_claim') or material.get('_material_batch_delete_claim')
+                        or (material.get('annotation_version') == receipt['version']
+                            and material.get('annotation_hash') == receipt['content_digest'])):
+                    continue
+                patches[image_id] = self._material_projection(
+                    annotation, material, receipt['summary']['annotation_origin'], annotation['updated_at'],
+                )
+            if patches:
+                materials.patch_annotation_projections(patches)
+
+    def candidate_committed_ids(self, task_id, image_ids):
+        ids = list(dict.fromkeys(image_ids))
+        if not ids or len(ids) > 200:
+            raise ValueError("candidate receipt lookup requires 1-200 image IDs")
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='annotation_candidate_commits'").fetchone():
+                return set()
+            rows = db.execute(
+                f"SELECT image_id FROM annotation_candidate_commits "
+                f"WHERE task_id=? AND image_id IN ({','.join('?' for _ in ids)})", (task_id, *ids),
+            )
+            return {row['image_id'] for row in rows}
+
+    def candidate_commit_receipts(self, task_id, operation_id, image_ids):
+        ids = list(dict.fromkeys(image_ids))
+        if not ids or len(ids) > 200:
+            raise ValueError("candidate receipt lookup requires 1-200 image IDs")
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='annotation_candidate_commits'").fetchone():
+                return {}
+            rows = db.execute(
+                f"SELECT image_id, receipt_json FROM annotation_candidate_commits "
+                f"WHERE task_id=? AND operation_id=? AND image_id IN ({','.join('?' for _ in ids)})",
+                (task_id, operation_id, *ids),
+            )
+            return {row['image_id']: json.loads(row['receipt_json']) for row in rows}
+
+    @staticmethod
+    def _record_candidate_commit(db, row, image_id, annotation, expected_version):
+        intent = row.get('candidate_commit')
+        if not intent:
+            return
+        if expected_version is None or annotation is None:
+            raise ValueError("candidate commit requires versioned formal GT evidence")
+        evidence = {**intent, 'expected_version': expected_version,
+                    'version': int(annotation['version']),
+                    'content_digest': annotation['content_digest']}
+        db.execute("INSERT INTO annotation_candidate_commits VALUES (?,?,?,?)",
+                   (intent['task_id'], intent['operation_id'], image_id,
+                    json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
+
     def upsert_many(
         self, rows, *, project_material: bool = True, return_rows: bool = False,
     ):
@@ -1207,6 +1308,10 @@ class AnnotationRepository:
                     db.execute('BEGIN IMMEDIATE')
                     try:
                         has_review_audit = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_negative_reviews'").fetchone())
+                        if any(row.get('candidate_commit') for row in rows):
+                            db.execute("""CREATE TABLE IF NOT EXISTS annotation_candidate_commits (
+                                task_id TEXT NOT NULL, operation_id TEXT NOT NULL, image_id TEXT NOT NULL,
+                                receipt_json TEXT NOT NULL, PRIMARY KEY(task_id, image_id))""")
                         for row, image_id, prepared in prepared_rows:
                             current = (db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
                                        if has_review_audit or row.get('expected_version') is not None else None)
@@ -1222,6 +1327,9 @@ class AnnotationRepository:
                                     raise AnnotationConflictError(
                                         image_id, expected_version, actual_version
                                     )
+                            if row.get('candidate_commit') and row.get('candidate_proof_only'):
+                                self._record_candidate_commit(db, row, image_id, current, expected_version)
+                                continue
                             # A batch absence review proves this exact GT revision.
                             # A later box edit must not silently carry that proof forward.
                             admitted_material = admitted.get(image_id) or {}
@@ -1277,6 +1385,7 @@ class AnnotationRepository:
                                 )
                             decoded = self._decode_persisted_row(persisted)
                             persisted_rows.append(decoded)
+                            self._record_candidate_commit(db, row, image_id, decoded, expected_version)
                             evidence = row.get('review_evidence')
                             if evidence:
                                 actor = str(evidence.get('actor_id') or '').strip()
@@ -1295,34 +1404,7 @@ class AnnotationRepository:
                                      str(evidence.get('source_content_sha256') or ''), decoded['version'],
                                      decoded['content_digest'], now))
                             material = admitted.get(image_id) or {}
-                            projection = annotation_summary(
-                                decoded['boxes'], decoded['annotation_state'],
-                            )
-                            origin = str(row.get('annotation_origin') or '').strip()
-                            if origin:
-                                projection['annotation_origin'] = origin
-                            projection.update({
-                                'annotation_version': int(decoded.get('version') or 0),
-                                'annotation_scope': list(decoded.get('annotation_scope') or []),
-                                'annotation_hash': str(decoded.get('content_digest') or ''),
-                                'annotation_summary_at': str(decoded.get('updated_at') or now),
-                            })
-                            if decoded['annotation_state'] in {'annotated', 'confirmed_empty'}:
-                                projection.update(
-                                    processing_status='processed',
-                                    annotated_at=str(decoded.get('updated_at') or now),
-                                )
-                                source_hash = str(
-                                    material.get('content_sha256') or ''
-                                ).strip().lower()
-                                if source_hash:
-                                    projection['annotation_source_content_sha256'] = source_hash
-                                    if str(material.get('annotation_review_reason') or '') == 'SOURCE_CONTENT_CHANGED':
-                                        projection.update(
-                                            annotation_needs_review=False,
-                                            annotation_review_reason='',
-                                            needs_review=False,
-                                        )
+                            projection = self._material_projection(decoded, material, row.get('annotation_origin'), now)
                             projections[image_id] = projection
                             written.append(image_id)
                         db.execute('COMMIT')

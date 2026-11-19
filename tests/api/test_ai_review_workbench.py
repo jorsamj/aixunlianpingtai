@@ -265,7 +265,22 @@ def test_transfer_receipt_pages_and_undo_crash_recover_from_original_pool_receip
     pool=NegativePool(host.material_store(project));category=pool.category(name='crash-'+uuid.uuid4().hex)
     base=f'/api/v60/projects/{project}/annotation-tasks/{task}'
     body={'request_id':'undo-crash-safe-001','image_ids':[image['id']],'category_ids':[category['id']]}
+    original = CandidateStore.set_review_exclusion
+
+    def crash_after_pool(self, image_id, state, **kwargs):
+        if state == 'transferred':
+            raise RuntimeError('interrupted after membership write')
+        return original(self, image_id, state, **kwargs)
+
+    revision = int(pool.revision())
+    with monkeypatch.context() as patch:
+        patch.setattr(CandidateStore, 'set_review_exclusion', crash_after_pool)
+        with pytest.raises(RuntimeError, match='after membership write'):
+            client.post(base+'/negative-transfer', json=body)
+    assert pool.member_snapshot(image['id'])['member']
+    assert int(pool.revision()) == revision + 1
     assert client.post(base+'/negative-transfer',json=body).json()['status']=='completed'
+    assert int(pool.revision()) == revision + 1
     page=client.get(base+'/negative-transfer/undo-crash-safe-001').json()
     assert len(page['items'])==1 and page['processed']==1 and 'image_ids' not in page
     original=CandidateStore.set_review_exclusion
@@ -275,10 +290,12 @@ def test_transfer_receipt_pages_and_undo_crash_recover_from_original_pool_receip
     monkeypatch.setattr(CandidateStore,'set_review_exclusion',crash)
     assert client.post(base+'/negative-transfer/undo-crash-safe-001/undo').status_code==409
     assert not pool.member_snapshot(image['id'])['member']
+    assert int(pool.revision()) == revision + 2
     monkeypatch.setattr(CandidateStore,'set_review_exclusion',original)
     resumed=client.post(base+'/negative-transfer/undo-crash-safe-001/undo')
     assert resumed.status_code==200,resumed.text
     assert resumed.json()['status']=='undone' and store.get(image['id'])['review_state']=='active'
+    assert int(pool.revision()) == revision + 2
 
 
 def test_legacy_json_transfer_receipt_is_archived_and_migrated_without_gt_changes(client, review_task):
@@ -395,7 +412,7 @@ def test_review_accept_selected_only_does_not_accept_other_clean_or_ambiguous_ca
     assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
     assert {item_id:host.read_annotation(project,item_id) for item_id in ids} == baseline
 
-def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing_other_candidates(client, review_task):
+def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing_other_candidates(client, review_task, monkeypatch):
     """Explicit user-selected batches commit formal GT, not a mere accepted draft."""
     project, image, task, store, repo = review_task
     from io import BytesIO
@@ -437,10 +454,30 @@ def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing
         'commit':True,'commit_selected':True,'request_id':'direct-gt-selected-0001',
         'review_revision':store.review_revision(),
     }
-    first = client.post(base+'/decisions',json=body)
+    def crash_before_journal(*args, **kwargs):
+        raise OSError('interrupted after formal GT commit')
+
+    before_write = {**body, 'request_id': 'direct-gt-interrupted-0001'}
+    with monkeypatch.context() as patch:
+        patch.setattr(host, '_decide_annotation_candidates', crash_before_journal)
+        with pytest.raises(OSError):
+            client.post(base+'/decisions', json=before_write)
+    unwritten = client.get(base+'/decisions/by-request/'+before_write['request_id']).json()
+    assert unwritten['status'] == 'rejected' and unwritten['detail']['code'] == 'REVIEW_NOT_COMMITTED'
+    assert client.post(base+'/decisions', json=before_write).status_code == 409
+
+    with monkeypatch.context() as patch:
+        patch.setattr(CandidateStore, 'record_commit_summaries', crash_before_journal)
+        with pytest.raises(OSError, match='after formal GT'):
+            client.post(base+'/decisions', json=body)
+    saved = host.read_annotation(project, ids[0])
+    assert saved['version'] > 0 and store.get_commit_summaries(ids) == {}
+    assert client.post(base+'/decisions', json={**body, 'review_revision': 999}).status_code == 409
+    first = client.get(base+'/decisions/by-request/'+body['request_id'])
     assert first.status_code == 200, first.text
-    assert first.json()['committed_selected'] is True
-    assert first.json()['applied_images'] == 1
+    result = first.json()['result']
+    assert result['committed_selected'] is True
+    assert result['applied_images'] == result['boxes_added'] == 1
     assert host.read_annotation(project, ids[0])['boxes'][0]['label'] == 'fire'
     assert host.read_annotation(project, ids[1])['boxes'] == []
     assert host.read_annotation(project, ids[2])['boxes'] == []
@@ -451,7 +488,8 @@ def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing
 
     replay = client.post(base+'/decisions',json=body)
     assert replay.status_code == 200, replay.text
-    assert replay.json()['idempotent'] is True
+    assert replay.json() == {**result, 'idempotent': True}
+    assert host.read_annotation(project, ids[0]) == saved
 
     second = client.post(base+'/decisions',json={
         'decisions':[{'image_id':ids[1],'accepted':True,'boxes':[fire]}],
@@ -467,3 +505,87 @@ def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing
     assert store.get(ids[2])['accepted'] is None
     assert set(store.get_commit_summaries(ids)) == set(ids[:2])
     assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
+
+
+def test_transfer_snapshot_is_scoped_to_operator_and_purpose(client, review_task, monkeypatch):
+    from platform_core.negative_pool import NegativePool
+
+    project, image, task, store, _ = review_task
+    pool = NegativePool(host.material_store(project))
+    category = pool.category(name='scope-'+uuid.uuid4().hex)
+    base = f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    actor = 'reviewer-one'
+    monkeypatch.setattr(host, '_material_governance_actor', lambda *_: {'actor_id': actor})
+    store.append_items([{'image_id': 'failed-candidate', 'status': 'failed', 'boxes': []}])
+    frozen = client.post(base+'/review-selection', json={'filter': 'all', 'purpose': 'transfer'}).json()
+    assert frozen['purpose'] == 'transfer'
+    assert (frozen['filtered_total'], frozen['total'], frozen['reasons']) == (2, 1, {'failed': 1})
+    body = {'request_id': 'transfer-actor-0001', 'selection_id': frozen['selection_id'],
+            'category_ids': [category['id']], 'review_revision': frozen['review_revision']}
+    selection_url = base+'/review-selection/'+frozen['selection_id']+'/candidates'
+    revision = pool.revision()
+    actor = 'reviewer-two'
+    assert client.get(selection_url).status_code == 404
+    for route in ('/negative-transfer-preview', '/negative-transfer'):
+        assert client.post(base+route, json=body).status_code == 404
+    assert pool.revision() == revision
+    actor = 'reviewer-one'
+    visible = client.get(base+'/candidates', params={'selection_id': frozen['selection_id']}).json()['items']
+    assert {row['image_id']: row['selection_member'] for row in visible} == {
+        image['id']: True, 'failed-candidate': False,
+    }
+    assert client.post(base+'/negative-transfer-preview', json=body).json()['eligible'] == 1
+    changed = {**body, 'confirm_absent': True}
+    assert client.post(base+'/negative-transfer', json=changed).status_code == 409
+    assert client.post(base+'/negative-transfer', json=body).json()['succeeded'] == 1
+    assert pool.member_snapshot(image['id'])['member']
+
+
+def test_worker_recovers_its_supplement_receipt_but_rejects_external_gt(client, review_task, monkeypatch):
+    from types import SimpleNamespace
+    from platform_core.annotation_candidates import CandidateDecision
+    from platform_core.annotation_task_service import commit_confirmed_review
+
+    project, image, task, store, repo = review_task
+    image_id = image['id']
+    source_hash = host.material_store(project).get(image_id)['content_sha256']
+    annotations = host._v50_annotation_repository(project)
+    initial_version = host.read_annotation(project, image_id)['version']
+    store.append_items([{'image_id': image_id, 'status': 'empty', 'boxes': [],
+                         'source_content_sha256': source_hash}])
+    store.apply_decisions([CandidateDecision(image_id, True, review_scope=['fire'])])
+    store.artifacts.atomic_write_json(task, 'request.json', {
+        'labels': ['fire'], 'review_scope_policy': 'per_image_required',
+        'per_image_annotation_versions': {image_id: initial_version},
+        'per_image_missing_review_scopes': {image_id: ['fire']},
+        'per_image_source_hashes': {image_id: source_hash},
+    })
+    store.artifacts.atomic_write_json(task, 'review/confirmation.json',
+                                      {'accepted': True, 'review_request_id': 'supplement-crash-01'})
+    worker = SimpleNamespace(task=repo.get(task), repository=repo, artifacts=store.artifacts,
+                             heartbeat=lambda **_: None, cancel_requested=lambda: False)
+
+    def crash_before_journal(*args, **kwargs):
+        raise OSError('interrupted after supplemental GT')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(CandidateStore, 'record_commit_summaries', crash_before_journal)
+        with pytest.raises(OSError, match='after supplemental GT'):
+            commit_confirmed_review(worker)
+    proof = host.read_annotation(project, image_id)
+    assert proof['version'] > initial_version
+    assert store.get_commit_summaries([image_id]) == {}
+
+    assert commit_confirmed_review(worker) == (TaskStatus.SUCCEEDED, 'review/result.json')
+    assert host.read_annotation(project, image_id) == proof
+    journal = store.get_commit_summaries([image_id])[image_id]
+    assert (journal['gt_snapshot_version'], journal['gt_snapshot_digest']) == (proof['version'], proof['content_digest'])
+
+    edited = [{'label': 'fire', 'class_id': 0, 'x1': 1, 'y1': 2, 'x2': 10, 'y2': 20}]
+    annotations.upsert(image_id, boxes=edited, annotation_state='annotated')
+    # Reproduce the same missing journal window with a later external GT edit.
+    with monkeypatch.context() as patch:
+        patch.setattr(CandidateStore, 'get_commit_summaries', lambda *_: {})
+        with pytest.raises(ValueError, match='AI_SUPPLEMENT_GT_CHANGED'):
+            commit_confirmed_review(worker)
+    assert host.read_annotation(project, image_id)['boxes'][0]['x1'] == 1

@@ -180,7 +180,7 @@ class NegativePool:
             return dict(db.execute('SELECT * FROM negative_pool_categories WHERE id=?', (identity,)).fetchone())
         return self._mutate(write)
 
-    def member_operation(self, operation_id, *, algorithm_id, project_id=None):
+    def member_operation(self, operation_id, *, algorithm_id, project_id=None, operation_kind=None):
         if not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id):
             raise ValueError('invalid member operation identity')
         with closing(self.materials._connect()) as db:
@@ -190,7 +190,7 @@ class NegativePool:
             if not row:
                 return None
             result = json.loads(row[0])
-            kind = 'negative_pool.members.v1' if algorithm_id else 'negative_pool.members.v2'
+            kind = operation_kind or ('negative_pool.members.v1' if algorithm_id else 'negative_pool.members.v2')
             if (result.get('operation_kind') != kind or result.get('algorithm_id') != str(algorithm_id)
                     or result.get('project_id') != str(project_id if project_id is not None else self.materials.project_path.name)):
                 raise MemberOperationScopeError('member operation receipt not found')
@@ -204,21 +204,23 @@ class NegativePool:
             raise ValueError('scoped member operations require a revision and operation ID')
         receipt = None
         if expected_revision is not None or operation_id is not None:
+            ai_transfer = operation_kind == 'negative_pool.ai_transfer.v1'
             if (not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id)
                     or not isinstance(expected_revision, str) or not re.fullmatch(r'0|[1-9][0-9]{0,18}', expected_revision)
-                    or (not algorithm_id and operation_kind != 'negative_pool.members.v2')
-                    or (algorithm_id and operation_kind not in (None, 'negative_pool.members.v1'))
+                    or (ai_transfer and (action != 'add' or categories_only or len(ids) != 1 or not categories))
+                    or (not ai_transfer and not algorithm_id and operation_kind != 'negative_pool.members.v2')
+                    or (not ai_transfer and algorithm_id and operation_kind not in (None, 'negative_pool.members.v1'))
                     or not ids or len(ids) > 200 or len(categories) > 200 or require_empty_gt
-                    or (algorithm_id and (categories or categories_only or action not in ('add', 'remove')))
+                    or (not ai_transfer and algorithm_id and (categories or categories_only or action not in ('add', 'remove')))
                     or (not algorithm_id and action == 'remove' and categories and not categories_only)):
                 raise ValueError('member operation requires paired revision/id and a valid range of 1-200 material identities')
             report_counts = True
-            kind = 'negative_pool.members.v1' if algorithm_id else 'negative_pool.members.v2'
+            kind = operation_kind or ('negative_pool.members.v1' if algorithm_id else 'negative_pool.members.v2')
             receipt = dict(operation_kind=kind, operation_id=operation_id,
                            project_id=str(project_id if project_id is not None else self.materials.project_path.name),
                            algorithm_id=str(algorithm_id), action=action, expected_revision=expected_revision)
             identity = {**receipt, 'image_ids': sorted(ids)}
-            if not algorithm_id:
+            if ai_transfer or not algorithm_id:
                 identity.update(category_ids=sorted(categories), categories_only=categories_only)
             receipt['identity'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         if zip_folder and (action != 'add' or categories_only or algorithm_id or not categories or receipt):
