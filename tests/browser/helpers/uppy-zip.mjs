@@ -75,6 +75,19 @@ export async function upload(page){await page.locator('.uppy-StatusBar-actionBtn
 export async function selectZipPositiveSample(scope){
   const kind=scope.locator('.zip-upload-sample-kind');
   if(!await kind.count())return;
+  const folders=scope.getByRole('region',{name:'ZIP 文件夹归集'});
+  if(await folders.count()){
+    const rows=folders.locator('[data-zip-folder-row]');
+    await expect(rows.first()).toBeVisible();
+    for(let index=0;index<await rows.count();index++){
+      const row=rows.nth(index);
+      await row.getByRole('combobox',{name:'数据用途'}).selectOption(await row.getAttribute('data-suggested-usage')||'unassigned');
+      await row.getByRole('combobox',{name:'素材类型'}).selectOption('positive');
+      const labels=row.getByRole('listbox',{name:'目标标签'});
+      await labels.selectOption({index:0});
+    }
+    return;
+  }
   await kind.locator('input[type="radio"]').first().check();
   await kind.locator('.zip-sample-categories input[type="checkbox"]').first().check();
 }

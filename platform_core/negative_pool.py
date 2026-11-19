@@ -196,7 +196,7 @@ class NegativePool:
                 raise MemberOperationScopeError('member operation receipt not found')
             return result
 
-    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False, expected_revision=None, operation_id=None, project_id=None, operation_kind=None):
+    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False, expected_revision=None, operation_id=None, project_id=None, operation_kind=None, zip_folder=None):
         if type(report_counts) is not bool or type(require_empty_gt) is not bool or type(categories_only) is not bool:
             raise ValueError('report_counts/require_empty_gt must be boolean')
         ids, categories = self._ids(image_ids), self._ids(category_ids)
@@ -221,6 +221,8 @@ class NegativePool:
             if not algorithm_id:
                 identity.update(category_ids=sorted(categories), categories_only=categories_only)
             receipt['identity'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        if zip_folder and (action != 'add' or categories_only or algorithm_id or not categories or receipt):
+            raise ValueError('invalid ZIP folder pool association')
         if action not in ('add','remove','set') or (action == 'set' and not categories_only):
             raise ValueError('invalid action')
         if require_empty_gt and (action != 'add' or categories_only or len(ids) > 200):
@@ -259,6 +261,17 @@ class NegativePool:
                 db.execute('DELETE FROM negative_pool_links WHERE material_id IN (SELECT id FROM pool_requested)')
             sql = 'DELETE FROM negative_pool_links WHERE material_id=? AND category_id=?' if action == 'remove' else 'INSERT OR IGNORE INTO negative_pool_links VALUES (?,?)'
             db.executemany(sql, ((v,c) for v in ids for c in categories))
+            if zip_folder:
+                for row in db.execute('SELECT m.* FROM materials m JOIN pool_requested r ON r.id=m.id').fetchall():
+                    material = self.materials._row_payload(row)
+                    source = material.get('zip_folder_source') or {}
+                    if (any(source.get(key) != value for key, value in zip_folder.items())
+                            or source.get('classification_status') != 'pending'
+                            or source.get('sample_type') != 'negative' or source.get('negative_category_ids') != categories):
+                        raise ValueError('素材不属于任务的待归集文件夹')
+                    material['zip_folder_source'] = dict(source, classification_status='applied')
+                    self.materials._write_row(db, material)
+                self.materials._bump_revision(db)
             return {'affected':len(ids), **({'added':len(ids)-existing, 'already_present':existing} if report_counts and not categories_only else {})}
         if require_empty_gt:
             from .annotation_repository import AnnotationRepository

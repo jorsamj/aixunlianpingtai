@@ -1,5 +1,5 @@
 import {test,expect} from '@playwright/test';
-import {archive,setup,open,add,upload,watch,successes,jobs,cleanupInputs,selectZipPositiveSample} from './helpers/uppy-zip.mjs';
+import {archive,setup,open,add,upload,watch,successes,jobs,cleanupInputs,selectZipPositiveSample,storedZip} from './helpers/uppy-zip.mjs';
 
 test.afterEach(()=>cleanupInputs());
 async function uploadOne(page,request,name='automatic.zip'){
@@ -132,4 +132,32 @@ test('server refusal leaves label review recoverable without claiming confirmati
  await expect(review(page).locator('[data-zip-confirm-button]')).toBeEnabled();
  expect((await jobs(request,project.id)).find(j=>j.id===id).status).toBe('selecting');
  await page.unroute(`**/import/jobs/${id}/start`);await confirm(page);await expect(review(page)).toHaveCount(0);
+});
+
+
+test('raw ZIP folders wait for explicit usage and inline project pool classification', async ({page,request})=>{
+ const project=await setup(page,request);await open(page);await watch(page);
+ const rawImage=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lYkAAAAASUVORK5CYII=','base64');
+ await add(page,[{name:'raw-folders.zip',buffer:storedZip([['background/a.png',rawImage],['contest_images/b.png',rawImage]])}]);
+ await upload(page);const [{jobId}]=await successes(page,1);
+ const endpoint=`/api/v19/projects/${project.id}/import/jobs/${jobId}`;
+ const pane=review(page),folder=pane.locator('[data-zip-folder-row]');
+ await expect(folder).toHaveCount(2);
+ const raw=folder.filter({hasText:'contest_images'}),negative=folder.filter({hasText:'background'});
+ await expect(raw.getByRole('combobox',{name:'数据用途'})).toHaveValue('');
+ await expect(pane.locator('[data-zip-confirm-button]')).toBeDisabled();
+ expect((await (await request.get(endpoint)).json()).status).toBe('selecting');
+ await raw.getByRole('combobox',{name:'数据用途'}).selectOption('unassigned');
+ await raw.getByRole('combobox',{name:'素材类型'}).selectOption('unclassified');
+ await negative.getByRole('combobox',{name:'数据用途'}).selectOption('train');
+ await negative.getByRole('combobox',{name:'素材类型'}).selectOption('negative');
+ await negative.getByRole('textbox',{name:'新分类名称'}).fill('反光干扰');
+ await negative.getByRole('button',{name:'新建分类'}).click();
+ await expect(negative.getByRole('option',{name:'反光干扰'})).toHaveJSProperty('selected',true);
+ await pane.locator('[data-zip-confirm-button]').click();
+ await expect.poll(async()=>(await (await request.get(endpoint)).json()).status).toBe('done');
+ const final=await (await request.get(endpoint)).json();
+ expect(final.report.folder_classification).toMatchObject({status:'applied',applied:2,pending:0});
+ await page.evaluate(id=>window.ZipImportRuntime.openTask(id),jobId);
+ await expect(page.getByText('目录归集 2 张，待处理 0 张')).toBeVisible();
 });

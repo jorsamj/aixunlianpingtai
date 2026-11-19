@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-当前为 M4-B1 项目公共负样本池与训练正负样本。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
+当前为 M4-C1 ZIP 文件夹归集及标签确认。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -156,3 +156,13 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - 独立复审先核对真实任务准备证据及兼容边界。M4-C 的 ZIP 划分继续等待独立安排，保持现有 ZIP 上传、确认与导入 Owner。
 - 独立审计整改以 `71e9531b229d5bbb70d97b585bdaa9b1c9b3c348` 为基线。冻结合并按账号、项目和算法保存最近一笔 UUIDv4，完整范围及五类修订一致时通过原服务端冻结接口重试。公共池回执按已验证账号和项目恢复，项目切换重新挂载并取消旧读取。旧项目级缓存键因无账号归属不自动恢复。
 - 独立审计整改本地通过 2 项 Python 定向用例及 6 项 Chrome 用例，覆盖同范围重试、改范围冲突、过期证据拒绝、账号隔离和项目切换。Vue 类型检查及新旧构建离线闭包通过。新 SHA 的 CI 以交付快照为准。
+
+
+## M4-C1 ZIP 文件夹归集与标签确认
+
+- 基线 `7f0a01771abd12d2e37919f13efa33481c71d871`。SPA 素材库沿用旧工作台 v19 ZIP 入口。新版普通上传明确启用文件夹确认，未启用的旧客户端、历史任务及旧算法池入口保留原合同。
+- `GET /api/v19/projects/{project_id}/import/jobs/{job_id}/folders` 分页返回真实图片目录、用途建议和标注汇总。识别完整中英文目录名。未知、术语需复核及冲突目录等待用户确认。确认同时复用原外部标签映射。外部类别或来源路径有冲突时需修正或拆包。
+- 原 job.json 冻结实际 ZIP SHA256、扫描清单摘要、项目、任务、选择范围、文件夹规则和外部映射。正式素材内 `zip_folder_source` 保存完整来源路径、用途、摘要与归集状态。该证据随 MaterialRepository 保留，新版来源用途不写成旧 `split`。成功解析节点直接提交素材 ID 的来源证据，包含 COCO/VOC 未引用原图分支。
+- 目标标签只写待标注意图。已入库外部 GT 保留原映射与正式标注权威。负样本直接进入项目公共池，分类和素材归集状态在同一事务提交。失败回执保留待归集范围，可通过原任务重试，或者在素材治理中处理。运行状态异常或归集分类已失效时应先核验任务或修复分类。正式训练、GPU 和生产仍待现场验证。
+- M4-C2 需先为 `platform_core/training_splits.py` 的 `SplitRequest` 和 `build_split_manifest()` 设计明确的固定 Val 及跨角色冲突合同，再衔接 `platform_core/remote_training_tasks.py` 的 `_freeze_request_contract()` 与 `platform_core/training_tasks.py` 的 `resolve_training_input_freeze()`。用途意图仅作为来源证据，正式 GT 和隔离准入仍由现有 Owner 校验。
+- 定向验证通过 ZIP API 与分类 Python 用例 23 项、ZIP Node 53 项、Chrome ZIP 路径 41 项，以及 Vue 类型、构建和离线资源核验。以交付消息记录最终提交 SHA 与对应 CI。

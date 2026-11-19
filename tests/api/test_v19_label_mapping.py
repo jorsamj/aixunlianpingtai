@@ -576,3 +576,149 @@ def test_v19_mapping_rejects_legacy_active_false_target(client):
     )
     assert rejected.status_code == 409
     assert "当前有效标签" in rejected.text
+
+
+def test_v19_confirmed_folders_bind_real_sources_and_recover_only_pool_association(client, monkeypatch):
+    from hashlib import sha256
+    from platform_core.storage.zip_folders import folder_rows
+
+    suggestions = {row['folder_key']: row for row in folder_rows({'path': f'{name}/a.jpg'} for name in (
+        'Training', 'valid', 'TESTING', '训练集', '验证集', '测试集', '试验集', '评测集', 'contest_images', 'train/test'
+    ))}
+    assert [suggestions[key]['suggested_usage'] for key in ('Training','valid','TESTING','训练集','验证集','测试集')] == ['train','val','test'] * 2
+    assert all(suggestions[key]['suggested_usage'] == 'unassigned' for key in ('试验集','评测集','contest_images','train/test'))
+    assert suggestions['train/test']['suggestion_reason'] == '用途目录冲突'
+    project = client.post('/api/projects', json={'name':'zip folders', 'labels':['person','vehicle']}).json()['id']
+    created_category = client.post(f'/api/v61/projects/{project}/negative-pool/categories', json={'name':'反光'})
+    category = created_category.json()['id']
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('data.yaml', 'names: [object]\n')
+        for path in ('images/train/001.jpg','images/验证集/001.jpg','images/背景/001.jpg','raw/001.jpg'):
+            archive.writestr(path, _jpg_bytes())
+        for path in ('train','验证集','背景'):
+            archive.writestr(f'labels/{path}/001.txt', '0 0.5 0.5 0.4 0.4\n')
+        archive.writestr('images/背景/broken.jpg', b'invalid image')
+    source = payload.getvalue()
+    response = client.post(f'/api/v19/projects/{project}/datasets/default/import/jobs',
+                           data={'folder_confirmation':'true'}, files={'file':('folders.zip',source,'application/zip')})
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert job['folder_confirmation_required'] is True and 'images' not in job
+    assert job['source_zip_sha256'] == sha256(source).hexdigest()
+    endpoint = f"/api/v19/projects/{project}/import/jobs/{job['id']}"
+    first = client.get(endpoint+'/folders?limit=2').json()
+    second = client.get(endpoint+'/folders?limit=2&offset=2').json()
+    assert first['total'] == 4 and first['next_offset'] == 2 and second['next_offset'] is None
+    folders = {row['folder_key']: row for row in first['items'] + second['items']}
+    assert folders['images/验证集']['suggested_usage'] == 'val'
+    assert folders['images/背景']['annotated_count'] == 1 and folders['images/背景']['image_count'] == 2
+    assert folders['raw']['annotated_count'] == 0 and folders['raw']['suggested_usage'] == 'unassigned'
+    rules = [
+        dict(folder_key='images/train',usage_intent='train',sample_type='positive',intended_label_codes=['person','vehicle']),
+        dict(folder_key='images/验证集',usage_intent='val',sample_type='positive',intended_label_codes=['person']),
+        dict(folder_key='images/背景',usage_intent='unassigned',sample_type='negative',negative_category_ids=[category]),
+        dict(folder_key='raw',usage_intent='unassigned',sample_type='unclassified'),
+    ]
+    confirmation = dict(source_scan_digest=first['source_scan_digest'], folder_rules=rules, label_mapping={'0':'person'})
+    start = endpoint+'/start'
+    assert client.post(start,json={}).status_code == 409
+    assert client.post(start,json={**confirmation,'source_scan_digest':'bad'}).status_code == 409
+    assert client.post(start,json={**confirmation,'folder_rules':rules[:3]}).status_code == 422
+    assert client.post(start,json={**confirmation,'folder_rules':[*rules[:3],dict(rules[3],folder_key='fake')]}).status_code == 422
+    assert client.post(start,json={**confirmation,'folder_rules':[dict(rules[0],intended_label_codes=['bad']),*rules[1:]]}).status_code == 422
+    assert client.post(start,json={**confirmation,'folder_rules':[*rules[:2],dict(rules[2],negative_category_ids=['other-project']),rules[3]]}).status_code == 422
+    assert client.post(start,json={**confirmation,'label_mapping':{}}).status_code == 409
+    original = NegativePool.members
+
+    def fail_once(self, ids, **kwargs):
+        if kwargs.get('zip_folder'):
+            raise ValueError('isolated pool write failure')
+        return original(self, ids, **kwargs)
+
+    monkeypatch.setattr(NegativePool,'members',fail_once)
+    response = client.post(start,json=confirmation)
+    assert response.status_code == 200, response.text
+    final = _wait_job(client, project, job['id'])
+    assert final['status'] == 'done', final
+    assert final['report']['imported_images'] == 4
+    assert final['report']['folder_classification']['pending'] == 1
+    review = client.get(f"/api/v52/projects/{project}/import/jobs/{job['id']}/review").json()
+    store = app_module.material_store(project)
+    materials = {row['zip_folder_source']['source_path']:row for row in store.get_many(review['image_ids'])}
+    assert len(materials) == len({row['id'] for row in materials.values()}) == 4
+    assert {row['zip_folder_source']['rule_digest'] for row in materials.values()} == {final['folder_confirmation_digest']}
+    assert materials['raw/001.jpg']['zip_folder_source']['usage_intent'] == 'unassigned'
+    assert materials['images/验证集/001.jpg']['zip_folder_source']['usage_intent'] == 'val'
+    assert materials['images/train/001.jpg']['upload_intended_label_codes'] == ['person','vehicle']
+    assert materials['images/train/001.jpg']['split'] == 'unassigned'
+    negative_id = materials['images/背景/001.jpg']['id']
+    annotation = f'/api/projects/{project}/annotations/{negative_id}'
+    boxes = client.get(annotation).json()['boxes']
+    assert [box['label'] for box in boxes] == ['person']
+    assert client.get(f"/api/projects/{project}/annotations/{materials['raw/001.jpg']['id']}").json()['boxes'] == []
+    assert client.post(start,json=confirmation).json()['folder_confirmation_digest'] == final['folder_confirmation_digest']
+    assert client.post(start,json={**confirmation,'folder_rules':[dict(rules[0],usage_intent='test'),*rules[1:]]}).status_code == 409
+    monkeypatch.setattr(NegativePool,'members',original)
+    pool = NegativePool(store)
+    retry = endpoint+'/retry-folder-classification'
+    assert client.post(retry).json()['report']['folder_classification']['pending'] == 0
+    assert pool.candidate_ids(category_ids=[category]) == [negative_id]
+    assert not pool.member_snapshot(negative_id)['algorithms']
+    pool_revision = pool.revision()
+    assert client.post(retry).json()['report']['folder_classification']['applied'] == 4
+    assert pool.revision() == pool_revision
+    assert client.get(annotation).json()['boxes'] == boxes
+    assert client.get(f"/api/v52/projects/{project}/import/jobs/{job['id']}/review").json()['image_ids'] == review['image_ids']
+
+
+def test_v19_folder_scan_rejects_conflicting_external_class_ids(client):
+    project = client.post('/api/projects', json={'name':'zip conflict', 'labels':['person']}).json()['id']
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w') as archive:
+        archive.writestr('train/data.yaml', 'names: [person]\n')
+        archive.writestr('val/data.yaml', 'names: [vehicle]\n')
+        for folder in ('train','val'):
+            archive.writestr(f'{folder}/images/001.jpg', _jpg_bytes())
+            archive.writestr(f'{folder}/labels/001.txt', '0 0.5 0.5 0.4 0.4\n')
+    uploaded = client.post(f'/api/v19/projects/{project}/datasets/default/import/jobs', data={'folder_confirmation':'true'},
+                           files={'file':('conflict.zip',payload.getvalue(),'application/zip')})
+    assert uploaded.status_code == 200, uploaded.text
+    job = uploaded.json()
+    assert job['folder_mapping_conflict'] is True
+    rules = [dict(folder_key=f'{folder}/images',usage_intent=folder,sample_type='positive',intended_label_codes=['person'])
+             for folder in ('train','val')]
+    assert client.post(f"/api/v19/projects/{project}/import/jobs/{job['id']}/start", json={
+        'source_scan_digest':job['source_scan_digest'], 'folder_rules':rules, 'label_mapping':{'0':'person'},
+    }).status_code == 409
+    assert app_module.v19_read_job(project,job['id'])['status'] == 'selecting'
+
+
+def test_v19_coco_folder_evidence_includes_unreferenced_same_name_image(client):
+    project = client.post('/api/projects', json={'name':'structured folders', 'labels':['person']}).json()['id']
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w') as archive:
+        archive.writestr('train/001.jpg', _jpg_bytes())
+        archive.writestr('raw/001.jpg', _jpg_bytes())
+        archive.writestr('coco.json', json.dumps({
+            'images':[{'id':1,'file_name':'train/001.jpg','height':60,'width':80}],
+            'categories':[{'id':1,'name':'person'}],
+            'annotations':[{'id':1,'image_id':1,'category_id':1,'bbox':[3,4,20,20]}],
+        }))
+    uploaded = client.post(f'/api/v19/projects/{project}/datasets/default/import/jobs', data={'folder_confirmation':'true'},
+                           files={'file':('structured.zip',payload.getvalue(),'application/zip')})
+    assert uploaded.status_code == 200, uploaded.text
+    job = uploaded.json()
+    rules = [dict(folder_key='train',usage_intent='train',sample_type='positive',intended_label_codes=['person']),
+             dict(folder_key='raw',usage_intent='unassigned',sample_type='unclassified')]
+    started = client.post(f"/api/v19/projects/{project}/import/jobs/{job['id']}/start", json={
+        'source_scan_digest':job['source_scan_digest'], 'folder_rules':rules, 'label_mapping':{'1':'person'},
+    })
+    assert started.status_code == 200, started.text
+    final = _wait_job(client,project,job['id'])
+    assert final['status'] == 'done', final
+    assert final['report']['unreferenced_raw_images'] == 1
+    samples = {row['source_path']:row['material_id'] for row in final['report']['folder_classification']['examples']}
+    assert samples['train/001.jpg'] != samples['raw/001.jpg']
+    assert [row['label'] for row in client.get(f"/api/projects/{project}/annotations/{samples['train/001.jpg']}").json()['boxes']] == ['person']
+    assert client.get(f"/api/projects/{project}/annotations/{samples['raw/001.jpg']}").json()['boxes'] == []

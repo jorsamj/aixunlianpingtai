@@ -134,7 +134,7 @@ export function zipView(job,jobs) {
   return {status:s,progress,stage:canonicalStage||job?.stage||'ZIP 导入',message:canonicalMessage||job?.message||'',queue:q};
 }
 export function zipNeedsLabelConfirmation(job) {
-  return status(job)==='selecting' && (Boolean(job?.sample_classification_required)
+  return status(job)==='selecting' && (Boolean(job?.folder_confirmation_required||job?.sample_classification_required)
     || (Boolean(job?.label_confirmation_required)
       && Array.isArray(job?.external_classes) && job.external_classes.length>0));
 }
@@ -183,6 +183,7 @@ export async function startZipJob(projectId,jobId,{fetchImpl=globalThis.fetch,co
     selected_paths:[],
     ...(confirmation?.algorithm_id?{algorithm_id:String(confirmation.algorithm_id)}:{}),
     label_mapping:{...(confirmation?.label_mapping||{})},
+    ...(confirmation?.source_scan_digest?{source_scan_digest:String(confirmation.source_scan_digest),folder_rules:[...(confirmation.folder_rules||[])]}:{}),
     ...(confirmation?.sample_type?{
       sample_type:confirmation.sample_type,
       intended_label_codes:[...(confirmation.intended_label_codes||[])],
@@ -193,7 +194,7 @@ export async function startZipJob(projectId,jobId,{fetchImpl=globalThis.fetch,co
 }
 export function uploadZipJob(projectId,file,{onTransfer=()=>{},xhrFactory=()=>new XMLHttpRequest()}={}) {
   return new Promise((resolve,reject)=>{
-    const form=new FormData(); form.append('file',file); const xhr=xhrFactory();
+    const form=new FormData(); form.append('file',file); form.append('folder_confirmation','true'); const xhr=xhrFactory();
     xhr.open('POST',`/api/v19/projects/${encodeURIComponent(String(projectId))}/datasets/default/import/jobs`,true);
     xhr.upload.onprogress=e=>{if(e.lengthComputable)onTransfer({loaded:e.loaded,total:e.total,ratio:e.total?e.loaded/e.total:0})};
     xhr.onerror=()=>reject(new Error('网络连接中断，ZIP 尚未得到服务器确认'));
@@ -240,7 +241,7 @@ export async function createZipUploadSession(projectId,file,{fetchImpl=globalThi
   const fingerprint=await zipFingerprint(file);
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/datasets/default/import/uploads`,{
     method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file_name:file.name,file_size:file.size,fingerprint,part_size:8*1024*1024,resume_upload_id:expectedUploadId||'',...(algorithmId?{algorithm_id:algorithmId}:{})}),
+    body:JSON.stringify({file_name:file.name,file_size:file.size,fingerprint,part_size:8*1024*1024,resume_upload_id:expectedUploadId||'',...(algorithmId?{algorithm_id:algorithmId}:{folder_confirmation:true})}),
   }));
 }
 
@@ -374,6 +375,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
   let localUploadSequence=0,queueSequence=0;
   const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set(),foregroundImports=new Set(),labelReviews=new Map(),classSampleCache=new Map(),cancellingJobs=new Set(),sampleChoices=new Map();
+  const folderReviews=new Map();
   let zipCategories=[],zipCategoryProject='',zipCategoriesLoading=false;
   const sampleChoice=id=>{if(!sampleChoices.has(String(id)))sampleChoices.set(String(id),{kind:'',labels:new Set(),categories:new Set()});return sampleChoices.get(String(id))};
   async function loadZipCategories(){
@@ -469,7 +471,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       batchTransfers.clear();batchFiles.clear();
     }
     runtimeProject=next;jobs=[];current=null;selectedJobId='';uploading=null;resumeFile=null;presentation=null;activeUploadView=null;uploadViews.clear();autoReviewCandidates.clear();shownReviews.clear();
-    eligibleSince.clear();started.clear();knownJobs.clear();completionEffects.clear();foregroundImports.clear();labelReviews.clear();classSampleCache.clear();cancellingJobs.clear();
+    eligibleSince.clear();started.clear();knownJobs.clear();completionEffects.clear();foregroundImports.clear();labelReviews.clear();classSampleCache.clear();cancellingJobs.clear();folderReviews.clear();sampleChoices.clear();
   }
   const isCurrentProject=project=>!destroyed&&Boolean(project)&&runtimeProject===String(project)&&pid()===String(project);
   const intentKey=(p,id)=>`mc_zip_import_start_v1:${p}:${id}`;
@@ -517,17 +519,125 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     return review;
   }
 
+  const folderUsage={train:'Train',val:'Val',test:'Test',unassigned:'未指定'};
+  const folderKinds={positive:'正样本',negative:'负样本',unclassified:'未分类'};
+  function folderReview(job){
+    const id=String(job.id),old=folderReviews.get(id);
+    if(old?.digest===job.source_scan_digest)return old;
+    const current={digest:job.source_scan_digest,rows:[],rules:new Map(),selected:new Set(),offset:0,next:null,total:null,loading:false,error:''};
+    folderReviews.set(id,current);
+    return current;
+  }
+  const folderJobUrl=(project,id)=>`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(id)}`;
+  async function loadFolderPage(jobId,offset=0){
+    const id=String(jobId),project=pid(),job=reviewJob(id);
+    if(!job||!isCurrentProject(project))return;
+    const review=folderReview(job);
+    if(review.loading)return;
+    review.loading=true;review.error='';
+    try{
+      const page=await withRequestDeadline(async signal=>json(await fetchImpl(folderJobUrl(project,id)+`/folders?offset=${offset}&limit=50`,{credentials:'same-origin',signal})),{label:'ZIP 文件夹扫描结果'});
+      if(!isCurrentProject(project)||folderReviews.get(id)!==review)return;
+      if(page.source_scan_digest!==review.digest)throw new Error('扫描证据已变化，请重新打开该导入任务');
+      review.rows=page.items;review.total=page.total;review.offset=offset;review.next=page.next_offset;
+      for(const row of page.items)if(!review.rules.has(row.folder_key))review.rules.set(row.folder_key,{
+        folder_key:row.folder_key,usage_intent:'',sample_type:'',intended_label_codes:[],negative_category_ids:[],
+        annotated:row.annotated_count>0,
+      });
+    }catch(error){if(isCurrentProject(project)&&folderReviews.get(id)===review)review.error=String(error.message||error)}
+    finally{if(isCurrentProject(project)&&folderReviews.get(id)===review){review.loading=false;rerenderLabelMapping(id)}}
+  }
+  function validFolder(rule){
+    return Boolean(rule.usage_intent && (rule.sample_type==='positive'&&rule.intended_label_codes.length
+      ||rule.sample_type==='negative'&&rule.negative_category_ids.length
+      ||rule.sample_type==='unclassified'&&!rule.annotated));
+  }
+  function confirmedFolders(review){return [...review.rules.values()].filter(validFolder).length}
+  const folderOptions=(dictionary,value,placeholder)=>`<option value="">${placeholder}</option>${Object.entries(dictionary).map(([key,name])=>`<option value="${key}" ${value===key?'selected':''}>${name}</option>`).join('')}`;
+  function folderMarkup(job,labels){
+    const id=String(job.id),review=folderReview(job);
+    if(review.total===null&&!review.loading&&!review.error)void loadFolderPage(id);
+    if(zipCategoryProject!==pid()&&!zipCategoriesLoading)void loadZipCategories();
+    const rows=review.rows.map(row=>{
+      const key=row.folder_key,rule=review.rules.get(key),args=`${jsArg(id)},${jsArg(key)}`;
+      const negative=rule.sample_type==='negative',kindField=negative?'negative_category_ids':'intended_label_codes';
+      const choices=negative?zipCategories.filter(value=>value.enabled&&zipCategoryProject===pid()).map(value=>[String(value.id),value.name]):labels.map(value=>[String(value.code),`${value.display_name||value.code} · ${value.code}`]);
+      const picker=rule.sample_type==='positive'||negative?`<input class="input" type="search" aria-label="搜索选项" placeholder="搜索${negative?'负样本分类':'目标标签'}" oninput="window.ZipImportRuntime?.filterFolderOptions(this)"><select class="select" multiple size="3" aria-label="${negative?'负样本分类':'目标标签'}" onchange="window.ZipImportRuntime?.changeFolder(${args},'${kindField}',Array.from(this.selectedOptions,option=>option.value))">${choices.map(([id,name])=>`<option value="${esc(id)}" ${rule[kindField].includes(id)?'selected':''}>${esc(name)}</option>`).join('')}</select>`:'';
+      const create=negative?`<div class="row"><input class="input" data-folder-category-name aria-label="新分类名称" placeholder="新分类名称"><button class="btn mini" onclick="window.ZipImportRuntime?.createFolderCategory(${args},this)">新建分类</button></div>`:'';
+      const kinds=rule.annotated?{positive:folderKinds.positive,negative:folderKinds.negative}:folderKinds;
+      return `<tr data-zip-folder-row data-suggested-usage="${esc(row.suggested_usage)}"><td><input type="checkbox" aria-label="选择 ${esc(row.folder_path)}" ${review.selected.has(key)?'checked':''} onchange="window.ZipImportRuntime?.selectFolder(${args},this.checked)"></td><th scope="row">${esc(row.folder_path==='.'?'ZIP 根目录':row.folder_path)}<small class="item-sub">${Number(row.image_count)} 张 · ${Number(row.annotated_count)} 张含标注</small></th><td><small class="item-sub">建议 ${folderUsage[row.suggested_usage]||'未指定'} · ${esc(row.suggestion_reason)}</small><select class="select" aria-label="数据用途" onchange="window.ZipImportRuntime?.changeFolder(${args},'usage_intent',this.value)">${folderOptions(folderUsage,rule.usage_intent,'选择用途')}</select></td><td><select class="select" aria-label="素材类型" onchange="window.ZipImportRuntime?.changeFolder(${args},'sample_type',this.value)">${folderOptions(kinds,rule.sample_type,'选择类型')}</select></td><td>${picker}${create}<small class="item-sub">${validFolder(rule)?'已确认':'待确认'}</small></td></tr>`;
+    }).join('');
+    const disabled=review.loading?'disabled':'';
+    return `<section class="zip-upload-sample-kind" aria-label="ZIP 文件夹归集"><h3>文件夹用途与归集</h3><p>${Number(job.image_count||0)} 张图片 · ${review.total??'…'} 个文件夹 · ${esc(job.detected_format||'原图')} · ${confirmedFolders(review)} 个已确认</p><p class="item-sub">用途记录随素材保存。训练时仍由正式训练划分决定；归集选择只记录待标注意图或公共池分类。</p>
+      ${job.folder_mapping_conflict?'<p class="alert warn">外部类别身份或标注路径存在冲突，请拆分 ZIP 或修正来源后上传。</p>':''}
+      ${review.error?`<p class="alert warn">${esc(review.error)} <button class="btn mini" onclick="window.ZipImportRuntime?.loadFolderPage(${jsArg(id)},${review.offset})">重新读取</button></p>`:''}
+      <div class="row"><label>批量用途 <select class="select" data-folder-bulk-usage>${folderOptions(folderUsage,'','保留当前用途')}</select></label><label>批量类型 <select class="select" data-folder-bulk-kind>${folderOptions(folderKinds,'','保留当前类型')}</select></label><label>批量负样本分类 <select class="select" multiple size="2" data-folder-bulk-categories>${zipCategories.filter(row=>row.enabled&&zipCategoryProject===pid()).map(row=>`<option value="${esc(row.id)}">${esc(row.name)}</option>`).join('')}</select></label><button class="btn" onclick="window.ZipImportRuntime?.applyFolderBatch(${jsArg(id)},this)">应用到勾选的文件夹</button></div>
+      <div style="overflow:auto"><table style="width:100%;text-align:left"><thead><tr><th scope="col">选择</th><th scope="col">来源目录</th><th scope="col">数据用途</th><th scope="col">素材类型</th><th scope="col">归集设置</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="row"><button class="btn" ${review.offset===0?'disabled':disabled} onclick="window.ZipImportRuntime?.loadFolderPage(${jsArg(id)},${Math.max(0,review.offset-50)})">上一页</button><button class="btn" ${review.next==null?'disabled':disabled} onclick="window.ZipImportRuntime?.loadFolderPage(${jsArg(id)},${Number(review.next||0)})">下一页</button></div></section>`;
+  }
+  function selectFolder(id,key,checked){const review=folderReviews.get(id);if(checked)review?.selected.add(key);else review?.selected.delete(key)}
+  function updateFolderRule(rule,field,value){
+    if(field==='sample_type'&&rule.sample_type!==value){rule.intended_label_codes=[];rule.negative_category_ids=[];}
+    rule[field]=value;
+  }
+  function changeFolder(id,key,field,value){
+    const rule=folderReviews.get(id)?.rules.get(key);
+    if(rule){updateFolderRule(rule,field,value);rerenderLabelMapping(id)}
+  }
+  function filterFolderOptions(input){
+    const query=input.value.trim().toLowerCase();
+    for(const option of input.nextElementSibling.options)option.hidden=!option.selected&&!option.textContent.toLowerCase().includes(query);
+  }
+  function applyFolderBatch(id,button){
+    const review=folderReviews.get(id),panel=button.closest('section');
+    if(!review?.selected.size){notify?.('请先勾选要批量修改的文件夹');return}
+    const usage=panel.querySelector('[data-folder-bulk-usage]').value,kind=panel.querySelector('[data-folder-bulk-kind]').value;
+    const categories=Array.from(panel.querySelector('[data-folder-bulk-categories]').selectedOptions,option=>option.value);
+    const rules=[...review.selected].map(key=>review.rules.get(key));
+    if(kind==='unclassified'&&rules.some(rule=>rule.annotated)){notify?.('勾选范围含外部标注，不能批量设为未分类');return}
+    if(!window.confirm?.(`更新已勾选的 ${rules.length} 个文件夹？`))return;
+    for(const rule of rules){
+      if(usage)updateFolderRule(rule,'usage_intent',usage);
+      if(kind)updateFolderRule(rule,'sample_type',kind);
+      if(categories.length&&rule.sample_type==='negative')updateFolderRule(rule,'negative_category_ids',[...categories]);
+    }
+    rerenderLabelMapping(id);
+  }
+  async function createFolderCategory(id,key,button){
+    const project=pid(),review=folderReviews.get(id),rule=review?.rules.get(key);
+    const name=String(button.parentElement.querySelector('[data-folder-category-name]').value||'').trim();
+    if(!rule||!name||!isCurrentProject(project))return;
+    button.disabled=true;
+    try{
+      const created=await json(await fetchImpl(`/api/v61/projects/${encodeURIComponent(project)}/negative-pool/categories`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}));
+      if(!isCurrentProject(project)||folderReviews.get(id)!==review)return;
+      if(zipCategoryProject===project){zipCategories=[...zipCategories.filter(row=>String(row.id)!==String(created.id)),created]}
+      if(rule.sample_type==='negative')rule.negative_category_ids=[...new Set([...rule.negative_category_ids,String(created.id)])];
+      rerenderLabelMapping(id);
+    }catch(error){if(isCurrentProject(project)){notify?.(String(error.message||error));button.disabled=false}}
+  }
+  async function retryFolderClassification(jobId){
+    const project=pid(),id=String(jobId);
+    if(!isCurrentProject(project))return;
+    try{
+      const result=await json(await fetchImpl(folderJobUrl(project,id)+'/retry-folder-classification',{method:'POST',credentials:'same-origin'}));
+      if(!isCurrentProject(project))return;
+      knownJobs.set(id,result);await reconcile('folder-classification');
+    }catch(error){if(isCurrentProject(project))notify?.(String(error.message||error))}
+  }
+
   function labelMappingMarkup(job){
     if(!zipNeedsLabelConfirmation(job)||acceptedReview(String(job.id||'')))return '';
     const id=String(job.id||''),review=mappingReview(job),page=labelMappingReviewPage(review),summary=labelMappingReviewSummary(review),labels=labelItems();
-    const requireKind=Boolean(job.sample_classification_required),choice=sampleChoice(id);
+    const folderMode=Boolean(job.folder_confirmation_required),requireKind=!folderMode&&Boolean(job.sample_classification_required),choice=sampleChoice(id);
+    const folders=folderMode?folderReview(job):null;
     const isRaw=job.scan_kind==='RAW_UNANNOTATED',selectedKind=choice.kind||(isRaw?'unclassified':'');
     if(requireKind&&zipCategoryProject!==pid()&&!zipCategoriesLoading)void loadZipCategories();
-    const kindValid=!requireKind||(isRaw&&selectedKind==='unclassified')||(selectedKind==='positive'&&choice.labels.size>0)||(selectedKind==='negative'&&choice.categories.size>0);
-    const kindMarkup=!requireKind?'':`<section class="zip-upload-sample-kind" role="group" aria-label="上传后素材类型"><h3>${isRaw?'检测到未标注原图':'先确认素材类型'}</h3>${isRaw?'<p class="muted-line">未检测到有效外部标注。默认仅存入素材库，后续可以直接 AI 或人工标注；空 txt 不等于负样本。</p>':''}<div class="row">${isRaw?`<label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='unclassified'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'unclassified')"> 原图入库 · 暂不分类（推荐）</label>`:''}<label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='positive'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'positive')"> 正样本 · 选择待标注目标</label><label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='negative'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'negative')"> 负样本 · 选择负样本池分类</label></div>
+    const kindValid=folderMode?Boolean(folders.total&&confirmedFolders(folders)===folders.total&&!job.folder_mapping_conflict):!requireKind||(isRaw&&selectedKind==='unclassified')||(selectedKind==='positive'&&choice.labels.size>0)||(selectedKind==='negative'&&choice.categories.size>0);
+    const kindMarkup=folderMode?folderMarkup(job,labels):!requireKind?'':`<section class="zip-upload-sample-kind" role="group" aria-label="上传后素材类型"><h3>${isRaw?'检测到未标注原图':'先确认素材类型'}</h3>${isRaw?'<p class="muted-line">未检测到有效外部标注。默认仅存入素材库，后续可以直接 AI 或人工标注；空 txt 不等于负样本。</p>':''}<div class="row">${isRaw?`<label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='unclassified'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'unclassified')"> 原图入库 · 暂不分类（推荐）</label>`:''}<label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='positive'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'positive')"> 正样本 · 选择待标注目标</label><label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='negative'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'negative')"> 负样本 · 选择负样本池分类</label></div>
       ${selectedKind==='positive'?`<div class="zip-sample-categories">${labels.map(row=>`<label><input type="checkbox" ${choice.labels.has(String(row.code))?'checked':''} onchange="window.ZipImportRuntime?.toggleSampleChoice(${jsArg(id)},'positive',${jsArg(String(row.code))},this.checked)"> ${esc(row.display_name||row.code)} · ${esc(row.code)}</label>`).join('')||'<span>当前没有可用目标标签，请先在标签管理中建立标签。</span>'}</div><small>仅记录待标注标签，不凭选择自动生成正式 GT 框。</small>`:''}
       ${selectedKind==='negative'?`<div class="zip-sample-categories">${zipCategories.filter(row=>row.enabled).map(row=>`<label><input type="checkbox" ${choice.categories.has(String(row.id))?'checked':''} onchange="window.ZipImportRuntime?.toggleSampleChoice(${jsArg(id)},'negative',${jsArg(String(row.id))},this.checked)"> ${esc(row.name)}</label>`).join('')||'<span>暂无分类，可先新建。</span>'}<button type="button" class="btn mini" onclick="window.ZipImportRuntime?.createNegativeCategory(${jsArg(id)})">新建负样本分类</button></div><small>只关联负样本池；ZIP 原始标注与标签不会被删除，训练时仍按目标范围二次确认。</small>`:''}</section>`;
-    if(requireKind&&summary.total===0)return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><header class="zip-label-heading"><div><h2>${isRaw?'导入未标注原图':'确认上传素材类型'}</h2><p>${esc(job.file_name||'ZIP 素材')} · ${Number(job.image_count||0)} 张图片（无有效外部标注）</p></div></header>${kindMarkup}<div class="zip-label-footer"><small data-zip-confirm-status>${kindValid?'可正式导入':'请选择有效素材分类'}</small><div class="zip-label-footer-actions"><button class="btn danger zip-label-cancel" data-zip-cancel-button onclick="window.ZipImportRuntime?.cancelJob(${jsArg(id)})">取消此 ZIP 任务</button><button class="btn primary" data-zip-confirm-button ${kindValid?'':'disabled'} onclick="window.ZipImportRuntime?.confirmLabels(${jsArg(id)})">${isRaw?'原图入库':'确认类型并导入'}</button></div></div></div>`;
+    if((requireKind||folderMode)&&summary.total===0)return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><header class="zip-label-heading"><div><h2>${folderMode?'确认 ZIP 导入':isRaw?'导入未标注原图':'确认上传素材类型'}</h2><p>${esc(job.file_name||'ZIP 素材')} · ${Number(job.image_count||0)} 张图片（无有效外部标注）</p></div></header>${kindMarkup}<div class="zip-label-footer"><small data-zip-confirm-status>${kindValid?'可正式导入':'请选择有效素材分类'}</small><div class="zip-label-footer-actions"><button class="btn danger zip-label-cancel" data-zip-cancel-button onclick="window.ZipImportRuntime?.cancelJob(${jsArg(id)})">取消此 ZIP 任务</button><button class="btn primary" data-zip-confirm-button ${kindValid?'':'disabled'} onclick="window.ZipImportRuntime?.confirmLabels(${jsArg(id)})">${folderMode?'确认文件夹并导入':isRaw?'原图入库':'确认类型并导入'}</button></div></div></div>`;
     const keepCodes=page.rows.map(row=>row.code).filter(Boolean);
     const visibleLabels=filterCanonicalLabels(labels,review.targetQuery,keepCodes);
     const options=(selected,classId)=>['<option value="">选择平台标签</option>',...(
@@ -553,7 +663,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const planned=pendingCodes.length?`<div class="zip-label-pending" role="status"><b>确认导入时将新建 ${pendingCodes.length} 个平台标签</b><span>${pendingCodes.map(code=>`<code>${esc(code)}</code>`).join('')}</span><small>现在只是待确认的映射，不会提前写入平台标签库。</small></div>`:'';
     const bulkOptions=['<option value="">批量映射到…</option>',...filterCanonicalLabels(labels,review.targetQuery).map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`)].join('');
     return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review ${review.manualExpanded?'manual-expanded':''}" data-zip-label-mapping data-review-key="${esc(id)}">
-      <header class="zip-label-heading"><div><h2>确认素材标签</h2><p>${esc(job.file_name||'ZIP 素材')}</p><small data-zip-review-order>待确认第 ${Math.max(1,orderZipJobs(jobs).filter(row=>zipNeedsLabelConfirmation(row)&&!acceptedReview(String(row.id))).findIndex(row=>String(row.id)===id)+1)} / ${orderZipJobs(jobs).filter(row=>zipNeedsLabelConfirmation(row)&&!acceptedReview(String(row.id))).length} 个 · 任务 ${esc(id)}</small></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已匹配</span></header>
+      <header class="zip-label-heading"><div><h2>${folderMode?'确认 ZIP 导入':'确认素材标签'}</h2><p>${esc(job.file_name||'ZIP 素材')}</p><small data-zip-review-order>待确认第 ${Math.max(1,orderZipJobs(jobs).filter(row=>zipNeedsLabelConfirmation(row)&&!acceptedReview(String(row.id))).findIndex(row=>String(row.id)===id)+1)} / ${orderZipJobs(jobs).filter(row=>zipNeedsLabelConfirmation(row)&&!acceptedReview(String(row.id))).length} 个 · 任务 ${esc(id)}</small></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已匹配</span></header>
       ${kindMarkup}
       <div class="zip-label-metrics"><span>图片 <b>${Number(job.image_count||0)}</b></span><span>原始标签 <b>${summary.total}</b></span><span>已匹配 <b>${summary.mapped}</b></span><span>待确认 <b>${summary.unmapped}</b></span></div>
       <div class="zip-label-actions"><button class="btn" onclick="window.ZipImportRuntime?.matchExistingLabels('${esc(id)}')">匹配已有标签</button><span class="zip-label-actions-hint">每行可以直接修改目标标签，无需进入手动模式</span></div>
@@ -564,7 +674,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         <div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索原始标签 / class_id" onchange="window.ZipImportRuntime?.setReviewSearch('${esc(id)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台编码或名称" onchange="window.ZipImportRuntime?.setTargetSearch('${esc(id)}',this.value)"><select class="select" data-zip-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="window.ZipImportRuntime?.bulkMapLabels('${esc(id)}')">映射选中项</button></div>
         <div class="label-mapping-review-page-info">当前 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div data-zip-label-pagination></div>
       </details>
-      <div class="zip-label-footer"><small data-zip-confirm-status>${!kindValid?'请选择正样本标签或负样本分类':summary.unmapped?'还剩 '+summary.unmapped+' 个标签需人工确认':'全部标签已匹配'}</small><div class="zip-label-footer-actions"><button class="btn danger zip-label-cancel" data-zip-cancel-button aria-label="取消当前 ZIP 导入任务" ${cancellingJobs.has(id)||job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.cancelJob('${esc(id)}')">${cancellingJobs.has(id)||job.cancel_requested?'正在取消…':'取消此 ZIP 任务'}</button><button class="btn" ${cancellingJobs.has(id)||job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.previewOriginalLabels('${esc(id)}')">一键使用原始标签</button><button class="btn primary" data-zip-confirm-button ${!kindValid||summary.unmapped||cancellingJobs.has(id)||job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">${pendingCodes.length?'创建标签并导入':'确认类型并导入'}</button></div></div>
+      <div class="zip-label-footer"><small data-zip-confirm-status>${!kindValid?(folderMode?'请确认全部文件夹':'请选择正样本标签或负样本分类'):summary.unmapped?'还剩 '+summary.unmapped+' 个标签需人工确认':'全部标签已匹配'}</small><div class="zip-label-footer-actions"><button class="btn danger zip-label-cancel" data-zip-cancel-button aria-label="取消当前 ZIP 导入任务" ${cancellingJobs.has(id)||job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.cancelJob('${esc(id)}')">${cancellingJobs.has(id)||job.cancel_requested?'正在取消…':'取消此 ZIP 任务'}</button><button class="btn" ${cancellingJobs.has(id)||job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.previewOriginalLabels('${esc(id)}')">一键使用原始标签</button><button class="btn primary" data-zip-confirm-button ${!kindValid||summary.unmapped||cancellingJobs.has(id)||job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">${pendingCodes.length?'创建标签并导入':folderMode?'确认文件夹并导入':'确认类型并导入'}</button></div></div>
     </div>`;
   }
 
@@ -578,7 +688,10 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'manual')"><strong>人工标注</strong><span>进入已有素材审核工作台</span></button>
       <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'later')"><strong>暂存素材库</strong><span>已入库，可随时回来处理</span></button>
     </div></section>`:'';
-    return `<div class="alert ok">${esc(zipCompletionSummary(job))}</div>${next}${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`;
+    const groups=r.folder_classification;
+    const evidence=groups?.examples?.length?`<details><summary>查看来源与素材身份示例</summary><ul>${groups.examples.map(row=>`<li>${esc(row.source_path)} → ${esc(row.material_id)} · ${esc(folderUsage[row.usage_intent]||'未指定')}</li>`).join('')}</ul></details>`:'';
+    const classification=groups?`<div class="alert ${groups.pending?'warn':'ok'}">目录归集 ${Number(groups.applied)} 张，待处理 ${Number(groups.pending)} 张${groups.pending?` <button class="btn" onclick="window.ZipImportRuntime?.retryFolderClassification(${jsArg(job.id)})">重试待处理归集</button><ul>${(groups.errors||[]).map(row=>`<li>${esc(row.folder_key)} · ${esc(row.error)}</li>`).join('')}</ul>`:''}</div>`:'';
+    return `<div class="alert ok">${esc(zipCompletionSummary(job))}</div>${classification}${evidence}${next}${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`;
   }if(s==='failed'&&job?.cleanup_status==='failed')return `<div class="alert err"><b>取消清理失败，可重试</b>：${esc(job?.cleanup_error||job?.error||'临时缓存尚未清理完成')}</div>`;if(s==='failed')return `<div class="alert err"><b>导入失败</b>：${esc(job?.error||job?.message||'未知错误')}</div>`;if(s==='cancelled'||s==='canceled')return '<div class="alert warn">本次 ZIP 导入已中断；未提交的缓存已由后台按安全边界清理。</div>';return''}
   function startBatchAction(jobId,action){
     const job=jobs.find(row=>String(row.id)===String(jobId))||knownJobs.get(String(jobId));
@@ -896,7 +1009,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       await assertLabelConfirmationOpen(project,id);
       const sample=sampleChoice(id);
       const selectedKind=sample.kind||(job.scan_kind==='RAW_UNANNOTATED'?'unclassified':'');
-      if(job.sample_classification_required && !(
+      const folders=job.folder_confirmation_required?folderReview(job):null;
+      if(folders&&(!folders.total||confirmedFolders(folders)!==folders.total||job.folder_mapping_conflict))throw new Error('请先确认全部文件夹及外部标注来源');
+      if(!folders&&job.sample_classification_required && !(
         (selectedKind==='unclassified'&&job.scan_kind==='RAW_UNANNOTATED') ||
         (selectedKind==='positive'&&sample.labels.size>0) || (selectedKind==='negative'&&sample.categories.size>0)
       ))throw new Error('请选择原图暂存、正样本标签或负样本分类');
@@ -924,11 +1039,11 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       }
       if(statusNode)statusNode.textContent='标签已确认，正在启动后台导入…';
       foregroundImports.add(id);started.add(id);writeIntent(project,id,'submitting');
-      const confirmation={label_mapping,algorithm_id:String(job.upload_algorithm_id||''),...(job.sample_classification_required?{
+      const confirmation={label_mapping,...(folders?{source_scan_digest:folders.digest,folder_rules:[...folders.rules.values()].map(({annotated,...rule})=>rule)}:{algorithm_id:String(job.upload_algorithm_id||''),...(job.sample_classification_required?{
         sample_type:selectedKind,
         intended_label_codes:selectedKind==='positive'?[...sample.labels]:[],
         negative_category_ids:selectedKind==='negative'?[...sample.categories]:[],
-      }:{})};
+      }:{})})};
       const response=await startZipJob(project,id,{fetchImpl,confirmation});
       accepted=true;writeIntent(project,id,'submitted');
       if(!isCurrentProject(project))return response;
@@ -1344,7 +1459,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
 
   const reportUploadBatchError=error=>{notify?.(`ZIP 批次处理失败：${error?.message||error}`);return null};
-  const runtime={registerUploadView,beforeModalClose,upload,uploadBatch,subscribeTransfers,resumeTransfer,getProjectId:pid,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,setSampleKind,toggleSampleChoice,createNegativeCategory,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,startBatchAction,forgetTerminal,forgetInvalid,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;presentation=null;activeUploadView=null;uploadViews.clear();autoReviewCandidates.clear();shownReviews.clear();transferObservers.clear();clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={registerUploadView,beforeModalClose,upload,uploadBatch,subscribeTransfers,resumeTransfer,getProjectId:pid,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,setSampleKind,toggleSampleChoice,createNegativeCategory,loadFolderPage,selectFolder,changeFolder,filterFolderOptions,applyFolderBatch,createFolderCategory,retryFolderClassification,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,startBatchAction,forgetTerminal,forgetInvalid,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;presentation=null;activeUploadView=null;uploadViews.clear();autoReviewCandidates.clear();shownReviews.clear();transferObservers.clear();clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>uploadBatch(input).catch(reportUploadBatchError);
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return uploadBatch(input).catch(reportUploadBatchError)};

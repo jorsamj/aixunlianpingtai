@@ -163,6 +163,7 @@ from platform_core.storage.import_tasks import (
 )
 from platform_core.zip_multipart import ZipMultipartRepository
 from platform_core.zip_label_samples import build_zip_class_samples
+from platform_core.storage import zip_folders
 from platform_core.storage.zip_import import (
     ServerZipImportError,
     resolve_server_zip,
@@ -14795,6 +14796,29 @@ def _v18_collect_class_names(root: Path, label_files: Optional[List[Path]] = Non
     return []
 
 
+def _v19_record_folder_source(project_id, root, source, image_id, context):
+    if not context or not context.get('folder_confirmation'):
+        return False
+    confirmation = context['folder_confirmation']
+    source_path = source.relative_to(root).as_posix()
+    key = zip_folders.folder_key(source_path)
+    rule = confirmation['rules'].get(key)
+    if rule is None or source_path not in context['folder_image_paths']:
+        raise RuntimeError('导入素材不属于已冻结的文件夹范围')
+    evidence = {
+        'job_id': confirmation['job_id'], 'source_zip_sha256': confirmation['source_zip_sha256'],
+        'source_scan_digest': confirmation['scan_digest'], 'source_path': source_path,
+        'rule_digest': context['folder_confirmation_digest'], **rule,
+        'classification_status': 'pending' if rule['sample_type'] == 'negative' else 'applied',
+    }
+    patch = {'zip_folder_source': evidence}
+    if rule['sample_type'] == 'positive':
+        patch['upload_intended_label_codes'] = rule['intended_label_codes']
+    if not _v50_queue_image_patch(project_id, image_id, patch):
+        raise RuntimeError('ZIP 素材来源未能与素材索引一起提交')
+    return True
+
+
 def _v18_image_lookup(root: Path):
     imgs = [x for x in root.rglob('*') if x.is_file() and x.suffix.lower() in IMAGE_EXTS]
     by_name: Dict[str, Path] = {}
@@ -14917,9 +14941,14 @@ def _v18_import_coco(
                 pass
         for im in coco.get('images', []):
             file_name = str(im.get('file_name') or '').replace('\\','/')
-            src = by_rel.get(file_name) or by_name.get(Path(file_name).name)
-            if not src and Path(file_name).stem in by_stem:
-                src = by_stem[Path(file_name).stem][0]
+            if import_context and import_context.get('folder_confirmation'):
+                source_path = zip_folders.structured_image(file_name, ann_json.relative_to(root).as_posix(),
+                    import_context['scan_image_paths'], import_context['image_stems'])
+                src = by_rel.get(source_path)
+            else:
+                src = by_rel.get(file_name) or by_name.get(Path(file_name).name)
+                if not src and Path(file_name).stem in by_stem:
+                    src = by_stem[Path(file_name).stem][0]
             if not src or not src.exists():
                 report['missing_images'] += 1
                 continue
@@ -14982,7 +15011,8 @@ def _v18_import_coco(
                 report['skipped_images'] += 1
                 continue
             seen_sources.add(source_ref)
-            _v18_set_image_split(project_id, rec['id'], split)
+            if not _v19_record_folder_source(project_id, root, src, rec['id'], import_context):
+                _v18_set_image_split(project_id, rec['id'], split)
             report.setdefault('imported_image_ids', []).append(rec['id'])
             report.setdefault('_imported_source_paths', []).append(str(src.relative_to(root)))
             for _b in boxes:
@@ -15026,7 +15056,12 @@ def _v18_import_voc(
         except Exception:
             continue
         filename = (r.findtext('filename') or '').strip()
-        src = by_name.get(filename) or by_stem.get(Path(filename).stem if filename else xp.stem, [None])[0]
+        if import_context and import_context.get('folder_confirmation'):
+            source_path = zip_folders.structured_image(filename or xp.stem, xp.relative_to(root).as_posix(),
+                import_context['scan_image_paths'], import_context['image_stems'])
+            src = by_rel.get(source_path)
+        else:
+            src = by_name.get(filename) or by_stem.get(Path(filename).stem if filename else xp.stem, [None])[0]
         if not src:
             report['missing_images'] += 1
             continue
@@ -15094,7 +15129,8 @@ def _v18_import_voc(
             report['skipped_images'] += 1
             continue
         seen_sources.add(source_ref)
-        _v18_set_image_split(project_id, rec['id'], split)
+        if not _v19_record_folder_source(project_id, root, src, rec['id'], import_context):
+            _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
         report.setdefault('_imported_source_paths', []).append(str(src.relative_to(root)))
         for _b in boxes:
@@ -15146,13 +15182,19 @@ def _v18_import_yolo(
     label_by_stem: Dict[str, List[Path]] = {}
     for lf in label_files:
         label_by_stem.setdefault(lf.stem, []).append(lf)
+    folder_mode = bool(import_context and import_context.get('folder_confirmation'))
+    label_paths = {file.relative_to(root).as_posix(): file for file in label_files} if folder_mode else {}
+    label_stems = zip_folders.sources_by_stem(label_paths) if folder_mode else {}
     any_imported = False
     total_expected=max(1,len(image_files)); progress_done=0
     for img in image_files:
         split = _v18_split_from_path(img)
         cands = label_by_stem.get(img.stem, [])
         label_file = None
-        if cands:
+        if folder_mode:
+            path = zip_folders.yolo_sidecar(img.relative_to(root).as_posix(), label_paths, label_stems, import_context['image_stems'])
+            label_file = label_paths.get(path)
+        elif cands:
             # 优先选与图片同 split 且路径包含 labels 的 txt
             same_split = [x for x in cands if _v18_split_from_path(x) == split]
             label_file = next((x for x in same_split if any(part.lower()=='labels' for part in x.parts)), same_split[0] if same_split else cands[0])
@@ -15241,7 +15283,8 @@ def _v18_import_yolo(
         if not rec:
             report['skipped_images'] += 1
             continue
-        _v18_set_image_split(project_id, rec['id'], split)
+        if not _v19_record_folder_source(project_id, root, img, rec['id'], import_context):
+            _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
         report.setdefault('_imported_source_paths', []).append(str(img.relative_to(root)))
         for _b in boxes:
@@ -15262,7 +15305,7 @@ def _v18_import_yolo(
 
 
 def _v19_import_unreferenced_images(
-    project_id: str, root: Path, dataset_id: str, report: Dict[str, Any],
+    project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], import_context=None,
 ) -> None:
     """Import raw images omitted by a partial COCO/VOC annotation manifest.
 
@@ -15279,7 +15322,8 @@ def _v19_import_unreferenced_images(
         if rec is None:
             report['skipped_images'] += 1
             continue
-        _v18_set_image_split(project_id, rec['id'], _v18_split_from_path(src))
+        if not _v19_record_folder_source(project_id, root, src, rec['id'], import_context):
+            _v18_set_image_split(project_id, rec['id'], _v18_split_from_path(src))
         report.setdefault('imported_image_ids', []).append(rec['id'])
         report['imported_images'] += 1
         report['unreferenced_raw_images'] = int(report.get('unreferenced_raw_images') or 0) + 1
@@ -15346,6 +15390,8 @@ async def v18_import_dataset_auto(project_id: str, dataset_id: str, file: Upload
 # v19 background import jobs + selectable parsing
 # -----------------------------
 class V19ImportStartReq(BaseModel):
+    source_scan_digest: str = ""
+    folder_rules: Optional[List[Dict[str, Any]]] = None
     selected_paths: Optional[List[str]] = None
     label_mapping: Dict[str, str] = Field(default_factory=dict)
     create_labels: List[str] = Field(default_factory=list)
@@ -15662,6 +15708,9 @@ def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
 def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
     result = dict(job or {})
     result.pop("images", None)
+    result.pop('folder_confirmation', None)
+    if result.get('folder_confirmation_required'):
+        image_limit = 0
     # A readable but stale job.json is not proof that a worker still runs after
     # a failed state write. A diagnostic only invalidates that exact file
     # revision; a later successful write restores the original authority.
@@ -15767,7 +15816,7 @@ def _v19_fail_worker(project_id, job_id, error, *, job, report, started, committ
                         job=job, report=report, committed=committed)
 
 
-def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
+def v19_scan_zip(zip_path: Path, progress_cb=None, *, folder_confirmation=False) -> Dict[str, Any]:
     import xml.etree.ElementTree as ET
 
     images: List[Dict[str, Any]] = []
@@ -15778,6 +15827,11 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
     detected_format = "images"
     annotation_box_count = 0
     annotated_image_stems: set[str] = set()
+    annotated_paths = set()
+    source_classes = {}
+    nonempty_yolo_paths = set()
+    annotation_sources = set()
+    mapping_conflict = False
     last_scan_checkpoint = 0.0
     def scan_checkpoint(name):
         nonlocal last_scan_checkpoint
@@ -15791,10 +15845,11 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
             except Exception:
                 pass
     with zipfile.ZipFile(zip_path, "r") as zf:
-        _v19_check_zip_compression(zf)
+        planned, _ = _v19_check_zip_compression(zf)
+        canonical = {info.filename: path.as_posix() for info, path, is_dir in planned if not is_dir} if folder_confirmation else {}
         members = []
         infos = [
-            (v19_normalize_zip_path(info.filename), info)
+            (canonical.get(info.filename, v19_normalize_zip_path(info.filename)), info)
             for info in zf.infolist()
             if info.filename
             and not v19_normalize_zip_path(info.filename).endswith("/")
@@ -15846,6 +15901,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
             except Exception:
                 pass
 
+        image_paths = {row['path'] for row in images}
+        image_stems = zip_folders.sources_by_stem(image_paths) if folder_confirmation else {}
         # Match the worker's import priority: COCO -> VOC -> YOLO.
         for name, info in members:
             scan_checkpoint(name)
@@ -15886,10 +15943,27 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         "image_count": len(image_sets.get(key, set())),
                     })
             if rows:
-                external_classes = rows
-                annotation_box_count = sum(int(row["box_count"]) for row in rows)
-                detected_format = "COCO"
-                break
+                if not folder_confirmation:
+                    external_classes = rows
+                    annotation_box_count = sum(int(row['box_count']) for row in rows)
+                    detected_format = 'COCO'
+                    break
+                detected_format = 'COCO'
+                if data['annotations']:
+                    annotation_sources.add('COCO')
+                for row in rows:
+                    prior = source_classes.setdefault(row['class_id'], dict(row, box_count=0, image_count=0))
+                    mapping_conflict |= prior['name'] != row['name']
+                    prior['box_count'] += row['box_count']
+                    prior['image_count'] += row['image_count']
+                for image in data['images']:
+                    path = zip_folders.structured_image(image.get('file_name'), name, image_paths, image_stems)
+                    if path:
+                        mapping_conflict |= path in annotated_paths
+                        annotated_paths.add(path)
+        if source_classes:
+            external_classes = list(source_classes.values())
+            annotation_box_count = sum(row['box_count'] for row in external_classes)
 
         if not external_classes:
             stats: Dict[str, Dict[str, Any]] = {}
@@ -15914,6 +15988,11 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     if label not in seen:
                         row["image_count"] += 1
                         seen.add(label)
+                if folder_confirmation:
+                    path = zip_folders.structured_image(root.findtext('filename') or Path(name).stem, name, image_paths, image_stems)
+                    if path:
+                        mapping_conflict |= path in annotated_paths
+                        annotated_paths.add(path)
             if stats:
                 external_classes = sorted(stats.values(), key=lambda row: str(row["name"]))
                 annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
@@ -15921,6 +16000,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
 
         if not external_classes:
             names: List[str] = []
+            dictionaries = []
             for name, info in members:
                 scan_checkpoint(name)
                 low = name.lower()
@@ -15941,8 +16021,10 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     except Exception:
                         names = []
                     if names:
-                        break
-            if not names:
+                        if not folder_confirmation:
+                            break
+                        dictionaries.append(names)
+            if not names or folder_confirmation:
                 for name, info in members:
                     if Path(name).name.lower() not in {"classes.txt", "obj.names", "_darknet.labels"}:
                         continue
@@ -15957,7 +16039,16 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     except Exception:
                         names = []
                     if names:
-                        break
+                        if not folder_confirmation:
+                            break
+                        dictionaries.append(names)
+            if dictionaries:
+                names = dictionaries[0]
+                seen_names = {}
+                for dictionary in dictionaries:
+                    for class_id, name in enumerate(dictionary):
+                        if name:
+                            mapping_conflict |= seen_names.setdefault(class_id, name) != name
 
             counts: Dict[int, int] = {}
             image_sets: Dict[int, set] = {}
@@ -15974,6 +16065,10 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                     raise
                 except Exception:
                     continue
+                if folder_confirmation and Path(name).stem not in image_stems and 'labels' not in Path(name).parts:
+                    continue
+                if folder_confirmation and any(line.strip() for line in lines):
+                    nonempty_yolo_paths.add(name)
                 for line in lines:
                     parts = line.strip().split()
                     if len(parts) < 5:
@@ -16011,6 +16106,8 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
             if suffix == ".txt":
                 if base in {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}:
                     continue
+                if folder_confirmation and Path(name).stem not in image_stems and 'labels' not in Path(name).parts:
+                    continue
                 annotation_sidecars += 1
                 try:
                     if info.file_size > 32 * 1024 * 1024:
@@ -16018,6 +16115,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         continue
                     if zf.read(info).strip():
                         nonempty_annotations += 1
+                        annotation_sources.add('YOLO')
                 except (ServerZipImportError, _V19ImportStopped):
                     raise
                 except Exception:
@@ -16030,6 +16128,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         continue
                     if ET.fromstring(zf.read(info)).find("object") is not None:
                         nonempty_annotations += 1
+                        annotation_sources.add('Pascal VOC')
                 except (ServerZipImportError, _V19ImportStopped):
                     raise
                 except Exception:
@@ -16044,6 +16143,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         annotation_sidecars += 1
                         if raw["annotations"]:
                             nonempty_annotations += 1
+                            annotation_sources.add('COCO')
                 except (ServerZipImportError, _V19ImportStopped):
                     raise
                 except Exception:
@@ -16051,10 +16151,27 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
 
         associated_stems = {Path(row["path"]).stem for row in images}
         annotated_count = len(associated_stems.intersection(annotated_image_stems))
+        if folder_confirmation:
+            mapping_conflict |= bool(annotation_sources - {detected_format})
+            if detected_format == 'YOLO':
+                label_paths = {name for name, _ in members if name.lower().endswith('.txt')
+                               and Path(name).name.lower() not in {'classes.txt', 'obj.names', '_darknet.labels', 'train.txt', 'val.txt', 'test.txt'}}
+                label_stems = zip_folders.sources_by_stem(label_paths)
+                matched = {path: zip_folders.yolo_sidecar(path, label_paths, label_stems, image_stems) for path in image_paths}
+                annotated_paths = {path for path, sidecar in matched.items() if sidecar in nonempty_yolo_paths}
+                mapping_conflict |= bool(nonempty_yolo_paths - set(matched.values()))
+            if annotation_sources:
+                nonempty_annotations = max(1, nonempty_annotations)
+            else:
+                annotated_paths.clear()
+            annotated_count = len(annotated_paths)
+            for row in images:
+                if row['path'] in annotated_paths:
+                    row['annotation_format'] = detected_format
         scan_kind = (
             "ANNOTATION_INVALID" if unreadable_annotations and not nonempty_annotations
             else "RAW_UNANNOTATED" if not nonempty_annotations
-            else "MIXED" if annotation_box_count and annotated_count < len(associated_stems)
+            else "MIXED" if annotation_box_count and annotated_count < (len(images) if folder_confirmation else len(associated_stems))
             else "ANNOTATED_VALID" if annotation_box_count else "ANNOTATION_INVALID"
         )
 
@@ -16077,6 +16194,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
 
     return {
         "class_samples": class_samples,
+        **({'folder_mapping_conflict': mapping_conflict} if folder_confirmation else {}),
         "file_count": file_count,
         "image_count": len(images),
         "images": images,
@@ -16110,6 +16228,43 @@ def _v19_prepare_scan(project_id: str, scan: Dict[str, Any]) -> Dict[str, Any]:
         prepared["external_classes"] = []
         prepared["label_confirmation_required"] = False
     return prepared
+
+
+def _v19_folder_archive_digest(path: Path, check_stop=None) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b''):
+            if check_stop:
+                check_stop()
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _v19_store_folder_scan(project_id, job_id, zip_path, scan, check_stop=None):
+    source_sha = _v19_folder_archive_digest(zip_path, check_stop)
+    images = scan['images']
+    if len({row['path'] for row in images}) != len(images):
+        raise ValueError('ZIP 中存在重复规范化图片路径')
+    scan_digest = zip_folders.scan_identity(project_id, job_id, source_sha, images, scan)
+    scan.update(source_zip_sha256=source_sha, source_scan_digest=scan_digest,
+                folder_confirmation_required=True)
+    atomic_write_json(v19_job_dir(project_id, job_id) / 'scan-folders.json', {
+        'source_scan_digest': scan_digest, 'items': zip_folders.folder_rows(images),
+    })
+
+
+@app.get('/api/v19/projects/{project_id}/import/jobs/{job_id}/folders')
+def v19_import_folders(project_id: str, job_id: str, offset: int = Query(0, ge=0),
+                       limit: int = Query(50, ge=1, le=100)):
+    get_project(project_id)
+    job = v19_read_job(project_id, job_id)
+    scan = read_json(v19_job_dir(project_id, job_id) / 'scan-folders.json', {})
+    if not job.get('folder_confirmation_required') or not scan or scan.get('source_scan_digest') != job.get('source_scan_digest'):
+        raise HTTPException(409, detail='当前任务没有可用的文件夹扫描证据')
+    rows = scan['items']
+    return dict(source_scan_digest=scan['source_scan_digest'], total=len(rows),
+                items=rows[offset:offset + limit],
+                next_offset=offset + limit if offset + limit < len(rows) else None)
 
 
 def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -16186,7 +16341,7 @@ def _v19_cleanup_uncommitted_job(project_id: str, job_id: str, *, preserve_repor
     released = 0
     removed: List[str] = []
     for name in (
-        "source.zip", "source.zip.assembling", "scan-images.json",
+        "source.zip", "source.zip.assembling", "scan-images.json", "scan-folders.json",
         "scan-class-samples.json", "report.json",
     ):
         if preserve_report and name == "report.json":
@@ -16329,6 +16484,73 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
         _v19_job_diagnostic(project_id, job_id, error, operation="worker_exit")
 
 
+def _v19_apply_folder_classification(project_id, job, report):
+    from platform_core.negative_pool import NegativePool
+
+    plan = job['folder_confirmation']
+    rule_digest = job['folder_confirmation_digest']
+    if (zip_folders.digest(plan) != rule_digest or plan['project_id'] != project_id or plan['job_id'] != job['id']):
+        raise ValueError('冻结的文件夹归集身份已变化')
+    materials = material_store(project_id)
+    pool = NegativePool(materials)
+    applied, pending = 0, 0
+    errors = {}
+    examples = []
+    ids = report.get('imported_image_ids') or []
+    for offset in range(0, len(ids), 500):
+        grouped = {}
+        for row in materials.get_many(ids[offset:offset + 500]):
+            source = row.get('zip_folder_source') or {}
+            key = source.get('folder_key')
+            rule = plan['rules'].get(key)
+            if (not rule or row.get('import_batch_id') != job['id'] or source.get('job_id') != job['id']
+                    or source.get('rule_digest') != rule_digest or source.get('source_zip_sha256') != plan['source_zip_sha256']
+                    or source.get('source_scan_digest') != plan['scan_digest']
+                    or zip_folders.folder_key(source.get('source_path') or '.') != key
+                    or any(source.get(field) != value for field, value in rule.items())):
+                continue
+            if len(examples) < 10:
+                examples.append({'source_path': source['source_path'], 'material_id': row['id'],
+                                 'usage_intent': source['usage_intent']})
+            if source.get('classification_status') == 'applied':
+                applied += 1
+            elif rule['sample_type'] == 'negative':
+                grouped.setdefault(key, []).append(row['id'])
+        for key, chunk in grouped.items():
+            try:
+                pool.members(chunk, category_ids=plan['rules'][key]['negative_category_ids'],
+                             zip_folder={'job_id': job['id'], 'rule_digest': rule_digest, 'folder_key': key})
+                applied += len(chunk)
+            except Exception as error:
+                pending += len(chunk)
+                if len(errors) < 20:
+                    errors.setdefault(key, str(error)[:180])
+    report['folder_classification'] = {
+        'status': 'pending' if pending else 'applied', 'applied': applied, 'pending': pending,
+        'unavailable': max(0, len(ids) - applied - pending),
+        'examples': examples, 'errors': [{'folder_key': key, 'error': reason} for key, reason in errors.items()],
+    }
+
+
+@app.post('/api/v19/projects/{project_id}/import/jobs/{job_id}/retry-folder-classification')
+def v19_retry_folder_classification(project_id: str, job_id: str):
+    get_project(project_id)
+    with _v19_stop_fence(project_id, job_id):
+        job = v19_read_job(project_id, job_id)
+        if (job.get('status') not in {'done', 'failed'} or job.get('history_hidden')
+                or not job.get('folder_confirmation')):
+            raise HTTPException(409, detail='当前任务不具备归集恢复条件')
+        report = v19_read_import_report(project_id, job_id, job)
+        if not report.get('imported_image_ids'):
+            raise HTTPException(409, detail='没有已入库的素材身份可供修复')
+        _v19_apply_folder_classification(project_id, job, report)
+        if not (report['folder_classification']['applied'] or report['folder_classification']['pending']):
+            raise HTTPException(409, detail='没有可核验的正式素材可供修复')
+        job['report'] = report
+        _v19_write_job_locked(project_id, job)
+        return v19_public_job(project_id, v19_read_job(project_id, job_id))
+
+
 def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     job = v19_read_job(project_id, job_id)
     if job.get("status") in {"done", "cancelled", "canceled", "failed"}:
@@ -16386,6 +16608,10 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                         processing_seconds=round(max(0.0, time.time()-processing_started), 1),
                         **metrics,
                     )
+                folder_plan = job.get('folder_confirmation')
+                if folder_plan and (zip_folders.digest(folder_plan) != job.get('folder_confirmation_digest')
+                                    or _v19_folder_archive_digest(zip_path, lambda: _v19_check_stop(project_id, job_id)) != folder_plan['source_zip_sha256']):
+                    raise ValueError('ZIP 来源或冻结规则已变化，不能导入')
                 _v18_safe_extract(
                     zip_path,
                     extracted,
@@ -16415,6 +16641,15 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                     "confirmed_at": str(job.get("label_confirmed_at") or ""),
                     "scan_kind": str(job.get("scan_kind") or ""),
                 }
+                if folder_plan:
+                    images = v19_read_scan_images(project_id, job_id)
+                    if zip_folders.scan_identity(project_id, job_id, folder_plan['source_zip_sha256'], images, job) != folder_plan['scan_digest']:
+                        raise ValueError('ZIP 图片扫描证据已变化')
+                    paths = {row['path'] for row in images}
+                    import_context.update(folder_confirmation=folder_plan,
+                                          folder_confirmation_digest=job['folder_confirmation_digest'],
+                                          scan_image_paths=paths, image_stems=zip_folders.sources_by_stem(paths),
+                                          folder_image_paths=set(selected_paths) if selected_paths else paths)
                 annotation_started = time.time()
                 last_import_emit = 0.0
                 def import_progress(done,total,msg):
@@ -16469,7 +16704,10 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                         import_context=import_context,
                     )
                 if imported:
-                    _v19_import_unreferenced_images(project_id, parse_root, dataset_id, report)
+                    if folder_plan:
+                        _v19_import_unreferenced_images(project_id, parse_root, dataset_id, report, import_context)
+                    else:
+                        _v19_import_unreferenced_images(project_id, parse_root, dataset_id, report)
                 if not imported or report.get("imported_images", 0) == 0:
                     raise RuntimeError("没有识别到可导入的数据。请确认 ZIP 内包含图片，并检查目录结构是否正确。")
                 # Material provenance is independent of annotation provenance:
@@ -16512,6 +16750,13 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                             _v19_assert_frozen_mapping_targets_active(
                                 project_id, frozen_mapping,
                             )
+                            if folder_plan:
+                                active = {str(row['code']) for row in active_label_options(project_label_items(get_project(project_id)))}
+                                if any(not set(rule['intended_label_codes']) <= active for rule in folder_plan['rules'].values()):
+                                    raise ValueError('已确认目标标签失效，不能提交素材')
+                                # Keep recovery IDs before the original material commit. The
+                                # retry path still verifies each ID against committed provenance.
+                                v19_update_job(project_id, job_id, report=report)
                             _v50_end_image_batch(save=True)
                             committed = True
                     except BaseException:
@@ -16526,7 +16771,10 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                         message="素材索引与标注投影已提交",
                         **metrics,
                     )
-        if committed and job.get('upload_sample_type') in {'positive', 'negative'}:
+        if committed and job.get('folder_confirmation'):
+            with _v19_stop_fence(project_id, job_id):
+                _v19_apply_folder_classification(project_id, job, report)
+        if committed and not job.get('folder_confirmation') and job.get('upload_sample_type') in {'positive', 'negative'}:
             # Original ZIP bytes and formal annotations have already committed.
             # Classification is a separate idempotent association: a failure
             # must never roll back, re-import, or duplicate those materials.
@@ -16607,6 +16855,7 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
 
 
 class V19MultipartUploadReq(BaseModel):
+    folder_confirmation: bool = False
     file_name: str
     file_size: int = Field(gt=0)
     fingerprint: str = ""
@@ -16655,6 +16904,7 @@ def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19Mu
         current = {
             "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
             "batch_id": job_id, "file_name": filename,
+            "folder_confirmation_requested": payload.folder_confirmation and not payload.algorithm_id,
             "file_size_mb": round(int(payload.file_size) / 1024 / 1024, 2),
             "uploaded_bytes": int(session.get("received_bytes") or 0),
             "upload_progress": float(session.get("upload_progress") or 0),
@@ -16679,6 +16929,8 @@ def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19Mu
     if payload.algorithm_id and frozen_algorithm and frozen_algorithm != payload.algorithm_id:
         raise HTTPException(409, detail='ZIP 目标算法已冻结，不能切换算法续传')
     if payload.algorithm_id:
+        if current.get('folder_confirmation_requested'):
+            raise HTTPException(409, detail='文件夹确认任务不绑定算法')
         current['upload_algorithm_id'] = payload.algorithm_id
     v19_write_job(project_id, current)
     return {"ok": True, **session, "job": v19_public_job(project_id, current, image_limit=0)}
@@ -16876,7 +17128,11 @@ def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
             )
 
         scan_total_started = time.time()
-        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, scan_progress))
+        folder_confirmation = bool(v19_read_job(project_id, upload_id).get('folder_confirmation_requested'))
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, scan_progress, folder_confirmation=True)
+                                 if folder_confirmation else v19_scan_zip(zip_path, scan_progress))
+        if folder_confirmation:
+            _v19_store_folder_scan(project_id, upload_id, zip_path, scan, check_stop=lambda: _v19_check_stop(project_id, upload_id))
         _v19_check_stop(project_id, upload_id)
         scan_seconds = round(max(0.0, time.time() - scan_total_started), 2)
         if scan.get("image_count", 0) == 0:
@@ -17029,7 +17285,8 @@ def v19_complete_multipart_upload(project_id: str, upload_id: str):
 
 
 @app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs")
-async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFile = File(...)):
+async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFile = File(...),
+                                folder_confirmation: bool = Form(False)):
     get_project(project_id)
     filename = safe_filename(file.filename or "dataset.zip")
     if Path(filename).suffix.lower() != ".zip":
@@ -17058,7 +17315,10 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         raise HTTPException(status_code=400, detail="上传失败：ZIP 文件为空。")
     scan_started = time.time()
     try:
-        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, folder_confirmation=True)
+                                 if folder_confirmation is True else v19_scan_zip(zip_path))
+        if folder_confirmation is True:
+            _v19_store_folder_scan(project_id, job_id, zip_path, scan)
     except zipfile.BadZipFile:
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。")
@@ -17188,12 +17448,51 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
             return _v19_start_import_job_locked(project_id, job_id, payload)
 
 
+def _v19_confirm_folder_rules(project_id, job_id, job, payload):
+    from platform_core.negative_pool import NegativePool
+
+    frozen = job.get('folder_confirmation')
+    if (not payload.source_scan_digest or payload.source_scan_digest != job.get('source_scan_digest')
+            or payload.folder_rules is None):
+        raise HTTPException(409, detail='文件夹待确认或扫描证据已变化，请重新读取当前任务')
+    if payload.algorithm_id or payload.sample_type or payload.intended_label_codes or payload.negative_category_ids:
+        raise HTTPException(422, detail='文件夹规则不能与整包归类或算法绑定混用')
+    if job.get('folder_mapping_conflict'):
+        raise HTTPException(409, detail='外部类别身份或标注路径不唯一，请修正目录或拆分 ZIP 后导入')
+    if job.get('unreadable_annotation_files') or (job.get('scan_kind') == 'ANNOTATION_INVALID' and not job.get('external_classes')):
+        raise HTTPException(409, detail='ZIP 中的外部标注无法核验，请修复标注后重新上传')
+    images = v19_read_scan_images(project_id, job_id)
+    if zip_folders.scan_identity(project_id, job_id, job['source_zip_sha256'], images, job) != payload.source_scan_digest:
+        raise HTTPException(409, detail='扫描图片清单已变化，无法确认')
+    if frozen:
+        active = {code for rule in frozen['rules'].values() for code in rule['intended_label_codes']}
+        categories = {cat for rule in frozen['rules'].values() for cat in rule['negative_category_ids']}
+    else:
+        active = {str(row['code']) for row in active_label_options(project_label_items(get_project(project_id)))}
+        categories = {str(row['id']) for row in NegativePool(material_store(project_id)).categories() if row.get('enabled')}
+    try:
+        selected, rules = zip_folders.normalize_rules(images, payload.selected_paths, payload.folder_rules, active, categories)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(409 if frozen else 422, detail=str(error)) from error
+    if frozen and (rules != frozen['rules'] or selected != frozen['selected_paths']
+                   or (payload.label_mapping and payload.label_mapping != frozen['label_mapping'])):
+        raise HTTPException(409, detail='该任务的文件夹或标签映射已冻结，不能更改')
+    return {'scan_digest': payload.source_scan_digest, 'selected_paths': selected, 'rules': rules}
+
+
 def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19ImportStartReq):
     job = v19_read_job(project_id, job_id)
     if job.get("history_hidden"):
         raise HTTPException(status_code=409, detail="该记录已清空历史并释放临时文件，不能重复启动")
     if job.get("cancel_requested"):
         raise HTTPException(status_code=409, detail="该 ZIP 任务正在取消，不能确认标签或启动正式导入")
+    folder_plan = None
+    if job.get('folder_confirmation_required'):
+        folder_plan = _v19_confirm_folder_rules(project_id, job_id, job, payload)
+        if job.get('folder_confirmation') and job.get('status') == 'done':
+            return v19_public_job(project_id, job)
+    elif payload.folder_rules is not None or payload.source_scan_digest:
+        raise HTTPException(409, detail='该任务没有文件夹扫描证据')
     if job.get("status") == "running":
         return v19_public_job(project_id, job)
     if job.get("status") not in {"selecting", "failed"}:
@@ -17271,7 +17570,8 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
                     confirmation, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
                 ).encode("utf-8")).hexdigest(),
             })
-            v19_write_job(project_id, job)
+            if folder_plan is None:
+                v19_write_job(project_id, job)
         remember_project_label_aliases(project_id, classes, resolved)
     elif payload.label_mapping:
         raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
@@ -17279,8 +17579,8 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
     # Raw ZIPs default to unclassified import, but an explicit positive/negative
     # upload intent remains optional and must retain its existing association.
     # The classification is never formal GT, even for empty sidecar files.
-    if (job.get("sample_classification_required") or str(payload.sample_type or "").strip()
-            or payload.intended_label_codes or payload.negative_category_ids):
+    if folder_plan is None and (job.get("sample_classification_required") or str(payload.sample_type or "").strip()
+                                or payload.intended_label_codes or payload.negative_category_ids):
         from platform_core.negative_pool import NegativePool
         chosen_type = str(
             payload.sample_type
@@ -17324,7 +17624,14 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
         job['upload_algorithm_id'] = target_algorithm
 
     selected_paths = payload.selected_paths or []
-    if selected_paths:
+    if folder_plan is not None:
+        selected_paths = folder_plan['selected_paths']
+        if not job.get('folder_confirmation'):
+            folder_plan.update(label_mapping=dict(job.get('label_mapping') or {}),
+                               source_zip_sha256=job['source_zip_sha256'], project_id=project_id, job_id=job_id)
+            job['folder_confirmation'] = folder_plan
+            job['folder_confirmation_digest'] = zip_folders.digest(folder_plan)
+    elif selected_paths:
         allowed = {x.get("path") for x in v19_read_scan_images(project_id, job_id)}
         selected_paths = [x for x in selected_paths if x in allowed]
         if not selected_paths:

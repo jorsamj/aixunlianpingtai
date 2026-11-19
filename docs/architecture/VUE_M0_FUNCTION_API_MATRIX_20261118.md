@@ -1,4 +1,4 @@
-# 功能/API迁移矩阵（M0基线2026-11-18，当前M4-B1）
+# 功能/API迁移矩阵（M0基线2026-11-18，当前M4-C1）
 
 M4-B1 的项目公共负样本池和训练正负样本选择复用 v61 负样本池、v62 训练选材及原冻结服务。历史算法级操作保留 v1，项目级成员操作使用 v2 回执，恢复状态按登录账号和项目隔离。冻结合并复用原引用幂等机制并校验提交时的证据修订。真实训练、现场和生产验收待确认。详见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m4-b1-项目公共负样本池)。
 
@@ -130,3 +130,10 @@ M2收尾先推送3e8e2291与d635fd1f，再开始M3-A代码07b98d236f8dc3b45856c9
 M3-A 冻结整改提交 `f71aae79`，同范围重试使用 UUIDv4 并恢复已冻结引用。M3-B 和 M3-C 的验收边界见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m3-c-原生训练报告与独立评测)。
 
 M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注的历史值分开，旧评测返回恢复原版本详情与筛选上下文。M3-C 只读范围为 `FUNCTIONAL_COMPLETE`，验收为 `CI_PENDING`，待独立复审。
+
+
+### M4-C1 ZIP 归集
+
+| 原入口 | 实际覆盖 | API 与 Owner | 迁移 / 验收 |
+|---|---|---|---|
+| 素材库 → ZIP 数据导入 | 上传恢复、按图片目录确认用途和归集、外部标签映射、取消与结果、安全重试负样本分类 | 原 v19 ZIP Runtime、新增 v19 `folders` 和 `retry-folder-classification`、MaterialRepository、AnnotationRepository、项目公共负样本池 | 正式 ZIP 功能 `FUNCTIONAL_COMPLETE`，SPA 仍为 `LEGACY_BRIDGE`。CI 以准确 SHA 快照为准。固定训练 Val 及现场未验证。 |
