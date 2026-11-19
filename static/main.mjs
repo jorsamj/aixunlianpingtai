@@ -37,11 +37,11 @@ import {installTrainingMaterialSummaryRuntime} from './modules/training-material
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
-import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=42.25.615';
+import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults, trainingConfigurationDefaults} from './modules/training-draft.js?v=42.25.628';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
 import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=42.25.592';
-import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=4226518';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=42.25.628';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
@@ -150,7 +150,7 @@ window.PlatformCore = {
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
-  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults},
+  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults, trainingConfigurationDefaults},
   trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
   reports: {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml, algorithmReportHtml, mountAlgorithmReport},

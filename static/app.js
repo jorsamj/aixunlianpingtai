@@ -3980,7 +3980,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
 
   // ---------------------- training creation from algorithm ----------------------
-  function baseCfg428(){return{model:'',epochs:150,time:null,imgsz:640,batch:8,device:'auto',precision:'auto',optimizer:'auto',patience:40,early_stopping_enabled:false,workers:0,lr0:.01,lrf:.01,momentum:.937,weight_decay:.0005,warmup_epochs:3,close_mosaic:10,mosaic:1,mixup:0,hsv_h:.015,hsv_s:.7,hsv_v:.4,degrees:0,translate:.1,scale:.5,shear:0,perspective:0,flipud:0,fliplr:.5,cache:'False',pretrained:true,amp:true,rect:false,cos_lr:false,freeze:0,multi_scale:0,save_period:-1,seed:0,deterministic:true,eval_interval:10,eval_metric:'map50',continue_threshold:0,stop_threshold:.90,val_max_samples:0,queue_priority:50,auto_convert_targets:[]}}
+  function baseCfg428(){return window.PlatformCore.trainingDraft.trainingConfigurationDefaults()}
   function trainingConfig428(){const draft=state.trainingDraft||{},resource=draft.resource||{},c=Object.assign(baseCfg428(),draft.config||{});if(resource.device&&resource.device!=='auto')c.device=resource.device;if(resource.batch!=null)c.batch=resource.batch;if(resource.workers!=null)c.workers=resource.workers;if(resource.cache!=null)c.cache=resource.cache===false?'False':resource.cache;if(resource.strategy)c.resource_strategy=resource.strategy;if(resource.profile)c.resource_profile=resource.profile;if(resource.gpuPolicy)c.gpu_policy=resource.gpuPolicy;return c}
   window.trainingConfigCanonical428=trainingConfig428;
   function selectedTarget428(){const id=document.getElementById('tr429Target')?.value||document.getElementById('tr428Target')?.value||'';return(state.targets||[]).find(x=>String(x.id)===String(id))}

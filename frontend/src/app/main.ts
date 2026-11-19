@@ -24,6 +24,7 @@ export const useWorkspace=defineStore('workspace',()=>{
 export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/',component:{render:()=>h('p','当前账号没有可用项目。')}},
   {path:'/projects/:projectId/algorithms',name:'algorithms',component:()=>import('./Algorithms.vue')},
+  {path:'/projects/:projectId/training/create',name:'training-create',component:()=>import('./TrainingCreate.vue')},
   {path:'/projects/:projectId/legacy/:page',name:'legacy',component:{render:()=>null}},
   {path:'/:pathMatch(.*)*',name:'not-found',component:{render:()=>h('p','页面不存在，请从侧栏选择业务入口。')}},
 ]});

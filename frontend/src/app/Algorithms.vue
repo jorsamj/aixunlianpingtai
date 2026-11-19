@@ -276,7 +276,7 @@ watch(selected,()=>{
    <footer>
     <el-button :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ selected===algorithm.id?'收起详情':'详情与版本' }}</el-button>
     <el-button :disabled="unconfirmed&&!external(algorithm)" @click="edit(algorithm.id)">{{ external(algorithm)?'基本信息':'基本编辑' }}</el-button>
-    <a v-if="algorithm.trainable===true" :href="original(algorithm.id,'train')">训练 · 原流程</a>
+    <a v-if="algorithm.trainable===true" :href="'/app/#/projects/'+encodeURIComponent(projectId)+'/training/create?algorithm='+encodeURIComponent(algorithm.id)">训练</a>
     <a :href="original(algorithm.id,'algorithm-report')">算法报告</a>
     <a v-if="external(algorithm)" :href="legacyUrl(projectId,'平台对接')">外部同步 · 原流程</a>
     <a v-else :href="original(algorithm.id,'delete-algorithm')">删除算法 · 原流程</a>
