@@ -15816,7 +15816,7 @@ def _v19_fail_worker(project_id, job_id, error, *, job, report, started, committ
                         job=job, report=report, committed=committed)
 
 
-def v19_scan_zip(zip_path: Path, progress_cb=None, *, folder_confirmation=False) -> Dict[str, Any]:
+def v19_scan_zip(zip_path: Path, progress_cb=None, folder_confirmation=False) -> Dict[str, Any]:
     import xml.etree.ElementTree as ET
 
     images: List[Dict[str, Any]] = []
