@@ -8,6 +8,7 @@ test('native report preserves task origin, pages history, and reads frozen evalu
   const paths:string[]=[];
   const reportBase={ok:true,project_id:'p',job_id:'t',algorithm_id:'a',version_id:'v',state:'AVAILABLE',
     val_metrics:{map50:0,map50_95:.4},test_metrics:{},test_status:'not_generated',
+    configuration:{workers:4},actual_parameters:{workers:0},historical_parameters:{batch:16},
     result:{status:'FAILED',best_epoch:1,completed_epochs:2,completion_reason:'recorded_failure'}};
   await page.route('**/app/**',route=>{
     const path=new URL(route.request().url()).pathname.slice(5)||'index.html';
@@ -49,6 +50,9 @@ test('native report preserves task origin, pages history, and reads frozen evalu
   await expect(page.getByRole('heading',{name:'报告已记录'})).toBeVisible();
   await expect(page.getByText('recorded_failure',{exact:true})).toBeVisible();
   await expect(page.getByRole('heading',{name:'独立 Test 指标'}).locator('..')).toContainText('未提供');
+  for(const [label,value] of [['请求配置','4'],['实际执行参数','0'],['历史参数（来源未标注）','16']]){
+    await expect(page.getByRole('heading',{name:label,exact:true}).locator('xpath=following-sibling::dl[1]').locator('dd')).toHaveText(value);
+  }
   await page.getByRole('button',{name:'训练过程'}).click();
   await expect(page.getByRole('img',{name:'Val 指标（原记录数值）'}).locator('canvas')).toBeVisible();
   await page.getByRole('button',{name:'下一页 Epoch'}).click();
@@ -73,9 +77,13 @@ test('native report preserves task origin, pages history, and reads frozen evalu
   await expect(page).toHaveURL(/training\/tasks\?query=needle&status=FAILED$/);
   await page.goto('/app/#/projects/p/training/reports/wrong');
   await expect(page.getByText('报告身份不一致',{exact:true})).toBeVisible();
-  const source='/projects/p/algorithms?algorithm=a&version=v&version_page=2';
+  const source='/projects/p/algorithms?algorithm=a&version=v&version_page=2&query=smoke';
   await page.goto('/app/#/projects/p/algorithms/a/versions/v/report?back='+encodeURIComponent(source));
   await expect(page.getByRole('heading',{name:'报告已记录'})).toBeVisible();
+  await page.getByRole('button',{name:'独立评测',exact:true}).click();
+  await expect(page.getByText('scope-frozen',{exact:true})).toBeVisible();
+  const href=await page.getByRole('link',{name:/继续训练.*LEGACY_BRIDGE/}).getAttribute('href');
+  expect(new URL(href!,'https://app.example.test').searchParams.get('return_to')).toBe(source);
   await page.getByRole('link',{name:'返回来源'}).click();
   await expect(page).toHaveURL('/app/#'+source);
   await expect(page.getByRole('dialog',{name:'模型版本详情'})).toBeVisible();

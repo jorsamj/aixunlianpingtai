@@ -24,9 +24,11 @@ test('vision API protocol and output capability persist across save refresh and 
  await expect(modelPanel).toBeVisible();
  const persistedBeforeEdit=await (await request.get('/api/v35/model-configs')).json();
  expect(persistedBeforeEdit.items.find(item=>item.id===saved.id)?.base_url).toBe(endpoint);
- // A late snapshot refresh can replace state while the rendered row is still visible.
+ const editConfig=modelPanel.locator('tbody tr').filter({hasText:'Responses隔离配置'}).getByRole('button',{name:'配置',exact:true});
+ // Simulate a cleared cache only after the catalogue has rendered the durable row.
+ await expect(editConfig).toBeVisible();
  await page.evaluate(()=>{state.modelConfigs=[]});
- await modelPanel.locator('tbody tr').filter({hasText:'Responses隔离配置'}).getByRole('button',{name:'配置',exact:true}).click();
+ await editConfig.click();
  const edit=page.getByRole('dialog',{name:'编辑视觉模型配置'});await edit.locator('summary').filter({hasText:'高级设置'}).click();
  await expect(edit.locator('#mcUrl')).toHaveValue(endpoint);await expect(edit.locator('#mcApiProtocol')).toHaveValue('responses');await expect(edit.locator('#mcStructuredOutput')).toHaveValue('prompt');await expect(edit.locator('#mcApiKey')).toHaveValue('');
  await edit.locator('#mcApiProtocol').selectOption('auto');

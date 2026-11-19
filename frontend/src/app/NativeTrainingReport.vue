@@ -33,9 +33,16 @@ const back=computed(()=>{
   }
   return {name:route.name==='version-report'?'algorithms':'training-tasks',params:{projectId}};
 });
-const originalEvaluation=computed(()=>canonical.value?legacyUrl(projectId,'算法列表',canonical.value.algorithmId,canonical.value.versionId,'evaluation'):'');
+function versionBridge(action:'report'|'evaluation',algorithmId:string,versionId:string){
+  const source=typeof back.value==='string'?router.resolve(back.value):null;
+  const url=legacyUrl(projectId,'算法列表',algorithmId,versionId,action);
+  return source?.name==='algorithms'
+    ?url+'&'+new URLSearchParams({return_to:source.fullPath})
+    :url;
+}
+const originalEvaluation=computed(()=>canonical.value?versionBridge('evaluation',canonical.value.algorithmId,canonical.value.versionId):'');
 const originalReport=computed(()=>canonical.value
-  ?legacyUrl(projectId,'算法列表',canonical.value.algorithmId,canonical.value.versionId,'report')
+  ?versionBridge('report',canonical.value.algorithmId,canonical.value.versionId)
   :legacyUrl(projectId,'训练任务','','','task-report')+'&'+new URLSearchParams({task_id:selection.value?.jobId||String(route.params.jobId||'')}));
 const states:Record<string,string>={AVAILABLE:'报告已记录',PARTIAL:'仅有部分训练结果',NOT_GENERATED:'报告尚未生成',NOT_FOUND:'报告或任务记录不存在',ERROR:'报告读取异常',DEFERRED:'报告超出读取边界'};
 const metricFields=[['Precision','precision'],['Recall','recall'],['mAP50','map50'],['mAP50-95','map50_95']] as const;
@@ -118,7 +125,7 @@ watch(()=>route.path,load,{immediate:true});
       <div v-if="pane==='overview'" class="report-grid">
         <section class="report-panel"><h3>Val 指标</h3><ReadOnlyFacts :fields="metricFields.map(([label,key])=>[label,report?.val_metrics?.[key]])"/></section>
         <section class="report-panel"><h3>独立 Test 指标</h3><ReadOnlyFacts :fields="[['正式评测状态',report.test_status],...metricFields.map(([label,key]):[string,unknown]=>[label,report?.test_metrics?.[key]])]"/></section>
-        <section class="report-panel"><h3>训练配置与实际参数</h3><ReadOnlyFacts :fields="Object.entries(report.configuration||{})"/><h4>已记录实际执行参数</h4><ReadOnlyFacts :fields="Object.entries(report.actual_parameters||{})"/></section>
+        <section class="report-panel"><h3>训练参数</h3><h4>请求配置</h4><ReadOnlyFacts :fields="Object.keys(report.configuration||{}).length?Object.entries(report.configuration||{}):[['参数记录',null]]"/><h4>实际执行参数</h4><ReadOnlyFacts :fields="Object.keys(report.actual_parameters||{}).length?Object.entries(report.actual_parameters||{}):[['参数记录',null]]"/><template v-if="Object.keys(report.historical_parameters||{}).length"><h4>历史参数（来源未标注）</h4><ReadOnlyFacts :fields="Object.entries(report.historical_parameters||{})"/></template></section>
         <section class="report-panel"><h3>可信度与质量诊断</h3><ReadOnlyFacts :fields="[['质量状态',report.quality_status],...Object.entries(report.credibility||{})]"/><ul v-if="report.warnings?.length"><li v-for="(warning,index) in report.warnings" :key="index">{{warning}}</li></ul></section>
         <section v-if="Object.keys(report.best_metrics||{}).length" class="report-panel"><h3>已记录最佳结果</h3><ReadOnlyFacts :fields="metricFields.map(([label,key])=>[label,report?.best_metrics?.[key]])"/></section>
       </div>

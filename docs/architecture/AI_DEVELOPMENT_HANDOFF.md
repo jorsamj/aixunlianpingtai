@@ -124,3 +124,10 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - Windows Node Agent CI **UNRESOLVED**。运行 `44450248821` 的 Windows Job `135312124779` 日志为 860 passed、1 failed、7 skipped。失败断言只打印 FAILED，没有 `outcome.error` 或进程诊断。本机定向用例通过。该测试直接构造 deployment lease，走下载和校验，不调用 M3-B 改动的 `read_payload_version(max_bytes=…)`。新增原样断言失败时显示错误原因，待同类 Runner 给出证据。
 - 本地验证为报告/评测投影与 API（含 Windows 单项）20 项、旧入口和静态合同 Node 28 项、Chrome 2 项，以及 SPA 类型检查、双构建、离线闭包、Python 编译和 Diff 检查。没有提交实际训练、评测或发布任务。CI 异步验收。
 - 下一步先独立审计本批导航、冻结证据及旧操作边界，按新 SHA 判断 Windows 回归。如需迁移评测决策写操作，先核对原 decision、benchmark、candidate set 和回执合同。
+
+### M3-C 独立审计整改
+
+- 审计基线 `d822ec1f4e01a90bbbb841f1b24506069a25f1d5`。Windows PR Run `44457940238` 的合同 Job `135337448930` 报 `NoSuchProcess`。本地强制子进程在身份采样前退出，复现于 `launch_process()` 的 `psutil.Process(pid)`。Windows 现由 Popen 持有的原始进程句柄读取内核创建时间，POSIX 和后续 PID、创建时间、命令摘要三项核验沿用原逻辑。
+- Frontend Run `44457931106` 的 Job `135337505431` 制品 `14499331406` 显示 POST 和读取均返回目标配置，失败画面仍在等待列表渲染。用例现在等待目标行出现，再清空内存缓存验证原编辑回退。模型配置业务代码保留。
+- v44 报告将请求配置、实际执行参数和来源未标注的历史参数分别呈现，缺失显示未提供，0 保留。旧报告和评测工作台返回新版时恢复同项目算法筛选、分页与已核验的版本详情。交接动作仍由原 Owner 一次性消费。现有冻结图片端点的评测 ID、图片 ID、Snapshot 归属及内容摘要校验保留。
+- 本轮完成定向本地验证。发布与验收以交付消息中的最终 SHA 和 Actions 快照为准。M3-C 待复审和 CI 验收，不启动 M4。

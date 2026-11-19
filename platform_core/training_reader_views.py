@@ -106,8 +106,19 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
         payload, payload_state = _read_task_payload(task, artifacts, 512 * 1024)
         if payload_state in ('ERROR','DEFERRED'):
             warnings.append('任务配置无法核验或超出读取边界，其他已记录结果仍可查看。')
-    configuration={**fields(payload,CONFIG),**fields(legacy,CONFIG),**fields(report.get('actual_train_params'),CONFIG)}
-    actual=next((item for item in (finalized.get('actual_train_params'), report.get('actual_train_params'), legacy.get('actual_train_params')) if isinstance(item,dict) and item),{})
+    configuration={
+        **fields(payload,CONFIG),
+        **fields(report.get('requested_train_params'),CONFIG),
+        **fields(legacy.get('requested_train_params'),CONFIG),
+        **fields(finalized.get('requested_train_params'),CONFIG),
+    }
+    actual={
+        **fields(legacy.get('actual_train_params'),CONFIG),
+        **fields(report.get('actual_train_params'),CONFIG),
+        **fields(finalized.get('actual_train_params'),CONFIG),
+    }
+    historical={key:value for key,value in fields(legacy,CONFIG).items()
+                if key not in configuration and key not in actual}
     result=fields({**legacy,**finalized},('status','created_at','started_at','finished_at','elapsed_seconds',
         'completed_epochs','requested_epochs','current_epoch','best_epoch','completion_reason','completion_message',
         'quality_gate_reason','early_stopping_reason','training_outcome','snapshot_id','dataset_revision_id'))
@@ -129,7 +140,7 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
     best = report.get('best_metrics')
     return {'state':state,'source':'DURABLE_FINALIZED' if committed else 'LEGACY_RECORDED',
         'message':'仅展示已记录结果，未生成完整报告' if state in ('PARTIAL','NOT_GENERATED') else '',
-        'configuration':configuration,'actual_parameters':fields(actual,CONFIG),'result':result,
+        'configuration':configuration,'actual_parameters':actual,'historical_parameters':historical,'result':result,
         'best_metrics':metrics(best) if isinstance(best,dict) and best else {},
         'val_metrics':metrics(canonical['metrics']),'test_metrics':metrics(evaluation.get('metrics') if isinstance(evaluation,dict) else {}),
         'test_status':text(evaluation.get('status')) if isinstance(evaluation,dict) else None,

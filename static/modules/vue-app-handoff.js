@@ -62,7 +62,23 @@ export async function resumeVueHandoff({state,navigate,request,windowRoot=window
  await navigate(page);
  if(expectedEvaluation)await readAlgorithm();
  if(state.project?.id!==project||state.page!==page)throw new Error('原业务页未就绪，未执行操作');
- const link=documentRoot.createElement('a');link.textContent='返回新版算法库';link.href=`/app/#/projects/${encodeURIComponent(project)}/algorithms${algorithmId?'?algorithm='+encodeURIComponent(algorithmId):''}`;
+ const link=documentRoot.createElement('a');
+ link.textContent='返回新版算法库';
+ const path=`/projects/${encodeURIComponent(project)}/algorithms`;
+ const back=new URLSearchParams();
+ const [returnPath,returnQuery]=(query.get('return_to')||'').split('?',2);
+ if(algorithmId)back.set('algorithm',algorithmId);
+ if(action==='report'||action==='evaluation'){
+  back.set('version',versionId);
+  if(returnPath===path){
+   const original=new URLSearchParams(returnQuery);
+   for(const key of ['query','algorithm_type','industry','source_type','training_state','category_ids','sort','page','version_page']){
+    const value=original.get(key);
+    if(value)back.set(key,value);
+   }
+  }
+ }
+ link.href=`/app/#${path}${back.size?'?'+back:''}`;
  Object.assign(link.style,{position:'fixed',right:'24px',bottom:'24px',zIndex:'10001',background:'#fff',color:'#222',padding:'12px 18px',border:'1px solid #aaa',borderRadius:'8px'});documentRoot.body.append(link);
  // Refreshing the old page must not replay an action or reopen a form.
  windowRoot.history.replaceState(null,'',windowRoot.location.pathname);

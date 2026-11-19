@@ -762,7 +762,7 @@ function finishCanonicalStartup() {
   if (state.uiReady !== true || !state.__startupCanonicalPainted) return;
   if(!vueHandoffStarted&&new URLSearchParams(location.search).get('spa_handoff')==='1'){
     vueHandoffStarted=true;
-    void import('./modules/vue-app-handoff.js?v=42.25.630').then(module=>module.resumeVueHandoff({state,navigate:page=>window.setPage(page),request:api})).catch(error=>window.toast(error.message));
+    void import('./modules/vue-app-handoff.js?v=42.25.631').then(module=>module.resumeVueHandoff({state,navigate:page=>window.setPage(page),request:api})).catch(error=>window.toast(error.message));
   }
   const owner=window.__v53SnapshotSequence||1;
   if(state.__startupExtrasOwner===owner)return;state.__startupExtrasOwner=owner;

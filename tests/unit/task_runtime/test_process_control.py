@@ -1,5 +1,6 @@
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -53,6 +54,29 @@ def test_launch_requires_argv_and_identity_rejects_reused_pid(tmp_path):
             controller.inspect(wrong)
     finally:
         controller.terminate_tree(handle.identity)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Popen process handle lifetime")
+def test_launch_binds_original_windows_process_after_exit(monkeypatch):
+    from platform_core.task_runtime import process_control
+
+    popen = subprocess.Popen
+
+    def exit_before_identity(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        assert child.wait(timeout=10) == 0
+        return child
+
+    monkeypatch.setattr(process_control.subprocess, "Popen", exit_before_identity)
+    command = [sys.executable, "-c", "pass"]
+    started = time.time()
+    launched = launch_process(command)
+    assert launched.process.returncode == 0
+    assert launched.identity.pid == launched.process.pid
+    assert started - 1 <= launched.identity.create_time <= time.time() + 1
+    assert launched.identity.command_hash == hash_command(command)
+    with pytest.raises(ProcessLookupError):
+        ProcessController().inspect(launched.identity)
 
 
 def test_suspend_resume_and_terminate_real_process_tree(tmp_path):

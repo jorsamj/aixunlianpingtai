@@ -71,6 +71,22 @@ test('evaluation handoff checks the frozen evidence identity after entering the 
   assert.deepEqual(c.calls.slice(-3),['算法列表','consume',['a','v']]);
 });
 
+test('evaluation back link restores same-project filters and the verified version without a handoff action',async()=>{
+  for(const source of ['/projects/p/algorithms?query=fire&sort=name&version_page=2&algorithm=other&version=wrong&action=rollback',
+    '/projects/other/algorithms?query=foreign','https://example.test/projects/p/algorithms?query=external']){
+    const c=context('p','evaluation');
+    c.windowRoot.location.search+='&return_to='+encodeURIComponent(source);
+    c.windowRoot.openVersionEvaluation429=(...args)=>c.calls.push(args);
+    await resumeVueHandoff(c);
+    const back=new URL(c.links[0].href,'https://app.example.test');
+    assert.equal(back.pathname,'/app/');
+    assert.match(back.hash,/^#\/projects\/p\/algorithms\?algorithm=a&version=v/);
+    assert.equal(back.hash.includes('query=fire&sort=name&version_page=2'),source.startsWith('/projects/p/'));
+    assert.doesNotMatch(back.hash,/rollback|foreign|external|spa_handoff/);
+    assert.deepEqual(c.calls,['算法列表','consume',['a','v']]);
+  }
+});
+
 
 test('training task handoff preserves identity and invokes only the original stop, recovery and report owners', async () => {
  for (const [action,owner] of [['task-stop','stopTrain428'],['task-detail','openTrainingRecoveryDetail'],['task-report','openJobReport429']]) {

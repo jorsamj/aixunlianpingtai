@@ -34,7 +34,7 @@ def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp
     from platform_core.task_runtime.artifacts import ArtifactStore
 
     store = ArtifactStore(tmp_path / 'artifacts')
-    payload = json.dumps({'algorithm_asset_id': 'a', 'epochs': 50, 'large': 'x' * (40 * 1024)}).encode()
+    payload = json.dumps({'algorithm_asset_id': 'a', 'epochs': 50, 'workers': 4, 'large': 'x' * (40 * 1024)}).encode()
     ref = f'payload-versions/v1/{"0" * 64}/sha256-{hashlib.sha256(payload).hexdigest()}.json'
     from pathlib import Path
     path = Path(_native_name(store.root / 't' / ref))
@@ -45,13 +45,16 @@ def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp
     detail = task_display(task, store, detail=True)
     assert detail['algorithm_id'] == 'a' and detail['configuration']['epochs'] == 50
     store.atomic_write_json('t','result.json',{
-        'training_report':{'history':[{'epoch':1,'map50':0},{'epoch':2,'map50_95':.4}]},
+        'training_report':{
+            'history':[{'epoch':1,'map50':0},{'epoch':2,'map50_95':.4}],
+            'actual_train_params':{'epochs':7,'workers':0},
+        },
         'best_epoch':1,'completed_epochs':2,'completion_reason':'early_stopping',
-        'actual_train_params':{'epochs':50,'batch':16,'token':'hidden'},
+        'actual_train_params':{'epochs':2,'batch':16,'token':'hidden'},
     })
     report=report_display('t',task,store,tmp_path/'absent.json',history_offset=1,history_limit=1)
-    assert report['configuration']['epochs']==50
-    assert report['actual_parameters']=={'epochs':50,'batch':16}
+    assert report['configuration']=={'epochs':50,'workers':4}
+    assert report['actual_parameters']=={'epochs':2,'batch':16,'workers':0}
     assert report['result']['status']=='QUEUED' and report['result']['best_epoch']==1 and report['result']['completed_epochs']==2
     assert report['history']==[{'epoch':2,'map50_95':.4}] and report['history_total']==2
     assert report['test_metrics']['map50'] is None
@@ -59,3 +62,10 @@ def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp
     assert task_display(task, store, detail=True)['metadata_state'] == 'ERROR'
     report=report_display('t',task,store,tmp_path/'absent.json')
     assert 'epochs' not in report['configuration'] and report['warnings']
+
+    legacy=tmp_path/'legacy.json'
+    legacy.write_text(json.dumps({'workers':0,'epochs':8,'requested_train_params':{'batch':12}}))
+    historical=report_display('old',None,store,legacy)
+    assert historical['configuration']=={'batch':12}
+    assert historical['actual_parameters']=={}
+    assert historical['historical_parameters']=={'workers':0,'epochs':8}

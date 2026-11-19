@@ -126,3 +126,5 @@ M2收尾先推送3e8e2291与d635fd1f，再开始M3-A代码07b98d236f8dc3b45856c9
 验证：类型/双构建/资源闭包/语法/Diff通过；native Chrome1（4.4秒）、adapter7、API4、原Draft/Submit85、排除5；M2缓存17、hydrate15和指定首次打开1通过。未跑全仓或全部浏览器。详细命令和限制见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m3-a-原生训练创建2026-11-19-当前)。下一步仅在GPT审计后安排M3-B，不自动开始。
 
 M3-A 冻结整改提交 `f71aae79`，同范围重试使用 UUIDv4 并恢复已冻结引用。M3-B 和 M3-C 的验收边界见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m3-c-原生训练报告与独立评测)。
+
+M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注的历史值分开，旧评测返回恢复原版本详情与筛选上下文。M3-C 只读范围为 `FUNCTIONAL_COMPLETE`，验收为 `CI_PENDING`，待独立复审。
