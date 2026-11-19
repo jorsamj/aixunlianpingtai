@@ -471,10 +471,12 @@ jobs:
           if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
           grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
           grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
+      - name: Install Vue frontend dependencies
+        run: npm ci --prefix frontend
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
       - name: Build opt-in Vue catalog preview
-        run: npm ci --prefix frontend && npm run build --prefix frontend
+        run: npm run build --prefix frontend
       - name: Download this workflow verified CJK font bundle
         uses: actions/download-artifact@v4
         with:
