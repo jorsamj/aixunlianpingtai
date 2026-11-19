@@ -1,5 +1,22 @@
 # 既有功能保护与 Vue 试点边界
 
+## 2026-11-19 M2收尾与M3-A原生训练创建
+
+A 3e8e2291/d635fd1f先推送；B代码07b98d236f8dc3b45856c945938e72f98d64e8d8。本节为当前，历史M2“训练仍桥接”限于其当时范围；当前任务执行/报告仍桥接。
+
+|对象|结论|依据与边界|
+|---|---|---|
+|旧资源合同/首次预加载|保持并修正已确认回归|实际版本数字点分/一致性/顺序断言；bootstrap不伪装实时缓存，真实hydration后仍复用；17+15合同与指定Chrome通过|
+|训练模式、默认值与原参数|保持一致|旧baseCfg纯工厂提取，严格与旧git返回值比较；原Draft/Submit builder/presets及版本继承不重写；85合同通过|
+|前端布局及提交Owner|已批准差异|独立Vue原生表单/选择器/确认；不移旧DOM、不调用旧全局；同一任务只由当前原生页面发原API，旧系统独立入口保留|
+|正式GT/正负样本/TrainValTest/重复审计|保持正式Owner和门禁|v62分页、summary、revision、compatibility、proof；人工排除记录original范围/排除项/revs，泄漏不以快捷排除掩盖|
+|大范围素材与隔离|保持有界协议|40分页，显式2000及Train reference；22,015引用不展开ID；Test重叠/五修订变化阻断；项目算法草稿隔离|
+|未知创建与退出|保持身份回查|先保存原格式回执，正式task_id；丢包/IN_PROGRESS只GET，存储不可用不POST；跨项目不混用|
+|执行与数据安全|保持一致|无backend Schema/API默认/Task状态机/Worker/GPU/Agent/Supervisor/Payload冻结修改，无生产/真实GPU训练|
+|未迁移入口|明确保留|任务列表执行/报告、有来源评测决策与全局策略管理仍原Owner，不能宣称全训练域原生；真实Worker产物未验|
+|本地/CI验收|本地必要项通过、CI_PENDING|新adapter7、API4、原生Chrome1、类型/双构建等；固定基准/增强/负样本多组合未穷举，待CI/GPT独立审计|
+
+
 ## 2026-11-19 M2 算法库功能等价
 
 起点`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`；只读投影`280ed4cfb21f80e0980c03ace18aa70877a41706`；原生UI/交接`c83c114230873f57ae9d0f9a348ffc17f9cc4307`。本节为当前结论，下方M1缺口是历史状态；详见[当前功能矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md#M2-完整功能等价对照2026-11-19)。

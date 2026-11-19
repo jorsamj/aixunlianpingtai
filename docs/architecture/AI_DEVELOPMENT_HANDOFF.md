@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-M2 算法库列表、详情与版本管理已实现，必要本地验证通过；验收 **CI_PENDING**，等待 GPT 独立审计，不自动进入 M3。本文件所属的最后文档提交是本批交付 HEAD；接续执行 `git rev-parse HEAD`，fetch 后比较 `origin/feature/external-algorithm-publishing`。准确最终完整 SHA 和一次 CI 快照在交付消息中，不能把下面实现 SHA 冒充最终文档提交 SHA。
+当前为 M2 CI收尾 + M3-A原生训练创建，必要本地验证已完成，验收 **CI_PENDING**；本批结束后等待GPT审计，不进入M3-B。下方M2实现台账保留为历史证据，当前功能以文末M3-A记录和功能矩阵为准。本文件所属的最后文档提交是本批交付 HEAD；接续执行 `git rev-parse HEAD`，fetch 后比较 `origin/feature/external-algorithm-publishing`。准确最终完整 SHA 和一次 CI 快照在交付消息中，不能把下面实现 SHA 冒充最终文档提交 SHA。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -66,3 +66,34 @@ M2 算法库列表、详情与版本管理已实现，必要本地验证通过�
 ## M2 CI收尾 / M3-A开始（2026-11-19）
 
 起点e51c30c9：GPT核查50工作流48成功2失败。A修复4个资源测试文件的历史缓存硬编码，改为实际index版本的数字格式、三资源一致性与顺序检查（定向17通过）；首次预加载修正bootstrap资源/推荐被误判实时缓存的新鲜度，指定hard refresh浏览器1通过（16.5秒含服务启动），hydration合同15通过。后者缓存复用用例先执行真实prewarm再断言后续零请求，未削弱预加载。无timeout/默认参数变更。A提交后立即开始M3-A，不等CI，未宣称CI成功。三份原设计及VERSION保留。
+
+## M3-A 原生训练创建（2026-11-19 当前）
+
+阶段SHA：A `3e8e229185c0cc802f1216e24aab243074dec14a`（缓存合同/首次预加载）与 `d635fd1f7cdbea3e741b6d7df10dc18bb24d65f2`（严格点分数字断言）均已先推送；然后实施B，代码 `07b98d236f8dc3b45856c945938e72f98d64e8d8`。最后仅更新接续文档/矩阵/保护台账与AGENTS阶段说明，最终HEAD为包含这些文档的提交，完整SHA和一次CI快照见交付消息。A/B的CI尚未本轮终验，不能继承其他SHA成功。
+
+入口 `/app/#/projects/{projectId}/training/create?algorithm={id}`；可从原生算法卡片“训练”或“训练任务”桥接页的原生创建入口进入。不加载app.js/main.mjs、不移入旧表单DOM。新增src/app/TrainingCreate.vue、TrainingMaterials.vue、training-api.ts及类型声明；原views/TrainingCreate.vue和TrainingMaterialPicker.vue保留服务旧试点，不冒称它们已原生化。Task列表/执行/恢复/完整报告仍LEGACY_BRIDGE。
+
+- 普通首次/当前版本迭代创建、分页搜索算法；四种训练模式、母模型、设备/资源/profile、优先级、精度、Epochs/imgsz/Batch/Workers、学习率与优化器、增强/早停/评测等全部原参数、自动转换选项和任务级robustness配置。版本与模型归属由正式API决定，迭代仍锁定当前版本/引擎编辑。
+- 将旧baseCfg428原样提取为trainingConfigurationDefaults纯函数，旧表单通过原PlatformCore命名空间调用相同工厂；曾用git旧工厂与新返回对象严格比较，完全相同。复用既有createTrainingDraft、trainingInheritedDefaults、trainingModePreset、buildTrainingStartPayload、trainingDraftToRequest，未创造新训练默认值。缓存仅数字版本42.25.628，VERSION42.24.592不改。
+- 素材v62服务端40条分页，图片lazy、标签/标注状态过滤，跨页Set选择，按项目+算法session草稿保存IDs/冻结引用/资源配置。显式选择沿API上限2000，冻结Train走selection-reference，22,015张例中只传引用；请求ID同范围重试保留，成员查询每批≤100；Test与训练范围重叠阻断。
+- 选择确认与创建前复核五项revision；只取正式selection-summary正样本标签，未知GT/候选框不变成训练标签。Train/Val/Test原默认随机20/20及独立Test规则保持，切换模式复用canonical归一化；历史复用、可信固定Test基准和输入冻结交给原服务。
+- 正式素材诊断、服务端RESOLVE_SELECTION+二次人工确认排除，复用removeResolvedTrainingMaterials保留原Train/Test范围、排除IDs和证据修订，不改素材库/GT；泄漏不以快捷排除掩盖。显式负样本预览/人工proof确认；冻结范围不误用仅支持显式IDs的负样本计划，必须明确同意后台核验；显式范围仍先检查硬GT/重复冲突。
+- 正式POST `/api/v12/projects/{p}/train/start`，先生成并保存train_随机身份，最终预览后草稿变化使确认失效；正式准入后再写。回执 `training-create-pending:{p}` 存储失败不POST；明确拒绝清除，IN_PROGRESS/5xx/丢包/非法回执保留，刷新后只GET `/api/v62/projects/{p}/tasks/{t}?reader_view=true` 核验项目/任务/算法身份，不自动重发。后端TaskRepository/Worker/调度/freeze/Payload均未改。
+- 成功后保留正式task_id并提供原训练任务入口。算法/项目切换会重建页面及取消读请求，提交回执按原项目保留。
+
+验证命令与结果（本机隔离或HTTP夹具，不是生产训练）：
+
+1. A四个资源合同测试文件：17通过；hydration合同15通过；指定 `tests/browser/training-create-first-open.spec.mjs --grep "hard refresh algorithm list prewarms"` 1通过，提取默认工厂后补测1通过（11.6秒含启动）。没有提高timeout或修改默认参数。
+2. `node --test tests/frontend/native-training-create.test.mjs`：7通过，覆盖正式body/身份、刷新未知GET恢复、资源/草稿变化、22,015引用、存储失败、硬GT冲突、权限拒绝/IN_PROGRESS、审计排除及过期证据。
+3. 原纯草稿/提交合同85通过；复用的training-material-summary-runtime仅排除/跨页相关5通过。未跑全部Node测试。
+4. `python -m pytest tests/api/test_training_material_selection_summary_api.py -q -k "opt_in_selection_validation or summary_only_avoids or accepts_final_training_submit_payload or resolves_current_scope" --disable-warnings`：4通过，10未选；临时FastAPI/SQLite，不是真实GPU任务。
+5. 原生Chrome `frontend/tests/native-training.spec.ts`：1通过（4.4秒含启动），跨两页选材、正式标签、完整默认body、最终确认、正式Task回执；断言不加载旧app.js/main.mjs。首次仅因ElementPlus隐藏input定位失败，改点其实际可见label并保留checked断言，未放宽等待。
+6. Vue类型、双Vite构建（旧30、新8资源闭包）、JS语法、git diff --check通过。共享大chunk警告仍在，未声称首屏性能专项完成。没有全仓pytest/完整Playwright，也没有真实GPU训练、生产数据、A800或4070操作。
+
+验收边界：普通原生创建/选择/配置/提交开发完成，CI_PENDING。固定基准、负样本和robustness手工子集已接入原合同，但未逐组合进行浏览器端到端穷举；等待CI和GPT复核。已确认评测决策带来源身份的继续训练/反馈补数入口仍在原评测Owner，不能把它们改造成无来源普通创建；全局robustness默认策略编辑仍保留在原完整训练表单，未新建全局配置Owner。本轮未迁移任务列表/执行恢复/完整报告，也未验证真实Worker训练结果。
+
+下一阶段：先按最终SHA处理已知CI失败（若有）；GPT审计通过后M3-B只做训练任务列表、队列/状态/取消/日志与原Task读取合同，不重写执行器。M3-C再处理完整报告和评测决策入口。保留三份原未提交设计、唯一分支、VERSION、全部冻结/GT/lease/attempt/fencing安全，不自动扩展。
+
+实际分工：gpt-6.1-sol做受影响测试、原生UI与素材控件；gpt-6.2-sol做有界API合同定位和适配器；主模型独立检查实际Diff、修正身份/缓存/回执/准入/快照与默认值边界、测试并统一Git。无代理推送/部署。
+
+Task reader_view若因证据缺失/大小限制不能提供算法身份，原生回查保留待核状态，不把普通HTTP成功当作身份确认，也不自动重发；需在原任务工作台核对证据后专项处理。
