@@ -1,4 +1,4 @@
-# 功能/API迁移矩阵（M0基线2026-11-18，当前M3-C）
+# 功能/API迁移矩阵（M0基线2026-11-18，当前M4-A1）
 
 当前以文末M3-A及M2功能对照及[接续入口](AI_DEVELOPMENT_HANDOFF.md)为准；M1段落为历史范围，不代表M2仍缺少已实现功能。
 
@@ -22,7 +22,7 @@ API中的{p}/{a}/{v}/{t}/{j}/{i}为原项目/算法/版本/任务/训练job/图�
 |---|---|---|---|---|---|---|---|---|---|---|
 |登录/项目/总览|static/app.js；static/main.mjs；frontend/src/app/App.vue|POST /api/auth/login；GET /api/auth/session；POST /api/auth/logout；GET/POST /api/projects；PUT/DELETE /api/projects/{p}；POST /api/v53/bootstrap/start；GET /api/v53/bootstrap/status、/snapshot|app.py auth/projects路由；platform_core/bootstrap.py|401/项目身份/退出取消|ProductWorkbench|M1 Shell会话/项目选择已原生；登录/项目创建与总览业务仍旧页|部分原生/LEGACY_BRIDGE|IN_PROGRESS|CI_PENDING（仅M1 Shell）|src/app/App.vue/main.ts；app-shell.spec.ts；API鉴权及真实临时FastAPI联调|
 |算法库卡片/筛选/新增编辑删除/详情版本|frontend/src/app/Algorithms.vue；原动作Owner|v12 algorithms的library_view/asset_view/basic_only；原版本API|AlgorithmSqlStore；原训练历史/TaskRepository|全局筛选排序后分页；外部只读；当前版本；写后GET；原退役保护|原ModelAssets试点保留；独立App原生列表/详情/备注|删除回退及其他工作台整页交给原Owner，不是原生执行工作台|原生列表版本 + LEGACY_BRIDGE动作|FUNCTIONAL_COMPLETE（列表/版本页面）|CI_PENDING|M2-A 280ed4cf；M2-B/C c83c1142；文末精确对照与验证|
-|素材库分页/详情/标注/GT|MaterialPaginationRuntime；openAnnotation|/api/v61/projects/{p}/materials；/api/projects/{p}/annotations/{i}|MaterialRepository；AnnotationRepository|源SHA/正式GT version CAS/隐藏框保全|MaterialLibrary + MaterialPreview；人工标注回原Owner|完整编辑继续原Owner|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/MaterialLibrary.vue；本行Owner/API源码|
+|素材库分页/详情/使用记录/标注|原素材库与独立 SPA “素材库”|v61 materials；原 annotations reader_view；v62 history|MaterialRepository、AnnotationRepository 与原使用记录|有界读取、同项目身份、正式 GT 版本|Materials + MaterialLibrary + MaterialPreview|上传、导入、标注、清洗、负样本池、标签、治理及删除审核由原 Owner 负责|原生浏览、详情与选择，写操作 LEGACY_BRIDGE|FUNCTIONAL_COMPLETE（M4-A1）|CI_PENDING|定向浏览器、投影 API 和交接测试|
 |图片上传/ZIP/清洗治理|原Uppy/ZIP/TaskCenter|v19 ZIP；v61 storage-imports/{t}/confirm|原导入Handler；MaterialRepository；TaskRepository|AWAITING_CONFIRMATION非终态/取消fencing/单调进度|MaterialImportGovernance|ZIP/治理真实执行未验|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/MaterialImportGovernance.vue；本行Owner/API源码|
 |算法负池/标签管理|static/modules/labels.js；frontend/src/views/NegativePool.vue|/api/v61/projects/{p}/negative-pool；GET /api/v12/projects/{p}/labels；POST /api/projects/{p}/labels；PUT/DELETE /api/v12/projects/{p}/labels/{class_id}；GET /api/v54/projects/{p}/label-schema|platform_core/negative_pool_api.py；platform_core/annotation_repository.py；app.py标签路由|revision/operation_id/CAS/未知回执先读回|NegativePool；标签完整页仍旧|标签完整CRUD不因负池组件存在视为完成|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/NegativePool.vue；本行Owner/API源码|
 |AI创建/选择/Provider/确认|原AI Submit/Picker|/api/v60/projects/{p}/annotation-tasks；by-request|AnnotationTaskService；TaskRepository|request_id UNKNOWN只GET恢复/冻结选择|AiAnnotationCreate|三步展示复用原子树|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/AiAnnotationCreate.vue；本行Owner/API源码|

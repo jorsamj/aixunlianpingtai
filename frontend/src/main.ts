@@ -58,7 +58,7 @@ export async function mountMaterialImportGovernance(host:HTMLElement,context:Mat
 export async function mountAiAnnotationCreate(host:HTMLElement,context:AiAnnotationCreateContext){return mountView(host,context,()=>import('./views/AiAnnotationCreate.vue'))}
 export async function mountConfigurationCenter(host:HTMLElement,context:ConfigurationCenterContext){return mountView(host,context,()=>import('./views/ConfigurationCenter.vue'))}
 export async function mountProductWorkbench(host:HTMLElement,context:ProductWorkbenchContext){return mountView(host,context,()=>import('./views/ProductWorkbench.vue'))}
-async function mountView(host:HTMLElement,context:PreviewContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext|AiAnnotationCreateContext|ConfigurationCenterContext|ProductWorkbenchContext,load:()=>Promise<{default:Component}>){
+async function mountView(host:HTMLElement,context:PreviewContext|MaterialContext|PickerContext|AiReviewContext|TrainingCreateContext|ConversionCreateContext|ModelDeliveryContext|MaterialImportGovernanceContext|AiAnnotationCreateContext|ConfigurationCenterContext|ProductWorkbenchContext,load:()=>Promise<{default:Component}>){
   if('signal' in context&&context.signal.aborted)return ()=>{};
   const {default:component}=await load();
   if('signal' in context&&context.signal.aborted)return ()=>{};

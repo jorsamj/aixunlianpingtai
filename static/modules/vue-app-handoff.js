@@ -1,6 +1,52 @@
 // Consumed only by the complete legacy page after its canonical project loads.
 // The independent Vue app performs a full navigation; it never calls these owners.
 const pages=new Set(['总览','质量中心','算法列表','训练任务','数据集','视频切帧','自动标注及清洗','标签管理','服务节点','部署资源','模型配置','存储配置','平台对接','畅联云数据','AI算法底座']);
+const materialPages={
+ 'material-manage':'数据集','material-manual':'数据集','material-upload':'数据集',
+ 'material-zip':'数据集','material-annotate':'数据集','material-negative':'数据集',
+ 'material-integrity':'数据集','material-ai':'自动标注及清洗','material-clean':'自动标注及清洗',
+ 'material-labels':'标签管理',
+};
+async function resumeMaterials({project,action,query,state,navigate,request,windowRoot,documentRoot}){
+ const page=materialPages[action];
+ if(query.get('page')!==page)throw new Error('素材工作台入口不匹配');
+ await navigate(page);
+ const active=()=>state.project?.id===project&&state.page===page;
+ if(!active())throw new Error('原素材工作台未就绪');
+ const id=query.get('material_id')||'';
+ if(action==='material-annotate'){
+  if(!id||/[\\/]/.test(id)||id==='.'||id==='..')throw new Error('素材身份无效');
+  const result=await request(`/api/projects/${encodeURIComponent(project)}/annotations/${encodeURIComponent(id)}?reader_view=true`);
+  if(result?.ok!==true||result.project_id!==project||result.image?.id!==id||!active())
+   throw new Error('素材身份不一致，未打开标注');
+ }
+ const incoming=new URLSearchParams(query.get('return_query')||'');
+ const back=new URLSearchParams();
+ for(const key of ['query','label','annotation_state','quality_status','storage_source_id','source_batch_id',
+  'created_from','created_to','page','layout','detail']){
+  const value=incoming.get(key);
+  if(value)back.set(key,value);
+ }
+ if(action==='material-annotate')back.set('detail',id);
+ const link=documentRoot.createElement('a');
+ link.textContent='返回新版素材库';
+ link.href=`/app/#/projects/${encodeURIComponent(project)}/materials${back.size?'?'+back:''}`;
+ Object.assign(link.style,{position:'fixed',right:'24px',bottom:'24px',zIndex:'10001',background:'#fff',color:'#222',padding:'12px 18px',border:'1px solid #aaa',borderRadius:'8px'});
+ documentRoot.body.append(link);
+ windowRoot.history.replaceState(null,'',windowRoot.location.pathname);
+ const openers={
+  'material-annotate':()=>windowRoot.openAnnotation?.(id),
+  'material-manual':()=>windowRoot.setData412Tab?.('unannotated'),
+  'material-upload':()=>typeof windowRoot.ImageUppyView?.open==='function'
+   ?windowRoot.ImageUppyView.open({projectId:project}):windowRoot.openDataUpload426?.(),
+  'material-zip':()=>windowRoot.openUppyZipUpload?.(),
+  'material-negative':()=>windowRoot.NegativePoolRuntime?.open?.(),
+  'material-ai':()=>windowRoot.createAiLabel429?.(),
+  'material-clean':()=>windowRoot.createClean427?.(),
+  'material-integrity':()=>windowRoot.openMaterialIntegrityAudit47?.(),
+ };
+ return openers[action]?.();
+}
 async function resumeTrainingTask({project, action, query, state, navigate, request, windowRoot, documentRoot}) {
  const taskId = query.get('task_id') || '';
  if (!taskId || query.get('page') !== '训练任务') throw new Error('训练任务身份不完整');
@@ -39,6 +85,8 @@ export async function resumeVueHandoff({state,navigate,request,windowRoot=window
  let algorithm;
  const project=query.get('project_id'),page=query.get('page'),algorithmId=query.get('algorithm_id')||'',versionId=query.get('version_id')||'',action=query.get('action')||'';
  const expectedEvaluation=action==='evaluation' ? query.get('expected_evaluation_id') : '';
+ if(project&&state.project?.id===project&&Object.hasOwn(materialPages,action))
+  return resumeMaterials({project,action,query,state,navigate,request,windowRoot,documentRoot});
  if(project&&state.project?.id===project&&['task-stop','task-detail','task-report'].includes(action))return resumeTrainingTask({project,action,query,state,navigate,request,windowRoot,documentRoot});
  if(!project||state.project?.id!==project||!pages.has(page)||!actions.has(action))throw new Error('新版入口的项目或页面身份不匹配，未执行操作');
  if(action&&(!algorithmId||page!=='算法列表'||(versionActions.has(action)&&!versionId)))throw new Error('版本操作身份不完整');

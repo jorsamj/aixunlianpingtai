@@ -24,6 +24,7 @@ export const useWorkspace=defineStore('workspace',()=>{
 export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/',component:{render:()=>h('p','当前账号没有可用项目。')}},
   {path:'/projects/:projectId/algorithms',name:'algorithms',component:()=>import('./Algorithms.vue')},
+  {path:'/projects/:projectId/materials',name:'materials',component:()=>import('./Materials.vue')},
   {path:'/projects/:projectId/training/tasks',name:'training-tasks',component:()=>import('./TrainingTasks.vue')},
   {path:'/projects/:projectId/training/reports/:jobId',name:'training-report',component:()=>import('./NativeTrainingReport.vue')},
   {path:'/projects/:projectId/algorithms/:algorithmId/versions/:versionId/report',name:'version-report',component:()=>import('./NativeTrainingReport.vue')},

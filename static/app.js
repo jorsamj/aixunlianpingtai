@@ -5758,13 +5758,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    const phaseText=()=>({waiting_headers:'等待 HTTP 响应',waiting_core:'准备核心缓存',reading_body:'下载核心快照',parsing_json:'解析核心数据'}[window.__startupDiagnostics413?.phase]||'读取核心页面');
    const operationId='bootstrap_'+(window.crypto?.randomUUID?.()||`${Date.now()}_${sequence}`);
    const snapshotOptions={signal:controller.signal,headers:{'X-Client-Operation-ID':operationId}};
+   const handoff=new URLSearchParams(location.search);
+   const materialProject=handoff.get('spa_handoff')==='1'&&handoff.get('action')?.startsWith('material-')
+     ?handoff.get('project_id'):'';
+   const snapshotUrl='/api/v53/bootstrap/snapshot'+(materialProject?'?'+new URLSearchParams({preferred_project_id:materialProject}):'');
    timers.push(setTimeout(()=>{if(current())paintBoot(view,{stage:phaseText(),message:'核心页面尚未就绪；诊断记录将区分服务端准备、传输和解码阶段'})},3000));
    timers.push(setTimeout(()=>{if(current())paintBoot(view,{stage:phaseText(),message:'20 秒内未完成将提供重试，不会创建或取消训练任务'})},10000));
    try{
      if(force)await bounded(api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true}),signal:controller.signal}));
      let snapshot;
      for(let attempt=0;attempt<10;attempt++){
-       try{snapshot=await bounded(api('/api/v53/bootstrap/snapshot',snapshotOptions));break}
+       try{snapshot=await bounded(api(snapshotUrl,snapshotOptions));break}
        catch(error){
          if(error.code!=='BOOTSTRAP_PENDING'&&error.code!=='HTTP_503')throw error;
          if(attempt===9)throw Object.assign(new Error('核心快照尚未就绪，请稍后重试；后台任务不受影响。'),{code:'BOOTSTRAP_PENDING'});

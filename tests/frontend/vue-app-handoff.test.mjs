@@ -111,3 +111,40 @@ test('training task handoff preserves identity and invokes only the original sto
   }
  }
 });
+
+test('material bridge verifies annotation identity and preserves only the browse context',async()=>{
+ const c=context('p','material-annotate');
+ const query=new URLSearchParams({spa_handoff:'1',project_id:'p',page:'数据集',action:'material-annotate',material_id:'m1',
+  return_query:'page=2&layout=list&label=smoke&project_id=other&action=material-ai'});
+ c.windowRoot.location.search='?'+query;
+ c.windowRoot.openAnnotation=id=>c.calls.push(id);
+ c.request=async url=>{
+  assert.equal(url,'/api/projects/p/annotations/m1?reader_view=true');
+  return {ok:true,project_id:'other',image:{id:'m1'}};
+ };
+ await assert.rejects(resumeVueHandoff(c),/素材身份不一致/);
+ assert.deepEqual(c.calls,['数据集']);
+ c.request=async()=>({ok:true,project_id:'p',image:{id:'m1'}});
+ await resumeVueHandoff(c);
+ assert.deepEqual(c.calls.slice(-3),['数据集','consume','m1']);
+ assert.equal(c.links[0].href,'/app/#/projects/p/materials?label=smoke&page=2&layout=list&detail=m1');
+});
+
+test('material links enter the original owner after loading the scoped page',async()=>{
+ const cases=[
+  ['material-upload','数据集','ImageUppyView','open'],['material-zip','数据集','openUppyZipUpload'],
+  ['material-manual','数据集','setData412Tab'],['material-negative','数据集','NegativePoolRuntime','open'],
+  ['material-ai','自动标注及清洗','createAiLabel429'],['material-clean','自动标注及清洗','createClean427'],
+  ['material-integrity','数据集','openMaterialIntegrityAudit47'],
+ ];
+ for(const [action,page,owner,method] of cases){
+  const c=context('p',action);
+  c.windowRoot.location.search='?'+new URLSearchParams({spa_handoff:'1',project_id:'p',page,action});
+  const run=()=>{c.calls.push(owner)};
+  c.windowRoot[owner]=method?{[method]:run}:run;
+  c.windowRoot.openDataUpload426=()=>assert.fail('unexpected upload fallback');
+  c.request=()=>assert.fail('unexpected request or mutation');
+  await resumeVueHandoff(c);
+  assert.deepEqual(c.calls,[page,'consume',owner]);
+ }
+});
