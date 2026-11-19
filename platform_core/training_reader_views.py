@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from .model_asset_views import fields,text,METRICS,PARAMETERS
 from .task_runtime.public import task_to_public
+from .task_runtime.payload_publications import VERSION_REF, PayloadPublicationError
 
 CONFIG=PARAMETERS+('framework','model','requested_device','gpu_policy','precision','target','training_target','resource_id','node_id')
 
@@ -28,8 +29,17 @@ def bounded_json(path,limit=2*1024*1024):
 def task_display(task,artifacts,detail=False):
     raw=task_to_public(task)  # Original status owner; deliberately no queue/worker scan.
     result=fields(raw,('task_id','project_id','kind','status','persisted_status','phase','progress_percent','created_at','updated_at','finished_at','worker_id','resource_key','resource_wait_reason','error','attempt'))
-    try:payload,state=bounded_json(artifacts.artifact_path(task.task_id,task.payload_ref),limit=512*1024 if detail else 32*1024)
-    except ValueError:payload,state={},'ERROR'
+    limit = 512 * 1024 if detail else 32 * 1024
+    try:
+        if VERSION_REF.fullmatch(task.payload_ref):
+            payload = artifacts.payload_reader.read_payload_version(task.task_id, task.payload_ref, max_bytes=limit).data
+            payload, state = (payload, 'AVAILABLE') if isinstance(payload, dict) else ({}, 'ERROR')
+        else:
+            payload, state = bounded_json(artifacts.artifact_path(task.task_id, task.payload_ref), limit=limit)
+    except PayloadPublicationError as error:
+        payload, state = {}, {'PAYLOAD_SIZE_LIMIT': 'DEFERRED', 'PAYLOAD_VERSION_MISSING': 'MISSING'}.get(error.code, 'ERROR')
+    except ValueError:
+        payload, state = {}, 'ERROR'
     result['metadata_state']=state
     identity=payload.get('algorithm_identity') or {}
     ids={str(value) for value in (payload.get('asset_algorithm_id'),payload.get('algorithm_asset_id'),identity.get('id')) if value}
@@ -39,6 +49,10 @@ def task_display(task,artifacts,detail=False):
     result['identity_conflict']=len(ids)>1
     result['report_job_id']=task.task_id if task.kind.value=='TRAINING' else None
     if detail:
+        if task.kind.value == 'TRAINING_PREPARE':
+            parent_id = str(payload.get('training_task_id') or '')
+            if parent_id and task.task_id == f'trainprep_{parent_id}':
+                result['related_task_id'] = parent_id
         result['configuration']=fields(payload,CONFIG)
         result['requested_execution']=fields(payload.get('execution'),CONFIG)
         finalized,final_state=bounded_json(artifacts.artifact_path(task.task_id,'result.json'))

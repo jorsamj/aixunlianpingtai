@@ -25,3 +25,24 @@ def test_bounded_artifact_and_task_display_preserve_truth_and_hide_secrets(tmp_p
     assert 'SECRET_SENTINEL' not in json.dumps(result)
     path=tmp_path/'large.json';path.write_text('x'*30)
     assert bounded_json(path,limit=10)[1]=='DEFERRED'
+
+
+def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp_path):
+    import hashlib
+    from platform_core.task_runtime.payload_publications import _native_name
+    from platform_core.training_reader_views import task_display
+    from platform_core.task_runtime.artifacts import ArtifactStore
+
+    store = ArtifactStore(tmp_path / 'artifacts')
+    payload = json.dumps({'algorithm_asset_id': 'a', 'epochs': 50, 'large': 'x' * (40 * 1024)}).encode()
+    ref = f'payload-versions/v1/{"0" * 64}/sha256-{hashlib.sha256(payload).hexdigest()}.json'
+    from pathlib import Path
+    path = Path(_native_name(store.root / 't' / ref))
+    path.parent.mkdir(parents=True)
+    path.write_bytes(payload)
+    task = TaskRecord.new('t', 'p', TaskKind.TRAINING, ref, 'training:auto')
+    assert task_display(task, store)['metadata_state'] == 'DEFERRED'
+    detail = task_display(task, store, detail=True)
+    assert detail['algorithm_id'] == 'a' and detail['configuration']['epochs'] == 50
+    path.write_bytes(payload.replace(b'50', b'51'))
+    assert task_display(task, store, detail=True)['metadata_state'] == 'ERROR'

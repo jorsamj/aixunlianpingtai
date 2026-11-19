@@ -84,6 +84,14 @@ def test_task_query_registered_http_contract(tmp_path, monkeypatch):
         assert client.get(base, params=params).status_code == 422
     assert client.get('/api/v62/projects/missing/tasks').status_code == 404
     assert before == [(t.task_id, t.status, t.updated_at) for t in repo.list(project_id='p').items if t.task_id == 'visible']
+    repo.create(TaskRecord.new('trainprep_visible', 'p', TaskKind.TRAINING_PREPARE, 'payload.json', 'cpu'))
+    artifacts.atomic_write_json('trainprep_visible', 'payload.json', {'training_task_id': 'visible'})
+    parent = client.get(base + '/visible', params={'reader_view': True}).json()['task']
+    child = client.get(base + '/trainprep_visible', params={'reader_view': True}).json()['task']
+    assert parent['related_task_id'] == 'trainprep_visible' and child['related_task_id'] == 'visible'
+    repo.create(TaskRecord.new('trainprep_foreign', 'p', TaskKind.TRAINING_PREPARE, 'payload.json', 'cpu'))
+    artifacts.atomic_write_json('trainprep_foreign', 'payload.json', {'training_task_id': 'foreign'})
+    assert 'related_task_id' not in client.get(base + '/trainprep_foreign', params={'reader_view': True}).json()['task']
     assert len(api._task_query_router.routes) == 2
     assert all(r.methods == {'GET'} for r in api._task_query_router.routes)
 

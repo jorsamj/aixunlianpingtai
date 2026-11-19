@@ -81,6 +81,14 @@ def create_task_query_router(
             task=_runtime_task_for_project(project_id,task_id)
             if task.kind not in (TaskKind.TRAINING,TaskKind.TRAINING_PREPARE):raise HTTPException(404,detail='训练任务不存在')
             rows=attach_version_refs([task_display(task,shared_task_artifacts(),detail=True)],AlgorithmSqlStore(algorithms_file(project_id)).training_display_refs([task_id]))
+            if task.kind is TaskKind.TRAINING:
+                child = shared_task_repository().get(f'trainprep_{task_id}')
+                if child and child.project_id == project_id and child.kind is TaskKind.TRAINING_PREPARE:
+                    rows[0]['related_task_id'] = child.task_id
+            elif parent_id := rows[0].pop('related_task_id', None):
+                parent = shared_task_repository().get(parent_id)
+                if parent and parent.project_id == project_id and parent.kind is TaskKind.TRAINING:
+                    rows[0]['related_task_id'] = parent_id
             return {'ok':True,'project_id':project_id,'task':rows[0]}
         repository = shared_task_repository()
         return task_to_public(_runtime_task_for_project(project_id, task_id), repository)

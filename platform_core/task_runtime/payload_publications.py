@@ -324,11 +324,12 @@ class PayloadVersionStore:
             if name is not None:
                 Path(name).unlink(missing_ok=True)
 
-    def read_payload_version(self, task_id: str, payload_ref: str) -> VerifiedPayload:
+    def read_payload_version(self, task_id: str, payload_ref: str, *, max_bytes: int | None = None) -> VerifiedPayload:
         match = VERSION_REF.fullmatch(payload_ref) if isinstance(payload_ref, str) else None
         if match is None:
             _fail("PAYLOAD_INVALID_REF", "v1 digest-bound reference required")
-        raw = self._read(self._path(task_id, payload_ref))
+        limit = self.limit if max_bytes is None else min(self.limit, max_bytes)
+        raw = self._read(self._path(task_id, payload_ref), limit=limit)
         if hashlib.sha256(raw).hexdigest() != match["digest"]:
             _fail("PAYLOAD_INTEGRITY_ERROR", "bytes do not match reference digest")
         try:

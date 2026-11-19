@@ -58,3 +58,28 @@ test('download refuses missing stored artifact',async()=>{
 test('report fails explicitly when legacy owner is unavailable',async()=>{
  const c=context('p','report');await assert.rejects(resumeVueHandoff(c),/操作入口未就绪/);
 });
+
+
+test('training task handoff preserves identity and invokes only the original stop and recovery owners', async () => {
+ for (const [action,owner] of [['task-stop','stopTrain428'],['task-detail','openTrainingRecoveryDetail']]) {
+  const c=context('p',action);
+  c.windowRoot.location.search='?spa_handoff=1&project_id=p&page='+encodeURIComponent('训练任务')+'&task_id=t&status=QUEUED&cursor=next&action='+action;
+  c.request=async url=>{
+   assert.equal(url,'/api/v62/projects/p/tasks/t?reader_view=true');
+   return {ok:true,project_id:'p',task:{task_id:'t',project_id:'p',kind:'TRAINING',status:'WAITING_RESOURCE'}};
+  };
+  c.windowRoot[owner]=id=>c.calls.push(id);
+  await resumeVueHandoff(c);
+  assert.deepEqual(c.calls,['训练任务','consume','t']);
+  assert.equal(c.links[0].href,'/app/#/projects/p/training/tasks?task=t&status=QUEUED&cursor=next');
+  c.calls.length=0;
+  c.request=async()=>({ok:true,project_id:'p',task:{task_id:'t',project_id:'other',kind:'TRAINING',status:'QUEUED'}});
+  await assert.rejects(resumeVueHandoff(c), /身份不一致/);
+  assert.deepEqual(c.calls,['训练任务']);
+  if(action==='task-stop'){
+   c.request=async()=>({ok:true,project_id:'p',task:{task_id:'t',project_id:'p',kind:'TRAINING',status:'CANCEL_REQUESTED'}});
+   await assert.rejects(resumeVueHandoff(c), /不允许再次停止/);
+   assert.deepEqual(c.calls,['训练任务','训练任务']);
+  }
+ }
+});

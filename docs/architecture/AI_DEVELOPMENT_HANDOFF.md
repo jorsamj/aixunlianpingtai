@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-当前为 M2 CI收尾 + M3-A原生训练创建，必要本地验证已完成，验收 **CI_PENDING**；本批结束后等待GPT审计，不进入M3-B。下方M2实现台账保留为历史证据，当前功能以文末M3-A记录和功能矩阵为准。本文件所属的最后文档提交是本批交付 HEAD；接续执行 `git rev-parse HEAD`，fetch 后比较 `origin/feature/external-algorithm-publishing`。准确最终完整 SHA 和一次 CI 快照在交付消息中，不能把下面实现 SHA 冒充最终文档提交 SHA。
+当前为 M3-A 冻结请求整改与 M3-B 原生训练任务，必要本地验证已完成，验收 **CI_PENDING**。本批结束后等待独立审计。下方M2实现台账保留为历史证据，当前功能以文末M3-A记录和功能矩阵为准。本文件所属的最后文档提交是本批交付 HEAD；接续执行 `git rev-parse HEAD`，fetch 后比较 `origin/feature/external-algorithm-publishing`。准确最终完整 SHA 和一次 CI 快照在交付消息中，不能把下面实现 SHA 冒充最终文档提交 SHA。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -101,3 +101,15 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 ## M3-A 冻结请求审计修复
 
 基线 37ea27a95bb3319512edb7198824592d0d990ce0。TrainingMaterials 使用 getRandomValues、UUIDv4 版本位及 RFC4122 variant 位，保留同范围失败重试身份。明确清除选择后可开始下一次冻结。隔离 FastAPI 正式冻结与同请求回执复用、selection-summary 验证 1 项通过。Chrome 夹具验证标准 UUID、失败重试、刷新恢复和 22,015 张训练仅提交引用，1 项通过。训练参数、GT、角色隔离及未知任务 GET 合同沿已有实现。CI 异步验收。
+
+## M3-B 原生训练任务（当前）
+
+开始基线为 `37ea27a95bb3319512edb7198824592d0d990ce0`。M3-A 冻结整改单独推送 `f71aae79260052fc26cdf399cea49416076934a9`，随后交付 M3-B。最终精确 SHA 和一次 GitHub Actions 快照见交付消息，可用 `git rev-parse HEAD` 核对包含本段的提交。
+
+- `/app/#/projects/{projectId}/training/tasks` 接管新 SPA 的“训练任务”，创建成功可直接打开相应任务。通过 URL 保存搜索、持久状态、类型、当前游标与详情。以 v62 Task reader_view 每页最多 20 条查询，详情不重读列表。TaskRepository 提供有效状态和进度，100% 不推断终态。准备与正式任务通过原有任务身份关联，项目/类型校验在现有只读路由内执行。
+- 详情显示阶段、起止时间、资源键、等待原因、Worker、执行记录和失败信息。读取不可变 Payload 由原 SHA256 校验读取器完成，继续执行列表 32 KiB 与详情 512 KiB 上限。训练日志复用原日志 GET，只显示有界文本。准备任务经关联入口进入正式训练日志。列表、详情及日志手动刷新，复用读取取消机制，无额外轮询器。
+- 停止与恢复属于 LEGACY_BRIDGE。整页交接核验项目、Task ID、类型及停机准入，再由原 stopTrain428 或 openTrainingRecoveryDetail 执行原确认、恢复门禁和回执。新页不将取消请求当作安全停止。暂停、继续、提权和历史记录管理保留在原完整任务页。报告仍由原工作台承担。
+- 局部验证：冻结 API 1 项及 Chrome 1 项，任务读 API/不可变读取 2 项，交接 Node 24 项，原生任务 Chrome 1 项，Vue 类型与双构建、JS/Python 语法与 diff 检查。浏览器业务请求使用隔离夹具，未运行实际停止、恢复或 GPU 训练。
+- 下一阶段 M3-C 在独立审计后迁移训练报告、指标与有来源评测决策入口。训练执行、GT、租约、调度、Payload 发布、数据库 Schema 与 VERSION 合同沿原 Owner。三份未提交设计文档继续保留。
+
+模型分工。GPT-6.1 Terra（Low）实现原生任务页初稿。GPT-6.2 Sol 负责 UUID 修复、读取与旧操作身份边界、整合、审查、定向验证及 Git。当前运行环境未提供 GPT-6 Luna。

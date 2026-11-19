@@ -1,6 +1,36 @@
 // Consumed only by the complete legacy page after its canonical project loads.
 // The independent Vue app performs a full navigation; it never calls these owners.
 const pages=new Set(['总览','质量中心','算法列表','训练任务','数据集','视频切帧','自动标注及清洗','标签管理','服务节点','部署资源','模型配置','存储配置','平台对接','畅联云数据','AI算法底座']);
+async function resumeTrainingTask({project, action, query, state, navigate, request, windowRoot, documentRoot}) {
+ const taskId = query.get('task_id') || '';
+ if (!taskId || query.get('page') !== '训练任务') throw new Error('训练任务身份不完整');
+ const readUrl = `/api/v62/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(taskId)}?reader_view=true`;
+ await navigate('训练任务');
+ if (state.project?.id !== project || state.page !== '训练任务') throw new Error('原训练任务页未就绪');
+ const result = await request(readUrl);
+ const task = result?.task;
+ if (result?.ok !== true || result.project_id !== project || task?.project_id !== project ||
+     task.task_id !== taskId || task.kind !== 'TRAINING' || state.project?.id !== project || state.page !== '训练任务') {
+  throw new Error('训练任务身份不一致，未执行操作');
+ }
+ if (action === 'task-stop' && (!['QUEUED','WAITING_RESOURCE','RUNNING','PAUSED'].includes(task.status) ||
+     ['cancelling','stopping','starting','pausing','resuming','cleaning_training_process','process_cleanup_blocked'].includes(task.phase))) {
+  throw new Error('任务当前状态不允许再次停止，请刷新核对');
+ }
+ const owner = action === 'task-stop' ? windowRoot.stopTrain428 : windowRoot.openTrainingRecoveryDetail;
+ if (typeof owner !== 'function') throw new Error('原训练任务操作入口未就绪');
+ const back = new URLSearchParams({task:taskId});
+ for (const key of ['query','kind','status','cursor','previous']) {
+  for (const value of query.getAll(key)) back.append(key,value);
+ }
+ const link = documentRoot.createElement('a');
+ link.textContent = '返回新版训练任务';
+ link.href = `/app/#/projects/${encodeURIComponent(project)}/training/tasks?${back}`;
+ Object.assign(link.style,{position:'fixed',right:'24px',bottom:'24px',zIndex:'10001',background:'#fff',color:'#222',padding:'12px 18px',border:'1px solid #aaa',borderRadius:'8px'});
+ documentRoot.body.append(link);
+ windowRoot.history.replaceState(null,'',windowRoot.location.pathname);
+ return owner.call(windowRoot,taskId);
+}
 export async function resumeVueHandoff({state,navigate,request,windowRoot=window,documentRoot=document}){
  const query=new URLSearchParams(windowRoot.location.search);
  if(query.get('spa_handoff')!=='1')return;
@@ -8,6 +38,7 @@ export async function resumeVueHandoff({state,navigate,request,windowRoot=window
  const actions=new Set(['','train','algorithm-report','delete-algorithm',...versionActions]);
  let algorithm;
  const project=query.get('project_id'),page=query.get('page'),algorithmId=query.get('algorithm_id')||'',versionId=query.get('version_id')||'',action=query.get('action')||'';
+ if(project&&state.project?.id===project&&['task-stop','task-detail'].includes(action))return resumeTrainingTask({project,action,query,state,navigate,request,windowRoot,documentRoot});
  if(!project||state.project?.id!==project||!pages.has(page)||!actions.has(action))throw new Error('新版入口的项目或页面身份不匹配，未执行操作');
  if(action&&(!algorithmId||page!=='算法列表'||(versionActions.has(action)&&!versionId)))throw new Error('版本操作身份不完整');
  if(algorithmId){

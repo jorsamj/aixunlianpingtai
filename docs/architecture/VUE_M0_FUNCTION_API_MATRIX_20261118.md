@@ -1,4 +1,4 @@
-# 功能/API迁移矩阵（M0基线2026-11-18，当前M3-A）
+# 功能/API迁移矩阵（M0基线2026-11-18，当前M3-B）
 
 当前以文末M3-A及M2功能对照及[接续入口](AI_DEVELOPMENT_HANDOFF.md)为准；M1段落为历史范围，不代表M2仍缺少已实现功能。
 
@@ -29,7 +29,7 @@ API中的{p}/{a}/{v}/{t}/{j}/{i}为原项目/算法/版本/任务/训练job/图�
 |AI任务/失败诊断/取消恢复|原Task/Candidate Owner|v60 annotation-tasks/{t}及原诊断/恢复子路由|AnnotationTaskService；CandidateStore|取消后不得推理/候选写入；失败不算unreviewed|AiAnnotationTasks|完整诊断导出/重试继续旧页|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/AiAnnotationTasks.vue；本行Owner/API源码|
 |AI候选/人工消歧/采用拒绝/正式提交|reviewAiLabel427/Annotorious|原v60审核路由|CandidateStore；AnnotationRepository|草稿revision≠GT version；歧义禁止提交；明确确认后入库|AiReviewWorkbench + AnnotationEditor|编辑核/GT提交不可复制|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/AiReviewWorkbench.vue；本行Owner/API源码|
 |训练创建/标签/选材/冻结|原生src/app/TrainingCreate.vue + TrainingMaterials.vue；复用纯Draft/Submit函数|原v12 train/start；v62 training-materials分页/summary/reference/revision/compatibility；Task reader_view|原训练服务/GT/Artifact/TaskRepository/Worker|五修订核验/大范围引用/Test隔离/已审核GT/未知只GET|原views外壳保留旧试点；新App完全原生|任务执行和报告不在M3-A；有来源评测决策仍原Owner|原生普通创建；其余LEGACY_BRIDGE|FUNCTIONAL_COMPLETE（M3-A普通创建范围）|CI_PENDING|代码07b98d23；文末测试与边界|
-|训练准备/执行/队列/取消/恢复|TrainingRecoveryRuntime/TaskCenter|/api/v62/projects/{p}/tasks[/{t}]；cancel/promote|task_runtime/query_api.py；TaskRepository；原Worker|资源队列/租约/取消fencing/terminal停止轮询|TrainingTasks|执行与恢复完整旧页|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/TrainingTasks.vue；本行Owner/API源码|
+|训练准备/执行/队列/取消/恢复|独立 App TrainingTasks.vue / 原 TrainingTaskRuntime 与 TrainingRecoveryRuntime|v62 tasks reader_view；原 jobs log；v48 stop 与 v62 recovery|TaskRepository、原训练服务|正式状态/进度、项目隔离、准备/训练关联、原取消确认与恢复准入|原views只读试点保留|停止、恢复、暂停、继续、提权和历史管理留原工作台|原生列表/详情/日志；操作 LEGACY_BRIDGE|FUNCTIONAL_COMPLETE（M3-B 页面范围）|CI_PENDING|HTTP、Node、Chrome 定向验证与接续入口|
 |报告/评估/质量中心|原reports/quality/evaluation|/api/v44/projects/{p}/jobs/{j}/report|原报告Owner/正式版本与评估数据|finalized优先/Val Test独立/身份校验/有界历史|TrainingReport + ReportCharts|复杂评估与质量中心旧页|PRESENTATION_ONLY|NOT_STARTED|未实施/未提交|frontend/src/views/TrainingReport.vue；本行Owner/API源码|
 |版本转换/动态参数/历史/验证取消|原转换Owner|/api/v42/projects/{p}/algorithms/{a}/versions/{v}/deployments|原deployment持久层/TaskRepository|UNKNOWN恢复/SDK与芯片能力/真实产物验证|ConversionCreate + ConversionHistory|真实SDK/转换未验|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/ConversionHistory.vue；本行Owner/API源码|
 |模型交付/外部算法/平台对接|static/modules/external-algorithm-platform.js；static/modules/external-algorithm-publish.js；frontend/src/views/ModelDelivery.vue|GET/PUT /api/v63/external-algorithm-platform/config；PUT /api/v63/external-algorithm-platform/mode；POST /api/v63/external-algorithm-platform/test、/diagnostics；交付动作见原发布模块，不以配置API代替|platform_core/external_algorithm_platform.py；platform_core/external_algorithm_publish.py；platform_core/external_publish_request.py|预检/明确确认/UNKNOWN读回/禁止虚报成功|ModelDelivery|原完整平台/交付入口|LEGACY_BRIDGE|NOT_STARTED|未实施/未提交|frontend/src/views/ModelDelivery.vue；本行Owner/API源码|
@@ -124,3 +124,5 @@ M2收尾先推送3e8e2291与d635fd1f，再开始M3-A代码07b98d236f8dc3b45856c9
 新route `/app/#/projects/{p}/training/create?algorithm={id}` 不加载旧app.js/main.mjs，不移DOM；旧views外壳仍为旧试点。M2卡片“训练”进入原生创建，“训练任务”页保留旧执行工作台并新增原生创建入口。普通创建范围FUNCTIONAL_COMPLETE，验收CI_PENDING；不把M3-A当作全部训练域迁移。
 
 验证：类型/双构建/资源闭包/语法/Diff通过；native Chrome1（4.4秒）、adapter7、API4、原Draft/Submit85、排除5；M2缓存17、hydrate15和指定首次打开1通过。未跑全仓或全部浏览器。详细命令和限制见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m3-a-原生训练创建2026-11-19-当前)。下一步仅在GPT审计后安排M3-B，不自动开始。
+
+M3-A 冻结整改提交 `f71aae79`，同范围重试使用 UUIDv4 并恢复已冻结引用。M3-B 当前范围见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m3-b-原生训练任务当前)。完整报告、评测决策仍由原工作台处理，待 M3-C。
