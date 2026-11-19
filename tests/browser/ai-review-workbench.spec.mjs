@@ -116,11 +116,15 @@ test('有歧义全选跨页冻结范围，预检与批量正式入库覆盖所�
  const rows=Array.from({length:30},(_,i)=>({image_id:'amb-cross-'+i,filename:'歧义-'+i+'.jpg',
    url:img,width:640,height:480,status:'success',manual_review_required:true,
    boxes:[{label:'person',x1:20,y1:30,x2:100,y2:150},{label:'tangzhe',x1:20,y1:30,x2:100,y2:150}]}));
+ const excluded={...rows[0],image_id:'outside-snapshot',filename:'未进入快照.jpg'};
+ const visible=[rows[0],excluded,...rows.slice(1)];
  const writes=[],reads=[];
  await page.route('**/api/v60/projects/*/annotation-tasks/cross-page-review/**',route=>{
    const u=new URL(route.request().url()),path=u.pathname,method=route.request().method();
-   if(method==='POST'&&path.endsWith('/review-selection'))
-     return route.fulfill({json:{selection_id:'a'.repeat(32),count:30,total:30,filter:'ambiguous',review_revision:1}});
+   if(method==='POST'&&path.endsWith('/review-selection')){
+     expect(route.request().postDataJSON()).toEqual({filter:'ambiguous',purpose:'ambiguity',review_revision:1});
+     return route.fulfill({json:{selection_id:'a'.repeat(32),count:30,total:30,filter:'ambiguous',purpose:'ambiguity',review_revision:1}});
+   }
    if(method==='GET'&&path.endsWith('/review-selection/'+'a'.repeat(32)+'/candidates')){
      const cursor=Number(u.searchParams.get('cursor')||0);reads.push(cursor);
      return route.fulfill({json:{items:rows.slice(cursor,cursor+20),total:30,filter:'ambiguous',
@@ -134,8 +138,15 @@ test('有歧义全选跨页冻结范围，预检与批量正式入库覆盖所�
    }
    if(method==='GET'&&path.endsWith('/candidates')){
      const offset=Number(u.searchParams.get('cursor')||0);
-     return route.fulfill({json:{items:rows.slice(offset,offset+24),total:30,
-       next_cursor:offset+24<30?String(offset+24):null,summary:{ambiguous:30,remaining_reviewable:30},
+     const selectionId=u.searchParams.get('selection_id');
+     let items=visible.slice(offset,offset+24);
+     if(selectionId){
+       expect(selectionId).toBe('a'.repeat(32));
+       expect(u.searchParams.get('limit')).toBe('24');
+       items=items.map(item=>({...item,selection_member:item.image_id!==excluded.image_id}));
+     }
+     return route.fulfill({json:{items,total:visible.length,
+       next_cursor:offset+24<visible.length?String(offset+24):null,summary:{ambiguous:31,remaining_reviewable:31},
        review_revision:1}});
    }
    return route.abort();
@@ -154,6 +165,10 @@ test('有歧义全选跨页冻结范围，预检与批量正式入库覆盖所�
  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
  await expect(page.locator('#ai60SelectionCount')).toContainText('选中 30 张');
  await expect(first).toHaveAttribute('data-preserve-identity','yes');
+ await expect(first.locator('.ai-review-select')).toBeChecked();
+ const outside=page.locator('[data-ai66-image-id="outside-snapshot"] .ai-review-select');
+ await expect(outside).toBeDisabled();
+ await expect(outside).not.toBeChecked();
  await page.locator('#ai60AmbiguousKeep').selectOption('person');
  await page.getByRole('button',{name:'预检全部已选图片'}).click();
  await expect(page.locator('.ai-review-ambiguity-preview')).toContainText('可处理 30 / 勾选 30 张');
@@ -179,7 +194,7 @@ test('无歧义跨页选中二次确认后正式入库，未选中和歧义候�
  await page.route('**/api/v60/projects/*/annotation-tasks/clean-scoped-review/**',route=>{
    const u=new URL(route.request().url()),path=u.pathname,method=route.request().method();
    if(method==='POST'&&path.endsWith('/review-selection'))
-     return route.fulfill({json:{selection_id:'b'.repeat(32),count:3,total:3,filter:'clean_boxes',review_revision:1}});
+     return route.fulfill({json:{selection_id:'b'.repeat(32),count:3,total:3,filter:'clean_boxes',purpose:'gt',review_revision:1}});
    if(method==='GET'&&path.endsWith('/review-selection/'+'b'.repeat(32)+'/candidates'))
      return route.fulfill({json:{items:clean,filter:'clean_boxes',review_revision:1,total:3,next_cursor:null}});
    if(method==='POST'&&path.endsWith('/decisions')){
@@ -187,7 +202,9 @@ test('无歧义跨页选中二次确认后正式入库，未选中和歧义候�
      return route.fulfill({json:{committed_selected:true,applied_images:body.decisions.length,review_revision:2,summary:{remaining_reviewable:1},task:{status:'AWAITING_CONFIRMATION'}}});
    }
    if(method==='GET'&&path.endsWith('/candidates')){
-     const filter=u.searchParams.get('filter'),items=filter==='clean_boxes'?clean:[...clean,ambiguous];
+     const filter=u.searchParams.get('filter');
+     const rows=filter==='clean_boxes'?clean:[...clean,ambiguous];
+     const items=u.searchParams.has('selection_id')?rows.map(item=>({...item,selection_member:item!==ambiguous})):rows;
      return route.fulfill({json:{items,total:items.length,review_revision:decisions.length?2:1,
        summary:{clean_boxes:3,ambiguous:1,remaining_reviewable:decisions.length?1:4}}});
    }

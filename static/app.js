@@ -9702,39 +9702,68 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     });
     invalidateAiSelectionPreview60(review);
   };
+  function syncAiSelectionCheckboxes60(review){
+    document.querySelectorAll('.ai-review-select').forEach(node=>{
+      const item=review.seen.get(String(node.closest('[data-ai66-image-id]')?.dataset.ai66ImageId||''));
+      node.disabled=!aiSelectionEligible60(review,item);
+      node.title=node.disabled?(item?.gt_committed?'已正式入库':'当前操作不可选'):'';
+      node.checked=!!item&&!node.disabled&&aiSelected60(review,item);
+    });
+  }
   window.clearAiSelection60=()=>{
     const review=state.ai60Review;if(!review||aiReviewSelectionBusy60(review))return;
     review.selected.clear();review.selection=null;
-    document.querySelectorAll('.ai-review-select').forEach(node=>node.checked=false);
+    syncAiSelectionCheckboxes60(review);
     invalidateAiSelectionPreview60(review);
   };
   window.selectAiFiltered60=async(purpose='gt')=>{
     const review=state.ai60Review;if(!review||aiReviewSelectionBusy60(review))return;
     const filter=review.filter==='target'?'clean_boxes':review.filter;
     if(purpose==='gt'&&filter==='ambiguous')purpose='ambiguity';
-    const revision=review.reviewRevision;
+    const revision=review.reviewRevision,offset=review.offset,pageEpoch=review.pageRequestEpoch;
+    const project=String(review.projectId??pid());
+    const current=()=>state.ai60Review===review&&!review.closed&&String(pid())===project&&
+      String(state.page||'')===String(review.ownerPage||'')&&review.pageRequestEpoch===pageEpoch;
     review.ambiguityPreview=null;review.selectionFreezing=true;
     review.selectionStatus='正在冻结当前筛选结果…';renderAiSelection60();
     try{
       const result=await api(taskApi(review.id,review.projectId)+'/review-selection',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({filter,purpose,review_revision:revision})});
-      if(state.ai60Review!==review||review.closed||(review.projectId!=null&&String(review.projectId)!==String(pid())))return;
-      if(review.reviewRevision!==revision||String(result.filter)!==filter)
+      if(!current())return;
+      if(review.reviewRevision!==revision||result.review_revision!==revision||result.filter!==filter||result.purpose!==purpose)
         throw new Error('审核范围在冻结时发生变化，请重新选择');
+      const membership=new Map();
+      if(result.count&&review.items.length){
+        const page=await api(`${taskApi(review.id,project)}/candidates?limit=${review.limit}&cursor=${offset}&filter=${encodeURIComponent(filter)}&selection_id=${encodeURIComponent(result.selection_id)}`);
+        if(!current())return;
+        for(const item of page.items||[])membership.set(String(item.image_id),item.selection_member);
+        if(page.selection_stale||page.review_revision!==revision||review.reviewRevision!==revision||
+          review.items.some(item=>typeof membership.get(String(item.image_id))!=='boolean'))
+          throw new Error('当前页的筛选资格已变化，请重新选择');
+      }
+      for(const item of review.items){
+        const id=String(item.image_id),member=membership.get(id)===true;
+        item.selection_member=member;
+        const seen=review.seen.get(id);
+        if(seen)seen.selection_member=member;
+      }
       review.selected.clear();review.selection=result.count?{...result,excluded:new Set()}:null;
       const reasonLabels={committed:'已正式入库',unavailable:'转池或阻断',failed:'处理失败',rejected:'已拒绝',
         requires_review:'待人工消歧',not_ambiguous:'无需消歧',formal_or_source_conflict:'GT 或素材冲突'};
       const reasons=Object.entries(result.reasons||{}).map(([key,count])=>`${reasonLabels[key]||'其他限制'} ${count} 张`);
       review.selectionStatus=result.excluded?`筛选 ${result.filtered_total} 张，可操作 ${result.count} 张，排除 ${result.excluded} 张（${reasons.join('、')}）`:
         result.count?'':'当前筛选没有可选素材';
-      await loadReviewPage(review.offset);
+      syncAiSelectionCheckboxes60(review);
+      invalidateAiSelectionPreview60(review);
     }catch(error){
-      if(state.ai60Review===review&&!review.closed&&(review.projectId==null||String(review.projectId)===String(pid())))review.selectionStatus='冻结失败：'+String(error.message||error);
-      toast(error.message||error);
+      if(current()){
+        review.selectionStatus='冻结失败：'+String(error.message||error);
+        toast(error.message||error);
+      }
     }finally{
       review.selectionFreezing=false;
-      if(state.ai60Review===review&&!review.closed&&(review.projectId==null||String(review.projectId)===String(pid())))renderAiSelection60();
+      if(current())renderAiSelection60();
     }
   };
   window.approveAiSelected60=async()=>{

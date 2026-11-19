@@ -53,7 +53,7 @@ test('真实API草稿刷新与转池撤销闭环（隔离候选，非模型实�
   await expect(page.locator('#ai60ReviewSummary')).toContainText('已正式入库 1 张');
   await page.locator('#ai60SelectFiltered').click();
   await expect(page.locator('#ai60SelectionCount')).toContainText('选中 0 张');
-  await expect(page.locator('#ai60SelectionStatus')).toContainText('没有可选的未入库素材');
+  await expect(page.locator('#ai60SelectionStatus')).toContainText('可操作 0 张，排除 1 张（已正式入库 1 张）');
   const committedResult=await (await request.get(base+'/candidates?filter=committed')).json();
   expect(committedResult.total).toBe(1);
   expect(committedResult.items[0].gt_committed).toBe(true);
