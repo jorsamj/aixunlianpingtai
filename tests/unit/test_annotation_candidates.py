@@ -187,7 +187,7 @@ def test_review_filters_separate_clean_boxes_from_ambiguous_candidates(tmp_path)
     assert [row["image_id"] for row in store.read_page(cursor=None, filter="ambiguous").items] == ["conflict"]
     counts = store.review_counts()
     assert counts["with_boxes"] == 2 and counts["clean_boxes"] == 1 and counts["ambiguous"] == 1 and counts["zero"] == 1
-    assert list(store.iter_selected_ids(filter="ambiguous")) == ["conflict"]
+    assert list(store.iter_selected_ids(filter="ambiguous", purpose="ambiguity")) == ["conflict"]
     # A saved draft remains in the ambiguity review queue until a verified GT commit.
     store.save_draft("conflict", [a], expected_revision=0, actor="reviewer", request_id="filter-draft")
     assert store.review_counts()["ambiguous"] == 1
