@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,onBeforeUnmount,ref} from 'vue';
-import {useRoute} from 'vue-router';
+import {useWorkspace} from './main';
 import MaterialPreview from '../components/MaterialPreview.vue';
 import type {MaterialRow} from '../types/materials';
 import {request} from './http';
@@ -9,8 +9,10 @@ type Category={id:string;name:string;enabled:boolean};
 type PoolRow=MaterialRow&{negative_pool?:{categories?:Category[];review_status?:string}};
 type Packet={operation_kind:'negative_pool.members.v2';operation_id:string;expected_revision:string;action:'add'|'remove'|'set';image_ids:string[];category_ids:string[];categories_only:boolean};
 type Receipt={project_id:string;operation_id:string;operation_kind:string;action:string;affected:number;negative_pool_revision:string};
-const projectId=String(useRoute().params.projectId),project=encodeURIComponent(projectId);
-const base=`/api/v61/projects/${project}/negative-pool`, key='public-negative-pool:'+projectId;
+const {projectId}=defineProps<{projectId:string}>();
+const project=encodeURIComponent(projectId),account=useWorkspace().username;
+const base=`/api/v61/projects/${project}/negative-pool`;
+const key=account?'public-negative-pool:'+JSON.stringify([account,projectId]):'';
 const controller=new AbortController();
 onBeforeUnmount(()=>controller.abort());
 const categories=ref<Category[]>([]),rows=ref<PoolRow[]>([]),selected=ref<string[]>([]),assigned=ref<string[]>([]);
@@ -18,7 +20,7 @@ const page=ref(1),total=ref(0),revision=ref('0'),query=ref(''),category=ref(''),
 const editing=ref(''),categoryName=ref(''),busy=ref(false),error=ref(''),message=ref(''),pending=ref<Packet|null>(null);
 const confirmation=ref<Packet['action']|null>(null);
 const visibleNames=computed(()=>rows.value.filter(row=>selected.value.includes(row.id)).map(row=>row.filename));
-try{pending.value=JSON.parse(sessionStorage.getItem(key)||'null')}catch{}
+try{if(key)pending.value=JSON.parse(sessionStorage.getItem(key)||'null')}catch{}
 async function run(action:()=>Promise<void>){
  if(busy.value)return;
  busy.value=true;error.value='';message.value='';
@@ -47,6 +49,7 @@ async function fetchRows(){
 function browse(pageNumber=1){void run(async()=>{page.value=pageNumber;await fetchRows()})}
 function operationId(){return Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('')}
 function journal(packet:Packet|null){
+ if(!key)throw new Error('无法确认当前登录账号，不能保存公共池操作回执');
  if(packet)sessionStorage.setItem(key,JSON.stringify(packet));
  else sessionStorage.removeItem(key);
  pending.value=packet;
@@ -55,6 +58,7 @@ async function accept(result:Receipt,packet:Packet){
  if(result.project_id!==projectId||result.operation_id!==packet.operation_id||result.operation_kind!=='negative_pool.members.v2'||result.action!==packet.action||!/^\d+$/.test(result.negative_pool_revision))
   throw new Error('回执身份异常，结果待确认');
  journal(null);
+ if(controller.signal.aborted)return;
  await fetchRows();
  message.value='操作已核实';
 }

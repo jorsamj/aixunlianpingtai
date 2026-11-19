@@ -2144,6 +2144,12 @@ def training_material_picker_router(
             if algorithm_provider is None or algorithm_provider(project_id, str(payload['algorithm_asset_id'])) is None:
                 raise ValueError('训练算法不存在')
             before = selection_context(data_dir(), project_id, payload)
+            if 'expected_revisions' in payload:
+                revision_keys = ('repository_revision', 'annotation_revision', 'usage_revision',
+                                 'negative_pool_revision', 'negative_confirmation_revision')
+                expected = payload['expected_revisions']
+                if not isinstance(expected, dict) or [str(expected.get(key)) for key in revision_keys] != before['revisions']:
+                    raise HTTPException(409, '素材证据已变化，请重新选择')
             positive = _normalize_selection_ids(payload.get('positive_ids') or [])
             negatives = _normalize_selection_ids(payload.get('negative_ids') or [])
             reference = str(payload.get('positive_ref') or '')

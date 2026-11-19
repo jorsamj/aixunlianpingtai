@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed,ref,onBeforeUnmount} from 'vue';
 import {request} from './http';
-import {trainingMaterialRevision,verifyTrainingSelection,selectionMembership,listTrainingMaterials} from './training-api';
+import {trainingMaterialRevision,verifyTrainingSelection,selectionMembership,listTrainingMaterials,trainingSelectionRequestId} from './training-api';
 const props=defineProps<{projectId:string;identity:Record<string,any>;role:'train'|'test';allowedReference?:string;allowedIds?:string[];explicitOnly?:boolean;poolOnly?:boolean;positiveOnly?:boolean;initial?:{ids:string[];reference?:string;count:number}}>();
 const emit=defineEmits<{confirm:[value:any];cancel:[]}>();
 const selected=ref(new Set(props.initial?.ids||[])),reference=ref(props.initial?.reference||''),count=ref(props.initial?.count||0),rows=ref<any[]>([]),page=ref(1),hasNext=ref(false),query=ref(''),sort=ref('newest'),busy=ref(false),error=ref(''),summary=ref<any>(null),revision=ref<any>({}),members=ref<string[]>([]);
@@ -12,11 +12,7 @@ function freezeRequestId(scope: Record<string, unknown>) {
   const key = JSON.stringify(scope);
   if (freezeAttempt?.key === key) return freezeAttempt.id;
 
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
-  const id = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+  const id = trainingSelectionRequestId();
   freezeAttempt = {key, id};
   return id;
 }

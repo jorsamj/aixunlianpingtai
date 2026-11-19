@@ -2,6 +2,7 @@
 import {computed,reactive,ref,onBeforeUnmount,watch} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import {request} from './http';
+import {useWorkspace} from './main';
 import TrainingMaterials from './TrainingMaterials.vue';
 import {removeResolvedTrainingMaterials} from '../../../static/modules/training-material-summary-runtime.js';
 import {createTrainingDraft,trainingConfigurationDefaults,trainingInheritedDefaults,trainingBaseVersionFromAlgorithm,trainingDraftToRequest} from '../../../static/modules/training-draft.js';
@@ -10,6 +11,7 @@ import * as trainingApi from './training-api';
 const router=useRouter();
 const route=useRoute(),projectId=String(route.params.projectId),algorithmId=String(route.params.algorithmId||route.query.algorithm||'');
 const draftStorageKey=`native-training:${projectId}:${algorithmId}`;
+const unionStorageKey='training-selection-union:'+JSON.stringify([useWorkspace().username,projectId,algorithmId]);
 let savedDraft:any=null;try{savedDraft=JSON.parse(sessionStorage.getItem(draftStorageKey)||'null')}catch{}
 const algorithmOptions=ref<any[]>([]),algorithmQuery=ref(''),algorithmPage=ref(1),algorithmTotal=ref(0);
 async function searchAlgorithms(){try{const r=await request<any>(`/api/v12/projects/${encodeURIComponent(projectId)}/algorithms?summary_only=true&asset_view=true&page=${algorithmPage.value}&page_size=20&query=${encodeURIComponent(algorithmQuery.value)}`,{signal:controller.signal});algorithmOptions.value=r.items||[];algorithmTotal.value=r.total||0;}catch(e){error.value=(e as Error).message}}
@@ -37,10 +39,19 @@ async function mergeSelections(nextPositive:PickerSelection,nextNegative:PickerS
  if(!nextNegative.count)return nextPositive;
  const ids=[...new Set([...nextPositive.ids,...nextNegative.ids])];
  const revision=await trainingApi.trainingMaterialRevision(projectId,algorithmId,controller.signal);
- const references=nextPositive.reference||nextNegative.reference
-   ?await trainingApi.combineTrainingSelections(projectId,{...identity.value,positive_ref:nextPositive.reference,
-     positive_ids:nextPositive.ids,negative_ref:nextNegative.reference,negative_ids:nextNegative.ids,test_image_ids:draft.testMaterialIds},controller.signal)
-   :null;
+ let references:Awaited<ReturnType<typeof trainingApi.combineTrainingSelections>>|undefined;
+ if(nextPositive.reference||nextNegative.reference){
+  const scope={...identity.value,train_labels:[...identity.value.train_labels].sort(),
+    positive_ref:nextPositive.reference,positive_ids:[...nextPositive.ids].sort(),
+    negative_ref:nextNegative.reference,negative_ids:[...nextNegative.ids].sort(),
+    test_image_ids:[...draft.testMaterialIds].sort(),expected_revisions:revision};
+  const key=JSON.stringify(scope);
+  const previous=JSON.parse(sessionStorage.getItem(unionStorageKey)||'null');
+  const id=previous?.key===key?previous.id:trainingApi.trainingSelectionRequestId();
+  // Save before POST so a lost response or reload can reuse the server receipt.
+  sessionStorage.setItem(unionStorageKey,JSON.stringify({key,id}));
+  references=await trainingApi.combineTrainingSelections(projectId,{...scope,request_id:id},controller.signal);
+ }
  const scope=references?{train_selection_ref:references.selection_ref}:{image_ids:ids};
  const summary=await trainingApi.summarizeTrainingSelection(projectId,{...identity.value,...scope,role:'train',summary_only:true},controller.signal);
  const count=references?.count??ids.length;

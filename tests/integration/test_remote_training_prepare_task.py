@@ -1141,8 +1141,18 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
         'negative_ref':frozen_negatives.json()['selection_ref']})
     assert paired.status_code==200,paired.text
     assert paired.json()['count']==len(payload['train_image_ids'])
+    from uuid import uuid4
+    revisions = client.get(endpoint.replace('selection-union', 'revision'),
+                           params={'algorithm_asset_id': 'algorithm-fire'}).json()
+    request.update(request_id=str(uuid4()), expected_revisions=revisions)
+    stale = {**revisions, 'annotation_revision': -1}
+    assert client.post(endpoint, json={**request, 'expected_revisions': stale}).status_code == 409
     merged=client.post(endpoint,json=request)
     assert merged.status_code==200,merged.text
+    assert client.post(endpoint, json=request).json() == merged.json()
+    different = {**request, 'negative_ids': ['image-1']}
+    assert client.post(endpoint, json=different).status_code == 422
+    assert client.post(endpoint, json={**different, 'request_id': str(uuid4())}).json()['selection_ref'] != merged.json()['selection_ref']
     assert set(merged.json())=={'selection_ref','count'}
     payload['train_selection_ref']=merged.json()['selection_ref']
     payload['train_image_ids']=read_selection(data_dir,payload['train_selection_ref'],selection_context(data_dir,pid,payload))
@@ -1176,7 +1186,7 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     assert exported['train']=='images/train' and exported['val']=='images/validation'
     assert 'test' not in exported
     pool.members(['image-3'])
-    assert client.post(endpoint,json=request).status_code==422
+    assert client.post(endpoint,json=request).status_code==409
 
 
 def test_training_publication_claim_anchor_and_historical_formal_test(tmp_path, monkeypatch):

@@ -1,7 +1,9 @@
 import {test,expect} from '@playwright/test';
 import {resolve} from 'node:path';
-for (const variant of ['ordinary','frozen','mixed','negative-first']) test('native training: '+variant,async({page})=>{
- const frozen=variant==='frozen',mixed=variant==='mixed'||variant==='negative-first';
+for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry']) test('native training: '+variant,async({page})=>{
+ const union=variant==='union-retry',frozen=variant==='frozen'||union,mixed=variant==='mixed'||variant==='negative-first';
+ const unions=new Map<string,string>();
+ const unionIds:string[]=[];
  const freezeIds:string[]=[];let summaries=0;
  let posts=0;const paths:string[]=[];const revision={repository_revision:1,annotation_revision:1,usage_revision:1,negative_pool_revision:1,negative_confirmation_revision:1};
  await page.route('**/app/**',route=>{const name=new URL(route.request().url()).pathname.slice(5)||'index.html';return route.fulfill({path:resolve('../static/vue-app',name),contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'})});
@@ -21,7 +23,8 @@ for (const variant of ['ordinary','frozen','mixed','negative-first']) test('nati
   if(path.endsWith('/negative-pool/categories'))return route.fulfill({json:{items:[{id:'reflection',name:'反光',enabled:true}]}});
   if((path.endsWith('/role-page')||path.endsWith('/page'))&&data.negative_pool_only){
    expect(data.algorithm_asset_id).toBe('a');
-   return route.fulfill({json:{...revision,items:[{id:'background',filename:'background.jpg',annotation_state:'confirmed_empty',sample_role:'confirmed_negative'}],page:1,page_size:40,has_next:false}});
+   const items=['background',...(union?['other-background']:[])].map(id=>({id,filename:id+'.jpg',annotation_state:'confirmed_empty',sample_role:'confirmed_negative'}));
+   return route.fulfill({json:{...revision,items,page:1,page_size:40,has_next:false}});
   }
   if(path.endsWith('/negative-preview'))return route.fulfill({json:{counts:{positive:0,confirmed_negative:1,pending_review:0},pending_count:0,proof_digest:'proof'}});
   if(path.endsWith('/page')){expect(r.method()).toBe('POST');expect(data.page_size).toBeLessThanOrEqual(50);const id=data.page===1?'one':'two';return route.fulfill({json:{...revision,items:[{id,filename:id+'.jpg',annotation_state:'annotated',box_count:1,selectable:true}],page:data.page,page_size:40,has_next:data.page===1,total:null,total_pages:null}})}
@@ -31,9 +34,25 @@ for (const variant of ['ordinary','frozen','mixed','negative-first']) test('nati
    if(freezeIds.length===1)return route.fulfill({status:503,json:{detail:'暂时无法冻结'}});
    return route.fulfill({json:{selection_ref:'isolated-ref',count:22015}});
   }
+  if(path.endsWith('/selection-union')){
+   expect(data.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+   expect(data.expected_revisions).toEqual(revision);
+   expect(data.positive_ref).toBe('isolated-ref');
+   expect(data.positive_ids).toEqual([]);
+   unionIds.push(data.request_id);
+   const prior=unions.get(data.request_id),ref=prior||'union-'+data.request_id;
+   unions.set(data.request_id,ref);
+   if(unionIds.length===1)return route.abort('connectionreset');
+   return route.fulfill({json:{selection_ref:ref,count:22015+data.negative_ids.length}});
+  }
   if(path.endsWith('/selection-membership'))return route.fulfill({json:{items:['one']}});
   if(path.endsWith('/selection-summary')&&frozen){
    summaries++;
+   if(union&&data.train_selection_ref!=='isolated-ref'){
+    expect(data.train_selection_ref).toBe(unions.get(unionIds.at(-1)!));
+    const count=unionIds.length===2?22016:22017;
+    return route.fulfill({json:{...revision,requested_count:count,matched_count:count,selection_reference:true,positive_label_codes:['smoke']}});
+   }
    expect(data.train_selection_ref).toBe('isolated-ref');
    expect(data.image_ids||[]).toEqual([]);
    return route.fulfill({json:{...revision,requested_count:22015,matched_count:22015,selection_reference:true,positive_label_codes:['smoke']}});
@@ -63,6 +82,34 @@ for (const variant of ['ordinary','frozen','mixed','negative-first']) test('nati
   await expect(picker).toContainText('服务器冻结 22015 张');expect(freezeIds).toHaveLength(2);expect(freezeIds[0]).toBe(freezeIds[1]);
   await picker.getByRole('button',{name:'读取正式标签并核验选择',exact:true}).click();
   await expect(page.getByRole('button',{name:/选择训练素材.*22015/})).toBeVisible();
+  if(union){
+   async function openPool(){
+    await page.getByRole('button',{name:/从公共池添加负样本/}).click();
+    await expect(picker).toContainText('background.jpg');
+   }
+   const apply=picker.getByRole('button',{name:'应用负样本选择'});
+   await openPool();
+   await picker.getByRole('row').filter({hasText:'background.jpg'}).filter({hasNotText:'other-background.jpg'}).locator('label.el-checkbox').click();
+   await apply.click();
+   await expect.poll(()=>unionIds.length).toBe(1);
+   await page.reload();
+   await openPool();
+   await picker.getByRole('row').filter({hasText:'background.jpg'}).filter({hasNotText:'other-background.jpg'}).locator('label.el-checkbox').click();
+   await apply.click();
+   await expect(picker).toBeHidden();
+   await expect(page.getByText(/合并后 22016 张/)).toBeVisible();
+   expect(unionIds[1]).toBe(unionIds[0]);
+   expect(unions.size).toBe(1);
+   await openPool();
+   await picker.getByRole('button',{name:'选择本页',exact:true}).click();
+   await apply.click();
+   await expect(picker).toBeHidden();
+   await expect(page.getByText(/合并后 22017 张/)).toBeVisible();
+   expect(unionIds[2]).not.toBe(unionIds[1]);
+   expect(unions.size).toBe(2);
+   expect(posts).toBe(0);
+   return;
+  }
   await page.reload();await page.getByRole('button',{name:/选择训练素材.*22015/}).click();
   await picker.getByRole('button',{name:'读取正式标签并核验选择',exact:true}).click();
   await expect.poll(()=>summaries).toBe(2);
