@@ -39,11 +39,9 @@ def _owner_evidence(data_dir, project_id, row, artifacts):
     sources = []
     if frozen:
         from .training_tasks import resolve_training_input_freeze
-        from .training_splits import SplitMode, SplitRequest
+        from .training_splits import SplitRequest
         split = frozen.get('split') or {}
-        request = SplitRequest(mode=SplitMode(split['mode']), train_image_ids=tuple(split['train_image_ids']),
-            test_image_ids=tuple(split.get('test_image_ids') or []),
-            validation_percent=split['validation_percent'], experiment_percent=split.get('experiment_percent'))
+        request = SplitRequest.from_payload(split, mode_key="mode")
         sources, _schema, _manifest, replay = resolve_training_input_freeze(frozen, request,
             seed=int(split['seed']), supplement_candidate_set=payload.get('supplement_candidate_set'))
         if replay['snapshot_id'] != snapshot_id or payload.get('input_freeze_id') != frozen.get('input_freeze_id'):

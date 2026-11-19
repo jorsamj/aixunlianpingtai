@@ -69,6 +69,8 @@ def _split_request(payload: Mapping[str, Any]) -> SplitRequest:
     mode = SplitMode(str(
         payload.get("split_mode") or SplitMode.RANDOM_TEST_FROM_TRAINING_POOL.value
     ))
+    if mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        return SplitRequest.from_payload(payload)
     return SplitRequest(
         mode=mode,
         train_image_ids=tuple(str(value) for value in train_ids if str(value)),
@@ -298,7 +300,7 @@ def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any], *, c
         request["split_mode"] = stored_split.get("mode") or stored_split.get("split_mode") or request.get("split_mode")
     split = _split_request(request)
     materials = MaterialRepository(project)
-    ids = (*split.train_image_ids, *split.test_image_ids)
+    ids = split.image_ids
     missing_count = 0
     if current_only:
         # History remains immutable. Its current-data view may omit indices
@@ -308,7 +310,7 @@ def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any], *, c
         missing_count = len(set(ids)-current_ids)
         ids = tuple(image_id for image_id in ids if image_id in current_ids)
     rows = _selected_project_images(materials, project, ids) if ids else []
-    issues = _duplicate_issues(rows, split.train_image_ids, split.test_image_ids, _dataset_names(project))
+    issues = _duplicate_issues(rows, (*split.train_image_ids, *split.validation_image_ids), split.test_image_ids, _dataset_names(project))
     return TrainingCompatibilityResult({}, tuple(issues), MaterialRepository(project).current_revision(),
         AnnotationRepository(project).current_revision(), {"selected_train_count": len(split.train_image_ids),
             "test_count": len(split.test_image_ids), "missing_current_image_count": missing_count})
@@ -437,11 +439,11 @@ def evaluate_selection_compatibility(
             by_id[image_id] = row
 
     duplicate_issues = _duplicate_issues(
-        list(by_id.values()), selection.selected_train_image_ids, effective.test_image_ids, names,
+        list(by_id.values()), (*selection.selected_train_image_ids, *effective.validation_image_ids), effective.test_image_ids, names,
     )
     issues = tuple(duplicate_issues) + tuple(
         issue
-        for image_id in (*selection.selected_train_image_ids, *effective.test_image_ids)
+        for image_id in (*selection.selected_train_image_ids, *effective.validation_image_ids, *effective.test_image_ids)
         if (issue := _issue_for_row(by_id[image_id], contract, names)) is not None
     )
     return TrainingCompatibilityResult(

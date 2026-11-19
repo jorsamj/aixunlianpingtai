@@ -583,7 +583,7 @@ class AgentTrainingRunner:
 
     def _materialize_indexed_inputs(self, lease, workdir, monitor):
         from .training_tasks import materialize_portable_dataset, resolve_remote_training_bundle, resolve_training_input_freeze
-        from .training_splits import SplitRequest, SplitMode
+        from .training_splits import SplitRequest
         self._assert_active(monitor)
         body = self.client.training_inputs_manifest(lease)
         self._assert_active(monitor)
@@ -593,9 +593,7 @@ class AgentTrainingRunner:
                 or frozen.get("source_input_freeze_id") != inputs.get("input_freeze_id")):
             raise AgentTrainingRuntimeError("frozen input origin identity changed")
         split = frozen.get("split") or {}
-        request = SplitRequest(mode=SplitMode(split["mode"]),
-            train_image_ids=tuple(split["train_image_ids"]), test_image_ids=tuple(split["test_image_ids"]),
-            experiment_percent=split.get("experiment_percent"), validation_percent=split["validation_percent"])
+        request = SplitRequest.from_payload(split, mode_key="mode")
         rows, _schema, _manifest, snapshot = resolve_training_input_freeze(
             frozen, request, seed=split["seed"], supplement_candidate_set=body.get("supplement_candidate_set"),
         )

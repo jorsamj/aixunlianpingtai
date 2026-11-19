@@ -282,14 +282,15 @@ interface TrainingCreationReceipt {
   taskId: string;
 }
 
-const trainingCreationReceiptKey = (projectId: string) => 'training-create-pending:' + projectId;
+const trainingCreationReceiptKey = (projectId: string, scope?: string) => 'training-create-pending:' + (scope || projectId);
 const creationReceipts = new Map<string, TrainingCreationReceipt>();
 
-export function pendingTrainingCreation(projectId: string): TrainingCreationReceipt | null {
-  const current = creationReceipts.get(projectId);
+export function pendingTrainingCreation(projectId: string, scope?: string): TrainingCreationReceipt | null {
+  const key = trainingCreationReceiptKey(projectId, scope);
+  const current = creationReceipts.get(key);
   if (current) return current;
   try {
-    const raw = sessionStorage.getItem(trainingCreationReceiptKey(projectId));
+    const raw = sessionStorage.getItem(key);
     if (raw === null) return null;
     const saved = JSON.parse(raw);
     if (saved?.projectId === projectId && typeof saved.algorithmId === 'string' && saved.algorithmId && isCanonicalTrainingTaskId(saved.taskId)) return saved;
@@ -299,15 +300,17 @@ export function pendingTrainingCreation(projectId: string): TrainingCreationRece
   throw new Error('训练创建回执不可读取，请核验训练任务后再继续');
 }
 
-function rememberTrainingCreation(receipt: TrainingCreationReceipt) {
-  sessionStorage.setItem(trainingCreationReceiptKey(receipt.projectId), JSON.stringify(receipt));
-  creationReceipts.set(receipt.projectId, receipt);
+function rememberTrainingCreation(receipt: TrainingCreationReceipt, scope?: string) {
+  const key = trainingCreationReceiptKey(receipt.projectId, scope);
+  sessionStorage.setItem(key, JSON.stringify(receipt));
+  creationReceipts.set(key, receipt);
 }
 
-function clearTrainingCreation(receipt: TrainingCreationReceipt) {
-  if (pendingTrainingCreation(receipt.projectId)?.taskId !== receipt.taskId) return;
-  creationReceipts.delete(receipt.projectId);
-  try { sessionStorage.removeItem(trainingCreationReceiptKey(receipt.projectId)); }
+function clearTrainingCreation(receipt: TrainingCreationReceipt, scope?: string) {
+  if (pendingTrainingCreation(receipt.projectId, scope)?.taskId !== receipt.taskId) return;
+  const key = trainingCreationReceiptKey(receipt.projectId, scope);
+  creationReceipts.delete(key);
+  try { sessionStorage.removeItem(key); }
   catch { /* Session storage may be unavailable. */ }
 }
 
@@ -338,18 +341,19 @@ function validatedTask(body: unknown, receipt: TrainingCreationReceipt, persiste
   return task;
 }
 
-export async function recoverNativeTraining(projectId: string, signal?: AbortSignal) {
-  const receipt = pendingTrainingCreation(projectId);
+export async function recoverNativeTraining(projectId: string, signal?: AbortSignal, scope?: string) {
+  const receipt = pendingTrainingCreation(projectId, scope);
   if (!receipt) return null;
   const url = '/api/v62/projects/' + encodeURIComponent(projectId) + '/tasks/' + encodeURIComponent(receipt.taskId) + '?reader_view=true';
   const body = await request<{task?: unknown}>(url, {signal});
   const task = validatedTask({ok: true, task: body.task || body}, receipt, true);
-  clearTrainingCreation(receipt);
+  clearTrainingCreation(receipt, scope);
   return task;
 }
 
 interface NativeTrainingSubmission {
   projectId: string;
+  receiptScope?: string;
   asset: TrainingAsset;
   draft: Record<string, any>;
   target: TrainingTarget;
@@ -363,6 +367,8 @@ interface NativeTrainingSubmission {
   benchmark?: TrainingBenchmark;
   stillCurrent: () => boolean;
   signal?: AbortSignal;
+  fixedPreview?: any;
+  fixedRequestId?: string;
 }
 
 interface CompatibilityResult {
@@ -376,14 +382,14 @@ interface CompatibilityResult {
 
 export async function submitNativeTraining(options: NativeTrainingSubmission) {
   const {
-    projectId, asset, draft, target, engine, devices, trainSummary, trainRevision,
-    testSummary, testRevision, backgroundConfirmed, benchmark, stillCurrent, signal,
+    projectId, receiptScope, asset, draft, target, engine, devices, trainSummary, trainRevision,
+    testSummary, testRevision, backgroundConfirmed, benchmark, stillCurrent, signal, fixedPreview, fixedRequestId,
   } = options;
   const ensureCurrent = () => {
     if (signal?.aborted || !stillCurrent()) throw new DOMException('训练配置或窗口已变化，本次检查已取消', 'AbortError');
   };
   ensureCurrent();
-  if (pendingTrainingCreation(projectId)) throw new Error('上次训练创建结果尚未确认，请先核验任务状态');
+  if (pendingTrainingCreation(projectId, receiptScope)) throw new Error('上次训练创建结果尚未确认，请先核验任务状态');
   if (asset.id !== draft.algorithmId || target.status !== 'ready' || !target.algorithms.some(row => row.key === engine.key)) {
     throw new Error('训练算法或训练资源已变化，请重新选择');
   }
@@ -396,11 +402,12 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
   const base = trainingBaseVersionFromAlgorithm(fresh);
   if (base.blocked || base.versionId !== draft.baseVersionId) throw new Error('当前可训练版本已变化，请重新核对训练配置');
   validateTrainingDevice(draft, devices, target);
-  const blockers = collectTrainingAdmissionBlockers({draft, base, target});
+  const fixed = draft.splitMode === 'fixed_zip_train_val_test';
+  const blockers = collectTrainingAdmissionBlockers({draft, base, target}).filter((row: {code:string}) => !fixed || row.code !== 'materials');
   if (blockers.length) throw new Error(blockers.map((row: {message: string}) => row.message).join('；'));
 
   const payload = buildTrainingStartPayload({draft, target, algorithm: engine, trainingDraftToRequest});
-  const fixedTest = benchmarkReuseContext({asset: fresh, draft, base, benchmark});
+  const fixedTest = fixed ? null : benchmarkReuseContext({asset: fresh, draft, base, benchmark});
   if (fixedTest) {
     if (draft.testMaterialIds?.length) throw new Error('复用固定评测基准时不能同时选择独立试验素材');
     delete payload.test_image_ids;
@@ -408,13 +415,20 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
     payload.benchmark_source_version_id = fixedTest.sourceVersionId;
     payload.benchmark_scope_id = fixedTest.scopeId;
   }
-  const supplement = supplementCandidateContext({asset: fresh, draft, base});
+  const supplement = fixed ? null : supplementCandidateContext({asset: fresh, draft, base});
   if (supplement?.active) payload.supplement_candidate_set_id = supplement.candidateSetId;
 
   const selectionContext = {
     algorithm_asset_id: asset.id, base_version_id: payload.base_version_id, model: payload.model,
     framework: payload.framework, train_labels: payload.train_labels, history_policy: payload.history_policy,
   };
+  if (fixed) {
+    if (!fixedPreview?.preview_digest || !fixedRequestId) throw new Error('请先预览固定 ZIP 划分');
+    const frozen = await post<any>(materialsPath(projectId) + '/zip-fixed-split-freeze', {...selectionContext, zip_source_job_ids:draft.zipSourceJobIds, review_all_training_backgrounds:!!backgroundConfirmed, preview_digest:fixedPreview.preview_digest, request_id:fixedRequestId}, signal);
+    ensureCurrent();
+    Object.assign(payload, frozen, {split_mode:'fixed_zip_train_val_test',validation_percent:null,experiment_percent:null,admission_mode:'background'});
+    delete payload.train_image_ids; delete payload.test_image_ids;
+  } else {
   const testIds = (draft.testMaterialIds || []) as string[];
   const trainIds = (draft.materialIds || []) as string[];
   const reference = String(draft.trainSelectionRef || '');
@@ -459,29 +473,30 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
       if (compatibility.compatible !== true && compatibility.skipped !== true) throw new Error('训练准入检查尚未明确通过');
     }
   }
+  }
   if (backgroundConfirmed) {
     payload.admission_mode = 'background';
     payload.review_all_training_backgrounds = true;
   }
   ensureCurrent();
-  if (pendingTrainingCreation(projectId)) throw new Error('上次训练创建结果尚未确认，请先核验任务状态');
+  if (pendingTrainingCreation(projectId, receiptScope)) throw new Error('上次训练创建结果尚未确认，请先核验任务状态');
 
   const taskId = 'train_' + Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
   const receipt = {projectId, algorithmId: asset.id, taskId};
   payload.task_id = taskId;
-  rememberTrainingCreation(receipt);
+  rememberTrainingCreation(receipt, receiptScope);
   try {
     const body = await postTrainingCreation(projectId, payload);
     const task = validatedTask(body, receipt);
-    clearTrainingCreation(receipt);
+    clearTrainingCreation(receipt, receiptScope);
     return task;
   } catch (error) {
     if ((error as {definiteRejection?: boolean})?.definiteRejection === true) {
-      clearTrainingCreation(receipt);
+      clearTrainingCreation(receipt, receiptScope);
       throw error;
     }
     try {
-      const task = await recoverNativeTraining(projectId);
+      const task = await recoverNativeTraining(projectId, undefined, receiptScope);
       if (task) return task;
     } catch {
       // A failed readback does not prove that the create request was rejected.
@@ -489,3 +504,6 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
     throw new Error('训练创建结果待核验，请查询任务 ' + taskId);
   }
 }
+
+export function fixedZipSources(projectId: string, offset: number, signal?: AbortSignal) { return request<any>(materialsPath(projectId) + '/zip-fixed-sources?' + new URLSearchParams({offset:String(offset),limit:'30'}), {signal}); }
+export function previewFixedZip(projectId: string, body: any, signal?: AbortSignal) { return post<any>(materialsPath(projectId) + '/zip-fixed-split-preview', body, signal); }

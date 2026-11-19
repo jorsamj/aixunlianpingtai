@@ -1279,3 +1279,105 @@ def test_ready_receipt_before_database_commit_resumes_in_new_preparation_lease(t
     assert repository.get(target_id).payload_ref==proposals[0].version.payload_ref
     assert provider.upload_calls==uploads
     with pytest.raises(ExecutionFencedError):handler.run(context)
+
+
+def test_fixed_zip_references_prepare_and_materialize_exact_three_roles(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app as app_module
+    from platform_core.snapshots import persist_snapshot
+    from platform_core.training_material_picker_api import training_material_picker_router
+    from platform_core.training_reader_views import report_display
+    from platform_core.training_selection_reference import validate_payload_references
+    from platform_core.training_splits import SplitRequest, build_split_manifest
+    from platform_core.training_tasks import materialize_portable_dataset, resolve_training_input_freeze
+
+    data = tmp_path / 'data'
+    pid = _build_project(data)
+    project = data / 'projects' / pid
+    repo, artifacts, task_id, _ = _runtime(data, pid)
+    store = MaterialRepository(project)
+    gt = AnnotationRepository(project)
+    gt.upsert('image-1', [], annotation_state='confirmed_empty', annotation_scope=['fire'])
+    gt.upsert('image-4', [], annotation_state='unannotated', annotation_scope=[])
+    before_gt = gt.get_many([f'image-{i}' for i in range(5)])
+    roles = ('train', 'train', 'val', 'test', 'unassigned')
+    for index, role in enumerate(roles):
+        folder = 'images/' + role
+        store.patch({f'image-{index}': {'import_batch_id': 'zip-one', 'source_task_id': 'zip-one',
+            'zip_folder_source': {'job_id': 'zip-one', 'source_zip_sha256': 'a'*64, 'source_scan_digest': 'b'*64,
+                'rule_digest': 'c'*64, 'source_path': folder + ('/negative.jpg' if index == 1 else '/same.jpg'),
+                'classification_status': 'applied', 'usage_intent': role, 'folder_key': folder}}})
+    payload = artifacts.read_json(task_id, 'payload.json')
+    for field in ('train_image_ids', 'test_image_ids'):
+        payload.pop(field)
+    payload.update(split_mode='fixed_zip_train_val_test', validation_percent=None, experiment_percent=None,
+                   zip_source_job_ids=['zip-one'], train_labels=['fire'])
+    app = FastAPI()
+    app.include_router(training_material_picker_router(lambda p: {'id':p} if p==pid else None,
+        lambda: data, algorithm_provider=lambda p,a: {'id':a,'versions':[]} if a=='algorithm-fire' else None))
+    client = TestClient(app)
+    base = f'/api/v62/projects/{pid}/training-materials/zip-fixed-'
+    assert client.get(base+'sources').json()['items'][0]['job_id'] == 'zip-one'
+    missing = client.post(base+'split-preview', json={**payload,'zip_source_job_ids':['foreign-job']})
+    assert missing.json()['issue_count'] > 0 and 'preview_digest' not in missing.json()
+    preview = client.post(base+'split-preview', json=payload)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['issue_count'] == 0, preview.text
+    assert preview.json()['unassigned'] == 1
+    assert preview.json()['roles']['train']['confirmed_negative'] == 1
+    intent = {**payload, 'preview_digest': preview.json()['preview_digest'], 'request_id': str(uuid4())}
+    assert client.post(base+'split-freeze', json={**intent,'preview_digest':'stale'}).status_code == 409
+    refs = client.post(base+'split-freeze', json=intent)
+    assert refs.status_code == 200, refs.text
+    assert client.post(base+'split-freeze', json=intent).json() == refs.json()
+    monkeypatch.setattr(app_module, 'DATA_DIR', data)
+    request = app_module.TrainReq.model_validate({**payload, **refs.json()})
+    for bad in ({'benchmark_scope_id':'old'}, {'validation_percent':20},
+                {'validation_selection_ref': refs.json()['test_selection_ref']}):
+        with pytest.raises(ValueError):
+            app_module._explicit_training_split(app_module.TrainReq.model_validate({**payload, **refs.json(), **bad}), pid)
+    split = app_module._explicit_training_split(request, pid)
+    payload.update(refs.json(), train_image_ids=list(split.train_image_ids),
+                   validation_image_ids=list(split.validation_image_ids), test_image_ids=list(split.test_image_ids))
+    context = SimpleNamespace(artifacts=artifacts, repository=repo, run_owned=lambda run: run())
+    updated = RemoteTrainingPrepareHandler(data)._freeze_request_contract(context, repo.get(task_id), payload)
+    frozen = artifacts.read_json(task_id, updated['input_freeze_ref'])
+    assert frozen['zip_source_proof']['jobs']['zip-one']['rule_digest'] == 'c'*64
+    rows, _, manifest, snapshot = resolve_training_input_freeze(frozen, split, seed=0)
+    expected = {'train':('image-0','image-1'), 'validation':('image-2',), 'test':('image-3',)}
+    assert manifest.ids == expected
+    assert build_split_manifest(rows, split, seed=456).ids == expected
+    with pytest.raises(ValueError, match='HISTORY_EXPOSURE'):
+        build_split_manifest(rows, split, seed=0, forbidden_test_image_ids=('image-3',))
+    damaged = {**frozen, 'zip_source_proof':{}}
+    with pytest.raises(ValueError, match='digest mismatch'):
+        resolve_training_input_freeze(damaged, split, seed=0)
+    for field, value, pattern in [('source_group_id','same-source','leakage'),
+                                  ('content_sha256',rows[0]['content_sha256'],'leakage')]:
+        broken = [dict(row) for row in rows]
+        broken[0][field] = broken[2][field] = value
+        with pytest.raises(ValueError, match=pattern):
+            build_split_manifest(broken, split, seed=0)
+    bundle = materialize_portable_dataset(tmp_path/'task',snapshot,rows,
+                                          lambda row: project/'uploads'/row['stored_name'],safety_reserve_bytes=0)
+    for role, expected_ids in expected.items():
+        assert tuple(sorted(path.stem for path in (bundle/'dataset/images'/role).glob('*.jpg'))) == expected_ids
+    assert (bundle/'dataset/labels/train/image-1.txt').read_bytes() == b''
+    assert (bundle/'evaluation/ground_truth/test/image-3.txt').read_text().startswith('0 ')
+    assert 'val: images/validation' in (bundle/'dataset/data.yaml').read_text()
+    assert 'test:' not in (bundle/'dataset/data.yaml').read_text()
+    assert gt.get_many([f'image-{i}' for i in range(5)]) == before_gt
+    persist_snapshot(project/'snapshots',snapshot)
+    artifacts.atomic_write_json(task_id,'payload.json',updated)
+    display = report_display(task_id,repo.get(task_id),artifacts,project/'jobs'/task_id/'job.json')
+    assert display['fixed_zip_split']['state'] == 'VERIFIED'
+    assert display['fixed_zip_split']['counts']['validation'] == 1
+    with sqlite3.connect(repo.path) as db:
+        assert dict(db.execute('SELECT image_id,role FROM training_material_usage WHERE task_id=?',(task_id,))) == {
+            image:role for role, ids in expected.items() for image in ids}
+    store.patch({'image-2': {'source_available':False}})
+    with pytest.raises(ValueError):
+        validate_payload_references(data,pid,payload)

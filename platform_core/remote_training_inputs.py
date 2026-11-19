@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .storage import StorageManager
 from .training_tasks import _training_input_freeze_digest, resolve_training_input_freeze
-from .training_splits import SplitMode, SplitRequest
+from .training_splits import SplitRequest
 
 
 @lru_cache(maxsize=2)
@@ -58,9 +58,7 @@ def training_inputs(service, task, payload, *, image_id=None):
         portable["source_input_freeze_id"] = frozen["input_freeze_id"]
         portable["input_freeze_id"] = _training_input_freeze_digest(portable)
         split = portable["split"]
-        request = SplitRequest(mode=SplitMode(split["mode"]),
-            train_image_ids=tuple(split["train_image_ids"]), test_image_ids=tuple(split["test_image_ids"]),
-            experiment_percent=split.get("experiment_percent"), validation_percent=split["validation_percent"])
+        request = SplitRequest.from_payload(split, mode_key="mode")
         # Validate that removing storage locations did not alter GT/split truth.
         resolve_training_input_freeze(portable, request, seed=split["seed"],
             supplement_candidate_set=payload.get("supplement_candidate_set"))

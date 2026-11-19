@@ -1,6 +1,7 @@
 import {test,expect} from '@playwright/test';
 import {resolve} from 'node:path';
-for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry']) test('native training: '+variant,async({page})=>{
+for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry','fixed-zip']) test('native training: '+variant,async({page})=>{
+ const fixedZip=variant==='fixed-zip';
  const union=variant==='union-retry',frozen=variant==='frozen'||union,mixed=variant==='mixed'||variant==='negative-first';
  const unions=new Map<string,string>();
  const unionIds:string[]=[];
@@ -19,6 +20,21 @@ for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry
   if(path==='/api/training_options')return route.fulfill({json:{targets:[{id:'cpu',name:'隔离CPU',type:'local',status:'ready',framework:'ultralytics',algorithms:[{key:'yolo_detect',base_model:'yolo11n.pt',default_imgsz:640}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}});
   if(path==='/api/v62/training-devices')return route.fulfill({json:{recommended:'auto',options:[{id:'auto',label:'自动',available:true}]}});
   if(path==='/api/system/recommendation')return route.fulfill({json:{device:'cpu',batch:1,workers:0}});
+  if(path.endsWith('/zip-fixed-sources'))return route.fulfill({json:{items:[{job_id:'zip-one',image_count:4}],next_offset:null}});
+  if(path.endsWith('/labels'))return route.fulfill({json:{items:[{code:'smoke'}]}});
+  if(path.endsWith('/zip-fixed-split-preview')){
+   expect(data.zip_source_job_ids).toEqual(['zip-one']);expect(data.train_labels).toEqual(['smoke']);
+   return route.fulfill({json:{roles:{train:{total:2,positive:1,confirmed_negative:1},validation:{total:1,positive:1},test:{total:1,positive:1}},unassigned:0,issue_count:0,conflict_count:0,problems:[],preview_digest:'preview'}});
+  }
+  if(path.endsWith('/zip-fixed-split-freeze')){
+   expect(data.preview_digest).toBe('preview');expect(data.request_id).toMatch(/[a-f0-9-]{36}/);
+   return route.fulfill({json:{zip_source_job_ids:['zip-one'],zip_selection_digest:'source',train_selection_ref:'train-ref',validation_selection_ref:'val-ref',test_selection_ref:'test-ref'}});
+  }
+  if(path.endsWith('/train/start')&&fixedZip){
+   posts++; expect(data).toMatchObject({split_mode:'fixed_zip_train_val_test',train_selection_ref:'train-ref',validation_selection_ref:'val-ref',test_selection_ref:'test-ref',validation_percent:null,experiment_percent:null});
+   expect(data.train_image_ids).toBeUndefined();expect(data.validation_image_ids).toBeUndefined();expect(data.test_image_ids).toBeUndefined();
+   return route.fulfill({json:{ok:true,task:{task_id:data.task_id,kind:'TRAINING',status:'QUEUED',project_id:'p'}}});
+  }
   if(path.endsWith('/revision'))return route.fulfill({json:revision});
   if(path.endsWith('/negative-pool/categories'))return route.fulfill({json:{items:[{id:'reflection',name:'反光',enabled:true}]}});
   if((path.endsWith('/role-page')||path.endsWith('/page'))&&data.negative_pool_only){
@@ -66,6 +82,18 @@ for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry
   throw new Error('Unexpected API '+path);
  });
  await page.goto('/app/#/projects/p/training/create?algorithm=a');
+ if(fixedZip){
+  await page.locator('.el-form-item').filter({hasText:'划分模式'}).locator('.el-select__wrapper').click();
+  await page.getByRole('option',{name:'按 ZIP 来源固定划分'}).click();
+  await page.getByText('zip-one · 4 张',{exact:true}).click();
+  await page.locator('label.el-checkbox').filter({has:page.getByRole('checkbox',{name:'smoke',exact:true})}).click();
+  await page.getByRole('button',{name:'预览固定划分'}).click();
+  await expect(page.getByRole('row',{name:/Train/})).toBeVisible();
+  await page.getByRole('button',{name:'核验并创建训练',exact:true}).click();
+  await page.getByRole('button',{name:'确认核验并创建',exact:true}).click();
+  await expect.poll(()=>posts).toBe(1);
+  return;
+ }
  const picker=page.locator('.training-materials');
  async function selectBackground(){
   await page.getByRole('button',{name:/从公共池添加负样本/}).click();

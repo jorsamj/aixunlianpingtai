@@ -2131,6 +2131,63 @@ def training_material_picker_router(
             return {'items':selection_membership(data_dir(),payload.get('selection_ref'),context,payload.get('image_ids') or [])}
         except (ValueError,TypeError) as error:raise HTTPException(422,str(error)) from error
 
+    @router.get('/zip-fixed-sources')
+    def fixed_zip_sources(project_id: str, offset: int = 0, limit: int = 30):
+        from .zip_fixed_training import sources_page
+        if offset < 0 or not 1 <= limit <= 100:
+            raise HTTPException(422, 'ZIP 来源分页范围无效')
+        return sources_page(materials(project_id), offset, limit)
+
+    def fixed_zip_plan(project_id, payload):
+        from .training_selection_reference import selection_context
+        from .zip_fixed_training import digest, job_ids, preview, reference_scope
+        repository = materials(project_id)
+        before = selection_context(data_dir(), project_id, payload)
+        summary, split, proof = preview(repository, payload, task_contract(project_id, payload, repository))
+        if before != selection_context(data_dir(), project_id, payload):
+            raise HTTPException(409, '素材或 GT 修订已变化，请重新核验固定划分')
+        if not proof:
+            return summary, None, None, before
+        identity = {'zip_source_job_ids': job_ids(payload.get('zip_source_job_ids')),
+                    'zip_selection_digest': proof['source_digest']}
+        scope = reference_scope({**payload, **identity})
+        summary['preview_digest'] = digest({'context': before, 'scope': scope})
+        return summary, split, identity, before
+
+    @router.post('/zip-fixed-split-preview')
+    def fixed_zip_preview(project_id: str, payload: dict):
+        try:
+            return fixed_zip_plan(project_id, payload)[0]
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @router.post('/zip-fixed-split-freeze')
+    def fixed_zip_freeze(project_id: str, payload: dict):
+        import hashlib
+        from uuid import UUID
+        from .training_selection_reference import freeze_selection, selection_context
+        from .zip_fixed_training import ROLES, reference_scope
+        try:
+            request_id = UUID(str(payload.get('request_id') or ''))
+            if request_id.version != 4:
+                raise ValueError('固定 ZIP 确认需要 UUIDv4 请求身份')
+            summary, split, identity, before = fixed_zip_plan(project_id, payload)
+            if not split or summary['preview_digest'] != payload.get('preview_digest'):
+                raise HTTPException(409, '固定划分预览已失效，请重新核验')
+            scope = json.dumps(reference_scope({**payload, **identity}), sort_keys=True)
+            result = dict(identity)
+            for role in ROLES:
+                # Deterministic UUIDv4-formatted child IDs let a partial write be retried safely.
+                child = UUID(bytes=hashlib.sha256(request_id.bytes + role.encode()).digest()[:16], version=4)
+                receipt = freeze_selection(data_dir(), {**before, 'role': role}, getattr(split, role + '_image_ids'),
+                                           request_id=str(child), request_scope=scope)
+                result[role + '_selection_ref'] = receipt['selection_ref']
+            if before != selection_context(data_dir(), project_id, payload):
+                raise HTTPException(409, '素材或 GT 修订已变化，请重新核验固定划分')
+            return result
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
     @router.post('/selection-union')
     def combine_training_selections(project_id: str, payload: dict):
         from .training_selection_reference import freeze_selection, read_selection, selection_context

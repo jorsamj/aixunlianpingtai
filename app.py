@@ -8132,6 +8132,10 @@ class TrainReq(BaseModel):
     val_labels: Optional[List[str]] = None
     train_selection_ref: Optional[str] = None
     test_selection_ref: Optional[str] = None
+    validation_selection_ref: Optional[str] = None
+    validation_image_ids: Optional[List[str]] = None
+    zip_source_job_ids: Optional[List[str]] = None
+    zip_selection_digest: Optional[str] = None
     train_image_ids: Optional[List[str]] = None
     val_image_ids: Optional[List[str]] = None
     test_image_ids: Optional[List[str]] = None
@@ -8140,8 +8144,8 @@ class TrainReq(BaseModel):
     selected_image_ids: Optional[List[str]] = None
     # Durable v2 split contract. When split_mode is present, the API only
     # persists the request; a standalone training worker prepares the snapshot.
-    split_mode: Optional[Literal["independent_test_set", "random_test_from_training_pool"]] = None
-    validation_percent: float = 20.0
+    split_mode: Optional[Literal["independent_test_set", "random_test_from_training_pool", "fixed_zip_train_val_test"]] = None
+    validation_percent: Optional[float] = 20.0
     random_experiment_split: bool = True
     experiment_percent: Optional[float] = 20.0
     train_max_samples: int = 0
@@ -8270,7 +8274,26 @@ def validate_train_request(payload: TrainReq):
 
 
 def _explicit_training_split(payload: TrainReq, project_id: str = "") -> SplitRequest:
-    from platform_core.training_selection_reference import read_selection,selection_context
+    from platform_core.training_selection_reference import read_selection, selection_context, read_fixed_zip_references
+    if payload.split_mode == SplitMode.FIXED_ZIP_TRAIN_VAL_TEST.value:
+        if (not project_id or payload.train_image_ids or payload.validation_image_ids or payload.test_image_ids
+                or payload.selected_image_ids or payload.val_image_ids):
+            raise ValueError('固定 ZIP 划分只允许三组经核验的服务端引用')
+        if (payload.benchmark_source_version_id or payload.benchmark_scope_id or payload.supplement_candidate_set_id
+                or payload.supplement_count or payload.auto_supplement or payload.train_max_samples or payload.val_max_samples
+                or payload.duplicate_review):
+            raise ValueError('固定 ZIP 划分不可复用 Benchmark、补数据、删减素材或限制样本数')
+        packet = payload.model_dump()
+        ids = read_fixed_zip_references(DATA_DIR, project_id, packet)
+        split = SplitRequest.from_payload({**packet, **ids})
+        from platform_core.zip_fixed_training import current_source_proof
+        if current_source_proof(material_store(project_id), split)['source_digest'] != payload.zip_selection_digest:
+            raise ValueError('固定 ZIP 来源证据已变化，请重新核验')
+        for field, values in ids.items():
+            setattr(payload, field, values)
+        return split
+    if payload.validation_selection_ref or payload.validation_image_ids or payload.zip_source_job_ids or payload.zip_selection_digest:
+        raise ValueError('只有固定 ZIP 模式支持固定 Validation 与 ZIP 来源')
     for role in ('train','test'):
         reference=getattr(payload,role+'_selection_ref',None)
         if reference:
@@ -8823,7 +8846,7 @@ def _enqueue_explicit_training_locked(
             detail="后台训练样本批量确认必须由已登录用户在快速创建时明确发起",
         )
     reference_request_identity = ""
-    if payload.train_selection_ref or payload.test_selection_ref:
+    if payload.train_selection_ref or payload.validation_selection_ref or payload.test_selection_ref:
         # Durable request identity is bound before live-ref revision checks.
         reference_request_identity=hashlib.sha256(json.dumps(payload.model_dump(mode='json',exclude_none=True),
             ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -8873,6 +8896,8 @@ def _enqueue_explicit_training_locked(
     if requested_task_id and requested_task_id != task_id:
         raise HTTPException(status_code=409, detail="训练任务 ID 与并发创建锁身份不一致")
     raw_request = payload.model_dump(mode="json", exclude_none=True)
+    if requested_split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        raw_request.update(validation_percent=None, experiment_percent=None)
     request_identity = hashlib.sha256(
         json.dumps(raw_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -8920,6 +8945,7 @@ def _enqueue_explicit_training_locked(
         "training_prepare_task_id": prepare_task_id,
         "requested_split": {
             "mode": requested_split.mode.value,
+            **({'validation_image_ids': list(requested_split.validation_image_ids)} if requested_split.validation_image_ids else {}),
             "train_image_ids": list(requested_split.train_image_ids),
             "test_image_ids": list(requested_split.test_image_ids),
             "experiment_percent": requested_split.experiment_percent,
@@ -8985,10 +9011,7 @@ def _enqueue_explicit_training_locked(
             with performance_measure("training.create.source_admission"):
                 assert_material_input_admission(
                     project_id,
-                    [
-                        *requested_split.train_image_ids,
-                        *requested_split.test_image_ids,
-                    ],
+                    requested_split.image_ids,
                     material_store(project_id),
                     shared_task_repository(),
                     shared_task_artifacts(),
@@ -9039,7 +9062,7 @@ def _enqueue_explicit_training_locked(
             )
         try:
             from platform_core.training_selection_reference import mark_selection_submitted
-            for reference in (payload.train_selection_ref,payload.test_selection_ref):
+            for reference in (payload.train_selection_ref,payload.validation_selection_ref,payload.test_selection_ref):
                 if reference:mark_selection_submitted(DATA_DIR,reference,task_id)
             from platform_core.task_runtime.payload_publications import PayloadPublicationIdentity
             initial_payload = shared_task_artifacts().prepare_payload_publication(PayloadPublicationIdentity(
@@ -9063,7 +9086,7 @@ def _enqueue_explicit_training_locked(
         except BaseException:
             if shared_task_repository().get(task_id) is None:
                 from platform_core.training_selection_reference import release_unpersisted_selection_claim
-                for reference in (payload.train_selection_ref,payload.test_selection_ref):
+                for reference in (payload.train_selection_ref,payload.validation_selection_ref,payload.test_selection_ref):
                     if reference:release_unpersisted_selection_claim(DATA_DIR,reference,task_id)
             raise
     try:

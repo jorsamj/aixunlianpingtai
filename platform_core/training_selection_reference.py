@@ -194,7 +194,7 @@ def selection_context(data_dir,project_id,payload,role='train'):
     from .training_material_usage import TrainingMaterialUsage
     from .negative_pool import NegativePool
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(project_id)):raise ValueError('invalid project identity')
-    if role not in {'train','test'}:raise ValueError('invalid selection role')
+    if role not in {'train','validation','test'}:raise ValueError('invalid selection role')
     materials=MaterialRepository(Path(data_dir)/'projects'/str(project_id))
     annotations=AnnotationRepository(materials.project_path)
     contract={key:str(payload.get(key) or '') for key in ('base_version_id','framework')}
@@ -235,8 +235,29 @@ def _same_selection_context(metadata, current):
         k:v for k,v in current.items() if k!='legacy_contract'}
 
 
+def read_fixed_zip_references(data_dir, project_id, payload):
+    from .zip_fixed_training import ROLES, reference_scope
+
+    scope = reference_scope(payload)
+    result = {}
+    for role in ROLES:
+        reference = payload.get(role + '_selection_ref')
+        if not reference:
+            raise ValueError('固定 ZIP 划分必须提供三组服务端引用')
+        context = selection_context(data_dir, project_id, payload, role)
+        result[role + '_image_ids'] = read_selection(data_dir, reference, context, required_scope=scope)
+    return result
+
+
 def validate_payload_references(data_dir,project_id,payload):
     """Worker repeats identity/revision and exact expanded-ID checks before freeze."""
+    from .zip_fixed_training import MODE
+
+    if payload.get('split_mode') == MODE:
+        for field, ids in read_fixed_zip_references(data_dir, project_id, payload).items():
+            if ids != list(payload.get(field) or ()):
+                raise ValueError('固定 ZIP 输入与冻结选择引用不一致')
+        return
     for role in ('train','test'):
         reference=payload.get(role+'_selection_ref')
         if not reference:continue

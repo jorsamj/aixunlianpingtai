@@ -557,13 +557,11 @@ class TrainingPrepareHandler:
         external_analysis_id = resolve_external_training_analysis(
             algorithm, payload.get("external_analysis_id"),
         )
-        split = SplitRequest(
-            mode=SplitMode(str(payload.get("split_mode"))),
-            train_image_ids=tuple(payload.get("train_image_ids") or ()),
-            test_image_ids=tuple(payload.get("test_image_ids") or ()),
-            experiment_percent=payload.get("experiment_percent"),
-            validation_percent=float(payload.get("validation_percent") or 20),
-        )
+        split = SplitRequest.from_payload(payload)
+        fixed = split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST
+        if fixed and any(payload.get(field) for field in ('benchmark_source_version_id', 'benchmark_scope_id',
+                'supplement_candidate_set_id', 'supplement_count', 'auto_supplement', 'train_max_samples', 'val_max_samples', 'duplicate_review')):
+            raise ValueError('固定 ZIP 划分不可替换或减少冻结素材')
         # Keep network-backed refresh outside the project GT fence, but validate
         # Benchmark, expected revisions, selection and publication atomically.
         with material_annotation_lifecycle_fence(project):
@@ -571,7 +569,15 @@ class TrainingPrepareHandler:
                 raise RemoteTrainingPreparationError("TRAINING_FREEZE_PUBLICATION_INCOMPLETE",
                     "冻结证据已存在但任务尚未绑定，已保留原证据；请核验后重新创建任务",
                     target_status=TaskStatus.FAILED)
+            if fixed:
+                from .training_selection_reference import validate_payload_references
+                from .zip_fixed_training import current_source_proof
+                validate_payload_references(self.data_dir, target.project_id, payload)
+                proof = current_source_proof(MaterialRepository(project), split)
+                if proof['source_digest'] != payload.get('zip_selection_digest'):
+                    raise ValueError('固定 ZIP 来源证据在排队后发生变化')
             request_selection = {
+                **({'validation_image_ids': list(split.validation_image_ids), 'zip_source_proof': proof} if fixed else {}),
                 "schema_version": 1, "task_id": target.task_id, "project_id": target.project_id,
                 "train_image_ids": list(split.train_image_ids), "test_image_ids": list(split.test_image_ids),
                 "expected_material_revision": payload.get("expected_material_revision"),
@@ -605,6 +611,7 @@ class TrainingPrepareHandler:
             )
             compatibility = diagnose_training_duplicates(project, {
                 "split_mode": split.mode.value, "train_image_ids": list(split.train_image_ids),
+                **({"validation_image_ids": list(split.validation_image_ids)} if fixed else {}),
                 "test_image_ids": list(split.test_image_ids), "experiment_percent": split.experiment_percent,
                 "validation_percent": split.validation_percent,
             })
@@ -619,6 +626,7 @@ class TrainingPrepareHandler:
                 )
                 compatibility = diagnose_training_duplicates(project, {
                     "split_mode": split.mode.value, "train_image_ids": list(split.train_image_ids),
+                **({"validation_image_ids": list(split.validation_image_ids)} if fixed else {}),
                     "test_image_ids": list(split.test_image_ids), "experiment_percent": split.experiment_percent,
                     "validation_percent": split.validation_percent,
                 })
@@ -653,7 +661,7 @@ class TrainingPrepareHandler:
                         )
                 selection = resolve_training_selection(project, split, label_contract=intent_contract)
                 effective_split = selection.effective_split
-                supplement = self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)
+                supplement = None if fixed else self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)
                 label_request = dict(payload)
                 label_request.update(
                     train_image_ids=list(effective_split.train_image_ids),
@@ -1002,16 +1010,12 @@ class TrainingPrepareHandler:
             )
 
         materials = MaterialRepository(project)
-        split_request = SplitRequest(
-            mode=SplitMode(str(payload.get("split_mode"))),
-            train_image_ids=train_image_ids,
-            test_image_ids=test_image_ids,
-            experiment_percent=payload.get("experiment_percent"),
-            validation_percent=float(payload.get("validation_percent") or 20),
-        )
+        split_request = SplitRequest.from_payload(payload)
         seed = int(payload.get("seed") or 0)
         freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
         self._heartbeat(context, 5, "locking_snapshot", "锁定远程训练数据快照")
+        if split_request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST and not freeze_ref:
+            raise ValueError('固定 ZIP 训练缺少正式输入冻结')
         if freeze_ref:
             frozen = context.artifacts.read_json(
                 training_task.task_id,
@@ -1478,8 +1482,9 @@ class TrainingPrepareHandler:
             or prepared.get("dataset_revision_id")
             or ""
         ).strip()
-        freeze_valid = not freeze_ref or (
-            isinstance(frozen, Mapping)
+        fixed = payload.get('split_mode') == SplitMode.FIXED_ZIP_TRAIN_VAL_TEST.value
+        freeze_valid = (not freeze_ref and not fixed) or (
+            bool(freeze_ref) and isinstance(frozen, Mapping)
             and str(frozen.get("input_freeze_id") or "")
             == str(payload.get("input_freeze_id") or "")
         )
@@ -1497,18 +1502,15 @@ class TrainingPrepareHandler:
             and freeze_valid
         )
         deferred = prepared.get("materialization_state") == "DEFERRED"
-        if deferred:
+        if fixed or deferred:
             try:
-                request = SplitRequest(mode=SplitMode(str(payload.get("split_mode"))),
-                    train_image_ids=tuple(payload.get("train_image_ids") or ()),
-                    test_image_ids=tuple(payload.get("test_image_ids") or ()),
-                    experiment_percent=payload.get("experiment_percent"),
-                    validation_percent=float(payload.get("validation_percent") or 20))
+                request = SplitRequest.from_payload(payload)
                 resolve_training_input_freeze(frozen, request, seed=int(payload.get("seed") or 0),
                     supplement_candidate_set=payload.get("supplement_candidate_set"))
             except (ValueError, TypeError, KeyError) as error:
                 raise RemoteTrainingPreparationError("TRAINING_PREPARED_OUTPUT_INVALID",
                     "prepared training frozen input is invalid", target_status=TaskStatus.FAILED) from error
+        if deferred:
             plan = context.artifacts.read_json(target.task_id, "input-plan/manifest.json", default={})
             valid_bundle = (
                 prepared.get("bundle_path") is None

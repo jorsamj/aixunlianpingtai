@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 
 class SplitMode(str, Enum):
+    FIXED_ZIP_TRAIN_VAL_TEST = "fixed_zip_train_val_test"
     INDEPENDENT_TEST_SET = "independent_test_set"
     RANDOM_TEST_FROM_TRAINING_POOL = "random_test_from_training_pool"
 
@@ -20,18 +21,35 @@ class SplitRequest:
     train_image_ids: tuple[str, ...]
     test_image_ids: tuple[str, ...] = ()
     experiment_percent: float | None = None
-    validation_percent: float = 20
+    validation_percent: float | None = 20
+    validation_image_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         mode = SplitMode(self.mode)
         train_ids = tuple(dict.fromkeys(str(value).strip() for value in self.train_image_ids if str(value).strip()))
         test_ids = tuple(dict.fromkeys(str(value).strip() for value in self.test_image_ids if str(value).strip()))
         object.__setattr__(self, "mode", mode)
+        if mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+            roles = (self.train_image_ids, self.validation_image_ids, self.test_image_ids)
+            if any(not ids or any(not isinstance(i, str) or not i.strip() or i != i.strip() for i in ids)
+                   or len(ids) != len(set(ids)) for ids in roles):
+                # Compare raw Train/Test before normalizing legacy inputs.
+                raise ValueError("固定 Train/Val/Test 各组必须非空且不含重复或无效素材")
+            if len(set((*roles[0], *roles[1], *roles[2]))) != sum(map(len, roles)):
+                raise ValueError("固定 Train/Val/Test 素材不能跨组重复")
+            if self.validation_percent is not None or self.experiment_percent is not None:
+                raise ValueError("固定 ZIP 划分不可设置随机比例")
+            object.__setattr__(self, 'train_image_ids', train_ids)
+            object.__setattr__(self, 'test_image_ids', test_ids)
+            object.__setattr__(self, 'validation_image_ids', tuple(roles[1]))
+            return
         object.__setattr__(self, "train_image_ids", train_ids)
         object.__setattr__(self, "test_image_ids", test_ids)
+        if self.validation_image_ids:
+            raise ValueError("只有固定 ZIP 模式支持显式 Validation")
         if not train_ids:
             raise ValueError("train_image_ids 不能为空")
-        if not 0 < float(self.validation_percent) < 100:
+        if self.validation_percent is None or not 0 < float(self.validation_percent) < 100:
             raise ValueError("validation_percent 必须大于 0 且小于 100")
         if mode == SplitMode.INDEPENDENT_TEST_SET:
             if not test_ids:
@@ -47,6 +65,19 @@ class SplitRequest:
                 raise ValueError("experiment_percent 必须大于 0 且小于 100")
             if float(self.experiment_percent) + float(self.validation_percent) >= 100:
                 raise ValueError("experiment_percent 与 validation_percent 之和必须小于 100，保留训练集")
+
+    @property
+    def image_ids(self) -> tuple[str, ...]:
+        return (*self.train_image_ids, *self.validation_image_ids, *self.test_image_ids)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any], *, mode_key: str = "split_mode") -> SplitRequest:
+        mode = SplitMode(payload.get(mode_key))
+        validation = payload.get("validation_percent")
+        if mode_key == "split_mode" and mode is not SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+            validation = float(validation or 20)
+        return cls(mode, tuple(payload.get("train_image_ids") or ()), tuple(payload.get("test_image_ids") or ()),
+                   payload.get("experiment_percent"), validation, tuple(payload.get("validation_image_ids") or ()))
 
 
 @dataclass(frozen=True)
@@ -891,18 +922,26 @@ def build_split_manifest(
             raise ValueError(f"素材 id 重复: {image_id}")
         by_id[image_id] = row
 
-    requested_ids = set(request.train_image_ids) | set(request.test_image_ids)
+    fixed = request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST
+    requested_ids = set(request.image_ids)
     missing_ids = sorted(requested_ids - set(by_id))
     if missing_ids:
         raise ValueError(f"所选素材不存在: {', '.join(missing_ids[:5])}")
 
     selected_rows = [
         by_id[image_id]
-        for image_id in (*request.train_image_ids, *request.test_image_ids)
+        for image_id in request.image_ids
     ]
-    canonical_rows, excluded_duplicate_ids, duplicate_groups = _deduplicate_selected(
-        selected_rows, request
-    )
+    if fixed:
+        role_rows = {name: [by_id[i] for i in ids] for name, ids in (
+            ('train', request.train_image_ids), ('validation', request.validation_image_ids), ('test', request.test_image_ids))}
+        _assert_no_leakage(role_rows)
+        hashes = [str(row.get('content_sha256') or '').strip().lower() for row in selected_rows]
+        if any(not value for value in hashes) or len(set(hashes)) != len(hashes):
+            raise ValueError('固定划分存在重复内容或缺少 SHA256，不能自动去重')
+        canonical_rows, excluded_duplicate_ids, duplicate_groups = selected_rows, (), {}
+    else:
+        canonical_rows, excluded_duplicate_ids, duplicate_groups = _deduplicate_selected(selected_rows, request)
     canonical_by_id = {str(row.get("id")): row for row in canonical_rows}
     train_pool = [
         canonical_by_id[image_id]
@@ -917,7 +956,7 @@ def build_split_manifest(
 
     invalid_annotation_ids = sorted(
         str(row.get("id"))
-        for row in [*train_pool, *independent_test_rows]
+        for row in canonical_rows
         if not _valid_annotation(row)
     )
     if invalid_annotation_ids:
@@ -932,11 +971,18 @@ def build_split_manifest(
         for value in required_train_labels
         if str(value).strip()
     ))
-    reserved_train_components = _reserve_required_train_components(
-        train_pool, component_keys, required_labels, int(seed),
-    )
+    if fixed:
+        available = set().union(*(_row_label_codes(row) for row in train_pool))
+        missing = [code for code in required_labels if code not in available]
+        if missing:
+            raise ValueError('固定 Train 缺少目标正样本: ' + ', '.join(missing[:20]))
+        reserved_train_components = set()
+    else:
+        reserved_train_components = _reserve_required_train_components(
+            train_pool, component_keys, required_labels, int(seed),
+        )
     history_test_components = {component_keys[item] for item in forbidden_test_image_ids if item in component_keys}
-    if request.mode == SplitMode.INDEPENDENT_TEST_SET and any(
+    if (fixed or request.mode == SplitMode.INDEPENDENT_TEST_SET) and any(
         component_keys[str(row['id'])] in history_test_components for row in independent_test_rows
     ):
         raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: parent model has seen selected Test materials')
@@ -947,7 +993,10 @@ def build_split_manifest(
     selector = _select_grouped_stratified if split_strategy == "multilabel_grouped_v2" else _select_grouped
     split_recovery_applied = False
 
-    if request.mode == SplitMode.INDEPENDENT_TEST_SET:
+    if fixed:
+        train_rows, validation_rows, test_rows = (role_rows[role] for role in ('train', 'validation', 'test'))
+        test_source = 'confirmed_zip_folders'
+    elif request.mode == SplitMode.INDEPENDENT_TEST_SET:
         test_rows = independent_test_rows
         train_rows, validation_rows = selector(
             train_pool,
@@ -1044,6 +1093,7 @@ def build_split_manifest(
     counts["total"] = total
     requested = {
         "test_source": test_source,
+        **({"validation_image_ids": list(request.validation_image_ids)} if fixed else {}),
         "train_image_ids": list(request.train_image_ids),
         "test_image_ids": list(request.test_image_ids),
         "experiment_percent": request.experiment_percent,

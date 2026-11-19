@@ -729,7 +729,9 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
                                    (str(task.project_id), str(task.task_id))).fetchone()
         if not has_tasks:
             context.run_owned(lambda: index.mark_coverage(task.project_id, algorithm['id'], complete=True))
-    rows = MaterialRepository(project).get_many((*split.train_image_ids, *split.test_image_ids))
+    materials = MaterialRepository(project)
+    ids = split.image_ids
+    rows = [row for offset in range(0, len(ids), 500) for row in materials.get_many(ids[offset:offset + 500])]
     try:
         train = index.query_filter(task.project_id, algorithm['id'], rows,
                                    parent_task_ids=parent_ids, exclude_used=policy == 'new_for_algorithm')
@@ -745,10 +747,15 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
     # evidence is healthy. Known exposure and active-role reservations remain
     # forbidden, including duplicate SHA/source tokens and verified ancestors.
     forbidden = sorted(set(test['excluded_image_ids']))
-    if split.mode == SplitMode.INDEPENDENT_TEST_SET and set(split.test_image_ids) & set(forbidden):
+    if split.mode in (SplitMode.INDEPENDENT_TEST_SET, SplitMode.FIXED_ZIP_TRAIN_VAL_TEST) and set(split.test_image_ids) & set(forbidden):
         raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: selected Test has prior exposure or unverified history')
-    effective = SplitRequest(mode=split.mode, train_image_ids=train_ids, test_image_ids=split.test_image_ids,
-                             experiment_percent=split.experiment_percent, validation_percent=split.validation_percent)
+    if split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        if set((*split.train_image_ids, *split.validation_image_ids)) & set(train['excluded_image_ids']):
+            raise ValueError('TRAINING_FIXED_HISTORY_CONFLICT: 固定 Train/Val 与历史隔离或使用范围冲突，不能删减后继续')
+        effective = split
+    else:
+        effective = SplitRequest(mode=split.mode, train_image_ids=train_ids, test_image_ids=split.test_image_ids,
+                                 experiment_percent=split.experiment_percent, validation_percent=split.validation_percent)
     assumed_count = sum(fact['state'] == 'unknown' for fact in test['by_image_id'].values())
     independence = ('assumed_unseen' if not verified_benchmark_reuse and
                     (unknown_parents or test['coverage'] != 'complete')

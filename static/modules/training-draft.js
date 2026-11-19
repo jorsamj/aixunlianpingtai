@@ -62,7 +62,7 @@ export function trainingInheritedDefaults(algorithm={}) {
 
 export function createTrainingDraft(values = {}) {
   const splitMode = String(values.splitMode || 'random_test_from_training_pool');
-  if (!['random_test_from_training_pool', 'independent_test_set'].includes(splitMode)) {
+  if (!['random_test_from_training_pool', 'independent_test_set', 'fixed_zip_train_val_test'].includes(splitMode)) {
     throw new Error('不支持的训练素材切分方式');
   }
 
@@ -95,10 +95,11 @@ export function createTrainingDraft(values = {}) {
       annotation_revision: Number(values.duplicateReview.annotation_revision),
     }} : {}),
     splitMode,
+    zipSourceJobIds: unique(values.zipSourceJobIds),
     experimentPercent: splitMode === 'random_test_from_training_pool'
       ? numberOr(values.experimentPercent ?? 20, 20)
       : null,
-    validationPercent: numberOr(values.validationPercent, 20),
+    validationPercent: splitMode === 'fixed_zip_train_val_test' ? null : numberOr(values.validationPercent, 20),
     newLabelCodes: unique(values.newLabelCodes),
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     history_policy: String(values.history_policy || 'new_for_algorithm'),
@@ -121,11 +122,11 @@ export function createTrainingDraft(values = {}) {
 export function trainingDraftToRequest(draft, parameters = {}) {
   const normalized = createTrainingDraft(draft);
   if (!normalized.algorithmId) throw new Error('请选择训练算法');
-  if (!normalized.materialIds.length && !normalized.trainSelectionRef) throw new Error('请选择训练素材');
+  if (normalized.splitMode !== 'fixed_zip_train_val_test' && !normalized.materialIds.length && !normalized.trainSelectionRef) throw new Error('请选择训练素材');
   if (!normalized.baseVersionId && !normalized.newLabelCodes.length) {
     throw new Error('首次训练至少选择一个训练标签');
   }
-  if (!(normalized.validationPercent > 0 && normalized.validationPercent < 100)) {
+  if (normalized.splitMode !== 'fixed_zip_train_val_test' && !(normalized.validationPercent > 0 && normalized.validationPercent < 100)) {
     throw new Error('验证集比例必须在 0 到 100 之间');
   }
   if (normalized.splitMode === 'random_test_from_training_pool'
@@ -145,6 +146,7 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     throw new Error('任务优先级必须是 1~999 的整数');
   }
 
+  if (normalized.splitMode === 'fixed_zip_train_val_test' && !normalized.zipSourceJobIds.length) throw new Error('请选择 ZIP 来源');
   const request = {
     ...parameters,
     algorithm_asset_id: normalized.algorithmId,
@@ -165,8 +167,12 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     gpu_policy: normalized.resource.gpuPolicy,
     queue_priority: normalized.priority,
   };
+  if (normalized.splitMode === 'fixed_zip_train_val_test') {
+    delete request.train_image_ids; delete request.test_image_ids; delete request.train_selection_ref;
+    request.zip_source_job_ids = normalized.zipSourceJobIds;
+  }
   if (normalized.resource.batch != null) request.batch = normalized.resource.batch;
-  if (normalized.duplicateReview) {
+  if (normalized.duplicateReview && normalized.splitMode !== 'fixed_zip_train_val_test') {
     request.duplicate_review = normalized.duplicateReview;
     request.expected_material_revision = normalized.duplicateReview.material_revision;
     request.expected_annotation_revision = normalized.duplicateReview.annotation_revision;

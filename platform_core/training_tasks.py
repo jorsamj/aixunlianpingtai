@@ -1043,12 +1043,19 @@ def revalidate_queued_training_selection(materials: MaterialRepository, split: S
     Called under the existing lifecycle fence, before formal GT/split admission.
     It is not allowed to rewrite an already-bound input freeze.
     """
-    requested = tuple(dict.fromkeys((*split.train_image_ids, *split.test_image_ids)))
+    requested = tuple(dict.fromkeys(split.image_ids))
     found = set()
     for offset in range(0, len(requested), 500):
         found.update(str(row['id']) for row in materials.get_many(requested[offset:offset + 500]))
     train = tuple(key for key in split.train_image_ids if key in found)
     test = tuple(key for key in split.test_image_ids if key in found)
+    if split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        if set(requested) != found:
+            raise ValueError('TRAINING_FIXED_SELECTION_CHANGED: 固定 Train/Val/Test 素材已缺失，不能补选')
+        return split, {'removed_image_ids': [], 'requested_train_count': len(train),
+                       'requested_validation_count': len(split.validation_image_ids), 'requested_test_count': len(test),
+                       'remaining_train_count': len(train), 'remaining_validation_count': len(split.validation_image_ids),
+                       'remaining_test_count': len(test)}
     if len(train) < 2:
         raise ValueError('TRAINING_SELECTION_INSUFFICIENT: 原请求范围内有效训练素材不足2张，请重新选择素材')
     if split.mode is SplitMode.INDEPENDENT_TEST_SET and not test:
@@ -1166,7 +1173,8 @@ def resolve_training_selection(
     annotations = AnnotationRepository(project)
     material_revision = materials.current_revision()
     annotation_revision = annotations.current_revision()
-    image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
+    fixed = split_request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST
+    image_ids = split_request.image_ids
     images = _selected_project_images(materials, project, image_ids)
     by_id = {str(row.get("id") or ""): row for row in images}
 
@@ -1188,6 +1196,8 @@ def resolve_training_selection(
         else:
             invalid_train.append(str(image_id))
 
+    if fixed and pending_annotation:
+        invalid_train.extend(pending_annotation)
     if invalid_train:
         raise ValueError(
             "训练候选包含尚未清洗完成或标注状态不一致的素材: "
@@ -1195,8 +1205,11 @@ def resolve_training_selection(
         )
 
     invalid_test: list[str] = []
-    for image_id in split_request.test_image_ids:
+    for image_id in (*split_request.validation_image_ids, *split_request.test_image_ids):
         row = by_id[str(image_id)]
+        if fixed and label_contract and training_material_role(row, {**label_contract, 'task_negative_confirmations': []})['role'] not in {'positive', 'confirmed_negative'}:
+            invalid_test.append(str(image_id))
+            continue
         if not is_training_ground_truth(
             row.get("annotation_state"),
             list(row.get("boxes") or []),
@@ -1204,7 +1217,8 @@ def resolve_training_selection(
             invalid_test.append(str(image_id))
     if invalid_test:
         raise ValueError(
-            "独立试验素材必须具备正式 Ground Truth，以下素材仍待标注: "
+            ("固定 Val/Test 素材必须具备当前目标的正式 Ground Truth: " if fixed else
+             "独立试验素材必须具备正式 Ground Truth，以下素材仍待标注: ")
             + ", ".join(invalid_test[:5])
         )
 
@@ -1220,8 +1234,9 @@ def resolve_training_selection(
         test_image_ids=tuple(split_request.test_image_ids),
         experiment_percent=split_request.experiment_percent,
         validation_percent=split_request.validation_percent,
+        validation_image_ids=split_request.validation_image_ids,
     )
-    effective_ids = set((*effective_split.train_image_ids, *effective_split.test_image_ids))
+    effective_ids = set(effective_split.image_ids)
     effective_images = tuple(
         row for row in images if str(row.get("id") or "") in effective_ids
     )
@@ -1807,9 +1822,9 @@ def freeze_training_inputs(
     """Freeze formal DB truth at submit time without reading/copying source bytes."""
     if selection_resolution is None:
         original_images = _selected_project_images(MaterialRepository(project), project,
-            (*split_request.train_image_ids, *split_request.test_image_ids))
+            split_request.image_ids)
         assert_training_duplicate_safety(original_images,
-            split_request.train_image_ids, split_request.test_image_ids)
+            (*split_request.train_image_ids, *split_request.validation_image_ids), split_request.test_image_ids)
     resolution = selection_resolution or resolve_training_selection(project, split_request)
     if resolution.requested_split != split_request:
         raise ValueError("training selection resolution does not match the requested split")
@@ -1832,7 +1847,7 @@ def freeze_training_inputs(
     # Original formal GT must be checked before task-label projection can hide
     # an out-of-scope category, empty-state, or coordinate disagreement.
     assert_training_duplicate_safety(
-        source_images, effective_split.train_image_ids, effective_split.test_image_ids,
+        source_images, (*effective_split.train_image_ids, *effective_split.validation_image_ids), effective_split.test_image_ids,
     )
     images = (
         [dict(row) for row in effective_images]
@@ -1871,7 +1886,8 @@ def freeze_training_inputs(
         images,
         effective_split,
         seed=int(seed),
-        required_train_labels=_required_positive_training_labels(label_contract, images),
+        required_train_labels=(_requested_new_training_labels(label_contract) if effective_split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST
+                               else _required_positive_training_labels(label_contract, images)),
         split_strategy="multilabel_grouped_v2",
         forbidden_test_image_ids=(history_admission or {}).get('forbidden_test_image_ids', ()),
     )
@@ -1885,6 +1901,8 @@ def freeze_training_inputs(
     from .training_robustness import resolve_policy, select_train_ids
     frozen_robustness = resolve_policy(project.parent.parent, robustness_policy) if robustness_policy is not None else None
     if frozen_robustness and frozen_robustness['enabled']:
+        if effective_split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+            raise ValueError('固定 ZIP 划分不能生成额外增强样本，请关闭本任务跨设备颜色鲁棒性')
         select_train_ids(manifest.ids['train'], frozen_robustness)
     snapshot = build_snapshot(
         images,
@@ -1932,6 +1950,13 @@ def freeze_training_inputs(
         ),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if effective_split.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        from .zip_fixed_training import source_proof
+        split_truth['validation_image_ids'] = list(effective_split.validation_image_ids)
+        value['zip_source_proof'] = source_proof(source_images, effective_split)
+        for source, frozen in zip(source_images, value['images']):
+            for field in ('zip_folder_source', 'import_batch_id', 'source_task_id'):
+                frozen[field] = source[field]
     value["input_freeze_id"] = _training_input_freeze_digest(value)
     # Material index writers can advance a revision during split/snapshot work.
     # Validate the same original selection again at the freeze publication point.
@@ -1965,17 +1990,25 @@ def resolve_training_input_freeze(
         "validation_percent": split_request.validation_percent,
         "seed": int(seed),
     }
+    if split_request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        expected_split['validation_image_ids'] = list(split_request.validation_image_ids)
+        if not value.get('zip_source_proof'):
+            raise ValueError('固定 ZIP 划分缺少冻结来源证明')
     if dict(value.get("split") or {}) != expected_split:
         raise ValueError("training payload no longer matches its frozen input selection")
     images = [dict(row) for row in (value.get("images") or []) if isinstance(row, Mapping)]
     expected_ids = tuple(dict.fromkeys(
         str(item).strip()
-        for item in (*split_request.train_image_ids, *split_request.test_image_ids)
+        for item in split_request.image_ids
         if str(item).strip()
     ))
     actual_ids = tuple(str(row.get("id") or "") for row in images)
     if actual_ids != expected_ids:
         raise ValueError("training input freeze image identity/order mismatch")
+    if split_request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST:
+        from .zip_fixed_training import source_proof
+        if source_proof(images, split_request) != value['zip_source_proof']:
+            raise ValueError('固定 ZIP 划分的冻结来源证明不一致')
     if not _indexed_content_identity_ready(images):
         raise ValueError("training input freeze contains invalid content identity")
     label_schema = [
@@ -1996,9 +2029,8 @@ def resolve_training_input_freeze(
         images,
         split_request,
         seed=int(seed),
-        required_train_labels=_required_positive_training_labels(
-            frozen_contract if isinstance(frozen_contract, Mapping) else None, images
-        ),
+        required_train_labels=(_requested_new_training_labels(frozen_contract) if split_request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST
+                               else _required_positive_training_labels(frozen_contract if isinstance(frozen_contract, Mapping) else None, images)),
         # Pre-v2 freezes carry no marker: replay the historical split exactly.
         split_strategy=str(value.get("split_strategy") or "legacy_v1"),
         forbidden_test_image_ids=(value.get('history_admission') or {}).get('forbidden_test_image_ids', ()),
@@ -3154,15 +3186,11 @@ class TrainingHandler:
         if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
             raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
         materials = MaterialRepository(project)
-        split_request = SplitRequest(
-            mode=SplitMode(str(payload.get("split_mode"))),
-            train_image_ids=train_image_ids,
-            test_image_ids=test_image_ids,
-            experiment_percent=payload.get("experiment_percent"),
-            validation_percent=float(payload.get("validation_percent") or 20),
-        )
+        split_request = SplitRequest.from_payload(payload)
         seed = int(payload.get("seed") or 0)
         freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        if split_request.mode is SplitMode.FIXED_ZIP_TRAIN_VAL_TEST and not freeze_ref:
+            raise ValueError('固定 ZIP 训练缺少正式输入冻结')
         if freeze_ref:
             frozen = context.artifacts.read_json(
                 context.task.task_id,

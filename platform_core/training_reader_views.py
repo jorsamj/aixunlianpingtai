@@ -164,10 +164,37 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
         project = Path(legacy_path).parent.parent.parent
         snapshot, _ = bounded_json(project / 'snapshots' / f'{snapshot_id}.json')
         sample_distribution = _split_sample_evidence(snapshot, snapshot_id)
+    fixed_split = None
+    if (payload.get('split_mode') or legacy.get('split_mode')) == 'fixed_zip_train_val_test':
+        fixed_split = {'state': 'UNAVAILABLE'}
+        ref = payload.get('input_freeze_ref')
+        if isinstance(ref, str) and ref:
+            try:
+                from .task_runtime.payload_publications import EVIDENCE_REF
+                from .training_tasks import _training_input_freeze_digest
+                from .snapshots import snapshot_content_matches_identity
+                if not EVIDENCE_REF.fullmatch(ref):
+                    raise ValueError('unbound input evidence')
+                frozen = artifacts.payload_reader.read_evidence_json(job_id, ref, max_bytes=2 * 1024 * 1024)
+                binding = frozen.get('input_freeze_id')
+                if (binding and binding == payload.get('input_freeze_id') == _training_input_freeze_digest(frozen)
+                        and frozen.get('snapshot_id') == payload.get('snapshot_id')):
+                    project = Path(legacy_path).parent.parent.parent
+                    fixed_id = frozen['snapshot_id']
+                    if not isinstance(fixed_id, str) or len(fixed_id) != 64 or any(c not in '0123456789abcdef' for c in fixed_id):
+                        raise ValueError('invalid snapshot identity')
+                    snapshot, _ = bounded_json(project / 'snapshots' / f'{fixed_id}.json')
+                    if snapshot_content_matches_identity(snapshot, fixed_id) and frozen.get('zip_source_proof'):
+                        sample_distribution = _split_sample_evidence(snapshot, fixed_id)
+                        fixed_split = {'state': 'VERIFIED', 'input_freeze_id': binding,
+                                       'sources': frozen['zip_source_proof']['jobs'], 'counts': snapshot['counts']}
+            except (OSError, ValueError, TypeError, KeyError, PayloadPublicationError):
+                pass
     best = report.get('best_metrics')
     return {'state':state,'source':'DURABLE_FINALIZED' if committed else 'LEGACY_RECORDED',
         'message':'仅展示已记录结果，未生成完整报告' if state in ('PARTIAL','NOT_GENERATED') else '',
         'configuration':configuration,'actual_parameters':actual,'historical_parameters':historical,'result':result,'sample_distribution':sample_distribution,
+        **({'fixed_zip_split': fixed_split} if fixed_split is not None else {}),
         'best_metrics':metrics(best) if isinstance(best,dict) and best else {},
         'val_metrics':metrics(canonical['metrics']),'test_metrics':metrics(evaluation.get('metrics') if isinstance(evaluation,dict) else {}),
         'test_status':text(evaluation.get('status')) if isinstance(evaluation,dict) else None,

@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-当前为 M4-C1 ZIP 文件夹归集及标签确认。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
+当前为 M4-C2 ZIP 固定 Train/Val/Test 正式训练。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -166,3 +166,14 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - 目标标签只写待标注意图。已入库外部 GT 保留原映射与正式标注权威。负样本直接进入项目公共池，分类和素材归集状态在同一事务提交。失败回执保留待归集范围，可通过原任务重试，或者在素材治理中处理。运行状态异常或归集分类已失效时应先核验任务或修复分类。正式训练、GPU 和生产仍待现场验证。
 - M4-C2 需先为 `platform_core/training_splits.py` 的 `SplitRequest` 和 `build_split_manifest()` 设计明确的固定 Val 及跨角色冲突合同，再衔接 `platform_core/remote_training_tasks.py` 的 `_freeze_request_contract()` 与 `platform_core/training_tasks.py` 的 `resolve_training_input_freeze()`。用途意图仅作为来源证据，正式 GT 和隔离准入仍由现有 Owner 校验。
 - 定向验证通过 ZIP API 与分类 Python 用例 23 项、ZIP Node 53 项、Chrome ZIP 路径 41 项，以及 Vue 类型、构建和离线资源核验。以交付消息记录最终提交 SHA 与对应 CI。
+
+
+## M4-C2 按 ZIP 来源固定训练划分
+
+- 基线 `535ec5497245ecea3ad43e05a1b6120c66e40209`。独立 Vue 训练创建页新增 `fixed_zip_train_val_test`，携带显式 Validation 引用和两个空随机比例。旧随机划分与独立 Test 保留默认行为。
+- v62 选材接口分页列出具有持久化 C1 素材来源的 ZIP。预览从 MaterialRepository 和 AnnotationRepository 读取真实用途中已入库的成员，排除未指定，显示资格和泄漏问题。三组引用用同一确认 UUID 派生三个稳定身份，复用原选择清单的角色、修订、配额及摘要核验。草稿、冻结请求和待核验创建记录按登录账号、项目及算法隔离。旧浏览器记录因缺少账号归属不自动恢复。
+- `/train/start` 校验来源、完整引用与组合限制。原 TrainingPrepare 在队列后复核引用、正式 GT、源内容身份和历史隔离，任一固定成员失效时拒绝整批。固定 Val/Test 使用正式评测 GT；Train 可使用原任务级确认。固定模式拒绝 Benchmark 复用、补数据、样本上限和会增加成员的颜色增强。
+- `SplitRequest.validation_image_ids` 和 `build_split_manifest()` 保留三组固定成员，阻断 ID、内容、来源和派生关系的跨组重叠，同角色内容重复也拒绝。冻结可选字段绑定角色、来源清单摘要及原 GT，历史冻结摘要兼容。中央、Node Agent、远程结果和使用索引维护共用固定输入重放合同。
+- 实际打包输出 Train/Val/Test 各自图片目录，Test 标签留在独立评测真值目录，未写进训练 YAML。报告核验冻结摘要和快照后显示实际数量及来源规则，超出摘要读取预算时明确显示证据不可用。
+- 隔离验证覆盖实际 v19 导入到 v12 任务请求、中央准备、不可变冻结、精确目录、负样本空标签、Test 隔离、使用记录和只读报告。未执行真实 epochs 或 A800/4070 验收。CI 以交付消息所列准确 SHA 为准，后续等待独立复审。
+- 本地通过训练核心、引用、报告、历史和准备定向 Python 用例，以及真实 ZIP 创建请求、Node Agent 冻结重放和远程结果验证。前端 41 项 Node、7 项 Chrome、Vue 类型检查和离线构建通过。

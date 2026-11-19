@@ -346,11 +346,11 @@ class PayloadVersionStore:
         self._publish(task_id, ref, raw, before_publish, limit=512 * 1024 * 1024)
         return ref
 
-    def read_evidence_json(self, task_id, ref):
+    def read_evidence_json(self, task_id, ref, *, max_bytes=512 * 1024 * 1024):
         match = EVIDENCE_REF.fullmatch(str(ref))
         if not match:
             _fail("PAYLOAD_INVALID_REF", "immutable evidence reference required")
-        raw = self._read(self._path(task_id, ref), limit=512 * 1024 * 1024)
+        raw = self._read(self._path(task_id, ref), limit=min(max_bytes, 512 * 1024 * 1024))
         if hashlib.sha256(raw).hexdigest() != match["digest"]:
             _fail("PAYLOAD_INTEGRITY_ERROR", "evidence digest mismatch")
         return json.loads(raw)

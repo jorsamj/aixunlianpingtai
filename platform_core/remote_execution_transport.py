@@ -3028,15 +3028,9 @@ class RemoteExecutionTransportService:
                 raise ValueError("training result durable input freeze mismatch")
             from .remote_training_results import verify_dataset_manifest_evidence
             from .training_tasks import resolve_training_input_freeze
-            from .training_splits import SplitMode, SplitRequest
+            from .training_splits import SplitRequest
 
-            request = SplitRequest(
-                mode=SplitMode(str(payload.get("split_mode"))),
-                train_image_ids=tuple(payload.get("train_image_ids") or ()),
-                test_image_ids=tuple(payload.get("test_image_ids") or ()),
-                experiment_percent=payload.get("experiment_percent"),
-                validation_percent=float(payload.get("validation_percent") or 20),
-            )
+            request = SplitRequest.from_payload(payload)
             images, _schema, _split, snapshot = resolve_training_input_freeze(
                 frozen, request, seed=int(payload.get("seed") or 0),
                 supplement_candidate_set=payload.get("supplement_candidate_set"),

@@ -124,6 +124,14 @@ watch(()=>route.path,load,{immediate:true});
       </section>
       <section v-if="pane==='overview'" class="report-panel">
         <h3>冻结快照的样本分布</h3>
+        <template v-if="report.fixed_zip_split">
+          <h3>按 ZIP 来源固定划分</h3>
+          <template v-if="report.fixed_zip_split.state==='VERIFIED'">
+            <ReadOnlyFacts :fields="[['Train',report.fixed_zip_split.counts?.train],['Val',report.fixed_zip_split.counts?.validation],['Test',report.fixed_zip_split.counts?.test],['输入冻结摘要',report.fixed_zip_split.input_freeze_id]]"/>
+            <details><summary>ZIP 来源规则</summary><ReadOnlyFacts :fields="Object.entries(report.fixed_zip_split.sources||{}).map(([job,source])=>[job,source.rule_digest])"/></details>
+          </template>
+          <p v-else>固定划分冻结证据不可用</p>
+        </template>
         <ReadOnlyFacts v-if="Object.keys(report.sample_distribution||{}).length"
           :fields="Object.entries(report.sample_distribution||{}).map(([role,counts])=>[role,`正样本 ${counts.positive} · 已确认负样本 ${counts.confirmed_negative}`])"/>
         <p v-else>暂无可核验的分角色统计。</p>

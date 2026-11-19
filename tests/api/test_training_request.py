@@ -2483,3 +2483,62 @@ def test_http_frozen_train_reference_reaches_real_prepare_freeze_without_gpu(
     assert not platform.shared_task_artifacts().artifact_path(
         task_id, "work/bundle",
     ).exists()
+
+
+def test_fixed_zip_public_create_binds_all_roles_to_the_prepare_task(client, seeded_project):
+    from io import BytesIO
+    import zipfile
+    from uuid import uuid4
+    from PIL import Image
+    import app as app_module
+
+    project, _ = seeded_project
+    algorithm = client.post(f'/api/v12/projects/{project}/algorithms',
+        json={'name':'fixed zip request', 'algorithm_type':'yolo_ultralytics'}).json()['algorithm']['id']
+    zip_bytes = BytesIO()
+    purposes = ('train', 'val', 'test')
+    with zipfile.ZipFile(zip_bytes, 'w') as archive:
+        for i, role in enumerate(purposes):
+            image = BytesIO()
+            Image.new('RGB', (64,64), (25+30*i,10,10)).save(image, format='JPEG')
+            archive.writestr(f'images/{role}/same.jpg', image.getvalue())
+            archive.writestr(f'labels/{role}/same.txt', '0 .5 .5 .4 .4\n')
+        archive.writestr('data.yaml', 'names: [fire]\n')
+    upload = client.post(f'/api/v19/projects/{project}/datasets/default/import/jobs',
+        files={'file': ('fixed.zip',zip_bytes.getvalue(),'application/zip')},data={'folder_confirmation':'true'})
+    assert upload.status_code == 200,upload.text
+    job = upload.json()['id']
+    rules = [dict(folder_key=f'images/{role}', usage_intent=role, sample_type='positive', intended_label_codes=['fire'])
+             for role in purposes]
+    source_endpoint = f'/api/v19/projects/{project}/import/jobs/{job}'
+    started = client.post(source_endpoint+'/start', json={'source_scan_digest':upload.json()['source_scan_digest'],
+        'folder_rules':rules, 'label_mapping':{'0':'fire'}})
+    assert started.status_code == 200,started.text
+    import time
+    for _ in range(150):
+        state = client.get(source_endpoint).json()
+        if state['status'] in ('done','failed'):
+            break
+        time.sleep(.03)
+    assert state['status'] == 'done',state
+    prefix = f'/api/v62/projects/{project}/training-materials/zip-fixed-'
+    packet = {'algorithm_asset_id':algorithm, 'framework':'ultralytics', 'model':'yolo11n.pt',
+              'train_labels':['fire'], 'zip_source_job_ids':[job]}
+    preview = client.post(prefix+'split-preview', json=packet)
+    assert preview.status_code == 200 and preview.json()['issue_count'] == 0,preview.text
+    references = client.post(prefix+'split-freeze', json={**packet,'preview_digest':preview.json()['preview_digest'],
+        'request_id':str(uuid4())})
+    assert references.status_code == 200,references.text
+    task_id = 'train_' + uuid4().hex
+    create = {**packet, **references.json(), 'task_id':task_id, 'split_mode':'fixed_zip_train_val_test',
+              'validation_percent':None, 'experiment_percent':None, 'admission_mode':'background', 'device':'cpu'}
+    response = client.post(f'/api/v12/projects/{project}/train/start', json=create)
+    assert response.status_code == 202,response.text
+    repo = app_module.shared_task_repository()
+    target = repo.get(task_id)
+    assert target.required_capabilities == ('training.input.ready',)
+    assert repo.get(f'trainprep_{task_id}').kind.value == 'TRAINING_PREPARE'
+    pending = app_module.shared_task_artifacts().read_json(task_id,target.payload_ref)
+    assert all(len(pending[field + '_image_ids']) == 1 for field in ('train','validation','test'))
+    assert pending['validation_percent'] is None and pending['experiment_percent'] is None
+    assert client.post(f'/api/v12/projects/{project}/train/start',json=create).json()['idempotent'] is True
