@@ -1435,15 +1435,20 @@ def test_large_filter_freezes_reference_without_returning_all_ids(tmp_path):
 
 
 def test_frozen_train_selection_summary_exposes_formal_labels_after_label_choice(tmp_path):
+    import uuid
     from platform_core.training_selection_reference import read_selection,selection_context
     client,repository=_client(tmp_path)
     endpoint='/api/v62/projects/p1/training-materials'
     frozen_payload={'algorithm_asset_id':'algorithm-a','role':'train','history_policy':'include_history',
         'framework':'ultralytics','base_version_id':'version-a','train_labels':[]}
+    frozen_payload['request_id']=str(uuid.uuid4())
     frozen=client.post(endpoint+'/selection-reference',json=frozen_payload)
     assert frozen.status_code==200,frozen.text
     reference=frozen.json()['selection_ref']
     assert frozen.json()['count']==260
+    retry=client.post(endpoint+'/selection-reference',json=frozen_payload)
+    assert retry.status_code==200,retry.text
+    assert retry.json()['selection_ref']==reference
     chosen={**frozen_payload,'train_selection_ref':reference,'train_labels':['smoke'],
             'image_ids':[],'summary_only':True}
     summary=client.post(endpoint+'/selection-summary',json=chosen)
