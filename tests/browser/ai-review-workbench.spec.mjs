@@ -224,3 +224,46 @@ test('无歧义跨页选中二次确认后正式入库，未选中和歧义候�
  expect(decisions[0].decisions.some(row=>row.image_id===ambiguous.image_id)).toBe(false);
  await expect(page.locator('#ai60SelectionStatus')).toContainText('其他图片仍可继续审核');
 });
+
+test('转池空快照保留服务端排除项，只有主动清除才恢复普通选择',async({page})=>{
+ await page.goto('/');
+ await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
+ const selectionId='c'.repeat(32);
+ const frozen={selection_id:selectionId,purpose:'transfer',filter:'all',review_revision:1,
+   total:0,count:0,filtered_total:1,excluded:1,reasons:{formal_or_source_conflict:1}};
+ const item={image_id:'pool-conflict',filename:'冲突素材.jpg',status:'empty',boxes:[]};
+ const transferRequests=[];
+ await page.route('**/api/v60/projects/*/annotation-tasks/empty-transfer-snapshot/**',route=>{
+   const path=new URL(route.request().url()).pathname;
+   if(path.endsWith('/candidates'))
+     return route.fulfill({json:{items:[item],total:1,review_revision:1}});
+   if(path.endsWith('/review-selection')){
+     expect(route.request().postDataJSON()).toEqual({filter:'all',purpose:'transfer',review_revision:1});
+     return route.fulfill({json:frozen});
+   }
+   if(/negative-transfer(?:-preview)?$/.test(path))transferRequests.push(path);
+   return route.abort();
+ });
+ await page.evaluate(()=>window.reviewAiLabel427('empty-transfer-snapshot'));
+ const checkbox=page.locator('.ai-review-select');
+ await expect(checkbox).toBeEnabled();
+ await page.getByRole('button',{name:'选择筛选结果用于转池',exact:true}).click();
+ await expect(page.locator('#ai60SelectionStatus')).toContainText('可操作 0 张，排除 1 张（GT 或素材冲突 1 张）');
+ await expect(page.locator('#ai60SelectionCount')).toContainText('选中 0 张');
+ await expect(checkbox).toBeDisabled();
+ await checkbox.evaluate(node=>node.click());
+ await expect(checkbox).not.toBeChecked();
+ await page.getByRole('button',{name:'转入负样本池',exact:true}).click();
+ await expect(page.locator('#ai60TransferPanel')).toBeHidden();
+ expect(transferRequests).toEqual([]);
+ const selection=await page.evaluate(()=>{
+   const review=state.ai60Review;
+   return {snapshot:review.selection&&{...review.selection,excluded:[...review.selection.excluded]},
+     member:review.seen.get('pool-conflict').selection_member,selected:review.selected.size};
+ });
+ expect(selection).toEqual({snapshot:{...frozen,excluded:[]},member:false,selected:0});
+ await page.getByRole('button',{name:'清除选择',exact:true}).click();
+ expect(await page.evaluate(()=>state.ai60Review.selection)).toBeNull();
+ await expect(checkbox).toBeEnabled();
+ await expect(checkbox).not.toBeChecked();
+});

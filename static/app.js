@@ -9748,7 +9748,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         const seen=review.seen.get(id);
         if(seen)seen.selection_member=member;
       }
-      review.selected.clear();review.selection=result.count?{...result,excluded:new Set()}:null;
+      review.selected.clear();review.selection={...result,excluded:new Set()};
       const reasonLabels={committed:'已正式入库',unavailable:'转池或阻断',failed:'处理失败',rejected:'已拒绝',
         requires_review:'待人工消歧',not_ambiguous:'无需消歧',formal_or_source_conflict:'GT 或素材冲突'};
       const reasons=Object.entries(result.reasons||{}).map(([key,count])=>`${reasonLabels[key]||'其他限制'} ${count} 张`);
