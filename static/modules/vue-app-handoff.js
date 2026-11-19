@@ -34,18 +34,24 @@ async function resumeMaterials({project,action,query,state,navigate,request,wind
  Object.assign(link.style,{position:'fixed',right:'24px',bottom:'24px',zIndex:'10001',background:'#fff',color:'#222',padding:'12px 18px',border:'1px solid #aaa',borderRadius:'8px'});
  documentRoot.body.append(link);
  windowRoot.history.replaceState(null,'',windowRoot.location.pathname);
- const openers={
-  'material-annotate':()=>windowRoot.openAnnotation?.(id),
-  'material-manual':()=>windowRoot.setData412Tab?.('unannotated'),
-  'material-upload':()=>typeof windowRoot.ImageUppyView?.open==='function'
-   ?windowRoot.ImageUppyView.open({projectId:project}):windowRoot.openDataUpload426?.(),
-  'material-zip':()=>windowRoot.openUppyZipUpload?.(),
-  'material-negative':()=>windowRoot.NegativePoolRuntime?.open?.(),
-  'material-ai':()=>windowRoot.createAiLabel429?.(),
-  'material-clean':()=>windowRoot.createClean427?.(),
-  'material-integrity':()=>windowRoot.openMaterialIntegrityAudit47?.(),
+ const actions={
+  'material-annotate':[windowRoot,'openAnnotation','人工标注',id],
+  'material-manual':[windowRoot,'setData412Tab','人工标注','unannotated'],
+  'material-upload':typeof windowRoot.ImageUppyView?.open==='function'
+   ?[windowRoot.ImageUppyView,'open','图片上传',{projectId:project}]
+   :[windowRoot,'openDataUpload426','图片上传'],
+  'material-zip':[windowRoot,'openUppyZipUpload','ZIP 导入'],
+  'material-negative':[windowRoot.NegativePoolRuntime,'open','负样本池'],
+  'material-ai':[windowRoot,'createAiLabel429','AI 预标注'],
+  'material-clean':[windowRoot,'createClean427','素材清洗'],
+  'material-integrity':[windowRoot,'openMaterialIntegrityAudit47','删除与安全审核'],
  };
- return openers[action]?.();
+ const entry=actions[action];
+ if(!entry)return; // These entries only navigate to the existing page.
+ const [owner,method,label,...args]=entry;
+ const open=owner?.[method];
+ if(typeof open!=='function')throw new Error(`原工作台的${label}入口未就绪，请返回素材库后重试`);
+ return open.apply(owner,args);
 }
 async function resumeTrainingTask({project, action, query, state, navigate, request, windowRoot, documentRoot}) {
  const taskId = query.get('task_id') || '';
@@ -85,8 +91,10 @@ export async function resumeVueHandoff({state,navigate,request,windowRoot=window
  let algorithm;
  const project=query.get('project_id'),page=query.get('page'),algorithmId=query.get('algorithm_id')||'',versionId=query.get('version_id')||'',action=query.get('action')||'';
  const expectedEvaluation=action==='evaluation' ? query.get('expected_evaluation_id') : '';
- if(project&&state.project?.id===project&&Object.hasOwn(materialPages,action))
+ if(Object.hasOwn(materialPages,action)){
+  if(!project||state.project?.id!==project)throw new Error('原素材工作台的当前项目与请求项目不一致，未打开操作');
   return resumeMaterials({project,action,query,state,navigate,request,windowRoot,documentRoot});
+ }
  if(project&&state.project?.id===project&&['task-stop','task-detail','task-report'].includes(action))return resumeTrainingTask({project,action,query,state,navigate,request,windowRoot,documentRoot});
  if(!project||state.project?.id!==project||!pages.has(page)||!actions.has(action))throw new Error('新版入口的项目或页面身份不匹配，未执行操作');
  if(action&&(!algorithmId||page!=='算法列表'||(versionActions.has(action)&&!versionId)))throw new Error('版本操作身份不完整');

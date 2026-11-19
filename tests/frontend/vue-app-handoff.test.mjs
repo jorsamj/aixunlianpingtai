@@ -148,3 +148,28 @@ test('material links enter the original owner after loading the scoped page',asy
   assert.deepEqual(c.calls,[page,'consume',owner]);
  }
 });
+
+test('material handoff rejects missing owners and keeps navigation-only entries usable',async()=>{
+ for(const [action,page,error] of [
+  ['material-zip','数据集',/ZIP 导入入口未就绪/],
+  ['material-negative','数据集',/负样本池入口未就绪/],
+  ['material-manage','数据集',null],
+  ['material-labels','标签管理',null],
+ ]){
+  const c=context('p',action);
+  c.windowRoot.location.search='?'+new URLSearchParams({spa_handoff:'1',project_id:'p',page,action});
+  if(error)await assert.rejects(resumeVueHandoff(c),error);
+  else await resumeVueHandoff(c);
+  assert.deepEqual(c.calls,[page,'consume']);
+  assert.equal(c.links[0].href,'/app/#/projects/p/materials');
+ }
+});
+
+test('material handoff rejects a different server-owned project before navigation',async()=>{
+ const c=context('other','material-annotate');
+ c.windowRoot.location.search='?'+new URLSearchParams({spa_handoff:'1',project_id:'p',page:'数据集',action:'material-annotate',material_id:'m1'});
+ c.request=()=>assert.fail('must not read the material');
+ c.windowRoot.openAnnotation=()=>assert.fail('must not open annotation');
+ await assert.rejects(resumeVueHandoff(c),/当前项目与请求项目不一致/);
+ assert.deepEqual(c.calls,[]);
+});
