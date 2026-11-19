@@ -62,3 +62,7 @@ M2 算法库列表、详情与版本管理已实现，必要本地验证通过�
 - [原前端Owner地图](../FRONTEND_OWNER_MAP_V42_25.md)
 - [专业组件复用合同](../FRONTEND_THIRD_PARTY_REUSE_POLICY.md)
 - [Payload协议与边界](P2B_4A_2B_CONTINUOUS_DELIVERY_20261118.md)
+
+## M2 CI收尾 / M3-A开始（2026-11-19）
+
+起点e51c30c9：GPT核查50工作流48成功2失败。A修复4个资源测试文件的历史缓存硬编码，改为实际index版本的数字格式、三资源一致性与顺序检查（定向17通过）；首次预加载修正bootstrap资源/推荐被误判实时缓存的新鲜度，指定hard refresh浏览器1通过（16.5秒含服务启动），hydration合同15通过。后者缓存复用用例先执行真实prewarm再断言后续零请求，未削弱预加载。无timeout/默认参数变更。A提交后立即开始M3-A，不等CI，未宣称CI成功。三份原设计及VERSION保留。

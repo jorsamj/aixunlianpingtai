@@ -40,8 +40,14 @@ test('13C-03 removes provider page module from startup static graph',()=>{
   assert.match(main,/changLianDataBrowserRuntime\.leave\(\)/);
   assert.match(main,/changLianDataBrowserRuntime\?\.render\?\.\(\)/);
   assert.match(main,/changLianDataBrowserRuntime\?\.destroy\?\.\(\)/);
-  for(const name of ['app.js','main.mjs','styles.css'])
-    assert.ok(html.includes('/static/'+name+'?v=42.25.625'));
+  const versions=['main.mjs','app.js','styles.css'].map(name=>{
+    const url=html.match(new RegExp('/static/'+name.replaceAll('.', '\\.')+'\\?v=([^\"\\s<>]+)'))?.[1];
+    assert.ok(url,`${name} has a cache version`);
+    assert.match(url,/^\d+(?:\.\d+)*$/);
+    return url;
+  });
+  assert.equal(versions[1],versions[0]);
+  assert.equal(versions[2],versions[0]);
 });
 
 test('only entering page loads module; provider refresh remains manual',async()=>{

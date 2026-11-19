@@ -16,8 +16,16 @@ function setup(){
 
 test('classic presenter loads before app.js and preserves its synchronous bridge',()=>{
   const resource=html.indexOf('/static/modules/training-resource-cards.js?v=42.25.601-13c04b');
-  const classic=html.indexOf('/static/app.js?v=42.25.625');
-  const module=html.indexOf('/static/main.mjs?v=42.25.625');
+  const versions=['main.mjs','app.js','styles.css'].map(name=>{
+    const url=html.match(new RegExp('/static/'+name.replaceAll('.', '\\.')+'\\?v=([^\"\\s<>]+)'))?.[1];
+    assert.ok(url,`${name} has a cache version`);
+    assert.match(url,/^\d+(?:\.\d+)*$/);
+    return url;
+  });
+  assert.equal(versions[1],versions[0]);
+  assert.equal(versions[2],versions[0]);
+  const classic=html.indexOf('/static/app.js?v='+versions[1]);
+  const module=html.indexOf('/static/main.mjs?v='+versions[0]);
   assert.ok(resource>=0&&resource<classic&&classic<module);
   assert.match(appSource,/function trainingResourceCardsHtmlV3\(\)\{/);
   assert.match(appSource,/renderer\(state\.targets\|\|\[\],\{escape:esc,familySummary\}\)/);

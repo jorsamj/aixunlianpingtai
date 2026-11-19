@@ -228,11 +228,14 @@ test('subsequent internal training open reuses hydrated configuration without a 
       getState: () => state,
       openTrainingForm,
       projectId: () => 'project-1',
-      request: async () => { requests += 1; return {}; },
+      request: async url => { requests += 1; return url.startsWith('/api/training_options')?{targets:state.targets}:{device:'cpu'}; },
       openShell: () => { shells += 1; },
       isShellCurrent: () => true,
       closeShell: () => {},
     });
+    await runtime.prewarm('',{includePreflight:false});
+    assert.equal(requests,2);
+    requests=0;
     await runtime.start('alg-1');
     await runtime.start('alg-1');
     assert.equal(requests, 0);

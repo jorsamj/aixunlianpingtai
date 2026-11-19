@@ -48,10 +48,14 @@ test('quality detection heavy module is absent from the startup import graph',()
   assert.match(classic,/window\.renderDetectBench = function|window\.renderDetectBench = /); // compatibility checked below independently
   assert.match(classic,/window\.renderDetectBench\?\.\(\)/);
   assert.match(bench,/export function installQualityDetectionWorkbench\(/);
-  const mainVersion=index.match(/\/static\/main\.mjs\?v=([\d.]+)/)?.[1];
-  assert.equal(mainVersion,'42.25.625');
-  assert.ok(index.includes('/static/app.js?v='+mainVersion));
-  assert.ok(index.includes('/static/styles.css?v='+mainVersion));
+  const versions=['main.mjs','app.js','styles.css'].map(name=>{
+    const url=index.match(new RegExp('/static/'+name.replaceAll('.', '\\.')+'\\?v=([^\"\\s<>]+)'))?.[1];
+    assert.ok(url,`${name} has a cache version`);
+    assert.match(url,/^\d+(?:\.\d+)*$/);
+    return url;
+  });
+  assert.equal(versions[1],versions[0]);
+  assert.equal(versions[2],versions[0]);
 });
 
 test('overview never fetches bench; repeated opens share one module and install only once',async()=>{

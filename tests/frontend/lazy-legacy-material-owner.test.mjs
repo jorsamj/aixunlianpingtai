@@ -28,5 +28,12 @@ test('lazy owner checks navigation, project and render generation before touchin
 });
 
 test('main entry keeps the numeric same-version cache contract',()=>{
-  for(const name of ['styles.css','app.js','main.mjs'])assert.ok(html.includes('/static/'+name+'?v=42.25.625'));
+  const versions=['main.mjs','app.js','styles.css'].map(name=>{
+    const url=html.match(new RegExp('/static/'+name.replaceAll('.', '\\.')+'\\?v=([^\"\\s<>]+)'))?.[1];
+    assert.ok(url,`${name} has a cache version`);
+    assert.match(url,/^\d+(?:\.\d+)*$/);
+    return url;
+  });
+  assert.equal(versions[1],versions[0]);
+  assert.equal(versions[2],versions[0]);
 });

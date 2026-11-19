@@ -59,7 +59,8 @@ export function installTrainingCreateHydrationRuntime({
   let recommendationInflight = null;
   let optionsController = null;
   let recommendationController = null;
-  let commonLoadedAt = trainingOptionsHydrated(getState?.()?.targets) ? Date.now() : 0;
+  // Bootstrap targets are a snapshot, not evidence of a live hydration request.
+  let commonLoadedAt = 0;
   let commonProjectId = String(projectId?.()||'');
   let recommendationLoadedAt = 0;
   let activeOpening = null;
@@ -169,7 +170,7 @@ export function installTrainingCreateHydrationRuntime({
 
   const hydrateRecommendation = async ({force = false} = {}) => {
     const {state, projectKey} = projectContext();
-    if (!force && state.rec != null && (!recommendationLoadedAt||Date.now()-recommendationLoadedAt<60000)){if(!recommendationLoadedAt)recommendationLoadedAt=Date.now();stage('recommendation',{status:'ready',cacheHit:true,error:''});return state.rec;}
+    if (!force && state.rec != null && recommendationLoadedAt>0 && Date.now()-recommendationLoadedAt<60000){if(!recommendationLoadedAt)recommendationLoadedAt=Date.now();stage('recommendation',{status:'ready',cacheHit:true,error:''});return state.rec;}
     if (recommendationInflight?.projectKey === projectKey) return recommendationInflight.promise;
 
     const started=clockNow();stage('recommendation',{status:'loading',error:'',cacheHit:false,url:'/api/system/recommendation',requestCount:Number(state.trainingCreationLoading?.recommendation?.requestCount||0)+1});
