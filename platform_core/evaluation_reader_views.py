@@ -4,6 +4,8 @@ from urllib.parse import quote, urlencode
 from .training_reader_views import fields, text, metrics
 from .model_asset_views import filename
 METRICS=('precision','recall','map50','map50_95','f1','false_positive','false_negative')
+METRIC_ALIASES={'metrics/precision(B)':'precision','metrics/recall(B)':'recall',
+                'metrics/mAP50(B)':'map50','metrics/mAP50-95(B)':'map50_95'}
 CLASS=('class_id','label','evaluation_status','precision','recall','map50','map50_95','f1','true_positive','false_positive','false_negative','ground_truth_count','prediction_count')
 def bounded(value):
     count=0
@@ -15,8 +17,9 @@ def bounded(value):
 def report_section(raw,section,offset,limit,class_id=None):
     result={'state':'AVAILABLE' if raw else 'NOT_GENERATED','evaluation_id':text(raw.get('evaluation_id')),'section':section,'offset':offset,'limit':limit,'total':0,'has_next':False,'evaluation':{}}
     if not bounded(raw):return {**result,'state':'DEFERRED','message':'评测证据超出2MiB安全读取边界，请使用原报告入口'}
-    e=fields(raw,('evaluation_id','status','image_count','created_at','completed_at','confidence_curve_protocol'))
-    e['metrics']=fields(raw.get('metrics'),METRICS)
+    e=fields(raw,('evaluation_id','status','image_count','created_at','completed_at','confidence_curve_protocol',
+                  'snapshot_id','dataset_revision_id','evaluation_protocol_id','historical_independence'))
+    e['metrics']={**fields(raw.get('metrics'),METRICS),**metrics(raw.get('metrics'))}
     result['evaluation']=e
     classes=raw.get('per_class') or []
     classes=[row for row in classes if isinstance(row,dict)] if isinstance(classes,list) else []
@@ -65,7 +68,8 @@ def samples_display(project,algorithm,version,value):
 
 def comparison_display(raw,offset=0,limit=20):
     result=fields(raw,('comparable','reason_codes','source_version_id','current_version_id'))
-    result['metrics']={key:fields(value,('before','after','delta')) for key,value in (raw.get('metrics') or {}).items() if key in METRICS}
+    result['metrics']={METRIC_ALIASES.get(key,key):fields(value,('before','after','delta'))
+                       for key,value in (raw.get('metrics') or {}).items() if key in METRICS or key in METRIC_ALIASES}
     classes=raw.get('classes') or []
     result['classes']=[{**fields(row,('class_id','label','comparable','regressed')),'metrics':{key:fields(value,('before','after','delta')) for key,value in (row.get('metrics') or {}).items() if key in METRICS}} for row in classes[offset:offset+limit]]
     result.update(offset=offset,limit=limit,total=len(classes),has_next=offset+limit<len(classes))

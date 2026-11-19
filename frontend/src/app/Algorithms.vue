@@ -95,6 +95,9 @@ function algorithmState(algorithm:AlgorithmSummary){
 }
 function dateLabel(value?:string){return value?value.replace('T',' ').slice(0,19):'未提供'}
 function original(aid:string,action:string,vid=''){return legacyUrl(projectId,'算法列表',aid,vid,action)}
+function versionReport(algorithmId:string,versionId:string,evaluation=false){
+ return {name:'version-report',params:{projectId,algorithmId,versionId},query:{tab:evaluation?'evaluation':undefined,back:route.fullPath}};
+}
 const algorithms=ref<Paged<AlgorithmSummary>|null>(null),versions=ref<VersionPage|null>(null),detail=ref<VersionDetail|null>(null),basic=ref<AlgorithmBasic|null>(null);
 const selected=computed(()=>String(route.query.algorithm||'')),versionPage=ref(1),drawer=ref(false),editing=ref(false),editingId=ref(''),saving=ref(false),writeError=ref('');
 const readOnlyAlgorithm=computed(()=>!!editingId.value&&(!basic.value?.editable||basic.value.source_type?.toUpperCase()==='EXTERNAL'));
@@ -111,6 +114,8 @@ function filterQuery(next:typeof defaults){
 function applyFilters(next:typeof defaults){
  const query=filterQuery(next);
  delete query.algorithm;
+ delete query.version;
+ delete query.version_page;
  Object.assign(filters,next);
  void router.push({query});
 }
@@ -118,21 +123,24 @@ function search(page=1){applyFilters({...filters,page})}
 function paginate(page:number){applyFilters({...appliedFilters.value,page})}
 function clearTag(key:typeof filterKeys[number]){applyFilters({...appliedFilters.value,[key]:defaults[key],page:1})}
 function toggleTrainable(){applyFilters({...appliedFilters.value,training_state:appliedFilters.value.training_state==='trainable'?'all':'trainable',page:1})}
-function choose(id:string){void router.push({query:{...route.query,algorithm:id||undefined}})}
+function choose(id:string){void router.push({query:{...route.query,algorithm:id||undefined,version:undefined,version_page:undefined}})}
 function toggle(id:string){choose(selected.value===id?'':id)}
 function loadVersions(){if(selected.value)void reads.run('versions',signal=>api.versions(selected.value,versionPage.value,signal),value=>{versions.value=value})}
-function changeVersionPage(value:number){versionPage.value=value;loadVersions()}
+function changeVersionPage(value:number){void router.push({query:{...route.query,version_page:value===1?undefined:String(value)}})}
 const versionRemark=ref(''),versionSaveError=ref('');
 const selectedAlgorithm=computed(()=>algorithms.value?.items.find(algorithm=>algorithm.id===selected.value)||versions.value?.algorithm);
 const canEditVersion=computed(()=>!!selectedAlgorithm.value&&selectedAlgorithm.value.id===detail.value?.algorithm_id);
 function setDetail(value:VersionDetail){detail.value=value;versionRemark.value=value.version.remark||''}
-function versionDetail(id:string){
+function versionDetail(id:string){void router.push({query:{...route.query,version:id}})}
+function loadVersionDetail(id:string){
  drawer.value=true;
  detail.value=null;
  versionSaveError.value='';
  void reads.run('detail',signal=>api.detail(selected.value,id,signal),setDetail);
 }
-function closeDetail(){reads.cancel('detail');drawer.value=false}
+function closeDetail(){
+ if(route.query.version)void router.push({query:{...route.query,version:undefined}});
+}
 async function saveVersionRemark(){
  if(saving.value||unconfirmed.value||!canEditVersion.value||!detail.value||detail.value.algorithm_id!==selected.value)return;
  const algorithmId=detail.value.algorithm_id,versionId=detail.value.version.id,remark=versionRemark.value;
@@ -216,12 +224,17 @@ function persistFilters(value:string){
 }
 void initializeFilters();
 watch(()=>JSON.stringify(appliedFilters.value),persistFilters);
-watch(selected,()=>{
- closeDetail();
+watch([selected,()=>route.query.version_page],()=>{
  reads.cancel('versions');
  versions.value=null;
- versionPage.value=1;
+ const page=Number(route.query.version_page);
+ versionPage.value=Number.isSafeInteger(page)&&page>0?page:1;
  loadVersions();
+},{immediate:true});
+watch([selected,()=>route.query.version],([algorithm,version])=>{
+ reads.cancel('detail');
+ drawer.value=false;
+ if(algorithm&&typeof version==='string'&&version)loadVersionDetail(version);
 },{immediate:true});
 </script>
 <template><section aria-label="算法库卡片管理">
@@ -294,9 +307,9 @@ watch(selected,()=>{
      <el-table-column label="操作" min-width="310"><template #default="{row}">
       <div class="algorithm-version-actions">
        <el-button link @click="versionDetail(row.id)">版本详情</el-button>
-       <a :href="original(selected,'report',row.id)">训练报告</a>
+       <router-link :to="versionReport(selected,row.id)">训练报告</router-link>
        <a v-if="row.has_lineage" :href="original(selected,'lineage',row.id)">训练溯源</a>
-       <a v-if="row.has_evaluation" :href="original(selected,'evaluation',row.id)">独立评测</a>
+       <router-link v-if="row.has_evaluation" :to="versionReport(selected,row.id,true)">独立评测</router-link>
        <a :href="original(selected,'conversion',row.id)">转换 · 原流程</a>
        <a :href="original(selected,'delivery',row.id)">交付 · 原流程</a>
        <a v-if="row.has_model" :href="original(selected,'download',row.id)">下载模型</a>
@@ -317,6 +330,7 @@ watch(selected,()=>{
   <el-alert v-else-if="reads.errors.detail" :title="reads.errors.detail" type="error"/>
   <template v-else-if="detail">
    <ModelVersionDetails :detail="detail"/>
+   <p><router-link :to="versionReport(detail.algorithm_id,detail.version.id)">训练报告</router-link>　<router-link v-if="detail.version.has_evaluation" :to="versionReport(detail.algorithm_id,detail.version.id,true)">独立评测</router-link></p>
    <form class="algorithm-form version-remark-form" @submit.prevent="saveVersionRemark">
     <label>版本备注<el-input v-model="versionRemark" aria-label="版本备注" type="textarea" :readonly="!canEditVersion" :disabled="saving"/></label>
     <el-alert v-if="versionSaveError" :title="versionSaveError" type="error" :closable="false"/>

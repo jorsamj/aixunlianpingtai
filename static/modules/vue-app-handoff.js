@@ -17,7 +17,7 @@ async function resumeTrainingTask({project, action, query, state, navigate, requ
      ['cancelling','stopping','starting','pausing','resuming','cleaning_training_process','process_cleanup_blocked'].includes(task.phase))) {
   throw new Error('任务当前状态不允许再次停止，请刷新核对');
  }
- const owner = action === 'task-stop' ? windowRoot.stopTrain428 : windowRoot.openTrainingRecoveryDetail;
+ const owner = action === 'task-stop' ? windowRoot.stopTrain428 : action === 'task-report' ? windowRoot.openJobReport429 : windowRoot.openTrainingRecoveryDetail;
  if (typeof owner !== 'function') throw new Error('原训练任务操作入口未就绪');
  const back = new URLSearchParams({task:taskId});
  for (const key of ['query','kind','status','cursor','previous']) {
@@ -38,15 +38,19 @@ export async function resumeVueHandoff({state,navigate,request,windowRoot=window
  const actions=new Set(['','train','algorithm-report','delete-algorithm',...versionActions]);
  let algorithm;
  const project=query.get('project_id'),page=query.get('page'),algorithmId=query.get('algorithm_id')||'',versionId=query.get('version_id')||'',action=query.get('action')||'';
- if(project&&state.project?.id===project&&['task-stop','task-detail'].includes(action))return resumeTrainingTask({project,action,query,state,navigate,request,windowRoot,documentRoot});
+ const expectedEvaluation=action==='evaluation' ? query.get('expected_evaluation_id') : '';
+ if(project&&state.project?.id===project&&['task-stop','task-detail','task-report'].includes(action))return resumeTrainingTask({project,action,query,state,navigate,request,windowRoot,documentRoot});
  if(!project||state.project?.id!==project||!pages.has(page)||!actions.has(action))throw new Error('新版入口的项目或页面身份不匹配，未执行操作');
  if(action&&(!algorithmId||page!=='算法列表'||(versionActions.has(action)&&!versionId)))throw new Error('版本操作身份不完整');
- if(algorithmId){
+ async function readAlgorithm(){
   const result=await request(`/api/v12/projects/${encodeURIComponent(project)}/algorithms/${encodeURIComponent(algorithmId)}`);
   if(result.algorithm?.id!==algorithmId||(versionId&&!result.algorithm.versions?.some(row=>row.id===versionId)))throw new Error('原算法或版本已不存在');
+  if(state.project?.id!==project)throw new Error('项目已切换，未执行操作');
+  if(expectedEvaluation&&result.algorithm.versions.find(row=>row.id===versionId)?.evaluation?.evaluation_id!==expectedEvaluation)throw new Error('冻结评测已变化，请返回重新读取报告');
   algorithm=result.algorithm;
   state.algorithms=(state.algorithms||[]).filter(row=>row.id!==algorithmId).concat([result.algorithm]);
  }
+ if(algorithmId&&!expectedEvaluation)await readAlgorithm();
  const external=String(algorithm?.source_type||'').toUpperCase()==='EXTERNAL';
  const changLian=external&&String(algorithm?.provider_type||'').toUpperCase()==='CHANG_LIAN';
  const version=algorithm?.versions?.find(row=>row.id===versionId);
@@ -56,6 +60,7 @@ export async function resumeVueHandoff({state,navigate,request,windowRoot=window
  if(action==='download'&&!String(version?.stored_path||'').trim())throw new Error('该版本没有可下载模型');
  if(state.project?.id!==project)throw new Error('项目已切换，未执行操作');
  await navigate(page);
+ if(expectedEvaluation)await readAlgorithm();
  if(state.project?.id!==project||state.page!==page)throw new Error('原业务页未就绪，未执行操作');
  const link=documentRoot.createElement('a');link.textContent='返回新版算法库';link.href=`/app/#/projects/${encodeURIComponent(project)}/algorithms${algorithmId?'?algorithm='+encodeURIComponent(algorithmId):''}`;
  Object.assign(link.style,{position:'fixed',right:'24px',bottom:'24px',zIndex:'10001',background:'#fff',color:'#222',padding:'12px 18px',border:'1px solid #aaa',borderRadius:'8px'});documentRoot.body.append(link);

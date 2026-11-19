@@ -6,7 +6,7 @@ import {request,login} from './http';
 import {menus,legacyUrl} from './navigation';
 const store=useWorkspace(),route=useRoute(),router=useRouter(),error=ref(''),advanced=ref(false);
 const projectId=computed(()=>String(route.params.projectId||store.projects[0]?.id||''));
-const title=computed(()=>route.name==='training-tasks'?'训练任务':route.name==='training-create'?'创建训练任务':route.name==='algorithms'?'算法库':menus.flatMap(group=>group.pages).find(([,page])=>page===route.params.page)?.[0]||'畅联云算法训练平台');
+const title=computed(()=>route.name==='training-tasks'?'训练任务':route.name==='training-create'?'创建训练任务':route.name==='training-report'||route.name==='version-report'?'训练报告与评测':route.name==='algorithms'?'算法库':menus.flatMap(group=>group.pages).find(([,page])=>page===route.params.page)?.[0]||'畅联云算法训练平台');
 function projectChange(id:string){void router.push({name:'algorithms',params:{projectId:id}})}
 function target(page:string){
  const project={projectId:projectId.value};

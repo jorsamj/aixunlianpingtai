@@ -26,10 +26,7 @@ def bounded_json(path,limit=2*1024*1024):
     except FileNotFoundError:return {},'MISSING'
     except (OSError,ValueError,UnicodeError):return {},'ERROR'
 
-def task_display(task,artifacts,detail=False):
-    raw=task_to_public(task)  # Original status owner; deliberately no queue/worker scan.
-    result=fields(raw,('task_id','project_id','kind','status','persisted_status','phase','progress_percent','created_at','updated_at','finished_at','worker_id','resource_key','resource_wait_reason','error','attempt'))
-    limit = 512 * 1024 if detail else 32 * 1024
+def _read_task_payload(task, artifacts, limit):
     try:
         if VERSION_REF.fullmatch(task.payload_ref):
             payload = artifacts.payload_reader.read_payload_version(task.task_id, task.payload_ref, max_bytes=limit).data
@@ -40,6 +37,13 @@ def task_display(task,artifacts,detail=False):
         payload, state = {}, {'PAYLOAD_SIZE_LIMIT': 'DEFERRED', 'PAYLOAD_VERSION_MISSING': 'MISSING'}.get(error.code, 'ERROR')
     except ValueError:
         payload, state = {}, 'ERROR'
+    return payload, state
+
+def task_display(task,artifacts,detail=False):
+    raw=task_to_public(task)  # Original status owner; deliberately no queue/worker scan.
+    result=fields(raw,('task_id','project_id','kind','status','persisted_status','phase','progress_percent','created_at','updated_at','finished_at','worker_id','resource_key','resource_wait_reason','error','attempt'))
+    limit = 512 * 1024 if detail else 32 * 1024
+    payload, state = _read_task_payload(task, artifacts, limit)
     result['metadata_state']=state
     identity=payload.get('algorithm_identity') or {}
     ids={str(value) for value in (payload.get('asset_algorithm_id'),payload.get('algorithm_asset_id'),identity.get('id')) if value}
@@ -98,13 +102,35 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
     has_metrics=any(value is not None for value in metrics(canonical['metrics']).values())
     state='AVAILABLE' if report else 'PARTIAL' if has_metrics else 'NOT_GENERATED'
     payload={}
-    if task:payload,_=bounded_json(artifacts.artifact_path(job_id,task.payload_ref),limit=512*1024)
+    if task:
+        payload, payload_state = _read_task_payload(task, artifacts, 512 * 1024)
+        if payload_state in ('ERROR','DEFERRED'):
+            warnings.append('任务配置无法核验或超出读取边界，其他已记录结果仍可查看。')
     configuration={**fields(payload,CONFIG),**fields(legacy,CONFIG),**fields(report.get('actual_train_params'),CONFIG)}
-    result=fields({**legacy,**finalized},('status','created_at','started_at','finished_at','elapsed_seconds','completed_epochs','current_epoch','completion_reason','training_outcome'))
-    if task:result['status']=task.status.value
+    actual=next((item for item in (finalized.get('actual_train_params'), report.get('actual_train_params'), legacy.get('actual_train_params')) if isinstance(item,dict) and item),{})
+    result=fields({**legacy,**finalized},('status','created_at','started_at','finished_at','elapsed_seconds',
+        'completed_epochs','requested_epochs','current_epoch','best_epoch','completion_reason','completion_message',
+        'quality_gate_reason','early_stopping_reason','training_outcome','snapshot_id','dataset_revision_id'))
+    if task:
+        current=task_to_public(task)
+        result['status']=current['status']
+        result.update(fields(current,('error',)))
+        if not result.get('finished_at'):
+            result.update(fields(current,('finished_at',)))
+    if result.get('elapsed_seconds') is None:
+        telemetry=finalized.get('training_metrics') or {}
+        duration=report.get('total_duration_seconds',telemetry.get('total_duration_seconds') if isinstance(telemetry,dict) else None)
+        if type(duration) in (int,float):
+            result['elapsed_seconds']=duration
+    if result.get('best_epoch') is None:
+        telemetry=finalized.get('training_metrics') or {}
+        if isinstance(telemetry,dict):
+            result.update(fields(telemetry,('best_epoch',)))
+    best = report.get('best_metrics')
     return {'state':state,'source':'DURABLE_FINALIZED' if committed else 'LEGACY_RECORDED',
         'message':'仅展示已记录结果，未生成完整报告' if state in ('PARTIAL','NOT_GENERATED') else '',
-        'configuration':configuration,'result':result,
+        'configuration':configuration,'actual_parameters':fields(actual,CONFIG),'result':result,
+        'best_metrics':metrics(best) if isinstance(best,dict) and best else {},
         'val_metrics':metrics(canonical['metrics']),'test_metrics':metrics(evaluation.get('metrics') if isinstance(evaluation,dict) else {}),
         'test_status':text(evaluation.get('status')) if isinstance(evaluation,dict) else None,
         'credibility':fields(canonical.get('metric_credibility'),('status','level','message','reason','note','source')),

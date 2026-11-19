@@ -347,7 +347,7 @@ def test_object_model_is_downloaded_and_verified_before_process(tmp_path):
 
     outcome = runner.run(current)
 
-    assert outcome.status == "SUCCEEDED"
+    assert outcome.status == "SUCCEEDED", outcome.error
     assert [call["url"] for call in transfer.get_calls] == [
         "https://storage.example.test/input",
         model_url,

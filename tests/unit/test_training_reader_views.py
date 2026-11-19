@@ -30,7 +30,7 @@ def test_bounded_artifact_and_task_display_preserve_truth_and_hide_secrets(tmp_p
 def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp_path):
     import hashlib
     from platform_core.task_runtime.payload_publications import _native_name
-    from platform_core.training_reader_views import task_display
+    from platform_core.training_reader_views import report_display, task_display
     from platform_core.task_runtime.artifacts import ArtifactStore
 
     store = ArtifactStore(tmp_path / 'artifacts')
@@ -44,5 +44,18 @@ def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp
     assert task_display(task, store)['metadata_state'] == 'DEFERRED'
     detail = task_display(task, store, detail=True)
     assert detail['algorithm_id'] == 'a' and detail['configuration']['epochs'] == 50
+    store.atomic_write_json('t','result.json',{
+        'training_report':{'history':[{'epoch':1,'map50':0},{'epoch':2,'map50_95':.4}]},
+        'best_epoch':1,'completed_epochs':2,'completion_reason':'early_stopping',
+        'actual_train_params':{'epochs':50,'batch':16,'token':'hidden'},
+    })
+    report=report_display('t',task,store,tmp_path/'absent.json',history_offset=1,history_limit=1)
+    assert report['configuration']['epochs']==50
+    assert report['actual_parameters']=={'epochs':50,'batch':16}
+    assert report['result']['status']=='QUEUED' and report['result']['best_epoch']==1 and report['result']['completed_epochs']==2
+    assert report['history']==[{'epoch':2,'map50_95':.4}] and report['history_total']==2
+    assert report['test_metrics']['map50'] is None
     path.write_bytes(payload.replace(b'50', b'51'))
     assert task_display(task, store, detail=True)['metadata_state'] == 'ERROR'
+    report=report_display('t',task,store,tmp_path/'absent.json')
+    assert 'epochs' not in report['configuration'] and report['warnings']

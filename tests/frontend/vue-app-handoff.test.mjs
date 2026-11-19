@@ -59,9 +59,21 @@ test('report fails explicitly when legacy owner is unavailable',async()=>{
  const c=context('p','report');await assert.rejects(resumeVueHandoff(c),/操作入口未就绪/);
 });
 
+test('evaluation handoff checks the frozen evidence identity after entering the old page',async()=>{
+  const c=context('p','evaluation');
+  c.windowRoot.location.search+='&expected_evaluation_id=expected';
+  c.windowRoot.openVersionEvaluation429=(...args)=>c.calls.push(args);
+  c.request=async()=>({algorithm:{id:'a',versions:[{id:'v',evaluation:{evaluation_id:'different'}}]}});
+  await assert.rejects(resumeVueHandoff(c),/冻结评测已变化/);
+  assert.deepEqual(c.calls,['算法列表']);
+  c.request=async()=>({algorithm:{id:'a',versions:[{id:'v',evaluation:{evaluation_id:'expected'}}]}});
+  await resumeVueHandoff(c);
+  assert.deepEqual(c.calls.slice(-3),['算法列表','consume',['a','v']]);
+});
 
-test('training task handoff preserves identity and invokes only the original stop and recovery owners', async () => {
- for (const [action,owner] of [['task-stop','stopTrain428'],['task-detail','openTrainingRecoveryDetail']]) {
+
+test('training task handoff preserves identity and invokes only the original stop, recovery and report owners', async () => {
+ for (const [action,owner] of [['task-stop','stopTrain428'],['task-detail','openTrainingRecoveryDetail'],['task-report','openJobReport429']]) {
   const c=context('p',action);
   c.windowRoot.location.search='?spa_handoff=1&project_id=p&page='+encodeURIComponent('训练任务')+'&task_id=t&status=QUEUED&cursor=next&action='+action;
   c.request=async url=>{

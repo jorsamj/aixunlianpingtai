@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-当前为 M3-A 冻结请求整改与 M3-B 原生训练任务，必要本地验证已完成，验收 **CI_PENDING**。本批结束后等待独立审计。下方M2实现台账保留为历史证据，当前功能以文末M3-A记录和功能矩阵为准。本文件所属的最后文档提交是本批交付 HEAD；接续执行 `git rev-parse HEAD`，fetch 后比较 `origin/feature/external-algorithm-publishing`。准确最终完整 SHA 和一次 CI 快照在交付消息中，不能把下面实现 SHA 冒充最终文档提交 SHA。
+当前为 M3-C 原生训练报告与独立评测。M3-B 基线 `f8377d2c92a911717a9a140024b27e87b2d570e7` 的只读列表和详情已通过独立代码审计，40 项 CI 中 39 成功，Windows Node Agent Executor 失败，见文末。独立复核本轮交付前，以 `git rev-parse HEAD` 和远端分支核对最终提交，按同一 SHA 查看 Actions。交付消息记录本轮准确 SHA 和 CI 快照。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -102,7 +102,7 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 
 基线 37ea27a95bb3319512edb7198824592d0d990ce0。TrainingMaterials 使用 getRandomValues、UUIDv4 版本位及 RFC4122 variant 位，保留同范围失败重试身份。明确清除选择后可开始下一次冻结。隔离 FastAPI 正式冻结与同请求回执复用、selection-summary 验证 1 项通过。Chrome 夹具验证标准 UUID、失败重试、刷新恢复和 22,015 张训练仅提交引用，1 项通过。训练参数、GT、角色隔离及未知任务 GET 合同沿已有实现。CI 异步验收。
 
-## M3-B 原生训练任务（当前）
+## M3-B 原生训练任务
 
 开始基线为 `37ea27a95bb3319512edb7198824592d0d990ce0`。M3-A 冻结整改单独推送 `f71aae79260052fc26cdf399cea49416076934a9`，随后交付 M3-B。最终精确 SHA 和一次 GitHub Actions 快照见交付消息，可用 `git rev-parse HEAD` 核对包含本段的提交。
 
@@ -115,3 +115,12 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - M3-A 的 GitHub Actions 快照为 22 成功、1 失败。前端失败来自三处旧数字缓存断言、Node 用例早于 Vue 依赖安装，以及旧训练弹窗的 1920×1080 滚轮用例。已补齐前三处断言的版本格式及一致性检查并调整原工作流安装顺序，定向 Node 18 项通过，YAML 解析通过。旧弹窗用例本地 1 项通过，CI 复现差异仍待最终 SHA 验证。
 
 模型分工。GPT-6.1 Terra（Low）实现原生任务页初稿。GPT-6.2 Sol 负责 UUID 修复、读取与旧操作身份边界、整合、审查、定向验证及 Git。当前运行环境未提供 GPT-6 Luna。
+
+## M3-C 原生训练报告与独立评测
+
+- 任务列表、任务详情、历史版本及版本详情可打开报告。任务 ID 或算法与版本 ID 保存在正式路由，返回仅接受同项目的训练列表或算法库路由，保留 URL 筛选、版本页及详情身份。报告内容每次从 API 读取。
+- v44 `report?reader_view=true` 保持 100 条历史一页，独立显示 Val、Test、最佳和最终 Epoch、实际参数、完成原因及质量告警。配置使用既有 SHA256 核验和 512 KiB 展示边界。无任务绑定的旧版本仅展示已保存的版本证据。现有离线 ECharts 在首次打开有数据的曲线区域时模块化加载，切页和离开时释放图表及观察器。
+- v12 分段评测和对比使用原版本身份与可比性规则，类别、样本和对比每页 20 条。样本预览使用同源历史证据端点，同时核验冻结评测 ID、图片 ID 与 SHA256。缺少身份时明确标记记录限制。原工作台仍处理 GT/预测的交互叠加、深度诊断、继续训练、困难样本挖掘和反馈补数。交接在旧页面加载后复核已知评测 ID，原 Owner 继续维护决策、快照和回执。
+- Windows Node Agent CI **UNRESOLVED**。运行 `44450248821` 的 Windows Job `135312124779` 日志为 860 passed、1 failed、7 skipped。失败断言只打印 FAILED，没有 `outcome.error` 或进程诊断。本机定向用例通过。该测试直接构造 deployment lease，走下载和校验，不调用 M3-B 改动的 `read_payload_version(max_bytes=…)`。新增原样断言失败时显示错误原因，待同类 Runner 给出证据。
+- 本地验证为报告/评测投影与 API（含 Windows 单项）20 项、旧入口和静态合同 Node 28 项、Chrome 2 项，以及 SPA 类型检查、双构建、离线闭包、Python 编译和 Diff 检查。没有提交实际训练、评测或发布任务。CI 异步验收。
+- 下一步先独立审计本批导航、冻结证据及旧操作边界，按新 SHA 判断 Windows 回归。如需迁移评测决策写操作，先核对原 decision、benchmark、candidate set 和回执合同。

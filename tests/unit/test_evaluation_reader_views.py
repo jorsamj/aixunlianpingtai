@@ -8,6 +8,12 @@ def test_evaluation_sections_are_bounded_and_paths_redacted():
     assert 'PRIVATE' not in json.dumps(result) and '/private' not in json.dumps(result)
     matrix=report_section(raw,'confusion',0,1)
     assert matrix['has_next'] is True and matrix['evaluation']['confusion_matrix']['cells_total']==3
+    summary=report_section({**raw,'snapshot_id':'snap','evaluation_protocol_id':'protocol',
+                            'metrics':{'metrics/mAP50(B)':0,'metrics/mAP50-95(B)':.42}},'summary',0,1)
+    assert summary['evaluation']['snapshot_id']=='snap' and summary['evaluation']['evaluation_protocol_id']=='protocol'
+    assert summary['evaluation']['metrics']=={'precision':None,'recall':None,'map50':0,'map50_95':.42}
+    comparison=comparison_display({'comparable':True,'metrics':{'metrics/mAP50-95(B)':{'before':0,'after':.42,'delta':.42}}})
+    assert comparison['metrics']['map50_95']=={'before':0,'after':.42,'delta':.42}
 
 def test_oversized_evaluation_defers_and_sample_urls_bind_original_evidence():
     assert report_section({'x':'a'*(2*1024*1024)},'summary',0,20)['state']=='DEFERRED'
