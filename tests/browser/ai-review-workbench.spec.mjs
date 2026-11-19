@@ -267,3 +267,81 @@ test('转池空快照保留服务端排除项，只有主动清除才恢复普�
  await expect(checkbox).toBeEnabled();
  await expect(checkbox).not.toBeChecked();
 });
+
+test('转池冻结快照手动排除和重新勾选沿用原预检范围',async({page})=>{
+ await page.goto('/');
+ await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
+ const selectionId='d'.repeat(32);
+ const items=[
+   {image_id:'pool-keep',filename:'保留素材.jpg',status:'empty',boxes:[]},
+   {image_id:'pool-toggle',filename:'手动排除素材.jpg',status:'empty',boxes:[]},
+ ];
+ const frozen={selection_id:selectionId,purpose:'transfer',filter:'all',review_revision:1,
+   total:2,count:2,filtered_total:2,excluded:0,reasons:{}};
+ const previews=[];
+ let freezes=0,submissions=0;
+ await page.route('**/api/v61/projects/*/negative-pool/categories',route=>
+   route.fulfill({json:{items:[{id:'pool-category',name:'测试分类'}]}}));
+ await page.route('**/api/v60/projects/*/annotation-tasks/manual-transfer-exclusion/**',route=>{
+   const url=new URL(route.request().url());
+   if(url.pathname.endsWith('/candidates')){
+     const scope=url.searchParams.get('selection_id');
+     if(scope)expect(scope).toBe(selectionId);
+     return route.fulfill({json:{items:scope?items.map(item=>({...item,selection_member:true})):items,
+       total:2,review_revision:1}});
+   }
+   if(url.pathname.endsWith('/review-selection')){
+     freezes++;
+     expect(route.request().postDataJSON()).toEqual({filter:'all',purpose:'transfer',review_revision:1});
+     return route.fulfill({json:frozen});
+   }
+   if(url.pathname.endsWith('/negative-transfer-preview')){
+     const body=route.request().postDataJSON();
+     previews.push(body);
+     const count=items.length-body.excluded_image_ids.length;
+     return route.fulfill({json:{total:count,with_boxes:0,zero:count,discarded_boxes:0,conflicts:0,eligible:count}});
+   }
+   if(url.pathname.endsWith('/negative-transfer'))submissions++;
+   return route.abort();
+ });
+ await page.evaluate(()=>window.reviewAiLabel427('manual-transfer-exclusion'));
+ const keep=page.locator('[data-ai66-image-id="pool-keep"] .ai-review-select');
+ const toggle=page.locator('[data-ai66-image-id="pool-toggle"] .ai-review-select');
+ const count=page.locator('#ai60SelectionCount');
+ const panel=page.locator('#ai60TransferPanel');
+ const readExcluded=()=>page.evaluate(()=>[...state.ai60Review.selection.excluded]);
+ await page.getByRole('button',{name:'选择筛选结果用于转池',exact:true}).click();
+ await expect(count).toContainText('选中 2 张');
+ await expect(keep).toBeEnabled();
+ await expect(toggle).toBeEnabled();
+ await expect(keep).toBeChecked();
+ await expect(toggle).toBeChecked();
+
+ await toggle.uncheck();
+ await expect(toggle).not.toBeChecked();
+ await expect(keep).toBeChecked();
+ await expect(count).toContainText('选中 1 张');
+ expect(await readExcluded()).toEqual(['pool-toggle']);
+
+ const preview=async(excluded,eligible)=>{
+   await page.getByRole('button',{name:'转入负样本池',exact:true}).click();
+   await panel.getByRole('button',{name:'预检影响范围',exact:true}).click();
+   await expect(panel.getByRole('button',{name:'确认转入可用 '+eligible+' 张',exact:true})).toBeEnabled();
+   const {request_id,...scope}=previews.at(-1);
+   expect(request_id).toBeTruthy();
+   expect(scope).toEqual({selection_id:selectionId,excluded_image_ids:excluded,
+     category_ids:['pool-category'],algorithm_id:'',confirm_absent:false,review_revision:1});
+   await panel.getByRole('button',{name:'取消',exact:true}).click();
+ };
+ await preview(['pool-toggle'],1);
+
+ await toggle.check();
+ await expect(toggle).toBeChecked();
+ await expect(keep).toBeChecked();
+ await expect(count).toContainText('选中 2 张');
+ expect(await readExcluded()).toEqual([]);
+ await preview([],2);
+ expect(previews).toHaveLength(2);
+ expect(freezes).toBe(1);
+ expect(submissions).toBe(0);
+});
