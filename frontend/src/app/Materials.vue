@@ -72,7 +72,7 @@ function locationFor(action:string,page:string){location.assign(original(action,
 const legacyActions=[
   ['上传图片','material-upload','数据集'],['ZIP 数据集导入','material-zip','数据集'],
   ['人工标注','material-manual','数据集'],['AI 预标注','material-ai','自动标注及清洗'],
-  ['素材清洗','material-clean','自动标注及清洗'],['负样本池','material-negative','数据集'],
+  ['素材清洗','material-clean','自动标注及清洗'],['历史算法池','material-negative','数据集'],
   ['标签管理','material-labels','标签管理'],['批量治理','material-manage','数据集'],
   ['删除与安全审核','material-integrity','数据集'],
 ];
@@ -81,7 +81,8 @@ const legacyActions=[
 <template>
   <MaterialLibrary :context="context" standalone>
     <template #actions>
-      <nav class="material-actions" aria-label="原工作台操作">
+      <nav class="material-actions" aria-label="素材操作">
+        <el-button tag="router-link" :to="{name:'public-negative-pool',params:{projectId}}">负样本池</el-button>
         <el-button v-for="[label,action,page] in legacyActions" :key="label" @click="locationFor(action,page)">{{label}}</el-button>
       </nav>
       <el-alert v-if="storageFailed" title="浏览器无法保留选择，刷新或离开页面后需重新核对。" type="warning" :closable="false"/>

@@ -72,6 +72,27 @@ def metrics(value):
              'map50':('map50','mAP50','metrics/mAP50(B)'), 'map50_95':('map50_95','mAP50_95','metrics/mAP50-95(B)')}
     return {key:next((value[name] for name in names if type(value.get(name)) in (int,float) and math.isfinite(value[name])),None) for key,names in aliases.items()}
 
+def _split_sample_evidence(snapshot, snapshot_id):
+    from .snapshots import snapshot_content_matches_identity
+
+    if not snapshot_content_matches_identity(snapshot, snapshot_id):
+        return {}
+    counts = {role: {"positive": 0, "confirmed_negative": 0} for role in ('train', 'validation', 'test')}
+    for row in snapshot.get('images', []):
+        role = row.get('role')
+        if role not in counts:
+            return {}
+        state, box_count = row.get('annotation_state'), row.get('box_count')
+        if state == 'confirmed_empty' and box_count == 0:
+            counts[role]["confirmed_negative"] += 1
+        elif state == 'annotated' and type(box_count) is int and box_count > 0:
+            counts[role]["positive"] += 1
+        else:
+            return {}
+    totals = snapshot.get('counts') or {}
+    return counts if all(sum(values.values()) == totals.get(role) for role, values in counts.items()) else {}
+
+
 def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id='',history_offset=None,history_limit=200):
     from .reports import build_version_report,diagnose_training_history
     legacy,legacy_state=bounded_json(legacy_path)
@@ -137,10 +158,16 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
         telemetry=finalized.get('training_metrics') or {}
         if isinstance(telemetry,dict):
             result.update(fields(telemetry,('best_epoch',)))
+    sample_distribution = {}
+    snapshot_id = finalized.get('snapshot_id')
+    if task and isinstance(snapshot_id, str) and len(snapshot_id) == 64 and all(c in '0123456789abcdef' for c in snapshot_id):
+        project = Path(legacy_path).parent.parent.parent
+        snapshot, _ = bounded_json(project / 'snapshots' / f'{snapshot_id}.json')
+        sample_distribution = _split_sample_evidence(snapshot, snapshot_id)
     best = report.get('best_metrics')
     return {'state':state,'source':'DURABLE_FINALIZED' if committed else 'LEGACY_RECORDED',
         'message':'仅展示已记录结果，未生成完整报告' if state in ('PARTIAL','NOT_GENERATED') else '',
-        'configuration':configuration,'actual_parameters':actual,'historical_parameters':historical,'result':result,
+        'configuration':configuration,'actual_parameters':actual,'historical_parameters':historical,'result':result,'sample_distribution':sample_distribution,
         'best_metrics':metrics(best) if isinstance(best,dict) and best else {},
         'val_metrics':metrics(canonical['metrics']),'test_metrics':metrics(evaluation.get('metrics') if isinstance(evaluation,dict) else {}),
         'test_status':text(evaluation.get('status')) if isinstance(evaluation,dict) else None,

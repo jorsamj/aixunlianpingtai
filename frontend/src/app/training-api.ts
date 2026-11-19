@@ -192,7 +192,7 @@ export function trainingMaterialRevision(projectId: string, algorithmId: string,
 }
 
 export function listTrainingMaterials(projectId: string, payload: Record<string, unknown>, signal?: AbortSignal) {
-  return post<TrainingMaterialPage>(materialsPath(projectId) + (payload.sample_role ? '/role-page' : '/page'), payload, signal);
+  return post<TrainingMaterialPage>(materialsPath(projectId) + ((payload.sample_role||payload.role_view) ? '/role-page' : '/page'), payload, signal);
 }
 
 export function summarizeTrainingSelection(projectId: string, payload: Record<string, unknown>, signal?: AbortSignal) {
@@ -201,6 +201,10 @@ export function summarizeTrainingSelection(projectId: string, payload: Record<st
 
 export function freezeTrainingSelection(projectId: string, payload: Record<string, unknown>, signal?: AbortSignal) {
   return post<TrainingSelectionReference>(materialsPath(projectId) + '/selection-reference', {...payload, role: 'train'}, signal);
+}
+
+export function combineTrainingSelections(projectId: string, payload: Record<string, unknown>, signal?: AbortSignal) {
+  return post<TrainingSelectionReference>(materialsPath(projectId) + '/selection-union',payload,signal);
 }
 
 export function selectionMembership(projectId: string, payload: Record<string, unknown>, signal?: AbortSignal) {
@@ -216,7 +220,7 @@ export function previewTrainingNegatives(projectId: string, payload: Record<stri
 }
 
 export function confirmTrainingNegatives(projectId: string, payload: Record<string, unknown>, proofDigest: string, signal?: AbortSignal) {
-  return post<{confirmed_count: number; receipt_ids: string[]}>(materialsPath(projectId) + '/confirm-negatives', {
+  return post<{confirmed_count: number; receipt_ids: string[]; selection_ref?:string; count?:number}>(materialsPath(projectId) + '/confirm-negatives', {
     ...payload, confirmed: true, proof_digest: proofDigest,
   }, signal);
 }

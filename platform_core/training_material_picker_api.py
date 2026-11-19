@@ -367,12 +367,11 @@ def _pool_filters(repository, filters):
         pool=NegativePool(repository)
         revision=pool.revision()
         category_ids = pool._ids(categories)
-        algorithm_id = str(body.get('algorithm_asset_id') or '')
         with closing(repository._connect()) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'negative_pool_%'")}
         body['__negative_pool_sql'] = {
-            'available': 'negative_pool_members' in tables and (not algorithm_id or 'negative_pool_algorithm_members' in tables),
-            'algorithm_id': algorithm_id, 'category_ids': category_ids,
+            'available': 'negative_pool_members' in tables and (not category_ids or 'negative_pool_links' in tables),
+            'category_ids': category_ids,
         }
         if pool.revision()!=revision:
             raise ValueError('负样本池已更新，请重试')
@@ -392,9 +391,6 @@ def _picker_filter_sql(filters=None):
             from .negative_pool import _LIVE
             clauses.append(_LIVE)
             clauses.append('EXISTS (SELECT 1 FROM negative_pool_members np WHERE np.material_id=m.id)')
-            if pool['algorithm_id']:
-                clauses.append('EXISTS (SELECT 1 FROM negative_pool_algorithm_members am WHERE am.algorithm_id=? AND am.material_id=m.id)')
-                params.append(pool['algorithm_id'])
             if pool['category_ids']:
                 clauses.append('EXISTS (SELECT 1 FROM negative_pool_links nl WHERE nl.material_id=m.id AND nl.category_id IN (SELECT value FROM json_each(?)))')
                 params.append(json.dumps(pool['category_ids']))
@@ -1598,6 +1594,7 @@ def training_material_picker_router(
             "base_version_id":str(payload.get("base_version_id") or ""),
             "test_image_ids":sorted(_normalize_selection_ids(payload.get("test_image_ids") or [])),
             "revisions": revisions, "selected":sorted(ids),
+            **({"rebind_train_reference":payload["rebind_train_reference"]} if payload.get("rebind_train_reference") else {}),
             "identities":[task_negative_identity(row, contract) for row in rows], "pending":pending}, sort_keys=True).encode()).hexdigest()
         return repository, contract, counts, pending, digest, coverage
 
@@ -1635,9 +1632,20 @@ def training_material_picker_router(
                     raise HTTPException(status_code=409, detail="素材或标注已变化，请重新检查并确认")
                 if counts["pending_review"]:
                     raise ValueError("存在失效或无效标注，不能确认为负样本")
+                reference = payload.get('rebind_train_reference')
+                rebound = {}
+                if reference:
+                    from .training_selection_reference import freeze_selection, read_selection, selection_context
+                    before = selection_context(data_dir(), project_id, payload)
+                    source_ids = read_selection(data_dir(), reference, before, required_scope={"sample_role": ""})
                 receipts = AnnotationRepository(repository.project_path).confirm_task_negatives(
                     task_negative_context(contract), pending, actor)
-            return {"confirmed_count":len(receipts), "receipt_ids":receipts}
+                if reference:
+                    after = selection_context(data_dir(), project_id, payload)
+            if reference and before['revisions'][:4] == after['revisions'][:4]:
+                # Carry forward the exact prior IDs only through this explicit confirmation.
+                rebound = freeze_selection(data_dir(), after, source_ids)
+            return {"confirmed_count":len(receipts), "receipt_ids":receipts, **rebound}
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -2122,6 +2130,59 @@ def training_material_picker_router(
             context=selection_context(data_dir(),project_id,payload,str(payload.get('role') or 'train'))
             return {'items':selection_membership(data_dir(),payload.get('selection_ref'),context,payload.get('image_ids') or [])}
         except (ValueError,TypeError) as error:raise HTTPException(422,str(error)) from error
+
+    @router.post('/selection-union')
+    def combine_training_selections(project_id: str, payload: dict):
+        from .training_selection_reference import freeze_selection, read_selection, selection_context
+        from itertools import chain
+        repository = materials(project_id)
+        try:
+            if payload.get('role', 'train') != 'train':
+                raise ValueError('只能组合 Train 素材')
+            if not payload.get('algorithm_asset_id'):
+                raise ValueError('请选择目标算法')
+            if algorithm_provider is None or algorithm_provider(project_id, str(payload['algorithm_asset_id'])) is None:
+                raise ValueError('训练算法不存在')
+            before = selection_context(data_dir(), project_id, payload)
+            positive = _normalize_selection_ids(payload.get('positive_ids') or [])
+            negatives = _normalize_selection_ids(payload.get('negative_ids') or [])
+            reference = str(payload.get('positive_ref') or '')
+            negative_ref = str(payload.get('negative_ref') or '')
+            if (reference and positive) or (negative_ref and negatives) or max(len(positive), len(negatives)) > 2000:
+                raise ValueError('显式选择超出限额，或与同组冻结引用混用')
+            if reference:
+                positive = read_selection(data_dir(), reference, before, required_scope={"sample_role": ""})
+            if negative_ref:
+                negatives = read_selection(data_dir(), negative_ref, before, required_scope={
+                    'negative_pool_only':True, 'sample_role':'confirmed_negative',
+                })
+            elif negatives:
+                filters = _pool_filters(repository, {'negative_pool_only': True})
+                conditions, params = _picker_filter_sql(filters)
+                with closing(repository._connect()) as db:
+                    found = db.execute(
+                        'SELECT m.id FROM materials m WHERE m.id IN (SELECT value FROM json_each(?)) AND '
+                        + ' AND '.join(conditions), [json.dumps(negatives), *params]
+                    ).fetchall()
+                if len(found) != len(negatives):
+                    raise ValueError('选中的负样本已不属于项目公共池，请重新选择')
+            if positive and not reference:
+                if len(repository.get_many(positive)) != len(positive):
+                    raise ValueError('正样本已变化，请重新选择')
+            test_ids = _normalize_selection_ids(payload.get('test_image_ids') or [])
+            if set(test_ids).intersection(chain(positive, negatives)):
+                raise ValueError('独立 Test 与训练素材不能重叠')
+            scope = json.dumps({'kind':'train_union','positive_ref':reference,
+                                'sample_role':'confirmed_negative_union' if negative_ref else '',
+                                'positive_ids':[] if reference else sorted(positive),
+                                'negative_ref':negative_ref,'negative_ids':[] if negative_ref else sorted(negatives),'test_image_ids':sorted(test_ids)}, sort_keys=True)
+            receipt = freeze_selection(data_dir(), before, dict.fromkeys(chain(positive, negatives)),
+                                       request_id=payload.get('request_id'), request_scope=scope)
+            if selection_context(data_dir(), project_id, payload) != before:
+                raise ValueError('素材证据已变化，请重新选择')
+            return receipt
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, str(error)) from error
 
     @router.post('/selection-reference')
     def freeze_training_material_reference(project_id: str, payload: dict):

@@ -122,6 +122,12 @@ watch(()=>route.path,load,{immediate:true});
         <p v-if="report.message">{{report.message}}</p>
         <ReadOnlyFacts :fields="[['记录来源',report.source],['任务状态',report.result?.status],['完成原因',report.result?.completion_reason],['失败记录',report.result?.error],['早停原因',report.result?.early_stopping_reason],['质量门禁',report.result?.quality_gate_reason],['训练结果',report.result?.training_outcome],['最终 Epoch',report.result?.completed_epochs??report.result?.current_epoch],['请求 Epoch',report.result?.requested_epochs],['最佳 Epoch',report.result?.best_epoch],['训练耗时（秒）',report.result?.elapsed_seconds],['开始时间',report.result?.started_at],['完成时间',report.result?.finished_at],['训练快照',report.result?.snapshot_id],['数据集修订',report.result?.dataset_revision_id]]"/>
       </section>
+      <section v-if="pane==='overview'" class="report-panel">
+        <h3>冻结快照的样本分布</h3>
+        <ReadOnlyFacts v-if="Object.keys(report.sample_distribution||{}).length"
+          :fields="Object.entries(report.sample_distribution||{}).map(([role,counts])=>[role,`正样本 ${counts.positive} · 已确认负样本 ${counts.confirmed_negative}`])"/>
+        <p v-else>暂无可核验的分角色统计。</p>
+      </section>
       <div v-if="pane==='overview'" class="report-grid">
         <section class="report-panel"><h3>Val 指标</h3><ReadOnlyFacts :fields="metricFields.map(([label,key])=>[label,report?.val_metrics?.[key]])"/></section>
         <section class="report-panel"><h3>独立 Test 指标</h3><ReadOnlyFacts :fields="[['正式评测状态',report.test_status],...metricFields.map(([label,key]):[string,unknown]=>[label,report?.test_metrics?.[key]])]"/></section>

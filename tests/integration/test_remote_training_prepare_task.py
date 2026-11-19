@@ -1100,7 +1100,53 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     contract=resolve_training_label_contract(data_dir,project,payload,algorithm,require_positive_evidence=False)
     originals=_ORIGINAL_SELECTED_PROJECT_IMAGES(MaterialRepository(project),project,payload['train_image_ids'])
     evidences=[task_negative_identity(row,contract) for row in originals if row['id'] in ['image-1','image-2']]
-    annotations.confirm_task_negatives(evidences[0]['context_key'],evidences,{'actor_id':'test'})
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool import NegativePool
+    from platform_core.training_material_picker_api import training_material_picker_router
+    from platform_core.training_selection_reference import freeze_selection, read_selection, selection_context
+    pool=NegativePool(MaterialRepository(project))
+    category=pool.category(name='reflections')['id']
+    pool.members(['image-1','image-2'],category_ids=[category])
+    assert pool.candidate_ids(algorithm_id='algorithm-fire')==[]
+    source=freeze_selection(data_dir,selection_context(data_dir,pid,payload),
+                            [i for i in payload['train_image_ids'] if i != 'image-2'])
+    app=FastAPI()
+    app.include_router(training_material_picker_router(lambda p:{'id':p} if p==pid else None,
+        lambda:data_dir,algorithm_provider=lambda p,a:algorithm if a=='algorithm-fire' else None,
+        actor_provider=lambda request, project_id:{'actor_id':'test'}))
+    endpoint=f'/api/v62/projects/{pid}/training-materials/selection-union'
+    client=TestClient(app)
+    confirmation={**payload, 'train_image_ids':[], 'image_ids':['image-1','image-2'],
+                  'rebind_train_reference':source['selection_ref']}
+    preview=client.post(endpoint.replace('selection-union','negative-preview'),json=confirmation)
+    assert preview.status_code==200,preview.text
+    assert preview.json()['pending_count']==2
+    confirm_url=endpoint.replace('selection-union','confirm-negatives')
+    confirmed=client.post(confirm_url,json={**confirmation,'confirmed':True,'proof_digest':preview.json()['proof_digest']})
+    assert confirmed.status_code==200,confirmed.text
+    assert confirmed.json()['confirmed_count']==2
+    assert confirmed.json()['count']==source['count']
+    assert confirmed.json()['selection_ref']!=source['selection_ref']
+    request={**payload,'positive_ref':confirmed.json()['selection_ref'],'negative_ids':['image-1','image-2']}
+    assert client.post(endpoint,json={**request,'test_image_ids':['image-2']}).status_code==422
+    frozen_negatives=client.post(endpoint.replace('union','reference'),json={
+        **payload, 'negative_pool_only':True, 'negative_category_ids':[category],
+        'sample_role':'confirmed_negative', 'history_policy':payload.get('history_policy','new_for_algorithm'),
+    })
+    assert frozen_negatives.status_code==200,frozen_negatives.text
+    assert frozen_negatives.json()['count']==2
+    assert client.post(endpoint,json={**request,'positive_ref':frozen_negatives.json()['selection_ref']}).status_code==422
+    paired=client.post(endpoint,json={**request,'negative_ids':[],
+        'negative_ref':frozen_negatives.json()['selection_ref']})
+    assert paired.status_code==200,paired.text
+    assert paired.json()['count']==len(payload['train_image_ids'])
+    merged=client.post(endpoint,json=request)
+    assert merged.status_code==200,merged.text
+    assert set(merged.json())=={'selection_ref','count'}
+    payload['train_selection_ref']=merged.json()['selection_ref']
+    payload['train_image_ids']=read_selection(data_dir,payload['train_selection_ref'],selection_context(data_dir,pid,payload))
+    assert merged.json()['count']==len(payload['train_image_ids'])
     from platform_core.training_compatibility import evaluate_training_compatibility
     assert not evaluate_training_compatibility(data_dir,project,payload,algorithm).issues
     before=annotations.get_many(payload['train_image_ids']);source_bytes={r['id']:(project/'uploads'/r['stored_name']).read_bytes() for r in originals}
@@ -1109,6 +1155,14 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     rows,schema,manifest,snapshot=resolve_training_input_freeze(frozen,SplitRequest(mode=SplitMode(split['mode']),train_image_ids=tuple(split['train_image_ids']),test_image_ids=tuple(split['test_image_ids']),validation_percent=split['validation_percent'],experiment_percent=split['experiment_percent']),seed=split['seed'])
     assert {r['id'] for r in rows} >= {'image-1','image-2','image-3'}
     snapshot_by_id={r['image_id']:r for r in snapshot['images']}
+    from platform_core.training_reader_views import _split_sample_evidence
+    distribution=_split_sample_evidence(snapshot,snapshot['snapshot_id'])
+    assert distribution
+    negative_counts=frozen['input_quality']['class_coverage']['role_confirmed_negative_image_counts']
+    assert sum(negative_counts.values())==2
+    for role in ('train','validation','test'):
+        assert negative_counts[role]==sum(snapshot_by_id[i]['box_count']==0 for i in manifest.ids[role])
+        assert distribution[role]['confirmed_negative']==negative_counts[role]
     assert snapshot_by_id['image-1']['task_negative_confirmation']['receipt_id']==evidences[0]['receipt_id']
     output=materialize_portable_dataset(tmp_path/'actual-task',snapshot,rows,lambda row:project/'uploads'/row['stored_name'],safety_reserve_bytes=0)
     for iid in ['image-1','image-2','image-3']:
@@ -1121,6 +1175,8 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     assert exported['names']=={0:'fire'}
     assert exported['train']=='images/train' and exported['val']=='images/validation'
     assert 'test' not in exported
+    pool.members(['image-3'])
+    assert client.post(endpoint,json=request).status_code==422
 
 
 def test_training_publication_claim_anchor_and_historical_formal_test(tmp_path, monkeypatch):

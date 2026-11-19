@@ -272,7 +272,7 @@ def test_negative_pool_filter_parity_and_role_cache_revision(tmp_path, monkeypat
         assert pool.revision()!=revision
         updated=client.post(endpoint+'/role-page',json=body)
         assert updated.status_code==200,updated.text
-        assert updated.json()['total']==1
+        assert updated.json()['total']==2
 
 
 def test_training_picker_is_server_paged_and_filtered(tmp_path):

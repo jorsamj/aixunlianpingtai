@@ -30,6 +30,30 @@ def test_member_receipt_replay_cas_and_scope(tmp_path):
     assert pool.revision() == '2'
 
 
+def test_public_member_receipt_classification_and_safe_historical_removal(tmp_path):
+    repo, pool = setup(tmp_path)
+    category = pool.category(name='reflection')['id']
+    packet = dict(operation_kind='negative_pool.members.v2', operation_id='public-add',
+                  expected_revision=pool.revision(), project_id='p')
+    receipt = pool.members(['0','1'], category_ids=[category], **packet)
+    assert receipt['added'] == 2
+    assert pool.member_operation('public-add', algorithm_id='', project_id='p') == receipt
+    assert pool.members(['1','0'], category_ids=[category], **packet) == receipt
+    with pytest.raises(ValueError):
+        pool.members(['0','1'], **packet)
+    with pytest.raises(ValueError):
+        pool.member_operation('public-add', algorithm_id='', project_id='foreign')
+    assert pool.query(category_ids=[category])['total'] == 2
+    pool.members(['0'], algorithm_id='historical-algorithm')
+    current = {**packet, 'operation_id':'public-remove','expected_revision':pool.revision()}
+    with pytest.raises(ValueError, match='历史算法关联'):
+        pool.members(['0','1'], action='remove', **current)
+    assert pool.candidate_ids() == ['0','1']
+    assert pool.candidate_ids(algorithm_id='historical-algorithm') == ['0']
+    pool.members(['1'], categories_only=True, action='set', **{**current, 'operation_id':'public-category'})
+    assert pool.query(category_ids=[category])['total'] == 1
+
+
 @pytest.mark.parametrize('options', [
     {'operation_id':'one'}, {'expected_revision':'0'},
     {'operation_id':'one','expected_revision':'0','algorithm_id':''},
@@ -76,6 +100,12 @@ def test_member_receipt_api_authorization_scope_and_recovery(tmp_path):
         assert client.get(base+'/operations/stale', params={'algorithm_id':a}).status_code == 404
         assert client.post(base+'/members', json={**packet, 'operation_id':None}).status_code == 400
         assert pool.revision() == '1'
+        project_packet = dict(image_ids=['1'], operation_kind='negative_pool.members.v2',
+                              expected_revision='1', operation_id='public')
+        response = client.post(base+'/members', json=project_packet)
+        assert response.status_code == 200, response.text
+        assert client.get(base+'/operations/public', params={'operation_kind':project_packet['operation_kind']}).json() == response.json()
+        assert client.get(base+'/operations/public', params={'algorithm_id':a}).status_code == 404
 
 
 def test_member_receipt_atomic_rollback_and_concurrent_replay(tmp_path):

@@ -181,7 +181,7 @@ class NegativePool:
         return self._mutate(write)
 
     def member_operation(self, operation_id, *, algorithm_id, project_id=None):
-        if not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id) or not algorithm_id:
+        if not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id):
             raise ValueError('invalid member operation identity')
         with closing(self.materials._connect()) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_operations'").fetchone():
@@ -190,27 +190,36 @@ class NegativePool:
             if not row:
                 return None
             result = json.loads(row[0])
-            if (result.get('operation_kind') != 'negative_pool.members.v1' or result.get('algorithm_id') != str(algorithm_id)
+            kind = 'negative_pool.members.v1' if algorithm_id else 'negative_pool.members.v2'
+            if (result.get('operation_kind') != kind or result.get('algorithm_id') != str(algorithm_id)
                     or result.get('project_id') != str(project_id if project_id is not None else self.materials.project_path.name)):
                 raise MemberOperationScopeError('member operation receipt not found')
             return result
 
-    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False, expected_revision=None, operation_id=None, project_id=None):
-        if type(report_counts) is not bool or type(require_empty_gt) is not bool:
+    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id='', report_counts=False, require_empty_gt=False, expected_revision=None, operation_id=None, project_id=None, operation_kind=None):
+        if type(report_counts) is not bool or type(require_empty_gt) is not bool or type(categories_only) is not bool:
             raise ValueError('report_counts/require_empty_gt must be boolean')
         ids, categories = self._ids(image_ids), self._ids(category_ids)
+        if operation_kind and (expected_revision is None or operation_id is None):
+            raise ValueError('scoped member operations require a revision and operation ID')
         receipt = None
         if expected_revision is not None or operation_id is not None:
             if (not isinstance(operation_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', operation_id)
                     or not isinstance(expected_revision, str) or not re.fullmatch(r'0|[1-9][0-9]{0,18}', expected_revision)
-                    or not algorithm_id or not ids or len(ids) > 200 or categories or categories_only
-                    or action not in ('add', 'remove') or require_empty_gt):
-                raise ValueError('member operation requires paired revision/id, algorithm scope and 1-200 ordinary membership identities')
+                    or (not algorithm_id and operation_kind != 'negative_pool.members.v2')
+                    or (algorithm_id and operation_kind not in (None, 'negative_pool.members.v1'))
+                    or not ids or len(ids) > 200 or len(categories) > 200 or require_empty_gt
+                    or (algorithm_id and (categories or categories_only or action not in ('add', 'remove')))
+                    or (not algorithm_id and action == 'remove' and categories and not categories_only)):
+                raise ValueError('member operation requires paired revision/id and a valid range of 1-200 material identities')
             report_counts = True
-            receipt = dict(operation_kind='negative_pool.members.v1', operation_id=operation_id,
+            kind = 'negative_pool.members.v1' if algorithm_id else 'negative_pool.members.v2'
+            receipt = dict(operation_kind=kind, operation_id=operation_id,
                            project_id=str(project_id if project_id is not None else self.materials.project_path.name),
                            algorithm_id=str(algorithm_id), action=action, expected_revision=expected_revision)
             identity = {**receipt, 'image_ids': sorted(ids)}
+            if not algorithm_id:
+                identity.update(category_ids=sorted(categories), categories_only=categories_only)
             receipt['identity'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         if action not in ('add','remove','set') or (action == 'set' and not categories_only):
             raise ValueError('invalid action')
@@ -234,7 +243,7 @@ class NegativePool:
                     return {'affected':removed, 'already_absent':len(ids)-removed, 'algorithm_id':str(algorithm_id), **({'removed':removed} if report_counts else {})}
                 if action == 'remove':
                     if db.execute('SELECT 1 FROM negative_pool_algorithm_members am JOIN pool_requested r ON r.id=am.material_id LIMIT 1').fetchone():
-                        raise ValueError('algorithm memberships exist; remove within the target algorithm')
+                        raise ValueError('历史算法关联仍存在，无法移出公共池。可调整分类，历史记录已保留。')
                     removed = db.execute('DELETE FROM negative_pool_members WHERE material_id IN (SELECT id FROM pool_requested)').rowcount
                     return {'affected':len(ids), **({'removed':removed, 'already_absent':len(ids)-removed} if report_counts else {})}
                 if report_counts:

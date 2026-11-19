@@ -102,7 +102,7 @@ def create_negative_pool_router(material_store, get_project, public_material, us
             result['items']=[{**public_material(project_id,row),'negative_pool':row['negative_pool']} for row in result['items']]
         if revisions != (store.current_revision(), annotations.current_revision(), pool(project_id).revision()):
             raise HTTPException(409, 'material, annotation or pool changed; refresh before retry')
-        result.update(material_revision=revisions[0], annotation_revision=revisions[1], negative_pool_revision=revisions[2])
+        result.update(project_id=project_id, material_revision=revisions[0], annotation_revision=revisions[1], negative_pool_revision=revisions[2])
         return result
 
     @router.get('/ids')
@@ -129,13 +129,17 @@ def create_negative_pool_router(material_store, get_project, public_material, us
 
     @router.post('/members')
     def members(project_id: str, body: dict = Body(...)):
+        if 'categories_only' in body and ('expected_revision' not in body or 'operation_id' not in body):
+            raise HTTPException(400, 'category membership requires paired revision/id')
         if ('expected_revision' in body or 'operation_id' in body) and (body.get('expected_revision') is None or body.get('operation_id') is None):
             raise HTTPException(400, 'member operation requires paired revision/id')
-        return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),algorithm_id=algorithm_scope(project_id,body.get('algorithm_id')),report_counts=body.get('report_counts',False),require_empty_gt=body.get('require_empty_gt',False),expected_revision=body.get('expected_revision'),operation_id=body.get('operation_id'),project_id=project_id))
+        return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),categories_only=body.get('categories_only',False),algorithm_id=algorithm_scope(project_id,body.get('algorithm_id')),report_counts=body.get('report_counts',False),require_empty_gt=body.get('require_empty_gt',False),expected_revision=body.get('expected_revision'),operation_id=body.get('operation_id'),project_id=project_id,operation_kind=body.get('operation_kind')))
 
     @router.get('/operations/{operation_id}')
-    def member_operation(project_id: str, operation_id: str, algorithm_id: str = ''):
+    def member_operation(project_id: str, operation_id: str, algorithm_id: str = '', operation_kind: str = ''):
         get_project(project_id)
+        if (not algorithm_id and operation_kind != 'negative_pool.members.v2') or (algorithm_id and operation_kind not in ('','negative_pool.members.v1')):
+            raise HTTPException(400, 'member operation scope is required')
         scope = invoke(lambda: algorithm_scope(project_id, algorithm_id))
         result = invoke(lambda: pool(project_id).member_operation(operation_id, algorithm_id=scope, project_id=project_id))
         if result is None:

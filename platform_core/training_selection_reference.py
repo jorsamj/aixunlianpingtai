@@ -157,7 +157,7 @@ def freeze_selection(data_dir,context,image_ids,*,request_id=None,request_scope=
             except OSError:pass
 
 
-def read_selection(data_dir,reference,context):
+def read_selection(data_dir,reference,context,*,required_scope=None):
     path=_path(data_dir,reference)
     if not path.is_file():raise ValueError('训练素材选择已失效，请重新选择')
     if path.stat().st_size>MAX_FROZEN_SELECTION_BYTES:raise ValueError('selection manifest exceeds byte quota')
@@ -167,6 +167,10 @@ def read_selection(data_dir,reference,context):
         metadata=json.loads(row[0])
         if _expired(metadata):raise ValueError('冻结素材选择已过期，请重新选择')
         if not _same_selection_context(metadata,context):raise ValueError('算法、策略或素材证据已更新，请重新选择训练素材')
+        if required_scope:
+            scope=json.loads(metadata.get('request_scope') or '{}')
+            if not isinstance(scope,dict) or any(scope.get(key, "" if key == "sample_role" else None)!=value for key,value in required_scope.items()):
+                raise ValueError('冻结引用与本次选择的来源或角色范围不一致')
         expected=metadata.get('count')
         if isinstance(expected,bool) or not isinstance(expected,int) or not 0<expected<=MAX_FROZEN_SELECTION_IDS:raise ValueError('invalid selection size')
         if db.execute('SELECT COUNT(*) FROM selection').fetchone()[0]!=expected:raise ValueError('selection count mismatch')
