@@ -51,7 +51,7 @@ test('quality detection heavy module is absent from the startup import graph',()
   const versions=['main.mjs','app.js','styles.css'].map(name=>{
     const url=index.match(new RegExp('/static/'+name.replaceAll('.', '\\.')+'\\?v=([^\"\\s<>]+)'))?.[1];
     assert.ok(url,`${name} has a cache version`);
-    assert.match(url,/^\d+(?:\.\d+)*$/);
+    assert.match(url,/^\d+(?:\.\d+)+$/);
     return url;
   });
   assert.equal(versions[1],versions[0]);

@@ -43,7 +43,7 @@ test('13C-03 removes provider page module from startup static graph',()=>{
   const versions=['main.mjs','app.js','styles.css'].map(name=>{
     const url=html.match(new RegExp('/static/'+name.replaceAll('.', '\\.')+'\\?v=([^\"\\s<>]+)'))?.[1];
     assert.ok(url,`${name} has a cache version`);
-    assert.match(url,/^\d+(?:\.\d+)*$/);
+    assert.match(url,/^\d+(?:\.\d+)+$/);
     return url;
   });
   assert.equal(versions[1],versions[0]);
