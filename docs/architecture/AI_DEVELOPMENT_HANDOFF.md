@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-当前为 M4-D0 AI 标注与审核安全加固，范围及故障恢复见[审核工作台](../AI_REVIEW_WORKBENCH_2026_11_06.md#m4-d0-审核数据恢复与操作范围)。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
+当前为 M4-D1-B 原生 AI 审核只读试点。M4-D0 的范围及故障恢复见[审核工作台](../AI_REVIEW_WORKBENCH_2026_11_06.md#m4-d0-审核数据恢复与操作范围)。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -184,3 +184,10 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - 部分 GT 恢复、逐图补审、负样本转池和撤销复用各自正式 Owner。旧工作台与 Vue 审核投影共用选择 Owner 和服务端资格。正式 GT、训练及任务运行边界见[审核工作台](../AI_REVIEW_WORKBENCH_2026_11_06.md#m4-d0-审核数据恢复与操作范围)。
 - 本地验证包括隔离 GT/转池中断、外部 GT 修改、选择排除和跨操作者拒绝；运行与实际改动相关的 Node 校验、Vue 双构建和 Python 编译。相关现有 GitHub Actions 异步验收。未操作生产或启动真实推理。
 - 下一步仅复核本次准确 SHA 的 AI Annotation Recovery 与 Frontend Runtime Stabilization，按证据处理相关失败，独立复审完成后再安排 M4-D1。
+
+
+## M4-D1-B 原生 AI 审核只读试点
+
+基线 `fb9f66ac202876196d1077ff3a870798b69606b1`，该基线 22 项 Actions 成功。D1-B 试点地址为 `/app/#/projects/:projectId/ai/tasks/:taskId/review`。经现有 Session、项目列表和 v60 任务详情核验后，单一 Pinia Store 读取每页 24 张候选。切换范围或离页取消请求；切图同时取消原图详情和诊断读取。原工作台继续承接编辑、采用、拒绝、冻结、消歧、正式入库、转池、撤销和回执恢复。
+
+新页面使用 v61 正式素材读取和既有候选框预览组件。验证使用隔离 Chrome 夹具，覆盖任务身份、20k 总量下的有界分页、图片和诊断按需读取、三个指定视口、原入口回退及读取取消。Vue 类型检查、独立 SPA 构建及离线资源检查见本阶段交付记录。准确提交 SHA 及 Actions 快照见交付消息；独立架构验收后再安排 D1-C。

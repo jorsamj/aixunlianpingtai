@@ -152,3 +152,11 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 | AI 候选与审核 | 原「自动标注及清洗」和 Vue 审核投影；v60 审核选择与候选分页 | CandidateStore 与原审核操作 Owner | 现有入口可用，三种批量范围分别核验，仍可查看失败和历史记录。独立 SPA 审核迁移 `NOT_STARTED` | M4-D0 定向验证完成，`CI_PENDING` |
 | 部分及逐图正式 GT | 原确认、入库与按原编号查询回执 | AnnotationRepository、原确认 Worker | 写入和凭据同一事务；中断后补 CandidateStore 日志 | 隔离恢复已验证，`CI_PENDING` |
 | 候选转池与撤销 | v60 预检、执行与原请求撤销 | NegativePool、CandidateStore | 快照验证操作者和当前修订，按原身份恢复成员写入和撤销 | 隔离恢复已验证，`CI_PENDING` |
+
+
+### M4-D1-B 原生 AI 审核试点
+
+| 功能 | 入口与 Owner | 功能状态 | 验收 |
+| --- | --- | --- | --- |
+| AI 审核只读浏览 | 显式 SPA 任务审核 URL；v60 TaskRepository / CandidateStore，v61 素材读取 | `FUNCTIONAL_COMPLETE`（D1-B 只读范围） | 定向 Chrome、类型和离线构建，`CI_PENDING` |
+| 原审核写操作 | 原「自动标注及清洗」工作台；既有 CandidateStore、AnnotationRepository、NegativePool、ArtifactStore | 原工作台可达，D1-C 原生迁移 `NOT_STARTED` | 按原 M4-D0 合同验收 |
