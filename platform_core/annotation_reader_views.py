@@ -5,7 +5,7 @@ from .model_asset_views import filename
 
 COUNT_KEYS=('total','success','empty','failed','accepted','rejected','unreviewed','boxes','gt_committed')
 def task_display(raw):
-    result=fields(raw,('id','project_id','kind','status','persisted_status','name','model_config_name','model_provider','created_at','updated_at','finished_at','phase','progress_percent','worker_id','resource_wait_reason','error','accepted','statistics_synced_at','generation_interruption_code'))
+    result=fields(raw,('id','project_id','kind','status','persisted_status','name','model_config_name','model_provider','created_at','updated_at','finished_at','phase','progress_percent','worker_id','resource_wait_reason','error','accepted','statistics_synced_at','generation_interruption_code','review_scope_policy'))
     source=raw.get('stage_statistics') or raw.get('summary') or {}
     known=isinstance(source,dict) and all(type(source.get(key)) is int and source[key]>=0 for key in COUNT_KEYS)
     if known:

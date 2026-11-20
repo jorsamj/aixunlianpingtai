@@ -239,7 +239,7 @@ test('原生单图决定按真实回执恢复，保留逐图范围、候选隔�
         (req.method()!=='GET'&&(/annotations\//.test(url.pathname)||req.postDataJSON()?.commit)))forbidden.push(url.pathname);
     });
     const selection=page.getByRole('region',{name:'候选选择'});
-    const countSelected=n=>expect(selection.getByText(new RegExp('已选 '+n+' 张'))).toBeVisible();
+    const countSelected=n=>expect(selection.locator('p[aria-live]').filter({hasText:new RegExp('已选 '+n+' 张')})).toBeVisible();
     const lastBox=page.getByRole('checkbox',{name:'选择 '+names[2],exact:true});
     const freezeButton=selection.getByRole('button',{name:'选择全部筛选结果'});
     const selectCurrent=selection.getByRole('button',{name:'选择本页'});
@@ -262,6 +262,7 @@ test('原生单图决定按真实回执恢复，保留逐图范围、候选隔�
     expect(frozen).not.toHaveProperty('image_ids');
     expect((await (await membership).json()).items.map(row=>row.selection_member)).toEqual([true,false,false]);
     await expect(lastBox).toHaveAttribute('data-preserve-identity','true');
+    await expect(selection.getByRole('button',{name:/^正式入库已选/})).toBeDisabled();
     await expect(selection).toContainText('生成失败或未生成 1 张');
     await expect(selection).toContainText('待人工消歧 1 张');
     await lastBox.uncheck();
@@ -307,6 +308,97 @@ test('原生单图决定按真实回执恢复，保留逐图范围、候选隔�
     await expect(selection.getByRole('button',{name:'清空选择'})).toBeDisabled();
     expect(await page.evaluate(key=>sessionStorage.getItem(key),otherKey)).toBe(otherPacket);
     expect(await gt()).toEqual(initialGt);
+
+    const formalTask='native-formal-selection';
+    execFileSync('python',['-c',[
+      'import app, sys',
+      'from platform_core.task_runtime import TaskRecord, TaskKind, TaskStatus',
+      'from platform_core.annotation_candidates import CandidateStore, CandidateDecision',
+      'project, task, first, rejected, last = sys.argv[1:]',
+      'repo = app.shared_task_repository(); artifacts = app.shared_task_artifacts()',
+      'artifacts.atomic_write_json(task, "request.json", {"labels":["fire"]})',
+      'repo.create(TaskRecord.new(task, project, TaskKind.AI_ANNOTATION, "request.json", "isolated"))',
+      'store = CandidateStore(artifacts, task_id=task); store.initialize(labels=["fire"], total_images=25)',
+      'materials = {id:app.material_store(project).get(id) for id in (first,last)}',
+      'store.append_items([dict(image_id=first, filename=materials[first]["filename"], status="success", source_content_sha256=materials[first]["content_sha256"], boxes=[dict(id="gt-box",label="fire",x1=20,y1=30,x2=100,y2=120)])])',
+      'store.append_items([dict(image_id=rejected, filename=app.material_store(project).get(rejected)["filename"], status="empty", source_content_sha256="0"*64)])',
+      'store.apply_decisions([CandidateDecision(rejected, True)])',
+      'store.append_items([dict(image_id=f"formal-filler-{i}", filename=f"formal-filler-{i}.jpg", status="empty") for i in range(22)])',
+      'store.append_items([dict(image_id=last, filename=materials[last]["filename"], status="empty", source_content_sha256=materials[last]["content_sha256"])])',
+      'lease = repo.claim_next("fixture", {TaskKind.AI_ANNOTATION}, set())',
+      'repo.finish(task, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION, "candidates/manifest.json")',
+    ].join('\n'),project,formalTask,...ids],{env});
+    const formalBase=origin+'/api/v60/projects/'+project+'/annotation-tasks/'+formalTask;
+    const formalUrl=origin+'/app/#/projects/'+project+'/ai/tasks/'+formalTask+'/review';
+    const formalPosts=[],formalLookups=[];
+    const untouchedFormal=(await read(formalBase+'/candidates/formal-filler-0')).item;
+    let failFormalPage=false;
+    await page.route(formalBase+'/candidates?*',route=>{
+      if(!failFormalPage)return route.continue();
+      failFormalPage=false;
+      return route.fulfill({status:503,json:{detail:'刷新中断'}});
+    });
+    await page.route(formalBase+'/decisions',async route=>{
+      formalPosts.push(route.request().postDataJSON());
+      const response=await route.fetch();
+      if(formalPosts.length>1){
+        expect(response.status(),await response.text()).toBe(409);
+        return route.fulfill({response});
+      }
+      expect(response.ok(),await response.text()).toBeTruthy();
+      return route.abort('failed');
+    });
+    await page.route(formalBase+'/decisions/by-request/*',route=>{
+      const requestId=route.request().url().split('/').at(-1);
+      formalLookups.push(requestId);
+      if(formalLookups.length===1)return route.fulfill({status:202,json:{status:'pending',request_id:requestId}});
+      if(formalLookups.length===2)return route.fulfill({status:404,json:{detail:'暂不可见'}});
+      if(formalLookups.length===3)failFormalPage=true;
+      return route.continue();
+    });
+    await page.goto(formalUrl);
+    await page.getByRole('checkbox',{name:'选择 '+names[0],exact:true}).check();
+    await next.click();
+    await lastBox.check();
+    await selection.getByRole('button',{name:'正式入库已选 2 张'}).click();
+    const dialog=page.getByRole('dialog',{name:'确认正式 GT 入库'});
+    await expect(dialog).toContainText(/有框 1 张.*零框 1 张/s);
+    expect(formalPosts).toHaveLength(0);
+    await dialog.getByRole('button',{name:'确认写入正式 GT'}).click();
+    await expect(selection.getByText('正式入库结果待核验',{exact:true})).toBeVisible();
+    await expect.poll(async()=> (await gt())[0].version).toBe(initialGt[0].version+1);
+    expect(formalPosts).toHaveLength(1);
+    expect(formalPosts[0]).toMatchObject({commit:true,commit_selected:true,single_candidate:false,
+      accept_unmentioned:false,reject_unmentioned:false,label_mapping:{},
+      decisions:[{image_id:ids[0],accepted:true},{image_id:ids[2],accepted:true}]});
+    await page.goto(origin+'/app/#/projects/'+project+'/ai/tasks/'+task+'/review');
+    await expect(selection.getByText('正式入库结果待核验',{exact:true})).toHaveCount(0);
+    await page.goto(formalUrl);
+    const lookupFormal=selection.getByRole('button',{name:'核验原入库请求'});
+    await lookupFormal.click();
+    await expect(lookupFormal).toBeEnabled();
+    await lookupFormal.click();
+    await expect(selection).toContainText('暂未查到原回执');
+    await lookupFormal.click();
+    await expect(selection).toContainText('正式入库完成，候选或统计刷新失败');
+    await selection.getByRole('button',{name:'重新读取候选与 GT'}).click();
+    await expect(selection).toContainText('正式入库完成 · 2 张');
+    expect(formalPosts).toHaveLength(1);
+    expect(formalLookups).toEqual(Array(3).fill(formalPosts[0].request_id));
+    const formalGt=await gt();
+    expect(formalGt[0]).toMatchObject({version:initialGt[0].version+1,boxes:[{label:'fire',source_task_id:formalTask}]});
+    expect(formalGt[1]).toEqual(initialGt[1]);
+    expect(formalGt[2]).toMatchObject({version:initialGt[2].version+1,annotation_state:'confirmed_empty',boxes:[]});
+    expect((await read(formalBase+'/candidates/formal-filler-0')).item).toEqual(untouchedFormal);
+
+    await page.getByRole('checkbox',{name:'选择 '+names[1],exact:true}).check();
+    await selection.getByRole('button',{name:'正式入库已选 1 张'}).click();
+    await dialog.getByRole('button',{name:'确认写入正式 GT'}).click();
+    await expect(selection).toContainText('原操作未写入正式 GT。候选已采用 1/1 张');
+    expect(formalPosts).toHaveLength(2);
+    expect(formalLookups.at(-1)).toBe(formalPosts[1].request_id);
+    expect((await read(formalBase+'/candidates/'+ids[1])).item).toMatchObject({accepted:true,gt_committed:false});
+    expect(await gt()).toEqual(formalGt);
   }finally{
     server.kill();
   }

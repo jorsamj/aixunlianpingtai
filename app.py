@@ -25558,6 +25558,7 @@ def public_annotation_task(
     worker_runtime=None,
     queued_candidates=None,
     statistics_synced_at: Optional[str] = None,
+    include_review_policy: bool = False,
 ) -> Dict[str, Any]:
     progress_summary = summary or {}
     repository = shared_task_repository()
@@ -25595,7 +25596,15 @@ def public_annotation_task(
         int(progress_summary.get("failed") or 0) if isinstance(summary, dict) and "failed" in summary
         else int((checkpoint or {}).get("failed") or 0) if isinstance(checkpoint, dict) else 0
     )
+    policy_projection = {}
+    if include_review_policy and isinstance(request, dict) and request and (
+        task.kind is TaskKind.AI_ANNOTATION or is_batch
+    ):
+        policy = request.get("review_scope_policy", "task_uniform_legacy")
+        if policy in ("task_uniform_legacy", "per_image_required"):
+            policy_projection["review_scope_policy"] = policy
     return {
+        **policy_projection,
         "id": task.task_id,
         "project_id": task.project_id,
         "kind": task.kind.value,
@@ -26397,7 +26406,7 @@ def get_annotation_task(project_id: str, task_id: str, reader_view: bool = False
             shared_task_repository(), task,
             CandidateStore(shared_task_artifacts(), task_id=task.task_id),
         )
-    result = public_annotation_task(task, summary=summary)
+    result = public_annotation_task(task, summary=summary, include_review_policy=reader_view)
     if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
         generation = shared_task_artifacts().read_json(task_id, "generation.json", default={})
         if isinstance(generation, dict):

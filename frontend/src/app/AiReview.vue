@@ -23,7 +23,7 @@ const scopeOptions=computed(()=>review.item?.review_scope_policy==='per_image_re
   :[]);
 const adoptAvailable=computed(()=>!!review.item&&canAdopt(review.item,checkedScope.value));
 const canEdit=computed(()=>review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION'
-  &&!review.decision&&!review.decisionBusy&&!review.itemBusy&&!review.itemError&&['success','empty'].includes(review.item?.status||'')
+  &&!review.formalLocked&&!review.decision&&!review.decisionBusy&&!review.itemBusy&&!review.itemError&&['success','empty'].includes(review.item?.status||'')
   &&review.item?.review_state==='active'&&!review.item.gt_committed);
 const canLeave=()=>editor.value?.canLeave()??true;
 onBeforeRouteLeave(canLeave);
@@ -176,12 +176,12 @@ const diagnosticFacts=computed(()=>{
     <nav aria-label="候选筛选" class="review-filters">
      <h3>审核范围</h3>
      <button v-for="[key,label] in reviewFilters.slice(0,5)" :key="key" type="button"
-      :disabled="review.pageBusy" :aria-pressed="review.filter===key" @click="review.setFilter(key)">
+      :disabled="review.pageBusy||review.formalLocked" :aria-pressed="review.filter===key" @click="review.setFilter(key)">
       {{ label }} <span v-if="review.page?.summary?.[key]!=null">{{ review.page.summary[key] }}</span>
      </button>
      <details><summary>更多筛选</summary>
       <button v-for="[key,label] in reviewFilters.slice(5)" :key="key" type="button"
-       :disabled="review.pageBusy" :aria-pressed="review.filter===key" @click="review.setFilter(key)">
+       :disabled="review.pageBusy||review.formalLocked" :aria-pressed="review.filter===key" @click="review.setFilter(key)">
        {{ label }} <span v-if="review.page?.summary?.[key]!=null">{{ review.page.summary[key] }}</span>
       </button>
      </details>
@@ -218,9 +218,9 @@ const diagnosticFacts=computed(()=>{
       </article>
      </div>
      <footer v-if="review.page && !review.page.task_error" class="review-pagination">
-      <el-button :disabled="review.pageNumber===1 || review.pageBusy || review.selectionBusy" @click="review.previousPage()">上一页</el-button>
+      <el-button :disabled="review.pageNumber===1 || review.pageBusy || review.selectionBusy || review.formalLocked" @click="review.previousPage()">上一页</el-button>
       <span>第 {{ review.pageNumber }} 页 · 每页 24 张</span>
-      <el-button :disabled="!review.page.next_cursor || review.pageBusy || review.selectionBusy" @click="review.nextPage()">下一页</el-button>
+      <el-button :disabled="!review.page.next_cursor || review.pageBusy || review.selectionBusy || review.formalLocked" @click="review.nextPage()">下一页</el-button>
      </footer>
      <section v-if="review.task.status.toUpperCase()==='AWAITING_CONFIRMATION'" class="review-selection"
       aria-label="候选选择">
@@ -228,7 +228,10 @@ const diagnosticFacts=computed(()=>{
        <el-button :disabled="!review.canSelect||!review.page?.items.length" @click="review.selectPage()">选择本页</el-button>
        <el-button :disabled="!review.canSelect||!!review.frozenSelection||!review.page?.total"
         :loading="review.selectionBusy" @click="review.freezeSelection()">选择全部筛选结果</el-button>
-       <el-button :disabled="!review.frozenSelection&&!review.selectedCount&&!review.selectionBusy"
+       <el-button :disabled="!review.canPrepareFormal" @click="review.prepareFormal()">
+        正式入库已选 {{ review.selectedCount }} 张
+       </el-button>
+       <el-button :disabled="review.formalLocked||(!review.frozenSelection&&!review.selectedCount&&!review.selectionBusy)"
         @click="review.clearSelection()">清空选择</el-button>
       </div>
       <p aria-live="polite">
@@ -241,6 +244,31 @@ const diagnosticFacts=computed(()=>{
        </span>
       </p>
       <p v-if="review.selectionNotice" role="status">{{ review.selectionNotice }}</p>
+      <p v-if="review.formalUnavailable">{{ review.formalUnavailable }}</p>
+      <div v-if="review.formalOperation" role="status">
+       <span v-if="!review.formalOperation.receipt">正式入库结果待核验</span>
+       <span v-else-if="review.formalOperation.receipt.status==='completed'">正式入库完成</span>
+       <span v-else>原操作未写入正式 GT</span>
+       <el-button :loading="review.formalBusy" @click="review.recoverFormal()">
+        {{ review.formalOperation.receipt ? '重新读取候选与 GT' : '核验原入库请求' }}
+       </el-button>
+      </div>
+      <p v-if="review.formalNotice" role="status">{{ review.formalNotice }}</p>
+      <el-dialog :model-value="!!review.formalPlan" title="确认正式 GT 入库" width="min(480px, 92vw)"
+       :close-on-click-modal="false" :close-on-press-escape="!review.formalBusy"
+       :show-close="!review.formalBusy" @close="review.cancelFormal()">
+       <template v-if="review.formalPlan">
+        <p>项目 {{ projectId }} · 任务 {{ review.task?.name || taskId }}</p>
+        <p>选中 {{ review.formalPlan.ids.length }} 张 · 有框 {{ review.formalPlan.boxed }} 张 ·
+         零框 {{ review.formalPlan.ids.length - review.formalPlan.boxed }} 张</p>
+        <p>确认后写入正式 GT，未选中的图片不受影响。</p>
+        <p v-if="review.formalNotice" role="alert">{{ review.formalNotice }}</p>
+       </template>
+       <template #footer>
+        <el-button :disabled="review.formalBusy" @click="review.cancelFormal()">取消</el-button>
+        <el-button :loading="review.formalBusy" @click="review.confirmFormal()">确认写入正式 GT</el-button>
+       </template>
+      </el-dialog>
       <small>此处的选择仅用于当前页面，原工作台需重新选择。</small>
      </section>
     </section>

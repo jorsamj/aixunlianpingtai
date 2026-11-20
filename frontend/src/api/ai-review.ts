@@ -11,7 +11,7 @@ export const reviewFilters = [
 export type ReviewFilter = typeof reviewFilters[number][0];
 export interface ReviewAddress {projectId:string;taskId:string}
 export interface ReviewTask {
-  id:string;project_id:string;name?:string;status:string;persisted_status?:string;
+  id:string;project_id:string;review_scope_policy?:"task_uniform_legacy"|"per_image_required";name?:string;status:string;persisted_status?:string;
   error?:string;phase?:string;total_count?:number|null;generation_interruption_code?:string;
 }
 export interface ReviewCandidate {
@@ -19,7 +19,7 @@ export interface ReviewCandidate {
   source_content_sha256?:string;content_sha256?:string;original_boxes?:MaterialBox[];review_state?:string;gt_committed?:boolean;manual_review_required?:boolean;
   draft_revision?:number;accepted?:boolean|null;error?:string;error_code?:string;error_stage?:string;
   http_status?:number;attempt_count?:number;retry_suggestion?:string;review_scope?:string[];
-  selection_member?:boolean;review_scope_policy?:string;missing_review_scope?:string[];draft?:{auto_resolution?:boolean};
+  selection_member?:boolean;review_scope_policy?:string;missing_review_scope?:string[];draft?:{auto_resolution?:boolean;actor?:string};
   review_conflicts?:{labels?:string[];iou?:number}[];
 }
 export interface ReviewPage {
@@ -105,4 +105,26 @@ export function sendSingleDecision(scope:ReviewAddress, body:SingleDecision, sig
 }
 export function getDecisionReceipt(scope:ReviewAddress, requestId:string, signal:AbortSignal) {
   return request<DecisionReceipt>(root(scope)+'/decisions/by-request/'+enc(requestId),{signal});
+}
+
+export interface FormalDecision {
+  single_candidate:false; commit:true; commit_selected:true;
+  accept_unmentioned:false; reject_unmentioned:false;
+  label_mapping:Record<string,never>; request_id:string; review_revision:number;
+  decisions:{image_id:string;accepted:true}[];
+}
+export type FormalReceipt = PendingDecision | RejectedDecision | {
+  status:'completed';request_id:string;result:{
+    committed_selected:boolean;queued_for_commit:boolean;completed_image_ids:string[];
+    task:{id:string;project_id:string};
+  };
+};
+export function submitFormalDecision(scope:ReviewAddress,body:FormalDecision,signal:AbortSignal){
+  return request<unknown>(root(scope)+'/decisions',{method:'POST',body:JSON.stringify(body),signal});
+}
+export function getFormalReceipt(scope:ReviewAddress,requestId:string,signal:AbortSignal){
+  return request<FormalReceipt>(root(scope)+'/decisions/by-request/'+enc(requestId),{signal});
+}
+export function getFormalAnnotation(scope:ReviewAddress,imageId:string,signal:AbortSignal){
+  return request<{version:number}>(`/api/projects/${enc(scope.projectId)}/annotations/${enc(imageId)}`,{signal});
 }

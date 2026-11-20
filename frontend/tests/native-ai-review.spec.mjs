@@ -191,3 +191,74 @@ test('原生审核拒绝错配身份，切项目与离页取消在途读取',asy
   await expect(page.getByText('已选 0 张',{exact:true})).toBeVisible();
   await expect(page.getByText(/可操作 1 张/)).toHaveCount(0);
 });
+
+test('正式入库仅接受有权威策略的有界显式范围',async({page})=>{
+  const {session}=await fixture(page);
+  const rows=Array.from({length:101},(_,index)=>({...candidate(index),review_state:'active'}));
+  // Current page is selectable, but detail for the first image fails the batch preflight.
+  const writes=[];
+  await page.route('**/api/v12/projects/*/labels',route=>route.fulfill({json:{items:[{code:'person',class_id:0}]}}));
+  await page.route('**/api/v60/projects/*/annotation-tasks/**',route=>{
+    const url=new URL(route.request().url());
+    const tail=url.pathname.split('/').slice(6);
+    if(route.request().method()!=='GET'){writes.push(url.pathname);return route.abort()}
+    if(tail.length===1){
+      const payload=task(tail[0],url.pathname.split('/')[4]);
+      if(tail[0]!=='unknown-policy')payload.task.review_scope_policy=
+        tail[0]==='per-image'?'per_image_required':'task_uniform_legacy';
+      return route.fulfill({json:payload});
+    }
+    if(tail.length===3){
+      const index=Number(tail[2].split('-').at(-1));
+      return route.fulfill({json:{review_revision:1,item:{...rows[index],
+        manual_review_required:index===0,draft_revision:1,draft:{auto_resolution:index===0,actor:'reviewer'},
+      }}});
+    }
+    const start=Number(url.searchParams.get('cursor')||0);
+    return route.fulfill({json:{items:rows.slice(start,start+24),total:rows.length,
+      next_cursor:start+24<rows.length?String(start+24):null,review_revision:1,summary:{}}});
+  });
+  const controls=page.getByRole('region',{name:'候选选择'});
+  const formal=controls.getByRole('button',{name:/^正式入库已选/});
+  for(const id of ['unknown-policy','per-image']){
+    await page.goto(route(id));
+    await controls.getByRole('button',{name:'选择本页'}).click();
+    await expect(formal).toBeDisabled();
+  }
+  await page.goto(route('bounded-formal'));
+  await page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true}).check();
+  await page.getByRole('checkbox',{name:'选择 候选 1.jpg',exact:true}).check();
+  await formal.click();
+  await expect(controls).toContainText('整批未提交');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  for(let pageIndex=0;pageIndex<5;pageIndex++){
+    await controls.getByRole('button',{name:'选择本页'}).click();
+    if(pageIndex<4)await page.getByRole('button',{name:'下一页'}).click();
+  }
+  await expect(formal).toHaveText('正式入库已选 101 张');
+  await expect(formal).toBeDisabled();
+  await page.evaluate(async ({projectId,taskId})=>{
+    const actorKey=JSON.stringify(['local','reviewer']);
+    const scope={actorKey,projectId,taskId};
+    const key='ai-review-formal:v1:'+JSON.stringify([actorKey,projectId,taskId]);
+    const body={commit:true,commit_selected:true,single_candidate:false,accept_unmentioned:false,
+      reject_unmentioned:false,label_mapping:{},review_revision:1,request_id:'formal-scope-fixture-001',
+      decisions:[{image_id:'image-0',accepted:true}]};
+    const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([key,body])));
+    const digest=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
+    localStorage.setItem(key,JSON.stringify({scope,body,digest}));
+  },{projectId:project.id,taskId:'bounded-formal'});
+  const recover=controls.getByRole('button',{name:'核验原入库请求'});
+  await page.reload();
+  await expect(recover).toBeVisible();
+  await page.goto(route('bounded-formal',other.id));
+  await expect(controls.getByRole('button',{name:'选择本页'})).toBeEnabled();
+  await expect(recover).toHaveCount(0);
+  session.user.username='another-reviewer';
+  await page.goto(route('bounded-formal'));
+  await page.reload();
+  await expect(page.getByText('another-reviewer',{exact:true})).toBeVisible();
+  await expect(controls.getByRole('button',{name:'选择本页'})).toBeEnabled();
+  await expect(recover).toHaveCount(0);
+  expect(writes).toEqual([]);
+});

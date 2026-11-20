@@ -1,10 +1,12 @@
 import {computed,ref,shallowRef} from 'vue';
 import {defineStore} from 'pinia';
-import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection} from '../api/ai-review';
+import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection,getReviewLabels,getFormalAnnotation,submitFormalDecision,getFormalReceipt} from '../api/ai-review';
 import type {ReviewAddress,ReviewTask,ReviewPage,ReviewCandidate,ReviewDiagnostics,ReviewFilter,SingleDecision,CompletedDecision,ReviewSelection} from '../api/ai-review';
 
+import {bodyDigest,formalBody,formalKey,loadFormalOperation,matchesFormalReceipt,readSelected,withFormalStorage} from './ai-review-formal';
+import type {FormalOperation} from './ai-review-formal';
 import {draftRecoveryKey} from '../app/ai-draft-recovery';
-import {canAdopt,decisionKey,loadDecision,matchesCompletion,validRevision} from './ai-review-decision';
+import {canAdopt,decisionKey,hasUnresolvedAmbiguity,loadDecision,matchesCompletion,validRevision} from './ai-review-decision';
 import type {DecisionRecovery} from './ai-review-decision';
 
 type Scope=ReviewAddress&{actorKey:string};
@@ -17,6 +19,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const taskError=ref(''),pageError=ref(''),itemError=ref(''),diagnosticsError=ref('');
   const revision=ref<number>(),decision=shallowRef<DecisionRecovery>();
   const decisionBusy=ref(false),decisionNotice=ref(''),decisionStorageError=ref(''),draftOutstanding=ref(false);
+  const formalPlan=shallowRef<{ids:string[];revision:number;boxed:number}>();
+  const formalOperation=shallowRef<FormalOperation>();
+  const formalBusy=ref(false),formalStorageError=ref(false),formalNotice=ref('');
+  let formalRequest:AbortController|undefined;
+  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value);
   const explicitSelection=ref(new Set<string>());
   const frozenSelection=shallowRef<ReviewSelection>();
   const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
@@ -25,11 +32,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const selectedCount=computed(()=>frozenSelection.value
     ?frozenSelection.value.count-excludedIds.value.size:explicitSelection.value.size);
   const canSelect=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'&&!!page.value
-    &&!pageBusy.value&&!pageError.value&&!selectionBusy.value&&!page.value.task_error);
+    &&!pageBusy.value&&!pageError.value&&!selectionBusy.value&&!page.value.task_error&&!formalLocked.value);
   let decisionRequest:AbortController|undefined;
   const decisionEligible=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'
     &&revision.value!==undefined&&!itemBusy.value&&!itemError.value&&!draftOutstanding.value
-    &&!decisionBusy.value&&!decision.value&&!decisionStorageError.value
+    &&!formalLocked.value&&!decisionBusy.value&&!decision.value&&!decisionStorageError.value
     &&item.value?.review_state==='active'&&!item.value.gt_committed&&['success','empty'].includes(item.value.status));
   const decisionOutsidePage=computed(()=>!!item.value&&!!page.value
     &&!page.value.items.some(row=>row.image_id===item.value?.image_id));
@@ -48,7 +55,10 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     itemError.value=diagnosticsError.value='';
   }
   function reset(){
-    generation++;clearSelection();
+    generation++;
+    formalRequest?.abort();formalPlan.value=formalOperation.value=undefined;
+    formalBusy.value=formalStorageError.value=false;formalNotice.value='';
+    clearSelection();
     scope=undefined;
     taskRead?.abort();pageRead?.abort();closeImage();
     task.value=page.value=undefined;
@@ -88,7 +98,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       }
       if(current()){
         if(preserveImage&&result.task_error)return false;
-        if(explicitSelection.value.size&&page.value?.review_revision!==result.review_revision)
+        if(!formalLocked.value&&explicitSelection.value.size&&page.value?.review_revision!==result.review_revision)
           invalidateSelection();
         membershipId.value=frozenSelection.value?.selection_id;
         page.value=result;filter.value=nextFilter;cursors.value=nextCursors;
@@ -109,15 +119,26 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     taskBusy.value=true;
     try{
       const result=await getReviewTask(next,controller.signal);
-      if(current()){task.value=result;await readPage('all',[null])}
+      if(current()){
+        task.value=result;
+        try{
+          const saved=await loadFormalOperation(next);
+          if(current())formalOperation.value=saved;
+        }catch(cause){
+          if(current()){formalStorageError.value=true;formalNotice.value=message(cause)}
+        }
+        if(current())await readPage('all',[null]);
+      }
     }catch(cause){if(current())taskError.value=message(cause)}
     finally{if(current())taskBusy.value=false}
   }
   function setFilter(value:ReviewFilter){
+    if(formalLocked.value)return;
     if(value!==filter.value)clearSelection();
     return readPage(value,[null]);
   }
   function clearSelection(){
+    if(formalLocked.value)return;
     selectionRequest?.abort();selectionBusy.value=false;
     explicitSelection.value.clear();excludedIds.value.clear();
     frozenSelection.value=undefined;membershipId.value=undefined;selectionNotice.value='';
@@ -185,10 +206,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }finally{if(current())selectionBusy.value=false}
   }
   function nextPage(){
+    if(formalLocked.value)return;
     const next=page.value?.next_cursor;
     if(next!=null)return readPage(filter.value,[...cursors.value,next]);
   }
-  function previousPage(){if(pageNumber.value>1)return readPage(filter.value,cursors.value.slice(0,-1))}
+  function previousPage(){if(!formalLocked.value&&pageNumber.value>1)return readPage(filter.value,cursors.value.slice(0,-1))}
   function reloadPage(){return readPage(filter.value,cursors.value)}
   async function refreshAfterDraft(id:string){
     const epoch=generation;
@@ -332,6 +354,161 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     if(record&&record.status!=='pending')await runDecision(signal=>synchronizeDecision(record,signal));
   }
 
+  const formalUnavailable=computed(()=>{
+    if(task.value?.review_scope_policy!=='task_uniform_legacy')return '仅支持已核实的普通审核任务。';
+    if(frozenSelection.value)return '正式入库仅支持显式选择。';
+    if(explicitSelection.value.size>100)return '单次最多正式入库 100 张。';
+    return '';
+  });
+  const canPrepareFormal=computed(()=>canSelect.value&&!formalUnavailable.value&&!decisionBusy.value
+    &&!draftOutstanding.value&&!decision.value&&explicitSelection.value.size>0&&validRevision(page.value?.review_revision));
+
+  async function runFormal(action:(address:Scope,signal:AbortSignal)=>Promise<void>){
+    if(!scope||formalBusy.value)return;
+    const address=scope, controller=formalRequest=new AbortController();
+    formalBusy.value=true;
+    try{await action(address,controller.signal)}
+    catch(cause){if(!controller.signal.aborted)formalNotice.value=message(cause)}
+    finally{if(!controller.signal.aborted)formalBusy.value=false}
+  }
+  function hasLocalReviewWork(address:Scope,imageId:string){
+    const imageScope={...address,imageId};
+    return sessionStorage.getItem(draftRecoveryKey(imageScope))!==null
+      ||sessionStorage.getItem(decisionKey(imageScope))!==null;
+  }
+  async function prepareFormal(){
+    if(!canPrepareFormal.value||!page.value)return;
+    const ids=[...explicitSelection.value], expected=page.value.review_revision;
+    formalNotice.value='';
+    await runFormal(async(address,signal)=>{
+      if(ids.some(id=>hasLocalReviewWork(address,id)))throw new Error('选中候选包含待核验的草稿或审核决定。');
+      const labels=new Set((await getReviewLabels(address.projectId,signal)).map(label=>label.code));
+      const selected=await readSelected(ids,id=>getReviewCandidateDetail(address,id,signal));
+      if(signal.aborted)return;
+      const validBox=(box:NonNullable<ReviewCandidate['boxes']>[number])=>labels.has(box.label??'')
+        &&[box.x1,box.y1,box.x2,box.y2].every(Number.isFinite)
+        &&box.x1>=0&&box.y1>=0&&box.x2>box.x1&&box.y2>box.y1;
+      if(page.value?.review_revision!==expected||selected.some(row=>row.review_revision!==expected)){
+        await readPage(filter.value,cursors.value,true,signal);
+        if(!signal.aborted)explicitSelection.value.clear();
+        throw new Error('审核修订已变化，请重新核对并选择。');
+      }
+      const invalid=selected.find(({item:row})=>row.gt_committed||row.review_state!=='active'
+        ||row.accepted===false||!['success','empty'].includes(row.status)||row.review_scope_policy==='per_image_required'
+        ||hasUnresolvedAmbiguity(row)||(row.manual_review_required&&!row.draft?.actor)
+        ||!Array.isArray(row.boxes)||!row.boxes.every(validBox));
+      if(invalid)throw new Error(`候选 ${invalid.item.filename||invalid.item.image_id} 不具备正式入库资格，整批未提交。`);
+      formalPlan.value={ids,revision:expected,boxed:selected.filter(row=>row.item.boxes?.length).length};
+    });
+  }
+  function cancelFormal(){if(!formalBusy.value)formalPlan.value=undefined}
+  async function saveFormal(operation:FormalOperation,signal:AbortSignal,first=false){
+    const saved=await withFormalStorage(operation.scope,signal,()=>{
+      const key=formalKey(operation.scope),raw=localStorage.getItem(key);
+      if(first?raw!==null:JSON.parse(raw??'null')?.digest!==operation.digest)return false;
+      localStorage.setItem(key,JSON.stringify(operation));
+      return true;
+    });
+    if(signal.aborted)return false;
+    if(!saved)throw new Error('正式入库记录已在其他页面变化，请刷新后核验。');
+    formalOperation.value=operation;
+    return true;
+  }
+  async function confirmFormal(){
+    const plan=formalPlan.value;
+    if(!plan||formalOperation.value||formalStorageError.value)return;
+    await runFormal(async(address,signal)=>{
+      if(page.value?.review_revision!==plan.revision||plan.ids.some(id=>hasLocalReviewWork(address,id))){
+        formalPlan.value=undefined;
+        throw new Error('候选状态已变化，请重新核验并确认。');
+      }
+      if(localStorage.getItem(formalKey(address))!==null){
+        const saved=await loadFormalOperation(address);
+        if(signal.aborted)return;
+        formalOperation.value=saved;
+        formalPlan.value=undefined;
+        formalNotice.value='请先核验原正式入库操作。';
+        return;
+      }
+      const requestId=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+      const body=formalBody(plan.ids,plan.revision,requestId);
+      const digest=await bodyDigest(address,body);
+      if(signal.aborted)return;
+      const operation={scope:address,body,digest};
+      if(!await saveFormal(operation,signal,true))return;
+      formalPlan.value=undefined;
+      formalNotice.value='';
+      try{
+        const result=await submitFormalDecision(address,body,signal);
+        if((result as {status?:string})?.status==='pending')return;
+      }catch(cause){
+        if(signal.aborted||(cause as {httpStatus?:number}).httpStatus!==409)return;
+      }
+      if(!signal.aborted)await verifyFormal(operation,signal);
+    });
+  }
+  async function refreshFormal(operation:FormalOperation,signal:AbortSignal){
+    const receipt=operation.receipt;
+    if(!receipt||receipt.status==='pending')return;
+    const ids=operation.body.decisions.map(row=>row.image_id);
+    if(receipt.status==='rejected'){
+      const checks=await readSelected(ids,async id=>{
+        const [candidate,gt]=await Promise.all([
+          getReviewCandidateDetail(operation.scope,id,signal),getFormalAnnotation(operation.scope,id,signal),
+        ]);
+        return {accepted:candidate.item.accepted===true,version:gt.version};
+      });
+      if(signal.aborted)return;
+      const adopted=checks.filter(row=>row.accepted).length;
+      const reason=typeof receipt.detail==='string'?receipt.detail:receipt.detail?.message;
+      const versions=checks.map(row=>row.version);
+      formalNotice.value=`原操作未写入正式 GT。候选已采用 ${adopted}/${ids.length} 张，当前正式 GT 版本 ${Math.min(...versions)}～${Math.max(...versions)}。${reason||''}`;
+    }
+    const [pageOk,detailOk]=await Promise.all([
+      readPage(filter.value,cursors.value,true,signal),item.value?readDetail(item.value):true,
+    ]);
+    if(signal.aborted)return;
+    if(!pageOk||!detailOk){
+      if(receipt.status==='completed')formalNotice.value='正式入库完成，候选或统计刷新失败。';
+      return;
+    }
+    await withFormalStorage(operation.scope,signal,()=>{
+      const key=formalKey(operation.scope);
+      const saved=JSON.parse(localStorage.getItem(key)??'null') as FormalOperation|null;
+      if(saved?.digest===operation.digest)localStorage.removeItem(key);
+    });
+    if(signal.aborted)return;
+    formalOperation.value=undefined;
+    if(receipt.status==='completed'){
+      for(const id of ids)explicitSelection.value.delete(id);
+      formalNotice.value=`正式入库完成 · ${ids.length} 张`;
+    }else{
+      explicitSelection.value.clear();
+    }
+  }
+  async function verifyFormal(operation:FormalOperation,signal:AbortSignal){
+    if(operation.receipt)return refreshFormal(operation,signal);
+    let receipt;
+    try{receipt=await getFormalReceipt(operation.scope,operation.body.request_id,signal)}
+    catch(cause){
+      if(!signal.aborted&&(cause as {httpStatus?:number}).httpStatus===404)
+        formalNotice.value='暂未查到原回执，正式入库结果待核验。';
+      else throw cause;
+      return;
+    }
+    if(signal.aborted||receipt.status==='pending')return;
+    if(!matchesFormalReceipt(operation,receipt))throw new Error('原回执未能证明本次操作的完整选中范围。');
+    const confirmed={...operation,receipt};
+    if(await saveFormal(confirmed,signal))await refreshFormal(confirmed,signal);
+  }
+  async function recoverFormal(){
+    const operation=formalOperation.value;
+    if(operation){
+      formalNotice.value='';
+      await runFormal((_,signal)=>verifyFormal(operation,signal));
+    }
+  }
+
   async function readDiagnostics(){
     if(!scope||!item.value||!imageRead||diagnosticsBusy.value)return;
     const {signal}=imageRead,epoch=generation;
@@ -348,5 +525,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     inspect,closeImage,readDiagnostics,refreshAfterDraft,revision,decision,decisionBusy,decisionNotice,
     decisionEligible,decisionStorageError,draftOutstanding,decisionOutsidePage,checkDraftOutstanding,
     decide,recoverDecision,retryDecisionRefresh,selectedCount,canSelect,frozenSelection,
-    selectionBusy,selectionNotice,selectionReason,isSelected,selectCandidate,selectPage,freezeSelection,clearSelection};
+    selectionBusy,selectionNotice,selectionReason,isSelected,selectCandidate,selectPage,freezeSelection,clearSelection,
+    formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
+    prepareFormal,cancelFormal,confirmFormal,recoverFormal};
 });
