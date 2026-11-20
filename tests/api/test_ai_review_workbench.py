@@ -589,3 +589,133 @@ def test_worker_recovers_its_supplement_receipt_but_rejects_external_gt(client, 
         with pytest.raises(ValueError, match='AI_SUPPLEMENT_GT_CHANGED'):
             commit_confirmed_review(worker)
     assert host.read_annotation(project, image_id)['boxes'][0]['x1'] == 1
+
+
+def test_explicit_single_decision_isolated_and_recovers_durable_receipt(client, review_task, monkeypatch):
+    project, image, task, store, repo = review_task
+    target = image["id"]
+    retired = "unselected-retired-label"
+    invalid = "selected-retired-label"
+    box = {"label": "fire", "class_id": 0, "x1": 1, "y1": 2, "x2": 30, "y2": 40}
+    store.append_items([
+        {"image_id": target, "status": "success", "boxes": [box]},
+        {"image_id": retired, "status": "success", "boxes": [{**box, "label": "retired"}]},
+        {"image_id": invalid, "status": "success", "boxes": [{**box, "label": "retired"}]},
+    ])
+    base = f"/api/v60/projects/{project}/annotation-tasks/{task}"
+    def body(image_id, accepted, request_id, **extra):
+        return {"single_candidate": True, "decisions": [{"image_id": image_id, "accepted": accepted, **extra}],
+                "commit": False, "commit_selected": False, "accept_unmentioned": False,
+                "reject_unmentioned": False, "request_id": request_id, "review_revision": store.review_revision()}
+
+    def candidate_rows():
+        from contextlib import closing
+        with closing(store._connect()) as db:
+            return {row["image_id"]: tuple(row) for row in db.execute("SELECT * FROM candidates")}
+
+    initial = candidate_rows()
+    gt = host.read_annotations_many(project, [target, retired, invalid])
+    apply = body(target, True, "single-apply-00001")
+    applied = client.post(base+"/decisions", json=apply)
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["accepted"] is True
+    assert applied.json()["review_revision"] == apply["review_revision"] + 1
+    assert store.get(target)["accepted"] is True
+    before = candidate_rows()
+    assert before[retired] == initial[retired] and before[invalid] == initial[invalid]
+
+    not_written = body(invalid, True, "single-invalid-0001")
+    assert client.post(base+"/decisions", json=not_written).status_code == 409
+    assert candidate_rows() == before
+    assert store.review_revision() == not_written["review_revision"]
+
+    reject = body(target, False, "single-reject-0001")
+    path = host._annotation_review_operation_path(reject["request_id"])
+    write = store.artifacts.atomic_write_json
+    def interrupt_after_commit(task_id, ref, value):
+        if ref == path and value.get("status") == "completed":
+            raise OSError("interrupted after single decision")
+        return write(task_id, ref, value)
+    with monkeypatch.context() as patch:
+        patch.setattr(store.artifacts, "atomic_write_json", interrupt_after_commit)
+        with pytest.raises(OSError, match="after single decision"):
+            client.post(base+"/decisions", json=reject)
+    assert store.get(target)["accepted"] is False
+
+    # A later operator's result cannot stand in for the original evidence.
+    later = client.post(base+"/decisions", json=body(target, True, "single-later-00001"))
+    assert later.status_code == 200
+    recovered = client.get(base+"/decisions/by-request/"+reject["request_id"])
+    assert recovered.status_code == 200
+    assert recovered.json()["status"] == "completed"
+    assert recovered.json()["result"]["accepted"] is False
+    assert recovered.json()["result"]["review_revision"] == reject["review_revision"] + 1
+    replay = client.post(base+"/decisions", json=reject)
+    assert replay.json() == {**recovered.json()["result"], "idempotent": True}
+    changed = {**reject, "decisions": [{"image_id": target, "accepted": True}]}
+    assert client.post(base+"/decisions", json=changed).status_code == 409
+    stale = {**apply, "request_id": "single-stale-00001"}
+    assert client.post(base+"/decisions", json=stale).status_code == 409
+    after = candidate_rows()
+    assert after[retired] == initial[retired] and after[invalid] == initial[invalid]
+    assert store.get(target)["accepted"] is True
+    assert store.review_revision() == later.json()["review_revision"]
+    assert host.read_annotations_many(project, [target, retired, invalid]) == gt
+    assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
+
+    with monkeypatch.context() as patch:
+        patch.setattr(host, "_material_governance_actor", lambda *_: {"actor_id": "other-operator"})
+        assert client.get(base+"/decisions/by-request/"+reject["request_id"]).status_code == 404
+        assert client.post(base+"/decisions", json=reject).status_code == 409
+
+    never_written = body(target, False, "single-pending-001")
+    with monkeypatch.context() as patch:
+        def interrupt_before_commit(*args):
+            raise OSError("interrupted before single decision")
+        patch.setattr(host, "_decide_single_annotation_candidate", interrupt_before_commit)
+        with pytest.raises(OSError, match="before single decision"):
+            client.post(base+"/decisions", json=never_written)
+    receipt = client.get(base+"/decisions/by-request/"+never_written["request_id"])
+    assert receipt.status_code == 202 and receipt.json()["status"] == "pending"
+    assert client.post(base+"/decisions", json=never_written).status_code == 202
+    assert candidate_rows() == after
+    assert store.review_revision() == later.json()["review_revision"]
+
+
+def test_explicit_single_supplement_requires_human_scope_and_keeps_ambiguity_gate(client, review_task):
+    project, image, task, store, repo = review_task
+    target = image["id"]
+    box = {"label": "fire", "x1": 1, "y1": 2, "x2": 30, "y2": 40}
+    store.append_items([{"image_id": target, "status": "success", "boxes": [box]}])
+    material = host.material_store(project).get(target)
+    gt = host.read_annotation(project, target)
+    store.artifacts.atomic_write_json(task, repo.get(task).payload_ref, {
+        "labels": ["fire"], "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {target: ["fire"]},
+        "per_image_annotation_versions": {target: int(gt.get("version") or 0)},
+        "per_image_source_hashes": {target: material["content_sha256"]},
+    })
+    endpoint = f"/api/v60/projects/{project}/annotation-tasks/{task}/decisions"
+    revision = store.review_revision()
+    body = {"single_candidate": True, "commit": False, "reject_unmentioned": False,
+            "review_revision": revision, "decisions": [{"image_id": target, "accepted": True}]}
+    assert client.post(endpoint, json={**body, "request_id": "missing-scope-0001"}).status_code == 400
+    assert store.review_revision() == revision
+    body["decisions"][0]["review_scope"] = ["fire"]
+    approved = client.post(endpoint, json={**body, "request_id": "explicit-scope-0001"})
+    assert approved.status_code == 200, approved.text
+    assert store.get(target)["review_scope"] == ["fire"]
+    assert host.read_annotation(project, target) == gt
+
+    store.append_items([{"image_id": target, "status": "success", "manual_review_required": True,
+                         "boxes": [box]}])
+    body["review_revision"] = store.review_revision()
+    denied = client.post(endpoint, json={**body, "request_id": "ambiguous-scope-001"})
+    assert denied.status_code == 409 and "跨标签" in denied.json()["detail"]
+    assert store.review_revision() == body["review_revision"]
+    body["decisions"] = [{"image_id": target, "accepted": False}]
+    rejected = client.post(endpoint, json={**body, "request_id": "reject-ambiguous-01"})
+    assert rejected.status_code == 200, rejected.text
+    assert store.get(target)["accepted"] is False
+    assert store.get(target).get("review_scope") is None
+    assert host.read_annotation(project, target) == gt

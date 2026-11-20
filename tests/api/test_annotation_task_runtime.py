@@ -607,7 +607,7 @@ def test_review_operation_receipt_identity_keeps_legacy_hash_and_fences_new_scop
         decisions=[{"image_id": "image-0", "accepted": True}],
         reject_unmentioned=False, request_id="stable-review-legacy",
     )
-    old_body = legacy.model_dump(mode="json", exclude={"request_id"})
+    old_body = legacy.model_dump(mode="json", exclude={"request_id", "single_candidate"})
     for item in old_body["decisions"]:
         item.pop("review_scope", None)
     # Keep the digest of historical payloads stable when optional new fields default off.
@@ -621,6 +621,8 @@ def test_review_operation_receipt_identity_keeps_legacy_hash_and_fences_new_scop
         reject_unmentioned=False, request_id="stable-review-legacy",
     )
     assert app_module._annotation_review_operation_identity(scoped) != legacy_hash
+    single = legacy.model_copy(update={"single_candidate": True})
+    assert app_module._annotation_review_operation_identity(single) != legacy_hash
 
 
 def test_annotation_review_operation_receipt_prevents_second_commit(

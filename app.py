@@ -25439,6 +25439,8 @@ class AnnotationDecisionReq(BaseModel):
     # Human-confirmed partial formal GT commit; all other task candidates remain pending.
     commit_selected: bool = False
     label_mapping: Dict[str, str] = Field(default_factory=dict)
+    # Opt-in isolated decision; older clients keep their batch/mapping behavior.
+    single_candidate: bool = False
     # Optional durable review submission identity; legacy callers remain valid.
     request_id: str = ""
     review_revision: Optional[int] = Field(default=None, ge=0)
@@ -27160,10 +27162,18 @@ def get_annotation_candidate_diagnostics(project_id: str, task_id: str, image_id
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions")
-def decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):
+def decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq, request: Request):
     from filelock import FileLock
     _require_annotation_review_task(project_id, task_id)
     request_id = str(payload.request_id or "").strip()
+    actor = None
+    if payload.single_candidate:
+        if (not request_id or payload.review_revision is None or len(payload.decisions) != 1
+                or payload.commit or payload.commit_selected or payload.accept_unmentioned or payload.reject_unmentioned
+                or payload.label_mapping or payload.expected_remaining is not None
+                or not payload.decisions[0].image_id or payload.decisions[0].boxes is not None):
+            raise HTTPException(422, detail="单图审核仅允许提交一张候选的决定、审核修订及原请求编号")
+        actor = _material_governance_actor(request, project_id)["actor_id"]
     if payload.commit_selected and not request_id:
         raise HTTPException(422, detail="部分正式入库必须提供审核操作编号")
     if request_id:
@@ -27178,7 +27188,8 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
         if isinstance(previous, dict):
             if (previous.get("request_id") != request_id
                     or previous.get("project_id") != project_id
-                    or previous.get("identity") != identity):
+                    or previous.get("identity") != identity
+                    or (payload.single_candidate and (previous.get("actor") != actor or previous.get("task_id") != task_id))):
                 raise HTTPException(status_code=409, detail="同一审核操作编号的提交内容不一致")
             if previous.get("status") == "rejected":
                 raise HTTPException(previous["status_code"], detail=previous["detail"])
@@ -27204,9 +27215,18 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
         }
         if payload.commit_selected and 1 <= len(payload.decisions) <= 100:
             pending["selected_image_ids"] = [str(item.image_id) for item in payload.decisions]
+        if payload.single_candidate:
+            decision = payload.decisions[0]
+            pending.update(actor=actor, single_decision={
+                "image_id": decision.image_id, "accepted": decision.accepted,
+                "review_revision": payload.review_revision,
+            })
         artifacts.atomic_write_json(task_id, path, pending)
         try:
-            result = _decide_annotation_candidates(project_id, task_id, payload)
+            if payload.single_candidate:
+                result = _decide_single_annotation_candidate(project_id, task_id, decision, pending)
+            else:
+                result = _decide_annotation_candidates(project_id, task_id, payload)
         except HTTPException as error:
             recovered = _annotation_review_resolve_receipt(
                 _require_annotation_review_task(project_id, task_id), pending, reject_unwritten=False,
@@ -27238,6 +27258,8 @@ def _annotation_review_operation_identity(payload: AnnotationDecisionReq) -> str
     # A false default must not invalidate operation identities from older builds.
     if body.get("commit_selected") is False:
         body.pop("commit_selected", None)
+    if body.get("single_candidate") is False:
+        body.pop("single_candidate", None)
     canonical = json.dumps(
         body,
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -27250,6 +27272,21 @@ def _annotation_review_resolve_receipt(task: TaskRecord, receipt: Dict[str, Any]
         return receipt
     artifacts = shared_task_artifacts()
     request_id = str(receipt.get("request_id") or "")
+    single = receipt.get("single_decision")
+    if "single_decision" in receipt:
+        if (receipt.get("project_id") != task.project_id or receipt.get("task_id") != task.task_id
+                or not receipt.get("identity") or not receipt.get("actor")
+                or not isinstance(single, dict) or not single.get("image_id")
+                or type(single.get("accepted")) is not bool or type(single.get("review_revision")) is not int):
+            return receipt
+        store = CandidateStore(artifacts, task_id=task.task_id)
+        evidence = store.single_decision_event(single["image_id"], request_id)
+        result = {"ok": True, "status": "completed", "request_id": request_id,
+                  "image_id": single["image_id"], "accepted": single["accepted"],
+                  "review_revision": single["review_revision"] + 1}
+        if evidence != {"identity": receipt["identity"], "actor": receipt["actor"], "result": result}:
+            return receipt
+        return {**receipt, "status": "completed", "result": result}
     ids = receipt.get("selected_image_ids")
     if ids is not None:
         from platform_core.annotation_task_service import (
@@ -27313,7 +27350,7 @@ def _annotation_review_recover_task_transition(task, artifacts, request_id):
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions/by-request/{request_id}")
-def get_annotation_review_operation(project_id: str, task_id: str, request_id: str):
+def get_annotation_review_operation(project_id: str, task_id: str, request_id: str, request: Request):
     from filelock import FileLock, Timeout
     task = _require_annotation_review_task(project_id, task_id)
     path = _annotation_review_operation_path(request_id)
@@ -27321,6 +27358,8 @@ def get_annotation_review_operation(project_id: str, task_id: str, request_id: s
         task_id, path, default=None,
     )
     if not isinstance(receipt, dict) or receipt.get("request_id") != request_id or receipt.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="尚无该审核操作的持久回执")
+    if "single_decision" in receipt and receipt.get("actor") != _material_governance_actor(request, project_id)["actor_id"]:
         raise HTTPException(status_code=404, detail="尚无该审核操作的持久回执")
     if receipt.get("status") == "pending":
         try:
@@ -27353,6 +27392,61 @@ def _annotation_selected_commit_response(task, store, committed):
         "review": summary, "summary": {**summary, **store.review_counts()},
         "review_revision": store.review_revision(), "label_summary": store.label_summary(),
     }
+
+
+def _decide_single_annotation_candidate(project_id, task_id, decision, pending):
+    task = _require_annotation_review_task(project_id, task_id)
+    if task.status is not TaskStatus.AWAITING_CONFIRMATION:
+        raise HTTPException(409, detail="任务当前不可审核")
+    project_path = project_dir(project_id)
+    store = CandidateStore(shared_task_artifacts(), task_id=task_id)
+    with label_governance_fence(project_path), material_annotation_lifecycle_fence(project_path):
+        if _v50_annotation_repository(project_id).candidate_committed_ids(task_id, [decision.image_id]):
+            raise HTTPException(409, detail="已正式入库的图片不可再次审核")
+        frozen = store.artifacts.read_json(task_id, task.payload_ref, default={}) or {}
+        if task.kind is TaskKind.MATERIAL_BATCH:
+            frozen = frozen.get("options") or {}
+        policy = frozen.get("review_scope_policy") or "task_uniform_legacy"
+        if policy not in {"task_uniform_legacy", "per_image_required"}:
+            raise HTTPException(409, detail="任务审核范围策略无效")
+        label_ids = {str(row["code"]): int(row["class_id"]) for row in _annotation_label_catalog(get_project(project_id))}
+        if decision.review_scope is not None:
+            manifest = store.artifacts.read_json(task_id, "candidates/manifest.json", default={}) or {}
+            allowed = set(frozen.get("labels") or manifest.get("labels") or []) & label_ids.keys()
+            if not decision.accepted or not decision.review_scope or not set(decision.review_scope).issubset(allowed):
+                raise HTTPException(400, detail="逐图审核类别不属于本任务有效标签范围")
+        if policy == "per_image_required":
+            _check_single_supplement_decision(project_id, decision, frozen)
+        try:
+            return store.apply_single_decision(
+                decision, expected_revision=pending["single_decision"]["review_revision"],
+                request_id=pending["request_id"], identity=pending["identity"], actor=pending["actor"],
+                label_ids=label_ids,
+            )
+        except ValueError as error:
+            raise HTTPException(409, detail=str(error)) from error
+
+
+def _check_single_supplement_decision(project_id, decision, frozen):
+    image_id = decision.image_id
+    maps = [frozen.get(key) for key in (
+        "per_image_missing_review_scopes", "per_image_annotation_versions", "per_image_source_hashes",
+    )]
+    if not all(isinstance(mapping, dict) and image_id in mapping for mapping in maps):
+        raise HTTPException(409, detail="逐图补审冻结凭据缺失，禁止提交")
+    missing, version, source_hash = (mapping[image_id] for mapping in maps)
+    if (not isinstance(missing, list) or not missing or any(not isinstance(code, str) for code in missing)
+            or type(version) is not int or not isinstance(source_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", source_hash)):
+        raise HTTPException(409, detail="逐图补审冻结凭据无效，禁止提交")
+    if decision.accepted and (not decision.review_scope or not set(decision.review_scope).issubset(missing)):
+        raise HTTPException(400, detail="请明确选择创建任务时冻结的已审核类别")
+    material = material_store(project_id).get(image_id) or {}
+    formal = read_annotation(project_id, image_id)
+    if (int(formal.get("version") or 0) != version
+            or str(material.get("content_sha256") or "").strip().lower() != source_hash
+            or material.get("source_available") is False
+            or material.get("_dataset_delete_claim") or material.get("_material_batch_delete_claim")):
+        raise HTTPException(409, detail="逐图补审所依据的正式 GT 或素材已变化，请重新创建任务")
 
 
 def _decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):

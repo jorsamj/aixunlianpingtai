@@ -554,6 +554,91 @@ class CandidateStore:
                 db.rollback()
                 raise
 
+    @staticmethod
+    def _reviewed_candidate(item, decision):
+        item = dict(item)
+        if decision.accepted and item.get("manual_review_required"):
+            if not int(item.get("draft_revision") or 0) and decision.boxes is None:
+                raise ValueError("跨标签重叠框尚未人工消歧，请先编辑并保存候选框")
+            if cross_label_overlaps(decision.boxes if decision.boxes is not None else item.get("boxes") or []):
+                raise ValueError("跨标签目标框仍显著重叠，请删除或修改冲突框后再采用")
+        item["accepted"] = bool(decision.accepted)
+        if decision.boxes is not None:
+            item["boxes"] = decision.boxes
+        # A new decision replaces, never inherits, previously
+        # attested scope. Rejection cannot attest any scope.
+        item.pop("review_scope", None)
+        if decision.review_scope is not None:
+            scope = decision.review_scope
+            if (not decision.accepted or not isinstance(scope, list)
+                    or not 1 <= len(scope) <= 128
+                    or any(not isinstance(code, str) or not code.strip()
+                           or code != code.strip() for code in scope)
+                    or len(set(scope)) != len(scope)):
+                raise ValueError("candidate per-image review scope is invalid")
+            item["review_scope"] = list(scope)
+        return item
+
+    def single_decision_event(self, image_id, request_id):
+        self._ready()
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT event_json FROM review_events WHERE image_id=? AND operation_id=? AND kind='single_decision'",
+                (image_id, request_id),
+            ).fetchone()
+            try:
+                return json.loads(row[0]) if row else None
+            except (TypeError, json.JSONDecodeError):
+                return None
+
+    def apply_single_decision(self, decision, *, expected_revision, request_id, identity, actor, label_ids):
+        """Commit one candidate, the review revision and its original operation receipt together."""
+        self._ready()
+        image_id = decision.image_id
+        result = {
+            "ok": True, "status": "completed", "request_id": request_id,
+            "image_id": image_id, "accepted": decision.accepted, "review_revision": expected_revision + 1,
+        }
+        evidence = {"identity": identity, "actor": actor, "result": result}
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT event_json FROM review_events WHERE image_id=? AND operation_id=? AND kind='single_decision'",
+                (image_id, request_id),
+            ).fetchone()
+            if previous:
+                if json.loads(previous[0]) != evidence:
+                    raise ValueError("同一审核操作编号的提交内容不一致")
+                return result
+            revision = int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
+            if revision != expected_revision:
+                raise ValueError("审核修订已变化，请重新读取候选")
+            row = db.execute("SELECT * FROM candidates WHERE image_id=?", (image_id,)).fetchone()
+            if (not row or row["status"] not in {"success", "empty"} or row["review_state"] != "active"
+                    or db.execute("SELECT 1 FROM commits WHERE image_id=?", (image_id,)).fetchone()):
+                raise ValueError("当前候选不可审核")
+            current = self._decode(row)
+            if (decision.accepted and current.get("manual_review_required")
+                    and (current.get("draft") or {}).get("auto_resolution")):
+                raise ValueError("跨标签重叠框尚未人工消歧，请先编辑并保存候选框")
+            item = self._reviewed_candidate(current, decision)
+            if decision.accepted:
+                boxes = []
+                for box in item["boxes"]:
+                    label = str(box.get("label") or "").strip()
+                    if label not in label_ids:
+                        raise ValueError("当前候选框标签不在有效标签库：" + (label or "(empty)"))
+                    boxes.append({**box, "label": label, "class_id": label_ids[label]})
+                if decision.review_scope is not None and not {box["label"] for box in boxes}.issubset(decision.review_scope):
+                    raise ValueError("候选框标签超出本次明确审核范围")
+                item["boxes"] = boxes
+            self._put(db, item, normalize=False)
+            db.execute(
+                "INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,'single_decision',?)",
+                (image_id, request_id, json.dumps(evidence, ensure_ascii=False)),
+            )
+            return result
+
     def apply_decisions(
         self,
         decisions: Iterable[CandidateDecision],
@@ -611,27 +696,7 @@ class CandidateStore:
                         if (item.get("review_state", "active") != "active"
                                 or db.execute("SELECT 1 FROM commits WHERE image_id=?", (image_id,)).fetchone()):
                             raise ValueError("candidate is unavailable for review")
-                        item = dict(item)
-                        if decision.accepted and item.get("manual_review_required"):
-                            if not int(item.get("draft_revision") or 0) and decision.boxes is None:
-                                raise ValueError("跨标签重叠框尚未人工消歧，请先编辑并保存候选框")
-                            if cross_label_overlaps(decision.boxes if decision.boxes is not None else item.get("boxes") or []):
-                                raise ValueError("跨标签目标框仍显著重叠，请删除或修改冲突框后再采用")
-                        item["accepted"] = bool(decision.accepted)
-                        if decision.boxes is not None:
-                            item["boxes"] = decision.boxes
-                        # A new decision replaces, never inherits, previously
-                        # attested scope. Rejection cannot attest any scope.
-                        item.pop("review_scope", None)
-                        if decision.review_scope is not None:
-                            scope = decision.review_scope
-                            if (not decision.accepted or not isinstance(scope, list)
-                                    or not 1 <= len(scope) <= 128
-                                    or any(not isinstance(code, str) or not code.strip()
-                                           or code != code.strip() for code in scope)
-                                    or len(set(scope)) != len(scope)):
-                                raise ValueError("candidate per-image review scope is invalid")
-                            item["review_scope"] = list(scope)
+                        item = self._reviewed_candidate(item, decision)
                         self._put(db, item, normalize=False)
                         items[image_id] = item
                 db.commit()
