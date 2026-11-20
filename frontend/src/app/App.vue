@@ -16,7 +16,7 @@ function target(page:string){
  if(page==='训练任务')return {name:'training-tasks',params:project};
  return {name:'legacy',params:{...project,page}};
 }
-async function logout(){try{await request('/api/auth/logout',{method:'POST'});store.actorKey='';login()}catch(cause){error.value=(cause as Error).message}}
+async function logout(){if(immersive.value&&!window.dispatchEvent(new Event('workspace-before-logout',{cancelable:true})))return;try{await request('/api/auth/logout',{method:'POST'});store.actorKey='';login()}catch(cause){error.value=(cause as Error).message}}
 onMounted(()=>{void store.load().catch(cause=>{error.value=cause.message})});
 </script>
 <template><div class="application-shell">

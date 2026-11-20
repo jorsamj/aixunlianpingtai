@@ -62,6 +62,15 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   }
   function previousPage(){if(pageNumber.value>1)return readPage(filter.value,cursors.value.slice(0,-1))}
   function reloadPage(){return readPage(filter.value,cursors.value)}
+  async function refreshAfterDraft(id:string){
+    const epoch=generation;
+    await reloadPage();
+    if(epoch!==generation||pageError.value)return;
+    if(!page.value?.items.length&&pageNumber.value>1)await previousPage();
+    if(epoch!==generation||pageError.value)return;
+    const row=page.value?.items.find(candidate=>candidate.image_id===id);
+    if(row)await inspect(row);
+  }
   async function inspect(row:ReviewCandidate){
     if(!scope)return;
     closeImage();item.value=row;
@@ -87,5 +96,5 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   }
   return {task,page,filter,pageNumber,item,diagnostics,taskBusy,pageBusy,itemBusy,diagnosticsBusy,
     taskError,pageError,itemError,diagnosticsError,open,reset,setFilter,nextPage,previousPage,reloadPage,
-    inspect,closeImage,readDiagnostics};
+    inspect,closeImage,readDiagnostics,refreshAfterDraft};
 });

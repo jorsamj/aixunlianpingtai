@@ -1,4 +1,5 @@
 import {request} from '../app/http';
+import type {AiEditorBox} from '../types/ai-editor';
 import type {MaterialBox} from '../types/materials';
 
 export const reviewFilters = [
@@ -15,7 +16,7 @@ export interface ReviewTask {
 }
 export interface ReviewCandidate {
   image_id:string;filename?:string;width?:number;height?:number;status:string;boxes?:MaterialBox[];
-  original_boxes?:MaterialBox[];review_state?:string;gt_committed?:boolean;manual_review_required?:boolean;
+  source_content_sha256?:string;content_sha256?:string;original_boxes?:MaterialBox[];review_state?:string;gt_committed?:boolean;manual_review_required?:boolean;
   draft_revision?:number;accepted?:boolean|null;error?:string;error_code?:string;error_stage?:string;
   http_status?:number;attempt_count?:number;retry_suggestion?:string;review_scope?:string[];
   review_conflicts?:{labels?:string[];iou?:number}[];
@@ -52,5 +53,22 @@ export async function getReviewCandidate(scope:ReviewAddress, id:string, signal:
 export async function getReviewDiagnostics(scope:ReviewAddress, id:string, signal:AbortSignal) {
   const result=await request<ReviewDiagnostics>(root(scope)+'/candidates/'+enc(id)+'/diagnostics',{signal});
   if(result.image_id!==id)throw new Error('诊断图片身份不一致');
+  return result;
+}
+
+export interface ReviewLabel {code:string;class_id:number;display_name?:string}
+export interface CandidateDraft {
+  boxes:AiEditorBox[];revision:number;request_id:string;source_content_sha256?:string;
+}
+export async function getReviewLabels(projectId:string,signal:AbortSignal){
+  const result=await request<{items:ReviewLabel[]}>(`/api/v12/projects/${enc(projectId)}/labels`,{signal});
+  return result.items;
+}
+export async function saveReviewDraft(scope:ReviewAddress,imageId:string,draft:CandidateDraft,signal:AbortSignal){
+  const result=await request<{image_id:string;revision:number}>(root(scope)+'/candidates/'+enc(imageId)+'/draft',{
+    method:'PUT',body:JSON.stringify(draft),signal,
+  });
+  if(result.image_id!==imageId||result.revision!==draft.revision+1)
+    throw new Error('草稿回执身份或版本不一致');
   return result;
 }

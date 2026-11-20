@@ -90,7 +90,7 @@ test('原生审核读取 24 张分页及失败诊断，三个视口保留原工�
     await expect(page.getByText('502',{exact:true})).toBeVisible();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     if(width!==768){
-      expect(await page.locator('.review-columns').evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(3);
+      expect(await page.locator('.review-columns').evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(width===1920?3:2);
       await page.getByRole('button',{name:'关闭检查'}).click();
     }
   }

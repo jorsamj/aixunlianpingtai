@@ -160,3 +160,11 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 | --- | --- | --- | --- |
 | AI 审核只读浏览 | 显式 SPA 任务审核 URL；v60 TaskRepository / CandidateStore，v61 素材读取 | `FUNCTIONAL_COMPLETE`（D1-B 只读范围） | 定向 Chrome、类型和离线构建，`CI_PENDING` |
 | 原审核写操作 | 原「自动标注及清洗」工作台；既有 CandidateStore、AnnotationRepository、NegativePool、ArtifactStore | 原工作台可达，D1-C 原生迁移 `NOT_STARTED` | 按原 M4-D0 合同验收 |
+
+
+### M4-D1-C 单图候选编辑
+
+| 功能 | Owner | 迁移状态 |
+| --- | --- | --- |
+| 单图候选标注框编辑、撤销/重做及草稿恢复 | 原生编辑会话、既有 Annotorious、v60 CandidateStore | `FUNCTIONAL_COMPLETE`（本阶段范围），CI 异步验收 |
+| 接受候选、冻结选择、批量消歧、GT 入库、转池与撤销 | 原审核工作台及既有服务端 Owner | 原生迁移 `NOT_STARTED`，原入口可达 |

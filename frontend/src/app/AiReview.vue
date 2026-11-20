@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import {computed,nextTick,onBeforeUnmount,onMounted,ref,watch} from 'vue';
+import {computed,defineAsyncComponent,nextTick,onBeforeUnmount,onMounted,ref,watch} from 'vue';
+import {onBeforeRouteLeave,onBeforeRouteUpdate} from 'vue-router';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 import {legacyUrl} from './navigation';
 import {login} from './http';
@@ -10,6 +11,21 @@ import MaterialPreview from '../components/MaterialPreview.vue';
 
 const props=defineProps<{projectId:string;taskId:string}>();
 const workspace=useWorkspace(),review=useAiReviewStore();
+const NativeAiCandidateEditor=defineAsyncComponent(()=>import('./NativeAiCandidateEditor.vue'));
+const editor=ref<{canLeave():boolean;suspend(value:boolean):void;hasUnresolved():boolean}>();
+const editing=ref<string>();
+const editScope=computed(()=>({projectId:props.projectId,taskId:props.taskId}));
+const canEdit=computed(()=>review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION'
+  &&!review.itemBusy&&!review.itemError&&['success','empty'].includes(review.item?.status||'')
+  &&review.item?.review_state==='active'&&!review.item.gt_committed);
+const canLeave=()=>editor.value?.canLeave()??true;
+onBeforeRouteLeave(canLeave);
+onBeforeRouteUpdate((to,from)=>to.path===from.path||canLeave());
+function beforeUnload(event:BeforeUnloadEvent){
+  if(editor.value?.hasUnresolved()){event.preventDefault();event.returnValue=''}
+}
+function beforeLogout(event:Event){if(!canLeave())event.preventDefault()}
+function closeEditor(){editing.value=undefined}
 const layout=ref<'grid'|'list'>('grid'),original=ref(false);
 const inspectorTitle=ref<HTMLElement>(),focusReturn=ref<HTMLButtonElement>();
 const legacy=computed(()=>legacyUrl(props.projectId,'自动标注及清洗'));
@@ -24,12 +40,14 @@ function open(){
 }
 watch([()=>props.projectId,()=>props.taskId,()=>workspace.actorKey],()=>{
   sessionRead?.abort();
+  closeEditor();
   review.reset();
   open();
 },{immediate:true,flush:'sync'});
 async function verifySession(){
   sessionRead?.abort();
-  review.reset();
+  if(editing.value)editor.value?.suspend(true);
+  else review.reset();
   if(document.hidden)return;
   const controller=sessionRead=new AbortController();
   sessionError.value='';
@@ -37,24 +55,30 @@ async function verifySession(){
     const session=await readWorkspaceSession(controller.signal);
     if(controller.signal.aborted)return;
     if(!session.authenticated){login();return}
-    if(workspaceActorKey(session)!==workspace.actorKey){location.reload();return}
-    open();
+    if(workspaceActorKey(session)!==workspace.actorKey){closeEditor();review.reset();location.reload();return}
+    if(editing.value)editor.value?.suspend(false);
+    else open();
   }catch(cause){
     if(!controller.signal.aborted)sessionError.value=(cause as Error).message;
   }
 }
 function release(){
   sessionRead?.abort();
+  closeEditor();
   review.reset();
 }
 function restore(event:PageTransitionEvent){if(event.persisted)void verifySession()}
 onMounted(()=>{
   document.addEventListener('visibilitychange',verifySession);
+  window.addEventListener('beforeunload',beforeUnload);
+  window.addEventListener('workspace-before-logout',beforeLogout);
   window.addEventListener('pagehide',release);
   window.addEventListener('pageshow',restore);
 });
 onBeforeUnmount(()=>{
   document.removeEventListener('visibilitychange',verifySession);
+  window.removeEventListener('beforeunload',beforeUnload);
+  window.removeEventListener('workspace-before-logout',beforeLogout);
   window.removeEventListener('pagehide',release);
   window.removeEventListener('pageshow',restore);
   release();
@@ -115,22 +139,32 @@ const diagnosticFacts=computed(()=>{
    </div>
    <el-button tag="a" :href="legacy">返回原工作台</el-button>
   </header>
-  <div v-if="sessionError || review.taskError" role="alert" class="review-notice">
-   {{ sessionError || review.taskError }}
-   <el-button @click="sessionError ? verifySession() : open()">重试</el-button>
+  <div v-if="sessionError" role="alert" class="review-notice">
+   {{ sessionError }} <el-button @click="verifySession()">重试会话核验</el-button>
   </div>
-  <p v-else-if="!review.task" role="status" class="review-notice">正在核验任务…</p>
-  <template v-else>
+  <NativeAiCandidateEditor v-if="editing" ref="editor" :key="editing" :image-id="editing"
+   :scope="editScope" :actor-key="workspace.actorKey" @close="closeEditor" @saved="review.refreshAfterDraft" />
+  <div v-else-if="review.taskError" role="alert" class="review-notice">
+   {{ review.taskError }} <el-button @click="open()">重试</el-button>
+  </div>
+  <p v-else-if="!review.task && !sessionError" role="status" class="review-notice">正在核验任务…</p>
+  <template v-else-if="review.task">
    <p v-if="review.task.error || review.task.generation_interruption_code" class="review-notice" role="status">
     {{ review.task.error || review.task.generation_interruption_code }}
    </p>
    <div class="review-columns">
     <nav aria-label="候选筛选" class="review-filters">
      <h3>审核范围</h3>
-     <button v-for="[key,label] in reviewFilters" :key="key" type="button"
+     <button v-for="[key,label] in reviewFilters.slice(0,5)" :key="key" type="button"
       :disabled="review.pageBusy" :aria-pressed="review.filter===key" @click="review.setFilter(key)">
       {{ label }} <span v-if="review.page?.summary?.[key]!=null">{{ review.page.summary[key] }}</span>
      </button>
+     <details><summary>更多筛选</summary>
+      <button v-for="[key,label] in reviewFilters.slice(5)" :key="key" type="button"
+       :disabled="review.pageBusy" :aria-pressed="review.filter===key" @click="review.setFilter(key)">
+       {{ label }} <span v-if="review.page?.summary?.[key]!=null">{{ review.page.summary[key] }}</span>
+      </button>
+     </details>
     </nav>
     <section class="review-results" aria-label="候选结果" :aria-busy="review.pageBusy">
      <div class="review-toolbar">
@@ -170,6 +204,7 @@ const diagnosticFacts=computed(()=>{
      <p v-if="!review.item">选择候选图片查看候选框和诊断。</p>
      <template v-else>
       <h4>{{ candidateName(review.item) }} · {{ candidateStatus(review.item) }}</h4>
+      <el-button v-if="canEdit" @click="editing=review.item.image_id">编辑候选</el-button>
       <div v-if="review.item.original_boxes" class="review-toolbar" role="group" aria-label="候选框版本">
        <button :aria-pressed="!original" @click="original=false">当前候选框</button>
        <button :aria-pressed="original" @click="original=true">原始候选框</button>
@@ -233,6 +268,13 @@ button[aria-pressed=true],button[aria-current=true]{background:#e9e9e9;border-co
 .review-workspace :deep(.box-layer rect){stroke:#444}
 .review-workspace :deep(.box-layer text){fill:#444}
 .review-candidate :deep(.media-scroll){max-height:none}
+.review-filters details button{display:block;width:100%;margin-top:4px}
+.review-filters summary{cursor:pointer;padding:5px}
+@media(min-width:901px) and (max-width:1400px){
+ .review-columns{grid-template-columns:184px minmax(0,1fr)}
+ .review-inspector{display:none}
+ .review-inspector.open{display:block;position:fixed;top:0;right:0;bottom:0;width:350px;max-height:100dvh;z-index:10}
+}
 @media(max-width:900px){
  .review-columns{grid-template-columns:minmax(0,1fr)}
  .review-filters{flex-direction:row;flex-wrap:wrap;align-items:center}

@@ -27,6 +27,9 @@ export interface AiEditorSnapshot {
   revision?: string | number;
   view?: {mode: string; visible: boolean; scale: number};
   conflict?: boolean;
+  retryPending?: boolean;
+  saveDisabled?: boolean;
+  editingDisabled?: boolean;
 }
 // An opaque original-owner handle. The Vue shell never edits the kernel.
 export type AiEditorHandle = object;
