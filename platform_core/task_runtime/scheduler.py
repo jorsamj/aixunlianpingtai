@@ -139,6 +139,10 @@ class Scheduler:
         except ExecutionFencedError:
             context.terminate_bound_process()
             return False
+        if context.task.kind is TaskKind.ANNOTATION_FORMAL_BULK:
+            # The next lease reconciles persisted evidence, including after a
+            # process exit. Generic finish cannot certify this task's GT journal.
+            return False
         if observed is None or observed.status is not TaskStatus.CANCEL_REQUESTED:
             return False
         if not cls._cleanup_bound_process_if_needed(
@@ -229,6 +233,10 @@ class Scheduler:
         except ExecutionFencedError:
             context.terminate_bound_process()
             return
+        if context.task.kind is TaskKind.ANNOTATION_FORMAL_BULK:
+            logger.warning("Formal bulk task %s stopped before reconciliation: %s",
+                           context.task.task_id, error)
+            return
         if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
             cls._finish_cancel_if_safe(context, current)
             return
@@ -276,6 +284,7 @@ class Scheduler:
             self._active_context = None
             return False
         handler = self.handlers[lease.task.kind]
+        formal_bulk = lease.task.kind is TaskKind.ANNOTATION_FORMAL_BULK
         stop_renewal = threading.Event()
         renewal = threading.Thread(
             target=self._renew_lease,
@@ -285,6 +294,11 @@ class Scheduler:
         )
         renewal.start()
         try:
+            if formal_bulk:
+                from ..annotation_bulk_commit import reconcile_worker_bulk_formal_cancel
+
+                if reconcile_worker_bulk_formal_cancel(context, self.artifacts):
+                    return True
             if lease.task.kind is TaskKind.TRAINING and not lease.task.resource_key.startswith("training:remote:"):
                 assignment = self.gpu_resources.assignment(lease)
                 context.artifacts.atomic_write_json(lease.task.task_id, "assignment.json", assignment)
@@ -300,7 +314,11 @@ class Scheduler:
                 status, result_ref = outcome
                 outcome_error = None
             current = context.assert_current_execution()
-            if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
+            if formal_bulk:
+                # F1 only implements verified cancellation. Automatic bulk
+                # execution and its non-cancellation terminal protocol follow.
+                reconcile_worker_bulk_formal_cancel(context, self.artifacts)
+            elif current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
                 self._finish_cancel_if_safe(context, current)
             else:
                 if lease.task.kind is TaskKind.TRAINING and status in {

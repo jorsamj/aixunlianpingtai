@@ -7,7 +7,7 @@ import time
 import uuid
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -761,6 +761,7 @@ def commit_candidate_decisions(
     persist_selected: Callable[[], None] | None = None,
     frozen_annotation_digests: dict[str, str] | None = None,
     before_formal_write: Callable[[], None] | None = None,
+    formal_write_barrier=None,
 ) -> dict[str, Any]:
     """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
@@ -1053,10 +1054,11 @@ def commit_candidate_decisions(
         if to_write:
             if before_formal_write is not None:
                 before_formal_write()
-            written_by_id = {
-                str(row.get("image_id") or ""): row
-                for row in (write_formal_annotations(project_id, to_write) or [])
-            }
+            with formal_write_barrier() if formal_write_barrier is not None else nullcontext():
+                written_by_id = {
+                    str(row.get("image_id") or ""): row
+                    for row in (write_formal_annotations(project_id, to_write) or [])
+                }
         # Future journal rows can prove an unchanged formal GT revision. Older
         # journals deliberately stay unknown when no durable revision evidence
         # exists; do not invent it during a later read-only audit.

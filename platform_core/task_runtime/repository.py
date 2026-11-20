@@ -5,6 +5,7 @@ from ..performance_diagnostics import connect_sqlite, observe_connection
 from contextlib import closing, contextmanager
 
 import base64
+from hashlib import sha256
 import json
 import sqlite3
 import threading
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from .claim_candidates import prepare_candidates, SEMANTIC_FIELDS, key as candidate_key
 
@@ -29,7 +30,7 @@ from ..gpu_resources import ensure_gpu_runtime_schema
 from .inference_resources import InferenceResourceMethods, ensure_inference_runtime_schema
 
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _INIT_LOCK_TIMEOUT = 30
 
 
@@ -37,6 +38,12 @@ def admission_preparer(admission):
     return getattr(admission, "prepare", None) or getattr(getattr(admission, "__self__", None), "prepare_admission", None)
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS formal_bulk_execution (
+    task_id TEXT PRIMARY KEY,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    active_batch TEXT,
+    reconciliation TEXT
+);
 CREATE TABLE IF NOT EXISTS task_tombstones (
     task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL,
     payload_ref TEXT, attempt INTEGER NOT NULL DEFAULT 0, deleted_at TEXT NOT NULL,
@@ -908,6 +915,27 @@ class TaskRepository(InferenceResourceMethods):
             database.commit()
         return int(changed)
 
+    def _formal_bulk_lock(self, task_id: str, *, timeout: float = 5) -> FileLock:
+        path = self.path.resolve()
+        identity = sha256(task_id.encode("utf-8")).hexdigest()
+        return FileLock(str(path.with_name(f"{path.name}.formal-{identity}.lock")), timeout=timeout)
+
+    def _requeue_expired_formal_bulk(self, database, row, now: str) -> int:
+        task_id = row["task_id"]
+        # The caller holds the SQLite writer. Never wait for a per-task lock here:
+        # the GT owner takes that lock before starting its short validation txn.
+        try:
+            with self._formal_bulk_lock(task_id, timeout=0):
+                return database.execute(
+                    """UPDATE tasks SET status='QUEUED', stage='recovered', worker_id=NULL,
+                           lease_token=NULL, lease_expires_at=NULL, updated_at=?
+                         WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')
+                           AND lease_expires_at<=?""",
+                    (now, task_id, now),
+                ).rowcount
+        except Timeout:
+            return 0
+
     def _release_expired_in(self, database: sqlite3.Connection, now: str) -> int:
         # Lease expiry fences writes but cannot prove a remote Agent stopped
         # computing after a network partition. Keep its durable owner until
@@ -941,6 +969,7 @@ class TaskRepository(InferenceResourceMethods):
              WHERE status IN ('RUNNING','CANCEL_REQUESTED')
                AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
                AND (worker_id IS NULL OR worker_id NOT LIKE 'agent:%')
+               AND kind<>'ANNOTATION_FORMAL_BULK'
             """,
             (now, now, now),
         ).rowcount
@@ -958,6 +987,12 @@ class TaskRepository(InferenceResourceMethods):
             """,
             (now,),
         )
+        for row in database.execute(
+            """SELECT task_id FROM tasks WHERE kind='ANNOTATION_FORMAL_BULK'
+                 AND status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at<=?
+                 AND (worker_id IS NULL OR worker_id NOT LIKE 'agent:%') AND process_pid IS NULL""", (now,),
+        ).fetchall():
+            count += self._requeue_expired_formal_bulk(database, row, now)
         return count
 
     def is_deleted(self, task_id, *, project_id=None):
@@ -1441,21 +1476,42 @@ class TaskRepository(InferenceResourceMethods):
         return result
 
     def request_cancel(self, task_id: str) -> TaskRecord:
-        now = utc_now()
+        result = self._request_cancel(task_id)
+        if result is not None:
+            return result
+        with self._formal_bulk_lock(str(task_id)):
+            return self._request_cancel(task_id, formal_bulk_locked=True)
+
+    def _request_cancel(self, task_id: str, *, formal_bulk_locked: bool = False) -> TaskRecord | None:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT status, stage FROM tasks WHERE task_id=?",
+                "SELECT status, stage, kind FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
             if row is None:
                 database.rollback()
                 raise KeyError(task_id)
+            if row["kind"] == TaskKind.ANNOTATION_FORMAL_BULK.value and not formal_bulk_locked:
+                database.rollback()
+                return None
+            now = utc_now()
             status = TaskStatus(row["status"])
             if status is TaskStatus.RUNNING and str(row["stage"]) == "finalizing_commit":
                 database.rollback()
                 raise ValueError("训练已完成并正在归档，无法再停止")
-            if status is TaskStatus.QUEUED or status is TaskStatus.AWAITING_CONFIRMATION:
+            if row["kind"] == TaskKind.ANNOTATION_FORMAL_BULK.value:
+                if status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+                    database.execute(
+                        """INSERT INTO formal_bulk_execution(task_id, cancel_requested) VALUES (?,1)
+                           ON CONFLICT(task_id) DO UPDATE SET cancel_requested=1""", (str(task_id),),
+                    )
+                    database.execute(
+                        """UPDATE tasks SET status=CASE WHEN status='RUNNING' THEN 'CANCEL_REQUESTED'
+                                                       ELSE status END, stage='cancelling', updated_at=?
+                             WHERE task_id=?""", (now, str(task_id)),
+                    )
+            elif status is TaskStatus.QUEUED or status is TaskStatus.AWAITING_CONFIRMATION:
                 database.execute(
                     """
                     UPDATE tasks SET status='CANCELLED', stage='cancelled', accepted=COALESCE(accepted,0),
@@ -1575,7 +1631,7 @@ class TaskRepository(InferenceResourceMethods):
                 UPDATE tasks
                    SET status=?, stage=?, error=?, finished_at=?, updated_at=?,
                        worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
-                 WHERE task_id=? AND status='QUEUED'
+                 WHERE task_id=? AND status='QUEUED' AND kind<>'ANNOTATION_FORMAL_BULK'
                 """,
                 (
                     status.value,
@@ -1634,6 +1690,7 @@ class TaskRepository(InferenceResourceMethods):
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND kind<>'ANNOTATION_FORMAL_BULK'
                    AND (
                        worker_id IS NULL OR worker_id NOT LIKE 'agent:%'
                        OR (
@@ -1876,7 +1933,7 @@ class TaskRepository(InferenceResourceMethods):
                     result_ref=NULL, worker_id=NULL, lease_token=NULL,
                     lease_expires_at=NULL, process_pid=NULL, process_create_time=NULL,
                     process_command_hash=NULL, finished_at=NULL, updated_at=?
-                 WHERE task_id=? AND status IN ({placeholders})
+                 WHERE task_id=? AND status IN ({placeholders}) AND kind<>'ANNOTATION_FORMAL_BULK'
                 """,
                 (now, str(task_id), *terminal_values),
             ).rowcount

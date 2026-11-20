@@ -1297,3 +1297,209 @@ def test_bulk_formal_commit_refuses_invalid_sealed_manifest(client, review_task,
     assert error.value.status_code == 503
     assert not store.bulk_formal_events(ids)
     assert store.review_revision() == body["review_revision"]
+
+@pytest.fixture
+def running_formal_bulk(request, client, review_task, tmp_path):
+    from platform_core.annotation_bulk_commit import execute_worker_bulk_formal_batch
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+    from platform_core.task_runtime.worker import WorkerContext
+
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, getattr(request, "param", 1))
+    operation, _ = _seal_for_bulk(client, project, task, store, base, body)
+    ref = operation["manifest_ref"]
+    identity = store.artifacts.payload_reader.read_evidence_json(task, ref)["operation"]["identity"]
+    repo = FencedTaskRepository(tmp_path / "execution.sqlite3")
+    queued = TaskRecord.new("formal-worker-task", project, TaskKind.ANNOTATION_FORMAL_BULK, ref, "review")
+    repo.create(queued, artifacts=store.artifacts)
+    lease = repo.claim_next("worker-a", [queued.kind], set())
+    context = WorkerContext(lease.task, lease, repo, store.artifacts)
+
+    def execute():
+        return execute_worker_bulk_formal_batch(
+            context, store.artifacts, identity, operation["operation_id"], ref, 0,
+        )
+
+    return project, store, ids, repo, queued, lease, execute, (identity, operation["operation_id"], ref)
+
+
+@pytest.mark.parametrize("running_formal_bulk", [100], indirect=True)
+def test_formal_bulk_gt_barrier_serializes_independent_worker_and_cancel(running_formal_bulk, monkeypatch):
+    import subprocess
+    import sys
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from time import perf_counter
+
+    from platform_core import annotation_task_service as service
+
+    project, store, ids, repo, queued, lease, execute, _ = running_formal_bulk
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    repo.create(TaskRecord.new("other-task", project, TaskKind.VIDEO_FRAMES, "input.json", "other"),
+                artifacts=store.artifacts)
+    other = repo.claim_next("worker-other", [TaskKind.VIDEO_FRAMES], set())
+    actual_write = service.write_formal_annotations
+    canceller_entered = threading.Event()
+    actual_lock = repo._formal_bulk_lock
+
+    def observe_lock(task_id, **kwargs):
+        if threading.current_thread().name.startswith("cancel-formal"):
+            canceller_entered.set()
+        return actual_lock(task_id, **kwargs)
+
+    monkeypatch.setattr(repo, "_formal_bulk_lock", observe_lock)
+    competitor = """
+from datetime import datetime, timedelta, timezone
+from platform_core.task_runtime import TaskKind
+from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+import sys
+repository = FencedTaskRepository(sys.argv[1])
+input()
+assert repository.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+# The unrelated task is expired by the simulated clock, the bulk task isn't.
+assert repository.claim_next("worker-b", [TaskKind.ANNOTATION_FORMAL_BULK], set()) is None
+print("blocked", flush=True)
+"""
+    with subprocess.Popen([sys.executable, "-c", competitor, str(repo.path)], text=True,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE) as worker_b, \
+            ThreadPoolExecutor(1, thread_name_prefix="cancel-formal") as pool:
+        try:
+            cancellation = None
+            elapsed = {}
+
+            def held_write(project_id, rows):
+                nonlocal cancellation
+                start = perf_counter()
+                gained = repo.heartbeat(other.task.task_id, other.lease_token, execution_generation=other.task.attempt)
+                elapsed["other_heartbeat"] = perf_counter() - start
+                assert gained.status is TaskStatus.RUNNING
+
+                stdout, _ = worker_b.communicate("reap\n", timeout=10)
+                assert worker_b.returncode == 0 and stdout.strip() == "blocked"
+
+                def cancel():
+                    start_cancel = perf_counter()
+                    try:
+                        return repo.request_cancel(queued.task_id)
+                    finally:
+                        elapsed["cancel"] = perf_counter() - start_cancel
+
+                cancellation = pool.submit(cancel)
+                assert canceller_entered.wait(2)
+                with pytest.raises(TimeoutError):
+                    cancellation.result(timeout=0.15)
+                assert repo.get(queued.task_id).status is TaskStatus.RUNNING
+                assert annotations.get_many(ids) == before
+                gt_start = perf_counter()
+                committed = actual_write(project_id, rows)
+                elapsed["gt_write"] = perf_counter() - gt_start
+                elapsed["barrier_observed"] = perf_counter() - start
+                return committed
+
+            monkeypatch.setattr(service, "write_formal_annotations", held_write)
+            assert execute()["status"] == "completed"
+            assert cancellation.result(timeout=5).status is TaskStatus.CANCEL_REQUESTED
+            print("formal bulk isolated seconds", elapsed)
+            assert elapsed["other_heartbeat"] < 2
+            assert elapsed["cancel"] >= 0.15
+        finally:
+            if worker_b.poll() is None:
+                worker_b.kill()
+
+    from datetime import datetime, timedelta, timezone
+    assert repo.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    replacement = repo.claim_next("worker-b", [queued.kind], set())
+    assert replacement.task.attempt == lease.task.attempt + 1
+    with pytest.raises(PermissionError):
+        with repo.formal_bulk_gt_write(lease, lease.task.attempt, {}):
+            pytest.fail("expired execution acquired the GT barrier")
+    after = annotations.get_many(ids)
+    assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids)
+    assert set(store.get_commit_summaries(ids)) == set(ids)
+
+
+@pytest.mark.parametrize("durable", [False, True], ids=["candidate-only", "gt-durable"])
+def test_formal_bulk_cancel_reclaim_reconciles_without_gt_write(running_formal_bulk, monkeypatch, durable):
+    import json
+    import subprocess
+    import sys
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core import annotation_task_service as service
+    from platform_core.task_runtime.scheduler import Scheduler
+
+    project, store, ids, repo, queued, lease, execute, intent = running_formal_bulk
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    def interrupt(*args, **kwargs):
+        raise OSError("interrupted before reconciliation")
+
+    if durable:
+        crash = """
+import json
+import os
+import sys
+import app as host
+from platform_core.annotation_bulk_commit import execute_worker_bulk_formal_batch
+from platform_core.annotation_candidates import CandidateStore
+from platform_core.task_runtime import ArtifactStore, TaskRepository, TaskStatus
+from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+from platform_core.task_runtime.models import TaskLease
+from platform_core.task_runtime.worker import WorkerContext
+
+parameters = json.load(sys.stdin)
+repo = FencedTaskRepository(parameters["db"])
+artifacts = ArtifactStore(parameters["artifacts"])
+host._SHARED_TASK_REPOSITORY = TaskRepository(parameters["review_db"])
+host._SHARED_TASK_ARTIFACTS = artifacts
+task = repo.get(parameters["task"])
+lease = TaskLease(task, parameters["token"], task.worker_id, task.lease_expires_at)
+context = WorkerContext(task, lease, repo, artifacts)
+
+def cancel_and_exit(*args, **kwargs):
+    assert repo.request_cancel(task.task_id).status is TaskStatus.CANCEL_REQUESTED
+    os._exit(42)
+
+CandidateStore.record_commit_summaries = cancel_and_exit
+execute_worker_bulk_formal_batch(context, artifacts, *parameters["intent"], 0)
+"""
+        review_repo = host._SHARED_TASK_REPOSITORY
+        process = subprocess.run(
+            [sys.executable, "-c", crash],
+            input=json.dumps({"db": str(repo.path), "artifacts": str(store.artifacts.root),
+                              "review_db": str(review_repo.path), "task": queued.task_id,
+                              "token": lease.lease_token, "intent": intent}),
+            text=True, capture_output=True, timeout=20,
+        )
+        assert process.returncode == 42, process.stderr
+    else:
+        with monkeypatch.context() as patch:
+            patch.setattr(service, "write_formal_annotations", interrupt)
+            with pytest.raises(OSError, match="before reconciliation"):
+                execute()
+        assert repo.request_cancel(queued.task_id).status is TaskStatus.CANCEL_REQUESTED
+
+    assert not store.get_commit_summaries(ids)
+    with pytest.raises(PermissionError):
+        repo.finish(queued.task_id, lease.lease_token, TaskStatus.CANCELLED, execution_generation=lease.task.attempt)
+    assert repo.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    assert repo.get(queued.task_id).status is TaskStatus.QUEUED
+    monkeypatch.setattr(service, "write_formal_annotations", interrupt)
+    current = annotations.get_many(ids)
+    assert all(current[key]["version"] == before[key]["version"] + int(durable) for key in ids)
+    if durable:
+        with monkeypatch.context() as patch:
+            patch.setattr(type(annotations), "candidate_commit_receipts", lambda *_: {})
+            scheduler = Scheduler(repo, store.artifacts, "worker-second", {queued.kind: object()}, set())
+            assert scheduler.run_once()
+            assert repo.get(queued.task_id).status is TaskStatus.RUNNING
+            assert not store.get_commit_summaries(ids)
+        assert repo.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    scheduler = Scheduler(repo, store.artifacts, "worker-final", {queued.kind: object()}, set())
+    assert scheduler.run_once()
+    final = repo.get(queued.task_id)
+    assert final.status is TaskStatus.CANCELLED and final.attempt == lease.task.attempt + 1 + int(durable)
+    assert annotations.get_many(ids) == current
+    assert bool(store.get_commit_summaries(ids)) == durable
+    assert scheduler.run_once() is False

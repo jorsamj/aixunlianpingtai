@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
+import json
 from contextvars import ContextVar
 
 from datetime import datetime, timedelta, timezone
@@ -124,6 +125,81 @@ class FencedTaskRepository(TaskRepository):
             raise PermissionError("task execution is fenced")
         return _from_row(row)
 
+    @staticmethod
+    def _formal_bulk_owner(database, lease, execution_generation):
+        now = utc_now()
+        row = database.execute(
+            """SELECT tasks.status, tasks.project_id, tasks.payload_ref,
+                      COALESCE(formal_bulk_execution.cancel_requested, 0) AS cancel_requested,
+                      formal_bulk_execution.active_batch
+                 FROM tasks LEFT JOIN formal_bulk_execution USING (task_id)
+                WHERE task_id=? AND kind='ANNOTATION_FORMAL_BULK'
+                  AND attempt=? AND lease_token=? AND worker_id=?
+                  AND status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at>?
+                  AND worker_id NOT LIKE 'agent:%' AND process_pid IS NULL""",
+            (lease.task.task_id, execution_generation, lease.lease_token, lease.worker_id, now),
+        ).fetchone()
+        if (lease.task.kind is not TaskKind.ANNOTATION_FORMAL_BULK
+                or lease.task.attempt != execution_generation or row is None
+                or row["project_id"] != lease.task.project_id or row["payload_ref"] != lease.task.payload_ref):
+            raise PermissionError("formal bulk execution no longer owns its task")
+        return row
+
+    @contextmanager
+    def formal_bulk_gt_write(self, lease, execution_generation, batch):
+        task_id = lease.task.task_id
+        with self._formal_bulk_lock(task_id):
+            with closing(self._connect()) as database:
+                # Drain any expiring worker's transaction before checking the
+                # row. Reapers may release the file lock before SQLite COMMIT.
+                database.execute("BEGIN IMMEDIATE")
+                row = self._formal_bulk_owner(database, lease, execution_generation)
+                if row["cancel_requested"] or row["status"] != "RUNNING":
+                    raise InterruptedError("formal bulk execution was cancelled")
+                if (batch["identity"]["project_id"] != row["project_id"]
+                        or batch["manifest_ref"] != row["payload_ref"]):
+                    raise PermissionError("formal bulk project or manifest identity mismatch")
+                if row["active_batch"]:
+                    active = json.loads(row["active_batch"])
+                    if any(active[key] != batch[key] for key in ("identity", "operation_id", "manifest_ref")):
+                        raise PermissionError("formal bulk batch changed operation identity")
+                    if batch["batch_number"] not in (active["batch_number"], active["batch_number"] + 1):
+                        raise PermissionError("formal bulk batch ordering mismatch")
+                elif batch["batch_number"] != 0:
+                    raise PermissionError("formal bulk execution must start at batch zero")
+                database.execute(
+                    """INSERT INTO formal_bulk_execution(task_id,active_batch) VALUES (?,?)
+                       ON CONFLICT(task_id) DO UPDATE SET active_batch=excluded.active_batch""",
+                    (task_id, json.dumps(batch, sort_keys=True)),
+                )
+                database.commit()
+            # Keep only this task's cross-process lock through the GT commit.
+            yield
+
+    def formal_bulk_cancel_state(self, lease, execution_generation):
+        with closing(self._connect()) as database:
+            row = self._formal_bulk_owner(database, lease, execution_generation)
+            return bool(row["cancel_requested"]), row["active_batch"]
+
+    def _finish_reconciled_formal_bulk_cancel(self, lease, execution_generation, active_batch, evidence):
+        task_id = lease.task.task_id
+        with self._formal_bulk_lock(task_id), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._formal_bulk_owner(database, lease, execution_generation)
+            if not row["cancel_requested"] or row["active_batch"] != active_batch:
+                raise PermissionError("formal bulk cancellation reconciliation became stale")
+            database.execute(
+                "UPDATE formal_bulk_execution SET reconciliation=? WHERE task_id=?",
+                (json.dumps(evidence, sort_keys=True), task_id),
+            )
+            now = utc_now()
+            database.execute(
+                """UPDATE tasks SET status='CANCELLED', stage='cancelled', finished_at=?, updated_at=?,
+                       worker_id=NULL, lease_token=NULL, lease_expires_at=NULL WHERE task_id=?""",
+                (now, now, task_id),
+            )
+            database.commit()
+
     @retry_busy
     def heartbeat(
         self,
@@ -244,6 +320,7 @@ class FencedTaskRepository(TaskRepository):
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND kind<>'ANNOTATION_FORMAL_BULK'
                    AND lease_expires_at IS NOT NULL AND lease_expires_at>?
                 """ + generation_sql,
                 (
@@ -383,6 +460,9 @@ class FencedTaskRepository(TaskRepository):
                 continue
             status = str(row["status"])
             kind = str(row["kind"])
+            if kind == TaskKind.ANNOTATION_FORMAL_BULK.value:
+                released += self._requeue_expired_formal_bulk(database, row, now)
+                continue
             accepted = row["accepted"]
             next_status = "CANCELLED" if status == "CANCEL_REQUESTED" else "QUEUED"
             if status == "CANCEL_REQUESTED":
