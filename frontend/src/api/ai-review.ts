@@ -19,12 +19,12 @@ export interface ReviewCandidate {
   source_content_sha256?:string;content_sha256?:string;original_boxes?:MaterialBox[];review_state?:string;gt_committed?:boolean;manual_review_required?:boolean;
   draft_revision?:number;accepted?:boolean|null;error?:string;error_code?:string;error_stage?:string;
   http_status?:number;attempt_count?:number;retry_suggestion?:string;review_scope?:string[];
-  review_scope_policy?:string;missing_review_scope?:string[];draft?:{auto_resolution?:boolean};
+  selection_member?:boolean;review_scope_policy?:string;missing_review_scope?:string[];draft?:{auto_resolution?:boolean};
   review_conflicts?:{labels?:string[];iou?:number}[];
 }
 export interface ReviewPage {
   items:ReviewCandidate[];total:number;next_cursor:string|null;review_revision:number;
-  summary:Partial<Record<string,number>>;task_error?:{message:string;code?:string;stage?:string};
+  selection_stale?:boolean;summary:Partial<Record<string,number>>;task_error?:{message:string;code?:string;stage?:string};
 }
 export interface ReviewDiagnostics {
   image_id:string;status:string;diagnostics?:null|{model_name?:string;model?:string;provider?:string;adapter?:string;
@@ -41,10 +41,20 @@ export async function getReviewTask(scope:ReviewAddress, signal:AbortSignal) {
     throw new Error('审核任务与当前项目或任务编号不一致');
   return result.task;
 }
-export function getReviewPage(scope:ReviewAddress, filter:ReviewFilter, cursor:string|null, signal:AbortSignal) {
+export function getReviewPage(scope:ReviewAddress, filter:ReviewFilter, cursor:string|null, signal:AbortSignal, selectionId?:string) {
   const query=new URLSearchParams({filter,limit:String(reviewPageSize)});
   if(cursor!==null)query.set('cursor',cursor);
+  if(selectionId)query.set('selection_id',selectionId);
   return request<ReviewPage>(root(scope)+'/candidates?'+query,{signal});
+}
+export interface ReviewSelection {
+  selection_id:string;filter:ReviewFilter;purpose:'gt';review_revision:number;
+  filtered_total:number;count:number;reasons:Record<string,number>;
+}
+export function freezeReviewSelection(scope:ReviewAddress, filter:ReviewFilter, revision:number, signal:AbortSignal) {
+  return request<ReviewSelection>(root(scope)+'/review-selection',{
+    method:'POST',body:JSON.stringify({filter,purpose:'gt',review_revision:revision}),signal,
+  });
 }
 export async function getReviewCandidateDetail(scope:ReviewAddress, id:string, signal:AbortSignal) {
   const result=await request<{item:ReviewCandidate;review_revision:number}>(root(scope)+'/candidates/'+enc(id),{signal});

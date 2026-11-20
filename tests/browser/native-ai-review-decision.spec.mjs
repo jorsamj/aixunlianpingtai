@@ -220,6 +220,93 @@ test('原生单图决定按真实回执恢复，保留逐图范围、候选隔�
     expect(postBodies).toHaveLength(1);
     expect(await page.evaluate(key=>sessionStorage.getItem(key),otherKey)).toBe(otherPacket);
     expect(await gt()).toEqual(initialGt);
+
+    const append=script=>execFileSync('python',['-c',[
+      'import app, sys',
+      'from platform_core.annotation_candidates import CandidateStore',
+      'store = CandidateStore(app.shared_task_artifacts(), task_id=sys.argv[1])',
+      script,
+    ].join('\n'),pagingTask],{env});
+    append('store.append_items([dict(image_id="failed-page", filename="failed-page.jpg", status="failed"),dict(image_id="ambiguous-page", filename="ambiguous-page.jpg", status="success", manual_review_required=True)])');
+
+    const freezeRequests=[],boundedReads=[],forbidden=[];
+    page.on('request',req=>{
+      const url=new URL(req.url());
+      if(req.method()==='POST'&&req.url()===pagingBase+'/review-selection')freezeRequests.push(req.postDataJSON());
+      if(req.method()==='GET'&&req.url().startsWith(pagingBase+'/candidates?')&&url.searchParams.has('selection_id'))
+        boundedReads.push(url.searchParams);
+      if(url.pathname.includes('/negative-transfer')||url.pathname.includes('/review-selection/')||
+        (req.method()!=='GET'&&(/annotations\//.test(url.pathname)||req.postDataJSON()?.commit)))forbidden.push(url.pathname);
+    });
+    const selection=page.getByRole('region',{name:'候选选择'});
+    const countSelected=n=>expect(selection.getByText(new RegExp('已选 '+n+' 张'))).toBeVisible();
+    const lastBox=page.getByRole('checkbox',{name:'选择 '+names[2],exact:true});
+    const freezeButton=selection.getByRole('button',{name:'选择全部筛选结果'});
+    const selectCurrent=selection.getByRole('button',{name:'选择本页'});
+    const previous=page.getByRole('button',{name:'上一页'});
+    const next=page.getByRole('button',{name:'下一页'});
+    await page.reload();
+    await selectCurrent.click();
+    await countSelected(24);
+    await next.click();
+    await lastBox.check();
+    await countSelected(25);
+    const failed=page.getByRole('checkbox',{name:'选择 failed-page.jpg',exact:true});
+    await expect(failed).toBeDisabled();
+    await lastBox.evaluate(node=>{node.dataset.preserveIdentity='true'});
+    const frozenResponse=page.waitForResponse(r=>r.ok()&&r.url()===pagingBase+'/review-selection'&&r.request().method()==='POST');
+    const membership=page.waitForResponse(r=>r.ok()&&r.url().startsWith(pagingBase+'/candidates?')&&r.url().includes('selection_id'));
+    await freezeButton.click();
+    const frozen=await (await frozenResponse).json();
+    expect(frozen).toMatchObject({purpose:'gt',filter:'all',filtered_total:27,count:25,reasons:{failed:1,requires_review:1}});
+    expect(frozen).not.toHaveProperty('image_ids');
+    expect((await (await membership).json()).items.map(row=>row.selection_member)).toEqual([true,false,false]);
+    await expect(lastBox).toHaveAttribute('data-preserve-identity','true');
+    await expect(selection).toContainText('生成失败或未生成 1 张');
+    await expect(selection).toContainText('待人工消歧 1 张');
+    await lastBox.uncheck();
+    await countSelected(24);
+    await previous.click();
+    await countSelected(24);
+    await expect(page.getByRole('checkbox',{name:'选择 first-page-0.jpg',exact:true})).toBeChecked();
+    await next.click();
+    await expect(lastBox).not.toBeChecked();
+    await lastBox.check();
+    await countSelected(25);
+    await expect(failed).toBeDisabled();
+    expect(freezeRequests).toEqual([{filter:'all',purpose:'gt',review_revision:frozen.review_revision}]);
+    expect(boundedReads.length).toBeGreaterThanOrEqual(3);
+    expect(boundedReads.every(query=>query.get('limit')==='24'&&query.get('selection_id')===frozen.selection_id)).toBe(true);
+    const wrongTask=await request.get(base+'/candidates?limit=24&selection_id='+frozen.selection_id);
+    expect(wrongTask.status()).toBe(404);
+
+    append('store.append_items([dict(image_id="new-revision", filename="new-revision.jpg", status="empty")])');
+    const stale=page.waitForResponse(r=>r.ok()&&r.url().includes('selection_id='+frozen.selection_id));
+    await previous.click();
+    expect(await (await stale).json()).toMatchObject({selection_stale:true});
+    await expect(selection).toContainText('筛选快照已失效，请重新选择');
+    await countSelected(0);
+    expect(freezeRequests).toHaveLength(1);
+    expect(postBodies).toHaveLength(1);
+    expect(forbidden).toEqual([]);
+    expect(await page.evaluate(key=>sessionStorage.getItem(key),otherKey)).toBe(otherPacket);
+    await select('first-page-0.jpg');
+    await expect(heading).toContainText('审核结果待核验');
+    await expect(adopt).toBeDisabled();
+    await inspector.getByRole('button',{name:'关闭检查'}).click();
+    await page.getByRole('button',{name:/^失败/}).click();
+    await expect(page.locator('.review-candidate')).toHaveCount(1);
+    await freezeButton.click();
+    await expect(selection).toContainText('可操作 0 张');
+    await countSelected(0);
+    await expect(failed).toBeDisabled();
+    await expect(selection.getByRole('button',{name:'清空选择'})).toBeEnabled();
+    await page.goto(origin+'/app/#/projects/'+project+'/ai/tasks/'+task+'/review');
+    await countSelected(0);
+    await expect(selection.getByText('可操作 0 张',{exact:false})).toHaveCount(0);
+    await expect(selection.getByRole('button',{name:'清空选择'})).toBeDisabled();
+    expect(await page.evaluate(key=>sessionStorage.getItem(key),otherKey)).toBe(otherPacket);
+    expect(await gt()).toEqual(initialGt);
   }finally{
     server.kill();
   }

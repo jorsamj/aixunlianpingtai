@@ -117,14 +117,16 @@ test('原生审核拒绝错配身份，切项目与离页取消在途读取',asy
   const {session}=await fixture(page);
   const candidateRequests=[];
   const pending=[];
+  let pendingFreeze;
   await page.route('**/api/v60/projects/*/annotation-tasks/**',async r=>{
     const parts=new URL(r.request().url()).pathname.split('/');
     const projectId=parts[4],id=parts[6];
     if(parts.length===7)return r.fulfill({json:task(id,id==='wrong'?'foreign-project':projectId,
       id==='empty'?'FAILED':'AWAITING_CONFIRMATION')});
+    if(parts[7]==='review-selection'){pendingFreeze=r;return}
     candidateRequests.push(id);
-    if(id==='account'&&session.user.username==='reviewer-two')return r.fulfill({json:{
-      items:[candidate(2)],total:1,next_cursor:null,review_revision:1,
+    if(id==='account'&&session.user.username!=='reviewer')return r.fulfill({json:{
+      items:[candidate(session.user.username==='reviewer-two'?2:3)],total:1,next_cursor:null,review_revision:1,
     }});
     if(id==='empty')return r.fulfill({json:{items:[],total:0,next_cursor:null,review_revision:0,
       task_error:{code:'CANDIDATES_NOT_GENERATED',message:'尚未生成候选结果'}}});
@@ -168,4 +170,24 @@ test('原生审核拒绝错配身份，切项目与离页取消在途读取',asy
   await expect(page.getByText('reviewer-two',{exact:true})).toBeVisible();
   await expect(page.locator('.review-candidate')).toHaveCount(1);
   await expect(page.getByRole('button',{name:'候选 2.jpg'})).toBeVisible();
+
+  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await expect.poll(()=>!!pendingFreeze).toBe(true);
+  const freezeCancelled=page.waitForEvent('requestfailed',{predicate:r=>r.url().endsWith('/review-selection')});
+  await page.evaluate(()=>{
+    Object.defineProperty(document,'hidden',{value:true,configurable:true});
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await freezeCancelled;
+  session.user.username='reviewer-three';
+  await page.evaluate(()=>{
+    delete document.hidden;
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await pendingFreeze.fulfill({json:{selection_id:'a'.repeat(32),filter:'all',purpose:'gt',
+    review_revision:1,filtered_total:1,count:1,reasons:{}}}).catch(()=>{});
+  await expect(page.getByText('reviewer-three',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'候选 3.jpg'})).toBeVisible();
+  await expect(page.getByText('已选 0 张',{exact:true})).toBeVisible();
+  await expect(page.getByText(/可操作 1 张/)).toHaveCount(0);
 });

@@ -168,4 +168,5 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 | --- | --- | --- |
 | 单图候选标注框编辑、撤销/重做及草稿恢复 | 原生编辑会话、既有 Annotorious、v60 CandidateStore | `FUNCTIONAL_COMPLETE`（本阶段范围），CI 异步验收 |
 | 单图采用与拒绝 | 原生审核检查区；v60 decisions 与 by-request；CandidateStore | `FUNCTIONAL_COMPLETE`（D1-D1B），按阶段准确 SHA 进行 CI 验收 |
-| 冻结选择、批量决定、批量消歧、GT 入库、转池与撤销 | 原审核工作台及既有服务端 Owner | 原生迁移 `NOT_STARTED`，原入口可达 |
+| 跨页选择及 GT 用途冻结 | 原生审核候选区；v60 review-selection、candidates；CandidateStore | `FUNCTIONAL_COMPLETE`（D1-D2A 选择范围），按阶段准确 SHA 进行 CI 验收 |
+| 批量决定、批量消歧、GT 入库、转池与撤销 | 原审核工作台及既有服务端 Owner | 原生迁移 `NOT_STARTED`，原入口可达 |

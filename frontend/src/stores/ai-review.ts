@@ -1,7 +1,7 @@
 import {computed,ref,shallowRef} from 'vue';
 import {defineStore} from 'pinia';
-import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt} from '../api/ai-review';
-import type {ReviewAddress,ReviewTask,ReviewPage,ReviewCandidate,ReviewDiagnostics,ReviewFilter,SingleDecision,CompletedDecision} from '../api/ai-review';
+import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection} from '../api/ai-review';
+import type {ReviewAddress,ReviewTask,ReviewPage,ReviewCandidate,ReviewDiagnostics,ReviewFilter,SingleDecision,CompletedDecision,ReviewSelection} from '../api/ai-review';
 
 import {draftRecoveryKey} from '../app/ai-draft-recovery';
 import {canAdopt,decisionKey,loadDecision,matchesCompletion,validRevision} from './ai-review-decision';
@@ -17,6 +17,15 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const taskError=ref(''),pageError=ref(''),itemError=ref(''),diagnosticsError=ref('');
   const revision=ref<number>(),decision=shallowRef<DecisionRecovery>();
   const decisionBusy=ref(false),decisionNotice=ref(''),decisionStorageError=ref(''),draftOutstanding=ref(false);
+  const explicitSelection=ref(new Set<string>());
+  const frozenSelection=shallowRef<ReviewSelection>();
+  const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
+  const selectionBusy=ref(false),selectionNotice=ref('');
+  let selectionRequest:AbortController|undefined;
+  const selectedCount=computed(()=>frozenSelection.value
+    ?frozenSelection.value.count-excludedIds.value.size:explicitSelection.value.size);
+  const canSelect=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'&&!!page.value
+    &&!pageBusy.value&&!pageError.value&&!selectionBusy.value&&!page.value.task_error);
   let decisionRequest:AbortController|undefined;
   const decisionEligible=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'
     &&revision.value!==undefined&&!itemBusy.value&&!itemError.value&&!draftOutstanding.value
@@ -39,7 +48,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     itemError.value=diagnosticsError.value='';
   }
   function reset(){
-    generation++;
+    generation++;clearSelection();
     scope=undefined;
     taskRead?.abort();pageRead?.abort();closeImage();
     task.value=page.value=undefined;
@@ -56,13 +65,32 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     const cancel=()=>controller.abort();
     decisionSignal?.addEventListener('abort',cancel,{once:true});
     try{
-      let result=await getReviewPage(scope,nextFilter,nextCursors.at(-1)??null,controller.signal);
+      const address=scope;
+      const read=async(cursor:string|null)=>{
+        const snapshot=frozenSelection.value?.filter===nextFilter?frozenSelection.value:undefined;
+        let result:ReviewPage;
+        try{
+          result=await getReviewPage(address,nextFilter,cursor,controller.signal,snapshot?.selection_id);
+        }catch(cause){
+          const status=(cause as {httpStatus?:number}).httpStatus;
+          if(!snapshot||!current()||(status!==404&&status!==409))throw cause;
+          if(snapshot===frozenSelection.value)invalidateSelection();
+          return getReviewPage(address,nextFilter,cursor,controller.signal);
+        }
+        if(current()&&snapshot===frozenSelection.value&&snapshot
+          &&(result.selection_stale||result.review_revision!==snapshot.review_revision))invalidateSelection();
+        return result;
+      };
+      let result=await read(nextCursors.at(-1)??null);
       if(preserveImage&&current()&&!result.task_error&&!result.items.length&&nextCursors.length>1){
         nextCursors=nextCursors.slice(0,-1);
-        result=await getReviewPage(scope,nextFilter,nextCursors.at(-1)??null,controller.signal);
+        result=await read(nextCursors.at(-1)??null);
       }
       if(current()){
         if(preserveImage&&result.task_error)return false;
+        if(explicitSelection.value.size&&page.value?.review_revision!==result.review_revision)
+          invalidateSelection();
+        membershipId.value=frozenSelection.value?.selection_id;
         page.value=result;filter.value=nextFilter;cursors.value=nextCursors;
         return true;
       }
@@ -85,7 +113,77 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }catch(cause){if(current())taskError.value=message(cause)}
     finally{if(current())taskBusy.value=false}
   }
-  function setFilter(value:ReviewFilter){return readPage(value,[null])}
+  function setFilter(value:ReviewFilter){
+    if(value!==filter.value)clearSelection();
+    return readPage(value,[null]);
+  }
+  function clearSelection(){
+    selectionRequest?.abort();selectionBusy.value=false;
+    explicitSelection.value.clear();excludedIds.value.clear();
+    frozenSelection.value=undefined;membershipId.value=undefined;selectionNotice.value='';
+  }
+  function invalidateSelection(){
+    explicitSelection.value.clear();excludedIds.value.clear();
+    frozenSelection.value=undefined;membershipId.value=undefined;
+    selectionNotice.value='筛选快照已失效，请重新选择';
+  }
+  function selectionReason(row:ReviewCandidate){
+    const snapshot=frozenSelection.value;
+    if(snapshot&&membershipId.value===snapshot.selection_id&&row.selection_member===true)return '';
+    if(row.gt_committed)return '已正式入库';
+    if(row.review_state==='transferred')return '已转池';
+    if(row.review_state==='pending_transfer')return '转池待恢复';
+    if(row.review_state!=='active')return '当前候选不可操作';
+    if(!['success','empty'].includes(row.status))return '候选生成失败或未生成';
+    if(row.accepted===false)return '已拒绝';
+    if(row.manual_review_required&&(!row.draft_revision||row.draft?.auto_resolution))return '待人工消歧';
+    if(frozenSelection.value&&(membershipId.value!==frozenSelection.value.selection_id||row.selection_member!==true))
+      return '不在服务端冻结范围';
+    return '';
+  }
+  function isSelected(row:ReviewCandidate){
+    return frozenSelection.value
+      ?membershipId.value===frozenSelection.value.selection_id&&row.selection_member===true&&!excludedIds.value.has(row.image_id)
+      :explicitSelection.value.has(row.image_id);
+  }
+  function selectCandidate(row:ReviewCandidate,checked:boolean){
+    if(!canSelect.value||selectionReason(row))return;
+    if(frozenSelection.value){
+      if(checked)excludedIds.value.delete(row.image_id);
+      else excludedIds.value.add(row.image_id);
+    }else if(checked)explicitSelection.value.add(row.image_id);
+    else explicitSelection.value.delete(row.image_id);
+  }
+  function selectPage(){
+    for(const row of page.value?.items??[])selectCandidate(row,true);
+  }
+  async function freezeSelection(){
+    const currentPage=page.value,address=scope;
+    if(!address||!currentPage||!canSelect.value||!validRevision(currentPage.review_revision))return;
+    const requestedFilter=filter.value,expected=currentPage.review_revision;
+    const controller=selectionRequest=new AbortController(),epoch=generation;
+    const current=()=>generation===epoch&&!controller.signal.aborted;
+    selectionBusy.value=true;selectionNotice.value='';
+    try{
+      const snapshot=await freezeReviewSelection(address,requestedFilter,expected,controller.signal);
+      if(!current())return;
+      if(snapshot.filter!==requestedFilter||snapshot.purpose!=='gt'||snapshot.review_revision!==expected
+        ||page.value?.review_revision!==expected){
+        invalidateSelection();
+        return;
+      }
+      frozenSelection.value=snapshot;
+      explicitSelection.value.clear();excludedIds.value.clear();membershipId.value=undefined;
+      if(!await readPage(requestedFilter,cursors.value,true,controller.signal)&&current())
+        invalidateSelection();
+    }catch(cause){
+      if(!current())return;
+      if((cause as {httpStatus?:number}).httpStatus===409){
+        invalidateSelection();
+        await readPage(requestedFilter,cursors.value,true,controller.signal);
+      }else selectionNotice.value=message(cause);
+    }finally{if(current())selectionBusy.value=false}
+  }
   function nextPage(){
     const next=page.value?.next_cursor;
     if(next!=null)return readPage(filter.value,[...cursors.value,next]);
@@ -126,6 +224,8 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       if(current()){
         item.value={...result,filename:result.filename||row.filename};
         revision.value=validRevision(review_revision)?review_revision:undefined;
+        if(frozenSelection.value&&validRevision(review_revision)
+          &&review_revision>frozenSelection.value.review_revision)invalidateSelection();
         return revision.value!==undefined;
       }
     }catch(cause){if(current())itemError.value=message(cause)}
@@ -247,5 +347,6 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     taskError,pageError,itemError,diagnosticsError,open,reset,setFilter,nextPage,previousPage,reloadPage,
     inspect,closeImage,readDiagnostics,refreshAfterDraft,revision,decision,decisionBusy,decisionNotice,
     decisionEligible,decisionStorageError,draftOutstanding,decisionOutsidePage,checkDraftOutstanding,
-    decide,recoverDecision,retryDecisionRefresh};
+    decide,recoverDecision,retryDecisionRefresh,selectedCount,canSelect,frozenSelection,
+    selectionBusy,selectionNotice,selectionReason,isSelected,selectCandidate,selectPage,freezeSelection,clearSelection};
 });

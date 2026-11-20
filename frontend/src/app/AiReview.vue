@@ -130,6 +130,13 @@ function closeImage(){
   review.closeImage();
   focusReturn.value?.focus();
 }
+const selectionReasonLabels:Record<string,string>={
+  committed:'已正式入库',unavailable:'当前不可操作',failed:'生成失败或未生成',
+  rejected:'已拒绝',requires_review:'待人工消歧',
+};
+function toggleSelection(row:ReviewCandidate,event:Event){
+  review.selectCandidate(row,(event.target as HTMLInputElement).checked);
+}
 const displayedBoxes=computed(()=>original.value?review.item?.original_boxes:review.item?.boxes);
 const diagnosticFacts=computed(()=>{
   const evidence=review.diagnostics?.diagnostics;
@@ -197,6 +204,13 @@ const diagnosticFacts=computed(()=>{
       <article v-for="row in review.page.items" :key="row.image_id" class="review-candidate">
        <MaterialPreview :image="media(row)" :project-id="projectId" :boxes="row.boxes?.slice(0,32)" />
        <div class="review-candidate-caption">
+        <label v-if="review.task.status.toUpperCase()==='AWAITING_CONFIRMATION'" class="review-checkbox"
+         :title="review.selectionReason(row)">
+         <input type="checkbox" :aria-label="'选择 '+candidateName(row)" :checked="review.isSelected(row)"
+          :disabled="!review.canSelect||!!review.selectionReason(row)" @change="toggleSelection(row,$event)">
+         <span v-if="review.selectionReason(row)">{{ review.selectionReason(row) }}</span>
+         <span v-else>选择</span>
+        </label>
         <button class="review-image-link" :aria-current="review.item?.image_id===row.image_id ? 'true' : undefined"
          @click="readImage(row,$event)">{{ candidateName(row) }}</button>
         <span>{{ candidateStatus(row) }} · {{ row.boxes?.length ?? 0 }} 框</span>
@@ -204,10 +218,31 @@ const diagnosticFacts=computed(()=>{
       </article>
      </div>
      <footer v-if="review.page && !review.page.task_error" class="review-pagination">
-      <el-button :disabled="review.pageNumber===1 || review.pageBusy" @click="review.previousPage()">上一页</el-button>
+      <el-button :disabled="review.pageNumber===1 || review.pageBusy || review.selectionBusy" @click="review.previousPage()">上一页</el-button>
       <span>第 {{ review.pageNumber }} 页 · 每页 24 张</span>
-      <el-button :disabled="!review.page.next_cursor || review.pageBusy" @click="review.nextPage()">下一页</el-button>
+      <el-button :disabled="!review.page.next_cursor || review.pageBusy || review.selectionBusy" @click="review.nextPage()">下一页</el-button>
      </footer>
+     <section v-if="review.task.status.toUpperCase()==='AWAITING_CONFIRMATION'" class="review-selection"
+      aria-label="候选选择">
+      <div class="review-actions">
+       <el-button :disabled="!review.canSelect||!review.page?.items.length" @click="review.selectPage()">选择本页</el-button>
+       <el-button :disabled="!review.canSelect||!!review.frozenSelection||!review.page?.total"
+        :loading="review.selectionBusy" @click="review.freezeSelection()">选择全部筛选结果</el-button>
+       <el-button :disabled="!review.frozenSelection&&!review.selectedCount&&!review.selectionBusy"
+        @click="review.clearSelection()">清空选择</el-button>
+      </div>
+      <p aria-live="polite">
+       <template v-if="review.frozenSelection">筛选 {{ review.frozenSelection.filtered_total }} 张 ·
+        可操作 {{ review.frozenSelection.count }} 张 · </template>已选 {{ review.selectedCount }} 张
+      </p>
+      <p v-if="review.frozenSelection && Object.keys(review.frozenSelection.reasons).length">
+       资格排除：<span v-for="(count,reason) in review.frozenSelection.reasons" :key="reason">
+        {{ selectionReasonLabels[reason] ?? reason }} {{ count }} 张
+       </span>
+      </p>
+      <p v-if="review.selectionNotice" role="status">{{ review.selectionNotice }}</p>
+      <small>此处的选择仅用于当前页面，原工作台需重新选择。</small>
+     </section>
     </section>
     <aside class="review-inspector" :class="{open:review.item}" aria-label="当前图片检查" @keydown.esc="closeImage">
      <div class="review-toolbar">
@@ -300,6 +335,11 @@ button[aria-pressed=true],button[aria-current=true]{background:#e9e9e9;border-co
 .review-candidate-caption{display:grid;gap:3px;padding:5px}.review-image-link{text-align:left;overflow-wrap:anywhere}
 .review-inspector{position:sticky;top:12px;max-height:calc(100dvh - 24px);overflow:auto}.review-inspector h4{margin-block:10px}
 .review-inspector dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 10px}.review-inspector dd{margin:0}
+.review-checkbox{display:flex;align-items:center;gap:5px}
+.review-checkbox input{margin:0;accent-color:#222}
+.review-selection{margin-top:12px;padding-top:12px;border-top:1px solid #ddd}
+.review-selection p{margin:8px 0}
+.review-selection p span+span::before{content:' · '}
 .review-actions,.review-scope{display:flex;flex-wrap:wrap;gap:8px}
 .review-actions :deep(.el-button){margin:0}
 .review-scope{margin:8px 0;padding:6px 10px;border:1px solid #ddd;min-width:0}
