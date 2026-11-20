@@ -807,7 +807,10 @@ class CandidateStore:
 
     def preview_selected_decisions(self, decisions, mapping, label_ids):
         """Prepare a bounded batch before changing the stored candidate decisions."""
-        items = self.get_many([decision.image_id for decision in decisions])
+        ids = [decision.image_id for decision in decisions]
+        if self.bulk_formal_events(ids):
+            raise ValueError("selected candidates belong to a sealed bulk operation")
+        items = self.get_many(ids)
         prepared = []
         for decision in decisions:
             item = items.get(decision.image_id)
@@ -818,6 +821,69 @@ class CandidateStore:
             item["boxes"] = self._normalized_selected_boxes(item, mapping, label_ids)
             prepared.append(item)
         return prepared
+
+    def bulk_formal_events(self, image_ids):
+        ids = list(image_ids)
+        if not 1 <= len(ids) <= 100:
+            raise ValueError("bulk formal event lookup requires 1–100 candidates")
+        with closing(self._connect()) as db:
+            return self._bulk_formal_events_in(db, ids)
+
+    @staticmethod
+    def _bulk_formal_events_in(db, ids):
+        included = ",".join("?" for _ in ids)
+        return [json.loads(row[0]) for row in db.execute(
+            f"SELECT event_json FROM review_events WHERE kind='bulk_formal' AND image_id IN ({included})", ids,
+        )]
+
+    def preview_bulk_formal_candidate(self, item, label_ids):
+        if item.get("accepted") is False:
+            raise ValueError("rejected candidate cannot be used for bulk formal commit")
+        updated = self._reviewed_candidate(
+            item, CandidateDecision(item["image_id"], True, review_scope=item.get("review_scope")),
+        )
+        updated["boxes"] = self._normalized_selected_boxes(updated, {}, label_ids)
+        if updated.get("draft") is not None:
+            updated["draft"] = {**updated["draft"], "boxes": updated["boxes"]}
+        return updated
+
+    def prepare_bulk_formal_batch(self, identity, frozen, projected, label_ids, expected_revision,
+                                  candidate_digest, commit_digest, guard):
+        ids = list(frozen)
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            current_revision = lambda: int(db.execute(
+                "SELECT value FROM metadata WHERE key='review_revision'",
+            ).fetchone()[0])
+            if current_revision() != expected_revision or self._bulk_formal_events_in(db, ids):
+                raise ValueError("bulk formal candidate revision or operation ownership changed")
+            proofs = []
+            for image_id in ids:
+                row = db.execute("SELECT * FROM candidates WHERE image_id=?", (image_id,)).fetchone()
+                if (not row or row["status"] not in {"success", "empty"} or row["review_state"] != "active"
+                        or db.execute("SELECT 1 FROM commits WHERE image_id=?", (image_id,)).fetchone()):
+                    raise ValueError(f"bulk formal candidate unavailable: {image_id}")
+                item = self._decode(row)
+                before = candidate_digest(item)
+                if before != frozen[image_id]["candidate_digest"]:
+                    raise ValueError(f"bulk formal candidate baseline changed: {image_id}")
+                updated = self.preview_bulk_formal_candidate(item, label_ids)
+                after = candidate_digest(updated)
+                if after != candidate_digest(projected[image_id]):
+                    raise ValueError(f"bulk formal candidate preview changed: {image_id}")
+                self._put(db, updated, normalize=False)
+                proofs.append({
+                    "image_id": image_id, "candidate_before": before, "candidate_after": after,
+                    "commit_digest": commit_digest(updated),
+                })
+            revision_after = current_revision()
+            db.executemany(
+                "INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,'bulk_formal',?)",
+                [(proof["image_id"], identity["batch_operation_id"], json.dumps({
+                    **identity, **proof, "revision_before": expected_revision, "revision_after": revision_after,
+                }, ensure_ascii=False)) for proof in proofs],
+            )
+            guard()
 
     def remap_selected_labels(
         self, image_ids: Iterable[str], mapping: dict[str, str], label_ids: dict[str, int],

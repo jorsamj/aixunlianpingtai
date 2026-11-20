@@ -866,7 +866,8 @@ def _bulk_intent_fixture(client, review_task, count=1):
     original = host.material_store(project).get(image["id"])
     ids = [image["id"], *(f"intent-fixture-{index:03d}" for index in range(1, count))]
     host.material_store(project).upsert_many([
-        {**original, "id": image_id, "filename": f"{image_id}.jpg"} for image_id in ids[1:]
+        {**original, "id": image_id, "filename": f"{image_id}.jpg",
+         "annotation_version": 0, "annotation_hash": ""} for image_id in ids[1:]
     ])
     store.initialize(labels=["fire"], total_images=count)
     store.append_items([
@@ -1015,3 +1016,218 @@ def test_bulk_formal_intent_rejects_changes_and_unpublished_evidence(client, rev
     (store.artifacts.root / task / ref).write_text("{}", encoding="utf-8")
     assert client.get(url + "/" + body["request_id"]).status_code == 503
     assert client.post(url, json=body).status_code == 503
+
+def _seal_for_bulk(client, project, task, store, base, body):
+    response = client.post(base + "/bulk-formal/intents", json=body)
+    assert response.status_code == 200, response.text
+    operation = response.json()
+    actor = store.artifacts.payload_reader.read_evidence_json(task, operation["manifest_ref"])["operation"]["identity"]["actor"]
+    identity = {"project_id": project, "task_id": task, "actor": actor, "request_id": body["request_id"]}
+
+    def execute(batch_number=0, *, authorize=lambda _: True):
+        from platform_core.annotation_bulk_commit import execute_bulk_formal_batch
+
+        return execute_bulk_formal_batch(
+            store.artifacts, identity, operation["operation_id"], operation["manifest_ref"],
+            batch_number, authorize=authorize,
+        )
+
+    return operation, execute
+
+
+def test_bulk_formal_commit_writes_100_with_original_baselines_and_order(client, review_task):
+    from platform_core.annotation_candidates import CandidateDecision
+
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    row = store.get(ids[0])
+    store.append_items([{
+        **row, "status": "success", "boxes": [{"label":"fire","x1":10,"y1":10,"x2":30,"y2":30}],
+    }])
+    store.apply_decisions([CandidateDecision(ids[1], True)])
+    selection = client.post(base + "/review-selection", json={
+        "purpose": "gt", "review_revision": store.review_revision(),
+    }).json()
+    body.update(selection_id=selection["selection_id"], review_revision=selection["review_revision"],
+                excluded_image_ids=[ids[-1]])
+    _, execute = _seal_for_bulk(client, project, task, store, base, body)
+    annotations = host._v50_annotation_repository(project)
+    original = annotations.get_many(ids)
+    excluded = store.get(ids[-1])
+    with pytest.raises(PermissionError):
+        execute(authorize=lambda _: False)
+    before = store.get_many(ids[:100])
+    checks = 0
+    def revoke_before_candidate_commit(_):
+        nonlocal checks
+        checks += 1
+        return checks < 3
+    with pytest.raises(PermissionError):
+        execute(authorize=revoke_before_candidate_commit)
+    assert not store.bulk_formal_events(ids[:100])
+    assert store.get_many(ids[:100]) == before and before[ids[1]]["accepted"] is True
+    with pytest.raises(ValueError, match="previous.*incomplete"):
+        execute(1)
+    assert annotations.get_many(ids) == original and store.review_revision() == body["review_revision"]
+    first = execute()
+    assert first["completed_image_ids"] == ids[:100]
+    events = store.bulk_formal_events(ids[:100])
+    assert len(events) == 100 and {event["batch_operation_id"] for event in events} == {first["batch_operation_id"]}
+    assert {event["revision_before"] for event in events} == {body["review_revision"]}
+    assert {event["revision_after"] for event in events} == {first["candidate_revision_after"]}
+    saved = annotations.get_many(ids)
+    assert saved[ids[0]]["boxes"][0]["label"] == "fire"
+    assert saved[ids[1]]["annotation_state"] == "confirmed_empty"
+    assert all(saved[image_id]["version"] == original[image_id]["version"] + 1 for image_id in ids[:100])
+    assert saved[ids[-2]] == original[ids[-2]]
+    assert execute() == first
+    assert annotations.get_many(ids) == saved and store.review_revision() == first["journal_revision"]
+    second = execute(1)
+    assert second["completed_image_ids"] == [ids[-2]]
+    assert second["batch_operation_id"] != first["batch_operation_id"]
+    assert store.get(ids[-1]) == excluded and annotations.get(ids[-1]) == original[ids[-1]]
+    assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
+
+
+@pytest.mark.parametrize("stage", ["candidate_only", "gt_only"])
+def test_bulk_formal_commit_recovers_original_operation(client, review_task, monkeypatch, stage):
+    from platform_core import annotation_task_service as service
+
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, 2)
+    _, execute = _seal_for_bulk(client, project, task, store, base, body)
+    annotations = host._v50_annotation_repository(project)
+    original = annotations.get_many(ids)
+    original_journal = CandidateStore.record_commit_summaries
+
+    def interrupted(*args, **kwargs):
+        raise OSError("interrupted batch")
+
+    with monkeypatch.context() as patch:
+        if stage == "candidate_only":
+            patch.setattr(service, "write_formal_annotations", interrupted)
+        else:
+            patch.setattr(CandidateStore, "record_commit_summaries", interrupted)
+        with pytest.raises(OSError, match="interrupted batch"):
+            execute()
+    events = store.bulk_formal_events(ids)
+    candidate_revision = store.review_revision()
+    assert len(events) == 2 and all(store.get(image_id)["accepted"] for image_id in ids)
+    assert not store.get_commit_summaries(ids)
+    operation_id = events[0]["batch_operation_id"]
+    current = annotations.get_many(ids)
+    proofs = annotations.candidate_commit_receipts(task, operation_id, ids)
+    if stage == "candidate_only":
+        assert current == original and not proofs
+        assert client.post(base + "/decisions", json=_formal_selection_body(
+            store, ids, "blocked-competing-formal-001",
+        )).status_code == 409
+        finished = execute()
+    else:
+        assert set(proofs) == set(ids) and current != original
+        with monkeypatch.context() as patch:
+            patch.setattr(type(annotations), "candidate_commit_receipts", lambda self, *_: {})
+            with pytest.raises(ValueError, match="GT belongs to another operation"):
+                execute()
+            assert not store.get_commit_summaries(ids)
+        with monkeypatch.context() as patch:
+            patch.setattr(type(annotations), "candidate_commit_receipts",
+                          lambda self, *_: {ids[0]: proofs[ids[0]]})
+            with pytest.raises(ValueError, match="evidence incomplete"):
+                execute()
+            assert not store.get_commit_summaries(ids)
+        with monkeypatch.context() as patch:
+            patch.setattr(service, "write_formal_annotations", interrupted)
+            finished = execute()
+        assert annotations.get_many(ids) == current
+    assert finished["batch_operation_id"] == operation_id
+    assert store.review_revision() == candidate_revision + 1
+    assert store.bulk_formal_events(ids) == events
+    assert CandidateStore.record_commit_summaries is original_journal
+    current = annotations.get_many(ids)
+    assert execute() == finished and annotations.get_many(ids) == current
+    proofs = annotations.candidate_commit_receipts(task, operation_id, ids)
+    with monkeypatch.context() as patch:
+        patch.setattr(type(annotations), "candidate_commit_receipts", lambda self, *_: {
+            **proofs, ids[0]: {**proofs[ids[0]], "candidate_digest": "0"*64},
+        })
+        with pytest.raises(ValueError, match="evidence conflict"):
+            execute()
+    assert annotations.get_many(ids) == current and store.review_revision() == finished["journal_revision"]
+
+
+@pytest.mark.parametrize("changed", ["gt", "candidate", "source", "delete", "labels", "legacy_digest"])
+def test_bulk_formal_commit_stops_on_changed_authority(client, review_task, monkeypatch, changed):
+    from platform_core.annotation_candidates import CandidateDecision
+    from platform_core.annotation_task_service import write_formal_annotations
+
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, 2)
+    _, execute = _seal_for_bulk(client, project, task, store, base, body)
+    annotations = host._v50_annotation_repository(project)
+    materials = host.material_store(project)
+    image_id = ids[-1] if changed == "legacy_digest" else ids[0]
+    original = annotations.get_many(ids)
+    if changed == "gt":
+        host.write_annotations_many(project, [{
+            "image_id":image_id, "boxes":[], "annotation_state":"confirmed_empty", "annotation_scope":["smoke"],
+            "source_content_sha256":materials.get(image_id)["content_sha256"],
+            "expected_version":original[image_id]["version"],
+        }])
+    if changed == "candidate":
+        store.apply_decisions([CandidateDecision(image_id, False)])
+    if changed in ("source", "delete"):
+        row = materials.get(image_id)
+        patch = ({"content_sha256": "9"*64} if changed == "source"
+                 else {"_dataset_delete_claim": {"token": "audit-delete"}})
+        materials.upsert({**row, **patch})
+    if changed == "labels":
+        catalog = host._annotation_label_catalog
+        monkeypatch.setattr(host, "_annotation_label_catalog",
+                            lambda project: [row for row in catalog(project) if row["code"] != "fire"])
+    if changed == "legacy_digest":
+        assert original[image_id]["version"] == 0
+
+        def replace_legacy_then_write(project_id, rows):
+            folder = annotations.project_path / "annotations"
+            folder.mkdir(exist_ok=True)
+            (folder / f"{image_id}.json").write_text(
+                '{"boxes":[],"annotation_state":"confirmed_empty","annotation_scope":["smoke"]}', encoding="utf-8",
+            )
+            return write_formal_annotations(project_id, rows)
+
+        monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations", replace_legacy_then_write)
+
+    candidates_before, revision = store.get_many(ids), store.review_revision()
+    gt_before = annotations.get_many(ids)
+    with pytest.raises((ValueError, RuntimeError)):
+        execute()
+    if changed == "legacy_digest":
+        assert len(store.bulk_formal_events(ids)) == 2
+        assert annotations.get(image_id)["version"] == 0
+        assert annotations.get(ids[0]) == gt_before[ids[0]]  # Whole GT transaction rolled back.
+        assert annotations.get(image_id)["annotation_scope"] == ["smoke"]
+    else:
+        assert not store.bulk_formal_events(ids)
+        assert store.get_many(ids) == candidates_before and store.review_revision() == revision
+        assert annotations.get_many(ids) == gt_before
+    assert not store.get_commit_summaries(ids)
+
+@pytest.mark.parametrize("corrupt", ["duplicate", "digest"])
+def test_bulk_formal_commit_refuses_invalid_sealed_manifest(client, review_task, corrupt):
+    from fastapi import HTTPException
+
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, 2)
+    operation, execute = _seal_for_bulk(client, project, task, store, base, body)
+    artifacts = store.artifacts
+    manifest = artifacts.payload_reader.read_evidence_json(task, operation["manifest_ref"])
+    if corrupt == "duplicate":
+        manifest["images"][1]["image_id"] = manifest["images"][0]["image_id"]
+    else:
+        manifest["images"][1]["gt_content_digest"] = "invalid"
+    forged_ref = artifacts.write_evidence_json(task, manifest)
+    path = "review/bulk-formal/intents/" + host._annotation_review_operation_path(body["request_id"]).rsplit("/", 1)[-1]
+    pointer = artifacts.read_json(task, path)
+    artifacts.atomic_write_json(task, path, {**pointer, "manifest_ref": forged_ref})
+    with pytest.raises(HTTPException) as error:
+        execute()
+    assert error.value.status_code == 503
+    assert not store.bulk_formal_events(ids)
+    assert store.review_revision() == body["review_revision"]

@@ -43,6 +43,31 @@ def _intent_identity(actor, project_id, task_id, request_id):
     }
 
 
+def _check_manifest(manifest):
+    ids = set()
+    for row in manifest["images"]:
+        if not isinstance(row, dict):
+            raise ValueError("bulk formal manifest image must be an object")
+        image_id = row.get("image_id")
+        if (not isinstance(image_id, str) or not image_id or image_id in ids
+                or type(row.get("gt_version")) is not int or row["gt_version"] < 0
+                or type(row.get("draft_revision")) is not int or row["draft_revision"] < 0
+                or not all(isinstance(row.get(key), str) and _SHA256.fullmatch(row[key]) for key in
+                           ("candidate_digest", "gt_content_digest", "source_content_sha256"))):
+            raise ValueError("bulk formal manifest has invalid image baselines")
+        ids.add(image_id)
+    intent, operation = manifest["intent"], manifest["operation"]
+    exclusions = intent.get("excluded_image_ids")
+    if (not isinstance(exclusions, list) or exclusions != sorted(set(exclusions))
+            or ids.intersection(exclusions) or len(exclusions) != operation["excluded_count"]
+            or len(ids) + len(exclusions) != operation["original_count"]
+            or intent.get("purpose") != "gt" or operation["purpose"] != "gt"
+            or intent.get("selection_id") != operation["selection_id"]
+            or type(intent.get("review_revision")) is not int or intent["review_revision"] < 0
+            or intent["review_revision"] != operation["review_revision"]):
+        raise ValueError("bulk formal manifest selection mismatch")
+
+
 def load_sealed_intent(artifacts, identity, *, allow_missing=False):
     """Read the publication pointer and verify the referenced immutable manifest."""
     task_id = identity["task_id"]
@@ -65,6 +90,7 @@ def load_sealed_intent(artifacts, identity, *, allow_missing=False):
                 or operation["operation_id"] != pointer.get("operation_id")
                 or operation["operation_id"] != _digest(["bulk-formal:v1", operation["request_digest"]])):
             raise ValueError("intent manifest identity mismatch")
+        _check_manifest(manifest)
         return manifest, ref
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise HTTPException(503, detail="批量入库意图的持久证据无法核验") from error

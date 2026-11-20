@@ -3738,6 +3738,7 @@ def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
             "annotation_origin": origins[image_id],
             "candidate_commit": row.get("candidate_commit"),
             "candidate_proof_only": row.get("candidate_proof_only"),
+            "expected_content_digest": row.get("expected_content_digest"),
         })
     saved_rows = _v50_annotation_repository(project_id).upsert_many(
         prepared,

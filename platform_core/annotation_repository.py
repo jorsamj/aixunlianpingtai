@@ -1327,6 +1327,12 @@ class AnnotationRepository:
                                     raise AnnotationConflictError(
                                         image_id, expected_version, actual_version
                                     )
+                            expected_digest = row.get("expected_content_digest")
+                            if expected_digest is not None:
+                                actual_digest = (current["content_digest"] if current is not None
+                                                 else self.record_digest(self._legacy_record(image_id)))
+                                if expected_version is None or actual_digest != expected_digest:
+                                    raise ValueError(f"formal GT content changed: {image_id}")
                             if row.get('candidate_commit') and row.get('candidate_proof_only'):
                                 self._record_candidate_commit(db, row, image_id, current, expected_version)
                                 continue

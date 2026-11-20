@@ -759,6 +759,9 @@ def commit_candidate_decisions(
     operation_id: str | None = None,
     selected_candidates: list[dict[str, Any]] | None = None,
     persist_selected: Callable[[], None] | None = None,
+    frozen_annotation_digests: dict[str, str] | None = None,
+    before_formal_write: Callable[[], None] | None = None,
+    before_formal_journal: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
@@ -808,6 +811,10 @@ def commit_candidate_decisions(
 
         committed = store.get_commit_summaries(image_ids)
         pending_ids = [image_id for image_id in image_ids if image_id not in committed]
+        for offset in range(0, len(pending_ids), 100):
+            claims = store.bulk_formal_events(pending_ids[offset:offset + 100])
+            if any(event.get("batch_operation_id") != operation_id for event in claims):
+                raise ValueError("candidate belongs to a sealed bulk formal operation")
         durable = (read_candidate_commit_receipts(project_id, task_id, operation_id, pending_ids)
                    if operation_id and pending_ids else {})
         if pending_ids:
@@ -907,6 +914,15 @@ def commit_candidate_decisions(
                 if not isinstance(frozen_version, int) or expected_version != frozen_version:
                     raise ValueError("AI_SUPPLEMENT_GT_CHANGED: formal GT changed after task creation")
                 expected_version = frozen_version
+            expected_digest = None
+            if frozen_annotation_digests is not None:
+                from app import _v50_annotation_repository
+
+                expected_digest = frozen_annotation_digests[image_id]
+                actual_digest = (previous_row.get("content_digest") if expected_version
+                                 else _v50_annotation_repository(project_id).record_digest(previous_row))
+                if actual_digest != expected_digest:
+                    raise ValueError(f"formal GT content changed: {image_id}")
             recorded_scope = {
                 str(value).strip()
                 for value in (previous_row.get("annotation_scope") or [])
@@ -973,8 +989,10 @@ def commit_candidate_decisions(
                 image_scope - recorded_scope
             )
             write_gt = bool(incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now)
-            if operation_id and expected_version == 0:
-                write_gt = True  # Establish versioned evidence for legacy GT.
+            if operation_id and (expected_version == 0 or frozen_annotation_digests is not None):
+                # Protected batches advance their GT version even for equivalent
+                # content. Missing evidence then cannot look like an unstarted write.
+                write_gt = True
             if write_gt or operation_id:
                 to_write.append({
                     "image_id": image_id,
@@ -983,6 +1001,7 @@ def commit_candidate_decisions(
                     "annotation_scope": annotation_scope,
                     "annotation_origin": annotation_origin,
                     "expected_version": expected_version,
+                    "expected_content_digest": expected_digest,
                     "source_content_sha256": str(
                         item.get("source_content_sha256") or ""
                     ).strip().lower(),
@@ -1033,6 +1052,8 @@ def commit_candidate_decisions(
             })
             persist_selected()
         if to_write:
+            if before_formal_write is not None:
+                before_formal_write()
             written_by_id = {
                 str(row.get("image_id") or ""): row
                 for row in (write_formal_annotations(project_id, to_write) or [])
@@ -1058,7 +1079,8 @@ def commit_candidate_decisions(
 
             _v50_annotation_repository(project_id).repair_candidate_commit_projections(recovered)
         if to_journal:
-            store.record_commit_summaries(to_journal)
+            journal_options = {"commit_guard": before_formal_journal} if before_formal_journal else {}
+            store.record_commit_summaries(to_journal, **journal_options)
         boxes_added += batch_boxes_added
 
         for image_id in image_ids:
