@@ -1122,6 +1122,8 @@ def test_bulk_formal_commit_recovers_original_operation(client, review_task, mon
         )).status_code == 409
         finished = execute()
     else:
+        from platform_core import annotation_bulk_commit
+
         assert set(proofs) == set(ids) and current != original
         with monkeypatch.context() as patch:
             patch.setattr(type(annotations), "candidate_commit_receipts", lambda self, *_: {})
@@ -1135,9 +1137,27 @@ def test_bulk_formal_commit_recovers_original_operation(client, review_task, mon
                 execute()
             assert not store.get_commit_summaries(ids)
         with monkeypatch.context() as patch:
+            patch.setattr(type(annotations), "candidate_commit_receipts", lambda self, *_: {
+                **proofs, ids[0]: {**proofs[ids[0]], "candidate_digest": "0"*64},
+            })
+            with pytest.raises(ValueError, match="evidence conflict"):
+                execute()
+            assert not store.get_commit_summaries(ids)
+        authorized = True
+        read_proof_state = annotation_bulk_commit._proof_state
+
+        def revoke_after_verified_proof(*args):
+            nonlocal authorized
+            state = read_proof_state(*args)
+            if state[1] and not state[2]:
+                authorized = False
+            return state
+
+        with monkeypatch.context() as patch:
+            patch.setattr(annotation_bulk_commit, "_proof_state", revoke_after_verified_proof)
             patch.setattr(service, "write_formal_annotations", interrupted)
-            finished = execute()
-        assert annotations.get_many(ids) == current
+            finished = execute(authorize=lambda _: authorized)
+        assert not authorized and annotations.get_many(ids) == current
     assert finished["batch_operation_id"] == operation_id
     assert store.review_revision() == candidate_revision + 1
     assert store.bulk_formal_events(ids) == events
@@ -1153,6 +1173,52 @@ def test_bulk_formal_commit_recovers_original_operation(client, review_task, mon
             execute()
     assert annotations.get_many(ids) == current and store.review_revision() == finished["journal_revision"]
 
+
+@pytest.mark.parametrize("revoke_after", ["candidate", "gt"])
+def test_bulk_formal_commit_revocation_boundary(client, review_task, monkeypatch, revoke_after):
+    from platform_core import annotation_task_service as service
+
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, 2)
+    _, execute = _seal_for_bulk(client, project, task, store, base, body)
+    annotations = host._v50_annotation_repository(project)
+    original = annotations.get_many(ids)
+    authorized = True
+    owner, method = (
+        (CandidateStore, "prepare_bulk_formal_batch") if revoke_after == "candidate"
+        else (service, "write_formal_annotations")
+    )
+    original_write = getattr(owner, method)
+
+    def persist_then_revoke(*args, **kwargs):
+        nonlocal authorized
+        saved = original_write(*args, **kwargs)
+        authorized = False
+        return saved
+
+    monkeypatch.setattr(owner, method, persist_then_revoke)
+    if revoke_after == "candidate":
+        with pytest.raises(PermissionError, match="no execution authority"):
+            execute(authorize=lambda _: authorized)
+    else:
+        result = execute(authorize=lambda _: authorized)
+        assert result["completed_image_ids"] == ids
+
+    assert not authorized
+    events = store.bulk_formal_events(ids)
+    assert len(events) == len(ids)
+    proofs = annotations.candidate_commit_receipts(task, events[0]["batch_operation_id"], ids)
+    if revoke_after == "candidate":
+        assert not proofs and not store.get_commit_summaries(ids)
+        assert annotations.get_many(ids) == original
+        assert store.review_revision() == events[0]["revision_after"]
+    else:
+        journal = store.get_commit_summaries(ids)
+        current = annotations.get_many(ids)
+        assert set(proofs) == set(journal) == set(ids)
+        for image_id in ids:
+            assert current[image_id]["version"] == original[image_id]["version"] + 1
+            assert journal[image_id]["gt_snapshot_version"] == proofs[image_id]["version"]
+            assert journal[image_id]["gt_snapshot_digest"] == proofs[image_id]["content_digest"]
 
 @pytest.mark.parametrize("changed", ["gt", "candidate", "source", "delete", "labels", "legacy_digest"])
 def test_bulk_formal_commit_stops_on_changed_authority(client, review_task, monkeypatch, changed):

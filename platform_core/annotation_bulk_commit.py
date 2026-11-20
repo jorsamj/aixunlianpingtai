@@ -139,10 +139,11 @@ def execute_bulk_formal_batch(artifacts, identity, operation_id, manifest_ref, b
             if not journal:
                 if store.review_revision() != after:
                     raise ValueError("bulk formal revision changed before journal recovery")
-                guard()
+                # Entry was authorized and the complete GT batch is durable.
+                # Its projections and journal must catch up even after cancellation.
                 annotations.repair_candidate_commit_projections(receipts.values())
                 store.record_commit_summaries(
-                    [candidate_commit_summary(receipts[image_id]) for image_id in frozen], commit_guard=guard,
+                    [candidate_commit_summary(receipts[image_id]) for image_id in frozen],
                 )
         else:
             if any(int(admitted[image_id].get("annotation_version") or 0) > row["gt_version"]
@@ -174,7 +175,7 @@ def execute_bulk_formal_batch(artifacts, identity, operation_id, manifest_ref, b
                 frozen_annotation_digests={image_id: row["gt_content_digest"] for image_id, row in frozen.items()},
                 selected_image_ids=frozen, operation_id=batch["batch_operation_id"],
                 selected_candidates=list(projected.values()), persist_selected=prepare if after is None else None,
-                before_formal_write=before_write, before_formal_journal=guard,
+                before_formal_write=before_write,
             )
         _, _, journal, after = _proof_state(store, annotations, batch, frozen)
         if not journal:

@@ -761,7 +761,6 @@ def commit_candidate_decisions(
     persist_selected: Callable[[], None] | None = None,
     frozen_annotation_digests: dict[str, str] | None = None,
     before_formal_write: Callable[[], None] | None = None,
-    before_formal_journal: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
@@ -1079,8 +1078,7 @@ def commit_candidate_decisions(
 
             _v50_annotation_repository(project_id).repair_candidate_commit_projections(recovered)
         if to_journal:
-            journal_options = {"commit_guard": before_formal_journal} if before_formal_journal else {}
-            store.record_commit_summaries(to_journal, **journal_options)
+            store.record_commit_summaries(to_journal)
         boxes_added += batch_boxes_added
 
         for image_id in image_ids:
