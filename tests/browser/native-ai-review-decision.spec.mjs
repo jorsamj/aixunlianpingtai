@@ -166,6 +166,60 @@ test('原生单图决定按真实回执恢复，保留逐图范围、候选隔�
     expect((await read(candidate(ids[2]))).item).toEqual(untouched);
     expect(await gt()).toEqual(initialGt);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(768);
+
+    const pagingTask='native-decision-last-page';
+    execFileSync('python',['-c',[
+      'import app, sys',
+      'from platform_core.task_runtime import TaskRecord, TaskKind, TaskStatus',
+      'from platform_core.annotation_candidates import CandidateStore',
+      'project, task, last_id = sys.argv[1:]',
+      'repository = app.shared_task_repository(); artifacts = app.shared_task_artifacts()',
+      'artifacts.atomic_write_json(task, "request.json", {"labels": ["fire"]})',
+      'repository.create(TaskRecord.new(task, project, TaskKind.AI_ANNOTATION, "request.json", "isolated"))',
+      'store = CandidateStore(artifacts, task_id=task); store.initialize(labels=["fire"], total_images=25)',
+      'store.append_items([dict(image_id=f"first-page-{i}", filename=f"first-page-{i}.jpg", status="empty", width=320, height=240) for i in range(24)])',
+      'material = app.material_store(project).get(last_id)',
+      'store.append_items([dict(image_id=last_id, filename=material["filename"], status="empty", width=320, height=240, source_content_sha256=material["content_sha256"])])',
+      'lease = repository.claim_next("fixture", {TaskKind.AI_ANNOTATION}, set())',
+      'repository.finish(task, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION, "candidates/manifest.json")',
+    ].join('\n'),project,pagingTask,ids[2]],{env});
+    const pagingBase=origin+'/api/v60/projects/'+project+'/annotation-tasks/'+pagingTask;
+    const postBodies=[];
+    await page.route(pagingBase+'/decisions',route=>{
+      postBodies.push(route.request().postDataJSON());
+      return route.continue();
+    });
+    await page.goto(origin+'/app/#/projects/'+project+'/ai/tasks/'+pagingTask+'/review');
+    await page.getByText('更多筛选',{exact:true}).click();
+    await unreviewed.click();
+    await expect(page.getByRole('heading',{name:'候选图片 25 张'})).toBeVisible();
+    await page.getByRole('button',{name:'下一页'}).click();
+    await expect(page.getByText('第 2 页 · 每页 24 张')).toBeVisible();
+    await expect(page.locator('.review-candidate')).toHaveCount(1);
+
+    const otherScope={actorKey:JSON.stringify(['test','isolated-test-runtime']),projectId:project,taskId:pagingTask,imageId:'first-page-0'};
+    const otherKey='ai-review-decision:v1:'+JSON.stringify(Object.values(otherScope));
+    const otherPacket=JSON.stringify({scope:otherScope,status:'pending',
+      body:{...payloads[2],request_id:'untouched-other-pending',decisions:[{image_id:otherScope.imageId,accepted:false}]}});
+    await page.evaluate(([key,packet])=>sessionStorage.setItem(key,packet),[otherKey,otherPacket]);
+
+    await select(names[2]);
+    const emptyRead=page.waitForResponse(response=>response.ok()
+      &&response.url().startsWith(pagingBase+'/candidates?')
+      &&new URL(response.url()).searchParams.get('cursor')==='24');
+    await adopt.click();
+    const empty=await (await emptyRead).json();
+    expect(empty).toMatchObject({items:[],total:24,summary:{unreviewed:24}});
+    await expect(heading).toContainText('已采用候选');
+    await expect(page.getByText('第 1 页 · 每页 24 张')).toBeVisible();
+    await expect(page.locator('.review-candidate')).toHaveCount(24);
+    await expect(page.getByRole('button',{name:'上一页'})).toBeDisabled();
+    await expect(page.getByRole('button',{name:'下一页'})).toBeDisabled();
+    await expect(unreviewed).toHaveAttribute('aria-pressed','true');
+    await expect(unreviewed).toContainText('24');
+    expect(postBodies).toHaveLength(1);
+    expect(await page.evaluate(key=>sessionStorage.getItem(key),otherKey)).toBe(otherPacket);
+    expect(await gt()).toEqual(initialGt);
   }finally{
     server.kill();
   }

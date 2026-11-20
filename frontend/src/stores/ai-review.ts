@@ -56,7 +56,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     const cancel=()=>controller.abort();
     decisionSignal?.addEventListener('abort',cancel,{once:true});
     try{
-      const result=await getReviewPage(scope,nextFilter,nextCursors.at(-1)??null,controller.signal);
+      let result=await getReviewPage(scope,nextFilter,nextCursors.at(-1)??null,controller.signal);
+      if(preserveImage&&current()&&!result.task_error&&!result.items.length&&nextCursors.length>1){
+        nextCursors=nextCursors.slice(0,-1);
+        result=await getReviewPage(scope,nextFilter,nextCursors.at(-1)??null,controller.signal);
+      }
       if(current()){
         if(preserveImage&&result.task_error)return false;
         page.value=result;filter.value=nextFilter;cursors.value=nextCursors;
