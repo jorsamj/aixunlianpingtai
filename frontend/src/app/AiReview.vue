@@ -25,7 +25,7 @@ function beforeUnload(event:BeforeUnloadEvent){
   if(editor.value?.hasUnresolved()){event.preventDefault();event.returnValue=''}
 }
 function beforeLogout(event:Event){if(!canLeave())event.preventDefault()}
-function closeEditor(){editing.value=undefined}
+function closeEditor(){editor.value?.suspend(true);editing.value=undefined}
 const layout=ref<'grid'|'list'>('grid'),original=ref(false);
 const inspectorTitle=ref<HTMLElement>(),focusReturn=ref<HTMLButtonElement>();
 const legacy=computed(()=>legacyUrl(props.projectId,'自动标注及清洗'));

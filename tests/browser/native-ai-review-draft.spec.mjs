@@ -57,12 +57,26 @@ test('原生 Annotorious 保存、原请求恢复及冲突保护使用真实草�
     const originalGt=await (await request.get(gt)).json();
     const latest=async()=> (await (await request.get(candidate)).json()).item;
     const payloads=[];
+    let failConfirmedRead=false;
+    await page.route(candidate,route=>{
+      if(failConfirmedRead){
+        failConfirmedRead=false;
+        return route.fulfill({status:503,json:{detail:'隔离读取失败'}});
+      }
+      return route.continue();
+    });
     await page.route(draft,async route=>{
       payloads.push(route.request().postDataJSON());
       if(payloads.length===1){
         const response=await route.fetch();
         expect(response.ok()).toBeTruthy();
         return route.abort('failed');
+      }
+      if(payloads.length===2){
+        const response=await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        failConfirmedRead=true;
+        return route.fulfill({response});
       }
       return route.continue();
     });
@@ -102,7 +116,21 @@ test('原生 Annotorious 保存、原请求恢复及冲突保护使用真实草�
     await page.reload();
     await open();
     await scope.getByRole('button',{name:'核验原保存请求'}).click();
+    await expect(scope.getByText('草稿已保存，最新草稿读取失败。请重新载入。')).toBeVisible();
+    const reload=scope.getByRole('button',{name:'重新载入草稿'});
+    await expect(reload).toBeEnabled();
+    await expect(save).toBeDisabled();
+    const stay=page.waitForEvent('dialog');
+    await Promise.all([stay.then(async dialog=>{
+      expect(dialog.message()).toContain('保存已确认');
+      await dialog.dismiss();
+    }),scope.getByRole('button',{name:'返回审核列表'}).click()]);
+    await expect(scope).toBeVisible();
+    page.on('dialog',async dialog=>{await dialog.accept()});
+    await reload.click();
     await expect(scope.getByText('已保存草稿 · 版本 1')).toBeVisible();
+    page.removeAllListeners('dialog');
+    expect(payloads).toHaveLength(2);
     expect(payloads[0]).toEqual(payloads[1]);
     expect((await latest()).draft_revision).toBe(1);
     const narrow=await img.boundingBox();
@@ -129,6 +157,33 @@ test('原生 Annotorious 保存、原请求恢复及冲突保护使用真实草�
     await page.getByRole('button',{name:'编辑候选',exact:true}).click();
     await expect(scope.getByText('原图方向或尺寸与服务端候选不一致，已阻止编辑。')).toBeVisible();
     await expect(save).toBeDisabled();
+    await scope.getByRole('button',{name:'返回审核列表'}).click();
+
+    const current=await latest();
+    const actorKey=JSON.stringify(['test','isolated-test-runtime']);
+    const identity={actorKey,projectId:project,taskId:'native-draft',imageId:row.id};
+    const key='ai-candidate-draft:v1:'+JSON.stringify([actorKey,project,identity.taskId,row.id]);
+    const seedRecovery=scope=>page.evaluate(([storageKey,value])=>sessionStorage.setItem(storageKey,JSON.stringify(value)),[
+      key,{scope,draft:{boxes:current.boxes,revision:1,request_id:'external-edit-0001'}},
+    ]);
+    await seedRecovery(identity);
+    await open();
+    await expect(scope.getByText('候选草稿',{exact:true})).toBeVisible();
+    await expect(scope.getByRole('button',{name:'核验原保存请求'})).toBeEnabled();
+    const pendingDialog=page.waitForEvent('dialog');
+    await Promise.all([pendingDialog.then(async dialog=>{
+      expect(dialog.message()).toContain('原保存结果待核验');
+      await dialog.dismiss();
+    }),scope.getByRole('button',{name:'返回审核列表'}).click()]);
+    await expect(scope).toBeVisible();
+    page.once('dialog',dialog=>dialog.accept());
+    await scope.getByRole('button',{name:'返回审核列表'}).click();
+
+    await seedRecovery({...identity,imageId:rotatedRow.id});
+    await page.getByRole('button',{name:'native-draft.jpg',exact:true}).click();
+    await page.getByRole('button',{name:'编辑候选',exact:true}).click();
+    await expect(page.getByRole('alert')).toContainText('原草稿恢复记录无法安全读取');
+    await expect(scope).toHaveCount(0);
     expect(payloads).toHaveLength(3);
   }finally{
     server.kill();

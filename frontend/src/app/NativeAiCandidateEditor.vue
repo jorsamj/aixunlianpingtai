@@ -6,6 +6,7 @@ import {getReviewCandidate,getReviewLabels,saveReviewDraft} from '../api/ai-revi
 import type {CandidateDraft,ReviewAddress,ReviewCandidate,ReviewLabel} from '../api/ai-review';
 import {createAnnotoriousEditor} from '../../../static/modules/annotorious-editor.js';
 import {withLegacyBoxIdentities} from '../../../static/modules/annotation-geometry-adapter.js';
+import {parseDraftRecovery} from './ai-draft-recovery';
 
 const props=defineProps<{scope:ReviewAddress;actorKey:string;imageId:string}>();
 const emit=defineEmits<{close:[];saved:[imageId:string]}>();
@@ -14,11 +15,13 @@ const boxes=shallowRef<AiEditorBox[]>([]),baseline=shallowRef<AiEditorBox[]>([])
 const activeId=ref<string|null>(null),labelCode=ref(''),filterCode=ref('');
 const view=ref({mode:'draw',visible:true,scale:1});
 const loading=ref(false),saving=ref(false),suspended=ref(false),conflict=ref(false);
-const refreshRequired=ref(false),error=ref(''),status=ref('');
+const refreshRequired=ref(false),recoveryBlocked=ref(false),error=ref(''),status=ref('');
+let confirmedRevision:number|undefined;
 const outstanding=shallowRef<CandidateDraft>();
 const history:AiEditorBox[][]=[],redo:AiEditorBox[][]=[];
 const dirty=computed(()=>JSON.stringify(boxes.value)!==JSON.stringify(baseline.value));
 const locked=computed(()=>loading.value||saving.value||suspended.value||!!outstanding.value||refreshRequired.value);
+const recoveryScope={actorKey:props.actorKey,...props.scope,imageId:props.imageId};
 const storageKey='ai-candidate-draft:v1:'+JSON.stringify([props.actorKey,props.scope.projectId,props.scope.taskId,props.imageId]);
 const url='/api/v61/projects/'+encodeURIComponent(props.scope.projectId)+'/materials/'+encodeURIComponent(props.imageId)+'/content';
 let apiRead:AbortController|undefined, mountController:AbortController|undefined,dead=false;
@@ -39,12 +42,13 @@ function loadBoxes(result:ReviewCandidate,working?:AiEditorBox[]){
 function forget(){
   sessionStorage.removeItem(storageKey);
   outstanding.value=undefined;
+  confirmedRevision=undefined;
 }
 function editable(candidate:ReviewCandidate){
   return ['success','empty'].includes(candidate.status)&&candidate.review_state==='active'&&!candidate.gt_committed;
 }
 async function load(restorePending=true){
-  if(loading.value||suspended.value)return;
+  if(loading.value||suspended.value||recoveryBlocked.value)return;
   const controller=apiRead=new AbortController(),current=()=>!dead&&!controller.signal.aborted;
   const pending=restorePending?outstanding.value:undefined;
   loading.value=true;error.value='';sync();
@@ -55,9 +59,18 @@ async function load(restorePending=true){
     if(!current())return false;
     labels.value=catalog;
     if(!catalog.some(label=>label.code===labelCode.value))labelCode.value=catalog[0]?.code||'';
-    loadBoxes(candidate,pending?.boxes);
-    conflict.value=!editable(candidate);
+    const pendingFits=!pending||pending.boxes.every(box=>box.x2<=(candidate.width??0)&&box.y2<=(candidate.height??0));
+    loadBoxes(candidate,pendingFits?pending?.boxes:undefined);
+    conflict.value=!editable(candidate)||!pendingFits;
     status.value=pending?'原草稿保存结果待核验。':'草稿版本 '+candidate.draft_revision;
+    if(confirmedRevision!==undefined){
+      if(candidate.draft_revision==null||candidate.draft_revision<confirmedRevision)
+        throw new Error('暂时无法读取已确认的草稿版本，请重试。');
+      status.value=candidate.draft_revision===confirmedRevision
+        ?'已保存草稿 · 版本 '+candidate.draft_revision
+        :'服务端草稿已更新 · 版本 '+candidate.draft_revision;
+      forget();
+    }
     if(conflict.value)error.value='当前候选已不可编辑，请核对重新读取的权威草稿。';
     refreshRequired.value=false;
     return true;
@@ -92,12 +105,22 @@ function selectBox(index:number){
   if(view.value.mode==='pan')kernel.setMode('select');
   return kernel.select(id);
 }
+const leaveWarning=computed(()=>{
+  if(saving.value)return '候选草稿正在保存。';
+  if(outstanding.value)return '原保存结果待核验。离开后可在本标签页重新打开此图，核验同一请求。确定离开？';
+  if(refreshRequired.value)return '保存已确认，最新草稿尚未重新读取。确定离开？';
+  if(dirty.value&&conflict.value)return '当前候选与服务端草稿有冲突，确定放弃本地修改？';
+  if(dirty.value)return '候选修改尚未保存，确定放弃修改？';
+  return '';
+});
 function canLeave(){
   if(saving.value)return false;
   kernel?.flush();
-  return !dirty.value||confirm(outstanding.value
-    ?'原保存结果待核验。离开后可在本标签页重新打开此图，核验同一请求。确定离开？'
-    :'候选修改尚未保存，确定放弃修改？');
+  return !leaveWarning.value||confirm(leaveWarning.value);
+}
+function hasUnresolved(){
+  kernel?.flush();
+  return Boolean(leaveWarning.value);
 }
 function suspend(value:boolean){
   suspended.value=value;
@@ -118,7 +141,7 @@ async function save(){
   try{
     draft=pending??{boxes:boxes.value,revision:candidate.draft_revision!,request_id:requestId(),
       source_content_sha256:candidate.source_content_sha256||candidate.content_sha256};
-    if(!pending)sessionStorage.setItem(storageKey,JSON.stringify(draft));
+    if(!pending)sessionStorage.setItem(storageKey,JSON.stringify({scope:recoveryScope,draft}));
     outstanding.value=draft;
   }catch(cause){error.value='无法记录草稿请求：'+message(cause);return}
   const controller=apiRead=new AbortController(),current=()=>!dead&&!controller.signal.aborted;
@@ -126,10 +149,15 @@ async function save(){
   try{
     const receipt=await saveReviewDraft(props.scope,props.imageId,draft,controller.signal);
     if(!current())return;
-    forget();
     refreshRequired.value=true;
+    outstanding.value=undefined;
+    confirmedRevision=receipt.revision;
+    sessionStorage.setItem(storageKey,JSON.stringify({scope:recoveryScope,draft,confirmedRevision}));
     const latest=await getReviewCandidate(props.scope,props.imageId,controller.signal);
     if(!current())return;
+    if(latest.draft_revision==null||latest.draft_revision<receipt.revision)
+      throw new Error('暂时无法读取已确认的草稿版本');
+    forget();
     if(latest.draft_revision!==receipt.revision){
       conflict.value=true;
       error.value='原保存已确认，但远端草稿版本随后变化。请重新载入核对。';
@@ -144,6 +172,7 @@ async function save(){
     if(dead)return;
     const code=(cause as {httpStatus?:number})?.httpStatus;
     if(refreshRequired.value)error.value='草稿已保存，最新草稿读取失败。请重新载入。';
+    else if(controller.signal.aborted)error.value='保存结果待核验，请用原请求编号重试。';
     else if(code===409){
       if(!pending)forget();
       conflict.value=true;
@@ -156,13 +185,12 @@ async function save(){
 }
 async function reload(){
   if(saving.value||loading.value||suspended.value)return;
-  if(outstanding.value&&!conflict.value)return;
+  if(outstanding.value)return;
   kernel?.flush();
   if((dirty.value||outstanding.value)&&!confirm('重新载入将采用服务端当前草稿，确定继续？'))return;
   // Read the current authority before dismissing an inconclusive recovery packet.
   if(await load(false)){
     imageLoadEpoch.value++;
-    if(outstanding.value)forget();
     sync();
     emit('saved',props.imageId);
   }
@@ -209,17 +237,27 @@ const snapshot=computed<AiEditorSnapshot|undefined>(()=>{
     labelCode:labelCode.value,filterCode:filterCode.value,dirty:dirty.value,saving:saving.value,
     pending:locked.value,editingDisabled:conflict.value,retryPending:!!outstanding.value&&!suspended.value&&!loading.value&&!conflict.value,
     saveDisabled:conflict.value||refreshRequired.value||(!dirty.value&&!outstanding.value),
+    reloadDisabled:loading.value||saving.value||suspended.value||!!outstanding.value,
     error:error.value,status:status.value,revision:row.draft_revision,view:view.value,conflict:row.manual_review_required};
 });
 onMounted(()=>{
   try{
     const stored=sessionStorage.getItem(storageKey);
-    if(stored)outstanding.value=JSON.parse(stored);
-  }catch(cause){error.value=message(cause);return}
+    if(stored){
+      const record=parseDraftRecovery(stored,recoveryScope);
+      confirmedRevision=record.confirmedRevision;
+      refreshRequired.value=confirmedRevision!==undefined;
+      if(!refreshRequired.value)outstanding.value=record.draft;
+    }
+  }catch{
+    recoveryBlocked.value=true;
+    error.value='原草稿恢复记录无法安全读取，已保留该记录。请在原工作台核对服务端草稿。';
+    return;
+  }
   void load();
 });
 onBeforeUnmount(()=>{dead=true;apiRead?.abort();context.release()});
-defineExpose({canLeave,suspend,hasUnresolved:()=>dirty.value||saving.value||!!outstanding.value});
+defineExpose({canLeave,suspend,hasUnresolved});
 </script>
 
 <template>
@@ -228,7 +266,7 @@ defineExpose({canLeave,suspend,hasUnresolved:()=>dirty.value||saving.value||!!ou
   <section v-else aria-label="候选编辑" class="editor-opening">
    <p v-if="error" role="alert">{{ error }}</p>
    <p v-else role="status">正在读取候选与标签…</p>
-   <el-button v-if="error" @click="load()">重试</el-button>
+   <el-button v-if="error && !recoveryBlocked" @click="load()">重试</el-button>
    <el-button @click="emit('close')">返回审核列表</el-button>
   </section>
  </div>

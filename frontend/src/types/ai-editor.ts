@@ -30,6 +30,7 @@ export interface AiEditorSnapshot {
   retryPending?: boolean;
   saveDisabled?: boolean;
   editingDisabled?: boolean;
+  reloadDisabled?: boolean;
 }
 // An opaque original-owner handle. The Vue shell never edits the kernel.
 export type AiEditorHandle = object;
