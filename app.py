@@ -27174,8 +27174,13 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
                 or not payload.decisions[0].image_id or payload.decisions[0].boxes is not None):
             raise HTTPException(422, detail="单图审核仅允许提交一张候选的决定、审核修订及原请求编号")
         actor = _material_governance_actor(request, project_id)["actor_id"]
-    if payload.commit_selected and not request_id:
-        raise HTTPException(422, detail="部分正式入库必须提供审核操作编号")
+    if payload.commit_selected:
+        ids = [str(item.image_id) for item in payload.decisions]
+        if (not request_id or not payload.commit or payload.accept_unmentioned or payload.reject_unmentioned
+                or not 1 <= len(ids) <= 100 or not all(ids) or len(set(ids)) != len(ids)
+                or any(not item.accepted for item in payload.decisions)):
+            raise HTTPException(422, detail="部分正式入库必须提供操作编号及 1～100 张唯一且明确通过的候选")
+        actor = _material_governance_actor(request, project_id)["actor_id"]
     if request_id:
         _annotation_review_operation_path(request_id)
     with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=30):
@@ -27186,10 +27191,14 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
         identity = _annotation_review_operation_identity(payload)
         previous = artifacts.read_json(task_id, path, default=None)
         if isinstance(previous, dict):
+            if ("selected_image_ids" in previous
+                    and (not previous.get("actor") or previous["actor"] != actor)):
+                raise HTTPException(404, detail="尚无该审核操作的持久回执")
             if (previous.get("request_id") != request_id
                     or previous.get("project_id") != project_id
                     or previous.get("identity") != identity
-                    or (payload.single_candidate and (previous.get("actor") != actor or previous.get("task_id") != task_id))):
+                    or ((payload.single_candidate or payload.commit_selected)
+                        and (previous.get("actor") != actor or previous.get("task_id") != task_id))):
                 raise HTTPException(status_code=409, detail="同一审核操作编号的提交内容不一致")
             if previous.get("status") == "rejected":
                 raise HTTPException(previous["status_code"], detail=previous["detail"])
@@ -27213,8 +27222,8 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
             "request_id": request_id, "project_id": project_id, "task_id": task_id,
             "identity": identity, "status": "pending", "created_at": now_iso(),
         }
-        if payload.commit_selected and 1 <= len(payload.decisions) <= 100:
-            pending["selected_image_ids"] = [str(item.image_id) for item in payload.decisions]
+        if payload.commit_selected:
+            pending.update(actor=actor, selected_image_ids=ids)
         if payload.single_candidate:
             decision = payload.decisions[0]
             pending.update(actor=actor, single_decision={
@@ -27225,14 +27234,22 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
         try:
             if payload.single_candidate:
                 result = _decide_single_annotation_candidate(project_id, task_id, decision, pending)
+            elif payload.commit_selected:
+                project_path = project_dir(project_id)
+                with label_governance_fence(project_path), material_annotation_lifecycle_fence(project_path):
+                    result = _decide_annotation_candidates(project_id, task_id, payload)
             else:
                 result = _decide_annotation_candidates(project_id, task_id, payload)
         except HTTPException as error:
             recovered = _annotation_review_resolve_receipt(
-                _require_annotation_review_task(project_id, task_id), pending, reject_unwritten=False,
+                _require_annotation_review_task(project_id, task_id), pending,
             ) if payload.commit_selected else pending
             result = recovered.get("result")
             if result is None:
+                if payload.commit_selected and recovered.get("status") == "pending":
+                    return JSONResponse(status_code=202, content={
+                        "status": "pending", "request_id": request_id,
+                    })
                 artifacts.atomic_write_json(task_id, path, {
                     **pending, "status": "rejected", "status_code": error.status_code, "detail": error.detail,
                 })
@@ -27267,7 +27284,7 @@ def _annotation_review_operation_identity(payload: AnnotationDecisionReq) -> str
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _annotation_review_resolve_receipt(task: TaskRecord, receipt: Dict[str, Any], *, reject_unwritten=True):
+def _annotation_review_resolve_receipt(task: TaskRecord, receipt: Dict[str, Any]):
     if receipt.get("status") != "pending":
         return receipt
     artifacts = shared_task_artifacts()
@@ -27297,7 +27314,7 @@ def _annotation_review_resolve_receipt(task: TaskRecord, receipt: Dict[str, Any]
             return receipt
         operation_id = candidate_commit_operation_id("partial", request_id, receipt["identity"])
         evidence = read_candidate_commit_receipts(task.project_id, task.task_id, operation_id, ids)
-        if not evidence and reject_unwritten:
+        if not evidence:
             # The HTTP selected batch uses one atomic formal write under the
             # same review lock. Zero receipts prove that no formal batch landed.
             return {**receipt, "status": "rejected", "status_code": 409, "detail": {
@@ -27357,21 +27374,36 @@ def get_annotation_review_operation(project_id: str, task_id: str, request_id: s
     receipt = shared_task_artifacts().read_json(
         task_id, path, default=None,
     )
-    if not isinstance(receipt, dict) or receipt.get("request_id") != request_id or receipt.get("project_id") != project_id:
-        raise HTTPException(status_code=404, detail="尚无该审核操作的持久回执")
-    if "single_decision" in receipt and receipt.get("actor") != _material_governance_actor(request, project_id)["actor_id"]:
-        raise HTTPException(status_code=404, detail="尚无该审核操作的持久回执")
+    def check_access(current):
+        if (not isinstance(current, dict) or current.get("request_id") != request_id
+                or current.get("project_id") != project_id):
+            raise HTTPException(404, detail="尚无该审核操作的持久回执")
+        if "single_decision" in current or "selected_image_ids" in current:
+            if current.get("task_id") != task_id:
+                raise HTTPException(404, detail="尚无该审核操作的持久回执")
+            # Historical selected receipts can still repair the journal under the
+            # review lock. Their original operator cannot be inferred or exposed.
+            if "selected_image_ids" in current and not current.get("actor"):
+                return False
+            if current.get("actor") != _material_governance_actor(request, project_id)["actor_id"]:
+                raise HTTPException(404, detail="尚无该审核操作的持久回执")
+        return True
+
+    visible = check_access(receipt)
     if receipt.get("status") == "pending":
         try:
             with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=5):
-                receipt = shared_task_artifacts().read_json(task_id, path, default=receipt)
+                receipt = shared_task_artifacts().read_json(task_id, path, default=None)
+                visible = check_access(receipt)
                 task = _require_annotation_review_task(project_id, task_id)
                 resolved = _annotation_review_resolve_receipt(task, receipt)
                 if resolved != receipt:
                     shared_task_artifacts().atomic_write_json(task_id, path, resolved)
                 receipt = resolved
         except Timeout:
-            pass  # The original POST still owns the review lock; expose pending.
+            pass  # The original POST still owns the review lock; expose pending only to its owner.
+    if not visible:
+        raise HTTPException(404, detail="尚无该审核操作的持久回执")
     if receipt.get("status") == "completed" and isinstance(receipt.get("result"), dict):
         return {"status": "completed", "request_id": request_id, "result": receipt["result"]}
     if receipt.get("status") == "rejected":
@@ -27555,6 +27587,50 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
                     detail=f"候选框标签不在当前有效标签库：{source or '(empty)'}",
                 )
 
+    if payload.commit_selected:
+        from platform_core.annotation_task_service import (
+            commit_candidate_decisions, _canonical_review_scope, candidate_commit_operation_id,
+        )
+        candidate_request = (
+            (frozen or {}).get("options") or {}
+            if task.kind is TaskKind.MATERIAL_BATCH else (frozen or {})
+        )
+        manifest = shared_task_artifacts().read_json(task_id, "candidates/manifest.json", default={})
+        scope_policy = str(candidate_request.get("review_scope_policy") or "task_uniform_legacy")
+        if scope_policy not in {"task_uniform_legacy", "per_image_required"}:
+            raise HTTPException(status_code=409, detail="冻结审核范围策略无效")
+        frozen_versions = candidate_request.get("per_image_annotation_versions") if scope_policy == "per_image_required" else None
+        frozen_scopes = candidate_request.get("per_image_missing_review_scopes") if scope_policy == "per_image_required" else None
+        frozen_hashes = candidate_request.get("per_image_source_hashes") if scope_policy == "per_image_required" else None
+        if scope_policy == "per_image_required" and not all(isinstance(value, dict) for value in (frozen_versions, frozen_scopes, frozen_hashes)):
+            raise HTTPException(status_code=409, detail="逐图补审冻结凭据不完整，不能直接入库")
+        def persist_selected():
+            store.apply_decisions(decisions, allowed_statuses={"success", "empty"})
+            store.remap_selected_labels(decided_ids, mapping, label_ids)
+
+        try:
+            scope = _canonical_review_scope(
+                candidate_request.get("labels") or (manifest or {}).get("labels") or [],
+                mapping, label_ids,
+            )
+            committed = commit_candidate_decisions(
+                project_id, task_id, store,
+                overwrite=bool(candidate_request.get("overwrite")),
+                review_scope=scope,
+                require_per_image_scope=scope_policy == "per_image_required",
+                frozen_annotation_versions=frozen_versions,
+                frozen_missing_review_scopes=frozen_scopes,
+                frozen_material_hashes=frozen_hashes,
+                selected_image_ids=[decision.image_id for decision in decisions],
+                selected_candidates=store.preview_selected_decisions(decisions, mapping, label_ids),
+                persist_selected=persist_selected,
+                operation_id=candidate_commit_operation_id(
+                    "partial", payload.request_id.strip(), _annotation_review_operation_identity(payload),
+                ),
+            )
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=409, detail="已选正式 GT 提交失败，请核对素材与已入库审计："+str(error)) from error
+        return _annotation_selected_commit_response(task, store, committed)
     try:
         store.apply_decisions(
             decisions,
@@ -27573,54 +27649,13 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
     )
     if not reject_all_without_mapping:
         try:
-            if payload.commit_selected:
-                store.remap_selected_labels(decided_ids, mapping, label_ids)
-            else:
-                store.remap_labels(mapping, label_ids)
+            store.remap_labels(mapping, label_ids)
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.accept_unmentioned:
         store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:
         store.decide_unmentioned(False, exclude=decided_ids)
-    if payload.commit_selected:
-        from platform_core.annotation_task_service import (
-            commit_candidate_decisions, _canonical_review_scope, candidate_commit_operation_id,
-        )
-        candidate_request = (
-            (frozen or {}).get("options") or {}
-            if task.kind is TaskKind.MATERIAL_BATCH else (frozen or {})
-        )
-        manifest = shared_task_artifacts().read_json(task_id, "candidates/manifest.json", default={})
-        scope_policy = str(candidate_request.get("review_scope_policy") or "task_uniform_legacy")
-        if scope_policy not in {"task_uniform_legacy", "per_image_required"}:
-            raise HTTPException(status_code=409, detail="冻结审核范围策略无效")
-        frozen_versions = candidate_request.get("per_image_annotation_versions") if scope_policy == "per_image_required" else None
-        frozen_scopes = candidate_request.get("per_image_missing_review_scopes") if scope_policy == "per_image_required" else None
-        frozen_hashes = candidate_request.get("per_image_source_hashes") if scope_policy == "per_image_required" else None
-        if scope_policy == "per_image_required" and not all(isinstance(value, dict) for value in (frozen_versions, frozen_scopes, frozen_hashes)):
-            raise HTTPException(status_code=409, detail="逐图补审冻结凭据不完整，不能直接入库")
-        try:
-            scope = _canonical_review_scope(
-                candidate_request.get("labels") or (manifest or {}).get("labels") or [],
-                mapping, label_ids,
-            )
-            committed = commit_candidate_decisions(
-                project_id, task_id, store,
-                overwrite=bool(candidate_request.get("overwrite")),
-                review_scope=scope,
-                require_per_image_scope=scope_policy == "per_image_required",
-                frozen_annotation_versions=frozen_versions,
-                frozen_missing_review_scopes=frozen_scopes,
-                frozen_material_hashes=frozen_hashes,
-                selected_image_ids=[decision.image_id for decision in decisions],
-                operation_id=candidate_commit_operation_id(
-                    "partial", payload.request_id.strip(), _annotation_review_operation_identity(payload),
-                ),
-            )
-        except (ValueError, RuntimeError) as error:
-            raise HTTPException(status_code=409, detail="已选正式 GT 提交失败，请核对素材与已入库审计："+str(error)) from error
-        return _annotation_selected_commit_response(task, store, committed)
     summary = sync_annotation_statistics(shared_task_repository(), task, store)
     if store.review_counts()["unreviewed_reviewable"] or not payload.commit:
         return {

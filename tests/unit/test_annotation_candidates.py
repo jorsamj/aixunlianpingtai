@@ -166,6 +166,13 @@ def test_automatic_ambiguity_draft_cannot_be_bulk_accepted_as_human_review(tmp_p
     assert store.get("auto")["draft"]["auto_resolution"] is True
     assert store.get("manual")["accepted"] is True
     assert store.review_counts()["unreviewed_reviewable"] == 1
+    revision = store.review_revision()
+    with pytest.raises(ValueError, match="人工消歧"):
+        store.apply_decisions([CandidateDecision("auto", True)])
+    assert store.get("auto")["accepted"] is None
+    assert store.review_revision() == revision
+    store.save_draft("auto", [a], expected_revision=1, actor="reviewer",
+                     request_id="verified-human-request")
     store.apply_decisions([CandidateDecision("auto", True)])
     assert store.get("auto")["accepted"] is True
     assert store.statistics()["gt_committed"] == 0

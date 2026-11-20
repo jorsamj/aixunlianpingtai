@@ -757,6 +757,8 @@ def commit_candidate_decisions(
     frozen_material_hashes: dict[str, str] | None = None,
     selected_image_ids: Iterable[str] | None = None,
     operation_id: str | None = None,
+    selected_candidates: list[dict[str, Any]] | None = None,
+    persist_selected: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Commit a bounded explicit selection, or all accepted items for terminal review."""
     journal_ref = "commit/result.json"
@@ -1015,6 +1017,21 @@ def commit_candidate_decisions(
 
         assert_not_cancelled()
         written_by_id: dict[str, dict[str, Any]] = {}
+        if persist_selected is not None:
+            # Validate the exact projected formal rows before touching CandidateStore.
+            # The final repository write still checks material admission and version CAS.
+            from app import _v50_annotation_repository, material_store
+
+            repository = _v50_annotation_repository(project_id)
+            for row in to_write:
+                payload = repository._content_payload(
+                    row["boxes"], row["annotation_state"], row["annotation_scope"],
+                )
+                repository._assert_active_annotation_payload(payload["boxes"], payload["annotation_scope"])
+            material_store(project_id).assert_formal_annotation_admission({
+                row["image_id"]: row["source_content_sha256"] for row in to_write
+            })
+            persist_selected()
         if to_write:
             written_by_id = {
                 str(row.get("image_id") or ""): row
@@ -1056,7 +1073,8 @@ def commit_candidate_decisions(
             progress(processed, accepted_total, image_ids[-1])
 
     if selected_ids is not None:
-        selected_items = store.get_many(selected_ids)
+        selected_items = ({item["image_id"]: item for item in selected_candidates}
+                          if selected_candidates is not None else store.get_many(selected_ids))
         if set(selected_items) != set(selected_ids) or any(
                 selected_items[image_id].get("accepted") is not True
                 or selected_items[image_id].get("status") not in {"success", "empty"}

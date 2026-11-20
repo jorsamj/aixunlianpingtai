@@ -75,6 +75,7 @@ class CandidateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
+        db.create_function("human_resolution", 2, self._draft_has_human_resolution)
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
         db.executescript("""
@@ -555,10 +556,23 @@ class CandidateStore:
                 raise
 
     @staticmethod
+    def _draft_has_human_resolution(revision, draft_json):
+        draft = json.loads(draft_json) if draft_json else {}
+        return bool(revision and draft.get("actor") and not draft.get("auto_resolution")
+                    and not cross_label_overlaps(draft.get("boxes") or []))
+
+    @staticmethod
     def _reviewed_candidate(item, decision):
         item = dict(item)
         if decision.accepted and item.get("manual_review_required"):
-            if not int(item.get("draft_revision") or 0) and decision.boxes is None:
+            draft = item.get("draft") or {}
+            saved_human_edit = CandidateStore._draft_has_human_resolution(
+                item.get("draft_revision"), json.dumps(draft),
+            )
+            # The older selected-review dialog can supply its human edits inline.
+            inline_edit = (decision.boxes is not None and decision.boxes != item.get("boxes")
+                           and not draft.get("auto_resolution"))
+            if not saved_human_edit and not inline_edit:
                 raise ValueError("跨标签重叠框尚未人工消歧，请先编辑并保存候选框")
             if cross_label_overlaps(decision.boxes if decision.boxes is not None else item.get("boxes") or []):
                 raise ValueError("跨标签目标框仍显著重叠，请删除或修改冲突框后再采用")
@@ -618,9 +632,6 @@ class CandidateStore:
                     or db.execute("SELECT 1 FROM commits WHERE image_id=?", (image_id,)).fetchone()):
                 raise ValueError("当前候选不可审核")
             current = self._decode(row)
-            if (decision.accepted and current.get("manual_review_required")
-                    and (current.get("draft") or {}).get("auto_resolution")):
-                raise ValueError("跨标签重叠框尚未人工消歧，请先编辑并保存候选框")
             item = self._reviewed_candidate(current, decision)
             if decision.accepted:
                 boxes = []
@@ -711,7 +722,8 @@ class CandidateStore:
             db.executemany("INSERT OR IGNORE INTO excluded VALUES (?)", ((str(value),) for value in exclude))
             db.execute("UPDATE candidates SET accepted=? WHERE status IN ('success','empty') "
                        "AND accepted IS NULL AND review_state='active' "
-                       "AND (NOT ? OR COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0 OR draft_revision>0) "
+                       "AND (NOT ? OR COALESCE(json_extract(item_json,'$.manual_review_required'),0)=0 "
+                       "OR human_resolution(draft_revision,draft_json)) "
                        "AND (NOT ? OR COALESCE(json_extract(draft_json,'$.auto_resolution'),0)=0) "
                        "AND image_id NOT IN (SELECT image_id FROM commits) "
                        "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted), bool(accepted), bool(accepted)))
@@ -780,6 +792,33 @@ class CandidateStore:
                 db.rollback()
                 raise
 
+    @staticmethod
+    def _normalized_selected_boxes(item, mapping, label_ids):
+        boxes = []
+        for box in item.get("boxes") or []:
+            current = dict(box)
+            source = str(current.get("label") or "").strip()
+            if not source or (source not in mapping and source not in label_ids):
+                raise ValueError("selected candidate label is no longer active")
+            target = mapping.get(source, source)
+            current.update(label=target, class_id=int(label_ids[target]))
+            boxes.append(current)
+        return boxes
+
+    def preview_selected_decisions(self, decisions, mapping, label_ids):
+        """Prepare a bounded batch before changing the stored candidate decisions."""
+        items = self.get_many([decision.image_id for decision in decisions])
+        prepared = []
+        for decision in decisions:
+            item = items.get(decision.image_id)
+            if (not item or item.get("status") not in {"success", "empty"}
+                    or item.get("review_state") != "active" or item.get("gt_committed")):
+                raise ValueError("selected review candidate is no longer available")
+            item = self._reviewed_candidate(item, decision)
+            item["boxes"] = self._normalized_selected_boxes(item, mapping, label_ids)
+            prepared.append(item)
+        return prepared
+
     def remap_selected_labels(
         self, image_ids: Iterable[str], mapping: dict[str, str], label_ids: dict[str, int],
     ) -> None:
@@ -808,25 +847,8 @@ class CandidateStore:
                             or item.get("review_state") != "active"
                             or db.execute("SELECT 1 FROM commits WHERE image_id=?", (item["image_id"],)).fetchone()):
                         raise ValueError("selected review candidate is no longer available")
-                    changed = False
-                    boxes = []
-                    for box in item.get("boxes") or []:
-                        current = dict(box)
-                        source = str(current.get("label") or "").strip()
-                        if not source or (source not in normalized and source not in label_ids):
-                            raise ValueError("selected candidate label is no longer active")
-                        target = normalized.get(source, source)
-                        target_id = int(label_ids[target])
-                        try:
-                            current_id = int(current.get("class_id"))
-                        except (TypeError, ValueError, OverflowError):
-                            current_id = None
-                        if source != target or current_id != target_id:
-                            current["label"] = target
-                            current["class_id"] = target_id
-                            changed = True
-                        boxes.append(current)
-                    if changed:
+                    boxes = self._normalized_selected_boxes(item, normalized, label_ids)
+                    if boxes != item["boxes"]:
                         item["boxes"] = boxes
                         self._put(db, item, normalize=False)
                 db.commit()
@@ -936,7 +958,7 @@ class CandidateStore:
         if purpose != 'transfer':
             clauses.append(("rejected", "accepted=0"))
         if purpose == 'gt':
-            clauses.append(("requires_review", f"{ambiguous} AND (draft_revision=0 OR json_extract(draft_json,'$.auto_resolution')=1)"))
+            clauses.append(("requires_review", f"{ambiguous} AND (NOT human_resolution(draft_revision,draft_json))"))
         elif purpose == 'ambiguity':
             clauses.append(("not_ambiguous", f"NOT ({ambiguous})"))
         return 'CASE ' + ' '.join(f"WHEN {condition} THEN '{name}'" for name, condition in clauses) + ' ELSE NULL END'

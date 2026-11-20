@@ -506,6 +506,25 @@ def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing
     assert set(store.get_commit_summaries(ids)) == set(ids[:2])
     assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
 
+    # Legacy actorless receipts may repair a journal, but cannot be claimed.
+    legacy = _formal_selection_body(store, [ids[2]], "legacy-actorless-formal-001")
+    path = host._annotation_review_operation_path(legacy["request_id"])
+    with monkeypatch.context() as patch:
+        patch.setattr(CandidateStore, "record_commit_summaries", crash_before_journal)
+        with pytest.raises(OSError, match="after formal GT"):
+            client.post(base + "/decisions", json=legacy)
+    legacy_gt = host.read_annotation(project, ids[2])
+    assert legacy_gt["annotation_state"] == "confirmed_empty"
+    pending = store.artifacts.read_json(task, path)
+    pending.pop("actor")
+    store.artifacts.atomic_write_json(task, path, pending)
+    assert client.get(base + "/decisions/by-request/" + legacy["request_id"]).status_code == 404
+    assert client.post(base + "/decisions", json=legacy).status_code == 404
+    repaired = store.artifacts.read_json(task, path)
+    assert repaired["status"] == "completed" and "actor" not in repaired
+    assert ids[2] in store.get_commit_summaries(ids)
+    assert host.read_annotation(project, ids[2]) == legacy_gt
+
 
 def test_transfer_snapshot_is_scoped_to_operator_and_purpose(client, review_task, monkeypatch):
     from platform_core.negative_pool import NegativePool
@@ -719,3 +738,125 @@ def test_explicit_single_supplement_requires_human_scope_and_keeps_ambiguity_gat
     assert store.get(target)["accepted"] is False
     assert store.get(target).get("review_scope") is None
     assert host.read_annotation(project, target) == gt
+
+def _formal_selection_body(store, ids, request_id):
+    return {
+        "commit": True, "commit_selected": True, "single_candidate": False,
+        "accept_unmentioned": False, "reject_unmentioned": False, "label_mapping": {},
+        "review_revision": store.review_revision(), "request_id": request_id,
+        "decisions": [{"image_id": image_id, "accepted": True} for image_id in ids],
+    }
+
+
+def test_selected_formal_commit_requires_human_draft_and_actor_owned_receipt(client, review_task, monkeypatch):
+    project, image, task, store, _ = review_task
+    image_id = image["id"]
+    material = host.material_store(project).get(image_id)
+    box = {"id": "fire", "label": "fire", "x1": 5, "y1": 5, "x2": 40, "y2": 40}
+    store.append_items([{
+        "image_id": image_id, "status": "success", "boxes": [box],
+        "manual_review_required": True, "source_content_sha256": material["content_sha256"],
+    }])
+    base = f"/api/v60/projects/{project}/annotation-tasks/{task}"
+    draft_url = base + f"/candidates/{image_id}/draft"
+    current_actor = {"actor_id": "reviewer-a"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: current_actor)
+    gt_before = host.read_annotation(project, image_id)
+    auto = client.put(draft_url, json={
+        "boxes": [box], "auto_resolution": True, "revision": 0, "request_id": "auto-draft-formal-001",
+    })
+    assert auto.status_code == 200, auto.text
+    auto_row = store.get(image_id)
+    auto_body = _formal_selection_body(store, [image_id], "auto-formal-blocked-001")
+    freeze = client.post(base + "/review-selection", json={
+        "filter": "all", "purpose": "gt", "review_revision": auto_body["review_revision"],
+    })
+    assert freeze.json()["reasons"] == {"requires_review": 1}
+    denied = client.post(base + "/decisions", json=auto_body)
+    assert denied.status_code == 409 and "人工消歧" in denied.text
+    assert store.review_revision() == auto_body["review_revision"]
+    assert store.get(image_id) == auto_row
+    assert host.read_annotation(project, image_id) == gt_before
+    legacy = client.post(base + "/decisions", json={
+        **auto_body, "commit": False, "commit_selected": False, "request_id": "auto-review-blocked-001",
+    })
+    assert legacy.status_code == 400
+    assert store.get(image_id) == auto_row
+    human = client.put(draft_url, json={
+        "boxes": [box], "revision": 1, "request_id": "human-draft-formal-001",
+    })
+    assert human.status_code == 200, human.text
+    body = _formal_selection_body(store, [image_id], "human-formal-allowed-001")
+    done = client.post(base + "/decisions", json=body)
+    assert done.status_code == 200, done.text
+    gt_saved = host.read_annotation(project, image_id)
+    assert gt_saved["version"] == gt_before["version"] + 1
+    receipt_url = base + "/decisions/by-request/" + body["request_id"]
+    proof_id = host._annotation_review_operation_identity(host.AnnotationDecisionReq.model_validate(body))
+    from platform_core.annotation_task_service import candidate_commit_operation_id, read_candidate_commit_receipts
+    proof = read_candidate_commit_receipts(
+        project, task, candidate_commit_operation_id("partial", body["request_id"], proof_id), [image_id],
+    )[image_id]
+    assert (proof["version"], proof["content_digest"]) == (gt_saved["version"], gt_saved["content_digest"])
+    current_actor["actor_id"] = "reviewer-b"
+    assert client.get(receipt_url).status_code == 404
+    assert client.post(base + "/decisions", json=body).status_code == 404
+    current_actor["actor_id"] = "reviewer-a"
+    assert client.get(receipt_url).json()["status"] == "completed"
+    assert client.post(base + "/decisions", json=body).json()["idempotent"] is True
+    assert host.read_annotation(project, image_id) == gt_saved
+
+
+@pytest.mark.parametrize("bad_candidate", ["source", "label", "delete", "write_failure"])
+def test_selected_formal_commit_preflights_entire_batch(client, review_task, monkeypatch, bad_candidate):
+    from io import BytesIO
+    from PIL import Image
+
+    project, image, task, store, _ = review_task
+    buf = BytesIO()
+    Image.new("RGB", (128, 128), "green").save(buf, format="JPEG")
+    uploaded = client.post(f"/api/projects/{project}/images",
+        files={"files": ("preflight.jpg", buf.getvalue(), "image/jpeg")}, data={"dataset_id": "default"})
+    uploaded.raise_for_status()
+    first, second = image["id"], uploaded.json()["uploaded"][0]["id"]
+    materials = host.material_store(project)
+    box = {"label": "fire", "class_id": 999, "x1": 5, "y1": 5, "x2": 40, "y2": 40}
+    store.append_items([
+        {"image_id": first, "status": "empty", "source_content_sha256": materials.get(first)["content_sha256"]},
+        {"image_id": second, "status": "success",
+         "boxes": [{**box,"label": "retired" if bad_candidate == "label" else "fire"}],
+         "source_content_sha256": "0"*64 if bad_candidate == "source" else materials.get(second)["content_sha256"]},
+    ])
+    if bad_candidate == "delete":
+        # Surface a deletion claim through the real admission check.
+        original_read = type(materials).get_many
+        def get_many(repository, ids):
+            rows = original_read(repository, ids)
+            return [{**row, "_dataset_delete_claim": {"token": "audit-delete"}}
+                    if row["id"] == second else row for row in rows]
+        monkeypatch.setattr(type(materials), "get_many", get_many)
+    before = store.get_many([first, second])
+    gt_before = host.read_annotations_many(project, [first, second])
+    body = _formal_selection_body(store, [first, second], "invalid-selected-batch-001")
+    base = f"/api/v60/projects/{project}/annotation-tasks/{task}"
+    if bad_candidate == "write_failure":
+        from platform_core import annotation_task_service
+
+        def fail_formal_write(*args):
+            raise OSError("failure after candidate persistence")
+
+        monkeypatch.setattr(annotation_task_service, "write_formal_annotations", fail_formal_write)
+        with pytest.raises(OSError, match="after candidate persistence"):
+            client.post(base + "/decisions", json=body)
+        assert all(item["accepted"] for item in store.get_many([first, second]).values())
+        receipt = client.get(base + "/decisions/by-request/" + body["request_id"]).json()
+        assert receipt["status"] == "rejected" and receipt["detail"]["code"] == "REVIEW_NOT_COMMITTED"
+    else:
+        response = client.post(base + "/decisions", json=body)
+        expected_error = {"source": "AI_CANDIDATE_SOURCE_CHANGED", "label": "no longer active",
+                          "delete": "is being deleted"}[bad_candidate]
+        assert response.status_code == 409 and expected_error in response.text, response.text
+        assert store.get_many([first, second]) == before
+        assert store.review_revision() == body["review_revision"]
+    assert host.read_annotations_many(project, [first, second]) == gt_before
+    assert store.get_commit_summaries([first, second]) == {}
