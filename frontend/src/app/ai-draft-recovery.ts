@@ -1,6 +1,9 @@
 import type {CandidateDraft} from '../api/ai-review';
 
 export interface DraftScope {actorKey:string;projectId:string;taskId:string;imageId:string}
+export function draftRecoveryKey({actorKey,projectId,taskId,imageId}:DraftScope){
+  return 'ai-candidate-draft:v1:'+JSON.stringify([actorKey,projectId,taskId,imageId]);
+}
 export interface DraftRecovery {
   scope:DraftScope;
   draft:CandidateDraft;

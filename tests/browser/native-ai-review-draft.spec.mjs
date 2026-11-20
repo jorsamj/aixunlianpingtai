@@ -153,6 +153,7 @@ test('原生 Annotorious 保存、原请求恢复及冲突保护使用真实草�
     await expect(scope.getByRole('heading',{name:'候选对象 · 2'})).toBeVisible();
     expect(await (await request.get(gt)).json()).toEqual(originalGt);
     await scope.getByRole('button',{name:'返回审核列表'}).click();
+    await expect(page.getByRole('button',{name:'采用候选',exact:true})).toBeEnabled();
     await page.getByRole('button',{name:'rotated-draft.jpg',exact:true}).click();
     await page.getByRole('button',{name:'编辑候选',exact:true}).click();
     await expect(scope.getByText('原图方向或尺寸与服务端候选不一致，已阻止编辑。')).toBeVisible();
@@ -178,6 +179,10 @@ test('原生 Annotorious 保存、原请求恢复及冲突保护使用真实草�
     await expect(scope).toBeVisible();
     page.once('dialog',dialog=>dialog.accept());
     await scope.getByRole('button',{name:'返回审核列表'}).click();
+
+    await expect(page.getByText('请先在候选编辑器核验原草稿保存。')).toBeVisible();
+    await expect(page.getByRole('button',{name:'采用候选',exact:true})).toBeDisabled();
+    await expect(page.getByRole('button',{name:'拒绝候选',exact:true})).toBeDisabled();
 
     await seedRecovery({...identity,imageId:rotatedRow.id});
     await page.getByRole('button',{name:'native-draft.jpg',exact:true}).click();

@@ -562,6 +562,11 @@ jobs:
               raise SystemExit('Isolated P1Z fixture did not become ready')
           PY
           node frontend/tests/real-product-workbench.acceptance.mjs
+      - name: Native AI single-image review against the real API
+        run: |
+          npm ci
+          npx playwright test --output=test-results/p1z-workbench/native-ai-review --reporter=line \
+            tests/browser/native-ai-review-decision.spec.mjs tests/browser/native-ai-review-draft.spec.mjs
       - name: Preserve exact SHA workbench receipt and six viewport evidence
         if: always()
         uses: actions/upload-artifact@v4

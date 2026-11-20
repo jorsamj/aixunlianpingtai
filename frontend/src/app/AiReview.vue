@@ -6,6 +6,7 @@ import {legacyUrl} from './navigation';
 import {login} from './http';
 import {reviewFilters} from '../api/ai-review';
 import type {ReviewCandidate} from '../api/ai-review';
+import {canAdopt,hasUnresolvedAmbiguity} from '../stores/ai-review-decision';
 import {useAiReviewStore} from '../stores/ai-review';
 import MaterialPreview from '../components/MaterialPreview.vue';
 
@@ -15,8 +16,14 @@ const NativeAiCandidateEditor=defineAsyncComponent(()=>import('./NativeAiCandida
 const editor=ref<{canLeave():boolean;suspend(value:boolean):void;hasUnresolved():boolean}>();
 const editing=ref<string>();
 const editScope=computed(()=>({projectId:props.projectId,taskId:props.taskId}));
+const checkedScope=ref<string[]>([]);
+watch([()=>review.item?.image_id,()=>review.item?.draft_revision,()=>review.item?.accepted],()=>{checkedScope.value=[]});
+const scopeOptions=computed(()=>review.item?.review_scope_policy==='per_image_required'
+  ?[...new Set(review.item.missing_review_scope??[])].filter(code=>typeof code==='string'&&code.trim()===code&&code)
+  :[]);
+const adoptAvailable=computed(()=>!!review.item&&canAdopt(review.item,checkedScope.value));
 const canEdit=computed(()=>review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION'
-  &&!review.itemBusy&&!review.itemError&&['success','empty'].includes(review.item?.status||'')
+  &&!review.decision&&!review.decisionBusy&&!review.itemBusy&&!review.itemError&&['success','empty'].includes(review.item?.status||'')
   &&review.item?.review_state==='active'&&!review.item.gt_committed);
 const canLeave=()=>editor.value?.canLeave()??true;
 onBeforeRouteLeave(canLeave);
@@ -25,7 +32,12 @@ function beforeUnload(event:BeforeUnloadEvent){
   if(editor.value?.hasUnresolved()){event.preventDefault();event.returnValue=''}
 }
 function beforeLogout(event:Event){if(!canLeave())event.preventDefault()}
-function closeEditor(){editor.value?.suspend(true);editing.value=undefined}
+function closeEditor(){
+  editor.value?.suspend(true);editing.value=undefined;review.checkDraftOutstanding();
+}
+function decide(accepted:boolean){
+  if(!editing.value)void review.decide(accepted,checkedScope.value);
+}
 const layout=ref<'grid'|'list'>('grid'),original=ref(false);
 const inspectorTitle=ref<HTMLElement>(),focusReturn=ref<HTMLButtonElement>();
 const legacy=computed(()=>legacyUrl(props.projectId,'自动标注及清洗'));
@@ -97,10 +109,11 @@ function candidateStatus(row:ReviewCandidate){
   if(row.review_state==='pending_transfer')return '转池待恢复';
   if(row.review_state==='blocked')return '已阻断';
   if(row.status==='failed')return '失败';
-  if(row.accepted===false)return '已拒绝';
-  if(row.manual_review_required)return '待消歧';
-  if(row.accepted===true)return '已接受候选';
-  return row.boxes?.length?'有框':'零框';
+  if(row.accepted===false)return '已拒绝候选';
+  if(row.accepted===true)return '已采用候选';
+  if(hasUnresolvedAmbiguity(row))return '待消歧';
+  if(!['success','empty'].includes(row.status))return '未生成候选';
+  return '待人工审核';
 }
 function media(row:ReviewCandidate){
   const content_url='/api/v61/projects/'+encodeURIComponent(props.projectId)+'/materials/'+encodeURIComponent(row.image_id)+'/content';
@@ -203,8 +216,32 @@ const diagnosticFacts=computed(()=>{
      </div>
      <p v-if="!review.item">选择候选图片查看候选框和诊断。</p>
      <template v-else>
-      <h4>{{ candidateName(review.item) }} · {{ candidateStatus(review.item) }}</h4>
-      <el-button v-if="canEdit" @click="editing=review.item.image_id">编辑候选</el-button>
+      <h4>{{ candidateName(review.item) }} · {{ review.decision?.status==='pending' ? '审核结果待核验' : candidateStatus(review.item) }}</h4>
+      <div class="review-actions" role="group" aria-label="单图审核">
+       <el-button v-if="canEdit" @click="editing=review.item.image_id">编辑候选</el-button>
+       <el-button :disabled="!review.decisionEligible || !adoptAvailable || review.item.accepted===true"
+        @click="decide(true)">采用候选</el-button>
+       <el-button :disabled="!review.decisionEligible || review.item.accepted===false"
+        @click="decide(false)">拒绝候选</el-button>
+      </div>
+      <fieldset v-if="scopeOptions.length && review.decisionEligible" class="review-scope">
+       <legend>本次已审核类别</legend>
+       <label v-for="code in scopeOptions" :key="code">
+        <input v-model="checkedScope" type="checkbox" :value="code"> {{ code }}
+       </label>
+      </fieldset>
+      <p v-else-if="review.decisionEligible && review.item.review_scope_policy==='per_image_required'" role="status">
+       缺少冻结审核范围，请在原工作台核对。
+      </p>
+      <p v-if="review.draftOutstanding" role="status">请先在候选编辑器核验原草稿保存。</p>
+      <p v-if="review.decisionStorageError" role="alert">{{ review.decisionStorageError }}</p>
+      <div v-if="review.decision?.status==='pending'" class="review-notice">
+       <el-button :loading="review.decisionBusy" @click="review.recoverDecision()">核验原操作</el-button>
+      </div>
+      <el-button v-else-if="review.decision" :loading="review.decisionBusy"
+       @click="review.retryDecisionRefresh()">重读候选和统计</el-button>
+      <p v-if="review.decisionNotice" role="status">{{ review.decisionNotice }}</p>
+      <p v-if="review.decisionOutsidePage" role="status">当前图片已不在本页筛选结果中。</p>
       <div v-if="review.item.original_boxes" class="review-toolbar" role="group" aria-label="候选框版本">
        <button :aria-pressed="!original" @click="original=false">当前候选框</button>
        <button :aria-pressed="original" @click="original=true">原始候选框</button>
@@ -263,6 +300,9 @@ button[aria-pressed=true],button[aria-current=true]{background:#e9e9e9;border-co
 .review-candidate-caption{display:grid;gap:3px;padding:5px}.review-image-link{text-align:left;overflow-wrap:anywhere}
 .review-inspector{position:sticky;top:12px;max-height:calc(100dvh - 24px);overflow:auto}.review-inspector h4{margin-block:10px}
 .review-inspector dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 10px}.review-inspector dd{margin:0}
+.review-actions,.review-scope{display:flex;flex-wrap:wrap;gap:8px}
+.review-actions :deep(.el-button){margin:0}
+.review-scope{margin:8px 0;padding:6px 10px;border:1px solid #ddd;min-width:0}
 .review-boxes{max-height:9rem;overflow:auto}.review-pagination{margin-top:12px}
 .review-workspace :deep(.material-media){background:#ededed}
 .review-workspace :deep(.box-layer rect){stroke:#444}

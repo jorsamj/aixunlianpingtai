@@ -6,7 +6,7 @@ import {getReviewCandidate,getReviewLabels,saveReviewDraft} from '../api/ai-revi
 import type {CandidateDraft,ReviewAddress,ReviewCandidate,ReviewLabel} from '../api/ai-review';
 import {createAnnotoriousEditor} from '../../../static/modules/annotorious-editor.js';
 import {withLegacyBoxIdentities} from '../../../static/modules/annotation-geometry-adapter.js';
-import {parseDraftRecovery} from './ai-draft-recovery';
+import {draftRecoveryKey,parseDraftRecovery} from './ai-draft-recovery';
 
 const props=defineProps<{scope:ReviewAddress;actorKey:string;imageId:string}>();
 const emit=defineEmits<{close:[];saved:[imageId:string]}>();
@@ -22,7 +22,7 @@ const history:AiEditorBox[][]=[],redo:AiEditorBox[][]=[];
 const dirty=computed(()=>JSON.stringify(boxes.value)!==JSON.stringify(baseline.value));
 const locked=computed(()=>loading.value||saving.value||suspended.value||!!outstanding.value||refreshRequired.value);
 const recoveryScope={actorKey:props.actorKey,...props.scope,imageId:props.imageId};
-const storageKey='ai-candidate-draft:v1:'+JSON.stringify([props.actorKey,props.scope.projectId,props.scope.taskId,props.imageId]);
+const storageKey=draftRecoveryKey(recoveryScope);
 const url='/api/v61/projects/'+encodeURIComponent(props.scope.projectId)+'/materials/'+encodeURIComponent(props.imageId)+'/content';
 let apiRead:AbortController|undefined, mountController:AbortController|undefined,dead=false;
 type Kernel=Awaited<ReturnType<typeof createAnnotoriousEditor>>;

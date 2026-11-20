@@ -4,7 +4,7 @@
 
 ## 当前阶段与准确提交
 
-当前为 M4-D1-D1A 原生 AI 单图审核服务端合同阶段。M4-D0 的范围及故障恢复见[审核工作台](../AI_REVIEW_WORKBENCH_2026_11_06.md#m4-d0-审核数据恢复与操作范围)。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
+当前为 M4-D1-D1B 原生 AI 单图审核决定阶段，功能与 CI 分开验收。M4-D0 的范围及故障恢复见[审核工作台](../AI_REVIEW_WORKBENCH_2026_11_06.md#m4-d0-审核数据恢复与操作范围)。M4-A1 基线 `a8aedf39f455630115511605f74b00dfa3f4fa94` 的 43 项 Actions 已通过。本轮验收以交付消息中准确 SHA 的 Actions 快照为准。
 
 - M2 起点（已核对远端）：`4c7a6d1f31c275311156fb0ab1a7a5cd9d47d7f8`，保留 M1 的数字缓存键修复与未知写入刷新保护。
 - M2-A：`280ed4cfb21f80e0980c03ace18aa70877a41706`，原 AlgorithmSqlStore 新增 opt-in 全局算法库只读投影及正式版本备注写入的轻量回执。
@@ -213,4 +213,10 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 
 单图资格、标签和逐图范围核对后，在 CandidateStore 同一 SQLite 写事务中完成候选、修订和 `review_events` 持久证据。回执查询按原项目、任务、操作者、请求摘要和单图结果匹配。缺少可信事件时保持 pending，不从后续 accepted 状态推断。拒绝不声明审核范围；逐图补审采用需要显式冻结范围；未人工解歧不得采用。
 
-实际验证比较了未选候选数据库行、正式 GT 内容和版本，并验证回执写入前后的中断、同号重放、修订冲突及旧批量、正式入库和草稿合同。精确提交及 CI 快照见交付；A 的 CI 通过才可开发 D1-D1B。前端采用和拒绝仍由原工作台承接。
+实际验证比较了未选候选数据库行、正式 GT 内容和版本，并验证回执写入前后的中断、同号重放、修订冲突及旧批量、正式入库和草稿合同。A 阶段准确提交 `d4d0be1086b0f73a74546c46712cbbbde307ad68` 的 Push 26 成功、1 失败，PR 21 成功。两个 AI Annotation Recovery 批次、Material Annotation Atomicity 和 Frontend Runtime Stabilization 均成功。ZIP Import Durable Runtime 的 `real-chrome-refresh` 在 `zip-import-refresh-recovery.spec.mjs:440` 等待第二个 v19 ZIP 队列项失败，原单项在本地复跑通过。A 的改动触及 v60 与 CandidateStore，目前没有因果证据指向 A。按修正放行规则继续 B，保留 GitHub 失败记录。[ZIP 工作流](https://github.com/jorsamj/aixunlianpingtai/actions/runs/44670825120)
+
+### M4-D1-D1B 原生单图采用和拒绝
+
+沿用 `/app/#/projects/:projectId/ai/tasks/:taskId/review`。Pinia 从候选详情保留权威 `review_revision`，操作前复读同一候选以核对显示快照。POST 只包含单图及明确人工选择的冻结补审范围，关闭正式入库和未提及处理开关。按账号、项目、任务、图片隔离单图决定回执。未知结果仅查原请求，404 和 202 继续保留，409 刷新候选后等待用户作下一次决定。已完成回执遇到读回失败时重读详情和当前页统计，保留筛选和检查图。
+
+现有 Frontend Runtime Stabilization 的真实入口 Job 复用该 SHA 已构建的资源运行单图决定与草稿 Chrome 用例。本地验证、准确 SHA 和 CI 快照见阶段交付。跨页冻结、批量决定、批量消歧、正式 GT 入库、转池和撤销继续由原工作台提供，原菜单入口保留。等待本阶段独立验收后再决定是否启动 D1-D2。

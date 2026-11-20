@@ -19,6 +19,7 @@ export interface ReviewCandidate {
   source_content_sha256?:string;content_sha256?:string;original_boxes?:MaterialBox[];review_state?:string;gt_committed?:boolean;manual_review_required?:boolean;
   draft_revision?:number;accepted?:boolean|null;error?:string;error_code?:string;error_stage?:string;
   http_status?:number;attempt_count?:number;retry_suggestion?:string;review_scope?:string[];
+  review_scope_policy?:string;missing_review_scope?:string[];draft?:{auto_resolution?:boolean};
   review_conflicts?:{labels?:string[];iou?:number}[];
 }
 export interface ReviewPage {
@@ -45,10 +46,13 @@ export function getReviewPage(scope:ReviewAddress, filter:ReviewFilter, cursor:s
   if(cursor!==null)query.set('cursor',cursor);
   return request<ReviewPage>(root(scope)+'/candidates?'+query,{signal});
 }
-export async function getReviewCandidate(scope:ReviewAddress, id:string, signal:AbortSignal) {
-  const result=await request<{item:ReviewCandidate}>(root(scope)+'/candidates/'+enc(id),{signal});
+export async function getReviewCandidateDetail(scope:ReviewAddress, id:string, signal:AbortSignal) {
+  const result=await request<{item:ReviewCandidate;review_revision:number}>(root(scope)+'/candidates/'+enc(id),{signal});
   if(result.item?.image_id!==id)throw new Error('候选图片身份不一致');
-  return result.item;
+  return result;
+}
+export async function getReviewCandidate(scope:ReviewAddress, id:string, signal:AbortSignal) {
+  return (await getReviewCandidateDetail(scope,id,signal)).item;
 }
 export async function getReviewDiagnostics(scope:ReviewAddress, id:string, signal:AbortSignal) {
   const result=await request<ReviewDiagnostics>(root(scope)+'/candidates/'+enc(id)+'/diagnostics',{signal});
@@ -71,4 +75,24 @@ export async function saveReviewDraft(scope:ReviewAddress,imageId:string,draft:C
   if(result.image_id!==imageId||result.revision!==draft.revision+1)
     throw new Error('草稿回执身份或版本不一致');
   return result;
+}
+
+export interface SingleDecision {
+  single_candidate:true; decisions:[{image_id:string;accepted:boolean;review_scope?:string[]}];
+  commit:false;commit_selected:false;accept_unmentioned:false;reject_unmentioned:false;
+  label_mapping:Record<string,never>;request_id:string;review_revision:number;
+}
+export interface CompletedDecision {
+  status:'completed';request_id:string;image_id:string;accepted:boolean;review_revision:number;
+}
+type PendingDecision={status:'pending';request_id:string};
+type RejectedDecision={status:'rejected';request_id:string;detail?:string|{message?:string}};
+export type DecisionReceipt=PendingDecision|RejectedDecision|{status:'completed';request_id:string;result:CompletedDecision};
+export function sendSingleDecision(scope:ReviewAddress, body:SingleDecision, signal:AbortSignal) {
+  return request<CompletedDecision|PendingDecision>(root(scope)+'/decisions',{
+    method:'POST',body:JSON.stringify(body),signal,
+  });
+}
+export function getDecisionReceipt(scope:ReviewAddress, requestId:string, signal:AbortSignal) {
+  return request<DecisionReceipt>(root(scope)+'/decisions/by-request/'+enc(requestId),{signal});
 }
