@@ -26765,6 +26765,31 @@ def _load_annotation_review_selection(store, project_id, task_id, selection_id, 
 
 
 
+class BulkFormalIntentReq(BaseModel):
+    request_id: str = Field(min_length=12, max_length=80)
+    selection_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    review_revision: StrictInt = Field(ge=0)
+    excluded_image_ids: list[str] = Field(default_factory=list, max_length=50000)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents")
+def accept_bulk_formal_intent(project_id: str, task_id: str, payload: BulkFormalIntentReq, request: Request):
+    from platform_core.annotation_bulk_intents import accept_intent
+
+    actor = _material_governance_actor(request, project_id)["actor_id"]
+    task = _require_annotation_review_task(project_id, task_id)
+    return accept_intent(shared_task_artifacts(), actor, task, payload)
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}")
+def read_bulk_formal_intent(project_id: str, task_id: str, request_id: str, request: Request):
+    from platform_core.annotation_bulk_intents import read_intent
+
+    actor = _material_governance_actor(request, project_id)["actor_id"]
+    _require_annotation_review_task(project_id, task_id)
+    return read_intent(shared_task_artifacts(), actor, project_id, task_id, request_id)
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection/{selection_id}/candidates")
 def get_annotation_review_selection_candidates(
     project_id: str, task_id: str, selection_id: str, request: Request,

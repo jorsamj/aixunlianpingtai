@@ -860,3 +860,158 @@ def test_selected_formal_commit_preflights_entire_batch(client, review_task, mon
         assert store.review_revision() == body["review_revision"]
     assert host.read_annotations_many(project, [first, second]) == gt_before
     assert store.get_commit_summaries([first, second]) == {}
+
+def _bulk_intent_fixture(client, review_task, count=1):
+    project, image, task, store, repo = review_task
+    original = host.material_store(project).get(image["id"])
+    ids = [image["id"], *(f"intent-fixture-{index:03d}" for index in range(1, count))]
+    host.material_store(project).upsert_many([
+        {**original, "id": image_id, "filename": f"{image_id}.jpg"} for image_id in ids[1:]
+    ])
+    store.initialize(labels=["fire"], total_images=count)
+    store.append_items([
+        {"image_id": image_id, "status": "empty", "boxes": [],
+         "source_content_sha256": original["content_sha256"]} for image_id in ids
+    ])
+    base = f"/api/v60/projects/{project}/annotation-tasks/{task}"
+    response = client.post(base + "/review-selection", json={
+        "filter": "all", "purpose": "gt", "review_revision": store.review_revision(),
+    })
+    response.raise_for_status()
+    selection = response.json()
+    assert selection["count"] == count
+    return project, task, store, repo, ids, base, {
+        "request_id": "bulk-intent-fixture-001", "selection_id": selection["selection_id"],
+        "review_revision": selection["review_revision"], "excluded_image_ids": [],
+    }
+
+
+def test_bulk_formal_intent_seals_boundaries_without_writing_gt(client, review_task, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.material_repository import MaterialRepository
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 201)
+    exclusion = [ids[190], ids[1]]
+    body["excluded_image_ids"] = exclusion
+    expected_ids = [image_id for image_id in ids if image_id not in exclusion]
+    gt_owner = host._v50_annotation_repository(project)
+    gt_before = gt_owner.get_many(ids)
+    candidate_before = {**store.get_many(ids[:100]), **store.get_many(ids[100:200]), **store.get_many(ids[200:])}
+    gt_revision = gt_owner.current_revision()
+    task_before = repo.get(task)
+    calls = {}
+
+    def track(owner, method, key):
+        original = getattr(owner, method)
+        def wrapped(self, image_ids, *args, **kwargs):
+            calls.setdefault(key, []).append(len(image_ids))
+            return original(self, image_ids, *args, **kwargs)
+        monkeypatch.setattr(owner, method, wrapped)
+
+    track(CandidateStore, "get_many", "candidate")
+    track(MaterialRepository, "get_many", "material")
+    track(AnnotationRepository, "get_many", "gt")
+    url = base + "/bulk-formal/intents"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: client.post(url, json=body), range(2)))
+    for response in responses:
+        assert response.status_code == 200, response.text
+    accepted = responses[0].json()
+    assert responses[1].json() == accepted
+    assert (accepted["original_count"], accepted["excluded_count"], accepted["count"]) == (201, 2, 199)
+    assert calls == {"candidate": [100, 99], "material": [100, 99], "gt": [100, 99]}
+    manifest = store.artifacts.payload_reader.read_evidence_json(task, accepted["manifest_ref"])
+    assert [row["image_id"] for row in manifest["images"]] == expected_ids
+    assert manifest["intent"]["excluded_image_ids"] == sorted(exclusion)
+    assert manifest["review_contract"]["labels"] == ["fire"]
+    for row in manifest["images"]:
+        gt = gt_before[row["image_id"]]
+        assert row["gt_version"] == gt["version"]
+        assert row["gt_content_digest"] == (gt.get("content_digest") or gt_owner.record_digest(gt))
+        assert len(row["candidate_digest"]) == 64
+        assert row["source_content_sha256"] == candidate_before[row["image_id"]]["source_content_sha256"]
+    assert gt_owner.get_many(ids) == gt_before and gt_owner.current_revision() == gt_revision
+    assert {**store.get_many(ids[:100]), **store.get_many(ids[100:200]), **store.get_many(ids[200:])} == candidate_before
+    assert store.review_revision() == body["review_revision"]
+    assert repo.get(task) == task_before
+
+    image_id = expected_ids[0]
+    host.write_annotations_many(project, [{"image_id": image_id, "boxes": [], "annotation_state": "confirmed_empty",
+        "annotation_scope": ["smoke"], "expected_version": gt_before[image_id]["version"],
+        "source_content_sha256": candidate_before[image_id]["source_content_sha256"]}])
+    assert gt_owner.get(image_id)["version"] > gt_before[image_id]["version"]
+    ref = "review/selections/" + body["selection_id"] + ".json"
+    snapshot = store.artifacts.read_json(task, ref)
+    store.artifacts.atomic_write_json(task, ref, {**snapshot, "expires_at": 0})
+    assert client.get(url + "/" + body["request_id"]).json() == accepted
+    assert client.post(url, json={**body, "excluded_image_ids": exclusion[::-1]}).json() == accepted
+    assert client.post(url, json={**body, "excluded_image_ids": []}).status_code == 409
+    assert client.post(url, json={**body, "request_id": "expired-new-intent-001"}).status_code == 409
+    assert store.artifacts.payload_reader.read_evidence_json(task, accepted["manifest_ref"]) == manifest
+
+    actor["actor_id"] = "bulk-other"
+    assert client.get(url + "/" + body["request_id"]).status_code == 404
+    assert client.post(url, json=body).status_code == 404
+    actor["actor_id"] = "bulk-owner"
+    different = uuid.uuid4().hex
+    store.artifacts.atomic_write_json(different, "request.json", {"labels": ["fire"]})
+    repo.create(TaskRecord.new(different, project, TaskKind.AI_ANNOTATION, "request.json", different))
+    other_task_url = url.replace("/" + task + "/", "/" + different + "/")
+    assert client.get(other_task_url + "/" + body["request_id"]).status_code == 404
+    other_project = client.post("/api/projects", json={"name": "bulk-other-project"}).json()["id"]
+    assert client.get(url.replace("/" + project + "/", "/" + other_project + "/") + "/" + body["request_id"]).status_code == 404
+
+
+def test_bulk_formal_intent_rejects_changes_and_unpublished_evidence(client, review_task, monkeypatch):
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task)
+    url = base + "/bulk-formal/intents"
+    assert client.post(url, json={**body, "excluded_image_ids": ["outside"]}).status_code == 422
+    assert client.post(url, json={**body, "excluded_image_ids": ids}).status_code == 422
+    assert client.post(url, json={**body, "review_revision": body["review_revision"] + 1}).status_code == 409
+    transfer = client.post(base + "/review-selection", json={
+        "filter": "all", "purpose": "transfer", "review_revision": store.review_revision(),
+    }).json()
+    assert client.post(url, json={**body, "selection_id": transfer["selection_id"]}).status_code == 409
+
+    artifact_type = type(store.artifacts)
+    publish_pointer = artifact_type.atomic_write_json
+    candidate_before = store.get(ids[0])
+    gt_before = host.read_annotation(project, ids[0])
+
+    def interrupt(self, task_id, path, value):
+        if path.startswith("review/bulk-formal/intents/"):
+            raise OSError("interrupted before publishing intent")
+        return publish_pointer(self, task_id, path, value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(artifact_type, "atomic_write_json", interrupt)
+        assert client.post(url, json=body).status_code == 503
+    assert client.get(url + "/" + body["request_id"]).status_code == 404
+    assert store.get(ids[0]) == candidate_before and host.read_annotation(project, ids[0]) == gt_before
+
+    write_evidence = artifact_type.write_evidence_json
+    def change_gt(self, task_id, value):
+        ref = write_evidence(self, task_id, value)
+        host.write_annotations_many(project, [{"image_id": ids[0], "boxes": [], "annotation_state": "confirmed_empty",
+            "annotation_scope": ["smoke"], "expected_version": gt_before["version"],
+            "source_content_sha256": candidate_before["source_content_sha256"]}])
+        return ref
+
+    with monkeypatch.context() as patch:
+        patch.setattr(artifact_type, "write_evidence_json", change_gt)
+        assert client.post(url, json=body).status_code == 409
+    assert client.get(url + "/" + body["request_id"]).status_code == 404
+    assert store.get(ids[0]) == candidate_before
+    assert store.review_revision() == body["review_revision"]
+    admitted = client.post(url, json=body)
+    assert admitted.status_code == 200, admitted.text
+    ref = admitted.json()["manifest_ref"]
+    evidence = store.artifacts.payload_reader.read_evidence_json(task, ref)
+    assert evidence["images"][0]["gt_version"] > gt_before["version"]
+    (store.artifacts.root / task / ref).write_text("{}", encoding="utf-8")
+    assert client.get(url + "/" + body["request_id"]).status_code == 503
+    assert client.post(url, json=body).status_code == 503
