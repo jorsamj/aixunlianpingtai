@@ -1088,6 +1088,74 @@ def test_bulk_formal_commit_writes_100_with_original_baselines_and_order(client,
     assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
 
 
+def _seed_equivalent_formal_gt(annotations, store, image_id):
+    source = store.get(image_id)["source_content_sha256"]
+    if annotations.get(image_id)["version"] == 0:
+        annotations.upsert(image_id, [], annotation_state="confirmed_empty", annotation_scope=["smoke"],
+                           source_content_sha256=source)
+    annotations.upsert(image_id, [], annotation_state="confirmed_empty", annotation_scope=["fire"],
+                       source_content_sha256=source)
+    assert annotations.get(image_id)["version"] == 2
+
+
+@pytest.mark.parametrize("corrupt_write", [False, True], ids=["replay", "transaction-rollback"])
+def test_bulk_formal_commit_equivalent_gt_advances_with_atomic_receipt(client, review_task, corrupt_write):
+    from contextlib import closing
+
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    existing, fresh, excluded = ids
+    annotations = host._v50_annotation_repository(project)
+    _seed_equivalent_formal_gt(annotations, store, existing)
+    body["excluded_image_ids"] = [excluded]
+    _, execute = _seal_for_bulk(client, project, task, store, base, body)
+    before = annotations.get_many(ids)
+    excluded_candidate = store.get(excluded)
+    assert before[fresh]["version"] == 0
+
+    if corrupt_write:
+        # Simulate a write that persisted the wrong version after an earlier
+        # row and its receipt succeeded inside the same GT transaction.
+        with closing(annotations._connect()) as database:
+            database.execute(f"""CREATE TRIGGER test_corrupt_gt_version AFTER INSERT ON annotations
+                WHEN NEW.image_id='{fresh}' BEGIN
+                    UPDATE annotations SET version=0 WHERE image_id=NEW.image_id;
+                END""")
+        with pytest.raises(RuntimeError, match="protected formal GT write verification failed"):
+            execute()
+        assert annotations.get_many(ids) == before
+        assert not annotations.candidate_committed_ids(task, ids)
+        assert not store.get_commit_summaries(ids)
+        assert len(store.bulk_formal_events(ids)) == 2
+        assert store.get(excluded) == excluded_candidate
+        return
+
+    finished = execute()
+    assert finished["completed_image_ids"] == [existing, fresh]
+    saved = annotations.get_many(ids)
+    assert saved[existing]["version"] == 3 and saved[existing]["content_digest"] == before[existing]["content_digest"]
+    assert saved[fresh]["version"] == 1
+    assert saved[excluded] == before[excluded] and store.get(excluded) == excluded_candidate
+    receipts = annotations.candidate_commit_receipts(task, finished["batch_operation_id"], ids)
+    journal = store.get_commit_summaries(ids)
+    assert set(receipts) == set(journal) == {existing, fresh}
+    for image_id in (existing, fresh):
+        assert receipts[image_id]["expected_version"] == before[image_id]["version"]
+        assert receipts[image_id]["version"] == journal[image_id]["gt_snapshot_version"] == saved[image_id]["version"]
+        assert receipts[image_id]["content_digest"] == journal[image_id]["gt_snapshot_digest"] == saved[image_id]["content_digest"]
+    revision = store.review_revision()
+    assert execute() == finished
+    assert store.review_revision() == revision and annotations.get_many(ids) == saved
+    assert annotations.candidate_commit_receipts(task, finished["batch_operation_id"], ids) == receipts
+
+    # Ordinary manual saves retain their content-based version semantics.
+    source = store.get(existing)["source_content_sha256"]
+    same = annotations.upsert(existing, [], annotation_state="confirmed_empty", annotation_scope=["fire"],
+                              source_content_sha256=source)
+    changed = annotations.upsert(existing, [], annotation_state="confirmed_empty", annotation_scope=["smoke"],
+                                 source_content_sha256=source)
+    assert same["version"] == 3 and changed["version"] == 4
+
+
 @pytest.mark.parametrize("stage", ["candidate_only", "gt_only"])
 def test_bulk_formal_commit_recovers_original_operation(client, review_task, monkeypatch, stage):
     from platform_core import annotation_task_service as service
@@ -1304,7 +1372,10 @@ def running_formal_bulk(request, client, review_task, tmp_path):
     from platform_core.task_runtime.fenced_repository import FencedTaskRepository
     from platform_core.task_runtime.worker import WorkerContext
 
-    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, getattr(request, "param", 1))
+    case = getattr(request, "param", 1)
+    project, task, store, _, ids, base, body = _bulk_intent_fixture(client, review_task, 2 if case == "mixed" else case)
+    if case == "mixed":
+        _seed_equivalent_formal_gt(host._v50_annotation_repository(project), store, ids[0])
     operation, _ = _seal_for_bulk(client, project, task, store, base, body)
     ref = operation["manifest_ref"]
     identity = store.artifacts.payload_reader.read_evidence_json(task, ref)["operation"]["identity"]
@@ -1418,7 +1489,8 @@ print("blocked", flush=True)
     assert set(store.get_commit_summaries(ids)) == set(ids)
 
 
-@pytest.mark.parametrize("durable", [False, True], ids=["candidate-only", "gt-durable"])
+@pytest.mark.parametrize("durable,running_formal_bulk", [(False, 1), (True, "mixed")],
+                         indirect=["running_formal_bulk"], ids=["candidate-only", "gt-durable-mixed"])
 def test_formal_bulk_cancel_reclaim_reconciles_without_gt_write(running_formal_bulk, monkeypatch, durable):
     import json
     import subprocess

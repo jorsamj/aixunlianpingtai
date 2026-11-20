@@ -989,9 +989,12 @@ def commit_candidate_decisions(
                 image_scope - recorded_scope
             )
             write_gt = bool(incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now)
-            if operation_id and (expected_version == 0 or frozen_annotation_digests is not None):
-                # Protected batches advance their GT version even for equivalent
-                # content. Missing evidence then cannot look like an unstarted write.
+            force_version_advance = (
+                bool(operation_id) and frozen_annotation_versions is not None
+                and frozen_annotation_digests is not None
+            )
+            if force_version_advance or (operation_id and expected_version == 0):
+                # A protected batch must advance the frozen version even for equivalent content.
                 write_gt = True
             if write_gt or operation_id:
                 to_write.append({
@@ -1002,6 +1005,7 @@ def commit_candidate_decisions(
                     "annotation_origin": annotation_origin,
                     "expected_version": expected_version,
                     "expected_content_digest": expected_digest,
+                    "force_version_advance": force_version_advance,
                     "source_content_sha256": str(
                         item.get("source_content_sha256") or ""
                     ).strip().lower(),

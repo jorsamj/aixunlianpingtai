@@ -5,6 +5,7 @@ from .performance_diagnostics import connect_sqlite, observe_connection
 
 import hashlib
 import json
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from .labels import active_project_label_ids, label_governance_fence
 STATES = {"unannotated", "annotated", "confirmed_empty"}
 _SCHEMA_VERSION = 3
 _INIT_LOCK_TIMEOUT = 30
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 _BACKUP_REFERENCE_CTE = """
 WITH backup_source AS (
@@ -1250,6 +1252,24 @@ class AnnotationRepository:
                    (intent['task_id'], intent['operation_id'], image_id,
                     json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
 
+    def _validate_protected_candidate_write(self, row, image_id):
+        intent = row.get("candidate_commit")
+        summary = intent.get("summary") if isinstance(intent, dict) else None
+        version = row.get("expected_version")
+        if (row["force_version_advance"] is not True or row.get("candidate_proof_only") is not False
+                or type(version) is not int or version < 0
+                or not isinstance(intent, dict) or not isinstance(summary, dict)
+                or intent.get("project_id") != self.project_path.name
+                or not isinstance(intent.get("task_id"), str) or not intent["task_id"].strip()
+                or intent.get("image_id") != image_id or summary.get("image_id") != image_id
+                or summary.get("gt_write_performed") is not True
+                or intent.get("source_sha256") != row.get("source_content_sha256")
+                or not all(isinstance(value, str) and _SHA256.fullmatch(value) for value in (
+                    row.get("expected_content_digest"), intent.get("operation_id"),
+                    intent.get("candidate_digest"), intent.get("source_sha256"),
+                ))):
+            raise ValueError(f"invalid protected formal GT write for {image_id}")
+
     def upsert_many(
         self, rows, *, project_material: bool = True, return_rows: bool = False,
     ):
@@ -1313,6 +1333,9 @@ class AnnotationRepository:
                                 task_id TEXT NOT NULL, operation_id TEXT NOT NULL, image_id TEXT NOT NULL,
                                 receipt_json TEXT NOT NULL, PRIMARY KEY(task_id, image_id))""")
                         for row, image_id, prepared in prepared_rows:
+                            force_version_advance = bool(row.get("force_version_advance"))
+                            if force_version_advance:
+                                self._validate_protected_candidate_write(row, image_id)
                             current = (db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
                                        if has_review_audit or row.get('expected_version') is not None else None)
                             actual_version = int(current['version']) if current is not None else 0
@@ -1370,7 +1393,7 @@ class AnnotationRepository:
                                        boxes_json=excluded.boxes_json,
                                        scope_json=excluded.scope_json,
                                        updated_at=excluded.updated_at
-                                   WHERE annotations.content_digest != excluded.content_digest""",
+                                   WHERE annotations.content_digest != excluded.content_digest OR ?""",
                                 (
                                     image_id,
                                     prepared['annotation_state'],
@@ -1379,6 +1402,7 @@ class AnnotationRepository:
                                     prepared['scope_payload'],
                                     now,
                                     now,
+                                    int(force_version_advance),
                                 ),
                             )
                             persisted = db.execute(
@@ -1389,6 +1413,12 @@ class AnnotationRepository:
                                 raise RuntimeError(
                                     "annotation upsert did not persist a row"
                                 )
+                            if force_version_advance and (
+                                persisted["image_id"] != image_id
+                                or persisted["version"] != expected_version + 1
+                                or persisted["content_digest"] != prepared["content_digest"]
+                            ):
+                                raise RuntimeError(f"protected formal GT write verification failed for {image_id}")
                             decoded = self._decode_persisted_row(persisted)
                             persisted_rows.append(decoded)
                             self._record_candidate_commit(db, row, image_id, decoded, expected_version)
