@@ -686,7 +686,9 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 
   await page.reload();
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
-  expect(await page.evaluate(taskId => (
+  // uiReady covers the shell; deferred training history is fetched independently.
+  // Wait for the created task instead of assuming it is already in state.
+  await expect.poll(async () => page.evaluate(taskId => (
     state.jobs || []
   ).some(job => String(job.task_id || job.id || '') === taskId), createdTaskId)).toBe(true);
   await page.evaluate(() => window.setPage('训练任务'));
@@ -760,4 +762,38 @@ test('late training device preparation cannot rewrite a closed form or another b
   release();await page.waitForResponse('**/api/v62/training-devices');
   await expect(page.locator('#other-business')).toHaveValue('保留');
   expect(await page.evaluate(()=>JSON.stringify(state.trainingDraft))).toBe(before);
+});
+
+
+test('late bootstrap snapshot cannot overwrite prewarmed training resources', async ({page, request}) => {
+  const {project} = await seedProject(request);
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const response = await route.fetch();
+    const snapshot = await response.json();
+    snapshot.targets = [{id: 'stale-ready-target', name: '未完成配置', status: 'ready'}];
+    snapshot.recommendation = null;
+    await route.fulfill({response, json: snapshot});
+  });
+  await page.route('**/api/training_options**', route => route.fulfill({json:{targets:[{
+    id:'first-open-ultralytics',name:'首次打开 Ultralytics',type:'local',framework:'ultralytics',
+    status:'ready',algorithms:[{key:'yolo_detect',base_model:'yolo11n.pt',default_epochs:20,
+      default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}}));
+  await page.route('**/api/system/recommendation', route => route.fulfill({json:{device:'cpu',batch:4,workers:0}}));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({json:{recommended:'cpu',
+    options:[{id:'cpu',label:'CPU',available:true}]}}));
+
+  await selectIsolatedTestProject(page, project.id, '算法列表');
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => ({
+    target: state.targets?.[0]?.id || null, device: state.rec?.device || null,
+  })), {timeout: 15_000}).toEqual({target: 'first-open-ultralytics', device: 'cpu'});
+
+  // Force the late snapshot to apply after the live resources are already in
+  // state. It must not be treated as the authority for training inputs.
+  await page.evaluate(() => window.loadStartupSnapshot413(true));
+  expect(await page.evaluate(() => ({
+    target: state.targets?.[0]?.id,
+    hasAlgorithms: Array.isArray(state.targets?.[0]?.algorithms),
+    device: state.rec?.device || null,
+  }))).toEqual({target: 'first-open-ultralytics', hasAlgorithms: true, device: 'cpu'});
 });

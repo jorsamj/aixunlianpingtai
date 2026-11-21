@@ -298,6 +298,18 @@ export function installTrainingCreateHydrationRuntime({
     retry,
     start,
     prewarm,
+    // Bootstrap snapshots are a cache, not the authority for training inputs.
+    // Tell the snapshot applier whether live resources already won for a project
+    // so a late snapshot cannot overwrite them with stale targets/recommendation.
+    authoritative(pid) {
+      const state = getState?.() || {};
+      const key = String(pid ?? projectId?.() ?? '');
+      const sameProject = commonProjectId === key;
+      return {
+        options: sameProject && commonLoadedAt > 0 && trainingOptionsHydrated(state.targets),
+        recommendation: sameProject && recommendationLoadedAt > 0 && state.rec != null,
+      };
+    },
     build: 'training-create-hydration-20261028',
     destroy() {
       destroyed = true;
