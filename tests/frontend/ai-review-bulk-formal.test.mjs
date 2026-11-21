@@ -34,7 +34,7 @@ test('store seals the frozen selection once and never expands IDs', () => {
   // No expanded id list can reach the bulk payload.
   const seal = store.slice(store.indexOf('async function preflightBulkFormal'), store.indexOf('async function confirmBulkFormal'));
   assert.doesNotMatch(seal, /[^_]image_ids\s*:/);
-  const writeAt=store.indexOf('writeBulkRecord(address,body);');
+  const writeAt=store.indexOf('writeBulkRecord(address,body)');
   const sealAt=store.indexOf('sealBulkFormalIntent(address,body');
   assert.ok(writeAt>0&&sealAt>writeAt,'request identity is persisted before the seal request');
   assert.match(store, /bulkPendingUnknown/);

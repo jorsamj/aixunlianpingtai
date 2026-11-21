@@ -26,6 +26,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   // Durable bulk formal GT (C2-B): frozen server selection only, never an
   // expanded ID list in the browser.
   const bulkIntent=shallowRef<BulkFormalIntent>(),bulkExecution=shallowRef<BulkFormalExecution>();
+  const lastBulkResult=shallowRef<BulkFormalExecution>();
   const bulkBusy=ref(false),bulkNotice=ref(''),bulkError=ref(''),bulkDialog=ref(false);
   const bulkRequestId=ref('');
   const bulkPendingUnknown=ref(false);
@@ -74,7 +75,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     formalRequest?.abort();formalPlan.value=formalOperation.value=undefined;
     formalBusy.value=formalStorageError.value=false;formalNotice.value='';
     stopBulkPoll();bulkAbort?.abort();
-    bulkIntent.value=bulkExecution.value=undefined;
+    bulkIntent.value=bulkExecution.value=undefined;lastBulkResult.value=undefined;
     bulkBusy.value=false;bulkError.value=bulkNotice.value='';bulkDialog.value=false;bulkRequestId.value='';
     bulkPendingUnknown.value=false;
     clearSelection();
@@ -544,13 +545,21 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }catch{/* storage unavailable or corrupt: degrade to no record */}
     return null;
   }
-  function writeBulkRecord(address:Scope,record:BulkRecord){
-    try{sessionStorage.setItem(bulkFormalKey(address),JSON.stringify(record))}catch{
-      bulkNotice.value='浏览器无法保存本次操作身份，刷新后需重新预检。';
-    }
+  function writeBulkRecord(address:Scope,record:BulkRecord):boolean{
+    try{sessionStorage.setItem(bulkFormalKey(address),JSON.stringify(record));return true}
+    catch{bulkError.value='浏览器无法保存本次操作身份，已停止预检；请允许站点存储后重试。';return false}
   }
   function clearBulkRecord(address:Scope){
     try{sessionStorage.removeItem(bulkFormalKey(address))}catch{}
+  }
+  // A terminal execution stays visible as the LAST result while a brand-new
+  // operation gets a fresh identity. It must never be reused as the current one.
+  function archiveTerminalBulk(){
+    if(!bulkExecution.value||!bulkTerminal.value)return;
+    lastBulkResult.value=bulkExecution.value;
+    bulkExecution.value=undefined;
+    bulkIntent.value=undefined;bulkRequestId.value='';bulkPendingUnknown.value=false;
+    if(scope)clearBulkRecord(scope);
   }
   function stopBulkPoll(){if(bulkPoll!==undefined){window.clearInterval(bulkPoll);bulkPoll=undefined}}
   function startBulkPoll(){
@@ -625,6 +634,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }
   }
   function openBulkFormal(){
+    if(bulkTerminal.value)archiveTerminalBulk();
     if(!bulkIntent.value&&!bulkExecution.value&&!bulkPendingUnknown.value&&!bulkRequestId.value&&!canBulkFormal.value)return;
     bulkDialog.value=true;bulkError.value='';bulkNotice.value='';
   }
@@ -649,7 +659,8 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');
   }
   async function preflightBulkFormal(){
-    if(bulkIntent.value||bulkExecution.value)return;
+    if(bulkIntent.value||bulkRunning.value)return;
+    archiveTerminalBulk();
     await runBulk(async(address,signal)=>{
       const stored=readBulkRecord(address);
       const snapshot=frozenSelection.value;
@@ -677,8 +688,9 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       }
       if(!bulkRequestId.value)bulkRequestId.value=body.request_id;
       // Persist BEFORE the request: a lost response must never create a second
-      // operation on retry.
-      writeBulkRecord(address,body);
+      // operation on retry. If storage is unavailable we refuse to create a
+      // persistent server-side seal we could not later recover.
+      if(!writeBulkRecord(address,body))throw new Error('浏览器无法保存本次操作身份，已停止预检；请允许站点存储后重试。');
       const intent=await sealBulkFormalIntent(address,body,signal);
       if(signal.aborted)return;
       if(intent.request_id!==body.request_id||intent.project_id!==address.projectId
@@ -698,7 +710,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     if(address)clearBulkRecord(address);
   }
   async function confirmBulkFormal(){
-    if(!bulkIntent.value||bulkExecution.value)return;
+    if(!bulkIntent.value||bulkRunning.value)return;
     await runBulk(async(address,signal)=>{
       const view=await startBulkFormalExecution(address,bulkRequestId.value,signal);
       if(signal.aborted)return;
@@ -753,7 +765,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
     prepareFormal,cancelFormal,confirmFormal,recoverFormal,
     bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,
-    bulkSealed,bulkPendingUnknown,
+    bulkSealed,bulkPendingUnknown,lastBulkResult,
     canBulkFormal,openBulkFormal,closeBulkFormal,preflightBulkFormal,confirmBulkFormal,refreshBulkFormal,
     cancelBulkFormal,recoverBulkFormal,abandonBulkFormal};
 });

@@ -279,7 +279,7 @@ const diagnosticFacts=computed(()=>{
         <el-button :loading="review.formalBusy" @click="review.confirmFormal()">确认写入正式 GT</el-button>
        </template>
       </el-dialog>
-      <div v-if="review.bulkIntent || review.bulkExecution || review.bulkPendingUnknown" class="review-bulk" role="status">
+      <div v-if="review.bulkIntent || review.bulkExecution || review.bulkPendingUnknown || review.lastBulkResult" class="review-bulk" role="status">
        <p><b>{{ bulkStatusName }}</b>
         <template v-if="review.bulkExecution">
          · 已证明提交 GT
@@ -299,6 +299,7 @@ const diagnosticFacts=computed(()=>{
         {{ review.bulkExecution.blocked_reason || review.bulkExecution.last_error_message || review.bulkExecution.blocked_code }}
        </p>
        <p v-else-if="review.bulkExecution?.last_error_message" role="alert">{{ review.bulkExecution.last_error_message }}</p>
+       <p v-if="review.lastBulkResult && !review.bulkExecution" role="status">上一笔：{{ bulkStatusNames[review.lastBulkResult.status] || review.lastBulkResult.status }} · 已证明提交 GT {{ review.lastBulkResult.committed_images_proven ? review.lastBulkResult.committed_images : '未证明' }} / {{ review.lastBulkResult.total_images }} 张</p>
        <p v-if="review.bulkNotice" role="status">{{ review.bulkNotice }}</p>
        <div class="review-actions">
         <el-button :loading="review.bulkBusy" @click="review.refreshBulkFormal()">刷新进度</el-button>
@@ -347,6 +348,7 @@ const diagnosticFacts=computed(()=>{
         <p v-else-if="review.bulkExecution.last_error_message" role="alert">{{ review.bulkExecution.last_error_message }}</p>
        </template>
        <p v-if="review.bulkError" role="alert">{{ review.bulkError }}</p>
+       <p v-if="review.lastBulkResult && !review.bulkExecution" role="status">上一笔：{{ bulkStatusNames[review.lastBulkResult.status] || review.lastBulkResult.status }} · 已证明提交 GT {{ review.lastBulkResult.committed_images_proven ? review.lastBulkResult.committed_images : '未证明' }} / {{ review.lastBulkResult.total_images }} 张</p>
        <p v-if="review.bulkNotice" role="status">{{ review.bulkNotice }}</p>
        <template #footer>
         <el-button :disabled="review.bulkBusy" @click="review.closeBulkFormal()">关闭</el-button>
