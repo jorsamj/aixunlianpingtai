@@ -25,15 +25,20 @@ test('bulk formal API client uses the existing C2-B routes and no client-side GT
 });
 
 test('store seals the frozen selection once and never expands IDs', () => {
-  assert.match(store, /sealBulkFormalIntent\(address,\{/);
+  assert.match(store, /sealBulkFormalIntent\(address,body/);
   assert.match(store, /excluded_image_ids:\[\.\.\.excludedIds\.value\]\.sort\(\)/);
-  assert.match(store, /bulkRequestId\.value\|\|Array\.from\(crypto\.getRandomValues/);
+  assert.match(store, /bulkRequestId\.value\|\|newBulkRequestId\(\)/);
+  assert.match(store, /Math\.random\(\)\*16/);
   assert.match(store, /startBulkFormalExecution\(address,bulkRequestId\.value/);
   assert.match(store, /view\.operation_id!==bulkIntent\.value\?\.operation_id/);
   // No expanded id list can reach the bulk payload.
   const seal = store.slice(store.indexOf('async function preflightBulkFormal'), store.indexOf('async function confirmBulkFormal'));
   assert.doesNotMatch(seal, /[^_]image_ids\s*:/);
-  assert.match(store, /sessionStorage\.setItem\(bulkFormalKey\(address\)/);
+  const writeAt=store.indexOf('writeBulkRecord(address,body);');
+  const sealAt=store.indexOf('sealBulkFormalIntent(address,body');
+  assert.ok(writeAt>0&&sealAt>writeAt,'request identity is persisted before the seal request');
+  assert.match(store, /bulkPendingUnknown/);
+  assert.match(store, /function abandonBulkFormal\(/);
 });
 
 test('store keeps honest progress and recovery semantics', () => {

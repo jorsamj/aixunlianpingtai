@@ -28,11 +28,16 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const bulkIntent=shallowRef<BulkFormalIntent>(),bulkExecution=shallowRef<BulkFormalExecution>();
   const bulkBusy=ref(false),bulkNotice=ref(''),bulkError=ref(''),bulkDialog=ref(false);
   const bulkRequestId=ref('');
+  const bulkPendingUnknown=ref(false);
   let bulkPoll:number|undefined,bulkAbort:AbortController|undefined;
   const bulkStatus=computed(()=>String(bulkExecution.value?.status||''));
   const bulkTerminal=computed(()=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(bulkStatus.value));
   const bulkRunning=computed(()=>!!bulkExecution.value&&!bulkTerminal.value);
-  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value);
+  // A sealed intent locks the selection identity until it is executed or the
+  // user explicitly abandons it; otherwise a user could edit the range and
+  // then confirm an already sealed (different) operation.
+  const bulkSealed=computed(()=>!!bulkIntent.value&&!bulkTerminal.value);
+  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value);
   const explicitSelection=ref(new Set<string>());
   const frozenSelection=shallowRef<ReviewSelection>();
   const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
@@ -71,6 +76,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     stopBulkPoll();bulkAbort?.abort();
     bulkIntent.value=bulkExecution.value=undefined;
     bulkBusy.value=false;bulkError.value=bulkNotice.value='';bulkDialog.value=false;bulkRequestId.value='';
+    bulkPendingUnknown.value=false;
     clearSelection();
     scope=undefined;
     taskRead?.abort();pageRead?.abort();closeImage();
@@ -527,6 +533,25 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   function bulkFormalKey(address:Scope){
     return 'ai-review-bulk:v1:'+JSON.stringify([address.actorKey,address.projectId,address.taskId]);
   }
+  type BulkRecord={request_id:string;selection_id:string;review_revision:number;excluded_image_ids:string[]};
+  function readBulkRecord(address:Scope):BulkRecord|null{
+    try{
+      const raw=JSON.parse(sessionStorage.getItem(bulkFormalKey(address))??'null') as Partial<BulkRecord>|null;
+      if(raw&&typeof raw.request_id==='string'&&typeof raw.selection_id==='string'
+        &&Number.isInteger(raw.review_revision)&&Array.isArray(raw.excluded_image_ids)
+        &&raw.excluded_image_ids.every(id=>typeof id==='string'))
+        return raw as BulkRecord;
+    }catch{/* storage unavailable or corrupt: degrade to no record */}
+    return null;
+  }
+  function writeBulkRecord(address:Scope,record:BulkRecord){
+    try{sessionStorage.setItem(bulkFormalKey(address),JSON.stringify(record))}catch{
+      bulkNotice.value='浏览器无法保存本次操作身份，刷新后需重新预检。';
+    }
+  }
+  function clearBulkRecord(address:Scope){
+    try{sessionStorage.removeItem(bulkFormalKey(address))}catch{}
+  }
   function stopBulkPoll(){if(bulkPoll!==undefined){window.clearInterval(bulkPoll);bulkPoll=undefined}}
   function startBulkPoll(){
     if(bulkPoll!==undefined||!scope||!bulkRequestId.value)return;
@@ -535,6 +560,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   async function settleBulkFormal(address:Scope){
     stopBulkPoll();
     if(scope!==address)return;
+    if(!bulkTerminal.value)return;
+    // Terminal execution: release the sealed identity so a NEW operation can
+    // start with a NEW request_id. The terminal execution stays visible.
+    bulkIntent.value=undefined;bulkRequestId.value='';bulkPendingUnknown.value=false;
+    clearBulkRecord(address);
     if(bulkStatus.value==='SUCCEEDED'){
       clearSelection();
       await readPage(filter.value,[null]);
@@ -559,22 +589,28 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }
   }
   async function restoreBulk(address:Scope){
-    let saved:{request_id?:string}|null=null;
-    try{saved=JSON.parse(sessionStorage.getItem(bulkFormalKey(address))??'null')}catch{saved=null}
-    const requestId=String(saved?.request_id||'');
+    const record=readBulkRecord(address);
+    const requestId=record?.request_id??'';
     if(!/^[a-z0-9]{12,80}$/i.test(requestId))return;
     bulkRequestId.value=requestId;
     try{
       const intent=await getBulkFormalIntent(address,requestId,new AbortController().signal);
       if(scope!==address)return;
-      if(intent.project_id!==address.projectId||intent.task_id!==address.taskId||intent.request_id!==requestId)
-        throw new Error('后台正式入库记录与当前任务不一致');
-      bulkIntent.value=intent;
+      if(intent.project_id!==address.projectId||intent.task_id!==address.taskId
+        ||intent.request_id!==requestId||intent.selection_id!==record?.selection_id
+        ||intent.review_revision!==record?.review_revision)
+        throw new Error('后台正式入库记录与当前任务或范围不一致');
+      bulkIntent.value=intent;bulkPendingUnknown.value=false;
     }catch(cause){
+      if(scope!==address)return;
       if((cause as {httpStatus?:number}).httpStatus===404){
-        bulkRequestId.value='';
-        try{sessionStorage.removeItem(bulkFormalKey(address))}catch{}
+        // The seal may have reached the server while its response was lost.
+        // Keep the SAME request_id; only an explicit abandon may replace it.
+        bulkPendingUnknown.value=true;
+        bulkNotice.value='上次预检结果未确认，可重试同一操作。';
+        return;
       }
+      bulkError.value=message(cause);
       return;
     }
     try{
@@ -589,7 +625,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }
   }
   function openBulkFormal(){
-    if(!bulkIntent.value&&!bulkExecution.value&&!canBulkFormal.value)return;
+    if(!bulkIntent.value&&!bulkExecution.value&&!bulkPendingUnknown.value&&!bulkRequestId.value&&!canBulkFormal.value)return;
     bulkDialog.value=true;bulkError.value='';bulkNotice.value='';
   }
   function closeBulkFormal(){if(!bulkBusy.value)bulkDialog.value=false}
@@ -603,27 +639,63 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     catch(cause){if(!controller.signal.aborted)bulkError.value=message(cause)}
     finally{if(!controller.signal.aborted)bulkBusy.value=false}
   }
+  function newBulkRequestId(){
+    const cryptoObject=globalThis.crypto;
+    if(cryptoObject?.getRandomValues){
+      return Array.from(cryptoObject.getRandomValues(new Uint8Array(16)),
+        byte=>byte.toString(16).padStart(2,'0')).join('');
+    }
+    // HTTP (non-secure) fallback: identity only needs uniqueness, never secrecy.
+    return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');
+  }
   async function preflightBulkFormal(){
     if(bulkIntent.value||bulkExecution.value)return;
     await runBulk(async(address,signal)=>{
-      const snapshot=frozenSelection.value,expected=page.value?.review_revision;
-      if(!snapshot||expected===undefined)throw new Error('请先冻结服务端筛选范围');
-      if(snapshot.review_revision!==expected||snapshot.purpose!=='gt')
-        throw new Error('筛选快照已变化，请重新冻结');
-      const requestId=bulkRequestId.value||Array.from(crypto.getRandomValues(new Uint8Array(16)),
-        byte=>byte.toString(16).padStart(2,'0')).join('');
-      const intent=await sealBulkFormalIntent(address,{
-        request_id:requestId,selection_id:snapshot.selection_id,review_revision:snapshot.review_revision,
-        excluded_image_ids:[...excludedIds.value].sort(),
-      },signal);
+      const stored=readBulkRecord(address);
+      const snapshot=frozenSelection.value;
+      let body:{request_id:string;selection_id:string;review_revision:number;excluded_image_ids:string[]};
+      if(snapshot){
+        const expected=page.value?.review_revision;
+        if(expected===undefined||snapshot.review_revision!==expected||snapshot.purpose!=='gt')
+          throw new Error('筛选快照已变化，请重新冻结');
+        body={request_id:bulkRequestId.value||newBulkRequestId(),
+          selection_id:snapshot.selection_id,review_revision:snapshot.review_revision,
+          excluded_image_ids:[...excludedIds.value].sort()};
+        if(stored&&stored.request_id===body.request_id
+          &&(stored.selection_id!==body.selection_id||stored.review_revision!==body.review_revision
+            ||JSON.stringify(stored.excluded_image_ids)!==JSON.stringify(body.excluded_image_ids)))
+          throw new Error('原预检请求内容与当前选择不一致，请先放弃原预检再重新选择');
+        if(stored&&stored.request_id!==body.request_id)
+          throw new Error('浏览器仍有未完成的预检操作，请先放弃原预检');
+      }else if(stored&&stored.request_id===bulkRequestId.value){
+        // Refreshed page: replay the persisted identity instead of inventing a
+        // second operation for a seal whose outcome is still unknown.
+        body={request_id:stored.request_id,selection_id:stored.selection_id,
+          review_revision:stored.review_revision,excluded_image_ids:stored.excluded_image_ids};
+      }else{
+        throw new Error('请先冻结服务端筛选范围');
+      }
+      if(!bulkRequestId.value)bulkRequestId.value=body.request_id;
+      // Persist BEFORE the request: a lost response must never create a second
+      // operation on retry.
+      writeBulkRecord(address,body);
+      const intent=await sealBulkFormalIntent(address,body,signal);
       if(signal.aborted)return;
-      if(intent.request_id!==requestId||intent.project_id!==address.projectId||intent.task_id!==address.taskId
-        ||intent.selection_id!==snapshot.selection_id||intent.review_revision!==snapshot.review_revision)
+      if(intent.request_id!==body.request_id||intent.project_id!==address.projectId
+        ||intent.task_id!==address.taskId||intent.selection_id!==body.selection_id
+        ||intent.review_revision!==body.review_revision)
         throw new Error('封存回执与所选范围不一致');
-      bulkRequestId.value=requestId;bulkIntent.value=intent;
-      try{sessionStorage.setItem(bulkFormalKey(address),JSON.stringify({request_id:requestId}))}catch{}
+      bulkIntent.value=intent;bulkPendingUnknown.value=false;
       bulkNotice.value=`预检通过：可入库 ${intent.count} 张，已排除 ${intent.excluded_count} 张。`;
     });
+  }
+  function abandonBulkFormal(){
+    if(bulkBusy.value||bulkRunning.value)return;
+    const address=scope;
+    stopBulkPoll();bulkAbort?.abort();
+    bulkIntent.value=bulkExecution.value=undefined;bulkRequestId.value='';
+    bulkPendingUnknown.value=false;bulkNotice.value='';bulkError.value='';bulkDialog.value=false;
+    if(address)clearBulkRecord(address);
   }
   async function confirmBulkFormal(){
     if(!bulkIntent.value||bulkExecution.value)return;
@@ -681,6 +753,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
     prepareFormal,cancelFormal,confirmFormal,recoverFormal,
     bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,
+    bulkSealed,bulkPendingUnknown,
     canBulkFormal,openBulkFormal,closeBulkFormal,preflightBulkFormal,confirmBulkFormal,refreshBulkFormal,
-    cancelBulkFormal,recoverBulkFormal};
+    cancelBulkFormal,recoverBulkFormal,abandonBulkFormal};
 });
