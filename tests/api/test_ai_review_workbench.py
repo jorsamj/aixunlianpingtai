@@ -2385,3 +2385,41 @@ def test_formal_bulk_recover_pending_before_first_gt_continues(client, review_ta
     after = annotations.get_many(ids)
     assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids)
     assert len(store.get_commit_summaries(ids)) == 3
+
+def test_bulk_formal_second_operation_after_success(client, review_task, monkeypatch):
+    """Real API + real Handler: a completed operation does not block a new one."""
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 6)
+    body["excluded_image_ids"] = ids[3:]
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    first = _start_bulk_execution(client, base, body["request_id"])
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-first")
+    assert scheduler.run_once()
+    assert repo.get(first["execution_task_id"]).status is TaskStatus.SUCCEEDED
+    after_first = annotations.get_many(ids)
+    assert all(after_first[key]["version"] == before[key]["version"] + 1 for key in ids[:3])
+    assert all(after_first[key] == before[key] for key in ids[3:])
+
+    # A fresh server-side selection now contains only the still-uncommitted images.
+    selection = client.post(base + "/review-selection", json={
+        "filter": "all", "purpose": "gt", "review_revision": store.review_revision(),
+    })
+    assert selection.status_code == 200, selection.text
+    assert selection.json()["count"] == 3
+    second_body = {"request_id": "bulk-intent-second-001", "selection_id": selection.json()["selection_id"],
+                   "review_revision": selection.json()["review_revision"], "excluded_image_ids": []}
+    assert client.post(base + "/bulk-formal/intents", json=second_body).status_code == 200
+    second = _start_bulk_execution(client, base, second_body["request_id"])
+    assert second["execution_task_id"] != first["execution_task_id"]
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-second")
+    assert scheduler.run_once()
+    assert repo.get(second["execution_task_id"]).status is TaskStatus.SUCCEEDED
+
+    after_second = annotations.get_many(ids)
+    assert all(after_second[key]["version"] == before[key]["version"] + 1 for key in ids)
+    assert len(store.get_commit_summaries(ids[:3])) == 3
+    assert len(store.get_commit_summaries(ids[3:])) == 3
