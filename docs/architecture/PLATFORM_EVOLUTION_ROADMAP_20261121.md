@@ -566,3 +566,11 @@ flowchart TB
 | D | [验收规范](../performance/PLATFORM_SCALE_ACCEPTANCE_20261121.md) 第 9 节模板 |
 | E | [Vue 迁移矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md) + [功能保留](EXISTING_FEATURE_PRESERVATION.md) |
 | F | 本文 + [P2 数据 Owner](P2_DATA_OWNERS_AND_POSTGRESQL_PREPARATION_20261117.md) |
+
+## 2026-11-21 当前状态快照（覆盖文首旧快照）
+
+- 当前 HEAD：`b74766b909124be757691a32766dbd9b8062a0e1`（本阶段提交 `43aaa14e`、`6134bfb5`、`b74766b9`）。
+- C2-B：不可变意图、幂等 `request_id`、GT CAS、批次回执与恢复已实现；真实浏览器 205→201 三批隔离联调通过（真实 uvicorn + 独立测试 Worker 进程 + 真实 GT/journal/回执）。
+- 前端：封存只在同正文幂等 POST 成功后才可执行；409 冲突在刷新后仍保持阻断；`execution_attempted` 的未知创建状态跨刷新保留。
+- 性能：`/images` 20 万返回约 106MB/2.2s、`/datasets` 约 6.5s、`/projects` 约 4.6s（隔离合成、无 GT 的 legacy 回退路径）；标签编辑已改为仅刷新标签，不再触发 `loadRelated()` 全量 `/images`。
+- 未实施：FTS5、`/images`/`/datasets`/`loadRelated` 的结构性治理、生产 Worker 生命周期与生产现场验收。
