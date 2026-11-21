@@ -38,7 +38,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   // user explicitly abandons it; otherwise a user could edit the range and
   // then confirm an already sealed (different) operation.
   const bulkSealed=computed(()=>!!bulkIntent.value&&!bulkTerminal.value);
-  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value);
+  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value||bulkPendingUnknown.value);
   const explicitSelection=ref(new Set<string>());
   const frozenSelection=shallowRef<ReviewSelection>();
   const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
