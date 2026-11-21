@@ -10,7 +10,7 @@ import {legacyUrl} from './navigation';
 const route=useRoute(),router=useRouter(),controller=new AbortController();
 onBeforeUnmount(()=>controller.abort());
 const projectId=String(route.params.projectId);
-const username=useWorkspace().username;
+const workspace=useWorkspace(),username=workspace.username;
 const selectionKey='materials.selection:'+JSON.stringify([username,projectId]);
 const storageFailed=ref(false);
 const filterKeys=['query','label','annotation_state','quality_status','storage_source_id','source_batch_id','created_from','created_to'] as const;
@@ -43,7 +43,7 @@ function original(action:string,page='数据集',id=''){
 }
 
 const context:MaterialContext={
-  projectId,signal:controller.signal,get:request,
+  projectId,actorKey:workspace.actorKey,signal:controller.signal,get:request,
   memory:{
     get materials(){return current},
     set materials(value:MaterialMemory|undefined){
@@ -79,7 +79,7 @@ const legacyActions=[
 </script>
 
 <template>
-  <MaterialLibrary :context="context" standalone>
+  <MaterialLibrary :context="context" standalone delete-enabled>
     <template #actions>
       <nav class="material-actions" aria-label="素材操作">
         <el-button tag="router-link" :to="{name:'public-negative-pool',params:{projectId}}">负样本池</el-button>
