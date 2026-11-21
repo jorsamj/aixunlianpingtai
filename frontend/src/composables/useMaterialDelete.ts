@@ -16,8 +16,13 @@ const STATUS_LABEL: Record<string, string> = {
   FAILED: '失败', CANCELLED: '已取消', BLOCKED_BY_ENVIRONMENT: '环境阻断',
   BLOCKED_BY_HARDWARE: '硬件阻断',
 };
+type DeleteMode = 'single' | 'selected';
 interface RecoveryRecord {
-  project_id: string; image_id: string; plan_id: string; operation: 'DELETE_INDEX';
+  project_id: string; plan_id: string; operation: 'DELETE_INDEX';
+  mode: DeleteMode; image_id?: string; image_count: number;
+}
+export interface DeleteSettlement {
+  deletedIds: string[]; failedIds: string[]; terminal: string; unknown: boolean;
 }
 function message(cause: unknown) {
   return cause instanceof Error ? cause.message : '操作失败';
@@ -27,43 +32,52 @@ export function useMaterialDelete(options: {
   enabled: () => boolean;
   projectId: () => string;
   actorKey: () => string;
-  onSettled: (imageId: string) => Promise<void> | void;
+  onSettled: (result: DeleteSettlement) => Promise<void> | void;
 }) {
   const state = reactive({
     dialog: false, busy: false, estimate: null as MaterialBatchEstimate | null,
-    task: null as MaterialBatchTask | null, targetId: '', error: '', notice: '',
-    unknown: false, pendingPlanId: '', pendingImageId: '',
+    task: null as MaterialBatchTask | null, targetId: '', targetIds: [] as string[],
+    mode: 'single' as DeleteMode, error: '', notice: '', unknown: false,
+    pendingPlanId: '', pendingImageId: '', pendingCount: 0,
   });
   let poll: number | undefined;
 
   const storageKey = () => 'ai-material-delete:v1:' + JSON.stringify([
     options.actorKey(), options.projectId(),
   ]);
-  function syncPending() {
-    const record = readRecord();
-    state.pendingPlanId = record?.plan_id || '';
-    state.pendingImageId = record?.image_id || '';
-  }
   function readRecord(): RecoveryRecord | null {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey()) || 'null');
       if (!value || value.operation !== 'DELETE_INDEX'
-          || typeof value.plan_id !== 'string' || typeof value.image_id !== 'string'
-          || value.project_id !== options.projectId()) return null;
-      return value;
+          || typeof value.plan_id !== 'string' || value.project_id !== options.projectId())
+        return null;
+      const mode: DeleteMode = value.mode === 'selected' ? 'selected' : 'single';
+      if (mode === 'single' && typeof value.image_id !== 'string') return null;
+      return {
+        project_id: value.project_id, plan_id: value.plan_id, operation: 'DELETE_INDEX',
+        mode, image_id: typeof value.image_id === 'string' ? value.image_id : undefined,
+        image_count: Math.max(1, Number(value.image_count) || 1),
+      };
     } catch { return null; }
   }
-  function writeRecord(planId: string, imageId: string): boolean {
+  function syncPending() {
+    const record = readRecord();
+    state.pendingPlanId = record?.plan_id || '';
+    state.pendingImageId = record?.image_id || '';
+    state.pendingCount = record?.image_count || 0;
+  }
+  function writeRecord(planId: string, mode: DeleteMode, count: number, imageId?: string): boolean {
+    const current = readRecord();
+    if (current && current.plan_id !== planId) return false;
     try {
       localStorage.setItem(storageKey(), JSON.stringify({
-        project_id: options.projectId(), image_id: imageId,
-        plan_id: planId, operation: 'DELETE_INDEX',
+        project_id: options.projectId(), plan_id: planId, operation: 'DELETE_INDEX',
+        mode, image_id: mode === 'single' ? imageId : undefined,
+        image_count: Math.max(1, count),
       }));
       syncPending();
       return true;
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   }
   function clearRecord() {
     try { localStorage.removeItem(storageKey()); } catch { /* storage unavailable */ }
@@ -105,37 +119,68 @@ export function useMaterialDelete(options: {
     }
   }
 
+  async function readResults(task: MaterialBatchTask) {
+    const succeeded = new Set<string>(), failed = new Set<string>();
+    let seen = 0, cursor: string | null = null, pages = 0;
+    do {
+      const page = await getMaterialBatchResults(
+        options.projectId(), task.task_id, new AbortController().signal, cursor,
+      );
+      for (const row of page.items || []) {
+        seen += 1;
+        if (row.item_state === 'succeeded') succeeded.add(row.image_id);
+        else failed.add(row.image_id);
+      }
+      for (const id of page.succeeded_image_ids || []) succeeded.add(id);
+      cursor = page.next_cursor || null;
+      pages += 1;
+      if (pages > 500) break;
+    } while (cursor);
+    return {succeeded, failed, seen, truncated: pages > 500};
+  }
+
   async function finish(task: MaterialBatchTask) {
     const record = readRecord();
+    const mode: DeleteMode = record?.mode || state.mode;
     const imageId = record?.image_id || state.targetId;
-    let deleted = false;
+    const required = Math.max(1, Number(record?.image_count) || state.estimate?.count
+      || Number(task.total) || 1);
+    let results;
     try {
-      const results = await getMaterialBatchResults(
-        options.projectId(), task.task_id, new AbortController().signal,
-      );
-      const item = results.items?.find(row => row.image_id === imageId);
-      deleted = item
-        ? item.item_state === 'succeeded'
-        : (results.succeeded_image_ids || []).includes(imageId);
+      results = await readResults(task);
     } catch {
-      // The terminal task is proven, but this image's result is not. Keep the
-      // recovery record and let the user retry the results read.
       state.unknown = true;
       state.notice = '任务已到终态，但逐项结果暂不可读；原删除身份已保留。';
       return;
     }
+    const deletedIds = [...results.succeeded];
+    const failedIds = [...results.failed];
+    if (results.truncated || results.seen < required) {
+      state.unknown = true;
+      state.notice = '逐项结果尚未完整覆盖本次范围，删除结果未证明；原删除身份已保留。';
+      return;
+    }
+    if (mode === 'single' && !results.succeeded.has(imageId) && !results.failed.has(imageId)) {
+      state.unknown = true;
+      state.notice = '逐项结果未包含该素材，删除结果尚未证明；原删除身份已保留。';
+      return;
+    }
     clearRecord();
     state.unknown = false;
-    if (task.status === 'SUCCEEDED' && deleted) {
-      state.notice = '素材删除成功（原图字节保留）。';
+    const succeededCount = deletedIds.length;
+    const failedCount = failedIds.length;
+    if (task.status === 'SUCCEEDED' && failedCount === 0) {
+      state.notice = mode === 'single'
+        ? '素材删除成功（原图字节保留）。'
+        : `已删除 ${succeededCount} 张素材（原图字节保留）。`;
       state.dialog = false;
-      await options.onSettled(imageId);
+      await options.onSettled({deletedIds, failedIds, terminal: task.status, unknown: false});
       return;
     }
     state.notice = task.status === 'PARTIAL_SUCCESS'
-      ? '素材部分处理；请查看逐项结果，未成功的素材不会被当作已删除。'
-      : `任务终态：${STATUS_LABEL[task.status] || task.status}${deleted ? '，本素材已删除' : '，本素材未确认删除'}。`;
-    await options.onSettled(imageId);
+      ? `部分成功：已删除 ${succeededCount} 张，失败 ${failedCount} 张；未确认的不会当作已删除。`
+      : `任务终态：${STATUS_LABEL[task.status] || task.status}；已证明删除 ${succeededCount} 张、失败 ${failedCount} 张。`;
+    await options.onSettled({deletedIds, failedIds, terminal: task.status, unknown: false});
   }
 
   async function verifyResults() {
@@ -151,12 +196,13 @@ export function useMaterialDelete(options: {
     if (state.pendingImageId) state.targetId = state.pendingImageId;
   }
 
-  async function prepare(imageId: string) {
+  async function prepareMany(ids: string[], mode: DeleteMode = 'selected') {
     if (!options.enabled() || state.busy) return;
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) return;
     syncPending();
     if (state.pendingPlanId) {
-      // A previous plan is not fully resolved. Never replace its identity.
-      state.targetId = state.pendingImageId || imageId;
+      state.targetId = state.pendingImageId || (mode === 'single' ? unique[0] : '');
       state.notice = '存在未完成的删除任务，正在核验原任务；请先处理该任务。';
       state.dialog = true;
       state.unknown = true;
@@ -168,20 +214,23 @@ export function useMaterialDelete(options: {
       return;
     }
     state.busy = true; state.error = ''; state.notice = ''; state.task = null;
-    state.unknown = false;
-    state.targetId = imageId;
+    state.unknown = false; state.mode = mode;
+    state.targetIds = unique; state.targetId = unique[0];
     try {
       const estimate = await estimateMaterialDeletion(
-        options.projectId(), imageId, new AbortController().signal,
+        options.projectId(), unique, new AbortController().signal,
       );
-      if (!estimate.supported || !estimate.deletion_preview || estimate.count !== 1)
+      if (!estimate.supported || !estimate.deletion_preview || estimate.count < 1)
         throw new Error(estimate.message || '当前素材暂不支持删除');
+      if (mode === 'single' && estimate.count !== 1)
+        throw new Error('单张删除范围与预检结果不一致');
       state.estimate = estimate;
       state.dialog = true;
     } catch (cause) {
       state.error = message(cause);
     } finally { state.busy = false; }
   }
+  function prepare(imageId: string) { return prepareMany([imageId], 'single'); }
 
   async function confirm() {
     const estimate = state.estimate;
@@ -189,7 +238,8 @@ export function useMaterialDelete(options: {
         || state.pendingPlanId) return;
     const preview = estimate.deletion_preview;
     state.busy = true; state.error = ''; state.notice = '';
-    if (!writeRecord(preview.plan_id, state.targetId)) {
+    if (!writeRecord(preview.plan_id, state.mode, estimate.count,
+      state.mode === 'single' ? state.targetId : undefined)) {
       state.busy = false;
       state.error = '浏览器无法保存删除计划身份，已停止提交；请允许站点存储后重试。';
       return;
@@ -202,6 +252,7 @@ export function useMaterialDelete(options: {
           || task.task_id !== preview.plan_id) {
         state.unknown = true;
         state.notice = '创建回执身份与删除计划不一致，已停止采信；原计划身份已保留。';
+        startPoll();
         return;
       }
       state.task = task; state.unknown = false; startPoll();
@@ -229,7 +280,9 @@ export function useMaterialDelete(options: {
     if (!options.enabled()) return;
     const record = readRecord();
     if (!record) { syncPending(); return; }
-    state.targetId = record.image_id;
+    state.mode = record.mode;
+    state.pendingCount = record.image_count;
+    state.targetId = record.image_id || '';
     state.unknown = true;
     state.notice = '正在核验上次未完成的删除任务…';
     await refresh();
@@ -242,7 +295,7 @@ export function useMaterialDelete(options: {
   function close() { if (!state.busy) state.dialog = false; }
   onBeforeUnmount(stopPoll);
   return {
-    state, statusLabel, terminal, pending, prepare, confirm, recover,
+    state, statusLabel, terminal, pending, prepare, prepareMany, confirm, recover,
     verifyResults, openTask, close, refresh,
   };
 }

@@ -618,6 +618,12 @@ jobs:
         run: npm ci
       - name: Verify local material presentation artifacts and notices
         run: node tools/vendor_material_presentation.mjs --check
+      - name: Install standalone Vue dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build standalone Vue app for real Chrome
+        working-directory: frontend
+        run: npm run build:app
       - name: Real Chrome runtime regressions
         # This admission test creates real random .pt weights locally (no GPU or download).
         # Keep heavyweight ML dependencies isolated to the browser job.

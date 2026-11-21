@@ -74,13 +74,13 @@ const batchBase = (projectId: string) =>
   `/api/v62/projects/${encodeURIComponent(projectId)}/material-batches`;
 
 export function estimateMaterialDeletion(
-  projectId: string, imageId: string, signal: AbortSignal,
+  projectId: string, imageIds: string[], signal: AbortSignal,
 ) {
   return request<MaterialBatchEstimate>(`${batchBase(projectId)}/estimate`, {
     method: 'POST', signal,
     body: JSON.stringify({
       operation: 'DELETE_INDEX',
-      selection_spec: {scope: 'SELECTED', image_ids: [imageId]},
+      selection_spec: {scope: 'SELECTED', image_ids: imageIds},
       options: {},
     }),
   });
@@ -112,7 +112,7 @@ export function getMaterialBatch(projectId: string, taskId: string, signal: Abor
 }
 
 export function getMaterialBatchResults(
-  projectId: string, taskId: string, signal: AbortSignal,
+  projectId: string, taskId: string, signal: AbortSignal, cursor: string | null = null,
 ) {
   return request<MaterialBatchResults>(
     `${batchBase(projectId)}/${encodeURIComponent(taskId)}/results?limit=100`, {signal},

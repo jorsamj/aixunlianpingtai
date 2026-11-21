@@ -373,3 +373,70 @@ test('storage failure aborts before create and leaves the dialog usable', async 
     await expect(page.getByRole('dialog').getByRole('button', {name: '确认删除'})).toBeEnabled();
   } finally { child.kill(); }
 });
+
+
+test('selected bulk delete uses one frozen plan and keeps unproven results', async ({page, request}) => {
+  test.setTimeout(180_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-material-bulk-'));
+  const env = {
+    ...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics'),
+  };
+  const {origin, child} = await startIsolated(env);
+  let worker;
+  try {
+    const project = await (await request.post(origin + '/api/projects', {
+      data: {name: '隔离批量删除', labels: [{code: 'fire', display_name: '明火'}]},
+    })).json();
+    const rows = [];
+    for (const name of ['bulk-a.jpg', 'bulk-b.jpg']) {
+      const row = await uploadOne(request, origin, project.id, name);
+      seedGt(env, project.id, row.id);
+      rows.push(row);
+    }
+    const before = inspect(env, project.id, rows[0].id);
+    worker = spawn('python', ['tests/browser/helpers/material_delete_worker.py'], {
+      env: {...env, MC_WORKER_SECONDS: '150'}, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    await page.goto(`${origin}/app/#/projects/${project.id}/materials`);
+    const card = index => page.locator('.material-card').filter({hasText: rows[index].filename});
+    for (const index of [0, 1]) await expect(card(index)).toBeVisible({timeout: 45000});
+    await card(0).locator('.el-checkbox').click();
+    await card(1).locator('.el-checkbox').click();
+    await expect(page.getByText(/已选 2 张/)).toBeVisible();
+
+    let estimatePayload = null;
+    await page.route('**/api/v62/projects/*/material-batches/estimate', async route => {
+      const response = await route.fetch();
+      estimatePayload = await response.json();
+      return route.fulfill({response});
+    });
+    let resultsCut = true;
+    await page.route('**/api/v62/projects/*/material-batches/*/results*', async route => {
+      if (resultsCut) {
+        resultsCut = false;
+        return route.fulfill({status: 200, json: {items: [], succeeded_image_ids: [], next_cursor: null}});
+      }
+      return route.continue();
+    });
+    await page.getByRole('button', {name: '删除所选 2 张', exact: true}).click();
+    await expect(page.locator('.el-dialog')).toContainText('本次删除 2 张素材', {timeout: 30000});
+    expect(estimatePayload.selection_spec.image_ids.sort()).toEqual(rows.map(row => row.id).sort());
+    await page.locator('.el-dialog').getByRole('button', {name: '确认删除'}).click();
+    await expect(page.locator('.el-dialog')).toContainText('逐项结果尚未完整覆盖', {timeout: 90000});
+    expect(await page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('ai-material-delete:v1:')))).toBe(true);
+    await page.locator('.el-dialog').getByRole('button', {name: '核验删除结果'}).click();
+    for (const index of [0, 1]) await expect(card(index)).toHaveCount(0, {timeout: 60000});
+    expect(await page.getByText(/已选 0 张/).count()).toBeGreaterThan(0);
+    expect(await page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('ai-material-delete:v1:')))).toBe(false);
+    for (const row of rows) {
+      const state = inspect(env, project.id, row.id);
+      expect(state.material).toBeNull();
+      expect(state.gt_rows).toBe(0);
+      expect(state.image_bytes).toBe(before.image_bytes);
+    }
+  } finally {
+    worker?.kill();
+    child.kill();
+  }
+});
