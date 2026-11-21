@@ -102,7 +102,16 @@ test('Vue standalone material library deletes one material through the v62 plan 
     await page.goto(`${origin}/app/#/projects/${project.id}/materials`);
     const card = page.locator('.material-card').filter({hasText: row.filename});
     await expect(card).toBeVisible({timeout: 45000});
+    const estimateResponse = page.waitForResponse(res => {
+      const url = new URL(res.url());
+      return res.request().method() === 'POST' && url.pathname.endsWith('/material-batches/estimate');
+    });
     await card.getByRole('button', {name: '删除', exact: true}).click();
+    const estimate = await (await estimateResponse).json();
+    expect(estimate.count).toBe(1);
+    expect(estimate.deletion_preview.plan_id).toBeTruthy();
+    expect(estimate.deletion_preview.physical_retained_count).toBe(1);
+    const planId = estimate.deletion_preview.plan_id;
     const dialog = page.getByRole('dialog');
     await expect(dialog).toContainText('本次删除 1 张素材', {timeout: 30000});
     expect(estimates).toBe(1);
@@ -117,7 +126,7 @@ test('Vue standalone material library deletes one material through the v62 plan 
     const task = await (await createResponse).json();
     expect(task.project_id).toBe(project.id);
     expect(task.operation).toBe('DELETE_INDEX');
-    expect(task.task_id).toBeTruthy();
+    expect(task.task_id).toBe(planId);
 
     await expect(card).toHaveCount(0, {timeout: 120000});
     const finished = await (await request.get(
