@@ -150,7 +150,7 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
   const confirm=page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'});
   const first=confirm.click();
   await page.waitForTimeout(100);
-  await confirm.click({force:true}).catch(()=>{});
+  await confirm.click({force:true,timeout:1500}).catch(()=>{});
   await first;
   await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
   await expect(page.locator('.review-bulk')).toContainText('未证明');
@@ -328,6 +328,7 @@ test('seal 409 with a different exclusion set blocks execution and keeps the ori
   state.conflictExisting=true;
   await page.goto(route);
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await expect(page.getByText(/可操作 30 张/)).toBeVisible();
   await page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true}).uncheck();
   await expect(page.locator('.review-selection').getByText(/已选 29 张/).first()).toBeVisible();
   await seal(page,'后台正式入库 29 张');
@@ -355,7 +356,9 @@ test('seal 409 with a different exclusion set blocks execution and keeps the ori
   await expect(page.locator('.review-bulk')).toHaveCount(0);
   expect(await readRecord(page)).toBeNull();
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await expect(page.getByText(/可操作 30 张/)).toBeVisible();
   await page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true}).uncheck();
+  await expect(page.locator('.review-selection').getByText(/已选 29 张/).first()).toBeVisible();
   await seal(page,'后台正式入库 29 张');
   await expect(page.getByRole('dialog')).toContainText('预检通过：可入库 29 张');
   const newRecord=await readRecord(page);

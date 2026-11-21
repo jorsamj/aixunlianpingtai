@@ -9,6 +9,7 @@ const TERMINAL = new Set([
   'SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED',
   'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE',
 ]);
+const ACTIVE = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'CANCEL_REQUESTED']);
 const STATUS_LABEL: Record<string, string> = {
   QUEUED: '排队中', WAITING_RESOURCE: '等待资源', RUNNING: '处理中',
   CANCEL_REQUESTED: '正在取消', SUCCEEDED: '已完成', PARTIAL_SUCCESS: '部分成功',
@@ -18,7 +19,6 @@ const STATUS_LABEL: Record<string, string> = {
 interface RecoveryRecord {
   project_id: string; image_id: string; plan_id: string; operation: 'DELETE_INDEX';
 }
-
 function message(cause: unknown) {
   return cause instanceof Error ? cause.message : '操作失败';
 }
@@ -27,18 +27,23 @@ export function useMaterialDelete(options: {
   enabled: () => boolean;
   projectId: () => string;
   actorKey: () => string;
-  onSettled: () => Promise<void> | void;
+  onSettled: (imageId: string) => Promise<void> | void;
 }) {
   const state = reactive({
     dialog: false, busy: false, estimate: null as MaterialBatchEstimate | null,
     task: null as MaterialBatchTask | null, targetId: '', error: '', notice: '',
-    unknown: false,
+    unknown: false, pendingPlanId: '', pendingImageId: '',
   });
   let poll: number | undefined;
 
   const storageKey = () => 'ai-material-delete:v1:' + JSON.stringify([
     options.actorKey(), options.projectId(),
   ]);
+  function syncPending() {
+    const record = readRecord();
+    state.pendingPlanId = record?.plan_id || '';
+    state.pendingImageId = record?.image_id || '';
+  }
   function readRecord(): RecoveryRecord | null {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey()) || 'null');
@@ -48,14 +53,21 @@ export function useMaterialDelete(options: {
       return value;
     } catch { return null; }
   }
-  function writeRecord(planId: string, imageId: string) {
-    localStorage.setItem(storageKey(), JSON.stringify({
-      project_id: options.projectId(), image_id: imageId,
-      plan_id: planId, operation: 'DELETE_INDEX',
-    }));
+  function writeRecord(planId: string, imageId: string): boolean {
+    try {
+      localStorage.setItem(storageKey(), JSON.stringify({
+        project_id: options.projectId(), image_id: imageId,
+        plan_id: planId, operation: 'DELETE_INDEX',
+      }));
+      syncPending();
+      return true;
+    } catch {
+      return false;
+    }
   }
   function clearRecord() {
     try { localStorage.removeItem(storageKey()); } catch { /* storage unavailable */ }
+    syncPending();
   }
   function stopPoll() {
     if (poll !== undefined) { window.clearInterval(poll); poll = undefined; }
@@ -64,10 +76,13 @@ export function useMaterialDelete(options: {
     if (poll !== undefined) return;
     poll = window.setInterval(() => { void refresh(); }, 2000);
   }
+  syncPending();
 
   const statusLabel = computed(() => state.task
     ? STATUS_LABEL[state.task.status] || state.task.status : '');
   const terminal = computed(() => !!state.task && TERMINAL.has(state.task.status));
+  const pending = computed(() => !!state.pendingPlanId || state.unknown
+    || (!!state.task && !terminal.value));
 
   async function refresh() {
     if (!options.enabled()) return;
@@ -103,28 +118,58 @@ export function useMaterialDelete(options: {
         ? item.item_state === 'succeeded'
         : (results.succeeded_image_ids || []).includes(imageId);
     } catch {
+      // The terminal task is proven, but this image's result is not. Keep the
+      // recovery record and let the user retry the results read.
       state.unknown = true;
-      state.notice = '任务已到终态，但逐项结果暂不可读；请稍后刷新核实。';
-      clearRecord();
+      state.notice = '任务已到终态，但逐项结果暂不可读；原删除身份已保留。';
       return;
     }
     clearRecord();
+    state.unknown = false;
     if (task.status === 'SUCCEEDED' && deleted) {
       state.notice = '素材删除成功（原图字节保留）。';
       state.dialog = false;
-      await options.onSettled();
+      await options.onSettled(imageId);
       return;
     }
     state.notice = task.status === 'PARTIAL_SUCCESS'
       ? '素材部分处理；请查看逐项结果，未成功的素材不会被当作已删除。'
       : `任务终态：${STATUS_LABEL[task.status] || task.status}${deleted ? '，本素材已删除' : '，本素材未确认删除'}。`;
-    await options.onSettled();
+    await options.onSettled(imageId);
+  }
+
+  async function verifyResults() {
+    if (!state.task) return;
+    state.busy = true; state.error = '';
+    try { await finish(state.task); }
+    catch (cause) { state.error = message(cause); }
+    finally { state.busy = false; }
+  }
+
+  function openTask() {
+    state.dialog = true;
+    if (state.pendingImageId) state.targetId = state.pendingImageId;
   }
 
   async function prepare(imageId: string) {
     if (!options.enabled() || state.busy) return;
+    syncPending();
+    if (state.pendingPlanId) {
+      // A previous plan is not fully resolved. Never replace its identity.
+      state.targetId = state.pendingImageId || imageId;
+      state.notice = '存在未完成的删除任务，正在核验原任务；请先处理该任务。';
+      state.dialog = true;
+      state.unknown = true;
+      await refresh();
+      return;
+    }
+    if (state.unknown || (state.task && ACTIVE.has(state.task.status))) {
+      state.dialog = true;
+      return;
+    }
     state.busy = true; state.error = ''; state.notice = ''; state.task = null;
-    state.unknown = false; state.targetId = imageId;
+    state.unknown = false;
+    state.targetId = imageId;
     try {
       const estimate = await estimateMaterialDeletion(
         options.projectId(), imageId, new AbortController().signal,
@@ -140,21 +185,29 @@ export function useMaterialDelete(options: {
 
   async function confirm() {
     const estimate = state.estimate;
-    if (!estimate?.deletion_preview || state.busy) return;
+    if (!estimate?.deletion_preview || state.busy || state.task || state.unknown
+        || state.pendingPlanId) return;
     const preview = estimate.deletion_preview;
     state.busy = true; state.error = ''; state.notice = '';
-    writeRecord(preview.plan_id, state.targetId);
+    if (!writeRecord(preview.plan_id, state.targetId)) {
+      state.busy = false;
+      state.error = '浏览器无法保存删除计划身份，已停止提交；请允许站点存储后重试。';
+      return;
+    }
     try {
       const task = await createMaterialDeletion(
         options.projectId(), estimate, new AbortController().signal,
       );
-      if (task.project_id !== options.projectId() || task.operation !== 'DELETE_INDEX')
-        throw new Error('删除任务身份不一致');
+      if (task.project_id !== options.projectId() || task.operation !== 'DELETE_INDEX'
+          || task.task_id !== preview.plan_id) {
+        state.unknown = true;
+        state.notice = '创建回执身份与删除计划不一致，已停止采信；原计划身份已保留。';
+        return;
+      }
       state.task = task; state.unknown = false; startPoll();
     } catch (cause) {
       const status = (cause as {httpStatus?: number}).httpStatus;
       if (status !== undefined && status < 500) {
-        // The server definitively rejected this plan; no task was accepted.
         state.error = message(cause); clearRecord(); return;
       }
       state.unknown = true;
@@ -163,7 +216,8 @@ export function useMaterialDelete(options: {
         const task = await getMaterialBatch(
           options.projectId(), preview.plan_id, new AbortController().signal,
         );
-        if (task.project_id === options.projectId() && task.operation === 'DELETE_INDEX') {
+        if (task.project_id === options.projectId() && task.operation === 'DELETE_INDEX'
+            && task.task_id === preview.plan_id) {
           state.task = task; state.unknown = false;
         }
       } catch { /* keep unknown; polling only GETs the original plan */ }
@@ -174,7 +228,7 @@ export function useMaterialDelete(options: {
   async function recover() {
     if (!options.enabled()) return;
     const record = readRecord();
-    if (!record) return;
+    if (!record) { syncPending(); return; }
     state.targetId = record.image_id;
     state.unknown = true;
     state.notice = '正在核验上次未完成的删除任务…';
@@ -187,5 +241,8 @@ export function useMaterialDelete(options: {
 
   function close() { if (!state.busy) state.dialog = false; }
   onBeforeUnmount(stopPoll);
-  return {state, statusLabel, terminal, prepare, confirm, recover, close, refresh};
+  return {
+    state, statusLabel, terminal, pending, prepare, confirm, recover,
+    verifyResults, openTask, close, refresh,
+  };
 }

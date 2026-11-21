@@ -666,6 +666,7 @@ jobs:
           tests/browser/material-pagination-performance.spec.mjs
           tests/browser/material-summary-nonblocking.spec.mjs
           tests/browser/material-library-flow.spec.mjs
+          tests/browser/real-material-delete.spec.mjs
           tests/browser/negative-pool-members.spec.mjs
           tests/browser/material-presentation-poc.spec.mjs
           tests/browser/page-loading-performance.spec.mjs
