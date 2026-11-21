@@ -667,13 +667,25 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       bulkIntent.value=proven;bulkConflict.value=false;bulkPendingUnknown.value=false;
     }catch(cause){
       if(scope!==address)return;
-      // The intent exists but its full request digest is not proven (409), or
-      // the proof request failed. Never expose this intent as executable.
-      bulkIntent.value=existing;bulkConflict.value=true;bulkPendingUnknown.value=false;
-      bulkNotice.value='已封存意图与本地保存的排除集合不一致，已阻止执行；请放弃后重新选择。';
+      const status=(cause as {httpStatus?:number}).httpStatus;
+      if(status===409){
+        // Only a proven digest conflict may become a conflict state.
+        bulkIntent.value=existing;bulkConflict.value=true;bulkPendingUnknown.value=false;
+        bulkNotice.value='已封存意图与本地保存的排除集合不一致，已阻止执行；请放弃后重新选择。';
+        if(attempted){
+          bulkCreatePending.value=true;
+          bulkNotice.value='后台任务创建结果未确认，且原意图无法证明与本地范围一致；原身份已保留，请核验执行状态。';
+        }
+        return;
+      }
+      // Network loss, timeout, 5xx or any unprovable read: keep the identity
+      // and the range locked, but do NOT claim a digest conflict and do NOT
+      // expose the unproven intent as executable.
+      bulkPendingUnknown.value=true;bulkConflict.value=false;
+      bulkNotice.value='无法确认原封存状态，已锁定原范围；可重试同一操作。';
       if(attempted){
         bulkCreatePending.value=true;
-        bulkNotice.value='后台任务创建结果未确认，且原意图无法证明与本地范围一致；原身份已保留，请核验执行状态。';
+        bulkNotice.value='后台任务创建结果未确认，且原意图尚未证明；原身份已保留，请查询执行状态或重试同一预检。';
       }
       return;
     }
@@ -762,8 +774,14 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
           try{existing=await getBulkFormalIntent(address,body.request_id,new AbortController().signal)}catch{}
           if(scope!==address)return;
           if(existing){
-            bulkIntent.value=existing;bulkConflict.value=true;bulkPendingUnknown.value=false;
-            bulkNotice.value=`服务端存在同一请求编号的原操作意图（可入库 ${existing.count} 张，排除 ${existing.excluded_count} 张），但无法证明与本次选择一致，已阻止执行。请放弃后重新选择。`;
+            if(retryStatus===409||status===409){
+              bulkIntent.value=existing;bulkConflict.value=true;bulkPendingUnknown.value=false;
+              bulkNotice.value=`服务端存在同一请求编号的原操作意图（可入库 ${existing.count} 张，排除 ${existing.excluded_count} 张），但无法证明与本次选择一致，已阻止执行。请放弃后重新选择。`;
+            }else{
+              // A read/replay failure is not a digest conflict.
+              bulkPendingUnknown.value=true;bulkConflict.value=false;
+              bulkNotice.value='无法确认原封存状态，已锁定原范围；可重试同一操作。';
+            }
           }else if(retryStatus===409||status===409){
             bulkPendingUnknown.value=true;
             bulkNotice.value='预检冲突且未能确认服务端意图，已锁定原范围；可重试同一操作或放弃。';

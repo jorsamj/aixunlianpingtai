@@ -34,7 +34,7 @@ async function fixture(page){
     committed:false,mode:'success',executionPolls:0,recoverStatus:0,executeDelay:0,
     holdSeal:false,sealStarted:false,sealGate:null,
     loseExecuteResponse:false,hideExecution:false,conflictExisting:false,
-    sealedRequest:null,intentStatus:0,executionStatus:0,sealFailures:0};
+    sealedRequest:null,intentStatus:0,executionStatus:0,sealFailures:0,replayStatus:0};
   await page.route('**/app/**',r=>{
     const path=new URL(r.request().url()).pathname.slice('/app/'.length)||'index.html';
     return r.fulfill({path:resolve('../static/vue-app',path),
@@ -65,6 +65,8 @@ async function fixture(page){
       const bulk=tail.slice(tail.indexOf('bulk-formal')+1);
       if(method==='POST'&&bulk.length===1){
         const body=request.postDataJSON();state.intents.push(body);state.sealStarted=true;
+        if(state.replayStatus){const code=state.replayStatus;state.replayStatus=0;
+          return r.fulfill({status:code,json:{detail:'seal proof unavailable'}});}
         if(state.holdSeal&&state.sealGate)await state.sealGate;
         if(state.sealed&&state.sealed.request_id===body.request_id
           &&JSON.stringify(state.sealedRequest)===JSON.stringify(body))
@@ -362,4 +364,18 @@ test('seal 409 with a different exclusion set blocks execution and keeps the ori
   await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   expect(state.executes).toBe(1);
+});
+test('unprovable seal replay is unknown state, not a digest conflict',async({page})=>{
+  const state=await fixture(page);
+  await page.goto(route);
+  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await seal(page);
+  const before=await readRecord(page);
+  expect(before).not.toBeNull();
+  state.replayStatus=503;
+  await page.reload();
+  await expect(page.locator('.review-bulk')).toContainText('无法确认原封存状态');
+  await expect(page.getByRole('button',{name:'确认创建后台任务'})).toHaveCount(0);
+  expect(await page.evaluate(()=>document.body.innerText.includes('预检冲突'))).toBe(false);
+  expect((await readRecord(page)).request_id).toBe(before.request_id);
 });
