@@ -1,18 +1,24 @@
 <script setup lang="ts">
-import {ref,watch,onBeforeUnmount} from 'vue';
+import {computed,ref,watch,onBeforeUnmount} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import {request} from './http';
 import {legacyUrl} from './navigation';
 import {trainingReaderApi,type TrainingTask,type TaskPage} from '../api/training-reader';
+import {fetchTrainingRecovery,requestTrainingRecovery,stopTrainingTask,type TrainingRecoveryTruth} from '../api/training-actions';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {withRequestDeadline} from '../../../static/modules/api.js';
 const route=useRoute(),router=useRouter(),projectId=String(route.params.projectId),controller=new AbortController();
-onBeforeUnmount(()=>controller.abort());
+onBeforeUnmount(()=>{controller.abort();if(stopTimer!==undefined)window.clearInterval(stopTimer)});
 const reads=useReadScope(controller),api=trainingReaderApi({projectId,get:request,memory:{}});
 const page = ref<TaskPage | null>(null);
 const task = ref<TrainingTask | null>(null);
 const log = ref('');
+const recovery = ref<TrainingRecoveryTruth | null>(null);
+const stopBusy = ref(false);
+const recoveryBusy = ref(false);
+const actionNotice = ref('');
+let stopTimer: number | undefined;
 const query = ref('');
 const status = ref('');
 const kind = ref('');
@@ -56,7 +62,7 @@ function loadDetail() {
   if (!id) return;
   void reads.run('detail',signal=>api.task(id,signal),value=>{
     task.value = value;
-    if (value.kind === 'TRAINING') loadLog(value.task_id);
+    if (value.kind === 'TRAINING') {loadLog(value.task_id); void loadRecovery(value.task_id);}
   });
 }
 function loadLog(id:string) {
@@ -68,7 +74,52 @@ function loadLog(id:string) {
     return (await response.text()).slice(-120000);
   },{signal}),value=>{log.value=value});
 }
-function refresh() {
+function stopPolling(){if(stopTimer!==undefined){window.clearInterval(stopTimer);stopTimer=undefined}}
+function startStatusPolling(id:string){
+  stopPolling();
+  stopTimer=window.setInterval(async()=>{
+    if(param('task')!==id){stopPolling();return}
+    try{
+      const latest=await api.task(id,new AbortController().signal);
+      if(param('task')!==id)return;
+      task.value=latest;
+      if(['CANCELLED','FAILED','SUCCEEDED','PARTIAL_SUCCESS','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(latest.status)){
+        stopPolling();await loadList();
+      }
+    }catch{/* keep the last proven state; next tick retries */}
+  },2000);
+}
+async function loadRecovery(id:string){
+  recovery.value=null;
+  try{recovery.value=await fetchTrainingRecovery(projectId,id,new AbortController().signal)}
+  catch{recovery.value=null}
+}
+async function stopTask(){
+  if(!task.value||!canStop(task.value)||stopBusy.value)return;
+  if(!window.confirm('确认停止该训练任务？停止请求会记录到原任务，进程安全终止后才进入取消终态。'))return;
+  stopBusy.value=true;actionNotice.value='';
+  try{
+    const updated=await stopTrainingTask(projectId,task.value.task_id,new AbortController().signal);
+    task.value=updated;
+    actionNotice.value='停止请求已记录，正在等待任务进入终态。';
+    startStatusPolling(updated.task_id);
+    await loadList();
+  }catch(cause){actionNotice.value=cause instanceof Error?cause.message:'停止请求失败'}
+  finally{stopBusy.value=false}
+}
+const recoverable=computed(()=>!!recovery.value?.available&&recovery.value.task_status==='FAILED'
+  &&recovery.value.recovery_action==='revalidate_checkpoint');
+async function recoverResult(){
+  if(!task.value||!recoverable.value||recoveryBusy.value)return;
+  if(!window.confirm('对该任务执行“恢复结果校验”？这会核验既有检查点，不会继续训练，也不会新建训练任务。'))return;
+  recoveryBusy.value=true;actionNotice.value='';
+  try{
+    const result=await requestTrainingRecovery(projectId,task.value.task_id,'revalidate_checkpoint',new AbortController().signal);
+    actionNotice.value=`恢复请求已受理（状态 ${result.status}），等待原任务更新。`;
+    await loadDetail();
+  }catch(cause){actionNotice.value=cause instanceof Error?cause.message:'恢复请求失败'}
+  finally{recoveryBusy.value=false}
+}function refresh() {
   void loadList();
   loadDetail();
 }
@@ -104,5 +155,5 @@ function canStop(row:TrainingTask) {
 <template><section class="training-tasks"><header><div><span>任务列表</span></div><div><a :href="bridge('')">原完整训练任务页</a>　<router-link :to="{name:'training-create',params:{projectId}}">新建训练</router-link></div></header>
 <form @submit.prevent="search"><el-input v-model="query" placeholder="搜索任务 ID 或阶段"/><el-select v-model="status" placeholder="状态"><el-option label="全部状态" value=""/><el-option v-for="v in page?.filter_options.status||[]" :key="v" :label="labels[v]||v" :value="v"/></el-select><el-select v-model="kind" placeholder="类型"><el-option label="全部类型" value=""/><el-option v-for="v in page?.filter_options.kind||[]" :key="v" :label="kinds[v]||v" :value="v"/></el-select><el-button native-type="submit" type="primary">查询</el-button><el-button @click="refresh">刷新</el-button></form>
 <el-alert v-if="reads.errors.tasks" :title="reads.errors.tasks" type="error" :closable="false"/><el-table v-loading="reads.busy.tasks" :data="page?.items||[]" row-key="task_id" empty-text="暂无任务"><el-table-column prop="task_id" label="任务 ID" min-width="200"/><el-table-column label="类型"><template #default="{row}">{{ kinds[row.kind]||row.kind }}</template></el-table-column><el-table-column label="状态"><template #default="{row}">{{labels[row.status]||row.status}}</template></el-table-column><el-table-column label="进度 / 阶段" min-width="150"><template #default="{row}">{{row.progress_percent==null?'未提供':row.progress_percent+'%'}} · {{row.phase||'—'}}</template></el-table-column><el-table-column prop="created_at" label="创建时间" min-width="170"/><el-table-column label="操作" min-width="145"><template #default="{row}"><el-button link type="primary" @click="open(row.task_id)">详情</el-button> <router-link v-if="row.kind==='TRAINING'" :to="reportLink(row)">训练报告</router-link></template></el-table-column></el-table><footer><span>本页 {{page?.items.length||0}} 条</span><el-button :disabled="!param('cursor')" @click="prev">上一页</el-button><el-button :disabled="!page?.next_cursor" @click="next">下一页</el-button></footer>
-<el-drawer :model-value="!!param('task')" title="任务详情" size="min(680px,100vw)" @close="close"><el-skeleton v-if="reads.busy.detail" :rows="8" animated/><el-alert v-else-if="reads.errors.detail" :title="reads.errors.detail" type="error" :closable="false"/><div v-else-if="task"><el-button @click="loadDetail">刷新详情</el-button>　<router-link v-if="task.kind==='TRAINING'" :to="reportLink(task)">训练报告</router-link><h3>身份与状态</h3><ReadOnlyFacts :fields="[['任务 ID',task.task_id],['类型',task.kind],['状态',`${labels[task.status]||task.status} (${task.status})`],['持久状态',task.persisted_status],['进度（%）',task.progress_percent],['阶段',task.phase],['算法',task.algorithm_name||task.algorithm_id],['版本',task.version_id]]"/><p v-if="task.related_task_id">关联任务：<el-button link type="primary" @click="open(task.related_task_id!)">{{task.related_task_id}}</el-button></p><h3>执行与资源</h3><ReadOnlyFacts :fields="[['创建',task.created_at],['开始',task.started_at],['结束',task.finished_at],['Worker',task.worker_id],['资源',task.resource_key],['等待原因',task.resource_wait_reason],...Object.entries(task.execution||{})]"/><h3>配置</h3><ReadOnlyFacts :fields="Object.entries(task.configuration||{})"/><h4>请求的执行配置</h4><ReadOnlyFacts :fields="Object.entries(task.requested_execution||{})"/><h3>失败信息</h3><ReadOnlyFacts :fields="[['原因',task.error]]"/><template v-if="task.kind==='TRAINING'"><h3>训练日志</h3><el-button @click="loadLog(task.task_id)">刷新日志</el-button><p v-if="reads.errors.log">{{reads.errors.log}}</p><pre>{{log||'暂无日志'}}</pre></template><p><a v-if="task.kind==='TRAINING'" :href="bridge('task-detail',task.task_id)">原工作台 · 操作与恢复</a>　<a v-if="canStop(task)" :href="bridge('task-stop',task.task_id)">原工作台 · 停止任务</a></p></div></el-drawer></section></template>
+<el-drawer :model-value="!!param('task')" title="任务详情" size="min(680px,100vw)" @close="close"><el-skeleton v-if="reads.busy.detail" :rows="8" animated/><el-alert v-else-if="reads.errors.detail" :title="reads.errors.detail" type="error" :closable="false"/><div v-else-if="task"><el-button @click="loadDetail">刷新详情</el-button>　<router-link v-if="task.kind==='TRAINING'" :to="reportLink(task)">训练报告</router-link><h3>身份与状态</h3><ReadOnlyFacts :fields="[['任务 ID',task.task_id],['类型',task.kind],['状态',`${labels[task.status]||task.status} (${task.status})`],['持久状态',task.persisted_status],['进度（%）',task.progress_percent],['阶段',task.phase],['算法',task.algorithm_name||task.algorithm_id],['版本',task.version_id]]"/><p v-if="task.related_task_id">关联任务：<el-button link type="primary" @click="open(task.related_task_id!)">{{task.related_task_id}}</el-button></p><h3>执行与资源</h3><ReadOnlyFacts :fields="[['创建',task.created_at],['开始',task.started_at],['结束',task.finished_at],['Worker',task.worker_id],['资源',task.resource_key],['等待原因',task.resource_wait_reason],...Object.entries(task.execution||{})]"/><h3>配置</h3><ReadOnlyFacts :fields="Object.entries(task.configuration||{})"/><h4>请求的执行配置</h4><ReadOnlyFacts :fields="Object.entries(task.requested_execution||{})"/><h3>失败信息</h3><ReadOnlyFacts :fields="[['原因',task.error]]"/><template v-if="task.kind==='TRAINING'"><h3>训练日志</h3><el-button @click="loadLog(task.task_id)">刷新日志</el-button><p v-if="reads.errors.log">{{reads.errors.log}}</p><pre>{{log||'暂无日志'}}</pre></template><p v-if="actionNotice" role="status">{{ actionNotice }}</p><p><el-button v-if="canStop(task)" type="danger" plain size="small" :loading="stopBusy" @click="stopTask()">停止任务</el-button> <el-button v-if="recoverable" type="primary" plain size="small" :loading="recoveryBusy" @click="recoverResult()">恢复结果校验</el-button></p><p v-if="recovery">恢复证据：{{ recovery.available ? '服务端确认可恢复' : '当前不可恢复' }}{{ recovery.failure_stage ? ' · 阶段 ' + recovery.failure_stage : '' }}</p><p><a v-if="task.kind==='TRAINING'" :href="bridge('task-detail',task.task_id)">原工作台 · 操作与恢复</a>　<a v-if="canStop(task)" :href="bridge('task-stop',task.task_id)">原工作台 · 停止任务</a></p></div></el-drawer></section></template>
 <style scoped>.training-tasks{padding:24px}header,form,footer{display:flex;align-items:center;gap:12px;flex-wrap:wrap}header{justify-content:space-between}form{margin:20px 0}form .el-input{max-width:300px}form .el-select{width:160px}footer{justify-content:flex-end;margin-top:16px}pre{white-space:pre-wrap;overflow:auto;max-height:300px;background:#f5f7fa;padding:12px}</style>
