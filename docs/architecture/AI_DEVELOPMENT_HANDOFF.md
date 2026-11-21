@@ -14,6 +14,18 @@ D2B2-C2B-F1 已实现专用正式 GT 写入屏障与取消后只读对账。详�
 - M2-B/C 实现：`c83c114230873f57ae9d0f9a348ffc17f9cc4307`，完整 Vue 列表/版本 UI、备注编辑、受控操作入口及定向回归；最后仅补本入口、矩阵、功能保护与当前 AGENTS 阶段说明。
 - M1 原 `65ae81372555786b78284a1bc62608703c1c40d6` 的 GPT 审计结果是50工作流48成功、2失败（Frontend Runtime Stabilization 44344576655、Material Upload Chunking 44344576624），不是验收通过；已在4c7a6d1f修复。该修复 SHA 的最终 CI 本轮未查询，不借旧结果验收新代码。
 
+## 2026-11-21 状态摘要与正式审计文档入口
+
+- 基线：分支 `feature/external-algorithm-publishing`，HEAD 与远端一致，均为 `1fa5119b84e8721e2dc4810903471a2e37b6e862`。该 SHA 的 **48 项 check-suite 已成功**；但这只代表该提交能通过现有 workflow，**不等于每项功能都有对应覆盖，也不等于已验收**。工作区当时不干净（8 个已修改 + 5 个未跟踪）。
+- C2-B（冻结选择后的后台分批正式 GT 入库）为**本地未提交候选实现**：唯一执行任务、不可变绑定、执行/查询/取消 API、CPU Handler、100 张续批、取消对账、终态与进度均已写出，但未提交、未 CI、未验收。已确认缺陷/待定项：D1 取消对账 `completed_batches` 多算并漏报最后一批准入批；D2 `unproven` 无有界重试与阻断态；D3 QUEUED 取消语义待定；D4 重复测试函数；D5 final audit 与 publish 锁域/成功语义待确认（事实已确认，风险等级 `TBD`，未定为 P0）；D6 进度含推算值。异常来源与终态可达性仍需定向核验。详见[架构审计](PLATFORM_ARCHITECTURE_AUDIT_20261121.md)第 8 节。
+- 20 万素材已有**隔离**证据（200k 元数据分页、稀疏 GT、20k/30k 冻结链路、任务只读批量队列位置），**生产性能与真实图片/GT/OSS 负载全部 `NOT VERIFIED`**。历史报告中部分 `p95_ms` 实为 7 次最大值，引用时须保留该口径。
+- 当前无任何阶段为 `ACCEPTED`；Vue 原生化覆盖 8 条具名业务路由（复用 7 个页面组件），其余菜单仍进入原系统。数据库仍为 SQLite，无迁移授权、无迁移动作。
+- 正式文档（本轮落库，待独立审阅）：
+  [架构与性能深度审计](PLATFORM_ARCHITECTURE_AUDIT_20261121.md)、
+  [20 万级素材性能验收规范](../performance/PLATFORM_SCALE_ACCEPTANCE_20261121.md)、
+  [架构演进路线与阶段验收](PLATFORM_EVOLUTION_ROADMAP_20261121.md)。
+- 下一步：A（C2-B 安全收口）优先，但**不阻塞 B（旧接口只读性能核验）**；C 以 B 的实测证据为前置，D 按各自业务链条件分别验收，E1（AI 批量 GT 的 Vue 入口）依赖 A，E2–E6 与 F 可按独立风险推进。除"正式 GT 写入依赖 A"这一安全前置外，不设统一串联门槛。
+
 ## 架构与唯一 Owner
 
 业务目标是素材/GT、算法训练评测、转换交付、外部平台与算力管理。当前 FastAPI 模块化单体 + SQLite，各既有 Repository 拥有领域数据；ArtifactStore保存不可变证据；Scheduler/Worker、中央Assignment、Agent Execution Lease、Supervisor负责执行。新Vue只读写原同源Session/API，不取得执行权。

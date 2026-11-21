@@ -149,7 +149,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 
 | 功能 | 页面与 API | 正式 Owner | 功能状态 | 验收 |
 | --- | --- | --- | --- | --- |
-| AI 候选与审核 | 原「自动标注及清洗」和 Vue 审核投影；v60 审核选择与候选分页 | CandidateStore 与原审核操作 Owner | 现有入口可用，三种批量范围分别核验，仍可查看失败和历史记录。独立 SPA 审核迁移 `NOT_STARTED` | M4-D0 定向验证完成，`CI_PENDING` |
+| AI 候选与审核 | 原「自动标注及清洗」和 Vue 审核投影；v60 审核选择与候选分页 | CandidateStore 与原审核操作 Owner | 现有入口可用，三种批量范围分别核验，仍可查看失败和历史记录。独立 SPA 审核迁移 `NOT_STARTED`（M4-D0 阶段记录；D1-B/D1-C/D2A 已在后续阶段实现，见下节与文末更正） | M4-D0 定向验证完成，`CI_PENDING` |
 | 部分及逐图正式 GT | 原确认、入库与按原编号查询回执 | AnnotationRepository、原确认 Worker | 写入和凭据同一事务；中断后补 CandidateStore 日志 | 隔离恢复已验证，`CI_PENDING` |
 | 候选转池与撤销 | v60 预检、执行与原请求撤销 | NegativePool、CandidateStore | 快照验证操作者和当前修订，按原身份恢复成员写入和撤销 | 隔离恢复已验证，`CI_PENDING` |
 
@@ -159,7 +159,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 | 功能 | 入口与 Owner | 功能状态 | 验收 |
 | --- | --- | --- | --- |
 | AI 审核只读浏览 | 显式 SPA 任务审核 URL；v60 TaskRepository / CandidateStore，v61 素材读取 | `FUNCTIONAL_COMPLETE`（D1-B 只读范围） | 定向 Chrome、类型和离线构建，`CI_PENDING` |
-| 原审核写操作 | 原「自动标注及清洗」工作台；既有 CandidateStore、AnnotationRepository、NegativePool、ArtifactStore | 原工作台可达，D1-C 原生迁移 `NOT_STARTED` | 按原 M4-D0 合同验收 |
+| 原审核写操作 | 原「自动标注及清洗」工作台；既有 CandidateStore、AnnotationRepository、NegativePool、ArtifactStore | 原工作台可达，D1-C 原生迁移 `NOT_STARTED`（M4-D1-B 阶段记录；D1-C 已在下节记录为实现） | 按原 M4-D0 合同验收 |
 
 
 ### M4-D1-C 单图候选编辑
@@ -169,4 +169,23 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 | 单图候选标注框编辑、撤销/重做及草稿恢复 | 原生编辑会话、既有 Annotorious、v60 CandidateStore | `FUNCTIONAL_COMPLETE`（本阶段范围），CI 异步验收 |
 | 单图采用与拒绝 | 原生审核检查区；v60 decisions 与 by-request；CandidateStore | `FUNCTIONAL_COMPLETE`（D1-D1B），按阶段准确 SHA 进行 CI 验收 |
 | 跨页选择及 GT 用途冻结 | 原生审核候选区；v60 review-selection、candidates；CandidateStore | `FUNCTIONAL_COMPLETE`（D1-D2A 选择范围），按阶段准确 SHA 进行 CI 验收 |
-| 批量决定、批量消歧、GT 入库、转池与撤销 | 原审核工作台及既有服务端 Owner | 原生迁移 `NOT_STARTED`，原入口可达 |
+| 批量决定、批量消歧、GT 入库、转池与撤销 | 原审核工作台及既有服务端 Owner | 原生迁移 `NOT_STARTED`（D2A 阶段记录；C2-B 批量入库为本地未提交候选实现，见文末更正），原入口可达 |
+
+## 2026-11-21 状态更正（审计复核）
+
+本节只修正**已确认的状态矛盾**，不改写历史阶段记录。上文的 `NOT_STARTED` 是各阶段当时的记录，不代表当前代码状态。
+
+| 上文位置 | 原表述 | 2026-11-21 实际 |
+|---|---|---|
+| M4-D0 表「AI 候选与审核」 | 独立 SPA 审核迁移 `NOT_STARTED` | D1-B 只读页、D1-C 单图编辑、D1-D1B 单图决定、D1-D2A 跨页选择已实现（见下文各节） |
+| M4-D1-B 表「原审核写操作」 | D1-C 原生迁移 `NOT_STARTED` | D1-C 已在下节记录为 `FUNCTIONAL_COMPLETE`（本阶段范围） |
+| M4-D1-C 表「批量…GT 入库」 | 原生迁移 `NOT_STARTED` | 单图正式 GT 已实现；**批量正式 GT（C2-B）为本地未提交候选实现**，含 D1/D2/D4/D5/D6 已确认问题，未提交、未 CI、未验收 |
+| 算法负池/标签管理 | `NOT_STARTED` | 算法级负样本池（v1）已有原生试点写入；项目公共池（v2）已原生；标签管理仍未迁移 |
+| 字典管理 | `LEGACY_BRIDGE` | P1 `CatalogPreview` 管理态已可原生写；配置/节点仍为只读或旧入口 |
+
+补充口径：
+
+- 本矩阵**没有任何一项为 `ACCEPTED`**；`FUNCTIONAL_COMPLETE` 只表示开发完成。表中早期阶段写的 `CI_PENDING` 是**该阶段交付时的快照**，不是当前 HEAD 状态：当前 HEAD `1fa5119b` 的 48 项 check-suite 已成功，但"HEAD 绿"不等于"该功能被 CI 实际覆盖"，也不等于已验收。
+- `/app` 现有 8 条具名业务路由，复用 7 个页面组件（`training-report` 与 `version-report` 共用 `NativeTrainingReport.vue`）。
+- 本文件多处早于代码提交（例如正式 GT 提交晚于本文档记录），属于**文档落后于代码**，不是代码夸大文档。
+- 后续状态以[接续入口](AI_DEVELOPMENT_HANDOFF.md)、[架构审计](PLATFORM_ARCHITECTURE_AUDIT_20261121.md)与[路线](PLATFORM_EVOLUTION_ROADMAP_20261121.md)为准；本矩阵只维护功能/API 对照。
