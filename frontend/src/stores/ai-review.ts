@@ -30,6 +30,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const bulkBusy=ref(false),bulkSealing=ref(false),bulkNotice=ref(''),bulkError=ref(''),bulkDialog=ref(false);
   const bulkRequestId=ref('');
   const bulkPendingUnknown=ref(false);
+  const bulkCreatePending=ref(false);
   let bulkPoll:number|undefined,bulkAbort:AbortController|undefined;
   const bulkStatus=computed(()=>String(bulkExecution.value?.status||''));
   const bulkTerminal=computed(()=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(bulkStatus.value));
@@ -38,7 +39,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   // user explicitly abandons it; otherwise a user could edit the range and
   // then confirm an already sealed (different) operation.
   const bulkSealed=computed(()=>!!bulkIntent.value&&!bulkTerminal.value);
-  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value||bulkPendingUnknown.value||bulkSealing.value);
+  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value||bulkPendingUnknown.value||bulkSealing.value||bulkCreatePending.value);
   const explicitSelection=ref(new Set<string>());
   const frozenSelection=shallowRef<ReviewSelection>();
   const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
@@ -77,7 +78,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     stopBulkPoll();bulkAbort?.abort();
     bulkIntent.value=bulkExecution.value=undefined;lastBulkResult.value=undefined;
     bulkBusy.value=false;bulkError.value=bulkNotice.value='';bulkDialog.value=false;bulkRequestId.value='';
-    bulkPendingUnknown.value=false;
+    bulkPendingUnknown.value=false;bulkCreatePending.value=false;
     clearSelection();
     scope=undefined;
     taskRead?.abort();pageRead?.abort();closeImage();
@@ -534,13 +535,15 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   function bulkFormalKey(address:Scope){
     return 'ai-review-bulk:v1:'+JSON.stringify([address.actorKey,address.projectId,address.taskId]);
   }
-  type BulkRecord={request_id:string;selection_id:string;review_revision:number;excluded_image_ids:string[]};
+  type BulkRecord={request_id:string;selection_id:string;review_revision:number;
+    excluded_image_ids:string[];execution_attempted?:boolean};
   function readBulkRecord(address:Scope):BulkRecord|null{
     try{
       const raw=JSON.parse(sessionStorage.getItem(bulkFormalKey(address))??'null') as Partial<BulkRecord>|null;
       if(raw&&typeof raw.request_id==='string'&&typeof raw.selection_id==='string'
         &&Number.isInteger(raw.review_revision)&&Array.isArray(raw.excluded_image_ids)
-        &&raw.excluded_image_ids.every(id=>typeof id==='string'))
+        &&raw.excluded_image_ids.every(id=>typeof id==='string')
+        &&(raw.execution_attempted===undefined||typeof raw.execution_attempted==='boolean'))
         return raw as BulkRecord;
     }catch{/* storage unavailable or corrupt: degrade to no record */}
     return null;
@@ -573,6 +576,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     // Terminal execution: release the sealed identity so a NEW operation can
     // start with a NEW request_id. The terminal execution stays visible.
     bulkIntent.value=undefined;bulkRequestId.value='';bulkPendingUnknown.value=false;
+    bulkCreatePending.value=false;
     clearBulkRecord(address);
     if(bulkStatus.value==='SUCCEEDED'){
       clearSelection();
@@ -625,12 +629,24 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     try{
       const view=await readBulkExecution(address,new AbortController().signal);
       if(scope!==address)return;
+      bulkCreatePending.value=false;
       if(bulkTerminal.value)await settleBulkFormal(address);
       else startBulkPoll();
       return view;
     }catch(cause){
-      if((cause as {httpStatus?:number}).httpStatus!==404&&scope===address)
-        bulkError.value=message(cause);
+      if(scope!==address)return;
+      const status=(cause as {httpStatus?:number}).httpStatus;
+      if(status===404){
+        // The seal exists but no execution task is readable. If this browser
+        // already asked to create one, the POST outcome is unknown: keep the
+        // identity and require a query/retry with the SAME request_id.
+        if(record?.execution_attempted===true){
+          bulkCreatePending.value=true;
+          bulkNotice.value='后台任务创建结果未确认：原操作身份已保留，请查询状态或重试同一创建。';
+        }
+        return;
+      }
+      bulkError.value=message(cause);
     }
   }
   function openBulkFormal(){
@@ -659,7 +675,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');
   }
   async function preflightBulkFormal(){
-    if(bulkIntent.value||bulkRunning.value)return;
+    if(bulkIntent.value||bulkRunning.value||bulkCreatePending.value)return;
     archiveTerminalBulk();
     await runBulk(async(address,signal)=>{
       const stored=readBulkRecord(address);
@@ -704,14 +720,30 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       }catch(cause){
         if(signal.aborted)return;
         const status=(cause as {httpStatus?:number}).httpStatus;
-        const rejected=status!==undefined&&status>=400&&status<500;
-        if(rejected){
-          // The server answered and refused this request, so no intent exists.
+        // 409 can mean "an intent with this request_id already exists with a
+        // different digest". Never treat a 4xx as proof of absence: ask the
+        // server for the original identity first.
+        try{
+          const existing=await getBulkFormalIntent(address,body.request_id,new AbortController().signal);
+          if(scope!==address)return;
+          if(existing.request_id===body.request_id){
+            bulkIntent.value=existing;bulkPendingUnknown.value=false;
+            const sameRange=existing.selection_id===body.selection_id
+              &&existing.review_revision===body.review_revision;
+            bulkNotice.value=sameRange
+              ?`服务端已存在该请求编号的封存意图：可入库 ${existing.count} 张。`
+              :'服务端已存在同一请求编号、但范围不同的封存意图；请放弃后重新选择。';
+            return;
+          }
+        }catch{/* no readable intent: fall through to error classification */}
+        if(status!==undefined&&status>=400&&status<500&&status!==409){
+          // Authentication, identity-not-found or validation rejection: the
+          // server answered and no intent exists for this request.
           bulkRequestId.value='';
           clearBulkRecord(address);
         }else{
-          // Network loss, timeout or ambiguous 5xx: the seal may already exist.
-          // Keep the identity, keep the range locked; only retry or abandon.
+          // 409 without a readable intent, network loss, timeout or 5xx: the
+          // seal may already exist. Keep the identity and the range locked.
           bulkPendingUnknown.value=true;
           bulkNotice.value='预检结果未确认，已锁定原范围；可重试同一操作或放弃。';
         }
@@ -720,31 +752,71 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     });
   }
   function abandonBulkFormal(){
-    if(bulkBusy.value||bulkRunning.value)return;
+    if(bulkBusy.value||bulkRunning.value||bulkCreatePending.value)return;
     const address=scope;
     stopBulkPoll();bulkAbort?.abort();
     bulkIntent.value=bulkExecution.value=undefined;bulkRequestId.value='';
-    bulkPendingUnknown.value=false;bulkNotice.value='';bulkError.value='';bulkDialog.value=false;
+    bulkPendingUnknown.value=false;bulkCreatePending.value=false;
+    bulkNotice.value='';bulkError.value='';bulkDialog.value=false;
     if(address)clearBulkRecord(address);
   }
   async function confirmBulkFormal(){
     if(!bulkIntent.value||bulkRunning.value)return;
     await runBulk(async(address,signal)=>{
-      const view=await startBulkFormalExecution(address,bulkRequestId.value,signal);
-      if(signal.aborted)return;
-      if(view.operation_id!==bulkIntent.value?.operation_id||view.total_images!==bulkIntent.value?.count)
-        throw new Error('后台任务身份与封存意图不一致');
-      bulkExecution.value=view;
-      if(!bulkTerminal.value)startBulkPoll();
+      const record=readBulkRecord(address);
+      if(!record||record.request_id!==bulkRequestId.value)
+        throw new Error('缺少原操作身份，无法创建后台任务');
+      // Persist the execution attempt BEFORE the request: a lost response must
+      // keep the same request_id and must not allow abandoning the identity.
+      if(!writeBulkRecord(address,{...record,execution_attempted:true}))
+        throw new Error('浏览器无法保存本次操作身份，已停止创建后台任务。');
+      try{
+        const view=await startBulkFormalExecution(address,bulkRequestId.value,signal);
+        if(signal.aborted)return;
+        if(view.operation_id!==bulkIntent.value?.operation_id||view.total_images!==bulkIntent.value?.count)
+          throw new Error('后台任务身份与封存意图不一致');
+        bulkExecution.value=view;bulkCreatePending.value=false;
+        if(!bulkTerminal.value)startBulkPoll();
+      }catch(cause){
+        if(signal.aborted)return;
+        // The POST may already have created the deterministic task. Query the
+        // original identity before declaring anything.
+        try{
+          const view=await getBulkFormalExecution(address,bulkRequestId.value,new AbortController().signal);
+          if(scope!==address)return;
+          bulkExecution.value=view;bulkCreatePending.value=false;
+          bulkNotice.value='后台任务已创建，已恢复真实执行状态。';
+          if(bulkTerminal.value)await settleBulkFormal(address);
+          else startBulkPoll();
+          return;
+        }catch{/* execution still unreadable: keep the unknown state */}
+        bulkCreatePending.value=true;
+        bulkNotice.value='后台任务创建结果未确认：原操作身份已保留，请查询状态或重试同一创建。';
+        throw cause;
+      }
     });
   }
   async function refreshBulkFormal(){
     if(!bulkRequestId.value)return;
     await runBulk(async(address,signal)=>{
-      const view=await readBulkExecution(address,signal);
-      if(view.blocked&&view.manual_review_required)bulkNotice.value='任务已阻断，需核验后人工恢复。';
-      if(bulkTerminal.value)await settleBulkFormal(address);
-      else startBulkPoll();
+      const record=readBulkRecord(address);
+      try{
+        const view=await readBulkExecution(address,signal);
+        if(scope!==address)return;
+        bulkCreatePending.value=false;bulkPendingUnknown.value=false;
+        if(view.blocked&&view.manual_review_required)bulkNotice.value='任务已阻断，需核验后人工恢复。';
+        if(bulkTerminal.value)await settleBulkFormal(address);
+        else startBulkPoll();
+      }catch(cause){
+        if(scope!==address)return;
+        if((cause as {httpStatus?:number}).httpStatus===404
+          &&(bulkCreatePending.value||record?.execution_attempted===true)){
+          bulkCreatePending.value=true;
+          bulkNotice.value='仍未查询到后台任务；原操作身份已保留，可重试同一创建。';
+          return;
+        }
+        throw cause;
+      }
     });
   }
   async function cancelBulkFormal(){
@@ -783,7 +855,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
     prepareFormal,cancelFormal,confirmFormal,recoverFormal,
     bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,
-    bulkSealed,bulkPendingUnknown,lastBulkResult,
+    bulkSealed,bulkPendingUnknown,bulkCreatePending,lastBulkResult,
     canBulkFormal,openBulkFormal,closeBulkFormal,preflightBulkFormal,confirmBulkFormal,refreshBulkFormal,
     cancelBulkFormal,recoverBulkFormal,abandonBulkFormal};
 });

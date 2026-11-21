@@ -66,3 +66,26 @@ test('native page distinguishes preflight, execution, proven GT and manual revie
 test('bulk execution disables selection drift while a task is running', () => {
   assert.match(store, /formalLocked=computed\(\(\)=>.*bulkRunning\.value/);
 });
+
+test('bulk execution creation keeps its identity when the response is unknown', () => {
+  const confirm = store.slice(store.indexOf('async function confirmBulkFormal'),
+    store.indexOf('async function refreshBulkFormal'));
+  assert.match(confirm, /execution_attempted:true/);
+  const attemptAt = confirm.indexOf('execution_attempted:true');
+  const startAt = confirm.indexOf('startBulkFormalExecution');
+  assert.ok(attemptAt > 0 && startAt > attemptAt,
+    'execution identity is persisted before POST execute');
+  assert.match(confirm, /bulkCreatePending\.value=true/);
+  assert.match(confirm, /getBulkFormalExecution\(address,bulkRequestId\.value/);
+  assert.match(store, /bulkBusy\.value\|\|bulkRunning\.value\|\|bulkCreatePending\.value/);
+  assert.match(page, /后台任务创建结果未确认/);
+  assert.match(page, /重试创建后台任务/);
+});
+
+test('seal conflicts query the original intent instead of treating 4xx as absence', () => {
+  const preflight = store.slice(store.indexOf('async function preflightBulkFormal'),
+    store.indexOf('function abandonBulkFormal'));
+  assert.match(preflight, /getBulkFormalIntent\(address,body\.request_id/);
+  assert.match(preflight, /status!==409/);
+  assert.match(store, /服务端已存在该请求编号/);
+});

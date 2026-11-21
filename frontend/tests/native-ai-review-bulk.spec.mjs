@@ -32,7 +32,8 @@ const executionView=(state,overrides={})=>({
 async function fixture(page){
   const state={sealed:null,executes:0,intents:[],failNextSeal:false,loseSealResponse:false,
     committed:false,mode:'success',executionPolls:0,recoverStatus:0,executeDelay:0,
-    holdSeal:false,sealStarted:false,sealGate:null};
+    holdSeal:false,sealStarted:false,sealGate:null,
+    loseExecuteResponse:false,hideExecution:false,conflictExisting:false};
   await page.route('**/app/**',r=>{
     const path=new URL(r.request().url()).pathname.slice('/app/'.length)||'index.html';
     return r.fulfill({path:resolve('../static/vue-app',path),
@@ -64,6 +65,8 @@ async function fixture(page){
       if(method==='POST'&&bulk.length===1){
         const body=request.postDataJSON();state.intents.push(body);state.sealStarted=true;
         if(state.holdSeal&&state.sealGate)await state.sealGate;
+        if(state.conflictExisting){state.sealed=intentBody(state,body);
+          return r.fulfill({status:409,json:{detail:'同一操作编号的入库意图不一致'}});}
         if(state.failNextSeal){state.failNextSeal=false;return r.abort('failed')}
         state.sealed=intentBody(state,body);
         if(state.loseSealResponse){state.loseSealResponse=false;return r.abort('failed')}
@@ -75,10 +78,11 @@ async function fixture(page){
       if(method==='POST'&&bulk.at(-1)==='execute'){
         state.executes+=1;state.executionPolls=0;
         if(state.executeDelay)await new Promise(done=>setTimeout(done,state.executeDelay));
+        if(state.loseExecuteResponse){state.loseExecuteResponse=false;return r.abort('failed')}
         return r.fulfill({json:executionView(state,{status:'QUEUED'})});
       }
       if(method==='GET'&&bulk.at(-1)==='execution'){
-        if(state.executes===0)return r.fulfill({status:404,json:{detail:'execution not found'}});
+        if(state.hideExecution||state.executes===0)return r.fulfill({status:404,json:{detail:'execution not found'}});
         state.executionPolls+=1;
         if(state.mode==='blocked')return r.fulfill({json:executionView(state,{status:'RUNNING',
           stage:'formal_bulk_blocked',blocked:true,blocked_code:'FORMAL_BULK_EVIDENCE_UNPROVEN',
@@ -178,7 +182,10 @@ test('服务端已封存但响应丢失：刷新查到原 intent 并继续，不
   await page.goto(route);
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await seal(page);
-  await expect(page.getByRole('dialog').getByRole('alert')).toBeVisible();
+  // The lost response is resolved immediately by querying the original
+  // request_id; no reload and no second intent are required.
+  await expect(page.getByRole('dialog')).toContainText('服务端已存在该请求编号的封存意图');
+  await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
   expect(state.intents).toHaveLength(1);
   expect(state.sealed).not.toBeNull();
 
@@ -247,4 +254,47 @@ test('pending preflight locks the frozen range until the request resolves',async
   state.releaseSeal();
   await sealing;
   await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
+});
+
+test('execute response loss keeps the original task identity and blocks abandon',async({page})=>{
+  const state=await fixture(page);
+  await page.goto(route);
+  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await seal(page);
+  const requestId=(await readRecord(page)).request_id;
+  state.hideExecution=true;
+  state.loseExecuteResponse=true;
+  await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
+  await expect(page.locator('.review-bulk')).toContainText('后台任务创建结果未确认');
+  await expect(page.getByRole('button',{name:'放弃预检'})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'放弃'})).toHaveCount(0);
+  expect(state.executes).toBe(1);
+  expect(state.intents).toHaveLength(1);
+  const record=await readRecord(page);
+  expect(record.request_id).toBe(requestId);
+  expect(record.execution_attempted).toBe(true);
+  expect(await page.evaluate(k=>sessionStorage.getItem(k),key())).not.toBeNull();
+
+  state.hideExecution=false;
+  await page.reload();
+  await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
+  expect(state.executes).toBe(1);
+  expect(state.intents).toHaveLength(1);
+  expect(state.intents[0].request_id).toBe(requestId);
+});
+
+test('seal 409 with an existing intent adopts the server identity instead of clearing it',async({page})=>{
+  const state=await fixture(page);
+  state.conflictExisting=true;
+  await page.goto(route);
+  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await seal(page);
+  await expect(page.getByRole('dialog')).toContainText('服务端已存在该请求编号的封存意图');
+  await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
+  expect(state.intents).toHaveLength(1);
+  expect(await readRecord(page)).not.toBeNull();
+  await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
+  expect(state.executes).toBe(1);
 });

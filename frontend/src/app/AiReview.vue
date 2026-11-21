@@ -106,7 +106,7 @@ const bulkStatusNames:Record<string,string>={QUEUED:'排队中',RUNNING:'后台�
   CANCELLED:'已取消',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分成功',FAILED:'失败'};
 const bulkStatusName=computed(()=>review.bulkExecution
   ?bulkStatusNames[review.bulkExecution.status]||review.bulkExecution.status
-  :review.bulkIntent?'已预检封存':review.bulkPendingUnknown?'上次预检未确认':'');
+  :review.bulkIntent?'已预检封存':review.bulkCreatePending?'后台任务创建未确认':review.bulkPendingUnknown?'上次预检未确认':'');
 const bulkManualExcluded=computed(()=>review.frozenSelection
   ?Math.max(0,review.frozenSelection.count-review.selectedCount):0);
 const candidateName=(row:ReviewCandidate)=>(row.filename||row.image_id).split(/[\\/]/).at(-1)||row.image_id;
@@ -279,7 +279,7 @@ const diagnosticFacts=computed(()=>{
         <el-button :loading="review.formalBusy" @click="review.confirmFormal()">确认写入正式 GT</el-button>
        </template>
       </el-dialog>
-      <div v-if="review.bulkIntent || review.bulkExecution || review.bulkPendingUnknown || review.lastBulkResult" class="review-bulk" role="status">
+      <div v-if="review.bulkIntent || review.bulkExecution || review.bulkPendingUnknown || review.bulkCreatePending || review.lastBulkResult" class="review-bulk" role="status">
        <p><b>{{ bulkStatusName }}</b>
         <template v-if="review.bulkExecution">
          · 已证明提交 GT
@@ -291,6 +291,7 @@ const diagnosticFacts=computed(()=>{
          </template>
          <template v-if="review.bulkExecution.cancellation_requested && !review.bulkTerminal"> · 已请求取消</template>
         </template>
+        <template v-else-if="review.bulkCreatePending"> · 后台任务创建结果未确认，原操作身份已保留，请查询或重试同一创建</template>
         <template v-else-if="review.bulkIntent"> · 已封存 {{ review.bulkIntent.count }} 张，待创建后台任务</template>
         <template v-else-if="review.bulkPendingUnknown"> · 上次预检结果未确认，可重试同一操作</template>
        </p>
@@ -307,9 +308,11 @@ const diagnosticFacts=computed(()=>{
          :loading="review.bulkBusy" @click="review.cancelBulkFormal()">取消后台任务</el-button>
         <el-button v-if="review.bulkExecution?.blocked" :loading="review.bulkBusy"
          @click="review.recoverBulkFormal()">核验并恢复</el-button>
+        <el-button v-if="review.bulkCreatePending" :loading="review.bulkBusy"
+         @click="review.confirmBulkFormal()">重试创建后台任务</el-button>
         <el-button v-if="review.bulkPendingUnknown" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">重试上次预检</el-button>
-        <el-button v-if="(review.bulkIntent || review.bulkPendingUnknown) && !review.bulkRunning && !review.bulkBusy"
+        <el-button v-if="(review.bulkIntent || review.bulkPendingUnknown) && !review.bulkRunning && !review.bulkCreatePending && !review.bulkBusy"
          @click="review.abandonBulkFormal()">{{ review.bulkIntent ? '放弃预检' : '放弃' }}</el-button>
         <el-button v-if="review.bulkIntent" @click="review.openBulkFormal()">查看预检</el-button>
        </div>
@@ -327,7 +330,8 @@ const diagnosticFacts=computed(()=>{
          原筛选 {{ review.bulkIntent.original_count }} 张
         </p>
         <p>预检只核验并封存范围，不写入正式 GT。确认后由后台 Worker 每 100 张一批提交，可随时取消。</p>
-        <p>放弃预检只清除浏览器记录，不会声称服务端已撤销；已封存意图不会写入 GT，并将在到期后失效。</p>
+        <p v-if="review.bulkCreatePending" role="alert">创建后台任务的结果尚未确认。请先查询执行状态；需要重试时仍使用原操作身份，不要放弃或新建。</p>
+        <p>放弃预检只清除浏览器本地记录，不会声称服务端已撤销；若后台任务已创建，必须查询或取消原任务。</p>
        </template>
        <template v-else>
         <p>{{ bulkStatusName }} · 任务 {{ review.bulkExecution.execution_task_id }}</p>
@@ -355,9 +359,11 @@ const diagnosticFacts=computed(()=>{
         <el-button :disabled="review.bulkBusy" @click="review.closeBulkFormal()">关闭</el-button>
         <el-button v-if="!review.bulkIntent" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">预检并封存</el-button>
-        <el-button v-if="review.bulkIntent && !review.bulkExecution" :disabled="review.bulkBusy"
+        <el-button v-if="review.bulkIntent && !review.bulkExecution && !review.bulkCreatePending" :disabled="review.bulkBusy"
          @click="review.abandonBulkFormal()">放弃预检</el-button>
-        <el-button v-if="review.bulkIntent && !review.bulkExecution" type="primary" :loading="review.bulkBusy"
+        <el-button v-if="review.bulkIntent && !review.bulkExecution && review.bulkCreatePending" type="primary" :loading="review.bulkBusy"
+         @click="review.confirmBulkFormal()">重试创建后台任务</el-button>
+        <el-button v-else-if="review.bulkIntent && !review.bulkExecution" type="primary" :loading="review.bulkBusy"
          @click="review.confirmBulkFormal()">确认创建后台任务</el-button>
       </template>
       </el-dialog>
