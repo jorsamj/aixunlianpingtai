@@ -1134,7 +1134,36 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
                 role = "pending_negative"
             result.append((row["id"], role))
     count("role_candidate_rows",len(result))
+    _remember_role_counts(
+        (material_path, annotation_path, material_revision, annotation_revision, contract_json, filters_json),
+        result,
+    )
     return tuple(result)
+
+
+_ROLE_ROLES = ("positive", "confirmed_negative", "pending_negative", "pending_review")
+_ROLE_INDEX_COUNTS: dict[tuple, tuple[tuple[str, int], ...]] = {}
+
+
+def _remember_role_counts(key, index):
+    """Cache the per-role totals with the index they were built from."""
+    counts = {role: 0 for role in _ROLE_ROLES}
+    for _image_id, role in index:
+        counts[role] = counts.get(role, 0) + 1
+    _ROLE_INDEX_COUNTS[key] = tuple(sorted(counts.items()))
+    while len(_ROLE_INDEX_COUNTS) > 16:
+        _ROLE_INDEX_COUNTS.pop(next(iter(_ROLE_INDEX_COUNTS)), None)
+
+
+def _role_counts(key, index):
+    """Give back cached totals; recompute only for monkeypatched/unknown indexes."""
+    stored = _ROLE_INDEX_COUNTS.get(key)
+    if stored is not None:
+        return dict(stored)
+    counts = {role: 0 for role in _ROLE_ROLES}
+    for _image_id, role in index:
+        counts[role] = counts.get(role, 0) + 1
+    return counts
 
 
 @stage("role_page")
@@ -1224,8 +1253,8 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None, cu
     count("role_index_requests")
     index = _cached_role_index(str(repository.path), str(annotations.path), *revisions,
         json.dumps(contract, sort_keys=True), json.dumps(selected, sort_keys=True))
-    counts = {role:0 for role in ("positive", "confirmed_negative", "pending_negative", "pending_review")}
-    for _, role in index: counts[role] = counts.get(role,0) + 1
+    counts = _role_counts((str(repository.path), str(annotations.path), *revisions,
+        json.dumps(contract, sort_keys=True), json.dumps(selected, sort_keys=True)), index)
     visible = [row for row in index if not sample_role or row[1] == sample_role]
     total = len(visible)
     if sort_order == "newest": visible.reverse()

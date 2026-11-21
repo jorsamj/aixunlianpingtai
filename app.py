@@ -4890,12 +4890,16 @@ def read_project(project_id: str):
     models = list_models_internal(project_id)
     annotated = 0
     boxes = 0
-    for img in images:
-        ann = read_annotation(project_id, img["id"])
-        cnt = len(ann.get("boxes", []))
-        boxes += cnt
-        if cnt:
-            annotated += 1
+    image_ids = [str(img.get("id")) for img in images if img.get("id") is not None]
+    # Batched formal-GT reads keep the legacy totals exactly, but replace the
+    # previous one-connection-per-image N+1 with ceil(N/500) queries. The batch
+    # reader keeps the same legacy JSON fallback as read_annotation().
+    for offset in range(0, len(image_ids), 500):
+        for ann in read_annotations_many(project_id, image_ids[offset:offset + 500]).values():
+            cnt = len(ann.get("boxes", []))
+            boxes += cnt
+            if cnt:
+                annotated += 1
     return {"project": project, "images": len(images), "annotated_images": annotated, "boxes": boxes, "jobs": jobs, "models": models}
 
 
@@ -5438,12 +5442,13 @@ def list_images(project_id: str, dataset_id: Optional[str] = None):
 @app.get('/api/v52/projects/{project_id}/annotation-index/status')
 def v52_annotation_index_status(project_id: str):
     get_project(project_id)
-    rows = load_images(project_id)
-    pending = sum(1 for x in rows if not x.get('annotation_summary_at'))
+    # One bounded aggregate replaces a full JSON hydration of every material:
+    # the endpoint only reports pending/total counts.
+    pending, total_images = material_store(project_id).annotation_index_counts()
     status = dict(_ANNOTATION_INDEX_STATUS.get(project_id) or {})
     status.setdefault('running', project_id in _ANNOTATION_INDEX_RUNNING)
     status['pending'] = pending
-    status['total_images'] = len(rows)
+    status['total_images'] = total_images
     return {'ok': True, **status}
 
 

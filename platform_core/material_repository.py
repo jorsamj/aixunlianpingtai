@@ -39,6 +39,9 @@ _STATUS_COUNTS_CACHE_LIMIT = 128
 _FILTERED_COUNTS_CACHE_LOCK = threading.Lock()
 _FILTERED_COUNTS_CACHE: OrderedDict[tuple[Any, ...], int] = OrderedDict()
 _FILTERED_COUNTS_CACHE_LIMIT = 128
+_ANNOTATION_INDEX_COUNTS_LOCK = threading.Lock()
+_ANNOTATION_INDEX_COUNTS: OrderedDict[tuple[Any, ...], tuple[int, int]] = OrderedDict()
+_ANNOTATION_INDEX_COUNTS_LIMIT = 128
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -1090,6 +1093,37 @@ class MaterialRepository:
         return total
 
     @stage("material.status_counts")
+    def annotation_index_counts(self) -> tuple[int, int]:
+        """Return ``(pending, total)`` without hydrating material payloads.
+
+        Same predicate as the legacy Python check ``not row["annotation_summary_at"]``:
+        a missing, SQL NULL or empty summary means the projection is pending.
+        The aggregate is revision-keyed so the status endpoint's polling loop
+        does not re-scan 200k payloads while nothing changed.
+        """
+        stat = self.path.stat()
+        with closing(self._connect()) as database:
+            revision = self._revision(database)
+            key = (str(self.path.resolve()), stat.st_dev, stat.st_ino, revision)
+            with _ANNOTATION_INDEX_COUNTS_LOCK:
+                cached = _ANNOTATION_INDEX_COUNTS.get(key)
+                if cached is not None:
+                    _ANNOTATION_INDEX_COUNTS.move_to_end(key)
+            if cached is not None:
+                return cached
+            row = database.execute(
+                "SELECT COUNT(*) AS total, "
+                "COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload_json,'$.annotation_summary_at'),'')='' "
+                "THEN 1 ELSE 0 END),0) AS pending FROM materials"
+            ).fetchone()
+        result = (int(row["pending"]), int(row["total"]))
+        with _ANNOTATION_INDEX_COUNTS_LOCK:
+            _ANNOTATION_INDEX_COUNTS[key] = result
+            _ANNOTATION_INDEX_COUNTS.move_to_end(key)
+            while len(_ANNOTATION_INDEX_COUNTS) > _ANNOTATION_INDEX_COUNTS_LIMIT:
+                _ANNOTATION_INDEX_COUNTS.popitem(last=False)
+        return result
+
     def processing_status_counts(self, storage_source_ids: Sequence[str] | None = None) -> dict[str, int]:
         """One read-only, revision-keyed projection for material summary counters.
 
