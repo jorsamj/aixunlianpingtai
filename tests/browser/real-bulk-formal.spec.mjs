@@ -1,14 +1,16 @@
 import {test, expect} from '@playwright/test';
 import {spawn, execFileSync} from 'node:child_process';
-import {mkdtempSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createServer} from 'node:net';
+import {createHash} from 'node:crypto';
 
 const taskId = 'browser-bulk-real';
 const total = 205;
 const expectedCommitted = 201;
 const excludedIndexes = [0, 1, 24, 25];
+const digest = value => createHash('sha256').update(value).digest('hex');
 
 function freePort() {
   return new Promise(resolve => {
@@ -23,6 +25,7 @@ function freePort() {
 test('Vue real FastAPI bulk formal GT: 205 candidates, shuffle exclusion, 201 across three batches', async ({page, request}) => {
   test.setTimeout(240000);
   const data = mkdtempSync(join(tmpdir(), 'xjalgo-bulk-review-'));
+  const workerLog = join(data, 'bulk-worker.log');
   const env = {
     ...process.env,
     MC_TRAIN_DATA_DIR: data,
@@ -60,7 +63,7 @@ test('Vue real FastAPI bulk formal GT: 205 candidates, shuffle exclusion, 201 ac
       stdio: 'inherit',
     });
     worker = spawn('python', ['tests/browser/helpers/bulk_review_worker.py'], {
-      env: {...env, MC_WORKER_SECONDS: '180'},
+      env: {...env, MC_WORKER_SECONDS: '180', MC_WORKER_LOG: workerLog},
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
 
@@ -84,6 +87,14 @@ test('Vue real FastAPI bulk formal GT: 205 candidates, shuffle exclusion, 201 ac
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('button', {name: '预检并封存'}).click();
     await expect(dialog).toContainText(`可入库 ${expectedCommitted} 张`, {timeout: 30000});
+    const firstRequestId = await page.evaluate(() => {
+      for (let index = 0; index < sessionStorage.length; index += 1) {
+        const key = sessionStorage.key(index);
+        if (key && key.startsWith('ai-review-bulk:v1:')) return JSON.parse(sessionStorage.getItem(key)).request_id;
+      }
+      return null;
+    });
+    expect(firstRequestId).toBeTruthy();
     await dialog.getByRole('button', {name: '确认创建后台任务'}).click();
     await dialog.getByRole('button', {name: '关闭'}).last().click();
     await expect(page.locator('.review-bulk')).toContainText(/排队中|后台执行中/, {timeout: 30000});
@@ -112,7 +123,7 @@ test('Vue real FastAPI bulk formal GT: 205 candidates, shuffle exclusion, 201 ac
     expect(execution.completed_batches).toBe(3);
 
     const dbCheck = `
-import json, sys
+import json, os, sqlite3
 import app
 from platform_core.annotation_candidates import CandidateStore
 pid = ${JSON.stringify(project.id)}
@@ -125,18 +136,63 @@ committed = [image_id for image_id in ids if int(gt[image_id].get('version') or 
 journal = 0
 for offset in range(0, len(ids), 100):
     journal += len(store.get_commit_summaries(ids[offset:offset + 100]))
-print(json.dumps({'committed': len(committed), 'total': len(ids),
-                  'excluded_versions': {image_id: int(gt[image_id].get('version') or 0)
-                                        for image_id in ids if image_id not in committed},
-                  'journal': journal}))
+samples = ['bulk-0002', 'bulk-0100', 'bulk-0200']
+sample_journal = store.get_commit_summaries(samples)
+db = sqlite3.connect(annotations.path)
+db.row_factory = sqlite3.Row
+receipt_rows = {
+    row['image_id']: {**json.loads(row['receipt_json']), 'receipt_operation_id': row['operation_id']}
+    for row in db.execute(
+        "SELECT image_id, operation_id, receipt_json FROM annotation_candidate_commits "
+        f"WHERE task_id=? AND image_id IN ({','.join('?' for _ in samples)})",
+        (tid, *samples),
+    )
+}
+batch_operations = db.execute(
+    "SELECT COUNT(DISTINCT operation_id) FROM annotation_candidate_commits WHERE task_id=?",
+    (tid,),
+).fetchone()[0]
+sample_state = {
+    image_id: {
+        'version': int(gt[image_id].get('version') or 0),
+        'boxes': [{key: box.get(key) for key in ('label', 'x1', 'y1', 'x2', 'y2')}
+                  for box in gt[image_id].get('boxes', [])],
+        'receipt': receipt_rows.get(image_id, {}),
+        'journal': sample_journal.get(image_id, {}),
+    } for image_id in samples
+}
+excluded = {
+    image_id: {'version': int(gt[image_id].get('version') or 0),
+               'box_count': len(gt[image_id].get('boxes', []))}
+    for image_id in ids if image_id not in committed
+}
+print(json.dumps({'committed': len(committed), 'total': len(ids), 'journal': journal,
+                  'samples': sample_state, 'excluded': excluded,
+                  'batch_operations': batch_operations}))
 `;
-    const firstCheck = JSON.parse(execFileSync('python', ['-c', dbCheck], {env}).toString());
+    const checkEnv = {...env, MC_OPERATION_ID: execution.operation_id};
+    const firstCheck = JSON.parse(execFileSync('python', ['-c', dbCheck], {env: checkEnv}).toString());
     expect(firstCheck.committed).toBe(expectedCommitted);
     expect(firstCheck.total).toBe(total);
-    expect(Object.keys(firstCheck.excluded_versions).sort()).toEqual(
+    expect(Object.keys(firstCheck.excluded).sort()).toEqual(
       excludedIndexes.map(index => `bulk-${String(index).padStart(4, '0')}`).sort());
-    expect(Object.values(firstCheck.excluded_versions).every(version => version === 0)).toBe(true);
+    expect(Object.values(firstCheck.excluded).every(row => row.version === 0 && row.box_count === 0)).toBe(true);
     expect(firstCheck.journal).toBe(expectedCommitted);
+    expect(firstCheck.batch_operations).toBe(3);
+    for (const [imageId, sample] of Object.entries(firstCheck.samples)) {
+      expect(sample.version).toBe(1);
+      expect(sample.boxes).toEqual([{label: 'fire', x1: 10, y1: 10, x2: 50, y2: 50}]);
+      expect(sample.receipt.task_id).toBe(taskId);
+      expect(sample.receipt.project_id).toBe(project.id);
+      expect(sample.receipt.image_id).toBe(imageId);
+      expect(sample.receipt.expected_version).toBe(0);
+      expect(sample.receipt.source_sha256).toBe(digest(imageId));
+      expect(sample.receipt.summary.gt_write_performed).toBe(true);
+      expect(sample.receipt.summary.box_count).toBe(1);
+      expect(sample.receipt.receipt_operation_id).toMatch(/^[a-f0-9]{64}$/);
+      expect(sample.journal.gt_write_performed).toBe(true);
+      expect(sample.journal.gt_snapshot_version).toBe(1);
+    }
 
     // A second, independent operation handles the four excluded candidates.
     await freeze.click();
@@ -144,15 +200,28 @@ print(json.dumps({'committed': len(committed), 'total': len(ids),
     await page.getByRole('button', {name: '后台正式入库 4 张'}).click();
     await page.getByRole('dialog').getByRole('button', {name: '预检并封存'}).click();
     await expect(page.getByRole('dialog')).toContainText('可入库 4 张', {timeout: 30000});
+    const secondRequestId = await page.evaluate(() => {
+      for (let index = 0; index < sessionStorage.length; index += 1) {
+        const key = sessionStorage.key(index);
+        if (key && key.startsWith('ai-review-bulk:v1:')) return JSON.parse(sessionStorage.getItem(key)).request_id;
+      }
+      return null;
+    });
+    expect(secondRequestId).toBeTruthy();
+    expect(secondRequestId).not.toBe(firstRequestId);
     await page.getByRole('dialog').getByRole('button', {name: '确认创建后台任务'}).click();
     await page.getByRole('dialog').getByRole('button', {name: '关闭'}).last().click();
     await expect(page.locator('.review-bulk')).toContainText('已完成', {timeout: 90000});
 
-    const secondCheck = JSON.parse(execFileSync('python', ['-c', dbCheck], {env}).toString());
+    const secondCheck = JSON.parse(execFileSync('python', ['-c', dbCheck], {env: checkEnv}).toString());
     expect(secondCheck.committed).toBe(total);
     expect(secondCheck.journal).toBe(total);
+    expect(secondCheck.batch_operations).toBe(4);
   } finally {
     worker?.kill();
     child.kill();
+    if (existsSync(workerLog)) {
+      await info.attach('bulk-worker-log', {body: readFileSync(workerLog, 'utf8'), contentType: 'text/plain'});
+    }
   }
 });
