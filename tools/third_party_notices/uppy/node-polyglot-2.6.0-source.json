@@ -1,0 +1,7 @@
+{
+  "package": "node-polyglot",
+  "version": "2.6.0",
+  "tarball": "https://registry.npmjs.org/node-polyglot/-/node-polyglot-2.6.0.tgz",
+  "integrity": "sha512-ZZFkaYzIfGfBvSM6QhA9dM8EEaUJOVewzGSRcXWbJELXDj0lajAtKaENCYxvF5yE+TgHg6NQb0CmgYMsMdcNJQ==",
+  "license": "BSD-2-Clause"
+}

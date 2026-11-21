@@ -90,7 +90,7 @@ def test_confirmed_storage_import_reports_monotonic_indexing_progress(tmp_path, 
     # public progress rather than only the terminal 100% finish.
     import platform_core.storage.import_tasks as import_tasks
 
-    monkeypatch.setattr(import_tasks, "BATCH_SIZE", 1)
+    monkeypatch.setattr(import_tasks, "INDEX_BATCH_SIZE", 1)
     original_heartbeat = repository.heartbeat
     indexing_progress: list[float] = []
 

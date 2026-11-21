@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
+import json
+from contextvars import ContextVar
 
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -11,12 +13,16 @@ from .process_control import (
     ProcessIdentity,
     ProcessIdentityMismatchError,
 )
-from .repository import TERMINAL_STATUSES, TaskRepository, _from_row, _iso
+from .repository import TERMINAL_STATUSES, TaskRepository, _from_row, _iso, admission_preparer
+from .sqlite_busy import retry_busy
+
+_PROCESS_OBSERVATIONS = ContextVar("task_expired_process_observations", default={})
 
 
 _RECOVERY_HOLD_STAGES = (
     "lease_expired_process_alive",
     "recovery_blocked_process_inspection",
+    "recovery_blocked_remote_agent_unverified",
 )
 
 
@@ -41,6 +47,7 @@ class FencedTaskRepository(TaskRepository):
         capabilities: Iterable[str],
         lease_seconds: int = 30,
         admission=None,
+        *, candidate_budget=256,
     ):
         caller_admission = admission
 
@@ -50,7 +57,7 @@ class FencedTaskRepository(TaskRepository):
                 SELECT task_id FROM tasks
                  WHERE task_id<>? AND resource_key=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
-                   AND stage IN (?,?)
+                   AND stage IN (?,?,?)
                  LIMIT 1
                 """,
                 (
@@ -90,13 +97,12 @@ class FencedTaskRepository(TaskRepository):
                 return True, None
             return caller_admission(database, candidate, owner, token, expires_at, now)
 
-        return super().claim_next(
-            worker_id,
-            kinds,
-            capabilities,
-            lease_seconds,
-            admission=fenced_admission,
-        )
+        fenced_admission.prepare = admission_preparer(caller_admission)
+        token = _PROCESS_OBSERVATIONS.set(self._inspect_expired_processes(_iso()))
+        try:
+            return super().claim_next(worker_id, kinds, capabilities, lease_seconds, admission=fenced_admission,candidate_budget=candidate_budget)
+        finally:
+            _PROCESS_OBSERVATIONS.reset(token)
 
     def assert_execution(
         self,
@@ -119,6 +125,117 @@ class FencedTaskRepository(TaskRepository):
             raise PermissionError("task execution is fenced")
         return _from_row(row)
 
+    @staticmethod
+    def _formal_bulk_owner(database, lease, execution_generation):
+        now = utc_now()
+        row = database.execute(
+            """SELECT tasks.status, tasks.project_id, tasks.payload_ref,
+                      COALESCE(formal_bulk_execution.cancel_requested, 0) AS cancel_requested,
+                      formal_bulk_execution.active_batch
+                 FROM tasks LEFT JOIN formal_bulk_execution USING (task_id)
+                WHERE task_id=? AND kind='ANNOTATION_FORMAL_BULK'
+                  AND attempt=? AND lease_token=? AND worker_id=?
+                  AND status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at>?
+                  AND worker_id NOT LIKE 'agent:%' AND process_pid IS NULL""",
+            (lease.task.task_id, execution_generation, lease.lease_token, lease.worker_id, now),
+        ).fetchone()
+        if (lease.task.kind is not TaskKind.ANNOTATION_FORMAL_BULK
+                or lease.task.attempt != execution_generation or row is None
+                or row["project_id"] != lease.task.project_id or row["payload_ref"] != lease.task.payload_ref):
+            raise PermissionError("formal bulk execution no longer owns its task")
+        return row
+
+    @contextmanager
+    def formal_bulk_gt_write(self, lease, execution_generation, batch):
+        task_id = lease.task.task_id
+        with self._formal_bulk_lock(task_id):
+            with closing(self._connect()) as database:
+                # Drain any expiring worker's transaction before checking the
+                # row. Reapers may release the file lock before SQLite COMMIT.
+                database.execute("BEGIN IMMEDIATE")
+                row = self._formal_bulk_owner(database, lease, execution_generation)
+                if row["cancel_requested"] or row["status"] != "RUNNING":
+                    raise InterruptedError("formal bulk execution was cancelled")
+                if (batch["identity"]["project_id"] != row["project_id"]
+                        or batch.get("binding_ref", batch["manifest_ref"]) != row["payload_ref"]):
+                    raise PermissionError("formal bulk project or manifest identity mismatch")
+                if row["active_batch"]:
+                    active = json.loads(row["active_batch"])
+                    if any(active[key] != batch[key] for key in ("identity", "operation_id", "manifest_ref")):
+                        raise PermissionError("formal bulk batch changed operation identity")
+                    if batch["batch_number"] not in (active["batch_number"], active["batch_number"] + 1):
+                        raise PermissionError("formal bulk batch ordering mismatch")
+                elif batch["batch_number"] != 0:
+                    raise PermissionError("formal bulk execution must start at batch zero")
+                database.execute(
+                    """INSERT INTO formal_bulk_execution(task_id,active_batch) VALUES (?,?)
+                       ON CONFLICT(task_id) DO UPDATE SET active_batch=excluded.active_batch""",
+                    (task_id, json.dumps(batch, sort_keys=True)),
+                )
+                database.commit()
+            # Keep only this task's cross-process lock through the GT commit.
+            yield
+
+    def formal_bulk_cancel_state(self, lease, execution_generation):
+        with closing(self._connect()) as database:
+            row = self._formal_bulk_owner(database, lease, execution_generation)
+            return bool(row["cancel_requested"]), row["active_batch"]
+
+    def _finish_reconciled_formal_bulk_cancel(self, lease, execution_generation, active_batch, evidence):
+        task_id = lease.task.task_id
+        with self._formal_bulk_lock(task_id), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._formal_bulk_owner(database, lease, execution_generation)
+            if not row["cancel_requested"] or row["active_batch"] != active_batch:
+                raise PermissionError("formal bulk cancellation reconciliation became stale")
+            database.execute(
+                "UPDATE formal_bulk_execution SET reconciliation=? WHERE task_id=?",
+                (json.dumps(evidence, sort_keys=True), task_id),
+            )
+            now = utc_now()
+            total = int(evidence.get("total_images") or 0)
+            committed = evidence.get("committed_images")
+            progress = (100.0 * committed / total) if total and type(committed) is int else None
+            database.execute(
+                """UPDATE tasks SET status='CANCELLED', stage='cancelled', finished_at=?, updated_at=?,
+                       progress=COALESCE(?, progress),
+                       worker_id=NULL, lease_token=NULL, lease_expires_at=NULL WHERE task_id=?""",
+                (now, now, progress, task_id),
+            )
+            database.commit()
+
+    def publish_formal_bulk_progress(self, lease, execution_generation, active_batch, evidence, *, status=None):
+        if status not in {None, TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.FAILED,
+                          TaskStatus.CANCELLED}:
+            raise ValueError("invalid formal bulk execution status")
+        task_id = lease.task.task_id
+        with self._formal_bulk_lock(task_id), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._formal_bulk_owner(database, lease, execution_generation)
+            if row["active_batch"] != active_batch:
+                raise PermissionError("formal bulk progress became stale")
+            if status is not None and bool(row["cancel_requested"]) != (status is TaskStatus.CANCELLED):
+                raise InterruptedError("formal bulk cancellation changed before finish")
+            database.execute(
+                """INSERT INTO formal_bulk_execution(task_id, reconciliation) VALUES (?,?)
+                   ON CONFLICT(task_id) DO UPDATE SET reconciliation=excluded.reconciliation""",
+                (task_id, json.dumps(evidence, sort_keys=True)),
+            )
+            if status is not None:
+                now = utc_now()
+                total = int(evidence.get("total_images") or 0)
+                committed = evidence.get("committed_images")
+                ratio = (100.0 * committed / total) if total and type(committed) is int else None
+                progress = 100.0 if status is TaskStatus.SUCCEEDED else ratio
+                database.execute(
+                    """UPDATE tasks SET status=?, stage=?, error=?, finished_at=?, updated_at=?,
+                              progress=COALESCE(?, progress),
+                              worker_id=NULL, lease_token=NULL, lease_expires_at=NULL WHERE task_id=?""",
+                    (status.value, status.value.lower(), evidence.get("last_error_message"), now, now,
+                     progress, task_id),
+                )
+            database.commit()
+    @retry_busy
     def heartbeat(
         self,
         task_id: str,
@@ -238,6 +355,7 @@ class FencedTaskRepository(TaskRepository):
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND kind<>'ANNOTATION_FORMAL_BULK'
                    AND lease_expires_at IS NOT NULL AND lease_expires_at>?
                 """ + generation_sql,
                 (
@@ -312,6 +430,25 @@ class FencedTaskRepository(TaskRepository):
             return "unknown"
         return "alive"
 
+    @staticmethod
+    def _process_observation_key(row):
+        return tuple(row[key] for key in ("task_id", "attempt", "lease_token", "lease_expires_at",
+                     "process_pid", "process_create_time", "process_command_hash"))
+
+    def _inspect_expired_processes(self, now):
+        with closing(self._connect()) as database:
+            rows = database.execute("SELECT * FROM tasks WHERE status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at<=?", (now,)).fetchall()
+        return {self._process_observation_key(row): self._process_recovery_state(row) for row in rows}
+
+    @retry_busy
+    def release_expired(self, now=None):
+        now_text = _iso(now)
+        token = _PROCESS_OBSERVATIONS.set(self._inspect_expired_processes(now_text))
+        try:
+            return super().release_expired(now_text)
+        finally:
+            _PROCESS_OBSERVATIONS.reset(token)
+
     def _release_expired_in(self, database, now: str) -> int:
         rows = database.execute(
             """
@@ -324,7 +461,24 @@ class FencedTaskRepository(TaskRepository):
         ).fetchall()
         released = 0
         for row in rows:
-            process_state = self._process_recovery_state(row)
+            if str(row["worker_id"] or "").startswith("agent:"):
+                # A remote Agent may have lost its control-plane connection
+                # while its OS process continues to use the GPU. Unlike a
+                # local PID, central SQLite cannot prove remote process death.
+                # Never requeue (or finalize a cancellation) on TTL alone.
+                if str(row["stage"] or "") != "recovery_blocked_remote_agent_unverified":
+                    database.execute(
+                        """UPDATE tasks
+                              SET stage='recovery_blocked_remote_agent_unverified',
+                                  resource_wait_reason='REMOTE_AGENT_STOP_UNVERIFIED: remote execution may still be running',
+                                  updated_at=?
+                            WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')""",
+                        (now, row["task_id"]),
+                    )
+                self._hold_gpu_reservation(database, row["task_id"], now)
+                continue
+            process_state = ("gone" if self._identity_from_row(row) is None else
+                             _PROCESS_OBSERVATIONS.get().get(self._process_observation_key(row), "unknown"))
             if process_state == "alive":
                 database.execute(
                     "UPDATE tasks SET stage='lease_expired_process_alive', updated_at=? WHERE task_id=?",
@@ -341,6 +495,9 @@ class FencedTaskRepository(TaskRepository):
                 continue
             status = str(row["status"])
             kind = str(row["kind"])
+            if kind == TaskKind.ANNOTATION_FORMAL_BULK.value:
+                released += self._requeue_expired_formal_bulk(database, row, now)
+                continue
             accepted = row["accepted"]
             next_status = "CANCELLED" if status == "CANCEL_REQUESTED" else "QUEUED"
             if status == "CANCEL_REQUESTED":
@@ -377,7 +534,7 @@ class FencedTaskRepository(TaskRepository):
                AND task_id NOT IN (
                     SELECT task_id FROM tasks
                      WHERE status IN ('RUNNING','CANCEL_REQUESTED')
-                       AND stage IN (?,?)
+                       AND stage IN (?,?,?)
                )
             """,
             (now, *_RECOVERY_HOLD_STAGES),

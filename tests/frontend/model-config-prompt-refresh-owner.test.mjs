@@ -12,7 +12,7 @@ function sliceFrom(startToken, endToken) {
   return app.slice(start, end);
 }
 
-const modelDelete = sliceFrom('window.deleteModelConfigV35=async function(id){', 'window.testModelConfigV35=async function(id)');
+const modelDelete = sliceFrom('window.deleteModelConfigV35=async function(id){', 'window.testModelConfigLegacyV35=async function(id)');
 const promptSave = sliceFrom("window.savePromptTemplateV35=async function(id=''){", 'window.deletePromptTemplateV35=async function(id)');
 const promptDelete = sliceFrom('window.deletePromptTemplateV35=async function(id){', '// ---------- Auto labeling ----------');
 
@@ -40,7 +40,9 @@ test('live prompt delete owns a local state removal with no global refresh', () 
 
 test('final model configuration renderer still reaches the migrated mutation owners', () => {
   const finalRenderer = app.slice(app.lastIndexOf('window.renderModelConfigPageV35=function()'));
-  assert.match(finalRenderer, /deleteModelConfigV35/);
+  assert.match(finalRenderer, /modelConfigRowsV35/);
+  const rows=app.slice(app.indexOf('function modelConfigRowsV35()'),app.indexOf('window.renderModelConfigPageV35=function()'));
+  assert.match(rows, /deleteModelConfigV35/);
   assert.equal(app.includes('onclick="savePromptTemplateV35('), true);
   assert.equal(app.includes('onclick="deletePromptTemplateV35('), true);
 });

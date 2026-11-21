@@ -1,0 +1,2008 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+import json
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from platform_core.service_nodes import ServiceNodeRepository
+from platform_core.task_node_assignments import (
+    AssignmentAwareFencedTaskRepository,
+    CentralTaskAllocator,
+    _assigned_gpu_ids,
+    task_node_capability,
+    task_node_connection_mode,
+    task_preemptible,
+    task_remote_execution_contract,
+)
+from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
+
+
+def runtime(tmp_path, repository_cls=TaskRepository):
+    repository = repository_cls(tmp_path / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    return repository, artifacts
+
+
+def create_task(repository, artifacts, task_id, kind, payload=None, *, priority=50):
+    payload_ref = "request.json"
+    artifacts.atomic_write_json(task_id, payload_ref, payload or {})
+    return repository.create(
+        TaskRecord.new(
+            task_id=task_id,
+            project_id="project-1",
+            kind=kind,
+            payload_ref=payload_ref,
+            resource_key=f"{kind.value.lower()}:{task_id}",
+            priority=priority,
+        ),
+        artifacts=artifacts,
+    )
+
+
+def create_online_node(
+    repository,
+    node_id,
+    capabilities,
+    *,
+    resources=None,
+    runtime_payload=None,
+    enabled=True,
+    connection_mode="local",
+):
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": node_id,
+        "display_name": node_id,
+        "enabled": enabled,
+        "connection_mode": connection_mode,
+        "allowed_capabilities": capabilities,
+    })
+    return nodes.heartbeat(node_id, token, {
+        "hostname": node_id,
+        "build_id": f"build-{node_id}",
+        "reported_capabilities": capabilities,
+        "resources": resources or {},
+        "runtime": runtime_payload or {},
+    })
+
+
+def training_resources(*, free0, free1=0, memory=32 * 1024**3, util0=0, util1=0):
+    gpus = [{
+        "id": "cuda:0",
+        "index": 0,
+        "uuid": "GPU-0",
+        "name": "NVIDIA A800",
+        "memory_free_bytes": free0,
+        "memory_total_bytes": 40 * 1024**3,
+        "utilization_percent": util0,
+    }]
+    if free1:
+        gpus.append({
+            "id": "cuda:1",
+            "index": 1,
+            "uuid": "GPU-1",
+            "name": "NVIDIA A800",
+            "memory_free_bytes": free1,
+            "memory_total_bytes": 40 * 1024**3,
+            "utilization_percent": util1,
+        })
+    return {
+        "cpu": {"logical_cores": 16},
+        "memory": {"available_bytes": memory},
+        "disk": {"free_bytes": 500 * 1024**3},
+        "gpu": {"available": True, "gpus": gpus},
+    }
+
+
+def test_allocator_requires_online_allowed_and_reported_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-eligible", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-good",
+        ["training"],
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-disabled",
+        ["training"],
+        enabled=False,
+        resources=training_resources(free0=39 * 1024**3),
+    )
+
+    nodes = ServiceNodeRepository(repository)
+    _node, mismatch_token = nodes.create({
+        "node_id": "gpu-mismatch",
+        "display_name": "gpu-mismatch",
+        "connection_mode": "local",
+        "allowed_capabilities": ["training", "conversion"],
+    })
+    nodes.heartbeat("gpu-mismatch", mismatch_token, {
+        "reported_capabilities": ["conversion"],
+        "resources": training_resources(free0=39 * 1024**3),
+    })
+
+    _node, stale_token = nodes.create({
+        "node_id": "gpu-stale",
+        "display_name": "gpu-stale",
+        "connection_mode": "local",
+        "allowed_capabilities": ["training"],
+    })
+    nodes.heartbeat("gpu-stale", stale_token, {
+        "reported_capabilities": ["training"],
+        "resources": training_resources(free0=39 * 1024**3),
+    })
+    stale_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE service_nodes SET last_heartbeat_at=? WHERE node_id=?",
+            (stale_at, "gpu-stale"),
+        )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-good"
+    assert assignment["capability"] == "training"
+
+
+def test_training_assignment_chooses_best_node_and_gpu_and_persists_execution_snapshot(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-choice", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-small",
+        ["training"],
+        resources=training_resources(free0=8 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-large",
+        ["training"],
+        resources=training_resources(free0=12 * 1024**3, free1=30 * 1024**3),
+        runtime_payload={"torch_version": "2.5.0+cu124", "cuda_version": "12.4"},
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment["node_id"] == "gpu-large"
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["protocol"] == "agent-http-v1"
+    assert resolved["selected_device"] == "cuda:1"
+    assert resolved["selected_gpu"]["memory_free_bytes"] == 30 * 1024**3
+    assert resolved["node_build_id"] == "build-gpu-large"
+    assert resolved["node_runtime"]["cuda_version"] == "12.4"
+
+
+def test_training_assignment_prefers_less_busy_gpu_when_vram_is_close(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-utilization", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-busy",
+        ["training"],
+        resources=training_resources(free0=22 * 1024**3, util0=95),
+    )
+    create_online_node(
+        repository,
+        "gpu-idle",
+        ["training"],
+        resources=training_resources(free0=21 * 1024**3, util0=5),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-idle"
+    assert assignment["resolved_execution_config"]["selected_gpu"]["utilization_percent"] == 5
+
+
+def test_training_assignment_waits_when_only_gpu_is_externally_saturated(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-busy-only", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-busy-only",
+        ["training"],
+        resources=training_resources(free0=22 * 1024**3, util0=95),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is None
+    assert repository.get("train-busy-only").status is TaskStatus.QUEUED
+
+
+def test_training_assignment_waits_when_only_gpu_has_too_little_relative_vram(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-low-vram-only", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-low-vram-only",
+        ["training"],
+        resources=training_resources(free0=2 * 1024**3, util0=5),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is None
+    assert repository.get("train-low-vram-only").status is TaskStatus.QUEUED
+
+
+def test_manual_training_device_is_respected_even_when_another_gpu_ranks_higher(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-gpu",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+    )
+    create_online_node(
+        repository,
+        "gpu-node",
+        ["training"],
+        resources=training_resources(
+            free0=35 * 1024**3,
+            free1=18 * 1024**3,
+            util0=1,
+            util1=40,
+        ),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is not None
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["requested_device"] == "cuda:1"
+    assert resolved["selected_device"] == "cuda:1"
+
+
+def test_manual_training_device_stays_queued_when_requested_gpu_is_reserved(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-first",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+        priority=10,
+    )
+    create_online_node(
+        repository,
+        "gpu-dual-manual",
+        ["training"],
+        resources=training_resources(
+            free0=30 * 1024**3,
+            free1=20 * 1024**3,
+        ),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    assert first is not None
+    assert first["resolved_execution_config"]["selected_device"] == "cuda:1"
+
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-second",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+        priority=20,
+    )
+    second = allocator.assign_next()
+
+    assert second is None
+    assert repository.get("train-manual-second").status is TaskStatus.QUEUED
+    assert len(allocator.list(active_only=True, node_id="gpu-dual-manual")) == 1
+
+
+def test_manual_training_device_can_select_another_node_with_that_gpu(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-cross-node",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+    )
+    create_online_node(
+        repository,
+        "gpu-single-high-score",
+        ["training"],
+        resources=training_resources(free0=39 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-dual-target",
+        ["training"],
+        resources=training_resources(free0=10 * 1024**3, free1=12 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-dual-target"
+    assert assignment["resolved_execution_config"]["selected_device"] == "cuda:1"
+
+
+def test_training_assignment_prefers_less_busy_gpu_inside_selected_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-utilization-local", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-node",
+        ["training"],
+        resources=training_resources(
+            free0=22 * 1024**3,
+            free1=21 * 1024**3,
+            util0=95,
+            util1=5,
+        ),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["resolved_execution_config"]["selected_device"] == "cuda:1"
+
+
+def test_training_assignment_prefers_gpu_node_over_idle_cpu_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-over-cpu", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "cpu-idle",
+        ["training"],
+        resources={
+            "cpu": {"logical_cores": 64},
+            "memory": {"available_bytes": 128 * 1024**3},
+            "disk": {"free_bytes": 1024 * 1024**3},
+            "gpu": {"available": False, "gpus": []},
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-available",
+        ["training"],
+        resources=training_resources(free0=12 * 1024**3, util0=15),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-available"
+    assert assignment["resolved_execution_config"]["selected_device"] == "cuda:0"
+
+
+def test_training_node_busy_penalty_does_not_hide_large_real_gpu_headroom(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "existing-active", TaskKind.TRAINING)
+    create_task(repository, artifacts, "train-headroom", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-small-idle",
+        ["training"],
+        resources=training_resources(free0=4 * 1024**3, util0=5),
+    )
+    create_online_node(
+        repository,
+        "gpu-large-active",
+        ["training"],
+        resources=training_resources(free0=24 * 1024**3, util0=5),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    assert first is not None
+    # Release whichever node the first task selected and seed one active
+    # assignment explicitly on the large node through the assignment table.
+    allocator.release(first["task_id"], "test-setup")
+    with repository._connect() as database:
+        database.execute(
+            """
+            INSERT INTO task_node_assignments
+                (task_id,generation,node_id,capability,state,assigned_at,updated_at,resolved_execution_config)
+            VALUES ('synthetic-active',1,'gpu-large-active','training','ASSIGNED',
+                    '2026-09-23T00:00:00+00:00','2026-09-23T00:00:00+00:00','{}')
+            """
+        )
+    assignment = allocator.assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-large-active"
+
+
+def test_multi_gpu_node_assigns_distinct_gpus_then_queues_next_task(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    for task_id in ("train-gpu-a", "train-gpu-b", "train-gpu-c"):
+        create_task(repository, artifacts, task_id, TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-dual",
+        ["training"],
+        resources=training_resources(
+            free0=20 * 1024**3,
+            free1=18 * 1024**3,
+            util0=5,
+            util1=5,
+        ),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    second = allocator.assign_next()
+    third = allocator.assign_next()
+
+    assert first is not None
+    assert second is not None
+    assert {
+        first["resolved_execution_config"]["selected_device"],
+        second["resolved_execution_config"]["selected_device"],
+    } == {"cuda:0", "cuda:1"}
+    assert first["resolved_execution_config"]["concurrent_reservations"] == 1
+    assert second["resolved_execution_config"]["concurrent_reservations"] == 2
+    assert third is None
+    assert len(allocator.list(active_only=True, node_id="gpu-dual")) == 2
+
+
+def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    clean = create_task(
+        repository, artifacts, "batch-clean", TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN", "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1, "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    assert task_node_capability(clean, artifacts) == "cleaning"
+
+
+@pytest.mark.parametrize("kind, operation", [
+    (TaskKind.AI_ANNOTATION, None),
+    (TaskKind.VIDEO_FRAMES, None),
+    (TaskKind.CLEANING, None),
+    (TaskKind.MATERIAL_BATCH, "AI_ANNOTATE"),
+    (TaskKind.MATERIAL_BATCH, "SMART_AUDIT"),
+    (TaskKind.MATERIAL_BATCH, "AUDIT_MATERIAL_INTEGRITY"),
+    (TaskKind.MATERIAL_BATCH, "AUDIT_LABEL_INTEGRITY"),
+    (TaskKind.MATERIAL_BATCH, "REMAP_ANNOTATION_LABELS"),
+    (TaskKind.MATERIAL_BATCH, "REPAIR_ANNOTATION_PROJECTIONS"),
+    (TaskKind.MATERIAL_BATCH, "DELETE_INDEX"),
+    (TaskKind.MATERIAL_BATCH, "MOVE"),
+    (TaskKind.MATERIAL_BATCH, "CLEAN"),
+])
+def test_unsupported_remote_operations_remain_unassigned_and_local_worker_can_claim(
+    tmp_path, kind, operation,
+):
+    repository, artifacts = runtime(tmp_path)
+    payload = {
+        "remote_execution": {
+            "version": 1, "task_kind": kind.value,
+            "transport": "agent-artifact-v1",
+        },
+    }
+    if operation:
+        payload["operation"] = operation
+    # CLEAN without explicit agent mode remains a local MaterialBatch operation.
+    task = create_task(repository, artifacts, "local-owner", kind, payload)
+    create_online_node(
+        repository, "local-node",
+        ["annotation", "video", "cleaning", "material-import"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository, "remote-node",
+        ["annotation", "video", "cleaning", "material-import"],
+        connection_mode="agent",
+    )
+    assert task_node_capability(task, artifacts) is None
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+    worker = AssignmentAwareFencedTaskRepository(repository.path)
+    lease = worker.claim_next("existing-worker", (kind,), (), lease_seconds=30)
+    assert lease is not None
+    assert lease.task.task_id == task.task_id
+
+
+def test_explicit_agent_clean_without_portable_contract_cannot_assign_local_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository, artifacts, "agent-clean-unprepared", TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    create_online_node(repository, "local-node", ["cleaning"], connection_mode="local")
+    assert task_node_capability(task, artifacts) == "cleaning"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+
+def test_clean_manual_node_affinity_never_spills_to_another_eligible_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "batch-clean-pinned",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": "clean-agent-b", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "clean-agent-a",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 64 * 1024**3}, "disk": {"free_bytes": 500 * 1024**3}},
+    )
+    create_online_node(
+        repository,
+        "clean-agent-b",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 50 * 1024**3}},
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "clean-agent-b"
+
+
+
+def test_clean_auto_scheduling_prefers_idle_agent_over_stronger_busy_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_online_node(
+        repository,
+        "clean-idle-a",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 50 * 1024**3}},
+    )
+    create_online_node(
+        repository,
+        "clean-busy-b",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 512 * 1024**3}, "disk": {"free_bytes": 100 * 1024**4}},
+    )
+    create_task(
+        repository,
+        artifacts,
+        "clean-running-on-b",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": "clean-busy-b", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    reserved = allocator.assign_next()
+    assert reserved and reserved["node_id"] == "clean-busy-b"
+    allocator.release("clean-running-on-b", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='scanning',worker_id='agent:clean-busy-b' "
+            "WHERE task_id='clean-running-on-b'"
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-auto-next",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "auto", "node_id": "", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    assignment = allocator.assign_next()
+    assert assignment is not None
+    assert assignment["task_id"] == "clean-auto-next"
+    assert assignment["node_id"] == "clean-idle-a"
+
+
+
+def test_clean_preemption_cancels_recoverable_victim_then_requeues_it_after_preemptor_finishes(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    node_id = "clean-preempt-agent"
+    create_online_node(
+        repository,
+        node_id,
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 16 * 1024**3}, "disk": {"free_bytes": 100 * 1024**3}},
+    )
+    create_task(
+        repository,
+        artifacts,
+        "clean-victim",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    victim_assignment = allocator.assign_next()
+    assert victim_assignment and victim_assignment["task_id"] == "clean-victim"
+    allocator.release("clean-victim", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='scanning',worker_id=? WHERE task_id='clean-victim'",
+            (f"agent:{node_id}",),
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-preemptor",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": node_id, "queue_policy": "preempt"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    event = allocator.preempt_for("clean-preemptor", node_id)
+    assert event["preempted_task_ids"] == ["clean-victim"]
+    assert repository.get("clean-victim").status is TaskStatus.CANCEL_REQUESTED
+
+    # Simulate the fenced Agent acknowledging cancellation, then the incoming
+    # clean finishing. The allocator owns the durable auto-resume transition.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCELLED',stage='cancelled',finished_at=updated_at WHERE task_id='clean-victim'"
+        )
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED',stage='succeeded',finished_at=updated_at WHERE task_id='clean-preemptor'"
+        )
+    allocator.assign_next()
+    resumed = repository.get("clean-victim")
+    assert resumed is not None
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.retry_of == "clean-victim"
+    lineage = allocator.list_preemptions(incoming_task_id="clean-preemptor")
+    assert lineage[0]["state"] == "RESUMED"
+
+
+def test_clean_preemption_fails_closed_for_nonrecoverable_running_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    node_id = "mixed-preempt-agent"
+    create_online_node(
+        repository,
+        node_id,
+        ["cleaning", "conversion"],
+        connection_mode="agent",
+    )
+    create_task(
+        repository,
+        artifacts,
+        "conversion-victim",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=10,
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    victim_assignment = allocator.assign_next()
+    assert victim_assignment and victim_assignment["task_id"] == "conversion-victim"
+    allocator.release("conversion-victim", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='converting',worker_id=? WHERE task_id='conversion-victim'",
+            (f"agent:{node_id}",),
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-cannot-preempt",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": node_id, "queue_policy": "preempt"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    with pytest.raises(Exception, match="non-preemptible task"):
+        allocator.preempt_for("clean-cannot-preempt", node_id)
+    assert repository.get("conversion-victim").status is TaskStatus.RUNNING
+
+
+def test_remote_training_is_not_preemptible_without_agent_pause_release_contract(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "remote-training-preempt-guard",
+        TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    assert task_preemptible(task, artifacts) is False
+
+
+def test_portable_clean_material_batch_selects_only_agent_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "batch-clean-agent",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(repository, "clean-local", ["cleaning"], connection_mode="local")
+    create_online_node(repository, "clean-agent", ["cleaning"], connection_mode="agent")
+
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "clean-agent"
+    assert assignment["capability"] == "cleaning"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_agent_clean_material_batch_without_portable_contract_never_falls_back_local(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "batch-clean-agent-unprepared",
+        TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    create_online_node(repository, "clean-local", ["cleaning"], connection_mode="local")
+    create_online_node(repository, "clean-agent", ["cleaning"], connection_mode="agent")
+
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+
+def test_training_prepare_remains_control_plane_local_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "train-prep",
+        TaskKind.TRAINING_PREPARE,
+        {"training_task_id": "train-target"},
+    )
+    assert task_node_capability(task, artifacts) is None
+
+
+def test_explicit_remote_training_never_falls_back_to_local_node_while_unprepared(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "train-remote-preparing",
+        TaskKind.TRAINING,
+        {"target": "remote", "epochs": 30},
+    )
+    create_online_node(
+        repository,
+        "gpu-local-fast",
+        ["training"],
+        connection_mode="local",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-agent",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+    assert repository.get("train-remote-preparing").status is TaskStatus.QUEUED
+
+
+def test_explicit_remote_training_with_portable_contract_uses_agent_even_if_local_scores_higher(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-remote-ready",
+        TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-local-fast",
+        ["training"],
+        connection_mode="local",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-agent-ready",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=12 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-agent-ready"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_material_import_agent_mode_requires_portable_contract_and_never_falls_back_local(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "material-agent-no-contract",
+        TaskKind.MATERIAL_IMPORT,
+        {"execution_mode": "agent"},
+    )
+    create_online_node(
+        repository,
+        "material-local",
+        ["material-import"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "material-agent",
+        ["material-import"],
+        connection_mode="agent",
+    )
+
+    assert task_node_connection_mode(
+        repository.get("material-agent-no-contract"),
+        artifacts,
+    ) == "agent"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+
+def test_portable_material_import_agent_mode_selects_only_agent_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "material-agent-ready",
+        TaskKind.MATERIAL_IMPORT,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "material-local",
+        ["material-import"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "material-agent",
+        ["material-import"],
+        connection_mode="agent",
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "material-agent"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_portable_conversion_stays_local_until_execution_mode_is_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "convert-portable-local",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "local",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "conversion-local",
+        ["conversion"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "conversion-local"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "local"
+
+
+def test_explicit_agent_conversion_requires_portable_contract_and_agent_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "convert-agent-no-contract",
+        TaskKind.MODEL_CONVERSION,
+        {"execution_mode": "agent"},
+    )
+    create_online_node(
+        repository,
+        "conversion-local",
+        ["conversion"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+    repository2, artifacts2 = runtime(tmp_path / "ready")
+    create_task(
+        repository2,
+        artifacts2,
+        "convert-agent-ready",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository2,
+        "conversion-local",
+        ["conversion"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository2,
+        "conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+    assignment = CentralTaskAllocator(repository2, artifacts2).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "conversion-agent"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_legacy_task_is_never_assigned_to_remote_agent_without_portable_contract(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-legacy-remote",
+        TaskKind.TRAINING,
+        {
+            "model_path": "/control-plane/models/base.pt",
+            "dataset_path": "C:\\control-plane\\datasets\\train",
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-remote-only",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next() is None
+    assert allocator.list(active_only=True) == []
+    assert repository.get("train-legacy-remote").status is TaskStatus.QUEUED
+
+
+def test_local_node_can_execute_legacy_path_bound_task_without_remote_contract(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-local-legacy",
+        TaskKind.TRAINING,
+        {"model_path": "/control-plane/models/base.pt"},
+    )
+    create_online_node(
+        repository,
+        "gpu-local",
+        ["training"],
+        connection_mode="local",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-remote",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-local"
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["connection_mode"] == "local"
+    assert resolved["remote_execution"] is None
+
+
+def test_portable_contract_allows_remote_agent_and_scheduler_snapshot_is_sanitized(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-portable",
+        TaskKind.TRAINING,
+        {
+            "epochs": 30,
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+                "credentials": {"secret": "must-not-enter-scheduler-truth"},
+                "download_url": "https://signed.example.test/private",
+                "control_plane_path": "/srv/private/model.pt",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-portable-agent",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=30 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-portable-agent"
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["connection_mode"] == "agent"
+    assert resolved["remote_execution"] == {
+        "version": 1,
+        "task_kind": "TRAINING",
+        "transport": "object-storage-v1",
+    }
+    serialized = str(resolved)
+    assert "must-not-enter-scheduler-truth" not in serialized
+    assert "signed.example.test" not in serialized
+    assert "/srv/private/model.pt" not in serialized
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        None,
+        "not-an-object",
+        {"version": 2, "task_kind": "TRAINING", "transport": "object-storage-v1"},
+        {"version": 1, "task_kind": "MODEL_CONVERSION", "transport": "object-storage-v1"},
+        {"version": 1, "task_kind": "TRAINING", "transport": "shared-nfs"},
+    ],
+)
+def test_invalid_remote_execution_contracts_fail_closed(tmp_path, contract):
+    repository, artifacts = runtime(tmp_path)
+    payload = {"epochs": 30}
+    if contract is not None:
+        payload["remote_execution"] = contract
+    task = create_task(
+        repository,
+        artifacts,
+        "train-contract-check",
+        TaskKind.TRAINING,
+        payload,
+    )
+    assert task_remote_execution_contract(task, artifacts) is None
+
+
+def test_agent_only_auto_assignment_fences_local_queue_and_requires_portable_intent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    local = create_task(
+        repository, artifacts, "train-local-first", TaskKind.TRAINING,
+        {
+            "epochs": 10,
+            # Portable metadata alone cannot turn a local training task remote.
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=1,
+    )
+    create_task(
+        repository, artifacts, "train-remote-second", TaskKind.TRAINING,
+        {
+            "target": "remote", "epochs": 10,
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    create_online_node(
+        repository, "a800-local", ["training"], connection_mode="local",
+        resources=training_resources(free0=30 * 1024**3),
+    )
+    create_online_node(
+        repository, "gpu-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assignment = allocator.assign_next(agent_only=True)
+    assert assignment is not None
+    assert assignment["task_id"] == "train-remote-second"
+    assert assignment["node_id"] == "gpu-agent"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+    assert allocator.assign_next(agent_only=True) is None
+    assert [item["task_id"] for item in allocator.list(active_only=True)] == [
+        "train-remote-second"
+    ]
+    local_worker = AssignmentAwareFencedTaskRepository(repository.path)
+    lease = local_worker.claim_next(
+        "local-training-worker", [TaskKind.TRAINING], [], lease_seconds=30
+    )
+    assert lease is not None
+    assert lease.task.task_id == local.task_id
+
+
+def test_agent_auto_preflight_does_not_hold_writer_lock_while_reading_local_payload(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    local = create_task(
+        repository, artifacts, "local-payload-probe", TaskKind.TRAINING,
+        {"epochs": 10}, priority=1,
+    )
+    create_task(
+        repository, artifacts, "remote-after-local", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    create_online_node(
+        repository, "gpu-remote", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    original_read_json = artifacts.read_json
+
+    def read_json_and_check_writer_not_held(task_id, *args, **kwargs):
+        if task_id == local.task_id:
+            # Local task inspection must not monopolize the SQLite writer.
+            # Simulate another Web/Worker request needing a write transaction.
+            with sqlite3.connect(
+                repository.path, timeout=0.05, isolation_level=None,
+            ) as other:
+                other.execute("BEGIN IMMEDIATE")
+                other.rollback()
+        return original_read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", read_json_and_check_writer_not_held)
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assigned = allocator.assign_next(agent_only=True)
+    assert assigned is not None
+    assert assigned["task_id"] == "remote-after-local"
+    assert repository.get(local.task_id).status is TaskStatus.QUEUED
+
+
+def test_agent_auto_discovers_remote_task_behind_large_local_queue(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    local = create_task(
+        repository, artifacts, "bulk-local-example", TaskKind.TRAINING,
+        {"epochs": 10}, priority=1,
+    )
+    remote = create_task(
+        repository, artifacts, "bulk-remote-last", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    # Generate isolated SQLite metadata, not thousands of fake train inputs
+    # or browser requests. All local rows have no matching remote payload,
+    # like a training queue that is irrelevant to an Agent.
+    with repository._connect() as database:
+        database.execute("BEGIN IMMEDIATE")
+        template = database.execute(
+            "SELECT * FROM tasks WHERE task_id=?", (local.task_id,),
+        ).fetchone()
+        columns = list(template.keys())
+        variables = ",".join("?" for _ in columns)
+        statement = (
+            f"INSERT INTO tasks ({','.join(columns)}) VALUES ({variables})"
+        )
+        positions = {name: index for index, name in enumerate(columns)}
+        base = tuple(template[name] for name in columns)
+        rows = []
+        for index in range(1500):
+            values = list(base)
+            values[positions["task_id"]] = f"bulk-local-{index:05d}"
+            rows.append(tuple(values))
+        database.executemany(statement, rows)
+        database.commit()
+    create_online_node(
+        repository, "remote-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert assignment is not None
+    assert assignment["task_id"] == remote.task_id
+    assert repository.get(local.task_id).status is TaskStatus.QUEUED
+    assert len(CentralTaskAllocator(repository, artifacts).list(active_only=True)) == 1
+
+
+def test_agent_only_auto_assignment_has_one_real_executor_slot(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    for task_id in ("remote-first", "remote-second"):
+        create_task(
+            repository, artifacts, task_id, TaskKind.TRAINING,
+            {
+                "target": "remote",
+                "remote_execution": {
+                    "version": 1, "task_kind": "TRAINING",
+                    "transport": "object-storage-v1",
+                },
+            },
+        )
+    create_online_node(
+        repository, "two-gpu-serial-agent", ["training"],
+        connection_mode="agent",
+        resources=training_resources(
+            free0=25 * 1024**3, free1=24 * 1024**3
+        ),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next(agent_only=True)
+    assert first is not None
+    # The existing Agent executor is sequential, even with two GPUs. Do not
+    # pre-reserve a second task on a node unable to execute it concurrently.
+    assert allocator.assign_next(agent_only=True) is None
+    assert len(allocator.list(active_only=True)) == 1
+    allocator.release(first["task_id"], "test-release")
+    # Released but still queued work can be selected again; no false claim
+    # that the second task started merely because another GPU exists.
+    assert allocator.assign_next(agent_only=True) is not None
+
+
+def test_agent_only_auto_assignment_respects_strict_manual_node_pin(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository, artifacts, "remote-pinned-offline", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "scheduling": {"mode": "node", "node_id": "offline-pinned"},
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository, "other-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next(agent_only=True) is None
+    assert allocator.list(active_only=True) == []
+
+
+def test_repeated_and_concurrent_allocate_next_create_only_one_active_assignment(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-once", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-one",
+        ["training"],
+        resources=training_resources(free0=20 * 1024**3),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+
+    def allocate():
+        return allocator.assign_next()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: allocate(), range(2)))
+
+    assert sum(result is not None for result in results) == 1
+    active = allocator.list(active_only=True)
+    assert len(active) == 1
+    assert active[0]["task_id"] == "train-once"
+
+
+def test_assignment_claim_is_node_scoped_reclaimable_and_keeps_task_queued(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-claim", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-claim",
+        ["training"],
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assignment = allocator.assign_next()
+    assert assignment["state"] == "ASSIGNED"
+    assert allocator.claim_for_node("other-node") is None
+
+    first = allocator.claim_for_node("gpu-claim", lease_seconds=5)
+    assert first["state"] == "CLAIMED"
+    assert first["assignment_lease_token"]
+    assert repository.get("train-claim").status is TaskStatus.QUEUED
+
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE task_node_assignments SET lease_expires_at=? WHERE task_id=? AND state='CLAIMED'",
+            ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), "train-claim"),
+        )
+    second = allocator.claim_for_node("gpu-claim", lease_seconds=5)
+    assert second["state"] == "CLAIMED"
+    assert second["assignment_lease_token"] != first["assignment_lease_token"]
+    assert repository.get("train-claim").status is TaskStatus.QUEUED
+
+
+def test_release_allows_new_generation_assignment(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-generation", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-generation",
+        ["training"],
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    released = allocator.release("train-generation", "manual-test")
+    second = allocator.assign_next()
+
+    assert first["generation"] == 1
+    assert released["state"] == "RELEASED"
+    assert released["release_reason"] == "manual-test"
+    assert second["generation"] == 2
+    assert len(allocator.list(active_only=True)) == 1
+
+
+def test_local_worker_never_claims_remote_training_before_agent_assignment(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    remote_task = create_task(
+        repository, artifacts, "train-remote-owned", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=1,
+    )
+    # The preparation owner publishes this resource_key when remote inputs
+    # become ready. It must not be claimed by the A800/local training Worker,
+    # even while an Agent is offline or before auto assignment is enabled.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET resource_key=? WHERE task_id=?",
+            ("training:remote:scheduler", remote_task.task_id),
+        )
+    local_task = create_task(
+        repository, artifacts, "train-existing-local", TaskKind.TRAINING,
+        {"epochs": 3},
+        priority=50,
+    )
+    worker = AssignmentAwareFencedTaskRepository(repository.path)
+    claimed = worker.claim_next(
+        "a800-local-worker", [TaskKind.TRAINING], [], lease_seconds=30,
+    )
+    assert claimed is not None
+    assert claimed.task.task_id == local_task.task_id
+    assert repository.get(remote_task.task_id).status is TaskStatus.QUEUED
+    assert CentralTaskAllocator(repository, artifacts).list(active_only=True) == []
+
+
+def test_central_assignment_fences_legacy_worker_until_release(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-fenced", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-central",
+        ["training"],
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    allocator.assign_next()
+
+    legacy = AssignmentAwareFencedTaskRepository(repository.path)
+    blocked = legacy.claim_next("legacy-worker", [TaskKind.TRAINING], [], lease_seconds=30)
+    assert blocked is None
+    queued = legacy.get("train-fenced")
+    assert queued.status is TaskStatus.QUEUED
+    assert queued.stage == "resource_waiting"
+    assert queued.resource_wait_reason.startswith("CENTRAL_NODE_ASSIGNED:")
+    assert "gpu-central" in queued.resource_wait_reason
+
+    allocator.release("train-fenced", "return-to-legacy")
+    lease = legacy.claim_next("legacy-worker", [TaskKind.TRAINING], [], lease_seconds=30)
+    assert lease is not None
+    assert lease.task.task_id == "train-fenced"
+    assert lease.task.status is TaskStatus.RUNNING
+    assert lease.task.attempt == 1
+
+
+class TracedRepository(TaskRepository):
+    def __init__(self, path):
+        self.sql_trace = []
+        super().__init__(path)
+
+    def _connect(self):
+        database = super()._connect()
+        database.set_trace_callback(self.sql_trace.append)
+        return database
+
+
+def test_allocator_never_runs_schema_script_inside_assignment_transaction(tmp_path):
+    repository, artifacts = runtime(tmp_path, TracedRepository)
+    create_task(repository, artifacts, "train-atomic", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-atomic",
+        ["training"],
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    repository.sql_trace.clear()
+
+    assignment = allocator.assign_next()
+    assert assignment is not None
+    normalized = [statement.strip().upper() for statement in repository.sql_trace]
+    assert any(statement.startswith("BEGIN IMMEDIATE") for statement in normalized)
+    assert not any(statement.startswith("CREATE TABLE") for statement in normalized)
+    assert not any(statement.startswith("CREATE INDEX") for statement in normalized)
+
+
+def test_agent_rockchip_conversion_requires_dedicated_rknn_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "convert-rknn-agent",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "target": "rockchip",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+                "conversion": {"target": "rockchip"},
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "generic-conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+    create_online_node(
+        repository,
+        "rknn-conversion-agent",
+        ["conversion.rknn"],
+        connection_mode="agent",
+        runtime_payload={
+            "rknn_toolkit2": {
+                "available": True,
+                "version": "2.3.2",
+                "supported_chips": ["rk3568", "rk3576"],
+            },
+        },
+    )
+
+    assert task_node_capability(task, artifacts) == "conversion.rknn"
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "rknn-conversion-agent"
+    assert assignment["capability"] == "conversion.rknn"
+    assert assignment["resolved_execution_config"]["capability"] == "conversion.rknn"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_local_rockchip_conversion_keeps_existing_conversion_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "convert-rknn-local",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "local",
+            "target": "rockchip",
+        },
+    )
+    assert task_node_capability(task, artifacts) == "conversion"
+
+
+def test_rknn_board_deployment_test_routes_only_to_matching_agent_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "rknn-board-test",
+        TaskKind.DEPLOYMENT_TEST,
+        {
+            "execution_mode": "agent",
+            "runtime_format": "rknn",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "DEPLOYMENT_TEST",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository, "generic-deploy", ["deployment-test"], connection_mode="agent"
+    )
+    create_online_node(
+        repository, "rknn-board", ["deployment-test.rknn"], connection_mode="agent"
+    )
+
+    assert task_node_capability(task, artifacts) == "deployment-test.rknn"
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "rknn-board"
+    assert assignment["capability"] == "deployment-test.rknn"
+
+
+def test_legacy_deployment_test_keeps_generic_capability_and_no_forced_connection_mode(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "legacy-deploy-test",
+        TaskKind.DEPLOYMENT_TEST,
+        {"runtime_format": "onnx"},
+    )
+    assert task_node_capability(task, artifacts) == "deployment-test"
+    assert task_node_connection_mode(task, artifacts) is None
+
+
+def test_confirmed_material_import_is_released_back_to_local_worker_owner(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "material-confirmed-local-owner",
+        TaskKind.MATERIAL_IMPORT,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET accepted=1, status='QUEUED', stage='indexing_queued' WHERE task_id=?",
+            (task.task_id,),
+        )
+    confirmed = repository.get(task.task_id)
+    assert confirmed.accepted is True
+    assert task_node_capability(confirmed, artifacts) is None
+
+
+def test_running_agent_still_excludes_its_gpu_after_assignment_release():
+    """Central allocator must not reuse cuda:0 while Agent training is RUNNING."""
+    database = sqlite3.connect(":memory:")
+    database.row_factory = sqlite3.Row
+    try:
+        database.execute(
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, worker_id TEXT)"
+        )
+        database.execute(
+            "CREATE TABLE task_node_assignments "
+            "(task_id TEXT, node_id TEXT, state TEXT, resolved_execution_config TEXT)"
+        )
+        database.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?)",
+            ("training-active", "RUNNING", "agent:gpu-node"),
+        )
+        database.execute(
+            "INSERT INTO task_node_assignments VALUES (?, ?, ?, ?)",
+            (
+                "training-active", "gpu-node", "RELEASED",
+                json.dumps({"selected_gpu": {"id": "cuda:0"}}),
+            ),
+        )
+        assert _assigned_gpu_ids(database, "gpu-node") == {"cuda:0"}
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED' WHERE task_id='training-active'"
+        )
+        assert _assigned_gpu_ids(database, "gpu-node") == set()
+    finally:
+        database.close()
+
+
+# P0-01A performance RED: Agent-only polling must not turn a huge local or
+# already-unschedulable queue into unbounded JSON reads. No production data.
+def test_agent_auto_skips_canonical_local_training_queue_without_payload_scan(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    local_ids = []
+    for index in range(48):
+        task = create_task(
+            repository, artifacts, f"local-auto-{index:03d}", TaskKind.TRAINING,
+            {"epochs": 2}, priority=1,
+        )
+        local_ids.append(task.task_id)
+    with repository._connect() as database:
+        database.executemany(
+            "UPDATE tasks SET resource_key='training:auto' WHERE task_id=?",
+            [(task_id,) for task_id in local_ids],
+        )
+    create_task(
+        repository, artifacts, "remote-after-auto", TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        }, priority=50,
+    )
+    create_online_node(
+        repository, "available-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    read_ids = []
+    read_json = artifacts.read_json
+
+    def track_reads(task_id, *args, **kwargs):
+        read_ids.append(task_id)
+        return read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", track_reads)
+    selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert selected is not None and selected["task_id"] == "remote-after-auto"
+    assert not set(local_ids).intersection(read_ids), (
+        "Canonical local-only training:auto tasks must not require JSON reads"
+    )
+
+
+def test_agent_auto_eligible_remote_head_does_not_read_entire_queue(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    for index in range(64):
+        create_task(
+            repository, artifacts, f"eligible-remote-{index:03d}",
+            TaskKind.TRAINING, {
+                "target": "remote",
+                "remote_execution": {
+                    "version": 1, "task_kind": "TRAINING",
+                    "transport": "object-storage-v1",
+                },
+            },
+        )
+    create_online_node(
+        repository, "free-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    reads = []
+    read_json = artifacts.read_json
+
+    def track_reads(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", track_reads)
+    selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert selected is not None
+    assert len(set(reads)) <= 16, (
+        "An immediately runnable head must not pre-read every remote payload"
+    )
+
+
+def test_agent_auto_scans_past_many_offline_pins_to_later_eligible_task(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    remote_contract = {
+        "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1",
+    }
+    for index in range(72):
+        create_task(
+            repository, artifacts, f"strict-offline-{index:03d}",
+            TaskKind.TRAINING, {
+                "target": "remote",
+                "scheduling": {"mode": "node", "node_id": "missing-agent"},
+                "remote_execution": remote_contract,
+            }, priority=1,
+        )
+    create_task(
+        repository, artifacts, "unblocked-after-pins", TaskKind.TRAINING, {
+            "target": "remote", "remote_execution": remote_contract,
+        }, priority=50,
+    )
+    create_online_node(
+        repository, "live-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert selected is not None
+    assert selected["task_id"] == "unblocked-after-pins"
+    assert selected["node_id"] == "live-agent"
+
+
+def test_agent_auto_full_agent_has_zero_candidate_payload_reads(tmp_path, monkeypatch):
+    repository, artifacts = runtime(tmp_path)
+    remote_contract = {
+        "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1",
+    }
+    for index in range(40):
+        create_task(
+            repository, artifacts, f"busy-remote-{index:03d}", TaskKind.TRAINING,
+            {"target": "remote", "remote_execution": remote_contract},
+        )
+    create_online_node(
+        repository, "single-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next(agent_only=True) is not None
+    reads = []
+    read_json = artifacts.read_json
+
+    def track_reads(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", track_reads)
+    assert allocator.assign_next(agent_only=True) is None
+    assert not reads, "A fully occupied Agent should short-circuit without JSON I/O"
+
+
+def test_legacy_training_auto_fallback_scan_is_bounded_and_advances(tmp_path, monkeypatch):
+    """Legacy payload-only remote intent must eventually be found without
+    reading the entire canonical local training:auto queue on every poll.
+    The cursor is an optimization hint across *new allocator instances*, not
+    an ownership or task-status source of truth.
+    """
+    repository, artifacts = runtime(tmp_path)
+    local_ids = []
+    for index in range(96):
+        task = create_task(
+            repository, artifacts, f"fallback-local-{index:03d}",
+            TaskKind.TRAINING, {"epochs": 2}, priority=1,
+        )
+        local_ids.append(task.task_id)
+    legacy_remote = create_task(
+        repository, artifacts, "fallback-legacy-remote",
+        TaskKind.TRAINING, {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1, "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        }, priority=50,
+    )
+    with repository._connect() as database:
+        database.executemany(
+            "UPDATE tasks SET resource_key='training:auto' WHERE task_id=?",
+            [(task_id,) for task_id in (*local_ids, legacy_remote.task_id)],
+        )
+    create_online_node(
+        repository, "fallback-agent", ["training"], connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    real_read_json = artifacts.read_json
+    reads = []
+
+    def tracked_read(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return real_read_json(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", tracked_read)
+    selected = None
+    for _ in range(4):
+        reads.clear()
+        # Emulate FastAPI per-request allocator reconstruction.
+        selected = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+        assert len(set(local_ids).intersection(reads)) <= 64, (
+            "Compatibility scan must be bounded per Agent polling request"
+        )
+        if selected is not None:
+            break
+    assert selected is not None, "Keyset fallback must not permanently starve legacy remote tasks"
+    assert selected["task_id"] == legacy_remote.task_id
+    assert selected["node_id"] == "fallback-agent"
+
+
+def test_empty_agent_claim_bypasses_writer_without_assignment_or_pending_preemption(tmp_path):
+    """Empty authenticated polls should not serialize SQLite writers.
+    This is a RED test for claim_for_node's unconditional BEGIN IMMEDIATE.
+    """
+    repository, artifacts = runtime(tmp_path, TracedRepository)
+    create_online_node(
+        repository, "idle-claim-agent", ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    repository.sql_trace.clear()
+    assert allocator.claim_for_node("idle-claim-agent") is None
+    statements = [statement.strip().upper() for statement in repository.sql_trace]
+    assert not any(statement.startswith("BEGIN IMMEDIATE") for statement in statements), (
+        "No assignment and no pending preemption must not acquire the SQLite writer"
+    )
+
+
+def test_empty_agent_claim_preserves_ready_preemption_recovery(tmp_path):
+    """Skipping an empty writer is permitted only when no CLEAN recovery
+    can be driven by this claim; existing durable preemptions still resume.
+    """
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository, artifacts, "preempted-victim", TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    create_task(
+        repository, artifacts, "finished-preemptor", TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    now = datetime.now(timezone.utc).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCELLED' WHERE task_id='preempted-victim'"
+        )
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED' WHERE task_id='finished-preemptor'"
+        )
+        database.execute(
+            """INSERT INTO task_preemptions
+               (incoming_task_id, victim_task_id, node_id, state, created_at)
+               VALUES (?, ?, ?, 'WAITING_CANCEL', ?)""",
+            ("finished-preemptor", "preempted-victim", "agent-clean", now),
+        )
+    assert allocator.claim_for_node("unrelated-idle-agent") is None
+    assert repository.get("preempted-victim").status is TaskStatus.QUEUED
+    assert allocator.list_preemptions(incoming_task_id="finished-preemptor")[0]["state"] == "RESUMED"
+
+
+def test_agent_auto_stale_scan_exits_when_last_agent_slot_was_reserved(tmp_path, monkeypatch):
+    """An Agent can become busy *after* a concurrent allocator has started
+    inspecting candidates. Once the authoritative writer sees no idle Agent,
+    it must stop rather than repeatedly locking SQLite and reading payloads
+    for the rest of a large remote queue.
+    """
+    repository, artifacts = runtime(tmp_path)
+    remote = {
+        "target": "remote",
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    }
+    create_task(
+        repository, artifacts, "remote-already-reserved",
+        TaskKind.TRAINING, remote, priority=1,
+    )
+    candidate = create_task(
+        repository, artifacts, "remote-after-capacity",
+        TaskKind.TRAINING, remote, priority=50,
+    )
+    create_online_node(
+        repository, "serial-only-agent", ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    first = CentralTaskAllocator(repository, artifacts).assign_next(agent_only=True)
+    assert first is not None and first["task_id"] == "remote-already-reserved"
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    yield_count = []
+    def stale_preflight():
+        # Deliberately emulate the prior scan's now-stale idle-node snapshot.
+        # Multiple pages have already been prepared, but none can actually
+        # execute because another request reserved the only executor slot.
+        for index in range(24):
+            yield_count.append(index)
+            yield (candidate.task_id,)
+
+    monkeypatch.setattr(allocator, "_iter_agent_candidate_batches", stale_preflight)
+    reads = []
+    original_read = artifacts.read_json
+
+    def count_read(task_id, *args, **kwargs):
+        reads.append(task_id)
+        return original_read(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "read_json", count_read)
+    assert allocator.assign_next(agent_only=True) is None
+    assert len(yield_count) == 1, (
+        "The first stale batch must stop scanning when no Agent has capacity"
+    )
+    assert not reads, (
+        "No payload IO is needed once the writer confirms no free Agent slot"
+    )
+    assert repository.get(candidate.task_id).status is TaskStatus.QUEUED

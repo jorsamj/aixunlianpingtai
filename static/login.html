@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#070a12" />
+  <title>登录 · 算法训练</title>
+  <link rel="stylesheet" href="/static/auth.css?v=4226530" />
+</head>
+<body class="auth-page">
+  <main class="login-shell">
+    <section class="login-visual" aria-hidden="true">
+      <div class="login-visual-grid"></div>
+      <div class="login-visual-noise"></div>
+      <div class="login-orb login-orb-a"></div>
+      <div class="login-orb login-orb-b"></div>
+
+      <div class="login-brand-lockup company-brand-login">
+        <span class="login-local-logo" aria-hidden="true">AI</span>
+        <strong class="login-local-brand">算法训练</strong>
+      </div>
+
+      <div class="login-visual-copy">
+        <span class="login-eyebrow"><i></i> AI MODEL LIFECYCLE</span>
+        <h1>从素材到模型，<br/><em>从模型到发布。</em></h1>
+        <p>统一管理视觉算法的数据、训练、模型转换与交付，支持独立内网运行。</p>
+      </div>
+
+      <div class="login-pipeline-card">
+        <div class="login-pipeline-head">
+          <span>MODEL PIPELINE</span>
+          <b><i></i> READY</b>
+        </div>
+        <div class="login-pipeline">
+          <div class="login-pipeline-step"><span>01</span><b>素材</b><small>DATA</small></div>
+          <i class="login-pipeline-link"></i>
+          <div class="login-pipeline-step"><span>02</span><b>训练</b><small>TRAIN</small></div>
+          <i class="login-pipeline-link"></i>
+          <div class="login-pipeline-step"><span>03</span><b>转换</b><small>CONVERT</small></div>
+          <i class="login-pipeline-link"></i>
+          <div class="login-pipeline-step"><span>04</span><b>发布</b><small>PUBLISH</small></div>
+        </div>
+      </div>
+
+      <div class="login-signal">
+        <i></i><span>本地身份认证 · 可选平台对接</span><b>SECURE ACCESS</b>
+      </div>
+    </section>
+
+    <section class="login-panel">
+      <form class="login-card" id="changlianLoginForm" novalidate>
+        <header>
+          <div class="login-mobile-company-brand">
+            <span class="login-local-logo" aria-hidden="true">AI</span>
+            <strong class="login-local-brand">算法训练</strong>
+          </div>
+          <div class="login-card-badge"><i></i><span>ALGORITHM TRAINING</span></div>
+          <span class="login-kicker">账号登录</span>
+          <h2>欢迎回来</h2>
+          <p id="loginModeDescription">使用本地账号登录，无需连接畅联云</p>
+        </header>
+
+        <div class="login-provider-switch" role="group" aria-label="登录方式">
+          <button type="button" class="active" data-login-provider="local" aria-pressed="true">本地登录</button>
+          <button type="button" data-login-provider="changlian" aria-pressed="false">畅联云登录</button>
+        </div>
+
+        <label class="login-field">
+          <span>用户名</span>
+          <input id="loginUsername" name="username" type="text" autocomplete="username" maxlength="128" placeholder="请输入本地用户名" value="jiangjs" required autofocus />
+        </label>
+
+        <label class="login-field">
+          <span>密码</span>
+          <div class="password-field">
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" maxlength="512" placeholder="请输入密码" required />
+            <button id="togglePassword" type="button" aria-label="显示或隐藏密码">显示</button>
+          </div>
+        </label>
+
+        <details class="login-advanced hidden" id="loginRemoteAdvanced">
+          <summary>验证码信息（如畅联云要求）</summary>
+          <div class="login-advanced-grid">
+            <label class="login-field">
+              <span>验证码</span>
+              <input id="loginCode" name="code" type="text" autocomplete="off" maxlength="128" placeholder="可选" />
+            </label>
+            <label class="login-field">
+              <span>UUID</span>
+              <input id="loginUuid" name="uuid" type="text" autocomplete="off" maxlength="256" placeholder="可选" />
+            </label>
+          </div>
+        </details>
+
+        <div class="login-error hidden" id="loginError" role="alert"></div>
+        <button class="login-submit" id="loginSubmit" type="submit">
+          <span>登录</span>
+          <i aria-hidden="true">→</i>
+        </button>
+
+        <footer>
+          <span class="login-lock">✓</span>
+          <span id="loginSecurityNote">本地认证，无需外部网络连接</span>
+        </footer>
+      </form>
+    </section>
+  </main>
+  <script src="/static/login.js?v=4226530"></script>
+</body>
+</html>

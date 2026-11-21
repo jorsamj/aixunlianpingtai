@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - app.py
       - platform_core/task_runtime/**
       - platform_core/training_job_projection.py
+      - platform_core/training_timing.py
       - platform_core/material_batches.py
       - static/modules/task-runtime-truth.js
       - static/modules/task-poller.js
@@ -20,6 +22,8 @@ on:
       - static/modules/deployment-tests.js
       - static/modules/resource-discovery.js
       - tests/unit/test_training_job_projection.py
+      - tests/unit/test_training_timing.py
+      - tests/unit/task_runtime/test_sqlite_busy_recovery.py
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/frontend/task-runtime-truth.test.mjs
@@ -38,6 +42,7 @@ on:
       - app.py
       - platform_core/task_runtime/**
       - platform_core/training_job_projection.py
+      - platform_core/training_timing.py
       - platform_core/material_batches.py
       - static/modules/task-runtime-truth.js
       - static/modules/task-poller.js
@@ -50,6 +55,8 @@ on:
       - static/modules/deployment-tests.js
       - static/modules/resource-discovery.js
       - tests/unit/test_training_job_projection.py
+      - tests/unit/test_training_timing.py
+      - tests/unit/task_runtime/test_sqlite_busy_recovery.py
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/frontend/task-runtime-truth.test.mjs
@@ -98,6 +105,8 @@ jobs:
         run: >-
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_training_job_projection.py
+          tests/unit/test_training_timing.py
+          tests/unit/task_runtime/test_sqlite_busy_recovery.py
           tests/unit/test_material_batch_public_truth.py
           tests/unit/task_runtime/test_public_projection.py
       - name: Frontend runtime truth guards
@@ -113,3 +122,10 @@ jobs:
           tests/frontend/video-tasks.test.mjs
           tests/frontend/deployment-task-view.test.mjs
           tests/frontend/resource-discovery-runtime-truth.test.mjs
+      - name: Permanent success-alias truth guard
+        shell: bash
+        run: |
+          grep -Fq "SUCCESS: 'SUCCEEDED'" static/modules/task-runtime-truth.js
+          grep -Fq "all historical training success aliases canonicalize to terminal SUCCEEDED truth" tests/frontend/task-runtime-truth.test.mjs
+          python -m platform_core.build_identity --check-version-file VERSION.txt
+          git diff --check

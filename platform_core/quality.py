@@ -12,6 +12,30 @@ WEIGHTS = {
 }
 
 
+def frozen_data_quality(snapshot: Mapping[str, Any]) -> dict:
+    """Read-only diagnostics of this training snapshot, never the live pool."""
+    records = [row for row in snapshot.get('images') or [] if isinstance(row, Mapping)]
+    boxes, images, states, hashes, roles = Counter(), Counter(), Counter(), Counter(), Counter()
+    for row in records:
+        states[str(row.get('annotation_state') or 'unknown')] += 1
+        roles[str(row.get('role') or 'unknown')] += 1
+        if row.get('content_sha256'):
+            hashes[str(row['content_sha256'])] += 1
+        for label in set(row.get('labels') or []):
+            images[str(label)] += 1
+    # V3 stores aggregate label counts; per-image box identities are purposely
+    # absent. Do not invent per-class box counts from label presence.
+    for label, count in (snapshot.get('label_counts') or {}).items():
+        boxes[str(label)] = int(count)
+    return {'snapshot_id': snapshot.get('snapshot_id'), 'image_count': len(records),
+            'split_counts': dict(roles), 'annotation_states': dict(states),
+            'duplicate_count': sum(max(0, count-1) for count in hashes.values()),
+            'classes': [{'label': label, 'image_count': images.get(label, 0) if all('labels' in row for row in records) else None,
+                         'box_count': boxes.get(label) if label in boxes else None}
+                        for label in sorted(set(images) | set(boxes))],
+            'scene_coverage': None, 'object_size_distribution': None}
+
+
 def compute_quality(
     rows: Sequence[Mapping[str, Any]],
     min_width: int = 640,
@@ -69,7 +93,7 @@ def compute_quality(
         maximum = max(used_counts)
         for label, count in sorted(label_counts.items()):
             if count < maximum:
-                suggestions.append(f"标签 {label} 只有 {count} 个框，建议补充到接近 {maximum} 个框。")
+                suggestions.append(f"标签 {label} 有 {count} 个框（最多类别 {maximum} 个）；请结合该类评测误检、漏检和实际场景检查覆盖，不要求各类数量相等。")
     if low_resolution:
         suggestions.append(f"有 {low_resolution} 张低分辨率素材，建议替换或确认小目标是否仍清晰。")
     if not splits.get("val"):

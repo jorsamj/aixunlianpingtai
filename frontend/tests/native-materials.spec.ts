@@ -1,0 +1,94 @@
+import {expect,test} from '@playwright/test';
+import {resolve} from 'node:path';
+
+test('native material library keeps scoped browsing, selection and original workflow links',async({page})=>{
+  await page.setViewportSize({width:1920,height:1080});
+  const queries:URL[]=[];
+  let releaseSlow!:()=>void,notifySlow!:()=>void;
+  const slowGate=new Promise<void>(done=>{releaseSlow=done});
+  const slowStarted=new Promise<void>(done=>{notifySlow=done});
+  await page.route('**/app/**',route=>{
+    const path=new URL(route.request().url()).pathname.slice(5)||'index.html';
+    return route.fulfill({path:resolve('../static/vue-app',path),contentType:path.endsWith('.js')?'text/javascript':path.endsWith('.css')?'text/css':'text/html'});
+  });
+  await page.route('**/api/**',async route=>{
+    const url=new URL(route.request().url()),path=url.pathname;
+    if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'tester'}}});
+    if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目甲'},{id:'q',name:'项目乙'}]});
+    const project=path.includes('/projects/q/')?'q':'p';
+    const row=(id:string)=>({id,filename:id+'.png',width:32,height:32,annotation_state:'annotated',box_count:1,quality_status:'processed',
+      storage_source_id:'local',content_url:'/api/v61/projects/'+project+'/materials/'+id+'/content',
+      thumbnail_url:'/api/v61/projects/'+project+'/materials/'+id+'/content/thumbnail',
+      annotation_preview:[{label:'smoke',x1:1,y1:1,x2:7,y2:7}]});
+    if(path.endsWith('/materials')){
+      queries.push(url);
+      const itemPage=Number(url.searchParams.get('page'));
+      expect(url.searchParams.get('reader_view')).toBe('true');
+      expect(url.searchParams.get('page_size')).toBe('48');
+      const term=url.searchParams.get('query');
+      if(term==='慢查询'){notifySlow();await slowGate;}
+      const id=term==='慢查询'?'stale':term==='新查询'?'fresh':project+itemPage;
+      return route.fulfill({json:{ok:true,project_id:project,page:itemPage,page_size:48,total:96,total_pages:2,has_next:itemPage===1,items:[row(id)]}}).catch(()=>{});
+    }
+    if(path.includes('/annotations/')){
+      expect(url.searchParams.get('reader_view')).toBe('true');
+      const id=path.split('/').at(-1)!;
+      return route.fulfill({json:{ok:true,project_id:id==='foreign'?'q':project,image:row(id),annotation:{boxes:row(id).annotation_preview,annotation_state:'annotated'},boxes_total:1}});
+    }
+    if(path.endsWith('/history'))return route.fulfill({json:{page:1,page_size:20,total:1,items:[{task_id:'frozen-task',role:'test'}]}});
+    if(path.includes('/content'))return route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmZcAAAAASUVORK5CYII=','base64')});
+    return route.fulfill({status:404,json:{detail:'unexpected request'}});
+  });
+  await page.goto('/app/#/projects/p/materials?label=smoke&annotation_state=annotated&quality_status=processed&source_batch_id=zip-1');
+  await expect(page.getByRole('heading',{name:'素材库',exact:true})).toBeVisible();
+  const image=page.getByRole('img',{name:'p1.png',exact:true});
+  await expect(image).toHaveAttribute('loading','lazy');
+  for(const [key,value] of Object.entries({label:'smoke',annotation_state:'annotated',quality_status:'processed',source_batch_id:'zip-1'}))
+    expect(queries[0].searchParams.get(key)).toBe(value);
+  await page.getByRole('button',{name:'选择本页'}).click();
+  await page.getByRole('button',{name:'下一页',exact:true}).click();
+  await expect(page.getByRole('img',{name:'p2.png',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'选择本页'}).click();
+  await page.getByRole('button',{name:'列表',exact:true}).click();
+  await expect(page.locator('.material-results')).toHaveClass(/list/);
+  await page.getByRole('button',{name:'详情',exact:true}).click();
+  const drawer=page.getByRole('dialog',{name:'素材详情'});
+  await expect(drawer.getByRole('heading',{name:'p2.png'})).toBeVisible();
+  await expect(drawer.getByRole('img',{name:'p2.png'})).toHaveAttribute('src','/api/v61/projects/p/materials/p2/content');
+  await expect(drawer.locator('svg rect')).toHaveCount(1);
+  await drawer.getByRole('button',{name:'读取历史使用记录'}).click();
+  await expect(drawer.getByText('frozen-task')).toBeVisible();
+  await page.reload();
+  await expect(drawer.getByRole('heading',{name:'p2.png'})).toBeVisible();
+  await expect(page.getByText('已选 2 张',{exact:false}).first()).toBeVisible();
+  await page.route('**/?spa_handoff=1&**',route=>route.fulfill({contentType:'text/html',body:'original workbench'}));
+  await drawer.getByRole('button',{name:'在原工作台标注'}).click();
+  await expect(page).toHaveURL(/action=material-annotate.*material_id=p2/);
+  const original=new URL(page.url());
+  expect(original.searchParams.get('project_id')).toBe('p');
+  const back=new URLSearchParams(original.searchParams.get('return_query')||'');
+  expect([back.get('page'),back.get('layout'),back.get('detail')]).toEqual(['2','list','p2']);
+  await page.goBack();
+  await expect(drawer.getByRole('heading',{name:'p2.png'})).toBeVisible();
+  await drawer.getByRole('button',{name:'返回素材库'}).click();
+  const search=page.getByRole('textbox',{name:'素材名称'});
+  await search.fill('慢查询');
+  await page.getByRole('button',{name:'查询素材'}).click();
+  await slowStarted;
+  await search.fill('新查询');
+  await page.getByRole('button',{name:'查询素材'}).click();
+  await expect(page.getByRole('img',{name:'fresh.png',exact:true})).toBeVisible();
+  releaseSlow();
+  await expect(page.getByRole('img',{name:'stale.png',exact:true})).toHaveCount(0);
+  await expect(page.getByText('已选 2 张',{exact:false}).first()).toBeVisible();
+  await page.getByText(/已选素材摘要/).click();
+  await page.getByRole('button',{name:'移除',exact:true}).first().click();
+  await expect(page.getByText('已选 1 张',{exact:false}).first()).toBeVisible();
+  await page.locator('.session-tools .el-select__wrapper').click();
+  await page.getByRole('option',{name:'项目乙',exact:true}).click();
+  await expect(page).toHaveURL(/projects\/q\/materials/);
+  await expect(page.getByRole('img',{name:'q1.png',exact:true})).toBeVisible();
+  await expect(page.getByText('已选 0 张',{exact:false})).toBeVisible();
+  await page.goto('/app/#/projects/p/materials?detail=foreign');
+  await expect(drawer.getByText('素材响应项目身份不一致')).toBeVisible();
+});

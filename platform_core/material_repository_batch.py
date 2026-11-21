@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .annotation_repository import AnnotationRepository
-from .material_repository import MaterialRepository, normalize_material
+from .material_repository import MaterialRepository, normalize_material, controlled_material_write_fence
 from .material_selection import MaterialFilters
 
 
@@ -17,7 +17,8 @@ MUTABLE_MATERIAL_FIELDS = frozenset({
     "filename", "processing_status", "split", "labels", "label_counts",
     "box_count", "annotated", "annotation_state", "annotation_status",
     "annotation_preview", "annotation_summary_at", "negative_sample",
-    "cleaned_at", "updated_at", "width", "height", "dataset_id",
+    "cleaned_at", "clean_skipped", "clean_decision", "clean_decision_at",
+    "clean_task_id", "updated_at", "width", "height", "dataset_id",
 })
 
 # App-level upload paths construct repositories once per image. Schema creation
@@ -47,7 +48,7 @@ def _install_repository_initialization_cache() -> None:
                 original_material_init(self, project)
                 _MATERIAL_INIT_READY.add(self.path.resolve())
 
-        MaterialRepository.__init__ = cached_material_init
+        MaterialRepository.__init__ = controlled_material_write_fence(cached_material_init)
         MaterialRepository._schema_init_cache_installed = True
 
     if not getattr(AnnotationRepository, "_schema_init_cache_installed", False):
@@ -65,7 +66,7 @@ def _install_repository_initialization_cache() -> None:
                 original_annotation_init(self, project)
                 _ANNOTATION_INIT_READY.add(self.path.resolve())
 
-        AnnotationRepository.__init__ = cached_annotation_init
+        AnnotationRepository.__init__ = controlled_material_write_fence(cached_annotation_init)
         AnnotationRepository._schema_init_cache_installed = True
 
 
@@ -439,13 +440,13 @@ def install_material_repository_batch_guards() -> None:
     if getattr(MaterialRepository, "_large_id_guards_installed", False):
         return
     MaterialRepository.get_many = _chunked_get_many
-    MaterialRepository.remove = _chunked_remove
-    MaterialRepository.mutate = _chunked_mutate
-    MaterialRepository.patch_many = _patch_many
-    MaterialRepository.patch_filtered = _patch_filtered
-    MaterialRepository.add_labels_many = _add_labels_many
-    MaterialRepository.remove_labels_many = _remove_labels_many
-    MaterialRepository.remove_many = _remove_many
+    MaterialRepository.remove = controlled_material_write_fence(_chunked_remove)
+    MaterialRepository.mutate = controlled_material_write_fence(_chunked_mutate)
+    MaterialRepository.patch_many = controlled_material_write_fence(_patch_many)
+    MaterialRepository.patch_filtered = controlled_material_write_fence(_patch_filtered)
+    MaterialRepository.add_labels_many = controlled_material_write_fence(_add_labels_many)
+    MaterialRepository.remove_labels_many = controlled_material_write_fence(_remove_labels_many)
+    MaterialRepository.remove_many = controlled_material_write_fence(_remove_many)
     MaterialRepository._large_id_guards_installed = True
 
 

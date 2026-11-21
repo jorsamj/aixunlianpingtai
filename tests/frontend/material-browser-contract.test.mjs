@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {materialQuery,materialMediaUrl,materialsApi} from '../../frontend/src/api/materials.ts';
+const filters={query:'a&b',label:'目标',annotation_state:'confirmed_empty',quality_status:'',storage_source_id:'',source_batch_id:'',created_from:'',created_to:''};
+test('material reader uses original bounded list fields',()=>{const q=materialQuery(filters,2);assert.equal(q.get('query'),'a&b');assert.equal(q.get('annotation_state'),'confirmed_empty');assert.equal(q.get('page_size'),'48');assert.equal(q.get('reader_view'),'true');assert.equal(q.has('negative'),false)});
+test('media only accepts the authenticated same-project owner',()=>{assert.equal(materialMediaUrl('/api/v61/projects/p/materials/a/content/thumbnail?edge=384','p','a','thumbnail'),'/api/v61/projects/p/materials/a/content/thumbnail?edge=384');for(const url of ['https://evil.test/a','/api/v61/projects/q/materials/a/content','//evil.test/a'])assert.equal(materialMediaUrl(url,'p','a','content'),'')});
+test('reader rejects mismatched project and image identity',async()=>{const c={projectId:'p',get:async()=>({ok:true,project_id:'q',items:[],page:1})};await assert.rejects(materialsApi(c).list(filters,1,new AbortController().signal),/身份/);c.get=async()=>({ok:true,project_id:'p',image:{id:'other'},annotation:{boxes:[]}});await assert.rejects(materialsApi(c).detail('a',new AbortController().signal),/身份/)});
+
+test('picker thumbnails retain original v62 owner and identity',()=>{assert.equal(materialMediaUrl('/api/v62/projects/p/training-materials/i/thumbnail?size=256','p','i','thumbnail'),'/api/v62/projects/p/training-materials/i/thumbnail?size=256');assert.equal(materialMediaUrl('/api/v62/projects/other/training-materials/i/thumbnail','p','i','thumbnail'),'')});

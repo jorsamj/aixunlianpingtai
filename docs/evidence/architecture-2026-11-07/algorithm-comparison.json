@@ -1,0 +1,31 @@
+{
+  "same_response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+  "samples_per_stage": 7,
+  "synthetic": true,
+  "metrics": {
+    "request_ms": {
+      "before_median": 931.1238000009325,
+      "after_median": 33.51710000424646
+    },
+    "json_bytes": {
+      "before_median": 100666830,
+      "after_median": 31
+    },
+    "json_parse_ms": {
+      "before_median": 105.62779996689642,
+      "after_median": 0.014800003555137664
+    },
+    "json_calls": {
+      "before_median": 50,
+      "after_median": 1
+    },
+    "sql_calls": {
+      "before_median": 40,
+      "after_median": 38
+    },
+    "sql_ms": {
+      "before_median": 799.7181999744498,
+      "after_median": 14.173100025800522
+    }
+  }
+}

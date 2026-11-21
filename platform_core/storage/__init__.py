@@ -8,7 +8,11 @@ from .oss import OSSStorageProvider
 from .remote import RemoteStorageProvider
 from .s3 import S3StorageProvider
 from .models import ObjectMetadata, ObjectPage, StorageHealth, StorageType
-from .source_repository import StorageSource, StorageSourceRepository
+from .source_repository import (
+    StorageSource,
+    StorageSourceRepository,
+    storage_source_lifecycle_fence,
+)
 from .yolo_import import (
     ParsedYoloBox,
     YoloDatasetLayout,
@@ -33,6 +37,7 @@ __all__ = [
     "StorageProvider",
     "StorageSource",
     "StorageSourceRepository",
+    "storage_source_lifecycle_fence",
     "StorageType",
     "StorageManager",
     "RemoteStorageProvider",

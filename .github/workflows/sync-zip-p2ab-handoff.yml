@@ -25,7 +25,7 @@ jobs:
         run: python tools/sync_zip_p2ab_handoff.py
       - name: Verify release boundary and diff
         run: |
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
           git diff -- docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md docs/codex-handoff-v42.25.md
       - name: Commit handoff sync

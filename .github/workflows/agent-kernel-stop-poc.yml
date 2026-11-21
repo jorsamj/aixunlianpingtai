@@ -1,0 +1,98 @@
+# P0-01C-2B: isolated real-kernel CPU experiment on GitHub-hosted VM.
+# No services, GPUs, credentials, or data from A800 / 4070 / production.
+name: Agent Kernel Stop PoC (Ephemeral CPU)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - '.github/workflows/agent-kernel-stop-poc.yml'
+      - 'tools/poc/linux_cgroup_probe.py'
+      - 'tools/poc/linux_cgroup_poc.py'
+      - 'tests/unit/test_linux_cgroup_poc_contract.py'
+      - 'tools/poc/linux_stop_receipt_bridge.py'
+      - 'tools/poc/central_stop_recovery_contract.py'
+      - 'tests/unit/test_linux_stop_receipt_bridge_contract.py'
+      - 'tools/poc/pt_stop_receipt_ed25519_contract.py'
+      - 'tests/unit/test_pt_stop_receipt_ed25519_contract.py'
+permissions:
+  contents: read
+concurrency:
+  group: agent-kernel-stop-poc-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-cgroup-22:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Portable cgroup contract checks (not stop proof)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check pytest cryptography
+          python3 -m pytest -q --confcutdir=tests/unit tests/unit/test_linux_cgroup_poc_contract.py tests/unit/test_linux_stop_receipt_bridge_contract.py
+      - name: Check Ubuntu 22.04 and non-root VM prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "P0-01C-2B is ephemeral CPU-only; no remote node access."
+          . /etc/os-release
+          test "$ID" = "ubuntu"
+          test "$VERSION_ID" = "22.04"
+          test "$(id -u)" -ne 0
+          test -d /run/systemd/system
+          test -f /sys/fs/cgroup/cgroup.controllers
+          python3 -m py_compile tools/poc/linux_cgroup_probe.py tools/poc/linux_cgroup_poc.py
+          echo "Non-root runner ID: $(id -u)"
+      - name: Prepare isolated runner user manager (never on production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${uid}.service"
+          test -S "/run/user/${uid}/bus"
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+      - name: Read-only preflight (environment blocked is not proof)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/poc/linux_cgroup_probe.py | tee p001c2b-preflight.json
+      - name: "Real kernel cgroup exercise: orphaned launcher + CPU descendant"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/poc/linux_cgroup_poc.py --run --isolated-test-host | tee p001c2b-kernel-result.json
+      - name: "Actual Linux cgroup stop to in-memory central challenge bridge"
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          python3 -m py_compile tools/poc/central_stop_recovery_contract.py tools/poc/linux_stop_receipt_bridge.py
+          python3 tools/poc/linux_stop_receipt_bridge.py --run --isolated-test-host | tee p001c3b-kernel-to-central.json
+      - name: "Actual original 249 kernel stop to Ed25519-signed isolated central CAS"
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          python3 tools/poc/linux_stop_receipt_bridge.py --run --isolated-test-host --ed25519-test-only | tee p001c3b-ed25519-kernel-to-central.json
+      - name: Retain diagnostic evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p001c2b-ubuntu22-cpu-evidence
+          path: |
+            p001c2b-preflight.json
+            p001c2b-kernel-result.json
+            p001c3b-kernel-to-central.json
+            p001c3b-ed25519-kernel-to-central.json
+          if-no-files-found: warn
+          retention-days: 14

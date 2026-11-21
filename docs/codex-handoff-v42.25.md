@@ -444,3 +444,58 @@ same SHA + different GT
 ### Next measured candidate
 
 当前源码确认 `_v18_import_coco()` 与 `_v18_import_voc()` 仍存在 `add_image_record()` 后再 `write_annotation()` 的双 durable write 结构。下一批若继续，应作为 **P2c COCO/VOC structured-import single-write** 独立建立 RED、原子性合同与真实 benchmark；不要直接复用 YOLO 结论。
+
+## 2026-10-13｜ZIP 多文件上传与任务中心修复
+
+- 原问题来自登记晚于两槽 limiter：第 3 个及之后已等待但不可见。现在文件选择后立即逐项登记，所有批次共享同一浏览器上传 FIFO；服务器 Durable Upload 和正式 FIFO Import 保持唯一事实源。
+- 任务中心展示全部活动项及排队位次，提供按状态操作；本地 File 刷新后明确重选，持久会话沿用原续传/取消，项目间队列不混用。错误逐项可见且不阻断同批后续项。
+- 普通素材仍由既有分块上传 Owner 处理，没有复制 ZIP 队列。正式版本 `42.24.356`，入口缓存键同步。
+- 本地最终验收：Node 24 962/962、Python 35/35、Chrome 16/16（含 3/5/10 ZIP、跨批次 FIFO、故障放行、传输中/排队取消、刷新、项目隔离、65 文件素材上传）。GitHub CI 与生产为 `NOT VERIFIED`；未 push、merge 或部署。
+
+
+## 2026-10-14｜训练失败智能诊断（REMOTE PUSHED / LOCAL CI FIX READY）
+
+- 事实源保持唯一：现有 Worker 在训练进程异常退出时只执行一次有界 Kernel journal 读取，并仅保存与 PID、进程创建时间及任务时间窗匹配的结构化 OOM 摘要；详情 API 不扫描系统日志，也未新增轮询器、诊断 Owner 或自动重试。
+- `training_recovery_truth` 输出后端判定的 `diagnosis`（code/certainty/title/summary/evidence/possible_causes/suggestions/checkpoint_message）。`HOST_MEMORY_OOM` 需要任务关联 Kernel 证据；cgroup 还要求同生命周期 `oom_kill_delta>0` 和 scope identity；纯 `SIGKILL/-9` 固定为 `SIGKILL_CAUSE_UNKNOWN`，CUDA OOM、租约丢失、取消、SQLite lock 等保持独立。
+- 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
+- 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
+- 远端 HEAD `ab470e8c` 的 44 个实际 Actions 已终态：42 success、2 failure、0 running；Training Recovery Guard 与其余训练关键工作流通过。两项失败分别为 Frontend Runtime 守卫仍硬编码旧 `upload-task-center-3`，以及 ZIP Chrome 测试在标签确认模态框拥有交互焦点时点击其后方任务中心。最小测试/工作流修复已在本地完成并复验 Node 964/964、ZIP Chrome 14/14、诊断 Python 33/33，尚未获准再次 push。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED。
+
+## 2026-10-14｜训练创建动效收口
+
+- 唯一 `TrainingSubmitRuntime` 原阶段映射为三段可信 UI；慢请求显示无虚假百分比的反馈层，快速请求不强制播放完整动画。
+- 成功仍依赖正式任务响应；POST 断线按 planned Task ID 回查，无法确认时阻止重复提交。失败不清空用户配置。
+- Node 968、Python 69、Chrome 1 均通过；四种目标视口和 reduced-motion 已验证。VERSION 42.24.356 不变，未 push/merge/deploy。
+
+## 2026-10-15｜素材全局去重治理收口
+
+- 复用 Full Audit + 既有 `DELETE_INDEX` MaterialBatch/Worker，新增后端完整范围冻结计划；前端仅展示统计、最多 20 组推荐和二次确认，不传全量待删 ID。
+- 只自动处理 SHA256 与正式标注摘要均一致的安全组；冲突组人工指定 keeper，异常/扫描失败/多重历史引用组跳过。执行和 Worker 删除前重复校验 revision、内容、标注、keeper 与历史/活动引用。
+- 删除边界仍是素材索引及对应正式标注；共享对象、标签字典、任务历史不删。Node 970/970、Python 11/11 + 19/19、Chrome 1/1；501 删除与 120 组跨分页通过。VERSION 42.24.356，CI/生产未验证，未 push/merge/deploy。
+
+## 2026-10-15｜训练反馈 CI 修复
+
+- 远端真实 Chrome 发现配置校验错误后的失败遮罩会拦截继续编辑。失败态现改为内联非阻断提示；工作/成功遮罩与未知结果防重复提交合同不变。
+- 原用例 RED→GREEN，完整 Chrome 12/12、Node 970/970；styles 缓存键 42.25.379，VERSION 42.24.356，等待远端复验。
+- `3718807f` 共 36 个运行，35 成功；唯一 Frontend 失败已按真实日志修复：失败面板不再越出长表单视口，仍无遮罩并可点击穿透；MaterialBatch 守卫从旧 `422403` 同步到实际 `422405`；启动夹具等待权威就绪，styles 缓存键为 `42.25.380`。Frontend Chrome 84/84、Training Create Chrome 12/12、Node 970/970，待新远端 SHA 终态。
+
+## 2026-10-15｜资源决议 OOM 防护与训练详情弹窗
+
+- Auto 资源决议基于实际 Worker host/cgroup v2 余量，联合约束 Batch、Workers、Prefetch、imgsz、有效精度、Cache 与并发；Manual 超预算拒绝，预启动资源漂移失败且冻结参数不变。
+- 进程树内存优先 USS/PSS，RSS fallback 不跨父子求和；其他 PID 的 Kernel OOM 只报疑似并发事件。训练详情沿用单一 Owner，显示 requested/resolved/runtime 与 host/cgroup/进程树事实。
+- 居中桌面弹窗、移动端留边、内部滚动、稳定刷新、Esc/焦点/快速重开/reduced-motion 已验收。Node 971/971、Python 99 passed / 1 skipped、Chrome 4/4；VERSION 42.24.356，真实 GPU/Linux/生产/CI 未验证，未 push/merge/deploy。
+
+## 2026-10-15｜资源与训练详情 CI 首轮收敛
+
+- Training Recovery Guard 首轮失败来自退役静态合同和 Ubuntu Chrome 68px 标签宽度。最小修复锁定原位 DOM patch、禁止旧整树替换，并给详情标签 80px 最小宽度。
+- Linux cgroup v2 与 `/proc/self/fd` 两项真实环境测试已在现有 Remote Training Runtime 增加 Ubuntu 专属具名执行步骤。Windows 本地证据为 Python 99 passed / 2 skipped、Node 971/971、Chrome 5/5。
+- CSS 缓存键为 42.25.382；VERSION 42.24.356 不变。远端修复 CI 与 A800 实机待验收。
+- `39157527` Ubuntu 首跑暴露旧 workers=12 精确断言与联合内存预算冲突；冻结 31 GiB 后安全结果仍为 8。现断言 GPU 数量无关、并发预约收敛与预算不超限，真实 Linux 文件测试保持独立且严格。
+
+## 2026-10-16｜独立评测图片预览专项（LOCAL VERIFIED / PRODUCTION OPEN）
+
+- 历史无 Image ID 的规范化 Bundle 名通过 Snapshot、manifest Image ID、源 SHA256 和评测字节 SHA256 闭环恢复；同名冲突、归一化证据丢失和内容变化继续拒绝。
+- JPEG/PNG/WebP/BMP 按真实格式返回 MIME；EXIF 仅产生保留原哈希的内存展示派生，保持冻结像素坐标。StorageManager.read_only 禁止预览补写正式素材元数据。
+- 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
+- Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
+- VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。

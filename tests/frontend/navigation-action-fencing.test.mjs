@@ -53,3 +53,43 @@ test('classic app has no fixed-page business writes and resource save is explici
   assert.match(saveServer, /NavigationStability\?\.action\?\./, 'saveServer must capture a navigation action fence');
   assert.match(saveServer, /action\.isCurrent\(\)/, 'saveServer must reject stale completion effects');
 });
+
+test('two navigations queued during core startup only perform the latest route after readiness', async () => {
+  const state = {page: '算法列表'};
+  const performed = [];
+  let release;
+  const ready = new Promise(resolve => {release = resolve;});
+  globalThis.document = {getElementById: () => ({dataset: {}})};
+  globalThis.window = {setPage(page) {state.page = page;}};
+  const runtime = installNavigationStability({
+    getState: () => state,
+    waitForNavigationReady: () => ready,
+    performNavigation(page) {performed.push(page); state.page = page;},
+  });
+  try {
+    const first = window.setPage('数据集');
+    const second = window.setPage('训练任务');
+    release(true);
+    assert.equal(await first, false);
+    await second;
+    assert.deepEqual(performed, ['训练任务']);
+    assert.equal(state.page, '训练任务');
+  } finally {runtime.destroy(); cleanup();}
+});
+
+test('failed startup readiness does not activate a pending business page', async () => {
+  const state = {page: '算法列表'};
+  let count = 0;
+  globalThis.document = {getElementById: () => ({dataset: {}})};
+  globalThis.window = {setPage(page) {state.page = page;}};
+  const runtime = installNavigationStability({
+    getState: () => state,
+    waitForNavigationReady: () => Promise.resolve(false),
+    performNavigation(page) {count++; state.page = page;},
+  });
+  try {
+    assert.equal(await window.setPage('训练任务'), false);
+    assert.equal(count, 0);
+    assert.equal(state.page, '算法列表');
+  } finally {runtime.destroy(); cleanup();}
+});

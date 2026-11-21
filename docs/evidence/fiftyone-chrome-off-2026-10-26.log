@@ -1,0 +1,15 @@
+
+Running 5 tests using 1 worker
+
+
+
+(node:45276) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[1/5] tests\browser\material-workflows.spec.mjs:67:1 › manual annotation saves, survives reload, and updates the thumbnail
+[2/5] tests\browser\material-workflows.spec.mjs:551:1 › single and multi-image uploads always end with cleaning decisions
+[3/5] tests\browser\material-workflows.spec.mjs:601:1 › label management create and edit stay page-scoped without loading the full material pool
+[4/5] tests\browser\training-label-selector.spec.mjs:66:1 › training dialog uses canonical wrapper-free label lifecycle and sole submit path
+
+
+[5/5] tests\browser\zip-label-presentation.spec.mjs:14:1 › ZIP foreground scan automatically opens the original review without a task-center click
+  5 passed (42.8s)

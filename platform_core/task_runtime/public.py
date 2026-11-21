@@ -19,6 +19,7 @@ def task_to_public(
     task: TaskRecord,
     repository: TaskRepository | None = None,
     *,
+    queue_positions: dict[str, int | None] | None = None,
     now=None,
     worker_runtime: list[dict[str, Any]] | None = None,
     queued_candidates: tuple[TaskRecord, ...] | None = None,
@@ -26,7 +27,8 @@ def task_to_public(
     queue_position = None
     queue_position_exact = False
     if repository is not None and task.status is TaskStatus.QUEUED:
-        queue_position = repository.resource_queue_position(task.task_id)
+        queue_position = (repository.resource_queue_position(task.task_id)
+                          if queue_positions is None else queue_positions.get(task.task_id))
         if task.kind is not TaskKind.TRAINING:
             queue_position_exact = _non_training_queue_position_exact(
                 task,
@@ -39,6 +41,7 @@ def task_to_public(
     return {
         "task_id": task.task_id,
         "project_id": task.project_id,
+        "kind": task.kind.value,
         "task_type": task.kind.value,
         "status": effective_task_status(task),
         "persisted_status": task.status.value,
@@ -108,6 +111,11 @@ def _non_training_queue_position_exact(
         or task.kind is TaskKind.TRAINING
         or queue_position is None
     ):
+        return False
+    if worker_runtime is None and not isinstance(repository, TaskRepository):
+        # Lightweight/read-only repository adapters can still expose durable
+        # task truth, but they cannot prove Worker claim order. Fail closed on
+        # exactness instead of reaching into a private SQLite connection.
         return False
     runtime = (
         WorkerInstanceService(repository).list_runtime(now=now)

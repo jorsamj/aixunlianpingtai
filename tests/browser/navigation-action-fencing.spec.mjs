@@ -32,7 +32,7 @@ test('stale training-server save cannot close or redraw UI owned by the new page
   });
 
   await page.evaluate(() => window.setPage('训练资源'));
-  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.locator('#title')).toContainText('算力与节点');
   await page.evaluate(() => window.addServer());
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await page.locator('#sname').fill('Action Fence GPU');

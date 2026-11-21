@@ -1,0 +1,7 @@
+import type {BrowseContext} from './model-browse';
+import type {MaterialRow} from './materials';
+export interface AiTask {id:string;project_id:string;kind?:string;name?:string;status:string;persisted_status?:string;phase?:string;model_config_name?:string;model_provider?:string;created_at?:string;finished_at?:string;error?:string;resource_wait_reason?:string;worker_id?:string;progress_percent?:number;statistics_known:boolean;total_count:number|null;completed_count:number|null;remaining_count:number|null;counts:Record<string,number|null>;requested_labels?:string[]}
+export interface AiTaskPage {ok:boolean;project_id:string;items:AiTask[];next_cursor:string|null;statistics_indexing?:boolean;indexing?:boolean;indexed?:number;total?:number;remaining?:number}
+export interface AiFailure {image_id:string;filename:string;thumbnail_url:string;status:string;error?:string;error_code?:string;error_stage?:string;http_status?:number|null;attempt_count?:number;retry_suggestion?:string;width?:number;height?:number}
+export interface AiFailurePage {ok:boolean;project_id:string;task_id:string;items:AiFailure[];next_cursor:string|null;total:number;review_revision:number|null;task_error?:{code?:string;stage?:string;message?:string}|null}
+export interface AiTaskContext extends BrowseContext {memory:BrowseContext['memory']&{aiTasks?:{q:string;status:string;cursors:string[];index:number}};openAiReview(taskId:string):void;legacyAi(action:'create'|'detail',id?:string):void}

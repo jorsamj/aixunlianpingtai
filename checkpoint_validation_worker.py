@@ -90,7 +90,7 @@ def _copy_verified_models(project_dir: Path, run_name: str, checkpoint_sha256: s
     return copied, verified, best_path, last_path
 
 
-def _blind_test(best_model, data_yaml: Path, device: str) -> dict:
+def _blind_test(best_model, data_yaml: Path, device: str, imgsz: int = 640) -> dict:
     import yaml
     from platform_core.training_evaluation import evaluate_blind_detection
 
@@ -111,6 +111,7 @@ def _blind_test(best_model, data_yaml: Path, device: str) -> dict:
     def blind_predict(image_path):
         results = best_model.predict(
             source=str(image_path),
+            imgsz=int(imgsz),
             conf=0.001,
             iou=0.7,
             device=device,
@@ -133,19 +134,31 @@ def _blind_test(best_model, data_yaml: Path, device: str) -> dict:
             ]
         return rows
 
-    return evaluate_blind_detection(
+    blind_result = evaluate_blind_detection(
         test_images_dir,
         hidden_ground_truth_dir,
         blind_predict,
         names=getattr(best_model, "names", None),
     )
+    if blind_result.get("status") == "succeeded":
+        blind_result["protocol"].update({
+            "predict_imgsz": int(imgsz),
+            "predict_conf": 0.001,
+            "predict_nms_iou": 0.7,
+        })
+    return blind_result
 
 
 def main() -> int:
+    from platform_core.task_runtime.process_start_gate import wait_for_execution_binding
+    wait_for_execution_binding()
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)
     parser.add_argument("--task-id", required=True)
+    parser.add_argument("--execution-attempt", type=int, default=None)
+    parser.add_argument("--execution-payload-ref", default="")
+    parser.add_argument("--execution-anchor-ref", default="")
     parser.add_argument("--snapshot-id", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--checkpoint", required=True)
@@ -248,7 +261,12 @@ def main() -> int:
             progress_percent=97.0,
         )
         try:
-            blind_result = _blind_test(best_model, data_yaml, runtime_device)
+            from platform_core.training_material_usage import assert_frozen_formal_test
+            assert_frozen_formal_test(project_dir, args.task_id, args.snapshot_id,
+                execution_attempt=args.execution_attempt,
+                execution_payload_ref=args.execution_payload_ref,
+                execution_anchor_ref=args.execution_anchor_ref)
+            blind_result = _blind_test(best_model, data_yaml, runtime_device, args.imgsz)
             training_report["test_result"] = blind_result
             training_report["test_metrics"] = blind_result.get("metrics") or {}
             training_report["test_per_class"] = blind_result.get("per_class") or []

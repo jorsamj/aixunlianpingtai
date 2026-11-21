@@ -65,6 +65,8 @@ def _runtime_device(assigned: str, resource_context: dict) -> tuple[str, int | N
 
 
 def main(argv=None) -> int:
+    from platform_core.task_runtime.process_start_gate import wait_for_execution_binding
+    wait_for_execution_binding()
     args = _parser().parse_args(argv)
     project_dir = Path(args.project_dir).resolve()
     runs_dir = (project_dir / "runs").resolve()
@@ -236,6 +238,7 @@ def main(argv=None) -> int:
         # start_epoch and the original run arguments from last.pt. Device is the
         # only runtime override: the durable Scheduler owns the concrete device.
         model.train(resume=True, device=logical_device)
+        base_worker.update_job(job_file, training_segment_finished_at=base_worker.now_iso())
         current = base_worker.read_json(job_file, {})
         base_worker.update_job(
             job_file,

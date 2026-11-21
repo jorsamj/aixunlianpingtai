@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from functools import wraps
+from contextlib import nullcontext
+from filelock import FileLock
 import mimetypes
 import os
 import stat
@@ -20,12 +23,72 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def controlled_local_startup_guard(data_dir, *, timeout=30):
+    """Updated platform entrypoints briefly acquire this before serving/claiming.
+
+    Offline GC holds the same mutex for the whole maintenance operation. This
+    is a startup barrier, not a second process registry or business-state owner.
+    """
+    if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+        return nullcontext()
+    path = Path(data_dir).resolve() / ".local-material-maintenance.lock"
+    if path.is_symlink() or (path.exists() and getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
+        raise ValueError("unsafe maintenance startup mutex")
+    return FileLock(str(path), timeout=timeout, thread_local=False)
+
+
+class _LeasedReader:
+    def __init__(self, stream, lease):
+        self._stream, self._lease = stream, lease
+        self._closed = False
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+    def __iter__(self):
+        return self
+    def __next__(self):
+        return next(self._stream)
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        self.close()
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            try:
+                self._stream.close()
+            finally:
+                self._lease.__exit__(None, None, None)
+
+
+def _leased_local_write(function):
+    @wraps(function)
+    def guarded(self, object_key, *args, **kwargs):
+        with self.byte_lease(object_key):
+            return function(self, object_key, *args, **kwargs)
+    return guarded
+
+
 class LocalStorageProvider:
     storage_type = StorageType.LOCAL
 
     def __init__(self, source_id: str, root: str | Path) -> None:
         self.source_id = str(source_id)
         self.root = Path(root).expanduser().resolve()
+
+    def byte_lease(self, object_key: str, *, timeout=30):
+        """Controlled-local byte lifetime; returned lock supports cross-thread close."""
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            return nullcontext()
+        path = self._path(object_key)
+        folder = self.root / ".material-byte-leases"
+        if (folder.exists() or folder.is_symlink()) and self._is_link_like(folder):
+            raise ValueError("unsafe source byte lease directory")
+        folder.mkdir(exist_ok=True)
+        key = hashlib.sha256(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
+        lock_path = folder / (key + ".lock")
+        if (lock_path.exists() or lock_path.is_symlink()) and self._is_link_like(lock_path):
+            raise ValueError("unsafe source byte lease lock")
+        return FileLock(str(lock_path), timeout=timeout, thread_local=False)
 
     def _path(self, object_key: str, *, allow_empty: bool = False) -> Path:
         raw = str(object_key or "")
@@ -123,7 +186,8 @@ class LocalStorageProvider:
         return False
 
     def _is_import_staging_segment(self, segment: str) -> bool:
-        return os.path.normcase(segment) == os.path.normcase(".import-staging")
+        return os.path.normcase(segment) in {os.path.normcase(name) for name in
+            (".import-staging", ".material-byte-leases", ".material-reclaim")}
 
     def _is_import_staging_path(self, path: Path) -> bool:
         relative = path.relative_to(self.root)
@@ -175,10 +239,21 @@ class LocalStorageProvider:
         return self._path(object_key).is_file()
 
     def open_reader(self, object_key: str) -> BinaryIO:
-        path = self._path(object_key)
-        if not path.is_file():
-            self.stat(object_key)
-        return path.open("rb")
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            path = self._path(object_key)
+            if not path.is_file():
+                self.stat(object_key)
+            return path.open("rb")
+        lease = self.byte_lease(object_key)
+        lease.__enter__()
+        try:
+            path = self._path(object_key)
+            if not path.is_file():
+                self.stat(object_key)
+            return _LeasedReader(path.open("rb"), lease)
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
 
     def _atomic_copy(self, source: BinaryIO, destination: Path) -> tuple[int, str]:
         """Copy once, fsync once, and compute the content hash in the same pass."""
@@ -225,6 +300,7 @@ class LocalStorageProvider:
             sha256=digest, last_modified=metadata.last_modified,
         )
 
+    @_leased_local_write
     def upload(
         self, object_key: str, source: BinaryIO | str | Path, *,
         content_type: str = "application/octet-stream",
@@ -265,6 +341,7 @@ class LocalStorageProvider:
             last_modified=str(stat_result.st_mtime_ns),
         )
 
+    @_leased_local_write
     def delete(self, object_key: str) -> None:
         try:
             self._path(object_key).unlink(missing_ok=True)

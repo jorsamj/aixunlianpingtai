@@ -1,3 +1,7 @@
+import logging
+import sqlite3
+from types import SimpleNamespace
+
 from platform_core.task_runtime import (
     ArtifactStore,
     Scheduler,
@@ -331,3 +335,118 @@ def test_failed_task_releases_resource_before_next_scheduler_claim(tmp_path):
     assert scheduler.run_once() is True
     assert repository.get("next").status is TaskStatus.SUCCEEDED
     assert calls == ["first", "next"]
+
+
+def test_transient_sqlite_busy_leaves_task_recoverable(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    repository.create(TaskRecord.new(
+        "sqlite-busy",
+        "project-1",
+        TaskKind.VIDEO_FRAMES,
+        "payload.json",
+        "cpu:video",
+    ))
+
+    class BusyThenRecover:
+        def run(self, _context):
+            raise sqlite3.OperationalError("database is locked")
+
+        def recover(self, _context):
+            return TaskStatus.SUCCEEDED, "result.json"
+
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "worker-sqlite",
+        {TaskKind.VIDEO_FRAMES: BusyThenRecover()},
+        set(),
+    )
+    assert scheduler.run_once() is True
+    uncertain = repository.get("sqlite-busy")
+    assert uncertain is not None and uncertain.status is TaskStatus.RUNNING
+    assert uncertain.error is None
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+    assert scheduler.run_once() is True
+    assert repository.get("sqlite-busy").status is TaskStatus.SUCCEEDED
+
+
+def test_lease_renewal_failure_logs_non_secret_diagnostics(tmp_path, caplog):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    scheduler = Scheduler(repository, ArtifactStore(tmp_path / "artifacts"), "worker-a800", {}, set())
+
+    class StopAfterOneCycle:
+        def wait(self, _seconds):
+            return False
+
+    context = SimpleNamespace(
+        task=SimpleNamespace(task_id="trainprep-1", kind=TaskKind.TRAINING_PREPARE),
+        execution_generation=2,
+        diagnostic_stage="materializing_sources",
+        heartbeat=lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+        mark_lease_lost=lambda: None,
+        terminate_bound_process=lambda: True,
+    )
+    with caplog.at_level(logging.ERROR, logger="platform_core.task_runtime.scheduler"):
+        scheduler._renew_lease(context, StopAfterOneCycle())
+
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "trainprep-1" in message
+    assert "TRAINING_PREPARE" in message
+    assert "worker-a800" in message
+    assert "generation=2" in message
+    assert "materializing_sources" in message
+    assert "database_unavailable" in message
+    assert "OperationalError" in message
+    assert "database is locked" in message
+    assert "lease_token" not in message
+
+
+def test_scheduler_claim_recovery_capability_and_empty_handlers(tmp_path, monkeypatch):
+    from platform_core.task_node_assignments import AssignmentAwareFencedTaskRepository
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+    for cls in (TaskRepository, FencedTaskRepository, AssignmentAwareFencedTaskRepository):
+        for empty in (False, True):
+            repo = cls(tmp_path / f'{cls.__name__}-{empty}.sqlite3')
+            repo.create(TaskRecord.new('expired', 'p', TaskKind.DEPLOYMENT_TEST, 'payload.json', 'cpu:test'))
+            lease = repo.claim_next('old', [TaskKind.DEPLOYMENT_TEST], set())
+            assert lease is not None
+            with repo._connect() as db:
+                db.execute("UPDATE tasks SET lease_expires_at='2000-01-01T00:00:00+00:00' WHERE task_id='expired'")
+            calls = []
+            original = repo.release_expired
+            def release(*a, **kw):
+                calls.append('release')
+                return original(*a, **kw)
+            monkeypatch.setattr(repo, 'release_expired', release)
+            if hasattr(repo, 'reap_expired_processes'):
+                reaper = repo.reap_expired_processes
+                def reap(*a, **kw):
+                    calls.append('reap')
+                    return reaper(*a, **kw)
+                monkeypatch.setattr(repo, 'reap_expired_processes', reap)
+            scheduler = Scheduler(repo, ArtifactStore(tmp_path / 'artifacts'), 'new',
+                                  {} if empty else {TaskKind.VIDEO_FRAMES: RecordingHandler()}, set())
+            assert scheduler.run_once() is False  # No matching queued candidate.
+            assert calls.count('release') == int(empty)
+            if hasattr(repo, 'reap_expired_processes'):
+                assert calls[0] == 'reap'
+            assert repo.get('expired').status is TaskStatus.QUEUED
+            handler = SimpleNamespace(run=lambda c: (TaskStatus.SUCCEEDED, None),
+                                      recover=lambda c: (TaskStatus.SUCCEEDED, None))
+            scheduler.handlers = {TaskKind.DEPLOYMENT_TEST: handler}
+            assert scheduler.run_once() is True
+            assert repo.get('expired').status is TaskStatus.SUCCEEDED
+            assert repo.get('expired').attempt == 2
+            assert calls.count('release') == int(empty)
+
+
+def test_scheduler_legacy_repository_keeps_outer_recovery(tmp_path):
+    calls = []
+    repo = SimpleNamespace(reap_expired_processes=lambda: calls.append('reap'),
+                           release_expired=lambda: calls.append('release'),
+                           claim_next=lambda *a, **kw: calls.append('claim'))
+    scheduler = Scheduler(repo, ArtifactStore(tmp_path / 'artifacts'), 'legacy',
+                          {TaskKind.VIDEO_FRAMES: RecordingHandler()}, set())
+    assert scheduler.run_once() is False
+    assert calls == ['reap', 'release', 'claim']

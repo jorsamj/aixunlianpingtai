@@ -11,13 +11,17 @@ def _project(client):
     return response.json()['id']
 
 
-def _ten_thousand_member_zip():
+def _member_zip(count: int):
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_STORED) as archive:
-        for index in range(10_000):
+    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+        for index in range(count):
             archive.writestr(f'images/train/image_{index:05d}.jpg', b'x')
         archive.writestr('data.yaml', 'train: images/train\nnames: [object]\n')
     return buffer.getvalue()
+
+
+def _ten_thousand_member_zip():
+    return _member_zip(10_000)
 
 
 def test_v19_10k_scan_keeps_candidate_manifest_out_of_hot_job_state(client):
@@ -69,3 +73,46 @@ def test_v19_10k_scan_keeps_candidate_manifest_out_of_hot_job_state(client):
     listing = client.get(f'/api/v19/projects/{project_id}/import/jobs')
     row = next(item for item in listing.json()['items'] if item['id'] == job_id)
     assert 'images' not in row
+
+
+def test_v19_20k_scan_keeps_manifest_external_and_hot_state_bounded(client):
+    project_id = _project(client)
+    response = client.post(
+        f'/api/v19/projects/{project_id}/datasets/default/import/jobs',
+        files={'file': ('twenty-thousand.zip', _member_zip(20_000), 'application/zip')},
+    )
+    response.raise_for_status()
+    body = response.json()
+
+    assert body['image_count'] == 20_000
+    assert len(body['images']) == 500
+    assert body['images_truncated'] is True
+
+    job_id = body['id']
+    job_path = app_module.v19_job_file(project_id, job_id)
+    persisted = json.loads(job_path.read_text(encoding='utf-8'))
+    assert 'images' not in persisted
+    assert persisted['scan_images_ref'] == 'scan-images.json'
+    assert job_path.stat().st_size < 64 * 1024
+
+    manifest_path = app_module.v19_scan_images_file(project_id, job_id)
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    assert len(manifest) == 20_000
+
+    detail = client.get(f'/api/v19/projects/{project_id}/import/jobs/{job_id}')
+    detail.raise_for_status()
+    assert 'images' not in detail.json()
+
+    preview = client.get(
+        f'/api/v19/projects/{project_id}/import/jobs/{job_id}',
+        params={'include_images': 'true', 'image_limit': 40},
+    )
+    preview.raise_for_status()
+    assert len(preview.json()['images']) == 40
+    assert preview.json()['images_truncated'] is True
+
+    listing = client.get(f'/api/v19/projects/{project_id}/import/jobs')
+    listing.raise_for_status()
+    row = next(item for item in listing.json()['items'] if item['id'] == job_id)
+    assert len(row['images']) == 300
+    assert row['images_truncated'] is True

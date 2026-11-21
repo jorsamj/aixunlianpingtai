@@ -1,0 +1,43 @@
+# P0-01C-3B-4: source-only audit. GREEN means known bypass remains detected.
+# Never interprets audit PASS as OS/GPU privilege isolation proof.
+name: GPU Supervisor Source Gap Audit (No GPU)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - '.github/workflows/gpu-supervisor-source-audit.yml'
+      - 'tools/poc/gpu_supervisor_gate_audit.py'
+      - 'tests/unit/test_gpu_supervisor_gate_audit.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'platform_core/task_runtime/process_control.py'
+      - 'platform_core/gpu_reservations_v2.py'
+      - 'node_agent.py'
+permissions:
+  contents: read
+concurrency:
+  group: gpu-supervisor-source-audit-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  source-only:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate read-only audit module syntax
+        run: python -m py_compile tools/poc/gpu_supervisor_gate_audit.py
+      - name: Install pytest (no platform or GPU requirements)
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Audit direct launch path and simulated fail-closed scope
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_gpu_supervisor_gate_audit.py
+      - name: Record unprotected launch gap (PASS does not imply safety)
+        run: python tools/poc/gpu_supervisor_gate_audit.py --read-only-audit

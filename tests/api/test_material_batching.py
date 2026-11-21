@@ -8,7 +8,7 @@ from PIL import Image
 def create_project(client) -> str:
     response = client.post(
         "/api/projects",
-        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     )
     response.raise_for_status()
     return response.json()["id"]
@@ -76,7 +76,9 @@ def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path
             app_module._v50_end_image_batch(save=False)
 
     snapshot = store.read()
-    assert snapshot.revision == outside_revision + 1
+    # One bounded Material identity transaction plus one bounded annotation
+    # projection transaction; never one Material revision per image.
+    assert snapshot.revision == outside_revision + 2
     assert {row["id"] for row in snapshot.rows} == {
         "existing", "outside", first["id"], second["id"]
     }
@@ -139,8 +141,11 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
     upload_path = project_path / "uploads" / record["stored_name"]
     annotation_repository = app_module.AnnotationRepository(project_path)
     assert upload_path.exists()
-    assert annotation_repository.exists(record["id"])
-    assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+    # Formal GT cannot precede its canonical Material identity.
+    assert not annotation_repository.exists(record["id"])
+    app_module.atomic_write_json(app_module.datasets_file(project_id), [
+        value for value in app_module.read_json(app_module.datasets_file(project_id), [])
+        if value['id'] != dataset_id])
 
     try:
         with pytest.raises(app_module.HTTPException) as raised:
@@ -154,7 +159,9 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
         str(row.get("id")) != record["id"]
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not upload_path.exists()
+    assert upload_path.is_file()
+    with app_module.material_store(project_id)._connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM material_cleanup_deferred').fetchone()[0] == 1
     assert not annotation_repository.exists(record["id"])
 
 
@@ -189,47 +196,26 @@ def test_rejected_multi_dataset_batch_cleans_all_buffered_files(
     second = app_module.add_image_record(
         project_id, second_source, "second.png", "imported_yolo", other_dataset
     )
-    reached = threading.Event()
-    resume = threading.Event()
-    original_stage = app_module._v50_stage_material_file
-
-    def paused_stage(source, destination):
-        if threading.current_thread().name == "batch-delete" and not reached.is_set():
-            reached.set()
-            assert resume.wait(5), "dataset deletion did not resume"
-        return original_stage(source, destination)
-
-    monkeypatch.setattr(app_module, "_v50_stage_material_file", paused_stage)
-    outcome = {}
-
-    def run_delete():
-        try:
-            outcome["value"] = app_module.delete_dataset(
-                project_id, deleting_dataset
-            )
-        except BaseException as error:
-            outcome["error"] = error
-
-    thread = threading.Thread(target=run_delete, name="batch-delete")
-    thread.start()
+    token = uuid.uuid4().hex
+    app_module._v50_register_dataset_delete_token(token, project_id, deleting_dataset)
     try:
-        assert reached.wait(5)
         with pytest.raises(app_module.HTTPException) as raised:
             app_module._v50_end_image_batch(save=True)
     finally:
-        resume.set()
-        thread.join(5)
+        app_module._v50_unregister_dataset_delete_token(token)
         if app_module._v50_active_image_batch(project_id):
             app_module._v50_end_image_batch(save=False)
-
     assert raised.value.status_code == 409
-    assert outcome == {"value": {"ok": True}}
     rows = app_module.material_store(project_id).read().rows
     assert {str(row.get("id")) for row in rows}.isdisjoint(
-        {seed["id"], first["id"], second["id"]}
+        {first["id"], second["id"]}
     )
     project_path = app_module.project_dir(project_id)
     annotation_repository = app_module.AnnotationRepository(project_path)
     for record in (first, second):
-        assert not (project_path / "uploads" / record["stored_name"]).exists()
+        assert (project_path / "uploads" / record["stored_name"]).is_file()
         assert not annotation_repository.exists(record["id"])
+
+    assert app_module.material_store(project_id).get(seed['id']) is not None
+    with app_module.material_store(project_id)._connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM material_cleanup_deferred').fetchone()[0] == 2

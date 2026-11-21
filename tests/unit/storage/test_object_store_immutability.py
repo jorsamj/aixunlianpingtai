@@ -296,6 +296,89 @@ def test_s3_generate_upload_url_delegates_to_protected_contract(monkeypatch):
     assert captured["params"]["ContentType"] == "image/jpeg"
 
 
+def test_s3_presigned_upload_contract_can_bind_size_and_sha256_metadata(monkeypatch):
+    import platform_core.storage.s3 as module
+    captured = {}
+
+    class FakeClient:
+        def generate_presigned_url(self, operation, Params=None, ExpiresIn=None):
+            captured.update({
+                "operation": operation,
+                "params": dict(Params or {}),
+                "expires": ExpiresIn,
+            })
+            return "https://s3.example.com/signed"
+
+    monkeypatch.setattr(
+        module,
+        "_load_boto3",
+        lambda: SimpleNamespace(client=lambda *_args, **_kwargs: FakeClient()),
+    )
+    provider = S3StorageProvider("s3", {"bucket": "materials", "prefix": "vision"}, {})
+
+    contract = provider.generate_upload_contract(
+        "results/result.jpg",
+        content_type="image/jpeg",
+        metadata={"sha256": "b" * 64},
+        size_bytes=123,
+    )
+
+    assert captured["params"]["ContentLength"] == 123
+    assert captured["params"]["Metadata"] == {"sha256": "b" * 64}
+    assert captured["params"]["IfNoneMatch"] == "*"
+    assert contract["headers"]["Content-Length"] == "123"
+    assert contract["headers"]["x-amz-meta-sha256"] == "b" * 64
+    assert contract["headers"]["If-None-Match"] == "*"
+
+
+def test_oss_presigned_upload_contract_can_bind_size_and_sha256_metadata(monkeypatch):
+    import platform_core.storage.oss as module
+    captured = {}
+
+    class FakeAuth:
+        def __init__(self, *_args):
+            pass
+
+    class FakeBucket:
+        def __init__(self, *_args):
+            pass
+
+        def sign_url(self, method, key, expires, headers=None):
+            captured.update({
+                "method": method,
+                "key": key,
+                "expires": expires,
+                "headers": dict(headers or {}),
+            })
+            return "https://oss.example.com/signed"
+
+    monkeypatch.setattr(
+        module,
+        "_load_oss2",
+        lambda: SimpleNamespace(Auth=FakeAuth, StsAuth=FakeAuth, Bucket=FakeBucket),
+    )
+    provider = OSSStorageProvider(
+        "oss",
+        {"endpoint": "oss.example.com", "bucket": "materials", "prefix": "vision"},
+        {"access_key_id": "id", "access_key_secret": "secret"},
+    )
+
+    contract = provider.generate_upload_contract(
+        "results/result.jpg",
+        content_type="image/jpeg",
+        metadata={"sha256": "c" * 64},
+        size_bytes=456,
+    )
+
+    assert captured["headers"] == {
+        "Content-Type": "image/jpeg",
+        "x-oss-meta-sha256": "c" * 64,
+        "Content-Length": "456",
+        "x-oss-forbid-overwrite": "true",
+    }
+    assert contract["headers"] == captured["headers"]
+
+
 def test_s3_real_sdk_presign_uses_sigv4_and_signs_conditional_headers():
     provider = S3StorageProvider(
         "s3-real-signing",

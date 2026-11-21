@@ -1,0 +1,1053 @@
+{
+  "environment": "Windows NTFS, Python 3.12.7, temporary SQLite; single samples, not production P95",
+  "baseline_claim_code": "aabffa49479a9b40f3c35d6fcd2414bad09519ea",
+  "measurement": "candidate_rows means materialized rows, not SQLite engine visits; prepare_calls counts callbacks, not real payload file reads",
+  "reports": {
+    "before": {
+      "source_sha256": "bc8e425984aa0b3caa6f3fb24093be58aca79582ecc0523835975070b78d3920",
+      "description": "Temporary SQLite claim microbenchmark; timings are single samples, not production P95.",
+      "python": "3.12.7 (tags/v3.12.7:0b05ead, Oct  1 2024, 03:06:41) [MSC v.1941 64 bit (AMD64)]",
+      "results": [
+        {
+          "candidate_rows": 1000,
+          "candidate_sql": 1,
+          "total_sql": 5,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.006368100002873689,
+          "writer_acquire_seconds": 1.5199999324977398e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.013439099999231985,
+          "size": 1000,
+          "scenario": "missing_capabilities",
+          "budget": null,
+          "claimed_task": null
+        },
+        {
+          "candidate_rows": 1000,
+          "candidate_sql": 1,
+          "total_sql": 13,
+          "begin_immediate": 2,
+          "recovery_calls": 2,
+          "writer_seconds": 0.007286099997145357,
+          "writer_acquire_seconds": 2.2300002456177026e-05,
+          "prepare_calls": 1,
+          "claim_seconds": 0.01641419999941718,
+          "size": 1000,
+          "scenario": "tail_runnable",
+          "budget": null,
+          "claimed_task": "task-00000999"
+        },
+        {
+          "candidate_rows": 5000,
+          "candidate_sql": 1,
+          "total_sql": 5,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.029589599998871563,
+          "writer_acquire_seconds": 1.0000003385357559e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.040830099998856895,
+          "size": 5000,
+          "scenario": "missing_capabilities",
+          "budget": null,
+          "claimed_task": null
+        },
+        {
+          "candidate_rows": 5000,
+          "candidate_sql": 1,
+          "total_sql": 13,
+          "begin_immediate": 2,
+          "recovery_calls": 2,
+          "writer_seconds": 0.032218600001215236,
+          "writer_acquire_seconds": 2.5800000003073364e-05,
+          "prepare_calls": 1,
+          "claim_seconds": 0.051763600000413135,
+          "size": 5000,
+          "scenario": "tail_runnable",
+          "budget": null,
+          "claimed_task": "task-00004999"
+        },
+        {
+          "candidate_rows": 10000,
+          "candidate_sql": 1,
+          "total_sql": 5,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.07708499999716878,
+          "writer_acquire_seconds": 1.809999957913533e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.10340079999878071,
+          "size": 10000,
+          "scenario": "missing_capabilities",
+          "budget": null,
+          "claimed_task": null
+        },
+        {
+          "candidate_rows": 10000,
+          "candidate_sql": 1,
+          "total_sql": 13,
+          "begin_immediate": 2,
+          "recovery_calls": 2,
+          "writer_seconds": 0.10356530000353814,
+          "writer_acquire_seconds": 1.9999999494757503e-05,
+          "prepare_calls": 1,
+          "claim_seconds": 0.12488920000032522,
+          "size": 10000,
+          "scenario": "tail_runnable",
+          "budget": null,
+          "claimed_task": "task-00009999"
+        },
+        {
+          "candidate_rows": 20000,
+          "candidate_sql": 1,
+          "total_sql": 5,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.17730090000259224,
+          "writer_acquire_seconds": 2.2599997464567423e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.215234799998143,
+          "size": 20000,
+          "scenario": "missing_capabilities",
+          "budget": null,
+          "claimed_task": null
+        },
+        {
+          "candidate_rows": 20000,
+          "candidate_sql": 1,
+          "total_sql": 13,
+          "begin_immediate": 2,
+          "recovery_calls": 2,
+          "writer_seconds": 0.155345799998031,
+          "writer_acquire_seconds": 3.6399997043190524e-05,
+          "prepare_calls": 1,
+          "claim_seconds": 0.20213720000174362,
+          "size": 20000,
+          "scenario": "tail_runnable",
+          "budget": null,
+          "claimed_task": "task-00019999"
+        }
+      ]
+    },
+    "after": {
+      "source_sha256": "bb323bb5fdabe1fc02596816e9716c5f99b2cf9049831f6437b69b13c6071c49",
+      "description": "Temporary SQLite claim microbenchmark; timings are single samples, not production P95.",
+      "python": "3.12.7 (tags/v3.12.7:0b05ead, Oct  1 2024, 03:06:41) [MSC v.1941 64 bit (AMD64)]",
+      "results": [
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0002330999996047467,
+          "writer_acquire_seconds": 1.2600001355167478e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.00815370000054827,
+          "size": 1000,
+          "scenario": "missing_capabilities",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.00815370000054827,
+          "total_rows": 64,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0003608999977586791,
+          "writer_acquire_seconds": 1.930000144056976e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.00836929999786662,
+          "size": 1000,
+          "scenario": "tail_runnable",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": 31,
+          "total_claim_seconds": 0.30409900001541246,
+          "total_rows": 1984,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": "task-00000999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00024960000155260786,
+          "writer_acquire_seconds": 9.60000033956021e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.008432399998127948,
+          "size": 5000,
+          "scenario": "missing_capabilities",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.008432399998127948,
+          "total_rows": 64,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00021109999943291768,
+          "writer_acquire_seconds": 8.800001523923129e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.005082600000605453,
+          "size": 5000,
+          "scenario": "tail_runnable",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": 156,
+          "total_claim_seconds": 1.0688909000018612,
+          "total_rows": 9984,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": "task-00004999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0002195999986724928,
+          "writer_acquire_seconds": 8.200004231184721e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.007530800001404714,
+          "size": 10000,
+          "scenario": "missing_capabilities",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.007530800001404714,
+          "total_rows": 64,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00021940000442555174,
+          "writer_acquire_seconds": 8.700000762473792e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.0063053999983821996,
+          "size": 10000,
+          "scenario": "tail_runnable",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": 312,
+          "total_claim_seconds": 2.0600607999731437,
+          "total_rows": 19968,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": "task-00009999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00023859999782871455,
+          "writer_acquire_seconds": 9.400006092619151e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.006961400002182927,
+          "size": 20000,
+          "scenario": "missing_capabilities",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.006961400002182927,
+          "total_rows": 64,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 64,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00025910000113071874,
+          "writer_acquire_seconds": 1.0799994925037026e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.006636699996306561,
+          "size": 20000,
+          "scenario": "tail_runnable",
+          "budget": 64,
+          "claimed_task": null,
+          "cycles_to_tail": 624,
+          "total_claim_seconds": 5.864247200079262,
+          "total_rows": 39936,
+          "max_single_claim_rows": 64,
+          "tail_claimed_task": "task-00019999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00027829999453388155,
+          "writer_acquire_seconds": 1.1399999493733048e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.008241199997428339,
+          "size": 1000,
+          "scenario": "missing_capabilities",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.008241199997428339,
+          "total_rows": 128,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00033819999953266233,
+          "writer_acquire_seconds": 1.5200006600935012e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.01034829999844078,
+          "size": 1000,
+          "scenario": "tail_runnable",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": 15,
+          "total_claim_seconds": 0.1343029999989085,
+          "total_rows": 1920,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": "task-00000999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00021550000383285806,
+          "writer_acquire_seconds": 8.800001523923129e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.0064613000067765824,
+          "size": 5000,
+          "scenario": "missing_capabilities",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.0064613000067765824,
+          "total_rows": 128,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00026190000062342733,
+          "writer_acquire_seconds": 9.499999578110874e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.0086788999979035,
+          "size": 5000,
+          "scenario": "tail_runnable",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": 78,
+          "total_claim_seconds": 0.6455613999642082,
+          "total_rows": 9984,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": "task-00004999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00028249999741092324,
+          "writer_acquire_seconds": 1.219999830937013e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.009385400000610389,
+          "size": 10000,
+          "scenario": "missing_capabilities",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.009385400000610389,
+          "total_rows": 128,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0002570999931776896,
+          "writer_acquire_seconds": 1.1500000255182385e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.008324000002176035,
+          "size": 10000,
+          "scenario": "tail_runnable",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": 156,
+          "total_claim_seconds": 1.6777560000191443,
+          "total_rows": 19968,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": "task-00009999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0005361999938031659,
+          "writer_acquire_seconds": 2.3200002033263445e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.011924099999305326,
+          "size": 20000,
+          "scenario": "missing_capabilities",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.011924099999305326,
+          "total_rows": 128,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 128,
+          "candidate_sql": 3,
+          "total_sql": 7,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0008168999993358739,
+          "writer_acquire_seconds": 3.229999856557697e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.008718500001123175,
+          "size": 20000,
+          "scenario": "tail_runnable",
+          "budget": 128,
+          "claimed_task": null,
+          "cycles_to_tail": 312,
+          "total_claim_seconds": 2.878473299984762,
+          "total_rows": 39936,
+          "max_single_claim_rows": 128,
+          "tail_claimed_task": "task-00019999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00019540000357665122,
+          "writer_acquire_seconds": 9.099996532313526e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.006775400004698895,
+          "size": 1000,
+          "scenario": "missing_capabilities",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.006775400004698895,
+          "total_rows": 256,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00037650000012945384,
+          "writer_acquire_seconds": 1.6500001947861165e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.009778699997696094,
+          "size": 1000,
+          "scenario": "tail_runnable",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": 5,
+          "total_claim_seconds": 0.045596599993587006,
+          "total_rows": 1280,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": "task-00000999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0005794999960926361,
+          "writer_acquire_seconds": 2.800000220304355e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.00999479999882169,
+          "size": 5000,
+          "scenario": "missing_capabilities",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.00999479999882169,
+          "total_rows": 256,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00044440000056056306,
+          "writer_acquire_seconds": 1.5899997379165143e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.009149400000751484,
+          "size": 5000,
+          "scenario": "tail_runnable",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": 26,
+          "total_claim_seconds": 0.20669959997030674,
+          "total_rows": 6656,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": "task-00004999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0002657000004546717,
+          "writer_acquire_seconds": 9.000003046821803e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.009844000000157394,
+          "size": 10000,
+          "scenario": "missing_capabilities",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.009844000000157394,
+          "total_rows": 256,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00030759999935980886,
+          "writer_acquire_seconds": 1.200000406242907e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.008147199994709808,
+          "size": 10000,
+          "scenario": "tail_runnable",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": 52,
+          "total_claim_seconds": 0.4097998999641277,
+          "total_rows": 13312,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": "task-00009999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.00022780000290367752,
+          "writer_acquire_seconds": 8.600000001024455e-06,
+          "prepare_calls": 0,
+          "claim_seconds": 0.006889699994644616,
+          "size": 20000,
+          "scenario": "missing_capabilities",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": null,
+          "total_claim_seconds": 0.006889699994644616,
+          "total_rows": 256,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": null,
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        },
+        {
+          "candidate_rows": 256,
+          "candidate_sql": 5,
+          "total_sql": 9,
+          "begin_immediate": 1,
+          "recovery_calls": 1,
+          "writer_seconds": 0.0002721999990171753,
+          "writer_acquire_seconds": 1.1500000255182385e-05,
+          "prepare_calls": 0,
+          "claim_seconds": 0.012841700001445133,
+          "size": 20000,
+          "scenario": "tail_runnable",
+          "budget": 256,
+          "claimed_task": null,
+          "cycles_to_tail": 104,
+          "total_claim_seconds": 0.8517153000211692,
+          "total_rows": 26624,
+          "max_single_claim_rows": 256,
+          "tail_claimed_task": "task-00019999",
+          "queued_query_plans": [
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=?)"
+              ]
+            ],
+            [
+              [
+                7,
+                0,
+                0,
+                "SEARCH candidate USING INDEX idx_task_claim_pipeline (status=? AND priority=? AND queue_rank=? AND created_at=? AND task_id>?)"
+              ]
+            ]
+          ]
+        }
+      ]
+    }
+  }
+}

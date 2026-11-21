@@ -22,6 +22,6 @@ test('modal-like preview and review rewrites route through one content replaceme
   assert.equal(app.includes('if(body&&list[i])body.innerHTML=previewHtml411(list[i],list,i)'), false);
   assert.equal(app.includes('if(body)body.innerHTML=reviewHtml412()'), false);
   assert.equal(app.includes('if(body)body.innerHTML=importReview414Html()'), false);
-  assert.equal(app.split('window.ModalContentRuntime.replace(body,reviewHtml412())').length - 1, 3);
-  assert.equal(app.split('window.ModalContentRuntime.replace(body,importReview414Html())').length - 1, 4);
+  assert.equal(app.split('window.ModalContentRuntime.replace(body,reviewHtml412())').length - 1, 2);
+  assert.equal(app.split('window.ModalContentRuntime.replace(body,importReview414Html())').length - 1, 3);
 });

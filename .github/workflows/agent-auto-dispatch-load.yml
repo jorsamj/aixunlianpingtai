@@ -1,0 +1,42 @@
+name: Agent Auto Dispatch Isolated Load Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'scripts/perf/agent_auto_dispatch_bench.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/agent_execution.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - '.github/workflows/agent-auto-dispatch-load.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-load:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused control-plane dependencies
+        run: python -m pip install --disable-pip-version-check psutil requests fastapi httpx filelock
+      - name: Validate benchmark syntax
+        run: python -m py_compile scripts/perf/agent_auto_dispatch_bench.py
+      - name: Test 1k and 10k queues, 1/4/8 Agents, and SQLite writer fairness
+        run: >-
+          python scripts/perf/agent_auto_dispatch_bench.py
+          --sizes 1000 10000 --agents 1 4 8 --polls 3
+          --output agent_dispatch_benchmark.json
+      - name: Preserve measurement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-dispatch-load-metrics
+          path: agent_dispatch_benchmark.json
+          if-no-files-found: warn

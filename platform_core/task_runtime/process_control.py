@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -40,6 +41,25 @@ class LaunchedProcess:
     identity: ProcessIdentity
 
 
+def _windows_process_create_time(process: subprocess.Popen) -> float:
+    from ctypes import POINTER, WinDLL, WinError, byref, get_last_error
+    from ctypes.wintypes import BOOL, FILETIME, HANDLE
+
+    kernel = WinDLL("kernel32", use_last_error=True)
+    get_process_times = kernel.GetProcessTimes
+    get_process_times.argtypes = [HANDLE] + [POINTER(FILETIME)] * 4
+    get_process_times.restype = BOOL
+    created, exited, kernel_time, user_time = (FILETIME() for _ in range(4))
+    # Popen owns the original CreateProcess handle until it is destroyed.
+    # Query that object even if the initial PID lookup would see an exited child.
+    if not get_process_times(
+        int(process._handle), byref(created), byref(exited), byref(kernel_time), byref(user_time)
+    ):
+        raise WinError(get_last_error())
+    ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+    return (ticks - 116_444_736_000_000_000) / 10_000_000
+
+
 def launch_process(
     argv: Sequence[str | os.PathLike[str]],
     *,
@@ -73,10 +93,13 @@ def launch_process(
         env=None if env is None else dict(env),
         **options,
     )
-    observed = psutil.Process(process.pid)
+    create_time = (
+        _windows_process_create_time(process)
+        if os.name == "nt" else psutil.Process(process.pid).create_time()
+    )
     identity = ProcessIdentity(
         pid=process.pid,
-        create_time=observed.create_time(),
+        create_time=create_time,
         command_hash=hash_command(command),
     )
     return LaunchedProcess(process, identity)
@@ -85,7 +108,14 @@ def launch_process(
 class ProcessController:
     def inspect(self, identity: ProcessIdentity) -> psutil.Process:
         try:
-            process = psutil.Process(int(identity.pid))
+            pid = int(identity.pid)
+            expected_create_time = float(identity.create_time)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ProcessIdentityMismatchError("process identity has invalid pid/create_time") from error
+        if pid <= 0 or not math.isfinite(expected_create_time) or expected_create_time <= 0:
+            raise ProcessIdentityMismatchError("process identity has invalid pid/create_time")
+        try:
+            process = psutil.Process(pid)
             observed_create_time = process.create_time()
             observed_hash = hash_command(process.cmdline())
         except (psutil.NoSuchProcess, psutil.ZombieProcess) as error:
@@ -93,7 +123,8 @@ class ProcessController:
         except psutil.AccessDenied as error:
             raise PermissionError("process identity cannot be inspected") from error
         if (
-            abs(observed_create_time - float(identity.create_time)) > 0.01
+            not math.isfinite(observed_create_time)
+            or abs(observed_create_time - expected_create_time) > 0.01
             or observed_hash != identity.command_hash
         ):
             raise ProcessIdentityMismatchError("process identity does not match")

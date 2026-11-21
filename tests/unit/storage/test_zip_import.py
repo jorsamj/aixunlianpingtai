@@ -397,7 +397,7 @@ def test_encrypted_and_unsupported_compression_fail_preflight(tmp_path, monkeypa
     monkeypatch.setattr(zip_import.zipfile.ZipFile, "infolist", infolist)
     with pytest.raises(UnsafeArchive) as captured:
         run_extract(archive, tmp_path / "target")
-    assert captured.value.code == "ZIP_INVALID_ARCHIVE"
+    assert captured.value.code == ("ZIP_UNSUPPORTED_COMPRESSION" if field=="compress_type" else "ZIP_INVALID_ARCHIVE")
     assert not (tmp_path / "target").exists()
 
 
@@ -693,3 +693,27 @@ def test_public_errors_do_not_expose_absolute_server_paths(tmp_path, monkeypatch
         assert str(path) not in " ".join(str(value) for value in public.values())
     if failure == "replace_error":
         assert error.__cause__ is original_error
+
+@pytest.mark.parametrize('method', [9,93])
+def test_compression_diagnostic_counts_every_affected_file_before_extraction(tmp_path, monkeypatch, method):
+    archive=make_zip(tmp_path,[('supported.txt',b'ok'),('a.txt',b'a'),('b.txt',b'b')])
+    original=zipfile.ZipFile.infolist
+    def infolist(stream):
+        entries=original(stream)
+        for item in entries[1:]: item.compress_type=method
+        return entries
+    monkeypatch.setattr(zipfile.ZipFile,'infolist',infolist)
+    with pytest.raises(zip_import.UnsupportedZipCompression) as captured:
+        run_extract(archive,tmp_path/'target')
+    assert str(method) in str(captured.value)
+    assert '2' in str(captured.value) and 'Deflate' in captured.value.solution
+    assert captured.value.context['affected_files']==2
+    assert not (tmp_path/'target').exists()
+
+@pytest.mark.parametrize('method',[zipfile.ZIP_STORED,zipfile.ZIP_DEFLATED,zipfile.ZIP_BZIP2,zipfile.ZIP_LZMA])
+def test_existing_zip_codecs_keep_directory_and_payload_semantics(tmp_path, method):
+    archive=make_zip(tmp_path,[('images/unannotated.jpg',b'image-payload'),('labels/a.txt',b'0 .5 .5 .2 .2')],compression=method)
+    root=tmp_path/'target'
+    run_extract(archive,root)
+    assert (root/PREFIX/'images/unannotated.jpg').read_bytes()==b'image-payload'
+    assert (root/PREFIX/'labels/a.txt').read_bytes()==b'0 .5 .5 .2 .2'

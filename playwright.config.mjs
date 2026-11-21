@@ -9,14 +9,14 @@ export default defineConfig({
   workers: 1,
   timeout: 60_000,
   use: {
-    baseURL: 'http://127.0.0.1:8011',
+    baseURL: `http://127.0.0.1:${process.env.MC_BROWSER_TEST_PORT||8011}`,
     channel: 'chrome',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure'
   },
   webServer: {
     command: 'python tools/test_server.py',
-    url: 'http://127.0.0.1:8011/api/health',
+    url: `http://127.0.0.1:${process.env.MC_BROWSER_TEST_PORT||8011}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000
   }

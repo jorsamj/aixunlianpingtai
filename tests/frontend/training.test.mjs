@@ -108,9 +108,13 @@ test('training material selection supports filtered, inverted, all, and none act
 test('final training dialog override selects materials instead of datasets', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('Durable v3 exact-material training split UI'), source.indexOf('Stable single-instance manual/batch annotation workbench'));
+  const canonical = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   assert.match(block, /openTrainMaterialPickerV3/);
-  assert.match(block, /select-filtered/);
-  assert.match(block, /clear-all/);
+  assert.match(block, /TrainingMaterialPickerRuntime/);
+  assert.doesNotMatch(block, /\/api\/projects\/\$\{pid\(\)\}\/images/);
+  assert.match(canonical, /select-filtered/);
+  assert.match(canonical, /clear-all/);
+  assert.match(canonical, /trainingMaterialSelectionPatch/);
   assert.doesNotMatch(block, /datasetRows\(\)/);
   assert.doesNotMatch(block, /trainDatasetIds/);
 });
@@ -145,4 +149,16 @@ test('report presentation keeps algorithm and version reports distinct', () => {
   assert.deepEqual(reportPresentation({report_type: 'version'}), {
     title: '单版本训练报告', scope: 'version'
   });
+});
+
+
+test('training algorithm selection is owned by the canonical training draft', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('window.applyAlg='), false);
+  assert.equal(source.includes('window.fillTrain='), false);
+  assert.equal(source.includes("const evalBox=$('#paddle_eval')"), false);
+  assert.match(source, /window\.openTrainingCreateCanonical429=async function\(aid\)/);
+  assert.match(source, /window\.TrainingDraftRuntime\?\.update\?\.\(\{algorithmId\}\)/);
+  assert.equal(source.includes('const oldApplyAlg = window.applyAlg;'), false);
+  assert.equal(source.includes('const oldApplyAlgV26 = window.applyAlg;'), false);
 });
