@@ -609,22 +609,39 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     const record=readBulkRecord(address);
     const requestId=record?.request_id??'';
     const attempted=record?.execution_attempted===true;
-    if(!/^[a-z0-9]{12,80}$/i.test(requestId))return;
+    if(!/^[a-z0-9]{12,80}$/i.test(requestId)||!record)return;
     bulkRequestId.value=requestId;
     if(attempted)bulkCreatePending.value=true;
+    // 1) A persisted execution is the strongest evidence: the endpoint binds
+    // request_id/actor/project/task and returns real progress.
     try{
-      const intent=await getBulkFormalIntent(address,requestId,new AbortController().signal);
+      const view=await readBulkExecution(address,new AbortController().signal);
       if(scope!==address)return;
-      if(intent.project_id!==address.projectId||intent.task_id!==address.taskId
-        ||intent.request_id!==requestId||intent.selection_id!==record?.selection_id
-        ||intent.review_revision!==record?.review_revision)
-        throw new Error('后台正式入库记录与当前任务或范围不一致');
-      bulkIntent.value=intent;bulkPendingUnknown.value=false;
+      bulkCreatePending.value=false;
+      if(bulkTerminal.value)await settleBulkFormal(address);
+      else startBulkPoll();
+      return view;
+    }catch(cause){
+      if(scope!==address)return;
+      if((cause as {httpStatus?:number}).httpStatus!==404){
+        if(attempted){
+          bulkCreatePending.value=true;
+          bulkNotice.value='后台任务创建结果未确认：原操作身份已保留，请查询状态或重试同一创建。';
+          return;
+        }
+        bulkError.value=message(cause);
+        return;
+      }
+    }
+    // 2) No execution readable. A GET intent only proves that some intent
+    // exists; it cannot prove the full request digest. Replay the exact body
+    // persisted in this browser and trust only a successful idempotent POST.
+    let existing:BulkFormalIntent;
+    try{
+      existing=await getBulkFormalIntent(address,requestId,new AbortController().signal);
     }catch(cause){
       if(scope!==address)return;
       if(attempted){
-        // The execute outcome outranks any seal read failure: never expose the
-        // identity for clearing while the background task may exist.
         bulkCreatePending.value=true;
         bulkNotice.value='已尝试创建后台任务，但无法读取原操作；原身份已保留，请重试同一预检或查询执行状态。';
         return;
@@ -637,22 +654,28 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       bulkError.value=message(cause);
       return;
     }
+    if(scope!==address)return;
     try{
-      const view=await readBulkExecution(address,new AbortController().signal);
+      const proven=await sealBulkFormalIntent(address,{
+        request_id:record.request_id,selection_id:record.selection_id,
+        review_revision:record.review_revision,excluded_image_ids:record.excluded_image_ids,
+      },new AbortController().signal);
       if(scope!==address)return;
-      bulkCreatePending.value=false;
-      if(bulkTerminal.value)await settleBulkFormal(address);
-      else startBulkPoll();
-      return view;
+      if(proven.request_id!==requestId||proven.selection_id!==record.selection_id
+        ||proven.review_revision!==record.review_revision)
+        throw new Error('恢复的封存回执与本地记录不一致');
+      bulkIntent.value=proven;bulkConflict.value=false;bulkPendingUnknown.value=false;
     }catch(cause){
       if(scope!==address)return;
+      // The intent exists but its full request digest is not proven (409), or
+      // the proof request failed. Never expose this intent as executable.
+      bulkIntent.value=existing;bulkConflict.value=true;bulkPendingUnknown.value=false;
+      bulkNotice.value='已封存意图与本地保存的排除集合不一致，已阻止执行；请放弃后重新选择。';
       if(attempted){
         bulkCreatePending.value=true;
-        bulkNotice.value='后台任务创建结果未确认：原操作身份已保留，请查询状态或重试同一创建。';
-        return;
+        bulkNotice.value='后台任务创建结果未确认，且原意图无法证明与本地范围一致；原身份已保留，请核验执行状态。';
       }
-      if((cause as {httpStatus?:number}).httpStatus===404)return;
-      bulkError.value=message(cause);
+      return;
     }
   }
   function openBulkFormal(){
@@ -764,6 +787,43 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       }finally{bulkSealing.value=false}
     });
   }
+  async function retryBulkSeal(){
+    if(!scope||bulkRunning.value||bulkSealing.value)return;
+    await runBulk(async(address,signal)=>{
+      const record=readBulkRecord(address);
+      if(!record||record.request_id!==bulkRequestId.value)
+        throw new Error('缺少原操作身份，无法恢复');
+      // If the background task already exists, query it instead of rebuilding.
+      try{
+        const view=await getBulkFormalExecution(address,record.request_id,new AbortController().signal);
+        if(scope!==address)return;
+        bulkExecution.value=view;bulkCreatePending.value=false;
+        if(!bulkTerminal.value)startBulkPoll();
+        return;
+      }catch{/* no readable execution; replay the original seal body */}
+      bulkSealing.value=true;
+      try{
+        const intent=await sealBulkFormalIntent(address,{
+          request_id:record.request_id,selection_id:record.selection_id,
+          review_revision:record.review_revision,excluded_image_ids:record.excluded_image_ids,
+        },signal);
+        if(scope!==address)return;
+        if(intent.request_id!==record.request_id)throw new Error('恢复回执身份不一致');
+        bulkIntent.value=intent;bulkConflict.value=false;bulkPendingUnknown.value=false;
+        bulkNotice.value='已恢复原预检；请查询执行状态或重试创建同一后台任务。';
+      }catch(cause){
+        if(scope!==address)return;
+        const status=(cause as {httpStatus?:number}).httpStatus;
+        try{
+          const existing=await getBulkFormalIntent(address,record.request_id,new AbortController().signal);
+          bulkIntent.value=existing;
+        }catch{/* keep the original identity even if the intent cannot be read */}
+        if(status===409)bulkConflict.value=true;
+        if(readBulkRecord(address)?.execution_attempted===true)bulkCreatePending.value=true;
+        throw cause;
+      }finally{bulkSealing.value=false}
+    });
+  }
   function abandonBulkFormal(){
     const address=scope;
     // The persisted execute attempt outranks in-memory flags: even before a
@@ -800,8 +860,13 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
         try{
           const view=await getBulkFormalExecution(address,bulkRequestId.value,new AbortController().signal);
           if(scope!==address)return;
-          bulkExecution.value=view;bulkCreatePending.value=false;
-          bulkNotice.value='后台任务已创建，已恢复真实执行状态。';
+          if(view.operation_id!==bulkIntent.value?.operation_id||view.total_images!==bulkIntent.value?.count){
+          bulkCreatePending.value=true;
+          bulkNotice.value='恢复的执行回执与封存意图身份不一致，已保留原操作身份。';
+          return;
+        }
+        bulkExecution.value=view;bulkCreatePending.value=false;
+        bulkNotice.value='后台任务已创建，已恢复真实执行状态。';
           if(bulkTerminal.value)await settleBulkFormal(address);
           else startBulkPoll();
           return;
@@ -873,5 +938,5 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,
     bulkSealed,bulkPendingUnknown,bulkCreatePending,bulkConflict,lastBulkResult,
     canBulkFormal,openBulkFormal,closeBulkFormal,preflightBulkFormal,confirmBulkFormal,refreshBulkFormal,
-    cancelBulkFormal,recoverBulkFormal,abandonBulkFormal};
+    cancelBulkFormal,recoverBulkFormal,retryBulkSeal,abandonBulkFormal};
 });

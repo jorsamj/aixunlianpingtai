@@ -315,7 +315,7 @@ const diagnosticFacts=computed(()=>{
         <el-button v-if="review.bulkCreatePending && review.bulkIntent" :loading="review.bulkBusy"
          @click="review.confirmBulkFormal()">重试创建后台任务</el-button>
         <el-button v-if="review.bulkCreatePending && !review.bulkIntent" :loading="review.bulkBusy"
-         @click="review.preflightBulkFormal()">重试上次预检</el-button>
+         @click="review.retryBulkSeal()">恢复原预检</el-button>
         <el-button v-if="review.bulkPendingUnknown" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">重试上次预检</el-button>
         <el-button v-if="(review.bulkIntent || review.bulkConflict || review.bulkPendingUnknown) && !review.bulkRunning && !review.bulkCreatePending && !review.bulkBusy"
@@ -364,7 +364,7 @@ const diagnosticFacts=computed(()=>{
        <template #footer>
         <el-button :disabled="review.bulkBusy" @click="review.closeBulkFormal()">关闭</el-button>
         <el-button v-if="!review.bulkIntent && review.bulkCreatePending" :loading="review.bulkBusy"
-         @click="review.preflightBulkFormal()">重试上次预检</el-button>
+         @click="review.retryBulkSeal()">恢复原预检</el-button>
         <el-button v-else-if="!review.bulkIntent" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">预检并封存</el-button>
         <el-button v-if="(review.bulkIntent || review.bulkConflict) && !review.bulkExecution && !review.bulkCreatePending" :disabled="review.bulkBusy"

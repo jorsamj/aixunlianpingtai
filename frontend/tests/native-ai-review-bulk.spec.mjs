@@ -293,7 +293,7 @@ test('execute response loss keeps the original task identity and blocks abandon'
   state.intentStatus=503;
   state.executionStatus=503;
   await page.reload();
-  await expect(page.locator('.review-bulk')).toContainText('已尝试创建后台任务');
+  await expect(page.locator('.review-bulk')).toContainText(/已尝试创建后台任务|后台任务创建结果未确认/);
   await expect(page.getByRole('button',{name:'放弃预检'})).toHaveCount(0);
   const locked=await readRecord(page);
   expect(locked.request_id).toBe(requestId);
@@ -302,6 +302,7 @@ test('execute response loss keeps the original task identity and blocks abandon'
   // 2) A seal 404 must not downgrade an attempted execution.
   state.intentStatus=404;
   state.executionStatus=0;
+  state.hideExecution=true;
   state.sealed=null;
   await page.reload();
   await expect(page.locator('.review-bulk')).toContainText('已尝试创建后台任务');
@@ -309,6 +310,7 @@ test('execute response loss keeps the original task identity and blocks abandon'
 
   // 3) Restore authoritative reads: the SAME deterministic task completes.
   state.intentStatus=0;
+  state.hideExecution=false;
   state.sealed=intentBody(state,{request_id:requestId,selection_id:selectionId,
     review_revision:1,excluded_image_ids:[]});
   state.sealedRequest={request_id:requestId,selection_id:selectionId,review_revision:1,
@@ -334,5 +336,30 @@ test('seal 409 with a different exclusion set blocks execution and keeps the ori
   expect(state.executes).toBe(0);
   // The original server intent (excluded image-24) was not replaced.
   expect(state.sealedRequest.excluded_image_ids).toEqual(['image-24']);
-  expect(await readRecord(page)).not.toBeNull();
+  const conflictRecord=await readRecord(page);
+  expect(conflictRecord).not.toBeNull();
+
+  // A refresh must NOT turn the conflict into an executable intent.
+  await page.reload();
+  await expect(page.locator('.review-bulk')).toContainText('预检冲突，已阻止执行');
+  await expect(page.getByRole('button',{name:'确认创建后台任务'})).toHaveCount(0);
+  expect(state.executes).toBe(0);
+  expect(state.sealedRequest.excluded_image_ids).toEqual(['image-24']);
+  expect((await readRecord(page)).request_id).toBe(conflictRecord.request_id);
+
+  // Explicit abandon clears only the local identity; a new operation must use
+  // a NEW request_id and can then proceed.
+  await page.locator('.review-bulk').getByRole('button',{name:'放弃预检'}).click();
+  await expect(page.locator('.review-bulk')).toHaveCount(0);
+  expect(await readRecord(page)).toBeNull();
+  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true}).uncheck();
+  await seal(page,'后台正式入库 29 张');
+  await expect(page.getByRole('dialog')).toContainText('预检通过：可入库 29 张');
+  const newRecord=await readRecord(page);
+  expect(newRecord.request_id).not.toBe(conflictRecord.request_id);
+  await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
+  expect(state.executes).toBe(1);
 });
