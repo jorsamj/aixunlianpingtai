@@ -102,6 +102,13 @@ const taskStatus=computed(()=>{
   const status=review.task?.status||'';
   return statusNames[status.toUpperCase()]||status;
 });
+const bulkStatusNames:Record<string,string>={QUEUED:'排队中',RUNNING:'后台执行中',CANCEL_REQUESTED:'正在取消',
+  CANCELLED:'已取消',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分成功',FAILED:'失败'};
+const bulkStatusName=computed(()=>review.bulkExecution
+  ?bulkStatusNames[review.bulkExecution.status]||review.bulkExecution.status
+  :review.bulkIntent?'已预检封存':'');
+const bulkManualExcluded=computed(()=>review.frozenSelection
+  ?Math.max(0,review.frozenSelection.count-review.selectedCount):0);
 const candidateName=(row:ReviewCandidate)=>(row.filename||row.image_id).split(/[\\/]/).at(-1)||row.image_id;
 function candidateStatus(row:ReviewCandidate){
   if(row.gt_committed)return '已正式入库';
@@ -231,6 +238,9 @@ const diagnosticFacts=computed(()=>{
        <el-button :disabled="!review.canPrepareFormal" @click="review.prepareFormal()">
         正式入库已选 {{ review.selectedCount }} 张
        </el-button>
+       <el-button v-if="review.frozenSelection" :disabled="!review.canBulkFormal" @click="review.openBulkFormal()">
+        后台正式入库 {{ review.selectedCount }} 张
+       </el-button>
        <el-button :disabled="review.formalLocked||(!review.frozenSelection&&!review.selectedCount&&!review.selectionBusy)"
         @click="review.clearSelection()">清空选择</el-button>
       </div>
@@ -268,6 +278,77 @@ const diagnosticFacts=computed(()=>{
         <el-button :disabled="review.formalBusy" @click="review.cancelFormal()">取消</el-button>
         <el-button :loading="review.formalBusy" @click="review.confirmFormal()">确认写入正式 GT</el-button>
        </template>
+      </el-dialog>
+      <div v-if="review.bulkIntent || review.bulkExecution" class="review-bulk" role="status">
+       <p><b>{{ bulkStatusName }}</b>
+        <template v-if="review.bulkExecution">
+         · 已证明提交 GT
+         {{ review.bulkExecution.committed_images_proven ? review.bulkExecution.committed_images : '未证明' }}
+         / {{ review.bulkExecution.total_images }} 张
+         · 完成批次 {{ review.bulkExecution.completed_batches }}/{{ review.bulkExecution.total_batches }}
+         <template v-if="review.bulkExecution.candidate_adopted_images">
+          · 候选已采用 {{ review.bulkExecution.candidate_adopted_images }} 张
+         </template>
+         <template v-if="review.bulkExecution.cancellation_requested && !review.bulkTerminal"> · 已请求取消</template>
+        </template>
+        <template v-else> · 已封存 {{ review.bulkIntent?.count }} 张，待创建后台任务</template>
+       </p>
+       <p v-if="review.bulkExecution?.blocked" role="alert">
+        任务已阻断{{ review.bulkExecution.manual_review_required ? '，需要人工核验后恢复' : '' }}：
+        {{ review.bulkExecution.blocked_reason || review.bulkExecution.last_error_message || review.bulkExecution.blocked_code }}
+       </p>
+       <p v-else-if="review.bulkExecution?.last_error_message" role="alert">{{ review.bulkExecution.last_error_message }}</p>
+       <div class="review-actions">
+        <el-button :loading="review.bulkBusy" @click="review.refreshBulkFormal()">刷新进度</el-button>
+        <el-button v-if="review.bulkExecution && !review.bulkTerminal && !review.bulkExecution.cancellation_requested"
+         :loading="review.bulkBusy" @click="review.cancelBulkFormal()">取消后台任务</el-button>
+        <el-button v-if="review.bulkExecution?.blocked" :loading="review.bulkBusy"
+         @click="review.recoverBulkFormal()">核验并恢复</el-button>
+        <el-button v-if="review.bulkIntent" @click="review.openBulkFormal()">查看预检</el-button>
+       </div>
+      </div>
+      <el-dialog :model-value="review.bulkDialog" title="后台正式 GT 入库" width="min(560px, 92vw)"
+       :close-on-click-modal="!review.bulkBusy" :close-on-press-escape="!review.bulkBusy"
+       :show-close="!review.bulkBusy" @close="review.closeBulkFormal()">
+       <template v-if="!review.bulkExecution">
+        <p v-if="!review.bulkIntent">
+         冻结筛选 {{ review.frozenSelection?.filtered_total }} 张 · 资格排除 {{ review.frozenSelection?.excluded }} 张 ·
+         当前选择 {{ review.selectedCount }} 张 · 手动排除 {{ bulkManualExcluded }} 张
+        </p>
+        <p v-else>
+         已封存：可入库 {{ review.bulkIntent.count }} 张 · 手动排除 {{ review.bulkIntent.excluded_count }} 张 ·
+         原筛选 {{ review.bulkIntent.original_count }} 张
+        </p>
+        <p>预检只核验并封存范围，不写入正式 GT。确认后由后台 Worker 每 100 张一批提交，可随时取消。</p>
+       </template>
+       <template v-else>
+        <p>{{ bulkStatusName }} · 任务 {{ review.bulkExecution.execution_task_id }}</p>
+        <p>
+         已证明提交 GT
+         {{ review.bulkExecution.committed_images_proven ? review.bulkExecution.committed_images : '未证明' }}
+         / {{ review.bulkExecution.total_images }} 张 · 完成批次
+         {{ review.bulkExecution.completed_batches }}/{{ review.bulkExecution.total_batches }}
+        </p>
+        <p v-if="review.bulkExecution.candidate_adopted_images">
+         候选已采用未提交 {{ review.bulkExecution.candidate_only_uncommitted_images }} 张
+         <template v-if="review.bulkExecution.uncommitted_gt_changed_images">
+          · 外部 GT 变更 {{ review.bulkExecution.uncommitted_gt_changed_images }} 张
+         </template>
+        </p>
+        <p v-if="review.bulkExecution.blocked" role="alert">
+         任务已阻断：{{ review.bulkExecution.blocked_reason || review.bulkExecution.blocked_code }}
+        </p>
+        <p v-else-if="review.bulkExecution.last_error_message" role="alert">{{ review.bulkExecution.last_error_message }}</p>
+       </template>
+       <p v-if="review.bulkError" role="alert">{{ review.bulkError }}</p>
+       <p v-if="review.bulkNotice" role="status">{{ review.bulkNotice }}</p>
+       <template #footer>
+        <el-button :disabled="review.bulkBusy" @click="review.closeBulkFormal()">关闭</el-button>
+        <el-button v-if="!review.bulkIntent" :loading="review.bulkBusy"
+         @click="review.preflightBulkFormal()">预检并封存</el-button>
+        <el-button v-if="review.bulkIntent && !review.bulkExecution" type="primary" :loading="review.bulkBusy"
+         @click="review.confirmBulkFormal()">确认创建后台任务</el-button>
+      </template>
       </el-dialog>
       <small>此处的选择仅用于当前页面，原工作台需重新选择。</small>
      </section>
@@ -366,6 +447,8 @@ button[aria-pressed=true],button[aria-current=true]{background:#e9e9e9;border-co
 .review-checkbox{display:flex;align-items:center;gap:5px}
 .review-checkbox input{margin:0;accent-color:#222}
 .review-selection{margin-top:12px;padding-top:12px;border-top:1px solid #ddd}
+.review-bulk{margin-top:10px;padding:8px 10px;border:1px solid #ddd;border-radius:6px;background:#fafafa}
+.review-bulk p{margin:4px 0}
 .review-selection p{margin:8px 0}
 .review-selection p span+span::before{content:' · '}
 .review-actions,.review-scope{display:flex;flex-wrap:wrap;gap:8px}

@@ -49,7 +49,7 @@ export function getReviewPage(scope:ReviewAddress, filter:ReviewFilter, cursor:s
 }
 export interface ReviewSelection {
   selection_id:string;filter:ReviewFilter;purpose:'gt';review_revision:number;
-  filtered_total:number;count:number;reasons:Record<string,number>;
+  filtered_total:number;count:number;excluded?:number;reasons:Record<string,number>;
 }
 export function freezeReviewSelection(scope:ReviewAddress, filter:ReviewFilter, revision:number, signal:AbortSignal) {
   return request<ReviewSelection>(root(scope)+'/review-selection',{
@@ -127,4 +127,43 @@ export function getFormalReceipt(scope:ReviewAddress,requestId:string,signal:Abo
 }
 export function getFormalAnnotation(scope:ReviewAddress,imageId:string,signal:AbortSignal){
   return request<{version:number}>(`/api/projects/${enc(scope.projectId)}/annotations/${enc(imageId)}`,{signal});
+}
+
+// ---- Durable bulk formal GT (C2-B) ----
+export interface BulkFormalIntent {
+  operation_id:string;request_id:string;project_id:string;task_id:string;
+  selection_id:string;review_revision:number;purpose:'gt';
+  original_count:number;excluded_count:number;count:number;
+  status:'accepted';accepted_at?:string;manifest_ref:string;manifest_digest:string;
+}
+export interface BulkFormalExecution {
+  operation_id:string;execution_task_id:string;status:string;stage?:string;
+  total_images:number;committed_images:number|null;committed_images_proven:boolean;
+  pending_images:number|null;completed_batches:number;total_batches:number;current_batch:number|null;
+  candidate_adopted_images:number;candidate_only_uncommitted_images:number;
+  candidate_only_gt_changed_images:number;uncommitted_gt_changed_images?:number|null;
+  cancellation_requested:boolean;blocked:boolean;blocked_code:string|null;blocked_reason:string|null;
+  manual_review_required:boolean;last_error_code:string|null;last_error_message:string|null;finished_at:string|null;
+}
+export interface BulkFormalSeal {
+  request_id:string;selection_id:string;review_revision:number;excluded_image_ids:string[];
+}
+const bulkRoot=({projectId,taskId}:ReviewAddress)=>root({projectId,taskId})+'/bulk-formal/intents';
+export function sealBulkFormalIntent(scope:ReviewAddress, body:BulkFormalSeal, signal:AbortSignal){
+  return request<BulkFormalIntent>(bulkRoot(scope),{method:'POST',body:JSON.stringify(body),signal});
+}
+export function getBulkFormalIntent(scope:ReviewAddress, requestId:string, signal:AbortSignal){
+  return request<BulkFormalIntent>(bulkRoot(scope)+'/'+enc(requestId),{signal});
+}
+export function startBulkFormalExecution(scope:ReviewAddress, requestId:string, signal:AbortSignal){
+  return request<BulkFormalExecution>(bulkRoot(scope)+'/'+enc(requestId)+'/execute',{method:'POST',signal});
+}
+export function getBulkFormalExecution(scope:ReviewAddress, requestId:string, signal:AbortSignal){
+  return request<BulkFormalExecution>(bulkRoot(scope)+'/'+enc(requestId)+'/execution',{signal});
+}
+export function cancelBulkFormalExecution(scope:ReviewAddress, requestId:string, signal:AbortSignal){
+  return request<BulkFormalExecution>(bulkRoot(scope)+'/'+enc(requestId)+'/execution/cancel',{method:'POST',signal});
+}
+export function recoverBulkFormalExecution(scope:ReviewAddress, requestId:string, signal:AbortSignal){
+  return request<BulkFormalExecution>(bulkRoot(scope)+'/'+enc(requestId)+'/execution/recover',{method:'POST',signal});
 }

@@ -1,7 +1,7 @@
 import {computed,ref,shallowRef} from 'vue';
 import {defineStore} from 'pinia';
-import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection,getReviewLabels,getFormalAnnotation,submitFormalDecision,getFormalReceipt} from '../api/ai-review';
-import type {ReviewAddress,ReviewTask,ReviewPage,ReviewCandidate,ReviewDiagnostics,ReviewFilter,SingleDecision,CompletedDecision,ReviewSelection} from '../api/ai-review';
+import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection,getReviewLabels,getFormalAnnotation,submitFormalDecision,getFormalReceipt,sealBulkFormalIntent,getBulkFormalIntent,startBulkFormalExecution,getBulkFormalExecution,cancelBulkFormalExecution,recoverBulkFormalExecution} from '../api/ai-review';
+import type {ReviewAddress,ReviewTask,ReviewPage,ReviewCandidate,ReviewDiagnostics,ReviewFilter,SingleDecision,CompletedDecision,ReviewSelection,BulkFormalIntent,BulkFormalExecution} from '../api/ai-review';
 
 import {bodyDigest,formalBody,formalKey,loadFormalOperation,matchesFormalReceipt,readSelected,withFormalStorage} from './ai-review-formal';
 import type {FormalOperation} from './ai-review-formal';
@@ -23,7 +23,16 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const formalOperation=shallowRef<FormalOperation>();
   const formalBusy=ref(false),formalStorageError=ref(false),formalNotice=ref('');
   let formalRequest:AbortController|undefined;
-  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value);
+  // Durable bulk formal GT (C2-B): frozen server selection only, never an
+  // expanded ID list in the browser.
+  const bulkIntent=shallowRef<BulkFormalIntent>(),bulkExecution=shallowRef<BulkFormalExecution>();
+  const bulkBusy=ref(false),bulkNotice=ref(''),bulkError=ref(''),bulkDialog=ref(false);
+  const bulkRequestId=ref('');
+  let bulkPoll:number|undefined,bulkAbort:AbortController|undefined;
+  const bulkStatus=computed(()=>String(bulkExecution.value?.status||''));
+  const bulkTerminal=computed(()=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(bulkStatus.value));
+  const bulkRunning=computed(()=>!!bulkExecution.value&&!bulkTerminal.value);
+  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value);
   const explicitSelection=ref(new Set<string>());
   const frozenSelection=shallowRef<ReviewSelection>();
   const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
@@ -33,6 +42,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     ?frozenSelection.value.count-excludedIds.value.size:explicitSelection.value.size);
   const canSelect=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'&&!!page.value
     &&!pageBusy.value&&!pageError.value&&!selectionBusy.value&&!page.value.task_error&&!formalLocked.value);
+  const canBulkFormal=computed(()=>!!frozenSelection.value&&canSelect.value&&selectedCount.value>0&&!bulkBusy.value);
   let decisionRequest:AbortController|undefined;
   const decisionEligible=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'
     &&revision.value!==undefined&&!itemBusy.value&&!itemError.value&&!draftOutstanding.value
@@ -58,6 +68,9 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     generation++;
     formalRequest?.abort();formalPlan.value=formalOperation.value=undefined;
     formalBusy.value=formalStorageError.value=false;formalNotice.value='';
+    stopBulkPoll();bulkAbort?.abort();
+    bulkIntent.value=bulkExecution.value=undefined;
+    bulkBusy.value=false;bulkError.value=bulkNotice.value='';bulkDialog.value=false;bulkRequestId.value='';
     clearSelection();
     scope=undefined;
     taskRead?.abort();pageRead?.abort();closeImage();
@@ -128,6 +141,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
           if(current()){formalStorageError.value=true;formalNotice.value=message(cause)}
         }
         if(current())await readPage('all',[null]);
+        if(current())await restoreBulk(next);
       }
     }catch(cause){if(current())taskError.value=message(cause)}
     finally{if(current())taskBusy.value=false}
@@ -509,6 +523,144 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     }
   }
 
+  // ---- C2-B durable bulk formal GT (Vue wiring) ----
+  function bulkFormalKey(address:Scope){
+    return 'ai-review-bulk:v1:'+JSON.stringify([address.actorKey,address.projectId,address.taskId]);
+  }
+  function stopBulkPoll(){if(bulkPoll!==undefined){window.clearInterval(bulkPoll);bulkPoll=undefined}}
+  function startBulkPoll(){
+    if(bulkPoll!==undefined||!scope||!bulkRequestId.value)return;
+    bulkPoll=window.setInterval(()=>{void pollBulkFormal()},2500);
+  }
+  async function settleBulkFormal(address:Scope){
+    stopBulkPoll();
+    if(scope!==address)return;
+    if(bulkStatus.value==='SUCCEEDED'){
+      clearSelection();
+      await readPage(filter.value,[null]);
+    }else if(!pageError.value){
+      await readPage(filter.value,cursors.value,true);
+    }
+  }
+  async function readBulkExecution(address:Scope,signal:AbortSignal){
+    const view=await getBulkFormalExecution(address,bulkRequestId.value,signal);
+    if(scope===address)bulkExecution.value=view;
+    return view;
+  }
+  async function pollBulkFormal(){
+    const address=scope;
+    if(!address||!bulkRequestId.value||bulkBusy.value||bulkTerminal.value)return;
+    try{
+      await readBulkExecution(address,new AbortController().signal);
+      if(bulkTerminal.value)await settleBulkFormal(address);
+    }catch{
+      // Polling failures are not terminal; the next tick retries. The user can
+      // always press 刷新, and the execution task remains the single truth.
+    }
+  }
+  async function restoreBulk(address:Scope){
+    let saved:{request_id?:string}|null=null;
+    try{saved=JSON.parse(sessionStorage.getItem(bulkFormalKey(address))??'null')}catch{saved=null}
+    const requestId=String(saved?.request_id||'');
+    if(!/^[a-z0-9]{12,80}$/i.test(requestId))return;
+    bulkRequestId.value=requestId;
+    try{
+      const intent=await getBulkFormalIntent(address,requestId,new AbortController().signal);
+      if(scope!==address)return;
+      if(intent.project_id!==address.projectId||intent.task_id!==address.taskId||intent.request_id!==requestId)
+        throw new Error('后台正式入库记录与当前任务不一致');
+      bulkIntent.value=intent;
+    }catch(cause){
+      if((cause as {httpStatus?:number}).httpStatus===404){
+        bulkRequestId.value='';
+        try{sessionStorage.removeItem(bulkFormalKey(address))}catch{}
+      }
+      return;
+    }
+    try{
+      const view=await readBulkExecution(address,new AbortController().signal);
+      if(scope!==address)return;
+      if(bulkTerminal.value)await settleBulkFormal(address);
+      else startBulkPoll();
+      return view;
+    }catch(cause){
+      if((cause as {httpStatus?:number}).httpStatus!==404&&scope===address)
+        bulkError.value=message(cause);
+    }
+  }
+  function openBulkFormal(){
+    if(!bulkIntent.value&&!bulkExecution.value&&!canBulkFormal.value)return;
+    bulkDialog.value=true;bulkError.value='';bulkNotice.value='';
+  }
+  function closeBulkFormal(){if(!bulkBusy.value)bulkDialog.value=false}
+  async function runBulk(action:(address:Scope,signal:AbortSignal)=>Promise<void>){
+    if(!scope||bulkBusy.value)return;
+    const address=scope;
+    bulkAbort?.abort();
+    const controller=bulkAbort=new AbortController();
+    bulkBusy.value=true;bulkError.value='';bulkNotice.value='';
+    try{await action(address,controller.signal)}
+    catch(cause){if(!controller.signal.aborted)bulkError.value=message(cause)}
+    finally{if(!controller.signal.aborted)bulkBusy.value=false}
+  }
+  async function preflightBulkFormal(){
+    if(bulkIntent.value||bulkExecution.value)return;
+    await runBulk(async(address,signal)=>{
+      const snapshot=frozenSelection.value,expected=page.value?.review_revision;
+      if(!snapshot||expected===undefined)throw new Error('请先冻结服务端筛选范围');
+      if(snapshot.review_revision!==expected||snapshot.purpose!=='gt')
+        throw new Error('筛选快照已变化，请重新冻结');
+      const requestId=bulkRequestId.value||Array.from(crypto.getRandomValues(new Uint8Array(16)),
+        byte=>byte.toString(16).padStart(2,'0')).join('');
+      const intent=await sealBulkFormalIntent(address,{
+        request_id:requestId,selection_id:snapshot.selection_id,review_revision:snapshot.review_revision,
+        excluded_image_ids:[...excludedIds.value].sort(),
+      },signal);
+      if(signal.aborted)return;
+      if(intent.request_id!==requestId||intent.project_id!==address.projectId||intent.task_id!==address.taskId
+        ||intent.selection_id!==snapshot.selection_id||intent.review_revision!==snapshot.review_revision)
+        throw new Error('封存回执与所选范围不一致');
+      bulkRequestId.value=requestId;bulkIntent.value=intent;
+      try{sessionStorage.setItem(bulkFormalKey(address),JSON.stringify({request_id:requestId}))}catch{}
+      bulkNotice.value=`预检通过：可入库 ${intent.count} 张，已排除 ${intent.excluded_count} 张。`;
+    });
+  }
+  async function confirmBulkFormal(){
+    if(!bulkIntent.value||bulkExecution.value)return;
+    await runBulk(async(address,signal)=>{
+      const view=await startBulkFormalExecution(address,bulkRequestId.value,signal);
+      if(signal.aborted)return;
+      if(view.operation_id!==bulkIntent.value?.operation_id||view.total_images!==bulkIntent.value?.count)
+        throw new Error('后台任务身份与封存意图不一致');
+      bulkExecution.value=view;
+      if(!bulkTerminal.value)startBulkPoll();
+    });
+  }
+  async function refreshBulkFormal(){
+    if(!bulkRequestId.value)return;
+    await runBulk(async(address,signal)=>{
+      const view=await readBulkExecution(address,signal);
+      if(view.blocked&&view.manual_review_required)bulkNotice.value='任务已阻断，需核验后人工恢复。';
+      if(bulkTerminal.value)await settleBulkFormal(address);
+      else startBulkPoll();
+    });
+  }
+  async function cancelBulkFormal(){
+    if(!bulkRequestId.value||!bulkExecution.value||bulkTerminal.value)return;
+    await runBulk(async(address,signal)=>{
+      bulkExecution.value=await cancelBulkFormalExecution(address,bulkRequestId.value,signal);
+      startBulkPoll();
+    });
+  }
+  async function recoverBulkFormal(){
+    if(!bulkRequestId.value)return;
+    await runBulk(async(address,signal)=>{
+      bulkExecution.value=await recoverBulkFormalExecution(address,bulkRequestId.value,signal);
+      bulkNotice.value='已重新排队，等待 Worker 按持久证据复核。';
+      startBulkPoll();
+    });
+  }
+
   async function readDiagnostics(){
     if(!scope||!item.value||!imageRead||diagnosticsBusy.value)return;
     const {signal}=imageRead,epoch=generation;
@@ -527,5 +679,8 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     decide,recoverDecision,retryDecisionRefresh,selectedCount,canSelect,frozenSelection,
     selectionBusy,selectionNotice,selectionReason,isSelected,selectCandidate,selectPage,freezeSelection,clearSelection,
     formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
-    prepareFormal,cancelFormal,confirmFormal,recoverFormal};
+    prepareFormal,cancelFormal,confirmFormal,recoverFormal,
+    bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,
+    canBulkFormal,openBulkFormal,closeBulkFormal,preflightBulkFormal,confirmBulkFormal,refreshBulkFormal,
+    cancelBulkFormal,recoverBulkFormal};
 });
