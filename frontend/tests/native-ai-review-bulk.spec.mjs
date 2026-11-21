@@ -33,7 +33,8 @@ async function fixture(page){
   const state={sealed:null,executes:0,intents:[],failNextSeal:false,loseSealResponse:false,
     committed:false,mode:'success',executionPolls:0,recoverStatus:0,executeDelay:0,
     holdSeal:false,sealStarted:false,sealGate:null,
-    loseExecuteResponse:false,hideExecution:false,conflictExisting:false};
+    loseExecuteResponse:false,hideExecution:false,conflictExisting:false,
+    sealedRequest:null,intentStatus:0,executionStatus:0,sealFailures:0};
   await page.route('**/app/**',r=>{
     const path=new URL(r.request().url()).pathname.slice('/app/'.length)||'index.html';
     return r.fulfill({path:resolve('../static/vue-app',path),
@@ -65,16 +66,27 @@ async function fixture(page){
       if(method==='POST'&&bulk.length===1){
         const body=request.postDataJSON();state.intents.push(body);state.sealStarted=true;
         if(state.holdSeal&&state.sealGate)await state.sealGate;
-        if(state.conflictExisting){state.sealed=intentBody(state,body);
-          return r.fulfill({status:409,json:{detail:'同一操作编号的入库意图不一致'}});}
-        if(state.failNextSeal){state.failNextSeal=false;return r.abort('failed')}
-        state.sealed=intentBody(state,body);
+        if(state.sealed&&state.sealed.request_id===body.request_id
+          &&JSON.stringify(state.sealedRequest)===JSON.stringify(body))
+          return r.fulfill({json:state.sealed});
+        if(state.sealed&&state.sealed.request_id===body.request_id)
+          return r.fulfill({status:409,json:{detail:'同一操作编号的入库意图不一致'}});
+        if(state.conflictExisting){
+          const existing={...body,excluded_image_ids:['image-24']};
+          state.conflictExisting=false;state.sealedRequest=existing;
+          state.sealed=intentBody(state,existing);
+          return r.fulfill({status:409,json:{detail:'同一操作编号的入库意图不一致'}});
+        }
+        if(state.sealFailures>0){state.sealFailures-=1;return r.abort('failed')}
+        state.sealedRequest=body;state.sealed=intentBody(state,body);
         if(state.loseSealResponse){state.loseSealResponse=false;return r.abort('failed')}
         return r.fulfill({json:state.sealed});
       }
-      if(method==='GET'&&bulk.length===2)
+      if(method==='GET'&&bulk.length===2){
+        if(state.intentStatus)return r.fulfill({status:state.intentStatus,json:{detail:'intent read unavailable'}});
         return state.sealed&&bulk[1]===state.sealed.request_id
           ?r.fulfill({json:state.sealed}):r.fulfill({status:404,json:{detail:'intent not found'}});
+      }
       if(method==='POST'&&bulk.at(-1)==='execute'){
         state.executes+=1;state.executionPolls=0;
         if(state.executeDelay)await new Promise(done=>setTimeout(done,state.executeDelay));
@@ -82,6 +94,7 @@ async function fixture(page){
         return r.fulfill({json:executionView(state,{status:'QUEUED'})});
       }
       if(method==='GET'&&bulk.at(-1)==='execution'){
+        if(state.executionStatus)return r.fulfill({status:state.executionStatus,json:{detail:'execution read unavailable'}});
         if(state.hideExecution||state.executes===0)return r.fulfill({status:404,json:{detail:'execution not found'}});
         state.executionPolls+=1;
         if(state.mode==='blocked')return r.fulfill({json:executionView(state,{status:'RUNNING',
@@ -160,7 +173,7 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
 
 test('服务端未封存的中断：重试复用同一 request_id',async({page})=>{
   const state=await fixture(page);
-  state.failNextSeal=true;
+  state.sealFailures=2;
   await page.goto(route);
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await seal(page);
@@ -171,9 +184,8 @@ test('服务端未封存的中断：重试复用同一 request_id',async({page})
   await expect(page.getByText('上次预检结果未确认，可重试同一操作。')).toBeVisible();
   await page.getByRole('button',{name:'重试上次预检'}).click();
   await expect(page.getByText(/已封存 30 张/)).toBeVisible();
-  expect(state.intents).toHaveLength(2);
-  expect(state.intents[1]).toEqual(state.intents[0]);
-  expect(state.intents[1].request_id).toBe(first.request_id);
+  expect(new Set(state.intents.map(item=>item.request_id)).size).toBe(1);
+  expect(state.intents.every(item=>JSON.stringify(item)===JSON.stringify(state.intents[0]))).toBe(true);
 });
 
 test('服务端已封存但响应丢失：刷新查到原 intent 并继续，不建第二笔',async({page})=>{
@@ -182,17 +194,17 @@ test('服务端已封存但响应丢失：刷新查到原 intent 并继续，不
   await page.goto(route);
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await seal(page);
-  // The lost response is resolved immediately by querying the original
-  // request_id; no reload and no second intent are required.
-  await expect(page.getByRole('dialog')).toContainText('服务端已存在该请求编号的封存意图');
-  await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
-  expect(state.intents).toHaveLength(1);
+  // The lost response is resolved by replaying the exact same request body;
+  // the backend's idempotent response proves the persisted intent matches.
+  await expect(page.getByRole('dialog')).toContainText('预检通过：可入库 30 张');
+  expect(state.intents).toHaveLength(2);
+  expect(state.intents[1]).toEqual(state.intents[0]);
   expect(state.sealed).not.toBeNull();
 
   await page.reload();
   await expect(page.getByText(/已封存 30 张/)).toBeVisible();
   await expect(page.getByText('上次预检结果未确认，可重试同一操作。')).toHaveCount(0);
-  expect(state.intents).toHaveLength(1);
+  expect(new Set(state.intents.map(item=>item.request_id)).size).toBe(1);
   await page.locator('.review-bulk').getByRole('button',{name:'查看预检'}).click();
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
   await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
@@ -276,25 +288,51 @@ test('execute response loss keeps the original task identity and blocks abandon'
   expect(await page.evaluate(k=>sessionStorage.getItem(k),key())).not.toBeNull();
 
   state.hideExecution=false;
+  // 1) Both reads fail after refresh: the persisted execute attempt must keep
+  // the identity locked.
+  state.intentStatus=503;
+  state.executionStatus=503;
+  await page.reload();
+  await expect(page.locator('.review-bulk')).toContainText('已尝试创建后台任务');
+  await expect(page.getByRole('button',{name:'放弃预检'})).toHaveCount(0);
+  const locked=await readRecord(page);
+  expect(locked.request_id).toBe(requestId);
+  expect(locked.execution_attempted).toBe(true);
+
+  // 2) A seal 404 must not downgrade an attempted execution.
+  state.intentStatus=404;
+  state.executionStatus=0;
+  state.sealed=null;
+  await page.reload();
+  await expect(page.locator('.review-bulk')).toContainText('已尝试创建后台任务');
+  await expect(page.getByRole('button',{name:'放弃预检'})).toHaveCount(0);
+
+  // 3) Restore authoritative reads: the SAME deterministic task completes.
+  state.intentStatus=0;
+  state.sealed=intentBody(state,{request_id:requestId,selection_id:selectionId,
+    review_revision:1,excluded_image_ids:[]});
+  state.sealedRequest={request_id:requestId,selection_id:selectionId,review_revision:1,
+    excluded_image_ids:[]};
   await page.reload();
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   expect(state.executes).toBe(1);
-  expect(state.intents).toHaveLength(1);
-  expect(state.intents[0].request_id).toBe(requestId);
+  expect(new Set(state.intents.map(item=>item.request_id)).size).toBe(1);
 });
 
-test('seal 409 with an existing intent adopts the server identity instead of clearing it',async({page})=>{
+test('seal 409 with a different exclusion set blocks execution and keeps the original intent',async({page})=>{
   const state=await fixture(page);
   state.conflictExisting=true;
   await page.goto(route);
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
-  await seal(page);
-  await expect(page.getByRole('dialog')).toContainText('服务端已存在该请求编号的封存意图');
-  await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
-  expect(state.intents).toHaveLength(1);
+  await page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true}).uncheck();
+  await expect(page.locator('.review-selection').getByText(/已选 29 张/).first()).toBeVisible();
+  await seal(page,'后台正式入库 29 张');
+  await expect(page.getByRole('dialog')).toContainText('无法证明与本次选择一致');
+  await expect(page.getByRole('dialog')).toContainText('已阻止执行');
+  await expect(page.getByRole('dialog')).not.toContainText('预检通过');
+  await expect(page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'})).toHaveCount(0);
+  expect(state.executes).toBe(0);
+  // The original server intent (excluded image-24) was not replaced.
+  expect(state.sealedRequest.excluded_image_ids).toEqual(['image-24']);
   expect(await readRecord(page)).not.toBeNull();
-  await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
-  await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
-  expect(state.executes).toBe(1);
 });

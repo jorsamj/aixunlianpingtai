@@ -106,7 +106,9 @@ const bulkStatusNames:Record<string,string>={QUEUED:'排队中',RUNNING:'后台�
   CANCELLED:'已取消',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分成功',FAILED:'失败'};
 const bulkStatusName=computed(()=>review.bulkExecution
   ?bulkStatusNames[review.bulkExecution.status]||review.bulkExecution.status
-  :review.bulkIntent?'已预检封存':review.bulkCreatePending?'后台任务创建未确认':review.bulkPendingUnknown?'上次预检未确认':'');
+  :review.bulkCreatePending?'后台任务创建未确认'
+  :review.bulkConflict?'预检冲突，已阻止执行'
+  :review.bulkIntent?'已预检封存':review.bulkPendingUnknown?'上次预检未确认':'');
 const bulkManualExcluded=computed(()=>review.frozenSelection
   ?Math.max(0,review.frozenSelection.count-review.selectedCount):0);
 const candidateName=(row:ReviewCandidate)=>(row.filename||row.image_id).split(/[\\/]/).at(-1)||row.image_id;
@@ -279,7 +281,7 @@ const diagnosticFacts=computed(()=>{
         <el-button :loading="review.formalBusy" @click="review.confirmFormal()">确认写入正式 GT</el-button>
        </template>
       </el-dialog>
-      <div v-if="review.bulkIntent || review.bulkExecution || review.bulkPendingUnknown || review.bulkCreatePending || review.lastBulkResult" class="review-bulk" role="status">
+      <div v-if="review.bulkIntent || review.bulkExecution || review.bulkPendingUnknown || review.bulkCreatePending || review.bulkConflict || review.lastBulkResult" class="review-bulk" role="status">
        <p><b>{{ bulkStatusName }}</b>
         <template v-if="review.bulkExecution">
          · 已证明提交 GT
@@ -292,6 +294,7 @@ const diagnosticFacts=computed(()=>{
          <template v-if="review.bulkExecution.cancellation_requested && !review.bulkTerminal"> · 已请求取消</template>
         </template>
         <template v-else-if="review.bulkCreatePending"> · 后台任务创建结果未确认，原操作身份已保留，请查询或重试同一创建</template>
+        <template v-else-if="review.bulkConflict"> · 原操作意图与本次选择不一致，已阻止执行</template>
         <template v-else-if="review.bulkIntent"> · 已封存 {{ review.bulkIntent.count }} 张，待创建后台任务</template>
         <template v-else-if="review.bulkPendingUnknown"> · 上次预检结果未确认，可重试同一操作</template>
        </p>
@@ -302,17 +305,20 @@ const diagnosticFacts=computed(()=>{
        <p v-else-if="review.bulkExecution?.last_error_message" role="alert">{{ review.bulkExecution.last_error_message }}</p>
        <p v-if="review.lastBulkResult && !review.bulkExecution" role="status">上一笔：{{ bulkStatusNames[review.lastBulkResult.status] || review.lastBulkResult.status }} · 已证明提交 GT {{ review.lastBulkResult.committed_images_proven ? review.lastBulkResult.committed_images : '未证明' }} / {{ review.lastBulkResult.total_images }} 张</p>
        <p v-if="review.bulkNotice" role="status">{{ review.bulkNotice }}</p>
+       <p v-if="review.bulkConflict" role="alert">服务端存在同一请求编号的原操作意图，但无法证明与本次选择一致，已阻止执行。</p>
        <div class="review-actions">
         <el-button :loading="review.bulkBusy" @click="review.refreshBulkFormal()">刷新进度</el-button>
         <el-button v-if="review.bulkExecution && !review.bulkTerminal && !review.bulkExecution.cancellation_requested"
          :loading="review.bulkBusy" @click="review.cancelBulkFormal()">取消后台任务</el-button>
         <el-button v-if="review.bulkExecution?.blocked" :loading="review.bulkBusy"
          @click="review.recoverBulkFormal()">核验并恢复</el-button>
-        <el-button v-if="review.bulkCreatePending" :loading="review.bulkBusy"
+        <el-button v-if="review.bulkCreatePending && review.bulkIntent" :loading="review.bulkBusy"
          @click="review.confirmBulkFormal()">重试创建后台任务</el-button>
+        <el-button v-if="review.bulkCreatePending && !review.bulkIntent" :loading="review.bulkBusy"
+         @click="review.preflightBulkFormal()">重试上次预检</el-button>
         <el-button v-if="review.bulkPendingUnknown" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">重试上次预检</el-button>
-        <el-button v-if="(review.bulkIntent || review.bulkPendingUnknown) && !review.bulkRunning && !review.bulkCreatePending && !review.bulkBusy"
+        <el-button v-if="(review.bulkIntent || review.bulkConflict || review.bulkPendingUnknown) && !review.bulkRunning && !review.bulkCreatePending && !review.bulkBusy"
          @click="review.abandonBulkFormal()">{{ review.bulkIntent ? '放弃预检' : '放弃' }}</el-button>
         <el-button v-if="review.bulkIntent" @click="review.openBulkFormal()">查看预检</el-button>
        </div>
@@ -357,14 +363,16 @@ const diagnosticFacts=computed(()=>{
        <p v-if="review.bulkNotice" role="status">{{ review.bulkNotice }}</p>
        <template #footer>
         <el-button :disabled="review.bulkBusy" @click="review.closeBulkFormal()">关闭</el-button>
-        <el-button v-if="!review.bulkIntent" :loading="review.bulkBusy"
+        <el-button v-if="!review.bulkIntent && review.bulkCreatePending" :loading="review.bulkBusy"
+         @click="review.preflightBulkFormal()">重试上次预检</el-button>
+        <el-button v-else-if="!review.bulkIntent" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">预检并封存</el-button>
-        <el-button v-if="review.bulkIntent && !review.bulkExecution && !review.bulkCreatePending" :disabled="review.bulkBusy"
+        <el-button v-if="(review.bulkIntent || review.bulkConflict) && !review.bulkExecution && !review.bulkCreatePending" :disabled="review.bulkBusy"
          @click="review.abandonBulkFormal()">放弃预检</el-button>
-        <el-button v-if="review.bulkIntent && !review.bulkExecution && review.bulkCreatePending" type="primary" :loading="review.bulkBusy"
-         @click="review.confirmBulkFormal()">重试创建后台任务</el-button>
-        <el-button v-else-if="review.bulkIntent && !review.bulkExecution" type="primary" :loading="review.bulkBusy"
-         @click="review.confirmBulkFormal()">确认创建后台任务</el-button>
+        <el-button v-if="review.bulkIntent && !review.bulkExecution && review.bulkCreatePending && !review.bulkConflict"
+         type="primary" :loading="review.bulkBusy" @click="review.confirmBulkFormal()">重试创建后台任务</el-button>
+        <el-button v-else-if="review.bulkIntent && !review.bulkExecution && !review.bulkConflict"
+         type="primary" :loading="review.bulkBusy" @click="review.confirmBulkFormal()">确认创建后台任务</el-button>
       </template>
       </el-dialog>
       <small>此处的选择仅用于当前页面，原工作台需重新选择。</small>

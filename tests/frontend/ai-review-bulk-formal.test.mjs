@@ -77,7 +77,7 @@ test('bulk execution creation keeps its identity when the response is unknown', 
     'execution identity is persisted before POST execute');
   assert.match(confirm, /bulkCreatePending\.value=true/);
   assert.match(confirm, /getBulkFormalExecution\(address,bulkRequestId\.value/);
-  assert.match(store, /bulkBusy\.value\|\|bulkRunning\.value\|\|bulkCreatePending\.value/);
+  assert.match(store, /readBulkRecord\(address\)\?\.execution_attempted===true/);
   assert.match(page, /后台任务创建结果未确认/);
   assert.match(page, /重试创建后台任务/);
 });
@@ -86,6 +86,9 @@ test('seal conflicts query the original intent instead of treating 4xx as absenc
   const preflight = store.slice(store.indexOf('async function preflightBulkFormal'),
     store.indexOf('function abandonBulkFormal'));
   assert.match(preflight, /getBulkFormalIntent\(address,body\.request_id/);
-  assert.match(preflight, /status!==409/);
-  assert.match(store, /服务端已存在该请求编号/);
+  assert.match(preflight, /retryStatus===409\|\|status===409/);
+  assert.match(preflight, /sealBulkFormalIntent\(address,body,new AbortController\(\)\.signal\)/);
+  assert.match(preflight, /bulkConflict\.value=true/);
+  assert.match(store, /服务端存在同一请求编号的原操作意图/);
+  assert.match(store, /无法证明与本次选择一致，已阻止执行/);
 });

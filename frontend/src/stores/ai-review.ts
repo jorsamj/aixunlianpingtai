@@ -31,6 +31,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   const bulkRequestId=ref('');
   const bulkPendingUnknown=ref(false);
   const bulkCreatePending=ref(false);
+  const bulkConflict=ref(false);
   let bulkPoll:number|undefined,bulkAbort:AbortController|undefined;
   const bulkStatus=computed(()=>String(bulkExecution.value?.status||''));
   const bulkTerminal=computed(()=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(bulkStatus.value));
@@ -78,7 +79,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     stopBulkPoll();bulkAbort?.abort();
     bulkIntent.value=bulkExecution.value=undefined;lastBulkResult.value=undefined;
     bulkBusy.value=false;bulkError.value=bulkNotice.value='';bulkDialog.value=false;bulkRequestId.value='';
-    bulkPendingUnknown.value=false;bulkCreatePending.value=false;
+    bulkPendingUnknown.value=false;bulkCreatePending.value=false;bulkConflict.value=false;
     clearSelection();
     scope=undefined;
     taskRead?.abort();pageRead?.abort();closeImage();
@@ -135,6 +136,9 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     reset();
     if(!next.actorKey)return;
     scope=next;
+    // A persisted execute attempt must lock selection/filtering immediately,
+    // before any restore request resolves or fails.
+    if(readBulkRecord(next)?.execution_attempted===true)bulkCreatePending.value=true;
     const controller=taskRead=new AbortController(),epoch=generation;
     const current=()=>generation===epoch&&!controller.signal.aborted;
     taskBusy.value=true;
@@ -604,8 +608,10 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   async function restoreBulk(address:Scope){
     const record=readBulkRecord(address);
     const requestId=record?.request_id??'';
+    const attempted=record?.execution_attempted===true;
     if(!/^[a-z0-9]{12,80}$/i.test(requestId))return;
     bulkRequestId.value=requestId;
+    if(attempted)bulkCreatePending.value=true;
     try{
       const intent=await getBulkFormalIntent(address,requestId,new AbortController().signal);
       if(scope!==address)return;
@@ -616,9 +622,14 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       bulkIntent.value=intent;bulkPendingUnknown.value=false;
     }catch(cause){
       if(scope!==address)return;
+      if(attempted){
+        // The execute outcome outranks any seal read failure: never expose the
+        // identity for clearing while the background task may exist.
+        bulkCreatePending.value=true;
+        bulkNotice.value='已尝试创建后台任务，但无法读取原操作；原身份已保留，请重试同一预检或查询执行状态。';
+        return;
+      }
       if((cause as {httpStatus?:number}).httpStatus===404){
-        // The seal may have reached the server while its response was lost.
-        // Keep the SAME request_id; only an explicit abandon may replace it.
         bulkPendingUnknown.value=true;
         bulkNotice.value='上次预检结果未确认，可重试同一操作。';
         return;
@@ -635,17 +646,12 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       return view;
     }catch(cause){
       if(scope!==address)return;
-      const status=(cause as {httpStatus?:number}).httpStatus;
-      if(status===404){
-        // The seal exists but no execution task is readable. If this browser
-        // already asked to create one, the POST outcome is unknown: keep the
-        // identity and require a query/retry with the SAME request_id.
-        if(record?.execution_attempted===true){
-          bulkCreatePending.value=true;
-          bulkNotice.value='后台任务创建结果未确认：原操作身份已保留，请查询状态或重试同一创建。';
-        }
+      if(attempted){
+        bulkCreatePending.value=true;
+        bulkNotice.value='后台任务创建结果未确认：原操作身份已保留，请查询状态或重试同一创建。';
         return;
       }
+      if((cause as {httpStatus?:number}).httpStatus===404)return;
       bulkError.value=message(cause);
     }
   }
@@ -720,48 +726,58 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       }catch(cause){
         if(signal.aborted)return;
         const status=(cause as {httpStatus?:number}).httpStatus;
-        // 409 can mean "an intent with this request_id already exists with a
-        // different digest". Never treat a 4xx as proof of absence: ask the
-        // server for the original identity first.
+        // Only an idempotent replay of the exact same body proves that the
+        // persisted intent (if any) matches this selection: the public intent
+        // omits excluded_image_ids, so a GET cannot prove digest equality.
+        let replay:BulkFormalIntent|undefined;
         try{
-          const existing=await getBulkFormalIntent(address,body.request_id,new AbortController().signal);
+          replay=await sealBulkFormalIntent(address,body,new AbortController().signal);
+        }catch(retryCause){
+          if(signal.aborted)return;
+          const retryStatus=(retryCause as {httpStatus?:number}).httpStatus;
+          let existing:BulkFormalIntent|undefined;
+          try{existing=await getBulkFormalIntent(address,body.request_id,new AbortController().signal)}catch{}
           if(scope!==address)return;
-          if(existing.request_id===body.request_id){
-            bulkIntent.value=existing;bulkPendingUnknown.value=false;
-            const sameRange=existing.selection_id===body.selection_id
-              &&existing.review_revision===body.review_revision;
-            bulkNotice.value=sameRange
-              ?`服务端已存在该请求编号的封存意图：可入库 ${existing.count} 张。`
-              :'服务端已存在同一请求编号、但范围不同的封存意图；请放弃后重新选择。';
-            return;
+          if(existing){
+            bulkIntent.value=existing;bulkConflict.value=true;bulkPendingUnknown.value=false;
+            bulkNotice.value=`服务端存在同一请求编号的原操作意图（可入库 ${existing.count} 张，排除 ${existing.excluded_count} 张），但无法证明与本次选择一致，已阻止执行。请放弃后重新选择。`;
+          }else if(retryStatus===409||status===409){
+            bulkPendingUnknown.value=true;
+            bulkNotice.value='预检冲突且未能确认服务端意图，已锁定原范围；可重试同一操作或放弃。';
+          }else if((retryStatus!==undefined&&retryStatus>=400&&retryStatus<500&&retryStatus!==409)
+            &&(status!==undefined&&status>=400&&status<500&&status!==409)){
+            // Both attempts were definitive client-side rejections and no
+            // intent exists: this identity cannot be resumed.
+            bulkRequestId.value='';clearBulkRecord(address);
+          }else{
+            bulkPendingUnknown.value=true;
+            bulkNotice.value='预检结果未确认，已锁定原范围；可重试同一操作或放弃。';
           }
-        }catch{/* no readable intent: fall through to error classification */}
-        if(status!==undefined&&status>=400&&status<500&&status!==409){
-          // Authentication, identity-not-found or validation rejection: the
-          // server answered and no intent exists for this request.
-          bulkRequestId.value='';
-          clearBulkRecord(address);
-        }else{
-          // 409 without a readable intent, network loss, timeout or 5xx: the
-          // seal may already exist. Keep the identity and the range locked.
-          bulkPendingUnknown.value=true;
-          bulkNotice.value='预检结果未确认，已锁定原范围；可重试同一操作或放弃。';
+          throw retryCause;
         }
-        throw cause;
+        if(signal.aborted)return;
+        if(!replay||replay.request_id!==body.request_id||replay.selection_id!==body.selection_id
+          ||replay.review_revision!==body.review_revision)
+          throw new Error('封存回执与所选范围不一致');
+        bulkIntent.value=replay;bulkConflict.value=false;bulkPendingUnknown.value=false;
+        bulkNotice.value=`预检通过：可入库 ${replay.count} 张，已排除 ${replay.excluded_count} 张。`;
       }finally{bulkSealing.value=false}
     });
   }
   function abandonBulkFormal(){
-    if(bulkBusy.value||bulkRunning.value||bulkCreatePending.value)return;
     const address=scope;
+    // The persisted execute attempt outranks in-memory flags: even before a
+    // restore request settles, the original identity must not be cleared.
+    if(address&&readBulkRecord(address)?.execution_attempted===true)return;
+    if(bulkBusy.value||bulkRunning.value||bulkCreatePending.value)return;
     stopBulkPoll();bulkAbort?.abort();
     bulkIntent.value=bulkExecution.value=undefined;bulkRequestId.value='';
-    bulkPendingUnknown.value=false;bulkCreatePending.value=false;
+    bulkPendingUnknown.value=false;bulkCreatePending.value=false;bulkConflict.value=false;
     bulkNotice.value='';bulkError.value='';bulkDialog.value=false;
     if(address)clearBulkRecord(address);
   }
   async function confirmBulkFormal(){
-    if(!bulkIntent.value||bulkRunning.value)return;
+    if(!bulkIntent.value||bulkRunning.value||bulkConflict.value)return;
     await runBulk(async(address,signal)=>{
       const record=readBulkRecord(address);
       if(!record||record.request_id!==bulkRequestId.value)
@@ -855,7 +871,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
     prepareFormal,cancelFormal,confirmFormal,recoverFormal,
     bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,
-    bulkSealed,bulkPendingUnknown,bulkCreatePending,lastBulkResult,
+    bulkSealed,bulkPendingUnknown,bulkCreatePending,bulkConflict,lastBulkResult,
     canBulkFormal,openBulkFormal,closeBulkFormal,preflightBulkFormal,confirmBulkFormal,refreshBulkFormal,
     cancelBulkFormal,recoverBulkFormal,abandonBulkFormal};
 });
