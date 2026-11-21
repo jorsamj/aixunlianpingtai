@@ -632,6 +632,18 @@ class MaterialRepository:
             rows = database.execute("SELECT payload_json FROM materials ORDER BY created_at, id").fetchall()
         return MaterialSnapshot(revision=revision, rows=[self._row_payload(row) for row in rows])
 
+    def list_all_ids(self) -> list[str]:
+        """All material ids in canonical order without hydrating payload JSON.
+
+        Legacy callers that only need counts or a set of identities must not pay
+        for decoding every metadata document.
+        """
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                "SELECT id FROM materials ORDER BY created_at, id"
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
     def get(self, image_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as database:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()

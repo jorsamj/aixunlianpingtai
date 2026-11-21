@@ -4885,12 +4885,14 @@ def create_project(payload: ProjectCreate):
 @app.get("/api/projects/{project_id}")
 def read_project(project_id: str):
     project = get_project(project_id)
-    images = load_images(project_id)
+    # The legacy response only needs the image count plus GT totals; reading
+    # ids (not every payload document) keeps the same response with far less
+    # hydration on 100k+ projects.
+    image_ids = material_store(project_id).list_all_ids()
     jobs = sync_jobs_index(project_id, read_only=True)
     models = list_models_internal(project_id)
     annotated = 0
     boxes = 0
-    image_ids = [str(img.get("id")) for img in images if img.get("id") is not None]
     # Batched formal-GT reads keep the legacy totals exactly, but replace the
     # previous one-connection-per-image N+1 with ceil(N/500) queries. The batch
     # reader keeps the same legacy JSON fallback as read_annotation().
@@ -4900,7 +4902,7 @@ def read_project(project_id: str):
             boxes += cnt
             if cnt:
                 annotated += 1
-    return {"project": project, "images": len(images), "annotated_images": annotated, "boxes": boxes, "jobs": jobs, "models": models}
+    return {"project": project, "images": len(image_ids), "annotated_images": annotated, "boxes": boxes, "jobs": jobs, "models": models}
 
 
 class AddLabelReq(BaseModel):
