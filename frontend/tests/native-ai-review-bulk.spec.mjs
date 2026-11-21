@@ -31,7 +31,8 @@ const executionView=(state,overrides={})=>({
 
 async function fixture(page){
   const state={sealed:null,executes:0,intents:[],failNextSeal:false,loseSealResponse:false,
-    committed:false,mode:'success',executionPolls:0,recoverStatus:0,executeDelay:0};
+    committed:false,mode:'success',executionPolls:0,recoverStatus:0,executeDelay:0,
+    holdSeal:false,sealStarted:false,sealGate:null};
   await page.route('**/app/**',r=>{
     const path=new URL(r.request().url()).pathname.slice('/app/'.length)||'index.html';
     return r.fulfill({path:resolve('../static/vue-app',path),
@@ -61,7 +62,8 @@ async function fixture(page){
     if(tail.includes('bulk-formal')){
       const bulk=tail.slice(tail.indexOf('bulk-formal')+1);
       if(method==='POST'&&bulk.length===1){
-        const body=request.postDataJSON();state.intents.push(body);
+        const body=request.postDataJSON();state.intents.push(body);state.sealStarted=true;
+        if(state.holdSeal&&state.sealGate)await state.sealGate;
         if(state.failNextSeal){state.failNextSeal=false;return r.abort('failed')}
         state.sealed=intentBody(state,body);
         if(state.loseSealResponse){state.loseSealResponse=false;return r.abort('failed')}
@@ -227,4 +229,22 @@ test('取消请求与阻断不被展示为成功，恢复 409 保留阻断',asyn
   await page.locator('.review-bulk').getByRole('button',{name:'核验并恢复'}).click();
   await expect(page.locator('.review-bulk')).toContainText('任务已阻断');
   await expect(page.locator('.review-bulk')).not.toContainText('已完成');
+});
+
+
+test('pending preflight locks the frozen range until the request resolves',async({page})=>{
+  const state=await fixture(page);
+  state.holdSeal=true;
+  state.sealGate=new Promise(resolve=>{state.releaseSeal=resolve;});
+  await page.goto(route);
+  await page.getByRole('button',{name:'选择全部筛选结果'}).click();
+  await expect(page.getByText(/可操作 30 张/)).toBeVisible();
+  await page.getByRole('button',{name:'后台正式入库 30 张'}).click();
+  const sealing=page.getByRole('dialog').getByRole('button',{name:'预检并封存'}).click();
+  await expect.poll(()=>state.sealStarted).toBe(true);
+  await expect(page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'清空选择'})).toBeDisabled();
+  state.releaseSeal();
+  await sealing;
+  await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
 });

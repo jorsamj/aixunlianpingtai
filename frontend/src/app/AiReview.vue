@@ -327,6 +327,7 @@ const diagnosticFacts=computed(()=>{
          原筛选 {{ review.bulkIntent.original_count }} 张
         </p>
         <p>预检只核验并封存范围，不写入正式 GT。确认后由后台 Worker 每 100 张一批提交，可随时取消。</p>
+        <p>放弃预检只清除浏览器记录，不会声称服务端已撤销；已封存意图不会写入 GT，并将在到期后失效。</p>
        </template>
        <template v-else>
         <p>{{ bulkStatusName }} · 任务 {{ review.bulkExecution.execution_task_id }}</p>

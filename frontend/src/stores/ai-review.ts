@@ -27,7 +27,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   // expanded ID list in the browser.
   const bulkIntent=shallowRef<BulkFormalIntent>(),bulkExecution=shallowRef<BulkFormalExecution>();
   const lastBulkResult=shallowRef<BulkFormalExecution>();
-  const bulkBusy=ref(false),bulkNotice=ref(''),bulkError=ref(''),bulkDialog=ref(false);
+  const bulkBusy=ref(false),bulkSealing=ref(false),bulkNotice=ref(''),bulkError=ref(''),bulkDialog=ref(false);
   const bulkRequestId=ref('');
   const bulkPendingUnknown=ref(false);
   let bulkPoll:number|undefined,bulkAbort:AbortController|undefined;
@@ -38,7 +38,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   // user explicitly abandons it; otherwise a user could edit the range and
   // then confirm an already sealed (different) operation.
   const bulkSealed=computed(()=>!!bulkIntent.value&&!bulkTerminal.value);
-  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value||bulkPendingUnknown.value);
+  const formalLocked=computed(()=>formalBusy.value||!!formalPlan.value||!!formalOperation.value||formalStorageError.value||bulkRunning.value||bulkSealed.value||bulkPendingUnknown.value||bulkSealing.value);
   const explicitSelection=ref(new Set<string>());
   const frozenSelection=shallowRef<ReviewSelection>();
   const excludedIds=ref(new Set<string>()),membershipId=ref<string>();
@@ -691,14 +691,32 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       // operation on retry. If storage is unavailable we refuse to create a
       // persistent server-side seal we could not later recover.
       if(!writeBulkRecord(address,body))throw new Error('浏览器无法保存本次操作身份，已停止预检；请允许站点存储后重试。');
-      const intent=await sealBulkFormalIntent(address,body,signal);
-      if(signal.aborted)return;
-      if(intent.request_id!==body.request_id||intent.project_id!==address.projectId
-        ||intent.task_id!==address.taskId||intent.selection_id!==body.selection_id
-        ||intent.review_revision!==body.review_revision)
-        throw new Error('封存回执与所选范围不一致');
-      bulkIntent.value=intent;bulkPendingUnknown.value=false;
-      bulkNotice.value=`预检通过：可入库 ${intent.count} 张，已排除 ${intent.excluded_count} 张。`;
+      bulkSealing.value=true;
+      try{
+        const intent=await sealBulkFormalIntent(address,body,signal);
+        if(signal.aborted)return;
+        if(intent.request_id!==body.request_id||intent.project_id!==address.projectId
+          ||intent.task_id!==address.taskId||intent.selection_id!==body.selection_id
+          ||intent.review_revision!==body.review_revision)
+          throw new Error('封存回执与所选范围不一致');
+        bulkIntent.value=intent;bulkPendingUnknown.value=false;
+        bulkNotice.value=`预检通过：可入库 ${intent.count} 张，已排除 ${intent.excluded_count} 张。`;
+      }catch(cause){
+        if(signal.aborted)return;
+        const status=(cause as {httpStatus?:number}).httpStatus;
+        const rejected=status!==undefined&&status>=400&&status<500;
+        if(rejected){
+          // The server answered and refused this request, so no intent exists.
+          bulkRequestId.value='';
+          clearBulkRecord(address);
+        }else{
+          // Network loss, timeout or ambiguous 5xx: the seal may already exist.
+          // Keep the identity, keep the range locked; only retry or abandon.
+          bulkPendingUnknown.value=true;
+          bulkNotice.value='预检结果未确认，已锁定原范围；可重试同一操作或放弃。';
+        }
+        throw cause;
+      }finally{bulkSealing.value=false}
     });
   }
   function abandonBulkFormal(){
