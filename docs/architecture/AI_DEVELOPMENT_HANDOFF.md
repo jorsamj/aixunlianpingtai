@@ -245,3 +245,10 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - 最新已推送 HEAD 见 `git log -1`；本阶段关键提交：`43aaa14e`（封存恢复必须幂等重放证明）、`6134bfb5`（真实批量 GT 回执/坐标/批次证据与 Worker 日志）、`b74766b9`（标签编辑仅刷新标签）。
 - 真实浏览器批量证据：`tests/browser/real-bulk-formal.spec.mjs` + `tests/browser/helpers/bulk_review_worker.py`（隔离 uvicorn + 独立测试 Worker 进程，205→201 三批、跨页排除 4 张、第二笔 4 张）。
 - 仍未验证：生产 Worker 监督/重启/租约重领、真实 20 万图片与存储 I/O、生产 P95、FTS5 搜索方案。
+
+## 2026-11-21 性能与恢复分类收口（本阶段）
+
+- C2-B 恢复证明：只有 409 摘要冲突进入 `bulkConflict`；503/超时/网络失败进入未知锁定态，保留原 request_id 与 execution_attempted。
+- legacy GT：空 `annotations/` 目录不再逐图 `is_file`；隔离 20 万合成、无持久 GT 下 `/projects` 4.65s→1.75s，`/datasets` 6.5s→3.63s，`/images` 仍约 2.15s/106MB。
+- 标签：正式标签页 Owner 为 `renderLabelManagement414` / `saveLabel414` / `refreshLabels414`，已具备局部刷新；`b74766b9` 的 `refreshLabelsOnly` 属历史路径，本阶段仅补项目切换与失败保护。
+- 未实施：`/images` 有界化、`/datasets` 聚合重构、FTS5、生产 Worker 生命周期验收。

@@ -23,11 +23,11 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 / HEAD | `feature/external-algorithm-publishing` / `1fa5119b84e8721e2dc4810903471a2e37b6e862` |
+| 分支 / HEAD | `feature/external-algorithm-publishing` / `ba3cd5773604859cb6fe150fee8fd713a37badb0` |
 | 远端 | 与本地一致（只读 `ls-remote` 核验） |
 | 该 SHA 的 CI | 48 个 check-suite，未检索到 `failure`；仅代表已提交代码 |
-| 工作区 | **不干净**：8 个已修改 + 5 个未跟踪（C2-B 候选实现与交接/设计文档） |
-| C2-B | **本地候选实现，未提交、未 CI、未验收**；D1/D2/D4/D6 已确认，D3 合同待定，D5 事实已确认但等级 `TBD` |
+| 工作区 | 本轮提交后干净；仅保留 4 份未跟踪设计文档 |
+| C2-B | 后端与 Vue 已实现；真实浏览器 205→201 三批隔离联调通过；生产 Worker 生命周期与现场验收未完成 |
 | Vue 迁移 | 8 条具名原生业务路由（复用 7 个页面组件）；18 个 opt-in 试点；其余菜单进入 legacy 中转 |
 | 20 万素材 | 有**隔离**元数据与选材测试；**生产未验收**（`NOT VERIFIED`） |
 | 数据库 | SQLite 保留；无迁移授权、无迁移动作 |
@@ -567,7 +567,7 @@ flowchart TB
 | E | [Vue 迁移矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md) + [功能保留](EXISTING_FEATURE_PRESERVATION.md) |
 | F | 本文 + [P2 数据 Owner](P2_DATA_OWNERS_AND_POSTGRESQL_PREPARATION_20261117.md) |
 
-## 2026-11-21 当前状态快照（覆盖文首旧快照）
+## 2026-11-21 阶段验收记录（历史快照）
 
 - 当前 HEAD：`b74766b909124be757691a32766dbd9b8062a0e1`（本阶段提交 `43aaa14e`、`6134bfb5`、`b74766b9`）。
 - C2-B：不可变意图、幂等 `request_id`、GT CAS、批次回执与恢复已实现；真实浏览器 205→201 三批隔离联调通过（真实 uvicorn + 独立测试 Worker 进程 + 真实 GT/journal/回执）。
