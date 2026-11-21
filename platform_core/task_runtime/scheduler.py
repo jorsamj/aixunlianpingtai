@@ -235,7 +235,7 @@ class Scheduler:
             return
         if context.task.kind is TaskKind.ANNOTATION_FORMAL_BULK:
             logger.warning("Formal bulk task %s stopped before reconciliation: %s",
-                           context.task.task_id, error)
+                           context.task.task_id, error, exc_info=True)
             return
         if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
             cls._finish_cancel_if_safe(context, current)
@@ -304,6 +304,11 @@ class Scheduler:
                 context.artifacts.atomic_write_json(lease.task.task_id, "assignment.json", assignment)
             recovered = lease.task.attempt > 1 or bool(context.load_checkpoint())
             outcome = handler.recover(context) if recovered else handler.run(context)
+            if formal_bulk:
+                # The dedicated ANNOTATION_FORMAL_BULK handler verifies the GT
+                # receipts/journal and publishes its own terminal state. Generic
+                # finish() must never certify this task's formal GT journal.
+                return True
             # Most handlers return (status, result_ref). A handler that has a
             # durable, sanitized failure reason may also return a third value.
             # Preserve it instead of publishing a terminal FAILED task with
@@ -314,11 +319,7 @@ class Scheduler:
                 status, result_ref = outcome
                 outcome_error = None
             current = context.assert_current_execution()
-            if formal_bulk:
-                # F1 only implements verified cancellation. Automatic bulk
-                # execution and its non-cancellation terminal protocol follow.
-                reconcile_worker_bulk_formal_cancel(context, self.artifacts)
-            elif current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
+            if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
                 self._finish_cancel_if_safe(context, current)
             else:
                 if lease.task.kind is TaskKind.TRAINING and status in {

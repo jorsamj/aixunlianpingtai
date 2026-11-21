@@ -10,9 +10,73 @@ from .annotation_task_service import (
     _candidate_commit_digest, _canonical_review_scope, candidate_commit_summary, commit_candidate_decisions,
 )
 from .task_runtime import TaskKind, TaskStatus
+from .task_runtime.payload_publications import EVIDENCE_REF
 
 BATCH_SIZE = 100
 _IDENTITY_KEYS = {"actor", "project_id", "task_id", "request_id"}
+
+
+def _batch_count(manifest):
+    return (len(manifest["images"]) + BATCH_SIZE - 1) // BATCH_SIZE
+
+
+class FormalBulkEvidenceError(ValueError):
+    """Persisted evidence cannot prove this execution's durable state yet."""
+
+
+def _gt_digest(annotations, row):
+    """Version zero is the repository's legacy/non-persisted GT view."""
+    return annotations.record_digest(row) if int(row.get("version") or 0) == 0 else row.get("content_digest")
+
+
+def audit_formal_bulk_execution(store, annotations, manifest, ref):
+    """Prove how far the sealed manifest is durably committed.
+
+    Only receipts plus the candidate journal prove a completed batch.  The
+    returned ``state`` is one of ``complete``, ``pending`` (next batch never
+    obtained GT), ``journal_pending`` (GT durable, journal lagging) or
+    ``unproven`` (contradictory/foreign evidence).
+    """
+    total = _batch_count(manifest)
+    expected_before = manifest["operation"]["review_revision"]
+    completed = committed = 0
+    for number in range(total):
+        batch, frozen = _batch(manifest, ref, number)
+        count = len(frozen)
+        try:
+            _, receipts, journal, after = _proof_state(store, annotations, batch, frozen)
+        except ValueError as error:
+            return {"state": "unproven", "batch": number, "completed": completed,
+                    "committed": committed, "detail": str(error)}
+        if receipts and not journal:
+            return {"state": "journal_pending", "batch": number, "completed": completed,
+                    "committed": committed, "detail": "GT 已提交，候选日志尚未完成"}
+        if receipts and journal:
+            events = store.bulk_formal_events(list(frozen))
+            if ({event.get("revision_before") for event in events} != {expected_before}
+                    or after != expected_before + count):
+                return {"state": "unproven", "batch": number, "completed": completed,
+                        "committed": committed, "detail": "批量正式入库候选修订链不连续"}
+            expected_before = after + 1
+            completed += 1
+            committed += count
+            continue
+        events = store.bulk_formal_events(list(frozen))
+        current = annotations.get_many(list(frozen))
+        changed = sum(
+            1 for image_id, row in frozen.items()
+            if current[image_id]["version"] != row["gt_version"]
+            or _gt_digest(annotations, current[image_id]) != row["gt_content_digest"]
+        )
+        adopted = ([{"batch_number": number, "image_count": count,
+                     "gt_changed_images": changed}] if events else [])
+        return {"state": "pending", "batch": number, "completed": completed,
+                "committed": committed, "candidate_only": adopted,
+                "detail": ("该批次候选已采用，正式 GT 已发生外部变化" if events and changed
+                           else "该批次候选已采用，尚未写入正式 GT" if events
+                           else "该批次正式 GT 已发生外部变化" if changed
+                           else "该批次尚未写入正式 GT")}
+    return {"state": "complete", "batch": total, "completed": completed, "committed": committed}
 
 
 def _batch(manifest, ref, number):
@@ -80,9 +144,10 @@ def _proof_state(store, annotations, identity, frozen):
     return candidates, receipts, journal, after
 
 
-def execute_worker_bulk_formal_batch(context, artifacts, identity, operation_id, manifest_ref, batch_number):
+def execute_worker_bulk_formal_batch(context, artifacts, identity, operation_id, manifest_ref, batch_number,
+                                     *, binding_ref=None, sealed=None):
     """Bind the internal GT kernel to a dedicated Worker execution."""
-    if context.task.payload_ref != manifest_ref:
+    if context.task.payload_ref != (binding_ref or manifest_ref):
         raise PermissionError("formal bulk manifest does not belong to this execution task")
 
     def authorize(_batch):
@@ -92,16 +157,19 @@ def execute_worker_bulk_formal_batch(context, artifacts, identity, operation_id,
 
     anchor = {"identity": dict(identity), "operation_id": operation_id,
               "manifest_ref": manifest_ref, "batch_number": batch_number}
+    if binding_ref is not None:
+        anchor["binding_ref"] = binding_ref
     return execute_bulk_formal_batch(
-        artifacts, identity, operation_id, manifest_ref, batch_number, authorize=authorize,
+        artifacts, identity, operation_id, manifest_ref, batch_number, authorize=authorize, sealed=sealed,
         formal_write_barrier=partial(context.repository.formal_bulk_gt_write, context.lease,
                                      context.execution_generation, anchor),
     )
 
 
 def reconcile_worker_bulk_formal_cancel(context, artifacts):
-    """Recover only the last admitted GT batch; never call the GT writer."""
+    """Recover every admitted GT batch; never call the GT writer."""
     from app import _v50_annotation_repository, label_governance_fence, material_annotation_lifecycle_fence, project_dir
+    from .task_runtime.models import utc_now
 
     context.assert_current_execution()
     repository = context.repository
@@ -109,50 +177,149 @@ def reconcile_worker_bulk_formal_cancel(context, artifacts):
     cancelled, anchor = repository.formal_bulk_cancel_state(*execution)
     if not cancelled:
         return False
-    if anchor is None:
-        # Admission is persisted before the GT transaction begins.
-        repository._finish_reconciled_formal_bulk_cancel(*execution, anchor, {"state": "no_batch_admitted"})
-        return True
-
-    descriptor = json.loads(anchor)
-    identity = descriptor["identity"]
-    project_id, task_id = identity["project_id"], identity["task_id"]
-    manifest, ref = load_sealed_intent(artifacts, identity)
-    if (ref != descriptor["manifest_ref"] or ref != context.task.payload_ref
-            or project_id != context.task.project_id
-            or descriptor["operation_id"] != manifest["operation"]["operation_id"]):
-        raise ValueError("formal bulk reconciliation identity mismatch")
-    batch, frozen = _batch(manifest, ref, descriptor["batch_number"])
-    path = project_dir(project_id)
-    with FileLock(str(artifacts.artifact_path(task_id, "review.lock")), timeout=30), \
+    descriptor = json.loads(anchor) if anchor is not None else None
+    manifest, ref, identity, binding_ref = _cancelled_intent(context, artifacts, descriptor)
+    total = _batch_count(manifest)
+    last = -1
+    if descriptor is not None:
+        last = descriptor["batch_number"]
+        batch_identity, _ = _batch(manifest, ref, last)
+        if (descriptor["identity"] != {key: batch_identity[key] for key in _IDENTITY_KEYS}
+                or batch_identity["operation_id"] != descriptor["operation_id"]
+                or batch_identity["batch_number"] != last):
+            raise ValueError("formal bulk reconciliation batch identity mismatch")
+    path = project_dir(identity["project_id"])
+    with FileLock(str(artifacts.artifact_path(identity["task_id"], "review.lock")), timeout=30), \
             label_governance_fence(path), material_annotation_lifecycle_fence(path):
         repository.formal_bulk_cancel_state(*execution)
-        store = CandidateStore(artifacts, task_id=task_id)
-        annotations = _v50_annotation_repository(project_id)
-        _, receipts, journal, after = _proof_state(store, annotations, batch, frozen)
-        evidence = {"batch_operation_id": batch["batch_operation_id"]}
-        if receipts:
-            if not journal:
-                if store.review_revision() != after:
-                    raise ValueError("bulk formal revision changed before journal recovery")
-                annotations.repair_candidate_commit_projections(receipts.values())
-                store.record_commit_summaries([candidate_commit_summary(receipts[key]) for key in frozen])
-                _, _, journal, _ = _proof_state(store, annotations, batch, frozen)
-            if not journal:
-                raise ValueError("bulk formal cancellation requires a verified journal")
-            evidence.update(state="verified_gt_journal", image_count=len(journal), journal_digest=_digest(journal))
-        else:
-            current_gt = annotations.get_many(list(frozen))
-            if any(current_gt[key]["version"] != row["gt_version"]
-                   or current_gt[key]["content_digest"] != row["gt_content_digest"] for key, row in frozen.items()):
-                raise ValueError("bulk formal GT changed without original batch receipts")
-            evidence["state"] = "no_gt_commit"
+        store = CandidateStore(artifacts, task_id=identity["task_id"])
+        annotations = _v50_annotation_repository(identity["project_id"])
+        completed, committed, first_uncommitted = _verified_prefix(
+            store, annotations, manifest, ref, total)
+        if last >= total:
+            raise ValueError("formal bulk active batch is out of range")
+        if last >= 0 and last < completed - 1:
+            raise ValueError("formal bulk active batch precedes verified batches")
+        # F1's active_batch only records the last batch admitted to the GT
+        # barrier. A batch that was admitted there but never obtained a receipt
+        # is uncommitted too, so the scan must start at the verified prefix,
+        # not at active_batch + 1.
+        uncommitted = _uncommitted_batches(
+            store, annotations, manifest, ref, first_uncommitted, total)
+        adopted = [item for item in uncommitted if item["adopted"]]
+        evidence = {
+            "state": "cancelled",
+            "binding_ref": binding_ref,
+            "operation_id": manifest["operation"]["operation_id"],
+            "manifest_ref": ref,
+            "manifest_digest": EVIDENCE_REF.fullmatch(ref)["digest"],
+            "total_images": len(manifest["images"]),
+            "batch_size": BATCH_SIZE,
+            "batch_count": total,
+            "completed_batches": completed,
+            "committed_images": committed,
+            "committed_images_proven": True,
+            "current_batch": last if last >= 0 else None,
+            "first_uncommitted_batch": first_uncommitted,
+            "candidate_only_batches": [
+                {"batch_number": item["batch_number"], "image_count": item["image_count"],
+                 "batch_operation_id": item["batch_operation_id"],
+                 "gt_changed_images": item["gt_changed_images"]}
+                for item in adopted
+            ],
+            "candidate_only_uncommitted_images": sum(item["image_count"] for item in adopted),
+            "candidate_only_gt_changed_images": sum(item["gt_changed_images"] for item in adopted),
+            "uncommitted_gt_changed_images": sum(item["gt_changed_images"] for item in uncommitted),
+            "finished_at": utc_now(),
+        }
         repository._finish_reconciled_formal_bulk_cancel(*execution, anchor, evidence)
     return True
 
 
+def _cancelled_intent(context, artifacts, descriptor):
+    """Resolve the sealed intent for either the bound or the F1 legacy task."""
+    payload_ref = context.task.payload_ref
+    if descriptor is not None and payload_ref == descriptor.get("manifest_ref"):
+        identity = descriptor["identity"]
+        manifest, ref = load_sealed_intent(artifacts, identity)
+        if (ref != descriptor["manifest_ref"] or ref != payload_ref
+                or manifest["operation"]["operation_id"] != descriptor["operation_id"]):
+            raise ValueError("formal bulk reconciliation identity mismatch")
+        return manifest, ref, identity, None
+
+    from .annotation_bulk_execution import assert_binding_matches_manifest, binding_identity, load_binding
+
+    binding = load_binding(artifacts, context.task.task_id, context.task.project_id, payload_ref)
+    identity = binding_identity(binding)
+    manifest, ref = load_sealed_intent(artifacts, identity)
+    assert_binding_matches_manifest(binding, manifest, ref)
+    if descriptor is not None and descriptor.get("binding_ref") not in (None, payload_ref):
+        raise ValueError("formal bulk reconciliation binding mismatch")
+    return manifest, ref, identity, payload_ref
+
+
+def _verified_prefix(store, annotations, manifest, ref, total):
+    """Return ``(completed_batches, committed_images, first_uncommitted_batch)``.
+
+    Completion is proven only by per-batch GT receipts plus the matching
+    candidate journal. A batch that was admitted into the GT barrier but has no
+    receipt is **not** completed and must stay visible as uncommitted. This
+    function never calls the GT writer.
+    """
+    completed = committed = 0
+    for number in range(total):
+        batch, frozen = _batch(manifest, ref, number)
+        _, receipts, journal, after = _proof_state(store, annotations, batch, frozen)
+        if not receipts:
+            return completed, committed, number
+        if not journal:
+            if store.review_revision() != after:
+                raise ValueError("bulk formal revision changed before journal recovery")
+            annotations.repair_candidate_commit_projections(receipts.values())
+            store.record_commit_summaries(
+                [candidate_commit_summary(receipts[key]) for key in frozen],
+            )
+            _, _, journal, _ = _proof_state(store, annotations, batch, frozen)
+        if not journal or len(journal) != len(frozen):
+            raise ValueError("bulk formal cancellation requires a verified journal")
+        completed += 1
+        committed += len(journal)
+    return completed, committed, total
+
+
+def _uncommitted_batches(store, annotations, manifest, ref, start, total):
+    """Describe every batch after the verified prefix; never writes GT.
+
+    ``adopted`` distinguishes "candidates were adopted but GT was never
+    committed" from "the batch was never started". ``gt_changed_images`` counts
+    lawful external GT edits and is never attributed to this operation.
+    """
+    found = []
+    for number in range(start, total):
+        batch, frozen = _batch(manifest, ref, number)
+        image_ids = list(frozen)
+        receipts = annotations.candidate_commit_receipts(store.task_id, batch["batch_operation_id"], image_ids)
+        if receipts:
+            raise ValueError("bulk formal batch after the verified prefix already has GT receipts")
+        events = store.bulk_formal_events(image_ids)
+        adopted = bool(events)
+        if adopted and (len(events) != len(image_ids) or any(
+                event.get("batch_operation_id") != batch["batch_operation_id"] for event in events)):
+            raise ValueError("bulk formal candidate-only evidence conflict")
+        current = annotations.get_many(image_ids)
+        changed = sum(
+            1 for image_id, row in frozen.items()
+            if current[image_id]["version"] != row["gt_version"]
+            or _gt_digest(annotations, current[image_id]) != row["gt_content_digest"]
+        )
+        found.append({"batch_number": number, "image_count": len(image_ids),
+                      "batch_operation_id": batch["batch_operation_id"],
+                      "adopted": adopted, "gt_changed_images": changed})
+    return found
+
+
 def execute_bulk_formal_batch(artifacts, identity, operation_id, manifest_ref, batch_number, *,
-                              authorize, formal_write_barrier=None):
+                              authorize, formal_write_barrier=None, sealed=None):
     """Execute or recover an exact batch; only trusted internal callers may authorize."""
     from app import (
         _annotation_label_catalog, _require_annotation_review_task, _v50_annotation_repository,
@@ -162,8 +329,9 @@ def execute_bulk_formal_batch(artifacts, identity, operation_id, manifest_ref, b
     if (set(identity) != _IDENTITY_KEYS or not all(isinstance(value, str) and value for value in identity.values())
             or type(batch_number) is not int or batch_number < 0):
         raise ValueError("invalid bulk formal execution identity")
-    manifest, ref = load_sealed_intent(artifacts, identity)
-    if ref != manifest_ref or operation_id != manifest["operation"]["operation_id"]:
+    manifest, ref = sealed if sealed is not None else load_sealed_intent(artifacts, identity)
+    if (ref != manifest_ref or operation_id != manifest["operation"]["operation_id"]
+            or manifest["operation"]["identity"] != identity):
         raise ValueError("bulk formal manifest reference mismatch")
     batch, frozen = _batch(manifest, ref, batch_number)
 

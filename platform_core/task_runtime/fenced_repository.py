@@ -157,7 +157,7 @@ class FencedTaskRepository(TaskRepository):
                 if row["cancel_requested"] or row["status"] != "RUNNING":
                     raise InterruptedError("formal bulk execution was cancelled")
                 if (batch["identity"]["project_id"] != row["project_id"]
-                        or batch["manifest_ref"] != row["payload_ref"]):
+                        or batch.get("binding_ref", batch["manifest_ref"]) != row["payload_ref"]):
                     raise PermissionError("formal bulk project or manifest identity mismatch")
                 if row["active_batch"]:
                     active = json.loads(row["active_batch"])
@@ -193,10 +193,86 @@ class FencedTaskRepository(TaskRepository):
                 (json.dumps(evidence, sort_keys=True), task_id),
             )
             now = utc_now()
+            total = int(evidence.get("total_images") or 0)
+            committed = evidence.get("committed_images")
+            progress = (100.0 * committed / total) if total and type(committed) is int else None
             database.execute(
                 """UPDATE tasks SET status='CANCELLED', stage='cancelled', finished_at=?, updated_at=?,
+                       progress=COALESCE(?, progress),
                        worker_id=NULL, lease_token=NULL, lease_expires_at=NULL WHERE task_id=?""",
-                (now, now, task_id),
+                (now, now, progress, task_id),
+            )
+            database.commit()
+
+    def publish_formal_bulk_progress(self, lease, execution_generation, active_batch, evidence, *, status=None):
+        if status not in {None, TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.FAILED,
+                          TaskStatus.CANCELLED}:
+            raise ValueError("invalid formal bulk execution status")
+        task_id = lease.task.task_id
+        with self._formal_bulk_lock(task_id), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = self._formal_bulk_owner(database, lease, execution_generation)
+            if row["active_batch"] != active_batch:
+                raise PermissionError("formal bulk progress became stale")
+            if status is not None and bool(row["cancel_requested"]) != (status is TaskStatus.CANCELLED):
+                raise InterruptedError("formal bulk cancellation changed before finish")
+            database.execute(
+                """INSERT INTO formal_bulk_execution(task_id, reconciliation) VALUES (?,?)
+                   ON CONFLICT(task_id) DO UPDATE SET reconciliation=excluded.reconciliation""",
+                (task_id, json.dumps(evidence, sort_keys=True)),
+            )
+            if status is not None:
+                now = utc_now()
+                total = int(evidence.get("total_images") or 0)
+                committed = evidence.get("committed_images")
+                ratio = (100.0 * committed / total) if total and type(committed) is int else None
+                progress = 100.0 if status is TaskStatus.SUCCEEDED else ratio
+                database.execute(
+                    """UPDATE tasks SET status=?, stage=?, error=?, finished_at=?, updated_at=?,
+                              progress=COALESCE(?, progress),
+                              worker_id=NULL, lease_token=NULL, lease_expires_at=NULL WHERE task_id=?""",
+                    (status.value, status.value.lower(), evidence.get("last_error_message"), now, now,
+                     progress, task_id),
+                )
+            database.commit()
+
+    def resume_blocked_formal_bulk(self, task_id: str, expected_attempt: int) -> None:
+        """Release a durable evidence block after an operator re-verified facts.
+
+        This never publishes SUCCEEDED and never writes GT. It only moves the
+        task back to QUEUED so the normal Worker re-audits the same operation.
+        """
+        task_id = str(task_id)
+        with self._formal_bulk_lock(task_id), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT kind, status, stage, attempt FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            if row is None or str(row["kind"]) != TaskKind.ANNOTATION_FORMAL_BULK.value:
+                raise KeyError(task_id)
+            if (str(row["status"]) != "RUNNING"
+                    or int(row["attempt"]) != int(expected_attempt)
+                    or str(row["stage"]) not in {"formal_bulk_blocked", "formal_bulk_attempt_limit"}):
+                raise PermissionError("formal bulk task is not in a recoverable blocked state")
+            ledger = database.execute(
+                "SELECT reconciliation FROM formal_bulk_execution WHERE task_id=?", (task_id,),
+            ).fetchone()
+            evidence = json.loads(ledger["reconciliation"] or "{}") if ledger is not None else {}
+            if evidence.get("state") != "blocked":
+                raise PermissionError("formal bulk block marker is missing")
+            evidence.update(state="resumed", resumed_at=utc_now())
+            now = utc_now()
+            database.execute(
+                "UPDATE formal_bulk_execution SET reconciliation=? WHERE task_id=?",
+                (json.dumps(evidence, sort_keys=True), task_id),
+            )
+            database.execute(
+                """UPDATE tasks SET status='QUEUED', stage='recovery_queued',
+                          worker_id=NULL, lease_token=NULL, lease_expires_at=NULL,
+                          process_pid=NULL, process_create_time=NULL, process_command_hash=NULL,
+                          updated_at=?
+                    WHERE task_id=? AND status='RUNNING' AND attempt=?""",
+                (now, task_id, int(expected_attempt)),
             )
             database.commit()
 

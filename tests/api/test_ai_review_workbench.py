@@ -1575,3 +1575,693 @@ execute_worker_bulk_formal_batch(context, artifacts, *parameters["intent"], 0)
     assert annotations.get_many(ids) == current
     assert bool(store.get_commit_summaries(ids)) == durable
     assert scheduler.run_once() is False
+
+
+def _sealed_manifest(store, task, operation):
+    return store.artifacts.payload_reader.read_evidence_json(task, operation["manifest_ref"])
+
+
+def _formal_bulk_scheduler(repo, artifacts, worker="formal-worker", handler=None):
+    from platform_core.annotation_bulk_execution import FormalBulkAnnotationHandler
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+    from platform_core.task_runtime.scheduler import Scheduler
+
+    fenced = FencedTaskRepository(repo.path)
+    scheduler = Scheduler(
+        fenced, artifacts, worker,
+        {TaskKind.ANNOTATION_FORMAL_BULK: handler or FormalBulkAnnotationHandler()},
+        {"annotation.formal_bulk"},
+    )
+    return fenced, scheduler
+
+
+def _start_bulk_execution(client, base, request_id):
+    response = client.post(base + f"/bulk-formal/intents/{request_id}/execute")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_bulk_formal_execution_runs_201_in_three_batches(client, review_task, monkeypatch):
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 203)
+    exclusion = [ids[190], ids[1]]
+    body["excluded_image_ids"] = exclusion
+    expected = [image_id for image_id in ids if image_id not in exclusion]
+    assert len(expected) == 201
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    candidate_before = {**store.get_many(ids[:100]), **store.get_many(ids[100:200]), **store.get_many(ids[200:])}
+    sealed = client.post(base + "/bulk-formal/intents", json=body)
+    assert sealed.status_code == 200, sealed.text
+    operation = sealed.json()
+    assert operation["count"] == 201
+
+    view = _start_bulk_execution(client, base, body["request_id"])
+    assert view["status"] == "QUEUED"
+    assert (view["total_images"], view["total_batches"], view["committed_images"]) == (201, 3, 0)
+    assert view["execution_task_id"].startswith("fbulk-")
+    execution = repo.get(view["execution_task_id"])
+    assert execution.kind is TaskKind.ANNOTATION_FORMAL_BULK
+    assert execution.payload_ref != operation["manifest_ref"]
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts)
+    assert scheduler.run_once()
+
+    final = repo.get(execution.task_id)
+    assert final.status is TaskStatus.SUCCEEDED, final.error
+    assert all(annotations.get(key)["version"] == before[key]["version"] + 1 for key in expected)
+    assert all(annotations.get(key) == before[key] for key in exclusion)
+    journal = {}
+    for offset in range(0, len(expected), 100):
+        journal.update(store.get_commit_summaries(expected[offset:offset + 100]))
+    assert len(journal) == 201
+    assert _sealed_manifest(store, task, operation)["images"][0]["image_id"] == expected[0]
+    assert repo.get(task).status is TaskStatus.AWAITING_CONFIRMATION
+    assert store.review_revision() == body["review_revision"] + 201 + 3
+    assert {**store.get_many(ids[:100]), **store.get_many(ids[100:200]), **store.get_many(ids[200:])} != candidate_before
+
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["status"] == "SUCCEEDED"
+    assert (progress["completed_batches"], progress["total_batches"]) == (3, 3)
+    assert (progress["committed_images"], progress["pending_images"]) == (201, 0)
+    assert progress["current_batch"] == 2 and progress["cancellation_requested"] is False
+    assert progress["candidate_only_uncommitted_images"] == 0
+    assert progress["finished_at"]
+
+
+def test_bulk_formal_execution_start_is_idempotent_and_concurrent(client, review_task, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 2)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    url = base + f"/bulk-formal/intents/{body['request_id']}/execute"
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        responses = list(pool.map(lambda _: client.post(url), range(3)))
+    assert [item.status_code for item in responses] == [200, 200, 200]
+    identities = {item.json()["execution_task_id"] for item in responses}
+    assert len(identities) == 1
+    execution_id = identities.pop()
+    with repo._connect() as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM tasks WHERE kind='ANNOTATION_FORMAL_BULK'").fetchone()[0] == 1
+    assert repo.get(execution_id).payload_ref.startswith("evidence-versions/v1/")
+    assert client.post(url).json()["execution_task_id"] == execution_id
+
+
+def test_bulk_formal_execution_resumes_after_crash_without_rewriting_gt(client, review_task, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import execute_worker_bulk_formal_batch
+    from platform_core.task_runtime.worker import WorkerContext
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    _start_bulk_execution(client, base, body["request_id"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    lease = fenced.claim_next("worker-a", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"})
+    assert lease is not None
+    context = WorkerContext(lease.task, lease, fenced, store.artifacts)
+    operation = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    identity = {"project_id": project, "task_id": task, "actor": "bulk-owner",
+                "request_id": body["request_id"]}
+    execute_worker_bulk_formal_batch(
+        context, store.artifacts, identity, operation["operation_id"], operation["manifest_ref"], 0,
+        binding_ref=lease.task.payload_ref,
+    )
+    first = annotations.get_many(ids[:100])
+    assert all(first[key]["version"] == before[key]["version"] + 1 for key in ids[:100])
+    # Process exit without finish/journal publication; the lease later expires.
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    assert repo.get(lease.task.task_id).status is TaskStatus.QUEUED
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-b")
+    assert scheduler.run_once()
+    final = repo.get(lease.task.task_id)
+    assert final.status is TaskStatus.SUCCEEDED, final.error
+    after = annotations.get_many(ids)
+    assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids)
+    assert len(store.get_commit_summaries(ids)) == 102
+    assert final.attempt == lease.task.attempt + 1
+
+
+def test_bulk_formal_execution_cancel_keeps_candidate_only_batch_uncommitted(client, review_task, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import _batch, execute_worker_bulk_formal_batch
+    from platform_core.annotation_bulk_intents import _candidate_digest
+    from platform_core.annotation_task_service import _candidate_commit_digest
+    from platform_core.task_runtime.worker import WorkerContext
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    operations = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    manifest = store.artifacts.payload_reader.read_evidence_json(task, operations["manifest_ref"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    lease = fenced.claim_next("worker-a", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"})
+    context = WorkerContext(lease.task, lease, fenced, store.artifacts)
+    identity = {"project_id": project, "task_id": task, "actor": "bulk-owner", "request_id": body["request_id"]}
+    execute_worker_bulk_formal_batch(
+        context, store.artifacts, identity, operations["operation_id"], operations["manifest_ref"], 0,
+        binding_ref=lease.task.payload_ref,
+    )
+    # Batch 1 candidates were adopted durably, then the execution stopped
+    # before the F1 GT barrier admitted that batch.
+    labels = {row["code"]: row["class_id"] for row in host._annotation_label_catalog(host.get_project(project))}
+    second, frozen = _batch(manifest, operations["manifest_ref"], 1)
+    projected = {image_id: store.preview_bulk_formal_candidate(store.get(image_id), labels)
+                 for image_id in frozen}
+    store.prepare_bulk_formal_batch(second, frozen, projected, labels, store.review_revision(),
+                                    _candidate_digest, _candidate_commit_digest, lambda: None)
+    assert store.bulk_formal_events(list(frozen))
+    assert not annotations.candidate_commit_receipts(task, second["batch_operation_id"], list(frozen))
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    assert client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/cancel").status_code == 200
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-c")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.CANCELLED, final.error
+    after = annotations.get_many(ids)
+    assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids[:100])
+    assert all(after[key] == before[key] for key in ids[100:])
+    assert store.bulk_formal_events(list(frozen))
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["status"] == "CANCELLED"
+    assert progress["cancellation_requested"] is True
+    assert (progress["completed_batches"], progress["committed_images"]) == (1, 100)
+    assert progress["candidate_only_uncommitted_images"] == 2
+    assert progress["pending_images"] == 2
+
+
+def test_bulk_formal_execution_blocks_external_gt_change_and_keeps_finished_batches(client, review_task, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import execute_worker_bulk_formal_batch
+    from platform_core.task_runtime.worker import WorkerContext
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    operations = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    lease = fenced.claim_next("worker-a", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"})
+    context = WorkerContext(lease.task, lease, fenced, store.artifacts)
+    identity = {"project_id": project, "task_id": task, "actor": "bulk-owner", "request_id": body["request_id"]}
+    execute_worker_bulk_formal_batch(
+        context, store.artifacts, identity, operations["operation_id"], operations["manifest_ref"], 0,
+        binding_ref=lease.task.payload_ref,
+    )
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    host.write_annotations_many(project, [{
+        "image_id": ids[100], "boxes": [], "annotation_state": "confirmed_empty",
+        "annotation_scope": ["fire"], "expected_version": before[ids[100]]["version"],
+        "source_content_sha256": store.get(ids[100])["source_content_sha256"],
+    }])
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-b")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.PARTIAL_SUCCESS, final.error
+    after = annotations.get_many(ids)
+    assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids[:100])
+    assert after[ids[100]]["version"] == before[ids[100]]["version"] + 1
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["status"] == "PARTIAL_SUCCESS"
+    assert progress["completed_batches"] == 1 and progress["committed_images"] == 100
+    assert progress["last_error_code"] and progress["last_error_message"]
+
+
+def test_bulk_formal_execution_api_is_scoped_to_actor_project_and_task(client, review_task, monkeypatch):
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 1)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    _start_bulk_execution(client, base, body["request_id"])
+    read = base + f"/bulk-formal/intents/{body['request_id']}/execution"
+    cancel = read + "/cancel"
+    assert client.get(read).status_code == 200
+
+    actor["actor_id"] = "bulk-other"
+    assert client.get(read).status_code == 404
+    assert client.post(base + f"/bulk-formal/intents/{body['request_id']}/execute").status_code == 404
+    assert client.post(cancel).status_code == 404
+    actor["actor_id"] = "bulk-owner"
+
+    other_project = client.post("/api/projects", json={"name": "bulk-other-project"}).json()["id"]
+    assert client.get(read.replace("/" + project + "/", "/" + other_project + "/")).status_code == 404
+    other_task = uuid.uuid4().hex
+    store.artifacts.atomic_write_json(other_task, "request.json", {"labels": ["fire"]})
+    repo.create(TaskRecord.new(other_task, project, TaskKind.AI_ANNOTATION, "request.json", other_task))
+    assert client.get(read.replace("/" + task + "/", "/" + other_task + "/")).status_code == 404
+    assert client.get(read + "-missing").status_code == 404
+
+
+def test_formal_bulk_worker_registration_is_cpu_only(tmp_path):
+    from platform_core.worker_registry import resolve_worker_registration
+
+    registration = resolve_worker_registration(tmp_path, {"annotation"})
+    assert TaskKind.ANNOTATION_FORMAL_BULK in registration.handlers
+    assert "annotation.formal_bulk" in registration.capabilities
+
+
+def _claim_formal_bulk(repo, store, worker="formal-worker"):
+    from platform_core.task_runtime.worker import WorkerContext
+
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    lease = fenced.claim_next(worker, [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"})
+    assert lease is not None
+    return fenced, lease, WorkerContext(lease.task, lease, fenced, store.artifacts)
+
+
+def _record_full_progress(fenced, lease, operation, total, batch_count):
+    _, anchor = fenced.formal_bulk_cancel_state(lease, lease.task.attempt)
+    fenced.publish_formal_bulk_progress(lease, lease.task.attempt, anchor, {
+        "state": "running", "binding_ref": lease.task.payload_ref,
+        "operation_id": operation["operation_id"], "manifest_ref": operation["manifest_ref"],
+        "manifest_digest": operation["manifest_ref"].rsplit("sha256-", 1)[1].removesuffix(".json"),
+        "total_images": total, "batch_size": 100, "batch_count": batch_count,
+        "completed_batches": batch_count, "committed_images": total,
+        "current_batch": batch_count - 1, "candidate_only_batches": [],
+        "candidate_only_uncommitted_images": 0,
+        "last_error_code": None, "last_error_message": None,
+    })
+
+
+@pytest.mark.parametrize("external_change", [False, True], ids=["untouched", "external-gt-change"])
+def test_formal_bulk_success_reproves_every_batch_after_reclaim(client, review_task, monkeypatch, external_change):
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import execute_worker_bulk_formal_batch
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 201)
+    body["excluded_image_ids"] = []
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    _start_bulk_execution(client, base, body["request_id"])
+    operation = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    fenced, lease, context = _claim_formal_bulk(repo, store)
+    identity = {"project_id": project, "task_id": task, "actor": "bulk-owner", "request_id": body["request_id"]}
+    for number in range(3):
+        execute_worker_bulk_formal_batch(
+            context, store.artifacts, identity, operation["operation_id"], operation["manifest_ref"],
+            number, binding_ref=lease.task.payload_ref,
+        )
+    _record_full_progress(fenced, lease, operation, 201, 3)
+    committed = annotations.get_many(ids)
+    assert all(committed[key]["version"] == before[key]["version"] + 1 for key in ids)
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+
+    if external_change:
+        row = store.get(ids[0])
+        host.write_annotations_many(project, [{
+            "image_id": ids[0],
+            "boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 30, "y2": 30}],
+            "annotation_state": "annotated", "annotation_scope": ["fire"],
+            "expected_version": committed[ids[0]]["version"],
+            "source_content_sha256": row["source_content_sha256"],
+        }])
+        changed = annotations.get(ids[0])
+        assert changed["version"] == committed[ids[0]]["version"] + 1
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-reprove")
+    assert scheduler.run_once()
+    final = repo.get(lease.task.task_id)
+    after = annotations.get_many(ids)
+    if external_change:
+        assert final.status is not TaskStatus.SUCCEEDED
+        assert after[ids[0]] == annotations.get(ids[0])
+        assert all(after[key] == committed[key] for key in ids[1:])
+        assert annotations.get(ids[0])["version"] == committed[ids[0]]["version"] + 1
+        progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+        assert progress["status"] != "SUCCEEDED"
+    else:
+        assert final.status is TaskStatus.SUCCEEDED, final.error
+        assert after == committed
+
+
+def test_formal_bulk_durable_gt_with_unfinished_journal_stays_recoverable(client, review_task, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import _batch
+    from platform_core.annotation_candidates import CandidateStore
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    operation = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    original = CandidateStore.record_commit_summaries
+
+    def refuse_journal(self, summaries, **kwargs):
+        raise ValueError("simulated journal failure after durable GT")
+
+    monkeypatch.setattr(CandidateStore, "record_commit_summaries", refuse_journal)
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts)
+    assert scheduler.run_once()
+    failed = repo.get(view["execution_task_id"])
+    assert failed.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.SUCCEEDED}
+    manifest = store.artifacts.payload_reader.read_evidence_json(task, operation["manifest_ref"])
+    first_batch, _ = _batch(manifest, operation["manifest_ref"], 0)
+    receipts = annotations.candidate_commit_receipts(task, first_batch["batch_operation_id"], ids[:100])
+    assert len(receipts) == 100
+    assert not store.get_commit_summaries(ids[:100])
+    assert all(annotations.get(key)["version"] == before[key]["version"] + 1 for key in ids[:100])
+
+    monkeypatch.setattr(CandidateStore, "record_commit_summaries", original)
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.RUNNING
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+    fenced = FencedTaskRepository(repo.path)
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-recover")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.SUCCEEDED, final.error
+    assert all(annotations.get(key)["version"] == before[key]["version"] + 1 for key in ids)
+    assert len(store.get_commit_summaries(ids)) == 102
+
+
+def test_formal_bulk_cancel_reports_external_gt_change_on_candidate_only_batch(client, review_task, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import _batch, execute_worker_bulk_formal_batch
+    from platform_core.annotation_bulk_intents import _candidate_digest
+    from platform_core.annotation_task_service import _candidate_commit_digest
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    _start_bulk_execution(client, base, body["request_id"])
+    operation = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    manifest = store.artifacts.payload_reader.read_evidence_json(task, operation["manifest_ref"])
+
+    fenced, lease, context = _claim_formal_bulk(repo, store)
+    identity = {"project_id": project, "task_id": task, "actor": "bulk-owner", "request_id": body["request_id"]}
+    execute_worker_bulk_formal_batch(
+        context, store.artifacts, identity, operation["operation_id"], operation["manifest_ref"], 0,
+        binding_ref=lease.task.payload_ref,
+    )
+    labels = {row["code"]: row["class_id"] for row in host._annotation_label_catalog(host.get_project(project))}
+    second, frozen = _batch(manifest, operation["manifest_ref"], 1)
+    projected = {image_id: store.preview_bulk_formal_candidate(store.get(image_id), labels)
+                 for image_id in frozen}
+    store.prepare_bulk_formal_batch(second, frozen, projected, labels, store.review_revision(),
+                                    _candidate_digest, _candidate_commit_digest, lambda: None)
+    host.write_annotations_many(project, [{
+        "image_id": ids[100],
+        "boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 30, "y2": 30}],
+        "annotation_state": "annotated", "annotation_scope": ["fire"],
+        "expected_version": before[ids[100]]["version"],
+        "source_content_sha256": store.get(ids[100])["source_content_sha256"],
+    }])
+    changed = annotations.get(ids[100])
+    assert changed["version"] == before[ids[100]]["version"] + 1
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    assert client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/cancel").status_code == 200
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-cancel")
+    assert scheduler.run_once()
+    final = repo.get(lease.task.task_id)
+    assert final.status is TaskStatus.CANCELLED, final.error
+    assert annotations.get(ids[100]) == changed
+    assert store.bulk_formal_events(list(frozen))
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["status"] == "CANCELLED"
+    assert progress["candidate_only_uncommitted_images"] == 2
+    assert progress["candidate_only_gt_changed_images"] == 1
+
+
+def test_formal_bulk_real_process_exit_after_durable_gt_recovers_journal(client, review_task, monkeypatch):
+    import json
+    import subprocess
+    import sys
+    from datetime import datetime, timedelta, timezone
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    crash = """
+import json
+import os
+import sys
+import app as host
+from platform_core.annotation_bulk_execution import run_formal_bulk
+from platform_core.annotation_candidates import CandidateStore
+from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRepository
+from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+from platform_core.task_runtime.worker import WorkerContext
+
+parameters = json.load(sys.stdin)
+repository = FencedTaskRepository(parameters["db"])
+artifacts = ArtifactStore(parameters["artifacts"])
+host._SHARED_TASK_REPOSITORY = TaskRepository(parameters["review_db"])
+host._SHARED_TASK_ARTIFACTS = artifacts
+lease = repository.claim_next("worker-crash", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"})
+assert lease is not None
+context = WorkerContext(lease.task, lease, repository, artifacts)
+CandidateStore.record_commit_summaries = lambda *args, **kwargs: os._exit(42)
+run_formal_bulk(context)
+os._exit(43)
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", crash],
+        input=json.dumps({"db": str(repo.path), "artifacts": str(store.artifacts.root),
+                          "review_db": str(repo.path)}),
+        text=True, capture_output=True, timeout=60,
+    )
+    assert process.returncode == 42, process.stderr
+    execution = repo.get(view["execution_task_id"])
+    assert execution.status is TaskStatus.RUNNING
+    assert all(annotations.get(key)["version"] == before[key]["version"] + 1 for key in ids[:100])
+    assert all(annotations.get(key)["version"] == before[key]["version"] for key in ids[100:])
+    assert not store.get_commit_summaries(ids[:100])
+    manifest = store.artifacts.payload_reader.read_evidence_json(
+        task, client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()["manifest_ref"])
+    from platform_core.annotation_bulk_commit import _batch
+    first, _ = _batch(manifest, client.get(
+        base + "/bulk-formal/intents/" + body["request_id"]).json()["manifest_ref"], 0)
+    assert len(annotations.candidate_commit_receipts(task, first["batch_operation_id"], ids[:100])) == 100
+
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+    fenced = FencedTaskRepository(repo.path)
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-recover")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.SUCCEEDED, final.error
+    assert all(annotations.get(key)["version"] == before[key]["version"] + 1 for key in ids)
+    assert len(store.get_commit_summaries(ids)) == 102
+
+
+def test_formal_bulk_cancel_counts_only_verified_batches(client, review_task, monkeypatch):
+    """D1: active_batch admitted without GT must not count as completed."""
+    from contextlib import contextmanager
+    from datetime import datetime, timedelta, timezone
+
+    from platform_core.annotation_bulk_commit import execute_worker_bulk_formal_batch
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 102)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    operation = client.get(base + "/bulk-formal/intents/" + body["request_id"]).json()
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    fenced, lease, context = _claim_formal_bulk(repo, store)
+    identity = {"project_id": project, "task_id": task, "actor": "bulk-owner",
+                "request_id": body["request_id"]}
+    manifest = store.artifacts.payload_reader.read_evidence_json(task, operation["manifest_ref"])
+    execute_worker_bulk_formal_batch(
+        context, store.artifacts, identity, operation["operation_id"], operation["manifest_ref"],
+        0, binding_ref=lease.task.payload_ref, sealed=(manifest, operation["manifest_ref"]),
+    )
+    real_barrier = fenced.formal_bulk_gt_write
+
+    @contextmanager
+    def aborting_barrier(lease_, generation_, anchor_):
+        with real_barrier(lease_, generation_, anchor_):
+            raise InterruptedError("stop after admission, before GT commit")
+
+    monkeypatch.setattr(fenced, "formal_bulk_gt_write", aborting_barrier)
+    try:
+        with pytest.raises(InterruptedError):
+            execute_worker_bulk_formal_batch(
+                context, store.artifacts, identity, operation["operation_id"],
+                operation["manifest_ref"], 1,
+                binding_ref=lease.task.payload_ref, sealed=(manifest, operation["manifest_ref"]),
+            )
+    finally:
+        monkeypatch.setattr(fenced, "formal_bulk_gt_write", real_barrier)
+
+    response = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/cancel")
+    assert response.status_code == 200, response.text
+    assert response.json()["cancellation_requested"] is True
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-cancel")
+    assert scheduler.run_once()
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.CANCELLED
+
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["completed_batches"] == 1
+    assert progress["committed_images"] == 100
+    assert progress["committed_images_proven"] is True
+    assert progress["candidate_adopted_images"] == 2
+    assert progress["candidate_only_uncommitted_images"] == 2
+    assert progress["candidate_only_gt_changed_images"] == 0
+    assert progress["uncommitted_gt_changed_images"] == 0
+    after = annotations.get_many(ids)
+    assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids[:100])
+    assert all(after[key] == before[key] for key in ids[100:])
+
+
+def test_formal_bulk_permanent_block_stops_requeue_and_needs_reverified_resume(client, review_task, monkeypatch):
+    """D2: a durable block must not be undone by the automatic reaper."""
+    import platform_core.annotation_bulk_commit as bulk_commit
+    from datetime import datetime, timedelta, timezone
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+
+    original_audit = bulk_commit.audit_formal_bulk_execution
+
+    def contradictory(*args, **kwargs):
+        raise ValueError("synthetic contradictory evidence")
+
+    monkeypatch.setattr(bulk_commit, "audit_formal_bulk_execution", contradictory)
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-block")
+    assert scheduler.run_once()
+    blocked = repo.get(view["execution_task_id"])
+    assert blocked.status is TaskStatus.RUNNING
+    assert blocked.stage == "formal_bulk_blocked"
+
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 0
+    assert repo.get(view["execution_task_id"]).stage == "formal_bulk_blocked"
+    assert fenced.claim_next("worker-2", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"}) is None
+
+    monkeypatch.setattr(bulk_commit, "audit_formal_bulk_execution", original_audit)
+    recover = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/recover")
+    assert recover.status_code == 409, recover.text
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.RUNNING
+
+
+def test_formal_bulk_queued_cancel_is_proven_zero_write(client, review_task, monkeypatch):
+    """D3: never-claimed execution can be cancelled without a Worker."""
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+
+    response = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/cancel")
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "CANCELLED"
+    assert result["committed_images"] == 0
+    assert result["committed_images_proven"] is True
+    record = repo.get(view["execution_task_id"])
+    assert record.status is TaskStatus.CANCELLED
+    assert record.attempt == 0
+    assert annotations.get_many(ids) == before
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    assert fenced.claim_next("worker-3", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"}) is None
+
+
+def test_formal_bulk_progress_never_infers_committed_images(client, review_task, monkeypatch):
+    """D6: missing proof reports unknown, never a guessed GT count."""
+    from datetime import datetime, timedelta, timezone
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    _start_bulk_execution(client, base, body["request_id"])
+    fenced, lease, _ = _claim_formal_bulk(repo, store)
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["committed_images"] is None
+    assert progress["committed_images_proven"] is False
+    assert progress["pending_images"] is None
+    assert progress["status"] == "QUEUED"
+
+
+def test_formal_bulk_success_semantics_survive_lawful_external_edit(client, review_task, monkeypatch):
+    """D5: SUCCEEDED proves this operation committed the frozen range; a later
+    lawful edit is a separate GT change and must not retroactively erase it."""
+    from platform_core.task_runtime.fenced_repository import FencedTaskRepository
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    committed: dict = {}
+
+    real_publish = FencedTaskRepository.publish_formal_bulk_progress
+
+    def publish_after_external_edit(self, lease, generation, anchor, evidence, *, status=None):
+        if status is TaskStatus.SUCCEEDED and not committed:
+            committed.update(annotations.get_many(ids))
+            host.write_annotations_many(project, [{
+                "image_id": ids[0],
+                "boxes": [{"label": "fire", "x1": 5, "y1": 5, "x2": 25, "y2": 25}],
+                "annotation_state": "annotated", "annotation_scope": ["fire"],
+                "expected_version": committed[ids[0]]["version"],
+                "source_content_sha256": store.get(ids[0])["source_content_sha256"],
+            }])
+        return real_publish(self, lease, generation, anchor, evidence, status=status)
+
+    monkeypatch.setattr(FencedTaskRepository, "publish_formal_bulk_progress", publish_after_external_edit)
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-race")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.SUCCEEDED, final.error
+    current = annotations.get(ids[0])
+    assert committed[ids[0]]["version"] == before[ids[0]]["version"] + 1
+    assert current["version"] == committed[ids[0]]["version"] + 1
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["status"] == "SUCCEEDED"
+    assert progress["committed_images"] == 3
+    assert progress["committed_images_proven"] is True

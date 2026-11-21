@@ -26792,6 +26792,78 @@ def read_bulk_formal_intent(project_id: str, task_id: str, request_id: str, requ
     return read_intent(shared_task_artifacts(), actor, project_id, task_id, request_id)
 
 
+def _bulk_formal_execution_view(project_id, task_id, request_id, actor):
+    from platform_core.annotation_bulk_execution import (
+        execution_task_id, load_binding, progress_view,
+    )
+    from platform_core.annotation_bulk_intents import _intent_identity, read_sealed_pointer
+
+    artifacts = shared_task_artifacts()
+    pointer = read_sealed_pointer(artifacts, _intent_identity(actor, project_id, task_id, request_id))
+    execution_id = execution_task_id(pointer["operation_id"])
+    snapshot = shared_task_repository().formal_bulk_execution_snapshot(execution_id)
+    if snapshot is None:
+        raise HTTPException(404, detail={'code': 'FORMAL_BULK_EXECUTION_NOT_FOUND',
+                                         'message': '后台正式入库任务尚未建立'})
+    record, cancelled, ledger = snapshot
+    if record.project_id != project_id:
+        raise HTTPException(404, detail={'code': 'FORMAL_BULK_EXECUTION_NOT_FOUND',
+                                         'message': '后台正式入库任务尚未建立'})
+    try:
+        binding = load_binding(artifacts, execution_id, project_id, record.payload_ref)
+    except (OSError, ValueError) as error:
+        raise HTTPException(503, detail='后台正式入库任务的持久证据无法核验') from error
+    if (binding["original_task_id"] != task_id or binding["request_id"] != request_id
+            or binding["actor"] != actor or binding["operation_id"] != pointer["operation_id"]
+            or binding["manifest_ref"] != pointer["manifest_ref"]):
+        raise HTTPException(404, detail={'code': 'FORMAL_BULK_EXECUTION_NOT_FOUND',
+                                         'message': '后台正式入库任务尚未建立'})
+    return progress_view(record, binding, ledger, cancellation_requested=cancelled)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execute")
+def execute_bulk_formal_intent(project_id: str, task_id: str, request_id: str, request: Request):
+    """Register the single execution task; never write GT inside this request."""
+    from platform_core.annotation_bulk_execution import start_execution
+
+    actor = _material_governance_actor(request, project_id)['actor_id']
+    task = _require_annotation_review_task(project_id, task_id)
+    if task.status is not TaskStatus.AWAITING_CONFIRMATION:
+        raise HTTPException(409, detail='任务当前不可批量入库')
+    start_execution(shared_task_artifacts(), shared_task_repository(), actor, project_id, task_id, request_id)
+    return _bulk_formal_execution_view(project_id, task_id, request_id, actor)
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execution")
+def read_bulk_formal_execution(project_id: str, task_id: str, request_id: str, request: Request):
+    actor = _material_governance_actor(request, project_id)['actor_id']
+    _require_annotation_review_task(project_id, task_id)
+    return _bulk_formal_execution_view(project_id, task_id, request_id, actor)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execution/cancel")
+def cancel_bulk_formal_execution(project_id: str, task_id: str, request_id: str, request: Request):
+    actor = _material_governance_actor(request, project_id)['actor_id']
+    _require_annotation_review_task(project_id, task_id)
+    view = _bulk_formal_execution_view(project_id, task_id, request_id, actor)
+    if view['status'] in {'CANCELLED', 'SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED'}:
+        return view
+    shared_task_repository().request_cancel(view['execution_task_id'])
+    return _bulk_formal_execution_view(project_id, task_id, request_id, actor)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execution/recover")
+def recover_bulk_formal_execution(project_id: str, task_id: str, request_id: str, request: Request):
+    """Re-verify persisted facts, then requeue a durable evidence block."""
+    from platform_core.annotation_bulk_execution import resume_blocked_execution
+
+    actor = _material_governance_actor(request, project_id)['actor_id']
+    _require_annotation_review_task(project_id, task_id)
+    resume_blocked_execution(shared_task_artifacts(), shared_task_repository(),
+                             actor, project_id, task_id, request_id)
+    return _bulk_formal_execution_view(project_id, task_id, request_id, actor)
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection/{selection_id}/candidates")
 def get_annotation_review_selection_candidates(
     project_id: str, task_id: str, selection_id: str, request: Request,

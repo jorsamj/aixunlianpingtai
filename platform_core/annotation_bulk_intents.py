@@ -96,6 +96,21 @@ def load_sealed_intent(artifacts, identity, *, allow_missing=False):
         raise HTTPException(503, detail="批量入库意图的持久证据无法核验") from error
 
 
+def read_sealed_pointer(artifacts, identity):
+    """Read the accepted pointer without loading the (up to 64 MiB) manifest."""
+    try:
+        pointer = artifacts.read_json(identity["task_id"], _receipt_path(identity["request_id"]))
+    except (OSError, ValueError) as error:
+        raise HTTPException(503, detail="批量入库意图的持久证据无法核验") from error
+    if not isinstance(pointer, dict) or pointer.get("identity") != identity:
+        raise HTTPException(404, detail="批量入库意图不存在或无访问权限")
+    ref, operation_id = pointer.get("manifest_ref"), pointer.get("operation_id")
+    if (not isinstance(ref, str) or not EVIDENCE_REF.fullmatch(ref)
+            or not isinstance(operation_id, str) or not _SHA256.fullmatch(operation_id)):
+        raise HTTPException(503, detail="批量入库意图的持久证据无法核验")
+    return {"operation_id": operation_id, "manifest_ref": ref}
+
+
 def _public(sealed):
     manifest, ref = sealed
     operation = manifest["operation"]

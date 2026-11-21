@@ -1270,7 +1270,9 @@ class AnnotationHandler:
 def worker_registration(_data_dir: Path):
     # The same AI_ANNOTATION handler owns both provider annotations and YOLO
     # mining; never advertise mining on the CPU-only control-plane Worker.
-    capabilities = {"vision_provider"}
+    from .annotation_bulk_execution import FormalBulkAnnotationHandler
+
+    capabilities = {"vision_provider", "annotation.formal_bulk"}
     try:
         import importlib.util
         if importlib.util.find_spec("ultralytics") and importlib.util.find_spec("torch"):
@@ -1280,6 +1282,9 @@ def worker_registration(_data_dir: Path):
     except (ImportError, RuntimeError, OSError):
         pass
     return {
-        "handlers": {TaskKind.AI_ANNOTATION: AnnotationHandler(_data_dir)},
+        "handlers": {
+            TaskKind.AI_ANNOTATION: AnnotationHandler(_data_dir),
+            TaskKind.ANNOTATION_FORMAL_BULK: FormalBulkAnnotationHandler(_data_dir),
+        },
         "capabilities": capabilities,
     }

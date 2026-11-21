@@ -32,6 +32,10 @@ from .inference_resources import InferenceResourceMethods, ensure_inference_runt
 
 _SCHEMA_VERSION = 6
 _INIT_LOCK_TIMEOUT = 30
+# Bounded automatic recovery for ANNOTATION_FORMAL_BULK only. Reaching the cap
+# leaves the task in a durable blocked stage that requires an explicit,
+# re-verified operator resume; other TaskKinds keep their existing behaviour.
+MAX_FORMAL_BULK_ATTEMPTS = 5
 
 
 def admission_preparer(admission):
@@ -915,13 +919,64 @@ class TaskRepository(InferenceResourceMethods):
             database.commit()
         return int(changed)
 
+    def formal_bulk_execution_snapshot(self, task_id: str):
+        with closing(self._connect()) as database:
+            row = database.execute(
+                """SELECT tasks.*, formal_bulk_execution.cancel_requested,
+                          formal_bulk_execution.reconciliation
+                     FROM tasks LEFT JOIN formal_bulk_execution USING (task_id)
+                    WHERE task_id=? AND kind='ANNOTATION_FORMAL_BULK'""", (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _from_row(row), bool(row["cancel_requested"]), json.loads(row["reconciliation"] or "{}")
+
     def _formal_bulk_lock(self, task_id: str, *, timeout: float = 5) -> FileLock:
         path = self.path.resolve()
         identity = sha256(task_id.encode("utf-8")).hexdigest()
         return FileLock(str(path.with_name(f"{path.name}.formal-{identity}.lock")), timeout=timeout)
 
+    def _formal_bulk_blocked(self, database, task_id: str):
+        row = database.execute(
+            "SELECT reconciliation FROM formal_bulk_execution WHERE task_id=?", (str(task_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            ledger = json.loads(row["reconciliation"] or "{}")
+        except (TypeError, ValueError):
+            return None
+        return ledger if isinstance(ledger, dict) and ledger.get("state") == "blocked" else None
+
     def _requeue_expired_formal_bulk(self, database, row, now: str) -> int:
         task_id = row["task_id"]
+        # A durable evidence block must never be undone by the automatic
+        # reaper, otherwise a permanent conflict would be re-claimed forever.
+        if self._formal_bulk_blocked(database, task_id) is not None:
+            database.execute(
+                "UPDATE tasks SET stage='formal_bulk_blocked', updated_at=? "
+                "WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                (now, task_id),
+            )
+            return 0
+        if int(row["attempt"] or 0) >= MAX_FORMAL_BULK_ATTEMPTS:
+            database.execute(
+                """INSERT INTO formal_bulk_execution(task_id, reconciliation) VALUES (?,?)
+                   ON CONFLICT(task_id) DO UPDATE SET reconciliation=excluded.reconciliation""",
+                (task_id, json.dumps({
+                    "state": "blocked",
+                    "committed_images_proven": False,
+                    "blocked_code": "FORMAL_BULK_ATTEMPT_LIMIT",
+                    "blocked_reason": f"自动重领达到上限 {MAX_FORMAL_BULK_ATTEMPTS}，需要人工核验",
+                    "blocked_at": now,
+                }, sort_keys=True)),
+            )
+            database.execute(
+                "UPDATE tasks SET stage='formal_bulk_attempt_limit', updated_at=? "
+                "WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                (now, task_id),
+            )
+            return 0
         # The caller holds the SQLite writer. Never wait for a per-task lock here:
         # the GT owner takes that lock before starting its short validation txn.
         try:
@@ -1486,7 +1541,9 @@ class TaskRepository(InferenceResourceMethods):
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT status, stage, kind FROM tasks WHERE task_id=?",
+                """SELECT t.status, t.stage, t.kind, t.attempt, f.active_batch
+                     FROM tasks t LEFT JOIN formal_bulk_execution f USING (task_id)
+                    WHERE t.task_id=?""",
                 (str(task_id),),
             ).fetchone()
             if row is None:
@@ -1501,7 +1558,33 @@ class TaskRepository(InferenceResourceMethods):
                 database.rollback()
                 raise ValueError("训练已完成并正在归档，无法再停止")
             if row["kind"] == TaskKind.ANNOTATION_FORMAL_BULK.value:
-                if status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+                if (status is TaskStatus.QUEUED and int(row["attempt"] or 0) == 0
+                        and row["active_batch"] is None):
+                    # Never claimed and never admitted to the GT barrier: no
+                    # worker can have written GT for this execution, so the
+                    # zero-write cancellation is provable without a Worker.
+                    evidence = {
+                        "state": "cancelled",
+                        "committed_images": 0,
+                        "committed_images_proven": True,
+                        "completed_batches": 0,
+                        "cancelled_at": now,
+                        "zero_gt_proof": "queued_attempt_zero_no_active_batch",
+                    }
+                    database.execute(
+                        """INSERT INTO formal_bulk_execution(task_id, cancel_requested, reconciliation)
+                           VALUES (?,1,?)
+                           ON CONFLICT(task_id) DO UPDATE SET cancel_requested=1,
+                               reconciliation=excluded.reconciliation""",
+                        (str(task_id), json.dumps(evidence, sort_keys=True)),
+                    )
+                    database.execute(
+                        """UPDATE tasks SET status='CANCELLED', stage='cancelled', finished_at=?,
+                               updated_at=?, progress=0.0, worker_id=NULL, lease_token=NULL,
+                               lease_expires_at=NULL WHERE task_id=?""",
+                        (now, now, str(task_id)),
+                    )
+                elif status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
                     database.execute(
                         """INSERT INTO formal_bulk_execution(task_id, cancel_requested) VALUES (?,1)
                            ON CONFLICT(task_id) DO UPDATE SET cancel_requested=1""", (str(task_id),),
