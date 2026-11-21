@@ -125,7 +125,17 @@ def isolated_network(tmp_path, monkeypatch):
     os_thread.start()
     for _ in range(300):
         if os_service.path.is_socket():
-            break
+            # bind() creates the path before listen(); probing until connect
+            # succeeds avoids racing the bind->listen window (ECONNREFUSED).
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.connect(str(os_service.path))
+            except OSError:
+                pass
+            else:
+                break
+            finally:
+                probe.close()
         time.sleep(0.01)
     assert os_service.path.is_socket()
     supervisor = SupervisorClient(

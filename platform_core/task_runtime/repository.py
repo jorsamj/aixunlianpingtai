@@ -929,7 +929,17 @@ class TaskRepository(InferenceResourceMethods):
             ).fetchone()
         if row is None:
             return None
-        return _from_row(row), bool(row["cancel_requested"]), json.loads(row["reconciliation"] or "{}")
+        try:
+            ledger = json.loads(row["reconciliation"] or "{}")
+        except (TypeError, ValueError):
+            ledger = {"state": "blocked", "committed_images_proven": False,
+                      "blocked_code": "FORMAL_BULK_LEDGER_CORRUPT",
+                      "blocked_reason": "持久对账证据无法解析"}
+        if not isinstance(ledger, dict):
+            ledger = {"state": "blocked", "committed_images_proven": False,
+                      "blocked_code": "FORMAL_BULK_LEDGER_CORRUPT",
+                      "blocked_reason": "持久对账证据格式不正确"}
+        return _from_row(row), bool(row["cancel_requested"]), ledger
 
     def _formal_bulk_lock(self, task_id: str, *, timeout: float = 5) -> FileLock:
         path = self.path.resolve()
@@ -937,29 +947,65 @@ class TaskRepository(InferenceResourceMethods):
         return FileLock(str(path.with_name(f"{path.name}.formal-{identity}.lock")), timeout=timeout)
 
     def _formal_bulk_blocked(self, database, task_id: str):
+        """Return the durable block ledger, or None when there is no block.
+
+        An unparsable ledger is treated as a BLOCK, never as "no block":
+        corrupted evidence must fail closed instead of triggering automatic
+        re-claims.
+        """
         row = database.execute(
-            "SELECT reconciliation FROM formal_bulk_execution WHERE task_id=?", (str(task_id),),
+            "SELECT reconciliation, cancel_requested FROM formal_bulk_execution WHERE task_id=?",
+            (str(task_id),),
         ).fetchone()
         if row is None:
             return None
         try:
             ledger = json.loads(row["reconciliation"] or "{}")
         except (TypeError, ValueError):
+            ledger = {"blocked_code": "FORMAL_BULK_LEDGER_CORRUPT",
+                      "blocked_reason": "持久对账证据无法解析"}
+        if not isinstance(ledger, dict):
+            ledger = {"blocked_code": "FORMAL_BULK_LEDGER_CORRUPT",
+                      "blocked_reason": "持久对账证据格式不正确"}
+        if ledger.get("state") != "blocked" and ledger.get("blocked_code") != "FORMAL_BULK_LEDGER_CORRUPT":
             return None
-        return ledger if isinstance(ledger, dict) and ledger.get("state") == "blocked" else None
+        ledger = dict(ledger)
+        ledger["state"] = "blocked"
+        ledger["_cancel_requested"] = bool(row["cancel_requested"])
+        return ledger
 
     def _requeue_expired_formal_bulk(self, database, row, now: str) -> int:
         task_id = row["task_id"]
+        attempt = int(row["attempt"] or 0)
         # A durable evidence block must never be undone by the automatic
         # reaper, otherwise a permanent conflict would be re-claimed forever.
-        if self._formal_bulk_blocked(database, task_id) is not None:
+        # Exception: a cancelled blocked execution still needs the Worker's
+        # read-only cancellation reconciliation, so it may be requeued without
+        # clearing the block marker, strictly bounded by the attempt cap.
+        blocked = self._formal_bulk_blocked(database, task_id)
+        if blocked is not None:
+            corrupt = str(blocked.get("blocked_code") or "") == "FORMAL_BULK_LEDGER_CORRUPT"
+            if (blocked.get("_cancel_requested") and not corrupt
+                    and attempt < MAX_FORMAL_BULK_ATTEMPTS):
+                try:
+                    with self._formal_bulk_lock(task_id, timeout=0):
+                        return database.execute(
+                            """UPDATE tasks SET status='QUEUED', stage='cancel_reconcile_queued',
+                                   worker_id=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=?
+                                 WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')
+                                   AND lease_expires_at<=?""",
+                            (now, task_id, now),
+                        ).rowcount
+                except Timeout:
+                    return 0
             database.execute(
-                "UPDATE tasks SET stage='formal_bulk_blocked', updated_at=? "
+                "UPDATE tasks SET stage=?, updated_at=? "
                 "WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
-                (now, task_id),
+                ("formal_bulk_attempt_limit" if attempt >= MAX_FORMAL_BULK_ATTEMPTS
+                 else "formal_bulk_blocked", now, task_id),
             )
             return 0
-        if int(row["attempt"] or 0) >= MAX_FORMAL_BULK_ATTEMPTS:
+        if attempt >= MAX_FORMAL_BULK_ATTEMPTS:
             database.execute(
                 """INSERT INTO formal_bulk_execution(task_id, reconciliation) VALUES (?,?)
                    ON CONFLICT(task_id) DO UPDATE SET reconciliation=excluded.reconciliation""",
@@ -990,6 +1036,52 @@ class TaskRepository(InferenceResourceMethods):
                 ).rowcount
         except Timeout:
             return 0
+
+    def resume_blocked_formal_bulk(self, task_id: str, expected_attempt: int) -> None:
+        """Release a durable evidence block after an operator re-verified facts.
+
+        This never publishes SUCCEEDED and never writes GT. It only moves the
+        task back to QUEUED so the normal Worker re-audits the same operation.
+        Kept on the base repository because the HTTP control plane uses the
+        plain ``TaskRepository``.
+        """
+        task_id = str(task_id)
+        with self._formal_bulk_lock(task_id), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT kind, status, attempt FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            if row is None or str(row["kind"]) != TaskKind.ANNOTATION_FORMAL_BULK.value:
+                raise KeyError(task_id)
+            if (str(row["status"]) not in {"RUNNING", "CANCEL_REQUESTED"}
+                    or int(row["attempt"]) != int(expected_attempt)):
+                raise PermissionError("formal bulk task is not in a recoverable blocked state")
+            ledger = database.execute(
+                "SELECT reconciliation FROM formal_bulk_execution WHERE task_id=?", (task_id,),
+            ).fetchone()
+            try:
+                evidence = json.loads(ledger["reconciliation"] or "{}") if ledger is not None else {}
+            except (TypeError, ValueError) as error:
+                raise PermissionError("formal bulk block ledger is corrupt") from error
+            if not isinstance(evidence, dict) or evidence.get("state") != "blocked":
+                raise PermissionError("formal bulk block marker is missing")
+            if str(evidence.get("blocked_code") or "") == "FORMAL_BULK_LEDGER_CORRUPT":
+                raise PermissionError("formal bulk block ledger is corrupt")
+            evidence.update(state="resumed", resumed_at=utc_now())
+            now = utc_now()
+            database.execute(
+                "UPDATE formal_bulk_execution SET reconciliation=? WHERE task_id=?",
+                (json.dumps(evidence, sort_keys=True), task_id),
+            )
+            database.execute(
+                """UPDATE tasks SET status='QUEUED', stage='recovery_queued',
+                          worker_id=NULL, lease_token=NULL, lease_expires_at=NULL,
+                          process_pid=NULL, process_create_time=NULL, process_command_hash=NULL,
+                          updated_at=?
+                    WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED') AND attempt=?""",
+                (now, task_id, int(expected_attempt)),
+            )
+            database.commit()
 
     def _release_expired_in(self, database: sqlite3.Connection, now: str) -> int:
         # Lease expiry fences writes but cannot prove a remote Agent stopped

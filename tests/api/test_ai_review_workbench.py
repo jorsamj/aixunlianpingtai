@@ -1910,12 +1910,21 @@ def test_formal_bulk_success_reproves_every_batch_after_reclaim(client, review_t
     final = repo.get(lease.task.task_id)
     after = annotations.get_many(ids)
     if external_change:
-        assert final.status is not TaskStatus.SUCCEEDED
+        # Historical success: every batch was durably committed by this
+        # operation, so a later lawful GT edit is a separate change and must
+        # not retroactively erase the execution fact. It must also NOT be
+        # rewritten: the current GT stays at the externally edited version.
+        assert final.status is TaskStatus.SUCCEEDED, final.error
         assert after[ids[0]] == annotations.get(ids[0])
+        assert after[ids[0]]["version"] == committed[ids[0]]["version"] + 1
         assert all(after[key] == committed[key] for key in ids[1:])
-        assert annotations.get(ids[0])["version"] == committed[ids[0]]["version"] + 1
+        assert len(store.get_commit_summaries(ids[:100])) == 100
+        assert len(store.get_commit_summaries(ids[100:200])) == 100
+        assert len(store.get_commit_summaries(ids[200:])) == 1
         progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
-        assert progress["status"] != "SUCCEEDED"
+        assert progress["status"] == "SUCCEEDED"
+        assert progress["committed_images"] == 201
+        assert progress["committed_images_proven"] is True
     else:
         assert final.status is TaskStatus.SUCCEEDED, final.error
         assert after == committed
@@ -2176,10 +2185,12 @@ def test_formal_bulk_permanent_block_stops_requeue_and_needs_reverified_resume(c
     assert repo.get(view["execution_task_id"]).stage == "formal_bulk_blocked"
     assert fenced.claim_next("worker-2", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"}) is None
 
-    monkeypatch.setattr(bulk_commit, "audit_formal_bulk_execution", original_audit)
+    # Contradictory evidence must never be auto-released: the resume path
+    # re-runs the same audit and refuses while the contradiction persists.
     recover = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/recover")
     assert recover.status_code == 409, recover.text
     assert repo.get(view["execution_task_id"]).status is TaskStatus.RUNNING
+    monkeypatch.setattr(bulk_commit, "audit_formal_bulk_execution", original_audit)
 
 
 def test_formal_bulk_queued_cancel_is_proven_zero_write(client, review_task, monkeypatch):
@@ -2265,3 +2276,112 @@ def test_formal_bulk_success_semantics_survive_lawful_external_edit(client, revi
     assert progress["status"] == "SUCCEEDED"
     assert progress["committed_images"] == 3
     assert progress["committed_images_proven"] is True
+
+def _block_formal_bulk(repo, store, monkeypatch=None, worker="worker-block"):
+    """Drive one execution into a durable evidence block."""
+    import platform_core.annotation_bulk_commit as bulk_commit
+
+    original = bulk_commit.audit_formal_bulk_execution
+
+    def contradictory(*args, **kwargs):
+        raise ValueError("synthetic contradictory evidence")
+
+    bulk_commit.audit_formal_bulk_execution = contradictory
+    try:
+        _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker=worker)
+        assert scheduler.run_once()
+    finally:
+        bulk_commit.audit_formal_bulk_execution = original
+    return original
+
+
+def test_formal_bulk_blocked_cancel_reconciles_to_verified_cancelled(client, review_task, monkeypatch):
+    """D2: a blocked task must still be able to end through cancellation."""
+    from datetime import datetime, timedelta, timezone
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    _block_formal_bulk(repo, store)
+    assert repo.get(view["execution_task_id"]).stage == "formal_bulk_blocked"
+
+    response = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/cancel")
+    assert response.status_code == 200, response.text
+    cancelled_view = response.json()
+    assert cancelled_view["cancellation_requested"] is True
+    assert cancelled_view["manual_review_required"] is True
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.CANCEL_REQUESTED
+
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 1
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.QUEUED
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="cancel-reconciler")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.CANCELLED, final.error
+
+    progress = client.get(base + f"/bulk-formal/intents/{body['request_id']}/execution").json()
+    assert progress["status"] == "CANCELLED"
+    assert progress["committed_images"] == 0
+    assert progress["committed_images_proven"] is True
+    assert annotations.get_many(ids) == before
+
+
+def test_formal_bulk_corrupt_block_ledger_never_auto_requeues(client, review_task, monkeypatch):
+    """D2: unparsable block evidence fails closed and stays manual."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    _block_formal_bulk(repo, store)
+    with sqlite3.connect(repo.path) as database:
+        database.execute(
+            "UPDATE formal_bulk_execution SET reconciliation=? WHERE task_id=?",
+            ("{not-json", view["execution_task_id"]),
+        )
+        database.commit()
+
+    assert client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/cancel").status_code == 200
+    fenced = _formal_bulk_scheduler(repo, store.artifacts)[0]
+    assert fenced.release_expired(datetime.now(timezone.utc) + timedelta(hours=1)) == 0
+    record = repo.get(view["execution_task_id"])
+    assert record.status is TaskStatus.CANCEL_REQUESTED
+    assert record.stage == "formal_bulk_blocked"
+    assert fenced.claim_next("worker-corrupt", [TaskKind.ANNOTATION_FORMAL_BULK], {"annotation.formal_bulk"}) is None
+
+    recover = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/recover")
+    assert recover.status_code == 409, recover.text
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.CANCEL_REQUESTED
+
+
+def test_formal_bulk_recover_pending_before_first_gt_continues(client, review_task, monkeypatch):
+    """D2: a fault before batch 0 must be resumable once evidence is clean."""
+    actor = {"actor_id": "bulk-owner"}
+    monkeypatch.setattr(host, "_material_governance_actor", lambda *_: actor)
+    project, task, store, repo, ids, base, body = _bulk_intent_fixture(client, review_task, 3)
+    assert client.post(base + "/bulk-formal/intents", json=body).status_code == 200
+    view = _start_bulk_execution(client, base, body["request_id"])
+    annotations = host._v50_annotation_repository(project)
+    before = annotations.get_many(ids)
+    _block_formal_bulk(repo, store)
+    assert repo.get(view["execution_task_id"]).status == TaskStatus.RUNNING
+
+    recover = client.post(base + f"/bulk-formal/intents/{body['request_id']}/execution/recover")
+    assert recover.status_code == 200, recover.text
+    assert repo.get(view["execution_task_id"]).status is TaskStatus.QUEUED
+
+    _, scheduler = _formal_bulk_scheduler(repo, store.artifacts, worker="worker-resume")
+    assert scheduler.run_once()
+    final = repo.get(view["execution_task_id"])
+    assert final.status is TaskStatus.SUCCEEDED, final.error
+    after = annotations.get_many(ids)
+    assert all(after[key]["version"] == before[key]["version"] + 1 for key in ids)
+    assert len(store.get_commit_summaries(ids)) == 3

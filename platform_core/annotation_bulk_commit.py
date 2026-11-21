@@ -137,10 +137,18 @@ def _proof_state(store, annotations, identity, frozen):
                     or proof["summary"]["image_id"] != image_id
                     or proof["summary"]["gt_write_performed"] is not True
                     or type(proof["version"]) is not int or proof["version"] != baseline["gt_version"] + 1
-                    or proof["version"] != current_gt["version"]
-                    or proof["content_digest"] != current_gt.get("content_digest")
                     or (journal and journal[image_id] != candidate_commit_summary(proof))):
                 raise ValueError(f"bulk formal GT evidence conflict: {image_id}")
+            # The receipt proves the write THIS operation performed. A later
+            # lawful edit may advance the current GT beyond that version; the
+            # historical fact must survive it. A rollback below the proven
+            # version, or a different payload at the same version, is a conflict.
+            current_version = int(current_gt.get("version") or 0)
+            if current_version < proof["version"]:
+                raise ValueError(f"bulk formal GT rolled back below proven version: {image_id}")
+            if (current_version == proof["version"]
+                    and proof["content_digest"] != current_gt.get("content_digest")):
+                raise ValueError(f"bulk formal GT digest changed at proven version: {image_id}")
     return candidates, receipts, journal, after
 
 

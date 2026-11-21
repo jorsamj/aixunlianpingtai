@@ -249,6 +249,7 @@ def progress_view(task, binding, ledger, *, cancellation_requested=False):
         "blocked": ledger.get("state") == "blocked",
         "blocked_code": ledger.get("blocked_code"),
         "blocked_reason": ledger.get("blocked_reason"),
+        "manual_review_required": bool(ledger.get("state") == "blocked" and cancellation_requested),
         "last_error_code": ledger.get("last_error_code"),
         "last_error_message": ledger.get("last_error_message"),
         "finished_at": task.finished_at,
@@ -379,9 +380,6 @@ def _block_unbound(context, error):
     return TaskStatus.RUNNING, None
 
 
-BLOCKED_STAGES = frozenset({"formal_bulk_blocked", "formal_bulk_attempt_limit"})
-
-
 def resume_blocked_execution(artifacts, repository, actor, project_id, task_id, request_id):
     """Release a durable block only after re-proving the persisted facts.
 
@@ -400,7 +398,7 @@ def resume_blocked_execution(artifacts, repository, actor, project_id, task_id, 
             or binding["actor"] != actor or binding["operation_id"] != pointer["operation_id"]
             or binding["manifest_ref"] != pointer["manifest_ref"]):
         raise HTTPException(404, detail="后台正式入库任务身份不一致")
-    if record.status is not TaskStatus.RUNNING or str(record.stage) not in BLOCKED_STAGES:
+    if record.status not in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
         raise HTTPException(409, detail={"code": "FORMAL_BULK_NOT_BLOCKED",
                                          "message": "任务当前不处于阻断状态"})
     manifest, manifest_ref = load_sealed_intent(artifacts, identity)
@@ -419,7 +417,12 @@ def resume_blocked_execution(artifacts, repository, actor, project_id, task_id, 
         raise HTTPException(409, detail={"code": "FORMAL_BULK_NOT_RECOVERABLE",
                                          "message": "持久证据互相矛盾，不能恢复",
                                          "detail": str(error)[:300]}) from error
-    if audit["state"] not in {"complete", "journal_pending"}:
+    # Only evidence that can be re-proven may be requeued:
+    #  - complete / journal_pending: GT is durable, journal can be repaired;
+    #  - pending: the verified prefix is intact and the next batch has no GT
+    #    receipt, so continuing cannot overwrite an unproven write.
+    # ``unproven`` (contradictory receipts/ownership) is never auto-released.
+    if audit["state"] not in {"complete", "journal_pending", "pending"}:
         raise HTTPException(409, detail={"code": "FORMAL_BULK_NOT_RECOVERABLE",
                                          "message": "持久证据仍不能证明可安全恢复",
                                          "detail": str(audit.get("detail") or "")[:300]})
@@ -427,7 +430,7 @@ def resume_blocked_execution(artifacts, repository, actor, project_id, task_id, 
         repository.resume_blocked_formal_bulk(execution_id, record.attempt)
     except PermissionError as error:
         raise HTTPException(409, detail={"code": "FORMAL_BULK_NOT_BLOCKED",
-                                         "message": "任务阻断状态已变化，请刷新后再试"}) from error
+                                         "message": "任务阻断状态已变化或证据损坏，请刷新后再试"}) from error
     return audit["state"]
 
 
