@@ -490,13 +490,32 @@ class AnnotationRepository:
             str(row["image_id"]): self._decode_persisted_row(row)
             for row in rows
         }
+        # An empty legacy directory cannot contain a per-image file, so
+        # _legacy_record() would only repeat one is_file() per missing ID and
+        # return the same empty record. Check the directory once instead.
+        legacy_dir = self.project_path / "annotations"
+        legacy_dir_has_files = legacy_dir.is_dir() and any(legacy_dir.iterdir())
         for image_id in ids:
             if image_id not in result:
                 # The batch query already proved this ID is absent from SQLite.
                 # Go straight to legacy JSON fallback instead of opening another
                 # connection and repeating the same SELECT once per missing ID.
-                result[image_id] = self._legacy_record(image_id)
+                result[image_id] = (
+                    self._legacy_record(image_id) if legacy_dir_has_files
+                    else self._empty_legacy_record(image_id)
+                )
         return result
+
+    @staticmethod
+    def _empty_legacy_record(image_id: str) -> dict:
+        """The exact fallback shape when no legacy annotations directory exists."""
+        return {
+            "image_id": image_id,
+            "boxes": [],
+            "annotation_state": "unannotated",
+            "annotation_scope": [],
+            "version": 0,
+        }
 
     def _content_payload(self, boxes, annotation_state=None, annotation_scope=None):
         boxes = [dict(box) for box in (boxes or [])]
