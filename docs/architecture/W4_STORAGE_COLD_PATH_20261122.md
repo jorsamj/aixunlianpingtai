@@ -25,7 +25,7 @@
 - OSS：只可确认去掉了显式 `stat()`；SDK 内部 HEAD 未实测。
 - 热路径 0 远程请求；但每次命中会重新计算缓存文件 SHA（大文件有本地 I/O 成本）。
 - 缓存写入是原子发布：临时文件完整、SHA 正确后才 `os.replace`；失败不留下可误用的完整缓存。
-- 远程流式读取有界（Remote 1 MiB chunk；OSS/S3 SDK 写文件）；未发现整文件读入内存的路径。
+- `download()` 路径有界流式（Remote 1 MiB chunk；OSS/S3 SDK 写文件）；`open_reader()` 仍用 `BytesIO(response.content)` 整文件读入内存，见第 3.2 节。
 - 本地素材读取每次 `stat()` 会整文件 SHA；未缓存，属于后续候选，但本轮未改。
 - 训练 Bundle 当前仍有控制端下载素材后重新打包上传的路径；本轮保留为默认，未切 Worker 直达。
 
