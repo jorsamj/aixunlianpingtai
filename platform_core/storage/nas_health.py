@@ -75,6 +75,30 @@ def _expectations(source: StorageSource) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, Mapping) else {}
 
 
+def _expected_sources(expected: Mapping[str, Any]) -> list[str]:
+    value = expected.get("expected_mount_sources", expected.get("expected_mount_source", []))
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _source_key(value: str, fs_type: str) -> str:
+    raw = str(value or "").strip()
+    if fs_type.lower() in {"cifs", "smb3", "smbfs"}:
+        return raw.replace("\\", "/").rstrip("/").casefold()
+    return raw.rstrip("/")
+
+
+def _redact_mount_source(value: str) -> str:
+    raw = str(value or "")
+    if "@" not in raw:
+        return raw
+    head, tail = raw.split("@", 1)
+    return "***@" + tail
+
+
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -102,6 +126,7 @@ def check_nas_source(
     details: dict[str, Any] = {
         "source_id": source.id, "node_id": str(node_id or ""),
         "checked_at": _now(), "read_only": True,
+        "evidence": "MOUNT_HEALTH_UNVERIFIED",
     }
     if not source.enabled:
         details["reason"] = "SOURCE_DISABLED"
@@ -113,17 +138,28 @@ def check_nas_source(
     expected = _expectations(source)
     expected_types = {str(value).strip().lower() for value in (expected.get("expected_fs_types") or [])}
     expected_mount = str(expected.get("mount_point") or "").strip()
+    expected_sources = _expected_sources(expected)
     allowed_nodes = {str(value) for value in (expected.get("node_ids") or [])}
     details["expected_fs_types"] = sorted(expected_types)
     details["expected_mount_point"] = expected_mount
+    details["expected_mount_sources"] = [_redact_mount_source(value) for value in expected_sources]
     if not expected_types or not expected_mount:
         details["reason"] = "MOUNT_EXPECTATION_MISSING"
+        details["evidence"] = "MOUNT_HEALTH_UNVERIFIED"
         return StorageHealth.unavailable(
             "存储源未声明预期挂载点/文件系统类型，无法证明这是 NAS 挂载",
             details=details,
         )
+    if not expected_sources:
+        details["reason"] = "MOUNT_SOURCE_EXPECTATION_MISSING"
+        details["evidence"] = "MOUNT_HEALTH_UNVERIFIED"
+        return StorageHealth.unavailable(
+            "存储源未声明预期挂载来源，无法证明挂载身份",
+            details=details,
+        )
     if allowed_nodes and str(node_id) not in allowed_nodes:
         details["reason"] = "NODE_NOT_ALLOWED"
+        details["evidence"] = "MOUNT_HEALTH_UNVERIFIED"
         return StorageHealth.unavailable("当前节点不在该 NAS 存储源的允许节点中", details=details)
 
     try:
@@ -169,17 +205,27 @@ def check_nas_source(
         details["retryable"] = True
         return StorageHealth.unavailable("无法确认 NAS 挂载身份", details=details)
     details.update({key: mount.get(key) for key in
-                    ("mount_point", "fs_type", "mount_source", "major_minor")})
+                    ("mount_point", "fs_type", "major_minor")})
+    details["mount_source"] = _redact_mount_source(str(mount.get("mount_source") or ""))
     actual_mount = str(mount.get("mount_point") or "")
     actual_type = str(mount.get("fs_type") or "").lower()
     if Path(actual_mount) != Path(expected_mount).resolve():
         details["reason"] = "MOUNT_POINT_MISMATCH"
         details["retryable"] = False
+        details["evidence"] = "MOUNT_HEALTH_UNVERIFIED"
         return StorageHealth.unavailable("实际挂载点与配置预期不一致", details=details)
     if actual_type not in expected_types:
         details["reason"] = "FS_TYPE_MISMATCH"
         details["retryable"] = False
+        details["evidence"] = "MOUNT_HEALTH_UNVERIFIED"
         return StorageHealth.unavailable("实际文件系统类型与配置预期不一致", details=details)
+    actual_source = str(mount.get("mount_source") or "")
+    allowed_sources = {_source_key(value, actual_type) for value in expected_sources}
+    if _source_key(actual_source, actual_type) not in allowed_sources:
+        details["reason"] = "MOUNT_SOURCE_MISMATCH"
+        details["retryable"] = False
+        details["evidence"] = "MOUNT_HEALTH_UNVERIFIED"
+        return StorageHealth.unavailable("实际挂载来源与配置预期不一致", details=details)
 
     try:
         usage = shutil.disk_usage(root)
@@ -193,6 +239,7 @@ def check_nas_source(
 
     if object_key:
         details["test_object"] = object_key
+        details["object_evidence"] = "OBJECT_EVIDENCE_UNVERIFIED"
         if not expected_sha256 or expected_size is None:
             details["reason"] = "TEST_OBJECT_EVIDENCE_MISSING"
             return StorageHealth.unavailable(
@@ -233,4 +280,10 @@ def check_nas_source(
 
     details["reason"] = "OK"
     details["retryable"] = False
-    return StorageHealth.available("NAS 挂载、读取权限和数据身份验证通过", details=details)
+    if object_key:
+        details["evidence"] = "OBJECT_EVIDENCE_VERIFIED"
+        details["object_evidence"] = "OBJECT_EVIDENCE_VERIFIED"
+        return StorageHealth.available("NAS 挂载、读取权限和指定对象数据身份验证通过", details=details)
+    details["evidence"] = "MOUNT_HEALTH_VERIFIED"
+    details["object_evidence"] = "NOT_CHECKED"
+    return StorageHealth.available("NAS 挂载与读取权限验证通过（未验证对象）", details=details)

@@ -17,15 +17,17 @@ def source(root: Path, **nas):
         id="nas-a", name="NAS A", type="local",
         config={"root": str(root), "nas": {
             "mount_point": str(root.parent), "expected_fs_types": ["nfs4"],
+            "expected_mount_sources": ["nas.example:/train"],
             "node_ids": ["node-a"], **nas,
         }},
     )
 
 
-def mount(root: Path, *, point: Path | None = None, fs: str = "nfs4"):
+def mount(root: Path, *, point: Path | None = None, fs: str = "nfs4",
+          mount_source: str = "nas.example:/train"):
     return {
         "mount_point": str(point or root.parent), "fs_type": fs,
-        "mount_source": "nas.example:/train", "major_minor": "0:44",
+        "mount_source": mount_source, "major_minor": "0:44",
     }
 
 
@@ -137,6 +139,7 @@ def test_storage_manager_exposes_nas_probe_without_new_source_owner(tmp_path, mo
         "id": "nas-a", "name": "NAS A", "type": "local",
         "config": {"root": str(root), "nas": {
             "mount_point": str(root.parent), "expected_fs_types": ["nfs4"],
+            "expected_mount_sources": ["nas.example:/train"],
         }},
     })
     manager = StorageManager(data_dir=tmp_path, project_id="project", sources=sources)
@@ -146,6 +149,47 @@ def test_storage_manager_exposes_nas_probe_without_new_source_owner(tmp_path, mo
     )
     assert result.ok is True
     assert result.details["source_id"] == "nas-a"
+
+
+def test_nas_probe_distinguishes_mount_health_from_object_evidence(tmp_path, monkeypatch):
+    root = tmp_path / "mnt" / "nas"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(nas_health, "read_mount_info", lambda _path: mount(root))
+    mount_only = probe(tmp_path, root)
+    assert mount_only.ok is True
+    assert mount_only.details["evidence"] == "MOUNT_HEALTH_VERIFIED"
+    assert mount_only.details["object_evidence"] == "NOT_CHECKED"
+    assert "未验证对象" in mount_only.message
+    with_object = probe(tmp_path, root, object_key="probe.bin",
+                        expected_sha256="0" * 64, expected_size=0)
+    assert with_object.ok is False
+    assert with_object.details["object_evidence"] == "OBJECT_EVIDENCE_UNVERIFIED"
+
+
+def test_nas_probe_rejects_wrong_mount_source_and_missing_source_expectation(tmp_path, monkeypatch):
+    root = tmp_path / "mnt" / "nas"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(nas_health, "read_mount_info",
+                        lambda _path: mount(root))
+    wrong = probe(tmp_path, root, source=source(
+        root, expected_mount_sources=["other.example:/train"]))
+    assert wrong.ok is False
+    assert wrong.details["reason"] == "MOUNT_SOURCE_MISMATCH"
+    no_source = probe(tmp_path, root, source=source(
+        root, expected_mount_sources=[]))
+    assert no_source.ok is False
+    assert no_source.details["reason"] == "MOUNT_SOURCE_EXPECTATION_MISSING"
+
+
+def test_nas_probe_matches_cifs_source_with_case_and_separator_rules(tmp_path, monkeypatch):
+    root = tmp_path / "mnt" / "nas"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(nas_health, "read_mount_info",
+                        lambda _path: mount(root, fs="cifs", mount_source="\\\\Server\\Share"))
+    result = probe(tmp_path, root, source=source(
+        root, expected_fs_types=["cifs"], expected_mount_sources=["//server/share"]))
+    assert result.ok is True
+    assert result.details["mount_source"] == "\\\\Server\\Share"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="mountinfo is Linux-only")

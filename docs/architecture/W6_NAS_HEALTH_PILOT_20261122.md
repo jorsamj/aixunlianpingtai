@@ -21,14 +21,18 @@ NAS 仍使用既有 `local` Provider，不新增 StorageType：
   "nas": {
     "mount_point": "/mnt/nas",
     "expected_fs_types": ["nfs", "nfs4"],
+    "expected_mount_sources": ["nas.example:/train"],
     "node_ids": ["gpu-node-a", "gpu-node-b"]
   }
 }
 ```
 
-- `root`、`mount_point`、允许节点都来自 **StorageSource 配置**，不是任务 payload。
+- `root`、`mount_point`、`expected_mount_sources`、允许节点都来自 **StorageSource 配置**，不是任务 payload。
+- `expected_mount_sources` 必须显式配置；缺失时 fail-closed，不能只凭目录存在或 fs type 猜 NAS。
+- NFS 来源按精确字符串/尾部斜杠归一；CIFS/SMB 额外做分隔符与大小写归一，规则固定，不做模糊包含。
+- 实际/预期来源在输出前脱敏；含 `user:pass@host` 时只保留 `***@host`。
 - `object_key` 必须是相对 root 的正斜杠对象键；`LocalStorageProvider._path` 拒绝绝对路径、`..`、Windows drive、反斜杠和越界 symlink。
-- 没有 `nas.mount_point` 或 `expected_fs_types` 时 **fail-closed**，不会把普通本地目录当 NAS。
+- 没有 `nas.mount_point`、`expected_fs_types` 或 `expected_mount_sources` 时 **fail-closed**，不会把普通本地目录当 NAS。
 
 ## 3. 检查顺序与结果
 
@@ -51,14 +55,27 @@ NAS 仍使用既有 `local` Provider，不新增 StorageType：
 
 `retryable=true` 只用于临时 I/O/挂载信息不可读/对象暂时不可达；不把网络短断解释为对象永久不存在。
 
+## 3.1 证据等级
+
+`StorageHealth.details` 明确：
+
+- `evidence=MOUNT_HEALTH_VERIFIED`：挂载点、文件系统、配置来源、基础读取和容量通过；`object_evidence=NOT_CHECKED`，**不能**被任务准入当成对象已校验。
+- `evidence=OBJECT_EVIDENCE_VERIFIED`：额外通过指定对象的相对路径、大小和 SHA256；`object_evidence=OBJECT_EVIDENCE_VERIFIED`。
+- `evidence=MOUNT_HEALTH_UNVERIFIED` 或 `object_evidence=OBJECT_EVIDENCE_UNVERIFIED`：未验证/失败，保持 fail-closed。
+
+仅挂载成功时消息为“NAS 挂载与读取权限验证通过（未验证对象）”，不再声称数据身份已验证。
+
 ## 4. 隔离验证
 
-`tests/unit/test_nas_health.py`：**8 passed, 1 skipped**（Windows 跳过 mountinfo 解析）。
+`tests/unit/test_nas_health.py`：**11 passed, 1 skipped**（Windows 跳过 mountinfo 解析）。
 
 覆盖：
 
-- 预期可读路径 + 正确 NFS4 挂载 + SHA/大小 → AVAILABLE；
-- 不存在 root；
+- 正确挂载 + 正确来源 + SHA/大小 → OBJECT_EVIDENCE_VERIFIED；
+- 仅挂载检查 → MOUNT_HEALTH_VERIFIED / object NOT_CHECKED；
+- 同一挂载点/fs type 但不同来源 → MOUNT_SOURCE_MISMATCH；
+- 未配置来源身份 → MOUNT_SOURCE_EXPECTATION_MISSING；
+- CIFS 分隔符/大小写归一；
 - 普通本地目录无挂载预期 → fail-closed；
 - 文件系统类型不符；
 - 挂载点不符；
