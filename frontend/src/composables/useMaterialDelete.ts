@@ -44,21 +44,15 @@ function countsText(counts: ResultCounts) {
     + ` · 处理中 ${counts.running}`
     + (counts.conflict ? ` · 证据冲突 ${counts.conflict}` : '');
 }
-// Bounded evidence for large selections: a deterministic digest over the
-// frozen IDs detects foreign/extra rows without persisting 100k local IDs.
-function digestIds(ids: Iterable<string>) {
+// Cryptographic scope proof for large selections without persisting 100k ids.
+async function digestIds(ids: Iterable<string>) {
   const sorted = [...new Set(ids)].sort();
-  let first = 2166136261, second = 2246822519;
-  for (const id of sorted) {
-    for (let index = 0; index < id.length; index += 1) {
-      const code = id.charCodeAt(index);
-      first = Math.imul(first ^ code, 16777619) >>> 0;
-      second = Math.imul(second ^ code, 2246822507) >>> 0;
-    }
-    first = Math.imul(first ^ 0x1f, 16777619) >>> 0;
-    second = Math.imul(second ^ 0x2f, 2246822507) >>> 0;
-  }
-  return `${sorted.length}:${first}:${second}`;
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error('当前浏览器不支持范围摘要，无法证明删除范围');
+  const bytes = new TextEncoder().encode(sorted.join('\n'));
+  const hash = await subtle.digest('SHA-256', bytes);
+  const hex = [...new Uint8Array(hash)].map(value => value.toString(16).padStart(2, '0')).join('');
+  return `sha256:${hex}:${sorted.length}`;
 }
 
 export function useMaterialDelete(options: {
@@ -241,9 +235,24 @@ export function useMaterialDelete(options: {
         + '删除结果未证明；原删除身份已保留。';
       return;
     }
-    if (record?.id_digest && digestIds(resultIds) !== record.id_digest) {
+    if (record?.id_digest?.startsWith('sha256:')) {
+      let proven = '';
+      try { proven = await digestIds(resultIds); }
+      catch {
+        state.unknown = true;
+        state.notice = '无法计算删除范围摘要，删除结果未证明；原删除身份已保留。';
+        return;
+      }
+      if (proven !== record.id_digest) {
+        state.unknown = true;
+        state.notice = '逐项结果与预检冻结范围不一致，身份异常；未执行本地清理，原删除身份已保留。';
+        return;
+      }
+    } else if (Number(record?.image_count) > 500) {
+      // A pre-digest 501+ record may contain only a truncated image_ids list.
+      // It cannot prove the frozen set and must be re-prechecked.
       state.unknown = true;
-      state.notice = '逐项结果与预检冻结范围不一致，身份异常；未执行本地清理，原删除身份已保留。';
+      state.notice = '旧版删除恢复记录缺少完整范围摘要，无法证明本次范围；请重新预检后再提交，原计划身份已保留。';
       return;
     }
     if (results.conflicts.size) {
@@ -342,23 +351,22 @@ export function useMaterialDelete(options: {
     const scopeIds = estimate.selection_spec?.scope === 'SELECTED'
       ? [...new Set(estimate.selection_spec.image_ids || [])] : [];
     const targets = [...new Set(state.targetIds)];
-    if (!scopeIds.length || estimate.count !== targets.length) {
+    const frozen = new Set(scopeIds);
+    if (!scopeIds.length || estimate.count !== targets.length
+        || frozen.size !== targets.length || targets.some(id => !frozen.has(id))) {
       state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
       return;
     }
-    if (targets.length <= 2000) {
-      const frozen = new Set(scopeIds);
-      if (frozen.size !== targets.length || targets.some(id => !frozen.has(id))) {
-        state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
-        return;
-      }
-    } else if (scopeIds.length !== targets.length) {
-      state.error = '预检返回的冻结数量与当前选择不一致，已停止提交；请重新预检。';
+    state.busy = true; state.error = ''; state.notice = '';
+    let idDigest: string;
+    try { idDigest = await digestIds(scopeIds); }
+    catch (cause) {
+      state.busy = false;
+      state.error = message(cause);
       return;
     }
-    state.busy = true; state.error = ''; state.notice = '';
     if (!writeRecord(preview.plan_id, state.mode, estimate.count,
-      state.mode === 'single' ? state.targetId : undefined, digestIds(scopeIds))) {
+      state.mode === 'single' ? state.targetId : undefined, idDigest)) {
       state.busy = false;
       state.error = '浏览器无法保存删除计划身份，已停止提交；请允许站点存储后重试。';
       return;

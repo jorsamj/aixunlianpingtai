@@ -1,5 +1,6 @@
 import {test, expect} from '@playwright/test';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -30,11 +31,12 @@ async function startIsolated(env) {
   });
   return {origin, child};
 }
-function resultsPage(planId, total, cursor) {
-  const start = cursor ? Number(/^img-(\d+)$/.exec(cursor)?.[1] || 0) : 0;
+function resultsPage(planId, total, cursor, prefix = 'img') {
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  const start = cursor ? Number(pattern.exec(cursor)?.[1] || 0) : 0;
   const rows = Array.from({length: Math.max(0, Math.min(100, total - start))}, (_, offset) => {
     const index = start + offset + 1;
-    return {image_id: `img-${String(index).padStart(6, '0')}`, item_state: 'succeeded'};
+    return {image_id: `${prefix}-${String(index).padStart(6, '0')}`, item_state: 'succeeded'};
   });
   const last = rows.at(-1)?.image_id || null;
   return {items: rows, succeeded_image_ids: rows.map(row => row.image_id),
@@ -44,21 +46,63 @@ function resultsPage(planId, total, cursor) {
 
 function digestIds(ids) {
   const sorted = [...new Set(ids)].sort();
-  let first = 2166136261, second = 2246822519;
-  for (const id of sorted) {
-    for (let index = 0; index < id.length; index += 1) {
-      const code = id.charCodeAt(index);
-      first = Math.imul(first ^ code, 16777619) >>> 0;
-      second = Math.imul(second ^ code, 2246822507) >>> 0;
+  const hash = createHash('sha256').update(sorted.join('\n'), 'utf8').digest('hex');
+  return `sha256:${hash}:${sorted.length}`;
+}
+function imageIds(total, prefix = 'img') {
+  return Array.from({length: total}, (_, index) => `${prefix}-${String(index + 1).padStart(6, '0')}`);
+}
+
+test('same-count foreign ids and pre-digest 501 records stay UNKNOWN', async ({page, request}) => {
+  test.setTimeout(180_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-delete-proof-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await (await request.post(origin + '/api/projects', {
+      data: {name: '删除范围证明', labels: [{code: 'fire', display_name: '明火'}]},
+    })).json();
+    await request.post(`${origin}/api/projects/${project.id}/images`, {
+      multipart: {files: {name: 'proof.jpg', mimeType: 'image/jpeg', buffer: JPEG}, dataset_id: 'default'},
+    });
+    const auth = await (await request.get(origin + '/api/auth/session')).json();
+    const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
+    const recordKey = 'ai-material-delete:v1:' + JSON.stringify([actorKey, project.id]);
+    let total = 0, planId = '', prefix = 'img';
+    await page.route('**/api/v62/projects/*/material-batches/*/results*', route => {
+      const url = new URL(route.request().url());
+      return route.fulfill({json: resultsPage(planId, total, url.searchParams.get('cursor'), prefix)});
+    });
+    await page.route('**/api/v62/projects/*/material-batches/*', route => {
+      const url = new URL(route.request().url());
+      if (route.request().method() !== 'GET' || !planId
+          || !url.pathname.endsWith(`/material-batches/${planId}`)) return route.continue();
+      return route.fulfill({json: {id: planId, task_id: planId, project_id: project.id,
+        operation: 'DELETE_INDEX', status: 'SUCCEEDED', total, succeeded: total,
+        failed: 0, logical_removed: total, physical_retained: total, reclaimed_bytes: 0}});
+    });
+
+    async function runCase(name, plan, size, resultPrefix, digest, expected) {
+      total = size; planId = plan; prefix = resultPrefix;
+      await page.goto(origin + '/app/');
+      await page.evaluate(([key, value]) => localStorage.setItem(key, value), [recordKey,
+        JSON.stringify({project_id: project.id, plan_id: plan, operation: 'DELETE_INDEX',
+          mode: 'selected', image_count: size,
+          ...(digest === null ? {image_ids: imageIds(500)} : {id_digest: digest})})]);
+      await page.goto(`${origin}/app/?proof=${name}#/projects/${project.id}/materials`);
+      await expect(page.getByText('存在未完成的素材删除任务')).toBeVisible({timeout: 60000});
+      expect(await page.evaluate(key => localStorage.getItem(key), recordKey)).not.toBeNull();
+      await page.getByRole('button', {name: '查看删除任务', exact: true}).click();
+      await expect(page.locator('.el-dialog')).toContainText(expected, {timeout: 30000});
+      await page.locator('.el-dialog').getByRole('button', {name: '取消', exact: true}).click();
     }
-    first = Math.imul(first ^ 0x1f, 16777619) >>> 0;
-    second = Math.imul(second ^ 0x2f, 2246822507) >>> 0;
-  }
-  return `${sorted.length}:${first}:${second}`;
-}
-function imageIds(total) {
-  return Array.from({length: total}, (_, index) => `img-${String(index + 1).padStart(6, '0')}`);
-}
+
+    await runCase('foreign', 'proof-foreign', 2001, 'other',
+      digestIds(imageIds(2001, 'img')), '身份异常');
+    await runCase('legacy', 'proof-legacy', 501, 'img', null, '缺少完整范围摘要');
+  } finally { child.kill(); }
+});
 
 test('501 and 2001 material deletions recover from server cursor pages without truncated local IDs', async ({page, request}) => {
   test.setTimeout(240_000);
@@ -77,13 +121,13 @@ test('501 and 2001 material deletions recover from server cursor pages without t
     const auth = await (await request.get(origin + '/api/auth/session')).json();
     const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
     const recordKey = 'ai-material-delete:v1:' + JSON.stringify([actorKey, project.id]);
-    let total = 0, planId = '';
+    let total = 0, planId = '', resultPrefix = 'img';
     const resultRequests = [];
     await page.route('**/api/v62/projects/*/material-batches/*/results*', route => {
       const url = new URL(route.request().url());
       resultRequests.push({plan: planId, cursor: url.searchParams.get('cursor') || '',
         limit: Number(url.searchParams.get('limit') || 0)});
-      return route.fulfill({json: resultsPage(planId, total, url.searchParams.get('cursor'))});
+      return route.fulfill({json: resultsPage(planId, total, url.searchParams.get('cursor'), resultPrefix)});
     });
     await page.route('**/api/v62/projects/*/material-batches/*', route => {
       const url = new URL(route.request().url());
@@ -100,11 +144,13 @@ test('501 and 2001 material deletions recover from server cursor pages without t
       if (req.method() === 'POST' && url.pathname.endsWith('/material-batches')) creates += 1;
     });
 
-    async function recover(size, plan) {
-      total = size; planId = plan;
+    async function recover(size, plan, options = {}) {
+      total = size; planId = plan; resultPrefix = options.prefix || 'img';
       await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [recordKey,
         JSON.stringify({project_id: project.id, plan_id: plan, operation: 'DELETE_INDEX',
-          mode: 'selected', image_count: size, id_digest: digestIds(imageIds(size))})]);
+          mode: 'selected', image_count: size,
+          ...(options.digest === null ? {} : {id_digest: options.digest ??
+            digestIds(imageIds(size, resultPrefix))})})]);
       await page.goto(`${origin}/app/?scale=${size}#/projects/${project.id}/materials`);
       await expect.poll(async () => page.evaluate(key => localStorage.getItem(key), recordKey),
         {timeout: 120000}).toBe(null);
