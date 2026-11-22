@@ -8,6 +8,7 @@ execution lease without requiring remote SQLite/NFS access.
 from __future__ import annotations
 
 import json
+import math
 import secrets
 from contextlib import closing
 from threading import Lock
@@ -441,8 +442,11 @@ def _assigned_gpu_ids(database, node_id: str) -> set[str]:
         selected = resolved.get("selected_gpu")
         selected = selected if isinstance(selected, Mapping) else {}
         device = str(selected.get("id") or resolved.get("selected_device") or "").strip()
+        uuid = str(selected.get("uuid") or "").strip()
         if device.startswith("cuda:"):
             assigned.add(device)
+        if uuid:
+            assigned.add(uuid)
     return assigned
 
 
@@ -584,6 +588,7 @@ def _selected_gpu(
     items = [
         item for item in items or []
         if isinstance(item, Mapping)
+        and str(item.get("uuid") or item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
         and str(item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
         and _gpu_is_training_candidate(item)
         and (
@@ -599,6 +604,7 @@ def _selected_gpu(
     best = max(items, key=_gpu_rank_value)
     return {
         "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "identity": str(best.get("uuid") or best.get("id") or f"cuda:{best.get('index', 0)}"),
         "index": int(best.get("index") or 0),
         "uuid": best.get("uuid"),
         "name": best.get("name"),
@@ -608,6 +614,238 @@ def _selected_gpu(
             int(best.get("utilization_percent"))
             if best.get("utilization_percent") is not None
             else None
+        ),
+    }
+
+
+_INVALID_RESOURCE_REQUIREMENTS = object()
+_RESOURCE_REQUIREMENT_KEYS = {
+    "gpu_count", "gpu_uuids", "min_gpu_memory_bytes",
+    "cpu_cores", "ram_bytes", "scratch_bytes", "storage_source_ids",
+}
+
+
+def _positive_int(value, *, minimum=1):
+    if isinstance(value, bool):
+        raise ValueError
+    number = int(value)
+    if number < minimum:
+        raise ValueError
+    return number
+
+
+def _positive_number(value):
+    if isinstance(value, bool):
+        raise ValueError
+    number = float(value)
+    if not number > 0 or not math.isfinite(number):
+        raise ValueError
+    return number
+
+
+def _task_resource_requirements(task, artifacts, capability: str | None):
+    """Opt-in resource requirements; absent means legacy behavior.
+
+    A present but malformed contract is returned as a sentinel so the task can
+    stay QUEUED instead of silently degrading its resource request.
+    """
+    if capability is None:
+        return None
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return _INVALID_RESOURCE_REQUIREMENTS
+    if not isinstance(payload, Mapping) or "resource_requirements" not in payload:
+        return None
+    raw = payload.get("resource_requirements")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or set(raw) - _RESOURCE_REQUIREMENT_KEYS:
+        return _INVALID_RESOURCE_REQUIREMENTS
+    try:
+        gpu_count = raw.get("gpu_count", 1 if capability == "training" else 0)
+        gpu_count = _positive_int(gpu_count, minimum=0)
+        if capability == "training" and gpu_count != 1:
+            return _INVALID_RESOURCE_REQUIREMENTS
+        if capability != "training" and gpu_count:
+            return _INVALID_RESOURCE_REQUIREMENTS
+        requirements: dict[str, Any] = {"gpu_count": gpu_count}
+        if "gpu_uuids" in raw:
+            values = raw.get("gpu_uuids")
+            if not isinstance(values, (list, tuple)):
+                raise ValueError
+            requirements["gpu_uuids"] = [
+                str(value).strip() for value in values if str(value).strip()
+            ]
+            if capability != "training":
+                raise ValueError
+        if "min_gpu_memory_bytes" in raw:
+            requirements["min_gpu_memory_bytes"] = _positive_int(
+                raw.get("min_gpu_memory_bytes"), minimum=0,
+            )
+            if capability != "training":
+                raise ValueError
+        for name in ("cpu_cores", "ram_bytes", "scratch_bytes"):
+            if name in raw:
+                requirements[name] = (
+                    _positive_number(raw[name]) if name == "cpu_cores"
+                    else _positive_int(raw[name], minimum=1)
+                )
+        if "storage_source_ids" in raw:
+            values = raw.get("storage_source_ids")
+            if not isinstance(values, (list, tuple)):
+                raise ValueError
+            requirements["storage_source_ids"] = [
+                str(value).strip() for value in values if str(value).strip()
+            ]
+        return requirements
+    except (TypeError, ValueError, OverflowError):
+        return _INVALID_RESOURCE_REQUIREMENTS
+
+
+def _active_assignment_configs(database, node_id: str) -> list[Mapping[str, Any]]:
+    rows = database.execute(
+        """
+        SELECT a.resolved_execution_config
+          FROM task_node_assignments AS a
+          LEFT JOIN tasks AS t ON t.task_id=a.task_id
+         WHERE a.node_id=?
+           AND (
+               a.state IN ('ASSIGNED','CLAIMED')
+               OR (t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?)
+           )
+        """,
+        (str(node_id), f"agent:{node_id}"),
+    ).fetchall()
+    return [
+        _loads(row["resolved_execution_config"], {})
+        for row in rows
+    ]
+
+
+def _reported_storage_ids(resources: Mapping[str, Any]) -> set[str]:
+    storage = resources.get("storage") if isinstance(resources, Mapping) else None
+    values = storage.get("source_ids") if isinstance(storage, Mapping) else None
+    if values is None:
+        values = resources.get("storage_source_ids") if isinstance(resources, Mapping) else None
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple)):
+        return set()
+    return {str(value) for value in values if str(value)}
+
+
+def _hard_admission(
+    database,
+    node,
+    capability: str,
+    requirements: Mapping[str, Any],
+    *,
+    requested_device: str = "auto",
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """Evaluate an opt-in opt-in hard budget against latest durable state."""
+    resources = _loads(node["resource_json"], {})
+    if not isinstance(resources, Mapping):
+        return False, "RESOURCE_REPORT_UNKNOWN", None
+    # A legacy active task has no frozen requirement. Its consumption cannot be
+    # proven, so a new opt-in task must wait instead of overcommitting the node.
+    running_without_assignment = database.execute(
+        """
+        SELECT 1 FROM tasks t
+         WHERE t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?
+           AND NOT EXISTS (
+               SELECT 1 FROM task_node_assignments a
+                WHERE a.task_id=t.task_id AND a.state IN ('ASSIGNED','CLAIMED')
+           )
+         LIMIT 1
+        """,
+        (f"agent:{node['node_id']}",),
+    ).fetchone()
+    if running_without_assignment:
+        return False, "ACTIVE_RESOURCE_UNKNOWN", None
+
+    used_cpu = 0.0
+    used_ram = 0
+    used_scratch = 0
+    assigned_gpus: set[str] = set()
+    for resolved in _active_assignment_configs(database, str(node["node_id"])):
+        if not isinstance(resolved, Mapping):
+            return False, "ACTIVE_RESOURCE_UNKNOWN", None
+        requirement = resolved.get("resource_requirements")
+        if not isinstance(requirement, Mapping):
+            return False, "ACTIVE_RESOURCE_UNKNOWN", None
+        used_cpu += float(requirement.get("cpu_cores") or 0)
+        used_ram += int(requirement.get("ram_bytes") or 0)
+        used_scratch += int(requirement.get("scratch_bytes") or 0)
+        selected = resolved.get("selected_gpu")
+        if isinstance(selected, Mapping):
+            if selected.get("uuid"):
+                assigned_gpus.add(str(selected["uuid"]))
+            if selected.get("id"):
+                assigned_gpus.add(str(selected["id"]))
+
+    cpu = resources.get("cpu") if isinstance(resources.get("cpu"), Mapping) else {}
+    memory = resources.get("memory") if isinstance(resources.get("memory"), Mapping) else {}
+    disk = resources.get("disk") if isinstance(resources.get("disk"), Mapping) else {}
+    available_cpu = max(0.0, float(cpu.get("logical_cores") or 0) - used_cpu)
+    available_ram = max(0, int(memory.get("available_bytes") or 0) - used_ram)
+    available_scratch = max(0, int(disk.get("free_bytes") or 0) - used_scratch)
+    if float(requirements.get("cpu_cores") or 0) > available_cpu:
+        return False, "CPU_INSUFFICIENT", None
+    if int(requirements.get("ram_bytes") or 0) > available_ram:
+        return False, "RAM_INSUFFICIENT", None
+    if int(requirements.get("scratch_bytes") or 0) > available_scratch:
+        return False, "SCRATCH_INSUFFICIENT", None
+    required_storage = set(requirements.get("storage_source_ids") or ())
+    if required_storage and not required_storage.issubset(_reported_storage_ids(resources)):
+        return False, "STORAGE_REACHABILITY_UNVERIFIED", None
+
+    if capability != "training":
+        return True, "OK", None
+    if int(requirements.get("gpu_count") or 0) != 1:
+        return False, "MULTI_GPU_REQUIREMENT_UNSUPPORTED", None
+    gpu = resources.get("gpu") if isinstance(resources.get("gpu"), Mapping) else {}
+    items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
+    items = [item for item in (items if isinstance(items, list) else []) if isinstance(item, Mapping)]
+    seen_uuids: set[str] = set()
+    for item in items:
+        uuid = str(item.get("uuid") or "").strip()
+        if uuid and uuid in seen_uuids:
+            return False, "DUPLICATE_GPU_IDENTITY", None
+        if uuid:
+            seen_uuids.add(uuid)
+    requested = str(requested_device or "auto").strip().lower()
+    minimum_memory = int(requirements.get("min_gpu_memory_bytes") or 0)
+    allowed_uuids = {str(value) for value in requirements.get("gpu_uuids") or ()}
+    candidates = []
+    for item in items:
+        identity = str(item.get("uuid") or item.get("id") or f"cuda:{item.get('index', 0)}")
+        device = str(item.get("id") or f"cuda:{item.get('index', 0)}")
+        if identity in assigned_gpus or device in assigned_gpus:
+            continue
+        if allowed_uuids and str(item.get("uuid") or "") not in allowed_uuids:
+            continue
+        if requested.startswith("cuda:") and device != requested:
+            continue
+        if int(item.get("memory_free_bytes") or 0) < minimum_memory:
+            continue
+        if not _gpu_is_training_candidate(item):
+            continue
+        candidates.append(item)
+    if not candidates:
+        return False, "GPU_INSUFFICIENT", None
+    best = max(candidates, key=_gpu_rank_value)
+    return True, "OK", {
+        "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "identity": str(best.get("uuid") or best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "index": int(best.get("index") or 0),
+        "uuid": best.get("uuid"),
+        "name": best.get("name"),
+        "memory_free_bytes": int(best.get("memory_free_bytes") or 0),
+        "memory_total_bytes": int(best.get("memory_total_bytes") or 0),
+        "utilization_percent": (
+            int(best.get("utilization_percent"))
+            if best.get("utilization_percent") is not None else None
         ),
     }
 
@@ -1068,6 +1306,10 @@ class CentralTaskAllocator:
                 capability = task_node_capability(task, self.artifacts)
                 if capability is None:
                     continue
+                requirements = _task_resource_requirements(task, self.artifacts, capability)
+                if requirements is _INVALID_RESOURCE_REQUIREMENTS:
+                    # Malformed opt-in demand must stay QUEUED; never strip it.
+                    continue
                 remote_contract = task_remote_execution_contract(task, self.artifacts)
                 required_connection_mode = task_node_connection_mode(task, self.artifacts)
                 if agent_only and (
@@ -1126,7 +1368,14 @@ class CentralTaskAllocator:
                         # until multi-slot execution is actually implemented.
                         continue
                     selected_gpu = None
-                    if capability == "training":
+                    if requirements is not None:
+                        admitted, reason, selected_gpu = _hard_admission(
+                            database, node, capability, requirements,
+                            requested_device=requested_device,
+                        )
+                        if not admitted:
+                            continue
+                    elif capability == "training":
                         assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))
                         selected_gpu = _selected_gpu(
                             node,
@@ -1138,6 +1387,8 @@ class CentralTaskAllocator:
                         # second task while its prior assignment is active.
                         if selected_gpu is None:
                             continue
+                    if capability == "training" and selected_gpu is None:
+                        continue
                     score, node_id = _score_node(
                         node,
                         capability,
@@ -1171,6 +1422,8 @@ class CentralTaskAllocator:
                 "requested_device": requested_device if capability == "training" else None,
                 "selected_device": gpu["id"] if gpu else "cpu",
                 "selected_gpu": gpu,
+                "resource_requirements": dict(requirements) if requirements else None,
+                "hard_admission": "verified" if requirements is not None else "legacy",
                 # Snapshot host-level contention at reservation time. The current
                 # assignment is included so Agent workers can divide CPU/RAM/cache
                 # budgets across simultaneously reserved tasks on a multi-GPU node.
