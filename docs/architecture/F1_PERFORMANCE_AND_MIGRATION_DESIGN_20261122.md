@@ -77,6 +77,55 @@ DB 文件约 55.8MB。`mutate` 即使回调不修改任何行，仍持有写事�
 
 **结论**：本轮只合并已由测量证明收益的任务中心优化；不把 `read/mutate` 改成未经调用者审计的“快路径”。
 
+### 2.1 W2 调用点清单（已审计）
+
+| 调用点 | 类型 | 范围 | 当前接口 | 判断 |
+|---|---|---|---|---|
+| `PATCH /api/v12/projects/{pid}/images/{id}` dataset 分支 | HTTP 用户触发 | 单条 | 旧 `read()+mutate()` → 本次改为 `get()+mutate_ids()` | **已优化** |
+| 同端点 split 分支 | HTTP 用户触发 | 单条 | `patch({id:...})` | 已定点，无需改 |
+| `v20_batch_image_split` selected | HTTP 用户触发 | 选中集合 | `patch` | 已定点 |
+| `v20_batch_image_split` filtered/dataset | HTTP 用户触发 | 筛选/全数据集 | `load_images` + `mutate` | 需按 filter 走 `mutate_ids`/批处理，暂未改 |
+| `v12_auto_split` | HTTP 用户触发 | 数据集 | `load_images` + `mutate` + 逐图 GT | 高成本，需按数据集 id 先取候选再定点 |
+| `v49_mark_processed` | HTTP 用户触发 | 显式 ids | `mutate` | **可迁移 `mutate_ids`，下一批** |
+| `v44_supplement_training_data` | HTTP 用户触发 | weak-label 候选 | `load_images` + 逐图 GT + `mutate` | 低频但高成本，下一批 |
+| `_v50_end_image_batch` ZIP 导入提交 | Worker/导入 | 全批次 | `mutate(commit)` | 导入路径，需保留批次回执 |
+| `_v50_restore_dataset_delete_rows` | 恢复 | 数据集删除恢复 | `mutate` | 低频运维 |
+| `create_project` 清空 | 管理 | 全量 | `mutate(clear)` | 低频 |
+| `load_images()` | 旧 API/Worker | 全表 | `read()` | 旧全量接口，保留兼容；新接口必须走分页 |
+| `_business_material_by_name` | 路径解析 | 全表按名 | `read()` | 可用 `list_page`/摘要，待审计 |
+| `remote_execution_transport` 素材 Bundle | Worker | 全量 | `read()` | 训练准备，B 阶段 |
+| `video_tasks` 读素材 | Worker | 全量 | `read()` | 视频任务 |
+
+`MaterialStore.upsert/upsert_many/patch/remove` 在 SQLite delegate 已走定点实现；只有显式 `mutate` 才是全表。
+
+### 2.2 W2 已优化调用路径
+
+`v12_patch_image` 的 dataset 迁移分支原本：
+
+1. `material_store.read()` 全表反序列化找当前行；
+2. 在 dataset 锁内 `mutate(apply_dataset_patch)` 全表 normalize/compare。
+
+改为：
+
+1. `material_store.get(image_id)` 主键查询；
+2. 在相同 dataset 锁内 `material_store.mutate_ids([image_id], apply_dataset_patch)`；
+3. 回调仍校验 latest `dataset_id == source_dataset_id`，CAS 冲突仍抛 `_V50DatasetSourceChanged` 并重试；
+4. revision 仍由 `_bump_revision` 递增，只更新目标行。
+
+### 2.3 W2 前后性能（50,000 行，30 次采样）
+
+`RUN_MATERIAL_PATCH_SCALE=1 pytest tests/performance/test_material_single_patch_scale.py -s`：
+
+| 路径 | P50 | P95 |
+|---|---:|---:|
+| 旧 `read()+mutate()` | **1972.69 ms** | **2197.66 ms** |
+| 新 `get()+mutate_ids()` | **13.55 ms** | **27.18 ms** |
+
+约为 **145× P50 / 81× P95** 的隔离元数据收益。样本 30；30 次 P95 仍是小样本估计，不是生产 P99。
+SQL：旧路径一次全表 `SELECT` + 全表 normalize + 定点 UPDATE；新路径一次主键 `SELECT` + 一次 UPDATE + revision 更新。
+数据一致性：API 测试验证仅目标行改变、第二行字节级不变、revision +1、split-only 路径不变、404/400 合同保留；
+`tests/api/test_dataset_deletion_recovery.py` 12 项数据集锁/删除恢复测试通过。
+
 ## 3. F1-B PostgreSQL 实施设计（不执行）
 
 ### 3.1 迁移单元（必须联合的范围）

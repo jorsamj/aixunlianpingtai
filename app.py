@@ -10947,14 +10947,7 @@ def v12_patch_image(project_id: str, image_id: str, payload: ImagePatchReq):
         target_dataset_id = payload.dataset_id or "default"
         patch["dataset_id"] = target_dataset_id
         for _attempt in range(16):
-            current = next(
-                (
-                    row
-                    for row in material_store(project_id).read().rows
-                    if str(row.get("id")) == str(image_id)
-                ),
-                None,
-            )
+            current = material_store(project_id).get(image_id)
             if current is None:
                 raise HTTPException(status_code=404, detail="图片不存在")
             source_dataset_id = str(current.get("dataset_id") or "default")
@@ -10983,8 +10976,8 @@ def v12_patch_image(project_id: str, image_id: str, payload: ImagePatchReq):
                             return dict(row)
                         raise HTTPException(status_code=404, detail="图片不存在")
 
-                    changed = material_store(project_id).mutate(
-                        apply_dataset_patch
+                    changed = material_store(project_id).mutate_ids(
+                        [image_id], apply_dataset_patch
                     )
                 break
             except _V50DatasetSourceChanged:

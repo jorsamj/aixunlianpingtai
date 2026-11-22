@@ -167,6 +167,33 @@ class MaterialStore:
                 _store_cached_rows(self.path, rows)
                 return result
 
+    def get(self, image_id: str) -> dict[str, Any] | None:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.get(str(image_id))
+        target = str(image_id)
+        with self._lock:
+            with self._file_lock:
+                for row in _cached_rows(self.path):
+                    if str(row.get("id")) == target:
+                        return dict(row)
+        return None
+
+    def mutate_ids(
+        self, image_ids: Iterable[str],
+        fn: Callable[[list[dict[str, Any]]], _Result],
+    ) -> _Result:
+        """Point mutations by primary key; never full-scan the SQLite owner."""
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.mutate_ids(image_ids, fn)
+        ids = {str(value) for value in image_ids}
+
+        def apply(rows: list[dict[str, Any]]) -> _Result:
+            return fn([row for row in rows if str(row.get("id")) in ids])
+
+        return self.mutate(apply)
+
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         delegate = self._sqlite_delegate()
         if delegate is not None:
