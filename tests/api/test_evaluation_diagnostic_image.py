@@ -677,10 +677,14 @@ def test_20k_bundle_index_parses_once_for_24_previews_and_invalidates(monkeypatc
         for i in range(20000)
     ]}}
     path.write_text(json.dumps(document), encoding='utf-8')
+    path_under_test = Path(path)
     original = platform.read_json
     reads = []
     def observed(path, default):
-        reads.append(path)
+        # The platform also reads unrelated JSON (projects.json); only the
+        # manifest under test belongs to this parse-count contract.
+        if Path(path) == path_under_test:
+            reads.append(path)
         return original(path, default)
     monkeypatch.setattr(platform, 'read_json', observed)
     started = time.perf_counter()
