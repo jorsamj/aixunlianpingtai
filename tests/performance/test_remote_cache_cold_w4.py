@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import socket
 import statistics
@@ -30,7 +31,8 @@ def _free_port():
 
 
 def _p95(values):
-    return round(sorted(values)[max(0, int(len(values) * 0.95) - 1)], 2)
+    # nearest-rank: index ceil(n*0.95)-1, not floor(n*0.95)-1
+    return round(sorted(values)[math.ceil(len(values) * 0.95) - 1], 2)
 
 
 @pytest.mark.scale
