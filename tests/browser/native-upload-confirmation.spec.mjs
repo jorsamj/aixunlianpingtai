@@ -1,0 +1,177 @@
+import {test, expect} from '@playwright/test';
+import {spawn} from 'node:child_process';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createServer} from 'node:net';
+
+const JPEG = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCADwAUADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD1CiiitDMKKKKACiiigAooooAKKKKACiiigAooooA//2Q==', 'base64');
+
+function freePort() {
+  return new Promise(resolve => {
+    const socket = createServer();
+    socket.listen(0, '127.0.0.1', () => {
+      const {port} = socket.address();
+      socket.close(() => resolve(port));
+    });
+  });
+}
+async function startIsolated(env) {
+  const port = await freePort();
+  const origin = `http://127.0.0.1:${port}`;
+  const child = spawn('python', ['-m', 'uvicorn', 'app:app', '--host', '127.0.0.1',
+    '--port', String(port), '--log-level', 'info'], {env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('isolated server startup timeout')), 40000);
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`isolated server exited ${code}`)); });
+    const onData = chunk => { if (String(chunk).includes('Uvicorn running on')) { clearTimeout(timer); resolve(); } };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+  });
+  return {origin, child};
+}
+async function projectWith(request, origin, name, labels = [{code: 'fire', display_name: '明火'}]) {
+  return (await request.post(origin + '/api/projects', {data: {name, labels}})).json();
+}
+function files(count, prefix = 'confirm') {
+  return Array.from({length: count}, (_, index) => ({
+    name: `${prefix}-${String(index).padStart(3, '0')}.jpg`, mimeType: 'image/jpeg', buffer: JPEG,
+  }));
+}
+async function openUpload(page, origin, projectId) {
+  await page.goto(`${origin}/app/#/projects/${projectId}/materials/upload`);
+  await expect(page.locator('.uppy-Dashboard')).toBeVisible({timeout: 45000});
+}
+async function upload(page, rows) {
+  await page.locator('.uppy-Dashboard input[type=file]').first().setInputFiles(rows);
+  const button = page.locator('.uppy-StatusBar-actionBtn--upload');
+  await expect(button).toBeVisible({timeout: 15000});
+  await button.click();
+  await expect(page.getByText(new RegExp(`服务器已确认 ${rows.length} / ${rows.length} 张`)))
+    .toBeVisible({timeout: 120000});
+  await expect(page.locator('.upload-confirmation .uc-workspace')).toBeVisible({timeout: 30000});
+  await expect(page.getByRole('link', {name: /AI 预标注/})).toHaveAttribute('href', /source_batch_id=/);
+}
+async function choosePositive(page) {
+  await page.locator('[data-upload-action="all"]').check();
+  await page.locator('input[name="uc-kind"][value="positive"]').check();
+  await page.locator('[data-uc-label="fire"]').check();
+}
+
+test('native confirmation opens a real preview and submits a positive upload intent before annotation', async ({page, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-upload-confirm-ready-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await projectWith(request, origin, '上传确认正样本');
+    await openUpload(page, origin, project.id);
+    await upload(page, files(5));
+
+    await page.evaluate(() => window.scrollTo(0, 900));
+    await page.waitForTimeout(500);
+    await page.locator('[data-preview]').first().click();
+    const dialog = page.locator('.el-dialog').filter({has: page.locator('img.preview-image')});
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('img.preview-image')).toBeVisible();
+    await dialog.locator('.el-dialog__headerbtn').click();
+    await expect(dialog).toHaveCount(0);
+
+    await choosePositive(page);
+    let decisionBody = null;
+    await page.route('**/decisions', async route => {
+      const response = await route.fetch();
+      decisionBody = await response.json();
+      return route.fulfill({response});
+    });
+    const intentPromise = page.waitForRequest(req => new URL(req.url()).pathname.endsWith('/negative-pool/upload-intent'));
+    await page.locator('[data-upload-action="ready"]').click();
+    const intent = (await intentPromise).postDataJSON();
+    expect(intent.sample_type).toBe('positive');
+    expect(intent.label_codes).toEqual(['fire']);
+    expect(intent.image_ids).toHaveLength(5);
+    await expect.poll(() => !!decisionBody).toBe(true);
+    expect((decisionBody.items || []).every(item => item.decision === 'ready')).toBe(true);
+    await page.waitForURL(/spa_handoff=1/);
+    expect(decodeURIComponent(page.url())).toContain('material-annotate');
+    expect(decodeURIComponent(page.url())).toMatch(/material_id=/);
+  } finally { child.kill(); }
+});
+
+test('native confirmation submits a clean decision through the original batch owner', async ({page, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-upload-confirm-clean-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await projectWith(request, origin, '上传确认清洗');
+    await openUpload(page, origin, project.id);
+    await upload(page, files(2, 'clean'));
+    await choosePositive(page);
+    const decisionPromise = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname.endsWith('/decisions'));
+    await page.locator('[data-upload-action="clean"]').click();
+    const decision = await (await decisionPromise).json();
+    expect((decision.clean_task_id || '')).toBeTruthy();
+    expect((decision.items || []).every(item => item.decision === 'clean')).toBe(true);
+    await expect(page.locator('[data-task]').first()).toBeVisible({timeout: 30000});
+    const auth = await (await request.get(origin + '/api/auth/session')).json();
+    const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
+    const key = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    const stored = await page.evaluate(storageKey => JSON.parse(localStorage.getItem(storageKey)), key);
+    const receipt = await (await request.get(
+      `${origin}/api/v55/projects/${project.id}/upload-batches/${stored.batchIds[0]}`)).json();
+    expect(receipt.clean_task_id).toBe(decision.clean_task_id);
+    expect(receipt.items.every(item => item.decision === 'clean')).toBe(true);
+    await page.goto(`${origin}/app/?clean=1#/projects/${project.id}/materials/tasks`);
+    const row = page.getByRole('row').filter({hasText: '图片上传批次'});
+    await expect(row).toContainText('待确认 0', {timeout: 30000});
+    await expect(row.getByText('待人工确认')).toHaveCount(0);
+  } finally { child.kill(); }
+});
+
+test('negative pool intent and later-deferred confirmation survive a page refresh', async ({page, request}) => {
+  test.setTimeout(300_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-upload-confirm-negative-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await projectWith(request, origin, '上传确认负样本');
+    const categoryResponse = await request.post(
+      `${origin}/api/v61/projects/${project.id}/negative-pool/categories`, {data: {name: '测试负样本分类'}});
+    expect(categoryResponse.ok()).toBeTruthy();
+    await openUpload(page, origin, project.id);
+    await upload(page, files(2, 'negative'));
+    await page.locator('[data-upload-action="all"]').check();
+    await page.locator('input[name="uc-kind"][value="negative"]').check();
+    const category = page.locator('[data-uc-category]').first();
+    await expect(category).toBeVisible({timeout: 30000});
+    await category.check();
+    const intentPromise = page.waitForRequest(req => new URL(req.url()).pathname.endsWith('/negative-pool/upload-intent'));
+    await page.locator('[data-upload-action="ready"]').click();
+    const intent = (await intentPromise).postDataJSON();
+    expect(intent.sample_type).toBe('negative');
+    expect(intent.category_ids).toHaveLength(1);
+    expect(intent.label_codes).toEqual([]);
+
+    await page.getByRole('button', {name: '再选一批', exact: true}).click();
+    await expect(page.locator('.uppy-Dashboard')).toBeVisible({timeout: 45000});
+    await upload(page, files(1, 'later'));
+    await page.locator('[data-upload-action="later"]').click();
+    const auth = await (await request.get(origin + '/api/auth/session')).json();
+    const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
+    const key = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    await expect.poll(async () => page.evaluate(storageKey =>
+      JSON.parse(localStorage.getItem(storageKey) || 'null')?.deferred, key)).toBe(true);
+
+    await page.reload();
+    await expect(page.locator('.upload-confirmation')).toContainText('本次上传图片', {timeout: 45000});
+    await expect(page.locator('.upload-confirmation')).toContainText('1 张待处理');
+    await page.goto(`${origin}/app/#/projects/${project.id}/materials/tasks`);
+    const row = page.getByRole('row').filter({hasText: '图片上传批次'}).filter({hasText: '待确认 1'});
+    await expect(row).toBeVisible({timeout: 30000});
+  } finally { child.kill(); }
+});

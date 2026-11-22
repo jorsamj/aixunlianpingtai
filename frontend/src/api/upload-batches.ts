@@ -22,7 +22,9 @@ export function getUploadBatchReceipt(
 }
 
 export function projectLabels(projectId: string, signal: AbortSignal) {
-  return request<{id: string; labels?: {code: string; display_name?: string; name?: string}[]}>(
-    `/api/projects/${encodeURIComponent(projectId)}`, {signal},
-  );
+  return request<{
+    id?: string;
+    labels?: {code: string; display_name?: string; name?: string}[];
+    project?: {id: string; labels?: {code: string; display_name?: string; name?: string}[]};
+  }>(`/api/projects/${encodeURIComponent(projectId)}`, {signal});
 }

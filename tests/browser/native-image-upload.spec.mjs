@@ -108,6 +108,9 @@ test('a partially failed server batch keeps the confirmed successes and exposes 
     await expect(page.getByText(/服务器已确认 3 \/ 3 张/)).toBeVisible({timeout: 90000});
     await expect(page.getByText(/失败 1/).first()).toBeVisible();
     await expect(page.locator('.failed')).toContainText('bad.jpg');
+    await page.getByRole('button', {name: '重试失败文件', exact: true}).click();
+    await expect(page.locator('.uppy-Dashboard')).toBeVisible({timeout: 30000});
+    await expect(page.getByText(/仅允许重试服务器已确认失败的文件名/)).toBeVisible();
     const stored = await session(page);
     expect(stored.failed).toBe(1);
     const receipt = await (await request.get(
@@ -173,7 +176,9 @@ test('switching projects never shows the previous project upload progress', asyn
     await expect(page.getByRole('button', {name: /查看已上传素材/})).toHaveCount(0);
     const sessions = await page.evaluate(() => Object.keys(localStorage)
       .filter(key => key.startsWith('material-upload-session:')));
-    expect(sessions).toEqual([`material-upload-session:${first.id}`]);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toContain('material-upload-session:v2:');
+    expect(sessions[0]).toContain(first.id);
   } finally { child.kill(); }
 });
 
@@ -210,5 +215,123 @@ test('more than 64 images are split into two original request ids', async ({page
     const list = await (await request.get(
       `${origin}/api/v61/projects/${project.id}/materials?reader_view=true&page=1&page_size=48`)).json();
     expect(list.total).toBe(65);
+  } finally { child.kill(); }
+});
+
+async function actorKeyFor(request, origin) {
+  const session = await (await request.get(origin + '/api/auth/session')).json();
+  return JSON.stringify([session.provider || '', session.user?.username || '']);
+}
+function sessionKey(actorKey, projectId) {
+  return `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(projectId)}`;
+}
+
+test('an unresolved upload request blocks new uploads until the server proves its receipt', async ({page, request}) => {
+  test.setTimeout(180_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-block-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await newProject(request, origin, '上传身份阻断');
+    const actorKey = await actorKeyFor(request, origin);
+    const key = sessionKey(actorKey, project.id);
+    const requestId = 'up-blocked-0001';
+    await page.addInitScript(([storageKey, value]) => localStorage.setItem(storageKey, value), [key,
+      JSON.stringify({projectId: project.id, owner: actorKey, totalFiles: 2, requestIds: [requestId],
+        batchIds: [], status: 'UNKNOWN', failed: 0, requestSeed: 'up-blocked',
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()})]);
+    let posts = 0;
+    page.on('request', req => {
+      const url = new URL(req.url());
+      if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/images`) posts += 1;
+    });
+    await page.goto(`${origin}/app/#/projects/${project.id}/materials/upload`);
+    await expect(page.getByText('原上传请求尚未核验', {exact: false}).first()).toBeVisible({timeout: 45000});
+    await expect(page.locator('.uppy-Dashboard')).toHaveCount(0);
+    await expect(page.getByRole('button', {name: '再选一批', exact: true})).toBeDisabled();
+    await page.getByRole('button', {name: '核验原上传请求', exact: true}).first().click();
+    await expect(page.getByText(/保持待核验|没有回执/)).toBeVisible({timeout: 30000});
+    expect(posts).toBe(0);
+    expect(await page.evaluate(storageKey => localStorage.getItem(storageKey), key)).not.toBeNull();
+
+    const proven = await request.post(`${origin}/api/projects/${project.id}/images`, {
+      multipart: {files: {name: 'proven.jpg', mimeType: 'image/jpeg', buffer: JPEG},
+        dataset_id: 'default', upload_request_id: requestId},
+    });
+    expect(proven.ok()).toBeTruthy();
+    await page.getByRole('button', {name: '核验原上传请求', exact: true}).first().click();
+    await expect(page.locator('.uppy-Dashboard')).toBeVisible({timeout: 45000});
+    const stored = await page.evaluate(storageKey => JSON.parse(localStorage.getItem(storageKey)), key);
+    expect(stored.status).toBe('SUCCEEDED');
+    expect(posts).toBe(0);
+  } finally { child.kill(); }
+});
+
+test('a browser that cannot persist upload identity sends no image POST', async ({page, request}) => {
+  test.setTimeout(150_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-storage-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await newProject(request, origin, '上传存储失败');
+    let posts = 0;
+    page.on('request', req => {
+      const url = new URL(req.url());
+      if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/images`) posts += 1;
+    });
+    await page.addInitScript(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (String(key).startsWith('material-upload-session:v2:')) throw new Error('quota');
+        return original.call(this, key, value);
+      };
+    });
+    await openUpload(page, origin, project.id);
+    await chooseAndUpload(page, files(1, 'storage'));
+    await expect(page.getByText(/无法保存上传请求身份/, {exact: false})).toBeVisible({timeout: 30000});
+    expect(posts).toBe(0);
+    expect(await page.evaluate(() => Object.keys(localStorage)
+      .some(key => key.startsWith('material-upload-session:v2:')))).toBe(false);
+  } finally { child.kill(); }
+});
+
+test('two upload sessions are indexed while another account and owner-less legacy data stay hidden', async ({page, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-index-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await newProject(request, origin, '上传会话索引');
+    await openUpload(page, origin, project.id);
+    await chooseAndUpload(page, files(1, 'first'));
+    await expect(page.getByText(/服务器已确认 1 \/ 1 张/)).toBeVisible({timeout: 90000});
+    await page.getByRole('button', {name: '再选一批', exact: true}).click();
+    await expect(page.locator('.uppy-Dashboard')).toBeVisible({timeout: 45000});
+    await chooseAndUpload(page, files(1, 'second'));
+    await expect(page.getByText(/服务器已确认 1 \/ 1 张/)).toBeVisible({timeout: 90000});
+
+    const actorKey = await actorKeyFor(request, origin);
+    const indexKey = `material-upload-index:v1:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    const index = await page.evaluate(key => JSON.parse(localStorage.getItem(key) || '[]'), indexKey);
+    expect(index.length).toBe(2);
+    expect(new Set(index.flatMap(row => row.requestIds)).size).toBe(2);
+
+    const legacyKey = `material-upload-session:${project.id}`;
+    await page.evaluate(([legacy, other]) => {
+      localStorage.setItem(legacy, JSON.stringify({projectId: other.projectId, totalFiles: 1,
+        requestIds: ['legacy-unowned-0001'], batchIds: [], status: 'UNKNOWN', failed: 0}));
+      localStorage.setItem(other.key, JSON.stringify({projectId: other.projectId,
+        owner: other.owner, totalFiles: 1, requestIds: ['other-account-0001'], batchIds: [],
+        status: 'SUCCEEDED', failed: 0}));
+    }, [legacyKey, {projectId: project.id, key: sessionKey('["test","other-account"]', project.id),
+      owner: '["test","other-account"]'}]);
+    await page.goto(`${origin}/app/?index=1#/projects/${project.id}/materials/tasks`);
+    await expect(page.getByRole('heading', {name: '上传任务', level: 2})).toBeVisible({timeout: 45000});
+    await expect(page.getByRole('row').filter({hasText: '图片上传批次'})).toHaveCount(2, {timeout: 30000});
+    await expect(page.getByText('legacy-unowned-0001')).toHaveCount(0);
+    await expect(page.getByText('other-account-0001')).toHaveCount(0);
   } finally { child.kill(); }
 });

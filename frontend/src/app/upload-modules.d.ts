@@ -131,6 +131,31 @@ declare module '*static/modules/zip-import-runtime.js' {
   }): ZipImportRuntime | null;
 }
 
+declare module '*static/modules/material-upload-session.js' {
+  export interface UploadSessionRecord {
+    projectId: string; owner: string; totalFiles: number; requestIds: string[]; batchIds: string[];
+    status: string; failed: number; requestSeed: string; deferred: boolean;
+    createdAt: string; updatedAt: string; source: string; legacy: boolean; owned: boolean;
+  }
+  export function uploadSessionStorageKey(actorKey: string, projectId: string): string;
+  export function uploadSessionLegacyKey(projectId: string): string;
+  export function uploadIndexStorageKey(actorKey: string, projectId: string): string;
+  export function uploadRequestIds(seed: string, chunkCount: number): string[];
+  export function readOwnedUploadSession(options: {
+    actorKey: string; projectId: string; storage?: Storage;
+  }): {session: UploadSessionRecord | null; key: string; migrated: boolean; unowned?: UploadSessionRecord | null};
+  export function isUploadSessionUnresolved(session: UploadSessionRecord | null): boolean;
+  export function writeUploadSession(options: {
+    actorKey: string; projectId: string; patch?: Partial<UploadSessionRecord>; storage?: Storage;
+  }): {ok: boolean; session: UploadSessionRecord | null; indexed?: boolean};
+  export function clearUploadSession(options: {
+    actorKey: string; projectId: string; storage?: Storage;
+  }): boolean;
+  export function listUploadSessions(options: {
+    actorKey: string; projectId: string; storage?: Storage;
+  }): UploadSessionRecord[];
+}
+
 declare module '*static/modules/upload-confirmation.js' {
   export interface UploadConfirmationRuntime {
     open(value: {
