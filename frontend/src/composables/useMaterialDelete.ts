@@ -20,7 +20,7 @@ const STATUS_LABEL: Record<string, string> = {
 type DeleteMode = 'single' | 'selected';
 interface RecoveryRecord {
   project_id: string; plan_id: string; operation: 'DELETE_INDEX';
-  mode: DeleteMode; image_id?: string; image_count: number; image_ids?: string[];
+  mode: DeleteMode; image_id?: string; image_count: number; id_digest?: string;
 }
 export interface DeleteSettlement {
   deletedIds: string[]; failedIds: string[]; terminal: string; unknown: boolean;
@@ -43,6 +43,22 @@ function countsText(counts: ResultCounts) {
   return `成功 ${counts.succeeded} · 失败 ${counts.failed} · 未处理 ${counts.pending}`
     + ` · 处理中 ${counts.running}`
     + (counts.conflict ? ` · 证据冲突 ${counts.conflict}` : '');
+}
+// Bounded evidence for large selections: a deterministic digest over the
+// frozen IDs detects foreign/extra rows without persisting 100k local IDs.
+function digestIds(ids: Iterable<string>) {
+  const sorted = [...new Set(ids)].sort();
+  let first = 2166136261, second = 2246822519;
+  for (const id of sorted) {
+    for (let index = 0; index < id.length; index += 1) {
+      const code = id.charCodeAt(index);
+      first = Math.imul(first ^ code, 16777619) >>> 0;
+      second = Math.imul(second ^ code, 2246822507) >>> 0;
+    }
+    first = Math.imul(first ^ 0x1f, 16777619) >>> 0;
+    second = Math.imul(second ^ 0x2f, 2246822507) >>> 0;
+  }
+  return `${sorted.length}:${first}:${second}`;
 }
 
 export function useMaterialDelete(options: {
@@ -71,14 +87,11 @@ export function useMaterialDelete(options: {
         return null;
       const mode: DeleteMode = value.mode === 'selected' ? 'selected' : 'single';
       if (mode === 'single' && typeof value.image_id !== 'string') return null;
-      const rawIds: string[] = Array.isArray(value.image_ids) ? value.image_ids : [];
-      const imageIds = [...new Set(rawIds.filter((id: string) =>
-        typeof id === 'string' && id.length > 0))].slice(0, 500);
       return {
         project_id: value.project_id, plan_id: value.plan_id, operation: 'DELETE_INDEX',
         mode, image_id: typeof value.image_id === 'string' ? value.image_id : undefined,
         image_count: Math.max(1, Number(value.image_count) || 1),
-        image_ids: imageIds.length ? imageIds : undefined,
+        id_digest: typeof value.id_digest === 'string' ? value.id_digest : undefined,
       };
     } catch { return null; }
   }
@@ -89,7 +102,7 @@ export function useMaterialDelete(options: {
     state.pendingCount = record?.image_count || 0;
   }
   function writeRecord(
-    planId: string, mode: DeleteMode, count: number, imageId?: string, imageIds?: string[],
+    planId: string, mode: DeleteMode, count: number, imageId?: string, idDigest?: string,
   ): boolean {
     const current = readRecord();
     if (current && current.plan_id !== planId) return false;
@@ -97,8 +110,8 @@ export function useMaterialDelete(options: {
       localStorage.setItem(storageKey(), JSON.stringify({
         project_id: options.projectId(), plan_id: planId, operation: 'DELETE_INDEX',
         mode, image_id: mode === 'single' ? imageId : undefined,
-        image_count: Math.max(1, count),
-        image_ids: imageIds?.length ? imageIds : undefined,
+        image_count: Math.max(1, Number(count) || 1),
+        id_digest: idDigest || undefined,
       }));
       syncPending();
       return true;
@@ -149,8 +162,8 @@ export function useMaterialDelete(options: {
     const conflicts = new Set<string>();
     const visited = new Set<string>(['']);
     let cursor: string | null = null, pages = 0, truncated = false;
-    const limit = 100;
-    const maxPages = Math.max(2, Math.min(20, Math.ceil(required / limit) + 2));
+    const limit = required > 5000 ? 500 : 100;
+    const maxPages = Math.max(4, Math.min(2000, Math.ceil(required / limit) + 3));
     do {
       const page = await getMaterialBatchResults(
         options.projectId(), task.task_id, new AbortController().signal, cursor, limit,
@@ -197,8 +210,7 @@ export function useMaterialDelete(options: {
     const record = readRecord();
     const mode: DeleteMode = record?.mode || state.mode;
     const imageId = record?.image_id || state.targetId;
-    const frozen = record?.image_ids?.length ? new Set(record.image_ids) : null;
-    const required = Math.max(1, frozen?.size || Number(record?.image_count)
+    const required = Math.max(1, Number(record?.image_count)
       || state.estimate?.count || Number(task.total) || 1);
     let results: ResultScan;
     try {
@@ -216,25 +228,22 @@ export function useMaterialDelete(options: {
     state.summary = counts;
     const deletedIds = [...results.succeeded];
     const failedIds = [...results.failed];
-    const foreign = frozen
-      ? [...results.succeeded, ...results.failed, ...results.pending,
-        ...results.running, ...results.conflicts].filter(id => !frozen.has(id))
-      : [];
-    if (foreign.length) {
+    const resultIds = [...results.succeeded, ...results.failed, ...results.pending,
+      ...results.running, ...results.conflicts];
+    if (results.seen > required) {
       state.unknown = true;
-      state.notice = '逐项结果包含本次冻结范围之外的素材，身份异常；未执行本地清理，原删除身份已保留。';
+      state.notice = '逐项结果包含预检冻结范围之外的素材，身份异常；未执行本地清理，原删除身份已保留。';
       return;
     }
-    const covered = frozen
-      ? results.seen === frozen.size && [...frozen].every(id =>
-        results.succeeded.has(id) || results.failed.has(id)
-        || results.pending.has(id) || results.running.has(id)
-        || results.conflicts.has(id))
-      : results.seen === required;
-    if (results.truncated || !covered) {
+    if (results.truncated || results.seen !== required) {
       state.unknown = true;
       state.notice = `逐项结果尚未完整覆盖本次范围（已读 ${results.seen} / 应有 ${required}），`
         + '删除结果未证明；原删除身份已保留。';
+      return;
+    }
+    if (record?.id_digest && digestIds(resultIds) !== record.id_digest) {
+      state.unknown = true;
+      state.notice = '逐项结果与预检冻结范围不一致，身份异常；未执行本地清理，原删除身份已保留。';
       return;
     }
     if (results.conflicts.size) {
@@ -330,17 +339,26 @@ export function useMaterialDelete(options: {
     if (!estimate?.deletion_preview || state.busy || state.task || state.unknown
         || state.pendingPlanId) return;
     const preview = estimate.deletion_preview;
-    const frozen = estimate.selection_spec?.scope === 'SELECTED'
+    const scopeIds = estimate.selection_spec?.scope === 'SELECTED'
       ? [...new Set(estimate.selection_spec.image_ids || [])] : [];
     const targets = [...new Set(state.targetIds)];
-    if (!frozen.length || frozen.length !== targets.length
-        || targets.some(id => !frozen.includes(id)) || estimate.count !== targets.length) {
+    if (!scopeIds.length || estimate.count !== targets.length) {
       state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
+      return;
+    }
+    if (targets.length <= 2000) {
+      const frozen = new Set(scopeIds);
+      if (frozen.size !== targets.length || targets.some(id => !frozen.has(id))) {
+        state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
+        return;
+      }
+    } else if (scopeIds.length !== targets.length) {
+      state.error = '预检返回的冻结数量与当前选择不一致，已停止提交；请重新预检。';
       return;
     }
     state.busy = true; state.error = ''; state.notice = '';
     if (!writeRecord(preview.plan_id, state.mode, estimate.count,
-      state.mode === 'single' ? state.targetId : undefined, frozen)) {
+      state.mode === 'single' ? state.targetId : undefined, digestIds(scopeIds))) {
       state.busy = false;
       state.error = '浏览器无法保存删除计划身份，已停止提交；请允许站点存储后重试。';
       return;
