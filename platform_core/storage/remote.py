@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from io import BytesIO
+from io import RawIOBase
 from pathlib import Path
 from typing import BinaryIO, Mapping
 
@@ -12,8 +12,39 @@ from .errors import StorageError, redact_storage_error
 from .models import ObjectMetadata, ObjectPage, StorageHealth, StorageType
 
 
-def _object(value: Mapping) -> ObjectMetadata:
-    return ObjectMetadata(
+class _RemoteResponseReader(RawIOBase):
+    """Bounded, closeable view over a streaming requests response."""
+
+    def __init__(self, response):
+        super().__init__()
+        self._response = response
+        self._raw = response.raw
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        return self._raw.read(size)
+
+    def readinto(self, buffer) -> int:
+        return self._raw.readinto(buffer)
+
+    def close(self) -> None:
+        if not self.closed:
+            try:
+                self._response.close()
+            finally:
+                super().close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return False
+
+
+def _object(value: Mapping) -> ObjectMetadata:    return ObjectMetadata(
         key=str(value.get("key") or ""), size_bytes=int(value.get("size_bytes") or 0),
         etag=str(value.get("etag") or ""), content_type=str(value.get("content_type") or "application/octet-stream"),
         sha256=str(value.get("sha256") or ""), last_modified=str(value.get("last_modified") or ""),
@@ -91,11 +122,19 @@ class RemoteStorageProvider:
 
     def open_reader(self, object_key: str) -> BinaryIO:
         try:
-            response = requests.get(self.objects_url + "/content", params={"namespace": self.namespace, "key": object_key}, headers=self.headers, timeout=self.timeout)
+            response = requests.get(
+                self.objects_url + "/content",
+                params={"namespace": self.namespace, "key": object_key},
+                headers=self.headers, timeout=self.timeout, stream=True,
+            )
             response.raise_for_status()
-            return BytesIO(response.content)
         except Exception as error:
+            try:
+                response.close()  # type: ignore[possibly-undefined]
+            except (NameError, AttributeError):
+                pass
             self._raise("read", error)
+        return _RemoteResponseReader(response)
 
     def download(self, object_key: str, destination: str | Path, *, include_metadata: bool = True) -> ObjectMetadata:
         target = Path(destination)

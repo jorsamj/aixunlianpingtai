@@ -84,6 +84,43 @@ def test_remote_server_rejects_bad_credentials_over_real_http(tmp_path):
         thread.join(timeout=5)
 
 
+def test_remote_open_reader_is_streaming_and_closes(tmp_path):
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(
+        create_app(tmp_path / "remote-root", api_key="test-token"),
+        host="127.0.0.1", port=port, log_level="warning",
+    ))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            try:
+                if requests.get(f"{base_url}/api/material-storage/v1/health",
+                                headers={"X-API-Key": "test-token"}, timeout=0.2).ok:
+                    break
+            except requests.RequestException:
+                time.sleep(0.02)
+        provider = RemoteStorageProvider(
+            "remote-a", {"base_url": base_url, "namespace": "factory-a", "timeout_seconds": 3},
+            {"token": "test-token"},
+        )
+        content = b"stream-" + b"x" * 2_000_000
+        provider.upload("incoming/stream.bin", BytesIO(content), content_type="application/octet-stream")
+        reader = provider.open_reader("incoming/stream.bin")
+        try:
+            assert not isinstance(reader, BytesIO)
+            first = reader.read(16)
+            rest = reader.read()
+            assert first + rest == content
+        finally:
+            reader.close()
+        assert reader.closed
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
 def test_cache_cold_materialize_skips_redundant_remote_metadata_request(tmp_path):
     port = free_port()
     application = create_app(tmp_path / "remote-root", api_key="test-token")

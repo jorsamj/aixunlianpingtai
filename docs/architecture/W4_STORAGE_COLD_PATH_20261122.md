@@ -25,7 +25,7 @@
 - OSS：只可确认去掉了显式 `stat()`；SDK 内部 HEAD 未实测。
 - 热路径 0 远程请求；但每次命中会重新计算缓存文件 SHA（大文件有本地 I/O 成本）。
 - 缓存写入是原子发布：临时文件完整、SHA 正确后才 `os.replace`；失败不留下可误用的完整缓存。
-- `download()` 路径有界流式（Remote 1 MiB chunk；OSS/S3 SDK 写文件）；`open_reader()` 仍用 `BytesIO(response.content)` 整文件读入内存，见第 3.2 节。
+- `download()` 与 `open_reader()` 均为有界流式路径：Remote 1 MiB/调用方分块；OSS/S3 SDK 写文件。
 - 本地素材读取每次 `stat()` 会整文件 SHA；未缓存，属于后续候选，但本轮未改。
 - 训练 Bundle 当前仍有控制端下载素材后重新打包上传的路径；本轮保留为默认，未切 Worker 直达。
 
@@ -80,11 +80,19 @@
 普通 `download()` 默认仍返回完整远程 metadata；没有其他调用方被静默改变。
 如果未来新增调用方，必须显式选择 `include_metadata=True` 或自行校验 SHA。
 
-### 3.2 Remote open_reader 缺口
+### 3.2 Remote open_reader 流式修复
 
-`RemoteStorageProvider.open_reader()` 使用 `BytesIO(response.content)`，会整文件进内存；调用方包括远程导入、训练输入、模型读取等，可能读取大文件。
-当前没有针对该路径的规模测量；本轮不扩大修改，记录为 W4 后续缺口。
-最小方案应由 provider 返回可关闭的流式响应包装（`response.raw`/`iter_content`），调用方 `with/closing` 关闭响应；必须保留 HTTP 错误映射和超时。未实施。
+原 `RemoteStorageProvider.open_reader()` 使用 `BytesIO(response.content)`，整文件进内存。
+现改为 `requests.get(..., stream=True)` + `_RemoteResponseReader`（`RawIOBase`）：
+
+- `read(size)` / `readinto()` 直接读 `response.raw`；
+- `close()` 关闭 HTTP response，`with` 自动关闭；
+- 状态错误时先关闭 response，再走原 `_raise` 映射；
+- 认证/超时/对象键安全不变；
+- `download()` 和 MaterialCache SHA 校验未变。
+
+隔离 loopback 测试：2 MB 内容先读 16 字节再读完，非 BytesIO，关闭后 `reader.closed=True`。
+真实 OSS/MinIO 内存/RSS：`NOT_VERIFIED`。
 
 ### 3.3 S3/OSS SDK 内部请求
 
