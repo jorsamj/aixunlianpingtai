@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -136,6 +138,109 @@ def test_agent_claim_http_auto_assignment_is_explicitly_opt_in(tmp_path, monkeyp
     again = client.post(url, headers=auth(token))
     assert again.status_code == 200
     assert again.json() == {"claimed": False, "item": None}
+
+
+def test_two_http_clients_cannot_start_two_executions_on_one_node_slot(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    nodes, token = create_node(repository)
+    nodes.heartbeat("gpu-api-agent", token, {
+        "hostname": "gpu-api-agent",
+        "reported_capabilities": ["training"],
+        "resources": {
+            "cpu": {"logical_cores": 8},
+            "memory": {"available_bytes": 32 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"available": True, "gpus": [
+                {"id": "cuda:0", "index": 0, "uuid": "GPU-0", "name": "A800",
+                 "memory_free_bytes": 30 * 1024**3, "memory_total_bytes": 40 * 1024**3},
+                {"id": "cuda:1", "index": 1, "uuid": "GPU-1", "name": "A800",
+                 "memory_free_bytes": 30 * 1024**3, "memory_total_bytes": 40 * 1024**3},
+            ]},
+        },
+    })
+    for task_id in ("slot-a", "slot-b"):
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "epochs": 30,
+            "remote_execution": {
+                "version": 1, "task_kind": TaskKind.TRAINING.value,
+                "transport": "object-storage-v1",
+            },
+        })
+        repository.create(TaskRecord.new(
+            task_id=task_id, project_id="project-api-agent", kind=TaskKind.TRAINING,
+            payload_ref="request.json", resource_key=f"training:{task_id}",
+        ), artifacts=artifacts)
+    service = AgentExecutionService(repository, artifacts)
+    assert service.allocator.assign_next() is not None
+    assert service.allocator.assign_next() is not None
+    claims = [
+        client.post("/api/v63/node-executor/gpu-api-agent/assignments/claim",
+                    headers=auth(token)).json()["item"]
+        for _ in range(2)
+    ]
+    assert {item["task"]["task_id"] for item in claims} == {"slot-a", "slot-b"}
+
+    def start(item):
+        response = client.post(
+            f"/api/v63/node-executor/gpu-api-agent/assignments/"
+            f"{item['task']['task_id']}/start",
+            headers=auth(token),
+            json={"assignment_lease_token": item["assignment"]["assignment_lease_token"]},
+        )
+        return response.status_code, response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(start, claims))
+    assert sorted(code for code, _ in results) == [200, 409]
+    rejected = [body for code, body in results if code == 409][0]
+    assert rejected["detail"]["code"] == "EXECUTION_SLOT_BUSY"
+    with repository._connect() as database:
+        running = database.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('RUNNING','CANCEL_REQUESTED')"
+        ).fetchone()[0]
+    assert running == 1
+
+
+def test_changed_payload_after_admission_rejects_execution_start(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    nodes, token = create_node(repository)
+    nodes.heartbeat("gpu-api-agent", token, {
+        "hostname": "gpu-api-agent",
+        "reported_capabilities": ["training"],
+        "resources": {
+            "cpu": {"logical_cores": 8},
+            "memory": {"available_bytes": 32 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"gpus": [{
+                "id": "cuda:0", "index": 0, "uuid": "GPU-0",
+                "memory_free_bytes": 30 * 1024**3, "memory_total_bytes": 40 * 1024**3,
+            }]},
+        },
+    })
+    payload = {
+        "epochs": 30,
+        "resource_requirements": {"gpu_count": 1, "min_gpu_memory_bytes": 1},
+        "remote_execution": {"version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1"},
+    }
+    artifacts.atomic_write_json("payload-change", "request.json", payload)
+    repository.create(TaskRecord.new(
+        task_id="payload-change", project_id="project-api-agent", kind=TaskKind.TRAINING,
+        payload_ref="request.json", resource_key="training:payload-change",
+    ), artifacts=artifacts)
+    service = AgentExecutionService(repository, artifacts)
+    assert service.allocator.assign_next() is not None
+    claim = client.post(
+        "/api/v63/node-executor/gpu-api-agent/assignments/claim", headers=auth(token),
+    ).json()["item"]
+    changed = {**payload, "epochs": 99}
+    artifacts.atomic_write_json("payload-change", "request.json", changed)
+    response = client.post(
+        "/api/v63/node-executor/gpu-api-agent/assignments/payload-change/start",
+        headers=auth(token),
+        json={"assignment_lease_token": claim["assignment"]["assignment_lease_token"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "TASK_INPUT_CHANGED"
 
 
 def test_agent_executor_http_happy_flow_and_cancellation_truth(tmp_path):
@@ -826,3 +931,4 @@ def test_remote_agent_recovery_diagnosis_refuses_nonheld_execution(tmp_path):
     assert diagnosis.status_code == 409
     assert diagnosis.json()["detail"]["code"] == "REMOTE_RECOVERY_NOT_HELD"
     assert repository.get("train-api-agent").status.value == "RUNNING"
+

@@ -7,6 +7,7 @@ execution lease without requiring remote SQLite/NFS access.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import secrets
@@ -421,22 +422,8 @@ def _has_idle_agent_slot(database, *, now: datetime, ttl_seconds: int) -> bool:
 
 
 def _assigned_gpu_ids(database, node_id: str) -> set[str]:
-    rows = database.execute(
-        """
-        SELECT a.resolved_execution_config
-          FROM task_node_assignments AS a
-          LEFT JOIN tasks AS t ON t.task_id=a.task_id
-         WHERE a.node_id=?
-           AND (
-               a.state IN ('ASSIGNED','CLAIMED')
-               OR (t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?)
-           )
-        """,
-        (str(node_id), f"agent:{node_id}"),
-    ).fetchall()
     assigned: set[str] = set()
-    for assignment in rows:
-        resolved = _loads(assignment["resolved_execution_config"], {})
+    for _task_id, resolved in _active_assignment_configs(database, str(node_id)):
         if not isinstance(resolved, Mapping):
             continue
         selected = resolved.get("selected_gpu")
@@ -625,17 +612,23 @@ _RESOURCE_REQUIREMENT_KEYS = {
 }
 
 
+def _payload_digest(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def _positive_int(value, *, minimum=1):
-    if isinstance(value, bool):
+    # Resource fields are machine-generated integers. Do not truncate a float
+    # (1.8 -> 1) or accept numeric strings; that would silently weaken a budget.
+    if type(value) is not int or value < minimum:
         raise ValueError
-    number = int(value)
-    if number < minimum:
-        raise ValueError
-    return number
+    return value
 
 
 def _positive_number(value):
-    if isinstance(value, bool):
+    if isinstance(value, bool) or type(value) not in (int, float):
         raise ValueError
     number = float(value)
     if not number > 0 or not math.isfinite(number):
@@ -659,7 +652,9 @@ def _task_resource_requirements(task, artifacts, capability: str | None):
         return None
     raw = payload.get("resource_requirements")
     if raw is None:
-        return None
+        # An explicit null is not a legacy "no requirement" signal; it is an
+        # incomplete opt-in contract and must not silently degrade to legacy.
+        return _INVALID_RESOURCE_REQUIREMENTS
     if not isinstance(raw, Mapping) or set(raw) - _RESOURCE_REQUIREMENT_KEYS:
         return _INVALID_RESOURCE_REQUIREMENTS
     try:
@@ -674,9 +669,14 @@ def _task_resource_requirements(task, artifacts, capability: str | None):
             values = raw.get("gpu_uuids")
             if not isinstance(values, (list, tuple)):
                 raise ValueError
-            requirements["gpu_uuids"] = [
-                str(value).strip() for value in values if str(value).strip()
-            ]
+            parsed = []
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError
+                parsed.append(value.strip())
+            if len(parsed) != len(set(parsed)):
+                raise ValueError
+            requirements["gpu_uuids"] = parsed
             if capability != "training":
                 raise ValueError
         if "min_gpu_memory_bytes" in raw:
@@ -695,32 +695,55 @@ def _task_resource_requirements(task, artifacts, capability: str | None):
             values = raw.get("storage_source_ids")
             if not isinstance(values, (list, tuple)):
                 raise ValueError
-            requirements["storage_source_ids"] = [
-                str(value).strip() for value in values if str(value).strip()
-            ]
+            parsed = []
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError
+                parsed.append(value.strip())
+            if len(parsed) != len(set(parsed)):
+                raise ValueError
+            requirements["storage_source_ids"] = parsed
         return requirements
     except (TypeError, ValueError, OverflowError):
         return _INVALID_RESOURCE_REQUIREMENTS
 
 
-def _active_assignment_configs(database, node_id: str) -> list[Mapping[str, Any]]:
+def _active_assignment_configs(database, node_id: str) -> list[tuple[str, Mapping[str, Any]]]:
     rows = database.execute(
         """
-        SELECT a.resolved_execution_config
+        SELECT a.task_id,a.generation,a.state,a.release_reason,a.resolved_execution_config,
+               t.status AS task_status,t.attempt AS task_attempt
           FROM task_node_assignments AS a
           LEFT JOIN tasks AS t ON t.task_id=a.task_id
          WHERE a.node_id=?
            AND (
                a.state IN ('ASSIGNED','CLAIMED')
-               OR (t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?)
+               OR (
+                   t.status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND t.worker_id=?
+                   AND (
+                       a.state IN ('ASSIGNED','CLAIMED')
+                       OR (
+                           a.state='RELEASED'
+                           AND a.release_reason='execution_started'
+                           AND json_extract(a.resolved_execution_config, '$.execution_attempt') = t.attempt
+                       )
+                   )
+               )
            )
+         ORDER BY a.task_id,a.generation DESC
         """,
         (str(node_id), f"agent:{node_id}"),
     ).fetchall()
-    return [
-        _loads(row["resolved_execution_config"], {})
-        for row in rows
-    ]
+    result: list[tuple[str, Mapping[str, Any]]] = []
+    seen: set[str] = set()
+    for row in rows:
+        task_id = str(row["task_id"])
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        result.append((task_id, _loads(row["resolved_execution_config"], {})))
+    return result
 
 
 def _reported_storage_ids(resources: Mapping[str, Any]) -> set[str]:
@@ -755,7 +778,15 @@ def _hard_admission(
          WHERE t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?
            AND NOT EXISTS (
                SELECT 1 FROM task_node_assignments a
-                WHERE a.task_id=t.task_id AND a.state IN ('ASSIGNED','CLAIMED')
+                WHERE a.task_id=t.task_id
+                  AND (
+                      a.state IN ('ASSIGNED','CLAIMED')
+                      OR (
+                          a.state='RELEASED'
+                          AND a.release_reason='execution_started'
+                          AND json_extract(a.resolved_execution_config, '$.execution_attempt') = t.attempt
+                      )
+                  )
            )
          LIMIT 1
         """,
@@ -768,7 +799,7 @@ def _hard_admission(
     used_ram = 0
     used_scratch = 0
     assigned_gpus: set[str] = set()
-    for resolved in _active_assignment_configs(database, str(node["node_id"])):
+    for _task_id, resolved in _active_assignment_configs(database, str(node["node_id"])):
         if not isinstance(resolved, Mapping):
             return False, "ACTIVE_RESOURCE_UNKNOWN", None
         requirement = resolved.get("resource_requirements")
@@ -818,12 +849,17 @@ def _hard_admission(
     minimum_memory = int(requirements.get("min_gpu_memory_bytes") or 0)
     allowed_uuids = {str(value) for value in requirements.get("gpu_uuids") or ()}
     candidates = []
+    identity_available = False
     for item in items:
-        identity = str(item.get("uuid") or item.get("id") or f"cuda:{item.get('index', 0)}")
+        uuid = str(item.get("uuid") or "").strip()
+        if not uuid:
+            continue
+        identity_available = True
+        identity = uuid
         device = str(item.get("id") or f"cuda:{item.get('index', 0)}")
         if identity in assigned_gpus or device in assigned_gpus:
             continue
-        if allowed_uuids and str(item.get("uuid") or "") not in allowed_uuids:
+        if allowed_uuids and uuid not in allowed_uuids:
             continue
         if requested.startswith("cuda:") and device != requested:
             continue
@@ -833,7 +869,8 @@ def _hard_admission(
             continue
         candidates.append(item)
     if not candidates:
-        return False, "GPU_INSUFFICIENT", None
+        return False, ("GPU_IDENTITY_UNVERIFIED" if items and not identity_available
+                       else "GPU_INSUFFICIENT"), None
     best = max(candidates, key=_gpu_rank_value)
     return True, "OK", {
         "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
@@ -1310,6 +1347,17 @@ class CentralTaskAllocator:
                 if requirements is _INVALID_RESOURCE_REQUIREMENTS:
                     # Malformed opt-in demand must stay QUEUED; never strip it.
                     continue
+                payload_digest = None
+                if requirements is not None:
+                    try:
+                        payload_value = self.artifacts.read_json(
+                            task.task_id, task.payload_ref, default=None,
+                        )
+                        if not isinstance(payload_value, Mapping):
+                            continue
+                        payload_digest = _payload_digest(payload_value)
+                    except (OSError, TypeError, ValueError):
+                        continue
                 remote_contract = task_remote_execution_contract(task, self.artifacts)
                 required_connection_mode = task_node_connection_mode(task, self.artifacts)
                 if agent_only and (
@@ -1423,7 +1471,8 @@ class CentralTaskAllocator:
                 "selected_device": gpu["id"] if gpu else "cpu",
                 "selected_gpu": gpu,
                 "resource_requirements": dict(requirements) if requirements else None,
-                "hard_admission": "verified" if requirements is not None else "legacy",
+                "payload_digest": payload_digest,
+                "hard_admission": "verified_declared" if requirements is not None else "legacy",
                 # Snapshot host-level contention at reservation time. The current
                 # assignment is included so Agent workers can divide CPU/RAM/cache
                 # budgets across simultaneously reserved tasks on a multi-GPU node.
@@ -1642,3 +1691,4 @@ __all__ = [
     "task_requested_node_id",
     "task_remote_execution_contract",
 ]
+

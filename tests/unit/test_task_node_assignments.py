@@ -1681,21 +1681,25 @@ def test_running_agent_still_excludes_its_gpu_after_assignment_release():
     database.row_factory = sqlite3.Row
     try:
         database.execute(
-            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, worker_id TEXT)"
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, worker_id TEXT, attempt INTEGER)"
         )
         database.execute(
             "CREATE TABLE task_node_assignments "
-            "(task_id TEXT, node_id TEXT, state TEXT, resolved_execution_config TEXT)"
+            "(task_id TEXT, generation INTEGER, node_id TEXT, state TEXT, "
+            "release_reason TEXT, resolved_execution_config TEXT)"
         )
         database.execute(
-            "INSERT INTO tasks VALUES (?, ?, ?)",
-            ("training-active", "RUNNING", "agent:gpu-node"),
+            "INSERT INTO tasks VALUES (?, ?, ?, ?)",
+            ("training-active", "RUNNING", "agent:gpu-node", 1),
         )
         database.execute(
-            "INSERT INTO task_node_assignments VALUES (?, ?, ?, ?)",
+            "INSERT INTO task_node_assignments VALUES (?, ?, ?, ?, ?, ?)",
             (
-                "training-active", "gpu-node", "RELEASED",
-                json.dumps({"selected_gpu": {"id": "cuda:0"}}),
+                "training-active", 1, "gpu-node", "RELEASED", "execution_started",
+                json.dumps({
+                    "selected_gpu": {"id": "cuda:0"},
+                    "execution_attempt": 1,
+                }),
             ),
         )
         assert _assigned_gpu_ids(database, "gpu-node") == {"cuda:0"}

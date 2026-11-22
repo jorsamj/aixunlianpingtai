@@ -58,6 +58,40 @@
 
 任务保持 QUEUED；不创建 assignment、不占 GPU、不产生执行租约。
 
+### 2.4 服务端单执行槽
+
+`AgentExecutionService.start_execution()` 在原有 `BEGIN IMMEDIATE` 内新增：
+
+- 统计同一 `agent:{node}` 的 RUNNING/CANCEL_REQUESTED 任务；
+- 已有活动执行 → `EXECUTION_SLOT_BUSY` 409，rollback，不创建第二个执行租约；
+- 不依赖 NodeAgentExecutorLoop 的本地单线程；
+- 已 CLAIMED 但未 start 的 assignment 会在 start 时被该检查阻断；
+- 第一个任务结束后才允许第二个 start（仍需 assignment lease 有效）。
+- 测试：两个已 claim 的 assignment 并发 start，结果仅一个 200，另一个 409。
+
+### 2.5 RUNNING 资源证据
+
+原 `start_execution()` 将 assignment 标记 RELEASED，导致 RUNNING 任务无活动 assignment，`_hard_admission` 只能返回 `ACTIVE_RESOURCE_UNKNOWN`。
+
+修复：
+
+- release 时在 `resolved_execution_config` 写入 `execution_attempt = task.attempt + 1`；
+- `_active_assignment_configs()` 对 RUNNING/CANCEL_REQUESTED 只接受：
+  - 当前 active assignment，或
+  - `RELEASED + release_reason='execution_started' + execution_attempt = tasks.attempt`；
+- 同一 task 多代 assignment 只取最高 generation 一次；
+- 旧 generation 不重复扣 GPU/CPU/RAM/scratch；
+- 没有 execution_attempt 证据的旧 RUNNING 任务仍 `ACTIVE_RESOURCE_UNKNOWN`，fail-closed；
+- CANCEL_REQUESTED 仍计入占用，直到可信终态。
+
+### 2.6 输入不可变绑定
+
+- 分配时对 payload 做 canonical JSON SHA256，写入 `resolved_execution_config.payload_digest`；
+- `start_execution()` 读取 payload 后重算 SHA256，与分配时摘要 `hmac.compare_digest`；
+- 不一致 → `TASK_INPUT_CHANGED` 409，不启动；
+- legacy assignment 无 `hard_admission` 字段时保持原行为；
+- 不新增任务身份/attempt 计数，不把大文件读取放进 SQLite 写事务；payload JSON 仍由 ArtifactStore 读取。
+
 ### 2.3 事务与并发
 
 - 需求解析在分配事务外读取 payload，但**最终准入、资源读取、assignment 插入都在同一 `BEGIN IMMEDIATE` 内**；
@@ -68,7 +102,7 @@
 
 ## 3. 隔离测试
 
-`tests/unit/test_w7a_hard_admission.py`：**12 passed**。
+`tests/unit/test_w7a_hard_admission.py`：**15 passed**。
 
 覆盖：
 
@@ -84,7 +118,13 @@
 - CPU/RAM/scratch 单独不足；
 - 存储源未上报拒绝；
 - 并发两个 Allocator 只产生 1 个 assignment；
-- 心跳过期不分配。
+- 心跳过期不分配；
+- RUNNING + RELEASED execution_attempt 证据计入 GPU，旧证据不重复；
+- 浮点/字符串/布尔/null/重复 UUID 资源需求拒绝。
+
+`tests/api/test_agent_executor_api.py`：
+- 两个并发 start 只有一个成功，另一个 `EXECUTION_SLOT_BUSY`；
+- 分配后修改 payload，start 返回 `TASK_INPUT_CHANGED`。
 
 现有 `tests/unit/test_task_node_assignments.py`：**73 passed**（未启用 hard admission 的旧任务路径保持）。
 

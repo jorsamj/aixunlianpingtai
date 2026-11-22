@@ -9,6 +9,7 @@ import pytest
 from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.task_node_assignments import (
     CentralTaskAllocator,
+    _INVALID_RESOURCE_REQUIREMENTS,
     _active_assignment_configs,
     _hard_admission,
     _task_resource_requirements,
@@ -80,7 +81,7 @@ def test_free_gpu_and_hard_budget_is_admitted(tmp_path):
     assignment = CentralTaskAllocator(repository, artifacts).assign_next()
     assert assignment is not None
     resolved = assignment["resolved_execution_config"]
-    assert resolved["hard_admission"] == "verified"
+    assert resolved["hard_admission"] == "verified_declared"
     assert resolved["selected_gpu"]["uuid"] == "GPU-0"
     assert resolved["resource_requirements"]["gpu_count"] == 1
 
@@ -228,6 +229,73 @@ def test_multi_gpu_and_malformed_requirements_stay_queued(tmp_path):
         ).fetchone()[0] == 0
 
 
+def test_running_released_assignment_evidence_is_counted(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "running", requirement(min_gpu_memory_bytes=1))
+    online_node(repository, "node-a", node_resources())
+    allocator = CentralTaskAllocator(repository, artifacts)
+    now = datetime.now(timezone.utc).isoformat()
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',attempt=1,worker_id='agent:node-a' WHERE task_id='running'"
+        )
+        database.execute(
+            "INSERT INTO task_node_assignments "
+            "(task_id,generation,node_id,capability,state,assigned_at,updated_at,released_at,"
+            "release_reason,resolved_execution_config) "
+            "VALUES ('running',1,'node-a','training','RELEASED',?,?,?,?,?)",
+            (now, now, now, "execution_started", json.dumps({
+                "resource_requirements": {"gpu_count": 1, "min_gpu_memory_bytes": 1},
+                "selected_gpu": {"id": "cuda:0", "uuid": "GPU-0"},
+                "execution_attempt": 1,
+            })),
+        )
+        database.commit()
+        node = database.execute("SELECT * FROM service_nodes LIMIT 1").fetchone()
+        configs = _active_assignment_configs(database, "node-a")
+        assert len(configs) == 1
+        ok, reason, _ = _hard_admission(database, node, "training", {"gpu_count": 1})
+    assert not ok and reason == "GPU_INSUFFICIENT"
+
+
+def test_resource_requirements_reject_float_null_and_duplicate_identity(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(repository, artifacts, "strict", {})
+    invalid = [
+        {"resource_requirements": None},
+        {"resource_requirements": {"gpu_count": 1.8}},
+        {"resource_requirements": {"gpu_count": "1"}},
+        {"resource_requirements": {"gpu_count": True}},
+        {"resource_requirements": {"gpu_count": 1, "gpu_uuids": ["GPU-0", "GPU-0"]}},
+        {"resource_requirements": {"gpu_count": 1, "gpu_uuids": [""]}},
+        {"resource_requirements": {"gpu_count": 1, "ram_bytes": 1.5}},
+        {"resource_requirements": {"gpu_count": 1, "cpu_cores": "2"}},
+        {"resource_requirements": {"gpu_count": 1, "scratch_bytes": -1}},
+    ]
+    for payload in invalid:
+        artifacts.atomic_write_json("strict", "request.json", payload)
+        assert _task_resource_requirements(task, artifacts, "training") is _INVALID_RESOURCE_REQUIREMENTS, payload
+
+    artifacts.atomic_write_json("strict", "request.json", {"resource_requirements": {
+        "gpu_count": 1, "gpu_uuids": ["GPU-0"], "cpu_cores": 2.5,
+        "ram_bytes": 1, "scratch_bytes": 1, "min_gpu_memory_bytes": 1,
+    }})
+    parsed = _task_resource_requirements(task, artifacts, "training")
+    assert parsed["cpu_cores"] == 2.5 and parsed["gpu_uuids"] == ["GPU-0"]
+
+
+def test_training_opt_in_without_physical_uuid_is_not_verified(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "no-uuid", requirement(min_gpu_memory_bytes=1))
+    online_node(repository, "node-no-uuid", node_resources(uuid0=""))
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next() is None
+    with allocator.repository._connect() as database:
+        node = database.execute("SELECT * FROM service_nodes LIMIT 1").fetchone()
+        ok, reason, _ = _hard_admission(database, node, "training", {"gpu_count": 1})
+    assert not ok and reason == "GPU_IDENTITY_UNVERIFIED"
+
+
 def test_same_cuda_index_on_different_nodes_is_resolved_by_uuid(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, "uuid-task", requirement(
@@ -265,3 +333,4 @@ def test_concurrent_allocators_do_not_share_one_gpu(tmp_path):
             "SELECT COUNT(*) FROM task_node_assignments WHERE state IN ('ASSIGNED','CLAIMED')"
         ).fetchone()[0]
     assert active == 1
+

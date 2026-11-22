@@ -11,13 +11,14 @@ transport layer; do not replace that layer with SQLite/NFS access from Agents.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import os
 import re
 import secrets
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from .service_nodes import (
     HEARTBEAT_TTL_SECONDS,
@@ -777,6 +778,20 @@ class AgentExecutionService:
                 preflight_assignment["resolved_execution_config"], {}
             ),
         }
+        assignment_config = assignment_snapshot["resolved_execution_config"]
+        if not isinstance(assignment_config, Mapping):
+            assignment_config = {}
+        if assignment_config.get("hard_admission") != "legacy":
+            frozen_digest = str(assignment_config.get("payload_digest") or "")
+            current_digest = hashlib.sha256(json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            if not frozen_digest or not hmac.compare_digest(frozen_digest, current_digest):
+                raise AgentExecutionError(
+                    "TASK_INPUT_CHANGED",
+                    "task payload changed after resource admission; reassign before start",
+                    409,
+                )
 
         execution_payload = payload
         self._verify_scenario_payload(preflight_task, payload)
@@ -915,6 +930,24 @@ class AgentExecutionService:
                     409,
                 )
 
+            # The current Agent implementation owns exactly one execution loop.
+            # Enforce that capacity in the same BEGIN IMMEDIATE transaction as
+            # task ownership; a local Agent mutex alone cannot stop two HTTP
+            # clients from starting two tasks on the same node.
+            active_executions = int(database.execute(
+                "SELECT COUNT(*) FROM tasks "
+                "WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED') "
+                "AND task_id<>?",
+                (worker_id, str(task_id)),
+            ).fetchone()[0])
+            if active_executions:
+                database.rollback()
+                raise AgentExecutionError(
+                    "EXECUTION_SLOT_BUSY",
+                    "the service node already has an active execution slot",
+                    409,
+                )
+
             latest = _from_row(task_row)
             if any(getattr(latest, field) != getattr(preflight_task, field) for field in (
                 'project_id','kind','payload_ref','resource_key','required_capabilities',
@@ -948,11 +981,15 @@ class AgentExecutionService:
                     409,
                 )
 
+            execution_attempt = int(task_row["attempt"]) + 1
             released = database.execute(
                 """
                 UPDATE task_node_assignments
                    SET state='RELEASED',updated_at=?,released_at=?,
                        release_reason='execution_started',
+                       resolved_execution_config=json_set(
+                           resolved_execution_config, '$.execution_attempt', ?
+                       ),
                        lease_token=NULL,lease_expires_at=NULL
                  WHERE task_id=? AND generation=? AND node_id=? AND state='CLAIMED'
                        AND lease_token=?
@@ -960,6 +997,7 @@ class AgentExecutionService:
                 (
                     now,
                     now,
+                    execution_attempt,
                     str(task_id),
                     int(assignment["generation"]),
                     str(node_id),
