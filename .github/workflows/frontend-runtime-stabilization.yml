@@ -673,6 +673,11 @@ jobs:
           tests/browser/material-summary-nonblocking.spec.mjs
           tests/browser/material-library-flow.spec.mjs
           tests/browser/real-material-delete.spec.mjs
+          tests/browser/material-delete-pagination.spec.mjs
+          tests/browser/material-delete-result-evidence.spec.mjs
+          tests/browser/native-image-upload.spec.mjs
+          tests/browser/native-zip-import.spec.mjs
+          tests/browser/native-upload-task-center.spec.mjs
           tests/browser/negative-pool-members.spec.mjs
           tests/browser/material-presentation-poc.spec.mjs
           tests/browser/page-loading-performance.spec.mjs
