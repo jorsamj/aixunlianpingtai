@@ -156,7 +156,10 @@ declare module '*static/modules/material-upload-session.js' {
   export function updateUploadIndex(options: {
     actorKey: string; projectId: string; id: string;
     patch?: Partial<UploadSessionRecord>; storage?: Storage;
-  }): boolean;
+  }): Promise<boolean>;
+  export function withUploadIdentityLock<T>(options: {
+    actorKey: string; projectId: string; wait?: boolean;
+  }, work: () => Promise<T> | T): Promise<T>;
   export function isUploadSessionProtected(session: UploadSessionRecord | null): boolean;
   export function listUploadSessions(options: {
     actorKey: string; projectId: string; storage?: Storage;

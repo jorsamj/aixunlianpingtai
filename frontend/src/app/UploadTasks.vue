@@ -5,7 +5,8 @@ import {request} from './http';
 import {useWorkspace} from './main';
 import {getUploadBatchReceipt,type UploadBatchReceipt} from '../api/upload-batches';
 import {
-  isUploadSessionUnresolved,listUploadSessions,readOwnedUploadSession,updateUploadIndex,writeUploadSession,
+  isUploadSessionUnresolved,listUploadSessions,readOwnedUploadSession,updateUploadIndex,
+  withUploadIdentityLock,writeUploadSession,
 } from '../../../static/modules/material-upload-session.js';
 import type {UploadSessionRecord} from '../../../static/modules/material-upload-session.js';
 
@@ -55,43 +56,83 @@ const active=computed(()=>rows.value.some(row=>['uploading','paused','merging','
   'UPLOADING','INTERRUPTED','UNKNOWN'].includes(row.status)));
 const imageRows=computed(()=>rows.value.filter(row=>row.type==='image'));
 
-async function loadImageSession(session:UploadSessionRecord):Promise<ImageSessionRow>{
-  const receipts:UploadBatchReceipt[]=[];
-  let missing=0,errorText='';
-  for(const requestId of session.requestIds.slice(0,100)){
-    try{receipts.push(await getUploadBatchReceipt(projectId,requestId,controller.signal))}
-    catch(cause){
-      const status=(cause as {httpStatus?:number}).httpStatus;
-      if(status===404)missing+=1;else errorText=cause instanceof Error?cause.message:'回执读取失败';
+interface ReceiptCacheEntry {row:ImageSessionRow;fetchedAt:number;idsKey:string;complete:boolean}
+const receiptCache=new Map<string,ReceiptCacheEntry>();
+const MAX_RECEIPT_REQUESTS=120;
+const ACTIVE_TTL=2500,PARTIAL_TTL=15000,PENDING_TTL=15000,HISTORY_TTL=60000;
+let loading=false,receiptBudget=0;
+
+async function fetchReceipts(ids:string[]){
+  const receipts:UploadBatchReceipt[]=[];let missing=0,errorText='';
+  for(let offset=0;offset<ids.length;offset+=4){
+    const chunk=ids.slice(offset,offset+4);
+    const results=await Promise.all(chunk.map(async requestId=>{
+      try{return {receipt:await getUploadBatchReceipt(projectId,requestId,controller.signal)}}
+      catch(cause){
+        const status=(cause as {httpStatus?:number}).httpStatus;
+        return {status,cause};
+      }
+    }));
+    for(const result of results){
+      if(result.receipt)receipts.push(result.receipt);
+      else if(result.status===404)missing+=1;
+      else errorText=result.cause instanceof Error?result.cause.message:'回执读取失败';
     }
   }
-  const allSucceeded=receipts.length===session.requestIds.length&&missing===0
-    &&receipts.every(row=>String(row.upload_request_status||'SUCCEEDED').toUpperCase()==='SUCCEEDED');
-  const anyFailed=receipts.some(row=>String(row.upload_request_status||'').toUpperCase()==='FAILED');
-  const uploaded=receipts.reduce((sum,row)=>sum+(row.items||[]).length,0);
-  const failed=receipts.reduce((sum,row)=>sum+(row.upload_failed||[]).length,0);
-  const pending=receipts.reduce((sum,row)=>sum+(row.items||[]).filter(item=>
-    String((item as {decision?:string}).decision||'pending')==='pending').length,0);
-  const partial=session.requestIds.length>100;
-  const status=allSucceeded?'SUCCEEDED':anyFailed?'FAILED':'UNKNOWN';
-  if(session.requestIds[0]&&(session.pendingDecision!==pending
-      ||session.confirmationState!==(pending?'PENDING':'DONE'))){
-    updateUploadIndex({actorKey:actorKey.value,projectId,id:session.requestIds[0],
-      patch:{pendingDecision:pending,confirmationState:pending?'PENDING':'DONE'}});
-  }
-  return {key:session.requestIds[0]||session.createdAt,session,status,
-    statusLabel:status==='SUCCEEDED'?'服务器已入库':status==='FAILED'?'失败':'待核验',
-    uploaded,failed,pending,partial,error:errorText,
-    recoverable:status!=='SUCCEEDED'||partial,pendingConfirm:pending>0};
+  return {receipts,missing,errorText};
 }
 
-async function load(){
-  if(!alive())return;
-  busy.value=true;error.value='';
+async function loadImageSession(session:UploadSessionRecord,force=false):Promise<ImageSessionRow>{
+  const cacheKey=session.requestIds[0]||session.createdAt;
+  const idsKey=session.requestIds.join('|');
+  const cached=receiptCache.get(cacheKey);
+  const age=Date.now()-(cached?.fetchedAt||0);
+  const ttl=!cached?.complete?PARTIAL_TTL
+    :session.pendingDecision>0?PENDING_TTL
+      :isUploadSessionUnresolved(session)?ACTIVE_TTL:HISTORY_TTL;
+  if(!force&&cached?.idsKey===idsKey&&age<ttl)return cached.row;
+  const ids=session.requestIds.slice(0,100);
+  const allowed=ids.slice(0,Math.max(0,receiptBudget));
+  if(!allowed.length&&cached?.idsKey===idsKey)return cached.row;
+  receiptBudget-=allowed.length;
+  const fetched=await fetchReceipts(allowed);
+  const complete=allowed.length===session.requestIds.length&&fetched.missing===0
+    &&!fetched.errorText;
+  const anyFailed=fetched.receipts.some(row=>String(row.upload_request_status||'').toUpperCase()==='FAILED');
+  const uploaded=fetched.receipts.reduce((sum,row)=>sum+(row.items||[]).length,0);
+  const failed=fetched.receipts.reduce((sum,row)=>sum+(row.upload_failed||[]).length,0);
+  const pending=fetched.receipts.reduce((sum,row)=>sum+(row.items||[]).filter(item=>
+    String((item as {decision?:string}).decision||'pending')==='pending').length,0);
+  const allSucceeded=complete&&fetched.receipts.length===session.requestIds.length
+    &&fetched.receipts.every(row=>String(row.upload_request_status||'SUCCEEDED').toUpperCase()==='SUCCEEDED');
+  const partial=!complete;
+  const status=allSucceeded?'SUCCEEDED':anyFailed&&complete?'FAILED':'UNKNOWN';
+  const row:ImageSessionRow={key:cacheKey,session,status,
+    statusLabel:status==='SUCCEEDED'?'服务器已入库':status==='FAILED'?'失败':'待核验',
+    uploaded,failed,pending,partial,
+    error:fetched.errorText||(partial&&allowed.length===0?'本轮回执读取预算已用完，尚未核验':'')
+      ||(session.requestIds.length>100?'该会话超过 100 个分片，仅核验前 100 个回执':''),
+    recoverable:status!=='SUCCEEDED'||partial,pendingConfirm:pending>0};
+  if(complete)receiptCache.set(cacheKey,{row,fetchedAt:Date.now(),idsKey,complete:true});
+  else receiptCache.set(cacheKey,{row,fetchedAt:Date.now(),idsKey,complete:false});
+  if(complete&&session.requestIds[0]&&(session.pendingDecision!==pending
+      ||session.confirmationState!==(pending?'PENDING':'DONE'))){
+    await updateUploadIndex({actorKey:actorKey.value,projectId,id:session.requestIds[0],
+      patch:{pendingDecision:pending,confirmationState:pending?'PENDING':'DONE'}});
+  }
+  return row;
+}
+
+async function load(force=false){
+  if(!alive()||loading)return;
+  loading=true;busy.value=true;error.value='';receiptBudget=MAX_RECEIPT_REQUESTS;
   try{
-    const sessions=listUploadSessions({actorKey:actorKey.value,projectId});
+    const sessions=listUploadSessions({actorKey:actorKey.value,projectId})
+      .sort((left,right)=>Number(isUploadSessionUnresolved(right))
+        -Number(isUploadSessionUnresolved(left))
+        ||Number(right.pendingDecision>0)-Number(left.pendingDecision>0));
     const loaded:ImageSessionRow[]=[];
-    for(const session of sessions)loaded.push(await loadImageSession(session));
+    for(const session of sessions)loaded.push(await loadImageSession(session,force));
     // Pending/recovery rows stay visible before historical successes when the
     // bounded local index reaches its limit.
     loaded.sort((left,right)=>{
@@ -102,25 +143,32 @@ async function load(){
     const zip=await request<{ok:boolean;items:ZipJob[]}>(`/api/v19/projects/${encodeURIComponent(projectId)}/import/jobs`,{signal:controller.signal});
     zipJobs.value=(zip.items||[]).slice(0,50);
     loadedAt.value=new Date().toLocaleTimeString();
-  }catch(cause){error.value=cause instanceof Error?cause.message:'上传任务读取失败'}
-  finally{busy.value=false}
+  }catch(cause){if(alive())error.value=cause instanceof Error?cause.message:'上传任务读取失败'}
+  finally{loading=false;busy.value=false}
 }
+function refresh(){void load(true)}
 function openNativeUpload(){void router.push({name:'material-upload',params:{projectId}})}
 async function continueSession(row:ImageSessionRow){
-  const current=readOwnedUploadSession({actorKey:actorKey.value,projectId}).session;
-  if(current&&isUploadSessionUnresolved(current)
-      &&current.requestIds[0]!==row.session.requestIds[0]){
-    error.value='当前存在另一笔未核验的上传请求；请先核验它，不能覆盖其身份。';
-    return;
-  }
-  const result=writeUploadSession({actorKey:actorKey.value,projectId,patch:{
-    totalFiles:row.session.totalFiles,requestIds:row.session.requestIds,batchIds:row.session.batchIds,
-    status:row.session.status,failed:row.session.failed,requestSeed:row.session.requestSeed,
-    deferred:row.session.deferred,pendingDecision:row.pending,
-    confirmationState:row.pending?'PENDING':'DONE',
-  }});
-  if(!result.ok){error.value='浏览器无法保存该上传会话身份；未切换。';return}
-  void router.push({name:'material-upload',params:{projectId}});
+  let switched=false;
+  try{
+    await withUploadIdentityLock({actorKey:actorKey.value,projectId},async()=>{
+      const current=readOwnedUploadSession({actorKey:actorKey.value,projectId}).session;
+      if(current&&isUploadSessionUnresolved(current)
+          &&current.requestIds[0]!==row.session.requestIds[0]){
+        error.value='当前存在另一笔未核验的上传请求；请先核验它，不能覆盖其身份。';
+        return;
+      }
+      const result=writeUploadSession({actorKey:actorKey.value,projectId,patch:{
+        totalFiles:row.session.totalFiles,requestIds:row.session.requestIds,batchIds:row.session.batchIds,
+        status:row.session.status,failed:row.session.failed,requestSeed:row.session.requestSeed,
+        deferred:row.session.deferred,pendingDecision:row.pending,
+        confirmationState:row.pending?'PENDING':'DONE',
+      }});
+      if(!result.ok){error.value='浏览器无法保存该上传会话身份；未切换。';return}
+      switched=true;
+    });
+  }catch(cause){error.value=cause instanceof Error?cause.message:'另一个标签页正在修改上传身份，未切换。'}
+  if(switched)void router.push({name:'material-upload',params:{projectId}});
 }
 async function viewImages(row:ImageSessionRow){
   const ids:string[]=[];
@@ -148,7 +196,7 @@ function viewMaterials(job?:ZipJob){void router.push({name:'materials',params:{p
 onMounted(()=>{void load();timer=window.setInterval(()=>{if(active.value)void load()},3000)});
 onBeforeUnmount(()=>{controller.abort();if(timer!==undefined)window.clearInterval(timer)});
 </script>
-<template><section class="upload-tasks"><header class="tasks-head"><div><button class="back" @click="router.push({name:'materials',params:{projectId}})">返回素材库</button><h2>上传任务</h2><p>统一查看当前账号与项目的图片上传回执、待确认素材和 ZIP 导入任务。传输、后台处理与正式入库分别展示。</p></div><div class="head-actions"><el-button type="primary" @click="openNativeUpload">上传图片（原生）</el-button><el-button @click="openNativeZip">ZIP 数据集（原生）</el-button><el-button :loading="busy" @click="load">刷新</el-button></div></header>
+<template><section class="upload-tasks"><header class="tasks-head"><div><button class="back" @click="router.push({name:'materials',params:{projectId}})">返回素材库</button><h2>上传任务</h2><p>统一查看当前账号与项目的图片上传回执、待确认素材和 ZIP 导入任务。传输、后台处理与正式入库分别展示。</p></div><div class="head-actions"><el-button type="primary" @click="openNativeUpload">上传图片（原生）</el-button><el-button @click="openNativeZip">ZIP 数据集（原生）</el-button><el-button :loading="busy" @click="refresh">刷新</el-button></div></header>
  <el-alert v-if="error" :title="error" type="error" :closable="false"/>
  <el-alert v-if="!rows.length&&!busy" title="当前账号与项目没有可核验的上传批次；不会扫描其他账号或其他浏览器的本地记录。" type="info" :closable="false"/>
  <section class="task-section"><header><div><h3>图片上传回执</h3><p>按本机账号/项目索引找回原 request_id；服务器回执是入库依据。</p></div><small v-if="loadedAt">更新于 {{ loadedAt }}</small></header><el-table :data="imageRows" row-key="key" empty-text="本机没有可核验的图片上传批次"><el-table-column label="批次" min-width="220"><template #default="{row}"><b>{{ row.title }}</b><small>{{ row.requestId }}</small><small v-if="row.partial">请求较多，仅核验前 100 个分片回执；未核验部分保持待确认。</small></template></el-table-column><el-table-column label="状态" min-width="150"><template #default="{row}"><el-tag type="info">{{ row.statusLabel }}</el-tag><small v-if="row.pendingConfirm">待人工确认</small><small v-if="row.recoverable">待核验</small><small>{{ row.transfer }}</small></template></el-table-column><el-table-column label="服务端回执" min-width="220"><template #default="{row}">{{ row.stage }}<small>{{ row.detail }}</small></template></el-table-column><el-table-column label="操作" min-width="210"><template #default="{row}"><div class="row-actions"><el-button v-if="row.recoverable" link type="primary" @click="continueSession(row)">核验 / 继续处理</el-button><el-button v-if="row.pendingConfirm" link type="primary" @click="continueSession(row)">继续上传确认</el-button><el-button v-if="row.uploaded" link @click="viewImages(row)">查看已入库素材</el-button></div></template></el-table-column></el-table></section>

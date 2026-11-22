@@ -18,6 +18,21 @@ export function uploadSessionLegacyKey(projectId) {
 export function uploadIndexStorageKey(actorKey, projectId) {
   return `${UPLOAD_INDEX_PREFIX}${encode(actorKey)}:${encode(projectId)}`;
 }
+export async function withUploadIdentityLock({actorKey, projectId, wait = false}, work) {
+  const manager = globalThis.navigator?.locks;
+  if (!manager?.request) {
+    throw new Error('当前浏览器不支持上传并发保护（Web Locks），已停止修改上传身份；请使用支持该能力的浏览器或原上传入口');
+  }
+  let acquired = false, result;
+  await manager.request(`material-upload-identity:${text(actorKey)}:${text(projectId)}`,
+    {ifAvailable: !wait}, async lock => {
+      if (!lock) return;
+      acquired = true;
+      result = await work();
+    });
+  if (!acquired) throw new Error('另一个标签页正在修改同一账号和项目的上传身份，已停止本次操作');
+  return result;
+}
 export function uploadRequestIds(seed, chunkCount) {
   const prefix = text(seed);
   const count = Math.max(0, Math.floor(Number(chunkCount) || 0));
@@ -195,22 +210,31 @@ export function clearUploadSession({actorKey, projectId, storage = globalThis.lo
   catch { return false; }
 }
 
-export function updateUploadIndex({
+export async function updateUploadIndex({
   actorKey, projectId, id, patch = {}, storage = globalThis.localStorage,
 } = {}) {
-  const key = uploadIndexStorageKey(actorKey, projectId);
-  const rows = listUploadIndex({actorKey, projectId, storage});
-  const target = rows.find(row => row.requestIds[0] === id);
-  if (!target) return false;
-  const merged = {
-    ...target,
-    ...patch,
-    projectId,
-    owner: text(actorKey),
-    requestIds: target.requestIds,
-    updatedAt: new Date().toISOString(),
+  const mutate = () => {
+    const key = uploadIndexStorageKey(actorKey, projectId);
+    const rows = listUploadIndex({actorKey, projectId, storage});
+    const target = rows.find(row => row.requestIds[0] === id);
+    if (!target) return false;
+    const merged = {
+      ...target,
+      ...patch,
+      projectId,
+      owner: text(actorKey),
+      requestIds: target.requestIds,
+      updatedAt: new Date().toISOString(),
+    };
+    return writeIndexSafely({actorKey, projectId, storage}, merged);
   };
-  return writeIndexSafely({actorKey, projectId, storage}, merged);
+  try {
+    return await withUploadIdentityLock({actorKey, projectId}, mutate);
+  } catch {
+    // Without an exclusive owner the index must stay unchanged; the display
+    // still reads the server receipts, so a stale pending flag is safe.
+    return false;
+  }
 }
 
 export function listUploadSessions({actorKey, projectId, storage = globalThis.localStorage} = {}) {

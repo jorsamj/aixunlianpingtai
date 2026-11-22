@@ -220,6 +220,109 @@ test('two tabs of the same account and project cannot upload over each other', a
   }
 });
 
+test('a second tab cannot clear the active upload identity through fresh', async ({page, context, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-fresh-tabs-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  let second;
+  try {
+    const project = await newProject(request, origin, '双标签清除保护');
+    await page.route('**/api/projects/*/images', async route => {
+      await new Promise(resolve => setTimeout(resolve, 900));
+      return route.continue();
+    });
+    await openUpload(page, origin, project.id);
+    await page.locator('.uppy-Dashboard input[type=file]').first().setInputFiles(files(65, 'fresh-a'));
+    second = await context.newPage();
+    await openUpload(second, origin, project.id);
+    const start = page.locator('.uppy-StatusBar-actionBtn--upload');
+    await expect(start).toBeVisible({timeout: 15000});
+    await start.click();
+    await second.getByRole('button', {name: '再选一批', exact: true}).click();
+    await expect(second.getByText(/另一个标签页正在修改同一账号/)).toBeVisible({timeout: 30000});
+    const stillActive = await second.evaluate(() => Object.entries(localStorage)
+      .filter(([key]) => key.startsWith('material-upload-session:v2:'))
+      .map(([, value]) => JSON.parse(value).status));
+    expect(stillActive).toContain('UPLOADING');
+    await expect(page.getByText(/服务器已确认 65 \/ 65 张/)).toBeVisible({timeout: 180000});
+  } finally {
+    await second?.close().catch(() => {});
+    child.kill();
+  }
+});
+
+test('a second tab cannot switch the current pointer while another upload owns it', async ({page, context, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-switch-tabs-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  let second;
+  try {
+    const project = await newProject(request, origin, '双标签切换保护');
+    const auth = await (await request.get(origin + '/api/auth/session')).json();
+    const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
+    const indexKey = `material-upload-index:v1:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    await page.route('**/api/projects/*/images', async route => {
+      await new Promise(resolve => setTimeout(resolve, 900));
+      return route.continue();
+    });
+    await openUpload(page, origin, project.id);
+    await page.evaluate(([key, projectId]) => localStorage.setItem(key, JSON.stringify([{
+      id: 'history-batch-0001', totalFiles: 1, requestIds: ['history-batch-0001'],
+      batchIds: ['history-batch-0001'], status: 'SUCCEEDED', failed: 0, pendingDecision: 0,
+      confirmationState: 'DONE', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }])), [indexKey, project.id]);
+    await page.locator('.uppy-Dashboard input[type=file]').first().setInputFiles(files(65, 'switch-a'));
+    const start = page.locator('.uppy-StatusBar-actionBtn--upload');
+    await expect(start).toBeVisible({timeout: 15000});
+    await start.click();
+
+    second = await context.newPage();
+    await second.goto(`${origin}/app/#/projects/${project.id}/materials/tasks`);
+    const historyRow = second.getByRole('row').filter({hasText: 'history-batch-0001'});
+    await expect(historyRow).toBeVisible({timeout: 45000});
+    await historyRow.getByRole('button', {name: '核验 / 继续处理'}).click();
+    await expect(second.getByText(/另一个标签页正在修改同一账号/)).toBeVisible({timeout: 30000});
+    const active = await second.evaluate(() => Object.entries(localStorage)
+      .filter(([key]) => key.startsWith('material-upload-session:v2:'))
+      .map(([, value]) => JSON.parse(value).requestIds));
+    expect(active.length).toBeGreaterThan(0);
+    expect(active.flat()).not.toContain('history-batch-0001');
+    await expect(page.getByText(/服务器已确认 65 \/ 65 张/)).toBeVisible({timeout: 180000});
+  } finally {
+    await second?.close().catch(() => {});
+    child.kill();
+  }
+});
+
+test('without Web Locks a new upload and fresh fail closed instead of racing', async ({page, request}) => {
+  test.setTimeout(150_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-no-locks-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await newProject(request, origin, '并发保护降级');
+    let posts = 0;
+    page.on('request', req => {
+      const url = new URL(req.url());
+      if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/images`) posts += 1;
+    });
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'locks', {value: undefined, configurable: true});
+    });
+    await openUpload(page, origin, project.id);
+    await chooseAndUpload(page, files(1, 'no-locks'));
+    await expect(page.getByText(/不支持上传并发保护/)).toBeVisible({timeout: 30000});
+    expect(posts).toBe(0);
+    await page.getByRole('button', {name: '再选一批', exact: true}).click();
+    await expect(page.getByText(/不支持上传并发保护/)).toBeVisible();
+  } finally { child.kill(); }
+});
+
 test('more than 64 images are split into two original request ids', async ({page, request}) => {
   test.setTimeout(240_000);
   const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-chunks-'));

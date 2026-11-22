@@ -683,6 +683,7 @@ jobs:
           tests/browser/native-zip-advanced.spec.mjs
           tests/browser/native-host-lifecycle.spec.mjs
           tests/browser/native-upload-task-center.spec.mjs
+          tests/browser/native-upload-task-center-load.spec.mjs
           tests/browser/negative-pool-members.spec.mjs
           tests/browser/material-presentation-poc.spec.mjs
           tests/browser/page-loading-performance.spec.mjs

@@ -11,7 +11,7 @@ import {uploadMaterialFilesSequentially,requestMaterialChunkRecoverable,partitio
 import {installUploadConfirmationRuntime,uploadSessionKey} from '../../../static/modules/upload-confirmation.js';
 import {
   clearUploadSession,isUploadSessionUnresolved,readOwnedUploadSession,uploadRequestIds,
-  uploadSessionStorageKey,writeUploadSession,
+  uploadSessionStorageKey,withUploadIdentityLock,writeUploadSession,
 } from '../../../static/modules/material-upload-session.js';
 import type {ImageUppyEvent,ImageUppyUploadOptions,ImageUploadRuntime} from '../../../static/modules/uppy-image-view.js';
 import type {UploadConfirmationRuntime} from '../../../static/modules/upload-confirmation.js';
@@ -82,24 +82,13 @@ function observe(event:ImageUppyEvent){
   else if(event.type==='complete')stage.value='上传交付完成；正式入库结果以下方回执为准。';
 }
 
-function uploadLockName(){
-  return `material-upload:${actorKey.value}:${projectId}`;
-}
 async function withUploadLock<T>(work:()=>Promise<T>):Promise<T>{
-  const manager=(navigator as unknown as {locks?:{request:(name:string,options:{ifAvailable:boolean},
-    callback:(lock:unknown)=>Promise<void>)=>Promise<void>}}).locks;
-  if(!manager?.request)return work();
-  let denied=false;
-  let result:T|undefined;
-  await manager.request(uploadLockName(),{ifAvailable:true},async lock=>{
-    if(!lock){denied=true;return}
-    result=await work();
-  });
-  if(denied){
-    notice.value='另一个标签页正在为同一账号和项目上传；已停止新请求，避免覆盖恢复记录。';
-    throw new Error('另一个标签页正在上传，请等待其完成或先核验原请求');
+  try{
+    return await withUploadIdentityLock({actorKey:actorKey.value,projectId},work);
+  }catch(cause){
+    notice.value=cause instanceof Error?cause.message:'另一个标签页正在修改上传身份，已停止本次操作。';
+    throw cause;
   }
-  return result as T;
 }
 
 async function uploadFiles(files:File[],options:ImageUppyUploadOptions={}){
@@ -236,6 +225,10 @@ function retryFailed(){
 function retry(){void mountUppy()}
 
 async function recoverSession(){
+  try{await withUploadLock(()=>recoverSessionLocked())}
+  catch{/* the lock helper already surfaced the reason */ }
+}
+async function recoverSessionLocked(){
   const value=loadSession();
   if(!value?.requestIds.length)return;
   busy.value=true;error.value='';notice.value='';
@@ -297,15 +290,28 @@ function viewUploaded(){
   }catch{/* selection is optional */}
   void router.push({name:'materials',params:{projectId}});
 }
-function fresh(){
-  if(uploading||unresolved.value){
-    notice.value='存在未核验的原上传请求，不能直接清除；“再选一批”不会覆盖或删除原身份。';
+async function fresh(){
+  if(uploading){
+    notice.value='当前页面仍有上传进行中，不能清除身份。';
     return;
   }
-  clearUploadSession({actorKey:actorKey.value,projectId});
-  session.value=null;failedFiles.value=[];batchIds.value=[];uploadedIds.value=[];
-  summary.total=0;summary.confirmed=0;summary.uploaded=0;summary.failed=0;summary.chunks=0;
-  retryNames.value=null;
+  let cleared=false;
+  try{
+    await withUploadLock(async()=>{
+      // Re-read under the exclusive owner; never trust stale Vue memory.
+      const current=readOwnedUploadSession({actorKey:actorKey.value,projectId}).session;
+      if(isUploadSessionUnresolved(current)){
+        notice.value='另一个标签页存在未核验的上传请求，不能清除；“再选一批”不会覆盖原身份。';
+        return;
+      }
+      clearUploadSession({actorKey:actorKey.value,projectId});
+      session.value=null;failedFiles.value=[];batchIds.value=[];uploadedIds.value=[];
+      summary.total=0;summary.confirmed=0;summary.uploaded=0;summary.failed=0;summary.chunks=0;
+      retryNames.value=null;
+      cleared=true;
+    });
+  }catch{return}
+  if(!cleared)return;
   confirmation?.destroy();confirmation=installConfirmation();
   void mountUppy();
 }
@@ -351,8 +357,12 @@ function installBridges(){
     legacyAction('material-clean-task','自动标注及清洗',{task_id:String(id)});
   };
   target.openSmartMaterialAudit=(options?:{imageIds?:string[];source?:string})=>{
-    const ids=(options?.imageIds||[]).map(value=>String(value||'')).filter(Boolean).slice(0,500);
+    const ids=(options?.imageIds||[]).map(value=>String(value||'')).filter(Boolean);
     if(!ids.length){notice.value='没有可提交智能质检的素材范围，请重新选择。';return}
+    if(ids.length>500){
+      notice.value=`原智能质检单次最多 500 张，本次选择 ${ids.length} 张；请缩小选择或分批处理，未提交任何范围。`;
+      return;
+    }
     legacyAction('material-smart-audit','数据集',{image_ids:ids.join(','),source:String(options?.source||'upload')});
   };
   target.renderDatasets424=()=>{};
