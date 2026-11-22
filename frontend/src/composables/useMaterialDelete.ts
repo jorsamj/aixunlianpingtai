@@ -10,6 +10,7 @@ const TERMINAL = new Set([
   'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE',
 ]);
 const ACTIVE = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'CANCEL_REQUESTED']);
+const ITEM_STATES = new Set(['pending', 'running', 'succeeded', 'failed']);
 const STATUS_LABEL: Record<string, string> = {
   QUEUED: '排队中', WAITING_RESOURCE: '等待资源', RUNNING: '处理中',
   CANCEL_REQUESTED: '正在取消', SUCCEEDED: '已完成', PARTIAL_SUCCESS: '部分成功',
@@ -19,13 +20,29 @@ const STATUS_LABEL: Record<string, string> = {
 type DeleteMode = 'single' | 'selected';
 interface RecoveryRecord {
   project_id: string; plan_id: string; operation: 'DELETE_INDEX';
-  mode: DeleteMode; image_id?: string; image_count: number;
+  mode: DeleteMode; image_id?: string; image_count: number; image_ids?: string[];
 }
 export interface DeleteSettlement {
   deletedIds: string[]; failedIds: string[]; terminal: string; unknown: boolean;
 }
+interface ResultCounts {
+  succeeded: number; failed: number; pending: number; running: number; conflict: number;
+  seen: number; required: number;
+}
+interface ResultScan {
+  succeeded: Set<string>; failed: Set<string>; pending: Set<string>; running: Set<string>;
+  conflicts: Set<string>; seen: number; truncated: boolean;
+}
+const EMPTY_COUNTS: ResultCounts = {
+  succeeded: 0, failed: 0, pending: 0, running: 0, conflict: 0, seen: 0, required: 0,
+};
 function message(cause: unknown) {
   return cause instanceof Error ? cause.message : '操作失败';
+}
+function countsText(counts: ResultCounts) {
+  return `成功 ${counts.succeeded} · 失败 ${counts.failed} · 未处理 ${counts.pending}`
+    + ` · 处理中 ${counts.running}`
+    + (counts.conflict ? ` · 证据冲突 ${counts.conflict}` : '');
 }
 
 export function useMaterialDelete(options: {
@@ -39,6 +56,7 @@ export function useMaterialDelete(options: {
     task: null as MaterialBatchTask | null, targetId: '', targetIds: [] as string[],
     mode: 'single' as DeleteMode, error: '', notice: '', unknown: false,
     pendingPlanId: '', pendingImageId: '', pendingCount: 0,
+    summary: {...EMPTY_COUNTS},
   });
   let poll: number | undefined;
 
@@ -53,10 +71,14 @@ export function useMaterialDelete(options: {
         return null;
       const mode: DeleteMode = value.mode === 'selected' ? 'selected' : 'single';
       if (mode === 'single' && typeof value.image_id !== 'string') return null;
+      const rawIds: string[] = Array.isArray(value.image_ids) ? value.image_ids : [];
+      const imageIds = [...new Set(rawIds.filter((id: string) =>
+        typeof id === 'string' && id.length > 0))].slice(0, 500);
       return {
         project_id: value.project_id, plan_id: value.plan_id, operation: 'DELETE_INDEX',
         mode, image_id: typeof value.image_id === 'string' ? value.image_id : undefined,
         image_count: Math.max(1, Number(value.image_count) || 1),
+        image_ids: imageIds.length ? imageIds : undefined,
       };
     } catch { return null; }
   }
@@ -66,7 +88,9 @@ export function useMaterialDelete(options: {
     state.pendingImageId = record?.image_id || '';
     state.pendingCount = record?.image_count || 0;
   }
-  function writeRecord(planId: string, mode: DeleteMode, count: number, imageId?: string): boolean {
+  function writeRecord(
+    planId: string, mode: DeleteMode, count: number, imageId?: string, imageIds?: string[],
+  ): boolean {
     const current = readRecord();
     if (current && current.plan_id !== planId) return false;
     try {
@@ -74,6 +98,7 @@ export function useMaterialDelete(options: {
         project_id: options.projectId(), plan_id: planId, operation: 'DELETE_INDEX',
         mode, image_id: mode === 'single' ? imageId : undefined,
         image_count: Math.max(1, count),
+        image_ids: imageIds?.length ? imageIds : undefined,
       }));
       syncPending();
       return true;
@@ -119,45 +144,111 @@ export function useMaterialDelete(options: {
     }
   }
 
-  async function readResults(task: MaterialBatchTask) {
-    const succeeded = new Set<string>(), failed = new Set<string>();
-    let seen = 0, cursor: string | null = null, pages = 0;
+  async function readResults(task: MaterialBatchTask, required: number): Promise<ResultScan> {
+    const rows = new Map<string, string>();
+    const conflicts = new Set<string>();
+    const visited = new Set<string>(['']);
+    let cursor: string | null = null, pages = 0, truncated = false;
+    const limit = 100;
+    const maxPages = Math.max(2, Math.min(20, Math.ceil(required / limit) + 2));
     do {
       const page = await getMaterialBatchResults(
-        options.projectId(), task.task_id, new AbortController().signal, cursor,
+        options.projectId(), task.task_id, new AbortController().signal, cursor, limit,
       );
-      for (const row of page.items || []) {
-        seen += 1;
-        if (row.item_state === 'succeeded') succeeded.add(row.image_id);
-        else failed.add(row.image_id);
-      }
-      for (const id of page.succeeded_image_ids || []) succeeded.add(id);
-      cursor = page.next_cursor || null;
       pages += 1;
-      if (pages > 500) break;
-    } while (cursor);
-    return {succeeded, failed, seen, truncated: pages > 500};
+      for (const row of page.items || []) {
+        const id = typeof row?.image_id === 'string' ? row.image_id : '';
+        if (!id) { truncated = true; continue; }
+        const stateValue = typeof row.item_state === 'string' ? row.item_state : '';
+        if (!ITEM_STATES.has(stateValue)) { conflicts.add(id); continue; }
+        const prior = rows.get(id);
+        if (prior === undefined) rows.set(id, stateValue);
+        else if (prior !== stateValue) conflicts.add(id);
+      }
+      for (const id of page.succeeded_image_ids || []) {
+        if (typeof id !== 'string' || !id) { truncated = true; continue; }
+        const prior = rows.get(id);
+        if (prior === undefined) rows.set(id, 'succeeded');
+        else if (prior !== 'succeeded') conflicts.add(id);
+      }
+      const next = typeof page.next_cursor === 'string' && page.next_cursor
+        ? page.next_cursor : null;
+      if (!next) { cursor = null; break; }
+      if (next === cursor || visited.has(next) || (cursor !== null && next <= cursor)) {
+        truncated = true; break;
+      }
+      visited.add(next);
+      cursor = next;
+      if (pages >= maxPages) { truncated = true; break; }
+    } while (cursor !== null);
+    const succeeded = new Set<string>(), failed = new Set<string>();
+    const pending = new Set<string>(), running = new Set<string>();
+    for (const [id, value] of rows) {
+      if (conflicts.has(id)) continue;
+      if (value === 'succeeded') succeeded.add(id);
+      else if (value === 'failed') failed.add(id);
+      else if (value === 'pending') pending.add(id);
+      else if (value === 'running') running.add(id);
+    }
+    return {succeeded, failed, pending, running, conflicts, seen: rows.size, truncated};
   }
 
   async function finish(task: MaterialBatchTask) {
     const record = readRecord();
     const mode: DeleteMode = record?.mode || state.mode;
     const imageId = record?.image_id || state.targetId;
-    const required = Math.max(1, Number(record?.image_count) || state.estimate?.count
-      || Number(task.total) || 1);
-    let results;
+    const frozen = record?.image_ids?.length ? new Set(record.image_ids) : null;
+    const required = Math.max(1, frozen?.size || Number(record?.image_count)
+      || state.estimate?.count || Number(task.total) || 1);
+    let results: ResultScan;
     try {
-      results = await readResults(task);
+      results = await readResults(task, required);
     } catch {
       state.unknown = true;
       state.notice = '任务已到终态，但逐项结果暂不可读；原删除身份已保留。';
       return;
     }
+    const counts: ResultCounts = {
+      succeeded: results.succeeded.size, failed: results.failed.size,
+      pending: results.pending.size, running: results.running.size,
+      conflict: results.conflicts.size, seen: results.seen, required,
+    };
+    state.summary = counts;
     const deletedIds = [...results.succeeded];
     const failedIds = [...results.failed];
-    if (results.truncated || results.seen < required) {
+    const foreign = frozen
+      ? [...results.succeeded, ...results.failed, ...results.pending,
+        ...results.running, ...results.conflicts].filter(id => !frozen.has(id))
+      : [];
+    if (foreign.length) {
       state.unknown = true;
-      state.notice = '逐项结果尚未完整覆盖本次范围，删除结果未证明；原删除身份已保留。';
+      state.notice = '逐项结果包含本次冻结范围之外的素材，身份异常；未执行本地清理，原删除身份已保留。';
+      return;
+    }
+    const covered = frozen
+      ? results.seen === frozen.size && [...frozen].every(id =>
+        results.succeeded.has(id) || results.failed.has(id)
+        || results.pending.has(id) || results.running.has(id)
+        || results.conflicts.has(id))
+      : results.seen === required;
+    if (results.truncated || !covered) {
+      state.unknown = true;
+      state.notice = `逐项结果尚未完整覆盖本次范围（已读 ${results.seen} / 应有 ${required}），`
+        + '删除结果未证明；原删除身份已保留。';
+      return;
+    }
+    if (results.conflicts.size) {
+      state.unknown = true;
+      state.notice = `逐项结果存在冲突或未知状态（${countsText(counts)}）；`
+        + '删除结果未证明，原删除身份已保留。';
+      return;
+    }
+    if (results.pending.size || results.running.size) {
+      state.unknown = true;
+      state.notice = `逐项结果仍有未处理/处理中素材（${countsText(counts)}），不能当作已删除或失败；`
+        + '已证明成功的素材会从选择中移除，原删除身份保留待核验。';
+      if (deletedIds.length)
+        await options.onSettled({deletedIds, failedIds, terminal: task.status, unknown: true});
       return;
     }
     if (mode === 'single' && !results.succeeded.has(imageId) && !results.failed.has(imageId)) {
@@ -178,8 +269,10 @@ export function useMaterialDelete(options: {
       return;
     }
     state.notice = task.status === 'PARTIAL_SUCCESS'
-      ? `部分成功：已删除 ${succeededCount} 张，失败 ${failedCount} 张；未确认的不会当作已删除。`
-      : `任务终态：${STATUS_LABEL[task.status] || task.status}；已证明删除 ${succeededCount} 张、失败 ${failedCount} 张。`;
+      ? `部分成功：已删除 ${succeededCount} 张，失败 ${failedCount} 张；`
+        + '只有成功项从选择中移除，失败项保持可见。'
+      : `任务终态：${STATUS_LABEL[task.status] || task.status}；`
+        + `已证明删除 ${succeededCount} 张、失败 ${failedCount} 张。`;
     await options.onSettled({deletedIds, failedIds, terminal: task.status, unknown: false});
   }
 
@@ -214,7 +307,7 @@ export function useMaterialDelete(options: {
       return;
     }
     state.busy = true; state.error = ''; state.notice = ''; state.task = null;
-    state.unknown = false; state.mode = mode;
+    state.unknown = false; state.mode = mode; state.summary = {...EMPTY_COUNTS};
     state.targetIds = unique; state.targetId = unique[0];
     try {
       const estimate = await estimateMaterialDeletion(
@@ -237,9 +330,17 @@ export function useMaterialDelete(options: {
     if (!estimate?.deletion_preview || state.busy || state.task || state.unknown
         || state.pendingPlanId) return;
     const preview = estimate.deletion_preview;
+    const frozen = estimate.selection_spec?.scope === 'SELECTED'
+      ? [...new Set(estimate.selection_spec.image_ids || [])] : [];
+    const targets = [...new Set(state.targetIds)];
+    if (!frozen.length || frozen.length !== targets.length
+        || targets.some(id => !frozen.includes(id)) || estimate.count !== targets.length) {
+      state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
+      return;
+    }
     state.busy = true; state.error = ''; state.notice = '';
     if (!writeRecord(preview.plan_id, state.mode, estimate.count,
-      state.mode === 'single' ? state.targetId : undefined)) {
+      state.mode === 'single' ? state.targetId : undefined, frozen)) {
       state.busy = false;
       state.error = '浏览器无法保存删除计划身份，已停止提交；请允许站点存储后重试。';
       return;

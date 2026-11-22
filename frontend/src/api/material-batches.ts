@@ -58,9 +58,11 @@ export interface MaterialBatchTask {
   finished_at?: string | null;
 }
 
+export type MaterialBatchItemState = 'pending' | 'running' | 'succeeded' | 'failed';
+
 export interface MaterialBatchItemResult {
   image_id: string;
-  item_state: 'succeeded' | 'failed' | string;
+  item_state: MaterialBatchItemState | string;
   item_error?: string | null;
 }
 
@@ -113,8 +115,11 @@ export function getMaterialBatch(projectId: string, taskId: string, signal: Abor
 
 export function getMaterialBatchResults(
   projectId: string, taskId: string, signal: AbortSignal, cursor: string | null = null,
+  limit = 100,
 ) {
+  const query = new URLSearchParams({limit: String(limit)});
+  if (cursor) query.set('cursor', cursor);
   return request<MaterialBatchResults>(
-    `${batchBase(projectId)}/${encodeURIComponent(taskId)}/results?limit=100`, {signal},
+    `${batchBase(projectId)}/${encodeURIComponent(taskId)}/results?${query}`, {signal},
   );
 }
