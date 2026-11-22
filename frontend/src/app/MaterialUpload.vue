@@ -8,11 +8,10 @@ import {getUploadBatchReceipt,projectLabels} from '../api/upload-batches';
 import {materialMediaUrl} from '../api/materials';
 import {mountImageUppyView} from '../../../static/modules/uppy-image-view.js';
 import {uploadMaterialFilesSequentially,requestMaterialChunkRecoverable,partitionMaterialFiles} from '../../../static/modules/material-upload-runtime.js';
-import {installUploadConfirmationRuntime,uploadSessionKey} from '../../../static/modules/upload-confirmation.js';
+import {installUploadConfirmationRuntime,uploadSessionKey,confirmationSessionKey} from '../../../static/modules/upload-confirmation.js';
 import {
   clearUploadSession,isUploadSessionUnresolved,readOwnedUploadSession,uploadRequestIds,
-  uploadSessionStorageKey,withUploadIdentityLock,writeUploadSession,
-} from '../../../static/modules/material-upload-session.js';
+  withUploadIdentityLock,writeUploadSession,} from '../../../static/modules/material-upload-session.js';
 import type {ImageUppyEvent,ImageUppyUploadOptions,ImageUploadRuntime} from '../../../static/modules/uppy-image-view.js';
 import type {UploadConfirmationRuntime} from '../../../static/modules/upload-confirmation.js';
 import type {UploadSessionRecord} from '../../../static/modules/material-upload-session.js';
@@ -42,7 +41,7 @@ const legacyAi=computed(()=>batchIds.value.length
   ?legacyUrl(projectId,'自动标注及清洗','','','material-ai')+'&source_batch_id='+encodeURIComponent(batchIds.value[batchIds.value.length-1])
   :legacyUrl(projectId,'自动标注及清洗','','','material-ai'));
 const pct=computed(()=>summary.total?Math.round(summary.confirmed/summary.total*100):0);
-const sessionKey=computed(()=>uploadSessionStorageKey(actorKey.value,projectId));
+
 
 function loadSession(){
   const value=readOwnedUploadSession({actorKey:actorKey.value,projectId});
@@ -317,7 +316,8 @@ async function fresh(){
 }
 function continueConfirmation(){
   if(!session.value?.batchIds.length)return;
-  if(confirmation)void confirmation.restoreForProject(projectId,{autoOpen:true});
+  const id=String(session.value.requestIds[0]||session.value.batchIds[0]||'');
+  if(confirmation)void confirmation.restoreForProject(projectId,{autoOpen:true,sessionId:id});
 }
 function previewImage(image:unknown){
   const row=image as {id?:string;filename?:string;content_url?:string;thumbnail_url?:string};
@@ -384,13 +384,38 @@ async function loadLabels(){
 }
 function scopedStorage():Storage{
   const legacyKey=uploadSessionKey(projectId);
+  const confirmationBase=confirmationSessionKey(projectId);
+  const confirmationKey=`material-upload-confirmation:v1:${encodeURIComponent(actorKey.value)}:${encodeURIComponent(projectId)}`;
+  const mapConfirmation=(key:string)=>{
+    if(key===confirmationBase)return confirmationKey;
+    if(key.startsWith(confirmationBase+':'))
+      return confirmationKey+key.slice(confirmationBase.length);
+    return '';
+  };
+  const mapGet=(key:string)=>{
+    const mapped=mapConfirmation(key);
+    if(mapped)return localStorage.getItem(mapped);
+    // Never expose the upload identity as a confirmation session: another tab
+    // may own it.  The upload page seeds confirmation state explicitly.
+    if(key===legacyKey)return null;
+    return localStorage.getItem(key);
+  };
+  const mapSet=(key:string,value:string)=>{
+    const mapped=mapConfirmation(key);
+    if(mapped)return localStorage.setItem(mapped,value);
+    if(key===legacyKey)return localStorage.setItem(confirmationKey,value);
+    return localStorage.setItem(key,value);
+  };
   return {
     get length(){return localStorage.length},
     clear(){/* never clear unrelated browser storage */},
     key:(index:number)=>localStorage.key(index),
-    getItem:(key:string)=>localStorage.getItem(key===legacyKey?sessionKey.value:key),
-    setItem:(key:string,value:string)=>localStorage.setItem(key===legacyKey?sessionKey.value:key,value),
-    removeItem:(key:string)=>localStorage.removeItem(key===legacyKey?sessionKey.value:key),
+    getItem:mapGet,
+    setItem:mapSet,
+    removeItem:(key:string)=>{
+      const mapped=mapConfirmation(key);
+      localStorage.removeItem(mapped||(key===legacyKey?confirmationKey:key));
+    },
   } as Storage;
 }
 function installConfirmation(){
@@ -416,8 +441,14 @@ onMounted(async()=>{
   if(unresolved.value)notice.value='存在未完成的上传请求；已禁止新上传覆盖，请先核验原 request_id。';
   else if(session.value?.batchIds.length)notice.value='上次上传已由服务器确认；可继续处理待确认素材或开始新批次。';
   else if(unowned.value)notice.value='发现归属无法确认的旧版本上传记录，未自动归属到当前账号；请使用原账号或原工作台上传入口核验。';
-  if(session.value?.batchIds.length&&confirmation)
-    await confirmation.restoreForProject(projectId,{autoOpen:false});
+  if(session.value?.batchIds.length&&confirmation){
+    const id=String(session.value.requestIds[0]||session.value.batchIds[0]||'');
+    const restored=await confirmation.restoreForProject(projectId,{autoOpen:false,sessionId:id});
+    if(!restored){
+      confirmation.recordSession({...session.value,projectId});
+      await confirmation.restoreForProject(projectId,{autoOpen:false,sessionId:id});
+    }
+  }
   await mountUppy();
 });
 onBeforeUnmount(()=>{

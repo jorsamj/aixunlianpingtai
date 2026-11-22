@@ -127,8 +127,16 @@ test('native confirmation submits a clean decision through the original batch ow
     expect(cleanNavigation).toContain(`task_id=${decision.clean_task_id}`);
     const auth = await (await request.get(origin + '/api/auth/session')).json();
     const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
-    const key = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
-    const stored = await page.evaluate(storageKey => JSON.parse(localStorage.getItem(storageKey)), key);
+    const keyPrefix = `material-upload-confirmation:v1:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}:`;
+    const stored = await page.evaluate(prefix => {
+      for (const key of Object.keys(localStorage)) {
+        if (!key.startsWith(prefix)) continue;
+        const value = JSON.parse(localStorage.getItem(key) || 'null');
+        if (value?.batchIds?.length) return value;
+      }
+      return null;
+    }, keyPrefix);
+    expect(stored).not.toBeNull();
     const receipt = await (await request.get(
       `${origin}/api/v55/projects/${project.id}/upload-batches/${stored.batchIds[0]}`)).json();
     expect(receipt.clean_task_id).toBe(decision.clean_task_id);
@@ -252,6 +260,62 @@ test('clean task progress opens the real legacy task modal for the created task'
   } finally { child.kill(); }
 });
 
+test('another tab upload cannot be overwritten by later or refresh on the first confirmation', async ({page, context, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-upload-confirm-race-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  let second;
+  try {
+    const project = await projectWith(request, origin, '确认与上传竞争');
+    await openUpload(page, origin, project.id);
+    let posts = 0;
+    page.on('request', req => {
+      const url = new URL(req.url());
+      if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/images`) posts += 1;
+    });
+    await upload(page, files(1, 'first'));
+
+    second = await context.newPage();
+    second.on('request', req => {
+      const url = new URL(req.url());
+      if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/images`) posts += 1;
+    });
+    await second.route('**/api/projects/*/images', async route => {
+      await new Promise(resolve => setTimeout(resolve, 900));
+      return route.continue();
+    });
+    await openUpload(second, origin, project.id);
+    const secondUpload = second.locator('.uppy-StatusBar-actionBtn--upload');
+    await second.locator('.uppy-Dashboard input[type=file]').first().setInputFiles(files(1, 'second'));
+    await expect(secondUpload).toBeVisible({timeout: 15000});
+    await secondUpload.click();
+
+    await page.locator('[data-upload-action="later"]').click();
+    await expect(second.getByText(/服务器已确认 1 \/ 1 张/)).toBeVisible({timeout: 90000});
+    await expect(page.getByRole('button', {name: /本次上传图片/})).toBeVisible({timeout: 30000});
+    await page.getByRole('button', {name: /本次上传图片/}).click();
+    await expect(page.locator('.upload-confirmation .uc-workspace')).toBeVisible({timeout: 30000});
+    expect(posts).toBe(2);
+
+    const auth = await (await request.get(origin + '/api/auth/session')).json();
+    const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
+    const identityKey = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    const indexPrefix = `material-upload-index:v1:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    const state = await page.evaluate(({identity, index}) => {
+      const current = JSON.parse(localStorage.getItem(identity) || 'null');
+      const rows = JSON.parse(localStorage.getItem(index) || '[]');
+      return {ids: current?.requestIds || [], requests: rows.flatMap(row => row.requestIds || [])};
+    }, {identity: identityKey, index: indexPrefix});
+    expect(state.ids).toHaveLength(1);
+    expect(state.requests).toHaveLength(2);
+  } finally {
+    await second?.close().catch(() => {});
+    child.kill();
+  }
+});
+
 test('negative pool intent and later-deferred confirmation survive a page refresh', async ({page, request}) => {
   test.setTimeout(300_000);
   const data = mkdtempSync(join(tmpdir(), 'xjalgo-upload-confirm-negative-'));
@@ -283,9 +347,15 @@ test('negative pool intent and later-deferred confirmation survive a page refres
     await page.locator('[data-upload-action="later"]').click();
     const auth = await (await request.get(origin + '/api/auth/session')).json();
     const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
-    const key = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
-    await expect.poll(async () => page.evaluate(storageKey =>
-      JSON.parse(localStorage.getItem(storageKey) || 'null')?.deferred, key)).toBe(true);
+    const keyPrefix = `material-upload-confirmation:v1:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}:`;
+    await expect.poll(async () => page.evaluate(prefix => {
+      for (const key of Object.keys(localStorage)) {
+        if (!key.startsWith(prefix)) continue;
+        const value = JSON.parse(localStorage.getItem(key) || 'null');
+        if (value?.deferred === true) return true;
+      }
+      return false;
+    }, keyPrefix)).toBe(true);
 
     await page.reload();
     await expect(page.locator('.upload-confirmation')).toContainText('本次上传图片', {timeout: 45000});

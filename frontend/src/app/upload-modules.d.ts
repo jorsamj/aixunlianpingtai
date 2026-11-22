@@ -172,7 +172,7 @@ declare module '*static/modules/upload-confirmation.js' {
       projectId: string; batchIds: string[]; totalFiles: number;
       failed?: {name?: string; reason?: string}[]; requestIds?: string[];
     }): Promise<boolean>;
-    restoreForProject(projectId: string, options?: {autoOpen?: boolean}): Promise<boolean>;
+    restoreForProject(projectId: string, options?: {autoOpen?: boolean; sessionId?: string}): Promise<boolean>;
     recordSession(value: Record<string, unknown>): Record<string, unknown> | null;
     mount(container?: HTMLElement): void;
     submit(decision: 'clean' | 'ready' | 'later' | 'smart'): Promise<boolean>;
@@ -190,4 +190,5 @@ declare module '*static/modules/upload-confirmation.js' {
     window?: Window;
   }): UploadConfirmationRuntime;
   export function uploadSessionKey(projectId: string): string;
+  export function confirmationSessionKey(projectId: string, sessionId?: string): string;
 }

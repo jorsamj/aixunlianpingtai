@@ -1,6 +1,10 @@
 import {withRequestDeadline} from './api.js?v=20261021s';
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export const uploadSessionKey = projectId => `material-upload-session:${projectId}`;
+// Confirmation UI/decision state is intentionally separate from the upload
+// request identity.  It must never replace the active request_id of another tab.
+export const confirmationSessionKey = (projectId, sessionId = '') =>
+  `material-upload-confirmation:v1:${projectId}${sessionId ? `:${sessionId}` : ''}`;
 
 export function confirmationRows(batches) {
   const seen = new Set();
@@ -38,14 +42,41 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
   const endpoint = (project, batch) => `/api/v55/projects/${encodeURIComponent(project)}/upload-batches/${encodeURIComponent(batch)}`;
   const current = (project, token) => token === generation && (!activeProject() || activeProject() === String(project));
   const request = (url, options={}) => withRequestDeadline(signal => api(url, {...options,signal}), {timeoutMs:30000,label:'上传回执'});
-  const read = project => {try { return JSON.parse(storage?.getItem(uploadSessionKey(project)) || 'null'); } catch { return null; }};
+  const sessionIdentity = value => String(value?.requestIds?.[0] || value?.batchIds?.[0] || '');
+  const read = (project, sessionId = '') => {
+    try {
+      const confirmation = JSON.parse(storage?.getItem(confirmationSessionKey(project, sessionId)) || 'null');
+      if (confirmation) return confirmation;
+      if (sessionId) return null;
+      // Legacy old page only; Vue scoped storage deliberately returns null for
+      // the upload-identity key so another tab's request can never be adopted.
+      return JSON.parse(storage?.getItem(uploadSessionKey(project)) || 'null');
+    } catch { return null; }
+  };
+  function readAny(project) {
+    let best = null;
+    try {
+      const prefix = confirmationSessionKey(project) + ':';
+      for (let index = 0; index < (storage?.length || 0); index += 1) {
+        const key = storage.key(index) || '';
+        if (!key.startsWith(prefix)) continue;
+        const value = JSON.parse(storage.getItem(key) || 'null');
+        if (!value || String(value.projectId || project) !== String(project)) continue;
+        if (!best || String(value.updatedAt || '') > String(best.updatedAt || '')) best = value;
+      }
+    } catch { /* corrupted confirmation state is ignored, upload identity stays separate */ }
+    return best || read(project);
+  }
   function recordSession(value) {
     const projectId = String(value.projectId || '');
     if (!projectId) return null;
-    const prior = read(projectId) || {};
-    const next = {...prior, ...value, failed:Array.isArray(value.failed)?value.failed.length:(value.failed??prior.failed??0), projectId, batchIds: [...new Set((value.batchIds || prior.batchIds || []).map(String))]};
-    // Only session pointers/counters live here. Image identities and decisions come from receipts.
-    try {storage?.setItem(uploadSessionKey(projectId), JSON.stringify(next));} catch {}
+    const sessionId = sessionIdentity(value);
+    if (!sessionId) return null;
+    const prior = read(projectId, sessionId) || {};
+    const next = {...prior, ...value, failed:Array.isArray(value.failed)?value.failed.length:(value.failed??prior.failed??0), projectId, batchIds: [...new Set((value.batchIds || prior.batchIds || []).map(String))], updatedAt: new Date().toISOString()};
+    // Only confirmation pointers/counters live here. Image identities and
+    // decisions come from receipts; the upload identity has a different owner.
+    try {storage?.setItem(confirmationSessionKey(projectId, sessionId), JSON.stringify(next));} catch {}
     return next;
   }
   async function fetchReceipts(projectId, ids, token = generation, recovering = false) {
@@ -149,10 +180,11 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
     finally {if(token===generation){loading=false;if(current(session.projectId,token))mount();}}
     return !error;
   }
-  async function restoreForProject(projectId, {autoOpen = true} = {}) {
+  async function restoreForProject(projectId, {autoOpen = true, sessionId = ''} = {}) {
     // Navigation may restore while open() is awaiting setPage; keep that request owner.
     if (busy || loading) return false;
-    const value=read(String(projectId));if(!value || !(value.batchIds?.length || value.requestIds?.length))return false;
+    const value=sessionId?read(String(projectId),String(sessionId)):readAny(String(projectId));
+    if(!value || !(value.batchIds?.length || value.requestIds?.length))return false;
     const token=++generation;session=value;visible=false;error='';sampleKind='';targetLabels.clear();negativeCategories.clear();categories=[];categoryError='';categoryLoading=false;
     try {const next=await fetchReceipts(String(projectId),sessionIds(value),token,true);if(!current(session.projectId,token))return false;batches=next;session=recordSession({...value,batchIds:[...new Set([...(value.batchIds||[]),...next.map(b=>String(b.id))])]});visible=autoOpen && (confirmationRows(batches).some(r=>r.decision==='pending') || unconfirmedCount()>0) && !value.deferred;mount();return true;}catch(e){if(!current(String(projectId),token))return false;error=String(e.message||e);mount();return false;}
   }
