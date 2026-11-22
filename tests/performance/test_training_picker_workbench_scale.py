@@ -149,7 +149,12 @@ def test_twelve_thousand_materials_formal_gt_multi_label_and_deep_page_contract(
                                              labels=('smoke','fire'),include_payload=False)
     gt_warm_ms = (time.perf_counter()-began)*1000
     assert filtered_next['total'] == filtered['total']
-    assert len([sql for sql in statements if 'SELECT COUNT(*) FROM materials m' in sql]) == 1
+    assert len([
+        sql for sql in statements
+        if ('SELECT COUNT(*) FROM materials m' in sql
+            or 'SELECT COUNT(*) FROM annotation_gt.annotation_label_references gt' in sql
+            or 'SELECT COUNT(DISTINCT gt.image_id) FROM annotation_gt.annotation_label_references gt' in sql)
+    ]) == 1
 
     # Positive/confirmed-negative/pending role truth is not inferred from Material labels.
     _cached_role_index.cache_clear()

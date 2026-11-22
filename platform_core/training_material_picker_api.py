@@ -562,6 +562,9 @@ def _gt_filtered_count_snapshot(
     params: list[object],
     material_revision: int,
     annotation_revision: int,
+    *,
+    from_sql: str = "materials m",
+    count_expr: str = "COUNT(*)",
 ) -> int:
     """Cache formal-GT counts only for an exact two-database read snapshot.
 
@@ -577,7 +580,7 @@ def _gt_filtered_count_snapshot(
         annotation_revision,
         # Bulk selection filters can contain tens of thousands of image IDs.
         # A bounded entry count alone must not retain entire ID lists as keys.
-        hashlib.sha256(json.dumps([where, params], ensure_ascii=False,
+        hashlib.sha256(json.dumps([from_sql, count_expr, where, params], ensure_ascii=False,
                                   separators=(",", ":")).encode("utf-8")).digest(),
     )
     with _GT_FILTER_COUNTS_LOCK:
@@ -587,7 +590,7 @@ def _gt_filtered_count_snapshot(
             count("training_gt_count_cache_hits")
             return cached
     total = int(database.execute(
-        "SELECT COUNT(*) FROM materials m" + where, params,
+        f"SELECT {count_expr} FROM {from_sql}" + where, params,
     ).fetchone()[0])
     with _GT_FILTER_COUNTS_LOCK:
         _GT_FILTER_COUNTS[key] = total
@@ -680,10 +683,14 @@ def _gt_material_filter_page(
     ))
     base_clauses = ["m.processing_status='processed'"]
     base_params: list[object] = []
+    material_clauses = list(base_clauses)
+    material_params = list(base_params)
     normalized_query = str(query or "").strip()
     if normalized_query:
         base_clauses.append("m.filename LIKE ? COLLATE NOCASE")
         base_params.append(f"%{normalized_query}%")
+        material_clauses.append("m.filename LIKE ? COLLATE NOCASE")
+        material_params.append(f"%{normalized_query}%")
     label_mode=str((filters or {}).get('label_mode') or 'any')
     if label_mode not in {'any','all'}: raise ValueError('invalid label_mode')
     if selected_labels and label_mode=='all':
@@ -710,6 +717,8 @@ def _gt_material_filter_page(
     extra_clauses, extra_params = _picker_filter_sql(pool_filters)
     base_clauses.extend(extra_clauses)
     base_params.extend(extra_params)
+    material_clauses.extend(extra_clauses)
+    material_params.extend(extra_params)
     base_where = " WHERE " + " AND ".join(base_clauses)
     with closing(observe_connection(connect_sqlite(repository.path, timeout=30,
                     uri=bool(pool_filters.get('__usage_sql_exclusion'))))) as database:
@@ -764,10 +773,29 @@ def _gt_material_filter_page(
             # The picker only needs a bounded first page and whether another
             # page exists. Exact COUNT(*) with a history/GT filter can scan the
             # entire 200k-material pool before LIMIT ever gets a chance to run.
-            total = (_gt_filtered_count_snapshot(
-                database, repository, annotations, base_where, base_params,
-                material_revision, annotation_revision,
-            ) if count_mode == "exact" else None)
+            if count_mode == "exact":
+                if selected_labels and label_mode == "any":
+                    label_where = (
+                        " WHERE gt.annotation_state='annotated' AND gt.box_count>0 "
+                        "AND gt.label_code IN (" + ",".join("?" for _ in selected_labels) + ")"
+                    )
+                    if material_clauses:
+                        label_where += " AND " + " AND ".join(material_clauses)
+                    total = _gt_filtered_count_snapshot(
+                        database, repository, annotations, label_where,
+                        [*selected_labels, *material_params],
+                        material_revision, annotation_revision,
+                        from_sql="annotation_gt.annotation_label_references gt JOIN materials m ON m.id=gt.image_id",
+                        count_expr=("COUNT(*)" if len(selected_labels) == 1
+                                    else "COUNT(DISTINCT gt.image_id)"),
+                    )
+                else:
+                    total = _gt_filtered_count_snapshot(
+                        database, repository, annotations, base_where, base_params,
+                        material_revision, annotation_revision,
+                    )
+            else:
+                total = None
             offset = None
             if page is not None:
                 page_number = int(page)

@@ -344,7 +344,12 @@ def test_formal_gt_filtered_count_reused_and_invalidated_by_both_revisions(tmp_p
     assert first.json()["total"] == second.json()["total"] == 115
 
     def count_queries():
-        return [sql for sql in statements if "SELECT COUNT(*) FROM materials m" in sql]
+        return [
+            sql for sql in statements
+            if ("SELECT COUNT(*) FROM materials m" in sql
+                or "SELECT COUNT(*) FROM annotation_gt.annotation_label_references gt" in sql
+                or "SELECT COUNT(DISTINCT gt.image_id) FROM annotation_gt.annotation_label_references gt" in sql)
+        ]
 
     assert len(count_queries()) == 1, "same GT/material revisions should reuse the exact filtered count"
 
