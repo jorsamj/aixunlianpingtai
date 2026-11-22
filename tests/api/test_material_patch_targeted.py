@@ -57,3 +57,35 @@ def test_single_image_dataset_patch_is_targeted_and_revisioned(client, seeded_pr
         f"/api/v12/projects/{project_id}/images/{image['id']}",
         json={"split": "not-a-split"},
     ).status_code == 400
+
+
+def test_mark_processed_updates_only_explicit_existing_ids(client, seeded_project):
+    project_id, image = seeded_project
+    store = platform_app.material_store(project_id)
+    before = store.read()
+    target_before = store.get(image["id"])
+    response = client.post(
+        f"/api/v49/projects/{project_id}/images/mark-processed",
+        json={"image_ids": [image["id"], image["id"], "missing-image"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "changed": 1}
+    after = store.read()
+    target = store.get(image["id"])
+    assert after.revision == before.revision + 1
+    assert target["processing_status"] == "processed"
+    assert target["cleaned_at"]
+    for key in ("split", "dataset_id", "labels", "storage_source_id"):
+        assert target.get(key) == target_before.get(key)
+    assert [row for row in after.rows if row["id"] != image["id"]] == [
+        row for row in before.rows if row["id"] != image["id"]
+    ]
+    again = client.post(
+        f"/api/v49/projects/{project_id}/images/mark-processed",
+        json={"image_ids": [image["id"]]},
+    )
+    assert again.json() == {"ok": True, "changed": 1}
+    # The callback reports every matching row; revision only advances when the
+    # serialized payload actually changes (same-second cleaned_at can be equal).
+    assert store.read().revision >= before.revision + 1
+
