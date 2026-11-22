@@ -36,14 +36,21 @@ def test_existing_schema6_adds_batch_index_without_data_rewrite(tmp_path):
     repo.upsert({'id':'keep','filename':'keep.jpg','processing_status':'pending_decision'})
     revision=repo.current_revision()
     with closing(repo._connect()) as db:
-        db.execute('DROP INDEX ix_materials_import_batch'); db.commit()
-    # Simulate a fresh process opening an old schema6 database. The existing
-    # per-process initialization cache intentionally ignores external DDL edits.
+        # Real schema-6 file: the batch index exists, the schema-7 dataset
+        # index does not. The version marker is what drives the migration.
+        db.execute('DROP INDEX IF EXISTS ix_materials_dataset')
+        db.execute('PRAGMA user_version=6')
+        db.commit()
     from platform_core.material_repository_batch import _MATERIAL_INIT_READY
     _MATERIAL_INIT_READY.discard(repo.path.resolve())
     restored=MaterialRepository(tmp_path)
     with closing(restored._connect()) as db:
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone()
-        assert db.execute('PRAGMA user_version').fetchone()[0]==6
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_dataset'").fetchone()
+        assert db.execute('PRAGMA user_version').fetchone()[0]==7
     assert restored.get('keep')['processing_status']=='pending_decision'
+    assert restored.current_revision()==revision
+    # A second open at schema 7 must reuse the fast path, not rebuild indexes.
+    _MATERIAL_INIT_READY.discard(repo.path.resolve())
+    MaterialRepository(tmp_path)
     assert restored.current_revision()==revision
