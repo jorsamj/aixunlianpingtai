@@ -88,6 +88,7 @@ jobs:
           node --check static/modules/auto-label-poll-runtime.js &&
           node --check static/modules/upload-task-center.js &&
           node --check static/modules/material-upload-runtime.js &&
+          node --check static/modules/material-upload-session.js &&
           node --check static/modules/material-batches.js &&
           node --check static/modules/zip-import-runtime.js &&
           node --check static/modules/ui-state.js &&
@@ -675,8 +676,11 @@ jobs:
           tests/browser/real-material-delete.spec.mjs
           tests/browser/material-delete-pagination.spec.mjs
           tests/browser/material-delete-result-evidence.spec.mjs
+          tests/browser/material-delete-scale.spec.mjs
           tests/browser/native-image-upload.spec.mjs
+          tests/browser/native-upload-confirmation.spec.mjs
           tests/browser/native-zip-import.spec.mjs
+          tests/browser/native-zip-advanced.spec.mjs
           tests/browser/native-upload-task-center.spec.mjs
           tests/browser/negative-pool-members.spec.mjs
           tests/browser/material-presentation-poc.spec.mjs
