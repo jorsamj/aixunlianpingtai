@@ -86,7 +86,7 @@ DB 文件约 55.8MB。`mutate` 即使回调不修改任何行，仍持有写事�
 | `v20_batch_image_split` selected | HTTP 用户触发 | 选中集合 | `patch` | 已定点 |
 | `v20_batch_image_split` filtered/dataset | HTTP 用户触发 | 筛选/全数据集 | `load_images` + `mutate` | 需按 filter 走 `mutate_ids`/批处理，暂未改 |
 | `v12_auto_split` | HTTP 用户触发 | 数据集 | `load_images` + `mutate` + 逐图 GT | 高成本，需按数据集 id 先取候选再定点 |
-| `v49_mark_processed` | HTTP 用户触发 | 显式 ids | `mutate` | **可迁移 `mutate_ids`，下一批** |
+| `v49_mark_processed` | HTTP 用户触发 | 显式 ids | `mutate_ids()`（<=2000）/`mutate()`（更大） | **W2.2 已优化并设阈值** |
 | `v44_supplement_training_data` | HTTP 用户触发 | weak-label 候选 | `load_images` + 逐图 GT + `mutate` | 低频但高成本，下一批 |
 | `_v50_end_image_batch` ZIP 导入提交 | Worker/导入 | 全批次 | `mutate(commit)` | 导入路径，需保留批次回执 |
 | `_v50_restore_dataset_delete_rows` | 恢复 | 数据集删除恢复 | `mutate` | 低频运维 |
@@ -125,6 +125,39 @@ DB 文件约 55.8MB。`mutate` 即使回调不修改任何行，仍持有写事�
 SQL：旧路径一次全表 `SELECT` + 全表 normalize + 定点 UPDATE；新路径一次主键 `SELECT` + 一次 UPDATE + revision 更新。
 数据一致性：API 测试验证仅目标行改变、第二行字节级不变、revision +1、split-only 路径不变、404/400 合同保留；
 `tests/api/test_dataset_deletion_recovery.py` 12 项数据集锁/删除恢复测试通过。
+
+> P95 口径：nearest-rank 的下取整位置 `floor(n*0.95)-1`，并保留原始样本；30 次样本仍只是小样本估计。
+
+### 2.4 W2.2 `v49_mark_processed`
+
+`POST /api/v49/projects/{pid}/images/mark-processed` 只接受显式 image_ids，原实现全表 `mutate`。
+
+优化：显式集合 `<= 2000` 时使用 `MaterialStore.mutate_ids()`；更大集合保留 `mutate()`。阈值来自实测：
+
+| 目标 ID 数 | 旧 mutate P50 / P95 | 新 mutate_ids P50 / P95 |
+|---:|---:|---:|
+| 1 | 1806.44 / 1856.80 ms | 16.54 / 18.79 ms |
+| 100 | 1755.96 / 1762.33 ms | 38.99 / 42.52 ms |
+| 1,000 | 1980.04 / 2139.78 ms | 203.84 / 209.72 ms |
+| 50,000 | 6051.09 / 6250.78 ms | 20538.70 / 22343.73 ms |
+
+样本各 3 次，50 万行素材库；P95=样本最大值，不是稳定 P95。50k 全量目标下 `mutate_ids` 的 500 行 IN 查询反而更慢，因此**不把大集合强切到定点接口**。
+业务合同：只更新显式存在的 ID；重复 ID 去重；缺失 ID 不计入 changed；只改 `processing_status/cleaned_at`；GT/负样本/split/dataset 不变；revision 仅在实际 payload 变化时递增；异常回滚由 Repository 事务保证。
+
+### 2.5 W2.3 `v20_batch_image_split`
+
+| 路径 | 处理 | 结果 |
+|---|---|---|
+| `selected` | `patch({id:...})` | 已定点；无全表 `read/mutate` |
+| `filtered` marked/unmarked | `load_images` + annotation snapshot + `mutate` | **保留原实现** |
+| `filtered` train/val/test/unassigned | `mutate` 内重算 latest split | **保留原实现** |
+| `dataset` | `mutate` 内重算 latest dataset membership | **保留原实现** |
+
+保留原因不是“不想改”，而是原合同要求**写事务内基于最新成员关系重算**：
+`test_batch_split_rechecks_latest_dataset_membership` 会在提交暂停期间把一张图移入目标数据集，旧实现随后的 `mutate` 必须把它计入；
+若先 `load_images` 冻结候选 ID 再 `mutate_ids`，会漏掉该图，改变“全成功/原子”语义。
+`filtered marked/unmarked` 的候选还依赖 GT 快照，无法在未扩展 Repository 事务原语的情况下安全冻结。
+本轮不把该路径改成非原子分批，保留原实现；这是已审计的阻塞结论，不是未完成优化。
 
 ## 3. F1-B PostgreSQL 实施设计（不执行）
 
