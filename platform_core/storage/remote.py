@@ -97,7 +97,7 @@ class RemoteStorageProvider:
         except Exception as error:
             self._raise("read", error)
 
-    def download(self, object_key: str, destination: str | Path) -> ObjectMetadata:
+    def download(self, object_key: str, destination: str | Path, *, include_metadata: bool = True) -> ObjectMetadata:
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.parent / f".part-{uuid.uuid4().hex}.tmp"
@@ -112,7 +112,9 @@ class RemoteStorageProvider:
             if temporary.stat().st_size <= 0:
                 raise OSError("downloaded object is empty")
             os.replace(temporary, target)
-            return self.stat(object_key)
+            if include_metadata:
+                return self.stat(object_key)
+            return ObjectMetadata(key=object_key, size_bytes=target.stat().st_size)
         except Exception as error:
             temporary.unlink(missing_ok=True)
             if isinstance(error, StorageError):
@@ -160,4 +162,4 @@ class RemoteStorageProvider:
         return None
 
     def materialize_to_local(self, object_key: str, destination: str | Path) -> ObjectMetadata:
-        return self.download(object_key, destination)
+        return self.download(object_key, destination, include_metadata=False)
