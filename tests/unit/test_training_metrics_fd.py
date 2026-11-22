@@ -88,6 +88,19 @@ def test_training_metrics_closes_every_sqlite_connection(tmp_path, monkeypatch):
     counters = {"opened": 0, "closed": 0}
 
     def tracked_connect(*args, **kwargs):
+        # sqlite3.connect is process-global; count only the metrics database.
+        # Background threads and unrelated repository opens must not pollute
+        # this connection-leak assertion.
+        target = str(args[0]) if args else ""
+        if target.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+            target = unquote(urlparse(target).path)
+            if len(target) > 2 and target[0] == "/" and target[2] == ":":
+                target = target[1:]
+        else:
+            target = target.split("?")[0]
+        if Path(target).resolve() != db_path.resolve():
+            return real_connect(*args, **kwargs)
         counters["opened"] += 1
         return TrackingConnection(real_connect(*args, **kwargs), counters)
 

@@ -156,7 +156,9 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     assert claim[0]["_dataset_delete_claim"] == "1" * 32
     assert business_state(target) == before == business_state(source)
     with closing(repository._connect()) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone()
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_dataset'").fetchone()
         plan = " ".join(row[3] for row in db.execute(
             "EXPLAIN QUERY PLAN SELECT payload_json FROM materials INDEXED BY ix_materials_dataset_delete_claim "
             "WHERE json_extract(payload_json,'$._dataset_delete_claim') IS NOT NULL "
