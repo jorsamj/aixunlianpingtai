@@ -121,6 +121,7 @@ from platform_core.material_repository import (
     DATASET_DELETE_CLAIM_FIELD,
     MaterialRepository,
     material_annotation_lifecycle_fence,
+    material_dataset_matches,
 )
 from platform_core.materials import initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
@@ -11037,7 +11038,7 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
                 annotation_box_counts[str(image_id)] = len(annotation.get("boxes", []))
 
     def match_latest(img: Dict[str, Any]) -> bool:
-        if dataset_id and img.get("dataset_id", "default") != dataset_id:
+        if not material_dataset_matches(img, dataset_id):
             return False
         if scope == "dataset":
             return True

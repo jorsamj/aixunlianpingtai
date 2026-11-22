@@ -24,9 +24,10 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 6
-# Schema 6 adds only an index; existing read-only lifecycle evidence is identical.
-MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6})
+_SCHEMA_VERSION = 7
+# Schema 7 adds the dataset expression index; old read-only lifecycle evidence
+# remains readable without rewriting material payloads.
+MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6, 7})
 _INIT_LOCK_TIMEOUT = 30
 DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
 MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
@@ -258,6 +259,21 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
+def material_dataset_matches(value: Mapping[str, Any], dataset_id: str | None) -> bool:
+    """Canonical dataset membership, including legacy default identities.
+
+    ``default`` accepts missing, null, empty, numeric zero and boolean false
+    representations that older JSON import paths wrote.  Non-default IDs remain
+    exact string matches; callers must not treat a numeric coincidence as an ID.
+    """
+    if dataset_id is None:
+        return True
+    raw = value.get("dataset_id", "default")
+    if str(dataset_id) == "default":
+        return str(raw or "default") == "default"
+    return raw == dataset_id
+
+
 def encode_material_cursor(created_at: str, image_id: str) -> str:
     raw = json.dumps([created_at, image_id], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -467,6 +483,16 @@ class MaterialRepository:
                           FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
                          WHERE TRIM(CAST(scope.value AS TEXT)) <> ''
                         """
+                    )
+                if version < 7:
+                    # Existing schema-6 databases skip _SCHEMA entirely on the
+                    # fast path.  Build the expression index once, under the
+                    # initialization lock; a failure aborts before user_version
+                    # is advanced, so the next open retries visibly.
+                    database.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_materials_dataset "
+                        "ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'), "
+                        "created_at, id)"
                     )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
@@ -1802,7 +1828,16 @@ class MaterialRepository:
             try:
                 query = "SELECT id, payload_json FROM materials"
                 params: tuple[Any, ...] = ()
-                if normalized_dataset is not None:
+                if normalized_dataset == "default":
+                    # Candidate superset; final membership is decided by the
+                    # canonical Python predicate below.  Historical default
+                    # rows may contain "", 0, 0.0 or false instead of "default".
+                    query += (
+                        " WHERE COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default') "
+                        "IN (?, ?, ?, ?)"
+                    )
+                    params = ("default", "", "0", "0.0")
+                elif normalized_dataset is not None:
                     query += (
                         " WHERE COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default') = ?"
                     )
@@ -1810,7 +1845,11 @@ class MaterialRepository:
                 query += " ORDER BY created_at, id"
                 stored = database.execute(query, params).fetchall()
                 before = {str(row["id"]): str(row["payload_json"]) for row in stored}
-                rows = [self._row_payload(row) for row in stored]
+                rows = [
+                    row for row in (self._row_payload(value) for value in stored)
+                    if material_dataset_matches(row, normalized_dataset)
+                ]
+                before = {str(row["id"]): before[str(row["id"])] for row in rows}
                 result = fn(rows)
                 after: dict[str, dict[str, Any]] = {}
                 for value in rows:

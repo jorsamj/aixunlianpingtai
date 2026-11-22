@@ -158,6 +158,9 @@ SQL：旧路径一次全表 `SELECT` + 全表 normalize + 定点 UPDATE；新路
 - 新增表达式索引 `ix_materials_dataset`，`EXPLAIN QUERY PLAN` 实测 `SEARCH materials USING INDEX ix_materials_dataset (<expr>=?)`；
 - `dataset_id=None` 退化为原有全量语义。
 
+历史默认身份：`default` 兼容缺失字段、`null`、`""`、`0`、`0.0`、`false`；SQL 先取候选超集，事务内再用 `material_dataset_matches()` 精确过滤；普通 dataset ID 保持字符串精确匹配，不把数值巧合当 ID。
+Schema 版本从 6 升到 7：旧 schema-6 库在初始化锁内执行一次 `CREATE INDEX IF NOT EXISTS`，失败不推进 `user_version`；新库由 `_SCHEMA` 创建，已有只读版本 5/6 仍可只读打开。
+
 `v20` 仅在 `scope == "dataset"` 使用 `mutate_dataset`；`filtered` 仍保留 `mutate`。
 
 50k 行 / 7 样本：
@@ -181,6 +184,12 @@ SQL 次数、RSS、事务精确持续时间：`NOT_VERIFIED`；函数耗时包�
 
 `filtered marked/unmarked` 的候选还依赖正式 GT 快照；`filtered train/val/test` 仍要求在写事务内重算最新 split。
 这些条件无法在现有 material 事务内与 GT 跨域快照保持一致，因此保留原实现，不拆成非原子批次；这是已审计的阻塞结论。
+
+### 2.7 W3 训练选材
+
+200k 隔离测量、精确 GT 标签 count 优化与结果等价证据见
+[W3_TRAINING_PICKER_MEASUREMENT_20261122.md](W3_TRAINING_PICKER_MEASUREMENT_20261122.md)。
+Vue 的 deferred 路径保持约 10–54ms；精确标签 count 从 1,225.8ms 降到 305.3–365.0ms（两次合成样本）。
 
 ## 3. F1-B PostgreSQL 实施设计（不执行）
 

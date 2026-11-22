@@ -177,6 +177,44 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
     )
 
 
+def test_dataset_default_matches_historical_legacy_identities(client):
+    import app as app_module
+
+    project = client.post(
+        "/api/projects",
+        json={"name": f"legacy-{uuid.uuid4().hex[:8]}", "labels": []},
+    ).json()
+    project_id = project["id"]
+    rows = [
+        {"id": "legacy-missing", "filename": "m.jpg", "object_key": "m.jpg"},
+        {"id": "legacy-null", "filename": "n.jpg", "object_key": "n.jpg", "dataset_id": None},
+        {"id": "legacy-empty", "filename": "e.jpg", "object_key": "e.jpg", "dataset_id": ""},
+        {"id": "legacy-zero", "filename": "z.jpg", "object_key": "z.jpg", "dataset_id": 0},
+        {"id": "legacy-zero-float", "filename": "zf.jpg", "object_key": "zf.jpg", "dataset_id": 0.0},
+        {"id": "legacy-false", "filename": "f.jpg", "object_key": "f.jpg", "dataset_id": False},
+        {"id": "legacy-string-zero", "filename": "sz.jpg", "object_key": "sz.jpg", "dataset_id": "0"},
+        {"id": "normal-default", "filename": "d.jpg", "object_key": "d.jpg", "dataset_id": "default"},
+        {"id": "other", "filename": "o.jpg", "object_key": "o.jpg", "dataset_id": "other"},
+        {"id": "numeric-one", "filename": "one.jpg", "object_key": "one.jpg", "dataset_id": 1},
+    ]
+    store = app_module.material_store(project_id)
+    store.upsert_many([{**row, "split": "unassigned"} for row in rows])
+    before = store.read().revision
+    result = client.post(
+        f"/api/v20/projects/{project_id}/images/batch_split",
+        json={"split": "train", "dataset_id": "default", "filter": "all", "scope": "dataset"},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["changed"] == 7
+    state = {row["id"]: row["split"] for row in store.read().rows}
+    for image_id in ("legacy-missing", "legacy-null", "legacy-empty", "legacy-zero",
+                     "legacy-zero-float", "legacy-false", "normal-default"):
+        assert state[image_id] == "train", image_id
+    for image_id in ("legacy-string-zero", "other", "numeric-one"):
+        assert state[image_id] == "unassigned", image_id
+    assert store.read().revision == before + 1
+
+
 def test_dataset_scope_empty_result_is_400_and_does_not_bump_revision(client):
     import app as app_module
 
