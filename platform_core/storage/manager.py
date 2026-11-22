@@ -12,7 +12,8 @@ from .base import StorageProvider
 from .cache import MaterialCache, MaterializedFile, file_sha256, resolve_material_cache_location
 from .errors import StorageError
 from .factory import StorageProviderFactory
-from .models import ObjectMetadata, StorageType
+from .models import ObjectMetadata, StorageHealth, StorageType
+from .nas_health import check_nas_source
 from .source_repository import StorageSource, StorageSourceRepository
 
 
@@ -43,6 +44,24 @@ class StorageManager:
             cache_root_source=cache_location.cache_root_source,
         )
         self._providers: dict[str, StorageProvider] = {}
+
+    def check_nas_source(
+        self, source_id: str, *, node_id: str, object_key: str = "",
+        expected_sha256: str = "", expected_size: int | None = None,
+    ) -> StorageHealth:
+        source = self.sources.get(str(source_id or "default_local"))
+        if source is None:
+            raise StorageError(
+                code="STORAGE_SOURCE_NOT_FOUND", message="素材存储源不存在",
+                detail=f"找不到存储源 {source_id}。",
+                solution="请恢复该存储源配置或重新建立素材索引。",
+                context={"source_id": str(source_id)},
+            )
+        return check_nas_source(
+            source, node_id=node_id, data_dir=self.data_dir,
+            project_dir=self.project_dir, object_key=object_key,
+            expected_sha256=expected_sha256, expected_size=expected_size,
+        )
 
     def provider_for(self, source_id: str) -> StorageProvider:
         normalized = str(source_id or "default_local")

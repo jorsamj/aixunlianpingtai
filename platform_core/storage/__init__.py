@@ -4,6 +4,7 @@ from .errors import StorageError, redact_storage_error
 from .factory import StorageProviderFactory
 from .local import LocalStorageProvider
 from .manager import StorageManager
+from .nas_health import check_nas_source, read_mount_info
 from .oss import OSSStorageProvider
 from .remote import RemoteStorageProvider
 from .s3 import S3StorageProvider
@@ -48,4 +49,6 @@ __all__ = [
     "file_sha256",
     "redact_storage_error",
     "LocalStorageProvider",
+    "check_nas_source",
+    "read_mount_info",
 ]
