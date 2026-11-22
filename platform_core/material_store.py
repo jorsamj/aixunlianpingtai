@@ -194,6 +194,24 @@ class MaterialStore:
 
         return self.mutate(apply)
 
+    def mutate_dataset(
+        self, dataset_id: str | None,
+        fn: Callable[[list[dict[str, Any]]], _Result],
+    ) -> _Result:
+        """Dataset-scoped mutation delegated to the transactional SQLite owner."""
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.mutate_dataset(dataset_id, fn)
+        expected = None if dataset_id is None else str(dataset_id)
+
+        def apply(rows: list[dict[str, Any]]) -> _Result:
+            return fn([
+                row for row in rows
+                if expected is None or str(row.get("dataset_id", "default")) == expected
+            ])
+
+        return self.mutate(apply)
+
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         delegate = self._sqlite_delegate()
         if delegate is not None:

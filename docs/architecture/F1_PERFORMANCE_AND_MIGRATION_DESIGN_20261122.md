@@ -86,7 +86,7 @@ DB 文件约 55.8MB。`mutate` 即使回调不修改任何行，仍持有写事�
 | `v20_batch_image_split` selected | HTTP 用户触发 | 选中集合 | `patch` | 已定点 |
 | `v20_batch_image_split` filtered/dataset | HTTP 用户触发 | 筛选/全数据集 | `load_images` + `mutate` | 需按 filter 走 `mutate_ids`/批处理，暂未改 |
 | `v12_auto_split` | HTTP 用户触发 | 数据集 | `load_images` + `mutate` + 逐图 GT | 高成本，需按数据集 id 先取候选再定点 |
-| `v49_mark_processed` | HTTP 用户触发 | 显式 ids | `mutate_ids()`（<=2000）/`mutate()`（更大） | **W2.2 已优化并设阈值** |
+| `v49_mark_processed` | HTTP 用户触发 | 显式 ids | `mutate_ids()`（<=5000）/`mutate()`（更大） | **W2.2 已优化并设阈值** |
 | `v44_supplement_training_data` | HTTP 用户触发 | weak-label 候选 | `load_images` + 逐图 GT + `mutate` | 低频但高成本，下一批 |
 | `_v50_end_image_batch` ZIP 导入提交 | Worker/导入 | 全批次 | `mutate(commit)` | 导入路径，需保留批次回执 |
 | `_v50_restore_dataset_delete_rows` | 恢复 | 数据集删除恢复 | `mutate` | 低频运维 |
@@ -132,32 +132,55 @@ SQL：旧路径一次全表 `SELECT` + 全表 normalize + 定点 UPDATE；新路
 
 `POST /api/v49/projects/{pid}/images/mark-processed` 只接受显式 image_ids，原实现全表 `mutate`。
 
-优化：显式集合 `<= 2000` 时使用 `MaterialStore.mutate_ids()`；更大集合保留 `mutate()`。阈值来自实测：
+优化：显式集合 `<= 5000` 时使用 `MaterialStore.mutate_ids()`；更大集合保留 `mutate()`。阈值来自实测：
 
 | 目标 ID 数 | 旧 mutate P50 / P95 | 新 mutate_ids P50 / P95 |
 |---:|---:|---:|
-| 1 | 1806.44 / 1856.80 ms | 16.54 / 18.79 ms |
-| 100 | 1755.96 / 1762.33 ms | 38.99 / 42.52 ms |
-| 1,000 | 1980.04 / 2139.78 ms | 203.84 / 209.72 ms |
-| 50,000 | 6051.09 / 6250.78 ms | 20538.70 / 22343.73 ms |
+| 1 | 1722.32 / 1746.78 ms | 10.21 / 11.48 ms |
+| 100 | 1715.07 / 1774.34 ms | 29.94 / 33.70 ms |
+| 1,000 | 1917.91 / 1957.21 ms | 192.86 / 215.65 ms |
+| 2,000 | 2284.04 / 2308.79 ms | 413.44 / 433.91 ms |
+| 5,000 | 2173.27 / 2237.86 ms | **1331.55 / 1491.03 ms** |
+| 10,000 | 2942.99 / 3001.59 ms | 3453.19 / 3681.48 ms |
+| 50,000 | 5921.42 / 6198.48 ms | 22574.00 / 23559.27 ms |
 
-样本各 3 次，50 万行素材库；P95=样本最大值，不是稳定 P95。50k 全量目标下 `mutate_ids` 的 500 行 IN 查询反而更慢，因此**不把大集合强切到定点接口**。
+样本各 3 次，**50,000 行**素材库；P95=样本最大值，不是稳定 P95。5k 是实测收益边界，10k 已反转；因此**不把大集合强切到定点接口**。
 业务合同：只更新显式存在的 ID；重复 ID 去重；缺失 ID 不计入 changed；只改 `processing_status/cleaned_at`；GT/负样本/split/dataset 不变；revision 仅在实际 payload 变化时递增；异常回滚由 Repository 事务保证。
 
-### 2.5 W2.3 `v20_batch_image_split`
+### 2.5 W2.4 `v20_batch_image_split` dataset 原子事务
+
+新增 `MaterialRepository.mutate_dataset(dataset_id, fn)`：
+
+- `BEGIN IMMEDIATE` 内用 `COALESCE(CAST(json_extract(payload_json,'$.dataset_id') AS TEXT),'default') = ?` 选择最新成员；
+- 只反序列化匹配行；非匹配行不进入 Python；
+- 回调仍执行原 `match_latest/apply_split`，只允许更新字段，不允许增删/改身份；
+- 变更才写行并 `_bump_revision`；异常回滚；
+- 新增表达式索引 `ix_materials_dataset`，`EXPLAIN QUERY PLAN` 实测 `SEARCH materials USING INDEX ix_materials_dataset (<expr>=?)`；
+- `dataset_id=None` 退化为原有全量语义。
+
+`v20` 仅在 `scope == "dataset"` 使用 `mutate_dataset`；`filtered` 仍保留 `mutate`。
+
+50k 行 / 7 样本：
+
+| 匹配行数 | 旧 P50 / P95 | 新 P50 / P95 |
+|---:|---:|---:|
+| 100（少量） | 1796.58 / 2057.16 ms | **19.98 / 24.23 ms** |
+| 5,000（中等） | 2220.21 / 2516.12 ms | **549.23 / 697.94 ms** |
+| 44,899（大部分） | 5335.42 / 5573.16 ms | **4935.14 / 5114.01 ms** |
+
+SQL 次数、RSS、事务精确持续时间：`NOT_VERIFIED`；函数耗时包含整个事务。
+
+### 2.6 W2.3 filtered 阻塞边界
 
 | 路径 | 处理 | 结果 |
 |---|---|---|
 | `selected` | `patch({id:...})` | 已定点；无全表 `read/mutate` |
 | `filtered` marked/unmarked | `load_images` + annotation snapshot + `mutate` | **保留原实现** |
 | `filtered` train/val/test/unassigned | `mutate` 内重算 latest split | **保留原实现** |
-| `dataset` | `mutate` 内重算 latest dataset membership | **保留原实现** |
+| `dataset` | `mutate_dataset` 事务内按最新 dataset 选择 | **W2.4 已迁移** |
 
-保留原因不是“不想改”，而是原合同要求**写事务内基于最新成员关系重算**：
-`test_batch_split_rechecks_latest_dataset_membership` 会在提交暂停期间把一张图移入目标数据集，旧实现随后的 `mutate` 必须把它计入；
-若先 `load_images` 冻结候选 ID 再 `mutate_ids`，会漏掉该图，改变“全成功/原子”语义。
-`filtered marked/unmarked` 的候选还依赖 GT 快照，无法在未扩展 Repository 事务原语的情况下安全冻结。
-本轮不把该路径改成非原子分批，保留原实现；这是已审计的阻塞结论，不是未完成优化。
+`filtered marked/unmarked` 的候选还依赖正式 GT 快照；`filtered train/val/test` 仍要求在写事务内重算最新 split。
+这些条件无法在现有 material 事务内与 GT 跨域快照保持一致，因此保留原实现，不拆成非原子批次；这是已审计的阻塞结论。
 
 ## 3. F1-B PostgreSQL 实施设计（不执行）
 

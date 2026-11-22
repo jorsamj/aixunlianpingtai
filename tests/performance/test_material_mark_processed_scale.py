@@ -55,7 +55,7 @@ def test_mark_processed_explicit_sets_scale(tmp_path: Path):
         return (time.perf_counter() - started) * 1000
 
     report = {"fixture_only": True, "rows": 50_000, "cases": []}
-    for size in (1, 100, 1_000, 50_000):
+    for size in (1, 100, 1_000, 2_000, 5_000, 10_000, 50_000):
         target = {f"m{index:07d}" for index in range(size)}
         old = [run(target, True, f"old-{size}-{index}") for index in range(3)]
         new = [run(target, False, f"new-{size}-{index}") for index in range(3)]

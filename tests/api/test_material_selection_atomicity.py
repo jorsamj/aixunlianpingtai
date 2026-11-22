@@ -49,6 +49,10 @@ class PausedCommitStore:
         self._pause()
         return self._delegate.mutate(fn)
 
+    def mutate_dataset(self, dataset_id, fn):
+        self._pause()
+        return self._delegate.mutate_dataset(dataset_id, fn)
+
     def patch(self, patches):
         self._pause()
         return self._delegate.patch(patches)
@@ -171,6 +175,49 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
             / "dataset_deletions"
         ).glob("*.json")
     )
+
+
+def test_dataset_scope_empty_result_is_400_and_does_not_bump_revision(client):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    before = app_module.material_store(project_id).read().revision
+    payload = app_module.BatchImageSplitReq(
+        image_ids=[], split="train", dataset_id=dataset_id,
+        filter="all", scope="dataset",
+    )
+    result = client.post(
+        f"/api/v20/projects/{project_id}/images/batch_split",
+        json=payload.model_dump(),
+    )
+    assert result.status_code == 400
+    assert app_module.material_store(project_id).read().revision == before
+
+
+def test_dataset_scope_changed_count_and_revision_match_original_contract(client):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    first = upload_png(client, project_id, dataset_id, "first.png")
+    second = upload_png(client, project_id, dataset_id, "second.png")
+    outside = upload_png(client, project_id, "default", "outside.png")
+    before = app_module.material_store(project_id).read().revision
+    payload = app_module.BatchImageSplitReq(
+        image_ids=[], split="train", dataset_id=dataset_id,
+        filter="all", scope="dataset",
+    )
+    result = client.post(
+        f"/api/v20/projects/{project_id}/images/batch_split",
+        json=payload.model_dump(),
+    )
+    assert result.status_code == 200, result.text
+    assert result.json() == {"ok": True, "changed": 2, "split": "train"}
+    store = app_module.material_store(project_id)
+    assert store.get(first["id"])["split"] == "train"
+    assert store.get(second["id"])["split"] == "train"
+    assert store.get(outside["id"])["split"] == "unassigned"
+    assert store.read().revision == before + 1
+
 
 
 @pytest.mark.parametrize(

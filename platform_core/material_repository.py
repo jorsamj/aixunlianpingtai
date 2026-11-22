@@ -71,6 +71,9 @@ CREATE INDEX IF NOT EXISTS ix_materials_dataset_delete_claim
     ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'),
                  json_extract(payload_json, '$._dataset_delete_claim'))
     WHERE json_extract(payload_json, '$._dataset_delete_claim') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_materials_dataset
+    ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'),
+                 created_at, id);
 CREATE TABLE IF NOT EXISTS material_labels (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
@@ -1772,6 +1775,60 @@ class MaterialRepository:
                     payload = json.dumps(after[image_id], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                     if before[image_id] != payload:
                         self._write_row(database, after[image_id])
+                        changed = True
+                if changed:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
+        return result
+
+    @controlled_material_write_fence
+    def mutate_dataset(
+        self, dataset_id: str | None,
+        fn: Callable[[list[dict[str, Any]]], _Result],
+    ) -> _Result:
+        """Atomically mutate rows whose latest dataset membership matches.
+
+        Selection and mutation share one ``BEGIN IMMEDIATE`` transaction, so a
+        concurrent dataset move cannot be missed by a pre-computed ID snapshot.
+        Nonmatching payloads are not deserialized.  Callbacks may update fields
+        only; adding, removing or renaming rows is rejected.
+        """
+        normalized_dataset = None if dataset_id is None else str(dataset_id)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                query = "SELECT id, payload_json FROM materials"
+                params: tuple[Any, ...] = ()
+                if normalized_dataset is not None:
+                    query += (
+                        " WHERE COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default') = ?"
+                    )
+                    params = (normalized_dataset,)
+                query += " ORDER BY created_at, id"
+                stored = database.execute(query, params).fetchall()
+                before = {str(row["id"]): str(row["payload_json"]) for row in stored}
+                rows = [self._row_payload(row) for row in stored]
+                result = fn(rows)
+                after: dict[str, dict[str, Any]] = {}
+                for value in rows:
+                    normalized = normalize_material(value)
+                    image_id = normalized["id"]
+                    if image_id in after:
+                        raise ValueError(f"素材 id 重复：{image_id}")
+                    after[image_id] = normalized
+                if set(after) != set(before):
+                    raise ValueError("按数据集修改不能添加、删除或更改素材身份")
+                changed = False
+                for image_id, normalized in after.items():
+                    payload = json.dumps(
+                        normalized, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if before[image_id] != payload:
+                        self._write_row(database, normalized)
                         changed = True
                 if changed:
                     self._bump_revision(database)

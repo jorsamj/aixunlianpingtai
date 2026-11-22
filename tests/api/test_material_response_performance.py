@@ -226,6 +226,40 @@ def test_selected_batch_split_uses_indexed_patch_without_full_table_mutate(monke
     assert "annotations.get_many(batch_ids)" in filtered
 
 
+def test_dataset_batch_split_uses_transactional_dataset_scope(monkeypatch):
+    import inspect
+    import app as app_module
+
+    class FakeMaterials:
+        def __init__(self):
+            self.calls = []
+
+        def mutate_dataset(self, dataset_id, callback):
+            self.calls.append(dataset_id)
+            return callback([
+                {"id": "a", "dataset_id": dataset_id, "split": "unassigned"},
+                {"id": "b", "dataset_id": "other", "split": "unassigned"},
+            ])
+
+        def mutate(self, _callback):
+            raise AssertionError("dataset split must not use the full-table mutate path")
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+    result = app_module.v20_batch_image_split(
+        "project-1",
+        app_module.BatchImageSplitReq(
+            split="test", dataset_id="target", scope="dataset", filter="all",
+        ),
+    )
+    assert result == {"ok": True, "changed": 1, "split": "test"}
+    assert materials.calls == ["target"]
+    source = inspect.getsource(app_module.v20_batch_image_split)
+    assert "mutate_dataset(dataset_id" in source
+    assert "materials.mutate(apply_split)" in source
+
+
 def test_mark_ready_uses_bounded_indexed_patch_without_full_table_mutate(monkeypatch):
     class FakeMaterials:
         def __init__(self):
