@@ -135,6 +135,7 @@ declare module '*static/modules/material-upload-session.js' {
   export interface UploadSessionRecord {
     projectId: string; owner: string; totalFiles: number; requestIds: string[]; batchIds: string[];
     status: string; failed: number; requestSeed: string; deferred: boolean;
+    pendingDecision: number; confirmationState: string;
     createdAt: string; updatedAt: string; source: string; legacy: boolean; owned: boolean;
   }
   export function uploadSessionStorageKey(actorKey: string, projectId: string): string;
@@ -146,11 +147,17 @@ declare module '*static/modules/material-upload-session.js' {
   }): {session: UploadSessionRecord | null; key: string; migrated: boolean; unowned?: UploadSessionRecord | null};
   export function isUploadSessionUnresolved(session: UploadSessionRecord | null): boolean;
   export function writeUploadSession(options: {
-    actorKey: string; projectId: string; patch?: Partial<UploadSessionRecord>; storage?: Storage;
+    actorKey: string; projectId: string; patch?: Partial<UploadSessionRecord>;
+    storage?: Storage; protectCurrent?: boolean;
   }): {ok: boolean; session: UploadSessionRecord | null; indexed?: boolean};
   export function clearUploadSession(options: {
     actorKey: string; projectId: string; storage?: Storage;
   }): boolean;
+  export function updateUploadIndex(options: {
+    actorKey: string; projectId: string; id: string;
+    patch?: Partial<UploadSessionRecord>; storage?: Storage;
+  }): boolean;
+  export function isUploadSessionProtected(session: UploadSessionRecord | null): boolean;
   export function listUploadSessions(options: {
     actorKey: string; projectId: string; storage?: Storage;
   }): UploadSessionRecord[];

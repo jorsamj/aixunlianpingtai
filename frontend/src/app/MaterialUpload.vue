@@ -52,8 +52,8 @@ function loadSession(){
   summary.uploaded=0;summary.failed=value.session?.failed||0;
   return value.session;
 }
-function saveSession(patch:Partial<UploadSessionRecord>,{silent=false}={}):boolean{
-  const result=writeUploadSession({actorKey:actorKey.value,projectId,patch});
+function saveSession(patch:Partial<UploadSessionRecord>,{silent=false,protectCurrent=false}={}):boolean{
+  const result=writeUploadSession({actorKey:actorKey.value,projectId,patch,protectCurrent});
   if(!result.ok){
     if(!silent)error.value='浏览器无法保存上传请求身份，已停止；请允许站点存储后再试。';
     return false;
@@ -82,10 +82,34 @@ function observe(event:ImageUppyEvent){
   else if(event.type==='complete')stage.value='上传交付完成；正式入库结果以下方回执为准。';
 }
 
+function uploadLockName(){
+  return `material-upload:${actorKey.value}:${projectId}`;
+}
+async function withUploadLock<T>(work:()=>Promise<T>):Promise<T>{
+  const manager=(navigator as unknown as {locks?:{request:(name:string,options:{ifAvailable:boolean},
+    callback:(lock:unknown)=>Promise<void>)=>Promise<void>}}).locks;
+  if(!manager?.request)return work();
+  let denied=false;
+  let result:T|undefined;
+  await manager.request(uploadLockName(),{ifAvailable:true},async lock=>{
+    if(!lock){denied=true;return}
+    result=await work();
+  });
+  if(denied){
+    notice.value='另一个标签页正在为同一账号和项目上传；已停止新请求，避免覆盖恢复记录。';
+    throw new Error('另一个标签页正在上传，请等待其完成或先核验原请求');
+  }
+  return result as T;
+}
+
 async function uploadFiles(files:File[],options:ImageUppyUploadOptions={}){
   const rows=Array.from(files||[]);
   if(!rows.length)return null;
   if(uploading||uploadPromise){notice.value='已有图片上传正在进行，请等待当前批次结束。';return null}
+  return withUploadLock(()=>runUpload(rows,options));
+}
+
+async function runUpload(rows:File[],options:ImageUppyUploadOptions){
   const current=loadSession();
   if(isUploadSessionUnresolved(current)){
     notice.value='存在未核验的原上传请求，已禁止新上传覆盖；请先核验原 request_id。';
@@ -100,7 +124,7 @@ async function uploadFiles(files:File[],options:ImageUppyUploadOptions={}){
   // The identity is durable before the first POST.  If the browser cannot
   // persist it, no upload request may be sent.
   if(!saveSession({totalFiles:rows.length,requestIds,batchIds:[],status:'UPLOADING',failed:0,
-    requestSeed,createdAt:new Date().toISOString(),deferred:false})){
+    requestSeed,createdAt:new Date().toISOString(),deferred:false,pendingDecision:0,confirmationState:''})){
     throw new Error('浏览器无法保存上传身份，未发送任何上传请求');
   }
   const ticket=++generation;
@@ -133,7 +157,7 @@ async function uploadFiles(files:File[],options:ImageUppyUploadOptions={}){
               if(image?.id)uploadedIds.value=[...new Set([...uploadedIds.value,String(image.id)])];
             }
             if(!saveSession({status:'UPLOADING',batchIds:batchIds.value,failed:event.failedCount,
-              totalFiles:event.totalFiles},{silent:true})){
+              totalFiles:event.totalFiles},{silent:true,protectCurrent:true})){
               persistenceLost=true;
               error.value='浏览器上传身份存储失败：当前批已由服务器处理，但不会继续发送后续批次；请保持页面并核验。';
             }
@@ -146,7 +170,9 @@ async function uploadFiles(files:File[],options:ImageUppyUploadOptions={}){
       summary.failed=aggregate.failed.length;summary.chunks=aggregate.chunks;
       batchIds.value=aggregate.batchIds;
       const proven=saveSession({status:'SUCCEEDED',batchIds:aggregate.batchIds,
-        totalFiles:aggregate.totalFiles,failed:aggregate.failed.length,deferred:false});
+        totalFiles:aggregate.totalFiles,failed:aggregate.failed.length,deferred:false,
+        pendingDecision:aggregate.uploaded.length,
+        confirmationState:aggregate.uploaded.length?'PENDING':''},{protectCurrent:true});
       stage.value=`上传交付完成 · 服务器已确认 ${aggregate.uploaded.length} 张成功、${aggregate.failed.length} 张失败`;
       if(!proven)error.value='上传已完成，但浏览器未能保存回执身份；刷新后可能无法恢复待确认素材。';
       if(confirmation&&(aggregate.batchIds.length||aggregate.failed.length)){
@@ -156,7 +182,8 @@ async function uploadFiles(files:File[],options:ImageUppyUploadOptions={}){
       return aggregate;
     }catch(cause){
       const details=(cause as {details?:{confirmedFiles?:number}}).details;
-      saveSession({status:'INTERRUPTED',batchIds:batchIds.value,failed:summary.failed},{silent:true});
+      saveSession({status:'INTERRUPTED',batchIds:batchIds.value,failed:summary.failed},
+        {silent:true,protectCurrent:true});
       error.value=`上传中断：${cause instanceof Error?cause.message:'网络或服务器响应丢失'}。`
         +`服务器已确认处理 ${details?.confirmedFiles??summary.confirmed}/${rows.length}。`
         +'为避免重复入库，系统不会自动重传未确认批次；请核验原 request_id。';
@@ -213,7 +240,7 @@ async function recoverSession(){
   if(!value?.requestIds.length)return;
   busy.value=true;error.value='';notice.value='';
   const batches:string[]=[],failed:FailedFile[]=[];const recoverUploaded:string[]=[];
-  let unknown=0,missing=0;
+  let unknown=0,missing=0,pending=0;
   try{
     for(const requestId of value.requestIds){
       try{
@@ -224,6 +251,7 @@ async function recoverSession(){
           for(const row of receipt.items||[]){
             const id=String(row.image?.id||row.image_id||'');
             if(id&&!recoverUploaded.includes(id))recoverUploaded.push(id);
+            if(String((row as {decision?:string}).decision||'pending')==='pending')pending+=1;
           }
           for(const row of receipt.upload_failed||[]){
             if(failed.length<50)failed.push({name:String(row.name||'文件'),reason:String(row.reason||'服务器未确认')});
@@ -241,7 +269,8 @@ async function recoverSession(){
     failedFiles.value=failed;
     const allConfirmed=batchIds.value.length===value.requestIds.length;
     saveSession({status:allConfirmed?'SUCCEEDED':'INTERRUPTED',batchIds:batchIds.value,
-      totalFiles:value.totalFiles,failed:failed.length});
+      totalFiles:value.totalFiles,failed:failed.length,pendingDecision:pending,
+      confirmationState:pending?'PENDING':'DONE'},{protectCurrent:true});
     if(batchIds.value.length){
       summary.total=value.totalFiles||recoverUploaded.length;
       summary.confirmed=recoverUploaded.length+failed.length;
@@ -295,6 +324,13 @@ function previewImage(image:unknown){
 }
 
 const savedGlobals:{[key:string]:unknown}={};
+let previousConfirmation:unknown=undefined;
+function legacyAction(action:string,page:string,extra:Record<string,string>={}){
+  const raw=legacyUrl(projectId,page,'','',action);
+  const params=new URLSearchParams(raw.split('?')[1]||'');
+  for(const [key,value] of Object.entries(extra))params.set(key,value);
+  location.assign('/?'+params.toString());
+}
 function installBridges(){
   const target=globalThis as unknown as Record<string,unknown>;
   for(const key of ['setPage','openAnnotation','ImageUppyView','showTaskProgress427',
@@ -303,8 +339,7 @@ function installBridges(){
   target.setPage=(page:string)=>{void page;/* confirmation must stay on this page */};
   target.openAnnotation=(id:string)=>{
     if(!id)return;
-    const url=legacyUrl(projectId,'数据集','','','material-annotate')+'&material_id='+encodeURIComponent(id);
-    location.assign(url);
+    legacyAction('material-annotate','数据集',{material_id:id});
   };
   target.ImageUppyView={open:(options:{retryNames?:string[]}={})=>{
     const names=Array.isArray(options?.retryNames)?[...new Set(options.retryNames.map(String))]:null;
@@ -312,10 +347,13 @@ function installBridges(){
     void mountUppy();
   }};
   target.showTaskProgress427=(kind:string,id:string)=>{
-    notice.value=`${kind==='clean'?'清洗':'后台'}任务 ${id||''} 已创建；可在原任务中心查看进度。`;
+    if(kind!=='clean'||!id){notice.value='该后台任务详情请在原任务中心查看。';return}
+    legacyAction('material-clean-task','自动标注及清洗',{task_id:String(id)});
   };
-  target.openSmartMaterialAudit=()=>{
-    notice.value='智能质检仍使用原工作台；本次确认列表与素材范围不会被清空。';
+  target.openSmartMaterialAudit=(options?:{imageIds?:string[];source?:string})=>{
+    const ids=(options?.imageIds||[]).map(value=>String(value||'')).filter(Boolean).slice(0,500);
+    if(!ids.length){notice.value='没有可提交智能质检的素材范围，请重新选择。';return}
+    legacyAction('material-smart-audit','数据集',{image_ids:ids.join(','),source:String(options?.source||'upload')});
   };
   target.renderDatasets424=()=>{};
   target.refreshLabels414=async()=>{await loadLabels();return true};
@@ -363,6 +401,7 @@ onMounted(async()=>{
   await loadLabels();
   await nextTick();
   installBridges();
+  previousConfirmation=(globalThis as unknown as {UploadConfirmationRuntime?:unknown}).UploadConfirmationRuntime;
   confirmation=installConfirmation();
   if(unresolved.value)notice.value='存在未完成的上传请求；已禁止新上传覆盖，请先核验原 request_id。';
   else if(session.value?.batchIds.length)notice.value='上次上传已由服务器确认；可继续处理待确认素材或开始新批次。';
@@ -374,6 +413,12 @@ onMounted(async()=>{
 onBeforeUnmount(()=>{
   generation+=1;controller.abort();
   handle?.destroy();handle=null;
+  const current=(globalThis as unknown as {UploadConfirmationRuntime?:unknown}).UploadConfirmationRuntime;
+  if(confirmation&&current===confirmation){
+    const target=globalThis as unknown as Record<string,unknown>;
+    if(previousConfirmation===undefined)delete target.UploadConfirmationRuntime;
+    else target.UploadConfirmationRuntime=previousConfirmation;
+  }
   confirmation?.destroy();confirmation=null;
   restoreBridges();
 });

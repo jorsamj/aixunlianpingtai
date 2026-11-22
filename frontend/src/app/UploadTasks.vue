@@ -5,7 +5,7 @@ import {request} from './http';
 import {useWorkspace} from './main';
 import {getUploadBatchReceipt,type UploadBatchReceipt} from '../api/upload-batches';
 import {
-  isUploadSessionUnresolved,listUploadSessions,readOwnedUploadSession,writeUploadSession,
+  isUploadSessionUnresolved,listUploadSessions,readOwnedUploadSession,updateUploadIndex,writeUploadSession,
 } from '../../../static/modules/material-upload-session.js';
 import type {UploadSessionRecord} from '../../../static/modules/material-upload-session.js';
 
@@ -74,6 +74,11 @@ async function loadImageSession(session:UploadSessionRecord):Promise<ImageSessio
     String((item as {decision?:string}).decision||'pending')==='pending').length,0);
   const partial=session.requestIds.length>100;
   const status=allSucceeded?'SUCCEEDED':anyFailed?'FAILED':'UNKNOWN';
+  if(session.requestIds[0]&&(session.pendingDecision!==pending
+      ||session.confirmationState!==(pending?'PENDING':'DONE'))){
+    updateUploadIndex({actorKey:actorKey.value,projectId,id:session.requestIds[0],
+      patch:{pendingDecision:pending,confirmationState:pending?'PENDING':'DONE'}});
+  }
   return {key:session.requestIds[0]||session.createdAt,session,status,
     statusLabel:status==='SUCCEEDED'?'服务器已入库':status==='FAILED'?'失败':'待核验',
     uploaded,failed,pending,partial,error:errorText,
@@ -111,7 +116,8 @@ async function continueSession(row:ImageSessionRow){
   const result=writeUploadSession({actorKey:actorKey.value,projectId,patch:{
     totalFiles:row.session.totalFiles,requestIds:row.session.requestIds,batchIds:row.session.batchIds,
     status:row.session.status,failed:row.session.failed,requestSeed:row.session.requestSeed,
-    deferred:row.session.deferred,
+    deferred:row.session.deferred,pendingDecision:row.pending,
+    confirmationState:row.pending?'PENDING':'DONE',
   }});
   if(!result.ok){error.value='浏览器无法保存该上传会话身份；未切换。';return}
   void router.push({name:'material-upload',params:{projectId}});

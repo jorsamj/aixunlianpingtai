@@ -5,6 +5,7 @@ const materialPages={
  'material-manage':'数据集','material-manual':'数据集','material-upload':'数据集',
  'material-zip':'数据集','material-annotate':'数据集','material-negative':'数据集',
  'material-integrity':'数据集','material-ai':'自动标注及清洗','material-clean':'自动标注及清洗',
+ 'material-clean-task':'自动标注及清洗','material-smart-audit':'数据集',
  'material-labels':'标签管理',
 };
 async function resumeMaterials({project,action,query,state,navigate,request,windowRoot,documentRoot}){
@@ -14,6 +15,21 @@ async function resumeMaterials({project,action,query,state,navigate,request,wind
  const active=()=>state.project?.id===project&&state.page===page;
  if(!active())throw new Error('原素材工作台未就绪');
  const id=query.get('material_id')||'';
+ const taskId=query.get('task_id')||'';
+ if(action==='material-clean-task'){
+  if(!taskId||/[\\/]/.test(taskId)||taskId==='.'||taskId==='..')throw new Error('清洗任务身份无效');
+  const owner=windowRoot.showCleanTaskProgress429;
+  if(typeof owner!=='function')throw new Error('原清洗任务进度入口未就绪');
+  return owner.call(windowRoot,taskId);
+ }
+ if(action==='material-smart-audit'){
+  const ids=[...new Set(String(query.get('image_ids')||'').split(',').map(value=>value.trim()).filter(Boolean))];
+  if(!ids.length||ids.length>500||ids.some(value=>/[\\/]/.test(value)||value==='.'||value==='..'))
+   throw new Error('智能质检素材范围无效');
+  const owner=windowRoot.openSmartMaterialAudit;
+  if(typeof owner!=='function')throw new Error('原智能质检入口未就绪');
+  return owner.call(windowRoot,{imageIds:ids,projectId:project,source:String(query.get('source')||'upload')});
+ }
  if(action==='material-annotate'){
   if(!id||/[\\/]/.test(id)||id==='.'||id==='..')throw new Error('素材身份无效');
   const result=await request(`/api/projects/${encodeURIComponent(project)}/annotations/${encodeURIComponent(id)}?reader_view=true`);
@@ -34,6 +50,7 @@ async function resumeMaterials({project,action,query,state,navigate,request,wind
  Object.assign(link.style,{position:'fixed',right:'24px',bottom:'24px',zIndex:'10001',background:'#fff',color:'#222',padding:'12px 18px',border:'1px solid #aaa',borderRadius:'8px'});
  documentRoot.body.append(link);
  windowRoot.history.replaceState(null,'',windowRoot.location.pathname);
+ const aiArgs=query.get('source_batch_id')?[{source_batch_id:String(query.get('source_batch_id'))}]:[];
  const actions={
   'material-annotate':[windowRoot,'openAnnotation','人工标注',id],
   'material-manual':[windowRoot,'setData412Tab','人工标注','unannotated'],
@@ -42,7 +59,7 @@ async function resumeMaterials({project,action,query,state,navigate,request,wind
    :[windowRoot,'openDataUpload426','图片上传'],
   'material-zip':[windowRoot,'openUppyZipUpload','ZIP 导入'],
   'material-negative':[windowRoot.NegativePoolRuntime,'open','负样本池'],
-  'material-ai':[windowRoot,'createAiLabel429','AI 预标注'],
+  'material-ai':[windowRoot,'createAiLabel429','AI 预标注',...aiArgs],
   'material-clean':[windowRoot,'createClean427','素材清洗'],
   'material-integrity':[windowRoot,'openMaterialIntegrityAudit47','删除与安全审核'],
  };

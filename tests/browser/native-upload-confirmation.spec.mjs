@@ -117,6 +117,14 @@ test('native confirmation submits a clean decision through the original batch ow
     expect((decision.clean_task_id || '')).toBeTruthy();
     expect((decision.items || []).every(item => item.decision === 'clean')).toBe(true);
     await expect(page.locator('[data-task]').first()).toBeVisible({timeout: 30000});
+    let cleanNavigation = '';
+    await page.route(/\/\?spa_handoff=/, route => {
+      cleanNavigation = route.request().url();
+      return route.fulfill({contentType: 'text/html', body: 'legacy-owner'});
+    });
+    await page.locator('[data-task]').first().click();
+    await expect.poll(() => cleanNavigation).toContain('action=material-clean-task');
+    expect(cleanNavigation).toContain(`task_id=${decision.clean_task_id}`);
     const auth = await (await request.get(origin + '/api/auth/session')).json();
     const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
     const key = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
@@ -129,6 +137,31 @@ test('native confirmation submits a clean decision through the original batch ow
     const row = page.getByRole('row').filter({hasText: '图片上传批次'});
     await expect(row).toContainText('待确认 0', {timeout: 30000});
     await expect(row.getByText('待人工确认')).toHaveCount(0);
+  } finally { child.kill(); }
+});
+
+test('smart quality audit opens the legacy owner with the selected material ids', async ({page, request}) => {
+  test.setTimeout(180_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-upload-confirm-smart-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await projectWith(request, origin, '上传确认智能质检');
+    await openUpload(page, origin, project.id);
+    await upload(page, files(2, 'smart'));
+    await page.locator('[data-upload-action="all"]').check();
+    let navigation = '';
+    await page.route(/\/\?spa_handoff=/, route => {
+      navigation = route.request().url();
+      return route.fulfill({contentType: 'text/html', body: 'legacy-owner'});
+    });
+    await page.locator('[data-upload-action="smart"]').click();
+    await expect.poll(() => navigation).toContain('action=material-smart-audit');
+    const target = new URL(navigation);
+    expect(target.searchParams.get('page')).toBe('数据集');
+    expect(target.searchParams.get('source')).toBe('upload');
+    expect(target.searchParams.get('image_ids').split(',').filter(Boolean)).toHaveLength(2);
   } finally { child.kill(); }
 });
 

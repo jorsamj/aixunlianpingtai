@@ -148,6 +148,86 @@ test('annotated ZIP maps two original classes and preserves real boxes and label
   } finally { child.kill(); }
 });
 
+test('a paused ZIP reopened in a new page resumes the original upload id', async ({page, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-zip-reopen-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  try {
+    const project = await (await request.post(origin + '/api/projects', {
+      data: {name: 'ZIP 重开续传', labels: [{code: 'fire', display_name: '明火'}]},
+    })).json();
+    const sessionIds = [];
+    page.on('response', async response => {
+      const url = new URL(response.url());
+      if (response.request().method() === 'POST' && url.pathname.endsWith('/datasets/default/import/uploads')) {
+        try { const body = await response.json(); if (body.upload_id) sessionIds.push(String(body.upload_id)); }
+        catch { /* navigated */ }
+      }
+    });
+    await page.route('**/import/uploads/*/parts/*', async route => {
+      await new Promise(resolve => setTimeout(resolve, 900));
+      return route.continue();
+    });
+    const archive = storedZip([
+      {name: 'images/reopen.jpg', buffer: JPEG},
+      {name: 'padding.bin', buffer: Buffer.alloc(48 * 1024 * 1024, 7)},
+    ]);
+    await page.route('**/resume-fixture.zip', route => route.fulfill({
+      contentType: 'application/zip', body: archive,
+    }));
+    const fixedLastModified = 1700000000000;
+    await openZip(page, origin, project.id);
+    await page.locator('.uppy-Dashboard input[type=file]').first().evaluate(async (input, args) => {
+      const response = await fetch(args.url);
+      const blob = await response.blob();
+      const file = new File([blob], args.name, {type: 'application/zip', lastModified: args.lastModified});
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', {bubbles: true}));
+    }, {url: `${origin}/resume-fixture.zip`, name: 'reopen.zip', lastModified: fixedLastModified});
+    const startUpload = page.locator('.uppy-StatusBar-actionBtn--upload');
+    await expect(startUpload).toBeVisible({timeout: 15000});
+    await startUpload.click();
+    await expect(page.locator('[data-zip-pause]')).toBeVisible({timeout: 30000});
+    await page.locator('[data-zip-pause]').click();
+    await expect(page.locator('[data-zip-resume]')).toBeVisible({timeout: 60000});
+
+    await page.route('**/resume-fixture.zip', route => route.fulfill({
+      contentType: 'application/zip', body: archive,
+    }));
+    await page.goto(`${origin}/app/?reopen-paused=1#/projects/${project.id}/materials/zip`);
+    const row = page.getByRole('row').filter({hasText: 'reopen.zip'});
+    await expect(row).toContainText('已暂停', {timeout: 45000});
+    const lastModified = fixedLastModified;
+    await row.locator('.zip-resume input[type=file]').evaluate(async (input, args) => {
+      const response = await fetch(args.url);
+      const blob = await response.blob();
+      const file = new File([blob], args.name, {type: 'application/zip', lastModified: args.lastModified});
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', {bubbles: true}));
+    }, {url: `${origin}/resume-fixture.zip`, name: 'reopen.zip', lastModified});
+    const modal = page.locator('#native-zip-modal-root');
+    const confirm = modal.locator('[data-zip-confirm-button]');
+    await expect(confirm).toBeVisible({timeout: 120000});
+    const folder = modal.locator('[data-zip-folder-row]').first();
+    await folder.locator('select[aria-label="数据用途"]').selectOption({index: 1});
+    await folder.locator('select[aria-label="素材类型"]').selectOption('unclassified');
+    await confirm.click();
+    await expect.poll(async () => {
+      const result = await (await request.get(
+        `${origin}/api/v19/projects/${project.id}/import/jobs`)).json();
+      return {count: result.items?.length || 0,
+        done: result.items?.filter(job => job.status === 'done').length || 0};
+    }, {timeout: 180000}).toEqual({count: 1, done: 1});
+    expect(new Set(sessionIds).size).toBe(1);
+  } finally { child.kill(); }
+});
+
 test('a paused ZIP resumes the original upload session without a second import job', async ({page, request}) => {
   test.setTimeout(240_000);
   const data = mkdtempSync(join(tmpdir(), 'xjalgo-zip-pause-'));

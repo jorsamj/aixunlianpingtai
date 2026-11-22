@@ -182,6 +182,44 @@ test('switching projects never shows the previous project upload progress', asyn
   } finally { child.kill(); }
 });
 
+test('two tabs of the same account and project cannot upload over each other', async ({page, context, request}) => {
+  test.setTimeout(240_000);
+  const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-tabs-'));
+  const env = {...process.env, MC_TRAIN_DATA_DIR: data, MC_PLATFORM_VERSION: 'browser-test',
+    MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS: '1', YOLO_CONFIG_DIR: join(data, 'ultralytics')};
+  const {origin, child} = await startIsolated(env);
+  let second;
+  try {
+    const project = await newProject(request, origin, '双标签页上传');
+    await page.route('**/api/projects/*/images', async route => {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      return route.continue();
+    });
+    await openUpload(page, origin, project.id);
+    await page.locator('.uppy-Dashboard input[type=file]').first().setInputFiles(files(65, 'tab-a'));
+    second = await context.newPage();
+    let secondPosts = 0;
+    second.on('request', req => {
+      const url = new URL(req.url());
+      if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/images`) secondPosts += 1;
+    });
+    await openUpload(second, origin, project.id);
+    await second.locator('.uppy-Dashboard input[type=file]').first().setInputFiles(files(1, 'tab-b'));
+    const firstUpload = page.locator('.uppy-StatusBar-actionBtn--upload');
+    await expect(firstUpload).toBeVisible({timeout: 15000});
+    await firstUpload.click();
+    const secondUpload = second.locator('.uppy-StatusBar-actionBtn--upload');
+    await expect(secondUpload).toBeVisible({timeout: 15000});
+    await secondUpload.click();
+    await expect(second.getByText(/另一个标签页正在/)).toBeVisible({timeout: 30000});
+    expect(secondPosts).toBe(0);
+    await expect(page.getByText(/服务器已确认 65 \/ 65 张/)).toBeVisible({timeout: 180000});
+  } finally {
+    await second?.close().catch(() => {});
+    child.kill();
+  }
+});
+
 test('more than 64 images are split into two original request ids', async ({page, request}) => {
   test.setTimeout(240_000);
   const data = mkdtempSync(join(tmpdir(), 'xjalgo-native-upload-chunks-'));

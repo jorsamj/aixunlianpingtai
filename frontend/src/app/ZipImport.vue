@@ -99,6 +99,13 @@ function restoreShims(){
   for(const [key,value] of Object.entries(savedGlobals)){
     if(value===undefined)delete globalWindow[key];else globalWindow[key]=value;
   }
+  const saved=savedGlobals.ZipImportRuntime as {__nativeVueZipRuntime?:boolean}|undefined;
+  if(saved?.__nativeVueZipRuntime){
+    // Never reattach a destroyed runtime from the previous visit.
+    delete globalWindow.ZipImportRuntime;
+    delete globalWindow.doUploadZip426;
+    delete globalWindow.doImportData;
+  }
 }
 function upsertTransfer(event:Record<string,unknown>){
   const uploadId=String(event.uploadId||'');
@@ -148,11 +155,12 @@ async function resumeJob(job:ZipJob,event:Event){  const input=event.target as H
 }
 onMounted(async()=>{
   await loadLabels();
-  const existing=(globalThis as unknown as {ZipImportRuntime?:ZipImportRuntime}).ZipImportRuntime;
-  try{existing?.destroy?.()}catch{/* previous page owner is replaced below */}
+  const existing=(globalThis as unknown as {ZipImportRuntime?:ZipImportRuntime&{__nativeVueZipRuntime?:boolean}}).ZipImportRuntime;
+  if(existing?.__nativeVueZipRuntime)try{existing.destroy?.()}catch{/* previous page owner is replaced below */}
   installShims();
   runtime=installZipImportRuntime({getState:()=>compat,projectId:()=>projectId,
     notify:message=>{notice.value=String(message||'')}});
+  if(runtime)(runtime as unknown as {__nativeVueZipRuntime?:boolean}).__nativeVueZipRuntime=true;
   await nextTick();
   if(target.value){
     try{
