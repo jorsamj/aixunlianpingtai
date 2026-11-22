@@ -43,17 +43,26 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
   const current = (project, token) => token === generation && (!activeProject() || activeProject() === String(project));
   const request = (url, options={}) => withRequestDeadline(signal => api(url, {...options,signal}), {timeoutMs:30000,label:'上传回执'});
   const sessionIdentity = value => String(value?.requestIds?.[0] || value?.batchIds?.[0] || '');
+  let sessionWriteError = '';
   const read = (project, sessionId = '') => {
     try {
-      const confirmation = JSON.parse(storage?.getItem(confirmationSessionKey(project, sessionId)) || 'null');
-      if (confirmation) return confirmation;
-      if (sessionId) return null;
+      if (sessionId) {
+        const current = JSON.parse(storage?.getItem(confirmationSessionKey(project, sessionId)) || 'null');
+        return current || null;
+      }
+      const pointer = JSON.parse(storage?.getItem(confirmationSessionKey(project)) || 'null');
+      if (pointer?.sessionId) {
+        const current = JSON.parse(storage?.getItem(confirmationSessionKey(project, String(pointer.sessionId))) || 'null');
+        if (current) return current;
+      }
       // Legacy old page only; Vue scoped storage deliberately returns null for
       // the upload-identity key so another tab's request can never be adopted.
       return JSON.parse(storage?.getItem(uploadSessionKey(project)) || 'null');
     } catch { return null; }
   };
   function readAny(project) {
+    const pointed = read(project);
+    if (pointed) return pointed;
     let best = null;
     try {
       const prefix = confirmationSessionKey(project) + ':';
@@ -65,7 +74,7 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
         if (!best || String(value.updatedAt || '') > String(best.updatedAt || '')) best = value;
       }
     } catch { /* corrupted confirmation state is ignored, upload identity stays separate */ }
-    return best || read(project);
+    return best;
   }
   function recordSession(value) {
     const projectId = String(value.projectId || '');
@@ -74,9 +83,17 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
     if (!sessionId) return null;
     const prior = read(projectId, sessionId) || {};
     const next = {...prior, ...value, failed:Array.isArray(value.failed)?value.failed.length:(value.failed??prior.failed??0), projectId, batchIds: [...new Set((value.batchIds || prior.batchIds || []).map(String))], updatedAt: new Date().toISOString()};
-    // Only confirmation pointers/counters live here. Image identities and
-    // decisions come from receipts; the upload identity has a different owner.
-    try {storage?.setItem(confirmationSessionKey(projectId, sessionId), JSON.stringify(next));} catch {}
+    sessionWriteError = '';
+    try {
+      storage?.setItem(confirmationSessionKey(projectId, sessionId), JSON.stringify(next));
+      // Pointer is confirmation-only: another session may replace it without
+      // touching the active upload request identity.
+      storage?.setItem(confirmationSessionKey(projectId), JSON.stringify({
+        sessionId, updatedAt: next.updatedAt,
+      }));
+    } catch {
+      sessionWriteError = '上传确认状态未能保存到浏览器；为避免误报，请检查存储空间后重试。';
+    }
     return next;
   }
   async function fetchReceipts(projectId, ids, token = generation, recovering = false) {
@@ -155,7 +172,11 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
       if (button.dataset.preview) {const row = rows.find(r=>String(r.image_id)===button.dataset.preview); if(row) previewImage?.(row.image); return;}
       if (button.dataset.task) {win?.showTaskProgress427?.('clean',button.dataset.task);return;}
       const action = button.dataset.uploadAction;
-      if (action==='later') {visible=false; session=recordSession({...session,deferred:true}); win?.renderDatasets424?.();mount(container);}
+      if (action==='later') {
+        session=recordSession({...session,deferred:true});
+        if(sessionWriteError){visible=true;error=sessionWriteError;say(error);mount(container);return;}
+        visible=false;win?.renderDatasets424?.();mount(container);
+      }
       if (action==='open'||action==='refresh') void open(session);
       if (action==='prev'||action==='next') {page += action==='prev'?-1:1;mount(container);}
       if(action==='failure-prev'||action==='failure-next'){failurePage+=action==='failure-prev'?-1:1;mount(container);container.querySelector('details')?.setAttribute('open','');}
@@ -173,7 +194,8 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
   async function open(value) {
     if (busy) return false;
     session = recordSession({...value,deferred:false}); if (!session) return false;
-    const token = ++generation; visible=true;loading=true;error='';selected.clear();batches=[];page=1;failurePage=1;sampleKind='';targetLabels.clear();negativeCategories.clear();categories=[];categoryLoading=false;categoryError='';
+    const recordedError=sessionWriteError;
+    const token = ++generation; visible=true;loading=true;error=recordedError;selected.clear();batches=[];page=1;failurePage=1;sampleKind='';targetLabels.clear();negativeCategories.clear();categories=[];categoryLoading=false;categoryError='';
     await win?.setPage?.('数据集'); if(!current(session.projectId,token))return false;mount();
     try {const next=await fetchReceipts(session.projectId,sessionIds(session),token,true);if(!current(session.projectId,token))return false;batches=next;session=recordSession({...session,batchIds:[...new Set([...(session.batchIds||[]),...next.map(batch=>String(batch.id))])]});}
     catch(e){error=String(e.message||e);}
@@ -186,7 +208,7 @@ export function installUploadConfirmationRuntime({getState, api, getContainer, p
     const value=sessionId?read(String(projectId),String(sessionId)):readAny(String(projectId));
     if(!value || !(value.batchIds?.length || value.requestIds?.length))return false;
     const token=++generation;session=value;visible=false;error='';sampleKind='';targetLabels.clear();negativeCategories.clear();categories=[];categoryError='';categoryLoading=false;
-    try {const next=await fetchReceipts(String(projectId),sessionIds(value),token,true);if(!current(session.projectId,token))return false;batches=next;session=recordSession({...value,batchIds:[...new Set([...(value.batchIds||[]),...next.map(b=>String(b.id))])]});visible=autoOpen && (confirmationRows(batches).some(r=>r.decision==='pending') || unconfirmedCount()>0) && !value.deferred;mount();return true;}catch(e){if(!current(String(projectId),token))return false;error=String(e.message||e);mount();return false;}
+    try {const next=await fetchReceipts(String(projectId),sessionIds(value),token,true);if(!current(session.projectId,token))return false;batches=next;session=recordSession({...value,batchIds:[...new Set([...(value.batchIds||[]),...next.map(b=>String(b.id))])]});if(sessionWriteError)error=sessionWriteError;visible=autoOpen && (confirmationRows(batches).some(r=>r.decision==='pending') || unconfirmedCount()>0) && !value.deferred;mount();return true;}catch(e){if(!current(String(projectId),token))return false;error=String(e.message||e);mount();return false;}
   }
   async function submit(decision) {
     if(busy||loading||!session)return false;

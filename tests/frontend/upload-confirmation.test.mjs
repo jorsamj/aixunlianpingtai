@@ -48,6 +48,19 @@ test('submission refreshes receipts, blocks concurrent duplicate clicks and open
  await runtime.restoreForProject('p');assert.equal(runtime.renderIfActive(),false);
 });
 
+test('later does not claim success when confirmation storage cannot persist',async()=>{
+ const storage={getItem:()=>null,setItem(){throw new Error('quota')}};let posts=0;
+ const runtime=installUploadConfirmationRuntime({getState:()=>({project:{id:'p'}}),storage,
+  window:{say(){}},api:async()=>{posts++;return receipt('a',['1']);}});
+ await runtime.open({projectId:'p',batchIds:['a'],totalFiles:1});
+ const root={dataset:{},querySelector:()=>null,prepend(){},set innerHTML(v){this.html=v;}};
+ const container={querySelector:()=>root,firstElementChild:root,children:[root],replaceChildren(){}};
+ runtime.mount(container);root.onclick({target:{closest:()=>({disabled:false,dataset:{uploadAction:'later'}})}});
+ assert.equal(runtime.renderIfActive(),true);
+ assert.match(String(root.html),/上传确认状态未能保存/);
+ assert.equal(posts,1);
+});
+
 test('negative uploaded images join the pool by category without opening the GT annotation editor',async()=>{
  const s={project:{id:'p',labels:['fire']}},requests=[],root={dataset:{},set innerHTML(v){this.html=v;},querySelector:()=>null};
  const container={querySelector:()=>root,firstElementChild:root,children:[root],replaceChildren(){}};
