@@ -82,16 +82,17 @@ test('native upload task center keeps image receipts, ZIP jobs and project ident
       `${origin}/api/v19/projects/${project.id}/import/jobs/${uploadId}`)).json()).status,
     {timeout: 30000}).toBe('selecting');
 
-    await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [
-      `material-upload-session:${project.id}`,
-      JSON.stringify({projectId: project.id, totalFiles: 1, requestIds: [requestId],
-        batchIds: [requestId], status: 'SUCCEEDED', failed: 0}),
-    ]);
+    const auth = await (await request.get(origin + '/api/auth/session')).json();
+    const actorKey = JSON.stringify([auth.provider || '', auth.user?.username || '']);
+    const key = `material-upload-session:v2:${encodeURIComponent(actorKey)}:${encodeURIComponent(project.id)}`;
+    await page.addInitScript(([storageKey, value]) => localStorage.setItem(storageKey, value), [key,
+      JSON.stringify({projectId: project.id, owner: actorKey, totalFiles: 1, requestIds: [requestId],
+        batchIds: [requestId], status: 'SUCCEEDED', failed: 0})]);
     await page.goto(`${origin}/app/#/projects/${project.id}/materials/tasks`);
     await expect(page.getByRole('heading', {name: '上传任务', level: 2})).toBeVisible({timeout: 30000});
     const imageRow = page.getByRole('row').filter({hasText: '图片上传批次'});
     await expect(imageRow).toContainText('服务器已入库');
-    await expect(imageRow).toContainText('已确认 1 张成功');
+    await expect(imageRow).toContainText('成功 1 · 失败 0 · 待确认 1');
     await expect(imageRow).toContainText(requestId);
     const zipRow = page.getByRole('row').filter({hasText: 'raw-e2e.zip'});
     await expect(zipRow).toContainText('等待标签确认');
@@ -105,7 +106,7 @@ test('native upload task center keeps image receipts, ZIP jobs and project ident
 
     await page.goto(`${origin}/app/?p=${other.id}#/projects/${other.id}/materials/tasks`);
     await expect(page.getByRole('heading', {name: '上传任务', level: 2})).toBeVisible();
-    await expect(page.getByText('当前项目没有可核验的上传批次')).toBeVisible({timeout: 30000});
+    await expect(page.getByText('当前账号与项目没有可核验的上传批次')).toBeVisible({timeout: 30000});
     await expect(page.getByText('raw-e2e.zip')).toHaveCount(0);
     await expect(page.getByText(requestId)).toHaveCount(0);
   } finally { child.kill(); }
