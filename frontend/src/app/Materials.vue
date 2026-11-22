@@ -59,6 +59,9 @@ const context:MaterialContext={
     },
   },
   legacyMaterials(action,id){location.assign(original(action==='annotate'?'material-annotate':action==='upload'?'material-upload':'material-manage','数据集',id))},
+  openNativeUpload(){void router.push({name:'material-upload',params:{projectId}})},
+  openNativeZip(){void router.push({name:'material-zip-import',params:{projectId}})},
+  openUploadTasks(){void router.push({name:'upload-tasks',params:{projectId}})},
   history(id,page,signal){
     // Existing read-only history contract uses POST to carry the material scope.
     return request<MaterialHistory>(`/api/v62/projects/${encodeURIComponent(projectId)}/training-materials/history`,{
