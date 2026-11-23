@@ -25,7 +25,8 @@
 - 节点 state 目录使用跨进程独占 FileLock，第二个 Agent 进程启动会被拒绝；
 - Runner `run()` 开始前注册 owner，正常完成后注销；异常/fence 不注销，保留给节点恢复；
 - 同一 `(task_id,generation)` 重复注册被拒绝；
-- `ProcessController.terminate_tree()` 在主 PID 已消失、但同号 POSIX 进程组仍存在时 fail-closed，不再仅凭 PGID==旧 PID 终止进程组；持久身份保留等待可信停止证明。
+- `ProcessController.terminate_tree()` 在主 PID 已消失、但同号 POSIX 进程组仍存在时，使用 launch-scoped `DSH_PROCESS_GROUP_TOKEN` + `/proc/<pid>/environ` 证明所有剩余组员属于本次执行；没有 token、权限拒绝或任一组员不匹配则 fail-closed。
+- 旧版无 token 的持久身份保留，不进行 leaderless 组清理。
 
 ### 1.3 隔离测试
 
