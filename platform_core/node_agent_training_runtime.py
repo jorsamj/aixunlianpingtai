@@ -1461,6 +1461,14 @@ class AgentTrainingRunner:
             outcome = self._run_owned(lease)
             completed = True
             return outcome
+        except Exception as error:
+            if self._require_stop_proof and self._last_process_identity is None:
+                try:
+                    self._submit_no_launch_proof(lease)
+                    self.client.finish(lease, "FAILED", error=f"{type(error).__name__}: {error}")
+                except Exception:
+                    pass
+            raise
         finally:
             # Only a completed run has a verified process stop receipt.  An
             # exceptional/fenced run retains ownership for node recovery.
