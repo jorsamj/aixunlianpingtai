@@ -2564,16 +2564,30 @@ class AgentExecutionService:
             raise AgentExecutionError("STOP_PROOF_INVALID", "process identity is incomplete", 409)
         if no_process_launched:
             evidence = no_launch_evidence if isinstance(no_launch_evidence, Mapping) else {}
-            digest_value = str(evidence.get("intent_sha256") or "")
-            if (len(digest_value) != 64
-                    or evidence.get("launch_boundary_entered") is not False
-                    or evidence.get("task_id") != str(task_id)
-                    or int(evidence.get("execution_attempt") or 0) != int(execution_generation)):
+            required_evidence = {
+                "launch_boundary_entered", "persisted_launch_intent",
+                "persisted_process_identity", "task_id", "assignment_generation",
+                "execution_attempt", "gpu_uuid", "intent_sha256",
+            }
+            if set(evidence) != required_evidence:
                 raise AgentExecutionError(
-                    "NO_LAUNCH_EVIDENCE_INVALID",
-                    "no-launch evidence is incomplete or inconsistent",
-                    409,
-                )
+                    "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence fields are incomplete", 409)
+            body = {key: evidence.get(key) for key in required_evidence if key != "intent_sha256"}
+            if (evidence.get("launch_boundary_entered") is not False
+                    or evidence.get("persisted_launch_intent") is not False
+                    or evidence.get("persisted_process_identity") is not False
+                    or str(evidence.get("task_id")) != str(task_id)
+                    or type(evidence.get("assignment_generation")) is not int
+                    or int(evidence["assignment_generation"]) != int(assignment_generation)
+                    or type(evidence.get("execution_attempt")) is not int
+                    or int(evidence["execution_attempt"]) != int(execution_generation)
+                    or str(evidence.get("gpu_uuid")) != str(gpu_uuid)):
+                raise AgentExecutionError(
+                    "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence is inconsistent", 409)
+            expected_intent = hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(str(evidence.get("intent_sha256") or ""), expected_intent):
+                raise AgentExecutionError(
+                    "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence digest mismatch", 409)
         proof = {
             "node_id": str(node_id), "task_id": str(task_id),
             "assignment_generation": int(assignment_generation),

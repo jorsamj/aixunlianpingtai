@@ -265,6 +265,8 @@ class AgentTrainingRunner:
             self._active_lease = lease
             self._active_identity = identity
             self._last_process_identity = identity
+
+    def _publish_active_process(self, identity: ProcessIdentity) -> None:
         callback = self._on_process_started
         if callable(callback):
             callback(identity)
@@ -1654,6 +1656,7 @@ class AgentTrainingRunner:
                     # allowing execution to continue.
                     self._terminate_active(strict=True)
                     raise
+                self._publish_active_process(launched.identity)
                 # Central start-identity registration is allowed only after the
                 # exact local identity is durable; otherwise a crash could leave
                 # a process without a local recovery witness.
