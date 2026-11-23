@@ -286,6 +286,7 @@ def _build_executor(
         max_slots=2 if slot_factory is not None else 1,
         slot_runner_factory=slot_factory,
         slot_controller=slot_controller,
+        slot_intent_path=(state_dir / "dual-slot-intents.json") if slot_factory is not None else None,
     )
 
 

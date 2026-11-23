@@ -85,6 +85,7 @@ class NodeAgentExecutorLoop:
         max_slots: int = 1,
         slot_runner_factory: Callable[[str, Callable[[Any], None]], object] | None = None,
         slot_controller: object | None = None,
+        slot_intent_path: object | None = None,
     ) -> None:
         self.client = client
         self.deployment_runner = deployment_runner
@@ -106,7 +107,7 @@ class NodeAgentExecutorLoop:
         self.max_slots = 2 if max_slots == 2 and slot_runner_factory and slot_controller else 1
         self._slot_factory = slot_runner_factory
         self._slot_controller = slot_controller
-        self._slots = BoundedExecutionSlots(2) if self.max_slots == 2 else None
+        self._slots = BoundedExecutionSlots(2, persist_path=slot_intent_path) if self.max_slots == 2 else None
         self._slot_runners: dict[tuple[str, int], object] = {}
 
     @property
@@ -132,7 +133,7 @@ class NodeAgentExecutorLoop:
             if getattr(runner, "ready", True) is False:
                 continue
             effective.append(str(capability))
-        if self.max_slots == 2:
+        if self.max_slots == 2 and self._slots is not None and not self._slots.blocked_reason:
             effective.append("execution-slots:2")
         return tuple(effective)
 
@@ -361,6 +362,9 @@ class NodeAgentExecutorLoop:
 
     def _run_dual_once(self) -> bool:
         if self._slots is None or len(self._slots.active()) >= self.max_slots:
+            return False
+        if self._slots.blocked_reason:
+            self._set_error(self._slots.blocked_reason)
             return False
         try:
             claimed = self.client.claim_assignment()

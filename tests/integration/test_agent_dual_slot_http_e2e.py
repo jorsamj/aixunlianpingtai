@@ -79,6 +79,7 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
     assert service.allocator.assign_next() is None
 
     started, pids, closed = {}, {}, {}
+    leases = {}
     controller = ProcessController()
 
     class CpuRunner:
@@ -96,11 +97,31 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
             self._on_started(handle.identity)
             started[lease.task_id] = time.monotonic()
             pids[lease.task_id] = handle.process.pid
+            leases[lease.task_id] = lease
             while not self._stop.wait(0.02):
-                pass
+                try:
+                    response = self._client.heartbeat(lease)
+                    if bool(response.get("cancel_requested")):
+                        self._stop.set()
+                except Exception:
+                    pass
             controller.terminate_tree(handle.identity, timeout=3.0)
             closed[lease.task_id] = time.monotonic()
+            assignment = lease.assignment or {}
+            config = assignment.get("resolved_execution_config") or {}
+            selected = config.get("selected_gpu") or {}
             try:
+                self._client.record_stop_proof(
+                    lease,
+                    assignment_generation=int(assignment.get("generation") or 0),
+                    gpu_uuid=str(selected.get("uuid") or ""),
+                    process_identity={
+                        "pid": int(handle.identity.pid),
+                        "create_time": float(handle.identity.create_time),
+                        "command_hash": str(handle.identity.command_hash),
+                    },
+                    stop_verified=True,
+                )
                 self._client.finish(lease, "CANCELLED")
             except Exception:
                 pass
@@ -136,9 +157,17 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
                 uuids.add(cfg["selected_gpu"]["uuid"])
         assert uuids == {"GPU-A", "GPU-B"}
 
-        # Cancel only A; B must keep running and C must take A's slot only
-        # after A's process death is proven and central finish is accepted.
-        assert loop.cancel_task("a") is True
+        # Central finish without a verified stop proof must be rejected and
+        # must leave the resource/task untouched.
+        from platform_core.node_agent_executor_runtime import NodeExecutorHTTPError
+        with pytest.raises(NodeExecutorHTTPError) as rejected:
+            client.finish(leases["b"], "CANCELLED")
+        assert rejected.value.code == "STOP_PROOF_REQUIRED"
+        assert repository.get("b").status.value == "RUNNING"
+
+        # Cancel A through the real central cancellation path, not a test-only
+        # loop helper. The runner observes cancel_requested via heartbeat.
+        repository.request_cancel("a")
         deadline = time.monotonic() + 10
         while "a" not in closed and time.monotonic() < deadline:
             time.sleep(0.02)

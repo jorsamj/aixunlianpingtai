@@ -6,9 +6,13 @@ ProcessIdentity) succeeds; otherwise it is quarantined.
 """
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -41,12 +45,49 @@ class ExecutionSlot:
 
 
 class BoundedExecutionSlots:
-    def __init__(self, max_slots: int = 1) -> None:
+    def __init__(self, max_slots: int = 1, persist_path: str | Path | None = None) -> None:
         if max_slots not in (1, 2):
             raise ValueError("max_slots must be 1 or 2")
         self.max_slots = int(max_slots)
         self._lock = threading.RLock()
         self._slots: dict[tuple[str, int], tuple[ExecutionSlot, threading.Thread | None]] = {}
+        self._persist_path = Path(persist_path) if persist_path else None
+        self.blocked_reason = ""
+        if self._persist_path is not None and self._persist_path.is_file():
+            try:
+                persisted = json.loads(self._persist_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                persisted = [{"state": "UNREADABLE"}]
+            if persisted:
+                self.blocked_reason = (
+                    "PERSISTED_DUAL_SLOT_INTENT_REQUIRES_RECONCILIATION"
+                )
+
+    def _persist(self) -> None:
+        if self._persist_path is None:
+            return
+        records = [
+            {"task_id": slot.task_id, "generation": slot.generation,
+             "gpu_uuid": slot.gpu_uuid, "state": slot.state,
+             "execution_attempt": slot.execution_attempt}
+            for slot, _thread in self._slots.values() if not slot.released
+        ]
+        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{self._persist_path.name}.", dir=str(self._persist_path.parent),
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(records, handle, ensure_ascii=False, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._persist_path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
 
     def active(self) -> tuple[ExecutionSlot, ...]:
         """All occupied slots, including exited/quarantined-but-unreleased."""
@@ -60,6 +101,8 @@ class BoundedExecutionSlots:
     ) -> ExecutionSlot:
         key = (str(lease.task_id), int(lease.generation))
         with self._lock:
+            if self.blocked_reason:
+                raise SlotCapacityError(self.blocked_reason)
             if key in self._slots:
                 raise SlotCapacityError("execution slot is already owned")
             if len(self._slots) >= self.max_slots:
@@ -73,6 +116,7 @@ class BoundedExecutionSlots:
                 slot_id=str(slot_id or ""), started_at=time.monotonic(),
             )
             self._slots[key] = (slot, None)
+            self._persist()
             return slot
 
     def mark_started(self, slot: ExecutionSlot, lease: Any) -> None:
@@ -85,6 +129,7 @@ class BoundedExecutionSlots:
             slot.lease = lease
             slot.execution_attempt = int(getattr(lease, "generation", 0) or 0)
             slot.state = "CENTRAL_STARTED"
+            self._persist()
 
     def abort_reserved(self, slot: ExecutionSlot, error: BaseException | None = None) -> None:
         """Abort only a never-started local reservation; central-started is never freed here."""
@@ -99,6 +144,7 @@ class BoundedExecutionSlots:
                 slot.error = error
             slot.released = True
             self._slots.pop((slot.task_id, slot.generation), None)
+            self._persist()
 
     def mark_central_unknown(self, slot: ExecutionSlot, error: BaseException | None = None) -> None:
         with self._lock:
@@ -108,6 +154,7 @@ class BoundedExecutionSlots:
                 slot.quarantined = True
                 if error is not None:
                     slot.error = error
+                self._persist()
 
     def start_worker(
         self, slot: ExecutionSlot, run: Callable[[ExecutionSlot, Any], Any]
@@ -137,6 +184,7 @@ class BoundedExecutionSlots:
 
             thread = threading.Thread(target=execute, name=f"agent-slot-{slot.task_id}", daemon=True)
             self._slots[(slot.task_id, slot.generation)] = (slot, thread)
+            self._persist()
             thread.start()
             return slot
 
@@ -189,6 +237,7 @@ class BoundedExecutionSlots:
                 return False
             slot.released = True
             self._slots.pop(key, None)
+            self._persist()
         return True
 
     def wait(self, timeout: float | None = None) -> None:

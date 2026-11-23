@@ -151,6 +151,19 @@ def test_confirm_requires_worker_exit_and_rejects_stale_slot():
         slots.shutdown()
 
 
+def test_persisted_unknown_intent_blocks_restart(tmp_path):
+    from types import SimpleNamespace
+    path = tmp_path / "dual-intents.json"
+    first = BoundedExecutionSlots(2, persist_path=path)
+    slot = first.reserve(SimpleNamespace(task_id="a", generation=2),
+                         gpu_uuid="GPU-A", slot_id="slot-a")
+    first.mark_central_unknown(slot, RuntimeError("lost response"))
+    restarted = BoundedExecutionSlots(2, persist_path=path)
+    assert restarted.blocked_reason == "PERSISTED_DUAL_SLOT_INTENT_REQUIRES_RECONCILIATION"
+    with pytest.raises(SlotCapacityError):
+        restarted.reserve(SimpleNamespace(task_id="b", generation=1), gpu_uuid="GPU-B")
+
+
 def test_shutdown_timeout_never_reports_released():
     controller = ProcessController()
     slots = BoundedExecutionSlots(1)

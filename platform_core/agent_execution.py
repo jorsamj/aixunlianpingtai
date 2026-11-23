@@ -87,6 +87,20 @@ def _execution_slots_for_worker(database, worker_id: str) -> int:
     return 2 if "execution-slots:2" in allowed and "execution-slots:2" in reported else 1
 
 
+def _ensure_resource_hold_schema(database) -> None:
+    database.execute(
+        "CREATE TABLE IF NOT EXISTS execution_resource_holds ("
+        "task_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,"
+        "assignment_generation INTEGER NOT NULL,execution_attempt INTEGER NOT NULL,"
+        "gpu_uuid TEXT NOT NULL,state TEXT NOT NULL,"
+        "proof_sha256 TEXT,updated_at TEXT NOT NULL)"
+    )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _sanitize_training_resource_resolution(
     value: object,
     *,
@@ -1030,6 +1044,25 @@ class AgentExecutionService:
                 "SELECT * FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
+            _ensure_resource_hold_schema(database)
+            if _execution_slots_for_worker(database, worker_id) == 2:
+                config = _json(assignment["resolved_execution_config"], {})
+                selected = config.get("selected_gpu") if isinstance(config, dict) else None
+                gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+                if not gpu_uuid:
+                    database.rollback()
+                    raise AgentExecutionError(
+                        "DUAL_SLOT_GPU_UUID_MISSING",
+                        "two-slot execution requires a selected GPU UUID",
+                        409,
+                    )
+                database.execute(
+                    "INSERT OR REPLACE INTO execution_resource_holds"
+                    "(task_id,node_id,assignment_generation,execution_attempt,gpu_uuid,state,"
+                    "proof_sha256,updated_at) VALUES(?,?,?,?,?, 'HELD', NULL, ?)",
+                    (str(task_id), str(node_id), int(assignment["generation"]),
+                     execution_attempt, gpu_uuid, now),
+                )
             database.commit()
 
         task = _from_row(started_row)
@@ -2370,6 +2403,77 @@ class AgentExecutionService:
             ) from error
         return {"task": _task_public(task)}
 
+    def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            row = database.execute(
+                "SELECT state,execution_attempt FROM execution_resource_holds WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                return True
+            return str(row["state"]) == "STOP_VERIFIED" and int(row["execution_attempt"]) == int(execution_attempt)
+
+    def record_stop_proof(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        assignment_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+        stop_verified: bool,
+    ) -> dict[str, Any]:
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        task = self.fenced.assert_execution(task_id, execution_lease_token, int(execution_generation))
+        if not stop_verified:
+            raise AgentExecutionError("STOP_PROOF_INVALID", "stop verification was not attested", 409)
+        required = {"pid", "create_time", "command_hash"}
+        if not isinstance(process_identity, Mapping) or not required.issubset(process_identity):
+            raise AgentExecutionError("STOP_PROOF_INVALID", "process identity is incomplete", 409)
+        proof = {
+            "node_id": str(node_id), "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid), "process_identity": dict(process_identity),
+            "stop_verified": True,
+        }
+        digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_resource_hold_schema(database)
+                row = database.execute(
+                    "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if row is None:
+                    raise AgentExecutionError("STOP_PROOF_NOT_APPLICABLE", "task has no dual-slot resource hold", 409)
+                if (str(row["node_id"]) != str(node_id)
+                        or int(row["assignment_generation"]) != int(assignment_generation)
+                        or int(row["execution_attempt"]) != int(execution_generation)
+                        or str(row["gpu_uuid"]) != str(gpu_uuid)):
+                    raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "stop proof identity mismatch", 409)
+                if row["state"] == "RELEASED":
+                    database.commit()
+                    return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
+                if row["state"] == "STOP_VERIFIED" and str(row["proof_sha256"]) == digest:
+                    database.commit()
+                    return {"task_id": str(task_id), "state": "STOP_VERIFIED", "idempotent": True}
+                database.execute(
+                    "UPDATE execution_resource_holds SET state='STOP_VERIFIED',proof_sha256=?,updated_at=? "
+                    "WHERE task_id=? AND execution_attempt=?",
+                    (digest, now, str(task_id), int(execution_generation)),
+                )
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return {"task_id": str(task.task_id), "state": "STOP_VERIFIED", "proof_sha256": digest}
+
     def finish_execution(
         self,
         node_id: str,
@@ -2400,6 +2504,12 @@ class AgentExecutionService:
             raise AgentExecutionError(
                 "CANCELLATION_WON",
                 "cancel-requested execution may only finish as CANCELLED",
+                409,
+            )
+        if not self._dual_hold_verified(task_id, execution_generation):
+            raise AgentExecutionError(
+                "STOP_PROOF_REQUIRED",
+                "verified stop proof is required before releasing the execution resource",
                 409,
             )
         if current.kind is TaskKind.MODEL_INSTALL and target is TaskStatus.SUCCEEDED:
@@ -2448,6 +2558,15 @@ class AgentExecutionService:
                 "remote execution finish lost ownership",
                 409,
             ) from exc
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            now = datetime.now(timezone.utc).isoformat()
+            database.execute(
+                "UPDATE execution_resource_holds SET state='RELEASED',updated_at=? "
+                "WHERE task_id=? AND execution_attempt=?",
+                (now, str(task_id), int(execution_generation)),
+            )
+            database.commit()
         return {"task": _task_public(task)}
 
 
@@ -2795,6 +2914,26 @@ def agent_executor_router(
             task_id,
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
+        )
+
+    @router.post("/executions/{task_id}/stop-proof")
+    def record_stop_proof(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().record_stop_proof,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            assignment_generation=int(payload.get("assignment_generation") or 0),
+            gpu_uuid=str(payload.get("gpu_uuid") or ""),
+            process_identity=payload.get("process_identity") or {},
+            stop_verified=payload.get("stop_verified") is True,
         )
 
     @router.post("/executions/{task_id}/finish")

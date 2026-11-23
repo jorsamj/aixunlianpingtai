@@ -391,7 +391,14 @@ def _node_active_work_count(database, node_id: str) -> int:
         """,
         (f"agent:{node}", node),
     ).fetchone()[0])
-    return assigned + running
+    try:
+        held = int(database.execute(
+            "SELECT COUNT(*) FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
+            (node,),
+        ).fetchone()[0])
+    except Exception:
+        held = 0
+    return assigned + running + held
 
 
 _MULTI_SLOT_CAPABILITY = "execution-slots:2"
@@ -443,6 +450,16 @@ def _assigned_gpu_ids(database, node_id: str) -> set[str]:
             assigned.add(device)
         if uuid:
             assigned.add(uuid)
+    try:
+        for row in database.execute(
+            "SELECT gpu_uuid FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
+            (str(node_id),),
+        ):
+            value = str(row[0] or "")
+            if value:
+                assigned.add(value)
+    except Exception:
+        pass
     return assigned
 
 
