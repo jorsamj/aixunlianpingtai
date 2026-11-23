@@ -299,11 +299,15 @@ class ProcessController:
         try:
             root = self.inspect(identity)
         except ProcessLookupError:
-            # The launch leader can disappear before cleanup (for example when
-            # Linux OOM-kills the training process).  Because launch_process()
-            # gave the execution its own POSIX group, descendants can still be
-            # reaped precisely even after they have PPID=1.
-            self._terminate_posix_group(identity.pid, timeout)
+            # The launch leader is gone. A live POSIX group with the same
+            # numeric id is NOT sufficient proof that it belongs to the old
+            # execution: PID/PGID values can be reused. Keep failing closed and
+            # retain the persisted identity until an operator/OS stop proof is
+            # available; never kill an unproven group.
+            if self._posix_group_exists(identity.pid):
+                raise PermissionError(
+                    "process group leader is gone; group ownership cannot be proven"
+                )
             return
         processes = self._tree(root)
         descendants = [process for process in processes if process.pid != root.pid]

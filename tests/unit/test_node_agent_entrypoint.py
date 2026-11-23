@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -438,3 +441,40 @@ def test_doctor_returns_nonzero_and_actionable_issue_when_rknn_board_is_not_read
         "capability": "deployment-test.rknn",
         "message": "device-tree compatible is not an RK3568/RK3576 board",
     }]
+
+
+def test_executor_state_lock_is_cross_process_and_released_on_exit(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    (tmp_path / "other").mkdir()
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    script = (
+        "import sys,time\n"
+        "from pathlib import Path\n"
+        "from node_agent import _claim_node_executor_state\n"
+        "try:\n"
+        "    _claim_node_executor_state(Path(sys.argv[1]))\n"
+        "    print('OK', flush=True)\n"
+        "    time.sleep(float(sys.argv[2]))\n"
+        "except RuntimeError:\n"
+        "    print('LOCKED', flush=True)\n"
+    )
+
+    def spawn(directory: Path, hold: float):
+        return subprocess.Popen(
+            [sys.executable, "-c", script, str(directory), str(hold)],
+            cwd=str(repo), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    first = spawn(tmp_path, 30)
+    try:
+        assert first.stdout.readline().strip() == "OK"
+        second = spawn(tmp_path, 0)
+        assert second.communicate(timeout=20)[0].strip() == "LOCKED"
+        other = spawn(tmp_path / "other", 0)
+        assert other.communicate(timeout=20)[0].strip() == "OK"
+    finally:
+        first.terminate()
+        first.wait(timeout=20)
+    third = spawn(tmp_path, 0)
+    assert third.communicate(timeout=20)[0].strip() == "OK"

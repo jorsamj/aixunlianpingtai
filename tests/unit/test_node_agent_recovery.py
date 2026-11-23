@@ -118,6 +118,38 @@ def test_duplicate_owner_claim_is_rejected():
     assert coordinator.register_owner("task", 1) is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows recovery is deliberately fail-closed")
+def test_training_and_conversion_share_recovery_owner_across_managers():
+    from pathlib import Path
+    from platform_core.node_agent_conversion_runtime import AgentConversionRunner
+    from platform_core.node_agent_training_runtime import AgentTrainingRunner
+    from platform_core.task_runtime.process_control import ProcessController
+
+    launched = launch_process([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        record_a = {"task_id": "a", "generation": 1, "pid": launched.identity.pid,
+                    "create_time": launched.identity.create_time,
+                    "command_hash": launched.identity.command_hash}
+        workdirs = FakeWorkdirs([record_a])
+        coordinator = NodeRecoveryCoordinator(workdirs, ProcessController())
+        coordinator.register_owner("a", 1)
+        assert coordinator.prepare() == ""
+        conversion = AgentConversionRunner(
+            object(), workdirs, runtime_root=Path(__file__).resolve().parents[2],
+            recovery_coordinator=coordinator,
+        )
+        training = AgentTrainingRunner(
+            object(), workdirs, runtime_root=Path(__file__).resolve().parents[2],
+            recovery_coordinator=coordinator,
+        )
+        assert conversion.ready and training.ready
+        assert launched.process.poll() is None
+    finally:
+        if launched.process.poll() is None:
+            launched.process.kill()
+            launched.process.wait(timeout=10)
+
+
 def test_unverified_launch_intent_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "name", "posix")
     workdirs = FakeWorkdirs(unverified=[{"kind": "TRAINING", "task_id": "a"}])

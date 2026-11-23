@@ -62,6 +62,7 @@ on:
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'node_agent.py'
       - 'tests/unit/test_node_agent_recovery.py'
+      - 'tests/unit/task_runtime/test_process_control.py'
       - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
@@ -164,6 +165,7 @@ on:
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'node_agent.py'
       - 'tests/unit/test_node_agent_recovery.py'
+      - 'tests/unit/task_runtime/test_process_control.py'
       - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
@@ -331,6 +333,7 @@ jobs:
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_node_agent_recovery.py
+          tests/unit/task_runtime/test_process_control.py
       - name: Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -370,6 +373,7 @@ jobs:
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_node_agent_recovery.py
+          tests/unit/task_runtime/test_process_control.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
       - name: Actual existing-ONNX CPU Runtime pilot (NO Supervisor launch)
