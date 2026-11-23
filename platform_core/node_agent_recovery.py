@@ -98,12 +98,39 @@ class NodeRecoveryCoordinator:
             try:
                 unverified = self.workdirs.list_unverified_process_launch_intents()
                 if unverified:
-                    self._error = (
-                        "remote launch outcome is unverified; exact process identity "
-                        f"was not persisted for {unverified[0].get('kind')} task "
-                        f"{unverified[0].get('task_id')}"
-                    )
-                    return self._error
+                    if self.client is None:
+                        item = unverified[0]
+                        self._error = (
+                            "remote launch outcome is unverified; exact process identity "
+                            f"was not persisted for {item.get('kind')} task "
+                            f"{item.get('task_id')}"
+                        )
+                        return self._error
+                    for item in unverified:
+                        try:
+                            status = self.client.execution_status(str(item["task_id"]))
+                        except Exception as error:
+                            self._error = (
+                                "central recovery status is unavailable: "
+                                f"{type(error).__name__}: {error}"
+                            )
+                            return self._error
+                        if (int(status.get("execution_attempt") or 0) != int(item["generation"])
+                                or str(status.get("status")) not in {
+                                    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+                                    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
+                                or str(status.get("hold_state")) != "RELEASED"
+                                or str(status.get("proof_type") or "") != "NO_PROCESS_LAUNCHED"
+                                or status.get("process_identity_sha256") is not None):
+                            self._error = (
+                                "remote launch outcome is unverified and not proven no-launch "
+                                f"for task {item.get('task_id')}"
+                            )
+                            return self._error
+                    for item in unverified:
+                        self.workdirs.clear_process_launch_intent(
+                            str(item["task_id"]), int(item["generation"]),
+                        )
                 records = self.workdirs.list_process_identities()
             except (OSError, ValueError) as error:
                 self._error = f"persisted process identity is unsafe or unreadable: {error}"

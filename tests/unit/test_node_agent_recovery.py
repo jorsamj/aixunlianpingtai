@@ -161,6 +161,11 @@ class FakeRecoveryClient:
 
     def recover_execution(self, task_id, **kwargs):
         self.recovered.append((task_id, kwargs))
+        self.status = {
+            **self.status,
+            "status": "FAILED",
+            "hold_state": "RELEASED",
+        }
         return {"task_id": task_id, "state": "RELEASED"}
 
 

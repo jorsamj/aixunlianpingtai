@@ -96,6 +96,16 @@ def _ensure_resource_hold_schema(database) -> None:
         raise RuntimeError("execution_resource_holds schema is not initialized")
 
 
+def _lease_valid(value: object) -> bool:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed > datetime.now(timezone.utc)
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -2531,8 +2541,8 @@ class AgentExecutionService:
                 "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
             ).fetchone()
             assignment = database.execute(
-                "SELECT node_id FROM task_node_assignments WHERE task_id=? "
-                "ORDER BY generation DESC LIMIT 1", (str(task_id),)
+                "SELECT node_id,state,generation,lease_expires_at FROM task_node_assignments "
+                "WHERE task_id=? ORDER BY generation DESC LIMIT 1", (str(task_id),)
             ).fetchone()
         origin = None
         if hold is not None:
@@ -2571,8 +2581,16 @@ class AgentExecutionService:
             "task_id": task.task_id,
             "node_id": str(node_id),
             "status": task.status.value,
+            "stage": str(task.stage or ""),
+            "resource_wait_reason": task.resource_wait_reason,
             "execution_attempt": int(task.attempt),
+            "lease_valid": _lease_valid(task.lease_expires_at),
             "process_identity_sha256": identity_sha,
+            "assignment_state": str(assignment["state"]) if assignment is not None else None,
+            "assignment_generation": int(assignment["generation"]) if assignment is not None else None,
+            "assignment_lease_expires_at": (
+                str(assignment["lease_expires_at"]) if assignment is not None else None
+            ),
             "hold_state": str(hold["state"]) if hold is not None else None,
             "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
             "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,

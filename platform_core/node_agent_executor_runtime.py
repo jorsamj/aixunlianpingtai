@@ -834,6 +834,17 @@ class AgentExecutionWorkdir:
         self._sync_launch_intent_directories(marker, self.root)
         return marker
 
+    def clear_process_launch_intent(self, task_id: str, generation: int) -> None:
+        marker = (
+            self.path_for(SimpleNamespace(task_id=str(task_id), generation=int(generation)))
+            / "process-launch-intent.json"
+        )
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise ValueError("process launch intent path is unsafe")
+        if marker.is_file():
+            marker.unlink()
+        self._sync_launch_intent_directories(marker, self.root)
+
     def read_process_launch_intent(self, lease) -> dict[str, Any] | None:
         marker = self.path_for(lease) / "process-launch-intent.json"
         if not marker.exists() and not marker.is_symlink():
