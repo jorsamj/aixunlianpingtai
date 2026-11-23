@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+from pathlib import Path
 from dataclasses import replace
 from threading import Barrier
 
@@ -1522,7 +1523,49 @@ def test_schema_6_database_migrates_execution_holds_without_data_loss(tmp_path):
     TaskRepository(path)  # repeated open is idempotent
 
 
-def test_schema_6_partial_migration_retries_without_data_loss(tmp_path):
+def test_real_historical_schema_6_upgrades_to_current(tmp_path):
+    import ast
+    import subprocess
+
+    source = subprocess.check_output(
+        ["git", "show", "e5378a84^:platform_core/task_runtime/repository.py"],
+        cwd=Path(__file__).resolve().parents[3],
+    ).decode("utf-8")
+    tree = ast.parse(source)
+    schema = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "SCHEMA" for target in node.targets
+        ):
+            schema = ast.literal_eval(node.value)
+            break
+    assert isinstance(schema, str) and "execution_resource_holds" not in schema
+    path = tmp_path / "historical.sqlite3"
+    with sqlite3.connect(path) as database:
+        database.executescript(schema)
+        values = task_repository_module._to_values(TaskRecord.new(
+            "historic-task", "project-1", TaskKind.TRAINING, "payload.json", "gpu:local:0",
+        ))
+        values["attempt"] = 4
+        values["status"] = "RUNNING"
+        values["worker_id"] = "worker-1"
+        columns = [name for name in values if name in {
+            str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()
+        }]
+        database.execute(
+            f"INSERT INTO tasks({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+            [values[name] for name in columns],
+        )
+        database.execute("PRAGMA user_version=6")
+        database.commit()
+    upgraded = TaskRepository(path)
+    task = upgraded.get("historic-task")
+    assert task is not None and task.attempt == 4 and task.worker_id == "worker-1"
+    with sqlite3.connect(path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 8
+        columns = {str(row[1]) for row in database.execute(
+            "PRAGMA table_info(execution_resource_holds)").fetchall()}
+        assert "proof_type" in columns
     path = tmp_path / "tasks.sqlite3"
     repository = TaskRepository(path)
     add(repository, "keep-2", "project-1", 4)
