@@ -961,11 +961,14 @@ class AgentExecutionService:
             # Enforce that capacity in the same BEGIN IMMEDIATE transaction as
             # task ownership; a local Agent mutex alone cannot stop two HTTP
             # clients from starting two tasks on the same node.
+            _ensure_resource_hold_schema(database)
             active_executions = int(database.execute(
-                "SELECT COUNT(*) FROM tasks "
-                "WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED') "
-                "AND task_id<>?",
-                (worker_id, str(task_id)),
+                "SELECT COUNT(*) FROM ("
+                " SELECT task_id FROM tasks WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')"
+                " UNION SELECT task_id FROM execution_resource_holds"
+                " WHERE node_id=? AND state<>'RELEASED'"
+                ")",
+                (worker_id, str(node_id)),
             ).fetchone()[0])
             if active_executions >= _execution_slots_for_worker(database, worker_id):
                 database.rollback()
@@ -974,6 +977,21 @@ class AgentExecutionService:
                     "the service node has no free authorized execution slot",
                     409,
                 )
+            if _execution_slots_for_worker(database, worker_id) == 2:
+                config = _json(assignment["resolved_execution_config"], {})
+                selected = config.get("selected_gpu") if isinstance(config, dict) else None
+                gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+                if not gpu_uuid:
+                    database.rollback()
+                    raise AgentExecutionError("DUAL_SLOT_GPU_UUID_MISSING", "selected GPU UUID is missing", 409)
+                conflict = database.execute(
+                    "SELECT 1 FROM execution_resource_holds WHERE node_id=? AND gpu_uuid=? "
+                    "AND task_id<>? AND state<>'RELEASED' LIMIT 1",
+                    (str(node_id), gpu_uuid, str(task_id)),
+                ).fetchone()
+                if conflict is not None:
+                    database.rollback()
+                    raise AgentExecutionError("GPU_UUID_BUSY", "selected GPU is already reserved", 409)
 
             latest = _from_row(task_row)
             if any(getattr(latest, field) != getattr(preflight_task, field) for field in (
@@ -2487,12 +2505,28 @@ class AgentExecutionService:
                         or int(row["execution_attempt"]) != int(execution_generation)
                         or str(row["gpu_uuid"]) != str(gpu_uuid)):
                     raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "stop proof identity mismatch", 409)
-                if row["state"] == "RELEASED":
+                if terminal_recovery and str(row["state"]) != "STOP_VERIFIED":
+                    raise AgentExecutionError(
+                        "STOP_PROOF_REQUIRED",
+                        "terminal task has no previously verified stop proof",
+                        409,
+                    )
+                if str(row["state"]) in {"STOP_VERIFIED", "RELEASED"}:
+                    if str(row["proof_sha256"] or "") != digest:
+                        raise AgentExecutionError(
+                            "STOP_PROOF_CONFLICT",
+                            "existing stop proof cannot be replaced by different evidence",
+                            409,
+                        )
+                    if str(row["state"]) == "RELEASED":
+                        database.commit()
+                        return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
+                    if not terminal_recovery:
+                        database.commit()
+                        return {"task_id": str(task_id), "state": "STOP_VERIFIED", "idempotent": True}
+                if str(row["state"]) == "RELEASED":
                     database.commit()
                     return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
-                if row["state"] == "STOP_VERIFIED" and str(row["proof_sha256"]) == digest:
-                    database.commit()
-                    return {"task_id": str(task_id), "state": "STOP_VERIFIED", "idempotent": True}
                 database.execute(
                     "UPDATE execution_resource_holds SET state=?,proof_sha256=?,updated_at=? "
                     "WHERE task_id=? AND execution_attempt=?",

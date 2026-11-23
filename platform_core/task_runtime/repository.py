@@ -30,7 +30,7 @@ from ..gpu_resources import ensure_gpu_runtime_schema
 from .inference_resources import InferenceResourceMethods, ensure_inference_runtime_schema
 
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _INIT_LOCK_TIMEOUT = 30
 # Bounded automatic recovery for ANNOTATION_FORMAL_BULK only. Reaching the cap
 # leaves the task in a durable blocked stage that requires an explicit,
@@ -297,6 +297,18 @@ class TaskRepository(InferenceResourceMethods):
                         f"task repository requires WAL mode, got {mode}"
                     )
                 database.executescript(SCHEMA)
+                if version <= 6:
+                    # Schema-6 databases have every prior table but no execution
+                    # resource holds. This migration is idempotent and runs only
+                    # inside the existing initialization lock before user_version
+                    # advances to 7.
+                    database.execute(
+                        "CREATE TABLE IF NOT EXISTS execution_resource_holds ("
+                        "task_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,"
+                        "assignment_generation INTEGER NOT NULL,execution_attempt INTEGER NOT NULL,"
+                        "gpu_uuid TEXT NOT NULL,state TEXT NOT NULL,"
+                        "proof_sha256 TEXT,updated_at TEXT NOT NULL)"
+                    )
                 columns = {
                     str(row[1])
                     for row in database.execute("PRAGMA table_info(tasks)").fetchall()
