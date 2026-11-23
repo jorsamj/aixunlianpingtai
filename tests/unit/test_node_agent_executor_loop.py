@@ -618,6 +618,7 @@ def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
     loop = NodeAgentExecutorLoop(
         client, SleepRunner(lambda _identity: None),
         capabilities=["training"], max_slots=2,
+        runners={"TRAINING": SleepRunner(lambda _identity: None)},
         slot_runner_factory=lambda kind, on_started: SleepRunner(on_started),
         slot_controller=ProcessController(), poll_interval=0.02,
     )

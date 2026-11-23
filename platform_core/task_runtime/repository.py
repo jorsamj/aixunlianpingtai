@@ -30,7 +30,7 @@ from ..gpu_resources import ensure_gpu_runtime_schema
 from .inference_resources import InferenceResourceMethods, ensure_inference_runtime_schema
 
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _INIT_LOCK_TIMEOUT = 30
 # Bounded automatic recovery for ANNOTATION_FORMAL_BULK only. Reaching the cap
 # leaves the task in a durable blocked stage that requires an explicit,
@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS execution_resource_holds (
     gpu_uuid TEXT NOT NULL,
     state TEXT NOT NULL,
     proof_sha256 TEXT,
+    proof_type TEXT,
     updated_at TEXT NOT NULL
 );
 """
@@ -311,7 +312,16 @@ class TaskRepository(InferenceResourceMethods):
                         "task_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,"
                         "assignment_generation INTEGER NOT NULL,execution_attempt INTEGER NOT NULL,"
                         "gpu_uuid TEXT NOT NULL,state TEXT NOT NULL,"
-                        "proof_sha256 TEXT,updated_at TEXT NOT NULL)"
+                        "proof_sha256 TEXT,proof_type TEXT,updated_at TEXT NOT NULL)"
+                    )
+                if version <= 7:
+                    hold_columns = {
+                        str(row[1])
+                        for row in database.execute("PRAGMA table_info(execution_resource_holds)").fetchall()
+                    }
+                    _add_column_if_missing(
+                        database, "execution_resource_holds", hold_columns,
+                        "proof_type", "TEXT",
                     )
                 columns = {
                     str(row[1])

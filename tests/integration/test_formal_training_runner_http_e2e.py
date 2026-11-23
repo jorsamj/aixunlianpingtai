@@ -437,6 +437,137 @@ def test_formal_training_runners_through_dual_slot_loop(tmp_path):
         thread.join(timeout=10)
 
 
+def test_formal_no_launch_preflight_through_dual_loop(tmp_path):
+    from platform_core.node_agent_executor_loop import NodeAgentExecutorLoop
+    from platform_core.task_runtime.process_control import ProcessController
+
+    fixtures = _unit_module()
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    app = FastAPI()
+    app.include_router(agent_executor_router(
+        lambda: repository, lambda: artifacts, execution_payload_resolver=_payload_resolver,
+        result_upload_preparer=_result_preparer, result_upload_confirmer=_result_confirmer,
+        training_model_upload_preparer=_model_preparer,
+        training_model_upload_confirmer=_model_confirmer,
+    ))
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert server.started
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "formal-runner", "display_name": "formal-runner",
+        "connection_mode": "agent", "allowed_capabilities": ["training", "execution-slots:2"],
+    })
+    nodes.heartbeat("formal-runner", token, {
+        "hostname": "formal-runner", "reported_capabilities": ["training", "execution-slots:2"],
+        "resources": {
+            "cpu": {"logical_cores": 4}, "memory": {"available_bytes": 16 * 1024**3},
+            "disk": {"free_bytes": 10 * 1024**3},
+            "gpu": {"gpus": [
+                {"id": "cuda:0", "index": 0, "uuid": "GPU-A", "memory_free_bytes": 8 * 1024**3,
+                 "memory_total_bytes": 8 * 1024**3},
+                {"id": "cuda:1", "index": 1, "uuid": "GPU-B", "memory_free_bytes": 8 * 1024**3,
+                 "memory_total_bytes": 8 * 1024**3},
+            ]},
+        },
+    })
+    prepared = {}
+
+    def create_task(task_id, gpu, mutate=None):
+        lease, downloads = fixtures.training_lease(tmp_path / task_id)
+        payload = dict(lease.payload)
+        payload.setdefault("remote_execution", {
+            "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1"})
+        payload["resource_requirements"] = {"gpu_count": 1, "gpu_uuids": [gpu],
+                                            "min_gpu_memory_bytes": 1}
+        if mutate:
+            mutate(payload)
+        artifacts.atomic_write_json(task_id, "request.json", payload)
+        repository.create(TaskRecord.new(
+            task_id=task_id, project_id="project-formal", kind=TaskKind.TRAINING,
+            payload_ref="request.json", resource_key=f"training:{task_id}",
+        ), artifacts=artifacts)
+        prepared[task_id] = {"downloads": downloads}
+
+    create_task("preflight", "GPU-A", lambda payload: payload.pop("snapshot_id", None))
+    service = AgentExecutionService(repository, artifacts)
+    assert service.allocator.assign_next() is not None
+    client = NodeExecutorClient(f"http://127.0.0.1:{port}", "formal-runner", token)
+    workdirs = {}
+
+    def factory(kind, on_started, task_id=None):
+        transfer = fixtures.FakeTransferSession(prepared[task_id]["downloads"])
+        runner, runtime_root, task_workdirs = fixtures.build_runner(
+            tmp_path / task_id / "loop", client, transfer)
+        runner._require_stop_proof = True
+        runner._on_process_started = on_started
+        workdirs[task_id] = task_workdirs
+        return runner
+
+    loop = NodeAgentExecutorLoop(
+        client, object(), capabilities=["training", "conversion"], max_slots=2,
+        runners={"TRAINING": type("R", (), {"ready": True, "run": lambda *_args: None})()},
+        slot_runner_factory=factory, slot_controller=ProcessController(), poll_interval=0.02,
+    )
+    try:
+        assert loop.effective_capabilities() == ("training", "execution-slots:2")
+        loop.start()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            loop._reap_dual_slots()
+            with repository._connect() as database:
+                hold = database.execute(
+                    "SELECT state,proof_type FROM execution_resource_holds WHERE task_id='preflight'"
+                ).fetchone()
+            if (repository.get("preflight").status.value == "FAILED"
+                    and hold is not None and hold["state"] == "RELEASED"):
+                break
+            time.sleep(0.02)
+        assert repository.get("preflight").status.value == "FAILED"
+        assert repository.get("preflight").process_pid is None
+        assert hold is not None and hold["proof_type"] == "NO_PROCESS_LAUNCHED"
+        assert workdirs["preflight"].read_process_identity(
+            type("L", (), {"task_id": "preflight", "generation": 1})()) is None
+        deadline = time.monotonic() + 10
+        while loop._slots.active() and time.monotonic() < deadline:
+            loop._reap_dual_slots()
+            time.sleep(0.02)
+        assert loop._slots.active() == ()
+        # Freed capacity can accept a subsequent valid task.
+        create_task("after", "GPU-B")
+        assert service.allocator.assign_next() is not None
+        started = {}
+        original_factory = factory
+
+        def tracking_factory(kind, on_started, task_id=None):
+            runner = original_factory(kind, on_started, task_id)
+
+            def wrapped(identity):
+                started[task_id] = identity
+                on_started(identity)
+
+            runner._on_process_started = wrapped
+            return runner
+
+        loop._slot_factory = tracking_factory
+        deadline = time.monotonic() + 20
+        while "after" not in started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert "after" in started
+        assert repository.get("after").status.value == "RUNNING"
+    finally:
+        loop.stop(timeout=15)
+        loop._slots.wait(15)
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
 def test_formal_training_runner_http_success(tmp_path):
     stack = _start_formal(tmp_path)
     try:
@@ -446,9 +577,10 @@ def test_formal_training_runner_http_success(tmp_path):
         assert task.status.value == "SUCCEEDED"
         with stack["repository"]._connect() as database:
             hold = database.execute(
-                "SELECT state,proof_sha256 FROM execution_resource_holds WHERE task_id='formal-1'"
+                "SELECT state,proof_sha256,proof_type FROM execution_resource_holds WHERE task_id='formal-1'"
             ).fetchone()
         assert hold is not None and hold["state"] == "RELEASED" and hold["proof_sha256"]
+        assert hold["proof_type"] == "PROCESS_STOP_VERIFIED"
     finally:
         _stop_formal(stack)
 
@@ -488,9 +620,10 @@ def test_formal_training_runner_startup_failure_uses_no_launch_proof(tmp_path):
         assert stack["workdirs"].read_process_launch_intent(stack["lease"]) is None
         with stack["repository"]._connect() as database:
             hold = database.execute(
-                "SELECT state FROM execution_resource_holds WHERE task_id='formal-preflight'"
+                "SELECT state,proof_type FROM execution_resource_holds WHERE task_id='formal-preflight'"
             ).fetchone()
         assert hold is not None and hold["state"] == "RELEASED"
+        assert hold["proof_type"] == "NO_PROCESS_LAUNCHED"
     finally:
         _stop_formal(stack)
 

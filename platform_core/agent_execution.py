@@ -1091,7 +1091,7 @@ class AgentExecutionService:
                     database.execute(
                         "INSERT INTO execution_resource_holds"
                         "(task_id,node_id,assignment_generation,execution_attempt,gpu_uuid,state,"
-                        "proof_sha256,updated_at) VALUES(?,?,?,?,?, 'HELD', NULL, ?)",
+                        "proof_sha256,proof_type,updated_at) VALUES(?,?,?,?,?, 'HELD', NULL, NULL, ?)",
                         (str(task_id), str(node_id), int(assignment["generation"]),
                          execution_attempt, gpu_uuid, now),
                     )
@@ -2527,7 +2527,7 @@ class AgentExecutionService:
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
             hold = database.execute(
-                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid "
+                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,proof_type "
                 "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
             ).fetchone()
             assignment = database.execute(
@@ -2577,6 +2577,7 @@ class AgentExecutionService:
             "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
             "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
             "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
+            "proof_type": str(hold["proof_type"]) if hold is not None else None,
         }
 
     def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
@@ -2650,6 +2651,7 @@ class AgentExecutionService:
                 raise AgentExecutionError(
                     "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence digest mismatch", 409)
         proof = {
+            "proof_type": "NO_PROCESS_LAUNCHED" if no_process_launched else "PROCESS_STOP_VERIFIED",
             "node_id": str(node_id), "task_id": str(task_id),
             "assignment_generation": int(assignment_generation),
             "execution_attempt": int(execution_generation),
@@ -2710,7 +2712,8 @@ class AgentExecutionService:
                         409,
                     )
                 if str(row["state"]) in {"STOP_VERIFIED", "RELEASED"}:
-                    if str(row["proof_sha256"] or "") != digest:
+                    if (str(row["proof_sha256"] or "") != digest
+                            or str(row["proof_type"] or "") != proof["proof_type"]):
                         raise AgentExecutionError(
                             "STOP_PROOF_CONFLICT",
                             "existing stop proof cannot be replaced by different evidence",
@@ -2726,10 +2729,10 @@ class AgentExecutionService:
                     database.commit()
                     return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
                 database.execute(
-                    "UPDATE execution_resource_holds SET state=?,proof_sha256=?,updated_at=? "
+                    "UPDATE execution_resource_holds SET state=?,proof_sha256=?,proof_type=?,updated_at=? "
                     "WHERE task_id=? AND execution_attempt=?",
                     ("RELEASED" if terminal_recovery else "STOP_VERIFIED",
-                     digest, now, str(task_id), int(execution_generation)),
+                     digest, proof["proof_type"], now, str(task_id), int(execution_generation)),
                 )
                 database.commit()
             except Exception:

@@ -100,7 +100,7 @@ def test_annotation_search_schema_migrates_v1_in_place_without_dropping_tasks(tm
         "total": 1, "pending": 1, "failed": 0,
     }
     with sqlite3.connect(path) as database:
-        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 7
+        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 8
         assert database.execute("SELECT COUNT(*) FROM inference_permits").fetchone()[0] == 0
 
 
@@ -128,7 +128,7 @@ def test_annotation_statistics_migrate_from_v2_and_batch_scope_exactly(tmp_path)
     with pytest.raises(ValueError):
         migrated.set_annotation_statistics("ai-real", {**counts, "gt_committed": 2})
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert db.execute("SELECT COUNT(*) FROM inference_domain_state").fetchone()[0] == 0
 
 
@@ -149,7 +149,7 @@ def test_inference_schema_migrates_v3_preserving_tasks_and_candidate_statistics(
     assert migrated.get(task.task_id) == before
     assert migrated.annotation_statistics_many('p', [task.task_id])[task.task_id]['counts'] == counts
     with sqlite3.connect(path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 7
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 8
         assert db.execute('SELECT COUNT(*) FROM inference_permits').fetchone()[0] == 0
         assert db.execute('SELECT COUNT(*) FROM inference_domain_state').fetchone()[0] == 0
 
@@ -1510,7 +1510,7 @@ def test_schema_6_database_migrates_execution_holds_without_data_loss(tmp_path):
         database.commit()
     reopened = TaskRepository(path)
     with sqlite3.connect(path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 8
         assert database.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_resource_holds'"
         ).fetchone()
@@ -1533,7 +1533,8 @@ def test_schema_6_partial_migration_retries_without_data_loss(tmp_path):
     # version marker advanced. The retry must remain idempotent.
     reopened = TaskRepository(path)
     with sqlite3.connect(path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 8
         assert database.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
     assert reopened.get("keep-2").task_id == "keep-2"
+
 

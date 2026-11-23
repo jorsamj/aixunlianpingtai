@@ -135,10 +135,15 @@ class NodeAgentExecutorLoop:
             if getattr(runner, "ready", True) is False:
                 continue
             effective.append(str(capability))
-        if self.max_slots == 2 and self._slots is not None and not self._slots.blocked_reason:
-            # The dual-slot path only implements two independent TRAINING runs.
-            effective = ["training"] if "training" in effective else []
-            effective.append("execution-slots:2")
+        if self.max_slots == 2 and self._slots is not None:
+            if self._slots.blocked_reason:
+                return ()
+            training = self.runners.get("TRAINING")
+            if (not training or "training" not in self.capabilities
+                    or not callable(getattr(training, "run", None))
+                    or getattr(training, "ready", True) is False):
+                return ()
+            return ("training", "execution-slots:2")
         return tuple(effective)
 
     def _runner_recovery_error(self) -> str:
@@ -375,6 +380,14 @@ class NodeAgentExecutorLoop:
                     or (status.get("process_identity_sha256") or None) != expected_identity_sha):
                 self._set_error(
                     f"SLOT_IDENTITY_MISMATCH: {slot.task_id} generation {slot.generation}"
+                )
+                continue
+            expected_proof_type = (
+                "NO_PROCESS_LAUNCHED" if slot.identity is None else "PROCESS_STOP_VERIFIED"
+            )
+            if str(status.get("proof_type") or "") != expected_proof_type:
+                self._set_error(
+                    f"SLOT_PROOF_TYPE_MISMATCH: {slot.task_id} generation {slot.generation}"
                 )
                 continue
             if (str(status.get("status")) not in {
