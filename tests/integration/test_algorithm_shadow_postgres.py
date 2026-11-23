@@ -115,13 +115,14 @@ def test_real_postgres_non_idle_read_requires_repeatable_read(pg):
         with pytest.raises(AlgorithmShadowError) as error:
             load_shadow_snapshot(connection, "txn")
         assert error.value.code == "ALGORITHM_SHADOW_TRANSACTION_ISOLATION_UNSUPPORTED"
-        assert connection.execute("SELECT 1").fetchone() == (1,)
+        from psycopg.pq import TransactionStatus
+        assert connection.info.transaction_status == TransactionStatus.INTRANS
         connection.rollback()
 
         connection.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
         loaded = load_shadow_snapshot(connection, "txn")
         assert loaded is not None and loaded["snapshot_digest"] == snapshot["snapshot_digest"]
-        assert connection.execute("SELECT 1").fetchone() == (1,)
+        assert connection.info.transaction_status == TransactionStatus.INTRANS
         connection.rollback()
     finally:
         connection.close()

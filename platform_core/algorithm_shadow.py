@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 import tempfile
-from contextlib import closing
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -375,14 +375,17 @@ def load_shadow_snapshot(connection, project_id: str) -> dict[str, Any] | None:
     project_id = str(project_id)
     meta = None
     tables: dict[str, list[dict]] = {"algorithms": [], "versions": [], "analyses": []}
-    transaction = connection.transaction() if hasattr(connection, "transaction") else closing(None)
     idle = True
     try:
         from psycopg.pq import TransactionStatus
         idle = connection.info.transaction_status == TransactionStatus.IDLE
     except ImportError:
         pass
-    with transaction:
+    # Idle: own and commit only the read transaction. Non-idle: never wrap the
+    # caller's transaction in connection.transaction(), because that context may
+    # commit it; only inspect and read inside the existing transaction.
+    manager = connection.transaction() if idle and hasattr(connection, "transaction") else nullcontext()
+    with manager:
         with connection.cursor() as cursor:
             if idle and hasattr(connection, "transaction"):
                 cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
