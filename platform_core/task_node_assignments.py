@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import secrets
+import sqlite3
 from contextlib import closing
 from threading import Lock
 from datetime import datetime, timedelta, timezone
@@ -370,16 +371,27 @@ def _gpu_is_training_candidate(item: Mapping[str, Any]) -> bool:
     return True
 
 
+def _ensure_resource_holds(database) -> None:
+    row = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_resource_holds'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("execution_resource_holds schema is not initialized")
+
+
 def _node_active_work_count(database, node_id: str) -> int:
-    """Count both queued reservations and executions already running on a node."""
+    """Count distinct task identities occupying one authorized execution slot."""
     node = str(node_id)
-    assigned = int(database.execute(
-        "SELECT COUNT(*) FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
-        (node,),
-    ).fetchone()[0])
-    running = int(database.execute(
+    _ensure_resource_holds(database)
+    occupied = {
+        str(row[0]) for row in database.execute(
+            "SELECT task_id FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
+            (node,),
+        )
+    }
+    occupied.update(str(row[0]) for row in database.execute(
         """
-        SELECT COUNT(DISTINCT task.task_id)
+        SELECT task.task_id
           FROM tasks task
          WHERE task.status IN ('RUNNING','CANCEL_REQUESTED')
            AND (
@@ -390,15 +402,12 @@ def _node_active_work_count(database, node_id: str) -> int:
            )
         """,
         (f"agent:{node}", node),
-    ).fetchone()[0])
-    try:
-        held = int(database.execute(
-            "SELECT COUNT(*) FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
-            (node,),
-        ).fetchone()[0])
-    except Exception:
-        held = 0
-    return assigned + running + held
+    ))
+    occupied.update(str(row[0]) for row in database.execute(
+        "SELECT task_id FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
+        (node,),
+    ))
+    return len(occupied)
 
 
 _MULTI_SLOT_CAPABILITY = "execution-slots:2"
@@ -451,6 +460,7 @@ def _assigned_gpu_ids(database, node_id: str) -> set[str]:
         if uuid:
             assigned.add(uuid)
     try:
+        _ensure_resource_holds(database)
         for row in database.execute(
             "SELECT gpu_uuid FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
             (str(node_id),),
@@ -458,8 +468,8 @@ def _assigned_gpu_ids(database, node_id: str) -> set[str]:
             value = str(row[0] or "")
             if value:
                 assigned.add(value)
-    except Exception:
-        pass
+    except sqlite3.OperationalError:
+        raise
     return assigned
 
 

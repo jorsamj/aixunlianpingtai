@@ -116,6 +116,16 @@ CREATE TABLE IF NOT EXISTS worker_instances (
 );
 CREATE INDEX IF NOT EXISTS idx_worker_instances_expiry
     ON worker_instances(expires_at);
+CREATE TABLE IF NOT EXISTS execution_resource_holds (
+    task_id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    assignment_generation INTEGER NOT NULL,
+    execution_attempt INTEGER NOT NULL,
+    gpu_uuid TEXT NOT NULL,
+    state TEXT NOT NULL,
+    proof_sha256 TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 

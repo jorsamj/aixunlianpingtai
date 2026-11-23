@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -88,13 +89,11 @@ def _execution_slots_for_worker(database, worker_id: str) -> int:
 
 
 def _ensure_resource_hold_schema(database) -> None:
-    database.execute(
-        "CREATE TABLE IF NOT EXISTS execution_resource_holds ("
-        "task_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,"
-        "assignment_generation INTEGER NOT NULL,execution_attempt INTEGER NOT NULL,"
-        "gpu_uuid TEXT NOT NULL,state TEXT NOT NULL,"
-        "proof_sha256 TEXT,updated_at TEXT NOT NULL)"
-    )
+    row = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_resource_holds'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("execution_resource_holds schema is not initialized")
 
 
 def _canonical_json(value: object) -> str:
@@ -1056,13 +1055,35 @@ class AgentExecutionService:
                         "two-slot execution requires a selected GPU UUID",
                         409,
                     )
-                database.execute(
-                    "INSERT OR REPLACE INTO execution_resource_holds"
-                    "(task_id,node_id,assignment_generation,execution_attempt,gpu_uuid,state,"
-                    "proof_sha256,updated_at) VALUES(?,?,?,?,?, 'HELD', NULL, ?)",
-                    (str(task_id), str(node_id), int(assignment["generation"]),
-                     execution_attempt, gpu_uuid, now),
-                )
+                existing_hold = database.execute(
+                    "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if existing_hold is not None:
+                    if str(existing_hold["state"]) != "RELEASED":
+                        database.rollback()
+                        raise AgentExecutionError(
+                            "RESOURCE_HOLD_CONFLICT",
+                            "task still owns an unreleased execution resource hold",
+                            409,
+                        )
+                    database.execute(
+                        "DELETE FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                    )
+                try:
+                    database.execute(
+                        "INSERT INTO execution_resource_holds"
+                        "(task_id,node_id,assignment_generation,execution_attempt,gpu_uuid,state,"
+                        "proof_sha256,updated_at) VALUES(?,?,?,?,?, 'HELD', NULL, ?)",
+                        (str(task_id), str(node_id), int(assignment["generation"]),
+                         execution_attempt, gpu_uuid, now),
+                    )
+                except sqlite3.IntegrityError as error:
+                    database.rollback()
+                    raise AgentExecutionError(
+                        "RESOURCE_HOLD_CONFLICT",
+                        "execution resource hold already exists",
+                        409,
+                    ) from error
             database.commit()
 
         task = _from_row(started_row)
@@ -2428,7 +2449,16 @@ class AgentExecutionService:
         stop_verified: bool,
     ) -> dict[str, Any]:
         self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
-        task = self.fenced.assert_execution(task_id, execution_lease_token, int(execution_generation))
+        terminal_recovery = False
+        try:
+            task = self.fenced.assert_execution(task_id, execution_lease_token, int(execution_generation))
+        except (KeyError, PermissionError):
+            task = self.repository.get(task_id)
+            if task is None or task.status not in TERMINAL_STATUSES:
+                raise AgentExecutionError("EXECUTION_FENCED", "remote execution lost ownership", 409)
+            if int(task.attempt) != int(execution_generation):
+                raise AgentExecutionError("EXECUTION_FENCED", "stale execution attempt", 409)
+            terminal_recovery = True
         if not stop_verified:
             raise AgentExecutionError("STOP_PROOF_INVALID", "stop verification was not attested", 409)
         required = {"pid", "create_time", "command_hash"}
@@ -2464,15 +2494,17 @@ class AgentExecutionService:
                     database.commit()
                     return {"task_id": str(task_id), "state": "STOP_VERIFIED", "idempotent": True}
                 database.execute(
-                    "UPDATE execution_resource_holds SET state='STOP_VERIFIED',proof_sha256=?,updated_at=? "
+                    "UPDATE execution_resource_holds SET state=?,proof_sha256=?,updated_at=? "
                     "WHERE task_id=? AND execution_attempt=?",
-                    (digest, now, str(task_id), int(execution_generation)),
+                    ("RELEASED" if terminal_recovery else "STOP_VERIFIED",
+                     digest, now, str(task_id), int(execution_generation)),
                 )
                 database.commit()
             except Exception:
                 database.rollback()
                 raise
-        return {"task_id": str(task.task_id), "state": "STOP_VERIFIED", "proof_sha256": digest}
+        return {"task_id": str(task.task_id), "state": "RELEASED" if terminal_recovery else "STOP_VERIFIED",
+                "proof_sha256": digest}
 
     def finish_execution(
         self,

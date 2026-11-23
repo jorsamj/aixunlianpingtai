@@ -240,6 +240,7 @@ def _build_executor(
                     heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
                     recovery_coordinator=recovery,
                     on_process_started=on_started,
+                    require_stop_proof=True,
                 )
     if {"conversion", "conversion.rknn"} & set(reported_capabilities):
         from platform_core.node_agent_conversion_runtime import AgentConversionRunner

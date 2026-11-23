@@ -218,6 +218,7 @@ class AgentTrainingRunner:
         mother_model_install_dir: str | Path | None = None,
         recovery_coordinator=None,
         on_process_started=None,
+        require_stop_proof: bool = False,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -243,6 +244,8 @@ class AgentTrainingRunner:
         self._recovery_error = ""
         self._recovery_coordinator = recovery_coordinator
         self._on_process_started = on_process_started
+        self._require_stop_proof = bool(require_stop_proof)
+        self._last_process_identity = None
         self._recover_persisted_processes()
 
     @property
@@ -261,6 +264,7 @@ class AgentTrainingRunner:
         with self._identity_lock:
             self._active_lease = lease
             self._active_identity = identity
+            self._last_process_identity = identity
         callback = self._on_process_started
         if callable(callback):
             callback(identity)
@@ -1317,6 +1321,33 @@ class AgentTrainingRunner:
             except Exception:
                 pass
 
+    def _submit_stop_proof(self, lease: RemoteExecutionLease) -> None:
+        if not self._require_stop_proof:
+            return
+        identity = self._last_process_identity
+        if identity is None:
+            raise AgentTrainingRuntimeError(
+                "STOP_PROOF_IDENTITY_MISSING"
+            )
+        # Verify the OS process group/token boundary before attesting stop.
+        self.controller.terminate_tree(identity, timeout=5.0)
+        assignment = lease.assignment if isinstance(lease.assignment, Mapping) else {}
+        config = assignment.get("resolved_execution_config")
+        config = config if isinstance(config, Mapping) else {}
+        selected = config.get("selected_gpu")
+        selected = selected if isinstance(selected, Mapping) else {}
+        self.client.record_stop_proof(
+            lease,
+            assignment_generation=int(assignment.get("generation") or 0),
+            gpu_uuid=str(selected.get("uuid") or ""),
+            process_identity={
+                "pid": int(identity.pid),
+                "create_time": float(identity.create_time),
+                "command_hash": str(identity.command_hash),
+            },
+            stop_verified=True,
+        )
+
     def _finish_best_effort(
         self,
         lease: RemoteExecutionLease,
@@ -1326,13 +1357,14 @@ class AgentTrainingRunner:
         error: str | None = None,
     ) -> dict[str, Any] | None:
         try:
+            self._submit_stop_proof(lease)
             return self.client.finish(
                 lease,
                 status,
                 result_ref=result_ref,
                 error=error,
             )
-        except (NodeExecutorHTTPError, OSError, requests.RequestException):
+        except (NodeExecutorHTTPError, OSError, requests.RequestException, AgentTrainingRuntimeError):
             return None
 
     def _runtime_result(self, job: Mapping[str, Any]) -> dict[str, Any]:
@@ -1965,6 +1997,7 @@ class AgentTrainingRunner:
                 and str(test_result.get("status") or "").strip().lower() == "failed"
             )
             terminal_status = "PARTIAL_SUCCESS" if partial else "SUCCEEDED"
+            self._submit_stop_proof(lease)
             finished = self.client.finish(
                 lease,
                 terminal_status,

@@ -1689,6 +1689,11 @@ def test_running_agent_still_excludes_its_gpu_after_assignment_release():
             "release_reason TEXT, resolved_execution_config TEXT)"
         )
         database.execute(
+            "CREATE TABLE execution_resource_holds "
+            "(task_id TEXT PRIMARY KEY, node_id TEXT, assignment_generation INTEGER, "
+            "execution_attempt INTEGER, gpu_uuid TEXT, state TEXT, proof_sha256 TEXT, updated_at TEXT)"
+        )
+        database.execute(
             "INSERT INTO tasks VALUES (?, ?, ?, ?)",
             ("training-active", "RUNNING", "agent:gpu-node", 1),
         )
