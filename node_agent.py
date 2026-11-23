@@ -21,6 +21,7 @@ from platform_core.node_agent_executor_runtime import (
     AgentExecutionWorkdir,
     NodeExecutorClient,
 )
+from platform_core.node_agent_recovery import NodeRecoveryCoordinator
 from platform_core.node_agent_supervisor_gate import (
     SupervisorExecutionBoundaryInvalid,
     allowed_remote_capabilities,
@@ -198,7 +199,9 @@ def _build_executor(
         # Keep the training dependency surface lazy: a deployment-only node
         # must not require Pillow/YAML/training packages merely to heartbeat.
         from platform_core.node_agent_training_runtime import AgentTrainingRunner
+        from platform_core.task_runtime.process_control import ProcessController
 
+        recovery = NodeRecoveryCoordinator(workdirs, ProcessController())
         runners["TRAINING"] = AgentTrainingRunner(
             client,
             workdirs,
@@ -206,6 +209,7 @@ def _build_executor(
             ultralytics_python=ultralytics_python,
             mother_model_install_dir=str(args.mother_model_install_dir or ""),
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+            recovery_coordinator=recovery,
         )
     if "material-import" in reported_capabilities:
         from platform_core.node_agent_material_runtime import AgentMaterialImportRunner

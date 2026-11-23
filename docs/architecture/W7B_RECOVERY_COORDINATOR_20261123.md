@@ -21,18 +21,20 @@
 - 有协调者时，Runner **不再**独立扫描/终止共享 workdir 中所有持久进程；
 - 只消费协调者 verdict；无协调者时保留原单槽恢复逻辑，兼容既有行为；
 - Runner 自身仍持有 lease/ProcessIdentity/workspace/stop signal，不共享可变执行状态。
+- `node_agent.py` 的 training Runner 已正式注入节点级 `NodeRecoveryCoordinator`；部署能力仍默认单槽。
 
 ### 1.3 隔离测试
 
-`tests/unit/test_node_agent_recovery.py`：**3 passed**。
+`tests/unit/test_node_agent_recovery.py`：
 
 - 活动槽位 A 的记录不被清理；
 - 未拥有 B 的记录被清理；
 - 第二次 `prepare()` 不重复扫描；
 - 清理失败保留身份并 fail-closed；
-- unverified launch intent 阻断。
+- unverified launch intent 阻断；
+- POSIX 真实子进程：owner 注册时不误杀，未拥有时实际 terminate（Windows 跳过，Windows 仍 fail-closed）。
 
-`tests/unit/test_node_agent_training_runtime.py`：**35 passed, 1 skipped**（原单槽恢复/训练路径保持）。
+`tests/unit/test_node_agent_training_runtime.py`：原单槽恢复/训练路径保持。
 
 ## 2. 未完成/阻塞
 
