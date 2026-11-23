@@ -568,6 +568,63 @@ def test_formal_no_launch_preflight_through_dual_loop(tmp_path):
         thread.join(timeout=10)
 
 
+def test_legacy_schema7_stop_proof_digest_compatibility(tmp_path):
+    import hashlib
+    import json
+
+    stack = _start_formal(tmp_path, task_id="formal-legacy-proof")
+    try:
+        outcome = stack["runner"].run(stack["lease"])
+        assert outcome.status == "SUCCEEDED"
+        with stack["repository"]._connect() as database:
+            row = database.execute(
+                "SELECT process_pid,process_create_time,process_command_hash FROM tasks "
+                "WHERE task_id='formal-legacy-proof'"
+            ).fetchone()
+            hold = database.execute(
+                "SELECT state,assignment_generation,execution_attempt,gpu_uuid "
+                "FROM execution_resource_holds WHERE task_id='formal-legacy-proof'"
+            ).fetchone()
+        identity = {"pid": int(row["process_pid"]),
+                    "create_time": float(row["process_create_time"]),
+                    "command_hash": str(row["process_command_hash"])}
+        legacy_body = {
+            "node_id": "formal-runner", "task_id": "formal-legacy-proof",
+            "assignment_generation": int(hold["assignment_generation"]),
+            "execution_attempt": int(hold["execution_attempt"]),
+            "gpu_uuid": str(hold["gpu_uuid"]),
+            "process_identity": identity, "stop_verified": True,
+        }
+        legacy_digest = hashlib.sha256(json.dumps(
+            legacy_body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        with stack["repository"]._connect() as database:
+            database.execute(
+                "UPDATE execution_resource_holds SET state='RELEASED',proof_sha256=?,"
+                "proof_type=NULL WHERE task_id='formal-legacy-proof'",
+                (legacy_digest,),
+            )
+            database.commit()
+        result = stack["client"].record_stop_proof(
+            stack["lease"],
+            assignment_generation=int(hold["assignment_generation"]),
+            gpu_uuid=str(hold["gpu_uuid"]),
+            process_identity=identity,
+            stop_verified=True,
+        )
+        assert result["idempotent"] is True and result["legacy"] is True
+        with stack["repository"]._connect() as database:
+            upgraded = database.execute(
+                "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
+                "WHERE task_id='formal-legacy-proof'"
+            ).fetchone()
+        assert upgraded["state"] == "RELEASED"
+        assert upgraded["proof_sha256"] == legacy_digest
+        assert upgraded["proof_type"] == "PROCESS_STOP_VERIFIED"
+    finally:
+        _stop_formal(stack)
+
+
 def test_formal_training_runner_http_success(tmp_path):
     stack = _start_formal(tmp_path)
     try:

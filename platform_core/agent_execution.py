@@ -2661,6 +2661,17 @@ class AgentExecutionService:
             "no_launch_evidence": dict(no_launch_evidence or {}),
         }
         digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
+        legacy_proof = {
+            "node_id": str(node_id), "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid), "process_identity": dict(process_identity),
+            "stop_verified": True,
+        }
+        if no_process_launched:
+            legacy_proof["no_process_launched"] = True
+            legacy_proof["no_launch_evidence"] = dict(no_launch_evidence or {})
+        legacy_digest = hashlib.sha256(_canonical_json(legacy_proof).encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
@@ -2705,26 +2716,45 @@ class AgentExecutionService:
                             "stop proof does not match the registered launch identity",
                             409,
                         )
-                if terminal_recovery and str(row["state"]) != "STOP_VERIFIED":
+                if terminal_recovery and str(row["state"]) not in {"STOP_VERIFIED", "RELEASED"}:
                     raise AgentExecutionError(
                         "STOP_PROOF_REQUIRED",
                         "terminal task has no previously verified stop proof",
                         409,
                     )
                 if str(row["state"]) in {"STOP_VERIFIED", "RELEASED"}:
-                    if (str(row["proof_sha256"] or "") != digest
-                            or str(row["proof_type"] or "") != proof["proof_type"]):
+                    current_digest = str(row["proof_sha256"] or "")
+                    current_type = str(row["proof_type"] or "")
+                    legacy_match = (
+                        current_type == ""
+                        and current_digest == legacy_digest
+                    )
+                    if not ((current_digest == digest and current_type == proof["proof_type"])
+                            or legacy_match):
                         raise AgentExecutionError(
                             "STOP_PROOF_CONFLICT",
                             "existing stop proof cannot be replaced by different evidence",
                             409,
                         )
+                    if legacy_match:
+                        # One-time, digest-preserving compatibility CAS. The
+                        # original proof_sha256 and its evidence semantics are
+                        # unchanged; only the historically missing type is fixed.
+                        database.execute(
+                            "UPDATE execution_resource_holds SET proof_type=? "
+                            "WHERE task_id=? AND execution_attempt=? "
+                            "AND proof_sha256=? AND proof_type IS NULL",
+                            (proof["proof_type"], str(task_id),
+                             int(execution_generation), current_digest),
+                        )
                     if str(row["state"]) == "RELEASED":
                         database.commit()
-                        return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
+                        return {"task_id": str(task_id), "state": "RELEASED",
+                                "idempotent": True, "legacy": legacy_match}
                     if not terminal_recovery:
                         database.commit()
-                        return {"task_id": str(task_id), "state": "STOP_VERIFIED", "idempotent": True}
+                        return {"task_id": str(task_id), "state": "STOP_VERIFIED",
+                                "idempotent": True, "legacy": legacy_match}
                 if str(row["state"]) == "RELEASED":
                     database.commit()
                     return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
