@@ -436,7 +436,9 @@ def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
     claims = [
         {
             "assignment": {"task_id": task_id, "assignment_lease_token": f"a-{task_id}",
-                           "capability": "training"},
+                           "capability": "training", "generation": 1,
+                           "resolved_execution_config": {"selected_gpu": {
+                               "uuid": f"GPU-{task_id.upper()}"}}},
             "task": {"task_id": task_id, "kind": "TRAINING"},
         }
         for task_id in ("a", "b", "c")

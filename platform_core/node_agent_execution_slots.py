@@ -24,9 +24,10 @@ class SlotNotReleased(RuntimeError):
 class ExecutionSlot:
     task_id: str
     generation: int
-    lease: Any
+    lease: Any = None
     gpu_uuid: str = ""
     slot_id: str = ""
+    state: str = "LOCAL_RESERVED"
     stop_event: threading.Event = field(default_factory=threading.Event)
     identity: Any = None
     outcome: Any = None
@@ -53,13 +54,8 @@ class BoundedExecutionSlots:
                 slot for slot, _thread in self._slots.values() if not slot.released
             )
 
-    def submit(
-        self,
-        lease: Any,
-        run: Callable[[ExecutionSlot, Any], Any],
-        *,
-        gpu_uuid: str = "",
-        slot_id: str = "",
+    def reserve(
+        self, lease: Any, *, gpu_uuid: str = "", slot_id: str = ""
     ) -> ExecutionSlot:
         key = (str(lease.task_id), int(lease.generation))
         with self._lock:
@@ -72,23 +68,91 @@ class BoundedExecutionSlots:
             ):
                 raise SlotCapacityError("GPU UUID is already reserved by another slot")
             slot = ExecutionSlot(
-                key[0], key[1], lease, gpu_uuid=str(gpu_uuid or ""),
+                key[0], key[1], lease=lease, gpu_uuid=str(gpu_uuid or ""),
                 slot_id=str(slot_id or ""), started_at=time.monotonic(),
             )
+            self._slots[key] = (slot, None)
+            return slot
+
+    def mark_started(self, slot: ExecutionSlot, lease: Any) -> None:
+        with self._lock:
+            current = self._slots.get((slot.task_id, slot.generation))
+            if current is None or current[0] is not slot:
+                raise SlotNotReleased("local reservation is no longer current")
+            if slot.state != "LOCAL_RESERVED":
+                raise SlotNotReleased("local reservation is not in reserved state")
+            slot.lease = lease
+            slot.state = "CENTRAL_STARTED"
+
+    def abort_reserved(self, slot: ExecutionSlot, error: BaseException | None = None) -> None:
+        """Abort only a never-started local reservation; central-started is never freed here."""
+        with self._lock:
+            current = self._slots.get((slot.task_id, slot.generation))
+            if current is None or current[0] is not slot:
+                return
+            if slot.state != "LOCAL_RESERVED":
+                slot.quarantined = True
+                return
+            if error is not None:
+                slot.error = error
+            slot.released = True
+            self._slots.pop((slot.task_id, slot.generation), None)
+
+    def mark_central_unknown(self, slot: ExecutionSlot, error: BaseException | None = None) -> None:
+        with self._lock:
+            current = self._slots.get((slot.task_id, slot.generation))
+            if current is not None and current[0] is slot:
+                slot.state = "CENTRAL_UNKNOWN"
+                slot.quarantined = True
+                if error is not None:
+                    slot.error = error
+
+    def start_worker(
+        self, slot: ExecutionSlot, run: Callable[[ExecutionSlot, Any], Any]
+    ) -> ExecutionSlot:
+        with self._lock:
+            current = self._slots.get((slot.task_id, slot.generation))
+            if current is None or current[0] is not slot:
+                raise SlotNotReleased("local reservation is no longer current")
+            if slot.state != "CENTRAL_STARTED":
+                raise SlotNotReleased("central start is not confirmed")
+            if current[1] is not None:
+                raise SlotNotReleased("slot worker already started")
+            lease = slot.lease
 
             def execute() -> None:
+                slot.state = "RUNNING"
                 try:
                     slot.outcome = run(slot, lease)
                 except BaseException as error:  # noqa: BLE001 - retained for recovery
                     slot.error = error
+                    slot.state = "WORKER_FAILED"
                 finally:
                     slot.worker_exited = True
                     slot.exited_at = time.monotonic()
+                    if slot.state == "RUNNING":
+                        slot.state = "STOP_PENDING"
 
-            thread = threading.Thread(target=execute, name=f"agent-slot-{key[0]}", daemon=True)
-            self._slots[key] = (slot, thread)
+            thread = threading.Thread(target=execute, name=f"agent-slot-{slot.task_id}", daemon=True)
+            self._slots[(slot.task_id, slot.generation)] = (slot, thread)
             thread.start()
             return slot
+
+    def submit(
+        self,
+        lease: Any,
+        run: Callable[[ExecutionSlot, Any], Any],
+        *,
+        gpu_uuid: str = "",
+        slot_id: str = "",
+    ) -> ExecutionSlot:
+        slot = self.reserve(lease, gpu_uuid=gpu_uuid, slot_id=slot_id)
+        try:
+            self.mark_started(slot, lease)
+            return self.start_worker(slot, run)
+        except Exception:
+            self.abort_reserved(slot)
+            raise
 
     def request_cancel(self, task_id: str, generation: int) -> bool:
         with self._lock:

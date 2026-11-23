@@ -194,10 +194,7 @@ class AgentConversionRunner:
             self._active_identity = identity
         callback = self._on_process_started
         if callable(callback):
-            try:
-                callback(identity)
-            except Exception:
-                pass
+            callback(identity)
 
     def _clear_active_process(self) -> None:
         with self._identity_lock:

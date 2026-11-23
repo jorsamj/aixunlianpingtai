@@ -381,19 +381,39 @@ class NodeAgentExecutorLoop:
         if factory is None or kind != "TRAINING":
             self._set_error(f"UNSUPPORTED_DUAL_SLOT_KIND: {kind}")
             return True
-        bound = {}
+        assignment = claimed.get("assignment") or {}
+        config = assignment.get("resolved_execution_config") or {}
+        selected = config.get("selected_gpu") if isinstance(config, Mapping) else None
+        gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, Mapping) else ""
+        if not gpu_uuid:
+            self._set_error("DUAL_SLOT_GPU_UUID_MISSING")
+            return True
+        try:
+            local_lease = type("LocalReservation", (), {
+                "task_id": task_id, "generation": int(assignment.get("generation") or 1)
+            })()
+            slot = self._slots.reserve(
+                local_lease, gpu_uuid=gpu_uuid, slot_id=f"slot-{task_id}",
+            )
+        except Exception as error:
+            self._set_error(f"SLOT_RESERVE_FAILED: {type(error).__name__}: {error}")
+            return True
+        bound = {"slot": slot}
 
         def on_process_started(identity) -> None:
-            slot = bound.get("slot")
-            if slot is not None:
-                slot.identity = identity
+            target = bound.get("slot")
+            if target is None:
+                raise RuntimeError("slot identity callback fired outside reservation")
+            target.identity = identity
 
         try:
             runner = factory(kind, on_process_started)
         except Exception as error:
+            self._slots.abort_reserved(slot, error)
             self._set_error(f"SLOT_RUNNER_FACTORY_FAILED: {type(error).__name__}: {error}")
             return True
         if getattr(runner, "ready", True) is False:
+            self._slots.abort_reserved(slot)
             self._set_error(
                 "SLOT_RUNNER_NOT_READY: "
                 + str(getattr(runner, "recovery_error", "") or "")
@@ -402,16 +422,28 @@ class NodeAgentExecutorLoop:
         try:
             lease = self.client.start_execution(task_id, assignment_token)
         except NodeExecutorHTTPError as error:
+            self._slots.abort_reserved(slot, error)
             self._set_error(f"{error.code}: {error}")
             return True
         except (OSError, ValueError) as error:
-            self._set_error(f"{type(error).__name__}: {error}")
+            # Outcome unknown: central may already be RUNNING. Never reuse the
+            # local slot or blindly retry the start.
+            self._slots.mark_central_unknown(slot, error)
+            self._set_error(f"CENTRAL_START_UNKNOWN: {type(error).__name__}: {error}")
+            return True
+        if str(lease.task_id) != task_id or int(lease.generation) != int(slot.generation):
+            self._slots.mark_central_unknown(slot, RuntimeError("start lease identity mismatch"))
+            self._set_error("SLOT_START_IDENTITY_MISMATCH")
+            return True
+        try:
+            self._slots.mark_started(slot, lease)
+        except Exception as error:
+            self._slots.mark_central_unknown(slot, error)
+            self._set_error(f"SLOT_MARK_STARTED_FAILED: {error}")
             return True
         self._set_active(lease.task_id, True)
 
-        def run_slot(slot, lease_value):
-            while "slot" not in bound and not self.stop_event.is_set():
-                self.stop_event.wait(0.01)
+        def run_slot(slot_value, lease_value):
             try:
                 return runner.run(lease_value)
             except RemoteExecutionFenced as error:
@@ -422,14 +454,11 @@ class NodeAgentExecutorLoop:
                 raise
 
         try:
-            slot = self._slots.submit(
-                lease, run_slot, gpu_uuid=self._dual_gpu_uuid(lease),
-                slot_id=f"slot-{lease.task_id}",
-            )
-            bound["slot"] = slot
+            self._slots.start_worker(slot, run_slot)
             self._slot_runners[(slot.task_id, slot.generation)] = runner
         except Exception as error:
-            self._set_error(f"SLOT_SUBMIT_FAILED: {type(error).__name__}: {error}")
+            self._slots.mark_central_unknown(slot, error)
+            self._set_error(f"SLOT_WORKER_START_FAILED: {type(error).__name__}: {error}")
             return True
         return True
 
