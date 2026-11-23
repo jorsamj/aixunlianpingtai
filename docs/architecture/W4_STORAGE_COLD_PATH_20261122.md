@@ -86,7 +86,8 @@
 现改为 `requests.get(..., stream=True)` + `_RemoteResponseReader`（`RawIOBase`）：
 
 - `read(size)` / `readinto()` 直接读 `response.raw`；
-- `close()` 关闭 HTTP response，`with` 自动关闭；
+- `raw.decode_content=True`，与旧 `response.content` 的 Content-Encoding 解码字节语义一致；
+- `close()` 关闭 HTTP response，`with` 自动关闭；关闭后读取抛 ValueError；
 - 状态错误时先关闭 response，再走原 `_raise` 映射；
 - 认证/超时/对象键安全不变；
 - `download()` 和 MaterialCache SHA 校验未变。

@@ -7,9 +7,10 @@ import hashlib
 from io import BytesIO
 
 import requests
+import pytest
 import uvicorn
 
-from platform_core.storage import MaterialCache, RemoteStorageProvider
+from platform_core.storage import MaterialCache, RemoteStorageProvider, StorageError
 from remote_material_server import create_app
 
 
@@ -110,12 +111,20 @@ def test_remote_open_reader_is_streaming_and_closes(tmp_path):
         reader = provider.open_reader("incoming/stream.bin")
         try:
             assert not isinstance(reader, BytesIO)
+            assert getattr(reader._raw, "decode_content", False) is True
             first = reader.read(16)
+            buffer = bytearray(16)
+            count = reader.readinto(buffer)
+            assert count == 16
             rest = reader.read()
-            assert first + rest == content
+            assert first + bytes(buffer) + rest == content
         finally:
             reader.close()
         assert reader.closed
+        with pytest.raises(ValueError):
+            reader.read(1)
+        with pytest.raises(StorageError):
+            provider.open_reader("incoming/missing.bin")
     finally:
         server.should_exit = True
         thread.join(timeout=5)

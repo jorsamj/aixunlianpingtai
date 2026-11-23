@@ -19,14 +19,23 @@ class _RemoteResponseReader(RawIOBase):
         super().__init__()
         self._response = response
         self._raw = response.raw
+        # requests' Response.content decodes Content-Encoding. raw.read only
+        # does so when decode_content is enabled, so opt in explicitly to keep
+        # the old byte semantics without buffering the whole object.
+        try:
+            self._raw.decode_content = True
+        except AttributeError:
+            pass
 
     def readable(self) -> bool:
         return True
 
     def read(self, size: int = -1) -> bytes:
+        self._checkClosed()
         return self._raw.read(size)
 
     def readinto(self, buffer) -> int:
+        self._checkClosed()
         return self._raw.readinto(buffer)
 
     def close(self) -> None:
