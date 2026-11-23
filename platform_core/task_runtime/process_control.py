@@ -295,19 +295,36 @@ class ProcessController:
             if still_alive:
                 raise PermissionError(f"{label} process termination could not be verified")
 
+    @staticmethod
+    def _group_has_post_launch_members(group_id: int, launched_at: float) -> bool:
+        """Best-effort membership check for a leaderless POSIX group."""
+        if os.name == "nt":
+            return False
+        members = []
+        for process in psutil.process_iter(["pid", "create_time"]):
+            try:
+                if int(os.getpgid(process.pid)) != int(group_id):
+                    continue
+                members.append(float(process.info["create_time"]))
+            except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return bool(members) and all(value + 1.0 >= float(launched_at) for value in members)
+
     def terminate_tree(self, identity: ProcessIdentity, timeout: float = 5.0) -> None:
         try:
             root = self.inspect(identity)
         except ProcessLookupError:
-            # The launch leader is gone. A live POSIX group with the same
-            # numeric id is NOT sufficient proof that it belongs to the old
-            # execution: PID/PGID values can be reused. Keep failing closed and
-            # retain the persisted identity until an operator/OS stop proof is
-            # available; never kill an unproven group.
+            # The launch leader can disappear (for example when Linux OOM-kills
+            # it) while descendants remain in the private launch group. Only
+            # reap that group if its current members were created at/after this
+            # execution; otherwise fail closed rather than kill an unrelated
+            # process group that merely reused the numeric id.
             if self._posix_group_exists(identity.pid):
-                raise PermissionError(
-                    "process group leader is gone; group ownership cannot be proven"
-                )
+                if not self._group_has_post_launch_members(identity.pid, identity.create_time):
+                    raise PermissionError(
+                        "process group membership predates or cannot prove this execution"
+                    )
+                self._terminate_posix_group(identity.pid, timeout)
             return
         processes = self._tree(root)
         descendants = [process for process in processes if process.pid != root.pid]

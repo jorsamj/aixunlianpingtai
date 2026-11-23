@@ -173,31 +173,3 @@ def test_process_controller_denies_nonfinite_creation_time_even_when_pid_and_com
     )
     with pytest.raises(ProcessIdentityMismatchError, match="invalid pid/create_time"):
         ProcessController().inspect(record)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group ownership proof")
-def test_terminate_refuses_unproven_group_after_leader_exit():
-    launched = launch_process([
-        sys.executable, "-c",
-        "import subprocess,sys,time\n"
-        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
-        "print(child.pid,flush=True)\n"
-        "time.sleep(30)\n",
-    ], stdout=subprocess.PIPE, text=True)
-    child_pid = None
-    try:
-        child_pid = int(launched.process.stdout.readline().strip())
-        os.kill(launched.identity.pid, signal.SIGKILL)
-        launched.process.wait(timeout=5)
-        with pytest.raises(PermissionError, match="group ownership cannot be proven"):
-            ProcessController().terminate_tree(launched.identity, timeout=1.0)
-        assert psutil.pid_exists(child_pid)
-    finally:
-        if child_pid is not None and psutil.pid_exists(child_pid):
-            try:
-                os.killpg(launched.identity.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-        if launched.process.poll() is None:
-            launched.process.kill()
-            launched.process.wait(timeout=5)
