@@ -37,6 +37,11 @@ on:
       - static/modules/training-submit.js
       - tests/browser/algorithm-list-performance.spec.mjs
       - tests/unit/test_algorithm_sql_store.py
+      - platform_core/algorithm_shadow.py
+      - platform_core/algorithm_shadow_cli.py
+      - tests/unit/test_algorithm_shadow.py
+      - tests/integration/test_algorithm_shadow_postgres.py
+      - docs/architecture/w5_algorithm_shadow_schema.sql
       - tests/unit/test_training_lineage.py
       - tests/unit/test_training_evaluation.py
       - tests/unit/test_iteration_actions.py
@@ -67,7 +72,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 requests filelock keyring pillow psutil pyyaml
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 requests filelock keyring pillow psutil pyyaml "psycopg[binary]" pgserver
       - name: Syntax checks
         run: |
           python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/training_lineage.py platform_core/training_evaluation.py platform_core/iteration_actions.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
@@ -76,6 +81,10 @@ jobs:
           node --check static/modules/training-submit.js
       - name: SQL migration and row CRUD contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+      - name: W5 algorithm shadow SQLite and PostgreSQL contracts
+        run: |
+          python -c "import psycopg, pgserver"
+          PYTHONPATH=. pytest -q tests/unit/test_algorithm_shadow.py tests/integration/test_algorithm_shadow_postgres.py
       - name: Read-only model and conversion display contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_model_asset_views.py tests/unit/test_conversion_history.py tests/unit/test_training_reader_views.py tests/unit/test_training_report_reader.py tests/unit/test_annotation_reader_views.py tests/unit/test_evaluation_reader_views.py
       - name: Negative pool query contracts

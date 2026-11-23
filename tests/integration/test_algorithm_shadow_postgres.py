@@ -103,6 +103,30 @@ def test_real_postgres_canonical_order_and_analysis_relations(pg):
         assert reconcile(snapshot, loaded)["same"] is True
 
 
+def test_real_postgres_non_idle_read_requires_repeatable_read(pg):
+    root = pathlib.Path(tempfile.mkdtemp(prefix="w5txn-"))
+    snapshot = export_snapshot(_store(root, "txn"))
+    with psycopg.connect(pg.get_uri()) as setup:
+        assert import_snapshot(setup, snapshot) is True
+
+    connection = psycopg.connect(pg.get_uri(), autocommit=True)
+    try:
+        connection.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        with pytest.raises(AlgorithmShadowError) as error:
+            load_shadow_snapshot(connection, "txn")
+        assert error.value.code == "ALGORITHM_SHADOW_TRANSACTION_ISOLATION_UNSUPPORTED"
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        connection.rollback()
+
+        connection.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        loaded = load_shadow_snapshot(connection, "txn")
+        assert loaded is not None and loaded["snapshot_digest"] == snapshot["snapshot_digest"]
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        connection.rollback()
+    finally:
+        connection.close()
+
+
 def test_real_postgres_first_import_concurrency_and_project_isolation(pg):
     root = pathlib.Path(tempfile.mkdtemp(prefix="w5race-"))
     snapshot = export_snapshot(_store(root, "project-a"))

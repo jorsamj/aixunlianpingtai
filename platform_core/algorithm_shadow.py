@@ -386,6 +386,15 @@ def load_shadow_snapshot(connection, project_id: str) -> dict[str, Any] | None:
         with connection.cursor() as cursor:
             if idle and hasattr(connection, "transaction"):
                 cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            elif hasattr(connection, "transaction"):
+                cursor.execute("SHOW transaction_isolation")
+                level = str(cursor.fetchone()[0]).strip().lower()
+                if level not in {"repeatable read", "serializable"}:
+                    raise AlgorithmShadowError(
+                        "ALGORITHM_SHADOW_TRANSACTION_ISOLATION_UNSUPPORTED",
+                        "non-idle shadow reads require REPEATABLE READ or SERIALIZABLE",
+                        detail=f"current={level}",
+                    )
             cursor.execute(
                 "SELECT algorithm_revision,snapshot_digest,contract_version,schema_version,captured_at,"
                 "algorithm_count,version_count,analysis_count "
