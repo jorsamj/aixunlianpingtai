@@ -394,6 +394,15 @@ def _node_active_work_count(database, node_id: str) -> int:
     return assigned + running
 
 
+_MULTI_SLOT_CAPABILITY = "execution-slots:2"
+
+
+def _agent_execution_slots(node) -> int:
+    allowed = set(_loads(node["allowed_capabilities"], []))
+    reported = set(_loads(node["reported_capabilities"], []))
+    return 2 if _MULTI_SLOT_CAPABILITY in allowed and _MULTI_SLOT_CAPABILITY in reported else 1
+
+
 def _has_idle_agent_slot(database, *, now: datetime, ttl_seconds: int) -> bool:
     """Check live Agent executor capacity under the canonical writer lock.
 
@@ -416,7 +425,7 @@ def _has_idle_agent_slot(database, *, now: datetime, ttl_seconds: int) -> bool:
         reported = set(_loads(node["reported_capabilities"], []))
         if not allowed.intersection(reported):
             continue
-        if _node_active_work_count(database, str(node["node_id"])) == 0:
+        if _node_active_work_count(database, str(node["node_id"])) < _agent_execution_slots(node):
             return True
     return False
 
@@ -1143,7 +1152,7 @@ class CentralTaskAllocator:
                 if heartbeat is None or (current - heartbeat).total_seconds() > self.heartbeat_ttl_seconds:
                     continue
                 node_id = str(node["node_id"])
-                if _node_active_work_count(database, node_id):
+                if _node_active_work_count(database, node_id) >= _agent_execution_slots(node):
                     continue
                 allowed = set(_loads(node["allowed_capabilities"], []))
                 reported = set(_loads(node["reported_capabilities"], []))
@@ -1410,10 +1419,7 @@ class CentralTaskAllocator:
                 ranked = []
                 for node in nodes:
                     active = _node_active_work_count(database, str(node["node_id"]))
-                    if agent_only and active:
-                        # The current NodeAgentExecutorLoop runs one job at a
-                        # time. Reserve at most one automatic slot per Agent
-                        # until multi-slot execution is actually implemented.
+                    if agent_only and active >= _agent_execution_slots(node):
                         continue
                     selected_gpu = None
                     if requirements is not None:

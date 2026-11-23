@@ -33,6 +33,7 @@ SUPPORTED_NODE_CAPABILITIES = (
     "deployment-test",
     "deployment-test.rknn",
     "model-upload",
+    "execution-slots:2",
 )
 HEARTBEAT_TTL_SECONDS = 45
 _NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")

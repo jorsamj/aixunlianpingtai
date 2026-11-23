@@ -73,6 +73,20 @@ def _json(value: object, fallback):
         return fallback
 
 
+def _execution_slots_for_worker(database, worker_id: str) -> int:
+    value = str(worker_id or "")
+    node_id = value.split(":", 1)[1] if value.startswith("agent:") else value
+    row = database.execute(
+        "SELECT allowed_capabilities,reported_capabilities FROM service_nodes WHERE node_id=?",
+        (node_id,),
+    ).fetchone()
+    if row is None:
+        return 1
+    allowed = set(_json(row["allowed_capabilities"], []))
+    reported = set(_json(row["reported_capabilities"], []))
+    return 2 if "execution-slots:2" in allowed and "execution-slots:2" in reported else 1
+
+
 def _sanitize_training_resource_resolution(
     value: object,
     *,
@@ -940,11 +954,11 @@ class AgentExecutionService:
                 "AND task_id<>?",
                 (worker_id, str(task_id)),
             ).fetchone()[0])
-            if active_executions:
+            if active_executions >= _execution_slots_for_worker(database, worker_id):
                 database.rollback()
                 raise AgentExecutionError(
                     "EXECUTION_SLOT_BUSY",
-                    "the service node already has an active execution slot",
+                    "the service node has no free authorized execution slot",
                     409,
                 )
 

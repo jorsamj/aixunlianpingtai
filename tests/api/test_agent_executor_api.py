@@ -140,6 +140,66 @@ def test_agent_claim_http_auto_assignment_is_explicitly_opt_in(tmp_path, monkeyp
     assert again.json() == {"claimed": False, "item": None}
 
 
+def test_explicit_two_slot_capability_allows_two_starts_and_queues_third(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    nodes, token = create_node(repository)
+    nodes.update("gpu-api-agent", {
+        "allowed_capabilities": ["training", "execution-slots:2"],
+    })
+    nodes.heartbeat("gpu-api-agent", token, {
+        "hostname": "gpu-api-agent",
+        "reported_capabilities": ["training", "execution-slots:2"],
+        "resources": {
+            "cpu": {"logical_cores": 8},
+            "memory": {"available_bytes": 64 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"gpus": [
+                {"id": "cuda:0", "index": 0, "uuid": "GPU-0",
+                 "memory_free_bytes": 30 * 1024**3, "memory_total_bytes": 40 * 1024**3},
+                {"id": "cuda:1", "index": 1, "uuid": "GPU-1",
+                 "memory_free_bytes": 30 * 1024**3, "memory_total_bytes": 40 * 1024**3},
+            ]},
+        },
+    })
+    for task_id in ("slot-a", "slot-b", "slot-c"):
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "epochs": 30,
+            "remote_execution": {
+                "version": 1, "task_kind": TaskKind.TRAINING.value,
+                "transport": "object-storage-v1",
+            },
+        })
+        repository.create(TaskRecord.new(
+            task_id=task_id, project_id="project-api-agent", kind=TaskKind.TRAINING,
+            payload_ref="request.json", resource_key=f"training:{task_id}",
+        ), artifacts=artifacts)
+    service = AgentExecutionService(repository, artifacts)
+    assert service.allocator.assign_next() is not None
+    assert service.allocator.assign_next() is not None
+    assert service.allocator.assign_next() is None  # third stays QUEUED
+    claims = [
+        client.post("/api/v63/node-executor/gpu-api-agent/assignments/claim",
+                    headers=auth(token)).json()["item"]
+        for _ in range(2)
+    ]
+    for item in claims:
+        response = client.post(
+            f"/api/v63/node-executor/gpu-api-agent/assignments/"
+            f"{item['task']['task_id']}/start",
+            headers=auth(token),
+            json={"assignment_lease_token": item["assignment"]["assignment_lease_token"]},
+        )
+        assert response.status_code == 200, response.text
+    with repository._connect() as database:
+        running = database.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='RUNNING'"
+        ).fetchone()[0]
+        queued = database.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='QUEUED'"
+        ).fetchone()[0]
+    assert running == 2 and queued == 1
+
+
 def test_two_http_clients_cannot_start_two_executions_on_one_node_slot(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
     nodes, token = create_node(repository)
