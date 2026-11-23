@@ -82,10 +82,11 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
     controller = ProcessController()
 
     class CpuRunner:
-        def __init__(self, on_started):
+        def __init__(self, on_started, client):
             self.ready = True
             self._on_started = on_started
             self._stop = threading.Event()
+            self._client = client
 
         def request_shutdown(self):
             self._stop.set()
@@ -99,12 +100,16 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
                 pass
             controller.terminate_tree(handle.identity, timeout=3.0)
             closed[lease.task_id] = time.monotonic()
+            try:
+                self._client.finish(lease, "CANCELLED")
+            except Exception:
+                pass
             return type("Outcome", (), {"status": "CANCELLED", "error": ""})()
 
     client = NodeExecutorClient(f"http://127.0.0.1:{port}", "dual-http", token)
     loop = NodeAgentExecutorLoop(
-        client, CpuRunner(lambda _identity: None), capabilities=["training"],
-        max_slots=2, slot_runner_factory=lambda kind, on_started: CpuRunner(on_started),
+        client, CpuRunner(lambda _identity: None, client), capabilities=["training"],
+        max_slots=2, slot_runner_factory=lambda kind, on_started: CpuRunner(on_started, client),
         slot_controller=controller, poll_interval=0.02,
     )
     try:
@@ -130,6 +135,29 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
                 cfg = json.loads(row[0])
                 uuids.add(cfg["selected_gpu"]["uuid"])
         assert uuids == {"GPU-A", "GPU-B"}
+
+        # Cancel only A; B must keep running and C must take A's slot only
+        # after A's process death is proven and central finish is accepted.
+        assert loop.cancel_task("a") is True
+        deadline = time.monotonic() + 10
+        while "a" not in closed and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert "a" in closed
+        assert pids["b"] and repository.get("b").status.value == "RUNNING"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            loop._reap_dual_slots()
+            if repository.get("a").status.value == "CANCELLED":
+                break
+            time.sleep(0.02)
+        assert repository.get("a").status.value == "CANCELLED"
+        assert service.allocator.assign_next() is not None
+        deadline = time.monotonic() + 10
+        while "c" not in started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert "c" in started
+        assert repository.get("c").status.value == "RUNNING"
+        assert repository.get("b").status.value == "RUNNING"
     finally:
         loop.stop(timeout=10)
         loop._slots.wait(10)

@@ -45,6 +45,16 @@ class NodeExecutorHTTPError(RuntimeError):
         self.retryable = bool(retryable)
         super().__init__(str(message or self.code))
 
+    @property
+    def outcome_unknown(self) -> bool:
+        """The server may have committed before this error was observed."""
+        return (
+            self.status_code == 0
+            or self.status_code >= 500
+            or self.code in {"NODE_EXECUTOR_TRANSPORT_FAILED",
+                             "NODE_EXECUTOR_INVALID_RESPONSE"}
+        )
+
 
 class RemoteExecutionFenced(RuntimeError):
     """The Agent can no longer prove ownership of the current execution."""

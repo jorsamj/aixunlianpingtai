@@ -428,6 +428,47 @@ def test_rknn_board_deployment_does_not_claim_generic_deployment_capability():
     assert "not executable" in loop.status().last_error
 
 
+def test_dual_start_unknown_keeps_local_reservation_and_explicit_reject_frees_it():
+    from platform_core.node_agent_executor_runtime import NodeExecutorHTTPError
+    from platform_core.task_runtime.process_control import ProcessController
+
+    claim = {
+        "assignment": {"task_id": "a", "assignment_lease_token": "token-a",
+                       "capability": "training", "generation": 2,
+                       "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        "task": {"task_id": "a", "kind": "TRAINING"},
+    }
+
+    class UnknownClient:
+        def claim_assignment(self):
+            return claim
+
+        def start_execution(self, task_id, assignment_token):
+            raise NodeExecutorHTTPError("NODE_EXECUTOR_TRANSPORT_FAILED", "lost", retryable=True)
+
+    loop = NodeAgentExecutorLoop(
+        UnknownClient(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: type("R", (), {"ready": True})(),
+        slot_controller=ProcessController(),
+    )
+    assert loop._run_dual_once() is True
+    active = loop._slots.active()
+    assert len(active) == 1 and active[0].state == "CENTRAL_UNKNOWN"
+    assert active[0].generation == 2
+
+    class RejectClient(UnknownClient):
+        def start_execution(self, task_id, assignment_token):
+            raise NodeExecutorHTTPError("EXECUTION_SLOT_BUSY", "busy", status_code=409)
+
+    loop2 = NodeAgentExecutorLoop(
+        RejectClient(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: type("R", (), {"ready": True})(),
+        slot_controller=ProcessController(),
+    )
+    assert loop2._run_dual_once() is True
+    assert loop2._slots.active() == ()
+
+
 def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
     from types import SimpleNamespace
 

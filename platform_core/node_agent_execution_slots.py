@@ -28,6 +28,7 @@ class ExecutionSlot:
     gpu_uuid: str = ""
     slot_id: str = ""
     state: str = "LOCAL_RESERVED"
+    execution_attempt: int = 0
     stop_event: threading.Event = field(default_factory=threading.Event)
     identity: Any = None
     outcome: Any = None
@@ -82,6 +83,7 @@ class BoundedExecutionSlots:
             if slot.state != "LOCAL_RESERVED":
                 raise SlotNotReleased("local reservation is not in reserved state")
             slot.lease = lease
+            slot.execution_attempt = int(getattr(lease, "generation", 0) or 0)
             slot.state = "CENTRAL_STARTED"
 
     def abort_reserved(self, slot: ExecutionSlot, error: BaseException | None = None) -> None:

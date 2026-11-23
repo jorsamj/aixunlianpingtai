@@ -422,8 +422,14 @@ class NodeAgentExecutorLoop:
         try:
             lease = self.client.start_execution(task_id, assignment_token)
         except NodeExecutorHTTPError as error:
-            self._slots.abort_reserved(slot, error)
-            self._set_error(f"{error.code}: {error}")
+            if error.outcome_unknown:
+                self._slots.mark_central_unknown(slot, error)
+                self._set_error(
+                    f"CENTRAL_START_UNKNOWN: {error.code}: {error}"
+                )
+            else:
+                self._slots.abort_reserved(slot, error)
+                self._set_error(f"{error.code}: {error}")
             return True
         except (OSError, ValueError) as error:
             # Outcome unknown: central may already be RUNNING. Never reuse the
@@ -431,8 +437,8 @@ class NodeAgentExecutorLoop:
             self._slots.mark_central_unknown(slot, error)
             self._set_error(f"CENTRAL_START_UNKNOWN: {type(error).__name__}: {error}")
             return True
-        if str(lease.task_id) != task_id or int(lease.generation) != int(slot.generation):
-            self._slots.mark_central_unknown(slot, RuntimeError("start lease identity mismatch"))
+        if str(lease.task_id) != task_id:
+            self._slots.mark_central_unknown(slot, RuntimeError("start lease task mismatch"))
             self._set_error("SLOT_START_IDENTITY_MISMATCH")
             return True
         try:
@@ -461,6 +467,23 @@ class NodeAgentExecutorLoop:
             self._set_error(f"SLOT_WORKER_START_FAILED: {type(error).__name__}: {error}")
             return True
         return True
+
+    def cancel_task(self, task_id: str, generation: int | None = None) -> bool:
+        """Cancel only the matching slot; never request shutdown for siblings."""
+        if self._slots is None:
+            return False
+        for slot in self._slots.active():
+            if slot.task_id != str(task_id):
+                continue
+            if generation is not None and slot.generation != int(generation):
+                continue
+            self._slots.request_cancel(slot.task_id, slot.generation)
+            runner = self._slot_runners.get((slot.task_id, slot.generation))
+            request_shutdown = getattr(runner, "request_shutdown", None)
+            if callable(request_shutdown):
+                request_shutdown()
+            return True
+        return False
 
     def _serve(self) -> None:
         while not self.stop_event.is_set():
