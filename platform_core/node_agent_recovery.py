@@ -30,9 +30,13 @@ class NodeRecoveryCoordinator:
         self._prepared = False
         self._error = ""
 
-    def register_owner(self, task_id: str, generation: int) -> None:
+    def register_owner(self, task_id: str, generation: int) -> bool:
         with self._lock:
-            self._owners.add((str(task_id), int(generation)))
+            key = (str(task_id), int(generation))
+            if key in self._owners:
+                return False
+            self._owners.add(key)
+            return True
 
     def unregister_owner(self, task_id: str, generation: int) -> None:
         with self._lock:

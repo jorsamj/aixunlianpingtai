@@ -1366,6 +1366,25 @@ class AgentTrainingRunner:
         }
 
     def run(self, lease: RemoteExecutionLease) -> AgentTrainingOutcome:
+        coordinator = self._recovery_coordinator
+        if coordinator is not None and not coordinator.register_owner(
+            lease.task_id, lease.generation
+        ):
+            raise RemoteExecutionFenced(
+                "execution is already owned by another active node slot"
+            )
+        completed = False
+        try:
+            outcome = self._run_owned(lease)
+            completed = True
+            return outcome
+        finally:
+            # Only a completed run has a verified process stop receipt.  An
+            # exceptional/fenced run retains ownership for node recovery.
+            if coordinator is not None and completed:
+                coordinator.unregister_owner(lease.task_id, lease.generation)
+
+    def _run_owned(self, lease: RemoteExecutionLease) -> AgentTrainingOutcome:
         if not self._recover_persisted_processes():
             raise RemoteExecutionFenced(
                 self._recovery_error

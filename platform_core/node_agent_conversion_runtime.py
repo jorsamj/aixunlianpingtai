@@ -144,6 +144,7 @@ class AgentConversionRunner:
         heartbeat_interval: float = 5.0,
         transfer_timeout: float = 600.0,
         process_poll_interval: float = 0.2,
+        recovery_coordinator=None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -164,6 +165,7 @@ class AgentConversionRunner:
         self._active_lease: RemoteExecutionLease | None = None
         self._shutdown_event = threading.Event()
         self._recovery_error = ""
+        self._recovery_coordinator = recovery_coordinator
         self._recover_persisted_processes()
 
     @property
@@ -195,6 +197,12 @@ class AgentConversionRunner:
             self._active_identity = None
 
     def _recover_persisted_processes(self) -> bool:
+        if self._recovery_coordinator is not None:
+            # The node-level coordinator owns shared workdir recovery across
+            # TRAINING and MODEL_CONVERSION. Individual runners only consume
+            # its verdict and must not scan/terminate the same records again.
+            self._recovery_error = self._recovery_coordinator.prepare()
+            return not bool(self._recovery_error)
         try:
             unverified = self.workdirs.list_unverified_process_launch_intents()
             if unverified:
@@ -754,6 +762,23 @@ class AgentConversionRunner:
         return candidates[0]
 
     def run(self, lease: RemoteExecutionLease) -> AgentConversionOutcome:
+        coordinator = self._recovery_coordinator
+        if coordinator is not None and not coordinator.register_owner(
+            lease.task_id, lease.generation
+        ):
+            raise RemoteExecutionFenced(
+                "execution is already owned by another active node slot"
+            )
+        completed = False
+        try:
+            outcome = self._run_owned(lease)
+            completed = True
+            return outcome
+        finally:
+            if coordinator is not None and completed:
+                coordinator.unregister_owner(lease.task_id, lease.generation)
+
+    def _run_owned(self, lease: RemoteExecutionLease) -> AgentConversionOutcome:
         if not self._recover_persisted_processes():
             raise RemoteExecutionFenced(
                 self._recovery_error

@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 import requests
+from filelock import FileLock, Timeout
 
 from platform_core.build_identity import resolve_build_id
 from platform_core.node_agent_deployment_runtime import AgentDeploymentRunner
@@ -151,6 +152,24 @@ def _restore_stop_handlers(previous) -> None:
             pass
 
 
+_NODE_EXECUTOR_LOCK: FileLock | None = None
+
+
+def _claim_node_executor_state(state_dir: Path) -> None:
+    """One Agent process per node state directory, enforced across processes."""
+    global _NODE_EXECUTOR_LOCK
+    if _NODE_EXECUTOR_LOCK is not None:
+        return
+    lock = FileLock(str(Path(state_dir) / "node-agent-executor.lock"))
+    try:
+        lock.acquire(timeout=0)
+    except Timeout as error:
+        raise RuntimeError(
+            "another Node Agent process already owns this state directory"
+        ) from error
+    _NODE_EXECUTOR_LOCK = lock
+
+
 def _build_executor(
     *,
     control_plane: str,
@@ -163,6 +182,7 @@ def _build_executor(
 ) -> NodeAgentExecutorLoop | None:
     if not reported_capabilities:
         return None
+    _claim_node_executor_state(state_dir)
     client = NodeExecutorClient(control_plane, node_id, token)
     workdirs = AgentExecutionWorkdir(state_dir / "executor")
     ultralytics_python = str(args.ultralytics_python or "").strip() or str(
@@ -184,6 +204,11 @@ def _build_executor(
         heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
     )
     runners = {}
+    recovery = None
+    if {"conversion", "conversion.rknn", "training"} & set(reported_capabilities):
+        from platform_core.task_runtime.process_control import ProcessController
+
+        recovery = NodeRecoveryCoordinator(workdirs, ProcessController())
     if {"conversion", "conversion.rknn"} & set(reported_capabilities):
         from platform_core.node_agent_conversion_runtime import AgentConversionRunner
 
@@ -194,14 +219,13 @@ def _build_executor(
             ultralytics_python=ultralytics_python,
             rknn_python=rknn_python,
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+            recovery_coordinator=recovery,
         )
     if "training" in reported_capabilities:
         # Keep the training dependency surface lazy: a deployment-only node
         # must not require Pillow/YAML/training packages merely to heartbeat.
         from platform_core.node_agent_training_runtime import AgentTrainingRunner
-        from platform_core.task_runtime.process_control import ProcessController
 
-        recovery = NodeRecoveryCoordinator(workdirs, ProcessController())
         runners["TRAINING"] = AgentTrainingRunner(
             client,
             workdirs,

@@ -109,6 +109,15 @@ def test_identity_mismatch_never_kills_real_process(tmp_path):
             launched.process.wait(timeout=10)
 
 
+def test_duplicate_owner_claim_is_rejected():
+    coordinator = NodeRecoveryCoordinator(FakeWorkdirs(), FakeController())
+    assert coordinator.register_owner("task", 1) is True
+    assert coordinator.register_owner("task", 1) is False
+    assert coordinator.register_owner("task", 2) is True
+    coordinator.unregister_owner("task", 1)
+    assert coordinator.register_owner("task", 1) is True
+
+
 def test_unverified_launch_intent_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "name", "posix")
     workdirs = FakeWorkdirs(unverified=[{"kind": "TRAINING", "task_id": "a"}])

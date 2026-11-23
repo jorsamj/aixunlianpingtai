@@ -1,4 +1,4 @@
-name: Node Agent Executor
+﻿name: Node Agent Executor
 
 on:
   workflow_dispatch:
@@ -58,6 +58,10 @@ on:
       - 'tests/unit/test_node_agent_supervisor_gate.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_recovery.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'node_agent.py'
+      - 'tests/unit/test_node_agent_recovery.py'
       - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
@@ -156,6 +160,10 @@ on:
       - 'tests/unit/test_node_agent_supervisor_gate.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_recovery.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'node_agent.py'
+      - 'tests/unit/test_node_agent_recovery.py'
       - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
@@ -322,6 +330,7 @@ jobs:
           tests/unit/test_model_artifacts.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
+          tests/unit/test_node_agent_recovery.py
       - name: Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -360,6 +369,7 @@ jobs:
           tests/unit/test_model_artifacts.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
+          tests/unit/test_node_agent_recovery.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
       - name: Actual existing-ONNX CPU Runtime pilot (NO Supervisor launch)
@@ -518,3 +528,5 @@ jobs:
           ! grep -Fq 'TaskRepository' platform_core/node_agent_executor_loop.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
+
+
