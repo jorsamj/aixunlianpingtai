@@ -2080,11 +2080,16 @@ class AgentTrainingRunner:
                 lease,
                 f"[agent] training cancelled: {error}\n",
             )
-            self._finish_best_effort(
+            finished = self._finish_best_effort(
                 lease,
                 "CANCELLED",
                 error=str(error),
             )
+            if (finished is None
+                    or str((finished.get("task") or {}).get("status") or "") != "CANCELLED"):
+                raise RemoteExecutionFenced(
+                    "could not confirm CANCELLED terminal state for current training execution"
+                )
             return AgentTrainingOutcome(
                 lease.task_id,
                 lease.generation,
@@ -2104,11 +2109,16 @@ class AgentTrainingRunner:
                     lease,
                     f"[agent] training cancelled: {message}\n",
                 )
-                self._finish_best_effort(
+                finished = self._finish_best_effort(
                     lease,
                     "CANCELLED",
                     error=message,
                 )
+                if (finished is None
+                        or str((finished.get("task") or {}).get("status") or "") != "CANCELLED"):
+                    raise RemoteExecutionFenced(
+                        "could not confirm CANCELLED terminal state for current training execution"
+                    )
                 return AgentTrainingOutcome(
                     lease.task_id,
                     lease.generation,

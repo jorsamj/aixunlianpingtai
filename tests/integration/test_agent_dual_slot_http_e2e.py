@@ -195,11 +195,28 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             loop._reap_dual_slots()
-            if repository.get("a").status.value == "CANCELLED":
+            with repository._connect() as database:
+                a_hold = database.execute(
+                    "SELECT state FROM execution_resource_holds WHERE task_id='a'"
+                ).fetchone()
+            if (repository.get("a").status.value == "CANCELLED"
+                    and (a_hold is None or a_hold["state"] == "RELEASED")):
                 break
             time.sleep(0.02)
         assert repository.get("a").status.value == "CANCELLED"
-        assert service.allocator.assign_next() is not None
+        with repository._connect() as database:
+            a_hold = database.execute(
+                "SELECT state FROM execution_resource_holds WHERE task_id='a'"
+            ).fetchone()
+        assert a_hold is None or a_hold["state"] == "RELEASED"
+        assigned_c = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            assigned_c = service.allocator.assign_next()
+            if assigned_c is not None:
+                break
+            time.sleep(0.02)
+        assert assigned_c is not None
         deadline = time.monotonic() + 10
         while "c" not in started and time.monotonic() < deadline:
             time.sleep(0.02)
