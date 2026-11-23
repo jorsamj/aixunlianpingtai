@@ -469,6 +469,84 @@ def test_dual_start_unknown_keeps_local_reservation_and_explicit_reject_frees_it
     assert loop2._slots.active() == ()
 
 
+def test_dual_slot_reaper_fails_closed_on_any_identity_mismatch():
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    class StatusClient:
+        node_id = "node-1"
+
+        def __init__(self, status):
+            self.status = status
+
+        def execution_status(self, _task_id):
+            return dict(self.status)
+
+    class Controller:
+        def terminate_tree(self, *_args, **_kwargs):
+            return None
+
+    def build(status):
+        lease = RemoteExecutionLease(
+            task_id="a", kind="TRAINING", project_id="p", generation=3,
+            lease_token="t", lease_expires_at="2026-09-18T10:00:00+00:00",
+            worker_id="agent:node-1", payload={}, assignment={}, transport={},
+        )
+        loop = NodeAgentExecutorLoop(
+            StatusClient(status), object(), capabilities=["training"], max_slots=2,
+            slot_runner_factory=lambda *_args: object(), slot_controller=Controller(),
+        )
+        slot = loop._slots.reserve(
+            SimpleNamespace(task_id="a", generation=2), gpu_uuid="GPU-A", slot_id="slot-a",
+        )
+        loop._slots.mark_started(slot, lease)
+        loop._slots.start_worker(slot, lambda *_args: None)
+        loop._slots.wait(5)
+        identity = SimpleNamespace(pid=11, create_time=12.5, command_hash="a" * 64)
+        slot.identity = identity
+        digest = hashlib.sha256(json.dumps({
+            "pid": 11, "create_time": 12.5, "command_hash": "a" * 64,
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        good = {
+            "task_id": "a", "node_id": "node-1", "status": "FAILED",
+            "execution_attempt": 3, "hold_state": "RELEASED",
+            "hold_execution_attempt": 3, "hold_assignment_generation": 2,
+            "hold_gpu_uuid": "GPU-A", "process_identity_sha256": digest,
+        }
+        return loop, good
+
+    base_variants = [
+        {"hold_state": "HELD"},
+        {"hold_state": "STOP_VERIFIED"},
+        {"status": "RUNNING"},
+        {"task_id": "other"},
+        {"node_id": "other"},
+        {"execution_attempt": 4},
+        {"hold_assignment_generation": 1},
+        {"hold_gpu_uuid": "GPU-B"},
+        {"process_identity_sha256": "b" * 64},
+        {"hold_execution_attempt": 2},
+    ]
+    for variant in base_variants:
+        loop, good = build({})
+        good.update(variant)
+        loop.client.status = good
+        loop._reap_dual_slots()
+        assert loop._slots.active(), variant
+        loop._slots.shutdown(0.1)
+
+    class FailingClient(StatusClient):
+        def execution_status(self, _task_id):
+            raise RuntimeError("network")
+
+    loop, _good = build({})
+    loop.client = FailingClient({})
+    loop._reap_dual_slots()
+    assert loop._slots.active()
+    loop._slots.shutdown(0.1)
+
+
 def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
     from types import SimpleNamespace
 

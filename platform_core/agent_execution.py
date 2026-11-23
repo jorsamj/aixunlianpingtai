@@ -2539,10 +2539,19 @@ class AgentExecutionService:
             origin = str(hold["node_id"])
         elif assignment is not None:
             origin = str(assignment["node_id"])
-        worker_ok = str(task.worker_id or "") in {"", f"agent:{node_id}"}
-        if (origin is not None and origin != str(node_id)) or (
-            origin is None and task.worker_id is not None and not worker_ok
-        ):
+        worker_id = str(task.worker_id or "")
+        worker_owner = worker_id[6:] if worker_id.startswith("agent:") else None
+        # Ownership requires positive durable evidence. An unassigned task with
+        # no Hold/Assignment and no worker cannot be read by any Agent.
+        if origin is None and worker_owner is None:
+            raise AgentExecutionError(
+                "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
+            )
+        if origin is not None and origin != str(node_id):
+            raise AgentExecutionError(
+                "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
+            )
+        if worker_owner is not None and worker_owner != str(node_id):
             raise AgentExecutionError(
                 "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
             )

@@ -136,6 +136,8 @@ class NodeAgentExecutorLoop:
                 continue
             effective.append(str(capability))
         if self.max_slots == 2 and self._slots is not None and not self._slots.blocked_reason:
+            # The dual-slot path only implements two independent TRAINING runs.
+            effective = ["training"] if "training" in effective else []
             effective.append("execution-slots:2")
         return tuple(effective)
 

@@ -327,6 +327,14 @@ def test_execution_status_is_scoped_to_owning_node(tmp_path):
         headers=auth(token),
     )
     assert missing.status_code == 404
+    create_task(repository, artifacts, task_id="unassigned-task")
+    for node_id, node_token in (("gpu-api-agent", token), ("other-agent", other_token)):
+        response = client.get(
+            f"/api/v63/node-executor/{node_id}/executions/unassigned-task/status",
+            headers=auth(node_token),
+        )
+        assert response.status_code == 404
+        assert "unassigned-task" not in response.text
 
 
 def test_agent_executor_http_happy_flow_and_cancellation_truth(tmp_path):
