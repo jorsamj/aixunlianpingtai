@@ -25,6 +25,8 @@ class ExecutionSlot:
     task_id: str
     generation: int
     lease: Any
+    gpu_uuid: str = ""
+    slot_id: str = ""
     stop_event: threading.Event = field(default_factory=threading.Event)
     identity: Any = None
     outcome: Any = None
@@ -51,14 +53,28 @@ class BoundedExecutionSlots:
                 slot for slot, _thread in self._slots.values() if not slot.released
             )
 
-    def submit(self, lease: Any, run: Callable[[ExecutionSlot, Any], Any]) -> ExecutionSlot:
+    def submit(
+        self,
+        lease: Any,
+        run: Callable[[ExecutionSlot, Any], Any],
+        *,
+        gpu_uuid: str = "",
+        slot_id: str = "",
+    ) -> ExecutionSlot:
         key = (str(lease.task_id), int(lease.generation))
         with self._lock:
             if key in self._slots:
                 raise SlotCapacityError("execution slot is already owned")
             if len(self._slots) >= self.max_slots:
                 raise SlotCapacityError("execution slot capacity is full")
-            slot = ExecutionSlot(key[0], key[1], lease, started_at=time.monotonic())
+            if gpu_uuid and any(
+                slot.gpu_uuid == str(gpu_uuid) for slot, _thread in self._slots.values()
+            ):
+                raise SlotCapacityError("GPU UUID is already reserved by another slot")
+            slot = ExecutionSlot(
+                key[0], key[1], lease, gpu_uuid=str(gpu_uuid or ""),
+                slot_id=str(slot_id or ""), started_at=time.monotonic(),
+            )
 
             def execute() -> None:
                 try:

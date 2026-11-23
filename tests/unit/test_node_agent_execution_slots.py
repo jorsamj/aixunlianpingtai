@@ -44,8 +44,10 @@ def test_stop_proof_required_before_capacity_can_be_reused():
         return "CANCELLED"
 
     try:
-        a = slots.submit(lease("a"), run)
-        b = slots.submit(lease("b"), run)
+        a = slots.submit(lease("a"), run, gpu_uuid="GPU-UUID-A", slot_id="slot-a")
+        with pytest.raises(SlotCapacityError, match="GPU UUID"):
+            slots.submit(lease("dup"), run, gpu_uuid="GPU-UUID-A", slot_id="slot-dup")
+        b = slots.submit(lease("b"), run, gpu_uuid="GPU-UUID-B", slot_id="slot-b")
         deadline = time.monotonic() + 10
         while not {"a", "b"}.issubset(started) and time.monotonic() < deadline:
             time.sleep(0.02)
