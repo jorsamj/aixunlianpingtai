@@ -1501,6 +1501,49 @@ def test_claim_pipeline_denied_candidates_use_one_bounded_transaction(tmp_path,m
     assert sum(sql.startswith('BEGIN IMMEDIATE') for sql in statements)==1
 
 
+def test_real_historical_schema_7_upgrade_preserves_stop_proof(tmp_path):
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "task_repository_schema_7.sql"
+    schema = fixture.read_text(encoding="utf-8")
+    assert hashlib.sha256(schema.encode("utf-8")).hexdigest() == (
+        "b74daa6f1d0bb3141e22d3220718113fe0385bf0a16bcf2a79407adaacbc8104"
+    )
+    assert "execution_resource_holds" in schema and "proof_type" not in schema
+    path = tmp_path / "schema7.sqlite3"
+    old_digest = "a" * 64
+    with sqlite3.connect(path) as database:
+        database.executescript(schema)
+        values = task_repository_module._to_values(TaskRecord.new(
+            "historic-7", "project-1", TaskKind.TRAINING, "payload.json", "gpu:local:0",
+        ))
+        columns = [name for name in values if name in {
+            str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()
+        }]
+        database.execute(
+            f"INSERT INTO tasks({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+            [values[name] for name in columns],
+        )
+        database.execute(
+            "INSERT INTO execution_resource_holds(task_id,node_id,assignment_generation,"
+            "execution_attempt,gpu_uuid,state,proof_sha256,updated_at) "
+            "VALUES('historic-7','node-1',3,2,'GPU-A','RELEASED',?, '2026-01-01T00:00:00+00:00')",
+            (old_digest,),
+        )
+        database.execute("PRAGMA user_version=7")
+        database.commit()
+    upgraded = TaskRepository(path)
+    assert upgraded.get("historic-7") is not None
+    with sqlite3.connect(path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 8
+        columns = {str(row[1]) for row in database.execute(
+            "PRAGMA table_info(execution_resource_holds)").fetchall()}
+        assert "proof_type" in columns
+        row = database.execute(
+            "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
+            "WHERE task_id='historic-7'"
+        ).fetchone()
+    assert row == ("RELEASED", old_digest, None)
+
+
 def test_schema_6_database_migrates_execution_holds_without_data_loss(tmp_path):
     path = tmp_path / "tasks.sqlite3"
     repository = TaskRepository(path)

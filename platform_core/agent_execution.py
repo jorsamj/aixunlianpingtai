@@ -2580,6 +2580,85 @@ class AgentExecutionService:
             "proof_type": str(hold["proof_type"]) if hold is not None else None,
         }
 
+    def recover_execution(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        *,
+        assignment_generation: int,
+        execution_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Authenticated, fenced recovery of an already-stopped original execution."""
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        try:
+            pid = int(process_identity.get("pid"))
+            create_time = float(process_identity.get("create_time"))
+            command_hash = str(process_identity.get("command_hash") or "")
+        except (TypeError, ValueError):
+            raise AgentExecutionError("RECOVERY_PROOF_INVALID", "process identity is invalid", 422)
+        proof = {
+            "proof_type": "PROCESS_STOP_VERIFIED", "node_id": str(node_id),
+            "task_id": str(task_id), "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation), "gpu_uuid": str(gpu_uuid),
+            "process_identity": {"pid": pid, "create_time": create_time,
+                                 "command_hash": command_hash},
+            "stop_verified": True, "no_process_launched": False,
+            "no_launch_evidence": {},
+        }
+        digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_resource_hold_schema(database)
+                hold = database.execute(
+                    "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if hold is None:
+                    raise AgentExecutionError("STOP_PROOF_NOT_APPLICABLE", "task has no resource hold", 409)
+                if (str(hold["node_id"]) != str(node_id)
+                        or int(hold["assignment_generation"]) != int(assignment_generation)
+                        or int(hold["execution_attempt"]) != int(execution_generation)
+                        or str(hold["gpu_uuid"]) != str(gpu_uuid)):
+                    raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "recovery identity mismatch", 409)
+                task = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if task is None or int(task["attempt"]) != int(execution_generation):
+                    raise AgentExecutionError("EXECUTION_FENCED", "stale execution attempt", 409)
+                if (int(task["process_pid"] or 0) != pid
+                        or float(task["process_create_time"] or 0) != create_time
+                        or str(task["process_command_hash"] or "") != command_hash):
+                    raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH",
+                                              "recovery does not match registered process", 409)
+                if str(hold["state"]) in {"STOP_VERIFIED", "RELEASED"}:
+                    if (str(hold["proof_sha256"] or "") != digest
+                            or str(hold["proof_type"] or "") != "PROCESS_STOP_VERIFIED"):
+                        raise AgentExecutionError("STOP_PROOF_CONFLICT",
+                                                  "existing stop proof differs from recovery proof", 409)
+                if str(task["status"]) in {"RUNNING", "CANCEL_REQUESTED"}:
+                    terminal = "CANCELLED" if str(task["status"]) == "CANCEL_REQUESTED" else "FAILED"
+                    database.execute(
+                        "UPDATE tasks SET status=?,stage=?,error=COALESCE(error,?),finished_at=?,"
+                        "updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL "
+                        "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                        (terminal, terminal.lower(), "RECOVERED_AFTER_AGENT_CRASH",
+                         now, now, str(task_id), int(execution_generation)),
+                    )
+                database.execute(
+                    "UPDATE execution_resource_holds SET state='RELEASED',proof_sha256=?,"
+                    "proof_type='PROCESS_STOP_VERIFIED',updated_at=? WHERE task_id=? AND execution_attempt=?",
+                    (digest, now, str(task_id), int(execution_generation)),
+                )
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return {"task_id": str(task_id), "state": "RELEASED", "proof_sha256": digest}
+
     def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
@@ -3213,6 +3292,22 @@ def agent_executor_router(
             task_id,
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
+        )
+
+    @router.post("/executions/{task_id}/recover")
+    def recover_execution(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().recover_execution,
+            node_id, token(authorization), task_id,
+            assignment_generation=int(payload.get("assignment_generation") or 0),
+            execution_generation=invoke(_execution_generation, payload.get("execution_generation")),
+            gpu_uuid=str(payload.get("gpu_uuid") or ""),
+            process_identity=payload.get("process_identity") or {},
         )
 
     @router.get("/executions/{task_id}/status")

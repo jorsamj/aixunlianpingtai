@@ -802,6 +802,12 @@ class AgentTrainingRunner:
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
         }
+        gpu_uuid = str(context.get("gpu_uuid") or "").strip()
+        if gpu_uuid:
+            # The resolver must never inspect a GPU outside this execution's
+            # assignment. The trainer worker repeats the same UUID mask before
+            # importing torch/ultralytics.
+            env["CUDA_VISIBLE_DEVICES"] = gpu_uuid
         try:
             completed = subprocess.run(
                 command,

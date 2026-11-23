@@ -576,6 +576,22 @@ class NodeExecutorClient:
     def execution_status(self, task_id: str) -> dict[str, Any]:
         return self._get(f"/executions/{quote(str(task_id), safe='')}/status")
 
+    def recover_execution(
+        self,
+        task_id: str,
+        *,
+        assignment_generation: int,
+        execution_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._post(f"/executions/{quote(str(task_id), safe='')}/recover", {
+            "assignment_generation": int(assignment_generation),
+            "execution_generation": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid),
+            "process_identity": dict(process_identity),
+        })
+
     def record_start_identity(
         self,
         lease: RemoteExecutionLease,

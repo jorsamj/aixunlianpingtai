@@ -210,7 +210,10 @@ def _build_executor(
     if {"conversion", "conversion.rknn", "training"} & set(reported_capabilities):
         from platform_core.task_runtime.process_control import ProcessController
 
-        recovery = NodeRecoveryCoordinator(workdirs, ProcessController())
+        recovery = NodeRecoveryCoordinator(
+            workdirs, ProcessController(), client=client,
+            intent_path=state_dir / "dual-slot-intents.json",
+        )
     if "training" in reported_capabilities:
         # Keep the training dependency surface lazy: a deployment-only node
         # must not require Pillow/YAML/training packages merely to heartbeat.

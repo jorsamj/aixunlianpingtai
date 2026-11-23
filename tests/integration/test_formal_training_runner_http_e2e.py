@@ -661,6 +661,41 @@ def test_terminal_finish_with_unreleased_hold_recovers_idempotently(tmp_path):
         _stop_formal(stack)
 
 
+def test_central_recover_execution_after_agent_death(tmp_path):
+    from platform_core.task_runtime.process_control import ProcessController, launch_process
+    stack = _start_formal(tmp_path, task_id="formal-recover")
+    process = None
+    try:
+        handle = launch_process([sys.executable, "-c", "import time; time.sleep(30)"])
+        process = handle.process
+        identity = {"pid": int(handle.identity.pid),
+                    "create_time": float(handle.identity.create_time),
+                    "command_hash": str(handle.identity.command_hash)}
+        stack["client"].record_start_identity(stack["lease"], identity)
+        ProcessController().terminate_tree(handle.identity, timeout=5.0)
+        assignment = stack["lease"].assignment
+        result = stack["client"].recover_execution(
+            "formal-recover",
+            assignment_generation=int(assignment["generation"]),
+            execution_generation=int(stack["lease"].generation),
+            gpu_uuid=str(assignment["resolved_execution_config"]["selected_gpu"]["uuid"]),
+            process_identity=identity,
+        )
+        assert result["state"] == "RELEASED"
+        task = stack["repository"].get("formal-recover")
+        assert task.status.value == "FAILED"
+        with stack["repository"]._connect() as database:
+            hold = database.execute(
+                "SELECT state,proof_type FROM execution_resource_holds WHERE task_id='formal-recover'"
+            ).fetchone()
+        assert hold["state"] == "RELEASED"
+        assert hold["proof_type"] == "PROCESS_STOP_VERIFIED"
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+        _stop_formal(stack)
+
+
 def test_formal_training_runner_http_success(tmp_path):
     stack = _start_formal(tmp_path)
     try:

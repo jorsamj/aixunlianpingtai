@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -148,6 +149,46 @@ def test_training_and_conversion_share_recovery_owner_across_managers():
         if launched.process.poll() is None:
             launched.process.kill()
             launched.process.wait(timeout=10)
+
+
+class FakeRecoveryClient:
+    def __init__(self, status):
+        self.status = status
+        self.recovered = []
+
+    def execution_status(self, task_id):
+        return dict(self.status, task_id=task_id)
+
+    def recover_execution(self, task_id, **kwargs):
+        self.recovered.append((task_id, kwargs))
+        return {"task_id": task_id, "state": "RELEASED"}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX recovery proof")
+def test_coordinator_uses_central_recovery_and_clears_intent(tmp_path):
+    workdirs = FakeWorkdirs([record("a", 2, 11)])
+    controller = FakeController()
+    intent = tmp_path / "dual-slot-intents.json"
+    intent.write_text(json.dumps([
+        {"task_id": "a", "generation": 2, "gpu_uuid": "GPU-A", "state": "CENTRAL_STARTED",
+         "execution_attempt": 2},
+        {"task_id": "b", "generation": 1, "gpu_uuid": "GPU-B", "state": "CENTRAL_STARTED",
+         "execution_attempt": 1},
+    ]), encoding="utf-8")
+    client = FakeRecoveryClient({
+        "status": "RUNNING", "execution_attempt": 2, "hold_state": "HELD",
+        "hold_assignment_generation": 5, "hold_gpu_uuid": "GPU-A",
+    })
+    coordinator = NodeRecoveryCoordinator(
+        workdirs, controller, client=client, intent_path=intent,
+    )
+    assert coordinator.prepare() == ""
+    assert client.recovered[0][0] == "a"
+    assert client.recovered[0][1]["execution_generation"] == 2
+    assert client.recovered[0][1]["assignment_generation"] == 5
+    assert workdirs.cleared == [("a", 2)]
+    remaining = json.loads(intent.read_text(encoding="utf-8"))
+    assert [item["task_id"] for item in remaining] == ["b"]
 
 
 def test_unverified_launch_intent_fails_closed(tmp_path, monkeypatch):

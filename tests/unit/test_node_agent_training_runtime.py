@@ -1590,3 +1590,27 @@ def test_windows_training_restart_never_erases_persisted_pid_without_job_object(
     with pytest.raises(ValueError, match="unverified process identity"):
         workdirs.cleanup(current)
     assert workspace.is_dir()
+
+
+def test_resource_resolver_subprocess_only_sees_assigned_gpu_uuid(tmp_path, monkeypatch):
+    runner = object.__new__(AgentTrainingRunner)
+    runner.ultralytics_python = sys.executable
+    runner.runtime_root = tmp_path
+    runner.transfer_timeout = 10
+    captured = {}
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.update(env)
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps({
+            "resolved_batch": 2, "resolved_workers": 0,
+            "resource_strategy": "auto",
+        }), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner._resolve_resource_contract_subprocess(
+        {"resource_strategy": "auto"}, {"gpu_uuid": "GPU-ASSIGNED"},
+        "/tmp/model.pt", tmp_path / "resource-resolution.json",
+    )
+    assert captured["CUDA_VISIBLE_DEVICES"] == "GPU-ASSIGNED"
