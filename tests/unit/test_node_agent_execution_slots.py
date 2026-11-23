@@ -151,6 +151,21 @@ def test_confirm_requires_worker_exit_and_rejects_stale_slot():
         slots.shutdown()
 
 
+def test_no_launch_slot_can_release_only_with_explicit_central_allowance():
+    from types import SimpleNamespace
+    slots = BoundedExecutionSlots(1)
+    lease = SimpleNamespace(task_id="no-launch", generation=1)
+    slot = slots.reserve(lease, gpu_uuid="GPU-A")
+    slots.mark_started(slot, lease)
+    slots.start_worker(slot, lambda _slot, _lease: (_ for _ in ()).throw(RuntimeError("preflight")))
+    slots.wait(5)
+    controller = type("Controller", (), {"terminate_tree": lambda *args, **kwargs: None})()
+    assert slots.confirm_stopped(slot, controller) is False
+    assert slots.active() == (slot,)
+    assert slots.confirm_stopped(slot, controller, allow_no_process=True) is True
+    assert slots.active() == ()
+
+
 def test_persisted_unknown_intent_blocks_restart(tmp_path):
     from types import SimpleNamespace
     path = tmp_path / "dual-intents.json"

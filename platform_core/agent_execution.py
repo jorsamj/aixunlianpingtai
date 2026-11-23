@@ -2518,6 +2518,28 @@ class AgentExecutionService:
                 raise
         return {"task_id": str(task_id), "process_pid": pid}
 
+    def execution_status(self, node_id: str, node_token: str, task_id: str) -> dict[str, Any]:
+        """Read-only ownership/terminal/Hold truth for the original Agent."""
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        task = self.repository.get(str(task_id))
+        if task is None:
+            raise AgentExecutionError("TASK_NOT_FOUND", "task does not exist", 404)
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            hold = database.execute(
+                "SELECT state,execution_attempt,assignment_generation,gpu_uuid "
+                "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+        return {
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "execution_attempt": int(task.attempt),
+            "hold_state": str(hold["state"]) if hold is not None else None,
+            "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
+            "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
+            "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
+        }
+
     def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
@@ -3118,6 +3140,14 @@ def agent_executor_router(
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
         )
+
+    @router.get("/executions/{task_id}/status")
+    def execution_status(
+        node_id: str,
+        task_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(service().execution_status, node_id, token(authorization), task_id)
 
     @router.post("/executions/{task_id}/start-identity")
     def record_start_identity(

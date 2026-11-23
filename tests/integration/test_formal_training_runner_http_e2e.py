@@ -55,7 +55,7 @@ def _result_preparer(_task, _payload, evidence):
     }
 
 
-UPLOADED_MODELS: list[dict] = []
+UPLOADED_MODELS: dict[str, list[dict]] = {}
 
 
 def _result_confirmer(task, _payload, evidence):
@@ -70,13 +70,13 @@ def _result_confirmer(task, _payload, evidence):
         "verified_models": [
             {"role": str(item.get("role")), "file_name": str(item.get("file_name")),
              "sha256": str(item.get("sha256")), "size_bytes": int(item.get("size_bytes") or 0)}
-            for item in UPLOADED_MODELS
+            for item in UPLOADED_MODELS.get(task.task_id, [])
         ],
     }}
 
 
 def _model_preparer(_task, _payload, *, execution_generation, models):
-    UPLOADED_MODELS[:] = [dict(item) for item in models]
+    UPLOADED_MODELS[str(_task.task_id)] = [dict(item) for item in models]
     items = []
     for item in models:
         role = str(item["role"])
@@ -282,6 +282,159 @@ def test_formal_training_runner_stop_proof_response_loss(tmp_path):
         assert released["proof_sha256"] == original_digest
     finally:
         _stop_formal(stack)
+
+
+def test_formal_training_runners_through_dual_slot_loop(tmp_path):
+    from platform_core.node_agent_execution_slots import BoundedExecutionSlots
+    from platform_core.node_agent_executor_loop import NodeAgentExecutorLoop
+    from platform_core.task_runtime.process_control import ProcessController
+
+    fixtures = _unit_module()
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    app = FastAPI()
+    app.include_router(agent_executor_router(
+        lambda: repository, lambda: artifacts, execution_payload_resolver=_payload_resolver,
+        result_upload_preparer=_result_preparer,
+        result_upload_confirmer=_result_confirmer,
+        training_model_upload_preparer=_model_preparer,
+        training_model_upload_confirmer=_model_confirmer,
+    ))
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert server.started
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "formal-runner", "display_name": "formal-runner",
+        "connection_mode": "agent", "allowed_capabilities": ["training", "execution-slots:2"],
+    })
+    nodes.heartbeat("formal-runner", token, {
+        "hostname": "formal-runner",
+        "reported_capabilities": ["training", "execution-slots:2"],
+        "resources": {
+            "cpu": {"logical_cores": 4}, "memory": {"available_bytes": 16 * 1024**3},
+            "disk": {"free_bytes": 10 * 1024**3},
+            "gpu": {"gpus": [
+                {"id": "cuda:0", "index": 0, "uuid": "GPU-A", "memory_free_bytes": 8 * 1024**3,
+                 "memory_total_bytes": 8 * 1024**3},
+                {"id": "cuda:1", "index": 1, "uuid": "GPU-B", "memory_free_bytes": 8 * 1024**3,
+                 "memory_total_bytes": 8 * 1024**3},
+            ]},
+        },
+    })
+    prepared = {}
+    for task_id, gpu in (("a", "GPU-A"), ("b", "GPU-B"), ("c", "GPU-A")):
+        lease, downloads = fixtures.training_lease(tmp_path / task_id)
+        payload = dict(lease.payload)
+        payload.setdefault("remote_execution", {
+            "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1"})
+        payload["resource_requirements"] = {"gpu_count": 1, "gpu_uuids": [gpu],
+                                            "min_gpu_memory_bytes": 1}
+        artifacts.atomic_write_json(task_id, "request.json", payload)
+        repository.create(TaskRecord.new(
+            task_id=task_id, project_id="project-formal", kind=TaskKind.TRAINING,
+            payload_ref="request.json", resource_key=f"training:{task_id}",
+        ), artifacts=artifacts)
+        prepared[task_id] = {"downloads": downloads}
+    service = AgentExecutionService(repository, artifacts)
+    assert service.allocator.assign_next() is not None
+    assert service.allocator.assign_next() is not None
+    assert service.allocator.assign_next() is None
+    client = NodeExecutorClient(f"http://127.0.0.1:{port}", "formal-runner", token)
+    active = {}
+    started = {}
+
+    def factory(kind, on_started, task_id=None):
+        transfer = fixtures.FakeTransferSession(prepared[task_id]["downloads"])
+        runner, runtime_root, workdirs = fixtures.build_runner(
+            tmp_path / task_id / "loop", client, transfer,
+            sleep_seconds=5.0 if task_id != "c" else 0.2,
+        )
+        runner._require_stop_proof = True
+
+        def on_identity(identity):
+            active[task_id] = identity
+            started[task_id] = time.monotonic()
+            on_started(identity)
+
+        runner._on_process_started = on_identity
+        prepared[task_id]["runtime_root"] = runtime_root
+        return runner
+
+    loop = NodeAgentExecutorLoop(
+        client, object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=factory, slot_controller=ProcessController(),
+        poll_interval=0.02,
+    )
+    try:
+        loop.start()
+        deadline = time.monotonic() + 20
+        while not {"a", "b"}.issubset(started) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert {"a", "b"} <= set(started)
+        assert active["a"].pid != active["b"].pid
+        assert abs(started["a"] - started["b"]) < 10
+        with repository._connect() as database:
+            uuids = {row[0] for row in database.execute(
+                "SELECT gpu_uuid FROM execution_resource_holds WHERE task_id IN ('a','b')")}
+        assert uuids == {"GPU-A", "GPU-B"}
+
+        repository.request_cancel("a")
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            loop._reap_dual_slots()
+            with repository._connect() as database:
+                hold = database.execute(
+                    "SELECT state FROM execution_resource_holds WHERE task_id='a'"
+                ).fetchone()
+            if (repository.get("a").status.value == "CANCELLED"
+                    and hold is not None and hold["state"] == "RELEASED"):
+                break
+            time.sleep(0.02)
+        assert repository.get("a").status.value == "CANCELLED"
+        assert repository.get("b").status.value == "RUNNING"
+        assigned = None
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            assigned = service.allocator.assign_next()
+            if assigned is not None:
+                break
+            time.sleep(0.02)
+        assert assigned is not None
+        deadline = time.monotonic() + 20
+        while "c" not in started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert "c" in started
+        assert active["c"].pid not in {active["a"].pid, active["b"].pid}
+        assert repository.get("c").status.value == "RUNNING"
+        assert repository.get("b").status.value == "RUNNING"
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            loop._reap_dual_slots()
+            with repository._connect() as database:
+                states = {row[0]: row[1] for row in database.execute(
+                    "SELECT task_id,state FROM execution_resource_holds "
+                    "WHERE task_id IN ('b','c')")}
+                task_states = {row[0]: row[1] for row in database.execute(
+                    "SELECT task_id,status FROM tasks WHERE task_id IN ('b','c')")}
+            if (states.get("b") == "RELEASED" and states.get("c") == "RELEASED"
+                    and all(value in {"SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED"}
+                            for value in task_states.values())):
+                break
+            time.sleep(0.02)
+        assert states.get("b") == "RELEASED" and states.get("c") == "RELEASED"
+        loop.stop(timeout=15)
+        loop._slots.wait(15)
+    finally:
+        loop.stop(timeout=15)
+        loop._slots.wait(15)
+        server.should_exit = True
+        thread.join(timeout=10)
 
 
 def test_formal_training_runner_http_success(tmp_path):

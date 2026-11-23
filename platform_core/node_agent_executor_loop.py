@@ -351,7 +351,21 @@ class NodeAgentExecutorLoop:
         for slot in self._slots.active():
             if not slot.worker_exited:
                 continue
-            if self._slots.confirm_stopped(slot, self._slot_controller):
+            try:
+                status = self.client.execution_status(slot.task_id)
+            except Exception as error:
+                self._set_error(f"SLOT_STATUS_UNKNOWN: {type(error).__name__}: {error}")
+                continue
+            if (str(status.get("status")) not in {
+                    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+                    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
+                    or str(status.get("hold_state")) != "RELEASED"
+                    or int(status.get("hold_execution_attempt") or -1) != int(slot.execution_attempt)):
+                continue
+            if self._slots.confirm_stopped(
+                slot, self._slot_controller,
+                allow_no_process=slot.identity is None,
+            ):
                 self._slot_runners.pop((slot.task_id, slot.generation), None)
                 self._set_active(slot.task_id, False)
                 self._completed_tasks += 1
@@ -411,7 +425,10 @@ class NodeAgentExecutorLoop:
             target.identity = identity
 
         try:
-            runner = factory(kind, on_process_started)
+            try:
+                runner = factory(kind, on_process_started, task_id)
+            except TypeError:
+                runner = factory(kind, on_process_started)
         except Exception as error:
             self._slots.abort_reserved(slot, error)
             self._set_error(f"SLOT_RUNNER_FACTORY_FAILED: {type(error).__name__}: {error}")

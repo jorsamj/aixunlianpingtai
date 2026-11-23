@@ -230,7 +230,7 @@ def _build_executor(
 
             slot_controller = ProcessController()
 
-            def slot_factory(kind, on_started):
+            def slot_factory(kind, on_started, task_id=None):
                 return AgentTrainingRunner(
                     client,
                     workdirs,

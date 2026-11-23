@@ -166,6 +166,33 @@ class NodeExecutorClient:
             f"{quote(self.node_id, safe='')}"
         )
 
+    def _get(self, suffix: str) -> dict[str, Any]:
+        try:
+            response = self.session.get(
+                self._prefix + suffix,
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_TRANSPORT_FAILED",
+                f"{type(error).__name__}: {error}", retryable=True,
+            ) from error
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if not response.ok:
+            code, message = _json_error(body, f"control plane returned HTTP {response.status_code}")
+            raise NodeExecutorHTTPError(code, message, status_code=int(response.status_code),
+                                       retryable=int(response.status_code) >= 500)
+        if not isinstance(body, dict):
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_INVALID_RESPONSE",
+                "control plane returned a non-object executor response",
+            )
+        return body
+
     def _post(
         self,
         suffix: str,
@@ -545,6 +572,9 @@ class NodeExecutorClient:
                 "execution_generation": lease.generation,
             },
         )
+
+    def execution_status(self, task_id: str) -> dict[str, Any]:
+        return self._get(f"/executions/{quote(str(task_id), safe='')}/status")
 
     def record_start_identity(
         self,

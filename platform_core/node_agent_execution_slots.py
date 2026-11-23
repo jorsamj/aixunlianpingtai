@@ -212,7 +212,10 @@ class BoundedExecutionSlots:
         item[0].stop_event.set()
         return True
 
-    def confirm_stopped(self, slot: ExecutionSlot, controller: Any, *, timeout: float = 8.0) -> bool:
+    def confirm_stopped(
+        self, slot: ExecutionSlot, controller: Any, *, timeout: float = 8.0,
+        allow_no_process: bool = False,
+    ) -> bool:
         """Release capacity only after worker exit AND ProcessController proof."""
         key = (slot.task_id, slot.generation)
         with self._lock:
@@ -224,8 +227,15 @@ class BoundedExecutionSlots:
             if not slot.worker_exited:
                 raise SlotNotReleased("execution worker has not exited")
             if slot.identity is None:
-                slot.quarantined = True
-                return False
+                if not allow_no_process:
+                    slot.quarantined = True
+                    return False
+                # Central terminal + Hold RELEASED is the caller's proof that a
+                # verified NO_PROCESS_LAUNCHED receipt was accepted.
+                slot.released = True
+                self._slots.pop(key, None)
+                self._persist()
+                return True
         try:
             controller.terminate_tree(slot.identity, timeout=timeout)
         except Exception:
