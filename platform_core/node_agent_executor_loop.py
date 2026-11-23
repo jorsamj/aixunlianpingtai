@@ -6,6 +6,8 @@ this Agent build.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
@@ -355,6 +357,23 @@ class NodeAgentExecutorLoop:
                 status = self.client.execution_status(slot.task_id)
             except Exception as error:
                 self._set_error(f"SLOT_STATUS_UNKNOWN: {type(error).__name__}: {error}")
+                continue
+            expected_identity_sha = None
+            if slot.identity is not None:
+                expected_identity_sha = hashlib.sha256(json.dumps({
+                    "pid": int(slot.identity.pid),
+                    "create_time": float(slot.identity.create_time),
+                    "command_hash": str(slot.identity.command_hash),
+                }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            if (str(status.get("task_id")) != str(slot.task_id)
+                    or str(status.get("node_id")) != str(self.client.node_id)
+                    or int(status.get("execution_attempt") or -1) != int(slot.execution_attempt)
+                    or int(status.get("hold_assignment_generation") or -1) != int(slot.generation)
+                    or str(status.get("hold_gpu_uuid") or "") != str(slot.gpu_uuid)
+                    or (status.get("process_identity_sha256") or None) != expected_identity_sha):
+                self._set_error(
+                    f"SLOT_IDENTITY_MISMATCH: {slot.task_id} generation {slot.generation}"
+                )
                 continue
             if (str(status.get("status")) not in {
                     "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",

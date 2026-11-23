@@ -2527,13 +2527,43 @@ class AgentExecutionService:
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
             hold = database.execute(
-                "SELECT state,execution_attempt,assignment_generation,gpu_uuid "
+                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid "
                 "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
             ).fetchone()
+            assignment = database.execute(
+                "SELECT node_id FROM task_node_assignments WHERE task_id=? "
+                "ORDER BY generation DESC LIMIT 1", (str(task_id),)
+            ).fetchone()
+        origin = None
+        if hold is not None:
+            origin = str(hold["node_id"])
+        elif assignment is not None:
+            origin = str(assignment["node_id"])
+        worker_ok = str(task.worker_id or "") in {"", f"agent:{node_id}"}
+        if (origin is not None and origin != str(node_id)) or (
+            origin is None and task.worker_id is not None and not worker_ok
+        ):
+            raise AgentExecutionError(
+                "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
+            )
+        with closing(self.repository._connect()) as database:
+            identity = database.execute(
+                "SELECT process_pid,process_create_time,process_command_hash "
+                "FROM tasks WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+        identity_sha = None
+        if identity is not None and identity["process_pid"] is not None:
+            identity_sha = hashlib.sha256(_canonical_json({
+                "pid": int(identity["process_pid"]),
+                "create_time": float(identity["process_create_time"]),
+                "command_hash": str(identity["process_command_hash"]),
+            }).encode("utf-8")).hexdigest()
         return {
             "task_id": task.task_id,
+            "node_id": str(node_id),
             "status": task.status.value,
             "execution_attempt": int(task.attempt),
+            "process_identity_sha256": identity_sha,
             "hold_state": str(hold["state"]) if hold is not None else None,
             "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
             "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,

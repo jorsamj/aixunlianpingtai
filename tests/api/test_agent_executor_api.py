@@ -303,6 +303,32 @@ def test_changed_payload_after_admission_rejects_execution_start(tmp_path):
     assert response.json()["detail"]["code"] == "TASK_INPUT_CHANGED"
 
 
+def test_execution_status_is_scoped_to_owning_node(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    create_task(repository, artifacts)
+    nodes, token = create_node(repository)
+    service = AgentExecutionService(repository, artifacts)
+    assert service.allocator.assign_next() is not None
+    own = client.get(
+        "/api/v63/node-executor/gpu-api-agent/executions/train-api-agent/status",
+        headers=auth(token),
+    )
+    assert own.status_code == 200, own.text
+    assert own.json()["task_id"] == "train-api-agent"
+    other_nodes, other_token = create_node(repository, node_id="other-agent")
+    denied = client.get(
+        "/api/v63/node-executor/other-agent/executions/train-api-agent/status",
+        headers=auth(other_token),
+    )
+    assert denied.status_code == 404
+    assert "train-api-agent" not in denied.text
+    missing = client.get(
+        "/api/v63/node-executor/gpu-api-agent/executions/missing-task/status",
+        headers=auth(token),
+    )
+    assert missing.status_code == 404
+
+
 def test_agent_executor_http_happy_flow_and_cancellation_truth(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
     _nodes, token = prepare(client, repository, artifacts)
