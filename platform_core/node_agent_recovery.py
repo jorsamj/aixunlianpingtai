@@ -126,16 +126,7 @@ class NodeRecoveryCoordinator:
                     command_hash=str(record["command_hash"]),
                     group_token=str(record.get("group_token") or ""),
                 )
-                try:
-                    self.controller.terminate_tree(identity, timeout=8.0)
-                except ProcessLookupError:
-                    pass
-                except (PermissionError, OSError) as error:
-                    self._error = (
-                        "unowned training process cleanup could not be verified: "
-                        f"{type(error).__name__}: {error}"
-                    )
-                    return self._error
+                status = None
                 if self.client is not None:
                     try:
                         status = self.client.execution_status(str(record["task_id"]))
@@ -150,6 +141,17 @@ class NodeRecoveryCoordinator:
                             "central execution attempt does not match persisted process identity"
                         )
                         return self._error
+                try:
+                    self.controller.terminate_tree(identity, timeout=8.0)
+                except ProcessLookupError:
+                    pass
+                except (PermissionError, OSError) as error:
+                    self._error = (
+                        "unowned training process cleanup could not be verified: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                    return self._error
+                if self.client is not None:
                     if (str(status.get("status")) not in {
                             "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
                             "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
@@ -166,11 +168,15 @@ class NodeRecoveryCoordinator:
                                     "command_hash": str(record["command_hash"]),
                                 },
                             )
+                            refreshed = self.client.execution_status(str(record["task_id"]))
                         except Exception as error:
                             self._error = (
                                 "central recovery could not release original execution: "
                                 f"{type(error).__name__}: {error}"
                             )
+                            return self._error
+                        if str(refreshed.get("hold_state")) != "RELEASED":
+                            self._error = "central recovery did not release the original Hold"
                             return self._error
                 try:
                     self.workdirs.clear_process_identity_record(key[0], key[1])

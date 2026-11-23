@@ -696,6 +696,52 @@ def test_central_recover_execution_after_agent_death(tmp_path):
         _stop_formal(stack)
 
 
+def test_finish_commit_then_hold_release_fault_recovers(tmp_path):
+    stack = _start_formal(tmp_path, task_id="formal-fault")
+    try:
+        with stack["repository"]._connect() as database:
+            database.execute(
+                "CREATE TRIGGER fail_hold_release BEFORE UPDATE OF state ON "
+                "execution_resource_holds WHEN NEW.state='RELEASED' "
+                "AND NEW.task_id='formal-fault' BEGIN SELECT RAISE(ABORT,'injected'); END"
+            )
+            database.commit()
+        with pytest.raises(Exception):
+            stack["runner"].run(stack["lease"])
+        with stack["repository"]._connect() as database:
+            database.execute("DROP TRIGGER fail_hold_release")
+            database.commit()
+            task = database.execute(
+                "SELECT status,process_pid,process_create_time,process_command_hash FROM tasks "
+                "WHERE task_id='formal-fault'").fetchone()
+            hold = database.execute(
+                "SELECT state,proof_sha256,proof_type,assignment_generation,execution_attempt,gpu_uuid "
+                "FROM execution_resource_holds WHERE task_id='formal-fault'").fetchone()
+        assert task["status"] == "SUCCEEDED"
+        assert hold["state"] == "STOP_VERIFIED"
+        original_digest = str(hold["proof_sha256"])
+        stack["client"].recover_execution(
+            "formal-fault",
+            assignment_generation=int(hold["assignment_generation"]),
+            execution_generation=int(hold["execution_attempt"]),
+            gpu_uuid=str(hold["gpu_uuid"]),
+            process_identity={
+                "pid": int(task["process_pid"]),
+                "create_time": float(task["process_create_time"]),
+                "command_hash": str(task["process_command_hash"]),
+            },
+        )
+        with stack["repository"]._connect() as database:
+            recovered = database.execute(
+                "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
+                "WHERE task_id='formal-fault'").fetchone()
+        assert recovered["state"] == "RELEASED"
+        assert recovered["proof_sha256"] == original_digest
+        assert recovered["proof_type"] == "PROCESS_STOP_VERIFIED"
+    finally:
+        _stop_formal(stack)
+
+
 def test_formal_training_runner_http_success(tmp_path):
     stack = _start_formal(tmp_path)
     try:

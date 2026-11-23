@@ -2609,6 +2609,15 @@ class AgentExecutionService:
             "no_launch_evidence": {},
         }
         digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
+        legacy_proof = {
+            "node_id": str(node_id), "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid),
+            "process_identity": proof["process_identity"],
+            "stop_verified": True,
+        }
+        legacy_digest = hashlib.sha256(_canonical_json(legacy_proof).encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
@@ -2634,32 +2643,65 @@ class AgentExecutionService:
                         or str(task["process_command_hash"] or "") != command_hash):
                     raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH",
                                               "recovery does not match registered process", 409)
-                if str(hold["state"]) in {"STOP_VERIFIED", "RELEASED"}:
-                    if (str(hold["proof_sha256"] or "") != digest
-                            or str(hold["proof_type"] or "") != "PROCESS_STOP_VERIFIED"):
+                hold_state = str(hold["state"])
+                stored_digest = str(hold["proof_sha256"] or "")
+                stored_type = str(hold["proof_type"] or "")
+                legacy_match = (not stored_type and stored_digest == legacy_digest)
+                if hold_state in {"STOP_VERIFIED", "RELEASED"}:
+                    if not ((stored_digest == digest and stored_type == "PROCESS_STOP_VERIFIED")
+                            or legacy_match):
                         raise AgentExecutionError("STOP_PROOF_CONFLICT",
                                                   "existing stop proof differs from recovery proof", 409)
-                if str(task["status"]) in {"RUNNING", "CANCEL_REQUESTED"}:
-                    terminal = "CANCELLED" if str(task["status"]) == "CANCEL_REQUESTED" else "FAILED"
-                    database.execute(
+                task_status = str(task["status"])
+                if task_status in {"RUNNING", "CANCEL_REQUESTED"}:
+                    if hold_state not in {"HELD", "STOP_VERIFIED"}:
+                        raise AgentExecutionError("RECOVERY_STATE_INVALID",
+                                                  "hold state is invalid for recovery", 409)
+                    terminal = "CANCELLED" if task_status == "CANCEL_REQUESTED" else "FAILED"
+                    changed = database.execute(
                         "UPDATE tasks SET status=?,stage=?,error=COALESCE(error,?),finished_at=?,"
                         "updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL "
                         "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
                         (terminal, terminal.lower(), "RECOVERED_AFTER_AGENT_CRASH",
                          now, now, str(task_id), int(execution_generation)),
-                    )
-                database.execute(
-                    "UPDATE execution_resource_holds SET state='RELEASED',proof_sha256=?,"
-                    "proof_type='PROCESS_STOP_VERIFIED',updated_at=? WHERE task_id=? AND execution_attempt=?",
-                    (digest, now, str(task_id), int(execution_generation)),
-                )
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentExecutionError("EXECUTION_FENCED",
+                                                  "recovery terminal CAS lost", 409)
+                elif task_status in {
+                        "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+                        "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}:
+                    if hold_state not in {"STOP_VERIFIED", "RELEASED"}:
+                        raise AgentExecutionError("STOP_PROOF_REQUIRED",
+                                                  "terminal task has no verified stop proof", 409)
+                else:
+                    raise AgentExecutionError("RECOVERY_STATE_INVALID",
+                                              "task state cannot be recovered", 409)
+                if hold_state != "RELEASED":
+                    final_digest = stored_digest if legacy_match else digest
+                    changed = database.execute(
+                        "UPDATE execution_resource_holds SET state='RELEASED',proof_sha256=?,"
+                        "proof_type='PROCESS_STOP_VERIFIED',updated_at=? "
+                        "WHERE task_id=? AND execution_attempt=? AND state IN ('HELD','STOP_VERIFIED')",
+                        (final_digest, now, str(task_id), int(execution_generation)),
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentExecutionError("RECOVERY_STATE_INVALID",
+                                                  "hold release CAS lost", 409)
                 database.commit()
+                final_state = "RELEASED"
+                final_digest = str(hold["proof_sha256"] or "")
+                if not legacy_match:
+                    final_digest = digest if hold_state == "HELD" else stored_digest
             except Exception:
                 database.rollback()
                 raise
-        return {"task_id": str(task_id), "state": "RELEASED", "proof_sha256": digest}
+        return {"task_id": str(task_id), "state": final_state, "proof_sha256": final_digest}
 
     def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
+        task = self.repository.get(str(task_id))
+        worker_id = str(getattr(task, "worker_id", "") or "") if task is not None else ""
+        node_id = worker_id[6:] if worker_id.startswith("agent:") else ""
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
             row = database.execute(
@@ -2667,7 +2709,19 @@ class AgentExecutionService:
                 (str(task_id),),
             ).fetchone()
             if row is None:
-                return True
+                if not node_id:
+                    return True
+                node = database.execute(
+                    "SELECT allowed_capabilities,reported_capabilities FROM service_nodes "
+                    "WHERE node_id=?", (node_id,)
+                ).fetchone()
+                if node is None:
+                    return True
+                allowed = set(_json(node["allowed_capabilities"], []))
+                reported = set(_json(node["reported_capabilities"], []))
+                dual = "execution-slots:2" in allowed and "execution-slots:2" in reported
+                # A dual-slot execution must never bypass a missing Hold.
+                return not dual
             return str(row["state"]) == "STOP_VERIFIED" and int(row["execution_attempt"]) == int(execution_attempt)
 
     def record_stop_proof(
