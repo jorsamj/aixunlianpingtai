@@ -2442,6 +2442,54 @@ class AgentExecutionService:
             ) from error
         return {"task": _task_public(task)}
 
+    def record_start_identity(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        current = self._owned_execution(node_id, node_token, task_id,
+                                        execution_lease_token, execution_generation)
+        try:
+            pid = int(process_identity.get("pid"))
+            create_time = float(process_identity.get("create_time"))
+            command_hash = str(process_identity.get("command_hash") or "")
+        except (TypeError, ValueError):
+            raise AgentExecutionError("START_IDENTITY_INVALID", "process identity is invalid", 422)
+        if pid <= 0 or create_time <= 0 or len(command_hash) != 64:
+            raise AgentExecutionError("START_IDENTITY_INVALID", "process identity is invalid", 422)
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_resource_hold_schema(database)
+                hold = database.execute(
+                    "SELECT 1 FROM execution_resource_holds WHERE task_id=? AND node_id=? "
+                    "AND execution_attempt=? AND state='HELD'",
+                    (str(task_id), str(node_id), int(execution_generation)),
+                ).fetchone()
+                if hold is None:
+                    raise AgentExecutionError("RESOURCE_HOLD_MISSING", "resource hold is missing", 409)
+                changed = database.execute(
+                    "UPDATE tasks SET process_pid=?,process_create_time=?,process_command_hash=?,"
+                    "updated_at=? WHERE task_id=? AND worker_id=? AND attempt=? "
+                    "AND lease_token=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                    (pid, create_time, command_hash, datetime.now(timezone.utc).isoformat(),
+                     str(task_id), str(current.worker_id), int(execution_generation),
+                     str(execution_lease_token)),
+                ).rowcount
+                if changed != 1:
+                    raise AgentExecutionError("EXECUTION_FENCED", "execution start identity is fenced", 409)
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return {"task_id": str(task_id), "process_pid": pid}
+
     def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
@@ -2465,6 +2513,7 @@ class AgentExecutionService:
         gpu_uuid: str,
         process_identity: Mapping[str, Any],
         stop_verified: bool,
+        no_process_launched: bool = False,
     ) -> dict[str, Any]:
         self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
         terminal_recovery = False
@@ -2480,7 +2529,9 @@ class AgentExecutionService:
         if not stop_verified:
             raise AgentExecutionError("STOP_PROOF_INVALID", "stop verification was not attested", 409)
         required = {"pid", "create_time", "command_hash"}
-        if not isinstance(process_identity, Mapping) or not required.issubset(process_identity):
+        if not no_process_launched and (
+            not isinstance(process_identity, Mapping) or not required.issubset(process_identity)
+        ):
             raise AgentExecutionError("STOP_PROOF_INVALID", "process identity is incomplete", 409)
         proof = {
             "node_id": str(node_id), "task_id": str(task_id),
@@ -2488,6 +2539,7 @@ class AgentExecutionService:
             "execution_attempt": int(execution_generation),
             "gpu_uuid": str(gpu_uuid), "process_identity": dict(process_identity),
             "stop_verified": True,
+            "no_process_launched": bool(no_process_launched),
         }
         digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
@@ -2505,6 +2557,35 @@ class AgentExecutionService:
                         or int(row["execution_attempt"]) != int(execution_generation)
                         or str(row["gpu_uuid"]) != str(gpu_uuid)):
                     raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "stop proof identity mismatch", 409)
+                execution_row = database.execute(
+                    "SELECT process_pid,process_create_time,process_command_hash FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                if no_process_launched:
+                    if execution_row is not None and any(
+                        execution_row[name] is not None
+                        for name in ("process_pid", "process_create_time", "process_command_hash")
+                    ):
+                        raise AgentExecutionError(
+                            "STOP_PROOF_IDENTITY_MISMATCH",
+                            "task has a recorded process identity; no-launch proof rejected",
+                            409,
+                        )
+                else:
+                    if execution_row is None or execution_row["process_pid"] is None:
+                        raise AgentExecutionError(
+                            "START_IDENTITY_UNKNOWN",
+                            "no trusted launch identity is registered for this execution",
+                            409,
+                        )
+                    if (int(execution_row["process_pid"]) != int(process_identity["pid"])
+                            or float(execution_row["process_create_time"]) != float(process_identity["create_time"])
+                            or str(execution_row["process_command_hash"]) != str(process_identity["command_hash"])):
+                        raise AgentExecutionError(
+                            "STOP_PROOF_IDENTITY_MISMATCH",
+                            "stop proof does not match the registered launch identity",
+                            409,
+                        )
                 if terminal_recovery and str(row["state"]) != "STOP_VERIFIED":
                     raise AgentExecutionError(
                         "STOP_PROOF_REQUIRED",
@@ -2982,6 +3063,23 @@ def agent_executor_router(
             invoke(_execution_generation, payload.get("execution_generation")),
         )
 
+    @router.post("/executions/{task_id}/start-identity")
+    def record_start_identity(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().record_start_identity,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            process_identity=payload.get("process_identity") or {},
+        )
+
     @router.post("/executions/{task_id}/stop-proof")
     def record_stop_proof(
         node_id: str,
@@ -3000,6 +3098,7 @@ def agent_executor_router(
             gpu_uuid=str(payload.get("gpu_uuid") or ""),
             process_identity=payload.get("process_identity") or {},
             stop_verified=payload.get("stop_verified") is True,
+            no_process_launched=payload.get("no_process_launched") is True,
         )
 
     @router.post("/executions/{task_id}/finish")

@@ -546,6 +546,20 @@ class NodeExecutorClient:
             },
         )
 
+    def record_start_identity(
+        self,
+        lease: RemoteExecutionLease,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{lease.task_id}/start-identity",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "process_identity": dict(process_identity),
+            },
+        )
+
     def record_stop_proof(
         self,
         lease: RemoteExecutionLease,
@@ -554,6 +568,7 @@ class NodeExecutorClient:
         gpu_uuid: str,
         process_identity: Mapping[str, Any],
         stop_verified: bool = True,
+        no_process_launched: bool = False,
     ) -> dict[str, Any]:
         return self._post(
             f"/executions/{lease.task_id}/stop-proof",
@@ -564,6 +579,7 @@ class NodeExecutorClient:
                 "gpu_uuid": str(gpu_uuid),
                 "process_identity": dict(process_identity),
                 "stop_verified": bool(stop_verified),
+                "no_process_launched": bool(no_process_launched),
             },
         )
 

@@ -1521,3 +1521,19 @@ def test_schema_6_database_migrates_execution_holds_without_data_loss(tmp_path):
     assert after.status == before.status
     TaskRepository(path)  # repeated open is idempotent
 
+
+def test_schema_6_partial_migration_retries_without_data_loss(tmp_path):
+    path = tmp_path / "tasks.sqlite3"
+    repository = TaskRepository(path)
+    add(repository, "keep-2", "project-1", 4)
+    with sqlite3.connect(path) as database:
+        database.execute("PRAGMA user_version=6")
+        database.commit()
+    # Simulate a migration that created the new table but failed before the
+    # version marker advanced. The retry must remain idempotent.
+    reopened = TaskRepository(path)
+    with sqlite3.connect(path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert database.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    assert reopened.get("keep-2").task_id == "keep-2"
+

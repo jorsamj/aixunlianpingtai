@@ -98,6 +98,11 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
             started[lease.task_id] = time.monotonic()
             pids[lease.task_id] = handle.process.pid
             leases[lease.task_id] = lease
+            self._client.record_start_identity(lease, {
+                "pid": int(handle.identity.pid),
+                "create_time": float(handle.identity.create_time),
+                "command_hash": str(handle.identity.command_hash),
+            })
             while not self._stop.wait(0.02):
                 try:
                     response = self._client.heartbeat(lease)

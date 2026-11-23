@@ -266,6 +266,15 @@ class AgentTrainingRunner:
             self._active_identity = identity
             self._last_process_identity = identity
         callback = self._on_process_started
+        if self._require_stop_proof:
+            self.client.record_start_identity(
+                lease,
+                {
+                    "pid": int(identity.pid),
+                    "create_time": float(identity.create_time),
+                    "command_hash": str(identity.command_hash),
+                },
+            )
         if callable(callback):
             callback(identity)
 

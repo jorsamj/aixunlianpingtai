@@ -297,6 +297,10 @@ class TaskRepository(InferenceResourceMethods):
                         f"task repository requires WAL mode, got {mode}"
                     )
                 database.executescript(SCHEMA)
+                # NOTE: executescript is not a single transaction; the schema
+                # statements may commit independently. Recovery therefore relies
+                # on every statement being idempotent and on user_version only
+                # advancing after all migration work succeeds.
                 if version <= 6:
                     # Schema-6 databases have every prior table but no execution
                     # resource holds. This migration is idempotent and runs only
