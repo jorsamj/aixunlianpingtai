@@ -99,20 +99,30 @@ class BoundedExecutionSlots:
         return True
 
     def confirm_stopped(self, slot: ExecutionSlot, controller: Any, *, timeout: float = 8.0) -> bool:
-        """Release capacity only after ProcessController proves the process gone."""
-        if slot.released:
-            return True
-        if slot.identity is None:
-            slot.quarantined = True
-            return False
+        """Release capacity only after worker exit AND ProcessController proof."""
+        key = (slot.task_id, slot.generation)
+        with self._lock:
+            current = self._slots.get(key)
+            if current is None or current[0] is not slot:
+                # A newer slot with the same task/generation must not be
+                # released by a stale confirmation.
+                raise SlotNotReleased("slot is not the current registered execution")
+            if not slot.worker_exited:
+                raise SlotNotReleased("execution worker has not exited")
+            if slot.identity is None:
+                slot.quarantined = True
+                return False
         try:
             controller.terminate_tree(slot.identity, timeout=timeout)
         except Exception:
             slot.quarantined = True
             return False
         with self._lock:
+            current = self._slots.get(key)
+            if current is None or current[0] is not slot:
+                return False
             slot.released = True
-            self._slots.pop((slot.task_id, slot.generation), None)
+            self._slots.pop(key, None)
         return True
 
     def wait(self, timeout: float | None = None) -> None:

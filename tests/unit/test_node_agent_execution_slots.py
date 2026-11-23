@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from platform_core.node_agent_execution_slots import BoundedExecutionSlots, SlotCapacityError
+from platform_core.node_agent_execution_slots import (
+    BoundedExecutionSlots,
+    SlotCapacityError,
+    SlotNotReleased,
+)
 from platform_core.task_runtime.process_control import ProcessController, launch_process
 
 
@@ -112,6 +116,38 @@ def test_worker_exception_keeps_slot_quarantined_until_proof():
         for handle in handles.values():
             if handle.process.poll() is None:
                 controller.terminate_tree(handle.identity, timeout=3.0)
+        slots.shutdown()
+
+
+def test_confirm_requires_worker_exit_and_rejects_stale_slot():
+    controller = ProcessController()
+    slots = BoundedExecutionSlots(1)
+
+    def run(slot, lease_value):
+        handle = launch_process([sys.executable, "-c", "import time; time.sleep(30)"])
+        slot.identity = handle.identity
+        while not slot.stop_event.wait(0.02):
+            pass
+
+    slot = slots.submit(lease("a"), run)
+    try:
+        deadline = time.monotonic() + 10
+        while slot.identity is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        with pytest.raises(SlotNotReleased, match="worker has not exited"):
+            slots.confirm_stopped(slot, controller)
+        slots.request_cancel("a", 1)
+        slots.wait(10)
+        assert slots.confirm_stopped(slot, controller, timeout=5.0) is True
+        with pytest.raises(SlotNotReleased, match="not the current"):
+            slots.confirm_stopped(slot, controller, timeout=5.0)
+        replacement = slots.submit(lease("a"), run)
+        with pytest.raises(SlotNotReleased, match="not the current"):
+            slots.confirm_stopped(slot, controller, timeout=5.0)
+        slots.request_cancel("a", 1)
+        slots.wait(10)
+        assert slots.confirm_stopped(replacement, controller, timeout=5.0) is True
+    finally:
         slots.shutdown()
 
 
