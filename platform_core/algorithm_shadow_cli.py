@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -36,6 +37,16 @@ def _postgres(dsn: str):
     return psycopg.connect(dsn)
 
 
+def _dsn(value: str | None) -> str:
+    dsn = str(value or os.environ.get("ALGORITHM_SHADOW_DSN") or "").strip()
+    if not dsn:
+        raise AlgorithmShadowError(
+            "ALGORITHM_SHADOW_DSN_MISSING",
+            "PostgreSQL DSN is required through --dsn or ALGORITHM_SHADOW_DSN",
+        )
+    return dsn
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="algorithm-shadow")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -50,15 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     imp = sub.add_parser("import")
     imp.add_argument("--snapshot", required=True)
-    imp.add_argument("--dsn", required=True, help="isolated PostgreSQL DSN; never log this value")
+    imp.add_argument("--dsn", help="isolated PostgreSQL DSN; else ALGORITHM_SHADOW_DSN")
 
     rec = sub.add_parser("reconcile")
     rec.add_argument("--snapshot", required=True)
-    rec.add_argument("--dsn", required=True)
+    rec.add_argument("--dsn", help="isolated PostgreSQL DSN; else ALGORITHM_SHADOW_DSN")
     rec.add_argument("--project", required=True)
 
     inspect = sub.add_parser("inspect")
-    inspect.add_argument("--dsn", required=True)
+    inspect.add_argument("--dsn", help="isolated PostgreSQL DSN; else ALGORITHM_SHADOW_DSN")
     inspect.add_argument("--project", required=True)
     return parser
 
@@ -80,19 +91,19 @@ def main(argv=None) -> int:
             return 0
         if args.command == "import":
             snapshot = load_snapshot(args.snapshot)
-            with _postgres(args.dsn) as connection:
+            with _postgres(_dsn(args.dsn)) as connection:
                 changed = import_snapshot(connection, snapshot)
             print(json.dumps({"imported": bool(changed), "revision": snapshot["algorithm_revision"],
                               "digest": snapshot["snapshot_digest"]}, ensure_ascii=False))
             return 0
         if args.command == "reconcile":
             source = load_snapshot(args.snapshot)
-            with _postgres(args.dsn) as connection:
+            with _postgres(_dsn(args.dsn)) as connection:
                 shadow = load_shadow_snapshot(connection, args.project)
             print(json.dumps(reconcile(source, shadow), ensure_ascii=False))
             return 0
         if args.command == "inspect":
-            with _postgres(args.dsn) as connection:
+            with _postgres(_dsn(args.dsn)) as connection:
                 shadow = load_shadow_snapshot(connection, args.project)
             print(json.dumps({"found": shadow is not None,
                               "revision": shadow.get("algorithm_revision") if shadow else None,

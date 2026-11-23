@@ -13,6 +13,7 @@
 - `export_snapshot(store)`：`file:...?mode=ro` + `PRAGMA query_only=ON` + 单读事务；不初始化、不迁移、不建文件；
 - 同一事务读取 `algorithm_store_meta`、algorithms、versions、external_analyses；`algorithm_revision` 与数据同快照；
 - 稳定排序（project/id、algorithm/id、algorithm/external_analysis_id）；
+- PG 读取使用 REPEATABLE READ 单事务，metadata/行/摘要同一快照；
 - canonical JSON SHA256；`captured_at` 不参与 digest，重复导出 digest 稳定；
 - `write_snapshot` / `load_snapshot`；
 - `import_snapshot(connection, snapshot)`：PostgreSQL 事务导入，项目隔离，同 revision+digest 幂等，同 revision 不同 digest 冲突，旧 revision 拒绝回退；

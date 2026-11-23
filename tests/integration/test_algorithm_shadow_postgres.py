@@ -64,6 +64,7 @@ def test_real_postgres_shadow_import_idempotency_conflict_and_reconcile(pg):
         with pytest.raises(AlgorithmShadowError) as older:
             import_snapshot(connection, snapshot)
         assert older.value.code == "ALGORITHM_SHADOW_REVISION_REGRESSION"
+        assert load_shadow_snapshot(connection, "p1")["snapshot_digest"] == newer["snapshot_digest"]
 
         # Same revision with different content digest is a conflict.
         conflict = copy.deepcopy(newer)
@@ -73,6 +74,33 @@ def test_real_postgres_shadow_import_idempotency_conflict_and_reconcile(pg):
         with pytest.raises(AlgorithmShadowError) as digest:
             import_snapshot(connection, conflict)
         assert digest.value.code == "ALGORITHM_SHADOW_DIGEST_CONFLICT"
+        assert load_shadow_snapshot(connection, "p1")["snapshot_digest"] == newer["snapshot_digest"]
+
+
+def test_real_postgres_canonical_order_and_analysis_relations(pg):
+    root = pathlib.Path(tempfile.mkdtemp(prefix="w5order-"))
+    store = AlgorithmSqlStore(root / "order" / "algorithms.json")
+    store.replace_all([
+        {"id": "a-1", "name": "A1", "current_version_id": "z-1",
+         "versions": [{"id": "z-1", "version_name": "1"}, {"id": "a-2", "version_name": "2"}],
+         "external_analyses": [{"analysis_id": "m-1"}, {"analysis_id": "b-1"}]},
+        {"id": "a-2", "name": "A2", "current_version_id": "b-2",
+         "versions": [{"id": "b-2", "version_name": "1"}],
+         "external_analyses": [{"analysis_id": "a-1"}]},
+    ])
+    snapshot = export_snapshot(store)
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert import_snapshot(connection, snapshot) is True
+        loaded = load_shadow_snapshot(connection, "order")
+        assert [row["id"] for row in loaded["tables"]["algorithms"]] == ["a-1", "a-2"]
+        assert [(row["algorithm_id"], row["id"]) for row in loaded["tables"]["versions"]] == [
+            ("a-1", "a-2"), ("a-1", "z-1"), ("a-2", "b-2"),
+        ]
+        assert [(row["algorithm_id"], row["external_analysis_id"])
+                for row in loaded["tables"]["analyses"]] == [
+            ("a-1", "b-1"), ("a-1", "m-1"), ("a-2", "a-1"),
+        ]
+        assert reconcile(snapshot, loaded)["same"] is True
 
 
 def test_real_postgres_first_import_concurrency_and_project_isolation(pg):

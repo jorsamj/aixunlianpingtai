@@ -376,23 +376,44 @@ def load_shadow_snapshot(connection, project_id: str) -> dict[str, Any] | None:
     meta = None
     tables: dict[str, list[dict]] = {"algorithms": [], "versions": [], "analyses": []}
     transaction = connection.transaction() if hasattr(connection, "transaction") else closing(None)
+    idle = True
+    try:
+        from psycopg.pq import TransactionStatus
+        idle = connection.info.transaction_status == TransactionStatus.IDLE
+    except ImportError:
+        pass
     with transaction:
         with connection.cursor() as cursor:
+            if idle and hasattr(connection, "transaction"):
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             cursor.execute(
-                "SELECT algorithm_revision,snapshot_digest,contract_version,schema_version,captured_at "
+                "SELECT algorithm_revision,snapshot_digest,contract_version,schema_version,captured_at,"
+                "algorithm_count,version_count,analysis_count "
                 "FROM w5_shadow.algorithm_snapshot WHERE project_id=%s", (project_id,),
             )
             meta = cursor.fetchone()
             if meta:
+                order_by = {
+                    "algorithm": "natural_key",
+                    "version": "payload->>'algorithm_id', natural_key",
+                    "analysis": "payload->>'algorithm_id', payload->>'external_analysis_id'",
+                }
                 for kind, name in (("algorithm", "algorithms"), ("version", "versions"), ("analysis", "analyses")):
                     cursor.execute(
                         "SELECT payload FROM w5_shadow.algorithm_row "
-                        "WHERE project_id=%s AND kind=%s ORDER BY natural_key",
+                        "WHERE project_id=%s AND kind=%s ORDER BY " + order_by[kind],
                         (project_id, kind),
                     )
                     tables[name] = [dict(payload) for (payload,) in cursor.fetchall()]
     if not meta:
         return None
+    if (int(meta[5]), int(meta[6]), int(meta[7])) != (
+        len(tables["algorithms"]), len(tables["versions"]), len(tables["analyses"]),
+    ):
+        raise AlgorithmShadowError(
+            "ALGORITHM_SHADOW_METADATA_MISMATCH",
+            "shadow metadata counts do not match its rows",
+        )
     body = _snapshot_body(project_id, int(meta[0]), tables)
     actual_digest = _digest(body)
     stored_digest = str(meta[1])
@@ -410,8 +431,23 @@ def load_shadow_snapshot(connection, project_id: str) -> dict[str, Any] | None:
     return body
 
 
+def _snapshot_differences(source: Mapping[str, Any], shadow: Mapping[str, Any]) -> dict[str, Any]:
+    differences: dict[str, Any] = {}
+    for name in ("algorithms", "versions", "analyses"):
+        kind = {"algorithms": "algorithm", "versions": "version", "analyses": "analysis"}[name]
+        source_rows = {_natural_key(kind, row): row for row in source.get("tables", {}).get(name, [])}
+        shadow_rows = {_natural_key(kind, row): row for row in shadow.get("tables", {}).get(name, [])}
+        missing = sorted(set(source_rows) - set(shadow_rows))
+        extra = sorted(set(shadow_rows) - set(source_rows))
+        changed = sorted(key for key in set(source_rows) & set(shadow_rows)
+                         if _canonical(source_rows[key]) != _canonical(shadow_rows[key]))
+        if missing or extra or changed:
+            differences[name] = {"missing": missing, "extra": extra, "changed": changed}
+    return differences
+
+
 def reconcile(source: Mapping[str, Any], shadow: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Compare two snapshots; never compares different revisions as failure."""
+    """Compare two snapshots; report detailed differences when both are valid."""
     source = validate_snapshot(source)
     if shadow is None:
         return {"same": False, "reason": "SHADOW_MISSING", "differences": {}}
@@ -424,22 +460,14 @@ def reconcile(source: Mapping[str, Any], shadow: Mapping[str, Any] | None) -> di
             "source_revision": source_revision, "shadow_revision": shadow_revision,
             "differences": {},
         }
+    differences = _snapshot_differences(source, shadow)
     if str(source.get("snapshot_digest")) != str(shadow.get("snapshot_digest")):
-        return {"same": False, "reason": "SNAPSHOT_DIGEST_MISMATCH", "differences": {}}
-    differences: dict[str, Any] = {}
-    for name in ("algorithms", "versions", "analyses"):
-        source_rows = {_natural_key(
-            {"algorithms": "algorithm", "versions": "version", "analyses": "analysis"}[name], row
-        ): row for row in source.get("tables", {}).get(name, [])}
-        shadow_rows = {_natural_key(
-            {"algorithms": "algorithm", "versions": "version", "analyses": "analysis"}[name], row
-        ): row for row in shadow.get("tables", {}).get(name, [])}
-        missing = sorted(set(source_rows) - set(shadow_rows))
-        extra = sorted(set(shadow_rows) - set(source_rows))
-        changed = sorted(key for key in set(source_rows) & set(shadow_rows)
-                         if _canonical(source_rows[key]) != _canonical(shadow_rows[key]))
-        if missing or extra or changed:
-            differences[name] = {"missing": missing, "extra": extra, "changed": changed}
-    return {"same": not differences, "reason": "OK" if not differences else "DATA_MISMATCH",
-            "source_revision": source_revision, "shadow_revision": shadow_revision,
-            "differences": differences}
+        return {"same": False, "reason": "SNAPSHOT_DIGEST_MISMATCH",
+                "source_revision": source_revision, "shadow_revision": shadow_revision,
+                "differences": differences}
+    if differences:
+        return {"same": False, "reason": "DATA_MISMATCH",
+                "source_revision": source_revision, "shadow_revision": shadow_revision,
+                "differences": differences}
+    return {"same": True, "reason": "OK", "source_revision": source_revision,
+            "shadow_revision": shadow_revision, "differences": {}}
