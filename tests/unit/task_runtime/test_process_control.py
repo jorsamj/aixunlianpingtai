@@ -133,6 +133,35 @@ def test_terminate_tree_reaps_group_after_leader_was_killed(tmp_path):
     assert wait_until(lambda: not process_execution_alive(child_pid), timeout=5.0)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group token proof")
+def test_leaderless_group_without_token_fails_closed(tmp_path):
+    child_pid_file = tmp_path / "token-child.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(p.pid));"
+        "time.sleep(60)"
+    )
+    handle = launch_process([sys.executable, "-c", script], cwd=tmp_path)
+    assert wait_until(child_pid_file.exists)
+    child_pid = int(child_pid_file.read_text())
+    os.kill(handle.identity.pid, signal.SIGKILL)
+    handle.process.wait(timeout=5)
+    untrusted = ProcessIdentity(
+        pid=handle.identity.pid,
+        create_time=handle.identity.create_time,
+        command_hash=handle.identity.command_hash,
+        group_token="",
+    )
+    try:
+        with pytest.raises(PermissionError):
+            ProcessController().terminate_tree(untrusted, timeout=1.0)
+        assert process_execution_alive(child_pid)
+    finally:
+        ProcessController().terminate_tree(handle.identity, timeout=3.0)
+    assert wait_until(lambda: not process_execution_alive(child_pid), timeout=5.0)
+
+
 def test_repository_binds_process_only_for_owned_lease(tmp_path):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     repository.create(

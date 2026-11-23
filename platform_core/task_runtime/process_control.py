@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -33,6 +34,7 @@ class ProcessIdentity:
     pid: int
     create_time: float
     command_hash: str
+    group_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,9 @@ def launch_process(
 
     options = dict(popen_options)
     options["shell"] = False
+    group_token = secrets.token_hex(24)
+    child_env = dict(env) if env is not None else dict(os.environ)
+    child_env["DSH_PROCESS_GROUP_TOKEN"] = group_token
     if os.name == "nt":
         options["creationflags"] = int(options.get("creationflags", 0)) | int(
             subprocess.CREATE_NEW_PROCESS_GROUP
@@ -90,7 +95,7 @@ def launch_process(
     process = subprocess.Popen(
         command,
         cwd=None if cwd is None else str(Path(cwd)),
-        env=None if env is None else dict(env),
+        env=dict(child_env),
         **options,
     )
     create_time = (
@@ -101,6 +106,7 @@ def launch_process(
         pid=process.pid,
         create_time=create_time,
         command_hash=hash_command(command),
+        group_token=group_token,
     )
     return LaunchedProcess(process, identity)
 
@@ -296,19 +302,37 @@ class ProcessController:
                 raise PermissionError(f"{label} process termination could not be verified")
 
     @staticmethod
-    def _group_has_post_launch_members(group_id: int, launched_at: float) -> bool:
-        """Best-effort membership check for a leaderless POSIX group."""
-        if os.name == "nt":
+    def _process_has_group_token(pid: int, token: str) -> bool:
+        if not token or os.name != "posix" or not os.path.isdir("/proc"):
+            return False
+        try:
+            with open(f"/proc/{int(pid)}/environ", "rb") as handle:
+                values = handle.read().split(b"\0")
+        except (OSError, PermissionError):
+            return False
+        expected = b"DSH_PROCESS_GROUP_TOKEN=" + token.encode("ascii")
+        return expected in values
+
+    @staticmethod
+    def _group_has_post_launch_members(group_id: int, launched_at: float, token: str) -> bool:
+        """Prove leaderless group ownership with the launch-scoped env token."""
+        if os.name != "posix" or not token:
             return False
         members = []
         for process in psutil.process_iter(["pid", "create_time"]):
             try:
                 if int(os.getpgid(process.pid)) != int(group_id):
                     continue
-                members.append(float(process.info["create_time"]))
+                if float(process.info["create_time"]) + 1.0 < float(launched_at):
+                    return False
+                members.append(int(process.pid))
             except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        return bool(members) and all(value + 1.0 >= float(launched_at) for value in members)
+        # Every remaining group member must carry the exact launch token. An
+        # unrelated process that merely reuses the numeric PGID cannot have it.
+        return bool(members) and all(
+            ProcessController._process_has_group_token(pid, token) for pid in members
+        )
 
     def terminate_tree(self, identity: ProcessIdentity, timeout: float = 5.0) -> None:
         try:
@@ -320,7 +344,9 @@ class ProcessController:
             # execution; otherwise fail closed rather than kill an unrelated
             # process group that merely reused the numeric id.
             if self._posix_group_exists(identity.pid):
-                if not self._group_has_post_launch_members(identity.pid, identity.create_time):
+                if not self._group_has_post_launch_members(
+                    identity.pid, identity.create_time, identity.group_token
+                ):
                     raise PermissionError(
                         "process group membership predates or cannot prove this execution"
                     )

@@ -311,6 +311,7 @@ class AgentTrainingRunner:
                 pid=int(record["pid"]),
                 create_time=float(record["create_time"]),
                 command_hash=str(record["command_hash"]),
+                group_token=str(record.get("group_token") or ""),
             )
             try:
                 self.controller.terminate_tree(identity, timeout=8.0)

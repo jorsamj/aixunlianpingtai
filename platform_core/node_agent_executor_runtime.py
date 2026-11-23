@@ -676,17 +676,20 @@ class AgentExecutionWorkdir:
         except (TypeError, ValueError) as error:
             raise ValueError("persisted process identity has invalid pid/create_time") from error
         command_hash = str(value.get("command_hash") or "").strip().lower()
+        group_token = str(value.get("group_token") or "").strip().lower()
         if (
             pid <= 0
             or not math.isfinite(create_time)
             or create_time <= 0
             or not re.fullmatch(r"[0-9a-f]{64}", command_hash)
+            or (group_token and not re.fullmatch(r"[0-9a-f]{48}", group_token))
         ):
             raise ValueError("persisted process identity is incomplete")
         return {
             "pid": pid,
             "create_time": create_time,
             "command_hash": command_hash,
+            "group_token": group_token,
         }
 
     @staticmethod
@@ -798,6 +801,7 @@ class AgentExecutionWorkdir:
             "pid": getattr(identity, "pid", None),
             "create_time": getattr(identity, "create_time", None),
             "command_hash": getattr(identity, "command_hash", None),
+            "group_token": getattr(identity, "group_token", ""),
         })
         value.update({
             "task_id": str(lease.task_id),

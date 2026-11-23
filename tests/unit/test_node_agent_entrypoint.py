@@ -443,6 +443,39 @@ def test_doctor_returns_nonzero_and_actionable_issue_when_rknn_board_is_not_read
     }]
 
 
+def test_executor_state_lock_recovers_after_sigkill(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    script = (
+        "import sys,time\n"
+        "from pathlib import Path\n"
+        "from node_agent import _claim_node_executor_state\n"
+        "try:\n"
+        "    _claim_node_executor_state(Path(sys.argv[1]))\n"
+        "    print('OK', flush=True)\n"
+        "    time.sleep(float(sys.argv[2]))\n"
+        "except RuntimeError:\n"
+        "    print('LOCKED', flush=True)\n"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path), "30"],
+        cwd=str(repo), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "OK"
+        holder.kill()
+        holder.wait(timeout=20)
+        probe = subprocess.Popen(
+            [sys.executable, "-c", script, str(tmp_path), "0"],
+            cwd=str(repo), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        assert probe.communicate(timeout=20)[0].strip() == "OK"
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=20)
+
+
 def test_executor_state_lock_is_cross_process_and_released_on_exit(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     (tmp_path / "other").mkdir()

@@ -398,11 +398,13 @@ def test_workdir_persists_only_exact_nonsecret_process_identity_for_recovery(tmp
         "pid": 4321,
         "create_time": 12345.5,
         "command_hash": "a" * 64,
+        "group_token": "",
     }
     assert workdirs.read_process_identity(current) == {
         "pid": 4321,
         "create_time": 12345.5,
         "command_hash": "a" * 64,
+        "group_token": "",
     }
     assert workdirs.list_process_identities() == [{
         "task_id": current.task_id,
@@ -410,6 +412,7 @@ def test_workdir_persists_only_exact_nonsecret_process_identity_for_recovery(tmp
         "pid": 4321,
         "create_time": 12345.5,
         "command_hash": "a" * 64,
+        "group_token": "",
     }]
     serialized = path.read_text(encoding="utf-8")
     assert current.lease_token not in serialized
@@ -777,6 +780,7 @@ def test_process_identity_rejects_nonfinite_create_time_without_dropping_evidenc
         "pid": 4321,
         "create_time": bad_created,
         "command_hash": "a" * 64,
+        "group_token": "",
     }), encoding="utf-8")
     with pytest.raises(ValueError, match="incomplete"):
         workdirs.read_process_identity(current)
@@ -852,6 +856,7 @@ def test_workdir_cleanup_never_erases_unpaired_persisted_process_identity(tmp_pa
     assert path.is_file()
     assert workdirs.read_process_identity(current) == {
         "pid": 4321, "create_time": 12345.5, "command_hash": "b" * 64,
+        "group_token": "",
     }
 
     # A caller that has independently proven termination may explicitly
