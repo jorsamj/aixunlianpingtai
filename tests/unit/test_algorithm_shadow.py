@@ -8,9 +8,12 @@ import pytest
 
 from platform_core.algorithm_shadow import (
     AlgorithmShadowError,
+    _digest,
+    _snapshot_body,
     export_snapshot,
     load_snapshot,
     reconcile,
+    validate_snapshot,
     write_snapshot,
 )
 from platform_core.algorithm_sql_store import AlgorithmSqlStore
@@ -81,19 +84,41 @@ def test_reconcile_same_digest_missing_extra_changed_and_revision(tmp_path):
 
     changed = copy.deepcopy(source)
     changed["tables"]["algorithms"][0]["name"] = "changed"
+    changed["snapshot_digest"] = _digest(_snapshot_body(
+        changed["project_id"], changed["algorithm_revision"], changed["tables"]))
     result = reconcile(source, changed)
     assert result["same"] is False
-    assert result["reason"] == "DATA_MISMATCH"
+    assert result["reason"] == "SNAPSHOT_DIGEST_MISMATCH"
 
     shadow["tables"]["algorithms"][0]["name"] = "shadow-only"
-    shadow["snapshot_digest"] = source["snapshot_digest"]
+    shadow["snapshot_digest"] = _digest(_snapshot_body(
+        shadow["project_id"], shadow["algorithm_revision"], shadow["tables"]))
     result = reconcile(source, shadow)
     assert result["same"] is False
-    assert result["differences"]["algorithms"]["changed"] == ["algo-1"]
+    assert result["reason"] == "SNAPSHOT_DIGEST_MISMATCH"
 
     newer = copy.deepcopy(source)
     newer["algorithm_revision"] = source["algorithm_revision"] + 1
+    newer["snapshot_digest"] = _digest(_snapshot_body(
+        newer["project_id"], newer["algorithm_revision"], newer["tables"]))
     assert reconcile(source, newer)["reason"] == "SOURCE_REVISION_CHANGED"
+
+
+def test_snapshot_validator_rejects_tampering_and_bad_contracts(tmp_path):
+    source = export_snapshot(_store(tmp_path))
+    for mutate in (
+        lambda value: value["tables"]["algorithms"][0].update(name="tampered"),
+        lambda value: value.update(algorithm_revision=source["algorithm_revision"] + 1),
+        lambda value: value["counts"].update(algorithms=99),
+        lambda value: value.update(contract_version="unknown"),
+        lambda value: value["tables"]["algorithms"].append(dict(value["tables"]["algorithms"][0])),
+        lambda value: value["tables"]["versions"].append({**value["tables"]["versions"][0], "id": "v2", "algorithm_id": "missing"}),
+    ):
+        tampered = copy.deepcopy(source)
+        mutate(tampered)
+        with pytest.raises(AlgorithmShadowError):
+            validate_snapshot(tampered)
+    validate_snapshot(source)
 
 
 def test_snapshot_digest_detects_table_row_changes(tmp_path):

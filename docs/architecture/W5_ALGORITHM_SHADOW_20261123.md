@@ -55,10 +55,19 @@ result = reconcile(snapshot, shadow)
 | 项 | 状态 |
 |---|---|
 | SQLite 只读快照/稳定摘要/空项目/源缺失 | `TARGETED_TEST_PASS` |
+| 快照完整性验证/防篡改/counts/关联/合同 | `TARGETED_TEST_PASS` |
 | 未知字段保留 | `TARGETED_TEST_PASS` |
 | 对账纯逻辑 | `TARGETED_TEST_PASS` |
-| PostgreSQL DDL/导入/幂等/回滚代码 | `CODE_COMPLETE` |
-| 真实 PostgreSQL 连接与导入 | `POSTGRESQL_INTEGRATION_NOT_VERIFIED` |
+| PostgreSQL DDL/导入/幂等/advisory lock | `CODE_COMPLETE` |
+| 真实 PostgreSQL 隔离实例 | **`POSTGRESQL_INTEGRATION_PASS`**（本机 pgserver + psycopg3） |
 | 正式 SQLite Owner 切换 | 未发生 |
 
-未验证：真实 psycopg 执行、DDL 权限、JSONB 类型转换、PG 崩溃恢复、并发导入竞争。
+真实 PG 验证覆盖：
+
+- 首次导入、同快照幂等、新 revision 替换、旧 revision 拒绝、同 revision 不同 digest 冲突；
+- 首次两个并发客户端导入只成功一个；
+- 项目 A/B 隔离；
+- PostgreSQL JSONB 与源 canonical 对账；
+- 读取元数据与行数据一致。
+
+仍未验证：生产 PG、权限受限只读角色、异常注入 rollback、超大 payload、PG 崩溃恢复。CLI 入口见 `platform_core/algorithm_shadow_cli.py`。
