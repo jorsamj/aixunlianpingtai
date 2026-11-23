@@ -2673,6 +2673,7 @@ class AgentExecutionService:
             legacy_proof["no_launch_evidence"] = dict(no_launch_evidence or {})
         legacy_digest = hashlib.sha256(_canonical_json(legacy_proof).encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
+        final_digest = digest
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
@@ -2737,6 +2738,7 @@ class AgentExecutionService:
                             409,
                         )
                     if legacy_match:
+                        final_digest = current_digest
                         # One-time, digest-preserving compatibility CAS. The
                         # original proof_sha256 and its evidence semantics are
                         # unchanged; only the historically missing type is fixed.
@@ -2762,7 +2764,7 @@ class AgentExecutionService:
                     "UPDATE execution_resource_holds SET state=?,proof_sha256=?,proof_type=?,updated_at=? "
                     "WHERE task_id=? AND execution_attempt=?",
                     ("RELEASED" if terminal_recovery else "STOP_VERIFIED",
-                     digest, proof["proof_type"], now, str(task_id), int(execution_generation)),
+                     final_digest, proof["proof_type"], now, str(task_id), int(execution_generation)),
                 )
                 database.commit()
             except Exception:

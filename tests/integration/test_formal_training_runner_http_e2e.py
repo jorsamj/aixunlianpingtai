@@ -600,7 +600,7 @@ def test_legacy_schema7_stop_proof_digest_compatibility(tmp_path):
         ).encode()).hexdigest()
         with stack["repository"]._connect() as database:
             database.execute(
-                "UPDATE execution_resource_holds SET state='RELEASED',proof_sha256=?,"
+                "UPDATE execution_resource_holds SET state='STOP_VERIFIED',proof_sha256=?,"
                 "proof_type=NULL WHERE task_id='formal-legacy-proof'",
                 (legacy_digest,),
             )
@@ -612,7 +612,7 @@ def test_legacy_schema7_stop_proof_digest_compatibility(tmp_path):
             process_identity=identity,
             stop_verified=True,
         )
-        assert result["idempotent"] is True and result["legacy"] is True
+        assert result["state"] == "RELEASED"
         with stack["repository"]._connect() as database:
             upgraded = database.execute(
                 "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
@@ -621,6 +621,42 @@ def test_legacy_schema7_stop_proof_digest_compatibility(tmp_path):
         assert upgraded["state"] == "RELEASED"
         assert upgraded["proof_sha256"] == legacy_digest
         assert upgraded["proof_type"] == "PROCESS_STOP_VERIFIED"
+    finally:
+        _stop_formal(stack)
+
+
+def test_terminal_finish_with_unreleased_hold_recovers_idempotently(tmp_path):
+    stack = _start_formal(tmp_path, task_id="formal-terminal-recover")
+    try:
+        assert stack["runner"].run(stack["lease"]).status == "SUCCEEDED"
+        with stack["repository"]._connect() as database:
+            row = database.execute(
+                "SELECT process_pid,process_create_time,process_command_hash FROM tasks "
+                "WHERE task_id='formal-terminal-recover'").fetchone()
+            original = database.execute(
+                "SELECT proof_sha256,proof_type FROM execution_resource_holds "
+                "WHERE task_id='formal-terminal-recover'").fetchone()
+            database.execute(
+                "UPDATE execution_resource_holds SET state='STOP_VERIFIED' "
+                "WHERE task_id='formal-terminal-recover'")
+            database.commit()
+        identity = {"pid": int(row["process_pid"]),
+                    "create_time": float(row["process_create_time"]),
+                    "command_hash": str(row["process_command_hash"])}
+        assignment = stack["lease"].assignment
+        stack["client"].record_stop_proof(
+            stack["lease"],
+            assignment_generation=int(assignment["generation"]),
+            gpu_uuid=str(assignment["resolved_execution_config"]["selected_gpu"]["uuid"]),
+            process_identity=identity, stop_verified=True,
+        )
+        with stack["repository"]._connect() as database:
+            recovered = database.execute(
+                "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
+                "WHERE task_id='formal-terminal-recover'").fetchone()
+        assert recovered["state"] == "RELEASED"
+        assert recovered["proof_sha256"] == original["proof_sha256"]
+        assert recovered["proof_type"] == original["proof_type"]
     finally:
         _stop_formal(stack)
 

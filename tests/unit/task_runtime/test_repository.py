@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import sqlite3
 from pathlib import Path
 from dataclasses import replace
@@ -1524,22 +1525,12 @@ def test_schema_6_database_migrates_execution_holds_without_data_loss(tmp_path):
 
 
 def test_real_historical_schema_6_upgrades_to_current(tmp_path):
-    import ast
-    import subprocess
-
-    source = subprocess.check_output(
-        ["git", "show", "e5378a84^:platform_core/task_runtime/repository.py"],
-        cwd=Path(__file__).resolve().parents[3],
-    ).decode("utf-8")
-    tree = ast.parse(source)
-    schema = None
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "SCHEMA" for target in node.targets
-        ):
-            schema = ast.literal_eval(node.value)
-            break
-    assert isinstance(schema, str) and "execution_resource_holds" not in schema
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "task_repository_schema_6.sql"
+    schema = fixture.read_text(encoding="utf-8")
+    assert hashlib.sha256(schema.encode("utf-8")).hexdigest() == (
+        "6830f40e38ce3edf99877fceb31f0f7c77baa1f63849226071505cc18ad9df68"
+    )
+    assert "execution_resource_holds" not in schema
     path = tmp_path / "historical.sqlite3"
     with sqlite3.connect(path) as database:
         database.executescript(schema)
