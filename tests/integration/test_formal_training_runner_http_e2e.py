@@ -98,13 +98,18 @@ def _model_confirmer(_task, _payload, *, execution_generation, models):
             "items": [dict(item) for item in models]}
 
 
-def test_formal_training_runner_http_success(tmp_path):
+def _start_formal(tmp_path, *, task_id="formal-1", gpu="GPU-A", mutate=None,
+                  worker_script=None, cancel_after=None):
     fixtures = _unit_module()
     current_lease, downloads = fixtures.training_lease(tmp_path)
     payload = dict(current_lease.payload)
     payload.setdefault("remote_execution", {
         "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1",
     })
+    payload["resource_requirements"] = {"gpu_count": 1, "gpu_uuids": [gpu],
+                                        "min_gpu_memory_bytes": 1}
+    if mutate is not None:
+        mutate(payload)
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "artifacts")
     app = FastAPI()
@@ -123,7 +128,6 @@ def test_formal_training_runner_http_success(tmp_path):
     while not server.started and time.monotonic() < deadline:
         time.sleep(0.02)
     assert server.started
-
     nodes = ServiceNodeRepository(repository)
     _node, token = nodes.create({
         "node_id": "formal-runner", "display_name": "formal-runner",
@@ -143,34 +147,113 @@ def test_formal_training_runner_http_success(tmp_path):
             ]},
         },
     })
-    payload["resource_requirements"] = {"gpu_count": 1, "gpu_uuids": ["GPU-A"],
-                                        "min_gpu_memory_bytes": 1}
-    artifacts.atomic_write_json("formal-1", "request.json", payload)
+    artifacts.atomic_write_json(task_id, "request.json", payload)
     repository.create(TaskRecord.new(
-        task_id="formal-1", project_id="project-formal", kind=TaskKind.TRAINING,
-        payload_ref="request.json", resource_key="training:formal-1",
+        task_id=task_id, project_id="project-formal", kind=TaskKind.TRAINING,
+        payload_ref="request.json", resource_key=f"training:{task_id}",
     ), artifacts=artifacts)
     service = AgentExecutionService(repository, artifacts)
     assert service.allocator.assign_next() is not None
     client = NodeExecutorClient(f"http://127.0.0.1:{port}", "formal-runner", token)
     claimed = client.claim_assignment()
     assert claimed is not None
-    item = claimed
-    lease = client.start_execution("formal-1", item["assignment"]["assignment_lease_token"])
+    lease = client.start_execution(task_id, claimed["assignment"]["assignment_lease_token"])
     transfer = fixtures.FakeTransferSession(downloads)
     runner, runtime_root, workdirs = fixtures.build_runner(tmp_path, client, transfer)
     runner._require_stop_proof = True
+    if worker_script is not None:
+        (runtime_root / "train_worker.py").write_text(worker_script, encoding="utf-8")
+    canceller = None
+    if cancel_after is not None:
+        def cancel():
+            time.sleep(cancel_after)
+            repository.request_cancel(task_id)
+        canceller = threading.Thread(target=cancel, daemon=True)
+        canceller.start()
+    return {
+        "fixtures": fixtures, "repository": repository, "artifacts": artifacts,
+        "service": service, "client": client, "lease": lease, "runner": runner,
+        "runtime_root": runtime_root, "workdirs": workdirs, "server": server,
+        "thread": thread, "task_id": task_id, "token": token, "canceller": canceller,
+    }
+
+
+def _stop_formal(stack):
+    stack["server"].should_exit = True
+    stack["thread"].join(timeout=10)
+    stack["runner"].request_shutdown()
+
+
+def test_formal_training_runner_http_success(tmp_path):
+    stack = _start_formal(tmp_path)
     try:
-        outcome = runner.run(lease)
+        outcome = stack["runner"].run(stack["lease"])
         assert outcome.status in {"SUCCEEDED", "PARTIAL_SUCCESS"}
-        task = repository.get("formal-1")
+        task = stack["repository"].get("formal-1")
         assert task.status.value in {"SUCCEEDED", "PARTIAL_SUCCESS"}
-        with repository._connect() as database:
+        with stack["repository"]._connect() as database:
             hold = database.execute(
                 "SELECT state,proof_sha256 FROM execution_resource_holds WHERE task_id='formal-1'"
+            ).fetchone()
+        assert hold is not None and hold["state"] == "RELEASED" and hold["proof_sha256"]
+    finally:
+        _stop_formal(stack)
+
+
+def test_formal_training_runner_process_failure(tmp_path):
+    stack = _start_formal(
+        tmp_path, task_id="formal-fail",
+        worker_script="import sys,time\ntime.sleep(0.2)\nsys.exit(7)\n",
+    )
+    try:
+        outcome = stack["runner"].run(stack["lease"])
+        assert outcome.status == "FAILED"
+        task = stack["repository"].get("formal-fail")
+        assert task.status.value == "FAILED"
+        with stack["repository"]._connect() as database:
+            hold = database.execute(
+                "SELECT state,proof_sha256 FROM execution_resource_holds WHERE task_id='formal-fail'"
             ).fetchone()
         assert hold is not None and hold["state"] == "RELEASED"
         assert hold["proof_sha256"]
     finally:
-        server.should_exit = True
-        thread.join(timeout=10)
+        _stop_formal(stack)
+
+
+def test_formal_training_runner_startup_failure_uses_no_launch_proof(tmp_path):
+    stack = _start_formal(
+        tmp_path, task_id="formal-preflight",
+        mutate=lambda payload: payload.pop("snapshot_id", None),
+    )
+    try:
+        with pytest.raises(Exception):
+            stack["runner"].run(stack["lease"])
+        task = stack["repository"].get("formal-preflight")
+        assert task.status.value == "FAILED"
+        assert task.process_pid is None
+        with stack["repository"]._connect() as database:
+            hold = database.execute(
+                "SELECT state FROM execution_resource_holds WHERE task_id='formal-preflight'"
+            ).fetchone()
+        assert hold is not None and hold["state"] == "RELEASED"
+    finally:
+        _stop_formal(stack)
+
+
+def test_formal_training_runner_central_cancel(tmp_path):
+    stack = _start_formal(
+        tmp_path, task_id="formal-cancel", cancel_after=1.5,
+        worker_script="import time\ntime.sleep(20)\n",
+    )
+    try:
+        outcome = stack["runner"].run(stack["lease"])
+        assert outcome.status in {"CANCELLED", "FAILED"}
+        task = stack["repository"].get("formal-cancel")
+        assert task.status.value == "CANCELLED"
+        with stack["repository"]._connect() as database:
+            hold = database.execute(
+                "SELECT state FROM execution_resource_holds WHERE task_id='formal-cancel'"
+            ).fetchone()
+        assert hold is not None and hold["state"] == "RELEASED"
+    finally:
+        _stop_formal(stack)
