@@ -185,18 +185,25 @@ class ProcessController:
         return not cls._posix_group_exists(group_id)
 
     @classmethod
-    def _terminate_posix_group(cls, group_id: int, timeout: float) -> None:
+    def _terminate_posix_group(
+        cls,
+        group_id: int,
+        timeout: float,
+        ownership_token: str | None = None,
+    ) -> None:
         """Terminate the dedicated launch group even after its leader is gone.
 
-        Linux may OOM-kill only the training leader while torch/DataLoader
-        descendants remain alive and are immediately re-parented to PID 1.  At
-        that point psutil parent traversal cannot recover the descendants, but
-        launch_process() has already fenced this execution into a private POSIX
-        session/process group whose id is the original launcher PID.
+        When ownership_token is supplied, membership is re-verified immediately
+        before every signal. The token is launch-origin corroboration, not an
+        unforgeable kernel identity; an unreadable/changed member fails closed.
         """
 
         if os.name == "nt" or not cls._posix_group_exists(group_id):
             return
+        if ownership_token is not None and not cls._group_has_post_launch_members(
+            group_id, 0.0, ownership_token
+        ):
+            raise PermissionError("process group ownership changed before termination")
 
         try:
             # Resume stopped descendants first so SIGTERM can be handled and
@@ -207,6 +214,12 @@ class ProcessController:
         except PermissionError as error:
             raise PermissionError("process group cannot be resumed") from error
 
+        if ownership_token is not None:
+            if not cls._posix_group_exists(group_id):
+                return
+            if not cls._group_has_post_launch_members(group_id, 0.0, ownership_token):
+                raise PermissionError("process group ownership changed before SIGTERM")
+
         try:
             os.killpg(int(group_id), signal.SIGTERM)
         except ProcessLookupError:
@@ -216,6 +229,12 @@ class ProcessController:
 
         if cls._wait_posix_group_exit(group_id, timeout):
             return
+
+        if ownership_token is not None:
+            if not cls._posix_group_exists(group_id):
+                return
+            if not cls._group_has_post_launch_members(group_id, 0.0, ownership_token):
+                raise PermissionError("process group ownership changed before SIGKILL")
 
         try:
             os.killpg(int(group_id), signal.SIGKILL)
@@ -326,8 +345,12 @@ class ProcessController:
                 if float(process.info["create_time"]) + 1.0 < float(launched_at):
                     return False
                 members.append(int(process.pid))
-            except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
+            except (ProcessLookupError, psutil.NoSuchProcess):
                 continue
+            except (PermissionError, psutil.AccessDenied) as error:
+                raise PermissionError(
+                    "process group membership cannot be inspected"
+                ) from error
         # Every remaining group member must carry the exact launch token. An
         # unrelated process that merely reuses the numeric PGID cannot have it.
         return bool(members) and all(
@@ -350,7 +373,9 @@ class ProcessController:
                     raise PermissionError(
                         "process group membership predates or cannot prove this execution"
                     )
-                self._terminate_posix_group(identity.pid, timeout)
+                self._terminate_posix_group(
+                    identity.pid, timeout, ownership_token=identity.group_token
+                )
             return
         processes = self._tree(root)
         descendants = [process for process in processes if process.pid != root.pid]
