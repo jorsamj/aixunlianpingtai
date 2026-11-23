@@ -10,6 +10,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
+from .node_agent_execution_slots import BoundedExecutionSlots
 from .node_agent_deployment_runtime import (
     AgentDeploymentOutcome,
     AgentDeploymentRunner,
@@ -81,6 +82,9 @@ class NodeAgentExecutorLoop:
         runners: Mapping[str, object] | None = None,
         poll_interval: float = 2.0,
         on_status_change: Callable[[AgentExecutorStatus], None] | None = None,
+        max_slots: int = 1,
+        slot_runner_factory: Callable[[str, Callable[[Any], None]], object] | None = None,
+        slot_controller: object | None = None,
     ) -> None:
         self.client = client
         self.deployment_runner = deployment_runner
@@ -99,6 +103,11 @@ class NodeAgentExecutorLoop:
         self._last_error = ""
         self._last_outcome = ""
         self._completed_tasks = 0
+        self.max_slots = 2 if max_slots == 2 and slot_runner_factory and slot_controller else 1
+        self._slot_factory = slot_runner_factory
+        self._slot_controller = slot_controller
+        self._slots = BoundedExecutionSlots(2) if self.max_slots == 2 else None
+        self._slot_runners: dict[tuple[str, int], object] = {}
 
     @property
     def enabled(self) -> bool:
@@ -123,6 +132,8 @@ class NodeAgentExecutorLoop:
             if getattr(runner, "ready", True) is False:
                 continue
             effective.append(str(capability))
+        if self.max_slots == 2:
+            effective.append("execution-slots:2")
         return tuple(effective)
 
     def _runner_recovery_error(self) -> str:
@@ -134,10 +145,13 @@ class NodeAgentExecutorLoop:
         return ""
 
     def _snapshot_locked(self) -> AgentExecutorStatus:
+        active = set(self._active_tasks)
+        if self._slots is not None:
+            active.update(slot.task_id for slot in self._slots.active())
         return AgentExecutorStatus(
             enabled=self.enabled,
             running=bool(self._thread and self._thread.is_alive()),
-            active_tasks=tuple(sorted(self._active_tasks)),
+            active_tasks=tuple(sorted(active)),
             last_error=self._last_error or self._runner_recovery_error(),
             completed_tasks=self._completed_tasks,
             last_outcome=self._last_outcome,
@@ -324,11 +338,112 @@ class NodeAgentExecutorLoop:
         finally:
             self._set_active(lease.task_id, False)
 
+    def _dual_gpu_uuid(self, lease) -> str:
+        assignment = getattr(lease, "assignment", None)
+        config = assignment.get("resolved_execution_config") if isinstance(assignment, Mapping) else None
+        selected = config.get("selected_gpu") if isinstance(config, Mapping) else None
+        return str(selected.get("uuid") or "") if isinstance(selected, Mapping) else ""
+
+    def _reap_dual_slots(self) -> None:
+        if self._slots is None:
+            return
+        for slot in self._slots.active():
+            if not slot.worker_exited:
+                continue
+            if self._slots.confirm_stopped(slot, self._slot_controller):
+                self._slot_runners.pop((slot.task_id, slot.generation), None)
+                self._set_active(slot.task_id, False)
+                self._completed_tasks += 1
+            else:
+                self._set_error(
+                    f"SLOT_STOP_UNVERIFIED: {slot.task_id} generation {slot.generation}"
+                )
+
+    def _run_dual_once(self) -> bool:
+        if self._slots is None or len(self._slots.active()) >= self.max_slots:
+            return False
+        try:
+            claimed = self.client.claim_assignment()
+        except NodeExecutorHTTPError as error:
+            self._set_error(f"{error.code}: {error}")
+            return False
+        except (OSError, ValueError) as error:
+            self._set_error(f"{type(error).__name__}: {error}")
+            return False
+        if claimed is None:
+            return False
+        try:
+            task_id, kind, assignment_token, required_capability = self._claimed_task(claimed)
+        except ValueError as error:
+            self._set_error(f"NODE_EXECUTOR_INVALID_RESPONSE: {error}")
+            return True
+        factory = self._slot_factory
+        if factory is None or kind != "TRAINING":
+            self._set_error(f"UNSUPPORTED_DUAL_SLOT_KIND: {kind}")
+            return True
+        bound = {}
+
+        def on_process_started(identity) -> None:
+            slot = bound.get("slot")
+            if slot is not None:
+                slot.identity = identity
+
+        try:
+            runner = factory(kind, on_process_started)
+        except Exception as error:
+            self._set_error(f"SLOT_RUNNER_FACTORY_FAILED: {type(error).__name__}: {error}")
+            return True
+        if getattr(runner, "ready", True) is False:
+            self._set_error(
+                "SLOT_RUNNER_NOT_READY: "
+                + str(getattr(runner, "recovery_error", "") or "")
+            )
+            return True
+        try:
+            lease = self.client.start_execution(task_id, assignment_token)
+        except NodeExecutorHTTPError as error:
+            self._set_error(f"{error.code}: {error}")
+            return True
+        except (OSError, ValueError) as error:
+            self._set_error(f"{type(error).__name__}: {error}")
+            return True
+        self._set_active(lease.task_id, True)
+
+        def run_slot(slot, lease_value):
+            while "slot" not in bound and not self.stop_event.is_set():
+                self.stop_event.wait(0.01)
+            try:
+                return runner.run(lease_value)
+            except RemoteExecutionFenced as error:
+                self._set_error(f"EXECUTION_FENCED: {error}")
+                raise
+            except Exception as error:
+                self._set_error(f"{type(error).__name__}: {error}")
+                raise
+
+        try:
+            slot = self._slots.submit(
+                lease, run_slot, gpu_uuid=self._dual_gpu_uuid(lease),
+                slot_id=f"slot-{lease.task_id}",
+            )
+            bound["slot"] = slot
+            self._slot_runners[(slot.task_id, slot.generation)] = runner
+        except Exception as error:
+            self._set_error(f"SLOT_SUBMIT_FAILED: {type(error).__name__}: {error}")
+            return True
+        return True
+
     def _serve(self) -> None:
         while not self.stop_event.is_set():
-            claimed = self.run_once()
-            if claimed:
-                continue
+            if self._slots is not None:
+                self._reap_dual_slots()
+                claimed = self._run_dual_once()
+                if claimed:
+                    continue
+            else:
+                claimed = self.run_once()
+                if claimed:
+                    continue
             self.stop_event.wait(self.poll_interval)
 
     def start(self) -> None:
@@ -351,6 +466,13 @@ class NodeAgentExecutorLoop:
         # Local shutdown must never leave a child inference process behind. The
         # runner treats this as execution fencing so central lease expiry/retry
         # remains authoritative rather than publishing a false terminal status.
+        for runner in list(self._slot_runners.values()):
+            request_shutdown = getattr(runner, "request_shutdown", None)
+            if callable(request_shutdown):
+                request_shutdown()
+        if self._slots is not None:
+            for slot in self._slots.active():
+                self._slots.request_cancel(slot.task_id, slot.generation)
         seen_runners: set[int] = set()
         for runner in self.runners.values():
             identity = id(runner)

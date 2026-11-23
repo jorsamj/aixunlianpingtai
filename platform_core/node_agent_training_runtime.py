@@ -217,6 +217,7 @@ class AgentTrainingRunner:
         resource_resolver=None,
         mother_model_install_dir: str | Path | None = None,
         recovery_coordinator=None,
+        on_process_started=None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -241,6 +242,7 @@ class AgentTrainingRunner:
         self._shutdown_event = threading.Event()
         self._recovery_error = ""
         self._recovery_coordinator = recovery_coordinator
+        self._on_process_started = on_process_started
         self._recover_persisted_processes()
 
     @property
@@ -259,6 +261,12 @@ class AgentTrainingRunner:
         with self._identity_lock:
             self._active_lease = lease
             self._active_identity = identity
+        callback = self._on_process_started
+        if callable(callback):
+            try:
+                callback(identity)
+            except Exception:
+                pass
 
     def _clear_active_process(self) -> None:
         with self._identity_lock:

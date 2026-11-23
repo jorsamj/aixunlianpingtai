@@ -205,22 +205,12 @@ def _build_executor(
     )
     runners = {}
     recovery = None
+    slot_factory = None
+    slot_controller = None
     if {"conversion", "conversion.rknn", "training"} & set(reported_capabilities):
         from platform_core.task_runtime.process_control import ProcessController
 
         recovery = NodeRecoveryCoordinator(workdirs, ProcessController())
-    if {"conversion", "conversion.rknn"} & set(reported_capabilities):
-        from platform_core.node_agent_conversion_runtime import AgentConversionRunner
-
-        runners["MODEL_CONVERSION"] = AgentConversionRunner(
-            client,
-            workdirs,
-            runtime_root=Path(__file__).resolve().parent,
-            ultralytics_python=ultralytics_python,
-            rknn_python=rknn_python,
-            heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
-            recovery_coordinator=recovery,
-        )
     if "training" in reported_capabilities:
         # Keep the training dependency surface lazy: a deployment-only node
         # must not require Pillow/YAML/training packages merely to heartbeat.
@@ -232,6 +222,34 @@ def _build_executor(
             runtime_root=Path(__file__).resolve().parent,
             ultralytics_python=ultralytics_python,
             mother_model_install_dir=str(args.mother_model_install_dir or ""),
+            heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+            recovery_coordinator=recovery,
+        )
+        if os.environ.get("DSH_AGENT_EXECUTION_SLOTS", "").strip() == "2":
+            from platform_core.task_runtime.process_control import ProcessController
+
+            slot_controller = ProcessController()
+
+            def slot_factory(kind, on_started):
+                return AgentTrainingRunner(
+                    client,
+                    workdirs,
+                    runtime_root=Path(__file__).resolve().parent,
+                    ultralytics_python=ultralytics_python,
+                    mother_model_install_dir=str(args.mother_model_install_dir or ""),
+                    heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+                    recovery_coordinator=recovery,
+                    on_process_started=on_started,
+                )
+    if {"conversion", "conversion.rknn"} & set(reported_capabilities):
+        from platform_core.node_agent_conversion_runtime import AgentConversionRunner
+
+        runners["MODEL_CONVERSION"] = AgentConversionRunner(
+            client,
+            workdirs,
+            runtime_root=Path(__file__).resolve().parent,
+            ultralytics_python=ultralytics_python,
+            rknn_python=rknn_python,
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
             recovery_coordinator=recovery,
         )
@@ -265,6 +283,9 @@ def _build_executor(
         capabilities=reported_capabilities,
         runners=runners,
         poll_interval=max(0.5, float(args.executor_poll_interval)),
+        max_slots=2 if slot_factory is not None else 1,
+        slot_runner_factory=slot_factory,
+        slot_controller=slot_controller,
     )
 
 

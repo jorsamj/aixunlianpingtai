@@ -145,6 +145,7 @@ class AgentConversionRunner:
         transfer_timeout: float = 600.0,
         process_poll_interval: float = 0.2,
         recovery_coordinator=None,
+        on_process_started=None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -166,6 +167,7 @@ class AgentConversionRunner:
         self._shutdown_event = threading.Event()
         self._recovery_error = ""
         self._recovery_coordinator = recovery_coordinator
+        self._on_process_started = on_process_started
         self._recover_persisted_processes()
 
     @property
@@ -190,6 +192,12 @@ class AgentConversionRunner:
         with self._identity_lock:
             self._active_lease = lease
             self._active_identity = identity
+        callback = self._on_process_started
+        if callable(callback):
+            try:
+                callback(identity)
+            except Exception:
+                pass
 
     def _clear_active_process(self) -> None:
         with self._identity_lock:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 import time
 
@@ -425,3 +426,91 @@ def test_rknn_board_deployment_does_not_claim_generic_deployment_capability():
     assert client.start_calls == []
     assert runner.calls == []
     assert "not executable" in loop.status().last_error
+
+
+def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
+    from types import SimpleNamespace
+
+    from platform_core.task_runtime.process_control import ProcessController, launch_process
+
+    claims = [
+        {
+            "assignment": {"task_id": task_id, "assignment_lease_token": f"a-{task_id}",
+                           "capability": "training"},
+            "task": {"task_id": task_id, "kind": "TRAINING"},
+        }
+        for task_id in ("a", "b", "c")
+    ]
+
+    class DualClient:
+        def __init__(self):
+            self.claim_calls = 0
+            self.start_calls = []
+
+        def claim_assignment(self):
+            self.claim_calls += 1
+            if self.claim_calls > 2:
+                return None
+            return claims[self.claim_calls - 1]
+
+        def start_execution(self, task_id, assignment_token):
+            self.start_calls.append(task_id)
+            return RemoteExecutionLease(
+                task_id=task_id, kind="TRAINING", project_id="project-1",
+                generation=1, lease_token="execution-secret",
+                lease_expires_at="2026-09-18T10:00:00+00:00",
+                worker_id="agent:node-1", payload={},
+                assignment={"resolved_execution_config": {"selected_gpu": {
+                    "uuid": f"GPU-{task_id.upper()}"}}},
+                transport={},
+            )
+
+        def finish(self, *args, **kwargs):
+            return None
+
+    started = {}
+    pids = {}
+    closed = {}
+
+    class SleepRunner:
+        def __init__(self, on_started):
+            self.ready = True
+            self._on_started = on_started
+            self._stop = threading.Event()
+            self._controller = ProcessController()
+
+        def request_shutdown(self):
+            self._stop.set()
+
+        def run(self, execution_lease):
+            handle = launch_process([sys.executable, "-c", "import time; time.sleep(30)"])
+            self._on_started(handle.identity)
+            started[execution_lease.task_id] = time.monotonic()
+            pids[execution_lease.task_id] = handle.process.pid
+            while not self._stop.wait(0.02):
+                pass
+            self._controller.terminate_tree(handle.identity, timeout=3.0)
+            closed[execution_lease.task_id] = time.monotonic()
+            return SimpleNamespace(status="CANCELLED", error="")
+
+    client = DualClient()
+    loop = NodeAgentExecutorLoop(
+        client, SleepRunner(lambda _identity: None),
+        capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: SleepRunner(on_started),
+        slot_controller=ProcessController(), poll_interval=0.02,
+    )
+    try:
+        loop.start()
+        deadline = time.monotonic() + 10
+        while len(started) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert set(started) == {"a", "b"}
+        assert abs(started["a"] - started["b"]) < 5
+        assert pids["a"] != pids["b"]
+        assert client.claim_calls == 2
+        assert "execution-slots:2" in loop.effective_capabilities()
+    finally:
+        loop.stop(timeout=10)
+        loop._slots.wait(10)
+    assert {"a", "b"} <= set(closed)
