@@ -266,17 +266,20 @@ class AgentTrainingRunner:
             self._active_identity = identity
             self._last_process_identity = identity
         callback = self._on_process_started
-        if self._require_stop_proof:
-            self.client.record_start_identity(
-                lease,
-                {
-                    "pid": int(identity.pid),
-                    "create_time": float(identity.create_time),
-                    "command_hash": str(identity.command_hash),
-                },
-            )
         if callable(callback):
             callback(identity)
+
+    def _register_start_identity(self, lease: RemoteExecutionLease, identity: ProcessIdentity) -> None:
+        if not self._require_stop_proof:
+            return
+        self.client.record_start_identity(
+            lease,
+            {
+                "pid": int(identity.pid),
+                "create_time": float(identity.create_time),
+                "command_hash": str(identity.command_hash),
+            },
+        )
 
     def _clear_active_process(self) -> None:
         with self._identity_lock:
@@ -1330,25 +1333,56 @@ class AgentTrainingRunner:
             except Exception:
                 pass
 
-    def _submit_stop_proof(self, lease: RemoteExecutionLease) -> None:
-        if not self._require_stop_proof:
-            return
-        identity = self._last_process_identity
-        if identity is None:
-            raise AgentTrainingRuntimeError(
-                "STOP_PROOF_IDENTITY_MISSING"
-            )
-        # Verify the OS process group/token boundary before attesting stop.
-        self.controller.terminate_tree(identity, timeout=5.0)
+    def _assignment_identity(self, lease: RemoteExecutionLease) -> tuple[int, str]:
         assignment = lease.assignment if isinstance(lease.assignment, Mapping) else {}
         config = assignment.get("resolved_execution_config")
         config = config if isinstance(config, Mapping) else {}
         selected = config.get("selected_gpu")
         selected = selected if isinstance(selected, Mapping) else {}
+        return int(assignment.get("generation") or 0), str(selected.get("uuid") or "")
+
+    def _submit_no_launch_proof(self, lease: RemoteExecutionLease) -> None:
+        if self.workdirs.read_process_launch_intent(lease) is not None:
+            raise AgentTrainingRuntimeError("STOP_PROOF_LAUNCH_INTENT_PRESENT")
+        if self.workdirs.read_process_identity(lease) is not None:
+            raise AgentTrainingRuntimeError("STOP_PROOF_IDENTITY_PRESENT")
+        assignment_generation, gpu_uuid = self._assignment_identity(lease)
+        evidence = {
+            "launch_boundary_entered": False,
+            "persisted_launch_intent": False,
+            "persisted_process_identity": False,
+            "task_id": str(lease.task_id),
+            "assignment_generation": assignment_generation,
+            "execution_attempt": int(lease.generation),
+            "gpu_uuid": gpu_uuid,
+        }
+        digest = hashlib.sha256(json.dumps(
+            evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
         self.client.record_stop_proof(
             lease,
-            assignment_generation=int(assignment.get("generation") or 0),
-            gpu_uuid=str(selected.get("uuid") or ""),
+            assignment_generation=assignment_generation,
+            gpu_uuid=gpu_uuid,
+            process_identity={},
+            stop_verified=True,
+            no_process_launched=True,
+            no_launch_evidence={**evidence, "intent_sha256": digest},
+        )
+
+    def _submit_stop_proof(self, lease: RemoteExecutionLease) -> None:
+        if not self._require_stop_proof:
+            return
+        identity = self._last_process_identity
+        if identity is None:
+            self._submit_no_launch_proof(lease)
+            return
+        # Verify the OS process group/token boundary before attesting stop.
+        self.controller.terminate_tree(identity, timeout=5.0)
+        assignment_generation, gpu_uuid = self._assignment_identity(lease)
+        self.client.record_stop_proof(
+            lease,
+            assignment_generation=assignment_generation,
+            gpu_uuid=gpu_uuid,
             process_identity={
                 "pid": int(identity.pid),
                 "create_time": float(identity.create_time),
@@ -1620,6 +1654,10 @@ class AgentTrainingRunner:
                     # allowing execution to continue.
                     self._terminate_active(strict=True)
                     raise
+                # Central start-identity registration is allowed only after the
+                # exact local identity is durable; otherwise a crash could leave
+                # a process without a local recovery witness.
+                self._register_start_identity(lease, launched.identity)
                 next_projection = 0.0
                 last_runtime_resources_signature = ""
 

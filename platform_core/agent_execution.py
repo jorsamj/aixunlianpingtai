@@ -2474,16 +2474,44 @@ class AgentExecutionService:
                 ).fetchone()
                 if hold is None:
                     raise AgentExecutionError("RESOURCE_HOLD_MISSING", "resource hold is missing", 409)
-                changed = database.execute(
-                    "UPDATE tasks SET process_pid=?,process_create_time=?,process_command_hash=?,"
-                    "updated_at=? WHERE task_id=? AND worker_id=? AND attempt=? "
-                    "AND lease_token=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
-                    (pid, create_time, command_hash, datetime.now(timezone.utc).isoformat(),
-                     str(task_id), str(current.worker_id), int(execution_generation),
-                     str(execution_lease_token)),
-                ).rowcount
-                if changed != 1:
+                task_row = database.execute(
+                    "SELECT process_pid,process_create_time,process_command_hash,status,"
+                    "worker_id,attempt,lease_token FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                if (task_row is None or str(task_row["worker_id"]) != str(current.worker_id)
+                        or int(task_row["attempt"]) != int(execution_generation)
+                        or str(task_row["lease_token"] or "") != str(execution_lease_token)
+                        or str(task_row["status"]) not in {"RUNNING", "CANCEL_REQUESTED"}):
                     raise AgentExecutionError("EXECUTION_FENCED", "execution start identity is fenced", 409)
+                existing = (
+                    task_row["process_pid"], task_row["process_create_time"],
+                    task_row["process_command_hash"],
+                )
+                if all(value is None for value in existing):
+                    changed = database.execute(
+                        "UPDATE tasks SET process_pid=?,process_create_time=?,process_command_hash=?,"
+                        "updated_at=? WHERE task_id=? AND worker_id=? AND attempt=? AND lease_token=? "
+                        "AND process_pid IS NULL AND process_create_time IS NULL "
+                        "AND process_command_hash IS NULL "
+                        "AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                        (pid, create_time, command_hash, datetime.now(timezone.utc).isoformat(),
+                         str(task_id), str(current.worker_id), int(execution_generation),
+                         str(execution_lease_token)),
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentExecutionError("START_IDENTITY_CONFLICT",
+                                                  "start identity changed concurrently", 409)
+                elif (existing[0] == pid and float(existing[1]) == create_time
+                      and str(existing[2]) == command_hash):
+                    database.commit()
+                    return {"task_id": str(task_id), "process_pid": pid, "idempotent": True}
+                else:
+                    raise AgentExecutionError(
+                        "START_IDENTITY_CONFLICT",
+                        "a different process identity is already registered",
+                        409,
+                    )
                 database.commit()
             except Exception:
                 database.rollback()
@@ -2514,6 +2542,7 @@ class AgentExecutionService:
         process_identity: Mapping[str, Any],
         stop_verified: bool,
         no_process_launched: bool = False,
+        no_launch_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
         terminal_recovery = False
@@ -2533,6 +2562,18 @@ class AgentExecutionService:
             not isinstance(process_identity, Mapping) or not required.issubset(process_identity)
         ):
             raise AgentExecutionError("STOP_PROOF_INVALID", "process identity is incomplete", 409)
+        if no_process_launched:
+            evidence = no_launch_evidence if isinstance(no_launch_evidence, Mapping) else {}
+            digest_value = str(evidence.get("intent_sha256") or "")
+            if (len(digest_value) != 64
+                    or evidence.get("launch_boundary_entered") is not False
+                    or evidence.get("task_id") != str(task_id)
+                    or int(evidence.get("execution_attempt") or 0) != int(execution_generation)):
+                raise AgentExecutionError(
+                    "NO_LAUNCH_EVIDENCE_INVALID",
+                    "no-launch evidence is incomplete or inconsistent",
+                    409,
+                )
         proof = {
             "node_id": str(node_id), "task_id": str(task_id),
             "assignment_generation": int(assignment_generation),
@@ -2540,6 +2581,7 @@ class AgentExecutionService:
             "gpu_uuid": str(gpu_uuid), "process_identity": dict(process_identity),
             "stop_verified": True,
             "no_process_launched": bool(no_process_launched),
+            "no_launch_evidence": dict(no_launch_evidence or {}),
         }
         digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
@@ -3099,6 +3141,7 @@ def agent_executor_router(
             process_identity=payload.get("process_identity") or {},
             stop_verified=payload.get("stop_verified") is True,
             no_process_launched=payload.get("no_process_launched") is True,
+            no_launch_evidence=payload.get("no_launch_evidence") or {},
         )
 
     @router.post("/executions/{task_id}/finish")

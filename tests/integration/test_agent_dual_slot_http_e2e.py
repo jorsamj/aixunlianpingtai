@@ -80,6 +80,7 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
 
     started, pids, closed = {}, {}, {}
     leases = {}
+    identities = {}
     controller = ProcessController()
 
     class CpuRunner:
@@ -98,11 +99,13 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
             started[lease.task_id] = time.monotonic()
             pids[lease.task_id] = handle.process.pid
             leases[lease.task_id] = lease
-            self._client.record_start_identity(lease, {
+            identity_payload = {
                 "pid": int(handle.identity.pid),
                 "create_time": float(handle.identity.create_time),
                 "command_hash": str(handle.identity.command_hash),
-            })
+            }
+            identities[lease.task_id] = identity_payload
+            self._client.record_start_identity(lease, identity_payload)
             while not self._stop.wait(0.02):
                 try:
                     response = self._client.heartbeat(lease)
@@ -162,9 +165,20 @@ def test_central_http_to_agent_loop_runs_two_real_cpu_slots(tmp_path):
                 uuids.add(cfg["selected_gpu"]["uuid"])
         assert uuids == {"GPU-A", "GPU-B"}
 
+        from platform_core.node_agent_executor_runtime import NodeExecutorHTTPError
+        # Launch identity is immutable: exact retry is idempotent, a different
+        # PID cannot replace the registered process.
+        assert client.record_start_identity(
+            leases["b"], identities["b"]
+        )["task_id"] == "b"
+        forged = dict(identities["b"])
+        forged["pid"] = int(forged["pid"]) + 1
+        with pytest.raises(NodeExecutorHTTPError) as conflict:
+            client.record_start_identity(leases["b"], forged)
+        assert conflict.value.code == "START_IDENTITY_CONFLICT"
+
         # Central finish without a verified stop proof must be rejected and
         # must leave the resource/task untouched.
-        from platform_core.node_agent_executor_runtime import NodeExecutorHTTPError
         with pytest.raises(NodeExecutorHTTPError) as rejected:
             client.finish(leases["b"], "CANCELLED")
         assert rejected.value.code == "STOP_PROOF_REQUIRED"

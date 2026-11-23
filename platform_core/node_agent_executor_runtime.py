@@ -569,6 +569,7 @@ class NodeExecutorClient:
         process_identity: Mapping[str, Any],
         stop_verified: bool = True,
         no_process_launched: bool = False,
+        no_launch_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self._post(
             f"/executions/{lease.task_id}/stop-proof",
@@ -580,6 +581,7 @@ class NodeExecutorClient:
                 "process_identity": dict(process_identity),
                 "stop_verified": bool(stop_verified),
                 "no_process_launched": bool(no_process_launched),
+                "no_launch_evidence": dict(no_launch_evidence or {}),
             },
         )
 
