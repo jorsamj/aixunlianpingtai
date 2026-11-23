@@ -216,6 +216,7 @@ class AgentTrainingRunner:
         process_poll_interval: float = 0.2,
         resource_resolver=None,
         mother_model_install_dir: str | Path | None = None,
+        recovery_coordinator=None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -239,6 +240,7 @@ class AgentTrainingRunner:
         self._active_lease: RemoteExecutionLease | None = None
         self._shutdown_event = threading.Event()
         self._recovery_error = ""
+        self._recovery_coordinator = recovery_coordinator
         self._recover_persisted_processes()
 
     @property
@@ -270,6 +272,12 @@ class AgentTrainingRunner:
             return self._active_lease, self._active_identity
 
     def _recover_persisted_processes(self) -> bool:
+        if self._recovery_coordinator is not None:
+            # One node-level coordinator owns the recovery scan. Runners only
+            # consume its verdict; they must not independently terminate shared
+            # persisted process records.
+            self._recovery_error = self._recovery_coordinator.prepare()
+            return not bool(self._recovery_error)
         try:
             unverified = self.workdirs.list_unverified_process_launch_intents()
             if unverified:
