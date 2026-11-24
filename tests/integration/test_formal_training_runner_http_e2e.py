@@ -920,6 +920,31 @@ def _slot_identity_from_workdir(stack, task_id):
     )
 
 
+def _process_identity_sha256(identity: dict) -> str:
+    return hashlib.sha256(json.dumps({
+        "pid": int(identity["pid"]),
+        "create_time": float(identity["create_time"]),
+        "command_hash": str(identity["command_hash"]),
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _wait_central_start_identity(stack, task_id: str, identity: dict, *, timeout: float = 20):
+    """Wait until the Agent's start-identity registration is durable.
+
+    Expiring or fencing the lease before central has registered the worker
+    identity would permanently lose that registration (the request itself is
+    fenced), so recovery could never match the original process. This is a test
+    precondition, not a retry around a product defect.
+    """
+    expected = _process_identity_sha256(identity)
+    _wait_until(
+        lambda: stack["client"].execution_status(str(task_id)).get(
+            "process_identity_sha256") == expected,
+        timeout=timeout,
+        message=f"central did not register the worker start identity for {task_id}",
+    )
+
+
 def _process_alive(identity):
     try:
         ProcessController().inspect(ProcessIdentity(
@@ -1099,6 +1124,7 @@ def _run_dual_slot_worker_death_scenario(tmp_path, killer):
         assert int(identity_a["pid"]) == int(stack["started"]["a"].pid)
         assert float(identity_a["create_time"]) == float(stack["started"]["a"].create_time)
         assert str(identity_a["command_hash"]) == str(stack["started"]["a"].command_hash)
+        _wait_central_start_identity(stack, "a", identity_a)
         with stack["repository"]._connect() as database:
             hold_a = database.execute(
                 "SELECT assignment_generation,execution_attempt,gpu_uuid "
@@ -1235,6 +1261,7 @@ def test_expired_lease_fencing_isolates_slot_and_recovery_releases(tmp_path):
         )
         identity_a = _slot_identity_from_workdir(stack, "a")
         assert identity_a is not None
+        _wait_central_start_identity(stack, "a", identity_a)
         with stack["repository"]._connect() as database:
             lease_a_row = database.execute(
                 "SELECT lease_token,attempt FROM tasks WHERE task_id='a'"
@@ -1381,6 +1408,7 @@ def test_advanced_attempt_fencing_rejects_stale_token(tmp_path):
         )
         identity_a = _slot_identity_from_workdir(stack, "a")
         assert identity_a is not None
+        _wait_central_start_identity(stack, "a", identity_a)
         with stack["repository"]._connect() as database:
             lease_a_row = database.execute(
                 "SELECT lease_token,attempt FROM tasks WHERE task_id='a'"
