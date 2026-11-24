@@ -571,3 +571,143 @@ def test_dual_slot_execution_is_explicit_opt_in_and_defaults_to_one_slot(tmp_pat
     assert dual.max_slots == 2
     assert dual._slots is not None
     assert dual.effective_capabilities() == ("training", "execution-slots:2")
+
+
+class FakeRecoveryCoordinator:
+    """Record the node-level recovery verdict without touching real processes."""
+
+    instances = []
+    error = ""
+
+    def __init__(self, workdirs, controller, *, client=None, intent_path=None):
+        self.workdirs = workdirs
+        self.controller = controller
+        self.client = client
+        self.intent_path = intent_path
+        self.prepare_calls = 0
+        FakeRecoveryCoordinator.instances.append(self)
+
+    def prepare(self):
+        self.prepare_calls += 1
+        return FakeRecoveryCoordinator.error
+
+
+def _write_persisted_identity(state_dir: Path) -> Path:
+    target = state_dir / "executor" / "executions" / "stale-task" / "1"
+    target.mkdir(parents=True)
+    path = target / "process-identity.json"
+    path.write_text(json.dumps({
+        "pid": 4321, "create_time": 1234.5,
+        "command_hash": "a" * 64, "group_token": "",
+        "task_id": "stale-task", "generation": 1,
+    }), encoding="utf-8")
+    return path
+
+
+def _build_for_recovery_test(state_dir: Path, capabilities):
+    return node_agent._build_executor(
+        control_plane="http://127.0.0.1:9",
+        node_id="recovery-evidence-node",
+        token="node-token",
+        state_dir=state_dir,
+        runtime_probe={"python_executable": sys.executable},
+        reported_capabilities=list(capabilities),
+        args=_slot_build_args(),
+    )
+
+
+def test_stale_recovery_evidence_withdraws_non_training_capabilities(
+    tmp_path, monkeypatch
+):
+    """A persisted worker from a previous Agent run must be adjudicated even
+    when the restarted Agent no longer requests training/conversion.
+
+    Otherwise the old Worker is orphaned and the central dual-slot Hold stays
+    HELD forever. Unsafe recovery must withdraw *every* remote execution
+    capability, not just the one that used to own the process.
+    """
+    monkeypatch.setattr(node_agent, "NodeRecoveryCoordinator", FakeRecoveryCoordinator)
+    FakeRecoveryCoordinator.instances = []
+    FakeRecoveryCoordinator.error = "central recovery status is unavailable: OSError"
+    state_dir = tmp_path / "state-cleaning"
+    _write_persisted_identity(state_dir)
+
+    executor = _build_for_recovery_test(state_dir, ["cleaning"])
+
+    assert FakeRecoveryCoordinator.instances, "recovery coordinator was not constructed"
+    assert FakeRecoveryCoordinator.instances[0].prepare_calls >= 1
+    assert executor is not None
+    assert executor.enabled is False
+    assert executor.effective_capabilities() == ()
+    assert "central recovery status is unavailable" in executor.last_error()
+
+
+def test_stale_recovery_evidence_with_empty_capabilities_still_fails_closed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(node_agent, "NodeRecoveryCoordinator", FakeRecoveryCoordinator)
+    FakeRecoveryCoordinator.instances = []
+    FakeRecoveryCoordinator.error = "persisted process identity is unsafe or unreadable"
+    state_dir = tmp_path / "state-empty"
+    # An unpaired launch intent is also recovery evidence.
+    target = state_dir / "executor" / "executions" / "stale-task" / "1"
+    target.mkdir(parents=True)
+    (target / "process-launch-intent.json").write_text(json.dumps({
+        "task_id": "stale-task", "generation": 1, "kind": "TRAINING",
+    }), encoding="utf-8")
+
+    executor = _build_for_recovery_test(state_dir, [])
+
+    assert FakeRecoveryCoordinator.instances, "recovery coordinator was not constructed"
+    assert executor is not None
+    assert executor.enabled is False
+    assert executor.effective_capabilities() == ()
+    assert "unsafe or unreadable" in executor.last_error()
+    assert executor.status().last_error == executor.last_error()
+
+
+def test_safe_recovery_evidence_keeps_capabilities_and_no_evidence_is_unchanged(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(node_agent, "NodeRecoveryCoordinator", FakeRecoveryCoordinator)
+    FakeRecoveryCoordinator.instances = []
+    FakeRecoveryCoordinator.error = ""
+    state_dir = tmp_path / "state-safe"
+    _write_persisted_identity(state_dir)
+
+    executor = _build_for_recovery_test(state_dir, ["cleaning"])
+    assert FakeRecoveryCoordinator.instances
+    assert executor is not None
+    assert executor.enabled is True
+    assert executor.effective_capabilities() == ("cleaning",)
+    assert executor.last_error() == ""
+
+    # Evidence adjudicated successfully but no capability requested: keep the
+    # historical "no executor" heartbeat shape instead of a disabled loop.
+    FakeRecoveryCoordinator.instances = []
+    empty_state = tmp_path / "state-safe-empty"
+    _write_persisted_identity(empty_state)
+    assert _build_for_recovery_test(empty_state, []) is None
+    assert FakeRecoveryCoordinator.instances
+    assert FakeRecoveryCoordinator.instances[0].prepare_calls >= 1
+
+    # Without recovery evidence the entrypoint must not construct a recovery
+    # coordinator or change the existing no-capability behavior.
+    FakeRecoveryCoordinator.instances = []
+    clean_state = tmp_path / "state-clean"
+    assert _build_for_recovery_test(clean_state, []) is None
+    assert FakeRecoveryCoordinator.instances == []
+    assert node_agent._persistent_recovery_evidence(clean_state) is False
+
+
+def test_dual_slot_intent_evidence_requires_non_empty_records(tmp_path):
+    state_dir = tmp_path / "intent-state"
+    state_dir.mkdir()
+    (state_dir / "dual-slot-intents.json").write_text("[]", encoding="utf-8")
+    assert node_agent._persistent_recovery_evidence(state_dir) is False
+    (state_dir / "dual-slot-intents.json").write_text(
+        json.dumps([{"task_id": "intent-task", "generation": 1}]),
+        encoding="utf-8",
+    )
+    assert node_agent._persistent_recovery_evidence(state_dir) is True
+

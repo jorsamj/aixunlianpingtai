@@ -2555,6 +2555,24 @@ class AgentExecutionService:
                 "SELECT node_id,state,generation,lease_expires_at FROM task_node_assignments "
                 "WHERE task_id=? ORDER BY generation DESC LIMIT 1", (str(task_id),)
             ).fetchone()
+            # Read-only projection of the original execution-slot contract this
+            # execution was started under. It comes from the same durable source
+            # as the start response (`_persisted_execution_slots`); operators
+            # must be able to distinguish "legally single-slot, no Hold" from
+            # "dual-slot Hold is missing/lost".
+            execution_slots = self._persisted_execution_slots(
+                database, str(task_id), int(task.attempt),
+            )
+            if execution_slots == 0:
+                # Pre-marker historical execution or a task that has not
+                # started yet. A Hold belonging to the *current* execution
+                # attempt is positive evidence of a dual-slot start; otherwise
+                # the only safe legacy interpretation is single-slot. "Unknown"
+                # is never projected as 0 slots.
+                if hold is not None and int(hold["execution_attempt"]) == int(task.attempt):
+                    execution_slots = 2
+                else:
+                    execution_slots = 1
         origin = None
         if hold is not None:
             origin = str(hold["node_id"])
@@ -2595,6 +2613,10 @@ class AgentExecutionService:
             "stage": str(task.stage or ""),
             "resource_wait_reason": task.resource_wait_reason,
             "execution_attempt": int(task.attempt),
+            # Original slot contract (1 or 2) for the current execution
+            # attempt; see the projection comment above. Read-only metadata,
+            # no lease/token material is exposed.
+            "execution_slots": int(execution_slots),
             "lease_valid": _lease_valid(task.lease_expires_at),
             "process_identity_sha256": identity_sha,
             "assignment_state": str(assignment["state"]) if assignment is not None else None,

@@ -88,6 +88,7 @@ class NodeAgentExecutorLoop:
         slot_runner_factory: Callable[[str, Callable[[Any], None]], object] | None = None,
         slot_controller: object | None = None,
         slot_intent_path: object | None = None,
+        recovery_error: str = "",
     ) -> None:
         self.client = client
         self.deployment_runner = deployment_runner
@@ -106,6 +107,10 @@ class NodeAgentExecutorLoop:
         self._last_error = ""
         self._last_outcome = ""
         self._completed_tasks = 0
+        # A node-level recovery verdict that blocks this Agent from safely
+        # owning any new remote execution. It is not cleared by later runner
+        # status: the durable recovery evidence is still unresolved.
+        self._recovery_error = str(recovery_error or "").strip()
         self.max_slots = 2 if max_slots == 2 and slot_runner_factory and slot_controller else 1
         self._slot_factory = slot_runner_factory
         self._slot_controller = slot_controller
@@ -115,10 +120,14 @@ class NodeAgentExecutorLoop:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.capabilities)
+        return bool(self.capabilities) and not self._recovery_error
 
     def effective_capabilities(self) -> tuple[str, ...]:
         """Capabilities safe to advertise in the current local runtime state."""
+        if self._recovery_error:
+            # Fail closed: unsafe persisted recovery evidence means this Agent
+            # must not accept any new remote work, even for unrelated kinds.
+            return ()
         kind_by_capability = {
             capability: kind
             for kind, capability in _CAPABILITY_BY_TASK_KIND.items()
@@ -163,7 +172,11 @@ class NodeAgentExecutorLoop:
             enabled=self.enabled,
             running=bool(self._thread and self._thread.is_alive()),
             active_tasks=tuple(sorted(active)),
-            last_error=self._last_error or self._runner_recovery_error(),
+            last_error=(
+                self._recovery_error
+                or self._last_error
+                or self._runner_recovery_error()
+            ),
             completed_tasks=self._completed_tasks,
             last_outcome=self._last_outcome,
         )

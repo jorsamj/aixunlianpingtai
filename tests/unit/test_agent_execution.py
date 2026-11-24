@@ -1131,3 +1131,59 @@ def test_execution_status_keeps_sql_null_fields_as_null(tmp_path):
     assert status["proof_type"] is None
     assert status["proof_sha256"] is None
     assert status["assignment_lease_expires_at"] is None
+
+
+def test_execution_status_projects_original_execution_slots(tmp_path):
+    """Operators must be able to tell single-slot (no Hold by design) from a
+    dual-slot Hold that went missing. The projection uses the same durable
+    original contract as the start response.
+    """
+    # Single-slot node: start records execution_slots=1 and no Hold exists.
+    repository, artifacts = runtime(tmp_path / "single")
+    create_task(repository, artifacts)
+    artifacts.atomic_write_json("train-agent", "request.json", {
+        "target": "remote", "epochs": 30,
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    claimed = service.claim_assignment("gpu-agent", token)
+    assert claimed is not None
+    # Before the durable start contract exists the safe legacy default is 1.
+    pre_start = service.execution_status("gpu-agent", token, "train-agent")
+    assert pre_start["execution_slots"] == 1
+    assert pre_start["hold_state"] is None
+    started = start(service, "train-agent", "gpu-agent", token, claimed)
+    assert started["execution"]["execution_slots"] == 1
+    status = service.execution_status("gpu-agent", token, "train-agent")
+    assert status["execution_slots"] == 1
+    assert status["hold_state"] is None
+    assert status["proof_type"] is None
+    assert status["proof_sha256"] is None
+
+    # Dual-slot node: start records execution_slots=2 and creates the Hold.
+    repository, artifacts = runtime(tmp_path / "dual")
+    _dual_nodes, dual_token = _dual_slot_node(repository)
+    _remote_training_task(repository, artifacts, "dual-one")
+    dual = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    dual_claimed = dual.claim_assignment("dual-agent", dual_token)
+    pre_start = dual.execution_status("dual-agent", dual_token, "dual-one")
+    assert pre_start["execution_slots"] == 1  # no Hold and no persisted contract yet
+    dual_started = start(dual, "dual-one", "dual-agent", dual_token, dual_claimed)
+    assert dual_started["execution"]["execution_slots"] == 2
+    status = dual.execution_status("dual-agent", dual_token, "dual-one")
+    assert status["execution_slots"] == 2
+    assert status["hold_state"] == "HELD"
+    # A live execution is not a completed stop proof.
+    assert status["proof_type"] is None
+    assert status["proof_sha256"] is None
+

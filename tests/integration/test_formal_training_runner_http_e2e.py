@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import uvicorn
@@ -15,10 +19,19 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from platform_core.agent_execution import AgentExecutionService, agent_executor_router
-from platform_core.node_agent_executor_runtime import NodeExecutorClient, RemoteExecutionFenced
+from platform_core.node_agent_executor_runtime import (
+    NodeExecutorClient,
+    NodeExecutorHTTPError,
+    RemoteExecutionFenced,
+)
 from platform_core.node_agent_training_runtime import AgentTrainingRuntimeError
 from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+from platform_core.task_runtime.process_control import (
+    ProcessController,
+    ProcessIdentity,
+    ProcessIdentityMismatchError,
+)
 
 
 def _unit_module():
@@ -887,3 +900,573 @@ def test_formal_training_runner_central_cancel(tmp_path):
         assert hold is not None and hold["state"] == "RELEASED"
     finally:
         _stop_formal(stack)
+
+
+def _wait_until(predicate, *, timeout, message, interval=0.02):
+    deadline = time.monotonic() + float(timeout)
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    raise AssertionError(message)
+
+
+def _slot_identity_from_workdir(stack, task_id):
+    """Read the durable worker identity the runner wrote before it spawned."""
+    attempt = int(stack["repository"].get(task_id).attempt)
+    return stack["workdirs"][task_id].read_process_identity(
+        SimpleNamespace(task_id=str(task_id), generation=attempt)
+    )
+
+
+def _process_alive(identity):
+    try:
+        ProcessController().inspect(ProcessIdentity(
+            pid=int(identity["pid"]),
+            create_time=float(identity["create_time"]),
+            command_hash=str(identity["command_hash"]),
+        ))
+    except (ProcessLookupError, ProcessIdentityMismatchError):
+        return False
+    return True
+
+
+def _expected_stop_proof_sha256(
+    *, node_id, task_id, assignment_generation, execution_attempt,
+    gpu_uuid, process_identity,
+):
+    """Recompute the central stop-proof digest from the original identity."""
+    proof = {
+        "proof_type": "PROCESS_STOP_VERIFIED",
+        "node_id": str(node_id),
+        "task_id": str(task_id),
+        "assignment_generation": int(assignment_generation),
+        "execution_attempt": int(execution_attempt),
+        "gpu_uuid": str(gpu_uuid),
+        "process_identity": {
+            "pid": int(process_identity["pid"]),
+            "create_time": float(process_identity["create_time"]),
+            "command_hash": str(process_identity["command_hash"]),
+        },
+        "stop_verified": True,
+        "no_process_launched": False,
+        "no_launch_evidence": {},
+    }
+    return hashlib.sha256(json.dumps(
+        proof, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _start_formal_dual_slot(tmp_path, specs):
+    """Real central HTTP + real dual-slot loop + real formal train_worker.
+
+    ``specs`` items are ``(task_id, gpu_uuid, worker_sleep_seconds)``. Only the
+    first two tasks are pre-assigned; the remaining ones stay QUEUED so a test
+    can prove admission ordering (a released GPU slot becomes assignable).
+    """
+    from platform_core.node_agent_executor_loop import NodeAgentExecutorLoop
+
+    fixtures = _unit_module()
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    app = FastAPI()
+    app.include_router(agent_executor_router(
+        lambda: repository, lambda: artifacts, execution_payload_resolver=_payload_resolver,
+        result_upload_preparer=_result_preparer,
+        result_upload_confirmer=_result_confirmer,
+        training_model_upload_preparer=_model_preparer,
+        training_model_upload_confirmer=_model_confirmer,
+    ))
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert server.started
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "formal-runner", "display_name": "formal-runner",
+        "connection_mode": "agent", "allowed_capabilities": ["training", "execution-slots:2"],
+    })
+    nodes.heartbeat("formal-runner", token, {
+        "hostname": "formal-runner",
+        "reported_capabilities": ["training", "execution-slots:2"],
+        "resources": {
+            "cpu": {"logical_cores": 4}, "memory": {"available_bytes": 16 * 1024**3},
+            "disk": {"free_bytes": 10 * 1024**3},
+            "gpu": {"gpus": [
+                {"id": "cuda:0", "index": 0, "uuid": "GPU-A", "memory_free_bytes": 8 * 1024**3,
+                 "memory_total_bytes": 8 * 1024**3},
+                {"id": "cuda:1", "index": 1, "uuid": "GPU-B", "memory_free_bytes": 8 * 1024**3,
+                 "memory_total_bytes": 8 * 1024**3},
+            ]},
+        },
+    })
+    prepared = {}
+    for task_id, gpu, sleep_seconds in specs:
+        lease, downloads = fixtures.training_lease(tmp_path / task_id)
+        payload = dict(lease.payload)
+        payload.setdefault("remote_execution", {
+            "version": 1, "task_kind": "TRAINING", "transport": "object-storage-v1"})
+        payload["resource_requirements"] = {"gpu_count": 1, "gpu_uuids": [gpu],
+                                            "min_gpu_memory_bytes": 1}
+        artifacts.atomic_write_json(task_id, "request.json", payload)
+        repository.create(TaskRecord.new(
+            task_id=task_id, project_id="project-formal", kind=TaskKind.TRAINING,
+            payload_ref="request.json", resource_key=f"training:{task_id}",
+        ), artifacts=artifacts)
+        prepared[task_id] = {"downloads": downloads, "sleep_seconds": float(sleep_seconds)}
+    service = AgentExecutionService(repository, artifacts)
+    for _ in range(min(2, len(specs))):
+        assert service.allocator.assign_next() is not None
+    client = NodeExecutorClient(f"http://127.0.0.1:{port}", "formal-runner", token)
+    started = {}
+    workdirs = {}
+
+    def factory(kind, on_started, task_id=None):
+        transfer = fixtures.FakeTransferSession(prepared[task_id]["downloads"])
+        runner, runtime_root, task_workdirs = fixtures.build_runner(
+            tmp_path / task_id / "loop", client, transfer,
+            sleep_seconds=prepared[task_id]["sleep_seconds"],
+        )
+        runner._require_stop_proof = True
+
+        def on_identity(identity):
+            started[task_id] = identity
+            on_started(identity)
+
+        runner._on_process_started = on_identity
+        prepared[task_id]["runtime_root"] = runtime_root
+        workdirs[task_id] = task_workdirs
+        return runner
+
+    loop = NodeAgentExecutorLoop(
+        client, object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=factory, slot_controller=ProcessController(),
+        poll_interval=0.02,
+    )
+    loop.start()
+    stack = {
+        "fixtures": fixtures, "repository": repository, "artifacts": artifacts,
+        "service": service, "client": client, "loop": loop, "started": started,
+        "workdirs": workdirs, "prepared": prepared, "server": server,
+        "thread": thread, "port": port, "token": token, "specs": specs,
+    }
+    _wait_until(
+        lambda: {"a", "b"} <= set(started),
+        timeout=20, message="dual-slot formal runners did not start",
+    )
+    return stack
+
+
+def _stop_formal_dual(stack):
+    stack["loop"].stop(timeout=15)
+    stack["loop"]._slots.wait(15)
+    stack["server"].should_exit = True
+    stack["thread"].join(timeout=10)
+
+
+def _run_dual_slot_worker_death_scenario(tmp_path, killer):
+    """External worker death of slot A must fail only slot A.
+
+    A: FAILED + Hold RELEASED with a real PROCESS_STOP_VERIFIED proof bound to
+    the original identity/assignment/GPU/attempt; attempt unchanged; GPU not
+    reusable before the release; B keeps running (and succeeds); the third task
+    only becomes admissible after A's Hold is released.
+    """
+    stack = _start_formal_dual_slot(tmp_path, [
+        ("a", "GPU-A", 30.0), ("b", "GPU-B", 15.0), ("c", "GPU-A", 3.0),
+    ])
+    try:
+        _wait_until(
+            lambda: {"a", "b"} <= set(stack["started"]),
+            timeout=20, message="A/B never entered RUNNING",
+        )
+        # Central truth before the kill: both slots RUNNING, both Holds HELD.
+        for task_id in ("a", "b"):
+            status = stack["client"].execution_status(task_id)
+            assert status["status"] == "RUNNING"
+            assert status["hold_state"] == "HELD"
+            assert status["execution_attempt"] == 1
+            assert status["execution_slots"] == 2
+            assert status["proof_type"] is None
+            assert status["proof_sha256"] is None
+        identity_a = _slot_identity_from_workdir(stack, "a")
+        assert identity_a is not None, "local worker identity was not persisted"
+        assert int(identity_a["pid"]) == int(stack["started"]["a"].pid)
+        assert float(identity_a["create_time"]) == float(stack["started"]["a"].create_time)
+        assert str(identity_a["command_hash"]) == str(stack["started"]["a"].command_hash)
+        with stack["repository"]._connect() as database:
+            hold_a = database.execute(
+                "SELECT assignment_generation,execution_attempt,gpu_uuid "
+                "FROM execution_resource_holds WHERE task_id='a'"
+            ).fetchone()
+        assert hold_a is not None
+        assert int(hold_a["execution_attempt"]) == 1
+        assert str(hold_a["gpu_uuid"]) == "GPU-A"
+        # While A holds GPU-A the third task must not be admitted and no other
+        # task may reuse that GPU.
+        assert stack["service"].allocator.assign_next() is None
+        with stack["repository"]._connect() as database:
+            live_gpu_a = [
+                str(row["task_id"]) for row in database.execute(
+                    "SELECT task_id FROM execution_resource_holds "
+                    "WHERE gpu_uuid='GPU-A' AND state<>'RELEASED'"
+                )
+            ]
+        assert live_gpu_a == ["a"]
+        assert stack["repository"].get("c").status.value == "QUEUED"
+
+        # Real external termination of A's worker process (not a simulated stop).
+        killer(int(identity_a["pid"]))
+
+        def a_failed_and_released():
+            stack["loop"]._reap_dual_slots()
+            try:
+                status = stack["client"].execution_status("a")
+            except NodeExecutorHTTPError:
+                return False
+            return status["status"] == "FAILED" and status["hold_state"] == "RELEASED"
+
+        _wait_until(a_failed_and_released, timeout=25,
+                    message="externally killed A did not reach FAILED with a released Hold")
+        status_a = stack["client"].execution_status("a")
+        assert status_a["status"] == "FAILED"
+        assert status_a["hold_state"] == "RELEASED"
+        assert status_a["proof_type"] == "PROCESS_STOP_VERIFIED"
+        assert status_a["proof_sha256"]
+        assert status_a["execution_attempt"] == 1
+        assert status_a["execution_slots"] == 2
+        expected_digest = _expected_stop_proof_sha256(
+            node_id="formal-runner", task_id="a",
+            assignment_generation=int(hold_a["assignment_generation"]),
+            execution_attempt=1, gpu_uuid="GPU-A", process_identity=identity_a,
+        )
+        assert status_a["proof_sha256"] == expected_digest
+        with stack["repository"]._connect() as database:
+            attempt_row = database.execute(
+                "SELECT attempt,status FROM tasks WHERE task_id='a'"
+            ).fetchone()
+            released_hold = database.execute(
+                "SELECT state,proof_type,proof_sha256 FROM execution_resource_holds "
+                "WHERE task_id='a'"
+            ).fetchone()
+            live_gpu_a = [
+                str(row["task_id"]) for row in database.execute(
+                    "SELECT task_id FROM execution_resource_holds "
+                    "WHERE gpu_uuid='GPU-A' AND state<>'RELEASED'"
+                )
+            ]
+        assert int(attempt_row["attempt"]) == 1
+        assert str(attempt_row["status"]) == "FAILED"
+        assert str(released_hold["state"]) == "RELEASED"
+        assert str(released_hold["proof_type"]) == "PROCESS_STOP_VERIFIED"
+        assert str(released_hold["proof_sha256"]) == expected_digest
+        # GPU-A was never reused before A's Hold release.
+        assert live_gpu_a == []
+        # A's slot capacity is only freed after the verified release.
+        _wait_until(
+            lambda: (stack["loop"]._reap_dual_slots() or True)
+            and all(slot.task_id != "a" for slot in stack["loop"]._slots.active()),
+            timeout=20, message="A slot capacity was not released after the proof",
+        )
+        # B was running throughout and is unaffected by A's death.
+        assert stack["repository"].get("b").status.value == "RUNNING"
+        assert stack["repository"].get("c").status.value == "QUEUED"
+        # The third task becomes admissible only after A released GPU-A.
+        assigned_c = stack["service"].allocator.assign_next()
+        assert assigned_c is not None and assigned_c["task_id"] == "c"
+        assert assigned_c["resolved_execution_config"]["selected_gpu"]["uuid"] == "GPU-A"
+        _wait_until(
+            lambda: "c" in stack["started"],
+            timeout=20, message="the third task was never started after release",
+        )
+        status_c = stack["client"].execution_status("c")
+        assert status_c["status"] == "RUNNING"
+        assert status_c["hold_state"] == "HELD"
+        assert status_c["hold_gpu_uuid"] == "GPU-A"
+        status_b = stack["client"].execution_status("b")
+        assert status_b["status"] == "RUNNING"
+        assert status_b["hold_state"] == "HELD"
+        # B eventually completes normally (its own proof/release path).
+        _wait_until(
+            lambda: (stack["loop"]._reap_dual_slots() or True)
+            and stack["client"].execution_status("b")["status"] == "SUCCEEDED"
+            and stack["client"].execution_status("b")["hold_state"] == "RELEASED",
+            timeout=40, message="B did not succeed after A's isolated failure",
+        )
+    finally:
+        _stop_formal_dual(stack)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires os.kill(worker_pid, SIGKILL)")
+def test_posix_worker_sigkill_fails_only_its_dual_slot(tmp_path):
+    _run_dual_slot_worker_death_scenario(
+        tmp_path, lambda pid: os.kill(int(pid), signal.SIGKILL),
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows TerminateProcess")
+def test_windows_worker_termination_fails_only_its_dual_slot(tmp_path):
+    # Windows has no SIGKILL. os.kill() with a non-console signal maps to
+    # TerminateProcess, the equivalent unconditional external process death;
+    # this keeps the same dual-slot isolation assertions runnable on Windows.
+    _run_dual_slot_worker_death_scenario(
+        tmp_path, lambda pid: os.kill(int(pid), signal.SIGTERM),
+    )
+
+
+def test_expired_lease_fencing_isolates_slot_and_recovery_releases(tmp_path):
+    """A stale/expired A lease token must never mutate central truth.
+
+    The Hold stays HELD until the legitimate central recover_execution call;
+    sibling B heartbeats/status are unaffected; the stale token cannot publish
+    a stop proof or finish for the task or its sibling; recovery proves the
+    original identity digest.
+    """
+    stack = _start_formal_dual_slot(tmp_path, [("a", "GPU-A", 30.0), ("b", "GPU-B", 10.0)])
+    try:
+        _wait_until(
+            lambda: {"a", "b"} <= set(stack["started"]),
+            timeout=20, message="A/B never entered RUNNING",
+        )
+        identity_a = _slot_identity_from_workdir(stack, "a")
+        assert identity_a is not None
+        with stack["repository"]._connect() as database:
+            lease_a_row = database.execute(
+                "SELECT lease_token,attempt FROM tasks WHERE task_id='a'"
+            ).fetchone()
+            lease_b_row = database.execute(
+                "SELECT lease_token,attempt FROM tasks WHERE task_id='b'"
+            ).fetchone()
+            hold_a = database.execute(
+                "SELECT assignment_generation,execution_attempt,gpu_uuid "
+                "FROM execution_resource_holds WHERE task_id='a'"
+            ).fetchone()
+        lease_a = SimpleNamespace(
+            task_id="a", lease_token=str(lease_a_row["lease_token"]),
+            generation=int(lease_a_row["attempt"]),
+        )
+        lease_b = SimpleNamespace(
+            task_id="b", lease_token=str(lease_b_row["lease_token"]),
+            generation=int(lease_b_row["attempt"]),
+        )
+        assignment_generation = int(hold_a["assignment_generation"])
+        # Isolated central fencing: only A's execution lease expires in SQLite.
+        with stack["repository"]._connect() as database:
+            database.execute(
+                "UPDATE tasks SET lease_expires_at='2000-01-01T00:00:00+00:00' "
+                "WHERE task_id='a'"
+            )
+            database.commit()
+
+        # Old token: heartbeat, finish, and stop proof are all fenced.
+        with pytest.raises(NodeExecutorHTTPError) as heartbeat_error:
+            stack["client"].heartbeat(lease_a)
+        assert heartbeat_error.value.status_code == 409
+        assert heartbeat_error.value.code == "EXECUTION_FENCED"
+        with pytest.raises(NodeExecutorHTTPError) as finish_error:
+            stack["client"].finish(lease_a, "FAILED", error="stale fenced finish")
+        assert finish_error.value.status_code == 409
+        assert finish_error.value.code == "EXECUTION_FENCED"
+        with pytest.raises(NodeExecutorHTTPError) as proof_error:
+            stack["client"].record_stop_proof(
+                lease_a,
+                assignment_generation=assignment_generation,
+                gpu_uuid="GPU-A",
+                process_identity=identity_a,
+                stop_verified=True,
+            )
+        assert proof_error.value.status_code == 409
+        assert proof_error.value.code == "EXECUTION_FENCED"
+
+        # The Hold was not prematurely released and no stale terminal truth or
+        # proof was published.
+        status_a = stack["client"].execution_status("a")
+        assert status_a["status"] == "RUNNING"
+        assert status_a["hold_state"] == "HELD"
+        assert status_a["hold_execution_attempt"] == 1
+        assert status_a["proof_type"] is None
+        assert status_a["proof_sha256"] is None
+        # Fencing made the local runner terminate its own worker; central truth
+        # still needs the verified recovery below.
+        _wait_until(lambda: not _process_alive(identity_a), timeout=20,
+                    message="fenced A worker was not stopped")
+        status_a = stack["client"].execution_status("a")
+        assert status_a["status"] == "RUNNING"
+        assert status_a["hold_state"] == "HELD"
+        assert status_a["proof_type"] is None
+
+        # Sibling B keeps its valid heartbeat and untouched state.
+        heartbeat_b = stack["client"].heartbeat(lease_b)
+        assert heartbeat_b["task"]["status"] == "RUNNING"
+        status_b = stack["client"].execution_status("b")
+        assert status_b["status"] == "RUNNING"
+        assert status_b["hold_state"] == "HELD"
+        # A's stale token cannot finish its sibling or a newer attempt.
+        with pytest.raises(NodeExecutorHTTPError) as sibling_error:
+            stack["client"].finish(
+                SimpleNamespace(task_id="b", lease_token=lease_a.lease_token,
+                                generation=lease_a.generation),
+                "FAILED", error="stale token against sibling",
+            )
+        assert sibling_error.value.status_code == 409
+        assert sibling_error.value.code == "EXECUTION_FENCED"
+        status_b = stack["client"].execution_status("b")
+        assert status_b["status"] == "RUNNING"
+        assert status_b["hold_state"] == "HELD"
+        # No A Hold record other than the original attempt exists.
+        with stack["repository"]._connect() as database:
+            hold_attempts = [
+                int(row["execution_attempt"]) for row in database.execute(
+                    "SELECT execution_attempt FROM execution_resource_holds "
+                    "WHERE task_id='a'"
+                )
+            ]
+        assert hold_attempts == [1]
+
+        # Legitimate path: authenticated recovery with the original identity.
+        recovered = stack["client"].recover_execution(
+            "a",
+            assignment_generation=assignment_generation,
+            execution_generation=1,
+            gpu_uuid="GPU-A",
+            process_identity=identity_a,
+        )
+        assert recovered["state"] == "RELEASED"
+        expected_digest = _expected_stop_proof_sha256(
+            node_id="formal-runner", task_id="a",
+            assignment_generation=assignment_generation,
+            execution_attempt=1, gpu_uuid="GPU-A", process_identity=identity_a,
+        )
+        assert recovered["proof_sha256"] == expected_digest
+        status_a = stack["client"].execution_status("a")
+        assert status_a["status"] == "FAILED"
+        assert status_a["hold_state"] == "RELEASED"
+        assert status_a["proof_type"] == "PROCESS_STOP_VERIFIED"
+        assert status_a["proof_sha256"] == expected_digest
+        assert status_a["execution_attempt"] == 1
+        assert status_a["execution_slots"] == 2
+        with stack["repository"]._connect() as database:
+            row = database.execute(
+                "SELECT state,proof_type,proof_sha256 FROM execution_resource_holds "
+                "WHERE task_id='a'"
+            ).fetchone()
+        assert str(row["state"]) == "RELEASED"
+        assert str(row["proof_type"]) == "PROCESS_STOP_VERIFIED"
+        assert str(row["proof_sha256"]) == expected_digest
+        # B was unaffected by A's fencing/recovery and finishes normally.
+        _wait_until(
+            lambda: (stack["loop"]._reap_dual_slots() or True)
+            and stack["client"].execution_status("b")["status"] == "SUCCEEDED"
+            and stack["client"].execution_status("b")["hold_state"] == "RELEASED",
+            timeout=40, message="B did not succeed after A's fencing/recovery",
+        )
+    finally:
+        _stop_formal_dual(stack)
+
+
+def test_advanced_attempt_fencing_rejects_stale_token(tmp_path):
+    """Central generation advance (SQL) fences the old token without touching
+    the still-HELD Hold or the sibling slot.
+    """
+    stack = _start_formal_dual_slot(tmp_path, [("a", "GPU-A", 30.0), ("b", "GPU-B", 30.0)])
+    try:
+        _wait_until(
+            lambda: {"a", "b"} <= set(stack["started"]),
+            timeout=20, message="A/B never entered RUNNING",
+        )
+        identity_a = _slot_identity_from_workdir(stack, "a")
+        assert identity_a is not None
+        with stack["repository"]._connect() as database:
+            lease_a_row = database.execute(
+                "SELECT lease_token,attempt FROM tasks WHERE task_id='a'"
+            ).fetchone()
+            lease_b_row = database.execute(
+                "SELECT lease_token,attempt FROM tasks WHERE task_id='b'"
+            ).fetchone()
+            hold_a = database.execute(
+                "SELECT assignment_generation,execution_attempt,gpu_uuid "
+                "FROM execution_resource_holds WHERE task_id='a'"
+            ).fetchone()
+        original_attempt = int(lease_a_row["attempt"])
+        assert original_attempt == 1
+        lease_a = SimpleNamespace(
+            task_id="a", lease_token=str(lease_a_row["lease_token"]),
+            generation=original_attempt,
+        )
+        lease_b = SimpleNamespace(
+            task_id="b", lease_token=str(lease_b_row["lease_token"]),
+            generation=int(lease_b_row["attempt"]),
+        )
+        # Simulate central fencing: the execution generation advanced while the
+        # old Hold row (attempt 1) is still unreleased.
+        with stack["repository"]._connect() as database:
+            database.execute(
+                "UPDATE tasks SET attempt=attempt+1 WHERE task_id='a'"
+            )
+            database.commit()
+        with pytest.raises(NodeExecutorHTTPError) as heartbeat_error:
+            stack["client"].heartbeat(lease_a)
+        assert heartbeat_error.value.status_code == 409
+        assert heartbeat_error.value.code == "EXECUTION_FENCED"
+        with pytest.raises(NodeExecutorHTTPError) as finish_error:
+            stack["client"].finish(lease_a, "FAILED", error="stale attempt finish")
+        assert finish_error.value.status_code == 409
+        assert finish_error.value.code == "EXECUTION_FENCED"
+        with pytest.raises(NodeExecutorHTTPError) as proof_error:
+            stack["client"].record_stop_proof(
+                lease_a,
+                assignment_generation=int(hold_a["assignment_generation"]),
+                gpu_uuid="GPU-A",
+                process_identity=identity_a,
+                stop_verified=True,
+            )
+        assert proof_error.value.status_code == 409
+        assert proof_error.value.code == "EXECUTION_FENCED"
+        # The original Hold is still HELD and the newer attempt has no Hold or
+        # stop proof of its own.
+        status_a = stack["client"].execution_status("a")
+        assert status_a["execution_attempt"] == original_attempt + 1
+        assert status_a["hold_state"] == "HELD"
+        assert status_a["hold_execution_attempt"] == original_attempt
+        assert status_a["proof_type"] is None
+        assert status_a["proof_sha256"] is None
+        assert status_a["status"] == "RUNNING"
+        with stack["repository"]._connect() as database:
+            holds = database.execute(
+                "SELECT task_id,state,execution_attempt,proof_type "
+                "FROM execution_resource_holds WHERE task_id='a'"
+            ).fetchall()
+        assert len(holds) == 1
+        assert str(holds[0]["state"]) == "HELD"
+        assert int(holds[0]["execution_attempt"]) == original_attempt
+        assert holds[0]["proof_type"] is None
+        # Sibling B is unaffected by A's advanced attempt.
+        assert stack["client"].heartbeat(lease_b)["task"]["status"] == "RUNNING"
+        status_b = stack["client"].execution_status("b")
+        assert status_b["status"] == "RUNNING"
+        assert status_b["hold_state"] == "HELD"
+        with pytest.raises(NodeExecutorHTTPError) as sibling_error:
+            stack["client"].finish(
+                SimpleNamespace(task_id="b", lease_token=lease_a.lease_token,
+                                generation=lease_a.generation),
+                "FAILED", error="stale attempt token against sibling",
+            )
+        assert sibling_error.value.code == "EXECUTION_FENCED"
+        status_b = stack["client"].execution_status("b")
+        assert status_b["status"] == "RUNNING"
+        assert status_b["hold_state"] == "HELD"
+        # No Hold was created for the advanced (fenced) attempt.
+        with stack["repository"]._connect() as database:
+            advanced_holds = database.execute(
+                "SELECT COUNT(*) FROM execution_resource_holds "
+                "WHERE task_id='a' AND execution_attempt<>?",
+                (original_attempt,),
+            ).fetchone()[0]
+        assert int(advanced_holds) == 0
+    finally:
+        _stop_formal_dual(stack)

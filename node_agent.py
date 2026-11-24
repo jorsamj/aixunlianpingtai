@@ -78,6 +78,44 @@ def _combined_error(heartbeat_error: str, executor: NodeAgentExecutorLoop | None
     return " | ".join(value for value in values if value)[:4000]
 
 
+_RECOVERY_EVIDENCE_GLOBS = (
+    "executions/*/*/process-identity.json",
+    "executions/*/*/process-launch-intent.json",
+)
+
+
+def _persistent_recovery_evidence(state_dir: Path) -> bool:
+    """True when this state directory may still own an unverified child process.
+
+    A persisted process identity, an unpaired launch intent, or a non-empty
+    dual-slot intent list all prove that a previous Agent process may have died
+    while its worker and central Hold were still live. An empty dual-slot intent
+    list is a clean shutdown and is *not* recovery evidence.
+    """
+    root = Path(state_dir)
+    for path in (
+        root / "dual-slot-intents.json",
+        root / "executor" / "dual-slot-intents.json",
+    ):
+        if path.is_symlink() or path.is_file():
+            try:
+                records = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # Unreadable intent state is itself unsafe: recovery must run
+                # and fail closed instead of silently advertising capability.
+                return True
+            if not isinstance(records, list) or records:
+                return True
+    executor_root = root / "executor"
+    try:
+        for pattern in _RECOVERY_EVIDENCE_GLOBS:
+            if next(executor_root.glob(pattern), None) is not None:
+                return True
+    except OSError:
+        return True
+    return False
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="畅联云服务节点 Agent")
     parser.add_argument("--control-plane", default=os.environ.get("MC_CONTROL_PLANE_URL", ""))
@@ -180,7 +218,8 @@ def _build_executor(
     reported_capabilities: list[str],
     args,
 ) -> NodeAgentExecutorLoop | None:
-    if not reported_capabilities:
+    recovery_evidence = _persistent_recovery_evidence(state_dir)
+    if not reported_capabilities and not recovery_evidence:
         return None
     _claim_node_executor_state(state_dir)
     client = NodeExecutorClient(control_plane, node_id, token)
@@ -205,15 +244,25 @@ def _build_executor(
     )
     runners = {}
     recovery = None
+    recovery_error = ""
     slot_factory = None
     slot_controller = None
-    if {"conversion", "conversion.rknn", "training"} & set(reported_capabilities):
+    runs_process_kinds = bool(
+        {"conversion", "conversion.rknn", "training"} & set(reported_capabilities)
+    )
+    if recovery_evidence or runs_process_kinds:
+        # Node-level recovery is required even when the requested capabilities
+        # no longer include training/conversion: a capability change (or a
+        # restart with different --capabilities) must not abandon a persisted
+        # worker/launch intent owned by a previous Agent process. One coordinator
+        # decides; runners only consume its verdict.
         from platform_core.task_runtime.process_control import ProcessController
 
         recovery = NodeRecoveryCoordinator(
             workdirs, ProcessController(), client=client,
             intent_path=state_dir / "dual-slot-intents.json",
         )
+        recovery_error = recovery.prepare()
     if "training" in reported_capabilities:
         # Keep the training dependency surface lazy: a deployment-only node
         # must not require Pillow/YAML/training packages merely to heartbeat.
@@ -281,7 +330,7 @@ def _build_executor(
             install_dir=str(args.mother_model_install_dir or ""),
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
         )
-    return NodeAgentExecutorLoop(
+    loop = NodeAgentExecutorLoop(
         client,
         deployment_runner,
         capabilities=reported_capabilities,
@@ -291,7 +340,14 @@ def _build_executor(
         slot_runner_factory=slot_factory,
         slot_controller=slot_controller,
         slot_intent_path=(state_dir / "dual-slot-intents.json") if slot_factory is not None else None,
+        recovery_error=recovery_error,
     )
+    if not reported_capabilities and not recovery_error:
+        # Recovery evidence (if any) was adjudicated without a blocking error.
+        # With no requested remote capability keep the historical "no executor"
+        # heartbeat shape instead of advertising a disabled registered loop.
+        return None
+    return loop
 
 
 def main(argv=None) -> int:
