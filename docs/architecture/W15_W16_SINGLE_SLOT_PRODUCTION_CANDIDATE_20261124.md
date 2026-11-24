@@ -13,7 +13,7 @@
 ## 1. 候选身份（N6.3）
 
 ```text
-CANDIDATE_CODE_SHA_40HEX = "ddf0fd651d56b316b37554c7c60ab5ad45f071db"
+CANDIDATE_CODE_SHA_40HEX = "b6e635cae2973edd493555a801bc0522109e2c31"
 ```
 
 > 该行为唯一候选代码 SHA：已由主代理在本轮全部代码提交完成后替换为远端实际 40 位 SHA
@@ -23,12 +23,12 @@ CANDIDATE_CODE_SHA_40HEX = "ddf0fd651d56b316b37554c7c60ab5ad45f071db"
 | 项 | 值 |
 |---|---|
 | 唯一开发分支 | `feature/external-algorithm-publishing` |
-| **代码候选 SHA（40 位）** | `ddf0fd651d56b316b37554c7c60ab5ad45f071db`（已推送远端） |
+| **代码候选 SHA（40 位）** | `b6e635cae2973edd493555a801bc0522109e2c31`（已推送远端） |
 | VERSION.txt | `42.24.592`（本轮未修改） |
 | 运行时 build_id | 部署时必须等于代码候选 SHA：`MC_BUILD_REVISION=<候选SHA>`，或 Git worktree HEAD 恰为该 SHA；证据以 `/api/health` 的 build/version 与本地 `resolve_build_identity` 一致为准 |
 | 前端构建身份 | `static/vue-catalog/offline-assets.json` 与 `static/vue-app/offline-assets.json` 的 receipt（`sha`=候选SHA、`build_origin=github-actions`、逐资源 sha256/bytes）；`UI_BUILD_VERSION=42.25.0-dev` 仅为内部 UI 构建元数据，**不是产品版本**。本机开发 checkout 的 receipt 为 `local-check`/`sha=null` 且缺 app receipt，属未验证；生产候选必须以候选 SHA 的 CI artifact receipt 为准 |
 | Python 依赖身份 | `requirements*.txt` 内容摘要 + 已安装关键发行版版本指纹（见 §2.1）；`tools/offline_bundle.py` 可额外产出 wheelhouse 逐文件 sha256 清单（见 §2.2） |
-| CI 事实 | **CI_PENDING**：代码候选 `ddf0fd651d56b316b37554c7c60ab5ad45f071db` 已推送（2026-11-24 19:0x +08）；按 CI-first 规则仅查询一次，未完成前不称验收通过，接受状态以该 SHA 的实际 Actions 结果为准 |
+| CI 事实 | **CI_PENDING**：代码候选 `b6e635cae2973edd493555a801bc0522109e2c31` 已推送（2026-11-24 19:0x +08）；按 CI-first 规则仅查询一次，未完成前不称验收通过，接受状态以该 SHA 的实际 Actions 结果为准 |
 | 双槽开关 | 生产默认关闭（见 §3.2） |
 | 生产升级工具 | `tools/production_upgrade.py`（预检 + 受控备份 + 数据库/应用/协调回滚） |
 | 离线交付工具 | `tools/offline_bundle.py`（build/verify：代码 SHA + VERSION + build_id + 前端资源摘要 + 依赖指纹 + 逐文件 sha256 清单 + 离线安装脚本）。**`OFFLINE_INSTALL_NOT_VERIFIED` 保持**：真实断网主机安装与真实 systemd 尚未执行 |
@@ -249,7 +249,7 @@ python tools/production_upgrade.py --rollback --backup-dir /data/backups/pre   #
 
 ## 6. 明确未验证（不得宣称通过）
 
-- `CANDIDATE_CI_PENDING`：§1 代码候选 SHA 已回填为 `ddf0fd651d56b316b37554c7c60ab5ad45f071db`；
+- `CANDIDATE_CI_PENDING`：§1 代码候选 SHA 已回填为 `b6e635cae2973edd493555a801bc0522109e2c31`；
   该 SHA 的 GitHub Actions 在本轮仅按 CI-first 规则查询一次，**查询当时仍有工作流未完成**，
   因此**不得**称生产候选验收通过；接受状态以该 SHA 的实际 Actions 最终结果为准。
   同一轮已用准确 SHA 的实际失败日志定位并修复了两处真实缺陷（见 §6.1），修复后的 SHA 仍需
