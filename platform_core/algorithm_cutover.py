@@ -44,6 +44,7 @@ from .algorithm_repository import (
     CONTRACT_VERSION,
     PROVIDER_POSTGRESQL,
     PROVIDER_SQLITE,
+    admission_switch_lock,
     admission_transition_path,
     load_admission_record,
 )

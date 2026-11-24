@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from platform_core.algorithm_repository import open_algorithm_repository
 from platform_core.task_runtime import ArtifactStore, TaskKind
 
 from .reports import build_version_report
@@ -71,6 +72,7 @@ class TrainingReportReader:
         get_project,
         project_dir,
         algorithms_file,
+        algorithm_repository=None,
         data_dir,
         read_json,
         enrich_job_runtime,
@@ -84,6 +86,12 @@ class TrainingReportReader:
         self._get_project = get_project
         self._project_dir = project_dir
         self._algorithms_file = algorithms_file
+        # Provider-neutral accessor: one authoritative algorithm source.
+        self._algorithm_repository = algorithm_repository or (
+            lambda project_id: open_algorithm_repository(
+                self._algorithms_file(project_id)
+            )
+        )
         self._data_dir = data_dir
         self._read_json = read_json
         self._enrich_job_runtime = enrich_job_runtime
@@ -107,13 +115,13 @@ class TrainingReportReader:
         if reader_view:
             if history_offset is not None and history_offset<0 or not 1<=history_limit<=200:raise HTTPException(422,detail='报告历史分页范围无效')
             from platform_core.training_reader_views import report_display
-            from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
             self._get_project(project_id)
             try:ArtifactStore._validate_task_id(job_id)
             except ValueError as error:raise HTTPException(422,detail='报告任务ID无效') from error
             task=self._task_repository().get(job_id)
             if task and (task.project_id!=project_id or task.kind is not TaskKind.TRAINING):raise HTTPException(404,detail='训练任务不存在')
-            store=AlgorithmSqlStore(self._algorithms_file(project_id))
+            store=self._algorithm_repository(project_id)
             if algorithm_id or version_id:
                 if not (algorithm_id and version_id):raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: 须同时指定算法与版本')
                 version=store.asset_version(algorithm_id,version_id,detail=False)
@@ -135,9 +143,10 @@ class TrainingReportReader:
             report_algorithms = self._list_algorithms_internal(project_id, algorithm_id=algorithm_id)
             indexed_refs = []
         else:
-            from platform_core.algorithm_sql_store import AlgorithmSqlStore
-            catalog = AlgorithmSqlStore(self._algorithms_file(project_id))
-            indexed_refs = catalog.training_version_refs(job_id) if catalog.db_path.is_file() else []
+            catalog = self._algorithm_repository(project_id)
+            # "not initialized yet" is a state; a provider failure must never
+            # be reported as an empty catalog.
+            indexed_refs = catalog.training_version_refs(job_id) if catalog.is_initialized() else []
             report_algorithms = (
                 [row for owner_id in sorted({owner_id for owner_id, _ in indexed_refs})
                  for row in self._list_algorithms_internal(project_id, algorithm_id=owner_id)]

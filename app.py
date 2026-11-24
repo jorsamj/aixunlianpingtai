@@ -23625,6 +23625,7 @@ _TRAINING_REPORT_READER = TrainingReportReader(
     get_project=lambda project_id: get_project(project_id),
     project_dir=lambda project_id: project_dir(project_id),
     algorithms_file=lambda project_id: algorithms_file(project_id),
+   algorithm_repository=lambda project_id: algorithm_repository(project_id),
     data_dir=lambda: DATA_DIR,
     read_json=lambda path, default: read_json(path, default),
     enrich_job_runtime=lambda project_id, job, **kwargs: enrich_job_runtime(project_id, job, **kwargs),

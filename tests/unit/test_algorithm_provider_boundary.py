@@ -161,9 +161,13 @@ def test_malformed_admission_record_is_refused(tmp_path):
 
 def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
     repository = PostgresAlgorithmRepository("postgresql://example.invalid/db", "project")
-    assert set(repository.capabilities()) == set(CORE_OPERATIONS)
+    # Declared capabilities must equal what the class really serves: core plus
+    # the presentation projections that are ported, never the whole set.
+    assert set(repository.capabilities()) == set(CORE_OPERATIONS) | set(
+        PRESENTATION_OPERATIONS
+    ) - set(UNSUPPORTED_OPERATIONS)
     assert repository.unsupported_operations() == tuple(UNSUPPORTED_OPERATIONS)
-    assert set(UNSUPPORTED_OPERATIONS) == set(PRESENTATION_OPERATIONS)
+    assert set(UNSUPPORTED_OPERATIONS) <= set(PRESENTATION_OPERATIONS)
     for name in UNSUPPORTED_OPERATIONS:
         with pytest.raises(AlgorithmProviderUnsupported) as error:
             getattr(repository, name)()

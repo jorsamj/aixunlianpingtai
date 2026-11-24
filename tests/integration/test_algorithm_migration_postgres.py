@@ -599,3 +599,87 @@ def test_rollback_requires_matching_evidence_and_restores_sqlite(pg):
     reopened = open_algorithm_repository(store.json_path, provider="sqlite")
     assert reopened.provider_name == "sqlite"
     assert reopened.read_all() == store.read_all()
+
+
+def _presentation_repository(server, store, project_id: str):
+    """Admitted PostgreSQL provider for a presentation-contract test."""
+    snapshot = export_source_snapshot(store.db_path, project_id)
+    _import(server, snapshot)
+    with _connect(server) as connection:
+        admitted = admit_cutover(
+            connection, db_path=store.db_path, project_id=project_id,
+            expected_generation=0, operator="presentation", reason="isolated",
+            acknowledge_unported=False,
+        )
+    assert admitted["admitted"] is True, admitted
+    return PostgresAlgorithmRepository(
+        server.get_uri(), project_id, admission=admitted["admission"],
+    )
+
+
+def test_all_seven_presentations_answer_real_business_queries(pg):
+    """Every presentation projection is actually callable and keeps its contract."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8pres-"))
+    store = _store(root, "pres")
+    repo = _presentation_repository(pg, store, "pres")
+
+    rows, total, revision = repo.bootstrap_summary()
+    assert total == 1 and rows[0]["id"] == "algo-a"
+    assert rows[0]["versions_deferred"] is True and rows[0]["versions"] == []
+    assert isinstance(revision, int)
+
+    assert repo.training_display_refs([]) == {}
+    assert repo.training_display_refs(["no-such-task"]) == {}
+
+    basic = repo.asset_algorithm_basic("algo-a")
+    assert basic["name"] == "烟火 A" and basic["editable"] is True
+    assert basic["deferred_fields"] == []
+
+    page = repo.asset_versions("algo-a", page=1, page_size=10)
+    assert page["total"] == 2 and page["versions_deferred"] is False
+    assert page["algorithm"]["id"] == "algo-a"
+    assert repo.asset_versions("algo-a", page=2, page_size=10)["items"] == []
+
+    one = repo.asset_version("algo-a", "v-a1", detail=True)
+    assert one["id"] == "v-a1" and one["model_file"]["file_name"] == "a1.pt"
+    assert one["metrics"]["map50"] == 0.5
+    assert one["has_model"] is True
+
+    listing = repo.asset_algorithms(page=1, page_size=10)
+    assert listing["total"] == 1 and len(listing["items"]) == 1
+    assert listing["items"][0]["current_version"]["id"] == "v-a2"
+    assert set(listing["filter_options"]) == {
+        "algorithm_type", "industry", "source_type", "status",
+    }
+    assert repo.asset_algorithms(query="nothing-matches")["total"] == 0
+
+    library = repo.library_algorithms(
+        statistics=[], master_digest="", categories=(), page=1, page_size=10,
+    )
+    assert library["total"] == 1
+    card = library["items"][0]
+    assert card["id"] == "algo-a" and card["trainable"] is True
+    # Current version v-a2 carries evaluation.metrics.map50 = 0.61 -> 61.0
+    assert card["map50_percent"] == pytest.approx(61.0)
+    assert card["current_version"]["id"] == "v-a2"
+    assert library["items"][0]["versions_deferred"] is True
+    assert repo.library_algorithms(
+        statistics=[], page=2, page_size=10,
+    )["items"] == []
+
+    # Project isolation: identical ids in another project never leak across.
+    other_repo = _presentation_repository(pg, _store(root, "other"), "other")
+    assert repo.asset_versions("algo-a")["total"] == 2
+    assert other_repo.asset_versions("algo-a")["total"] == 2
+    assert repo.asset_algorithms()["total"] == 1
+    assert other_repo.asset_algorithms()["total"] == 1
+
+    # A stale admission still refuses writes.
+    stale = dict(repo._admission)
+    stale["writer_generation"] = int(stale["writer_generation"]) + 5
+    stale_repo = PostgresAlgorithmRepository(
+        pg.get_uri(), "pres", admission=stale,
+    )
+    with pytest.raises(AlgorithmAdmissionRequired):
+        stale_repo.create_algorithm({"id": "leak", "name": "leak"})

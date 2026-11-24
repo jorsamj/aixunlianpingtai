@@ -232,6 +232,14 @@ class SqliteAlgorithmRepository:
             _refuse_stale_sqlite(Path(self.json_path), self.record_path)
             yield
 
+    def is_initialized(self) -> bool:
+        """True when this project's algorithm catalog already exists on disk.
+
+        Provider-neutral replacement for the SQLite-only ``db_path.is_file()``
+        probe: "not initialized yet" is a state, not an error, and a provider
+        failure must never be reported as an empty catalog.
+        """
+        return Path(self.store.db_path).is_file()
     def _guard_write(self) -> None:
         """Compatibility helper: check authority under the switch mutex."""
         with self._write_guard():

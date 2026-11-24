@@ -53,8 +53,8 @@ _LEGACY_REMOTE_VERSION_FIELDS = frozenset({
     "external_publish_status",
 })
 _PORTED_PRESENTATION = (
-    "bootstrap_summary", "training_display_refs",
-    "asset_algorithm_basic", "asset_versions", "asset_version", "asset_algorithms",
+    "bootstrap_summary", "training_display_refs", "asset_algorithm_basic",
+    "asset_versions", "asset_version", "asset_algorithms", "library_algorithms",
 )
 _UNSUPPORTED = tuple(
     name for name in PRESENTATION_OPERATIONS if name not in _PORTED_PRESENTATION
@@ -90,7 +90,7 @@ def _payload_json_sql(prefix: str, keys, column: str = "v.payload") -> str:
     for key in keys:
         path = ",".join(segments + [key])
         parts.append("'" + key + "'")
-        parts.append(column + "#>>'{" + path + "}'")
+        parts.append(column + "#>'{" + path + "}'")
     return "jsonb_build_object(" + ",".join(parts) + ")::text"
 
 
@@ -194,7 +194,9 @@ class PostgresAlgorithmRepository:
 
     # -- provider metadata -------------------------------------------------
     def capabilities(self) -> frozenset[str]:
-        return frozenset(CORE_OPERATIONS)
+        # The declared capability set must match what this class really serves:
+        # core operations plus the presentation projections that are ported.
+        return frozenset(CORE_OPERATIONS) | frozenset(_PORTED_PRESENTATION)
 
     def unsupported_operations(self) -> tuple[str, ...]:
         return _UNSUPPORTED
@@ -215,6 +217,26 @@ class PostgresAlgorithmRepository:
         try:
             with connection.cursor() as cursor:
                 yield cursor
+        finally:
+            connection.close()
+
+    @contextmanager
+    def _read_snapshot(self):
+        """One consistent read-only snapshot across several statements.
+
+        Multi-statement projections (list + total + filter options + revision)
+        must not observe different commits, otherwise a page can disagree with
+        its own total. REPEATABLE READ READ ONLY gives exactly that without
+        touching the write-transaction contract.
+        """
+        psycopg = _psycopg()
+        connection = self._connect()
+        try:
+            connection.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+            connection.read_only = True
+            with connection.cursor() as cursor:
+                yield cursor
+            connection.rollback()
         finally:
             connection.close()
 
@@ -337,7 +359,7 @@ class PostgresAlgorithmRepository:
     def bootstrap_summary(self, limit: int = 500):
         """Bounded boot rows from PostgreSQL, never version/report hydration."""
         bound = max(1, min(500, int(limit)))
-        with self._read() as cursor:
+        with self._read_snapshot() as cursor:
             cursor.execute(
                 "SELECT count(*) AS total FROM w5_algorithm.algorithm WHERE project_id=%s",
                 (self.project_id,),
@@ -356,6 +378,8 @@ class PostgresAlgorithmRepository:
 
     def training_display_refs(self, task_ids) -> dict[str, dict[str, Any]]:
         """Bounded task -> version reference index; no version payload hydration."""
+        from .model_asset_views import text
+
         ids = list(dict.fromkeys(str(value) for value in task_ids))
         if not ids:
             return {}
@@ -375,9 +399,11 @@ class PostgresAlgorithmRepository:
                 (self.project_id, *ids),
             )
             rows = cursor.fetchall()
+        # Same contract as the SQLite projection: text() keeps numbers as
+        # numbers and only sanitizes strings, so reference_count stays an int.
         return {
             row["task_id"]: {
-                key: "" if row[key] is None else str(row[key])
+                key: text(row[key])
                 for key in (
                     "task_id", "reference_count", "algorithm_id",
                     "algorithm_name", "version_id",
@@ -426,7 +452,7 @@ class PostgresAlgorithmRepository:
         from .model_asset_views import text, version_record
 
         self._asset_page(page, page_size)
-        with self._read() as cursor:
+        with self._read_snapshot() as cursor:
             cursor.execute(
                 "SELECT id,name,current_version_id,algorithm_type,source_type,provider_type "
                 "FROM w5_algorithm.algorithm WHERE project_id=%s AND id=%s",
@@ -457,7 +483,7 @@ class PostgresAlgorithmRepository:
         return {
             "project_id": self.project_id,
             "algorithm": {key: text(value) for key, value in dict(row).items()},
-            "items": [version_record(item, self._json_object) for item in rows],
+            "items": [version_record(item, _json_object) for item in rows],
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -485,7 +511,7 @@ class PostgresAlgorithmRepository:
                 "",
                 status_code=404,
             )
-        return version_record(row, self._json_object)
+        return version_record(row, _json_object)
 
     def asset_algorithms(
         self, *, page=1, page_size=20, query="", algorithm_type="", industry="",
@@ -522,7 +548,7 @@ class PostgresAlgorithmRepository:
                 condition.append(expressions[key] + "=%s")
                 args.append(value)
         where = " AND ".join(condition)
-        with self._read() as cursor:
+        with self._read_snapshot() as cursor:
             cursor.execute(
                 "SELECT count(*) AS total FROM w5_algorithm.algorithm a WHERE " + where, args,
             )
@@ -573,6 +599,187 @@ class PostgresAlgorithmRepository:
             "filter_options": options,
         }
 
+    def library_algorithms(
+        self, *, statistics, master_digest="", categories=(), page=1, page_size=10,
+        query="", algorithm_type="", industry="", source_type="",
+        training_state="", category_ids="", sort="comprehensive",
+    ):
+        """Algorithm-library cards with the SQLite sort/filter/统计 semantics.
+
+        Everything that decides the page (filters, trainability, mAP50 metric,
+        ordering, LIMIT/OFFSET) runs in PostgreSQL; only the already-bounded
+        page rows are post-processed, exactly like the SQLite owner does.
+        """
+        import json as _json
+
+        self._asset_page(page, page_size)
+        sorts = {
+            "comprehensive": "(training_status IS NOT NULL) DESC,sort_index,created_at DESC,id",
+            "updated": "COALESCE(NULLIF(updated_at,''),created_at) DESC NULLS LAST,sort_index,id",
+            "training": "successful_training_count DESC,sort_index,id",
+            "metric": "map50_percent DESC NULLS LAST,sort_index,id",
+            "created": "created_at DESC NULLS LAST,id",
+            "name": "name ASC NULLS FIRST,id",
+            "name_desc": "name DESC NULLS LAST,id",
+        }
+        if (
+            sort not in sorts
+            or training_state not in ("", "all", "trainable", "training", "trained", "untrained", "blocked")
+            or source_type not in ("", "all", "internal", "external")
+        ):
+            raise PlatformError("ASSET_INVALID_QUERY", "算法库查询参数非法", "", status_code=422)
+
+        external = "upper(COALESCE(a.source_type,''))='EXTERNAL'"
+        ready = (
+            "CASE WHEN NOT (" + external + ") THEN a.algorithm_type IN "
+            "('yolo_ultralytics','paddle_detection') "
+            "WHEN upper(COALESCE(a.provider_type,''))<>'CHANG_LIAN' THEN 1 "
+            "WHEN a.external_active = FALSE THEN 0 "
+            "WHEN NOT EXISTS (SELECT 1 FROM w5_algorithm.algorithm_external_analysis x "
+            "WHERE x.project_id=a.project_id AND x.algorithm_id=a.id "
+            "AND x.analysis_type='1' AND (x.payload->>'status')='1') THEN 0 "
+            "WHEN %s='' OR COALESCE(a.payload->>'external_master_data_digest','')<>%s THEN 0 "
+            "ELSE 1 END"
+        )
+        # mAP50: the first *numeric* candidate in priority order. JSONB typeof
+        # keeps NULL, strings, booleans, objects and arrays out, so one broken
+        # historical record can never fail the whole library query.
+        metric_candidates = (
+            "(VALUES (1, v.payload->'map50'), (2, v.payload->'mAP50'),"
+            "(3, v.payload->'metrics'->'map50'), (4, v.payload->'metrics'->'mAP50'),"
+            "(5, v.payload->'metrics'->'metrics/mAP50(B)'),"
+            "(6, v.payload->'evaluation'->'metrics'->'map50'),"
+            "(7, v.payload->'evaluation'->'metrics'->'mAP50'),"
+            "(8, v.payload->'evaluation'->'metrics'->'metrics/mAP50(B)'))"
+        )
+        cards = (
+            "WITH stats AS (SELECT * FROM jsonb_to_recordset(%s::jsonb) AS s("
+            'algorithm_id text, "count" integer, active text, filter_active integer)),'
+            "cards AS (SELECT a.id,a.name,a.remark,a.industry,a.algorithm_type,a.source_type,"
+            "a.provider_type,a.external_category_id,a.external_product_id,a.external_active,"
+            "a.current_version_id,a.created_at,a.updated_at,a.sort_index,"
+            "a.payload->>'source_name' AS source_name,"
+            "a.payload->>'external_deletion_status' AS external_status,"
+            + ready +
+            " AS trainable,COALESCE(stats.\"count\",0) AS successful_training_count,"
+            "stats.active AS training_status,COALESCE(stats.filter_active,0) AS filter_active,"
+            "(SELECT count(*) FROM w5_algorithm.algorithm_version n "
+            "WHERE n.project_id=a.project_id AND n.algorithm_id=a.id) AS version_count,"
+            "v.id AS current_record_id,v.version_name AS current_version_name,"
+            "m.map50_percent "
+            "FROM w5_algorithm.algorithm a "
+            "LEFT JOIN w5_algorithm.algorithm_version v ON v.project_id=a.project_id "
+            "AND v.algorithm_id=a.id AND v.id=a.current_version_id "
+            "LEFT JOIN stats ON stats.algorithm_id=a.id "
+            "LEFT JOIN LATERAL (SELECT CASE WHEN c.value>1 THEN c.value ELSE c.value*100 END"
+            " AS map50_percent FROM (SELECT (candidate #>> '{}')::numeric AS value "
+            "FROM " + metric_candidates + " AS raw(ord,candidate) "
+            "WHERE jsonb_typeof(candidate)='number' ORDER BY ord LIMIT 1) c) m ON TRUE "
+            "WHERE a.project_id=%s)"
+        )
+        args: list[Any] = [
+            _json.dumps(statistics, ensure_ascii=False), str(master_digest),
+            str(master_digest), self.project_id,
+        ]
+        conditions = ["1=1"]
+        if query.strip():
+            conditions.append(
+                "(position(lower(%s) in lower(name))>0 OR position(lower(%s) in lower(id))>0)"
+            )
+            args.extend([query.strip(), query.strip()])
+        for field, value in (("algorithm_type", algorithm_type), ("industry", industry)):
+            if value:
+                conditions.append(field + "=%s")
+                args.append(value)
+        if source_type in ("internal", "external"):
+            operator = "=" if source_type == "external" else "<>"
+            conditions.append("upper(COALESCE(source_type,''))" + operator + "'EXTERNAL'")
+        selected = [value for value in category_ids.split(",") if value]
+        if len(selected) > 100:
+            raise PlatformError("ASSET_INVALID_QUERY", "品目选择超限", "", status_code=422)
+        if selected:
+            parents = {
+                str(item.get("id", item.get("categoryId", ""))): str(item.get("parentId") or "")
+                for item in categories
+            }
+            matched = set(selected)
+            for category in parents:
+                ancestor = category
+                seen: set[str] = set()
+                while ancestor and ancestor not in seen:
+                    if ancestor in selected:
+                        matched.add(category)
+                        break
+                    seen.add(ancestor)
+                    ancestor = parents.get(ancestor, "")
+            conditions.append("external_category_id = ANY(%s)")
+            args.append(sorted(matched))
+        conditions.extend({
+            "trainable": ["trainable=1"],
+            "blocked": ["trainable=0"],
+            "training": ["filter_active=1"],
+            "trained": ["version_count>0"],
+            "untrained": ["version_count=0"],
+        }.get(training_state, []))
+        where = " WHERE " + " AND ".join(conditions)
+        with self._read_snapshot() as cursor:
+            cursor.execute(cards + "SELECT count(*) AS total FROM cards" + where, args)
+            total = int(cursor.fetchone()["total"])
+            cursor.execute(
+                cards + "SELECT * FROM cards" + where
+                + " ORDER BY " + sorts[sort] + " LIMIT %s OFFSET %s",
+                args + [page_size, (page - 1) * page_size],
+            )
+            rows = cursor.fetchall()
+            options: dict[str, list] = {}
+            for key in ("industry", "algorithm_type"):
+                cursor.execute(
+                    "SELECT DISTINCT " + key + " AS value FROM w5_algorithm.algorithm "
+                    "WHERE project_id=%s AND " + key + "<>'' ORDER BY 1",
+                    (self.project_id,),
+                )
+                options[key] = [item["value"] for item in cursor.fetchall()]
+            revision = self._revision(cursor)
+        items = []
+        for row in rows:
+            item = dict(row)
+            item.pop("sort_index")
+            item.pop("filter_active")
+            item["trainable"] = bool(item["trainable"])
+            item["external_active"] = (
+                None if item["external_active"] is None else bool(item["external_active"])
+            )
+            item["trainability_message"] = "" if item["trainable"] else (
+                "外部主数据下架、视觉分析缺失或同步版本过期，请到平台对接核对"
+                if str(item["source_type"]).upper() == "EXTERNAL"
+                else "当前算法类型暂不支持直接训练"
+            )
+            item["current_version"] = (
+                {"id": item["current_version_id"],
+                 "version_name": item.pop("current_version_name")}
+                if item.pop("current_record_id") is not None else None
+            )
+            item.pop("current_version_name", None)
+            item["versions_deferred"] = True
+            items.append(item)
+        return {
+            "project_id": self.project_id,
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "algorithm_revision": revision,
+            "filter_options": options,
+            "categories": [
+                {
+                    "id": str(item.get("categoryId", item.get("id", ""))),
+                    "name": str(item.get("categoryName", item.get("name", ""))),
+                    "parentId": str(item.get("parentId") or ""),
+                }
+                for item in categories
+            ],
+        }
+
     @staticmethod
     def _asset_page(page: int, page_size: int) -> None:
         if (
@@ -581,6 +788,13 @@ class PostgresAlgorithmRepository:
         ):
             raise PlatformError("ASSET_INVALID_QUERY", "分页范围非法", "", status_code=422)
 
+    def is_initialized(self) -> bool:
+        """A PostgreSQL provider is initialized once its schema is ready.
+
+        Unlike SQLite there is no per-project file to look for; schema/admission
+        failures raise instead of being reported as "no catalog".
+        """
+        return True
     def revision(self) -> int:
         with self._read() as cursor:
             return self._revision(cursor)
@@ -1681,12 +1895,9 @@ class PostgresAlgorithmRepository:
         }
 
     # -- presentation projections that are still not ported -----------------
-    # bootstrap_summary, training_display_refs and the asset_* reads are
-    # implemented above; only the ones listed here remain a declared capability
-    # gap. Keep this block free of those names: a later placeholder silently
-    # overrides the real implementation.
-    def library_algorithms(self, **_kwargs):
-        self._check_operation("library_algorithms")
+    # Every presentation projection is implemented above; this class declares no
+    # remaining gap. If a projection is ever removed, add it back here *and*
+    # remove the real definition, never shadow it with a second stub.
 
 
 
