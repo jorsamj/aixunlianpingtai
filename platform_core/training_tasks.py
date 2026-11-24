@@ -1065,26 +1065,36 @@ def _record_cancel_wait_diagnostic(
     The job is still owned by the running Worker, so this only records why the
     cancellation cannot be certified yet. Task status, lease and GPU stay
     untouched until a verified stop proof is available.
+
+    The Worker writes progress to the same record, so this diagnostic must use
+    the one shared lock contract (``<job.json>.lock``) and re-read inside it;
+    an unlocked read-modify-write silently dropped a just-published progress
+    tick (or was itself dropped by the Worker).
     """
-    job = _json(job_file, {})
-    if (
-        not isinstance(job, dict)
-        or str(job.get("task_id") or job.get("id") or "") != str(context.task.task_id)
-    ):
-        return
-    now_iso = datetime.now(timezone.utc).isoformat()
-    job.update(
-        cancel_requested_at=str(job.get("cancel_requested_at") or now_iso),
-        cancel_stop_state=(
-            "unverified" if stage == CANCEL_STAGE_UNVERIFIED else "waiting_verified_stop"
-        ),
-        cancel_stop_attempts=int(attempts),
-        cancel_wait_seconds=round(max(0.0, float(elapsed_seconds)), 3),
-        cancel_stop_last_error=str(last_error or "")[:500],
-        cancel_diagnostic_at=now_iso,
-        cancel_stage=str(stage),
-    )
-    atomic_write_json(job_file, job)
+    from filelock import FileLock
+
+    from .training_timing import JOB_RECORD_LOCK_SUFFIX, _read_job_record
+
+    with FileLock(str(job_file) + JOB_RECORD_LOCK_SUFFIX, timeout=10, thread_local=False):
+        job = _read_job_record(Path(job_file))
+        if (
+            not isinstance(job, dict)
+            or str(job.get("task_id") or job.get("id") or "") != str(context.task.task_id)
+        ):
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        job.update(
+            cancel_requested_at=str(job.get("cancel_requested_at") or now_iso),
+            cancel_stop_state=(
+                "unverified" if stage == CANCEL_STAGE_UNVERIFIED else "waiting_verified_stop"
+            ),
+            cancel_stop_attempts=int(attempts),
+            cancel_wait_seconds=round(max(0.0, float(elapsed_seconds)), 3),
+            cancel_stop_last_error=str(last_error or "")[:500],
+            cancel_diagnostic_at=now_iso,
+            cancel_stage=str(stage),
+        )
+        atomic_write_json(job_file, job)
 
 
 
