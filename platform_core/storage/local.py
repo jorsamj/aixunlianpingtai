@@ -90,6 +90,12 @@ class LocalStorageProvider:
             raise ValueError("unsafe source byte lease lock")
         return FileLock(str(lock_path), timeout=timeout, thread_local=False)
 
+    def _extended_path(self, path: Path) -> Path:
+        text = str(path)
+        if os.name == "nt" and len(text) >= 240 and not text.startswith("\\\\?\\"):
+            return Path("\\\\?\\" + text)
+        return Path(path)
+
     def _path(self, object_key: str, *, allow_empty: bool = False) -> Path:
         raw = str(object_key or "")
         posix = Path(raw)
@@ -126,10 +132,7 @@ class LocalStorageProvider:
         # once the project-local storage root is prepended. Use the extended
         # length form for filesystem operations only; object keys and URLs keep
         # the normal POSIX form.
-        text = str(resolved)
-        if os.name == "nt" and len(text) >= 240 and not text.startswith("\\\\?\\"):
-            return Path("\\\\?\\" + text)
-        return resolved
+        return self._extended_path(resolved)
 
     def health_check(self) -> StorageHealth:
         try:
@@ -144,10 +147,21 @@ class LocalStorageProvider:
                 f"本地存储目录不可访问：{error}", details={"root": str(self.root)}
             )
 
+    def _relative_to_root(self, path: Path) -> Path:
+        """Relative path that is stable across normal and \\?\ forms."""
+        candidate = Path(str(path))
+        root = Path(str(self.root))
+        if str(candidate).startswith("\\\\?\\"):
+            candidate = Path(str(candidate)[4:])
+        if str(root).startswith("\\\\?\\"):
+            root = Path(str(root)[4:])
+        return candidate.relative_to(root)
+
     def _metadata(self, path: Path, *, object_key: str | None = None) -> ObjectMetadata:
+        path = self._extended_path(path)
         stat_result = path.stat()
         return ObjectMetadata(
-            key=object_key if object_key is not None else path.relative_to(self.root).as_posix(),
+            key=object_key if object_key is not None else self._relative_to_root(path).as_posix(),
             size_bytes=stat_result.st_size,
             etag=f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"',
             content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
@@ -168,6 +182,7 @@ class LocalStorageProvider:
         return self._metadata(path, object_key=Path(object_key).as_posix())
 
     def _is_link_like(self, path: Path) -> bool:
+        path = self._extended_path(path)
         try:
             if path.is_symlink():
                 return True
@@ -184,7 +199,7 @@ class LocalStorageProvider:
             return True
 
     def _has_symlink_component(self, path: Path) -> bool:
-        relative = path.relative_to(self.root)
+        relative = self._relative_to_root(path)
         current = self.root
         for part in relative.parts:
             current = current / part
@@ -197,7 +212,7 @@ class LocalStorageProvider:
             (".import-staging", ".material-byte-leases", ".material-reclaim")}
 
     def _is_import_staging_path(self, path: Path) -> bool:
-        relative = path.relative_to(self.root)
+        relative = self._relative_to_root(path)
         return bool(relative.parts) and self._is_import_staging_segment(relative.parts[0])
 
     def iter_objects(
@@ -221,7 +236,7 @@ class LocalStorageProvider:
             if not is_directory:
                 yield self._metadata(path)
                 continue
-            directory = path
+            directory = self._extended_path(path)
             with os.scandir(directory) as scan:
                 descriptors: list[tuple[str, bool, Path]] = []
                 for entry in scan:
@@ -231,7 +246,8 @@ class LocalStorageProvider:
                     if entry.is_file(follow_symlinks=False):
                         descriptors.append((entry.name, False, path))
                     elif recursive and entry.is_dir(follow_symlinks=False):
-                        if directory == self.root and self._is_import_staging_segment(entry.name):
+                        if (not self._relative_to_root(directory).parts
+                                and self._is_import_staging_segment(entry.name)):
                             continue
                         descriptors.append((f"{entry.name}/", True, path))
             for _key, is_child_directory, path in reversed(
@@ -366,20 +382,14 @@ class LocalStorageProvider:
         base = self._path(prefix, allow_empty=True)
         if not base.exists():
             return ObjectPage(())
-        if base.is_file():
-            candidates = [base]
-        else:
-            candidates = list(base.rglob("*") if recursive else base.glob("*"))
-        keys = sorted(
-            path.relative_to(self.root).as_posix()
-            for path in candidates if path.is_file()
-        )
+        metadata = {item.key: item for item in self.iter_objects(prefix, recursive=recursive)}
+        keys = sorted(metadata)
         if cursor:
             keys = [key for key in keys if key > str(cursor)]
         bounded = max(1, min(10000, int(limit)))
         visible = keys[:bounded]
         next_cursor = visible[-1] if len(keys) > bounded else None
-        return ObjectPage(tuple(self.stat(key) for key in visible), next_cursor)
+        return ObjectPage(tuple(metadata[key] for key in visible), next_cursor)
 
     def generate_preview_url(self, object_key: str, *, expires_seconds: int = 900) -> str | None:
         del expires_seconds
