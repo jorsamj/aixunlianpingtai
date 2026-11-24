@@ -104,7 +104,7 @@ test('main owns visibility installation before canonical training page registrat
   const index = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
 
-  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';");
+  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-eta-stale';");
   const installAt = main.indexOf('const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({');
   const ownerAt = main.indexOf("navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())");
 
@@ -502,4 +502,64 @@ test('active task uses stable identity and never offers unsafe delete', () => {
   assert.doesNotMatch(queued,/deleteTrain428/);
   const done=trainingTaskPresentationRow({id:'train_12345678',status:'completed'});
   assert.match(done,/deleteTrain428/);
+});
+
+test('stale training ETA is shown as stale and never keeps counting down', () => {
+  const live = trainingTaskPresentationRow({
+    id: 'task-live',
+    status: 'running',
+    task_name: 'live',
+    training_display_progress: {
+      eta_seconds: 61, elapsed_seconds: 30, eta_stale: false,
+    },
+  });
+  assert.match(live, /data-eta-stale="0"/);
+  assert.doesNotMatch(live, /估算滞后/);
+
+  const stale = trainingTaskPresentationRow({
+    id: 'task-stale',
+    status: 'running',
+    task_name: 'stale',
+    training_display_progress: {
+      eta_seconds: 61, elapsed_seconds: 30, eta_stale: true,
+    },
+  });
+  assert.match(stale, /估算滞后/);
+  assert.match(stale, /data-eta-stale="1"/);
+  assert.match(stale, /data-training-clock="eta" data-seconds=""/);
+
+  const unknown = trainingTaskPresentationRow({
+    id: 'task-unknown',
+    status: 'running',
+    task_name: 'unknown',
+    training_display_progress: {
+      eta_seconds: 61, elapsed_seconds: 30, eta_stale: null,
+    },
+  });
+  assert.match(unknown, /data-training-clock="eta" data-seconds=""[^>]*>未知</);
+});
+
+test('ticking training clocks leaves a stale ETA untouched', () => {
+  const eta = {
+    dataset: {seconds: '', etaStale: '1'},
+    textContent: '估算滞后',
+  };
+  const row = {
+    querySelector: selector => (selector === '[data-training-clock="eta"]' ? eta : null),
+  };
+  const changed = tickTrainingClockRows({
+    querySelectorAll: () => [row],
+  }, 1, 1000);
+  assert.equal(changed, 0);
+  assert.equal(eta.textContent, '估算滞后');
+
+  const liveEta = {dataset: {seconds: '61', etaStale: '0'}, textContent: ''};
+  const liveRow = {
+    querySelector: selector => (selector === '[data-training-clock="eta"]' ? liveEta : null),
+  };
+  const liveChanged = tickTrainingClockRows({
+    querySelectorAll: () => [liveRow],
+  }, 1, 1000);
+  assert.equal(liveChanged, 1);
+  assert.equal(liveEta.dataset.seconds, '60');
 });

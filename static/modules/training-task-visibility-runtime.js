@@ -172,6 +172,19 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
   const taskName = [job?.task_name, job?.run_name, job?.auto_version_name].map(v => String(v || '').trim()).find(v => v && v !== '训练任务') || `训练 · ${id.slice(-8) || '待分配'}`;
   const elapsed = progress.elapsedSeconds == null ? '' : Math.max(0, Number(progress.elapsedSeconds) || 0);
   const eta = progress.etaSeconds == null ? '' : Math.max(0, Number(progress.etaSeconds) || 0);
+  // A stale ETA estimate must not keep counting down as if it were live.
+  // undefined keeps compatibility with payloads produced before this field.
+  const etaStaleState = job?.training_display_progress?.eta_stale;
+  const etaStale = etaStaleState === true;
+  const etaUnknown = etaStaleState === null;
+  const etaLive = !etaStale && !etaUnknown;
+  const etaSecondsValue = etaLive ? eta : '';
+  const etaLabel = etaStale
+    ? '估算滞后'
+    : (etaUnknown ? '未知' : formatTrainingDuration(progress.etaSeconds));
+  const etaTitle = etaStale
+    ? '训练进度遥测已停止更新，剩余时间不再按实时值倒数'
+    : (etaUnknown ? '无法证明剩余时间估算是最新的' : '');
   const active = ['starting', 'running', 'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested'].includes(status);
   const checkbox = batchMode ? `<label class="train428-select"><input type="checkbox" data-training-batch-select="${esc(id)}" ${selected ? 'checked' : ''} aria-label="选择训练任务 ${esc(taskName)}"><span></span></label>` : '';
   const timing = job?.training_display_progress || {};
@@ -195,7 +208,7 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
       : 'Checkpoint 已保留')
     : '';
   const stageDetails = [stage.detail, queueRuntimeMeta(job), job?.task_worker_id ? `执行节点 ${job.task_worker_id}` : '', recoveryMeta].filter(Boolean).join(' · ');
-  return `<tr data-job-id="${esc(id)}" data-clock-active="${active ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${checkbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job?.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="entity-status ${statusBucket(job)}">${esc(statusText(status, job))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${(Math.max(0, Math.min(100, percent)) / 100).toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsed}" data-anchor-seconds="${elapsed}" data-anchor-ms="${performance.now()}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${eta}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}</div></td><td><span class="train428-started">${esc(started)}</span></td><td><div class="entity-row-actions train428-actions-cell">${taskActions(job)}</div></td></tr>`;
+  return `<tr data-job-id="${esc(id)}" data-clock-active="${active ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${checkbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job?.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="entity-status ${statusBucket(job)}">${esc(statusText(status, job))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${(Math.max(0, Math.min(100, percent)) / 100).toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsed}" data-anchor-seconds="${elapsed}" data-anchor-ms="${performance.now()}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${etaSecondsValue}" data-eta-stale="${etaStale ? '1' : '0'}"${etaTitle ? ` title="${esc(etaTitle)}"` : ''}>${esc(etaLabel)}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}</div></td><td><span class="train428-started">${esc(started)}</span></td><td><div class="entity-row-actions train428-actions-cell">${taskActions(job)}</div></td></tr>`;
 }
 
 export function tickTrainingClockRows(root, stepSeconds = 1, nowMilliseconds = performance.now()) {

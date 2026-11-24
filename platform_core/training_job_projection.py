@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -64,6 +65,50 @@ def _latest_timestamp(*values: Any) -> str:
     if not candidates:
         return ""
     return max(candidates, key=_timestamp_key)
+
+
+ETA_STALE_SECONDS_ENV = "TRAINING_ETA_STALE_SECONDS"
+DEFAULT_ETA_STALE_SECONDS = 300.0
+
+
+def _eta_stale_seconds() -> float:
+    raw = str(os.environ.get(ETA_STALE_SECONDS_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_ETA_STALE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_ETA_STALE_SECONDS
+    return value if value > 0 else DEFAULT_ETA_STALE_SECONDS
+
+
+def _seconds_since_timestamp(value: Any) -> float | None:
+    """Wall-clock age of the newest display telemetry, or None when unknown."""
+    key = _timestamp_key(value)
+    if key == float("-inf"):
+        return None
+    return max(0.0, time.time() - key)
+
+
+def _eta_freshness(status: str, eta_seconds: float | None, updated_at: Any) -> tuple[bool | None, str, float | None]:
+    """Classify an ETA as live/stale/unknown without changing the raw estimate.
+
+    A stale ETA must not be presented as a live countdown: the Agent may have
+    stopped publishing telemetry while the task is still marked running. When
+    the timestamp is missing the scheduler cannot prove freshness, so it also
+    refuses to label the estimate as live.
+    """
+    age = _seconds_since_timestamp(updated_at)
+    if status in _TERMINAL_STATUSES:
+        return False, "terminal", age
+    if eta_seconds is None:
+        return (False, "paused", age) if status == "PAUSED" else (False, "unavailable", age)
+    if age is None:
+        return None, "unknown", None
+    if age > _eta_stale_seconds():
+        return True, "stale", age
+    return False, "live", age
+
 
 
 def _next_display_revision() -> int:
@@ -185,6 +230,8 @@ def build_training_display_progress(
     ) or bool(training_progress)
     updated_at = _latest_timestamp(runtime.get("updated_at"), telemetry.get("updated_at"))
     timing = timing_view({**job, **telemetry}, runtime)
+    eta_stale, eta_display, telemetry_age_seconds = _eta_freshness(
+        status, eta_seconds, updated_at)
     return {
         "revision": int(revision if revision is not None else _next_display_revision()),
         "updated_at": updated_at or None,
@@ -202,6 +249,9 @@ def build_training_display_progress(
         "current_process_elapsed_seconds": elapsed_seconds,
         "elapsed_seconds": timing["wall_elapsed_seconds"],
         "eta_seconds": eta_seconds,
+        "eta_stale": eta_stale,
+        "eta_display": eta_display,
+        "telemetry_age_seconds": telemetry_age_seconds,
         "throughput": throughput,
         "message": message or None,
         "telemetry_source": "worker_training_telemetry" if telemetry_present else "durable_task",

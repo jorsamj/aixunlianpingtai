@@ -35,7 +35,7 @@ import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtim
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=42.25.613';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=42.25.582';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=42.25.571';
-import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
+import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-eta-stale';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults, trainingConfigurationDefaults} from './modules/training-draft.js?v=42.25.628';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';

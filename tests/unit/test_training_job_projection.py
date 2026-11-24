@@ -195,3 +195,95 @@ def test_live_durable_training_progress_has_one_server_projection_and_no_log_inf
     assert "training_display_progress" in stream
     assert "displayRevision(" in stream
     assert "applyProgressCounters" not in stream
+
+
+def _eta_job(**overrides):
+    job = {
+        "id": "job-eta",
+        "status": "running",
+        "progress_percent": 40,
+        "elapsed_seconds": 60,
+        "eta_seconds": 61,
+        "updated_at": "2026-09-28T12:00:00+00:00",
+    }
+    job.update(overrides)
+    return job
+
+
+def _eta_runtime(**overrides):
+    runtime = {
+        "status": "RUNNING",
+        "persisted_status": "RUNNING",
+        "phase": "training",
+        "progress_percent": 40,
+        "updated_at": "2026-09-28T12:00:00+00:00",
+    }
+    runtime.update(overrides)
+    return runtime
+
+
+def test_display_progress_marks_fresh_eta_as_live():
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat()
+    display = build_training_display_progress(
+        _eta_job(updated_at=fresh), _eta_runtime(updated_at=fresh),
+    )
+    assert display["eta_seconds"] == 61
+    assert display["eta_stale"] is False
+    assert display["eta_display"] == "live"
+    assert display["telemetry_age_seconds"] is not None
+
+
+def test_display_progress_marks_old_telemetry_eta_as_stale_not_live():
+    display = build_training_display_progress(
+        _eta_job(), _eta_runtime(),
+    )
+    assert display["eta_seconds"] == 61, "the raw estimate is preserved"
+    assert display["eta_stale"] is True
+    assert display["eta_display"] == "stale"
+    assert display["telemetry_age_seconds"] is not None
+
+
+def test_display_progress_eta_staleness_threshold_is_configurable(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setenv("TRAINING_ETA_STALE_SECONDS", "1")
+    recent = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    display = build_training_display_progress(
+        _eta_job(updated_at=recent), _eta_runtime(updated_at=recent),
+    )
+    assert display["eta_stale"] is True
+    monkeypatch.setenv("TRAINING_ETA_STALE_SECONDS", "600")
+    display = build_training_display_progress(
+        _eta_job(updated_at=recent), _eta_runtime(updated_at=recent),
+    )
+    assert display["eta_stale"] is False
+
+
+def test_display_progress_unknown_freshness_is_never_labelled_live():
+    job = _eta_job()
+    job.pop("updated_at", None)
+    runtime = _eta_runtime()
+    runtime.pop("updated_at", None)
+    display = build_training_display_progress(job, runtime)
+    assert display["eta_seconds"] == 61
+    assert display["eta_stale"] is None
+    assert display["eta_display"] == "unknown"
+    assert display["telemetry_age_seconds"] is None
+
+
+def test_display_progress_terminal_and_paused_eta_states():
+    terminal = build_training_display_progress(
+        _eta_job(status="succeeded"),
+        _eta_runtime(status="SUCCEEDED"),
+    )
+    assert terminal["eta_seconds"] == 0.0
+    assert terminal["eta_stale"] is False
+    assert terminal["eta_display"] == "terminal"
+
+    paused = build_training_display_progress(
+        _eta_job(status="paused"),
+        _eta_runtime(status="PAUSED"),
+    )
+    assert paused["eta_seconds"] is None
+    assert paused["eta_stale"] is False
+    assert paused["eta_display"] == "paused"
