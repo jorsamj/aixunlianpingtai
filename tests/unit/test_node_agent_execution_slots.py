@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
 from types import SimpleNamespace
@@ -14,8 +15,16 @@ from platform_core.node_agent_execution_slots import (
 from platform_core.task_runtime.process_control import ProcessController, launch_process
 
 
-def lease(task_id, generation=1):
-    return SimpleNamespace(task_id=task_id, generation=generation)
+def lease(task_id, generation=1, *, gpu_uuid=""):
+    config = {"selected_gpu": {"uuid": gpu_uuid}} if gpu_uuid else {}
+    return SimpleNamespace(
+        task_id=task_id,
+        generation=generation,
+        assignment={
+            "generation": int(generation),
+            "resolved_execution_config": config,
+        },
+    )
 
 
 def child_slot_runner(controller, *, clean_on_stop=True):
@@ -61,8 +70,48 @@ def test_mark_started_rejects_central_assignment_identity_mismatch(tmp_path):
     )
     with pytest.raises(SlotNotReleased, match="assignment generation"):
         slots.mark_started(slot, wrong)
+    # A rejected central identity must not pollute the local reservation: the
+    # slot still owns its original lease and has never bound an attempt.
     assert slot.state == "LOCAL_RESERVED"
     assert slot.generation == 5
+    assert slot.assignment_generation == 5
+    assert slot.lease is local_reservation
+    assert slot.execution_attempt == 0
+    records = json.loads((tmp_path / "intents.json").read_text(encoding="utf-8"))
+    assert records == [{
+        "task_id": "task-1", "generation": 5, "gpu_uuid": "GPU-A",
+        "state": "LOCAL_RESERVED", "execution_attempt": 0,
+        "assignment_generation": 5,
+    }]
+
+
+def test_mark_started_rejects_wrong_gpu_or_missing_assignment_without_pollution(tmp_path):
+    slots = BoundedExecutionSlots(1, persist_path=tmp_path / "intents.json")
+    local_reservation = SimpleNamespace(task_id="task-1", generation=5)
+    slot = slots.reserve(local_reservation, gpu_uuid="GPU-A")
+    wrong_gpu = SimpleNamespace(
+        task_id="task-1", generation=2,
+        assignment={"generation": 5, "resolved_execution_config": {
+            "selected_gpu": {"uuid": "GPU-B"}}},
+    )
+    with pytest.raises(SlotNotReleased, match="GPU"):
+        slots.mark_started(slot, wrong_gpu)
+    missing_evidence = SimpleNamespace(task_id="task-1", generation=2)
+    with pytest.raises(SlotNotReleased, match="assignment evidence"):
+        slots.mark_started(slot, missing_evidence)
+    wrong_task = SimpleNamespace(task_id="task-2", generation=2, assignment={
+        "generation": 5,
+        "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}},
+    })
+    with pytest.raises(SlotNotReleased, match="task mismatch"):
+        slots.mark_started(slot, wrong_task)
+
+    assert slot.state == "LOCAL_RESERVED"
+    assert slot.lease is local_reservation
+    assert slot.execution_attempt == 0
+    records = json.loads((tmp_path / "intents.json").read_text(encoding="utf-8"))
+    assert records[0]["execution_attempt"] == 0
+    assert records[0]["state"] == "LOCAL_RESERVED"
 
 
 def test_stop_proof_required_before_capacity_can_be_reused():
@@ -81,10 +130,10 @@ def test_stop_proof_required_before_capacity_can_be_reused():
         return "CANCELLED"
 
     try:
-        a = slots.submit(lease("a"), run, gpu_uuid="GPU-UUID-A", slot_id="slot-a")
+        a = slots.submit(lease("a", gpu_uuid="GPU-UUID-A"), run, gpu_uuid="GPU-UUID-A", slot_id="slot-a")
         with pytest.raises(SlotCapacityError, match="GPU UUID"):
-            slots.submit(lease("dup"), run, gpu_uuid="GPU-UUID-A", slot_id="slot-dup")
-        b = slots.submit(lease("b"), run, gpu_uuid="GPU-UUID-B", slot_id="slot-b")
+            slots.submit(lease("dup", gpu_uuid="GPU-UUID-A"), run, gpu_uuid="GPU-UUID-A", slot_id="slot-dup")
+        b = slots.submit(lease("b", gpu_uuid="GPU-UUID-B"), run, gpu_uuid="GPU-UUID-B", slot_id="slot-b")
         deadline = time.monotonic() + 10
         while not {"a", "b"}.issubset(started) and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -187,9 +236,14 @@ def test_confirm_requires_worker_exit_and_rejects_stale_slot():
 def test_no_launch_slot_can_release_only_with_explicit_central_allowance():
     from types import SimpleNamespace
     slots = BoundedExecutionSlots(1)
-    lease = SimpleNamespace(task_id="no-launch", generation=1)
-    slot = slots.reserve(lease, gpu_uuid="GPU-A")
-    slots.mark_started(slot, lease)
+    reservation = SimpleNamespace(task_id="no-launch", generation=1)
+    execution_lease = SimpleNamespace(
+        task_id="no-launch", generation=2,
+        assignment={"generation": 1, "resolved_execution_config": {
+            "selected_gpu": {"uuid": "GPU-A"}}},
+    )
+    slot = slots.reserve(reservation, gpu_uuid="GPU-A")
+    slots.mark_started(slot, execution_lease)
     slots.start_worker(slot, lambda _slot, _lease: (_ for _ in ()).throw(RuntimeError("preflight")))
     slots.wait(5)
     controller = type("Controller", (), {"terminate_tree": lambda *args, **kwargs: None})()

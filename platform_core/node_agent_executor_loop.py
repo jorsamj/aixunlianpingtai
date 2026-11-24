@@ -496,6 +496,31 @@ class NodeAgentExecutorLoop:
             self._slots.mark_central_unknown(slot, RuntimeError("start lease task mismatch"))
             self._set_error("SLOT_START_IDENTITY_MISMATCH")
             return True
+        # The dual-slot manager may only bind a lease that provably belongs to
+        # the reservation it made: same Assignment generation, same GPU UUID,
+        # and (when the control plane reports it) the two-slot contract. An
+        # explicit single-slot contract under a dual-slot reservation means the
+        # central Hold/stop-proof chain does not exist for this execution.
+        assignment_evidence = lease.assignment if isinstance(lease.assignment, dict) else {}
+        evidence_config = assignment_evidence.get("resolved_execution_config")
+        evidence_selected = (
+            evidence_config.get("selected_gpu") if isinstance(evidence_config, dict) else None
+        )
+        evidence_gpu = (
+            str(evidence_selected.get("uuid") or "")
+            if isinstance(evidence_selected, dict) else ""
+        )
+        central_slots = int(getattr(lease, "execution_slots", 0) or 0)
+        if (central_slots not in (0, 2)
+                or int(assignment_evidence.get("generation") or 0)
+                != int(slot.assignment_generation)
+                or not evidence_gpu
+                or evidence_gpu != gpu_uuid):
+            self._slots.mark_central_unknown(
+                slot, RuntimeError("start lease assignment identity mismatch"),
+            )
+            self._set_error("SLOT_START_IDENTITY_MISMATCH")
+            return True
         try:
             self._slots.mark_started(slot, lease)
         except Exception as error:

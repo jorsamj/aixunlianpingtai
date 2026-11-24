@@ -263,3 +263,293 @@ def test_unverified_launch_intent_fails_closed(tmp_path, monkeypatch):
     workdirs = FakeWorkdirs(unverified=[{"kind": "TRAINING", "task_id": "a"}])
     coordinator = NodeRecoveryCoordinator(workdirs, FakeController())
     assert "launch outcome is unverified" in coordinator.prepare()
+
+
+
+
+def _use_posix_recovery(monkeypatch):
+    """Exercise the POSIX recovery branch without changing global os.name.
+
+    Patching os.name would make pathlib build PosixPath on Windows; only the
+    coordinator module's view of the OS needs to be POSIX for these logic tests.
+    """
+    import platform_core.node_agent_recovery as recovery_module
+
+    class _PosixView:
+        name = "posix"
+
+        def __getattr__(self, item):
+            return getattr(os, item)
+
+    monkeypatch.setattr(recovery_module, "os", _PosixView())
+
+class RecoveringClient:
+    node_id = "node-a"
+
+    def __init__(self, status, *, digest=None, refreshed=None):
+        self.status = dict(status)
+        self.digest = digest
+        self.refreshed = dict(refreshed) if refreshed is not None else None
+        self.recovered = []
+
+    def execution_status(self, task_id):
+        return dict(self.status, task_id=task_id)
+
+    def recover_execution(self, task_id, **kwargs):
+        self.recovered.append((task_id, kwargs))
+        body = {
+            "status": "FAILED",
+            "hold_state": "RELEASED",
+            "proof_type": "PROCESS_STOP_VERIFIED",
+            "proof_sha256": self.digest,
+        }
+        if self.refreshed is not None:
+            body.update(self.refreshed)
+        self.status = {**self.status, **body}
+        return {"task_id": task_id, "state": "RELEASED",
+                "proof_sha256": self.digest}
+
+
+def _local_digest(pid=11, create_time=1.0, command_hash="h"):
+    return hashlib.sha256(json.dumps(
+        {"pid": pid, "create_time": create_time, "command_hash": command_hash},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def stop_proof_digest(*, legacy=False, **overrides):
+    body = {
+        "node_id": "node-a", "task_id": "a", "assignment_generation": 5,
+        "execution_attempt": 2, "gpu_uuid": "GPU-A",
+        "process_identity": {"pid": 11, "create_time": 1.0, "command_hash": "h"},
+        "stop_verified": True,
+    }
+    if not legacy:
+        body["proof_type"] = "PROCESS_STOP_VERIFIED"
+        body["no_process_launched"] = False
+        body["no_launch_evidence"] = {}
+    body.update(overrides)
+    return hashlib.sha256(json.dumps(
+        body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def dual_record(**overrides):
+    value = {"task_id": "a", "generation": 2, "pid": 11, "create_time": 1.0,
+             "command_hash": "h", "assignment_generation": 5,
+             "gpu_uuid": "GPU-A", "execution_slots": 2}
+    value.update(overrides)
+    return value
+
+
+def dual_status(*, hold_state="HELD", proof_type=None, proof_sha256=None, **overrides):
+    value = {
+        "status": "RUNNING", "execution_attempt": 2, "hold_state": hold_state,
+        "hold_execution_attempt": 2, "hold_assignment_generation": 5,
+        "hold_gpu_uuid": "GPU-A", "node_id": "node-a",
+        "process_identity_sha256": _local_digest(),
+        "proof_type": proof_type, "proof_sha256": proof_sha256,
+    }
+    value.update(overrides)
+    return value
+
+
+def test_legacy_single_slot_recovery_without_hold_is_not_blocked(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    record = {"task_id": "a", "generation": 2, "pid": 11, "create_time": 1.0,
+              "command_hash": "h", "assignment_generation": 5,
+              "gpu_uuid": "", "execution_slots": 1}
+    status = {
+        "status": "RUNNING", "execution_attempt": 2, "node_id": "node-a",
+        "assignment_generation": 5, "assignment_state": "RELEASED",
+        "hold_state": None, "hold_execution_attempt": None,
+        "hold_assignment_generation": None, "hold_gpu_uuid": None,
+        "proof_type": None, "proof_sha256": None,
+        "process_identity_sha256": _local_digest(),
+    }
+    workdirs = FakeWorkdirs([record])
+    controller = FakeController()
+    client = RecoveringClient(status)
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert coordinator.prepare() == ""
+    assert controller.terminated == [(11, 1.0, "h")]
+    assert client.recovered == []
+    assert workdirs.cleared == [("a", 2)]
+
+
+def test_dual_slot_missing_hold_blocks_recovery(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    status = dual_status(hold_state=None, hold_execution_attempt=None,
+                         hold_assignment_generation=None, hold_gpu_uuid=None)
+    coordinator = NodeRecoveryCoordinator(
+        workdirs, controller, client=RecoveringClient(status))
+    assert coordinator.prepare() == "central Hold missing for dual-slot execution"
+    assert controller.terminated == []
+    assert workdirs.cleared == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows recovery is deliberately fail-closed")
+@pytest.mark.parametrize("legacy_digest", [False, True])
+def test_released_stop_proof_is_verified_and_idempotently_cleaned(legacy_digest, monkeypatch):
+    digest = stop_proof_digest(legacy=legacy_digest)
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    client = RecoveringClient(dual_status(
+        status="FAILED", hold_state="RELEASED",
+        proof_type="PROCESS_STOP_VERIFIED", proof_sha256=digest,
+    ))
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert coordinator.prepare() == ""
+    assert client.recovered == []
+    assert controller.terminated == [(11, 1.0, "h")]
+    assert workdirs.cleared == [("a", 2)]
+
+
+def test_released_stop_proof_mismatch_keeps_evidence(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    client = RecoveringClient(dual_status(
+        status="FAILED", hold_state="RELEASED",
+        proof_type="PROCESS_STOP_VERIFIED", proof_sha256="0" * 64,
+    ))
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert coordinator.prepare() == "central stop proof digest mismatch"
+    assert controller.terminated == []
+    assert workdirs.cleared == []
+
+
+def test_no_launch_proof_cannot_cover_a_persisted_process_identity(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    client = RecoveringClient(dual_status(
+        status="FAILED", hold_state="RELEASED",
+        proof_type="NO_PROCESS_LAUNCHED", proof_sha256=stop_proof_digest(),
+    ))
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert coordinator.prepare() == "central stop proof type mismatch"
+    assert controller.terminated == []
+    assert workdirs.cleared == []
+
+
+def test_legacy_single_slot_must_not_carry_a_stop_proof(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    record = {"task_id": "a", "generation": 2, "pid": 11, "create_time": 1.0,
+              "command_hash": "h", "assignment_generation": 0,
+              "gpu_uuid": "", "execution_slots": 0}
+    status = {
+        "status": "RUNNING", "execution_attempt": 2, "node_id": "node-a",
+        "assignment_generation": None, "hold_state": None,
+        "proof_type": "NO_PROCESS_LAUNCHED", "proof_sha256": "a" * 64,
+        "process_identity_sha256": _local_digest(),
+    }
+    workdirs = FakeWorkdirs([record])
+    controller = FakeController()
+    coordinator = NodeRecoveryCoordinator(
+        workdirs, controller, client=RecoveringClient(status))
+    assert coordinator.prepare() == "central stop proof present without a Hold"
+    assert controller.terminated == []
+
+
+def test_recovery_digest_must_match_refreshed_status(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    digest = stop_proof_digest()
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    client = RecoveringClient(
+        dual_status(),
+        digest=digest,
+        refreshed={"proof_type": "PROCESS_STOP_VERIFIED", "proof_sha256": "b" * 64},
+    )
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert "stop proof does not match" in coordinator.prepare()
+    assert len(client.recovered) == 1
+    assert workdirs.cleared == []
+
+
+def test_central_recovery_releases_hold_with_exact_identity(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    digest = stop_proof_digest()
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    client = RecoveringClient(dual_status(), digest=digest)
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert coordinator.prepare() == ""
+    assert client.recovered == [("a", {
+        "assignment_generation": 5,
+        "execution_generation": 2,
+        "gpu_uuid": "GPU-A",
+        "process_identity": {"pid": 11, "create_time": 1.0, "command_hash": "h"},
+    })]
+    assert workdirs.cleared == [("a", 2)]
+
+
+class FlakyWorkdirs(FakeWorkdirs):
+    def __init__(self, records=None, unverified=None, failures=1):
+        super().__init__(records, unverified)
+        self.failures = int(failures)
+
+    def clear_process_identity_record(self, task_id, generation):
+        if self.failures > 0:
+            self.failures -= 1
+            raise OSError("injected identity cleanup failure")
+        super().clear_process_identity_record(task_id, generation)
+
+
+def test_intent_is_cleared_first_and_a_failed_identity_cleanup_converges(tmp_path, monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    intent = tmp_path / "dual-slot-intents.json"
+    intent.write_text(json.dumps([
+        {"task_id": "a", "generation": 5, "execution_attempt": 2,
+         "assignment_generation": 5, "gpu_uuid": "GPU-A", "state": "CENTRAL_STARTED"},
+        {"task_id": "b", "generation": 1, "execution_attempt": 1,
+         "assignment_generation": 1, "gpu_uuid": "GPU-B", "state": "CENTRAL_STARTED"},
+    ]), encoding="utf-8")
+    digest = stop_proof_digest()
+    status = dual_status(status="FAILED", hold_state="RELEASED",
+                         proof_type="PROCESS_STOP_VERIFIED", proof_sha256=digest)
+    workdirs = FlakyWorkdirs([dual_record()], failures=1)
+    controller = FakeController()
+    first = NodeRecoveryCoordinator(
+        workdirs, controller, client=RecoveringClient(status), intent_path=intent,
+    )
+    assert "could not be persisted" in first.prepare()
+    # The unique original execution evidence was retained because the second
+    # step failed; the intent (not the evidence) was already cleared.
+    assert workdirs.cleared == []
+    remaining = json.loads(intent.read_text(encoding="utf-8"))
+    assert [item["task_id"] for item in remaining] == ["b"]
+
+    # A restarted coordinator converges: no matching intent record is fine, the
+    # identity is cleared, and the other task's intent is untouched.
+    second = NodeRecoveryCoordinator(
+        workdirs, controller, client=RecoveringClient(status), intent_path=intent,
+    )
+    assert second.prepare() == ""
+    assert workdirs.cleared == [("a", 2)]
+    remaining = json.loads(intent.read_text(encoding="utf-8"))
+    assert [item["task_id"] for item in remaining] == ["b"]
+
+
+def test_unmatched_same_task_intent_blocks_instead_of_silently_ignoring(tmp_path, monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    intent = tmp_path / "dual-slot-intents.json"
+    intent.write_text(json.dumps([
+        {"task_id": "a", "generation": 5, "execution_attempt": 3,
+         "assignment_generation": 5, "gpu_uuid": "GPU-A", "state": "CENTRAL_STARTED"},
+    ]), encoding="utf-8")
+    digest = stop_proof_digest()
+    status = dual_status(status="FAILED", hold_state="RELEASED",
+                         proof_type="PROCESS_STOP_VERIFIED", proof_sha256=digest)
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    coordinator = NodeRecoveryCoordinator(
+        workdirs, controller, client=RecoveringClient(status), intent_path=intent,
+    )
+    assert "does not match" in coordinator.prepare()
+    assert workdirs.cleared == []
+    remaining = json.loads(intent.read_text(encoding="utf-8"))
+    assert remaining[0]["execution_attempt"] == 3

@@ -922,3 +922,190 @@ def test_agent_start_rechecks_payload_after_transport_preparation(tmp_path):
     with pytest.raises(AgentExecutionError,match='task inputs changed'):
         start(service,'train-agent','gpu-agent',token,claimed)
     assert repository.get('train-agent').status is TaskStatus.QUEUED
+
+
+def _dual_slot_node(repository):
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "dual-agent",
+        "display_name": "dual-agent",
+        "connection_mode": "agent",
+        "enabled": True,
+        "allowed_capabilities": ["training", "execution-slots:2"],
+    })
+    nodes.heartbeat("dual-agent", token, {
+        "hostname": "dual-agent",
+        "build_id": "build-dual-agent",
+        "reported_capabilities": ["training", "execution-slots:2"],
+        "resources": {
+            "memory": {"available_bytes": 32 * 1024**3},
+            "gpu": {
+                "available": True,
+                "gpus": [
+                    {"id": "cuda:0", "index": 0, "uuid": "GPU-A",
+                     "memory_free_bytes": 30 * 1024**3,
+                     "memory_total_bytes": 40 * 1024**3},
+                    {"id": "cuda:1", "index": 1, "uuid": "GPU-B",
+                     "memory_free_bytes": 30 * 1024**3,
+                     "memory_total_bytes": 40 * 1024**3},
+                ],
+            },
+        },
+        "runtime": {"torch_version": "2.5.0+cu124", "cuda_version": "12.4"},
+    })
+    return nodes, token
+
+
+def _remote_training_task(repository, artifacts, task_id):
+    create_task(repository, artifacts, task_id)
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "target": "remote", "epochs": 30,
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+
+
+def _assignment_contract(repository, task_id):
+    import json
+    with repository._connect() as database:
+        row = database.execute(
+            "SELECT state,resolved_execution_config FROM task_node_assignments "
+            "WHERE task_id=? ORDER BY generation DESC LIMIT 1", (task_id,)
+        ).fetchone()
+    return row["state"], json.loads(row["resolved_execution_config"])
+
+
+def test_start_persists_original_slot_contract_for_single_and_dual(tmp_path):
+    # Single-slot start: the original contract is recorded durably.
+    repository, artifacts = runtime(tmp_path / "single")
+    create_task(repository, artifacts)
+    artifacts.atomic_write_json("train-agent", "request.json", {
+        "target": "remote", "epochs": 30,
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    })
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    claimed = service.claim_assignment("gpu-agent", token)
+    started = start(service, "train-agent", "gpu-agent", token, claimed)
+    assert started["execution"]["execution_slots"] == 1
+    state, config = _assignment_contract(repository, "train-agent")
+    assert state == "RELEASED"
+    assert config["execution_slots"] == 1
+    assert config["execution_attempt"] == started["execution"]["generation"]
+    # A single-slot execution has no Hold by design and must still finish.
+    assert service._dual_hold_verified("train-agent", started["execution"]["generation"]) is True
+    finished = service.finish_execution(
+        "gpu-agent", token, "train-agent",
+        started["execution"]["lease_token"], started["execution"]["generation"],
+        status="FAILED", error="synthetic single-slot finish",
+    )
+    assert finished["task"]["status"] == "FAILED"
+
+    # Dual-slot start: contract=2, Hold exists and matches the original identity.
+    repository, artifacts = runtime(tmp_path / "dual")
+    _dual_nodes, dual_token = _dual_slot_node(repository)
+    _remote_training_task(repository, artifacts, "dual-one")
+    dual = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    dual_claimed = dual.claim_assignment("dual-agent", dual_token)
+    dual_started = start(dual, "dual-one", "dual-agent", dual_token, dual_claimed)
+    assert dual_started["execution"]["execution_slots"] == 2
+    state, config = _assignment_contract(repository, "dual-one")
+    assert state == "RELEASED"
+    assert config["execution_slots"] == 2
+    assert config["execution_attempt"] == dual_started["execution"]["generation"]
+    attempt = dual_started["execution"]["generation"]
+    status = dual.execution_status("dual-agent", dual_token, "dual-one")
+    assert status["hold_state"] == "HELD"
+    assert status["hold_execution_attempt"] == attempt
+    assert (status["hold_assignment_generation"]
+            == dual_claimed["assignment"]["generation"])
+    assert status["hold_gpu_uuid"] in {"GPU-A", "GPU-B"}
+    # A live Hold is not a completed stop proof.
+    assert dual._dual_hold_verified("dual-one", attempt) is False
+
+
+def test_missing_dual_hold_is_never_released_after_node_downgrade(tmp_path):
+    from contextlib import closing
+
+    repository, artifacts = runtime(tmp_path)
+    nodes, token = _dual_slot_node(repository)
+    _remote_training_task(repository, artifacts, "dual-one")
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    claimed = service.claim_assignment("dual-agent", token)
+    started = start(service, "dual-one", "dual-agent", token, claimed)
+    attempt = started["execution"]["generation"]
+    assert started["execution"]["execution_slots"] == 2
+
+    # Simulate lost/corrupted Hold evidence for a dual-slot execution, then
+    # downgrade the node to one slot. The node's later capabilities must not
+    # release the execution without a Hold/proof.
+    with closing(repository._connect()) as database:
+        database.execute("DELETE FROM execution_resource_holds WHERE task_id='dual-one'")
+        database.commit()
+    nodes.heartbeat("dual-agent", token, {
+        "hostname": "dual-agent",
+        "build_id": "build-dual-agent",
+        "reported_capabilities": ["training"],
+        "resources": {"memory": {"available_bytes": 32 * 1024**3}},
+        "runtime": {"torch_version": "2.5.0+cu124", "cuda_version": "12.4"},
+    })
+    assert service._dual_hold_verified("dual-one", attempt) is False
+    with pytest.raises(AgentExecutionError) as error:
+        service.finish_execution(
+            "dual-agent", token, "dual-one",
+            started["execution"]["lease_token"], attempt,
+            status="FAILED", error="synthetic dual downgrade",
+        )
+    assert error.value.code == "STOP_PROOF_REQUIRED"
+
+
+def test_single_slot_contract_is_not_upgraded_into_dual_hold_requirement(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    _nodes, _token = _dual_slot_node(repository)
+    _remote_training_task(repository, artifacts, "dual-one")
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    assert service.allocator.assign_next() is not None
+
+    # Build a durable single-slot start record by writing the exact contract
+    # start_execution persists for a single-slot execution.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE task_node_assignments SET state='RELEASED',"
+            "resolved_execution_config=json_set(resolved_execution_config,"
+            "'$.execution_attempt', 1, '$.execution_slots', 1) "
+            "WHERE task_id='dual-one'",
+        )
+    service = AgentExecutionService(repository, artifacts)
+    # The node is currently authorized for two slots, but this execution was
+    # started under the single-slot contract: no Hold exists by design.
+    assert service._dual_hold_verified("dual-one", 1) is True
+
+    # A pre-marker record (no durable contract) keeps the historical
+    # capabilities-based conservative behavior.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE task_node_assignments SET "
+            "resolved_execution_config=json_remove(resolved_execution_config,"
+            "'$.execution_slots') WHERE task_id='dual-one'",
+        )
+        database.execute(
+            "UPDATE tasks SET worker_id='agent:dual-agent' WHERE task_id='dual-one'",
+        )
+    assert service._dual_hold_verified("dual-one", 1) is False

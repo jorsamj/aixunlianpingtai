@@ -972,6 +972,13 @@ class AgentExecutionService:
             # task ownership; a local Agent mutex alone cannot stop two HTTP
             # clients from starting two tasks on the same node.
             _ensure_resource_hold_schema(database)
+            # Record this execution's original slot contract once, inside the
+            # same transaction that owns the start, and persist it with the
+            # released Assignment below. Recovery/finish adjudication must use
+            # the original contract, never the node's capabilities at a later
+            # time: a node downgraded to one slot must not thereby release a
+            # dual-slot execution whose Hold is missing.
+            execution_slots = _execution_slots_for_worker(database, worker_id)
             active_executions = int(database.execute(
                 "SELECT COUNT(*) FROM ("
                 " SELECT task_id FROM tasks WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')"
@@ -980,14 +987,14 @@ class AgentExecutionService:
                 ")",
                 (worker_id, str(node_id)),
             ).fetchone()[0])
-            if active_executions >= _execution_slots_for_worker(database, worker_id):
+            if active_executions >= execution_slots:
                 database.rollback()
                 raise AgentExecutionError(
                     "EXECUTION_SLOT_BUSY",
                     "the service node has no free authorized execution slot",
                     409,
                 )
-            if _execution_slots_for_worker(database, worker_id) == 2:
+            if execution_slots == 2:
                 config = _json(assignment["resolved_execution_config"], {})
                 selected = config.get("selected_gpu") if isinstance(config, dict) else None
                 gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
@@ -1043,7 +1050,8 @@ class AgentExecutionService:
                    SET state='RELEASED',updated_at=?,released_at=?,
                        release_reason='execution_started',
                        resolved_execution_config=json_set(
-                           resolved_execution_config, '$.execution_attempt', ?
+                           resolved_execution_config, '$.execution_attempt', ?,
+                           '$.execution_slots', ?
                        ),
                        lease_token=NULL,lease_expires_at=NULL
                  WHERE task_id=? AND generation=? AND node_id=? AND state='CLAIMED'
@@ -1053,6 +1061,7 @@ class AgentExecutionService:
                     now,
                     now,
                     execution_attempt,
+                    int(execution_slots),
                     str(task_id),
                     int(assignment["generation"]),
                     str(node_id),
@@ -1072,7 +1081,7 @@ class AgentExecutionService:
                 (str(task_id),),
             ).fetchone()
             _ensure_resource_hold_schema(database)
-            if _execution_slots_for_worker(database, worker_id) == 2:
+            if execution_slots == 2:
                 config = _json(assignment["resolved_execution_config"], {})
                 selected = config.get("selected_gpu") if isinstance(config, dict) else None
                 gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
@@ -1127,6 +1136,7 @@ class AgentExecutionService:
                 "generation": int(task.attempt),
                 "lease_expires_at": execution_expires,
                 "worker_id": worker_id,
+                "execution_slots": int(execution_slots),
             },
             "assignment": {
                 "generation": int(assignment["generation"]),
@@ -2718,6 +2728,28 @@ class AgentExecutionService:
                 raise
         return {"task_id": str(task_id), "state": final_state, "proof_sha256": final_digest}
 
+    @staticmethod
+    def _persisted_execution_slots(database, task_id: str, execution_attempt: int) -> int:
+        """Original slot contract recorded at start; 0 means a pre-marker record."""
+        try:
+            row = database.execute(
+                "SELECT resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? AND state='RELEASED' "
+                "AND json_extract(resolved_execution_config,'$.execution_attempt')=? "
+                "ORDER BY generation DESC LIMIT 1",
+                (str(task_id), int(execution_attempt)),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # Malformed historical JSON is not evidence of a single-slot start.
+            return 0
+        if row is None:
+            return 0
+        config = _json(row["resolved_execution_config"], {})
+        slots = config.get("execution_slots") if isinstance(config, dict) else None
+        if type(slots) is int and slots in (1, 2):
+            return int(slots)
+        return 0
+
     def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
         task = self.repository.get(str(task_id))
         worker_id = str(getattr(task, "worker_id", "") or "") if task is not None else ""
@@ -2729,6 +2761,20 @@ class AgentExecutionService:
                 (str(task_id),),
             ).fetchone()
             if row is None:
+                # Adjudicate against the slot contract this execution was
+                # started under, not the node's current (possibly downgraded)
+                # capabilities.
+                contract = self._persisted_execution_slots(database, task_id, execution_attempt)
+                if contract == 2:
+                    # A dual-slot execution must never bypass a missing Hold;
+                    # a node downgraded to one slot must not release it either.
+                    return False
+                if contract == 1:
+                    # The original execution was single-slot: no Hold exists by
+                    # design and the legacy single-slot contract applies.
+                    return True
+                # Pre-marker historical rows only have live capabilities as
+                # evidence; keep the historical conservative behavior.
                 if not node_id:
                     return True
                 node = database.execute(

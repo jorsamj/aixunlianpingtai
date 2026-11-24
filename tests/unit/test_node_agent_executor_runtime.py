@@ -418,6 +418,7 @@ def test_workdir_persists_only_exact_nonsecret_process_identity_for_recovery(tmp
         "generation": current.generation,
         "assignment_generation": 3,
         "gpu_uuid": "",
+        "execution_slots": 0,
         "pid": 4321,
         "create_time": 12345.5,
         "command_hash": "a" * 64,
@@ -452,6 +453,7 @@ def test_recovery_metadata_separates_legacy_missing_from_corrupt_execution(tmp_p
         "selected_device": "cuda:0",
         "selected_gpu": {"uuid": "GPU-A"},
     }
+    body["execution"]["execution_slots"] = 2
     dual = RemoteExecutionLease.from_start_response(body)
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
     target = workdirs.prepare(dual)
@@ -478,6 +480,7 @@ def test_recovery_metadata_separates_legacy_missing_from_corrupt_execution(tmp_p
         "generation": 1,
         "assignment_generation": 5,
         "gpu_uuid": "GPU-A",
+        "execution_slots": 2,
         "pid": 77,
         "create_time": 9876.5,
         "command_hash": "c" * 64,
@@ -493,12 +496,14 @@ def test_recovery_metadata_separates_legacy_missing_from_corrupt_execution(tmp_p
     # generation or any central current value.
     legacy_execution = dict(dual_execution)
     legacy_execution.pop("assignment", None)
+    legacy_execution.pop("execution_slots", None)
     execution_path.write_text(json.dumps(legacy_execution), encoding="utf-8")
     assert workdirs.list_process_identities() == [{
         "task_id": "task-1",
         "generation": 1,
         "assignment_generation": 0,
         "gpu_uuid": "",
+        "execution_slots": 0,
         "pid": 77,
         "create_time": 9876.5,
         "command_hash": "c" * 64,
@@ -519,6 +524,14 @@ def test_recovery_metadata_separates_legacy_missing_from_corrupt_execution(tmp_p
         with pytest.raises(ValueError):
             workdirs.list_process_identities()
         assert (target / "process-identity.json").is_file()
+
+    # A corrupt slot contract is not the legacy shape either.
+    corrupt_slots = dict(dual_execution)
+    corrupt_slots["execution_slots"] = "2"
+    execution_path.write_text(json.dumps(corrupt_slots), encoding="utf-8")
+    with pytest.raises(ValueError, match="slot contract"):
+        workdirs.list_process_identities()
+    assert (target / "process-identity.json").is_file()
 
     # Lineage corruption must also fail closed rather than read as legacy.
     lineage_execution = dict(legacy_execution)

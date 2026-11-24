@@ -640,3 +640,130 @@ def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
         loop.stop(timeout=10)
         loop._slots.wait(10)
     assert {"a", "b"} <= set(closed)
+
+
+def test_dual_slot_binds_assignment_five_with_execution_attempt_two(tmp_path):
+    import json
+
+    from platform_core.task_runtime.process_control import ProcessController
+
+    claim = {
+        "assignment": {"task_id": "a", "assignment_lease_token": "token-a",
+                       "capability": "training", "generation": 5,
+                       "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        "task": {"task_id": "a", "kind": "TRAINING"},
+    }
+
+    class Client:
+        def claim_assignment(self):
+            return claim
+
+        def start_execution(self, task_id, assignment_token):
+            return RemoteExecutionLease(
+                task_id=task_id, kind="TRAINING", project_id="project-1",
+                generation=2, lease_token="execution-secret",
+                lease_expires_at="2026-09-18T10:00:00+00:00",
+                worker_id="agent:node-1", payload={},
+                assignment={"generation": 5, "resolved_execution_config": {
+                    "selected_gpu": {"uuid": "GPU-A"}}},
+                transport={}, execution_slots=2,
+            )
+
+    observed = {}
+
+    class Runner:
+        ready = True
+
+        def run(self, current):
+            observed["lease"] = current
+            return AgentDeploymentOutcome(current.task_id, current.generation, "SUCCEEDED")
+
+    intent = tmp_path / "dual-slot-intents.json"
+    loop = NodeAgentExecutorLoop(
+        Client(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: Runner(),
+        slot_controller=ProcessController(), slot_intent_path=intent,
+    )
+    assert loop._run_dual_once() is True
+    active = loop._slots.active()
+    assert len(active) == 1
+    slot = active[0]
+    # Slot identity is the Assignment generation; the execution attempt is
+    # tracked separately and both are persisted.
+    assert slot.generation == 5
+    assert slot.assignment_generation == 5
+    assert slot.execution_attempt == 2
+    assert slot.gpu_uuid == "GPU-A"
+    records = json.loads(intent.read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert records[0]["task_id"] == "a"
+    assert records[0]["generation"] == 5
+    assert records[0]["assignment_generation"] == 5
+    assert records[0]["execution_attempt"] == 2
+    assert records[0]["gpu_uuid"] == "GPU-A"
+    assert observed["lease"].execution_slots == 2
+    loop._slots.shutdown(0.1)
+
+
+def test_dual_slot_rejects_start_that_is_not_the_reserved_contract(tmp_path):
+    import json
+
+    from platform_core.task_runtime.process_control import ProcessController
+
+    def build_lease(*, execution_slots, assignment_generation, gpu_uuid, generation=2):
+        return RemoteExecutionLease(
+            task_id="a", kind="TRAINING", project_id="project-1",
+            generation=generation, lease_token="execution-secret",
+            lease_expires_at="2026-09-18T10:00:00+00:00",
+            worker_id="agent:node-1", payload={},
+            assignment={"generation": assignment_generation,
+                        "resolved_execution_config": {
+                            "selected_gpu": {"uuid": gpu_uuid}}},
+            transport={}, execution_slots=execution_slots,
+        )
+
+    claim = {
+        "assignment": {"task_id": "a", "assignment_lease_token": "token-a",
+                       "capability": "training", "generation": 5,
+                       "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        "task": {"task_id": "a", "kind": "TRAINING"},
+    }
+
+    variants = {
+        "explicit single-slot contract": build_lease(
+            execution_slots=1, assignment_generation=5, gpu_uuid="GPU-A"),
+        "different assignment generation": build_lease(
+            execution_slots=2, assignment_generation=7, gpu_uuid="GPU-A"),
+        "different gpu": build_lease(
+            execution_slots=2, assignment_generation=5, gpu_uuid="GPU-B"),
+    }
+    for name, response in variants.items():
+        class Client:
+            def claim_assignment(self):
+                return claim
+
+            def start_execution(self, task_id, assignment_token):
+                return response
+
+        intent = tmp_path / f"intent-{abs(hash(name))}.json"
+        loop = NodeAgentExecutorLoop(
+            Client(), object(), capabilities=["training"], max_slots=2,
+            slot_runner_factory=lambda kind, on_started: type("R", (), {"ready": True})(),
+            slot_controller=ProcessController(), slot_intent_path=intent,
+        )
+        assert loop._run_dual_once() is True
+        assert loop.status().last_error == "SLOT_START_IDENTITY_MISMATCH"
+        active = loop._slots.active()
+        assert len(active) == 1
+        slot = active[0]
+        # The local reservation is retained (central may have started) but it
+        # was never bound to the rejected execution attempt.
+        assert slot.state == "CENTRAL_UNKNOWN"
+        assert slot.assignment_generation == 5
+        assert slot.execution_attempt == 0
+        # The rejected central lease was never bound to the local reservation.
+        assert slot.lease is not response
+        records = json.loads(intent.read_text(encoding="utf-8"))
+        assert records[0]["execution_attempt"] == 0
+        assert records[0]["assignment_generation"] == 5
+        loop._slots.shutdown(0.1)

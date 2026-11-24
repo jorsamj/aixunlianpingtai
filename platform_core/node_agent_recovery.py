@@ -6,6 +6,7 @@ ProcessController.  It does not create a second task-state database.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import tempfile
@@ -16,6 +17,17 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .node_agent_training_runtime import AgentExecutionWorkdir
     from .task_runtime.process_control import ProcessController
+
+
+TERMINAL_TASK_STATUSES = frozenset({
+    "SUCCEEDED",
+    "PARTIAL_SUCCESS",
+    "CANCELLED",
+    "FAILED",
+    "BLOCKED_BY_ENVIRONMENT",
+    "BLOCKED_BY_HARDWARE",
+})
+PROCESS_STOP_VERIFIED = "PROCESS_STOP_VERIFIED"
 
 
 class NodeRecoveryCoordinator:
@@ -44,15 +56,105 @@ class NodeRecoveryCoordinator:
         self._error = ""
 
     @staticmethod
-    def _identity_sha256(record: dict[str, Any]) -> str:
-        value = {
-            "pid": int(record["pid"]),
-            "create_time": float(record["create_time"]),
-            "command_hash": str(record["command_hash"]),
-        }
+    def _digest(value: dict[str, Any]) -> str:
         return hashlib.sha256(json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _identity_sha256(cls, record: dict[str, Any]) -> str:
+        return cls._digest({
+            "pid": int(record["pid"]),
+            "create_time": float(record["create_time"]),
+            "command_hash": str(record["command_hash"]),
+        })
+
+    @classmethod
+    def _stop_proof_digests(
+        cls, status: dict[str, Any], record: dict[str, Any],
+    ) -> tuple[str, str]:
+        """Recompute the acceptable stop-proof digests from local evidence.
+
+        The first digest is the current proof schema, the second the frozen
+        schema-6/7 legacy digest that predates proof_type/no-launch fields.
+        """
+        base = {
+            "node_id": str(status.get("node_id") or ""),
+            "task_id": str(record["task_id"]),
+            "assignment_generation": int(record.get("assignment_generation") or 0),
+            "execution_attempt": int(record["generation"]),
+            "gpu_uuid": str(record.get("gpu_uuid") or ""),
+            "process_identity": {
+                "pid": int(record["pid"]),
+                "create_time": float(record["create_time"]),
+                "command_hash": str(record["command_hash"]),
+            },
+            "stop_verified": True,
+        }
+        current = dict(base)
+        current["proof_type"] = PROCESS_STOP_VERIFIED
+        current["no_process_launched"] = False
+        current["no_launch_evidence"] = {}
+        return cls._digest(current), cls._digest(base)
+
+    def _hold_identity_error(
+        self,
+        status: dict[str, Any],
+        record: dict[str, Any],
+        local_assignment: int,
+        local_gpu: str,
+    ) -> str:
+        if int(status.get("hold_execution_attempt") or 0) != int(record["generation"]):
+            return "central Hold execution attempt mismatch"
+        if int(status.get("hold_assignment_generation") or 0) != int(local_assignment):
+            return "central Hold assignment generation mismatch"
+        if str(status.get("hold_gpu_uuid") or "") != local_gpu:
+            return "central Hold GPU UUID mismatch"
+        return ""
+
+    def _proof_error(self, status: dict[str, Any], record: dict[str, Any]) -> str:
+        """Post-verify the recorded stop proof against the original identity."""
+        hold_state = str(status.get("hold_state") or "")
+        proof_type = str(status.get("proof_type") or "")
+        proof_sha256 = str(status.get("proof_sha256") or "")
+        if hold_state in {"STOP_VERIFIED", "RELEASED"}:
+            if proof_type != PROCESS_STOP_VERIFIED:
+                return "central stop proof type mismatch"
+            if not proof_sha256:
+                return "central stop proof digest is missing"
+            current, legacy = self._stop_proof_digests(status, record)
+            if not (hmac.compare_digest(proof_sha256, current)
+                    or hmac.compare_digest(proof_sha256, legacy)):
+                return "central stop proof digest mismatch"
+            return ""
+        if hold_state == "HELD":
+            if proof_sha256 or proof_type:
+                return "central stop proof recorded for a held execution"
+            return ""
+        return "central Hold state is invalid"
+
+    def _single_slot_contract_error(
+        self,
+        status: dict[str, Any],
+        record: dict[str, Any],
+        local_assignment: int,
+    ) -> str:
+        """Validate the original single-slot recovery contract.
+
+        A single-slot execution never created a resource Hold, so its durable
+        evidence is the execution attempt, the released Assignment that started
+        it, and the registered ProcessIdentity. It must not be blocked merely
+        because no Hold exists, and it must not borrow the dual-slot proof.
+        """
+        if status.get("hold_state") is not None or status.get("hold_execution_attempt") is not None:
+            return "central Hold present for single-slot execution"
+        if status.get("proof_type") or status.get("proof_sha256"):
+            return "central stop proof present without a Hold"
+        central_assignment = status.get("assignment_generation")
+        if local_assignment > 0 and central_assignment is not None:
+            if int(central_assignment) != int(local_assignment):
+                return "central assignment generation mismatch"
+        return ""
 
     def _status_matches_identity(self, status: dict[str, Any], record: dict[str, Any]) -> str:
         if str(status.get("task_id")) != str(record["task_id"]):
@@ -62,47 +164,57 @@ class NodeRecoveryCoordinator:
             return "central node identity mismatch"
         if int(status.get("execution_attempt") or 0) != int(record["generation"]):
             return "central execution attempt mismatch"
-        if int(status.get("hold_execution_attempt") or 0) != int(record["generation"]):
-            return "central Hold execution attempt mismatch"
+        if str(status.get("process_identity_sha256") or "") != self._identity_sha256(record):
+            return "central ProcessIdentity digest mismatch"
+
         local_assignment = int(record.get("assignment_generation") or 0)
         local_gpu = str(record.get("gpu_uuid") or "")
-        has_hold = (status.get("hold_state") is not None
-                    or status.get("hold_execution_attempt") is not None)
-        if has_hold:
-            # A dual-slot execution must carry complete original Assignment
-            # evidence; missing local fields are corruption, not legacy.
+        local_slots = int(record.get("execution_slots") or 0)
+        has_hold = (
+            status.get("hold_state") is not None
+            or status.get("hold_execution_attempt") is not None
+        )
+        if local_slots == 2 or (local_slots == 0 and has_hold):
+            # The original contract is a dual slot: either recorded explicitly
+            # by the control plane at start, or a pre-marker record that owns a
+            # central Hold. A dual-slot execution must carry complete original
+            # Assignment/GPU evidence; missing local fields are corruption, not
+            # legacy, and a missing central Hold is never bypassed.
+            if not has_hold:
+                return "central Hold missing for dual-slot execution"
             if local_assignment <= 0:
                 return "local Assignment generation missing for dual-slot recovery"
             if not local_gpu:
                 return "local GPU UUID missing for dual-slot recovery"
-        if local_assignment > 0 and int(
-            status.get("hold_assignment_generation") or 0
-        ) != local_assignment:
-            return "central Hold assignment generation mismatch"
-        if local_gpu and str(status.get("hold_gpu_uuid") or "") != local_gpu:
-            return "central Hold GPU UUID mismatch"
-        if int(status.get("hold_assignment_generation") or 0) <= 0:
-            return "central Hold assignment generation missing"
-        if not str(status.get("hold_gpu_uuid") or "").strip():
-            return "central Hold GPU UUID missing"
-        if str(status.get("process_identity_sha256") or "") != self._identity_sha256(record):
-            return "central ProcessIdentity digest mismatch"
-        return ""
+            error = self._hold_identity_error(status, record, local_assignment, local_gpu)
+            if error:
+                return error
+            return self._proof_error(status, record)
+        if local_slots == 1 and has_hold:
+            return "central Hold present for single-slot execution"
+        return self._single_slot_contract_error(status, record, local_assignment)
 
     def _clear_intent(
         self, task_id: str, generation: int, *,
         execution_attempt: int | None = None,
         gpu_uuid: str | None = None,
         assignment_generation: int | None = None,
-    ) -> None:
+    ) -> int:
+        """Remove the exact recovered slot intent; never a different attempt.
+
+        Returns the number of removed records. A record for the same task that
+        does not match the recovered identity is corruption (or a newer attempt)
+        and is never silently ignored: it raises so recovery stays fail-closed.
+        """
         if self.intent_path is None or not self.intent_path.is_file():
-            return
+            return 0
         try:
             records = json.loads(self.intent_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise ValueError("persisted dual-slot intent is unreadable")
         if not isinstance(records, list):
             raise ValueError("persisted dual-slot intent is invalid")
+
         def matches(item: object) -> bool:
             if not isinstance(item, dict):
                 return False
@@ -120,6 +232,18 @@ class NodeRecoveryCoordinator:
                 if int(item.get("assignment_generation")) != int(assignment_generation):
                     return False
             return True
+
+        same_task = [
+            item for item in records
+            if isinstance(item, dict) and str(item.get("task_id")) == str(task_id)
+        ]
+        matched = [item for item in same_task if matches(item)]
+        if same_task and not matched:
+            raise ValueError(
+                "persisted dual-slot intent does not match the recovered execution"
+            )
+        if not matched:
+            return 0
         remaining = [item for item in records if not matches(item)]
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{self.intent_path.name}.", dir=str(self.intent_path.parent),
@@ -136,6 +260,7 @@ class NodeRecoveryCoordinator:
             except OSError:
                 pass
             raise
+        return len(matched)
 
     def register_owner(self, task_id: str, generation: int) -> bool:
         with self._lock:
@@ -180,9 +305,7 @@ class NodeRecoveryCoordinator:
                             )
                             return self._error
                         if (int(status.get("execution_attempt") or 0) != int(item["generation"])
-                                or str(status.get("status")) not in {
-                                    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
-                                    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
+                                or str(status.get("status")) not in TERMINAL_TASK_STATUSES
                                 or str(status.get("hold_state")) != "RELEASED"
                                 or str(status.get("proof_type") or "") != "NO_PROCESS_LAUNCHED"
                                 or status.get("process_identity_sha256") is not None):
@@ -242,46 +365,71 @@ class NodeRecoveryCoordinator:
                     )
                     return self._error
                 if self.client is not None:
-                    if (str(status.get("status")) not in {
-                            "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
-                            "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
-                            or str(status.get("hold_state")) != "RELEASED"):
-                        try:
-                            self.client.recover_execution(
-                                str(record["task_id"]),
-                                assignment_generation=int(status.get("hold_assignment_generation") or 0),
-                                execution_generation=int(record["generation"]),
-                                gpu_uuid=str(status.get("hold_gpu_uuid") or ""),
-                                process_identity={
-                                    "pid": int(record["pid"]),
-                                    "create_time": float(record["create_time"]),
-                                    "command_hash": str(record["command_hash"]),
-                                },
-                            )
-                            refreshed = self.client.execution_status(str(record["task_id"]))
-                        except Exception as error:
-                            self._error = (
-                                "central recovery could not release original execution: "
-                                f"{type(error).__name__}: {error}"
-                            )
-                            return self._error
-                        if str(refreshed.get("hold_state")) != "RELEASED":
-                            self._error = "central recovery did not release the original Hold"
-                            return self._error
-                        refreshed_error = self._status_matches_identity(refreshed, record)
-                        if refreshed_error:
-                            self._error = refreshed_error
-                            return self._error
-                        status = refreshed
+                    hold_state = status.get("hold_state")
+                    if (str(status.get("status")) not in TERMINAL_TASK_STATUSES
+                            or str(hold_state or "") != "RELEASED"):
+                        if hold_state is None:
+                            # Original legacy single-slot execution: no resource
+                            # Hold and no stop-proof contract exists. The verified
+                            # termination above is the whole local obligation;
+                            # central lease expiry reclaims the execution.
+                            pass
+                        else:
+                            try:
+                                recovered = self.client.recover_execution(
+                                    str(record["task_id"]),
+                                    assignment_generation=int(
+                                        record.get("assignment_generation") or 0),
+                                    execution_generation=int(record["generation"]),
+                                    gpu_uuid=str(record.get("gpu_uuid") or ""),
+                                    process_identity={
+                                        "pid": int(record["pid"]),
+                                        "create_time": float(record["create_time"]),
+                                        "command_hash": str(record["command_hash"]),
+                                    },
+                                )
+                                refreshed = self.client.execution_status(
+                                    str(record["task_id"]))
+                            except Exception as error:
+                                self._error = (
+                                    "central recovery could not release original execution: "
+                                    f"{type(error).__name__}: {error}"
+                                )
+                                return self._error
+                            recovered_digest = str(
+                                (recovered or {}).get("proof_sha256") or "")
+                            if str(refreshed.get("hold_state")) != "RELEASED":
+                                self._error = "central recovery did not release the original Hold"
+                                return self._error
+                            if (not recovered_digest
+                                    or not hmac.compare_digest(
+                                        str(refreshed.get("proof_sha256") or ""),
+                                        recovered_digest)):
+                                self._error = (
+                                    "central recovery stop proof does not match the "
+                                    "original execution identity"
+                                )
+                                return self._error
+                            refreshed_error = self._status_matches_identity(
+                                refreshed, record)
+                            if refreshed_error:
+                                self._error = refreshed_error
+                                return self._error
+                            status = refreshed
                 try:
-                    self.workdirs.clear_process_identity_record(key[0], key[1])
+                    assignment_generation = int(record.get("assignment_generation") or 0)
+                    # Clear the intent first: the persisted ProcessIdentity is the
+                    # unique original execution evidence and must survive any
+                    # interruption before the second step. Both steps are
+                    # idempotent, so a retried preparation converges.
                     self._clear_intent(
                         key[0],
-                        int(record.get("assignment_generation") or 0) or key[1],
+                        assignment_generation or key[1],
                         execution_attempt=int(record["generation"]),
-                        gpu_uuid=str(status.get("hold_gpu_uuid") or "") if status else None,
-                        assignment_generation=int(record.get("assignment_generation") or 0) or None,
+                        gpu_uuid=str(record.get("gpu_uuid") or ""),
+                        assignment_generation=assignment_generation,
                     )
+                    self.workdirs.clear_process_identity_record(key[0], key[1])
                 except (OSError, ValueError) as error:
                     self._error = (
                         "unowned process identity cleanup could not be persisted: "

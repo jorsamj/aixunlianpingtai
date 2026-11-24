@@ -102,6 +102,9 @@ class RemoteExecutionLease:
     assignment: dict[str, Any]
     transport: dict[str, Any]
     payload_ref: str = ""
+    # Slot contract recorded by the control plane when this execution started.
+    # 0 means the control plane did not report it (pre-marker / legacy response).
+    execution_slots: int = 0
 
     @classmethod
     def from_start_response(cls, body: Mapping[str, Any]) -> "RemoteExecutionLease":
@@ -121,6 +124,13 @@ class RemoteExecutionLease:
             raise ValueError("executor start response has invalid generation") from error
         if not kind or not token or generation <= 0 or not worker_id or not expiry:
             raise ValueError("executor start response is incomplete")
+        raw_slots = execution.get("execution_slots")
+        if raw_slots is None:
+            execution_slots = 0
+        elif type(raw_slots) is int and int(raw_slots) in (1, 2):
+            execution_slots = int(raw_slots)
+        else:
+            raise ValueError("executor start response has invalid execution_slots")
         payload = body.get("payload")
         if not isinstance(payload, Mapping):
             raise ValueError("executor start response payload must be an object")
@@ -138,6 +148,7 @@ class RemoteExecutionLease:
             assignment=dict(assignment) if isinstance(assignment, Mapping) else {},
             transport=dict(transport) if isinstance(transport, Mapping) else {},
             payload_ref=str(task.get('payload_ref') or ''),
+            execution_slots=execution_slots,
         )
 
 
@@ -757,6 +768,7 @@ class AgentExecutionWorkdir:
             "worker_id": lease.worker_id,
             "lease_expires_at": lease.lease_expires_at,
             "assignment": lease.assignment,
+            "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
             "transport": lease.transport,
         })
         return target
@@ -1016,7 +1028,7 @@ class AgentExecutionWorkdir:
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError("persisted execution metadata path is unsafe")
         if not path.is_file():
-            return {"assignment_generation": 0, "gpu_uuid": ""}
+            return {"assignment_generation": 0, "gpu_uuid": "", "execution_slots": 0}
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -1024,9 +1036,20 @@ class AgentExecutionWorkdir:
         if (not isinstance(raw, dict) or raw.get("task_id") != str(task_id)
                 or int(raw.get("generation") or 0) != int(generation)):
             raise ValueError("persisted execution metadata lineage mismatch")
+        raw_slots = raw.get("execution_slots")
+        if raw_slots is None:
+            execution_slots = 0
+        elif type(raw_slots) is int and int(raw_slots) in (0, 1, 2):
+            execution_slots = int(raw_slots)
+        else:
+            raise ValueError("persisted execution slot contract is invalid")
         assignment = raw.get("assignment")
         if assignment is None or assignment == {}:
-            return {"assignment_generation": 0, "gpu_uuid": ""}
+            return {
+                "assignment_generation": 0,
+                "gpu_uuid": "",
+                "execution_slots": execution_slots,
+            }
         if not isinstance(assignment, dict):
             raise ValueError("persisted execution assignment evidence is invalid")
         raw_generation = assignment.get("generation")
@@ -1053,6 +1076,7 @@ class AgentExecutionWorkdir:
         return {
             "assignment_generation": assignment_generation,
             "gpu_uuid": gpu_uuid,
+            "execution_slots": execution_slots,
         }
 
     def list_process_identities(self) -> list[dict[str, Any]]:
@@ -1110,6 +1134,8 @@ class AgentExecutionWorkdir:
                     "assignment_generation": int(
                         execution_metadata.get("assignment_generation") or 0),
                     "gpu_uuid": str(execution_metadata.get("gpu_uuid") or ""),
+                    "execution_slots": int(
+                        execution_metadata.get("execution_slots") or 0),
                     **identity,
                 })
         return result

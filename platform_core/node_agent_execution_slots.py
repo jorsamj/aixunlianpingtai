@@ -123,14 +123,26 @@ class BoundedExecutionSlots:
             return slot
 
     def mark_started(self, slot: ExecutionSlot, lease: Any) -> None:
+        """Bind the central execution lease to a local reservation atomically.
+
+        Every identity check happens before any reserved field changes: a wrong
+        central Assignment generation/GPU must not leave the local reservation
+        stamped with an execution attempt it never legally owned.
+        """
         with self._lock:
             current = self._slots.get((slot.task_id, slot.generation))
             if current is None or current[0] is not slot:
                 raise SlotNotReleased("local reservation is no longer current")
             if slot.state != "LOCAL_RESERVED":
                 raise SlotNotReleased("local reservation is not in reserved state")
-            slot.lease = lease
-            slot.execution_attempt = int(getattr(lease, "generation", 0) or 0)
+            if str(getattr(lease, "task_id", "")) != str(slot.task_id):
+                raise SlotNotReleased("central execution task mismatch")
+            try:
+                execution_attempt = int(getattr(lease, "generation", 0) or 0)
+            except (TypeError, ValueError):
+                raise SlotNotReleased("central execution generation is invalid")
+            if execution_attempt <= 0:
+                raise SlotNotReleased("central execution generation is invalid")
             assignment = getattr(lease, "assignment", None)
             if isinstance(assignment, dict):
                 central_generation = int(assignment.get("generation") or 0)
@@ -141,6 +153,13 @@ class BoundedExecutionSlots:
                 central_gpu = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
                 if slot.gpu_uuid and central_gpu != slot.gpu_uuid:
                     raise SlotNotReleased("central assignment GPU mismatch")
+            elif slot.gpu_uuid:
+                # A GPU slot is only ever reserved from a claimed Assignment that
+                # carried a selected GPU. A start response without Assignment
+                # evidence cannot be verified against the reservation.
+                raise SlotNotReleased("central assignment evidence is missing")
+            slot.lease = lease
+            slot.execution_attempt = execution_attempt
             slot.state = "CENTRAL_STARTED"
             self._persist()
 
