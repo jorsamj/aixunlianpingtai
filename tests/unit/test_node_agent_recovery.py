@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -152,6 +153,8 @@ def test_training_and_conversion_share_recovery_owner_across_managers():
 
 
 class FakeRecoveryClient:
+    node_id = "node-a"
+
     def __init__(self, status):
         self.status = status
         self.recovered = []
@@ -170,6 +173,36 @@ class FakeRecoveryClient:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX recovery proof")
+@pytest.mark.parametrize("field,value", [
+    ("node_id", "node-b"),
+    ("execution_attempt", 3),
+    ("hold_execution_attempt", 3),
+    ("hold_assignment_generation", 9),
+    ("hold_gpu_uuid", "GPU-B"),
+    ("process_identity_sha256", "0" * 64),
+])
+def test_coordinator_fails_closed_on_central_identity_mismatch(tmp_path, field, value):
+    workdirs = FakeWorkdirs([record("a", 2, 11)])
+    controller = FakeController()
+    status = {
+        "status": "RUNNING", "execution_attempt": 2, "hold_state": "HELD",
+        "hold_execution_attempt": 2, "hold_assignment_generation": 5,
+        "hold_gpu_uuid": "GPU-A", "node_id": "node-a",
+        "process_identity_sha256": hashlib.sha256(json.dumps(
+            {"pid": 11, "create_time": 1.0, "command_hash": "h"},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest(),
+    }
+    status[field] = value
+    client = FakeRecoveryClient(status)
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    assert coordinator.prepare() != ""
+    assert client.recovered == []
+    assert workdirs.cleared == []
+    assert controller.terminated == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX recovery proof")
 def test_coordinator_uses_central_recovery_and_clears_intent(tmp_path):
     workdirs = FakeWorkdirs([record("a", 2, 11)])
     controller = FakeController()
@@ -182,7 +215,12 @@ def test_coordinator_uses_central_recovery_and_clears_intent(tmp_path):
     ]), encoding="utf-8")
     client = FakeRecoveryClient({
         "status": "RUNNING", "execution_attempt": 2, "hold_state": "HELD",
-        "hold_assignment_generation": 5, "hold_gpu_uuid": "GPU-A",
+        "hold_execution_attempt": 2, "hold_assignment_generation": 5,
+        "hold_gpu_uuid": "GPU-A", "node_id": "node-a",
+        "process_identity_sha256": hashlib.sha256(json.dumps(
+            {"pid": 11, "create_time": 1.0, "command_hash": "h"},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest(),
     })
     coordinator = NodeRecoveryCoordinator(
         workdirs, controller, client=client, intent_path=intent,
