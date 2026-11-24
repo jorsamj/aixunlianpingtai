@@ -631,15 +631,15 @@ class PostgresAlgorithmRepository:
 
         external = "upper(COALESCE(a.source_type,''))='EXTERNAL'"
         ready = (
-            "CASE WHEN NOT (" + external + ") THEN a.algorithm_type IN "
-            "('yolo_ultralytics','paddle_detection') "
-            "WHEN upper(COALESCE(a.provider_type,''))<>'CHANG_LIAN' THEN 1 "
-            "WHEN a.external_active = FALSE THEN 0 "
+            "CASE WHEN NOT (" + external + ") THEN (a.algorithm_type IN "
+            "('yolo_ultralytics','paddle_detection')) "
+            "WHEN upper(COALESCE(a.provider_type,''))<>'CHANG_LIAN' THEN TRUE "
+            "WHEN a.external_active = FALSE THEN FALSE "
             "WHEN NOT EXISTS (SELECT 1 FROM w5_algorithm.algorithm_external_analysis x "
             "WHERE x.project_id=a.project_id AND x.algorithm_id=a.id "
-            "AND x.analysis_type='1' AND (x.payload->>'status')='1') THEN 0 "
-            "WHEN %s='' OR COALESCE(a.payload->>'external_master_data_digest','')<>%s THEN 0 "
-            "ELSE 1 END"
+            "AND x.analysis_type='1' AND (x.payload->>'status')='1') THEN FALSE "
+            "WHEN %s='' OR COALESCE(a.payload->>'external_master_data_digest','')<>%s THEN FALSE "
+            "ELSE TRUE END"
         )
         # mAP50: the first *numeric* candidate in priority order. JSONB typeof
         # keeps NULL, strings, booleans, objects and arrays out, so one broken
@@ -672,9 +672,12 @@ class PostgresAlgorithmRepository:
             "AND v.algorithm_id=a.id AND v.id=a.current_version_id "
             "LEFT JOIN stats ON stats.algorithm_id=a.id "
             "LEFT JOIN LATERAL (SELECT CASE WHEN c.value>1 THEN c.value ELSE c.value*100 END"
-            " AS map50_percent FROM (SELECT (candidate #>> '{}')::numeric AS value "
+            "::double precision AS map50_percent FROM (SELECT (candidate #>> '{}')::numeric AS value "
             "FROM " + metric_candidates + " AS raw(ord,candidate) "
-            "WHERE jsonb_typeof(candidate)='number' ORDER BY ord LIMIT 1) c) m ON TRUE "
+            "WHERE jsonb_typeof(candidate) IN ('number','string') "
+            "AND lower(btrim(candidate #>> '{}')) NOT IN ('nan','-nan','infinity','-infinity','inf','-inf') "
+            "AND pg_input_is_valid(btrim(candidate #>> '{}'), 'numeric') "
+            "ORDER BY ord LIMIT 1) c) m ON TRUE "
             "WHERE a.project_id=%s)"
         )
         args: list[Any] = [
@@ -715,8 +718,8 @@ class PostgresAlgorithmRepository:
             conditions.append("external_category_id = ANY(%s)")
             args.append(sorted(matched))
         conditions.extend({
-            "trainable": ["trainable=1"],
-            "blocked": ["trainable=0"],
+            "trainable": ["trainable IS TRUE"],
+            "blocked": ["trainable IS FALSE"],
             "training": ["filter_active=1"],
             "trained": ["version_count>0"],
             "untrained": ["version_count=0"],

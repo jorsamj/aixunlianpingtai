@@ -420,7 +420,9 @@ def test_cutover_admission_gates_single_writer_and_stale_sqlite(pg):
             acknowledge_unported=True,
         )
     assert admitted["admitted"] is True, admitted["blocking"]
-    assert admitted["admission"]["unported_operations"]
+    # Every presentation projection is implemented now, so the admission
+    # records an empty gap; the single-writer safety assertions still hold.
+    assert admitted["admission"]["unported_operations"] == []
     from platform_core.algorithm_cutover import write_admission_record
 
     write_admission_record(admitted["admission"], record_path)
@@ -625,8 +627,8 @@ def test_all_seven_presentations_answer_real_business_queries(pg):
     repo = _presentation_repository(pg, store, "pres")
 
     rows, total, revision = repo.bootstrap_summary()
-    assert total == 1 and rows[0]["id"] == "algo-a"
-    assert rows[0]["versions_deferred"] is True and rows[0]["versions"] == []
+    assert total == 2 and {row["id"] for row in rows} == {"algo-a", "algo-b"}
+    assert all(row["versions_deferred"] is True and row["versions"] == [] for row in rows)
     assert isinstance(revision, int)
 
     assert repo.training_display_refs([]) == {}
@@ -647,8 +649,9 @@ def test_all_seven_presentations_answer_real_business_queries(pg):
     assert one["has_model"] is True
 
     listing = repo.asset_algorithms(page=1, page_size=10)
-    assert listing["total"] == 1 and len(listing["items"]) == 1
-    assert listing["items"][0]["current_version"]["id"] == "v-a2"
+    assert listing["total"] == 2 and len(listing["items"]) == 2
+    by_id = {item["id"]: item for item in listing["items"]}
+    assert by_id["algo-a"]["current_version"]["id"] == "v-a2"
     assert set(listing["filter_options"]) == {
         "algorithm_type", "industry", "source_type", "status",
     }
@@ -657,8 +660,8 @@ def test_all_seven_presentations_answer_real_business_queries(pg):
     library = repo.library_algorithms(
         statistics=[], master_digest="", categories=(), page=1, page_size=10,
     )
-    assert library["total"] == 1
-    card = library["items"][0]
+    assert library["total"] == 2
+    card = next(item for item in library["items"] if item["id"] == "algo-a")
     assert card["id"] == "algo-a" and card["trainable"] is True
     # Current version v-a2 carries evaluation.metrics.map50 = 0.61 -> 61.0
     assert card["map50_percent"] == pytest.approx(61.0)
@@ -672,8 +675,8 @@ def test_all_seven_presentations_answer_real_business_queries(pg):
     other_repo = _presentation_repository(pg, _store(root, "other"), "other")
     assert repo.asset_versions("algo-a")["total"] == 2
     assert other_repo.asset_versions("algo-a")["total"] == 2
-    assert repo.asset_algorithms()["total"] == 1
-    assert other_repo.asset_algorithms()["total"] == 1
+    assert repo.asset_algorithms()["total"] == 2
+    assert other_repo.asset_algorithms()["total"] == 2
 
     # A stale admission still refuses writes.
     stale = dict(repo._admission)
