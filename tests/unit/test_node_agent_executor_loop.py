@@ -767,3 +767,82 @@ def test_dual_slot_rejects_start_that_is_not_the_reserved_contract(tmp_path):
         assert records[0]["execution_attempt"] == 0
         assert records[0]["assignment_generation"] == 5
         loop._slots.shutdown(0.1)
+
+
+def test_concurrent_slot_reaping_is_single_flight_and_idempotent():
+    """Two reconcilers must never double-release the same slot.
+
+    The executor loop serially reaps in its own thread, but the slot reconciler
+    is also exercised by operators/tests; without single-flight protection two
+    scans can both confirm the same release and the loser raises SlotNotReleased.
+    """
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    class StatusClient:
+        node_id = "node-1"
+
+        def execution_status(self, _task_id):
+            return {
+                "task_id": "a", "node_id": "node-1", "status": "FAILED",
+                "execution_attempt": 3, "hold_state": "RELEASED",
+                "hold_execution_attempt": 3, "hold_assignment_generation": 2,
+                "hold_gpu_uuid": "GPU-A", "proof_type": "PROCESS_STOP_VERIFIED",
+                "proof_sha256": "f" * 64,
+                "process_identity_sha256": hashlib.sha256(json.dumps({
+                    "pid": 11, "create_time": 12.5, "command_hash": "a" * 64,
+                }, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            }
+
+    class Controller:
+        def terminate_tree(self, *_args, **_kwargs):
+            return None
+
+    lease = RemoteExecutionLease(
+        task_id="a", kind="TRAINING", project_id="p", generation=3,
+        lease_token="t", lease_expires_at="2026-09-18T10:00:00+00:00",
+        worker_id="agent:node-1", payload={}, assignment={
+            "generation": 2,
+            "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        transport={},
+    )
+    loop = NodeAgentExecutorLoop(
+        StatusClient(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda *_args: object(), slot_controller=Controller(),
+    )
+    slot = loop._slots.reserve(
+        SimpleNamespace(task_id="a", generation=2), gpu_uuid="GPU-A", slot_id="slot-a",
+    )
+    loop._slots.mark_started(slot, lease)
+    loop._slots.start_worker(slot, lambda *_args: None)
+    loop._slots.wait(5)
+    slot.identity = SimpleNamespace(pid=11, create_time=12.5, command_hash="a" * 64)
+
+    confirmations = []
+    original = loop._slots.confirm_stopped
+
+    def counting(slot_value, controller, **kwargs):
+        confirmations.append(slot_value.task_id)
+        time.sleep(0.05)
+        return original(slot_value, controller, **kwargs)
+
+    loop._slots.confirm_stopped = counting
+    errors = []
+
+    def reap():
+        try:
+            loop._reap_dual_slots()
+        except BaseException as error:  # noqa: BLE001 - surfaced below
+            errors.append(error)
+
+    threads = [threading.Thread(target=reap) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert errors == []
+    # Single-flight: exactly one reconciler may confirm the release.
+    assert confirmations == ["a"]
+    assert loop._slots.active() == ()
+    loop._slots.shutdown(0.1)

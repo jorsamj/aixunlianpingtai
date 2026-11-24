@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
-from .node_agent_execution_slots import BoundedExecutionSlots
+from .node_agent_execution_slots import BoundedExecutionSlots, SlotNotReleased
 from .node_agent_deployment_runtime import (
     AgentDeploymentOutcome,
     AgentDeploymentRunner,
@@ -111,6 +111,7 @@ class NodeAgentExecutorLoop:
         self._slot_controller = slot_controller
         self._slots = BoundedExecutionSlots(2, persist_path=slot_intent_path) if self.max_slots == 2 else None
         self._slot_runners: dict[tuple[str, int], object] = {}
+        self._reap_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -357,6 +358,17 @@ class NodeAgentExecutorLoop:
     def _reap_dual_slots(self) -> None:
         if self._slots is None:
             return
+        if not self._reap_lock.acquire(blocking=False):
+            # Another thread is already reconciling the slots. Concurrent
+            # reaping could release the same slot twice and turn a legitimate
+            # release into a spurious SlotNotReleased failure.
+            return
+        try:
+            self._reap_dual_slots_locked()
+        finally:
+            self._reap_lock.release()
+
+    def _reap_dual_slots_locked(self) -> None:
         for slot in self._slots.active():
             if not slot.worker_exited:
                 continue
@@ -396,10 +408,19 @@ class NodeAgentExecutorLoop:
                     or str(status.get("hold_state")) != "RELEASED"
                     or int(status.get("hold_execution_attempt") or -1) != int(slot.execution_attempt)):
                 continue
-            if self._slots.confirm_stopped(
-                slot, self._slot_controller,
-                allow_no_process=slot.identity is None,
-            ):
+            try:
+                released = self._slots.confirm_stopped(
+                    slot, self._slot_controller,
+                    allow_no_process=slot.identity is None,
+                )
+            except SlotNotReleased:
+                # The slot was released by another reconciler between the scan
+                # and this confirmation; that is an idempotent success, not an
+                # error, and capacity is already accounted for.
+                self._slot_runners.pop((slot.task_id, slot.generation), None)
+                self._set_active(slot.task_id, False)
+                continue
+            if released:
                 self._slot_runners.pop((slot.task_id, slot.generation), None)
                 self._set_active(slot.task_id, False)
                 self._completed_tasks += 1

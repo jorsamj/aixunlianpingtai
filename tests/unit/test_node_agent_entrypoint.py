@@ -511,3 +511,54 @@ def test_executor_state_lock_is_cross_process_and_released_on_exit(tmp_path):
         first.wait(timeout=20)
     third = spawn(tmp_path, 0)
     assert third.communicate(timeout=20)[0].strip() == "OK"
+
+
+def _slot_build_args():
+    return SimpleNamespace(
+        ultralytics_python="",
+        paddle_python="",
+        rknn_python="",
+        rknn_lite_python="",
+        mother_model_install_dir="",
+        execution_heartbeat_interval=5.0,
+        executor_poll_interval=2.0,
+    )
+
+
+def test_dual_slot_execution_is_explicit_opt_in_and_defaults_to_one_slot(tmp_path, monkeypatch):
+    """W15/W16: production default must stay single-slot.
+
+    The two-slot executor requires BOTH the local runtime opt-in
+    (DSH_AGENT_EXECUTION_SLOTS=2) and the central authorization capability.
+    Without the env opt-in the Agent must build a one-slot loop and advertises
+    only its normal capability, never execution-slots:2.
+    """
+    monkeypatch.delenv("DSH_AGENT_EXECUTION_SLOTS", raising=False)
+    single = node_agent._build_executor(
+        control_plane="http://127.0.0.1:9",
+        node_id="default-slot-node",
+        token="node-token",
+        state_dir=tmp_path / "state-default",
+        runtime_probe={"python_executable": sys.executable},
+        reported_capabilities=["training"],
+        args=_slot_build_args(),
+    )
+    assert single is not None
+    assert single.max_slots == 1
+    assert single._slots is None
+    assert single.effective_capabilities() == ("training",)
+
+    monkeypatch.setenv("DSH_AGENT_EXECUTION_SLOTS", "2")
+    dual = node_agent._build_executor(
+        control_plane="http://127.0.0.1:9",
+        node_id="opt-in-dual-node",
+        token="node-token",
+        state_dir=tmp_path / "state-dual",
+        runtime_probe={"python_executable": sys.executable},
+        reported_capabilities=["training"],
+        args=_slot_build_args(),
+    )
+    assert dual is not None
+    assert dual.max_slots == 2
+    assert dual._slots is not None
+    assert dual.effective_capabilities() == ("training", "execution-slots:2")
