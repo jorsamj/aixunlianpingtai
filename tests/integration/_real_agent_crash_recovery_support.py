@@ -436,7 +436,9 @@ def launch_agent(
         str(Path(staged["agent"])),
         "--control-plane", stack["base_url"],
         "--node-id", NODE_ID,
-        "--token", stack["token"],
+        # tokens are token_urlsafe and may start with '-'; the '=' form keeps
+        # argparse from mistaking an opaque secret for an option.
+        "--token=" + str(stack["token"]),
         "--state-dir", str(state_dir),
         "--data-dir", str(data_dir),
         "--capabilities", "training",

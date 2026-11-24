@@ -161,8 +161,8 @@ start、mark_started、Worker、恢复、Slot intent 精确清理、新任务准
 - e041ff53 的一批红 job 根因是主代理新增的默认单槽测试在未安装训练依赖的 job 中触发
   `ModuleNotFoundError: yaml`；已在 5cbe36c1 用 `pytest.importorskip` 显式 skip 修复。
 - 双槽 reap 并发竞态（同一 SHA 的 PR 运行绿、push 运行红）已由 f7298f9d 的单飞锁修复。
-- M2 的 POSIX 全链路只在 Linux CI 验证；在 Linux job 实际 green 之前保持
-  `REAL_OS_SIGKILL_RECOVERY_NOT_VERIFIED`。
+- M2 的 POSIX 全链路只在 Linux CI 验证；该场景已于 `39a1d0f1` 获得正式 Linux CI
+  证据（见 §9.9 与 `AGENT_SIGKILL_RESTART_E2E_PASS`）。
 
 ### 9.7 进行中工作流（子代理并行）
 
@@ -192,8 +192,38 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 - `A800_PREFLIGHT_REQUIRED`
 - `A800_PRODUCTION_UPGRADE_NOT_EXECUTED`
 - `OFFLINE_INSTALL_NOT_VERIFIED`
-- 真实 Linux POSIX SIGKILL 全链路：以 Node Agent Executor 的 Linux-only CI step 实跑为准；
-  在对应 job green 前保持 `REAL_OS_SIGKILL_RECOVERY_NOT_VERIFIED`。
+- `AGENT_SIGKILL_RESTART_E2E_PASS`（**已由准确 Linux CI 证据确认**）：
+  SHA `39a1d0f1`，workflow run `45331930879`（Node Agent Executor，pull_request，
+  conclusion=success），Linux job `138234917704`，其中 step
+  `POSIX Agent crash-window SIGKILL isolation (no GPU)` 与
+  `Real Node Agent OS SIGKILL recovery E2E (Linux, no GPU)` 均 SUCCESS。
+  该标签**仅覆盖**“真实 node_agent.py OS 进程 SIGKILL → 新 Agent → 中央 HTTP 对账 →
+  Stop Proof → Hold RELEASED → 清理 → 新任务准入”这一场景；
+  响应丢失五类、双槽两槽同时崩溃分别恢复、同 GPU 重新准入、同 node_id 双实例、
+  真实 GPU 验收**仍未覆盖**，继续单独记录。
+- `REAL_OS_SIGKILL_RECOVERY_NOT_VERIFIED`：不再用于上述核心场景；仅用于尚未覆盖的
+  POSIX 恢复子合同（见 M15 队列）。
+
+### 9.9 CI 事实核对（M9，2026-11-24）
+
+- 代码候选 `39a1d0f1`：50 个 workflow run 全部 completed；其中 48 success。
+  非 success 两项均已定性：
+  1. `Remote Material Import`（PR run `45331930750`）`cancelled`：由后续运行/并发取消，
+     同 SHA 的 push run `45331923075` success、最终 SHA `fe0e964c` 的 PR run
+     `45332708407` success ⇒ 等价通过，不计失败根因。
+  2. `Node Agent Executor`（push run `45331923029`）Windows `contract` 失败：
+     `test_real_agent_restart_is_fail_closed_without_stop_proof` 中的真实 Agent 以
+     退出码 2 结束，argparse 报 `argument --token: expected one argument`。
+     根因：节点 token 由 `secrets.token_urlsafe` 生成，可能以 `-` 开头，作为独立 argv
+     传给 `--token` 时被 argparse 当成选项（同 SHA 的 PR run 通过 = token 恰好未以 `-`
+     开头的时序随机）。已修复：
+     - `node_agent.py::_normalized_argv` 将 `--token -<value>` 规范化为 `--token=<value>`
+       （生产 CLI 健壮性缺陷，不只是测试问题）；
+     - M2 harness 显式使用 `--token=<value>`；
+     - 新增回归测试 `test_cli_accepts_tokens_that_start_with_a_dash`。
+- 最终文档 SHA `fe0e964c`：22 runs，21 completed（0 failure）+1 in_progress（当次查询）。
+- CI 查询规则：单次查询记录状态，不轮询；pending 不宣称验收通过。
+
 
 下一轮优先：
 

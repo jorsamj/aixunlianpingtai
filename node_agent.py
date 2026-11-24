@@ -350,8 +350,33 @@ def _build_executor(
     return loop
 
 
+def _normalized_argv(argv=None) -> list[str]:
+    """Keep opaque option values that start with '-' out of argparse's parser.
+
+    Node Agent tokens come from ``secrets.token_urlsafe`` and may legitimately
+    begin with '-' (or '_'). Passed as a separate argv item, argparse treats
+    such a value as an option and aborts the Agent with exit code 2. Operators
+    and supervisors may keep using the documented ``--token <value>`` form, so
+    normalize only this value into ``--token=<value>`` before parsing.
+    """
+    values = list(sys.argv[1:] if argv is None else argv)
+    normalized: list[str] = []
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if item == "--token" and index + 1 < len(values):
+            value = values[index + 1]
+            if value.startswith("-") and value != "-":
+                normalized.append("--token=" + value)
+                index += 2
+                continue
+        normalized.append(item)
+        index += 1
+    return normalized
+
+
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(_normalized_argv(argv))
     data_dir = Path(args.data_dir).expanduser().resolve() if str(args.data_dir).strip() else None
     model_roots = list(args.mother_model_roots or [])
     if data_dir is not None and (data_dir / "models").is_dir():

@@ -712,3 +712,21 @@ def test_dual_slot_intent_evidence_requires_non_empty_records(tmp_path):
     )
     assert node_agent._persistent_recovery_evidence(state_dir) is True
 
+
+
+def test_cli_accepts_tokens_that_start_with_a_dash():
+    """token_urlsafe may start with '-'; the CLI must not treat it as an option."""
+    assert node_agent._normalized_argv([
+        "--token", "-abc_123", "--node-id", "node-1",
+    ]) == ["--token=-abc_123", "--node-id", "node-1"]
+    # Ordinary values and already-normalized forms stay untouched.
+    plain = ["--token", "abc123", "--token=def456", "-h"]
+    assert node_agent._normalized_argv(plain) == plain
+    # A bare lone dash is a conventional stdin marker, not an option.
+    assert node_agent._normalized_argv(["--token", "-"]) == ["--token", "-"]
+    # argparse must accept the normalized argv and keep the exact secret.
+    parsed = node_agent.build_parser().parse_args(node_agent._normalized_argv([
+        "--token", "-opaque_secret", "--control-plane", "http://127.0.0.1:9",
+        "--node-id", "node-1",
+    ]))
+    assert parsed.token == "-opaque_secret"
