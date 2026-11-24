@@ -42,7 +42,8 @@ test('native conversion history reuses the pilot read-only view against the v42 
  await expect(page.getByRole('row').filter({hasText:'job-1'})).toBeVisible();
  await expect(page.getByRole('row').filter({hasText:'job-1'})).toContainText('RKNN');
  await expect(page.getByText('共 1 条 · 当前版本范围',{exact:true})).toBeVisible();
- await expect(page.getByRole('button',{name:'创建版本转换',exact:true})).toHaveCount(0);
+ // T2-C: creation is native now; the read-only pilot list still owns the records.
+ await expect(page.getByRole('button',{name:'创建版本转换',exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'原版本转换 / 验证',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'查看转换job-1详情',exact:true}).click();
  const drawer=page.getByRole('dialog',{name:'转换任务诊断与证据'});
@@ -51,6 +52,7 @@ test('native conversion history reuses the pilot read-only view against the v42 
  await expect(drawer).toContainText('matched');
  await expect(drawer).toContainText('model.rknn');
  await expect(drawer).toContainText('2.3.0');
+ await expect(drawer.getByRole('button',{name:'原生任务详情',exact:true})).toBeVisible();
  await drawer.getByRole('button',{name:'返回当前记录列表',exact:true}).click();
  await expect(drawer).toBeHidden();
  expect(writes).toEqual([]);

@@ -11,6 +11,7 @@ const filters=reactive<Record<string,string|number>>({page:1,status:'',target:''
 const history=ref<ConversionPage|null>(null),record=ref<ConversionRecord|null>(null);
 const filterFields=[['status','状态'],['target','目标'],['chip','芯片'],['precision','精度'],['csc','颜色配置']];
 function log(){const id=record.value?.id;if(!id)return;close();props.context.openConversionLog?.(id)}
+function openNativeDetail(){const id=record.value?.id;if(!id)return;close();props.context.openConversionDetail?.(id)}
 function manage(){close();if(selection)props.context.openLegacy(selection)}
 function close(){record.value=null}
 function load(force=false){if(!selection?.algorithmId||!selection.versionId)return;close();props.context.memory.history={...filters};return reads.run('history',signal=>api.history(selection.algorithmId,selection.versionId,{...filters,...(force?{force:'true'}:{})},signal),value=>{history.value=value})}
@@ -39,5 +40,5 @@ onMounted(()=>void load());
   <h3>执行信息</h3><ReadOnlyFacts :fields="[['任务状态',record.task_status],['Durable 状态',record.durable_status],['当前阶段',record.stage],['进度',record.progress],['执行资源',record.resource_name],['Worker',record.worker_id],['创建',record.created_at],['开始',record.started_at],['完成',record.finished_at]]"/><ReadOnlyFacts :fields="Object.entries(record.execution_evidence||{})"/>
   <h3>输出产物</h3><p v-if="!record.outputs?.length" class="evidence-note">没有提供产物证据，不能据此生成下载链接。</p><article v-for="(output,index) in record.outputs||[]" :key="index" class="artifact-evidence"><strong>{{ output.file_name||'文件名未提供' }}</strong><ReadOnlyFacts :fields="[['文件存在',output.exists===true?'文件存在（不代表完整性通过）':output.exists===false?'文件不存在':'未核验'],['SHA256',output.sha256],['大小（MB）',output.size_mb],['大小（字节）',output.size_bytes],['完整性记录',output.validation_status]]"/></article><p v-if="record.outputs_truncated">仅展示前20个输出，完整记录请使用原管理入口。</p>
   <h3>诊断</h3><ReadOnlyFacts :fields="[['错误代码',record.error_code],['错误',record.error],['消息',record.message],['建议',record.solution],['等待原因',record.resource_wait_reason]]"/><ReadOnlyFacts :fields="Object.entries(record.hardware_verification||{})"/>
- </div><template #footer><el-button @click="close">返回当前记录列表</el-button><el-button v-if="record&&context.openConversionLog" @click="log">原任务日志</el-button><el-button @click="manage">原任务操作与验证</el-button></template></el-drawer>
+ </div><template #footer><el-button @click="close">返回当前记录列表</el-button><el-button v-if="record&&context.openConversionDetail" @click="openNativeDetail">原生任务详情</el-button><el-button v-if="record&&context.openConversionLog" @click="log">原任务日志</el-button><el-button @click="manage">原任务操作与验证</el-button></template></el-drawer>
 </section></template>

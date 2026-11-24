@@ -1,0 +1,113 @@
+import {request, requestText} from '../app/http.ts';
+import type {
+  ConversionCatalog,
+  ConversionContractResult,
+  ConversionJobDetail,
+  ConversionJobRequest,
+  ConversionSource,
+  DeployResource,
+} from '../types/conversion-job';
+
+const projectRoot = (projectId: string) =>
+  `/api/v39/projects/${encodeURIComponent(projectId)}`;
+
+// Dynamic vendor/chip/template dictionary owned by the existing conversion
+// catalog API. The native page never keeps a copy of these records.
+export async function loadConversionCatalog(signal: AbortSignal) {
+  const value = await request<ConversionCatalog>('/api/v39/deploy/catalog', {signal});
+  if (!value || !Array.isArray(value.vendors) || !Array.isArray(value.chips) ||
+      !Array.isArray(value.templates)) throw new Error('转换字典响应格式无效');
+  return value;
+}
+
+// Cached resource facts only: no SDK probe is started by opening the form.
+export async function loadConversionResources(signal: AbortSignal) {
+  const value = await request<{ok?: boolean; items?: DeployResource[]}>(
+    '/api/v39/deploy/resources?detect_missing=false', {signal},
+  );
+  if (value?.ok !== true || !Array.isArray(value.items))
+    throw new Error('转换资源响应格式无效');
+  return value.items;
+}
+
+export async function loadConversionSources(projectId: string, signal: AbortSignal) {
+  const value = await request<{ok?: boolean; items?: ConversionSource[]}>(
+    `${projectRoot(projectId)}/deploy/source-models`, {signal},
+  );
+  if (value?.ok !== true || !Array.isArray(value.items))
+    throw new Error('转换源模型响应格式无效');
+  return value.items;
+}
+
+// Same preview/admission contract the original create dialog resolves.
+export async function resolveConversion(
+  projectId: string, body: ConversionJobRequest, signal: AbortSignal,
+) {
+  const value = await request<ConversionContractResult>(
+    `${projectRoot(projectId)}/deploy/resolve`,
+    {method: 'POST', signal, body: JSON.stringify(body)},
+  );
+  if (!value || typeof value.ready !== 'boolean' || typeof value.status !== 'string')
+    throw new Error('转换合同响应格式无效');
+  return value;
+}
+
+// Existing conversion task creation owner. Idempotency is the caller's
+// request_id; the response is checked against the submitted identity.
+export async function createConversionJob(
+  projectId: string, body: ConversionJobRequest, signal: AbortSignal,
+) {
+  const value = await request<{ok?: boolean; job?: ConversionJobDetail}>(
+    `${projectRoot(projectId)}/deploy/jobs`,
+    {method: 'POST', signal, body: JSON.stringify(body)},
+  );
+  const job = value?.job;
+  if (value?.ok !== true || !job?.id) throw new Error('转换任务创建回执不完整');
+  if (job.project_id !== projectId || job.source_id !== body.source_id)
+    throw new Error('转换任务回执与当前项目或源模型不一致');
+  if (body.request_id && job.request_id !== body.request_id)
+    throw new Error('转换任务回执与当前请求 ID 不一致');
+  return job;
+}
+
+export async function loadConversionJob(
+  projectId: string, jobId: string, signal: AbortSignal,
+) {
+  const job = await request<ConversionJobDetail>(
+    `${projectRoot(projectId)}/deploy/jobs/${encodeURIComponent(jobId)}`, {signal},
+  );
+  if (job?.id !== jobId) throw new Error('转换任务响应身份不一致');
+  return job;
+}
+
+// Read-only recovery of an unconfirmed creation; no new request ID is minted.
+export async function findConversionByRequest(
+  projectId: string, requestId: string, signal: AbortSignal,
+) {
+  const value = await request<{
+    ok?: boolean; found?: boolean; pending?: boolean; job?: ConversionJobDetail;
+  }>(
+    `${projectRoot(projectId)}/deploy/jobs/by-request/${encodeURIComponent(requestId)}`,
+    {signal},
+  );
+  if (value?.ok !== true || typeof value.found !== 'boolean')
+    throw new Error('转换请求核验响应格式无效');
+  return value;
+}
+
+// Existing plain-text log endpoint through the shared text request owner.
+export async function loadConversionLog(
+  projectId: string, jobId: string, signal: AbortSignal,
+) {
+  const text = await requestText(
+    `${projectRoot(projectId)}/deploy/jobs/${encodeURIComponent(jobId)}/log`, {signal},
+  );
+  return text.slice(-160000);
+}
+
+export function newConversionRequestId() {
+  const uuid = globalThis.crypto?.randomUUID?.().replace(/-/g, '');
+  return uuid
+    ? `conv_${uuid}`
+    : `conv_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
