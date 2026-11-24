@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`9c926d0c979fdefeb66627ee148533797a85834a`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`9c926d0c979fdefeb66627ee148533797a85834a`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -394,7 +394,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.16 第六轮（P0 安全收口 + T7）交付摘要（2026-11-24 21:xx +08）
 
-起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**。
+起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`9c926d0c979fdefeb66627ee148533797a85834a`**。
 纪律：单主 Agent + 至多 1 个活跃子 Agent（仅 T7 迁移使用），本地仅 `py_compile`/`import app`/
 定向用例/守卫 grep，无重型测试。
 
@@ -405,7 +405,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.17 第七轮（真实 PG CI + 算法访问收口）交付摘要（2026-11-24 22:xx +08）
 
-起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**。
+起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`9c926d0c979fdefeb66627ee148533797a85834a`**。
 本轮按序推进第 1 项（真实 PG CI）与第 3 项（T8 业务接线）的可独立部分；本地仅
 `py_compile` / `import app` / pytest `--collect-only` / 守卫 grep，未执行任何 PG、集成或重型测试。
 
@@ -415,7 +415,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.18 第八轮（单一算法事实源 + PG CI 修复）交付摘要（2026-11-24 23:xx +08）
 
-起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**。
+起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`9c926d0c979fdefeb66627ee148533797a85834a`**。
 
 | 提交 | 内容 |
 |---|---|
@@ -449,3 +449,18 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 5. **M1 同类项**：`node_agent_conversion_runtime.py` 仍在中央确认前清除持久身份（同类缺陷，转换器有独立 supervisor 证明合同，需单独设计确认路径，本轮未盲改）。
 6. **M5.2 RAM 准入语义**：`RESOURCE_HOST_MEMORY_INSUFFICIENT` 仍直接 `FAILED`，未改为等待资源/`BLOCKED_BY_ENVIRONMENT`（属产品语义，需判定；本轮不猜）。
 
+
+### 9.19 第九轮（PG 投影去遮蔽 + 准入合同）— 2026-11-24 23:xx +08
+
+代码候选：`9c926d0c979fdefeb66627ee148533797a85834a`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
+被类尾同名占位方法**覆盖**（能力断言与实际不符），已删除占位；`algorithm_migration_cli.py` 调用
+`cutover_transition` 未导入（cutover-admit 必 NameError），已补 import 并复核调用链。CI 合同：
+parity 测试改为先按真实生产流程做隔离 admission 再打开 Provider（不取消写入准入、不加绕过开关）；
+两个合同步骤 `if: always()` 各自产出证据，最终守卫仍对失败/缺失/skip 判红。
+
+**七个展示方法现状**：`bootstrap_summary`、`training_display_refs` 为真实 PG 查询；
+`library_algorithms`、`asset_algorithms`、`asset_algorithm_basic`、`asset_versions`、`asset_version`
+仍为 fail-closed 占位。剩余工作具体阻断：三个 `asset_*` 需把 `model_asset_views.version_columns()`
+的 SQLite `json_extract/json_type` 投影改写为 JSONB SQL 并保持 `version_record` 行形状；
+`library_algorithms` 还需外部资格、品目层级、训练统计与 mAP50 排序规则；`asset_algorithms` 需
+分页/筛选/排序/`filter_options` 与 revision 同快照。PG 正式切换保持关闭。
