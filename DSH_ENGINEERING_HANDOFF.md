@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`f2ce326ee1c8fd6a577f8c9c613a8e97ab955b67`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`1e89d10dd53ebf71c7308a65f82f0db6159541d1`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`f2ce326ee1c8fd6a577f8c9c613a8e97ab955b67`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`1e89d10dd53ebf71c7308a65f82f0db6159541d1`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -389,6 +389,8 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 | `76e989da` | **M0-A** 双槽 Windows 失败的真实根因是 fixture：测试替身 trainer 把 `runtime_cache`/`actual_cache` 硬编码 `False`，而冻结解算器在主机有余量时确实会解出 `ram`/`disk`，于是平台按合同判 `REMOTE_RUNTIME_RESOURCES_MISMATCH` 并 FENCED 两个执行。替身改为陈述实际解出的 cache（与生产 Worker 一致），**未放宽任何资源合同校验**。**M0-B** 三条永久守卫仍 grep 已迁走的代码，改绑 `online_feedback_api.py`；其余 app.py 守卫逐条核对仍存在。**M1.1** 租约监视器改为单调截止时间（初始取中央实际授予的截止，不叠加 TTL）、请求超时按剩余租约收紧、重试等待可取消并检查 `stop_event`、beat 单飞且迟到响应不得复活已 fenced 执行；503/HTTP 应答 fencing 合同不变。**M1.2** `_terminate_active()` 不再在中央确认前删除持久 ProcessIdentity，改为写 `process-stop-verified.json`（精确 pid/create_time/command_hash + 原因）；仅 `_confirm_stop_cleanup()` 在中央权威终态后释放身份 | 5 项 lease-monitor 单测通过（高风险并发路径，单次定向）；其余交 CI |
 | `adec7da2` | **M2** 算法域单写 Owner：PG 写入在**同一事务**内 `FOR UPDATE` 锁定 `cutover_state` 并复核 provider/admission/generation/吊销（关闭 TOCTOU）；PG 写入强制要求 admission（此前为空即可写）；`evidence.phase` 处于切换中时 PG 拒写；SQLite 适配器**每次写**复核权威（旧实例与未声明的 mutating helper 均不可绕过）；切换前先落 `.transition` marker、本地 admission 落盘后才移除，崩溃窗口留下“两侧都不可写”的显式可恢复状态 | 17 项 provider-boundary 单测通过（fake connection，无真实 PG/磁盘压力）；真实 PG 交 CI |
 | `f2ce326e` | **M5.1** `_record_cancel_wait_diagnostic` 改为在共享 `<job.json>.lock` 下读改写（原为无锁，可与 Worker 进度互相覆盖） | `py_compile` + 共享锁助手导入校验 |
+
+| `1e89d10d` | **CI 回归修复（本轮自引入）**：`ONLINE_FEEDBACK_MAX_IMAGE_BYTES` 守卫应指向 `online_feedback_service.py`（此前误指 api 模块，OFR 两 job 必然红）；两条 UI 文案守卫改回文件原文（此前按控制台乱码改写，其中一条改成了不存在的文案）；`_terminate_active(graceful=)` 恢复“有序关闭自行验证并清除身份”的既有 POSIX 合同，fenced/异常路径仍保留身份与停止证据 | 由 CI 验证 |
 
 本轮未完成 / 阻断：
 1. **准确 SHA 的 CI**：本轮三次 push 后的 Actions 结果尚未取得（`CI_PENDING`）。
