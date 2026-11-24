@@ -2,10 +2,27 @@
 from datetime import datetime, timezone
 import json
 import math
+import sys
+import time
 from pathlib import Path
 
 from filelock import FileLock
 from .annotations import atomic_write_json
+
+
+# One lock identity for the shared per-job record. The app job writer, the
+# conversion/deployment workers and the numeric-evidence projection all use
+# ``<job.json>.lock``; a second lock name for the training Worker let progress
+# updates and cancellation writes read/modify/write the same file at once.
+JOB_RECORD_LOCK_SUFFIX = ".lock"
+JOB_RECORD_IO_DEADLINE_SECONDS = 15.0
+# A cancellation already persisted by the control plane is durable truth: a
+# late progress/startup write must not clear it while the process is stopped.
+CANCELLATION_STATUSES = frozenset({"stopped", "cancelled", "canceled", "cancelling"})
+TERMINAL_STATUSES = CANCELLATION_STATUSES | frozenset({
+    "done", "completed", "finished", "failed", "partial_success",
+    "blocked_by_environment", "blocked_by_hardware",
+})
 
 
 def utc(value):
@@ -87,19 +104,101 @@ def record_update(job, updates, observed_at=None):
         entry.setdefault("finished_at", observed_at)
 
 
-def update_job(path, updates, *, writer=atomic_write_json, before_update=None):
-    """Extend the original job mutation, sharing one short read/write lock."""
-    path = Path(path)
-    with FileLock(str(path) + ".state.lock", timeout=10):
+def _read_job_record(path: Path) -> dict:
+    """Read the record under the caller's lock, retrying transient Windows sharing errors.
+
+    An unreadable record is never degraded to ``{}`` here: merging into an empty
+    document would silently drop the fields another owner already persisted.
+    """
+    deadline = time.monotonic() + JOB_RECORD_IO_DEADLINE_SECONDS
+    while True:
         try:
-            job = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
+            break
         except FileNotFoundError:
-            job = {}
+            return {}
+        except PermissionError:
+            # A reader on Windows may hold the file open for a few ms.
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("job record is not a JSON object")
+    return value
+
+
+def _persisted_attempt(job) -> int | None:
+    try:
+        return int(job.get("training_attempt_generation"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _superseded_by_newer_attempt(job, attempt) -> bool:
+    """An older execution attempt must not overwrite a newer attempt's record."""
+    if attempt is None:
+        return False
+    try:
+        mine = int(attempt)
+    except (TypeError, ValueError):
+        return False
+    persisted = _persisted_attempt(job)
+    return persisted is not None and persisted > mine
+
+
+def _cancellation_persisted(job) -> bool:
+    return bool(job.get("cancel_requested")) or str(job.get("status") or "").strip().lower() in CANCELLATION_STATUSES
+
+
+def _guarded_updates(job, updates) -> dict:
+    """Keep a persisted cancellation marker; never resurrect a stopped job as running."""
+    guarded = dict(updates)
+    if not _cancellation_persisted(job):
+        return guarded
+    status = str(guarded.get("status") or "").strip().lower()
+    if status and status not in TERMINAL_STATUSES:
+        guarded.pop("status", None)
+        guarded.pop("message", None)
+        print(
+            f"[job-record] cancellation already persisted; skipped status={status!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+    for key in ("cancel_requested", "cancel_requested_at"):
+        if job.get(key) and not guarded.get(key):
+            guarded[key] = job[key]
+    return guarded
+
+
+def update_job(path, updates, *, writer=atomic_write_json, before_update=None,
+               attempt=None):
+    """Extend the original job mutation under one read/write lock.
+
+    Contract (shared with the app/deployment/numeric job writers):
+    ``<job.json>.lock`` + read-under-lock -> mutate -> whole-file atomic replace.
+    ``attempt`` is this writer's persisted execution generation; when the record
+    already carries a newer generation the update is skipped (and reported to
+    stderr) instead of clobbering the newer attempt's facts.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path) + JOB_RECORD_LOCK_SUFFIX, timeout=10, thread_local=False):
+        job = _read_job_record(path)
+        if _superseded_by_newer_attempt(job, attempt):
+            print(
+                f"[job-record] skipped stale write for attempt {attempt}: "
+                f"persisted generation {_persisted_attempt(job)} is newer ({path.name})",
+                file=sys.stderr,
+                flush=True,
+            )
+            return job
         if before_update is not None:
             before_update()
         observed_at = now_utc()
-        record_update(job, updates, observed_at)
-        job.update(updates)
+        guarded = _guarded_updates(job, updates)
+        record_update(job, guarded, observed_at)
+        job.update(guarded)
         job["updated_at"] = observed_at
         writer(path, job)
         return job

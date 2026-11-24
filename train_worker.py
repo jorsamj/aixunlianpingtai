@@ -34,6 +34,17 @@ def read_json(path: Path, default):
         return default
 
 
+# Bounded window for the whole-file atomic replacement. Windows readers may hold
+# the record open for a moment; a persistent denial is still raised, never
+# swallowed into a lost progress/cancellation/finalization fact.
+JOB_RECORD_REPLACE_DEADLINE_SECONDS = 15.0
+
+# Persisted execution generation of this Worker process (``--execution-attempt``).
+# The shared job record fences writes so an older attempt cannot clobber a newer
+# one; legacy/remote launches do not carry an identity and are not fenced.
+EXECUTION_ATTEMPT = None
+
+
 def write_json(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(
@@ -46,7 +57,21 @@ def write_json(path: Path, data):
             json.dump(data, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        deadline = None
+        delay = 0.005
+        while True:
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                # Another process may be reading the record. Retry briefly, then
+                # surface the failure instead of silently dropping the update.
+                if deadline is None:
+                    deadline = time.monotonic() + JOB_RECORD_REPLACE_DEADLINE_SECONDS
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(0.2, delay * 2)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -55,7 +80,7 @@ def write_json(path: Path, data):
 
 def update_job(job_file: Path, **kwargs):
     from platform_core.training_timing import update_job as update_training_job
-    return update_training_job(job_file, kwargs, writer=write_json)
+    return update_training_job(job_file, kwargs, writer=write_json, attempt=EXECUTION_ATTEMPT)
 
 
 def publish_startup_stage(job_file: Path, stage: str, message: str, progress_percent: float, **extra):
@@ -1122,6 +1147,8 @@ def main():
 
     project_dir = Path(args.project_dir)
     job_file = project_dir / "jobs" / args.job_id / "job.json"
+    global EXECUTION_ATTEMPT
+    EXECUTION_ATTEMPT = args.execution_attempt
     runs_dir = project_dir / "runs"
     models_dir = project_dir / "models"
     models_dir.mkdir(exist_ok=True)

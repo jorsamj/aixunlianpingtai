@@ -38,7 +38,7 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
     launched = launch_process(
         [sys.executable, "-c", "import time,sys; from filelock import FileLock; from pathlib import Path\n"
          "with FileLock(sys.argv[1]):\n Path(sys.argv[2]).write_text('ready'); time.sleep(.4)\n"
-         "while True: time.sleep(0.1)", str(job_dir / "job.json.state.lock"), str(ready)],
+         "while True: time.sleep(0.1)", str(job_dir / "job.json.lock"), str(ready)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
