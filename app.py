@@ -10042,15 +10042,16 @@ def algorithm_repository(project_id: str):
 
 
 def algorithm_presentation_store(project_id: str):
-    """SQLite store for presentation-only projections (library/asset/overview).
+    """Algorithm views for this project, served by the authoritative provider.
 
-    These projections are declared outside the cutover contract, so they are
-    served by SQLite *by design* rather than by a silent fallback; a PostgreSQL
-    cutover needs them ported (or explicitly acknowledged as unported).
+    A project has exactly one authoritative algorithm fact source: while SQLite
+    is the default this is the existing store (all projections implemented),
+    and after a PostgreSQL cutover it is the PostgreSQL provider. Asking for a
+    projection the chosen provider cannot serve fails closed instead of quietly
+    reading a possibly stale SQLite file, which is why this helper no longer
+    constructs AlgorithmSqlStore itself.
     """
-    from platform_core.algorithm_sql_store import AlgorithmSqlStore
-
-    return AlgorithmSqlStore(algorithms_file(project_id))
+    return algorithm_repository(project_id)
 
 
 def list_algorithms_internal(project_id: str, *, summary_only: bool = False,

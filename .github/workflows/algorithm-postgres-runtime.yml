@@ -16,6 +16,8 @@ on:
   pull_request:
     paths:
       - 'platform_core/algorithm_*.py'
+      - 'app.py'
+      - 'platform_core/training_report_api.py'
       - 'tests/integration/test_algorithm_migration_postgres.py'
       - 'tests/integration/test_algorithm_shadow_postgres.py'
       - 'tests/unit/test_algorithm_provider_boundary.py'
@@ -23,6 +25,8 @@ on:
   push:
     paths:
       - 'platform_core/algorithm_*.py'
+      - 'app.py'
+      - 'platform_core/training_report_api.py'
       - 'tests/integration/test_algorithm_migration_postgres.py'
       - 'tests/integration/test_algorithm_shadow_postgres.py'
       - 'tests/unit/test_algorithm_provider_boundary.py'
@@ -79,12 +83,21 @@ jobs:
           print("database:", database)
           assert version.startswith("PostgreSQL 16"), version
           PY
-      - name: Algorithm PostgreSQL contracts
+      - name: Algorithm PostgreSQL integration contracts
+        # --confcutdir keeps the repository-wide conftest (PIL + FastAPI +
+        # app.py) out of this focused environment: these contracts own their
+        # fixtures and must not need the whole training stack.
         run: |
           python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
             --junitxml=postgres-contracts.xml \
             tests/integration/test_algorithm_shadow_postgres.py \
-            tests/integration/test_algorithm_migration_postgres.py \
+            tests/integration/test_algorithm_migration_postgres.py
+      - name: Algorithm provider boundary contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/unit \
+            --junitxml=provider-boundary.xml \
             tests/unit/test_algorithm_provider_boundary.py
       - name: Refuse a run that skipped a PostgreSQL contract
         if: always()
@@ -94,17 +107,20 @@ jobs:
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          report = Path("postgres-contracts.xml")
-          if not report.is_file():
-              print("no junit report: the contract run did not complete", file=sys.stderr)
+          reports = [Path("postgres-contracts.xml"), Path("provider-boundary.xml")]
+          missing = [str(p) for p in reports if not p.is_file()]
+          if missing:
+              print(f"no junit report: {missing}: a contract run did not complete", file=sys.stderr)
               sys.exit(1)
-          suite = ET.parse(report).getroot().find("testsuite")
-          if suite is None:
-              print("malformed junit report", file=sys.stderr)
-              sys.exit(1)
-          skipped = int(suite.get("skipped") or 0)
-          failures = int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
-          tests = int(suite.get("tests") or 0)
+          tests = skipped = failures = 0
+          for report in reports:
+              suite = ET.parse(report).getroot().find("testsuite")
+              if suite is None:
+                  print(f"malformed junit report: {report}", file=sys.stderr)
+                  sys.exit(1)
+              skipped += int(suite.get("skipped") or 0)
+              failures += int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+              tests += int(suite.get("tests") or 0)
           print(f"tests={tests} failures={failures} skipped={skipped}")
           if skipped:
               print("a PostgreSQL contract was skipped; the job must fail", file=sys.stderr)
@@ -120,5 +136,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: algorithm-postgres-contracts
-          path: postgres-contracts.xml
+          path: |
+            postgres-contracts.xml
+            provider-boundary.xml
           if-no-files-found: warn

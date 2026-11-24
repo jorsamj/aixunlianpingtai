@@ -52,7 +52,10 @@ _LEGACY_REMOTE_VERSION_FIELDS = frozenset({
     "external_algo_version_id",
     "external_publish_status",
 })
-_UNSUPPORTED = tuple(PRESENTATION_OPERATIONS)
+_PORTED_PRESENTATION = ("bootstrap_summary", "training_display_refs")
+_UNSUPPORTED = tuple(
+    name for name in PRESENTATION_OPERATIONS if name not in _PORTED_PRESENTATION
+)
 #: Declared capability gap of this provider (single source for the cutover tool).
 UNSUPPORTED_OPERATIONS = _UNSUPPORTED
 
@@ -262,6 +265,58 @@ class PostgresAlgorithmRepository:
             )
 
     # -- meta --------------------------------------------------------------
+    def bootstrap_summary(self, limit: int = 500):
+        """Bounded boot rows from PostgreSQL, never version/report hydration."""
+        bound = max(1, min(500, int(limit)))
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT count(*) AS total FROM w5_algorithm.algorithm WHERE project_id=%s",
+                (self.project_id,),
+            )
+            total = int(cursor.fetchone()["total"])
+            cursor.execute(
+                "SELECT id,name,remark,industry,algorithm_type,current_version_id,"
+                "created_at,updated_at,source_type,master_data_readonly "
+                "FROM w5_algorithm.algorithm WHERE project_id=%s "
+                "ORDER BY sort_index, created_at DESC, id LIMIT %s",
+                (self.project_id, bound),
+            )
+            rows = cursor.fetchall()
+            revision = self._revision(cursor)
+        return [dict(row, versions=[], versions_deferred=True) for row in rows], total, revision
+
+    def training_display_refs(self, task_ids) -> dict[str, dict[str, Any]]:
+        """Bounded task -> version reference index; no version payload hydration."""
+        ids = list(dict.fromkeys(str(value) for value in task_ids))
+        if not ids:
+            return {}
+        if len(ids) > 100:
+            raise ValueError("task reference page too large")
+        placeholders = ",".join(["%s"] * len(ids))
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT v.training_job_id AS task_id, count(*) AS reference_count, "
+                "min(a.id) AS algorithm_id, min(a.name) AS algorithm_name, "
+                "min(v.id) AS version_id "
+                "FROM w5_algorithm.algorithm_version v "
+                "JOIN w5_algorithm.algorithm a "
+                "ON a.project_id = v.project_id AND a.id = v.algorithm_id "
+                f"WHERE v.project_id=%s AND v.training_job_id IN ({placeholders}) "
+                "GROUP BY v.training_job_id",
+                (self.project_id, *ids),
+            )
+            rows = cursor.fetchall()
+        return {
+            row["task_id"]: {
+                key: "" if row[key] is None else str(row[key])
+                for key in (
+                    "task_id", "reference_count", "algorithm_id",
+                    "algorithm_name", "version_id",
+                )
+            }
+            for row in rows
+        }
+
     def revision(self) -> int:
         with self._read() as cursor:
             return self._revision(cursor)

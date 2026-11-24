@@ -402,9 +402,52 @@ def create_training_task(
     return {"task_id": task_id, "payload": payload, "gpu_uuid": gpu_uuid}
 
 
+def allocator_diagnostics(stack: dict) -> str:
+    """Bounded evidence for why the central allocator handed out nothing."""
+    parts: list[str] = []
+    repository = stack["repository"]
+    try:
+        with repository._connect() as database:
+            tasks = [tuple(row) for row in database.execute(
+                "SELECT task_id,status,stage,attempt,worker_id,resource_key "
+                "FROM tasks ORDER BY task_id"
+            )]
+            assignments = [tuple(row) for row in database.execute(
+                "SELECT task_id,generation,node_id,state,lease_expires_at "
+                "FROM task_node_assignments ORDER BY task_id,generation"
+            )]
+            holds = [tuple(row) for row in database.execute(
+                "SELECT task_id,state,assignment_generation,execution_attempt,gpu_uuid "
+                "FROM execution_resource_holds ORDER BY task_id"
+            )]
+            nodes = [tuple(row) for row in database.execute(
+                "SELECT node_id,reported_capabilities,desired_capabilities,status,last_error "
+                "FROM service_nodes"
+            )]
+    except Exception as error:
+        return f"allocator diagnostics unavailable: {type(error).__name__}: {error}"
+    parts.append(f"tasks: {tasks}")
+    parts.append(f"assignments: {assignments}")
+    parts.append(f"holds: {holds}")
+    parts.append(f"nodes: {nodes}")
+    try:
+        allocations = stack["service"].allocator
+        for name in ("last_error", "last_refusal", "last_skip_reason"):
+            value = getattr(allocations, name, None)
+            if value:
+                parts.append(f"allocator.{name}: {str(value)[:400]}")
+    except Exception:
+        pass
+    return "\n".join(parts)
+
+
 def assign_next(stack: dict) -> dict:
     assignment = stack["service"].allocator.assign_next()
-    assert assignment is not None, "central allocator did not assign the queued task"
+    if assignment is None:
+        raise AssertionError(
+            "central allocator did not assign the queued task\n"
+            f"--- allocator diagnostics ---\n{allocator_diagnostics(stack)}"
+        )
     return assignment
 
 
