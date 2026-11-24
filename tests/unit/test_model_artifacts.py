@@ -1908,3 +1908,92 @@ def test_remote_utc_receipt_and_self_hash_without_manifest_cannot_prove_conversi
     assert item["metadata"]["finished_at"] == "2026-11-12T06:15:49+00:00"
     assert item["metadata"]["remote_job_id"] == "remote-received"
     assert item["metadata"]["conversion_identity_verified"] is False
+
+
+def _digest_bound_manifest(path, source_sha, *, tamper=False, legacy=False):
+    import hashlib as _hashlib
+    from platform_core.conversion import source_manifest_digest
+    digest = _hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {
+        "job_id": "c1", "created_at": "2026-10-20T02:00:00Z", "status": "runtime_verified",
+        "source": {"sha256": source_sha},
+        "onnx": {"input_shapes": [[1, 3, 384, 640]], "sha256": digest,
+                 "output_names": ["output0"], "output_count": 1},
+        "tool": {"name": "ultralytics-export", "version": "8.4.127"},
+        "outputs": [{"name": path.name, "sha256": digest, "size_bytes": path.stat().st_size}],
+        "source_manifest": {
+            "schema_version": 1,
+            "source": {"sha256": source_sha, "size_bytes": 1, "file_name": "best.pt"},
+            "onnx": {"sha256": digest},
+            "outputs": [{"name": path.name, "sha256": digest, "size_bytes": path.stat().st_size}],
+        },
+    }
+    if not legacy:
+        manifest["manifest_digest"] = source_manifest_digest(manifest)
+        if tamper:
+            manifest["manifest_digest"] = "0" * 64
+    else:
+        manifest.pop("source_manifest")
+    return manifest, digest
+
+
+def test_artifact_metadata_recomputes_source_manifest_digest_and_projects_status(tmp_path, monkeypatch):
+    import hashlib as _hashlib
+    service = _service(tmp_path)
+    version = _metadata_model(tmp_path)
+    path = tmp_path / "converted.onnx"
+    path.write_bytes(b"real-onnx-bytes-for-digest")
+    source_sha = _hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    manifest_path = tmp_path / "manifest.json"
+    manifest, output_sha = _digest_bound_manifest(path, source_sha)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    job = {"id": "c1", "status": "done", "target": "onnx",
+           "source_trace": {"sha256": source_sha}, "manifest_path": str(manifest_path),
+           "outputs": [{"path": str(path)}],
+           "numeric_status": "consistent",
+           "publication_status": "numeric_consistent_delivery_evidence_incomplete",
+           "numeric_validation": {"verification_id": "nv_1", "verdict": "consistent",
+                                  "hardware_verified": False, "ground_truth_used": False,
+                                  "sample_count": 2, "internal_field": "ignored"}}
+    monkeypatch.setattr(service, "_conversion_jobs", lambda *args: [job])
+    row = next(r for r in service.discover_version_artifacts("p1", {"id": "a1"}, version)
+               if r["target"] == "onnx")
+    metadata = row["metadata"]
+    assert metadata["conversion_identity_verified"] is True
+    assert metadata["manifest_integrity_status"] == "digest_verified"
+    assert metadata["manifest_legacy"] is False
+    assert metadata["manifest_digest"] == manifest["manifest_digest"]
+    assert metadata["source_manifest"]["source"]["sha256"] == source_sha
+    assert metadata["source_manifest"]["onnx"]["sha256"] == output_sha
+    assert metadata["source_manifest"]["manifest_digest"] == manifest["manifest_digest"]
+    assert metadata["numeric_status"] == "consistent"
+    assert metadata["publication_status"] == "numeric_consistent_delivery_evidence_incomplete"
+    assert metadata["numeric_validation"]["verdict"] == "consistent"
+    assert "internal_field" not in metadata["numeric_validation"]
+    saved = service.repository.upsert(row)
+    assert saved["metadata"]["manifest_digest"] == manifest["manifest_digest"]
+    # A sparse metadata refresh must not erase the frozen manifest identity.
+    replay = service.repository.upsert({**row, "metadata": {"version_field": "stored_path"}})
+    assert replay["metadata"]["manifest_digest"] == manifest["manifest_digest"]
+    assert replay["metadata"]["source_manifest"]["source"]["sha256"] == source_sha
+
+    # A legacy manifest keeps the existing identity check but says "unverified".
+    legacy, _ = _digest_bound_manifest(path, source_sha, legacy=True)
+    manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
+    row = next(r for r in service.discover_version_artifacts("p1", {"id": "a1"}, version)
+               if r["target"] == "onnx")
+    assert row["metadata"]["manifest_metadata_error"] == ""
+    assert row["metadata"]["manifest_integrity_status"] == "legacy_unverified_digest"
+    assert row["metadata"]["manifest_legacy"] is True
+    assert row["metadata"]["manifest_digest"] == ""
+
+    # A recorded digest that does not recompute means tampering: never trust its IO.
+    tampered, _ = _digest_bound_manifest(path, source_sha, tamper=True)
+    manifest_path.write_text(json.dumps(tampered), encoding="utf-8")
+    row = next(r for r in service.discover_version_artifacts("p1", {"id": "a1"}, version)
+               if r["target"] == "onnx")
+    assert row["metadata"]["conversion_identity_verified"] is False
+    assert row["metadata"]["manifest_integrity_status"] == "digest_mismatch"
+    assert "不匹配" in row["metadata"]["manifest_metadata_error"]
+    saved = service.repository.upsert(row)
+    assert saved["metadata"]["conversion_identity_verified"] is False

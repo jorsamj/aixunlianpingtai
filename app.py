@@ -22054,6 +22054,19 @@ def _numeric_conversion_dir(project_id: str, verification_id: str) -> Path:
     return deploy_root(project_id) / "numeric-validations" / verification_id
 
 
+def _numeric_frozen_imgsz(params: dict) -> list:
+    """Only an explicitly frozen conversion size may drive numeric comparison."""
+    params = params if isinstance(params, dict) else {}
+    if not any(key in params for key in ("input_size", "input_height", "input_width")):
+        return []
+    try:
+        from platform_core.conversion import conversion_input_shape
+        height, width = conversion_input_shape(params)
+    except (TypeError, ValueError):
+        return []
+    return [height, width]
+
+
 def _numeric_conversion_artifact(job_dir: Path, manifest: dict, suffix: str, *, required: bool) -> tuple[Path | None, str]:
     """Resolve a unique frozen output, never the alphabetically first artifact."""
     root = (job_dir / "artifacts").resolve()
@@ -22226,6 +22239,12 @@ def v39_create_numeric_validation(
                 "confidence": confidence, "nms_iou": nms_iou,
                 "input_color_order": str((job.get("params") or {}).get("input_color_order") or ((job.get("params") or {}).get("preprocessing") or {}).get("pixel_format") or "rgb"),
                 "preprocessing": dict((job.get("params") or {}).get("preprocessing") or {}),
+                # Frozen input contract: the conversion manifest's real ONNX input
+                # shapes plus the explicitly requested size (never a silent 640).
+                "input_shapes": onnx_evidence.get("input_shapes") if isinstance(onnx_evidence.get("input_shapes"), list) else [],
+                "frozen_imgsz": _numeric_frozen_imgsz(job.get("params") or {}),
+                "frozen_batch": (int((job.get("params") or {}).get("batch"))
+                                 if type((job.get("params") or {}).get("batch")) is int else None),
                 "label_codes": source_evidence.get("label_codes") if isinstance(source_evidence.get("label_codes"), list) else [],
                 "label_schema": source_evidence.get("label_schema") if isinstance(source_evidence.get("label_schema"), list) else [],
                 "image_names": names, "source_type": "PT", "compared_type": "ONNX",

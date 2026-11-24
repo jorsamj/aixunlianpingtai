@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,9 +19,12 @@ from platform_core.sophon_runtime import (find_sophon_tools, require_sophon_tool
 
 from platform_core.conversion import (
     ConversionError,
+    SOURCE_MANIFEST_SCHEMA_VERSION,
     build_manifest,
+    build_source_manifest,
     file_record,
     sha256_file,
+    source_manifest_digest,
     validate_target,
     conversion_input_shape,
 )
@@ -40,6 +44,17 @@ def read_json(path: Path, default):
 def write_json(path: Path, data: Any):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+def write_json_atomic(path: Path, data: Any):
+    """Persist the immutable manifest as a whole; readers never see half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def append_log(path: Path, text: str):
@@ -199,13 +214,37 @@ def export_pt_to_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], par
         candidate.resolve(): (candidate.stat().st_mtime_ns, candidate.stat().st_size)
         for candidate in source.parent.glob(source.stem + '*.onnx') if candidate.is_file()
     }
-    script = (
-        "import sys,json; from pathlib import Path; from ultralytics import YOLO; "
-        "p=Path(sys.argv[1]).resolve(strict=True); m=YOLO(str(p)); "
-        "print('__CONVERSION_PT_NAMES__='+json.dumps(m.names,ensure_ascii=False)); "
-        f"print('__CONVERSION_ONNX_PATH__='+str(Path(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half})).resolve()))"
-    )
+    script = "\n".join([
+        "import sys, json, importlib",
+        "from pathlib import Path",
+        "from ultralytics import YOLO",
+        "versions = {}",
+        "for name in ('torch','ultralytics','onnx','onnxruntime','numpy','cv2','onnxsim'):",
+        "    try:",
+        "        versions[name] = getattr(importlib.import_module(name), '__version__', None)",
+        "    except Exception as error:",
+        "        versions[name] = {'error': type(error).__name__ + ': ' + str(error)[:200]}",
+        "p = Path(sys.argv[1]).resolve(strict=True)",
+        "m = YOLO(str(p))",
+        "print('__CONVERSION_PT_NAMES__=' + json.dumps(m.names, ensure_ascii=False))",
+        "print('__CONVERSION_TOOLCHAIN__=' + json.dumps(versions, ensure_ascii=False, sort_keys=True))",
+        f"print('__CONVERSION_ONNX_PATH__=' + str(Path(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half})).resolve()))",
+    ])
     stdout = run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
+    toolchain_lines = [line.split('__CONVERSION_TOOLCHAIN__=', 1)[1].strip()
+                       for line in (stdout or '').splitlines() if '__CONVERSION_TOOLCHAIN__=' in line]
+    if toolchain_lines:
+        try:
+            versions = json.loads(toolchain_lines[-1])
+            if not isinstance(versions, dict):
+                raise ValueError('invalid toolchain payload')
+            write_json(out_dir / 'pt_export_toolchain.json', versions)
+        except (ValueError, TypeError) as error:
+            write_json(out_dir / 'pt_export_toolchain.json', {
+                'status': 'unavailable', 'reason': f'导出器依赖版本证据无法解析：{error}'})
+    else:
+        write_json(out_dir / 'pt_export_toolchain.json', {
+            'status': 'unavailable', 'reason': '导出器未回报运行时依赖版本'})
     name_lines = [line.split('__CONVERSION_PT_NAMES__=', 1)[1].strip()
                   for line in (stdout or '').splitlines() if '__CONVERSION_PT_NAMES__=' in line]
     if name_lines:
@@ -419,6 +458,12 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
             'input_shapes': actual_shapes,
             'output_names': [item.name for item in session.get_outputs()],
             'output_count': len(outputs),
+            # Declared graph metadata plus the shapes/dtypes actually observed by
+            # the same ORT probe. This is evidence, not a synthetic re-inference.
+            'output_shapes': [list(item.shape) for item in session.get_outputs()],
+            'output_types': [item.type for item in session.get_outputs()],
+            'output_inferred_shapes': [list(np.asarray(value).shape) for value in outputs],
+            'output_dtypes': [str(np.asarray(value).dtype) for value in outputs],
             'input_types': [item.type for item in session.get_inputs()],
             'floating_tensor_types': sorted({onnx.TensorProto.DataType.Name(t.data_type) for t in model.graph.initializer if t.data_type in (onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT16, onnx.TensorProto.DOUBLE, onnx.TensorProto.BFLOAT16)}),
             'opset_imports': {item.domain: item.version for item in model.opset_import},
@@ -692,6 +737,95 @@ def copy_artifact(src: Path, artifacts: Path):
     return dst
 
 
+def frozen_export_images(params: Dict[str, Any], onnx_validation: Dict[str, Any]) -> Optional[List[int]]:
+    """Read the frozen export size from the real ONNX input, never a silent 640."""
+    shapes = onnx_validation.get('input_shapes') or []
+    if len(shapes) == 1 and len(shapes[0]) == 4 and all(type(dim) is int and dim > 0 for dim in shapes[0]):
+        return [int(shapes[0][2]), int(shapes[0][3])]
+    if any(key in params for key in ('input_size', 'input_height', 'input_width')):
+        try:
+            return list(conversion_input_shape(params))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def manifest_tool_dependencies(python_path: str, toolchain_file: Path, *, source_suffix: str,
+                               target: str) -> Dict[str, Any]:
+    """Record the export interpreter's real dependency evidence, never invented values."""
+    if source_suffix in {'.onnx'}:
+        return {'status': 'not_probed', 'reason': '源模型已是 ONNX，本次未执行导出器，无依赖版本证据'}
+    if source_suffix in {'.pdparams', '.pdmodel', '.pdiparams'} or target == 'paddle_inference':
+        return {'status': 'not_probed', 'reason': 'Paddle 导出由外部命令执行，未回报依赖版本'}
+    versions = read_json(toolchain_file, None)
+    if isinstance(versions, dict) and 'status' not in versions:
+        return {str(name): value for name, value in versions.items()}
+    if isinstance(versions, dict) and versions.get('status') == 'unavailable':
+        return {'status': 'unavailable', 'reason': str(versions.get('reason') or '')[:512]}
+    return {'status': 'unavailable', 'reason': '导出器依赖版本证据缺失'}
+
+
+def build_conversion_source_manifest(*, source: Path, source_trace: Dict[str, Any],
+                                     source_meta: Dict[str, Any], params: Dict[str, Any],
+                                     target: str, tool_name: str, tool_version: str,
+                                     tool_python: str, toolchain_file: Path,
+                                     onnx_record: Optional[Dict[str, Any]],
+                                     onnx_validation: Dict[str, Any],
+                                     output_records: List[Dict[str, Any]],
+                                     source_sha_recheck: Dict[str, Any]) -> Dict[str, Any]:
+    """One conversion task's immutable identity; shared by every target."""
+    dependencies = manifest_tool_dependencies(tool_python, toolchain_file,
+                                              source_suffix=source.suffix.lower(), target=target)
+    ultralytics_version = dependencies.get('ultralytics') if isinstance(dependencies, dict) else None
+    if isinstance(ultralytics_version, str) and ultralytics_version:
+        tool_version = ultralytics_version
+    export_meta = {
+        'opset': params.get('opset'),
+        'dynamic': bool(params.get('dynamic', False)),
+        'simplify': bool(params.get('simplify', False)),
+        'batch': int(params.get('batch') or 1),
+        'imgsz': frozen_export_images(params, onnx_validation),
+        'precision': params.get('precision'),
+        'half': bool(params.get('kind') == 'onnx' and params.get('precision') == 'fp16'),
+        'reused_existing_onnx': source.suffix.lower() == '.onnx',
+    }
+    source_block = {
+        'sha256': source_sha_recheck.get('computed_sha256') or '',
+        'size_bytes': source.stat().st_size,
+        'file_name': source.name,
+        'algorithm_id': str(source_trace.get('algorithm_id') or source_meta.get('algorithm_id') or ''),
+        'version_id': str(source_trace.get('version_id') or source_meta.get('version_id') or ''),
+        'artifact_id': str(source_trace.get('artifact_id') or ''),
+        'label_codes': source_trace.get('label_codes'),
+        'label_schema': source_trace.get('label_schema'),
+        'label_binding': source_trace.get('label_binding'),
+        'training_lineage': source_trace.get('training_lineage'),
+        'sha256_recheck': source_sha_recheck,
+    }
+    onnx_block = None
+    if onnx_record:
+        onnx_block = {
+            **onnx_record,
+            'opset_imports': onnx_validation.get('opset_imports'),
+            'input_shapes': onnx_validation.get('input_shapes'),
+            'input_types': onnx_validation.get('input_types'),
+            'input_names': onnx_validation.get('input_names'),
+            'output_shapes': onnx_validation.get('output_shapes'),
+            'output_types': onnx_validation.get('output_types'),
+            'output_names': onnx_validation.get('output_names'),
+            'output_inferred_shapes': onnx_validation.get('output_inferred_shapes'),
+            'output_dtypes': onnx_validation.get('output_dtypes'),
+            'floating_tensor_types': onnx_validation.get('floating_tensor_types'),
+        }
+    return build_source_manifest(
+        source=source_block, export=export_meta,
+        tool={'name': tool_name, 'version': tool_version,
+              'python_path': tool_python, 'dependencies': dependencies},
+        onnx=onnx_block, outputs=output_records,
+    )
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--job-dir', required=True)
@@ -714,9 +848,28 @@ def main():
         append_log(log_file, f"转换目标：{job.get('target')} / 资源：{resource.get('name','')}")
         if not source.exists(): raise RuntimeError(f'源模型不存在：{source}')
         target = str(job.get('target') or '').lower()
-        recorded_source_sha = str((job.get('source_trace') or {}).get('sha256') or '')
-        if target == 'sophon' and recorded_source_sha and recorded_source_sha != sha256_file(source):
-            raise ConversionError('SOURCE_IDENTITY_MISMATCH', '源模型SHA256与选定版本不一致', solution='请重新选择已验证算法版本并创建转换任务。')
+        source_trace = job.get('source_trace') or {}
+        source_meta = job.get('source_meta') or {}
+        computed_source_sha = sha256_file(source)
+        recorded_source_sha = str(source_trace.get('sha256') or '').strip().lower()
+        # Every target must prove the same source bytes; a task without a usable
+        # recorded digest stays explicitly un-rechecked instead of silently skipped.
+        if re.fullmatch(r'[0-9a-f]{64}', recorded_source_sha):
+            if recorded_source_sha != computed_source_sha:
+                raise ConversionError('SOURCE_IDENTITY_MISMATCH', '源模型SHA256与选定版本不一致',
+                                      solution='请重新选择已验证算法版本并创建转换任务。')
+            source_sha_recheck = {'status': 'matched', 'recorded_sha256': recorded_source_sha,
+                                  'computed_sha256': computed_source_sha, 'reason': ''}
+        elif recorded_source_sha:
+            source_sha_recheck = {'status': 'unavailable', 'recorded_sha256': recorded_source_sha,
+                                  'computed_sha256': computed_source_sha,
+                                  'reason': '转换任务记录的源 SHA256 不是合法摘要，无法复核'}
+        else:
+            source_sha_recheck = {'status': 'unavailable', 'recorded_sha256': '',
+                                  'computed_sha256': computed_source_sha,
+                                  'reason': '转换任务未记录源 SHA256，无法复核'}
+        if source_sha_recheck['status'] != 'matched':
+            append_log(log_file, '源模型SHA复核不可用：' + source_sha_recheck['reason'])
         target_contract = validate_target(target, params)
         params = target_contract
         toolchain = preflight_vendor_tool(target, resource, params) or {}
@@ -784,10 +937,10 @@ def main():
         if onnx_validation and params.get('onnx_topology_evidence'):
             params['onnx_topology_evidence']['runtime'] = 'passed'
         manifest = build_manifest(
-            source=job.get('source_trace') or {
+            source=source_trace or {
                 'source_id': job.get('source_id'),
-                'version_id': (job.get('source_meta') or {}).get('version_id') or '',
-                'sha256': sha256_file(source),
+                'version_id': source_meta.get('version_id') or '',
+                'sha256': computed_source_sha,
             },
             onnx={**(file_record(onnx_output, relative_to=artifacts) if onnx_output else {}), **onnx_validation},
             target=target_contract,
@@ -808,6 +961,30 @@ def main():
             manifest['sophon_validation'] = sophon_facts
             manifest['tool'].update(version=sophon_facts.get('toolchain', {}).get('version', ''),
                                     python_path=sophon_facts.get('toolchain', {}).get('python_path', ''))
+        # Every target freezes the same immutable source identity. The digest is
+        # computed before mutable delivery state (status/board/hardware fields)
+        # is added, so later writebacks can never change model identity.
+        export_python = ''
+        if source.suffix.lower() in {'.pt', '.pth'}:
+            export_python = find_ultra_python(resource)
+        elif source.suffix.lower() in {'.pdparams', '.pdmodel', '.pdiparams'}:
+            export_python = str(resource.get('paddle_python') or resource.get('python_path') or '')
+        source_manifest = build_conversion_source_manifest(
+            source=source, source_trace=source_trace, source_meta=source_meta, params=params,
+            target=target, tool_name=tool_names.get(target, target),
+            tool_version=str(toolchain.get('version') or resource.get('version') or ''),
+            tool_python=export_python,
+            toolchain_file=work/'pt_export_toolchain.json',
+            onnx_record=file_record(onnx_output, relative_to=artifacts) if onnx_output else None,
+            onnx_validation=onnx_validation, output_records=output_records,
+            source_sha_recheck=source_sha_recheck)
+        manifest['source_manifest'] = source_manifest
+        manifest['manifest_digest'] = source_manifest_digest(manifest)
+        manifest['manifest_integrity'] = {
+            'status': 'digest_recorded',
+            'manifest_digest': manifest['manifest_digest'],
+            'schema_version': SOURCE_MANIFEST_SCHEMA_VERSION,
+        }
         if target == 'onnx':
             manifest['status'] = 'runtime_verified'
             manifest['runtime_verified'] = True
@@ -836,6 +1013,13 @@ def main():
             'onnx_input_types': onnx_validation.get('input_types') or [],
             'onnx_floating_tensor_types': onnx_validation.get('floating_tensor_types') or [],
             'onnx_opset_imports': onnx_validation.get('opset_imports') or {},
+            # Actual ONNX Runtime probe evidence, reused (no second load).
+            'onnx_output_shapes': onnx_validation.get('output_shapes') or [],
+            'onnx_output_types': onnx_validation.get('output_types') or [],
+            'onnx_output_dtypes': onnx_validation.get('output_dtypes') or [],
+            'onnx_output_inferred_shapes': onnx_validation.get('output_inferred_shapes') or [],
+            'manifest_digest': manifest['manifest_digest'],
+            'source_sha256_recheck': source_sha_recheck,
         }
         if target == 'sophon':
             evidence['compiler_numeric_status'] = (manifest.get('sophon_validation') or {}).get('compiler_numeric_status', 'unavailable')
@@ -870,13 +1054,13 @@ def main():
             evidence['compiler_numeric_status'] = 'unavailable'
             evidence['compiler_numeric_scope'] = 'unverified'
         manifest['execution_evidence'] = evidence
-        write_json(artifacts/'manifest.json', manifest)
+        write_json_atomic(artifacts/'manifest.json', manifest)
         output_rows=[]
         for p in artifacts.rglob('*'):
             if p.is_file() and p.suffix.lower() not in {'.py','.md'}:
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
         runtime_verified = target == 'onnx'
-        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, execution_evidence=evidence, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))
+        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, execution_evidence=evidence, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'), manifest_digest=manifest['manifest_digest'], manifest_integrity=manifest['manifest_integrity'], source_sha256_recheck=source_sha_recheck)
         append_log(log_file, '转换完成。')
     except Exception as e:
         append_log(log_file, '转换失败：' + str(e))

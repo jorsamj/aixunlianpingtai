@@ -13,7 +13,13 @@ from pathlib import Path, PurePosixPath
 
 import requests
 
-from platform_core.conversion import ConversionError, sha256_file, validate_target
+from platform_core.conversion import (
+    ConversionError,
+    SOURCE_MANIFEST_SCHEMA_VERSION,
+    sha256_file,
+    validate_target,
+    verify_source_manifest_digest,
+)
 from platform_core.task_runtime import ExecutionFencedError
 
 
@@ -49,6 +55,50 @@ def safe_extract_zip(zf, destination, *, max_bytes=4 * 1024**3, max_entries=1000
         names.add(name.casefold())
         (destination / name).resolve().relative_to(destination)
     zf.extractall(destination)
+
+
+def validate_remote_manifest_integrity(manifest, *, digest_required: bool) -> dict:
+    """Recompute the frozen source-manifest digest; missing digests cannot pass.
+
+    New conversion requests freeze `source_manifest_schema`; a manifest from such
+    a request MUST carry a matching digest. Only pre-upgrade in-flight jobs may
+    take the explicit legacy path, and that path never reports digest-verified.
+    """
+    outcome = verify_source_manifest_digest(manifest)
+    if outcome["present"]:
+        if not outcome["valid"]:
+            raise ValueError(str(outcome["reason"]))
+        document = manifest.get("source_manifest")
+        if not isinstance(document, dict) or document.get("schema_version") != SOURCE_MANIFEST_SCHEMA_VERSION:
+            raise ValueError("远程 manifest 缺少不可变 source_manifest 结构")
+        source = manifest.get("source") or {}
+        if not isinstance(document.get("source"), dict) or document["source"].get("sha256") != source.get("sha256"):
+            raise ValueError("远程 source_manifest 源模型 SHA256 与 manifest.source 不一致")
+        onnx = manifest.get("onnx") or {}
+        onnx_document = document.get("onnx") if isinstance(document.get("onnx"), dict) else {}
+        if onnx.get("sha256") and onnx_document.get("sha256") != onnx.get("sha256"):
+            raise ValueError("远程 source_manifest ONNX SHA256 与 manifest.onnx 不一致")
+        documented = sorted(
+            (str(row.get("name") or ""), str(row.get("sha256") or ""), row.get("size_bytes"))
+            for row in document.get("outputs") or [] if isinstance(row, dict)
+        )
+        actual = sorted(
+            (str(row.get("name") or ""), str(row.get("sha256") or ""), row.get("size_bytes"))
+            for row in manifest.get("outputs") or [] if isinstance(row, dict)
+        )
+        if documented != actual:
+            raise ValueError("远程 source_manifest 产物证据与 manifest.outputs 不一致")
+        return {
+            "status": "digest_verified", "manifest_digest": outcome["recorded"],
+            "digest_verified": True, "legacy_manifest": False,
+        }
+    if digest_required:
+        raise ValueError("远程 manifest 缺少必填 manifest_digest，拒绝按新转换合同采信")
+    return {
+        "status": "legacy_unverified_digest", "manifest_digest": "",
+        "digest_verified": False, "legacy_manifest": True,
+        "reason": str(outcome.get("reason") or "旧历史 manifest 缺少 manifest_digest"),
+    }
 
 
 def validate_remote_artifacts(directory, job):
@@ -165,6 +215,11 @@ def validate_remote_artifacts(directory, job):
     onnx_models = [evidence_record(row) for row in records if str(row.get("name") or "").lower().endswith(".onnx")]
     if bmodels != [evidence_record(structure.get("artifact") or {})] or onnx_models != [evidence_record(onnx)]:
         raise ValueError("远程验证证据未绑定到实际下载的 ONNX/BMODEL 文件")
+    digest_required = (job.get("params") or {}).get("source_manifest_schema") == SOURCE_MANIFEST_SCHEMA_VERSION
+    integrity = validate_remote_manifest_integrity(manifest, digest_required=digest_required)
+    manifest["manifest_integrity"] = integrity
+    if integrity.get("legacy_manifest"):
+        manifest["legacy_manifest"] = True
     return manifest
 
 
@@ -280,6 +335,7 @@ def synchronize_remote_conversion(context, request, *, recovering=False, http=re
                         if hasattr(response, "close"):
                             response.close()
                     manifest = validate_remote_artifacts(staged, job)
+                    manifest_integrity = dict(manifest.get("manifest_integrity") or {})
                     manifest.update(hardware_verified=False, status="converted_unverified")
                     (staged / "manifest.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding="utf-8")
                     artifacts = jd / "artifacts"
@@ -296,6 +352,9 @@ def synchronize_remote_conversion(context, request, *, recovering=False, http=re
                 job["execution_evidence"]=dict(execution) if isinstance(execution,dict) else {}
                 job.update(status="blocked_by_hardware", hardware_verified=False, conversion_status="converted",
                     stage="等待目标硬件验证", progress=100, manifest_path=str(artifacts / "manifest.json"),
+                    manifest_digest=str(manifest_integrity.get("manifest_digest") or ""),
+                    manifest_integrity=manifest_integrity,
+                    legacy_manifest=bool(manifest_integrity.get("legacy_manifest")),
                     outputs=[{"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_bytes":p.stat().st_size}
                              for p in artifacts.rglob("*") if p.is_file() and p.suffix.lower() not in {".py",".md"}])
                 persist()

@@ -1,4 +1,6 @@
 """Numerical verification must distinguish measured agreement from missing evidence."""
+import json
+
 import numpy as np
 import pytest
 
@@ -147,7 +149,7 @@ def test_worker_does_not_say_success_when_dependencies_or_models_fail(tmp_path, 
     }), encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         numeric.run_verification_directory(directory)
-    receipt = json.loads((directory / "result.json").read_text())
+    receipt = json.loads((directory / "result.json").read_text(encoding="utf-8"))
     assert receipt["verdict"] == "unavailable"
     assert receipt["bmodel_verified"] is False
 
@@ -316,3 +318,333 @@ def test_recovered_successful_verification_reuses_durable_result(tmp_path):
     status, result_ref = run_numeric_verification(context, {"verification_dir": str(directory), "worker_path": str(worker)})
     assert status is TaskStatus.SUCCEEDED
     assert context.artifacts.entries[("verification-id", result_ref)]["verdict"] == "difference_detected"
+
+
+def _detection_tensor(rows, class_count=2):
+    """Single-output YOLO11 XYWH + class-score tensor with an unambiguous layout."""
+    fields = 4 + class_count
+    value = np.zeros((1, fields, len(rows)), dtype=np.float32)
+    for index, (xywh, scores) in enumerate(rows):
+        value[0, :4, index] = xywh
+        value[0, 4:4 + len(scores), index] = scores
+    return value
+
+
+@pytest.mark.parametrize("original_size,expected", [
+    ((240, 120), {"scale_x": 64 / 240, "scale_y": 32 / 120, "pad_x": 0.0, "pad_y": 16.0}),
+    ((120, 240), {"scale_x": 32 / 120, "scale_y": 64 / 240, "pad_x": 16.0, "pad_y": 0.0}),
+    ((97, 61), {"scale_x": 64 / 97, "scale_y": 40 / 61, "pad_x": 0.0, "pad_y": 12.0}),
+])
+def test_letterbox_geometry_maps_real_boxes_back_to_original_pixels(tmp_path, original_size, expected):
+    from PIL import Image
+    from platform_core.auto_label import adapt_coordinates
+    from platform_core.deployment.numeric_consistency import (
+        compare_yolo_detections, make_input_with_geometry,
+    )
+
+    width, height = original_size
+    picture = tmp_path / "rect.png"
+    Image.new("RGB", (width, height), (30, 60, 90)).save(picture)
+    prepared = make_input_with_geometry(picture, 64, 64)
+    geometry = prepared["geometry"]
+    assert prepared["original_size"] == [width, height]
+    for key, value in expected.items():
+        assert geometry[key] == pytest.approx(value, rel=1e-12), key
+    # Real image tensor has exactly the frozen shape and canonical letterbox padding.
+    assert prepared["tensor"].shape == (1, 3, 64, 64)
+    content_center_x = geometry["pad_x"] + 0.5 * 64 * geometry["scale_x"]
+    content_center_y = geometry["pad_y"] + 0.5 * 64 * geometry["scale_y"]
+    half = 4.0
+    box = [content_center_x - half, content_center_y - half, content_center_x + half, content_center_y + half]
+    xywh = [box[0] + half, box[1] + half, 2 * half, 2 * half]
+    tensor = _detection_tensor([(xywh, [0.9, 0.0])])
+    compared = compare_yolo_detections(tensor, tensor.copy(), class_count=2,
+                                       geometry=geometry, original_size=prepared["original_size"])
+    assert compared["comparable"] and compared["within_tolerance"]
+    entry = compared["reference_detections"][0]
+    assert entry["box_xyxy_input"] == [round(float(value), 3) for value in box]
+    expected_original = adapt_coordinates(
+        box, width=width, height=height, coordinate_space="pixel", coordinate_order="xyxy",
+        coordinate_origin="top_left", geometry=geometry,
+    )
+    # The detection tensor is float32; geometry math is float64. Allow the
+    # float32 quantisation of the input box, not a different mapping formula.
+    assert len(entry["box_xyxy_original"]) == 4
+    for observed, expected_value in zip(entry["box_xyxy_original"], expected_original):
+        assert observed == pytest.approx(float(expected_value), abs=0.002)
+    assert entry["coordinate_error"] == ""
+    x1, y1, x2, y2 = entry["box_xyxy_original"]
+    assert 0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height
+    assert compared["original_coordinates"]["status"] == "mapped"
+    assert compared["original_coordinates"]["mapped"] == 2
+
+
+def test_detection_comparison_reports_mean_iou_and_per_class_counts():
+    from platform_core.deployment.numeric_consistency import compare_yolo_detections
+
+    reference = _detection_tensor([
+        ([20.0, 20.0, 10.0, 10.0], [0.9, 0.0]),
+        ([60.0, 60.0, 10.0, 10.0], [0.8, 0.0]),
+        ([100.0, 100.0, 10.0, 10.0], [0.0, 0.7]),
+    ])
+    converted = reference.copy()
+    converted[0, :4, 2] = [150.0, 150.0, 10.0, 10.0]  # same class, disjoint -> unmatched pair
+    compared = compare_yolo_detections(reference, converted, class_count=2)
+    assert compared["comparable"] and not compared["within_tolerance"]
+    assert compared["matched_pairs"] == 2 and compared["mean_matched_iou"] == 1.0
+    assert compared["unmatched_reference"] == compared["unmatched_converted"] == 1
+    per_class = {row["class_id"]: row for row in compared["per_class"]}
+    assert per_class[0] == {"class_id": 0, "reference_boxes": 2, "converted_boxes": 2,
+                            "matched_pairs": 2, "unmatched_reference": 0,
+                            "unmatched_converted": 0, "mean_matched_iou": 1.0}
+    assert per_class[1]["reference_boxes"] == per_class[1]["converted_boxes"] == 1
+    assert per_class[1]["unmatched_reference"] == per_class[1]["unmatched_converted"] == 1
+    assert per_class[1]["matched_pairs"] == 0 and per_class[1]["mean_matched_iou"] is None
+    assert compared["reference_detections"][0]["box_xyxy_original"] is None
+    assert compared["reference_detections"][0]["coordinate_error"] == "PREPROCESSING_GEOMETRY_UNAVAILABLE"
+    assert compared["original_coordinates"]["status"] == "unavailable"
+
+
+def test_dynamic_spatial_input_without_frozen_size_is_not_comparable_not_fallback_640():
+    from types import SimpleNamespace
+    from platform_core.deployment.numeric_consistency import (
+        DYNAMIC_INPUT_WITHOUT_FROZEN_CODE, _resolve_input_contract,
+    )
+
+    dynamic = SimpleNamespace(shape=[1, 3, "height", "width"])
+    unresolved = _resolve_input_contract(dynamic, input_shapes=None, frozen_imgsz=None)
+    assert unresolved["status"] == "not_comparable"
+    assert unresolved["code"] == DYNAMIC_INPUT_WITHOUT_FROZEN_CODE
+    assert unresolved["dynamic_resolution"] == "not_comparable"
+    assert "640" in unresolved["reason"]
+    assert unresolved["resolved_input_shape"] is None
+    frozen_imgsz = _resolve_input_contract(dynamic, input_shapes=None, frozen_imgsz=[64, 96])
+    assert frozen_imgsz["status"] == "resolved"
+    assert frozen_imgsz["resolved_input_shape"] == [1, 3, 64, 96]
+    assert frozen_imgsz["dynamic_resolution"] == "frozen_imgsz"
+    assert frozen_imgsz["input_shape_source"] == "frozen_imgsz"
+    assert frozen_imgsz["dynamic_resolution_reason"]
+    frozen_manifest = _resolve_input_contract(dynamic, input_shapes=[[1, 3, 128, 160]], frozen_imgsz=None)
+    assert frozen_manifest["status"] == "resolved"
+    assert frozen_manifest["resolved_input_shape"] == [1, 3, 128, 160]
+    assert frozen_manifest["input_shape_source"] == "frozen_manifest"
+    # A dynamic batch needs an explicit frozen batch=1; it is never assumed.
+    dynamic_axes = SimpleNamespace(shape=["batch", 3, "height", "width"])
+    dynamic_batch = _resolve_input_contract(dynamic_axes, input_shapes=None, frozen_imgsz=[64, 96])
+    assert dynamic_batch["status"] == "not_comparable"
+    assert dynamic_batch["code"] == "DYNAMIC_BATCH_WITHOUT_FROZEN_BATCH"
+    frozen_batch = _resolve_input_contract(dynamic_axes, input_shapes=None, frozen_imgsz=[64, 96], frozen_batch=1)
+    assert frozen_batch["status"] == "resolved"
+    assert frozen_batch["resolved_input_shape"] == [1, 3, 64, 96]
+    assert frozen_batch["dynamic_resolution"] == "frozen_imgsz"
+    assert frozen_batch["batch_source"] == "frozen_batch"
+    assert _resolve_input_contract(
+        SimpleNamespace(shape=[2, 3, 64, 64]), input_shapes=None, frozen_imgsz=None,
+    )["code"] == "NON_SINGLE_IMAGE_BATCH"
+
+
+def test_static_input_shape_from_manifest_must_match_graph_and_never_conflict():
+    from types import SimpleNamespace
+    from platform_core.deployment.numeric_consistency import _resolve_input_contract
+
+    static = SimpleNamespace(shape=[1, 3, 64, 64])
+    matched = _resolve_input_contract(static, input_shapes=[[1, 3, 64, 64]], frozen_imgsz=[64, 64])
+    assert matched["status"] == "resolved"
+    assert matched["dynamic_resolution"] == "static"
+    assert matched["input_shape_source"] == "frozen_manifest"
+    conflict = _resolve_input_contract(static, input_shapes=[[1, 3, 32, 32]], frozen_imgsz=None)
+    assert conflict["status"] == "not_comparable" and conflict["code"] == "INPUT_SHAPE_CONFLICT"
+    out_of_range = _resolve_input_contract(
+        SimpleNamespace(shape=[1, 3, 8192, 8192]), input_shapes=None, frozen_imgsz=None)
+    assert out_of_range["status"] == "not_comparable" and out_of_range["code"] == "INPUT_SIZE_OUT_OF_RANGE"
+
+
+def test_dynamic_onnx_session_is_reported_not_comparable_without_frozen_imgsz(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from PIL import Image
+    from platform_core.deployment.numeric_consistency import verify_images
+
+    pt, onnx, picture = (tmp_path / name for name in ("model.pt", "model.onnx", "frame.png"))
+    pt.write_bytes(b"not-loaded-for-dynamic-contract")
+    onnx.write_bytes(b"not-loaded-for-dynamic-contract")
+    Image.new("RGB", (32, 32), (1, 2, 3)).save(picture)
+
+    class Session:
+        def get_inputs(self):
+            return [SimpleNamespace(name="images", shape=[1, 3, "height", "width"], type="tensor(float)")]
+
+        def get_outputs(self):
+            return [SimpleNamespace(name="output")]
+
+        def run(self, *_args, **_kwargs):
+            raise AssertionError("动态输入未冻结尺寸时不得执行推理")
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(InferenceSession=lambda *args, **kwargs: Session()))
+    result = verify_images(pt, onnx, [picture], precision="fp32")
+    assert result["status"] == "completed"
+    assert result["verdict"] == "not_comparable" and result["raw_verdict"] == "not_comparable"
+    assert result["rejection"]["code"] == "DYNAMIC_INPUT_WITHOUT_FROZEN_IMGSZ"
+    assert result["dynamic_resolution"] == "not_comparable"
+    assert result["sample_count"] == 0 and result["images"] == []
+    assert result["hardware_verified"] is False
+
+
+def test_non_rgb_input_is_rejected_with_explicit_reason_code(tmp_path):
+    from platform_core.deployment.numeric_consistency import NON_RGB_INPUT_CODE, verify_images
+
+    pt, onnx, picture = (tmp_path / name for name in ("model.pt", "model.onnx", "frame.png"))
+    pt.write_bytes(b"source")
+    onnx.write_bytes(b"converted")
+    picture.write_bytes(b"image-not-opened-for-bgr-rejection")
+    result = verify_images(pt, onnx, [picture], precision="fp32", input_color_order="bgr")
+    assert result["status"] == "completed"
+    assert result["verdict"] == "not_comparable"
+    assert result["rejection"] == {
+        "code": NON_RGB_INPUT_CODE,
+        "reason": "该产物使用非 RGB 输入颜色适配；当前原始张量核验仅支持 RGB 同输入，不能冒充通过",
+    }
+    assert result["input_color_space"] == "bgr"
+    assert result["sample_count"] == 0 and result["images"] == []
+    assert result["ground_truth_used"] is False and result["hardware_verified"] is False
+
+
+def test_runtime_versions_record_actual_versions_and_explicit_import_failures(tmp_path, monkeypatch):
+    import contextlib
+    import sys
+    from types import SimpleNamespace
+    from PIL import Image
+    from platform_core.deployment import numeric_consistency as numeric
+
+    assert set(numeric.runtime_versions()) == set(numeric.RUNTIME_MODULES)
+    observed = numeric.runtime_versions()
+    assert observed["numpy"]["version"] == np.__version__ and observed["numpy"]["error"] is None
+    pt, onnx, image = (tmp_path / name for name in ("best.pt", "best.onnx", "frame.png"))
+    pt.write_bytes(b"isolated-source")
+    onnx.write_bytes(b"isolated-onnx")
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(image)
+
+    class Tensor:
+        def __init__(self, value): self.value = value
+        def detach(self): return self
+        def cpu(self): return self
+        def numpy(self): return self.value
+
+    class Model:
+        names = {0: "fight"}
+        def cpu(self): return self
+        def eval(self): return self
+        def float(self): return self
+        def __call__(self, value): return Tensor(np.ones((1, 5), dtype=np.float32))
+
+    class Session:
+        def get_inputs(self): return [SimpleNamespace(name="images", shape=[1, 3, 32, 32], type="tensor(float)")]
+        def get_outputs(self): return [SimpleNamespace(name="output")]
+        def run(self, outputs, inputs): return [np.ones((1, 5), dtype=np.float32)]
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=contextlib.nullcontext, from_numpy=Tensor))
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(InferenceSession=lambda *args, **kwargs: Session()))
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda path: SimpleNamespace(model=Model(), names={0: "fight"})))
+    result = numeric.verify_images(pt, onnx, [image], precision="fp32")
+    versions = result["runtime_versions"]
+    assert set(versions) == set(numeric.RUNTIME_MODULES)
+    for name, row in versions.items():
+        assert set(row) == {"version", "error"}
+        assert row["version"] is None or isinstance(row["version"], str)
+        assert row["error"] is None or isinstance(row["error"], str)
+        assert (row["version"] is None) == bool(row["error"])
+    # Mocked modules expose no __version__: the report records the failure, not a fake value.
+    assert versions["torch"]["version"] is None and "未暴露" in versions["torch"]["error"]
+    assert versions["onnx"]["version"] == __import__("onnx").__version__
+    assert versions["cv2"]["version"] == __import__("cv2").__version__
+    assert result["input_color_space"] == "rgb"
+    assert result["dynamic_resolution"] == "static"
+    assert result["input_contract"]["status"] == "resolved"
+    assert result["input_contract"]["frozen_input_shapes"] is None
+    assert result["input_contract"]["input_shape_source"] == "onnx_graph_static"
+
+
+def _job_layout(tmp_path, *, job_id="conversion-1", project_id="p1"):
+    deploy = tmp_path / "deployment"
+    verification = deploy / "numeric-validations" / "nv_0123456789abcdef01234567"
+    verification.mkdir(parents=True)
+    (verification / "images").mkdir()
+    (verification / "request.json").write_text("{}", encoding="utf-8")
+    job_dir = deploy / "jobs" / job_id
+    job_dir.mkdir(parents=True)
+    job = {"id": job_id, "project_id": project_id, "status": "done", "numeric_status": None,
+           "publication_status": None}
+    (job_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    receipt = {"id": verification.name, "project_id": project_id, "conversion_job_id": job_id}
+    return verification, job_dir / "job.json", receipt
+
+
+@pytest.mark.parametrize("verdict,expected_numeric,expected_publication", [
+    ("consistent", "consistent", "numeric_consistent_delivery_evidence_incomplete"),
+    ("difference_detected", "difference_detected", "blocked_numeric_difference"),
+    ("not_comparable", "not_comparable", "blocked_numeric_not_comparable"),
+    ("contract_mismatch", "not_comparable", "blocked_numeric_not_comparable"),
+])
+def test_numeric_verdict_projects_into_existing_conversion_job_json(tmp_path, verdict, expected_numeric, expected_publication):
+    from platform_core.deployment.numeric_consistency import project_numeric_status
+
+    verification, job_path, receipt = _job_layout(tmp_path)
+    projection = project_numeric_status(verification, receipt, {
+        "status": "completed", "verdict": verdict, "raw_verdict": "consistent",
+        "detection_status": "consistent", "sample_count": 2, "protocol": "pt-onnx-raw-and-detection-v4",
+        "precision": "fp32", "completed_at": "2026-11-24T00:00:00+00:00",
+    })
+    assert projection["status"] == "projected"
+    assert projection["numeric_status"] == expected_numeric
+    assert projection["publication_status"] == expected_publication
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    assert job["numeric_status"] == expected_numeric
+    assert job["publication_status"] == expected_publication
+    assert job["numeric_validation"]["verdict"] == verdict
+    assert job["numeric_validation"]["hardware_verified"] is False
+    assert job["numeric_validation"]["ground_truth_used"] is False
+    assert job["numeric_validation"]["result_ref"].endswith("/result.json")
+    assert not list(job_path.parent.glob(".job.json.*.tmp"))
+
+
+def test_numeric_projection_failure_maps_to_unavailable_and_missing_job_never_crashes(tmp_path):
+    from platform_core.deployment.numeric_consistency import project_numeric_status
+
+    verification, job_path, receipt = _job_layout(tmp_path)
+    projection = project_numeric_status(verification, receipt, {"status": "failed", "error": "boom"})
+    assert projection["numeric_status"] == "unavailable"
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    assert job["numeric_status"] == "unavailable"
+    assert job["publication_status"] == "blocked_numeric_unavailable"
+    assert job["numeric_validation"]["status"] == "failed"
+    missing_receipt = {"id": "nv_x", "project_id": "p1", "conversion_job_id": "missing-job"}
+    assert project_numeric_status(verification, missing_receipt, {"status": "completed"})["status"] == "unavailable"
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    assert project_numeric_status(outside, receipt, {"status": "completed"})["status"] == "unavailable"
+    assert project_numeric_status(verification, {"conversion_job_id": ""}, {})["status"] == "skipped"
+
+
+def test_worker_success_path_writes_verdict_back_to_conversion_job(tmp_path, monkeypatch):
+    import contextlib
+    import sys
+    from types import SimpleNamespace
+    from platform_core.deployment import numeric_consistency as numeric
+
+    verification, job_path, receipt = _job_layout(tmp_path)
+    receipt.update({"source_path": "source.pt", "onnx_path": "model.onnx",
+                    "image_names": ["a.png"], "precision": "fp32"})
+    (verification / "request.json").write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(numeric, "verify_images", lambda *args, **kwargs: {
+        "status": "completed", "verdict": "consistent", "raw_verdict": "consistent",
+        "detection_status": "consistent", "sample_count": 1, "protocol": numeric.PROTOCOL,
+        "precision": "fp32", "hardware_verified": False, "ground_truth_used": False,
+        "completed_at": "2026-11-24T00:00:00+00:00",
+    })
+    numeric.run_verification_directory(verification)
+    result = json.loads((verification / "result.json").read_text(encoding="utf-8"))
+    assert result["verdict"] == "consistent"
+    assert result["status_projection"]["status"] == "projected"
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    assert job["numeric_status"] == "consistent"
+    assert job["publication_status"] == "numeric_consistent_delivery_evidence_incomplete"

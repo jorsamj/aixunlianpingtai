@@ -96,6 +96,15 @@ def test_legacy_remote_preprocessing_defaults_keep_old_inflight_task_recoverable
     result = runtime.synchronize_remote_conversion(context, request, recovering=True, http=http)
     assert result['status'] == 'blocked_by_hardware'
     assert (jd / 'artifacts' / 'model.bmodel').is_file()
+    # Pre-upgrade in-flight jobs keep working, but must never claim digest verification.
+    assert result['legacy_manifest'] is True
+    assert result['manifest_digest'] == ''
+    assert result['manifest_integrity']['status'] == 'legacy_unverified_digest'
+    assert result['manifest_integrity']['digest_verified'] is False
+    manifest = json.loads((jd / 'artifacts' / 'manifest.json').read_text(encoding='utf-8'))
+    assert manifest['legacy_manifest'] is True
+    assert manifest['manifest_integrity']['legacy_manifest'] is True
+    assert 'manifest_digest' not in manifest
 
 
 def test_explicit_new_preprocessing_contract_requires_remote_evidence(task):
@@ -369,3 +378,73 @@ def test_csc_remote_reference_matches_frozen_contract_and_rejects_tampering(tmp_
     (directory/'manifest.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError,match='可信参考'):
         runtime.validate_remote_artifacts(directory,job)
+
+
+def _freeze_manifest_digest(manifest):
+    """Attach the new immutable source-manifest block plus its canonical digest."""
+    from platform_core.conversion import source_manifest_digest
+    manifest['source_manifest'] = {
+        'schema_version': 1,
+        'source': {'sha256': manifest['source']['sha256']},
+        'onnx': {'sha256': manifest['onnx']['sha256']},
+        'outputs': [dict(record) for record in manifest['outputs']],
+    }
+    manifest['manifest_digest'] = source_manifest_digest(manifest)
+
+
+def _new_contract_bundle(*, tamper=False, with_digest=True):
+    def mutate(manifest):
+        if with_digest:
+            _freeze_manifest_digest(manifest)
+            if tamper:
+                manifest['manifest_digest'] = '0' * 64
+    return bundle(mutate=mutate)
+
+
+def _mark_new_contract(job_dir):
+    job = json.loads((job_dir / 'job.json').read_text())
+    job['params']['source_manifest_schema'] = 1
+    (job_dir / 'job.json').write_text(json.dumps(job))
+
+
+def _zip_done_http(payload):
+    from types import SimpleNamespace as _SimpleNamespace
+    return _SimpleNamespace(get=lambda url, **kwargs:
+        Response(content=payload) if url.endswith('.zip') else Response({'status': 'done'}))
+
+
+def test_new_contract_remote_manifest_missing_digest_fails_closed(task):
+    context, request, jd = task
+    _mark_new_contract(jd)
+    result = runtime.synchronize_remote_conversion(
+        context, request, recovering=True, http=_zip_done_http(_new_contract_bundle(with_digest=False)))
+    assert result['status'] == 'failed'
+    assert 'manifest_digest' in result['error']
+    assert not (jd / 'artifacts').exists()
+
+
+def test_new_contract_remote_manifest_valid_digest_is_recorded(task):
+    context, request, jd = task
+    _mark_new_contract(jd)
+    result = runtime.synchronize_remote_conversion(
+        context, request, recovering=True, http=_zip_done_http(_new_contract_bundle()))
+    assert result['status'] == 'blocked_by_hardware'
+    assert result['legacy_manifest'] is False
+    assert len(result['manifest_digest']) == 64
+    assert result['manifest_integrity']['status'] == 'digest_verified'
+    assert result['manifest_integrity']['digest_verified'] is True
+    manifest = json.loads((jd / 'artifacts' / 'manifest.json').read_text(encoding='utf-8'))
+    assert manifest['manifest_digest'] == result['manifest_digest']
+    assert manifest['manifest_integrity']['status'] == 'digest_verified'
+    from platform_core.conversion import verify_source_manifest_digest
+    assert verify_source_manifest_digest(manifest)['valid'] is True
+
+
+def test_new_contract_remote_manifest_tampered_digest_fails_closed(task):
+    context, request, jd = task
+    _mark_new_contract(jd)
+    result = runtime.synchronize_remote_conversion(
+        context, request, recovering=True, http=_zip_done_http(_new_contract_bundle(tamper=True)))
+    assert result['status'] == 'failed'
+    assert 'manifest_digest' in result['error']
+    assert not (jd / 'artifacts').exists()

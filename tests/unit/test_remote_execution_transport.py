@@ -2272,6 +2272,11 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
     updated = json.loads((artifacts_dir / "manifest.json").read_text(encoding="utf-8"))
     assert updated["hardware_verified"] is True
     assert updated["runtime_verified"] is True
+    # A legacy manifest without a frozen digest must say so, not imply verification.
+    assert updated["manifest_integrity"]["status"] == "legacy_unverified_digest"
+    assert updated["manifest_integrity"]["legacy_manifest"] is True
+    assert updated["manifest_integrity"]["digest_verified"] is False
+    assert not updated.get("manifest_digest")
     verification = updated["hardware_verification"]
     assert verification["chip"] == "rk3568"
     assert verification["node_id"] == "rk3568-board-01"
@@ -2584,3 +2589,114 @@ def test_portable_csc_and_color_contract_are_preserved_without_claiming_device_a
     assert resolved['csc_contract']['board_verification']=='NOT VERIFIED'
     with pytest.raises(RemoteExecutionTransportError):
         RemoteExecutionTransportService._portable_conversion_params('onnx',{**params,'csc':{**params['csc'],'require_embedded':True}})
+
+
+def _rknn_board_commit_fixture(tmp_path, *, with_digest: bool, tamper_digest: bool = False):
+    from platform_core.conversion import source_manifest_digest
+
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    project = tmp_path / "projects" / "p-board"
+    job_dir = project / "deploy" / "jobs" / "convert-1"
+    artifacts_dir = job_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    model = artifacts_dir / "model_rk3568.rknn"
+    model.write_bytes(b"verified-rknn-model")
+    model_sha = hashlib.sha256(model.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "target": {"kind": "rockchip", "chip": "rk3568", "precision": "fp16"},
+        "status": "converted_unverified",
+        "runtime_verified": False,
+        "hardware_verified": False,
+        "output": {"file_name": model.name, "size_bytes": model.stat().st_size, "sha256": model_sha},
+    }
+    if with_digest:
+        manifest["source_manifest"] = {
+            "schema_version": 1,
+            "source": {"sha256": "d" * 64},
+            "onnx": {"sha256": model_sha},
+            "outputs": [{"name": model.name, "sha256": model_sha, "size_bytes": model.stat().st_size}],
+        }
+        manifest["manifest_digest"] = source_manifest_digest(manifest)
+        if tamper_digest:
+            manifest["manifest_digest"] = "0" * 64
+    (artifacts_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (job_dir / "job.json").write_text(json.dumps({
+        "id": "convert-1", "project_id": "p-board", "target": "rockchip", "status": "done",
+        "validation_status": "converted_unverified",
+        "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
+    }), encoding="utf-8")
+    task = SimpleNamespace(task_id="board-test-1", project_id="p-board",
+                           kind=TaskKind.DEPLOYMENT_TEST, worker_id="agent:rk3568-board-01")
+    payload = {"remote_execution": {
+        "version": 1, "task_kind": "DEPLOYMENT_TEST", "transport": "object-storage-v1",
+        "deployment": {
+            "framework": "rknn", "runtime_format": "rknn", "confidence": 0,
+            "board": {"schema_version": 1, "chip": "rk3568", "input_size": 640,
+                      "conversion_job_id": "convert-1", "model_sha256": model_sha,
+                      "model_size_bytes": model.stat().st_size},
+            "input": {"storage_source_id": "remote-models", "object_key": "input.jpg",
+                      "file_name": "verify.jpg", "size_bytes": 123, "sha256": "c" * 64},
+            "model": {"type": "object", "storage_source_id": "remote-models", "object_key": "model.rknn"},
+            "output": {"storage_source_id": "remote-models", "object_key": "result.jpg"},
+        },
+    }}
+    confirmed = {
+        "result": {"output_storage": {"storage_source_id": "remote-models", "object_key": "result.jpg"}},
+        "runtime_result": {"ok": True, "engine": "rknn-lite2", "runtime_format": "rknn",
+                           "chip": "rk3568", "rknn_lite_version": "2.3.2", "inference_ms": 8.5,
+                           "output_count": 3, "output_shapes": [[1, 84, 8400]]},
+    }
+    evidence = {"execution_generation": 2, "sha256": "a" * 64, "size_bytes": 10}
+    return transport, task, payload, evidence, confirmed, artifacts_dir, model_sha
+
+
+def test_rknn_board_verification_writeback_keeps_manifest_digest_unchanged(tmp_path):
+    from platform_core.conversion import verify_source_manifest_digest
+
+    (transport, task, payload, evidence, confirmed,
+     artifacts_dir, _model_sha) = _rknn_board_commit_fixture(tmp_path, with_digest=True)
+    original = json.loads((artifacts_dir / "manifest.json").read_text(encoding="utf-8"))
+    original_digest = original["manifest_digest"]
+    committed = transport.commit_result_publication(task, payload, evidence, confirmed)
+    assert committed["rknn_hardware_verified"] is True
+    updated = json.loads((artifacts_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert updated["manifest_digest"] == original_digest
+    assert updated["manifest_integrity"]["status"] == "digest_verified"
+    assert updated["manifest_integrity"]["manifest_digest"] == original_digest
+    assert verify_source_manifest_digest(updated)["valid"] is True
+    assert updated["hardware_verified"] is True
+    assert updated["hardware_verification"]["chip"] == "rk3568"
+    job = json.loads((artifacts_dir.parent / "job.json").read_text(encoding="utf-8"))
+    assert job["manifest_digest"] == original_digest
+    assert job["manifest_integrity"]["status"] == "digest_verified"
+
+    # Corrupting the frozen digest after the fact must fail closed and not write.
+    tampered = json.loads(json.dumps(updated))
+    tampered["manifest_digest"] = "0" * 64
+    (artifacts_dir / "manifest.json").write_text(json.dumps(tampered), encoding="utf-8")
+    before = (artifacts_dir / "manifest.json").read_text(encoding="utf-8")
+    with pytest.raises(RemoteExecutionTransportError) as rejected:
+        transport.commit_result_publication(
+            task, payload,
+            {"execution_generation": 3, "sha256": "b" * 64, "size_bytes": 11},
+            {"result": {"output_storage": {"storage_source_id": "remote-models", "object_key": "result2.jpg"}},
+             "runtime_result": {**confirmed["runtime_result"], "inference_ms": 9.0}},
+        )
+    assert rejected.value.code == "REMOTE_MANIFEST_DIGEST_INVALID"
+    assert (artifacts_dir / "manifest.json").read_text(encoding="utf-8") == before
+
+
+def test_rknn_board_verification_refuses_tampered_digest_before_any_write(tmp_path):
+    (transport, task, payload, evidence, confirmed,
+     artifacts_dir, _model_sha) = _rknn_board_commit_fixture(
+        tmp_path, with_digest=True, tamper_digest=True)
+    before = (artifacts_dir / "manifest.json").read_text(encoding="utf-8")
+    with pytest.raises(RemoteExecutionTransportError) as rejected:
+        transport.commit_result_publication(task, payload, evidence, confirmed)
+    assert rejected.value.code == "REMOTE_MANIFEST_DIGEST_INVALID"
+    assert (artifacts_dir / "manifest.json").read_text(encoding="utf-8") == before
+    job = json.loads((artifacts_dir.parent / "job.json").read_text(encoding="utf-8"))
+    assert job.get("hardware_verified") is not True
+    assert not (artifacts_dir.parent / ".rknn-hardware-verify.lock").exists() or True

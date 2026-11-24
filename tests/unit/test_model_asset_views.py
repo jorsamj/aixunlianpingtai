@@ -45,3 +45,19 @@ def test_safe_diagnostics_hide_quoted_credentials_and_unc_paths():
     from platform_core.model_asset_views import text
     value=text(r'''{"token":"SECRET_SENTINEL", "password": "SECOND_SECRET"} \\server\private\credentials.txt''')
     assert 'SECRET' not in value and 'server' not in value and 'credentials.txt' not in value
+
+
+def test_conversion_view_reads_projected_numeric_and_publication_status(tmp_path):
+    from platform_core.model_asset_views import conversion_record
+    for numeric, publication in (
+        ('consistent', 'numeric_consistent_delivery_evidence_incomplete'),
+        ('difference_detected', 'blocked_numeric_difference'),
+        ('not_comparable', 'blocked_numeric_not_comparable'),
+        ('unavailable', 'blocked_numeric_unavailable'),
+    ):
+        row = conversion_record({'id': 'j', 'status': 'done', 'numeric_status': numeric,
+                                 'publication_status': publication}, tmp_path)
+        assert row['numeric_status'] == numeric
+        assert row['publication_status'] == publication
+    absent = conversion_record({'id': 'j2', 'status': 'done'}, tmp_path)
+    assert absent['numeric_status'] is None and absent['publication_status'] is None

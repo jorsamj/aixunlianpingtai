@@ -20,6 +20,7 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms
+from .conversion import source_manifest_summary, verify_source_manifest_digest
 from .model_metadata import model_metadata
 from .errors import PlatformError
 from .secrets import SecretCredentialStore, KeyringSecretStore, secret_ref
@@ -704,7 +705,12 @@ class ModelArtifactRepository:
                      "manifest_path", "sdk_name", "model_io", "model_validation_status",
                      "source_sha256", "validation_status", "conversion_status", "runtime_verified", "hardware_verified",
                      "snapshot_id", "task_id", "framework", "framework_version", "finished_at", "last_label_conflict", "training_precision", "class_count",
-                     "remote_training", "object_identity_verified", "execution_generation", "role", "conversion_identity_verified"}
+                     "remote_training", "object_identity_verified", "execution_generation", "role", "conversion_identity_verified",
+                     # Frozen source-manifest identity and its bounded projection:
+                     # a sparse delivery refresh must never erase them, and a later
+                     # conflicting identity is still rejected above.
+                     "manifest_digest", "manifest_integrity_status", "manifest_legacy", "source_manifest",
+                     "numeric_status", "publication_status", "numeric_validation"}
             for key in owned:
                 if metadata.get(key) is None and key in previous:
                     metadata[key] = previous[key]
@@ -1682,8 +1688,47 @@ class ModelArtifactService:
                 matches = (len(outputs)==1 and outputs[0].get("sha256")==digest and outputs[0].get("size_bytes")==path.stat().st_size
                            and bool(manifest_job_id) and manifest_job_id in accepted_job_ids
                            and source_sha and (manifest.get("source") or {}).get("sha256")==source_sha)
+                integrity = verify_source_manifest_digest(manifest) if isinstance(manifest, dict) else {
+                    "present": False, "valid": False, "recorded": "", "reason": "manifest 不是 JSON object"}
+                if matches and integrity["present"] and not integrity["valid"]:
+                    # A recorded digest that no longer matches the immutable
+                    # fields means tampering/corruption: never trust its IO data.
+                    matches = False
+                    metadata["manifest_integrity_status"] = "digest_mismatch"
+                    metadata["manifest_digest"] = ""
+                elif matches and integrity["present"]:
+                    document = manifest.get("source_manifest")
+                    if not isinstance(document, Mapping) or document.get("schema_version") != 1:
+                        matches = False
+                        metadata["manifest_integrity_status"] = "source_manifest_missing"
+                        metadata["manifest_digest"] = ""
+                    else:
+                        documented_source = document.get("source") if isinstance(document.get("source"), Mapping) else {}
+                        if documented_source.get("sha256") != (manifest.get("source") or {}).get("sha256"):
+                            matches = False
+                            metadata["manifest_integrity_status"] = "source_manifest_sha_mismatch"
+                            metadata["manifest_digest"] = ""
                 if matches:
                     metadata["conversion_identity_verified"]=True
+                    metadata["manifest_digest"] = str(integrity.get("recorded") or "")
+                    # Missing digest is an explicit legacy state, never "verified".
+                    metadata["manifest_integrity_status"] = "digest_verified" if integrity["present"] else "legacy_unverified_digest"
+                    metadata["manifest_legacy"] = not integrity["present"]
+                    if integrity["present"]:
+                        metadata["source_manifest"] = source_manifest_summary(manifest)
+                    # Numeric/publication state is a bounded read-only projection of
+                    # the existing conversion job; the job remains the single Owner.
+                    metadata["numeric_status"] = str(job.get("numeric_status") or "")
+                    metadata["publication_status"] = str(job.get("publication_status") or "")
+                    numeric = job.get("numeric_validation")
+                    if isinstance(numeric, Mapping):
+                        metadata["numeric_validation"] = {
+                            key: numeric.get(key) for key in (
+                                "verification_id", "status", "verdict", "raw_verdict", "detection_status",
+                                "sample_count", "protocol", "hardware_verified", "ground_truth_used",
+                                "completed_at", "result_ref",
+                            ) if key in numeric
+                        }
                     # Conversion worker emits its manifest after producing
                     # outputs; only its timezone-qualified timestamp is trusted.
                     # Never guess a zone for legacy job times or file mtimes.
@@ -1709,7 +1754,13 @@ class ModelArtifactService:
                                     manifest_metadata_error="")
                 else:
                     metadata["conversion_identity_verified"]=False
-                    metadata["manifest_metadata_error"]="Manifest与真实产物SHA/大小、任务或源模型不匹配，未采信其模型IO信息"
+                    metadata.setdefault("manifest_digest", "")
+                    metadata.setdefault("manifest_integrity_status", "unverified")
+                    metadata["manifest_metadata_error"] = (
+                        "Manifest与真实产物SHA/大小、任务或源模型不匹配，未采信其模型IO信息"
+                        if metadata.get("manifest_integrity_status") in {"unverified", ""}
+                        else "Manifest的不可变摘要或 source_manifest 与真实产物/源模型不匹配，未采信其模型IO信息"
+                    )
             chip_code = str(metadata.get("chip_code") or "").strip().lower()
             artifact_id = hashlib.sha256(
                 f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_code}:{digest}".encode("utf-8")

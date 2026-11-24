@@ -26,7 +26,10 @@ from .algorithms import (
 )
 from filelock import FileLock, Timeout
 
-from .conversion import SUPPORTED_ROCKCHIP_CHIPS
+from .conversion import (
+    SUPPORTED_ROCKCHIP_CHIPS,
+    verify_source_manifest_digest,
+)
 from .external_publish_request import request_external_auto_publish_if_enabled
 from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService, build_artifact_object_key
@@ -4094,6 +4097,15 @@ class RemoteExecutionTransportService:
             # Re-read under the lock before publishing the hardware truth.
             latest_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             latest_job = json.loads(job_path.read_text(encoding="utf-8"))
+            digest_before = str(latest_manifest.get("manifest_digest") or "")
+            if digest_before:
+                before_integrity = verify_source_manifest_digest(latest_manifest)
+                if not before_integrity["valid"]:
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_MANIFEST_DIGEST_INVALID",
+                        "硬件验证写回前 manifest_digest 已与不可变字段不一致，拒绝写入硬件结论",
+                        409,
+                    )
             latest_manifest.update({
                 "status": "hardware_verified",
                 "runtime_verified": True,
@@ -4101,6 +4113,33 @@ class RemoteExecutionTransportService:
                 "validation_status": "hardware_verified",
                 "hardware_verification": verification,
             })
+            # Only mutable delivery state may change here. The frozen model
+            # identity digest must be byte-identical before and after writeback.
+            digest_after = str(latest_manifest.get("manifest_digest") or "")
+            if digest_after != digest_before:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MANIFEST_DIGEST_CHANGED",
+                    "硬件验证写回篡改了 manifest_digest，拒绝登记硬件结论",
+                    409,
+                )
+            if digest_before:
+                after_integrity = verify_source_manifest_digest(latest_manifest)
+                if not after_integrity["valid"]:
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_MANIFEST_DIGEST_INVALID",
+                        "硬件验证写回后 manifest_digest 重算不一致，拒绝登记硬件结论",
+                        409,
+                    )
+                latest_manifest["manifest_integrity"] = {
+                    "status": "digest_verified", "manifest_digest": digest_before,
+                    "digest_verified": True, "legacy_manifest": False,
+                }
+            else:
+                latest_manifest["manifest_integrity"] = {
+                    "status": "legacy_unverified_digest", "manifest_digest": "",
+                    "digest_verified": False, "legacy_manifest": True,
+                    "reason": "旧历史 manifest 缺少 manifest_digest，硬件验证写回未据此声明模型身份已验证",
+                }
             manifest_tmp = manifest_path.with_name(".manifest.json.hardware.tmp")
             manifest_tmp.write_text(
                 json.dumps(latest_manifest, ensure_ascii=False, sort_keys=True),
@@ -4115,6 +4154,8 @@ class RemoteExecutionTransportService:
                 "conversion_status": "hardware_verified",
                 "message": f"RKNN 已在 {chip.upper()} 实机完成 Runtime 推理验证",
                 "hardware_verification": verification,
+                "manifest_digest": digest_before,
+                "manifest_integrity": latest_manifest["manifest_integrity"],
             })
             job_tmp = job_path.with_name(".job.json.hardware.tmp")
             job_tmp.write_text(
