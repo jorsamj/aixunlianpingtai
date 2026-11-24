@@ -117,7 +117,7 @@ def _model_confirmer(_task, _payload, *, execution_generation, models):
 
 def _start_formal(tmp_path, *, task_id="formal-1", gpu="GPU-A", mutate=None,
                   worker_script=None, cancel_after=None, cancel_marker=None,
-                  drop_response_path=None):
+                  drop_response_path=None, start_execution=True):
     fixtures = _unit_module()
     current_lease, downloads = fixtures.training_lease(tmp_path)
     payload = dict(current_lease.payload)
@@ -185,6 +185,19 @@ def _start_formal(tmp_path, *, task_id="formal-1", gpu="GPU-A", mutate=None,
     client = NodeExecutorClient(f"http://127.0.0.1:{port}", "formal-runner", token)
     claimed = client.claim_assignment()
     assert claimed is not None
+    if not start_execution:
+        # Response-loss probe: the caller drives the HTTP start itself so the
+        # injected loss can be asserted on the client boundary. No runner and no
+        # execution lease exist yet; central state is the only truth.
+        return {
+            "fixtures": fixtures, "repository": repository, "artifacts": artifacts,
+            "service": service, "client": client, "lease": None, "runner": None,
+            "runtime_root": None, "workdirs": None, "server": server,
+            "thread": thread, "task_id": task_id, "token": token, "canceller": None,
+            "drop_state": drop_state, "app": app, "port": port,
+            "claimed": claimed,
+            "assignment_token": str(claimed["assignment"]["assignment_lease_token"]),
+        }
     lease = client.start_execution(task_id, claimed["assignment"]["assignment_lease_token"])
     transfer = fixtures.FakeTransferSession(downloads)
     runner, runtime_root, workdirs = fixtures.build_runner(tmp_path, client, transfer)
@@ -215,7 +228,9 @@ def _start_formal(tmp_path, *, task_id="formal-1", gpu="GPU-A", mutate=None,
 def _stop_formal(stack):
     stack["server"].should_exit = True
     stack["thread"].join(timeout=10)
-    stack["runner"].request_shutdown()
+    runner = stack.get("runner")
+    if runner is not None:
+        runner.request_shutdown()
 
 
 def test_formal_training_runner_start_identity_response_loss(tmp_path):
@@ -1079,6 +1094,7 @@ def _start_formal_dual_slot(tmp_path, specs):
         "service": service, "client": client, "loop": loop, "started": started,
         "workdirs": workdirs, "prepared": prepared, "server": server,
         "thread": thread, "port": port, "token": token, "specs": specs,
+        "app": app,
     }
     _wait_until(
         lambda: {"a", "b"} <= set(started),
@@ -1498,3 +1514,517 @@ def test_advanced_attempt_fencing_rejects_stale_token(tmp_path):
         assert int(advanced_holds) == 0
     finally:
         _stop_formal_dual(stack)
+
+
+# ---------------------------------------------------------------------------
+# Remaining N7 response-loss matrix: start_execution, finish, recover.
+# start-identity and stop-proof loss are covered by the tests above.
+# ---------------------------------------------------------------------------
+
+
+def _central_snapshot(repository, task_ids):
+    """Durable rows a read-only GET must never change.
+
+    Mutable heartbeat columns (updated_at/progress/lease_expires_at/stage) are
+    deliberately excluded: a live runner legitimately heartbeats those.
+    """
+    snapshot = {}
+    with repository._connect() as database:
+        for task_id in task_ids:
+            task = database.execute(
+                "SELECT task_id,status,attempt,finished_at,process_pid,"
+                "process_create_time,process_command_hash,lease_token,worker_id "
+                "FROM tasks WHERE task_id=?", (str(task_id),),
+            ).fetchone()
+            holds = [dict(row) for row in database.execute(
+                "SELECT task_id,node_id,assignment_generation,execution_attempt,"
+                "gpu_uuid,state,proof_sha256,proof_type FROM execution_resource_holds "
+                "WHERE task_id=? ORDER BY execution_attempt", (str(task_id),),
+            )]
+            assignments = [dict(row) for row in database.execute(
+                "SELECT generation,node_id,state,release_reason,lease_token,"
+                "resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? ORDER BY generation", (str(task_id),),
+            )]
+            snapshot[str(task_id)] = {
+                "task": dict(task) if task is not None else None,
+                "holds": holds,
+                "assignments": assignments,
+            }
+    return snapshot
+
+
+def _row_count(repository, table, task_id):
+    with repository._connect() as database:
+        return int(database.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (str(task_id),),
+        ).fetchone()[0])
+
+
+def test_formal_training_runner_start_execution_response_loss(tmp_path):
+    """Committed start + lost response must never start a duplicate execution.
+
+    The control plane committed RUNNING/attempt=1/HELD and consumed the
+    Assignment before the 503. A retry is fenced fail-closed: no second
+    attempt, no second Hold, no forged terminal, no premature Hold release.
+    """
+    task_id = "formal-lost-start"
+    stack = _start_formal(
+        tmp_path, task_id=task_id, start_execution=False,
+        drop_response_path=f"/assignments/{task_id}/start",
+    )
+    try:
+        token = stack["assignment_token"]
+        with pytest.raises(NodeExecutorHTTPError) as lost:
+            stack["client"].start_execution(task_id, token)
+        assert lost.value.status_code >= 500
+        assert lost.value.code == "INJECTED_RESPONSE_LOSS"
+
+        # The start transaction committed before the response was dropped.
+        with stack["repository"]._connect() as database:
+            row = database.execute(
+                "SELECT status,attempt,finished_at,process_pid,process_create_time,"
+                "process_command_hash,lease_token,worker_id "
+                "FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            hold = database.execute(
+                "SELECT state,execution_attempt,assignment_generation,gpu_uuid,"
+                "proof_type,proof_sha256 FROM execution_resource_holds WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            assignment = database.execute(
+                "SELECT state,release_reason,lease_token,resolved_execution_config "
+                "FROM task_node_assignments WHERE task_id=?", (task_id,),
+            ).fetchone()
+        assert row["status"] == "RUNNING" and row["attempt"] == 1
+        assert row["finished_at"] is None and row["process_pid"] is None
+        assert row["lease_token"]
+        assert hold["state"] == "HELD" and hold["execution_attempt"] == 1
+        assert hold["gpu_uuid"] == "GPU-A"
+        assert hold["proof_type"] is None and hold["proof_sha256"] is None
+        assert assignment["state"] == "RELEASED"
+        assert assignment["release_reason"] == "execution_started"
+        assert assignment["lease_token"] is None
+        config = json.loads(assignment["resolved_execution_config"])
+        assert config["execution_attempt"] == 1
+        assert config["execution_slots"] == 2
+        assert _row_count(stack["repository"], "tasks", task_id) == 1
+        assert _row_count(stack["repository"], "execution_resource_holds", task_id) == 1
+
+        # Retry after the loss: fail closed, no duplicate execution.
+        stack["drop_state"][0] = False
+        with pytest.raises(NodeExecutorHTTPError) as retry:
+            stack["client"].start_execution(task_id, token)
+        assert retry.value.status_code == 409
+        assert retry.value.code == "ASSIGNMENT_NOT_CLAIMED"
+        assert stack["client"].claim_assignment() is None
+
+        with stack["repository"]._connect() as database:
+            row_after = database.execute(
+                "SELECT status,attempt,finished_at,process_pid,process_create_time,"
+                "process_command_hash,lease_token,worker_id "
+                "FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            hold_after = database.execute(
+                "SELECT state,execution_attempt,assignment_generation,gpu_uuid,"
+                "proof_type,proof_sha256 FROM execution_resource_holds WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        assert dict(row_after) == dict(row)
+        assert dict(hold_after) == dict(hold)
+        assert _row_count(stack["repository"], "tasks", task_id) == 1
+        assert _row_count(stack["repository"], "execution_resource_holds", task_id) == 1
+        # No process identity was forged by the retried/failed start.
+        assert row_after["process_pid"] is None
+        assert row_after["process_create_time"] is None
+        assert row_after["process_command_hash"] is None
+
+        status = stack["client"].execution_status(task_id)
+        assert status["status"] == "RUNNING"
+        assert status["execution_attempt"] == 1
+        assert status["execution_slots"] == 2
+        assert status["hold_state"] == "HELD"
+        assert status["hold_gpu_uuid"] == "GPU-A"
+        assert status["process_identity_sha256"] is None
+        assert status["proof_type"] is None
+        assert status["proof_sha256"] is None
+        assert status["recovery_state"] == "HELD"
+        assert status["recovery_blocked_reason"] == "PROCESS_STOP_UNPROVEN"
+    finally:
+        _stop_formal(stack)
+
+
+def test_formal_training_runner_finish_response_loss(tmp_path):
+    """A committed finish whose response is lost is never re-forged.
+
+    The terminal status, its finished_at and the RELEASED Hold with a real stop
+    proof digest are already durable. Retrying finish is fenced, and the
+    terminal truth/digest/attempt stay byte-identical.
+    """
+    task_id = "formal-lost-finish"
+    stack = _start_formal(
+        tmp_path, task_id=task_id,
+        drop_response_path="/finish",
+    )
+    try:
+        with pytest.raises(RemoteExecutionFenced):
+            stack["runner"].run(stack["lease"])
+
+        with stack["repository"]._connect() as database:
+            row = database.execute(
+                "SELECT status,attempt,finished_at,process_pid,process_create_time,"
+                "process_command_hash FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            hold = database.execute(
+                "SELECT state,assignment_generation,execution_attempt,gpu_uuid,"
+                "proof_type,proof_sha256 FROM execution_resource_holds WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        assert row["status"] == "SUCCEEDED" and row["attempt"] == 1
+        assert row["finished_at"] is not None
+        assert row["process_pid"] is not None
+        assert hold["state"] == "RELEASED"
+        assert hold["proof_type"] == "PROCESS_STOP_VERIFIED"
+        identity = {"pid": int(row["process_pid"]),
+                    "create_time": float(row["process_create_time"]),
+                    "command_hash": str(row["process_command_hash"])}
+        expected_digest = _expected_stop_proof_sha256(
+            node_id="formal-runner", task_id=task_id,
+            assignment_generation=int(hold["assignment_generation"]),
+            execution_attempt=int(hold["execution_attempt"]),
+            gpu_uuid=str(hold["gpu_uuid"]), process_identity=identity,
+        )
+        assert hold["proof_sha256"] == expected_digest
+
+        # Retrying the lost finish must not duplicate a terminal transition.
+        stack["drop_state"][0] = False
+        with pytest.raises(NodeExecutorHTTPError) as retry:
+            stack["client"].finish(stack["lease"], "FAILED",
+                                   error="retry after lost finish")
+        assert retry.value.status_code == 409
+        assert retry.value.code == "EXECUTION_FENCED"
+        with stack["repository"]._connect() as database:
+            row_after = database.execute(
+                "SELECT status,attempt,finished_at,process_pid,process_create_time,"
+                "process_command_hash FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            hold_after = database.execute(
+                "SELECT state,assignment_generation,execution_attempt,gpu_uuid,"
+                "proof_type,proof_sha256 FROM execution_resource_holds WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        # Same single terminal truth, same proof; the FAILED retry was fenced
+        # and never replaced the committed SUCCEEDED.
+        assert dict(row_after) == dict(row)
+        assert row_after["status"] == "SUCCEEDED"
+        assert dict(hold_after) == dict(hold)
+        assert _row_count(stack["repository"], "tasks", task_id) == 1
+        assert _row_count(stack["repository"], "execution_resource_holds", task_id) == 1
+    finally:
+        _stop_formal(stack)
+
+
+def test_central_recover_response_loss_is_idempotent(tmp_path):
+    """Committed recovery + lost response must stay idempotent and consistent."""
+    task_id = "formal-lost-recover"
+    from platform_core.task_runtime.process_control import ProcessController, launch_process
+
+    stack = _start_formal(tmp_path, task_id=task_id, drop_response_path="/recover")
+    process = None
+    try:
+        handle = launch_process([sys.executable, "-c", "import time; time.sleep(30)"])
+        process = handle.process
+        identity = {"pid": int(handle.identity.pid),
+                    "create_time": float(handle.identity.create_time),
+                    "command_hash": str(handle.identity.command_hash)}
+        stack["client"].record_start_identity(stack["lease"], identity)
+        ProcessController().terminate_tree(handle.identity, timeout=5.0)
+        assignment = stack["lease"].assignment
+        assignment_generation = int(assignment["generation"])
+        execution_generation = int(stack["lease"].generation)
+        gpu_uuid = str(assignment["resolved_execution_config"]["selected_gpu"]["uuid"])
+
+        with pytest.raises(NodeExecutorHTTPError) as lost:
+            stack["client"].recover_execution(
+                task_id, assignment_generation=assignment_generation,
+                execution_generation=execution_generation, gpu_uuid=gpu_uuid,
+                process_identity=identity,
+            )
+        assert lost.value.status_code >= 500
+        assert lost.value.code == "INJECTED_RESPONSE_LOSS"
+
+        expected_digest = _expected_stop_proof_sha256(
+            node_id="formal-runner", task_id=task_id,
+            assignment_generation=assignment_generation,
+            execution_attempt=execution_generation,
+            gpu_uuid=gpu_uuid, process_identity=identity,
+        )
+        task = stack["repository"].get(task_id)
+        assert task.status.value == "FAILED"
+        with stack["repository"]._connect() as database:
+            row = database.execute(
+                "SELECT status,attempt,finished_at,process_pid,process_create_time,"
+                "process_command_hash FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            hold = database.execute(
+                "SELECT state,assignment_generation,execution_attempt,gpu_uuid,"
+                "proof_type,proof_sha256 FROM execution_resource_holds WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        assert row["status"] == "FAILED" and row["attempt"] == execution_generation
+        assert hold["state"] == "RELEASED"
+        assert hold["proof_type"] == "PROCESS_STOP_VERIFIED"
+        assert hold["proof_sha256"] == expected_digest
+        assert int(hold["assignment_generation"]) == assignment_generation
+        assert int(hold["execution_attempt"]) == execution_generation
+        assert str(hold["gpu_uuid"]) == gpu_uuid
+
+        # Retrying the lost recovery is idempotent: same digest, no new proof.
+        stack["drop_state"][0] = False
+        first_retry = stack["client"].recover_execution(
+            task_id, assignment_generation=assignment_generation,
+            execution_generation=execution_generation, gpu_uuid=gpu_uuid,
+            process_identity=identity,
+        )
+        second_retry = stack["client"].recover_execution(
+            task_id, assignment_generation=assignment_generation,
+            execution_generation=execution_generation, gpu_uuid=gpu_uuid,
+            process_identity=identity,
+        )
+        assert first_retry["state"] == "RELEASED"
+        assert first_retry["proof_sha256"] == expected_digest
+        assert second_retry["proof_sha256"] == expected_digest
+        with stack["repository"]._connect() as database:
+            row_after = database.execute(
+                "SELECT status,attempt,finished_at,process_pid,process_create_time,"
+                "process_command_hash FROM tasks WHERE task_id=?", (task_id,),
+            ).fetchone()
+            hold_after = database.execute(
+                "SELECT state,assignment_generation,execution_attempt,gpu_uuid,"
+                "proof_type,proof_sha256 FROM execution_resource_holds WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        assert dict(row_after) == dict(row)
+        assert dict(hold_after) == dict(hold)
+        assert _row_count(stack["repository"], "tasks", task_id) == 1
+        assert _row_count(stack["repository"], "execution_resource_holds", task_id) == 1
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+        _stop_formal(stack)
+
+
+# ---------------------------------------------------------------------------
+# Read-only operations diagnostics.
+# ---------------------------------------------------------------------------
+
+
+def test_execution_status_read_only_recovery_diagnostics(tmp_path):
+    """The central status projection is complete, GET-only and secret-free."""
+    stack = _start_formal_dual_slot(tmp_path, [("a", "GPU-A", 30.0), ("b", "GPU-B", 2.0)])
+    try:
+        identity_a = _slot_identity_from_workdir(stack, "a")
+        assert identity_a is not None
+        _wait_central_start_identity(stack, "a", identity_a)
+        identity_b = _slot_identity_from_workdir(stack, "b")
+        assert identity_b is not None
+        _wait_central_start_identity(stack, "b", identity_b)
+        client = stack["client"]
+        before = _central_snapshot(stack["repository"], ("a", "b"))
+        status_a = client.execution_status("a")
+        status_a_again = client.execution_status("a")
+        held_b = client.execution_status("b")
+        assert _central_snapshot(stack["repository"], ("a", "b")) == before
+
+        # Existing durable Assignment/Hold/GPU/generation evidence is fixed here.
+        assert status_a["execution_attempt"] == 1
+        assert status_a["execution_slots"] == 2
+        assert status_a["assignment_state"] == "RELEASED"
+        assert status_a["assignment_generation"] == held_b["assignment_generation"]
+        assert status_a["hold_state"] == "HELD"
+        assert status_a["hold_execution_attempt"] == 1
+        assert status_a["hold_gpu_uuid"] == "GPU-A"
+        assert status_a["process_identity_sha256"] == _process_identity_sha256(identity_a)
+        assert status_a["proof_type"] is None
+        assert status_a["proof_sha256"] is None
+        # Node capability evidence (names only).
+        assert "training" in status_a["node_capabilities"]
+        assert "execution-slots:2" in status_a["node_capabilities"]
+        # Recovery state/blocking reason and stable evidence digest.
+        assert status_a["recovery_state"] == "HELD"
+        assert status_a["recovery_blocked_reason"] == "PROCESS_STOP_UNPROVEN"
+        assert len(status_a["evidence_sha256"]) == 64
+        assert status_a_again == status_a
+        assert held_b["recovery_state"] == "HELD"
+        assert held_b["hold_gpu_uuid"] == "GPU-B"
+        assert held_b["evidence_sha256"] != status_a["evidence_sha256"]
+
+        # No lease/assignment token or credential material is projected.
+        secrets = []
+        with stack["repository"]._connect() as database:
+            for row in database.execute(
+                "SELECT lease_token FROM tasks WHERE task_id IN ('a','b')"
+            ):
+                if row[0] is not None:
+                    secrets.append(str(row[0]))
+            for row in database.execute(
+                "SELECT lease_token FROM task_node_assignments WHERE task_id IN ('a','b')"
+            ):
+                if row[0] is not None:
+                    secrets.append(str(row[0]))
+        secrets.append(str(stack["token"]))
+        serialized = json.dumps({"a": status_a, "b": held_b}, sort_keys=True)
+        for secret in secrets:
+            assert secret not in serialized
+        for payload in (status_a, held_b):
+            assert not any(
+                marker in str(key).lower()
+                for key in payload
+                for marker in ("token", "secret", "credential")
+            )
+        # The status route is a GET; the service exposes no forced-release verb.
+        paths = stack["app"].openapi()["paths"]
+        status_routes = {
+            path: methods for path, methods in paths.items()
+            if path.startswith("/api/v63/node-executor/") and path.endswith("/status")
+        }
+        assert status_routes
+        assert all(set(methods) == {"get"} for methods in status_routes.values())
+        assert not any(
+            marker in path.lower()
+            for path in paths
+            if path.startswith("/api/v63/node-executor/")
+            for marker in ("release", "force", "requeue")
+        )
+
+        # A completed sibling projects RELEASED + the recomputable stop proof.
+        def b_released():
+            stack["loop"]._reap_dual_slots()
+            status = client.execution_status("b")
+            if status["status"] in {"SUCCEEDED", "PARTIAL_SUCCESS"} \
+                    and status["hold_state"] == "RELEASED":
+                return status
+            return None
+
+        released_b = _wait_until(
+            b_released, timeout=40, message="B did not finish after its own proof",
+        )
+        assert released_b["proof_type"] == "PROCESS_STOP_VERIFIED"
+        assert released_b["recovery_state"] == "RELEASED"
+        assert released_b["recovery_blocked_reason"] is None
+        expected_b = _expected_stop_proof_sha256(
+            node_id="formal-runner", task_id="b",
+            assignment_generation=int(released_b["hold_assignment_generation"]),
+            execution_attempt=int(released_b["hold_execution_attempt"]),
+            gpu_uuid=str(released_b["hold_gpu_uuid"]), process_identity=identity_b,
+        )
+        assert released_b["proof_sha256"] == expected_b
+        assert released_b["evidence_sha256"] != held_b["evidence_sha256"]
+        # The still-HELD sibling was not affected by B's release.
+        status_a_after = client.execution_status("a")
+        assert status_a_after["hold_state"] == "HELD"
+        assert status_a_after["recovery_state"] == "HELD"
+        assert status_a_after["evidence_sha256"] == status_a["evidence_sha256"]
+    finally:
+        _stop_formal_dual(stack)
+
+
+def test_remote_recovery_diagnosis_is_read_only_projection(tmp_path):
+    """The stop-proof preflight exposes evidence but can never release."""
+    task_id = "formal-diagnosis"
+    stack = _start_formal(tmp_path, task_id=task_id)
+    try:
+        client = stack["client"]
+        with pytest.raises(NodeExecutorHTTPError) as not_held:
+            client.recovery_diagnosis(task_id)
+        assert not_held.value.status_code == 409
+        assert not_held.value.code == "REMOTE_RECOVERY_NOT_HELD"
+        # Test fixture: mark the execution as awaiting the supervisor stop proof.
+        with stack["repository"]._connect() as database:
+            database.execute(
+                "UPDATE tasks SET stage='recovery_blocked_remote_agent_unverified' "
+                "WHERE task_id=?", (task_id,),
+            )
+            database.commit()
+            lease_token = database.execute(
+                "SELECT lease_token FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()[0]
+        before = _central_snapshot(stack["repository"], (task_id,))
+        diagnostic = client.recovery_diagnosis(task_id)
+        again = client.recovery_diagnosis(task_id)
+        assert _central_snapshot(stack["repository"], (task_id,)) == before
+
+        assert diagnostic["task_id"] == task_id
+        assert diagnostic["node_id"] == "formal-runner"
+        assert diagnostic["execution_generation"] == 1
+        assert diagnostic["task_status"] == "RUNNING"
+        assert diagnostic["recovery_state"] == "STOP_PROOF_REQUIRED"
+        assert diagnostic["automatic_reassignment_allowed"] is False
+        assert diagnostic["stop_proof_verified"] is False
+        # Minimal additive read-only evidence (no mutation capability).
+        assert diagnostic["execution_slots"] == 2
+        assert "training" in diagnostic["node_capabilities"]
+        assert diagnostic["assignment_state"] == "RELEASED"
+        assert diagnostic["hold_state"] == "HELD"
+        assert diagnostic["hold_execution_attempt"] == 1
+        assert diagnostic["hold_gpu_uuid"] == "GPU-A"
+        assert diagnostic["proof_type"] is None
+        assert diagnostic["proof_sha256"] is None
+        assert diagnostic["execution_recovery_state"] == "HELD"
+        assert diagnostic["execution_recovery_blocked_reason"] == "PROCESS_STOP_UNPROVEN"
+        assert len(diagnostic["evidence_sha256"]) == 64
+        assert again == diagnostic
+
+        status = client.execution_status(task_id)
+        assert status["evidence_sha256"] == diagnostic["evidence_sha256"]
+        assert status["hold_state"] == diagnostic["hold_state"]
+        assert status["hold_gpu_uuid"] == diagnostic["hold_gpu_uuid"]
+        assert status["recovery_state"] == diagnostic["execution_recovery_state"]
+        serialized = json.dumps(diagnostic, sort_keys=True)
+        assert lease_token is not None
+        assert str(lease_token) not in serialized
+        assert str(stack["token"]) not in serialized
+        assert not any(
+            marker in str(key).lower()
+            for key in diagnostic
+            for marker in ("token", "secret", "credential")
+        )
+        # The diagnosis route is a GET only.
+        paths = stack["app"].openapi()["paths"]
+        recovery_routes = {
+            path: methods for path, methods in paths.items()
+            if path.startswith("/api/v63/node-executor/") and path.endswith("/recovery")
+        }
+        assert recovery_routes
+        assert all(set(methods) == {"get"} for methods in recovery_routes.values())
+    finally:
+        _stop_formal(stack)
+
+
+# ---------------------------------------------------------------------------
+# Dual-slot simultaneous Agent crash: real node_agent.py E2E (POSIX) and the
+# Windows fail-closed contract. The scenario bodies live in the shared harness.
+# ---------------------------------------------------------------------------
+
+
+def _load_real_agent_support():
+    name = "real_agent_crash_recovery_e2e_support_formal_runner"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = Path(__file__).with_name("_real_agent_crash_recovery_support.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dual-slot real Agent SIGKILL recovery")
+def test_real_agent_dual_slot_simultaneous_crash_recovers_both(tmp_path):
+    _load_real_agent_support().run_dual_slot_simultaneous_agent_sigkill_recovery(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows dual-slot real Agent fail-closed contract")
+def test_real_agent_dual_slot_simultaneous_crash_is_fail_closed(tmp_path):
+    _load_real_agent_support().run_dual_slot_simultaneous_agent_crash_fail_closed(tmp_path)

@@ -110,6 +110,77 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _node_effective_capabilities(database, node_id: str) -> list[str]:
+    """Read-only capability projection safe to expose to the owning Agent.
+
+    Only capability *names* that are both allowed and currently reported are
+    returned. No node token material, resource inventory or provider credential
+    is included.
+    """
+    row = database.execute(
+        "SELECT allowed_capabilities,reported_capabilities FROM service_nodes WHERE node_id=?",
+        (str(node_id),),
+    ).fetchone()
+    if row is None:
+        return []
+    allowed = set(_json(row["allowed_capabilities"], []))
+    reported = set(_json(row["reported_capabilities"], []))
+    return sorted(str(item) for item in (allowed & reported))
+
+
+def _recovery_projection(hold) -> tuple[str, str | None]:
+    """Read-only recovery state and its blocking reason for one execution.
+
+    The projection never exposes a forced-release verdict: a HELD execution is
+    blocked until an authentic stop proof is recorded, and a STOP_VERIFIED
+    execution is blocked until the fenced terminal finish commits.
+    """
+    if hold is None:
+        return "NO_HOLD", None
+    state = str(hold["state"])
+    if state == "HELD":
+        return "HELD", "PROCESS_STOP_UNPROVEN"
+    if state == "STOP_VERIFIED":
+        return "STOP_VERIFIED", "TERMINAL_FINISH_PENDING"
+    if state == "RELEASED":
+        return "RELEASED", None
+    return "UNKNOWN", "HOLD_STATE_UNKNOWN"
+
+
+def _persistent_evidence_sha256(
+    *,
+    task_id: str,
+    execution_attempt: int,
+    assignment_state: str | None,
+    assignment_generation: int | None,
+    hold_state: str | None,
+    hold_execution_attempt: int | None,
+    hold_assignment_generation: int | None,
+    gpu_uuid: str | None,
+    proof_type: str | None,
+    proof_sha256: str | None,
+    process_identity_sha256: str | None,
+) -> str:
+    """Stable digest over durable recovery evidence (never tokens/secrets).
+
+    Operators can compare this across Agent restarts to detect evidence drift
+    without reading mutable rows or being handed any credential material.
+    """
+    return hashlib.sha256(_canonical_json({
+        "task_id": str(task_id),
+        "execution_attempt": int(execution_attempt),
+        "assignment_state": assignment_state,
+        "assignment_generation": assignment_generation,
+        "hold_state": hold_state,
+        "hold_execution_attempt": hold_execution_attempt,
+        "hold_assignment_generation": hold_assignment_generation,
+        "gpu_uuid": gpu_uuid,
+        "proof_type": proof_type,
+        "proof_sha256": proof_sha256,
+        "process_identity_sha256": process_identity_sha256,
+    }).encode("utf-8")).hexdigest()
+
+
 def _sanitize_training_resource_resolution(
     value: object,
     *,
@@ -725,6 +796,39 @@ class AgentExecutionService:
                 "remote task is not awaiting a verified stop proof",
                 409,
             )
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            hold = database.execute(
+                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,"
+                "proof_type,proof_sha256 "
+                "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+            assignment = database.execute(
+                "SELECT node_id,state,generation,lease_expires_at FROM task_node_assignments "
+                "WHERE task_id=? ORDER BY generation DESC LIMIT 1", (str(task_id),)
+            ).fetchone()
+            execution_slots = self._persisted_execution_slots(
+                database, str(task_id), int(task.attempt),
+            )
+            if execution_slots == 0:
+                if hold is not None and int(hold["execution_attempt"]) == int(task.attempt):
+                    execution_slots = 2
+                else:
+                    execution_slots = 1
+            node_capabilities = _node_effective_capabilities(database, str(node_id))
+            identity = database.execute(
+                "SELECT process_pid,process_create_time,process_command_hash "
+                "FROM tasks WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+        identity_sha = None
+        if identity is not None and identity["process_pid"] is not None:
+            identity_sha = hashlib.sha256(_canonical_json({
+                "pid": int(identity["process_pid"]),
+                "create_time": float(identity["process_create_time"]),
+                "command_hash": str(identity["process_command_hash"]),
+            }).encode("utf-8")).hexdigest()
+        hold_state = str(hold["state"]) if hold is not None else None
+        recovery_state, recovery_blocked_reason = _recovery_projection(hold)
         return {
             "task_id": task.task_id,
             "node_id": str(node_id),
@@ -734,6 +838,53 @@ class AgentExecutionService:
             "automatic_reassignment_allowed": False,
             "stop_proof_verified": False,
             "resource_wait_reason": task.resource_wait_reason,
+            # Read-only durable evidence for the original execution. These are
+            # projections only: this endpoint can never release a Hold and never
+            # returns a lease/assignment token.
+            "execution_slots": int(execution_slots),
+            "node_capabilities": node_capabilities,
+            "assignment_state": str(assignment["state"]) if assignment is not None else None,
+            "assignment_generation": int(assignment["generation"]) if assignment is not None else None,
+            "hold_state": hold_state,
+            "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
+            "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
+            "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
+            "proof_type": (
+                None if hold is None or hold["proof_type"] is None else str(hold["proof_type"])
+            ),
+            "proof_sha256": (
+                None if hold is None or hold["proof_sha256"] is None else str(hold["proof_sha256"])
+            ),
+            "process_identity_sha256": identity_sha,
+            "execution_recovery_state": recovery_state,
+            "execution_recovery_blocked_reason": recovery_blocked_reason,
+            "evidence_sha256": _persistent_evidence_sha256(
+                task_id=str(task.task_id),
+                execution_attempt=int(task.attempt),
+                assignment_state=(
+                    str(assignment["state"]) if assignment is not None else None
+                ),
+                assignment_generation=(
+                    int(assignment["generation"]) if assignment is not None else None
+                ),
+                hold_state=hold_state,
+                hold_execution_attempt=(
+                    int(hold["execution_attempt"]) if hold is not None else None
+                ),
+                hold_assignment_generation=(
+                    int(hold["assignment_generation"]) if hold is not None else None
+                ),
+                gpu_uuid=str(hold["gpu_uuid"]) if hold is not None else None,
+                proof_type=(
+                    None if hold is None or hold["proof_type"] is None
+                    else str(hold["proof_type"])
+                ),
+                proof_sha256=(
+                    None if hold is None or hold["proof_sha256"] is None
+                    else str(hold["proof_sha256"])
+                ),
+                process_identity_sha256=identity_sha,
+            ),
         }
 
     def start_execution(
@@ -2573,6 +2724,7 @@ class AgentExecutionService:
                     execution_slots = 2
                 else:
                     execution_slots = 1
+            node_capabilities = _node_effective_capabilities(database, str(node_id))
         origin = None
         if hold is not None:
             origin = str(hold["node_id"])
@@ -2606,6 +2758,27 @@ class AgentExecutionService:
                 "create_time": float(identity["process_create_time"]),
                 "command_hash": str(identity["process_command_hash"]),
             }).encode("utf-8")).hexdigest()
+        hold_state = str(hold["state"]) if hold is not None else None
+        proof_type = (
+            None if hold is None or hold["proof_type"] is None
+            else str(hold["proof_type"])
+        )
+        proof_sha256 = (
+            None if hold is None or hold["proof_sha256"] is None
+            else str(hold["proof_sha256"])
+        )
+        assignment_state = str(assignment["state"]) if assignment is not None else None
+        assignment_generation = (
+            int(assignment["generation"]) if assignment is not None else None
+        )
+        hold_execution_attempt = (
+            int(hold["execution_attempt"]) if hold is not None else None
+        )
+        hold_assignment_generation = (
+            int(hold["assignment_generation"]) if hold is not None else None
+        )
+        hold_gpu_uuid = str(hold["gpu_uuid"]) if hold is not None else None
+        recovery_state, recovery_blocked_reason = _recovery_projection(hold)
         return {
             "task_id": task.task_id,
             "node_id": str(node_id),
@@ -2617,29 +2790,46 @@ class AgentExecutionService:
             # attempt; see the projection comment above. Read-only metadata,
             # no lease/token material is exposed.
             "execution_slots": int(execution_slots),
+            # Effective node capability names only (allowed and reported).
+            # No token, credential or resource inventory is exposed.
+            "node_capabilities": node_capabilities,
             "lease_valid": _lease_valid(task.lease_expires_at),
             "process_identity_sha256": identity_sha,
-            "assignment_state": str(assignment["state"]) if assignment is not None else None,
-            "assignment_generation": int(assignment["generation"]) if assignment is not None else None,
+            "assignment_state": assignment_state,
+            "assignment_generation": assignment_generation,
             "assignment_lease_expires_at": (
                 None if assignment is None or assignment["lease_expires_at"] is None
                 else str(assignment["lease_expires_at"])
             ),
-            "hold_state": str(hold["state"]) if hold is not None else None,
-            "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
-            "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
-            "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
+            "hold_state": hold_state,
+            "hold_execution_attempt": hold_execution_attempt,
+            "hold_assignment_generation": hold_assignment_generation,
+            "hold_gpu_uuid": hold_gpu_uuid,
             # SQL NULL must stay a JSON null. Stringifying it to "None" would
             # look like a recorded stop proof to the Agent recovery coordinator
             # (a HELD execution legitimately has no proof yet) and make every
             # real crash recovery fail closed.
-            "proof_type": (
-                None if hold is None or hold["proof_type"] is None
-                else str(hold["proof_type"])
-            ),
-            "proof_sha256": (
-                None if hold is None or hold["proof_sha256"] is None
-                else str(hold["proof_sha256"])
+            "proof_type": proof_type,
+            "proof_sha256": proof_sha256,
+            # Read-only recovery projection. It never authorizes a release:
+            # HELD means the process stop is not proven yet, STOP_VERIFIED means
+            # only the fenced terminal finish is still outstanding.
+            "recovery_state": recovery_state,
+            "recovery_blocked_reason": recovery_blocked_reason,
+            # Stable digest over durable evidence; lets operators compare the
+            # original execution evidence across restarts without any secret.
+            "evidence_sha256": _persistent_evidence_sha256(
+                task_id=str(task.task_id),
+                execution_attempt=int(task.attempt),
+                assignment_state=assignment_state,
+                assignment_generation=assignment_generation,
+                hold_state=hold_state,
+                hold_execution_attempt=hold_execution_attempt,
+                hold_assignment_generation=hold_assignment_generation,
+                gpu_uuid=hold_gpu_uuid,
+                proof_type=proof_type,
+                proof_sha256=proof_sha256,
+                process_identity_sha256=identity_sha,
             ),
         }
 
