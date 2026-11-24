@@ -52,12 +52,81 @@ _LEGACY_REMOTE_VERSION_FIELDS = frozenset({
     "external_algo_version_id",
     "external_publish_status",
 })
-_PORTED_PRESENTATION = ("bootstrap_summary", "training_display_refs")
+_PORTED_PRESENTATION = (
+    "bootstrap_summary", "training_display_refs",
+    "asset_algorithm_basic", "asset_versions", "asset_version", "asset_algorithms",
+)
 _UNSUPPORTED = tuple(
     name for name in PRESENTATION_OPERATIONS if name not in _PORTED_PRESENTATION
 )
 #: Declared capability gap of this provider (single source for the cutover tool).
 UNSUPPORTED_OPERATIONS = _UNSUPPORTED
+
+
+_VERSION_DISPLAY_KEYS = (
+    "size_bytes", "size_mb", "sha256", "model_sha256", "format", "source_type",
+    "status", "parent_version_id", "base_version_id", "artifact_id", "map50",
+    "mAP50", "remark",
+)
+_LINEAGE_KEYS = (
+    "base_version_id", "parent_version_id", "source_version_id", "task_id",
+    "snapshot_id", "algorithm_id", "version_id", "iteration",
+)
+_METADATA_KEYS = (
+    "image_width", "image_height", "framework_version", "class_count",
+    "label_source", "label_validation_status", "yolo_version",
+)
+
+
+def _payload_json_sql(prefix: str, keys, column: str = "v.payload") -> str:
+    """JSONB equivalent of ``model_asset_views.json_fields`` (same aliases).
+
+    Only the small contract fields are extracted in SQL, so a page read never
+    deserializes archived training evidence. The result is cast to text so the
+    existing pure projections decode it exactly as they decode SQLite rows.
+    """
+    segments = [part for part in prefix.split(".") if part]
+    parts: list[str] = []
+    for key in keys:
+        path = ",".join(segments + [key])
+        parts.append("'" + key + "'")
+        parts.append(column + "#>>'{" + path + "}'")
+    return "jsonb_build_object(" + ",".join(parts) + ")::text"
+
+
+def _version_columns_sql(detail: bool = False) -> str:
+    """PostgreSQL column list with the exact aliases ``version_record`` expects."""
+    from .model_asset_views import METRICS, PARAMETERS
+
+    parts = [
+        "v.id,v.algorithm_id,v.version_name,v.version_no,v.training_job_id,v.framework,"
+        "v.training_status,v.artifact_verified,v.trainable,v.external_publish_status,"
+        "v.created_at,v.finished_at,v.stored_path,v.model_name"
+        ",CASE WHEN length(btrim(coalesce(v.stored_path,'')))>0 THEN 1 ELSE 0 END AS has_model"
+        ",CASE WHEN jsonb_typeof(v.payload->'training_lineage')='object' THEN 1 ELSE 0 END AS has_lineage"
+        ",CASE WHEN jsonb_typeof(v.payload->'evaluation')='object' THEN 1 ELSE 0 END AS has_evaluation",
+        _payload_json_sql("", _VERSION_DISPLAY_KEYS) + " AS display_json",
+        _payload_json_sql("metrics.", METRICS) + " AS metrics_json",
+        _payload_json_sql("evaluation.metrics.", METRICS) + " AS test_metrics_json",
+    ]
+    if detail:
+        parts.append(_payload_json_sql("val_metrics.", METRICS) + " AS val_metrics_json")
+        parts.append(
+            _payload_json_sql("training_lineage.parameters.actual.", PARAMETERS)
+            + " AS parameters_json"
+        )
+        parts.append(_payload_json_sql("training_lineage.", _LINEAGE_KEYS) + " AS lineage_json")
+        parts.append(_payload_json_sql("model_metadata.", _METADATA_KEYS) + " AS metadata_json")
+        parts.append(
+            "(SELECT jsonb_agg(value) FROM ("
+            "SELECT value FROM jsonb_array_elements_text("
+            "coalesce(v.payload->'label_codes','[]'::jsonb)) LIMIT 256"
+            "))::text AS classes_json"
+        )
+        parts.append(
+            "jsonb_array_length(coalesce(v.payload->'label_codes','[]'::jsonb)) AS class_count"
+        )
+    return ",".join(parts)
 
 
 class _Projection:
@@ -316,6 +385,201 @@ class PostgresAlgorithmRepository:
             }
             for row in rows
         }
+
+    def asset_algorithm_basic(self, algorithm_id):
+        """Single-algorithm editor projection (same contract as SQLite)."""
+        from .model_asset_views import text
+
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT id,name,remark,industry,algorithm_type,source_type,current_version_id,"
+                "created_at,updated_at,provider_type,external_product_id,external_product_code,"
+                "external_category_id,external_analysis_id,external_active,external_last_synced_at,"
+                "payload->>'external_master_data_digest' AS external_master_data_digest,"
+                "payload->>'master_data_readonly' AS master_data_readonly "
+                "FROM w5_algorithm.algorithm WHERE project_id=%s AND id=%s",
+                (self.project_id, str(algorithm_id)),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", "", status_code=404)
+        result = {key: text(value) for key, value in dict(row).items()}
+        clipped = []
+        for key in ("name", "remark", "industry", "algorithm_type"):
+            value = str(row[key] or "")
+            result[key] = value[:16384]
+            if len(value) > 16384:
+                clipped.append(key)
+        master_readonly = str(row["master_data_readonly"] or "").strip().lower() in {
+            "1", "true", "t", "yes",
+        }
+        result["editable"] = not (
+            str(row["source_type"] or "").upper() == "EXTERNAL" and master_readonly
+        )
+        result["deferred_fields"] = clipped
+        if clipped:
+            result["editable"] = False
+        return result
+
+    def asset_versions(self, algorithm_id, *, page=1, page_size=20):
+        """One algorithm's version page; project and algorithm identity agree."""
+        from .model_asset_views import text, version_record
+
+        self._asset_page(page, page_size)
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT id,name,current_version_id,algorithm_type,source_type,provider_type "
+                "FROM w5_algorithm.algorithm WHERE project_id=%s AND id=%s",
+                (self.project_id, str(algorithm_id)),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", "", status_code=404)
+            cursor.execute(
+                "SELECT count(*) AS total FROM w5_algorithm.algorithm_version "
+                "WHERE project_id=%s AND algorithm_id=%s",
+                (self.project_id, str(algorithm_id)),
+            )
+            total = int(cursor.fetchone()["total"])
+            cursor.execute(
+                "SELECT " + _version_columns_sql() + " FROM w5_algorithm.algorithm_version v "
+                "JOIN w5_algorithm.algorithm a "
+                "ON a.project_id = v.project_id AND a.id = v.algorithm_id "
+                "WHERE v.project_id=%s AND v.algorithm_id=%s "
+                "ORDER BY v.created_at DESC, v.sort_index, v.id LIMIT %s OFFSET %s",
+                (
+                    self.project_id, str(algorithm_id),
+                    page_size, (page - 1) * page_size,
+                ),
+            )
+            rows = cursor.fetchall()
+            revision = self._revision(cursor)
+        return {
+            "project_id": self.project_id,
+            "algorithm": {key: text(value) for key, value in dict(row).items()},
+            "items": [version_record(item, self._json_object) for item in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "algorithm_revision": revision,
+            "versions_deferred": False,
+        }
+
+    def asset_version(self, algorithm_id, version_id, *, detail=True):
+        """One version inside one algorithm inside this project (no cross-links)."""
+        from .model_asset_views import version_record
+
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT " + _version_columns_sql(detail) + " FROM w5_algorithm.algorithm_version v "
+                "JOIN w5_algorithm.algorithm a "
+                "ON a.project_id = v.project_id AND a.id = v.algorithm_id "
+                "WHERE a.project_id=%s AND a.id=%s AND v.id=%s",
+                (self.project_id, str(algorithm_id), str(version_id)),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise PlatformError(
+                "ALGORITHM_VERSION_NOT_FOUND",
+                "算法版本不存在或不属于当前算法",
+                "",
+                status_code=404,
+            )
+        return version_record(row, self._json_object)
+
+    def asset_algorithms(
+        self, *, page=1, page_size=20, query="", algorithm_type="", industry="",
+        source_type="", status="", sort="updated",
+    ):
+        """Filtered/sorted/paged algorithm list with filter options and revision."""
+        from .model_asset_views import text
+
+        self._asset_page(page, page_size)
+        sorts = {
+            "updated": "a.updated_at DESC,a.id",
+            "created": "a.created_at DESC,a.id",
+            "name": "a.name,a.id",
+            "name_desc": "a.name DESC,a.id",
+        }
+        if sort not in sorts:
+            raise PlatformError("ASSET_INVALID_QUERY", "排序参数非法", "", status_code=422)
+        condition = ["a.project_id=%s"]
+        args: list[Any] = [self.project_id]
+        if query.strip():
+            condition.append("position(lower(%s) in lower(a.name))>0")
+            args.append(query.strip()[:120])
+        expressions = {
+            "algorithm_type": "a.algorithm_type",
+            "industry": "a.industry",
+            "source_type": "a.source_type",
+            "status": "a.payload->>'status'",
+        }
+        for key, value in (
+            ("algorithm_type", algorithm_type), ("industry", industry),
+            ("source_type", source_type), ("status", status),
+        ):
+            if value:
+                condition.append(expressions[key] + "=%s")
+                args.append(value)
+        where = " AND ".join(condition)
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT count(*) AS total FROM w5_algorithm.algorithm a WHERE " + where, args,
+            )
+            total = int(cursor.fetchone()["total"])
+            cursor.execute(
+                "SELECT a.id,a.name,a.algorithm_type,a.industry,a.source_type,"
+                "a.current_version_id,a.created_at,a.updated_at,"
+                "a.payload->>'status' AS status,"
+                "(SELECT count(*) FROM w5_algorithm.algorithm_version v "
+                " WHERE v.project_id=a.project_id AND v.algorithm_id=a.id) AS version_count,"
+                "(SELECT version_name FROM w5_algorithm.algorithm_version v "
+                " WHERE v.project_id=a.project_id AND v.algorithm_id=a.id "
+                " AND v.id=a.current_version_id) AS current_version_name "
+                "FROM w5_algorithm.algorithm a WHERE " + where
+                + " ORDER BY " + sorts[sort] + " LIMIT %s OFFSET %s",
+                args + [page_size, (page - 1) * page_size],
+            )
+            rows = cursor.fetchall()
+            options: dict[str, list] = {}
+            for key, expression in expressions.items():
+                cursor.execute(
+                    "SELECT DISTINCT " + expression + " AS value FROM w5_algorithm.algorithm a "
+                    "WHERE a.project_id=%s AND " + expression + " IS NOT NULL AND "
+                    + expression + "<>'' ORDER BY 1 LIMIT 100",
+                    (self.project_id,),
+                )
+                options[key] = [text(item["value"]) for item in cursor.fetchall()]
+            revision = self._revision(cursor)
+        items = []
+        for row in rows:
+            current_version_id = row["current_version_id"]
+            items.append({
+                **{key: text(value) for key, value in dict(row).items()},
+                "versions_deferred": True,
+                "current_version": (
+                    {"id": current_version_id,
+                     "version_name": text(row["current_version_name"])}
+                    if current_version_id else None
+                ),
+            })
+        return {
+            "project_id": self.project_id,
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "algorithm_revision": revision,
+            "filter_options": options,
+        }
+
+    @staticmethod
+    def _asset_page(page: int, page_size: int) -> None:
+        if (
+            type(page) is not int or page < 1
+            or type(page_size) is not int or not 1 <= page_size <= 50
+        ):
+            raise PlatformError("ASSET_INVALID_QUERY", "分页范围非法", "", status_code=422)
 
     def revision(self) -> int:
         with self._read() as cursor:
@@ -1417,24 +1681,13 @@ class PostgresAlgorithmRepository:
         }
 
     # -- presentation projections that are still not ported -----------------
-    # bootstrap_summary and training_display_refs are implemented above; only
-    # the ones listed here remain a declared capability gap. Keep this block
-    # free of those two names: a later placeholder silently overrides the real
-    # implementation.
+    # bootstrap_summary, training_display_refs and the asset_* reads are
+    # implemented above; only the ones listed here remain a declared capability
+    # gap. Keep this block free of those names: a later placeholder silently
+    # overrides the real implementation.
     def library_algorithms(self, **_kwargs):
         self._check_operation("library_algorithms")
 
-    def asset_algorithms(self, **_kwargs):
-        self._check_operation("asset_algorithms")
-
-    def asset_algorithm_basic(self, *_args, **_kwargs):
-        self._check_operation("asset_algorithm_basic")
-
-    def asset_versions(self, *_args, **_kwargs):
-        self._check_operation("asset_versions")
-
-    def asset_version(self, *_args, **_kwargs):
-        self._check_operation("asset_version")
 
 
 def _summary_version_row(row: dict[str, Any]) -> dict[str, Any]:
