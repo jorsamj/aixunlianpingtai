@@ -295,3 +295,23 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 4. N5 的 HTTP 只读 dry-run/预检端点接线（本轮只完成后端只读函数）。
 5. N3 剩余：外部发布/平台配置只读原生页、转换创建/日志/质量中心原生详情（转换创建与真实发布仍禁止执行）。
 6. M12/W14 其他规模化整改与 M8/W13-14 剩余迁移。
+
+### 9.12 第三轮续推进（N5/N7/N2 后续，2026-11-24 17:00 前后）
+
+**最终代码 SHA：`6032874814f6bcb821d0a0add23f7a3dc08095f7`**（已推送；
+候选文档 §1 已回填该 SHA，CI 状态 `CANDIDATE_CI_PENDING`）。
+
+| 提交 | 内容 | 关键验证 |
+|---|---|---|
+| N7 `88817c60` | 五类 HTTP 响应丢失补全（start_execution/finish/recover 新增，start-identity/stop-proof 既有）；双槽同时崩溃分别恢复（POSIX 真 SIGKILL + Windows fail-closed 合同）；只读执行诊断 `execution_status`/`remote_recovery_diagnosis` 增补 node_capabilities/recovery_state/evidence_sha256，无写操作、无 token | 定向 21 passed/2 skipped（POSIX-only 由 Linux CI） |
+| N5 HTTP `0d228047` + `5745e71a` | 只读交付质量/激活与回滚 Dry-Run 端点（零写入快照断言，`DRY_RUN_STATE_CHANGED` fail-closed）；列表/详情投影 `quality_preflight/formal_activation_eligible/delivery_presentation/hardware_acceptance`；未验证产物仍可附件交付但不伪装正式激活；`_write_job_json` 统一 `<job.json>.lock` + 原子写，并修复 Windows 共享读导致的瞬时 PermissionError（有界重试、不丢证据投影） | 定向 9 passed；并发写不撕裂、无投影丢失 |
+| N2 后续 `60328748` | 转换历史冷扫描 1,000 文件：串行 scandir+stat 后 8 线程池解析（3,998→584ms，−85%）；`ix_materials_source_status` 覆盖索引 + 非关联标签存在性前置谓词（空交集 cold 576→32–47ms；并发素材查询 P95 491→52–61ms）；AI 兼容全量接口定位后不动（真实调用方已有界分页）；LIKE/冷统计记录为下轮候选 | 定向 53 passed；200k 语义等价 9 组组合 ID/计数一致；旧库补索引 user_version 不变 |
+| 中间快照 `05c9da6d` | `_real_agent_crash_recovery_support.py` 的 N7 中间态（后续 `88817c60` 已包含最终内容）；同时修正 N1 失败证据路径与中央 task.error 投影 | 仅测试基础设施 |
+
+当前 CI：`60328748` 推送后按规则查询一次并如实记录；`CANDIDATE_CI_PENDING` 未完成前
+不得称生产候选验收通过。仍待办：
+1. 准确 SHA 的 GitHub CI 结果（失败时只分析失败 Job 并最小整改）。
+2. N3 剩余：外部发布/平台配置只读原生页、转换创建/日志/质量中心原生详情（真实发布/设备激活仍禁止执行）。
+3. N2 剩余候选：LIKE 搜索计划优化、冷统计覆盖索引（需评估写放大）。
+4. N5 剩余：`train_worker.py`/`remote_train_server.py` 的 job.json 写入统一锁（当前不在本批允许范围）。
+5. M12/W14 其余规模化整改与 M8/W13-14 剩余迁移。

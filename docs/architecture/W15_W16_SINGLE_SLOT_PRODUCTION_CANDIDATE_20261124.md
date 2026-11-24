@@ -13,7 +13,7 @@
 ## 1. 候选身份（N6.3）
 
 ```text
-CANDIDATE_CODE_SHA_40HEX = "bee265a488983d4dc206d0f901d6f169af9e9f15"
+CANDIDATE_CODE_SHA_40HEX = "6032874814f6bcb821d0a0add23f7a3dc08095f7"
 ```
 
 > 该行为唯一候选代码 SHA 占位：**由主代理在本轮全部代码提交完成后替换为远端实际 40 位
@@ -24,12 +24,12 @@ CANDIDATE_CODE_SHA_40HEX = "bee265a488983d4dc206d0f901d6f169af9e9f15"
 | 项 | 值 |
 |---|---|
 | 唯一开发分支 | `feature/external-algorithm-publishing` |
-| **代码候选 SHA（40 位）** | 见上方 `CANDIDATE_CODE_SHA_40HEX`（=`bee265a488983d4dc206d0f901d6f169af9e9f15`，已推送远端） |
+| **代码候选 SHA（40 位）** | 见上方 `CANDIDATE_CODE_SHA_40HEX`（=`6032874814f6bcb821d0a0add23f7a3dc08095f7`，已推送远端） |
 | VERSION.txt | `42.24.592`（本轮未修改） |
 | 运行时 build_id | 部署时必须等于代码候选 SHA：`MC_BUILD_REVISION=<候选SHA>`，或 Git worktree HEAD 恰为该 SHA；证据以 `/api/health` 的 build/version 与本地 `resolve_build_identity` 一致为准 |
 | 前端构建身份 | `static/vue-catalog/offline-assets.json` 与 `static/vue-app/offline-assets.json` 的 receipt（`sha`=候选SHA、`build_origin=github-actions`、逐资源 sha256/bytes）；`UI_BUILD_VERSION=42.25.0-dev` 仅为内部 UI 构建元数据，**不是产品版本**。本机开发 checkout 的 receipt 为 `local-check`/`sha=null` 且缺 app receipt，属未验证；生产候选必须以候选 SHA 的 CI artifact receipt 为准 |
 | Python 依赖身份 | `requirements*.txt` 内容摘要 + 已安装关键发行版版本指纹（见 §2.1）；不提供 wheelhouse 哈希清单 |
-| CI 事实 | **CI_PENDING**：`bee265a488983d4dc206d0f901d6f169af9e9f15` 推送后单次查询（2026-11-24 16:20 +08）24 个 workflow 已触发、0 completed；未完成前不称验收通过，接受状态以该 SHA 的实际 Actions 结果为准 |
+| CI 事实 | **CI_PENDING**：代码候选 `6032874814f6bcb821d0a0add23f7a3dc08095f7` 已推送（2026-11-24 17:0x +08）；按 CI-first 规则仅查询一次，未完成前不称验收通过，接受状态以该 SHA 的实际 Actions 结果为准 |
 | 双槽开关 | 生产默认关闭（见 §3.2） |
 | 生产升级工具 | `tools/production_upgrade.py`（预检 + 受控备份 + 数据库/应用/协调回滚） |
 
@@ -235,7 +235,7 @@ python tools/production_upgrade.py --rollback --backup-dir /data/backups/pre   #
 
 ## 6. 明确未验证（不得宣称通过）
 
-- `CANDIDATE_CI_PENDING`：§1 代码候选 SHA 已回填为 `bee265a488983d4dc206d0f901d6f169af9e9f15`；该 SHA 的 GitHub Actions 尚未全部完成（单次查询时 0 completed），在获得必要 CI 证据前不得称生产候选验收通过；
+- `CANDIDATE_CI_PENDING`：§1 代码候选 SHA 已回填为 `6032874814f6bcb821d0a0add23f7a3dc08095f7`；该 SHA 的 GitHub Actions 尚未全部完成（单次查询时 0 completed），在获得必要 CI 证据前不得称生产候选验收通过；
   工具对占位值 fail-closed（`TARGET_SHA_REQUIRED`/`PREVIOUS_SHA_REQUIRED`，有测试断言）；
   CI 事实 UNKNOWN（未联网查询）。
 - `REAL_GPU_UAT_NOT_VERIFIED`：真实双卡 UAT 未执行（`W7B_GPU_UAT_CHECKLIST_20261123.md` 保持未执行）。
