@@ -23579,200 +23579,48 @@ def v44_test_saved_model_config(config_id: str):
     if not cfg: raise HTTPException(status_code=404,detail='模型配置不存在')
     return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(cfg) else v35_test_model_config(V35ModelConfigReq(**cfg))
 
-@app.get('/api/v44/projects/{project_id}/jobs/{job_id}/report')
-def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = '', reader_view: bool=False, history_offset: Optional[int]=None, history_limit: int=200):
-    if reader_view:
-        if history_offset is not None and history_offset<0 or not 1<=history_limit<=200:raise HTTPException(422,detail='报告历史分页范围无效')
-        from platform_core.training_reader_views import report_display
-        from platform_core.algorithm_sql_store import AlgorithmSqlStore
-        get_project(project_id)
-        try:ArtifactStore._validate_task_id(job_id)
-        except ValueError as error:raise HTTPException(422,detail='报告任务ID无效') from error
-        task=shared_task_repository().get(job_id)
-        if task and (task.project_id!=project_id or task.kind is not TaskKind.TRAINING):raise HTTPException(404,detail='训练任务不存在')
-        store=AlgorithmSqlStore(algorithms_file(project_id))
-        if algorithm_id or version_id:
-            if not (algorithm_id and version_id):raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: 须同时指定算法与版本')
-            version=store.asset_version(algorithm_id,version_id,detail=False)
-            if str(version.get('training_job_id') or '')!=job_id:raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: 版本与训练任务不一致')
-        else:
-            refs=store.training_version_refs(job_id)
-            if len(refs)>1:raise HTTPException(409,detail='REPORT_IDENTITY_AMBIGUOUS: 请从具体版本进入')
-            if refs:algorithm_id,version_id=refs[0]
-        result=report_display(job_id,task,shared_task_artifacts(),project_dir(project_id)/'jobs'/job_id/'job.json',algorithm_id=algorithm_id,version_id=version_id,history_offset=history_offset,history_limit=history_limit)
-        if result['state']=='IDENTITY_CONFLICT':raise HTTPException(409,detail='REPORT_IDENTITY_MISMATCH: '+result['message'])
-        return {'ok':True,'project_id':project_id,'job_id':job_id,'algorithm_id':algorithm_id,'version_id':version_id,**result}
-    get_project(project_id);jf=project_dir(project_id)/'jobs'/job_id/'job.json'
-    if not jf.exists(): raise HTTPException(status_code=404,detail='训练任务不存在')
-    job=enrich_job_runtime(project_id,read_json(jf,{}),allow_version_archive=False);report=job.get('training_report') or {}
-    # Prefer the existing SQL training-job index, then hydrate only its owning
-    # algorithms. Historical versions with no indexed identity still retain
-    # the original full-catalog fallback and its ambiguity safeguards.
-    if algorithm_id:
-        report_algorithms = list_algorithms_internal(project_id, algorithm_id=algorithm_id)
-        indexed_refs = []
-    else:
-        from platform_core.algorithm_sql_store import AlgorithmSqlStore
-        catalog = AlgorithmSqlStore(algorithms_file(project_id))
-        indexed_refs = catalog.training_version_refs(job_id) if catalog.db_path.is_file() else []
-        report_algorithms = (
-            [row for owner_id in sorted({owner_id for owner_id, _ in indexed_refs})
-             for row in list_algorithms_internal(project_id, algorithm_id=owner_id)]
-            if indexed_refs else list_algorithms_internal(project_id)
-        )
-    matches = [(algorithm, version) for algorithm in report_algorithms
-               for version in algorithm.get('versions', [])
-               if (not algorithm_id or str(algorithm.get('id')) == algorithm_id)
-               and (not version_id or str(version.get('id')) == version_id)
-               and str(version.get('job_id') or (version.get('training_lineage') or {}).get('task_id') or '') == job_id]
-    if not matches and indexed_refs:
-        # An indexed row whose JSON task identity is stale must not hide a
-        # genuine lineage-only match elsewhere in an older catalog.
-        matches = [(algorithm, version) for algorithm in list_algorithms_internal(project_id)
-                   for version in algorithm.get('versions', [])
-                   if (not version_id or str(version.get('id')) == version_id)
-                   and str(version.get('job_id') or (version.get('training_lineage') or {}).get('task_id') or '') == job_id]
-    if (algorithm_id or version_id) and (not algorithm_id or not version_id or len(matches) != 1):
-        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 所选算法版本与训练任务不一致')
-    if len(matches) > 1:
-        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_AMBIGUOUS: 训练任务关联多个版本，须明确选择')
-    algorithm, version = matches[0] if matches else ({}, {})
-    task_references = {str(value) for value in (version.get('job_id'), (version.get('training_lineage') or {}).get('task_id'), job.get('id')) if value}
-    algorithm_references = {str(value) for value in (algorithm.get('id'), job.get('asset_algorithm_id'), job.get('algorithm_asset_id')) if value}
-    if task_references - {job_id} or len(algorithm_references) > 1:
-        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 任务、算法与版本血缘存在冲突')
-    if version and any(str(job[key]) != str(version['id']) for key in ('auto_version_id', 'version_id') if job.get(key)):
-        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 任务版本记录与算法版本冲突')
-    if not report:
-        metrics = job.get('metrics') or job.get('final_metrics') or {}
-        elapsed = job.get('elapsed_seconds')
-        report = {
-            'generated_at': now_iso(),
-            'framework': job.get('framework') or '',
-            'status': job.get('status') or '',
-            'metrics': metrics,
-            'per_class': [],
-            'weak_labels': [],
-            'gate_events': job.get('gate_events') or [],
-            'summary': {
-                'elapsed_seconds': elapsed,
-                'epochs': job.get('epochs') or 0,
-                'model': job.get('model') or '',
-                'dataset_name': job.get('dataset_name') or '全部数据',
-                'artifacts': [x for x in [job.get('best_model'), job.get('last_model')] if x],
-            },
-            'note': '该任务未生成逐类别评测明细；报告仅汇总已记录的训练结果。',
-        }
-    # Finalized TaskRecord artifacts own model-quality truth.  The mutable
-    # job.json may be stale or may predate TQ-04; it must never supply a
-    # synthetic credibility verdict.  A legacy report without durable
-    # evidence explicitly has no metric_credibility.
-    task = _durable_training_task(project_id, job_id)
-    finalized = (
-        shared_task_artifacts().read_json(job_id, 'result.json', default={})
-        if task is not None else {}
-    )
-    if not isinstance(finalized, dict):
-        finalized = {}
-    committed_report = finalized.get('training_report')
-    if isinstance(committed_report, dict) and committed_report:
-        report = committed_report
-    canonical = {**job, 'training_report': report}
-    # The finalized validation metrics are the same evidence shown alongside
-    # the frozen credibility assessment, never an older job-level metric copy.
-    if isinstance(report.get('metrics'), dict) and report['metrics']:
-        canonical['metrics'] = report['metrics']
-    if isinstance(finalized.get('evaluation'), dict):
-        canonical['evaluation'] = finalized['evaluation']
-    if isinstance(finalized.get('metric_credibility'), dict):
-        canonical['metric_credibility'] = finalized['metric_credibility']
-    version_report = build_version_report(canonical)
-    from platform_core.training_metrics import read_metrics
-    metrics_path = shared_task_artifacts().artifact_path(job_id, 'training-metrics.sqlite3') if task else jf.parent / 'training-metrics.sqlite3'
-    telemetry = read_metrics(metrics_path, include_history=True)
-    version_report['history'] = report.get('history') or _v45_training_history(job) or telemetry.get('epochs') or []
-    version_report['runtime_metrics'] = telemetry
-    version_report['generated_at'] = now_iso()
-    version_report['per_class'] = report.get('per_class') or []
-    from platform_core.reports import diagnose_training_history
-    version_report['quality_analysis'] = diagnose_training_history(version_report['history'])
-    snapshot_id = str(version_report.get('snapshot_id') or '')
-    if re.fullmatch(r'[0-9a-f]{64}', snapshot_id):
-        snapshot_path = project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json'
-        frozen = read_json(snapshot_path, {}) if snapshot_path.is_file() else {}
-        if frozen.get('snapshot_id') == snapshot_id:
-            from platform_core.quality import frozen_data_quality
-            version_report['frozen_data_quality'] = frozen_data_quality(frozen)
-            quality = frozen.get('input_quality') or {}
-            version_report['frozen_audit'] = quality
-            coverage = quality.get('class_coverage') or {}
-            version_report['capture_source_summary'] = {key: value for key, value in coverage.items() if 'source' in key or 'component' in key or key == 'provenance_status'}
-            version_report['frozen_data_quality']['negative_count'] = coverage.get('role_confirmed_negative_image_counts')
-    version_report['configuration'] = {
-        'framework': job.get('framework') or '', 'algorithm_name': job.get('algorithm_name') or '', 'model': job.get('model') or '',
-        'epochs': job.get('epochs'), 'imgsz': job.get('imgsz'), 'batch': job.get('batch'), 'device': job.get('device') or '',
-        **(job.get('advanced_params') or {})
-    }
-    version_report['data_summary'] = {
-        'counts': job.get('dataset_counts') or {}, 'selected_ids': job.get('dataset_selected_ids') or {},
-        'quality_gate': job.get('quality_gate') or {}
-    }
-    from platform_core.model_metadata import frozen_weight_labels, yolo_architecture
-    from platform_core.reports import representative_error_samples, report_resource_evidence
-    version_report['identity'] = {'project_id': project_id, 'algorithm_id': algorithm.get('id') or '',
-        'algorithm_name': algorithm.get('name') or job.get('asset_algorithm_name') or '',
-        'version_id': version.get('id') or version_report.get('version_id') or '', 'job_id': job_id}
-    version_report['lineage'] = version.get('training_lineage') or job.get('training_lineage') or {}
-    version_report['execution'] = version_report['lineage'].get('execution') or job.get('execution') or {}
-    version_report['framework'] = job.get('framework') or report.get('framework') or ''
-    version_report['model_architecture'] = yolo_architecture(version, algorithm) if version else ''
-    labels = frozen_weight_labels(version) if version else None
-    schema = {row.get('code'): row for row in version.get('label_schema') or [] if isinstance(row, dict)}
-    version_report['class_mapping'] = [{'class_id': index, 'code': code,
-        'name': schema.get(code, {}).get('display_name') or code} for index, code in enumerate(labels or [])]
-    version_report['started_at'] = job.get('started_at') or ''
-    version_report['elapsed_seconds'] = job.get('elapsed_seconds') if job.get('elapsed_seconds') is not None else (report.get('summary') or {}).get('elapsed_seconds')
-    version_report['train_metrics'] = report.get('train_metrics')
-    version_report['best_epoch'] = report.get('best_epoch') or telemetry.get('best_epoch')
-    version_report['representative_errors'] = representative_error_samples(version_report['evaluation'], job_id=job_id, snapshot_id=snapshot_id)
-    version_report.update(report_resource_evidence(job, telemetry))
-    version_report['conversions'] = []
-    if version and (Path(DATA_DIR) / 'model_artifacts' / 'artifacts.sqlite3').is_file():
-        from platform_core.model_artifacts import ModelArtifactRepository
-        version_report['conversions'] = [row for row in ModelArtifactRepository(DATA_DIR).list(
-            project_id=project_id, algorithm_id=str(algorithm['id']), version_id=str(version['id']), limit=100)
-            if row.get('target') != 'original']
-    return {"ok":True,"report_type":"version","job":job,"report":version_report}
-
+# Training report (v44) read/projection now lives in
+# platform_core/training_report_api.py (router + legacy version-report
+# composition). The thin bindings below stay in app.py only as legacy
+# compatibility for callers/tests that patch these names.
+from platform_core.training_report_api import (
+    TrainingReportReader,
+    create_training_report_router,
+    training_history as _training_history_impl,
+)
 
 
 def _v45_training_history(job: Dict[str, Any]) -> List[Dict[str, Any]]:
-    recorded_dir = str(job.get('run_dir') or '').strip()
-    if not recorded_dir:
-        return []
-    csv_path = Path(recorded_dir) / 'results.csv'
-    if not csv_path.is_file(): return []
-    try:
-        import csv
-        rows=[]
-        with csv_path.open('r',encoding='utf-8-sig',errors='replace',newline='') as fp:
-            for raw in csv.DictReader(fp):
-                def num(*names):
-                    for n in names:
-                        for k,v in raw.items():
-                            if k and k.strip()==n:
-                                try:return float(v)
-                                except:return None
-                    return None
-                rows.append({'epoch':int(float(raw.get('epoch') or len(rows)+1)),
-                             'precision':num('metrics/precision(B)'), 'recall':num('metrics/recall(B)'),
-                             'map50':num('metrics/mAP50(B)'), 'map5095':num('metrics/mAP50-95(B)'),
-                             'box_loss':num('train/box_loss'), 'cls_loss':num('train/cls_loss'), 'dfl_loss':num('train/dfl_loss'),
-                             'val_box_loss':num('val/box_loss'), 'val_cls_loss':num('val/cls_loss'),
-                             'val_dfl_loss':num('val/dfl_loss'), 'learning_rate':num('lr/pg0')})
-        return rows[-500:]
-    except Exception:
-        return []
+    return _training_history_impl(job)
+
+
+_TRAINING_REPORT_READER = TrainingReportReader(
+    get_project=lambda project_id: get_project(project_id),
+    project_dir=lambda project_id: project_dir(project_id),
+    algorithms_file=lambda project_id: algorithms_file(project_id),
+    data_dir=lambda: DATA_DIR,
+    read_json=lambda path, default: read_json(path, default),
+    enrich_job_runtime=lambda project_id, job, **kwargs: enrich_job_runtime(project_id, job, **kwargs),
+    list_algorithms_internal=lambda project_id, algorithm_id=None: list_algorithms_internal(
+        project_id, algorithm_id=algorithm_id
+    ),
+    durable_training_task=lambda project_id, task_id: _durable_training_task(project_id, task_id),
+    task_repository=lambda: shared_task_repository(),
+    task_artifacts=lambda: shared_task_artifacts(),
+    # Late-bound: app.py keeps owning the results.csv history seam and every
+    # accessor above that callers/tests already replace at runtime.
+    training_history=lambda job: _v45_training_history(job),
+    now_iso=lambda: now_iso(),
+)
+app.include_router(create_training_report_router(_TRAINING_REPORT_READER))
+
+
+def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = '', reader_view: bool=False, history_offset: Optional[int]=None, history_limit: int=200):
+    return _TRAINING_REPORT_READER.report(
+        project_id, job_id, algorithm_id=algorithm_id, version_id=version_id,
+        reader_view=reader_view, history_offset=history_offset, history_limit=history_limit,
+    )
+
 
 class V45ErrorCauseReq(BaseModel):
     model_config_id: str

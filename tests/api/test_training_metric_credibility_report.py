@@ -199,3 +199,27 @@ def test_report_without_run_dir_never_reads_unrelated_working_directory_csv(monk
     (tmp_path/'results.csv').write_text('epoch,metrics/mAP50(B)\n1,0.95\n',encoding='utf-8')
     assert platform._v45_training_history({}) == []
     assert platform._v45_training_history({'run_dir':str(tmp_path)})[0]['map50'] == .95
+
+
+def test_training_report_module_never_imports_the_application():
+    import ast
+    from pathlib import Path
+    source=(Path(__file__).resolve().parents[2]/'platform_core'/'training_report_api.py').read_text(encoding='utf-8')
+    roots=set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node,ast.Import):
+            roots.update(alias.name.split('.')[0] for alias in node.names)
+        elif isinstance(node,ast.ImportFrom) and node.level==0 and node.module:
+            roots.add(node.module.split('.')[0])
+    assert 'app' not in roots
+
+
+def test_training_report_router_keeps_the_v44_route_and_operation_identity():
+    from platform_core.training_report_api import create_training_report_router
+    router=create_training_report_router(object())
+    route=next(item for item in router.routes if getattr(item,'path','')=='/api/v44/projects/{project_id}/jobs/{job_id}/report')
+    assert route.methods=={'GET'} and route.name=='v44_training_report'
+    assert [param.name for param in route.dependant.path_params]==['project_id','job_id']
+    assert sorted(param.name for param in route.dependant.query_params)==[
+        'algorithm_id','history_limit','history_offset','reader_view','version_id',
+    ]
