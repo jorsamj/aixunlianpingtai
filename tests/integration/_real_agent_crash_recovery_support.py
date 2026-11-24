@@ -732,6 +732,44 @@ def worker_liveness_report(
             )
         except (OSError, ValueError) as error:
             parts.append(f"job.json unavailable: {type(error).__name__}: {error}")
+    try:
+        state_dir = Path(context["state_dir"]) if context else None
+    except (KeyError, TypeError):
+        state_dir = None
+    if state_dir is not None:
+        try:
+            execution_logs = sorted(
+                state_dir.glob("executor/executions/*/*/runtime.log"),
+                key=lambda item: item.stat().st_mtime, reverse=True,
+            )
+        except OSError:
+            execution_logs = []
+        for log_path in execution_logs[:2]:
+            try:
+                tail = log_path.read_text(encoding="utf-8", errors="replace")[-3000:]
+                parts.append(f"execution runtime.log tail ({log_path.parent.name}):\n{tail}")
+            except OSError as error:
+                parts.append(f"runtime.log unreadable: {type(error).__name__}: {error}")
+            for name in ("execution.json", "workspace-cleanup.json"):
+                record_path = log_path.parent / name
+                try:
+                    if record_path.is_file():
+                        record = json.loads(record_path.read_text(encoding="utf-8"))
+                        if isinstance(record, dict):
+                            selected = {
+                                key: record[key] for key in (
+                                    "task_id", "generation", "execution_generation",
+                                    "status", "stage", "current_item", "error",
+                                    "recovery_error", "cleanup", "state",
+                                    "worker_cleanup", "removed",
+                                ) if key in record
+                            }
+                            parts.append(
+                                f"{name} ({log_path.parent.name}): "
+                                + json.dumps(selected, ensure_ascii=False)[:1200]
+                            )
+                except (OSError, ValueError) as error:
+                    parts.append(f"{name} unreadable: {type(error).__name__}: {error}")
     if context:
         parts.append("context diagnostics:\n" + diagnostics(context))
     return "\n".join(parts)
