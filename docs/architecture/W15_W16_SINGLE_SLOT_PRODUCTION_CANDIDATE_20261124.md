@@ -110,3 +110,16 @@ python tools/production_upgrade.py --rollback --backup-dir /data/backups/pre   #
 4. 升级作业窗口：`--apply --backup-dir ...`；失败按 `STOPPED` 输出定位，不自动二次回滚。
 5. 如需回滚：先 `--rollback ...`（dry-run）→ `--apply --acknowledge-data-restore`。
 6. 双槽仅在独立授权节点按 W7-B 清单验证；验证前生产保持关闭。
+
+### M11 首批迁移与 M13-A/M14-A 记录（第二轮）
+
+- 候选代码 SHA（本轮）: `3d17cc74`；文档提交随后。
+- CI 事实（`39a1d0f1`/`fe0e964c`）：Node Agent Executor PR run 45331930879 success，
+  Linux job 138234917704 的 POSIX crash-window 与 Real Node Agent OS SIGKILL recovery 两个
+  step 均 success ⇒ `AGENT_SIGKILL_RESTART_E2E_PASS`。同 SHA 的 push run Windows contract 失败
+  根因是 token 以 '-' 开头被 argparse 误判，已由 `d803afea` 修复。
+- M11：`/app` 新增 AI 任务列表/转换记录/服务节点三个只读原生页；旧入口、菜单、算法库卡片、
+  素材标注台入口保持不变；vue-tsc、vite app build、Node 合同、Playwright 已本地验证。
+- M13-A：真实请求可触发 `TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE`；
+  显式负样本必须能归属目标算法（算法池成员或算法上下文回执），否则 fail-closed。
+- M14-A：取消未证明进程停止时进入 `cancelling_unverified` 诊断并退避重试，不释放 GPU/lease。

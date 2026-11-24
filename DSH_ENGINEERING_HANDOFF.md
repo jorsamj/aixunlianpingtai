@@ -236,3 +236,37 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
    顺序执行预检/备份/升级/回滚，需单独授权。
 
 
+
+### 9.10 第二轮（M9–M17）交付摘要（2026-11-24 下午）
+
+代码候选（本轮最终代码 SHA，推送后以远端为准）：`3d17cc74`（后续仅文档提交）。
+
+| 提交 | 内容 | 关键验证 |
+|---|---|---|
+| `d803afea` | M9：真实 Agent 以退出码 2 结束的根因（`secrets.token_urlsafe` 可能以 `-` 开头 → argparse 误判）；`node_agent.py::_normalized_argv` + harness `--token=` 形式 + 回归测试；交接记录 `AGENT_SIGKILL_RESTART_E2E_PASS`（run 45331930879 / Linux job 138234917704，POSIX+真实 SIGKILL 两个 step SUCCESS） | 回归测试通过；fail-closed E2E 连跑 3 次稳定 |
+| `3cacaef3` | W11/W12：空闲门控的训练 bundle 缓存维护（dry-run 预览、活跃/取消未收口/共享引用保护、1h 节流、后台 Worker 调度、按项目故障隔离） | `test_training_bundle_cache.py` 21 passed/1 skipped（Windows 长路径需短 basetemp；CI Linux 无此限制） |
+| `2e32827b` | W11/W12：训练磁盘只读诊断（每任务 workspace/artifact/checkpoint、可回收/受保护/未知分类、缓存 dry-run、`GET /training-tasks/storage-diagnostics`），不执行任何删除/自动 GC | 2 passed；recovery API 20 passed |
+| `9ee9f33d` | W11/W12：训练 ETA 陈旧治理——投影新增 `eta_stale/eta_display/telemetry_age_seconds`（阈值 env 可配），前端陈旧 ETA 显示"估算滞后"且停止本地倒数；入口缓存标识推进 | projection/progress/terminal 22 passed；Node 36 passed |
+| `3e4ed593` | W11/W12：断点续训合同——要求冻结类名 schema、last.pt 必须含 optimizer（best.pt 不等于完整 checkpoint）、epoch 与冻结 schema 交叉核验（admission + worker 双层） | 18 passed |
+| `3cacaef3`→`97fc6f34` | M10-A/B：应用+数据库**协调回滚**（备份绑定 app SHA/VERSION/build/schema；schema 不兼容 fail-closed；`--rollback-application-to` 仅祖先 SHA、非破坏性 checkout；部分恢复结构化诊断+幂等收敛；备份非灾备声明；Hold/活跃任务/近期心跳/worker 标记准入） | 27 passed/1 skipped + 15 new passed |
+| `a541b36b` | M10-C：数值验证**先证据后发布**（完整证据含 project/algo/version/job/PT/ONNX/产物 SHA/manifest digest/样本集/参数/摘要→原子落盘→锁内身份复核→发布摘要；STALE/冲突/并发/崩溃恢复收敛；artifact 按自身转换 job 投影） | 176 passed；真实 PT→ONNX 4 passed |
+| `16280076` | M11/W13 首批原生迁移：`/app` 新增 AI 任务列表（消除孤儿审核路由）、转换记录只读页、服务节点只读页；复用现有 API/视图；旧入口与菜单保留；类型检查/构建/Playwright 全绿 | vue-tsc 0 error；vite app build ok；Node 1824 passed；新增 Playwright 6/6 + 回归 17/17 |
+| `3d17cc74` | M13-A：首次纯负样本 typed 码在**真实** prepare/同步创建路径可达（不再仅 monkeypatch 证明）；负样本算法归属一致性（算法池成员或算法上下文回执，否则 `TRAINING_NEGATIVE_ALGORITHM_ATTRIBUTION_MISSING`，选择器/冻结/Worker 输入一致）；M14-A：取消未证明停止时记录有界退避与 `cancelling_unverified` 诊断，不释放 GPU/lease | W10 22 passed；picker/negative 66；request/GT 90；prepare 30；cancel/scheduler 16 |
+
+状态标签保持：`REAL_GPU_UAT_NOT_VERIFIED`、`REAL_HARDWARE_INFERENCE_NOT_VERIFIED`、
+`PRODUCTION_DUAL_SLOT_DISABLED`、`A800_PREFLIGHT_REQUIRED`、
+`A800_PRODUCTION_UPGRADE_NOT_EXECUTED`、`OFFLINE_INSTALL_NOT_VERIFIED`。
+`AGENT_SIGKILL_RESTART_E2E_PASS` 已由 Linux CI 证据确认；响应丢失五类、双槽同时崩溃、
+同 GPU 重新准入、同 node_id 双实例、真实 GPU 仍未覆盖。
+
+本轮仍未完成（下一轮队列）：
+1. M11 剩余优先项：ZIP 导入双 Owner/双轮询收口、AI 审核任务创建/取消/重试原生化、
+   训练暂停/删除/提权原生化、转换创建/日志/质量中心、外部发布/平台配置原生页、
+   统一请求出口（日志/训练创建）。
+2. M12/W14 大规模真实性能（20 万素材/千级模型/2 万跨页选择/SQLite 并发）——本轮未开始。
+3. M15 剩余：同 GPU 重新准入、响应丢失五类正式 Agent 链路、双槽同崩溃分别恢复、
+   同 node_id 双实例中央合同、运维诊断面。
+4. M16 剩余：FP16/动态/opset 扩展矩阵、来源血缘贯通、发布准入实际消费质量状态、
+   发布幂等/回滚 Dry-Run。
+5. M17：离线安装（当前 OFFLINE_INSTALL_NOT_VERIFIED）、单槽真实业务候选现场 UAT、
+   候选证据文档更新为最终不可歧义 SHA。
