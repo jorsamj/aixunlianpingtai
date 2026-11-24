@@ -16,6 +16,17 @@ from typing import Any, Iterable, Mapping
 
 SCHEMA_VERSION = 1
 FEEDBACK_TYPES = {"correct", "false_positive", "needs_correction"}
+# Only these two existing feedback types keep their original direct-GT review
+# semantics. Every correction ("needs_correction") must flow through the
+# existing candidate/review queue and can never write formal GT directly.
+DIRECT_TRUTH_FEEDBACK_TYPES = frozenset({"correct", "false_positive"})
+CANDIDATE_ONLY_FEEDBACK_TYPES = frozenset({"needs_correction"})
+# Optional sub-kind for "needs_correction" only. Older clients keep sending the
+# three original feedback types; new clients can state the concrete defect.
+CORRECTION_KINDS = frozenset({
+    "missed_detection", "wrong_class", "inaccurate_box",
+    "partial_correction", "other",
+})
 TERMINAL_STATUSES = {"confirmed", "dismissed"}
 
 _SCHEMA = """
@@ -31,7 +42,9 @@ CREATE TABLE IF NOT EXISTS online_feedback (
     material_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     confirmed_at TEXT NOT NULL DEFAULT '',
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    correction_kind TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_online_feedback_status
     ON online_feedback(status, created_at DESC, id DESC);
@@ -40,6 +53,12 @@ CREATE INDEX IF NOT EXISTS ix_online_feedback_version
 CREATE INDEX IF NOT EXISTS ix_online_feedback_pending_version
     ON online_feedback(algorithm_id, version_id, status);
 """
+
+# Additive only: existing feedback rows/readers keep working with empty values.
+_OPTIONAL_COLUMNS = (
+    ("project_id", "TEXT NOT NULL DEFAULT ''"),
+    ("correction_kind", "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 def _text(value: object, limit: int = 1000) -> str:
@@ -67,6 +86,54 @@ def _number(value: object, field: str) -> float:
     if result != result or result in {float("inf"), float("-inf")}:
         raise ValueError(f"{field} must be finite")
     return result
+
+
+def _project_identity(value: object) -> str:
+    text = _text(value, 96)
+    if not text:
+        return ""
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in text):
+        raise ValueError("project_id is invalid")
+    return text
+
+
+def normalize_correction_kind(feedback_type: object, correction_kind: object) -> str:
+    """Optional bounded defect kind; only corrections may carry one."""
+    kind = _text(correction_kind, 64).lower()
+    if kind and kind not in CORRECTION_KINDS:
+        raise ValueError("correction_kind is invalid")
+    if kind and str(feedback_type or "") not in CANDIDATE_ONLY_FEEDBACK_TYPES:
+        raise ValueError("correction_kind 仅适用于需要修正的反馈（该反馈只能进入候选）")
+    return kind
+
+
+def _prediction_identity(source: Mapping[str, Any]) -> str:
+    """Stable original-prediction projection used to prove it never changes."""
+    detections = []
+    for row in source.get("detections") or []:
+        if not isinstance(row, Mapping):
+            continue
+        detections.append({
+            "class_id": int(row.get("class_id") or 0),
+            "label": str(row.get("label") or ""),
+            "confidence": round(float(row.get("confidence") or 0), 6),
+            "x1": round(float(row.get("x1") or 0), 4),
+            "y1": round(float(row.get("y1") or 0), 4),
+            "x2": round(float(row.get("x2") or 0), 4),
+            "y2": round(float(row.get("y2") or 0), 4),
+        })
+    detections.sort(key=lambda row: (
+        row["class_id"], row["label"], row["confidence"],
+        row["x1"], row["y1"], row["x2"], row["y2"],
+    ))
+    return _canonical({
+        "prediction_id": str(source.get("prediction_id") or ""),
+        "algorithm_id": str(source.get("algorithm_id") or ""),
+        "version_id": str(source.get("version_id") or ""),
+        "model_sha256": str(source.get("model_sha256") or ""),
+        "input_sha256": str(source.get("input_sha256") or ""),
+        "detections": detections,
+    })
 
 
 def validate_prediction_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -133,6 +200,9 @@ def validate_prediction_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     source_channel = _text(value.get("source_channel"), 100)
     external_source = _text(value.get("external_source"), 200)
     external_sample_id = _text(value.get("external_sample_id"), 200)
+    project_id = _project_identity(value.get("project_id"))
+    if project_id:
+        result["project_id"] = project_id
     if source_channel:
         result["source_channel"] = source_channel
     if external_source:
@@ -158,8 +228,12 @@ def public_feedback(value: Mapping[str, Any], *, compact: bool = False) -> dict[
         "schema_version": SCHEMA_VERSION,
         "id": str(row.get("id") or ""),
         "prediction_id": str(row.get("prediction_id") or ""),
+        "project_id": str(row.get("project_id") or source.get("project_id") or ""),
         "status": str(row.get("status") or ""),
         "feedback_type": str(row.get("feedback_type") or ""),
+        "correction_kind": str(
+            row.get("correction_kind") or payload.get("correction_kind") or ""
+        ),
         "algorithm_id": str(row.get("algorithm_id") or ""),
         "version_id": str(row.get("version_id") or ""),
         "model_sha256": str(row.get("model_sha256") or ""),
@@ -194,6 +268,11 @@ def build_supplement_candidate(
     material_sha = str(material.get("content_sha256") or "").strip().lower()
     if material_id and material and material_sha != input_sha:
         reasons.append("MATERIAL_CONTENT_CHANGED")
+    material_processing = _text(material.get("processing_status"), 100)
+    if material_id and material and material_processing and material_processing != "processed":
+        # A pending_decision feedback material has not completed human review;
+        # it must not be frozen/selected as training truth yet.
+        reasons.append("MATERIAL_NOT_PROCESSED")
 
     annotation_state = str(
         annotation.get("annotation_state")
@@ -234,10 +313,16 @@ def build_supplement_candidate(
         labels = list(scope)
 
     source = dict(public.get("source") or {})
+    annotation_version = annotation.get("version")
+    try:
+        annotation_version = max(0, int(annotation_version or 0))
+    except (TypeError, ValueError, OverflowError):
+        annotation_version = 0
     payload = {
         "schema_version": 1,
         "feedback_id": str(public["id"]),
         "feedback_type": feedback_type,
+        "correction_kind": str(public.get("correction_kind") or ""),
         "material_id": material_id,
         "algorithm_id": str(public["algorithm_id"]),
         "version_id": str(public["version_id"]),
@@ -246,6 +331,9 @@ def build_supplement_candidate(
         "confirmed_at": str(public.get("confirmed_at") or ""),
         "annotation_state": annotation_state,
         "annotation_hash": annotation_hash,
+        "annotation_version": annotation_version,
+        "annotation_updated_at": _text(annotation.get("updated_at"), 100),
+        "annotation_origin": _text(annotation.get("annotation_origin"), 100),
         "annotation_scope": scope,
         "labels": labels,
         "source_channel": _text(source.get("source_channel") or "platform_prediction", 100),
@@ -305,13 +393,19 @@ def build_supplement_candidate_set(
             raise ValueError("feedback candidate identity is incomplete")
         feedback_ids.append(feedback_id)
         material_ids.append(material_id)
+        try:
+            annotation_version = max(0, int(row.get("annotation_version") or 0))
+        except (TypeError, ValueError, OverflowError):
+            annotation_version = 0
         normalized.append({
             "feedback_id": feedback_id,
             "feedback_type": _text(row.get("feedback_type"), 100),
+            "correction_kind": _text(row.get("correction_kind"), 64),
             "material_id": material_id,
             "candidate_digest": digest,
             "annotation_hash": _sha(row.get("annotation_hash"), "annotation_hash"),
             "annotation_state": _text(row.get("annotation_state"), 100),
+            "annotation_version": annotation_version,
             "labels": sorted({_text(v, 200) for v in list(row.get("labels") or []) if _text(v, 200)}),
             "model_sha256": _sha(row.get("model_sha256"), "model_sha256"),
             "input_sha256": _sha(row.get("input_sha256"), "input_sha256"),
@@ -419,6 +513,7 @@ def build_supplement_training_provenance(
         adopted.append({
             "feedback_id": _text(raw.get("feedback_id"), 100),
             "feedback_type": _text(raw.get("feedback_type"), 100),
+            "correction_kind": _text(raw.get("correction_kind"), 64),
             "material_id": material_id,
             "candidate_digest": _sha(raw.get("candidate_digest"), "candidate_digest"),
             "annotation_hash": annotation_hash,
@@ -459,6 +554,17 @@ class OnlineFeedbackRepository:
         self.path = self.project_path / "online_feedback.sqlite3"
         with closing(self._connect()) as db:
             db.executescript(_SCHEMA)
+            # Legacy databases keep every old row/query; only optional columns
+            # are appended. Never rebuild or rewrite existing feedback evidence.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(online_feedback)")}
+            for name, definition in _OPTIONAL_COLUMNS:
+                if name in columns:
+                    continue
+                try:
+                    db.execute(f"ALTER TABLE online_feedback ADD COLUMN {name} {definition}")
+                except sqlite3.OperationalError as error:
+                    if "duplicate column name" not in str(error).lower():
+                        raise
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -572,11 +678,13 @@ class OnlineFeedbackRepository:
         feedback_type: str,
         note: str,
         created_at: str,
+        correction_kind: str = "",
     ) -> tuple[dict[str, Any], bool]:
         source = validate_prediction_evidence(evidence)
         feedback_type = str(feedback_type or "").strip()
         if feedback_type not in FEEDBACK_TYPES:
             raise ValueError("feedback_type is invalid")
+        correction_kind = normalize_correction_kind(feedback_type, correction_kind)
         identity = {
             "prediction_id": source["prediction_id"],
             "input_sha256": source["input_sha256"],
@@ -586,10 +694,12 @@ class OnlineFeedbackRepository:
         feedback_id = "feedback_" + hashlib.sha256(json.dumps(
             identity, sort_keys=True, separators=(",", ":")
         ).encode()).hexdigest()[:24]
+        project_id = str(source.get("project_id") or "")
         payload = {
             "schema_version": SCHEMA_VERSION,
             "source": source,
             "note": _text(note, 1000),
+            "correction_kind": correction_kind,
             "result": {},
         }
         with closing(self._connect()) as db:
@@ -606,10 +716,18 @@ class OnlineFeedbackRepository:
                             db.execute("COMMIT")
                             return current, True
                         raise ValueError("prediction feedback is already finalized")
+                    # The original prediction evidence is immutable. Re-staging
+                    # may change the human judgement/note, never the prediction.
+                    previous_source = (current.get("payload") or {}).get("source") or {}
+                    if _prediction_identity(previous_source) != _prediction_identity(source):
+                        raise ValueError("原始预测证据已变化，不能改写已暂存反馈")
                     db.execute(
-                        "UPDATE online_feedback SET feedback_type=?,payload_json=? WHERE id=?",
+                        "UPDATE online_feedback SET feedback_type=?,correction_kind=?,"
+                        "project_id=?,payload_json=? WHERE id=?",
                         (
                             feedback_type,
+                            correction_kind,
+                            project_id or str(current.get("project_id") or ""),
                             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                             current["id"],
                         ),
@@ -622,13 +740,15 @@ class OnlineFeedbackRepository:
                 db.execute(
                     """INSERT INTO online_feedback
                        (id,prediction_id,status,feedback_type,algorithm_id,version_id,
-                        model_sha256,input_sha256,material_id,created_at,confirmed_at,payload_json)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        model_sha256,input_sha256,material_id,created_at,confirmed_at,payload_json,
+                        project_id,correction_kind)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         feedback_id, source["prediction_id"], "pending_review", feedback_type,
                         source["algorithm_id"], source["version_id"], source["model_sha256"],
                         source["input_sha256"], "", str(created_at), "",
                         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                        project_id, correction_kind,
                     ),
                 )
                 row = db.execute(

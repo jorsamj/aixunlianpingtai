@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from platform_core.online_feedback import (
+    CANDIDATE_ONLY_FEEDBACK_TYPES,
+    CORRECTION_KINDS,
+    DIRECT_TRUTH_FEEDBACK_TYPES,
     OnlineFeedbackRepository,
     build_supplement_candidate,
     build_supplement_candidate_set,
     build_supplement_training_provenance,
+    normalize_correction_kind,
     public_feedback,
     validate_prediction_evidence,
 )
@@ -248,3 +254,125 @@ def test_evaluation_feedback_never_becomes_supplement_candidate(tmp_path):
         {"annotation_state":"annotated","content_digest":"c"*64,"boxes":[{"label":"smoke"}]})
     assert candidate["eligible"] is False
     assert "FROZEN_EVALUATION_TEST" in candidate["reason_codes"]
+
+
+_LEGACY_SCHEMA = """
+CREATE TABLE online_feedback (
+    id TEXT PRIMARY KEY,
+    prediction_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    feedback_type TEXT NOT NULL,
+    algorithm_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    model_sha256 TEXT NOT NULL,
+    input_sha256 TEXT NOT NULL,
+    material_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX ix_online_feedback_status
+    ON online_feedback(status, created_at DESC, id DESC);
+"""
+
+
+def test_legacy_feedback_database_is_migrated_additively(tmp_path: Path):
+    """Old feedback rows and old queries keep working after optional columns."""
+    source = validate_prediction_evidence(evidence())
+    payload = {
+        "schema_version": 1,
+        "source": source,
+        "note": "旧记录",
+        "result": {},
+    }
+    legacy_id = "feedback_legacy_row"
+    with sqlite3.connect(tmp_path / "online_feedback.sqlite3") as db:
+        db.executescript(_LEGACY_SCHEMA)
+        db.execute(
+            "INSERT INTO online_feedback VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                legacy_id, source["prediction_id"], "pending_review", "needs_correction",
+                source["algorithm_id"], source["version_id"], source["model_sha256"],
+                source["input_sha256"], "", "2026-09-19T00:00:00+00:00", "",
+                json.dumps(payload),
+            ),
+        )
+
+    repository = OnlineFeedbackRepository(tmp_path)
+    legacy = repository.get(legacy_id)
+    assert legacy["status"] == "pending_review"
+    assert legacy["payload"]["note"] == "旧记录"
+    assert legacy["project_id"] == ""
+    assert legacy["correction_kind"] == ""
+    assert public_feedback(legacy)["correction_kind"] == ""
+    assert [row["id"] for row in repository.list(status="pending_review")] == [legacy_id]
+
+    # An old pending row can still be re-staged; the optional defect kind and
+    # owning project are filled additively without touching old columns.
+    source_with_project = {**source, "project_id": "legacy-project"}
+    updated, idempotent = repository.stage(
+        source_with_project, feedback_type="needs_correction",
+        note="补充问题类型", correction_kind="wrong_class", created_at="2026-09-20T00:00:00+00:00",
+    )
+    assert idempotent is True
+    assert updated["id"] == legacy_id
+    assert updated["project_id"] == "legacy-project"
+    assert updated["correction_kind"] == "wrong_class"
+
+
+def test_feedback_retains_original_prediction_and_rejects_evidence_rewrite(tmp_path: Path):
+    source = evidence()
+    source["project_id"] = "project-1"
+    source["detections"] = [
+        {"class_id": 0, "label": "smoke", "confidence": 0.91,
+         "x1": 10, "y1": 12, "x2": 40, "y2": 50},
+        {"class_id": 1, "label": "fire", "confidence": 0.72,
+         "x1": 50, "y1": 20, "x2": 90, "y2": 70},
+    ]
+    repository = OnlineFeedbackRepository(tmp_path)
+    row, _ = repository.stage(
+        source, feedback_type="needs_correction", note="多目标部分修正",
+        created_at="2026-09-19T00:00:00+00:00", correction_kind="partial_correction",
+    )
+    assert row["project_id"] == "project-1"
+    assert row["correction_kind"] == "partial_correction"
+    stored = row["payload"]["source"]
+    assert stored["prediction_id"] == "abc123def456"
+    assert stored["algorithm_id"] == "algorithm-1"
+    assert stored["version_id"] == "version-1"
+    assert stored["model_sha256"] == "a" * 64
+    assert stored["input_sha256"] == "b" * 64
+    assert [
+        (box["class_id"], box["label"], box["confidence"], box["x1"], box["y2"])
+        for box in stored["detections"]
+    ] == [(0, "smoke", 0.91, 10, 50), (1, "fire", 0.72, 50, 70)]
+    public = public_feedback(row)
+    assert public["project_id"] == "project-1"
+    assert public["correction_kind"] == "partial_correction"
+    assert len(public["source"]["detections"]) == 2
+
+    changed = evidence()
+    changed["project_id"] = "project-1"
+    changed["detections"] = [{
+        "class_id": 0, "label": "smoke", "confidence": 0.99,
+        "x1": 1, "y1": 1, "x2": 2, "y2": 2,
+    }]
+    with pytest.raises(ValueError, match="原始预测证据已变化"):
+        repository.stage(
+            changed, feedback_type="needs_correction", note="篡改",
+            created_at="2026-09-19T00:01:00+00:00",
+        )
+    assert repository.get(row["id"])["payload"]["source"]["detections"][1]["label"] == "fire"
+
+
+def test_correction_kind_is_bounded_and_only_for_corrections():
+    assert CANDIDATE_ONLY_FEEDBACK_TYPES == {"needs_correction"}
+    assert DIRECT_TRUTH_FEEDBACK_TYPES == {"correct", "false_positive"}
+    assert "partial_correction" in CORRECTION_KINDS
+    for kind in sorted(CORRECTION_KINDS):
+        assert normalize_correction_kind("needs_correction", kind) == kind
+    assert normalize_correction_kind("needs_correction", "") == ""
+    with pytest.raises(ValueError):
+        normalize_correction_kind("needs_correction", "not-a-kind")
+    with pytest.raises(ValueError, match="只能进入候选"):
+        normalize_correction_kind("correct", "wrong_class")

@@ -11,6 +11,7 @@ from PIL import Image
 
 import app as app_module
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.online_feedback import OnlineFeedbackRepository
 
 
 def _project(client):
@@ -819,3 +820,503 @@ def test_stage_correct_prediction_rejects_retired_frozen_label(client):
     assert app_module._online_feedback_repository(project["id"]).list(
         status="pending_review"
     ) == []
+
+
+def _review_annotation(client, project_id: str, image_id: str, boxes, labels=None):
+    """Save formal GT through the existing annotation review API (the Owner)."""
+    current = client.get(f"/api/projects/{project_id}/annotations/{image_id}").json()
+    response = client.post(
+        f"/api/projects/{project_id}/annotations/{image_id}",
+        json={
+            "boxes": boxes,
+            "expected_version": current["annotation"]["version"],
+            "source_content_sha256": current["image"]["content_sha256"],
+            "reviewed_label_codes": list(labels or [box["label"] for box in boxes]),
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _confirm(client, project_id, feedback_id, feedback_type, request_id="", **extra):
+    return client.post(
+        f"/api/v63/projects/{project_id}/online-feedback/{feedback_id}/confirm",
+        json={
+            "expected_feedback_type": feedback_type,
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+            "request_id": request_id,
+            **extra,
+        },
+    )
+
+
+def test_feedback_evidence_retains_prediction_identity_and_never_rewrites_it(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, image_path = _prediction(
+        project["id"],
+        algorithm_id,
+        version,
+        detections=[{
+            "class_id": 0,
+            "label": "smoke",
+            "confidence": 0.93,
+            "x1": 10,
+            "y1": 8,
+            "x2": 60,
+            "y2": 52,
+        }],
+        suffix="evidence-retained",
+    )
+    evidence_path = (
+        app_module.project_dir(project["id"]) / "predictions"
+        / f"{prediction_id}.evidence.json"
+    )
+    evidence_before = evidence_path.read_bytes()
+    staged_response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback",
+        json={
+            "prediction_id": prediction_id,
+            "feedback_type": "needs_correction",
+            "note": "定位偏移，部分目标框需要修正",
+            "correction_kind": "inaccurate_box",
+        },
+    )
+    assert staged_response.status_code == 201, staged_response.text
+    staged = staged_response.json()["feedback"]
+    detail = client.get(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}"
+    ).json()["feedback"]
+
+    assert detail["prediction_id"] == prediction_id
+    assert detail["project_id"] == project["id"]
+    assert detail["algorithm_id"] == algorithm_id
+    assert detail["version_id"] == version["id"]
+    assert detail["model_sha256"] == app_module.sha256_file(Path(version["stored_path"]))
+    assert detail["input_sha256"] == app_module.sha256_file(image_path)
+    assert detail["feedback_type"] == "needs_correction"
+    assert detail["correction_kind"] == "inaccurate_box"
+    assert detail["note"].startswith("定位偏移")
+    assert detail["created_at"]
+    detection = detail["source"]["detections"][0]
+    assert (detection["class_id"], detection["label"], detection["confidence"]) == (
+        0, "smoke", 0.93,
+    )
+    assert (detection["x1"], detection["y1"], detection["x2"], detection["y2"]) == (
+        10, 8, 60, 52,
+    )
+
+    confirmed = _confirm(client, project["id"], staged["id"], "needs_correction")
+    assert confirmed.status_code == 200, confirmed.text
+    # The original prediction evidence file is never rewritten by feedback or
+    # review; only the feedback owner stores a copy of the frozen prediction.
+    assert evidence_path.read_bytes() == evidence_before
+    stored = OnlineFeedbackRepository(
+        app_module.project_dir(project["id"])
+    ).get(staged["id"])
+    assert stored["payload"]["source"]["detections"][0]["label"] == "smoke"
+
+
+@pytest.mark.parametrize(
+    "correction_kind,detections",
+    [
+        ("missed_detection", []),
+        ("wrong_class", [{
+            "class_id": 0, "label": "smoke", "confidence": 0.8,
+            "x1": 10, "y1": 10, "x2": 50, "y2": 50,
+        }]),
+        ("inaccurate_box", [{
+            "class_id": 0, "label": "smoke", "confidence": 0.8,
+            "x1": 10, "y1": 10, "x2": 50, "y2": 50,
+        }]),
+        ("partial_correction", [{
+            "class_id": 0, "label": "smoke", "confidence": 0.8,
+            "x1": 10, "y1": 10, "x2": 50, "y2": 50,
+        }]),
+    ],
+)
+def test_correction_feedback_only_enters_candidate_until_human_review(
+    client, correction_kind, detections,
+):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    _enable_supplement_action(project["id"], algorithm_id, version["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=detections, suffix=f"correction-{correction_kind}",
+    )
+    staged = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback",
+        json={
+            "prediction_id": prediction_id,
+            "feedback_type": "needs_correction",
+            "note": correction_kind,
+            "correction_kind": correction_kind,
+        },
+    ).json()["feedback"]
+    confirmed = _confirm(client, project["id"], staged["id"], "needs_correction")
+    assert confirmed.status_code == 200, confirmed.text
+    feedback = confirmed.json()["feedback"]
+    assert feedback["status"] == "confirmed"
+    assert feedback["result"]["candidate_only"] is True
+    assert feedback["result"]["gt_written"] is False
+    assert feedback["result"]["gt_recorded"] is False
+    assert feedback["result"]["annotation_action"] == "manual_annotation_required"
+    assert feedback["result"]["correction_kind"] == correction_kind
+    assert feedback["result"]["review"]["actor_id"]
+    assert "gt_receipt" not in feedback["result"]
+
+    material_id = feedback["material_id"]
+    before_review = AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).get(material_id)
+    assert before_review["annotation_state"] == "unannotated"
+    assert before_review["boxes"] == []
+
+    listing = client.get(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates"
+    )
+    assert listing.status_code == 200, listing.text
+    item = listing.json()["items"][0]
+    assert item["eligible"] is False
+    assert "ANNOTATION_REQUIRED" in item["reason_codes"]
+    assert item["correction_kind"] == correction_kind
+
+    _review_annotation(
+        client, project["id"], material_id,
+        [{
+            "class_id": 0, "label": "smoke",
+            "x1": 12, "y1": 12, "x2": 55, "y2": 55,
+        }],
+        ["smoke"],
+    )
+    reviewed_listing = client.get(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates"
+    )
+    reviewed = reviewed_listing.json()["items"][0]
+    assert reviewed["eligible"] is True
+    annotation = AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).get(material_id)
+    assert reviewed["annotation_hash"] == annotation["content_digest"]
+    assert reviewed["annotation_version"] == annotation["version"]
+    assert reviewed["correction_kind"] == correction_kind
+
+    frozen = client.post(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates/freeze",
+        json={"candidates": [{
+            "feedback_id": reviewed["feedback_id"],
+            "candidate_digest": reviewed["candidate_digest"],
+        }]},
+    )
+    assert frozen.status_code == 200, frozen.text
+    frozen_candidate = frozen.json()["candidate_set"]["candidates"][0]
+    assert frozen_candidate["feedback_id"] == staged["id"]
+    assert frozen_candidate["correction_kind"] == correction_kind
+    assert frozen_candidate["annotation_hash"] == annotation["content_digest"]
+
+
+def test_correction_kind_is_rejected_for_direct_truth_feedback(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.9,
+            "x1": 10, "y1": 10, "x2": 50, "y2": 50,
+        }],
+    )
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback",
+        json={
+            "prediction_id": prediction_id,
+            "feedback_type": "correct",
+            "note": "试图携带修正类型",
+            "correction_kind": "wrong_class",
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert "只能进入候选" in response.text
+    assert app_module._online_feedback_repository(project["id"]).list() == []
+
+
+def test_correct_confirm_persists_review_evidence_and_idempotent_gt_receipt(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+        suffix="receipt",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    confirmed = _confirm(
+        client, project["id"], staged["id"], "correct", request_id="review-op-1",
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    feedback = confirmed.json()["feedback"]
+    receipt = feedback["result"]["gt_receipt"]
+    assert feedback["result"]["gt_written"] is True
+    assert feedback["result"]["gt_recorded"] is True
+    assert feedback["result"]["review"]["request_id"] == "review-op-1"
+    assert feedback["result"]["review"]["actor_id"]
+    assert receipt["feedback_id"] == staged["id"]
+    assert receipt["project_id"] == project["id"]
+    assert receipt["algorithm_id"] == algorithm_id
+    assert receipt["version_id"] == version["id"]
+    assert receipt["annotation_state"] == "annotated"
+    assert receipt["annotation_version"] == 1
+    assert receipt["box_count"] == 1
+    assert receipt["labels"] == ["smoke"]
+    assert len(receipt["annotation_content_digest"]) == 64
+    assert receipt["gt_write"] == "written"
+    assert receipt["review_request_id"] == "review-op-1"
+
+    annotation = AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).get(feedback["material_id"])
+    assert receipt["annotation_content_digest"] == annotation["content_digest"]
+    assert receipt["annotation_version"] == annotation["version"]
+
+    repeated = _confirm(
+        client, project["id"], staged["id"], "correct", request_id="review-op-1",
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    repeated_feedback = repeated.json()["feedback"]
+    assert repeated_feedback["result"]["gt_receipt"] == receipt
+    # The receipt is durable: the original feedback record read back exposes the
+    # exact same formal-GT identity after the response was returned.
+    persisted_feedback = client.get(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}"
+    ).json()["feedback"]
+    assert persisted_feedback["result"]["gt_receipt"] == receipt
+    assert persisted_feedback["result"]["review"]["request_id"] == "review-op-1"
+    repeated_annotation = AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).get(feedback["material_id"])
+    assert repeated_annotation["version"] == annotation["version"] == 1
+    refs = app_module.material_store(project["id"]).get(
+        feedback["material_id"]
+    )["online_feedback_refs"]
+    assert [row["feedback_id"] for row in refs] == [staged["id"]]
+
+
+def test_false_positive_confirm_persists_grounded_negative_receipt(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.77,
+            "x1": 5, "y1": 5, "x2": 30, "y2": 30,
+        }],
+        suffix="negative-receipt",
+    )
+    staged = _stage(client, project["id"], prediction_id, "false_positive")
+    confirmed = _confirm(
+        client, project["id"], staged["id"], "false_positive",
+        confirm_all_labels_absent=True,
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    feedback = confirmed.json()["feedback"]
+    receipt = feedback["result"]["gt_receipt"]
+    assert feedback["result"]["gt_written"] is True
+    assert feedback["result"]["gt_recorded"] is True
+    assert receipt["annotation_state"] == "confirmed_empty"
+    assert receipt["box_count"] == 0
+    assert receipt["labels"] == []
+    assert receipt["gt_write"] == "written"
+    assert receipt["annotation_version"] == 1
+    repeated = _confirm(
+        client, project["id"], staged["id"], "false_positive",
+        confirm_all_labels_absent=True,
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["feedback"]["result"]["gt_receipt"] == receipt
+
+
+def test_gt_write_with_lost_confirm_response_recovers_without_duplicate_gt(client, monkeypatch):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+        suffix="lost-response",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    original_finalize = OnlineFeedbackRepository.finalize
+    state = {"raised": False}
+
+    def lose_first_response(self, *args, **kwargs):
+        if not state["raised"]:
+            state["raised"] = True
+            raise RuntimeError("simulated lost confirm response after GT write")
+        return original_finalize(self, *args, **kwargs)
+
+    monkeypatch.setattr(OnlineFeedbackRepository, "finalize", lose_first_response)
+    with pytest.raises(RuntimeError):
+        _confirm(client, project["id"], staged["id"], "correct", request_id="retry-op")
+    # GT was really written before the simulated response loss; feedback is
+    # still pending so the client can safely retry the same review.
+    pending = app_module._online_feedback_repository(project["id"]).get(staged["id"])
+    assert pending["status"] == "pending_review"
+    written_material = app_module.material_store(project["id"]).get_by_content_sha256(
+        pending["input_sha256"]
+    )
+    assert written_material is not None
+    written = AnnotationRepository(app_module.project_dir(project["id"])).get(
+        written_material["id"]
+    )
+    assert written["annotation_state"] == "annotated"
+    assert written["version"] == 1
+
+    monkeypatch.setattr(OnlineFeedbackRepository, "finalize", original_finalize)
+    recovered = _confirm(
+        client, project["id"], staged["id"], "correct", request_id="retry-op",
+    )
+    assert recovered.status_code == 200, recovered.text
+    feedback = recovered.json()["feedback"]
+    receipt = feedback["result"]["gt_receipt"]
+    assert feedback["status"] == "confirmed"
+    # This retry did not write GT again; it recovered the existing formal truth.
+    assert feedback["result"]["gt_written"] is False
+    assert feedback["result"]["gt_recorded"] is True
+    assert feedback["result"]["annotation_action"] == "prediction_matches_existing_truth"
+    assert receipt["gt_write"] == "already_present"
+    assert receipt["annotation_version"] == 1
+    assert receipt["review_request_id"] == "retry-op"
+    recorded = AnnotationRepository(app_module.project_dir(project["id"])).get(
+        written_material["id"]
+    )
+    assert recorded["version"] == 1, "lost response must never duplicate the GT write"
+    refs = app_module.material_store(project["id"]).get(
+        written_material["id"]
+    )["online_feedback_refs"]
+    assert [row["feedback_id"] for row in refs] == [staged["id"]]
+
+
+def test_false_positive_recovery_rejects_incomplete_negative_scope(client):
+    created = client.post("/api/projects", json={
+        "name": f"feedback-negative-scope-{uuid.uuid4().hex[:8]}",
+        "labels": ["smoke", "fire"],
+    })
+    assert created.status_code == 200, created.text
+    project_id = created.json()["id"]
+    algorithm_id, version = _algorithm_version(client, project_id)
+    prediction_id, input_path = _prediction(
+        project_id, algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.8,
+            "x1": 10, "y1": 10, "x2": 50, "y2": 50,
+        }],
+        suffix="partial-negative",
+    )
+    material = app_module.add_image_record(
+        project_id, input_path, "partial-negative.jpg", "raw",
+        "default", "default_local",
+        content_sha256=app_module.sha256_file(input_path),
+    )
+    assert material is not None
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(material["id"], [], "confirmed_empty", annotation_scope=["smoke"])
+    staged = _stage(client, project_id, prediction_id, "false_positive")
+    blocked = _confirm(
+        client, project_id, staged["id"], "false_positive",
+        confirm_all_labels_absent=True,
+    )
+    # An existing negative that never reviewed the second active label cannot be
+    # acknowledged as "all active labels absent"; the feedback stays reviewable.
+    assert blocked.status_code == 409, blocked.text
+    assert "正式标注在复核期间发生变化" in blocked.text
+    staging = app_module._online_feedback_repository(project_id).get(staged["id"])
+    assert staging["status"] == "pending_review"
+    annotations.upsert(
+        material["id"], [], "confirmed_empty", annotation_scope=["smoke", "fire"],
+    )
+    recovered = _confirm(
+        client, project_id, staged["id"], "false_positive",
+        confirm_all_labels_absent=True,
+    )
+    assert recovered.status_code == 200, recovered.text
+    receipt = recovered.json()["feedback"]["result"]["gt_receipt"]
+    assert receipt["gt_write"] == "already_present"
+    assert set(receipt["annotation_scope"]) == {"smoke", "fire"}
+
+
+def test_feedback_is_scoped_to_owning_project_and_algorithm_version(client):
+    first_project = _project(client)
+    first_algorithm_id, first_version = _algorithm_version(client, first_project["id"])
+    prediction_id, _ = _prediction(
+        first_project["id"], first_algorithm_id, first_version,
+        detections=[], suffix="project-scope",
+    )
+    first_evidence = (
+        app_module.project_dir(first_project["id"]) / "predictions"
+        / f"{prediction_id}.evidence.json"
+    )
+    # Real prediction registration stamps the owning project into the file.
+    evidence_value = json.loads(first_evidence.read_text(encoding="utf-8"))
+    evidence_value["project_id"] = first_project["id"]
+    first_evidence.write_text(json.dumps(evidence_value), encoding="utf-8")
+    staged = _stage(client, first_project["id"], prediction_id, "needs_correction")
+
+    other_project = _project(client)
+    other_algorithm_id, other_version = _algorithm_version(client, other_project["id"])
+    listing = client.get(
+        f"/api/v63/projects/{other_project['id']}/online-feedback"
+    )
+    assert listing.status_code == 200
+    assert listing.json()["items"] == []
+    blocked = client.get(
+        f"/api/v63/projects/{other_project['id']}/online-feedback/{staged['id']}"
+    )
+    assert blocked.status_code == 404
+    blocked_confirm = _confirm(
+        client, other_project["id"], staged["id"], "needs_correction",
+    )
+    assert blocked_confirm.status_code == 404
+    assert app_module._online_feedback_repository(
+        first_project["id"]
+    ).get(staged["id"])["status"] == "pending_review"
+
+    # A copied prediction evidence file keeps its owning project identity and
+    # cannot be replayed as another project's feedback input.
+    target_root = app_module.project_dir(other_project["id"]) / "predictions"
+    target_root.mkdir(parents=True, exist_ok=True)
+    (target_root / f"{prediction_id}.evidence.json").write_bytes(
+        first_evidence.read_bytes()
+    )
+    copied = client.post(
+        f"/api/v63/projects/{other_project['id']}/online-feedback",
+        json={"prediction_id": prediction_id, "feedback_type": "needs_correction"},
+    )
+    assert copied.status_code == 409, copied.text
+    assert "项目归属" in copied.text
+    assert app_module._online_feedback_repository(
+        other_project["id"]
+    ).list() == []
+
+    # The other project's algorithm versions never see the first project's
+    # confirmed feedback candidate set.
+    enable = _enable_supplement_action(
+        other_project["id"], other_algorithm_id, other_version["id"],
+    )
+    assert enable["source"]["version_id"] == other_version["id"]
+    other_candidates = client.get(
+        f"/api/v63/projects/{other_project['id']}/algorithms/{other_algorithm_id}/"
+        f"versions/{other_version['id']}/supplement-data-candidates"
+    )
+    assert other_candidates.status_code == 200, other_candidates.text
+    assert other_candidates.json()["total"] == 0
+    assert other_algorithm_id != first_algorithm_id

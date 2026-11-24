@@ -6034,6 +6034,22 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             solution="请刷新当前图片，基于最新内容重新标注和审核。",
             status_code=409,
         )
+    # Online-feedback material enters the review queue as pending_decision.
+    # Once the human review saves formal truth it becomes ordinary processed
+    # training data; without this transition the reviewed sample could never
+    # enter the next-round training selection (only processed rows are
+    # selectable). This is the same existing Material owner projection, not a
+    # second GT store.
+    if (
+        annotation_state in {"annotated", "confirmed_empty"}
+        and bool((fresh or {}).get("online_feedback_needs_review"))
+    ):
+        materials.patch({str(image_id): {
+            "processing_status": "processed",
+            "online_feedback_needs_review": False,
+            "online_feedback_reviewed_at": now_iso(),
+        }})
+        fresh = materials.get(str(image_id)) or fresh
     reviewed_added = sorted(set(next_scope) - existing_scope)
     return {
         "ok": True,
@@ -12105,7 +12121,7 @@ def _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, *
         try:
             evidence = reviewed_mining_feedback_evidence(task_id=task_id, request=request, candidate=item,
                 material=materials.get(image_id) or {}, annotation=annotations.get(image_id) or {},
-                commit_summary=journals.get(image_id))
+                commit_summary=journals.get(image_id), project_id=project_id)
             result.append({'image_id': image_id, 'eligible': True, **evidence})
         except ValueError as error:
             result.append({'image_id': image_id, 'eligible': False, 'reason': str(error)})
@@ -12167,7 +12183,8 @@ def review_evaluation_sample(project_id: str, algorithm_id: str, version_id: str
     sample = matches[0]
     # Persist only an opinion in the existing feedback owner. No image/GT write.
     prediction_id = 'evalreview_' + hashlib.sha256((payload.expected_evaluation_id + ':' + payload.image_id).encode()).hexdigest()[:48]
-    source = {'schema_version': 1, 'prediction_id': prediction_id, 'algorithm_id': algorithm_id,
+    source = {'schema_version': 1, 'prediction_id': prediction_id, 'project_id': project_id,
+              'algorithm_id': algorithm_id,
               'version_id': version_id, 'model_sha256': model['model_sha256'],
               'input_sha256': sample.get('image_content_sha256'), 'width': sample.get('image_width'),
               'height': sample.get('image_height'), 'detections': [], 'engine': 'formal_evaluation',
@@ -13972,16 +13989,27 @@ async def v12_predict_image(
     return response
 
 
+OnlineFeedbackCorrectionKind = Literal[
+    "", "missed_detection", "wrong_class", "inaccurate_box", "partial_correction", "other",
+]
+
+
 class OnlineFeedbackCreateReq(BaseModel):
     prediction_id: str
     feedback_type: Literal["correct", "false_positive", "needs_correction"]
     note: str = ""
+    # Optional, additive defect kind. Only "needs_correction" may carry one and
+    # such feedback can only become reviewed candidate data, never direct GT.
+    correction_kind: OnlineFeedbackCorrectionKind = ""
 
 
 class OnlineFeedbackConfirmReq(BaseModel):
     expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
     dataset_id: str = "default"
     confirm_all_labels_absent: bool = False
+    # Stable optional operation identity: a client that lost the response can
+    # retry the exact review and read back the same persisted GT receipt.
+    request_id: str = ""
 
 
 class OnlineFeedbackDismissReq(BaseModel):
@@ -14037,11 +14065,16 @@ def _online_prediction_evidence(project_id: str, prediction_id: str):
     ):
         raise HTTPException(status_code=400, detail="prediction_id 无效")
     root = project_dir(project_id) / "predictions"
-    evidence = validate_prediction_evidence(
-        read_json(root / f"{prediction_id}.evidence.json", {})
-    )
+    raw_evidence = read_json(root / f"{prediction_id}.evidence.json", {})
+    evidence = validate_prediction_evidence(raw_evidence)
     if evidence["prediction_id"] != prediction_id:
         raise HTTPException(status_code=409, detail="预测证据身份不一致，请重新测试")
+    stored_project = str(raw_evidence.get("project_id") or "").strip()
+    if stored_project and stored_project != str(project_id):
+        raise HTTPException(status_code=409, detail="预测证据项目归属不一致，请重新测试")
+    # Persist the owning project in new feedback evidence without rewriting the
+    # prediction file; legacy prediction files without this field stay valid.
+    evidence["project_id"] = str(project_id)
     input_file = str(evidence.get("input_file") or "")
     if not input_file or Path(input_file).name != input_file:
         raise HTTPException(status_code=409, detail="预测输入证据无效，请重新测试")
@@ -14094,6 +14127,74 @@ def _online_feedback_prediction_boxes(project: Dict[str, Any], evidence: Dict[st
             "x2": float(detection["x2"]), "y2": float(detection["y2"]),
         })
     return boxes, [str(item["code"]) for item in active]
+
+
+def _online_feedback_truth_matches(
+    feedback_type: str, annotation: Mapping[str, Any], expected_boxes: List[Dict[str, Any]],
+    expected_scope: Optional[List[str]] = None,
+) -> bool:
+    """Read back the persisted formal GT; the receipt is never optimistic."""
+    state = str(annotation.get("annotation_state") or "unannotated")
+    boxes = list(annotation.get("boxes") or [])
+    if feedback_type == "correct":
+        return (
+            state == "annotated"
+            and bool(boxes)
+            and _online_feedback_box_signature(boxes)
+            == _online_feedback_box_signature(expected_boxes)
+        )
+    if state != "confirmed_empty" or boxes:
+        return False
+    scope = {
+        str(value) for value in list(annotation.get("annotation_scope") or [])
+        if str(value)
+    }
+    required = {
+        str(value) for value in list(expected_scope or []) if str(value)
+    }
+    return "*" in scope or required.issubset(scope)
+
+
+def _online_feedback_gt_receipt(
+    *,
+    feedback_id: str,
+    evidence: Mapping[str, Any],
+    material_id: str,
+    annotation: Mapping[str, Any],
+    annotation_action: str,
+    gt_write: str,
+    request_id: str,
+    confirmed_at: str,
+) -> Dict[str, Any]:
+    """Persist the exact formal-GT identity produced/reused by one review."""
+    boxes = list(annotation.get("boxes") or [])
+    return {
+        "schema_version": 1,
+        "feedback_id": str(feedback_id),
+        "prediction_id": str(evidence.get("prediction_id") or ""),
+        "project_id": str(evidence.get("project_id") or ""),
+        "material_id": str(material_id),
+        "algorithm_id": str(evidence.get("algorithm_id") or ""),
+        "version_id": str(evidence.get("version_id") or ""),
+        "model_sha256": str(evidence.get("model_sha256") or ""),
+        "input_sha256": str(evidence.get("input_sha256") or ""),
+        "annotation_state": str(annotation.get("annotation_state") or ""),
+        "annotation_version": int(annotation.get("version") or 0),
+        "annotation_content_digest": str(annotation.get("content_digest") or ""),
+        "annotation_scope": sorted(
+            str(value) for value in list(annotation.get("annotation_scope") or []) if str(value)
+        ),
+        "box_count": len(boxes),
+        "labels": sorted({
+            str(box.get("label") or box.get("code") or "")
+            for box in boxes
+            if str(box.get("label") or box.get("code") or "")
+        }),
+        "annotation_action": str(annotation_action),
+        "gt_write": str(gt_write),
+        "review_request_id": str(request_id),
+        "confirmed_at": str(confirmed_at),
+    }
 
 
 @app.get("/api/v63/projects/{project_id}/online-feedback")
@@ -14159,6 +14260,7 @@ def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
                     feedback_type=payload.feedback_type,
                     note=payload.note,
                     created_at=now_iso(),
+                    correction_kind=payload.correction_kind,
                 )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -14177,6 +14279,7 @@ async def create_external_online_feedback(
     detections_json: str = Form("[]"),
     confidence: float = Form(0.25),
     note: str = Form(""),
+    correction_kind: OnlineFeedbackCorrectionKind = Form(""),
     file: UploadFile = File(...),
 ):
     from platform_core.online_feedback import public_feedback, validate_prediction_evidence
@@ -14247,6 +14350,7 @@ async def create_external_online_feedback(
         incoming = validate_prediction_evidence({
             "schema_version": 1,
             "prediction_id": prediction_id,
+            "project_id": project_id,
             "algorithm_id": str(algorithm_id),
             "version_id": str(version_id),
             "model_sha256": expected_model_sha,
@@ -14298,6 +14402,8 @@ async def create_external_online_feedback(
         finally:
             temporary.unlink(missing_ok=True)
 
+    if not incoming.get("project_id"):
+        incoming["project_id"] = str(project_id)
     try:
         with model_delivery_version_fence(DATA_DIR, project_id, algorithm_id, version_id):
             _, current_version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
@@ -14313,6 +14419,7 @@ async def create_external_online_feedback(
                     feedback_type=feedback_type,
                     note=note,
                     created_at=now_iso(),
+                    correction_kind=correction_kind,
                 )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -14326,13 +14433,19 @@ async def create_external_online_feedback(
 @app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/confirm")
 def confirm_online_feedback(
     project_id: str, feedback_id: str, payload: OnlineFeedbackConfirmReq,
+    request: Request,
 ):
-    from platform_core.online_feedback import public_feedback
+    from platform_core.online_feedback import (
+        DIRECT_TRUTH_FEEDBACK_TYPES, public_feedback,
+    )
     project = get_project(project_id)
     repository = _online_feedback_repository(project_id)
     staged = repository.get(feedback_id)
     if staged is None:
         raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    review_request_id = str(payload.request_id or "").strip()
+    if review_request_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", review_request_id):
+        raise HTTPException(status_code=400, detail="request_id 无效")
     if staged["status"] == "confirmed":
         return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
     if staged["status"] != "pending_review":
@@ -14341,6 +14454,9 @@ def confirm_online_feedback(
         raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再确认")
     if (staged.get('payload') or {}).get('source', {}).get('source_channel') == 'evaluation':
         raise HTTPException(status_code=409, detail='冻结评测只允许在高级评测保存复核意见，不能通过抽检确认写入GT或采纳训练')
+    # Human review evidence: reuse the existing verified login identity. It is
+    # persisted with the formal GT receipt / candidate intent below.
+    review_actor = _material_governance_actor(request, project_id)["actor_id"]
     try:
         evidence, input_path, _, _ = _online_prediction_evidence(
             project_id, staged["prediction_id"]
@@ -14354,7 +14470,15 @@ def confirm_online_feedback(
             raise ValueError("目标数据集不存在")
 
         feedback_type = str(staged["feedback_type"])
-        truth_feedback = feedback_type in {"correct", "false_positive"}
+        correction_kind = str(
+            staged.get("correction_kind")
+            or (staged.get("payload") or {}).get("correction_kind")
+            or ""
+        )
+        truth_feedback = feedback_type in DIRECT_TRUTH_FEEDBACK_TYPES
+        truth_boxes: List[Dict[str, Any]] = []
+        truth_scope: List[str] = []
+        gt_write = "not_applicable"
         if feedback_type == "correct":
             preview_boxes, _ = _online_feedback_prediction_boxes(project, evidence)
             if not preview_boxes:
@@ -14367,6 +14491,7 @@ def confirm_online_feedback(
             })
             if not preview_scope:
                 raise ValueError("项目没有可用于负样本确认的启用标签")
+            truth_scope = list(preview_scope)
 
         materials = material_store(project_id)
         material = materials.get_by_content_sha256(evidence["input_sha256"])
@@ -14401,6 +14526,7 @@ def confirm_online_feedback(
                     current_project = get_project(project_id)
                     annotations = AnnotationRepository(project_dir(project_id))
                     current = annotations.get(material_id)
+                    expected_version = int(current.get("version") or 0)
                     if feedback_type == "correct":
                         boxes, _ = _online_feedback_prediction_boxes(
                             current_project, evidence,
@@ -14409,14 +14535,17 @@ def confirm_online_feedback(
                             raise ValueError(
                                 "当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本"
                             )
+                        truth_boxes = boxes
                         current_state = str(
                             current.get("annotation_state") or "unannotated"
                         )
                         if current_state == "unannotated":
                             write_annotation(
                                 project_id, material_id, boxes, "annotated",
+                                expected_version=expected_version,
                             )
                             annotation_action = "prediction_confirmed_as_truth"
+                            gt_write = "written"
                         elif (
                             current_state == "annotated"
                             and _online_feedback_box_signature(
@@ -14428,6 +14557,7 @@ def confirm_online_feedback(
                             # committed immediately before feedback finalization
                             # failed. Matching truth is safe to acknowledge.
                             annotation_action = "prediction_matches_existing_truth"
+                            gt_write = "already_present"
                         else:
                             raise ValueError(
                                 "该素材已有不同的正式标注，线上抽检不能覆盖现有 Annotation truth"
@@ -14440,6 +14570,7 @@ def confirm_online_feedback(
                             raise ValueError(
                                 "项目没有可用于负样本确认的启用标签"
                             )
+                        truth_scope = list(active_codes)
                         state = str(
                             current.get("annotation_state") or "unannotated"
                         )
@@ -14454,7 +14585,11 @@ def confirm_online_feedback(
                                 [],
                                 "confirmed_empty",
                                 annotation_scope=active_codes,
+                                expected_version=expected_version,
                             )
+                            gt_write = "written"
+                        else:
+                            gt_write = "already_present"
                         annotation_action = "confirmed_empty"
 
                 if image_batch_open:
@@ -14469,6 +14604,25 @@ def confirm_online_feedback(
             raise
 
         confirmed_at = now_iso()
+        gt_receipt: Dict[str, Any] = {}
+        if truth_feedback:
+            # Read the persisted formal GT after batching/flush. The receipt is
+            # proof of stored truth, never of an in-memory intent.
+            truth = AnnotationRepository(project_dir(project_id)).get(material_id)
+            if not _online_feedback_truth_matches(
+                feedback_type, truth, truth_boxes, truth_scope,
+            ):
+                raise ValueError("正式标注在复核期间发生变化，本次反馈未确认；请刷新后重新复核")
+            gt_receipt = _online_feedback_gt_receipt(
+                feedback_id=feedback_id,
+                evidence=evidence,
+                material_id=material_id,
+                annotation=truth,
+                annotation_action=annotation_action,
+                gt_write=gt_write,
+                request_id=review_request_id,
+                confirmed_at=confirmed_at,
+            )
         latest_material = materials.get(material_id) or material
         refs = [
             dict(value) for value in list(latest_material.get("online_feedback_refs") or [])
@@ -14483,29 +14637,49 @@ def confirm_online_feedback(
             "model_sha256": evidence["model_sha256"],
             "input_sha256": evidence["input_sha256"],
             "feedback_type": staged["feedback_type"],
+            "correction_kind": correction_kind,
             "confirmed_at": confirmed_at,
         })
         patch = {
             "online_feedback_refs": refs,
-            "online_feedback_needs_review": staged["feedback_type"] == "needs_correction",
+            "online_feedback_needs_review": feedback_type == "needs_correction",
             "updated_at": confirmed_at,
         }
-        if staged["feedback_type"] in {"correct", "false_positive"}:
+        if truth_feedback:
             patch["processing_status"] = "processed"
-        elif staged["feedback_type"] == "needs_correction":
+        else:
             patch["processing_status"] = "pending_decision"
         materials.patch({material_id: patch})
 
+        result = {
+            "annotation_action": annotation_action,
+            "material_reused": reused,
+            "needs_manual_annotation": feedback_type == "needs_correction",
+            "candidate_only": feedback_type not in DIRECT_TRUTH_FEEDBACK_TYPES,
+            "dataset_id": dataset_id,
+            "feedback_type": feedback_type,
+            "correction_kind": correction_kind,
+            "gt_recorded": bool(gt_receipt),
+            "gt_written": bool(gt_receipt) and gt_receipt.get("gt_write") == "written",
+            "review": {
+                "schema_version": 1,
+                "channel": "online_feedback_confirm",
+                "actor_id": review_actor,
+                "request_id": review_request_id,
+                "feedback_type": feedback_type,
+                "correction_kind": correction_kind,
+                "dataset_id": dataset_id,
+                "confirm_all_labels_absent": bool(payload.confirm_all_labels_absent),
+                "confirmed_at": confirmed_at,
+            },
+        }
+        if gt_receipt:
+            result["gt_receipt"] = gt_receipt
         row, idempotent = repository.finalize(
             feedback_id,
             expected_feedback_type=payload.expected_feedback_type,
             material_id=material_id,
-            result={
-                "annotation_action": annotation_action,
-                "material_reused": reused,
-                "needs_manual_annotation": staged["feedback_type"] == "needs_correction",
-                "dataset_id": dataset_id,
-            },
+            result=result,
             confirmed_at=confirmed_at,
         )
     except (ValueError, KeyError) as error:
@@ -28440,6 +28614,7 @@ def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
     evidence = validate_prediction_evidence({
         "schema_version": 1,
         "prediction_id": prediction_id,
+        "project_id": project_id,
         "algorithm_id": algorithm_id,
         "version_id": version_id,
         "model_sha256": model_sha256,

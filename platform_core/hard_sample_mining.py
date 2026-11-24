@@ -280,7 +280,8 @@ def infer_with_frozen_yolo(request: dict[str, Any], image: Mapping[str, Any]) ->
 
 def reviewed_mining_feedback_evidence(*, task_id: str, request: Mapping[str, Any],
         candidate: Mapping[str, Any], material: Mapping[str, Any],
-        annotation: Mapping[str, Any], commit_summary: Mapping[str, Any]) -> dict[str, Any]:
+        annotation: Mapping[str, Any], commit_summary: Mapping[str, Any],
+        project_id: str = "") -> dict[str, Any]:
     """Project reviewed task/journal and current formal GT into feedback evidence.
 
     Callers must require a successful task and recheck frozen Test identities.
@@ -335,6 +336,7 @@ def reviewed_mining_feedback_evidence(*, task_id: str, request: Mapping[str, Any
     prediction_hash = hashlib.sha256(canonical(identity).encode()).hexdigest()
     evidence = validate_prediction_evidence({
         "schema_version":1, "prediction_id":"hmreview_" + prediction_hash[:55],
+        "project_id": str(project_id or ""),
         "algorithm_id":request.get("mining_algorithm_id"), "version_id":request.get("mining_version_id"),
         "model_sha256":model_sha, "input_sha256":input_sha,
         "width":material.get("width"), "height":material.get("height"),
