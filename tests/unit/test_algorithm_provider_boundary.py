@@ -1,0 +1,310 @@
+"""T8.1-T8.3 unit contracts that do not need a PostgreSQL server.
+
+Real PostgreSQL behaviour (schema, import, cutover, rollback) is covered by
+``tests/integration/test_algorithm_migration_postgres.py`` and is never claimed
+here.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from platform_core.algorithm_migration import (
+    AlgorithmMigrationError,
+    build_report,
+    content_digest,
+    normalized_tables,
+)
+from platform_core.algorithm_postgres_schema import MIGRATIONS, SCHEMA_VERSION, migration_checksum
+from platform_core.algorithm_postgres_store import (
+    PostgresAlgorithmRepository,
+    UNSUPPORTED_OPERATIONS,
+)
+from platform_core.algorithm_repository import (
+    CORE_OPERATIONS,
+    PRESENTATION_OPERATIONS,
+    AlgorithmAdmissionRequired,
+    AlgorithmProviderConfigError,
+    AlgorithmProviderUnsupported,
+    SqliteAlgorithmRepository,
+    admission_record_path,
+    open_algorithm_repository,
+    resolve_provider,
+)
+from platform_core.algorithm_shadow import _digest, _snapshot_body
+from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+BUSINESS_MODULES = (
+    "app.py",
+    "platform_core/algorithms.py",
+    "platform_core/external_algorithm_publish.py",
+    "platform_core/model_artifacts.py",
+    "platform_core/training_tasks.py",
+)
+
+
+def _rows():
+    return [
+        {
+            "id": "algo-1", "name": "Algo", "current_version_id": "v1",
+            "versions": [{"id": "v1", "version_name": "1", "created_at": "2026-01-01"}],
+            "external_analyses": [{"analysis_id": "a1", "analysis_name": "A"}],
+        },
+        {"id": "algo-2", "name": "Algo 2", "versions": [], "external_analyses": []},
+    ]
+
+
+def _store(tmp_path: Path) -> AlgorithmSqlStore:
+    store = AlgorithmSqlStore(tmp_path / "project" / "algorithms.json")
+    store.replace_all(_rows())
+    return store
+
+
+def _snapshot(store, db_path=None):
+    from platform_core.algorithm_migration import export_source_snapshot
+
+    return export_source_snapshot(db_path or store.db_path, store.project_id)
+
+
+def _admission(path: Path, *, project="project", provider="postgresql", revoked=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "contract_version": "algorithm-repository-v1",
+        "admission_id": "admit-test",
+        "project_id": project,
+        "authoritative_provider": provider,
+        "algorithm_revision": 1,
+        "snapshot_digest": "0" * 64,
+        "content_digest": "0" * 64,
+        "writer_generation": 1,
+        "admitted_at": "2026-11-24T00:00:00+00:00",
+        "revoked_at": revoked,
+        "operator": "ops",
+        "reason": "pilot",
+    }), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# provider boundary
+# ---------------------------------------------------------------------------
+def test_sqlite_is_the_default_provider_and_delegates_unchanged(tmp_path):
+    store = _store(tmp_path)
+    repository = open_algorithm_repository(store.json_path)
+    assert isinstance(repository, SqliteAlgorithmRepository)
+    assert repository.provider_name == "sqlite"
+    assert repository.unsupported_operations() == ()
+    assert set(CORE_OPERATIONS + PRESENTATION_OPERATIONS) <= repository.capabilities()
+    assert repository.read_all() == store.read_all()
+    assert repository.revision() == store.revision()
+    repository.create_algorithm({"id": "algo-3", "name": "Algo 3"})
+    assert store.read_one("algo-3")["name"] == "Algo 3"
+    # Presentation projections keep working through the pass-through adapter.
+    assert repository.bootstrap_summary()[2] == store.revision()
+
+
+def test_provider_resolution_is_explicit_and_unknown_values_fail(tmp_path):
+    assert resolve_provider(None, environ={}) == "sqlite"
+    assert resolve_provider(None, environ={"ALGORITHM_STORE_PROVIDER": "postgresql"}) == "postgresql"
+    assert resolve_provider("SQLITE", environ={}) == "sqlite"
+    with pytest.raises(AlgorithmProviderConfigError) as error:
+        resolve_provider("mysql", environ={})
+    assert error.value.code == "ALGORITHM_PROVIDER_UNKNOWN"
+
+
+def test_postgresql_selection_requires_dsn_and_admission(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(AlgorithmProviderConfigError) as dsn:
+        open_algorithm_repository(store.json_path, provider="postgresql", environ={})
+    assert dsn.value.code == "ALGORITHM_POSTGRES_DSN_MISSING"
+    with pytest.raises(AlgorithmAdmissionRequired) as admission:
+        open_algorithm_repository(
+            store.json_path, provider="postgresql",
+            dsn="postgresql://example.invalid/db", environ={},
+        )
+    assert admission.value.code == "ALGORITHM_POSTGRES_ADMISSION_REQUIRED"
+
+
+def test_stale_sqlite_after_cutover_is_refused_unless_explicitly_allowed(tmp_path):
+    store = _store(tmp_path)
+    path = admission_record_path(store.json_path)
+    _admission(path)
+    with pytest.raises(AlgorithmAdmissionRequired) as error:
+        open_algorithm_repository(store.json_path, provider="sqlite")
+    assert error.value.code == "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER"
+    allowed = open_algorithm_repository(
+        store.json_path, provider="sqlite", allow_stale_sqlite=True
+    )
+    assert allowed.read_all() == store.read_all()
+
+    _admission(path, revoked="2026-11-24T01:00:00+00:00")
+    assert open_algorithm_repository(store.json_path, provider="sqlite").provider_name == "sqlite"
+
+    _admission(path, provider="sqlite")
+    assert open_algorithm_repository(store.json_path, provider="sqlite").provider_name == "sqlite"
+
+
+def test_malformed_admission_record_is_refused(tmp_path):
+    store = _store(tmp_path)
+    path = admission_record_path(store.json_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"contract_version": "unknown"}), encoding="utf-8")
+    with pytest.raises(AlgorithmAdmissionRequired) as error:
+        open_algorithm_repository(store.json_path, provider="sqlite")
+    assert error.value.code == "ALGORITHM_ADMISSION_RECORD_INVALID"
+
+
+def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
+    repository = PostgresAlgorithmRepository("postgresql://example.invalid/db", "project")
+    assert set(repository.capabilities()) == set(CORE_OPERATIONS)
+    assert repository.unsupported_operations() == tuple(UNSUPPORTED_OPERATIONS)
+    assert set(UNSUPPORTED_OPERATIONS) == set(PRESENTATION_OPERATIONS)
+    for name in UNSUPPORTED_OPERATIONS:
+        with pytest.raises(AlgorithmProviderUnsupported) as error:
+            getattr(repository, name)()
+        assert error.value.code == "ALGORITHM_PROVIDER_OPERATION_UNSUPPORTED"
+    assert "example.invalid" not in repr(repository)
+
+
+def test_business_callers_embed_no_dialect_specific_sql(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    allowed = {
+        "platform_core/algorithm_sql_store.py",
+        "platform_core/algorithm_postgres_store.py",
+        "platform_core/algorithm_postgres_schema.py",
+        "platform_core/algorithm_migration.py",
+        "platform_core/algorithm_cutover.py",
+        "platform_core/algorithm_migration_cli.py",
+        "platform_core/algorithm_shadow.py",
+        "platform_core/algorithm_shadow_cli.py",
+    }
+    offenders = []
+    for relative in BUSINESS_MODULES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if re.search(r"\bimport\s+psycopg\b|\bfrom\s+psycopg\b", text):
+            offenders.append(f"{relative}: psycopg import")
+        if "w5_algorithm." in text or "w5_shadow." in text:
+            offenders.append(f"{relative}: PostgreSQL schema reference")
+        if "%s::jsonb" in text:
+            offenders.append(f"{relative}: PostgreSQL cast")
+    assert offenders == []
+    port_source = (root / "platform_core" / "algorithm_repository.py").read_text(encoding="utf-8")
+    for keyword in ("SELECT ", "INSERT ", "UPDATE ", "DELETE ", "CREATE TABLE"):
+        assert keyword not in port_source
+
+
+# ---------------------------------------------------------------------------
+# migration report semantics (pure, no server)
+# ---------------------------------------------------------------------------
+def test_normalized_content_digest_is_engine_independent(tmp_path):
+    store = _store(tmp_path)
+    snapshot = _snapshot(store)
+    normalized = normalized_tables(snapshot)
+    assert isinstance(normalized["algorithms"][0]["payload_json"], dict)
+    # PostgreSQL JSONB may reorder keys; the content digest must not care.
+    reordered = copy.deepcopy(snapshot)
+    for name in ("algorithms", "versions", "analyses"):
+        for row in reordered["tables"][name]:
+            payload = json.loads(row["payload_json"])
+            row["payload_json"] = json.dumps(dict(reversed(list(payload.items()))))
+    assert content_digest(reordered) == content_digest(snapshot)
+
+    # Boolean 0/1 and false normalize to the same value; NULL stays distinct.
+    from platform_core.algorithm_migration import normalize_row
+
+    assert normalize_row("algorithms", {"external_active": False})["external_active"] == 0
+    assert normalize_row("algorithms", {"external_active": True})["external_active"] == 1
+    assert normalize_row("algorithms", {"external_active": None})["external_active"] is None
+    assert normalize_row(
+        "algorithms", {"payload_json": '{"b": 1, "a": 2}'}
+    )["payload_json"] == {"b": 1, "a": 2}
+
+
+def test_report_accepts_identical_target_and_flags_each_regression(tmp_path):
+    store = _store(tmp_path)
+    source = _snapshot(store)
+    assert build_report(source, source)["verdict"] == "OK"
+
+    renamed = copy.deepcopy(source)
+    renamed["tables"]["algorithms"][0]["id"] = "generated-id"
+    renamed["snapshot_digest"] = _digest(_snapshot_body(
+        renamed["project_id"], renamed["algorithm_revision"], renamed["tables"]))
+    report = build_report(source, renamed)
+    assert report["verdict"] == "MISMATCH"
+    assert report["checks"]["primary_keys"]["ids_regenerated"] == 1
+
+    lost_empty = copy.deepcopy(source)
+    lost_empty["tables"]["algorithms"][0]["remark"] = None
+    lost_empty["snapshot_digest"] = _digest(_snapshot_body(
+        lost_empty["project_id"], lost_empty["algorithm_revision"], lost_empty["tables"]))
+    assert "null_vs_empty" in build_report(source, lost_empty)["blocking_findings"]
+
+    extra_project = copy.deepcopy(source)
+    extra_project["tables"]["algorithms"][0]["project_id"] = "other"
+    extra_project["snapshot_digest"] = _digest(_snapshot_body(
+        extra_project["project_id"], extra_project["algorithm_revision"],
+        extra_project["tables"]))
+    assert "project_isolation" in build_report(source, extra_project)["blocking_findings"]
+
+    older = copy.deepcopy(source)
+    older["algorithm_revision"] = max(0, source["algorithm_revision"] - 1)
+    older["snapshot_digest"] = _digest(_snapshot_body(
+        older["project_id"], older["algorithm_revision"], older["tables"]))
+    report = build_report(source, older)
+    assert report["checks"]["revision"]["relation"] == "target_behind"
+
+    missing = build_report(source, None)
+    assert missing["verdict"] == "TARGET_MISSING"
+    assert missing["target"] is None
+
+
+def test_report_flags_object_reference_types_and_unknown_fields(tmp_path):
+    store = _store(tmp_path)
+    source = _snapshot(store)
+    target = copy.deepcopy(source)
+    target["tables"]["versions"][0]["stored_path"] = {"bucket": "b"}
+    payload = json.loads(target["tables"]["versions"][0]["payload_json"])
+    payload["unknown_field"] = 1
+    target["tables"]["versions"][0]["payload_json"] = json.dumps(payload)
+    target["snapshot_digest"] = _digest(_snapshot_body(
+        target["project_id"], target["algorithm_revision"], target["tables"]))
+    report = build_report(source, target)
+    assert report["checks"]["object_references"]["non_string"]
+    assert report["checks"]["object_references"]["resolved"] is False
+    assert report["checks"]["json_fields"]["field_differences"]
+
+
+def test_credential_material_is_never_exported(tmp_path):
+    store = AlgorithmSqlStore(tmp_path / "secret" / "algorithms.json")
+    store.replace_all([{
+        "id": "algo-secret", "name": "Secret",
+        "versions": [{"id": "v1", "version_name": "1",
+                      "deploy": {"api_key": "sk-live-plaintext"}}],
+    }])
+    from platform_core.algorithm_migration import export_source_snapshot
+
+    with pytest.raises(AlgorithmMigrationError) as error:
+        export_source_snapshot(store.db_path, "secret")
+    assert error.value.code == "ALGORITHM_MIGRATION_SECRET_MATERIAL"
+
+    # A reference is not a credential and stays a string.
+    store.patch_version("algo-secret", "v1", {"deploy": {"api_key": "secret://deploy/key"}},
+                        now="2026-01-02")
+    snapshot = export_source_snapshot(store.db_path, "secret")
+    assert snapshot["counts"]["versions"] == 1
+
+
+def test_schema_migrations_are_monotonic_and_checksummed():
+    versions = [version for version, _name, _statements in MIGRATIONS]
+    assert versions == sorted(versions)
+    assert versions[-1] == SCHEMA_VERSION
+    assert migration_checksum(1) == migration_checksum(1)
+    assert len(migration_checksum(1)) == 64
+    first = migration_checksum(1)
+    assert re.fullmatch(r"[0-9a-f]{64}", first)
