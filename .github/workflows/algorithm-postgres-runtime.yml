@@ -84,6 +84,7 @@ jobs:
           assert version.startswith("PostgreSQL 16"), version
           PY
       - name: Algorithm PostgreSQL integration contracts
+        if: always()
         # --confcutdir keeps the repository-wide conftest (PIL + FastAPI +
         # app.py) out of this focused environment: these contracts own their
         # fixtures and must not need the whole training stack.
@@ -94,6 +95,7 @@ jobs:
             tests/integration/test_algorithm_shadow_postgres.py \
             tests/integration/test_algorithm_migration_postgres.py
       - name: Algorithm provider boundary contracts
+        if: always()
         run: |
           python -m pytest -q -p no:cacheprovider -rs \
             --confcutdir=tests/unit \

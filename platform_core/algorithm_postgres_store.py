@@ -1416,7 +1416,11 @@ class PostgresAlgorithmRepository:
             "total": len(incoming),
         }
 
-    # -- presentation projections are intentionally not ported -------------
+    # -- presentation projections that are still not ported -----------------
+    # bootstrap_summary and training_display_refs are implemented above; only
+    # the ones listed here remain a declared capability gap. Keep this block
+    # free of those two names: a later placeholder silently overrides the real
+    # implementation.
     def library_algorithms(self, **_kwargs):
         self._check_operation("library_algorithms")
 
@@ -1431,12 +1435,6 @@ class PostgresAlgorithmRepository:
 
     def asset_version(self, *_args, **_kwargs):
         self._check_operation("asset_version")
-
-    def bootstrap_summary(self, *_args, **_kwargs):
-        self._check_operation("bootstrap_summary")
-
-    def training_display_refs(self, *_args, **_kwargs):
-        self._check_operation("training_display_refs")
 
 
 def _summary_version_row(row: dict[str, Any]) -> dict[str, Any]:

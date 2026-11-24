@@ -279,12 +279,33 @@ def test_report_proves_ids_counts_associations_json_null_and_digest(pg):
     assert "null_vs_empty" in bad["blocking_findings"]
 
 
+def _admitted_repository(server, store, project_id: str):
+    """Open the PostgreSQL provider through the real admission contract.
+
+    PostgreSQL writes require an admission; a test may not bypass it, so the
+    parity test performs the same isolated cutover admission production uses and
+    then opens the repository with that record.
+    """
+    snapshot = export_source_snapshot(store.db_path, project_id)
+    _import(server, snapshot)
+    with _connect(server) as connection:
+        admitted = admit_cutover(
+            connection, db_path=store.db_path, project_id=project_id,
+            expected_generation=0, operator="parity-test", reason="isolated parity",
+            acknowledge_unported=True,
+        )
+    assert admitted["admitted"] is True, admitted
+    return PostgresAlgorithmRepository(
+        server.get_uri(), project_id, admission=admitted["admission"],
+    )
+
+
 def test_read_and_write_parity_with_sqlite_store(pg):
     _initialized(pg)
     root = pathlib.Path(tempfile.mkdtemp(prefix="t8par-"))
     store = AlgorithmSqlStore(root / "parity" / "algorithms.json")
     store.ensure_ready()
-    repo = PostgresAlgorithmRepository(pg.get_uri(), "parity")
+    repo = _admitted_repository(pg, store, "parity")
     assert store.read_all() == [] and repo.read_all() == []
 
     store.create_algorithm({"id": "x1", "name": "X1", "algorithm_type": "yolo_ultralytics"})
