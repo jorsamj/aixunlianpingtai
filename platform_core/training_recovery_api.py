@@ -630,6 +630,31 @@ def training_recovery_router(
         get_project(project_id)
         return {"ok": True, **workspace_service(project_id).history_page(project_id, after=after, limit=limit)}
 
+    @recovery_router.get("/storage-diagnostics")
+    def storage_diagnostics(
+        project_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        cache_preview: bool = True,
+    ):
+        """Read-only storage view: no deletion, no automatic GC."""
+        get_project(project_id)
+        if project_path_provider is None:
+            raise HTTPException(status_code=503, detail="训练临时空间服务不可用")
+        from .training_storage_diagnostics import training_storage_diagnostics
+
+        data_dir = Path(project_path_provider(project_id)).parent.parent
+        return {
+            "ok": True,
+            **training_storage_diagnostics(
+                data_dir,
+                project_id,
+                task_repository(),
+                task_artifacts(),
+                limit=limit,
+                include_cache_preview=bool(cache_preview),
+            ),
+        }
+
     @recovery_router.get("/{task_id}/workspace")
     def workspace_preview(project_id: str, task_id: str):
         require_task(project_id, task_id)
