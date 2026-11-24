@@ -1187,3 +1187,143 @@ def test_execution_status_projects_original_execution_slots(tmp_path):
     assert status["proof_type"] is None
     assert status["proof_sha256"] is None
 
+
+
+def _gpu_task_payload(artifacts, task_id, gpu_uuid):
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "target": "remote", "epochs": 30,
+        "remote_execution": {
+            "version": 1, "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+        "resource_requirements": {
+            "gpu_count": 1, "gpu_uuids": [gpu_uuid], "min_gpu_memory_bytes": 1,
+        },
+    })
+
+
+def test_released_dual_slot_gpu_is_reusable_and_busy_before_release(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    _nodes, token = _dual_slot_node(repository)
+    for task_id in ("gpu-first", "gpu-second"):
+        create_task(repository, artifacts, task_id)
+        _gpu_task_payload(artifacts, task_id, "GPU-A")
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    first_assignment = service.allocator.assign_next()
+    assert first_assignment is not None and first_assignment["task_id"] == "gpu-first"
+    claimed = service.claim_assignment("dual-agent", token)
+    assert claimed is not None
+    started = start(service, "gpu-first", "dual-agent", token, claimed)
+    first_generation = int(started["execution"]["generation"])
+    assignment_generation = int(claimed["assignment"]["generation"])
+    held = service.execution_status("dual-agent", token, "gpu-first")
+    assert held["hold_state"] == "HELD"
+    assert held["hold_gpu_uuid"] == "GPU-A"
+    # While GPU-A is held, a second task that requires the same GPU must not be
+    # admitted (dual capacity alone is not permission to reuse a held GPU).
+    assert service.allocator.assign_next() is None
+
+    identity = {
+        "pid": 4321, "create_time": 12345.5, "command_hash": "a" * 64,
+    }
+    service.record_start_identity(
+        "dual-agent", token, "gpu-first",
+        started["execution"]["lease_token"], first_generation,
+        process_identity=identity,
+    )
+    service.record_stop_proof(
+        "dual-agent", token, "gpu-first",
+        started["execution"]["lease_token"], first_generation,
+        assignment_generation=assignment_generation, gpu_uuid="GPU-A",
+        process_identity=identity, stop_verified=True,
+    )
+    service.finish_execution(
+        "dual-agent", token, "gpu-first",
+        started["execution"]["lease_token"], first_generation,
+        status="FAILED", error="synthetic verified stop",
+    )
+    released = service.execution_status("dual-agent", token, "gpu-first")
+    assert released["hold_state"] == "RELEASED"
+
+    # Only after the verified stop proof may the same physical GPU be reserved
+    # again, and the new execution must carry the same GPU identity.
+    second_assignment = service.allocator.assign_next()
+    assert second_assignment is not None and second_assignment["task_id"] == "gpu-second"
+    second_claimed = service.claim_assignment("dual-agent", token)
+    assert second_claimed is not None
+    second_started = start(service, "gpu-second", "dual-agent", token, second_claimed)
+    assert int(second_started["execution"]["generation"]) >= 1
+    second_status = service.execution_status("dual-agent", token, "gpu-second")
+    assert second_status["hold_state"] == "HELD"
+    assert second_status["hold_gpu_uuid"] == "GPU-A"
+    assert second_status["node_id"] == "dual-agent"
+
+
+def test_two_clients_of_the_same_node_cannot_exceed_authorized_slots(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    _nodes, token = _dual_slot_node(repository)
+    for task_id, gpu in (
+        ("same-node-a", "GPU-A"), ("same-node-b", "GPU-B"),
+        ("same-node-c", "GPU-A"),
+    ):
+        create_task(repository, artifacts, task_id)
+        _gpu_task_payload(artifacts, task_id, gpu)
+    # Two independent Agent processes (different state directories) share the
+    # same node_id/token. Central capacity must bound them as one node.
+    client_a = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    client_b = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    first_assignment = client_a.allocator.assign_next()
+    second_assignment = client_b.allocator.assign_next()
+    assert first_assignment is not None and second_assignment is not None
+    first_claim = client_a.claim_assignment("dual-agent", token)
+    second_claim = client_b.claim_assignment("dual-agent", token)
+    assert first_claim is not None and second_claim is not None
+    started_a = start(client_a, first_claim["task"]["task_id"], "dual-agent", token, first_claim)
+    started_b = start(client_b, second_claim["task"]["task_id"], "dual-agent", token, second_claim)
+    assert started_a["task"]["status"] == "RUNNING"
+    assert started_b["task"]["status"] == "RUNNING"
+
+    # The two independent Agent instances are bounded as one node: no third
+    # assignment is handed out while both authorized slots are RUNNING.
+    third_assignment = client_b.allocator.assign_next()
+    assert third_assignment is None
+    assert client_a.claim_assignment("dual-agent", token) is None
+    assert repository.get("same-node-c").status is TaskStatus.QUEUED
+
+
+def test_stale_agent_generation_cannot_mutate_a_newer_execution_identity(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    _nodes, token = _dual_slot_node(repository)
+    create_task(repository, artifacts, "generation-guard")
+    _gpu_task_payload(artifacts, "generation-guard", "GPU-A")
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    claimed = service.claim_assignment("dual-agent", token)
+    assert claimed is not None
+    started = start(service, "generation-guard", "dual-agent", token, claimed)
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET attempt=attempt+1 WHERE task_id='generation-guard'",
+        )
+        database.commit()
+    with pytest.raises(AgentExecutionError) as error:
+        service.finish_execution(
+            "dual-agent", token, "generation-guard",
+            started["execution"]["lease_token"], started["execution"]["generation"],
+            status="FAILED", error="stale generation",
+        )
+    assert error.value.code in {"EXECUTION_FENCED", "EXECUTION_NOT_OWNED"}
+    stale = service.execution_status("dual-agent", token, "generation-guard")
+    assert stale["execution_attempt"] >= 2
+    assert stale["hold_state"] == "HELD"
