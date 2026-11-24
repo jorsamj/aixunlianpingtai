@@ -270,3 +270,28 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
    发布幂等/回滚 Dry-Run。
 5. M17：离线安装（当前 OFFLINE_INSTALL_NOT_VERIFIED）、单槽真实业务候选现场 UAT、
    候选证据文档更新为最终不可歧义 SHA。
+
+### 9.11 第三轮（N0–N7）交付摘要（2026-11-24 傍晚）
+
+代码候选 SHA：`bee265a488983d4dc206d0f901d6f169af9e9f15`（已推送；候选文档 §1 已回填）。
+该 SHA 的 CI 单次查询时为 `CI_PENDING`（24 workflows 已触发、0 completed），未完成前保持
+`CANDIDATE_CI_PENDING`，不得称验收通过。
+
+| 提交 | 内容 | 状态/证据 |
+|---|---|---|
+| N0 `66ec7d70` | 定时缓存清理默认关闭；实际删除需 `TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE` 显式 opt-in；扫描中按项目重读保护（新任务/Hold 出现即中止删除）；dry-run 默认；未释放 Hold 保护 | 定向测试通过；默认不扫描不删除 |
+| N1 `f119e628` / `fcbe3af3` | Windows CI 真实根因与稳定化：真实 Agent 以退出码 2 结束的 token 前置 `-` 问题（前轮已修）；新增有界 worker 存活失败现场证据；修复双槽 fencing 测试在中央 start-identity 注册完成前过期 lease 的真实竞态 | 本地 10 次无法复现原 flake；fencing 前置条件修复；CI 待准确 SHA 结果 |
+| N2 `bee265a4` | W14 真实 200k 规模基线（200,000 素材/110 算法/1,100 版本/1,160 任务/20k 选中/20k AI 候选）+ 原始 JSON；唯一生产优化：过滤冻结分页 1,000→5,000（含历史冻结 −53.9%、排除历史 −44.1%，SQL 241→81/281→89）；性能测试保持 `RUN_SCALE_PERF=1` opt-in | 报告 `docs/performance/2026-11-24-scale-200k-baseline.md`；P95 与瓶颈证据在 JSON |
+| N3 | W13 第二批：ZIP 导入单一网络/状态 Owner（去双轮询、卸载销毁、保留 Uppy 续传）；AI 任务取消/合法重试/审核恢复/失败素材定位（复用 v60 既有 API）；训练暂停/继续/插队/删除资格与日志统一走 `app/http.ts`；旧入口与产品菜单/布局不变 | vue-tsc 0、app build 成功、Node 契约 1845 通过、Playwright 26 通过（含新增 8） |
+| N4 | W10 反馈闭环：反馈证据保留原预测不可变 + `correction_kind`（漏检/类别/定位/部分修正）非破坏性增量迁移；`needs_correction` 永不直接写 GT；confirm 复用登录身份 + GT CAS + `request_id` 幂等回执；GT 写入后响应丢失安全恢复；部分修正保留其他框；反馈→候选→审核→GT→候选集→训练冻结 `supplement_provenance` 真实 E2E | 新增 `test_online_feedback_training_chain.py`；review/negative/prepare 回归通过 |
+| N5 | W9 收口：真实 FP32/FP16/opset11/opset12/simplify/动态冻结矩阵（FP16 真实导出+ORT，历史 Cast→Conv 拓扑故障真实复现并证明 sorter 正确）；`assert_delivery_quality_eligibility` 只信真实证据不信 `numeric_status`；job.json 写入统一锁；交付预检区分归档/附件交付/正式激活/硬件验收；发布/回滚 Dry-Run 只读 | 真实矩阵 8 passed；核心单测 190/121 通过；硬件一律 NOT_VERIFIED |
+| N6 | W15/W16：备份绑定前端构建身份与 Python 依赖指纹；systemd 配置差异只读记录；停服后活动二次复核（Hold/心跳/worker marker，不自动 force）；detached HEAD 升级拒绝并给出分支恢复命令；部分恢复/回滚后再次升级语义；`write_silence=unverified` 保持；离线交付事实清单与阻断（无 wheelhouse/主 unit 安装脚本，`OFFLINE_INSTALL_NOT_VERIFIED`） | 42 passed/1 skipped + N6.1 10 passed；候选文档重写并回填 SHA |
+| N7 | 已证明：GPU-A 仅在 Stop Proof/Hold RELEASED 后可被下一任务复用（未释放前不可准入）；同 node_id 两独立 Agent 实例合计不得超过授权槽；stale generation 不能改写新执行身份 | 新增 3 项 central 合同测试 |
+
+本轮仍未完成：
+1. N1/全部工作包的准确 SHA GitHub CI 验收（当前 CI_PENDING）。
+2. N7 剩余：五类 HTTP 响应丢失的正式 Agent 全链路、双槽同时崩溃分别恢复、运维只读诊断面。
+3. N2 后续瓶颈（转换历史冷扫描 ~5s、AI 候选兼容接口全量 ~7.7MB、空交集筛选 ~0.6s、并发素材查询 P95 ~0.57s、冷统计/大摘要）。
+4. N5 的 HTTP 只读 dry-run/预检端点接线（本轮只完成后端只读函数）。
+5. N3 剩余：外部发布/平台配置只读原生页、转换创建/日志/质量中心原生详情（转换创建与真实发布仍禁止执行）。
+6. M12/W14 其他规模化整改与 M8/W13-14 剩余迁移。
