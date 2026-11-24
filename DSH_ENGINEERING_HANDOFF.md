@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`057b1a6e73242e8cc7dc80030292e706fb4b8673`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`057b1a6e73242e8cc7dc80030292e706fb4b8673`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -394,7 +394,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.16 第六轮（P0 安全收口 + T7）交付摘要（2026-11-24 21:xx +08）
 
-起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`057b1a6e73242e8cc7dc80030292e706fb4b8673`**。
+起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**。
 纪律：单主 Agent + 至多 1 个活跃子 Agent（仅 T7 迁移使用），本地仅 `py_compile`/`import app`/
 定向用例/守卫 grep，无重型测试。
 
@@ -405,7 +405,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.17 第七轮（真实 PG CI + 算法访问收口）交付摘要（2026-11-24 22:xx +08）
 
-起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`057b1a6e73242e8cc7dc80030292e706fb4b8673`**。
+起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**。
 本轮按序推进第 1 项（真实 PG CI）与第 3 项（T8 业务接线）的可独立部分；本地仅
 `py_compile` / `import app` / pytest `--collect-only` / 守卫 grep，未执行任何 PG、集成或重型测试。
 
@@ -415,7 +415,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.18 第八轮（单一算法事实源 + PG CI 修复）交付摘要（2026-11-24 23:xx +08）
 
-起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`057b1a6e73242e8cc7dc80030292e706fb4b8673`**。
+起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**。
 
 | 提交 | 内容 |
 |---|---|
@@ -452,7 +452,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.19 第九轮（PG 投影去遮蔽 + 准入合同）— 2026-11-24 23:xx +08
 
-代码候选：`057b1a6e73242e8cc7dc80030292e706fb4b8673`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
+代码候选：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
 被类尾同名占位方法**覆盖**（能力断言与实际不符），已删除占位；`algorithm_migration_cli.py` 调用
 `cutover_transition` 未导入（cutover-admit 必 NameError），已补 import 并复核调用链。CI 合同：
 parity 测试改为先按真实生产流程做隔离 admission 再打开 Provider（不取消写入准入、不加绕过开关）；
@@ -466,7 +466,7 @@ parity 测试改为先按真实生产流程做隔离 admission 再打开 Provide
 分页/筛选/排序/`filter_options` 与 revision 同快照。PG 正式切换保持关闭。
 ### 9.20 第九轮补记（PG 展示查询 6/7）
 
-代码候选：`057b1a6e73242e8cc7dc80030292e706fb4b8673`。本轮在 9.19 之后补齐四个 `asset_*` 展示查询的真实 PG 实现
+代码候选：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`。本轮在 9.19 之后补齐四个 `asset_*` 展示查询的真实 PG 实现
 （`asset_algorithm_basic`/`asset_versions`/`asset_version`/`asset_algorithms`），复用
 `model_asset_views.version_record` 纯投影与 `_version_columns_sql` 的 JSONB 列合同；
 联表统一 `(project_id, algorithm_id)`，分页/筛选/排序/`filter_options`/revision 同快照。
@@ -479,3 +479,19 @@ parity 测试改为先按真实生产流程做隔离 admission 再打开 Provide
 `jsonb_to_recordset`，以及 `ready` CASE 中的 `algorithm_external_analyses` 存在性与 master digest
 比较。需要先定义 Provider 中立的“mAP50 归一化 + 排序”合同（或把该规则实现为 PG 函数）后再移植；
 PG 正式切换继续关闭。
+### 9.21 第十轮（PG 七个展示方法收口 + 训练报告接 Provider）
+
+代码候选：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`。七个 `PRESENTATION_OPERATIONS` **全部具备真实 PG 实现**（能力缺口为空，
+`capabilities()` = CORE ∪ 七个），并修复审计指出的六项缺陷：`admission_switch_lock` 未导入、
+`capabilities()` 与实际不符、`self._json_object` 未定义、`#>>` 破坏数值类型、
+`training_display_refs` 把计数转成字符串、多语句读取无一致性快照。
+`library_algorithms` 按 SQLite 合同完整移植（`jsonb_to_recordset` 统计、LATERAL + 有序 VALUES
+取 mAP50 首个数值候选、`jsonb_typeof` 过滤非法类型、>1 保留否则 ×100、`DESC NULLS LAST` 与
+SQLite NULL 顺序一致、品目祖先展开、filter_options/categories/revision 同快照）。
+`training_report_api.py` 移除两处直接构造，改为注入 `algorithm_repository` 并使用
+Provider 中立的 `is_initialized()`。新增真实行为测试
+`test_all_seven_presentations_answer_real_business_queries`（真实 PG16，覆盖七方法、分页、筛选、
+排序、项目隔离、mAP50 优先级、失效 admission 拒写）。
+
+仍未完成/保留：维护窗口与 rollback 状态机、其他数据库域、FastAPI 剩余域、停止证明恢复、
+资源 requeue、离线交付；PG 正式切换保持关闭。
