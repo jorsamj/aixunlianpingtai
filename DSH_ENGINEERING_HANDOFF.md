@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`a4aeb89ba5c15e69b7b3a0789f6bac8579fdc798`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`fca1e1acb119062ad016b465c71410b994f61eb1`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -354,10 +354,10 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 | `f0cfd313` | **T8**：算法域 Provider 端口（SQLite 直通默认 + PostgreSQL 实现）、`w5_algorithm` 关系型 schema（版本/校验和/禁止降级/启动不迁移）、单域迁移工具（导出/导入/报告/幂等/断点续跑/dry-run/主键集合/外键/revision/JSON/NULL 语义/摘要；保留原 ID；不读 SecretStore）、切换准入与回滚阻断 | 真实 PostgreSQL 16.2：29 passed（provider 契约、迁移/对账/并发单写者/回滚阻断、SQLite↔PG 18 操作一致） |
 | `9693e3ea` | **CI 守卫过期**：`training-task-visibility.yml` 仍断言 `?v=4226386-timing`，实际 `static/main.mjs` 为 `-eta-stale` → 153 测试全绿但 job `exit 1` | 令牌同步，意图不变 |
 | `0ef0baca` | **T7**：在线反馈与 deploy artifact 查询迁出 `app.py`（`online_feedback_service.py`/`online_feedback_api.py`/`deployment/artifacts_api.py`），`OnlineFeedbackRepository` 仍是唯一持久化 Owner，`app.py` 保留装配/顺序/薄绑定；外部发布确认“已迁移，无需改动” | 有效路由表 535 项与 OpenAPI 473 paths/527 operations **逐项一致**（含 operationId/状态码/请求体 $ref/安全/标签）；`import app` OK；反馈 API 7 + artifact 可见性 5 passed |
-| `a4aeb89b` | **T2-A/B**：原生外部发布（按版本只读详情：发布记录/同步状态/失败原因/产物映射/三个独立质量事实）与平台对接（读 v63 配置 + v64 映射，复用既有 v63 保存契约；只显示掩码状态，密钥只写、保存后清空） | `vue-tsc` 0 error；`build:app` 成功；未调用任何真实发布/同步/连接测试 |
+| `fca1e1ac` | **T2-A/B**：原生外部发布（按版本只读详情：发布记录/同步状态/失败原因/产物映射/三个独立质量事实）与平台对接（读 v63 配置 + v64 映射，复用既有 v63 保存契约；只显示掩码状态，密钥只写、保存后清空） | `vue-tsc` 0 error；`build:app` 成功；未调用任何真实发布/同步/连接测试 |
 
 本轮仍未完成 / 待判定：
-1. **准确 SHA 的 CI 最终证据**（单次查询时仍有工作流未完成）：代码候选 `a4aeb89b` 的
+1. **准确 SHA 的 CI 最终证据**（单次查询时仍有工作流未完成）：代码候选 `fca1e1ac` 的
    Actions 结果决定 `CANDIDATE_CI_PENDING` 能否转 ACCEPTED。
 2. **双槽 Windows 崩溃恢复**仍偶发（`dual-crash-task-a` Worker 启动后消失）。本轮补上了
    “谁、因为什么停止”的证据链（`execution-error.json`），下一次 CI 将直接给出结论；

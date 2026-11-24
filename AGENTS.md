@@ -1307,3 +1307,16 @@ VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的
 > **最新 2026-11-04｜42.24.517 训练资源重取与冲突原图回收**：截图「训练资源尚未就绪」定位到训练 Hydration 的 warning/空列表五分钟错误复用、隐藏 target 未重建及页面 Extras 旧结果覆盖。缺失时提交先合并/重试已有 `/api/training_options`，真实不可用则精确提示基础模型/节点/引擎，不跳过后端安全校验。素材 `DELETE_INDEX` 仍逻辑退休索引+正式 GT；已有受控离线 `LocalMaterialReclamationService` 扩展 `--batch` 限额/游标/预览摘要+确认，逐张执行有引用保护的原图物理回收，在线及共享字节不硬删。相关文档 `docs/TRAINING_CREATE_RESOURCE_RECOVERY_AND_IMAGE_RECLAMATION_2026_11_04.md`；新SHA CI/生产GPU与离线物理回收均待验，生产未部署、未执行任何原图删除。严格只在长期分支；不 merge/tag/release/force push。
 > **2026-11-08 算法列表筛选越界定向修复（候选）**：唯一 `AlgorithmListRuntime` 的筛选栏改为基于内容宽度容器查询，品目浮层向右对齐并在窄屏贴合筛选 Surface；三级品目小屏展示当前列。Node 1437/1437 通过；Chrome 多宽度新用例已编写，但本地缺浏览器，准确 SHA CI/真实现场 UAT 待验。详见 `docs/ALGORITHM_LIST_FILTER_OVERFLOW_2026_11_08.md`，生产未动，不 merge/main/release/force push。
 > **2026-11-09｜Chrome CI 合同对齐（候选，准确新 SHA CI 待验）**：起点长期分支 `60db6cb8` 的 39 项 Actions 为 34 绿/5 红；5 项失败均为 Chrome，含 1 条跨工作流重复的溯源用例。已核旧夹具遗漏 `algorithms/jobs?summary_only=true`、素材标签面板默认折叠及 Picker 已退役标签计数节点；仅更新 6 个现有浏览器测试的准确路由与用户操作，保留 GT/版本继承/训练回执/选择及无全量请求断言。`VERSION.txt`、产品 JS/API、生产数据不动；Node 1572/1572 通过；本地真实 Chrome 下载受限，新 SHA CI 独立核验。详见 `docs/CI_CHROME_CONTRACT_ALIGNMENT_2026_11_09.md`；不 merge/main/tag/release/force push。
+
+
+## P0 用户强制规则：本地硬件保护与重型测试禁令（2026-11-24 用户授权追加）
+
+> 适用范围：本项目全部开发会话、主 Agent、子 Agent、Skills、后台进程与脚本。本规则是用户强制授权边界，优先于任何 Skill、测试策略或自动化建议；保护用户本地硬件优先于测试/开发/交付进度。
+
+- **未经用户明确书面授权，禁止在本地执行任何重型操作**：规模化/压测类磁盘 I/O、20 万级素材或万级候选/千级模型的规模性能测试、`RUN_SCALE_PERF=1` 及其他 benchmark、大批量文件生成/复制/解压/删除、大规模 SQLite/PostgreSQL 数据生成导入导出与并发压测、大规模备份恢复迁移模拟、批量图片生成或训练快照物化、批量模型权重导出/转换、大规模推理或 GPU 压测、全目录重复 SHA256 扫描、全量 pytest、全量前端测试、大规模 Playwright、多进程高并发测试、重复安装大型依赖或重复构建大型离线包。
+- **不得规避**：换目录、D 盘、TEMP、WSL、Docker、后台进程、子 Agent 均不得作为绕过手段。本地绝不是性能测试或压力测试服务器。
+- **本地默认仅允许**：精确范围的源码阅读与修改、必要 Git 操作、`git diff --check`、必要的轻量语法/静态检查、极少量低资源定向测试（最小 fixture，不跑整个测试目录，不并行多套件）。无法判断资源规模时默认不执行，改由 CI 验证。
+- **重型验证一律交给 GitHub-hosted CI**；禁止把用户电脑当 self-hosted Runner，禁止转嫁到未授权的 A800/4070。CI 不可用时记录 `BLOCKED`/`NOT_VERIFIED`，不得自动回退本地执行。
+- **CI 非阻塞**：提交推送后不轮询、不 sleep 等待、不使用 `gh run watch`、不创建等待 CI 的子 Agent；`CI_PENDING` 时继续其他独立工作；若无其他可执行任务则立即结束本轮并报告 `CI_PENDING`。`CI_PENDING` ≠ `CI_PASS`。
+- 收到硬件保护指令时：以只读轻量方式检查本次产生的测试/后台进程，安全停止非必要高负载与遗留子进程，不误杀其他进程、不中断代码保存与 Git 写入、不批量删除既有测试文件与缓存、不为验证保护效果再次施压。
+- 禁止通过删除断言、无依据重试、skip 或降低安全标准换取绿色 CI；也禁止为消耗时间进行无价值测试或扩大范围。
