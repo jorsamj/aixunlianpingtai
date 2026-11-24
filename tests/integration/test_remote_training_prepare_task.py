@@ -1306,6 +1306,11 @@ def test_fixed_zip_references_prepare_and_materialize_exact_three_roles(tmp_path
     gt = AnnotationRepository(project)
     gt.upsert('image-1', [], annotation_state='confirmed_empty', annotation_scope=['fire'])
     gt.upsert('image-4', [], annotation_state='unannotated', annotation_scope=[])
+    # M13-A: an explicit formal negative must prove target-algorithm ownership.
+    # The fixed ZIP flow keeps its original roles; only the existing algorithm-tier
+    # negative-pool association is added as the owned attribution evidence.
+    from platform_core.negative_pool import NegativePool
+    NegativePool(store).members(['image-1'], algorithm_id='algorithm-fire')
     before_gt = gt.get_many([f'image-{i}' for i in range(5)])
     roles = ('train', 'train', 'val', 'test', 'unassigned')
     for index, role in enumerate(roles):

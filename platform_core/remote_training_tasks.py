@@ -99,6 +99,24 @@ def _freeze_training_inputs(project, split, **kwargs):
         ) from error
 
 
+def _admission_checked_label_contract(*args, **kwargs):
+    """Resolve the label contract and keep typed admission refusals coded.
+
+    ``resolve_training_label_contract`` is the earliest real gate for a
+    first-training pure-negative request. A typed ``TrainingAdmissionError``
+    raised there must reach the prepare failure evidence as its own code instead
+    of being flattened into the generic preparation failure.
+    """
+    try:
+        return resolve_training_label_contract(*args, **kwargs)
+    except TrainingAdmissionError as error:
+        raise RemoteTrainingPreparationError(
+            error.code,
+            str(error),
+            target_status=TaskStatus.FAILED,
+        ) from error
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -696,7 +714,7 @@ class TrainingPrepareHandler:
             if not compatibility.issues:
                 # Project only target roles here; the final label_contract
                 # below is the single authoritative checkpoint hash freeze.
-                intent_contract = resolve_training_label_contract(
+                intent_contract = _admission_checked_label_contract(
                     self.data_dir, project, payload, algorithm,
                     require_positive_evidence=False, include_base_weight_digest=False,
                 )
@@ -718,7 +736,7 @@ class TrainingPrepareHandler:
                     if confirmed_count:
                         # The authoritative resolver reads the newly persisted
                         # task receipts; no in-memory synthetic GT is accepted.
-                        intent_contract = resolve_training_label_contract(
+                        intent_contract = _admission_checked_label_contract(
                             self.data_dir, project, payload, algorithm,
                             require_positive_evidence=False, include_base_weight_digest=False,
                         )
@@ -731,7 +749,7 @@ class TrainingPrepareHandler:
                     test_image_ids=list(effective_split.test_image_ids),
                     selected_image_ids=list(effective_split.train_image_ids),
                 )
-                label_contract = resolve_training_label_contract(
+                label_contract = _admission_checked_label_contract(
                     self.data_dir, project, label_request, algorithm,
                 )
                 # Creation fences the algorithm current version; the freeze must

@@ -63,6 +63,10 @@ TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"
 TRAINING_PROJECTION_POLICY_V3 = "reviewed_negative_original_v3_preserve_selected"
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
+TRAINING_CANCEL_VERIFICATION_GRACE_ENV = "TRAINING_CANCEL_VERIFICATION_GRACE_SECONDS"
+DEFAULT_TRAINING_CANCEL_VERIFICATION_GRACE_SECONDS = 60.0
+CANCEL_STAGE_VERIFYING = "cancelling"
+CANCEL_STAGE_UNVERIFIED = "cancelling_unverified"
 TRAINING_PROJECTION_POLICY_V4 = "target_confirmation_original_v4"
 
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
@@ -1034,6 +1038,56 @@ def _json(path: Path, default: Any) -> Any:
         return default
 
 
+def training_cancel_verification_grace_seconds() -> float:
+    """How long cancellation may wait for verified process cleanup before
+    surfacing an explicit unverified state (GPU stays reserved either way)."""
+    raw = str(os.environ.get(TRAINING_CANCEL_VERIFICATION_GRACE_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_TRAINING_CANCEL_VERIFICATION_GRACE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_TRAINING_CANCEL_VERIFICATION_GRACE_SECONDS
+    return value if value > 0 else DEFAULT_TRAINING_CANCEL_VERIFICATION_GRACE_SECONDS
+
+
+def _record_cancel_wait_diagnostic(
+    context,
+    job_file: Path,
+    *,
+    stage: str,
+    attempts: int,
+    elapsed_seconds: float,
+    last_error: str,
+) -> None:
+    """Persist bounded cancellation diagnostics; never publish a terminal state.
+
+    The job is still owned by the running Worker, so this only records why the
+    cancellation cannot be certified yet. Task status, lease and GPU stay
+    untouched until a verified stop proof is available.
+    """
+    job = _json(job_file, {})
+    if (
+        not isinstance(job, dict)
+        or str(job.get("task_id") or job.get("id") or "") != str(context.task.task_id)
+    ):
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    job.update(
+        cancel_requested_at=str(job.get("cancel_requested_at") or now_iso),
+        cancel_stop_state=(
+            "unverified" if stage == CANCEL_STAGE_UNVERIFIED else "waiting_verified_stop"
+        ),
+        cancel_stop_attempts=int(attempts),
+        cancel_wait_seconds=round(max(0.0, float(elapsed_seconds)), 3),
+        cancel_stop_last_error=str(last_error or "")[:500],
+        cancel_diagnostic_at=now_iso,
+        cancel_stage=str(stage),
+    )
+    atomic_write_json(job_file, job)
+
+
+
 def _indexed_content_identity_ready(images: Sequence[Mapping[str, Any]]) -> bool:
     """Return true only when the durable material index can reproduce the Snapshot ID without source reads."""
     if not images:
@@ -1869,6 +1923,71 @@ def _training_source_projection_admission(
     }
 
 
+def _assert_negative_algorithm_attribution(
+    project: Path,
+    label_contract: Mapping[str, Any] | None,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Explicit formal negatives must prove membership of the target algorithm.
+
+    A training request that declares ``algorithm_asset_id`` may only submit
+    ``confirmed_empty`` formal Ground Truth when that material is proven to
+    belong to the same algorithm. Exactly two existing read-only proofs are
+    accepted, never a new table or a second Ground-Truth owner:
+
+    * algorithm-tier ``NegativePool`` membership
+      (``negative_pool_algorithm_members`` via the pool's read-only method), or
+    * a current task negative receipt bound to this algorithm and effective
+      label context (``task_negative_confirmations`` via
+      ``AnnotationRepository.task_negative_receipts``).
+
+    Historical/ordinary requests without a declared algorithm keep the previous
+    behaviour. A request that proves neither path fails closed instead of
+    silently borrowing another algorithm's negative material.
+    """
+    algorithm_id = str((label_contract or {}).get("algorithm_id") or "").strip()
+    if not algorithm_id:
+        return
+    negatives = [
+        row for row in rows
+        if str(row.get("annotation_state") or "").strip() == "confirmed_empty"
+        and not list(row.get("boxes") or [])
+    ]
+    if not negatives:
+        return
+    from .negative_pool import NegativePool
+    from .training_label_tasks import task_negative_context, task_negative_identity
+
+    contract = dict(label_contract or {})
+    negative_ids = [str(row.get("id") or "") for row in negatives]
+    receipts = AnnotationRepository(project).task_negative_receipts(
+        task_negative_context(contract), negative_ids,
+    )
+    receipt_ids = {str(item.get("receipt_id") or "") for item in receipts}
+    unexplained = [
+        row for row in negatives
+        if task_negative_identity(row, contract)["receipt_id"] not in receipt_ids
+    ]
+    if not unexplained:
+        return
+    algorithm_members = set(
+        NegativePool(MaterialRepository(project)).candidate_ids(
+            algorithm_id=algorithm_id,
+        )
+    )
+    unattributed = [
+        str(row.get("id") or "") for row in unexplained
+        if str(row.get("id") or "") not in algorithm_members
+    ]
+    if unattributed:
+        raise TrainingAdmissionError(
+            "TRAINING_NEGATIVE_ALGORITHM_ATTRIBUTION_MISSING",
+            "以下显式提交的正式负样本无法证明属于目标算法: "
+            + ", ".join(unattributed[:5])
+            + "；请先在目标算法负样本池确认归属，或通过该算法上下文的负样本审核生成任务级回执后再训练",
+        )
+
+
 def freeze_training_inputs(
     project: Path,
     split_request: SplitRequest,
@@ -1946,6 +2065,10 @@ def freeze_training_inputs(
         project, source_images, images, label_schema, label_contract,
     )
     annotation_admission = _training_annotation_admission(images, label_schema)
+    # Explicit formal negatives must be provably owned by the declared target
+    # algorithm before any snapshot/split is frozen. This runs after the
+    # original/projection/GT audits so invalid annotations keep their own codes.
+    _assert_negative_algorithm_attribution(project, label_contract, source_images)
     manifest = build_split_manifest(
         images,
         effective_split,
@@ -2415,22 +2538,70 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             next_metrics = 0.0
             completion_seen_at = None
             usage_evidence_level = 0
+            cancel_wait_started = None
+            cancel_attempts = 0
+            cancel_next_retry = 0.0
+            cancel_last_error = ""
             while launched.process.poll() is None:
                 if context.cancel_requested():
-                    try:
-                        controller.terminate_tree(launched.identity)
-                    except PermissionError as error:
-                        # Do not release the task/GPU lease while the exact
-                        # process tree cannot be proven stopped. Keep managing
-                        # the cancellation and retry instead of publishing a
-                        # false CANCELLED terminal state.
-                        context.heartbeat(
-                            stage="cancelling",
-                            current_item=f"waiting for verified process cleanup: {error}",
+                    now = time.monotonic()
+                    if cancel_wait_started is None:
+                        cancel_wait_started = now
+                        _record_cancel_wait_diagnostic(
+                            context, job_file, stage=CANCEL_STAGE_VERIFYING,
+                            attempts=0, elapsed_seconds=0.0, last_error="",
                         )
-                        time.sleep(0.25)
-                        continue
-                    raise InterruptedError("training cancelled")
+                    if now >= cancel_next_retry:
+                        try:
+                            controller.terminate_tree(launched.identity)
+                        except PermissionError as error:
+                            # Do not release the task/GPU lease while the exact
+                            # process tree cannot be proven stopped. Keep managing
+                            # the cancellation and retry instead of publishing a
+                            # false CANCELLED terminal state.
+                            cancel_attempts += 1
+                            cancel_last_error = f"{type(error).__name__}: {error}"
+                            elapsed = now - cancel_wait_started
+                            stage = (
+                                CANCEL_STAGE_UNVERIFIED
+                                if elapsed > training_cancel_verification_grace_seconds()
+                                else CANCEL_STAGE_VERIFYING
+                            )
+                            # Bounded exponential backoff: never hammer the OS
+                            # with unverified terminate attempts.
+                            delay = min(5.0, 0.25 * (2 ** min(cancel_attempts - 1, 5)))
+                            cancel_next_retry = now + delay
+                            _record_cancel_wait_diagnostic(
+                                context, job_file, stage=stage,
+                                attempts=cancel_attempts,
+                                elapsed_seconds=elapsed,
+                                last_error=cancel_last_error,
+                            )
+                            context.heartbeat(
+                                stage=stage,
+                                current_item=(
+                                    f"waiting for verified process cleanup: {error}"
+                                    if stage == CANCEL_STAGE_VERIFYING
+                                    else "cancel requested; process stop is not verified, "
+                                         "task lease and GPU are kept for safety"
+                                ),
+                            )
+                            time.sleep(min(delay, 0.25))
+                            continue
+                        raise InterruptedError("training cancelled")
+                    # Waiting for the next bounded retry window; keep the lease
+                    # alive without repeating the terminate attempt.
+                    context.heartbeat(
+                        stage=(
+                            CANCEL_STAGE_UNVERIFIED
+                            if (now - cancel_wait_started)
+                            > training_cancel_verification_grace_seconds()
+                            else CANCEL_STAGE_VERIFYING
+                        ),
+                        current_item="cancel requested; waiting for the next verified stop attempt",
+                    )
+                    time.sleep(0.1)
+                    continue
                 job = _json(job_file, {})
                 if _training_completion_error(
                     job,

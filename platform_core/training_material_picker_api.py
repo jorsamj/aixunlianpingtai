@@ -387,6 +387,38 @@ def _pool_filters(repository, filters):
     return body
 
 
+def _algorithm_negative_receipt_image_ids(data_dir, repository, algorithm, body, image_ids):
+    """Existing task-receipt proof for explicit negative ids.
+
+    The receipt context binds the algorithm identity and effective label codes
+    (``task_negative_context``), so another algorithm's confirmation can never
+    be reused. Any resolution failure simply yields no extra proof; the caller
+    then keeps the existing fail-closed pool rejection.
+    """
+    ids = [str(value) for value in image_ids if str(value or "").strip()]
+    if not ids or algorithm is None:
+        return set()
+    from .training_label_tasks import (
+        resolve_training_label_contract,
+        task_negative_context,
+    )
+
+    try:
+        contract = resolve_training_label_contract(
+            data_dir, repository.project_path, dict(body), algorithm,
+            require_positive_evidence=False, include_base_weight_digest=False,
+        )
+    except Exception:
+        # Fail closed: any contract-resolution failure yields no extra proof and
+        # the caller keeps the existing pool rejection. This only happens on the
+        # already-rejected branch, so it can never widen admission.
+        return set()
+    receipts = AnnotationRepository(repository.project_path).task_negative_receipts(
+        task_negative_context(contract), ids,
+    )
+    return {str(item.get("image_id") or "") for item in receipts}
+
+
 def _picker_filter_sql(filters=None):
     """Shared predicates; formal annotation truth always belongs to AnnotationRepository."""
     f = dict(filters or {})
@@ -2269,7 +2301,11 @@ def training_material_picker_router(
                 raise ValueError('只能组合 Train 素材')
             if not payload.get('algorithm_asset_id'):
                 raise ValueError('请选择目标算法')
-            if algorithm_provider is None or algorithm_provider(project_id, str(payload['algorithm_asset_id'])) is None:
+            algorithm = (
+                algorithm_provider(project_id, str(payload['algorithm_asset_id']))
+                if algorithm_provider is not None else None
+            )
+            if algorithm is None:
                 raise ValueError('训练算法不存在')
             before = selection_context(data_dir(), project_id, payload)
             if 'expected_revisions' in payload:
@@ -2293,17 +2329,28 @@ def training_material_picker_router(
             elif negatives:
                 # Explicit negatives must belong to the target algorithm's pool,
                 # not merely the project-wide pool. The same shared predicate is
-                # used by the filtered picker pages.
+                # used by the filtered picker pages. The second legal proof is an
+                # existing task negative receipt bound to this algorithm's label
+                # context; nothing is borrowed from other algorithms.
                 filters = _pool_filters(repository, {'negative_pool_only': True,
                     'algorithm_asset_id': str(payload['algorithm_asset_id'])})
                 conditions, params = _picker_filter_sql(filters)
                 with closing(repository._connect()) as db:
-                    found = db.execute(
+                    found = {str(row[0]) for row in db.execute(
                         'SELECT m.id FROM materials m WHERE m.id IN (SELECT value FROM json_each(?)) AND '
                         + ' AND '.join(conditions), [json.dumps(negatives), *params]
-                    ).fetchall()
-                if len(found) != len(negatives):
-                    raise ValueError('选中的负样本不属于项目公共池或目标算法负样本池，请重新选择')
+                    ).fetchall()}
+                missing = [image_id for image_id in negatives if image_id not in found]
+                if missing:
+                    receipt_ids = _algorithm_negative_receipt_image_ids(
+                        data_dir(), repository, algorithm, payload, missing,
+                    )
+                    missing = [image_id for image_id in missing if image_id not in receipt_ids]
+                if missing:
+                    raise ValueError(
+                        '选中的负样本不属于项目公共池或目标算法负样本池，也没有该算法上下文的'
+                        '负样本确认回执，请重新选择或先完成负样本审核'
+                    )
             if positive and not reference:
                 if len(repository.get_many(positive)) != len(positive):
                     raise ValueError('正样本已变化，请重新选择')

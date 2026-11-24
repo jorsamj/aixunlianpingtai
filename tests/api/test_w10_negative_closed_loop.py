@@ -1,20 +1,19 @@
-"""W10 negative-sample training closed loop, isolated on real SQLite.
+"""W10/M13-A negative-sample training closed loop, isolated on real SQLite.
 
 Every test builds real MaterialRepository / AnnotationRepository / NegativePool
 databases under ``tmp_path`` (or uses the session-isolated app DATA_DIR for the
-formal review API) and drives the existing prepare -> freeze -> materialize
-path. Core repositories are never mocked.
+formal review API) and drives the existing prepare -> freeze -> materialize and
+synchronous-create paths. Core repositories are never mocked.
 
-Two boundary monkeypatches remain, each documented where used:
+M13-A closes two reachability/consistency gaps:
 
-* the synchronous create branch (``assert_material_input_admission``) because a
-  first-training pure-negative request is refused by the earlier label-contract
-  rule before the typed freeze rule can run; the patch proves the API code
-  surface added by W10.
-* ``freeze_training_inputs`` raising the typed admission error inside the real
-  prepare handler, because the same earlier label-contract gate makes the typed
-  rule unreachable through the full worker path; the patch proves the failure
-  evidence/``code`` plumbing added by W10.
+* the first-training pure-negative refusal is proven on the *real* prepare
+  worker and the *real* synchronous create request (no ``freeze_training_inputs``
+  nor ``assert_material_input_admission`` monkeypatch). Only one minimal unit test
+  keeps the typed-error -> preparation-evidence mapping injecting a typed error.
+* an explicitly submitted formal negative (``confirmed_empty``) must prove that
+  it belongs to the declared target algorithm, through algorithm-tier
+  ``NegativePool`` membership or an algorithm-context task negative receipt.
 """
 
 from __future__ import annotations
@@ -58,6 +57,12 @@ PREP_TASK_ID = "trainprep_train_w10_target"
 FIRE_BOX = {"label": "fire", "class_id": 0, "x1": 5, "y1": 5, "x2": 40, "y2": 40}
 FIRST_TRAINING_POSITIVE_MESSAGE = (
     "训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型"
+)
+# The earlier label-contract gate (the first real gate reached by a request that
+# selects only confirmed_empty material) keeps its own Chinese reason.
+FIRST_TRAINING_CONTRACT_POSITIVE_MESSAGE = (
+    "首次训练的所有已选素材都没有正样本标注框"
+    "；confirmed_empty 只能作为负样本，不能单独训练检测模型"
 )
 
 
@@ -137,6 +142,41 @@ def _set_annotation(
 def _paint_fire_gt(project: Path, image_ids: list[str] | tuple[str, ...]) -> None:
     for image_id in image_ids:
         _set_annotation(project, image_id, boxes=[FIRE_BOX], scope=["fire"])
+
+
+def _add_to_algorithm_pool(
+    project: Path, image_ids: list[str] | tuple[str, ...],
+    algorithm_id: str = ALGORITHM_ID,
+) -> None:
+    NegativePool(MaterialRepository(project)).members(
+        list(image_ids), algorithm_id=algorithm_id,
+    )
+
+
+def _confirm_algorithm_negative_receipts(
+    project: Path, image_ids: list[str] | tuple[str, ...],
+    labels: tuple[str, ...] = ("fire",),
+    *,
+    algorithm_id: str = ALGORITHM_ID,
+) -> list[str]:
+    """Issue the existing algorithm-context task negative receipts (real owner)."""
+    from platform_core.training_label_tasks import (
+        task_negative_context,
+        task_negative_identity,
+    )
+
+    contract = {
+        "algorithm_id": algorithm_id,
+        "effective_label_codes": list(labels),
+    }
+    rows = training_tasks._selected_project_images(
+        MaterialRepository(project), project, list(image_ids),
+    )
+    return AnnotationRepository(project).confirm_task_negatives(
+        task_negative_context(contract),
+        [task_negative_identity(row, contract) for row in rows],
+        {"actor_id": "w10-m13a"},
+    )
 
 
 def _runtime(
@@ -470,6 +510,9 @@ def test_confirmed_empty_negative_enters_frozen_snapshot_and_materialized_datase
         _set_annotation(project, image_id, boxes=[FIRE_BOX], scope=["fire"])
     _set_annotation(project, "image-1", state="confirmed_empty", scope=["fire"])
     _set_annotation(project, "image-4", boxes=[FIRE_BOX], scope=["fire"])
+    # M13-A: the explicit formal negative proves target-algorithm ownership via
+    # the existing algorithm-tier negative pool; GT and roles stay unchanged.
+    _add_to_algorithm_pool(project, ["image-1"])
     repository = MaterialRepository(project)
     source_bytes = {
         row["id"]: (project / "uploads" / row["stored_name"]).read_bytes()
@@ -566,6 +609,9 @@ def test_negative_only_iteration_with_base_version_is_allowed(tmp_path):
     # Positive fire evidence belongs to the independent test image only; the
     # continuation is intentionally trained from the inherited checkpoint.
     _set_annotation(project, "image-3", boxes=[FIRE_BOX], scope=["fire"])
+    # M13-A: the explicit negatives prove target-algorithm ownership through the
+    # existing algorithm-tier pool, preserving the legal continuation path.
+    _add_to_algorithm_pool(project, ["image-0", "image-1", "image-2"])
     contract = {
         "schema_version": 1,
         "strict_target_negative_scope": True,
@@ -599,6 +645,107 @@ def test_negative_only_iteration_with_base_version_is_allowed(tmp_path):
     ]
     assert len(snapshot_negatives) == 3
     assert any("纯负样本继续训练" in warning for warning in quality["warnings"])
+
+
+def test_negative_only_iteration_with_new_label_is_forbidden_by_split_quality():
+    """The base-version pure-negative rule keeps its typed split-quality code."""
+    images = [
+        {"id": "negative-1", "boxes": []},
+        {"id": "validation-fire", "boxes": [{"label": "fire"}]},
+        {"id": "test-1", "boxes": []},
+    ]
+    manifest = SimpleNamespace(ids={
+        "train": ("negative-1",),
+        "validation": ("validation-fire",),
+        "test": ("test-1",),
+    })
+    contract = {
+        "base_training_mode": "previous_weights_init",
+        "base_version_id": "v1",
+        "effective_label_codes": ["fire", "smoke"],
+        "requested_new_label_codes": ["smoke"],
+    }
+    with pytest.raises(training_tasks.TrainingAdmissionError) as captured:
+        training_tasks._training_split_quality(
+            images,
+            manifest,
+            [{"code": "fire", "class_id": 0}, {"code": "smoke", "class_id": 1}],
+            label_contract=contract,
+        )
+    assert captured.value.code == "TRAINING_NEGATIVE_ONLY_NEW_LABEL_FORBIDDEN"
+    assert "纯负样本继续训练" in str(captured.value)
+
+
+def _run_prepare_worker(
+    data_dir: Path,
+    project_id: str,
+    *,
+    train_ids: tuple[str, ...],
+    test_ids: tuple[str, ...] = (),
+    updates: dict | None = None,
+) -> tuple[TaskRepository, ArtifactStore, str]:
+    """Run the real TRAINING_PREPARE worker; return its durable failure evidence."""
+    repository, artifacts, target_id = _runtime(
+        data_dir, project_id, train_ids=train_ids, test_ids=test_ids,
+    )
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
+    payload.update(schema_version=4, training_input_state="PREPARING")
+    payload.update(updates or {})
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "w10-m13a-preparer",
+        {TaskKind.TRAINING_PREPARE: RemoteTrainingPrepareHandler(data_dir)},
+        {"training.prepare"},
+    )
+    assert scheduler.run_once() is True
+    return repository, artifacts, target_id
+
+
+def test_real_prepare_first_training_pure_negative_returns_typed_code(tmp_path):
+    """The full worker path (no freeze monkeypatch) yields the typed evidence."""
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir, count=4)
+    project = _project_path(data_dir, project_id)
+    for index in range(4):
+        _set_annotation(project, f"image-{index}", state="confirmed_empty", scope=["fire"])
+    repository, artifacts, target_id = _run_prepare_worker(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-2"), test_ids=("image-3",),
+    )
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.FAILED
+    evidence = artifacts.read_json(target_id, "input-preparation-error.json", default={})
+    assert evidence["code"] == "TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE"
+    assert evidence["input_freeze_created"] is False
+    assert evidence["task_id"] == target_id
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+
+def test_real_prepare_first_training_with_positive_evidence_but_no_label_stays_plain_error(tmp_path):
+    """Positive evidence exists: omitting labels remains an ordinary user error."""
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir, count=4)
+    project = _project_path(data_dir, project_id)
+    _paint_fire_gt(project, ["image-0", "image-1", "image-2"])
+    _set_annotation(project, "image-3", state="confirmed_empty", scope=["fire"])
+    repository, artifacts, target_id = _runtime(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-2"), test_ids=("image-3",),
+    )
+    payload = artifacts.read_json(target_id, repository.get(target_id).payload_ref)
+    payload.update(schema_version=4, training_input_state="PREPARING")
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    context = SimpleNamespace(
+        artifacts=artifacts, repository=repository, run_owned=lambda operation: operation(),
+    )
+    with pytest.raises(ValueError) as captured:
+        handler._freeze_request_contract(context, repository.get(target_id), payload)
+    assert not isinstance(captured.value, training_tasks.TrainingAdmissionError)
+    assert "首次训练必须" in str(captured.value)
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
 
 
 def test_prepare_maps_typed_admission_code_into_failure_evidence(tmp_path, monkeypatch):
@@ -750,6 +897,9 @@ def test_negative_scope_extra_labels_do_not_pollute_frozen_class_mapping(tmp_pat
     # effective schema only asks for fire.
     _set_annotation(project, "image-2", state="confirmed_empty", scope=["fire", "smoke"])
     _set_annotation(project, "image-3", boxes=[FIRE_BOX], scope=["fire"])
+    # M13-A: the explicit negative owns target-algorithm attribution through the
+    # existing algorithm pool; its scope still must not pollute the class map.
+    _add_to_algorithm_pool(project, ["image-2"])
     _, frozen, _, _, _ = _freeze_through_prepare(
         data_dir, project_id,
         train_ids=("image-0", "image-1", "image-2"),
@@ -785,7 +935,7 @@ def test_negative_scope_extra_labels_do_not_pollute_frozen_class_mapping(tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# 8. Synchronous create exposes the typed admission code (409 unchanged)
+# 8. Real synchronous create exposes the typed admission code (409 unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -836,20 +986,58 @@ def _training_ready_image(client, project_id: str, name: str, color: str) -> dic
     return image
 
 
-def test_synchronous_create_returns_machine_readable_admission_code(client, monkeypatch):
+def _training_negative_image(client, project_id: str, name: str, color: str) -> dict:
+    stream = io.BytesIO()
+    Image.new("RGB", (128, 128), color).save(stream, format="JPEG")
+    image = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", (name, stream.getvalue(), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    annotation = client.get(
+        f"/api/projects/{project_id}/annotations/{image['id']}"
+    ).json()
+    saved = client.post(
+        f"/api/projects/{project_id}/annotations/{image['id']}",
+        json={
+            "boxes": [],
+            "annotation_state": "confirmed_empty",
+            "expected_version": annotation["annotation"]["version"],
+            "source_content_sha256": annotation["image"]["content_sha256"],
+            "reviewed_label_codes": ["fire"],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    import app as platform_app
+    platform_app.material_store(project_id).patch({
+        image["id"]: {"processing_status": "processed"},
+    })
+    return image
+
+
+def _assert_no_training_task_leak(platform_app, project_id, task_id):
+    repository = platform_app.shared_task_repository()
+    assert repository.get(task_id) is None
+    assert repository.get("trainprep_" + task_id) is None
+    assert not (platform_app.project_dir(project_id) / "jobs" / task_id).exists()
+
+
+def test_real_synchronous_create_first_training_pure_negative_returns_typed_code(client):
+    """A real request with only confirmed_empty GT gets the earliest typed code."""
     import app as platform_app
 
     project = client.post("/api/projects", json={
-        "name": "w10-sync-admission-" + uuid.uuid4().hex[:8],
+        "name": "w10-sync-negative-" + uuid.uuid4().hex[:8],
         "labels": [{"code": "fire", "class_id": 0}],
     }).json()
     project_id = project["id"]
-    train_a = _training_ready_image(client, project_id, "sync-a.jpg", "red")
-    train_b = _training_ready_image(client, project_id, "sync-b.jpg", "blue")
-    test = _training_ready_image(client, project_id, "sync-test.jpg", "green")
+    negatives = [
+        _training_negative_image(client, project_id, f"sync-neg-{index}.jpg", color)
+        for index, color in enumerate(("red", "blue", "green"))
+    ]
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
-        json={"name": "W10 sync admission", "algorithm_type": "yolo_ultralytics"},
+        json={"name": "W10 sync negative admission", "algorithm_type": "yolo_ultralytics"},
     ).json()["algorithm"]
     task_id = "train_" + hashlib.sha256(project_id.encode()).hexdigest()[:24]
     request = {
@@ -857,27 +1045,323 @@ def test_synchronous_create_returns_machine_readable_admission_code(client, monk
         "framework": "ultralytics",
         "algorithm_asset_id": algorithm["id"],
         "model": "yolo11n.pt",
-        "train_labels": ["fire"],
-        "split_mode": "independent_test_set",
-        "train_image_ids": [train_a["id"], train_b["id"]],
-        "test_image_ids": [test["id"]],
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [image["id"] for image in negatives],
+        "test_image_ids": [],
+        "experiment_percent": 20,
         "validation_percent": 20,
-        "experiment_percent": None,
     }
-
-    def reject_source_admission(*_args, **_kwargs):
-        raise training_tasks.TrainingAdmissionError(
-            "TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE",
-            FIRST_TRAINING_POSITIVE_MESSAGE,
-        )
-
-    monkeypatch.setattr(
-        platform_app, "assert_material_input_admission", reject_source_admission,
-    )
     response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
     assert response.status_code == 409, response.text
     body = response.json()
     assert body["code"] == "TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE"
-    assert FIRST_TRAINING_POSITIVE_MESSAGE in body["message"]
-    assert FIRST_TRAINING_POSITIVE_MESSAGE in body["detail"]
-    assert platform_app.shared_task_repository().get(task_id) is None
+    assert FIRST_TRAINING_CONTRACT_POSITIVE_MESSAGE in body["message"]
+    assert body["message"] in body["detail"]
+    _assert_no_training_task_leak(platform_app, project_id, task_id)
+
+
+def test_real_synchronous_create_with_positive_evidence_but_no_label_stays_plain_error(client):
+    """Positive evidence exists: the real request keeps the ordinary 409 detail."""
+    import app as platform_app
+
+    project = client.post("/api/projects", json={
+        "name": "w10-sync-positive-" + uuid.uuid4().hex[:8],
+        "labels": [{"code": "fire", "class_id": 0}],
+    }).json()
+    project_id = project["id"]
+    positives = [
+        _training_ready_image(client, project_id, f"sync-pos-{index}.jpg", color)
+        for index, color in enumerate(("red", "blue", "green"))
+    ]
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "W10 sync positive no label", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    task_id = "train_" + hashlib.sha256(project_id.encode()).hexdigest()[:24]
+    request = {
+        "task_id": task_id,
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [image["id"] for image in positives],
+        "test_image_ids": [],
+        "experiment_percent": 20,
+        "validation_percent": 20,
+    }
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["code"] != "TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE"
+    assert body["code"] == "CONFLICT"
+    assert "首次训练必须" in body["message"]
+    _assert_no_training_task_leak(platform_app, project_id, task_id)
+
+
+# ---------------------------------------------------------------------------
+# 9. Explicit formal negatives must prove target-algorithm ownership (M13-A)
+# ---------------------------------------------------------------------------
+
+
+def _attribution_project(
+    tmp_path: Path, *, count: int = 5,
+) -> tuple[Path, str, str]:
+    """Positive train/test GT plus one explicit confirmed_empty negative."""
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir, count=count)
+    project = _project_path(data_dir, project_id)
+    _paint_fire_gt(project, ["image-0", "image-1", "image-2"])
+    _set_annotation(project, "image-3", state="confirmed_empty", scope=["fire"])
+    _set_annotation(project, "image-4", boxes=[FIRE_BOX], scope=["fire"])
+    return project, project_id, data_dir
+
+
+def test_prepare_rejects_project_pool_negative_without_algorithm_attribution(tmp_path):
+    project, project_id, data_dir = _attribution_project(tmp_path)
+    category = NegativePool(MaterialRepository(project)).category(name="反光")["id"]
+    NegativePool(MaterialRepository(project)).members(
+        ["image-3"], category_ids=[category],
+    )
+    repository, artifacts, target_id = _run_prepare_worker(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-2", "image-3"),
+        test_ids=("image-4",),
+        updates={"train_labels": ["fire"]},
+    )
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.FAILED
+    evidence = artifacts.read_json(target_id, "input-preparation-error.json", default={})
+    assert evidence["code"] == "TRAINING_NEGATIVE_ALGORITHM_ATTRIBUTION_MISSING"
+    assert evidence["input_freeze_created"] is False
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+
+def test_prepare_allows_algorithm_pool_negative_and_freezes_correct_snapshot(tmp_path):
+    project, project_id, data_dir = _attribution_project(tmp_path)
+    _add_to_algorithm_pool(project, ["image-3"])
+    _updated, frozen, _artifacts, _repository, _target_id = _freeze_through_prepare(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-2", "image-3"),
+        test_ids=("image-4",),
+    )
+    assert frozen["label_contract"]["algorithm_id"] == ALGORITHM_ID
+    assert [item["code"] for item in frozen["label_schema"]] == ["fire"]
+    split = frozen["split"]
+    _rows, schema, _manifest, snapshot = training_tasks.resolve_training_input_freeze(
+        frozen,
+        SplitRequest(
+            mode=SplitMode(split["mode"]),
+            train_image_ids=tuple(split["train_image_ids"]),
+            test_image_ids=tuple(split["test_image_ids"]),
+            validation_percent=split["validation_percent"],
+            experiment_percent=split["experiment_percent"],
+        ),
+        seed=split["seed"],
+    )
+    assert [item["code"] for item in schema] == ["fire"]
+    frozen_negative = next(
+        item for item in frozen["images"] if item["id"] == "image-3"
+    )
+    assert frozen_negative["annotation_state"] == "confirmed_empty"
+    assert frozen_negative["boxes"] == []
+    assert frozen_negative["annotation_scope"] == ["fire"]
+    negative = next(item for item in snapshot["images"] if item["image_id"] == "image-3")
+    assert negative["role"] == "train"
+    assert negative["annotation_state"] == "confirmed_empty"
+    assert negative["box_count"] == 0
+    assert negative["annotation_scope"] == ["fire"]
+    assert snapshot["negative_origin_counts"] == {"explicit_confirmed_empty": 1}
+
+
+def test_prepare_allows_algorithm_context_negative_receipt_and_freezes_snapshot(tmp_path):
+    project, project_id, data_dir = _attribution_project(tmp_path)
+    receipt_ids = _confirm_algorithm_negative_receipts(project, ["image-3"])
+    assert receipt_ids
+    _updated, frozen, _artifacts, _repository, _target_id = _freeze_through_prepare(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-2", "image-3"),
+        test_ids=("image-4",),
+    )
+    contract = frozen["label_contract"]
+    assert contract["algorithm_id"] == ALGORITHM_ID
+    assert contract["training_projection_policy"] == (
+        training_tasks.TRAINING_PROJECTION_POLICY_V4
+    )
+    receipt_images = {
+        str(item.get("image_id") or "")
+        for item in contract.get("task_negative_confirmations") or []
+    }
+    assert "image-3" in receipt_images
+    split = frozen["split"]
+    _rows, _schema, _manifest, snapshot = training_tasks.resolve_training_input_freeze(
+        frozen,
+        SplitRequest(
+            mode=SplitMode(split["mode"]),
+            train_image_ids=tuple(split["train_image_ids"]),
+            test_image_ids=tuple(split["test_image_ids"]),
+            validation_percent=split["validation_percent"],
+            experiment_percent=split["experiment_percent"],
+        ),
+        seed=split["seed"],
+    )
+    negative = next(item for item in snapshot["images"] if item["image_id"] == "image-3")
+    assert negative["role"] == "train"
+    assert negative["annotation_state"] == "confirmed_empty"
+    assert negative["box_count"] == 0
+    assert frozen["images"][3]["annotation_state"] == "confirmed_empty"
+
+
+def test_prepare_rejects_negative_receipt_from_another_algorithm_context(tmp_path):
+    project, project_id, data_dir = _attribution_project(tmp_path)
+    assert _confirm_algorithm_negative_receipts(
+        project, ["image-3"], algorithm_id="algorithm-other",
+    )
+    repository, artifacts, target_id = _run_prepare_worker(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-2", "image-3"),
+        test_ids=("image-4",),
+        updates={"train_labels": ["fire"]},
+    )
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.FAILED
+    evidence = artifacts.read_json(target_id, "input-preparation-error.json", default={})
+    assert evidence["code"] == "TRAINING_NEGATIVE_ALGORITHM_ATTRIBUTION_MISSING"
+    assert evidence["input_freeze_created"] is False
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+
+def test_freeze_without_declared_algorithm_keeps_unattributed_negative_allowed(tmp_path):
+    """Historical/ordinary contract without algorithm_id keeps the old behaviour."""
+    project, project_id, data_dir = _attribution_project(tmp_path)
+    split = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=("image-0", "image-1", "image-2", "image-3"),
+        test_image_ids=("image-4",),
+        validation_percent=25,
+    )
+    contract = {
+        "schema_version": 1,
+        "strict_target_negative_scope": True,
+        "training_projection_policy": training_tasks.TRAINING_PROJECTION_POLICY_V3,
+        "effective_label_codes": ["fire"],
+        "effective_label_schema": [{"code": "fire", "class_id": 0,
+                                    "canonical_project_class_id": 0}],
+        "requested_new_label_codes": [],
+        "base_training_mode": "mother_model_init",
+    }
+    resolution = training_tasks.resolve_training_selection(
+        project, split, label_contract=contract,
+    )
+    from platform_core.training_label_tasks import project_training_rows
+    projected = project_training_rows(list(resolution.effective_images), contract)
+    frozen = training_tasks.freeze_training_inputs(
+        project,
+        split,
+        seed=5,
+        selection_resolution=resolution,
+        effective_images=projected,
+        label_schema_override=contract["effective_label_schema"],
+        label_contract=contract,
+    )
+    frozen_negative = next(
+        item for item in frozen["images"] if item["id"] == "image-3"
+    )
+    assert frozen_negative["annotation_state"] == "confirmed_empty"
+    assert frozen_negative["annotation_scope"] == ["fire"]
+    assert "algorithm_id" not in (frozen.get("label_contract") or {}) or not frozen[
+        "label_contract"
+    ].get("algorithm_id")
+
+
+def test_picker_selection_union_accepts_algorithm_context_receipt_for_negative(tmp_path):
+    project, project_id, data_dir = _attribution_project(tmp_path, count=5)
+    category = NegativePool(MaterialRepository(project)).category(name="反光")["id"]
+    NegativePool(MaterialRepository(project)).members(
+        ["image-3"], category_ids=[category],
+    )
+    assert _confirm_algorithm_negative_receipts(project, ["image-3"])
+    client = _picker_client(data_dir, project_id)
+    payload = {
+        "algorithm_asset_id": ALGORITHM_ID,
+        "role": "train",
+        "positive_ids": ["image-0", "image-1"],
+        "negative_ids": ["image-3"],
+        "train_labels": ["fire"],
+        "model": "yolo11n.pt",
+    }
+    response = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-union",
+        json=payload,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["count"] == 3
+    from platform_core.training_selection_reference import (
+        read_selection,
+        selection_context,
+    )
+    frozen_ids = set(read_selection(
+        data_dir,
+        response.json()["selection_ref"],
+        selection_context(data_dir, project_id, payload),
+    ))
+    assert frozen_ids == {"image-0", "image-1", "image-3"}
+
+
+def test_picker_union_explicit_ids_frozen_selection_and_worker_contract_agree(tmp_path):
+    project, project_id, data_dir = _attribution_project(tmp_path)
+    _add_to_algorithm_pool(project, ["image-3"])
+    client = _picker_client(data_dir, project_id)
+    picker_payload = {
+        "algorithm_asset_id": ALGORITHM_ID,
+        "role": "train",
+        "positive_ids": ["image-0", "image-1"],
+        "negative_ids": ["image-3"],
+        "train_labels": ["fire"],
+        "model": "yolo11n.pt",
+    }
+    union = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-union",
+        json=picker_payload,
+    )
+    assert union.status_code == 200, union.text
+    from platform_core.training_selection_reference import (
+        read_selection,
+        selection_context,
+    )
+    picker_ids = set(read_selection(
+        data_dir,
+        union.json()["selection_ref"],
+        selection_context(data_dir, project_id, picker_payload),
+    ))
+    explicit_ids = {"image-0", "image-1", "image-3"}
+    assert picker_ids == explicit_ids
+
+    updated, frozen, _artifacts, _repository, _target_id = _freeze_through_prepare(
+        data_dir, project_id,
+        train_ids=("image-0", "image-1", "image-3"),
+        test_ids=("image-4",),
+    )
+    assert set(updated["selected_train_image_ids"]) == explicit_ids
+    assert set(updated["train_image_ids"]) == explicit_ids
+    assert updated["input_freeze_id"] == frozen["input_freeze_id"]
+    assert updated["snapshot_id"] == frozen["snapshot_id"]
+    assert set(frozen["selection"]["selected_train_image_ids"]) == explicit_ids
+    assert updated["selection_counts"]["selected_train_count"] == 3
+    split = frozen["split"]
+    _rows, _schema, _manifest, snapshot = training_tasks.resolve_training_input_freeze(
+        frozen,
+        SplitRequest(
+            mode=SplitMode(split["mode"]),
+            train_image_ids=tuple(split["train_image_ids"]),
+            test_image_ids=tuple(split["test_image_ids"]),
+            validation_percent=split["validation_percent"],
+            experiment_percent=split["experiment_percent"],
+        ),
+        seed=split["seed"],
+    )
+    roles = {item["image_id"]: item["role"] for item in snapshot["images"]}
+    assert roles["image-3"] == "train"
+    negative = next(item for item in snapshot["images"] if item["image_id"] == "image-3")
+    assert negative["annotation_state"] == "confirmed_empty"
+    assert negative["box_count"] == 0
+    assert set(roles) == explicit_ids | {"image-4"}

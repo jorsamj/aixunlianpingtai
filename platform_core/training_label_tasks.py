@@ -231,6 +231,17 @@ def _temporary_or_unmapped_label(code: str) -> bool:
     )
 
 
+def _selected_material_ids(payload: Mapping[str, Any]) -> list[str]:
+    """Exact task-selected material identities used as positive-evidence scope."""
+    return _unique_codes(
+        [
+            *(payload.get("train_image_ids") or []),
+            *(payload.get("val_image_ids") or []),
+            *(payload.get("selected_image_ids") or []),
+        ]
+    )
+
+
 def selected_material_label_codes(
     project: Path,
     payload: Mapping[str, Any],
@@ -248,13 +259,7 @@ def selected_material_label_codes(
     longer knowable.
     """
 
-    selected_ids = _unique_codes(
-        [
-            *(payload.get("train_image_ids") or []),
-            *(payload.get("val_image_ids") or []),
-            *(payload.get("selected_image_ids") or []),
-        ]
-    )
+    selected_ids = _selected_material_ids(payload)
     if not selected_ids:
         return []
     annotations = AnnotationRepository(project)
@@ -573,6 +578,30 @@ def resolve_training_label_contract(
         if code not in available_set and code not in retained_inherited_set
     ]
     if previous is None and not requested:
+        # This is the earliest gate every real first-training request reaches,
+        # including the intent/preflight callers that pass
+        # ``require_positive_evidence=False``. Only on this failure branch, and
+        # only with a real selected-material identity, classify the request:
+        # zero positive evidence means the submission is a pure-negative first
+        # training (typed admission refusal), while positive evidence that was
+        # simply not selected stays an ordinary user error. The ordinary
+        # validation itself is never removed or weakened.
+        selected_ids = _selected_material_ids(payload)
+        positive_evidence = (
+            available
+            if require_positive_evidence
+            else (
+                selected_material_label_codes(project_path, payload, positive_only=True)
+                if selected_ids
+                else []
+            )
+        )
+        if selected_ids and not positive_evidence:
+            raise base.TrainingAdmissionError(
+                "TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE",
+                "首次训练的所有已选素材都没有正样本标注框；confirmed_empty 只能作为负样本，"
+                "不能单独训练检测模型，请先补充带目标框的正样本。",
+            )
         raise ValueError(
             "首次训练必须从已选素材实际携带的标签中至少选择一个；母算法自带类别不会自动继承。"
         )

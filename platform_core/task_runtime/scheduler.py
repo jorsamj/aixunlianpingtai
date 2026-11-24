@@ -169,6 +169,8 @@ class Scheduler:
             and bool(str(observed.process_command_hash or "").strip())
         )
 
+    _cancel_wait_started: dict[str, float] = {}
+
     @classmethod
     def _cleanup_bound_process_if_needed(
         cls,
@@ -182,14 +184,38 @@ class Scheduler:
             # Keep status, lease and GPU reservation intact. Lease recovery will
             # continue exact process cleanup; publishing any terminal state here
             # could admit the next GPU task while the previous process is alive.
+            task_id = str(getattr(context.task, "task_id", "") or "")
+            cancel_grace = 60.0
+            unverified_stage, verifying_stage = "cancelling_unverified", "cancelling"
+            try:
+                from platform_core.training_tasks import (
+                    CANCEL_STAGE_UNVERIFIED,
+                    CANCEL_STAGE_VERIFYING,
+                    training_cancel_verification_grace_seconds,
+                )
+                cancel_grace = training_cancel_verification_grace_seconds()
+                unverified_stage = CANCEL_STAGE_UNVERIFIED
+                verifying_stage = CANCEL_STAGE_VERIFYING
+            except Exception:
+                pass
+            started = cls._cancel_wait_started.setdefault(task_id, time.monotonic())
+            elapsed = time.monotonic() - started
             try:
                 context.heartbeat(
-                    stage=stage,
-                    current_item=current_item,
+                    stage=unverified_stage if elapsed > cancel_grace else verifying_stage,
+                    current_item=(
+                        "cancel requested; process stop is not verified, "
+                        "task lease and GPU are kept for safety"
+                        if elapsed > cancel_grace
+                        else current_item
+                    ),
                 )
             except ExecutionFencedError:
                 pass
             return False
+        task_id = str(getattr(context.task, "task_id", "") or "")
+        if task_id:
+            cls._cancel_wait_started.pop(task_id, None)
         return True
 
     @staticmethod
