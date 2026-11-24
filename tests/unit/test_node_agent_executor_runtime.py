@@ -618,23 +618,83 @@ def test_lease_monitor_observes_cancel_without_falsely_marking_fenced():
         monitor.assert_active()
 
 
-def test_lease_monitor_fails_closed_on_any_unproven_renewal_and_runs_cleanup_callback():
+def test_lease_monitor_fails_closed_after_the_lease_window_is_exhausted():
     calls = []
-    client = FakeHeartbeatClient(
-        NodeExecutorHTTPError(
-            "NODE_EXECUTOR_TRANSPORT_FAILED",
-            "timeout",
-            retryable=True,
-        )
+
+    class AlwaysFailingClient:
+        def __init__(self):
+            self.calls = 0
+
+        def heartbeat(self, _lease, **_kwargs):
+            self.calls += 1
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_TRANSPORT_FAILED",
+                "ConnectionResetError: [WinError 10054]",
+                retryable=True,
+            )
+
+    client = AlwaysFailingClient()
+    monitor = ExecutionLeaseMonitor(
+        client, lease(), on_fenced=lambda: calls.append("terminate"),
+        lease_seconds=0.2, retry_sleep=0.02,
     )
-    monitor = ExecutionLeaseMonitor(client, lease(), on_fenced=lambda: calls.append("terminate"))
 
     with pytest.raises(RemoteExecutionFenced):
         monitor.beat()
     assert monitor.fenced.is_set()
     assert calls == ["terminate"]
+    assert client.calls > 1, "an unproven renewal must be retried before fencing"
+    assert "EXECUTION_LEASE_UNVERIFIED" in monitor.last_error
     with pytest.raises(RemoteExecutionFenced):
         monitor.assert_active()
+
+
+def test_lease_monitor_keeps_the_worker_on_a_transient_transport_failure():
+    """A single connection reset must not destroy a live execution.
+
+    Regression: every retryable transport error used to fence immediately and
+    call ``on_fenced`` (which terminates the running worker), leaving the task
+    RUNNING with its GPU Hold still HELD while the worker was already gone.
+    """
+    calls = []
+    client = FakeHeartbeatClient(
+        NodeExecutorHTTPError(
+            "NODE_EXECUTOR_TRANSPORT_FAILED",
+            "ConnectionResetError: [WinError 10054]",
+            retryable=True,
+        ),
+        {"cancel_requested": False, "task": {"status": "RUNNING"}},
+    )
+    monitor = ExecutionLeaseMonitor(
+        client, lease(), on_fenced=lambda: calls.append("terminate"),
+        lease_seconds=5.0, retry_sleep=0.01,
+    )
+
+    body = monitor.beat(progress=20)
+    assert body["task"]["status"] == "RUNNING"
+    assert not monitor.fenced.is_set()
+    assert calls == []
+    assert monitor.transport_verified is True
+    assert monitor.last_transport_error == ""
+    assert client.calls == 2
+    monitor.assert_active()
+
+
+def test_lease_monitor_fences_immediately_on_an_authoritative_fencing_answer():
+    calls = []
+    client = FakeHeartbeatClient(
+        NodeExecutorHTTPError("EXECUTION_FENCED", "lost ownership", status_code=409),
+    )
+    monitor = ExecutionLeaseMonitor(
+        client, lease(), on_fenced=lambda: calls.append("terminate"),
+        lease_seconds=5.0, retry_sleep=0.01,
+    )
+
+    with pytest.raises(RemoteExecutionFenced):
+        monitor.beat()
+    assert client.calls == 1, "an authoritative fencing answer must not be retried"
+    assert calls == ["terminate"]
+    assert monitor.fenced.is_set()
 
 
 def test_agent_executor_runtime_has_no_control_plane_database_imports():

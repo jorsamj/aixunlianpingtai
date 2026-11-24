@@ -568,6 +568,9 @@ args, _unknown = parser.parse_known_args()
 
 runtime_root = Path(__file__).resolve().parent
 runtime_root.joinpath("started.marker").write_text("started", encoding="utf-8")
+# Per-job marker: a shared marker lets a second concurrent task in the same
+# staged runtime pass its "worker started" wait on the first task's marker.
+runtime_root.joinpath("started.marker." + args.job_id).write_text("started", encoding="utf-8")
 runtime_root.joinpath("worker-args.json").write_text(
     json.dumps({{
         "project_dir": args.project_dir,

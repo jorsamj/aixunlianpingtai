@@ -16,7 +16,9 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping
@@ -29,6 +31,11 @@ _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 DEFAULT_EXECUTOR_TIMEOUT_SECONDS = 15.0
 DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS = 300.0
 DEFAULT_EXECUTION_HEARTBEAT_SECONDS = 5.0
+DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS = 30.0
+# Control-plane answers that prove this Agent no longer owns the execution.
+_FENCING_STATUS_CODES = frozenset({401, 403, 404, 409, 410})
+# Transport-level answers that say nothing about ownership yet.
+_TRANSIENT_STATUS_CODES = frozenset({0, 408, 425, 429})
 
 
 class NodeExecutorHTTPError(RuntimeError):
@@ -75,6 +82,34 @@ def _control_plane_base(value: object) -> str:
     if parsed.username or parsed.password:
         raise ValueError("control plane URL must not contain userinfo")
     return base
+
+
+def _lease_window_seconds(
+    lease: RemoteExecutionLease, override: float | None,
+) -> float:
+    """How long an unproven renewal may last before ownership must be dropped.
+
+    Derived from the execution lease the control plane granted, so the Agent
+    never outlives the moment another node could be handed the same task.
+    """
+    if override is not None:
+        try:
+            return max(1.0, float(override))
+        except (TypeError, ValueError):
+            pass
+    raw = str(getattr(lease, "lease_expires_at", "") or "").strip()
+    try:
+        expiry = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS
+    now = datetime.now(expiry.tzinfo) if expiry.tzinfo is not None else datetime.now()
+    remaining = (expiry - now).total_seconds()
+    if remaining >= 1.0:
+        return min(600.0, remaining)
+    # A past expiry only means the start response is old: the control plane has
+    # renewed the lease on every heartbeat since. Fall back to the default TTL
+    # instead of fencing on the first blip of a long-running execution.
+    return DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS
 
 
 def _json_error(body: object, fallback: str) -> tuple[str, str]:
@@ -1164,7 +1199,23 @@ class AgentExecutionWorkdir:
 
 
 class ExecutionLeaseMonitor:
-    """Fail-closed background lease renewal and cancellation observation."""
+    """Fail-closed background lease renewal and cancellation observation.
+
+    Safety invariant: a launched worker may keep running only while this Agent's
+    execution lease could still be valid.  Ownership is proven by the control
+    plane, never by the absence of a local exception, so the monitor:
+
+    * treats an explicit fencing answer (HTTP 401/403/404/409/410, or a request
+      the control plane rejected outright) as authoritative and fences at once;
+    * treats a *transport* failure (connection reset, timeout, 5xx, invalid
+      response) as "ownership not yet proven" and retries, because a transient
+      reset is not evidence that the lease was lost and destroying a live
+      execution on one would strand the task RUNNING with its GPU Hold still
+      HELD while the worker is already dead;
+    * fences only once the lease validity window elapses without a verified
+      renewal.  At that instant the control plane may hand the task to another
+      node, so continuing would risk two workers on one GPU.
+    """
 
     def __init__(
         self,
@@ -1173,6 +1224,8 @@ class ExecutionLeaseMonitor:
         *,
         interval: float = DEFAULT_EXECUTION_HEARTBEAT_SECONDS,
         on_fenced: Callable[[], None] | None = None,
+        lease_seconds: float | None = None,
+        retry_sleep: float = 0.25,
     ) -> None:
         self.client = client
         self.lease = lease
@@ -1182,16 +1235,49 @@ class ExecutionLeaseMonitor:
         self.fenced = threading.Event()
         self.stop_event = threading.Event()
         self.last_error = ""
+        self.transport_failures = 0
+        self.last_transport_error = ""
+        self._lease_seconds = _lease_window_seconds(lease, lease_seconds)
+        self._retry_sleep = max(0.0, float(retry_sleep))
+        self._last_verified = time.monotonic()
         self._thread: threading.Thread | None = None
 
+    @property
+    def transport_verified(self) -> bool:
+        """True while the last renewal attempt was confirmed by the control plane."""
+        return not self.transport_failures
+
+    @property
+    def lease_seconds(self) -> float:
+        return self._lease_seconds
+
     def _mark_fenced(self, error: BaseException) -> None:
-        self.last_error = f"{type(error).__name__}: {error}"
+        detail = f"{type(error).__name__}: {error}"
+        code = str(getattr(error, "code", "") or "")
+        self.last_error = f"{code}: {detail}" if code and code not in detail else detail
         self.fenced.set()
         if self.on_fenced is not None:
             try:
                 self.on_fenced()
             except Exception:
                 pass
+
+    @staticmethod
+    def _is_authoritative_fence(error: BaseException) -> bool:
+        """Only a control-plane answer about ownership may fence immediately."""
+        if not isinstance(error, NodeExecutorHTTPError):
+            return False
+        status = int(getattr(error, "status_code", 0) or 0)
+        if status in _FENCING_STATUS_CODES:
+            return True
+        if status in _TRANSIENT_STATUS_CODES or status >= 500:
+            return False
+        # Any other explicit rejection (malformed request, unsupported payload)
+        # is the control plane answering: stop instead of retrying for a window.
+        return status >= 400
+
+    def _lease_window_exhausted(self) -> bool:
+        return (time.monotonic() - self._last_verified) >= self._lease_seconds
 
     def beat(
         self,
@@ -1204,22 +1290,39 @@ class ExecutionLeaseMonitor:
     ) -> dict[str, Any]:
         if self.fenced.is_set():
             raise RemoteExecutionFenced(self.last_error or "remote execution is fenced")
-        try:
-            heartbeat_kwargs = {
-                "progress": progress,
-                "stage": stage,
-                "current_item": current_item,
-                "resource_resolution": resource_resolution,
-            }
-            if runtime_resources is not None:
-                heartbeat_kwargs["runtime_resources"] = runtime_resources
-            body = self.client.heartbeat(self.lease, **heartbeat_kwargs)
-        except (NodeExecutorHTTPError, requests.RequestException, OSError) as error:
-            self._mark_fenced(error)
-            raise RemoteExecutionFenced(self.last_error) from error
-        if bool(body.get("cancel_requested")):
-            self.cancel_requested.set()
-        return body
+        heartbeat_kwargs = {
+            "progress": progress,
+            "stage": stage,
+            "current_item": current_item,
+            "resource_resolution": resource_resolution,
+        }
+        if runtime_resources is not None:
+            heartbeat_kwargs["runtime_resources"] = runtime_resources
+        while True:
+            try:
+                body = self.client.heartbeat(self.lease, **heartbeat_kwargs)
+            except (NodeExecutorHTTPError, requests.RequestException, OSError) as error:
+                if self._is_authoritative_fence(error):
+                    self._mark_fenced(error)
+                    raise RemoteExecutionFenced(self.last_error) from error
+                self.transport_failures += 1
+                self.last_transport_error = f"{type(error).__name__}: {error}"[:400]
+                if self._lease_window_exhausted():
+                    self._mark_fenced(NodeExecutorHTTPError(
+                        "EXECUTION_LEASE_UNVERIFIED",
+                        "execution lease was not renewed within its validity window "
+                        f"({self._lease_seconds:.1f}s): {self.last_transport_error}",
+                    ))
+                    raise RemoteExecutionFenced(self.last_error) from error
+                if self._retry_sleep:
+                    time.sleep(self._retry_sleep)
+                continue
+            self.transport_failures = 0
+            self.last_transport_error = ""
+            self._last_verified = time.monotonic()
+            if bool(body.get("cancel_requested")):
+                self.cancel_requested.set()
+            return body
 
     def _serve(self) -> None:
         while not self.stop_event.wait(self.interval):

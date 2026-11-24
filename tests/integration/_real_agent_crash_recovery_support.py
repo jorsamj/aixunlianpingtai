@@ -556,6 +556,17 @@ def central_status(stack: dict, task_id: str) -> dict:
     return client.execution_status(task_id)
 
 
+def central_error(stack: dict, task_id: str, *, limit: int = 1200) -> str:
+    """Bounded control-plane failure reason for an execution that never started."""
+    try:
+        task = stack["repository"].get(task_id)
+    except Exception as error:  # pragma: no cover - diagnostic only
+        return f"unavailable: {type(error).__name__}: {error}"
+    if task is None:
+        return "task disappeared"
+    return str(task.error or "")[:limit] or "(empty)"
+
+
 def task_row(repository: TaskRepository, task_id: str) -> dict:
     task = repository.get(task_id)
     assert task is not None, f"task {task_id} disappeared"
@@ -876,7 +887,9 @@ def wait_worker_started(
         row = task_row(stack["repository"], task_id)
         if row["status"] in _TERMINAL_STATUSES:
             raise AssertionError(
-                f"execution {task_id} ended before spawning its worker: {row}"
+                f"execution {task_id} ended before spawning its worker: {row}\n"
+                f"--- central error ---\n{central_error(stack, task_id)}\n"
+                f"--- diagnostics ---\n{diagnostics(context)}"
             )
         return None
 
@@ -892,9 +905,9 @@ def wait_worker_started(
         context=context,
     )
     wait_for(
-        lambda: (Path(staged["root"]) / "started.marker").is_file(),
+        lambda: (Path(staged["root"]) / f"started.marker.{task_id}").is_file(),
         timeout=45,
-        message="test-double training worker did not start",
+        message=f"test-double training worker did not start for {task_id}",
         context=context,
     )
     wait_for(
