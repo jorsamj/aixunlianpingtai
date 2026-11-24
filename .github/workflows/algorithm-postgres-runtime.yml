@@ -1,0 +1,124 @@
+name: Algorithm PostgreSQL Runtime
+
+# Real PostgreSQL contracts for the algorithm-domain cutover work.
+#
+# These tests used to depend on an in-process `pgserver`, which silently turned
+# into "skipped" whenever the dependency was missing - so a green run proved
+# nothing about PostgreSQL. This job runs the same contracts against a real
+# PostgreSQL 16 service container and fails outright if any of them is skipped
+# (MC_REQUIRE_POSTGRES=1 turns "no PostgreSQL here" into an error, and the last
+# step refuses a run that skipped anything).
+#
+# It uses only small deterministic fixtures, never a production database, and it
+# is the only place where a real PostgreSQL server is expected.
+
+on:
+  pull_request:
+    paths:
+      - 'platform_core/algorithm_*.py'
+      - 'tests/integration/test_algorithm_migration_postgres.py'
+      - 'tests/integration/test_algorithm_shadow_postgres.py'
+      - 'tests/unit/test_algorithm_provider_boundary.py'
+      - '.github/workflows/algorithm-postgres-runtime.yml'
+  push:
+    paths:
+      - 'platform_core/algorithm_*.py'
+      - 'tests/integration/test_algorithm_migration_postgres.py'
+      - 'tests/integration/test_algorithm_shadow_postgres.py'
+      - 'tests/unit/test_algorithm_provider_boundary.py'
+      - '.github/workflows/algorithm-postgres-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: changlian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      MC_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/changlian_test
+      MC_REQUIRE_POSTGRES: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check \
+            pytest "psycopg[binary]" filelock
+      - name: Prove the service container is the real server
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          dsn = os.environ["MC_TEST_POSTGRES_DSN"]
+          with psycopg.connect(dsn) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version(), current_database()")
+                  version, database = cursor.fetchone()
+          print(version)
+          print("database:", database)
+          assert version.startswith("PostgreSQL 16"), version
+          PY
+      - name: Algorithm PostgreSQL contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --junitxml=postgres-contracts.xml \
+            tests/integration/test_algorithm_shadow_postgres.py \
+            tests/integration/test_algorithm_migration_postgres.py \
+            tests/unit/test_algorithm_provider_boundary.py
+      - name: Refuse a run that skipped a PostgreSQL contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("postgres-contracts.xml")
+          if not report.is_file():
+              print("no junit report: the contract run did not complete", file=sys.stderr)
+              sys.exit(1)
+          suite = ET.parse(report).getroot().find("testsuite")
+          if suite is None:
+              print("malformed junit report", file=sys.stderr)
+              sys.exit(1)
+          skipped = int(suite.get("skipped") or 0)
+          failures = int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+          tests = int(suite.get("tests") or 0)
+          print(f"tests={tests} failures={failures} skipped={skipped}")
+          if skipped:
+              print("a PostgreSQL contract was skipped; the job must fail", file=sys.stderr)
+              sys.exit(1)
+          if failures:
+              sys.exit(1)
+          if tests < 12:
+              print(f"expected at least 12 contracts, collected {tests}", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Upload contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: algorithm-postgres-contracts
+          path: postgres-contracts.xml
+          if-no-files-found: warn

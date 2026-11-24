@@ -10027,13 +10027,39 @@ def algorithms_file(project_id: str) -> Path:
     return project_dir(project_id) / "algorithms.json"
 
 
+def algorithm_repository(project_id: str):
+    """The provider that owns algorithm-domain reads/writes for this project.
+
+    SQLite is the default and behaves exactly as before. A PostgreSQL admission
+    switches this to the PostgreSQL provider; it never falls back silently, and
+    an unresolved cutover refuses both sides. Callers must go through this
+    accessor instead of constructing AlgorithmSqlStore directly, so a single
+    place decides the authoritative writer.
+    """
+    from platform_core.algorithm_repository import open_algorithm_repository
+
+    return open_algorithm_repository(algorithms_file(project_id))
+
+
+def algorithm_presentation_store(project_id: str):
+    """SQLite store for presentation-only projections (library/asset/overview).
+
+    These projections are declared outside the cutover contract, so they are
+    served by SQLite *by design* rather than by a silent fallback; a PostgreSQL
+    cutover needs them ported (or explicitly acknowledged as unported).
+    """
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+    return AlgorithmSqlStore(algorithms_file(project_id))
+
+
 def list_algorithms_internal(project_id: str, *, summary_only: bool = False,
                              algorithm_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fast, read-only algorithm projection. Existing report snapshots are reused."""
     get_project(project_id)
     if algorithm_id is not None:
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
-        selected = AlgorithmSqlStore(algorithms_file(project_id)).read_one(str(algorithm_id))
+        selected = algorithm_repository(project_id).read_one(str(algorithm_id))
         data = [selected] if selected is not None else []
     else:
         data = (list_algorithm_assets(algorithms_file(project_id), summary_only=True)
@@ -13207,14 +13233,14 @@ def v12_list_algorithms(project_id: str, summary_only: bool = False, asset_view:
         get_project(project_id)
         if not summary_only or not asset_view:raise PlatformError('ASSET_INVALID_QUERY','算法库必须使用只读摘要投影','',status_code=422)
         cache=ExternalPlatformRepository(DATA_DIR).cache()
-        return {'ok':True,**AlgorithmSqlStore(algorithms_file(project_id)).library_algorithms(
+        return {'ok':True,**algorithm_presentation_store(project_id).library_algorithms(
             statistics=_algorithm_library_statistics(project_id),master_digest=cache.get('master_data_digest') or '',categories=cache.get('categories') or [],
             page=page,page_size=page_size,query=query,algorithm_type=algorithm_type,industry=industry,source_type=source_type,training_state=training_state,category_ids=category_ids,sort=sort)}
     if asset_view:
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
         get_project(project_id)
         if not summary_only:raise PlatformError('ASSET_INVALID_QUERY','模型浏览列表必须使用摘要模式','',status_code=422)
-        return {'ok':True,**AlgorithmSqlStore(algorithms_file(project_id)).asset_algorithms(page=page,page_size=page_size,query=query,algorithm_type=algorithm_type,industry=industry,source_type=source_type,status=status,sort=sort)}
+        return {'ok':True,**algorithm_presentation_store(project_id).asset_algorithms(page=page,page_size=page_size,query=query,algorithm_type=algorithm_type,industry=industry,source_type=source_type,status=status,sort=sort)}
     if summary_only:
         # Reuse the existing process-local bootstrap snapshot for the compact
         # catalog. F5 should not deserialize every version again when the SQL
@@ -13262,7 +13288,7 @@ def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False
     get_project(project_id)
     if asset_view:
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
-        store=AlgorithmSqlStore(algorithms_file(project_id))
+        store=algorithm_presentation_store(project_id)
         if basic_only:return {'ok':True,'project_id':project_id,'algorithm':store.asset_algorithm_basic(algorithm_id)}
         if version_id:
             version=store.asset_version(algorithm_id,version_id)
@@ -20638,7 +20664,7 @@ def _deploy_selected_algorithm_version(project_id: str, algorithm_id: str, versi
     """
     from platform_core.algorithm_sql_store import AlgorithmSqlStore
     get_project(project_id)
-    algorithm = AlgorithmSqlStore(algorithms_file(project_id)).read_one(str(algorithm_id))
+    algorithm = algorithm_repository(project_id).read_one(str(algorithm_id))
     if not algorithm:
         return None, None
     version = next((v for v in algorithm.get("versions", [])
@@ -22816,7 +22842,7 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
     if asset_view:
         from platform_core.model_asset_views import conversion_record, text
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
-        store=AlgorithmSqlStore(algorithms_file(project_id))
+        store=algorithm_presentation_store(project_id)
         version=store.asset_version(algorithm_id,version_id,detail=False)
         history=_conversion_history_page(project_id,algorithm_id=algorithm_id,version_id=version_id,page=page,page_size=page_size,status=status,target=target,chip=chip,precision=precision,csc=csc,created_from=created_from,created_to=created_to,force=force,include_facets=True)
         rows=[conversion_record(job,deploy_root(project_id)) for job in history['items']]
@@ -28934,7 +28960,7 @@ def _v53_build_core_snapshot(project_id):
     datasets=measure("datasets",lambda:ensure_default_datasets(project_id))
     revisions=measure("revision",lambda:_v53_core_revisions(project_id))
     project=measure("project",lambda:get_project(project_id))
-    algorithms,total,revision=measure("algorithms",lambda:AlgorithmSqlStore(algorithms_file(project_id)).bootstrap_summary())
+    algorithms,total,revision=measure("algorithms",lambda:algorithm_presentation_store(project_id).bootstrap_summary())
     materials=measure("materials",lambda:material_store(project_id).summary())
     annotations=measure("annotations",lambda:AnnotationRepository(project_dir(project_id)).summary())
     if revisions != _v53_core_revisions(project_id) or revision != revisions["algorithm"]:

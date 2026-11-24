@@ -9,14 +9,32 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+import os
 import tempfile
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg", reason="psycopg 3 is required for PostgreSQL provider tests")
-pgserver = pytest.importorskip(
-    "pgserver", reason="an isolated local PostgreSQL server is required"
-)
+
+def _require_or_skip(module_name: str, reason: str):
+    """Import a PostgreSQL dependency, or skip - unless CI demands real PG.
+
+    ``MC_REQUIRE_POSTGRES=1`` turns "no PostgreSQL here" into a hard failure, so
+    a CI job can never report green by silently skipping the contracts.
+    """
+    import importlib
+
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        if os.environ.get("MC_REQUIRE_POSTGRES", "").strip() == "1":
+            raise RuntimeError(
+                f"MC_REQUIRE_POSTGRES=1 but {module_name} is unavailable: {reason}"
+            )
+        pytest.skip(reason, allow_module_level=True)
+
+
+psycopg = _require_or_skip("psycopg", "psycopg 3 is required for PostgreSQL provider tests")
+_EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
 from platform_core.algorithm_cutover import (
     admit_cutover,
@@ -50,8 +68,36 @@ from platform_core.algorithm_shadow import _digest, _snapshot_body
 from platform_core.algorithm_sql_store import AlgorithmSqlStore
 
 
+class _ExternalPostgres:
+    """A PostgreSQL server supplied by CI (service container) instead of pgserver."""
+
+    def __init__(self, dsn: str):
+        self._dsn = dsn
+
+    def get_uri(self) -> str:
+        return self._dsn
+
+    def cleanup(self) -> None:
+        # Leave the container as we found it: the contracts create the
+        # algorithm schema themselves, so only that schema is removed.
+        try:
+            with psycopg.connect(self._dsn) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("DROP SCHEMA IF EXISTS w5_algorithm CASCADE")
+                connection.commit()
+        except Exception:
+            pass
+
+
 @pytest.fixture(scope="module")
 def pg():
+    external = os.environ.get(_EXTERNAL_DSN_ENV, "").strip()
+    if external:
+        yield _ExternalPostgres(external)
+        return
+    pgserver = _require_or_skip(
+        "pgserver", "an isolated local PostgreSQL server is required"
+    )
     root = pathlib.Path(tempfile.mkdtemp(prefix="t8pg-")) / "data"
     server = pgserver.get_server(root, cleanup_mode="delete")
     try:
