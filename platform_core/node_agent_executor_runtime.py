@@ -1325,7 +1325,41 @@ class ExecutionLeaseMonitor:
         client_timeout = float(getattr(self.client, "timeout", 0) or 0)
         remaining = self.remaining_lease_seconds
         ceiling = client_timeout if client_timeout > 0 else DEFAULT_EXECUTOR_TIMEOUT_SECONDS
-        return max(1.0, min(ceiling, remaining))
+        # A sub-second remainder must shrink the request, not be rounded up.
+        return max(0.05, min(ceiling, remaining))
+
+    @staticmethod
+    def _deadline_from_receipt(body: object, fallback_ttl: float) -> float | None:
+        """Prefer the control plane's own expiry for the renewed lease.
+
+        The heartbeat response may carry the new deadline; when it does, the
+        local deadline is derived from it instead of assuming receipt time plus
+        the initial TTL. A missing/unparseable value returns None so the caller
+        keeps the conservative receipt-time-plus-TTL rule.
+        """
+        if not isinstance(body, Mapping):
+            return None
+        candidates = []
+        execution = body.get("execution")
+        if isinstance(execution, Mapping):
+            candidates.append(execution.get("lease_expires_at"))
+        candidates.append(body.get("lease_expires_at"))
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            try:
+                expiry = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            now_wall = (
+                datetime.now(expiry.tzinfo) if expiry.tzinfo is not None else datetime.now()
+            )
+            remaining = (expiry - now_wall).total_seconds()
+            if remaining <= 0:
+                continue
+            return time.monotonic() + remaining
+        return None
 
     def beat(
         self,
@@ -1392,7 +1426,10 @@ class ExecutionLeaseMonitor:
                 self.transport_failures = 0
                 self.last_transport_error = ""
                 self._last_verified = time.monotonic()
-                self._deadline = self._last_verified + self._lease_seconds
+                # Trust the control plane's own expiry when it is reported;
+                # otherwise the renewal is valid for one full TTL from receipt.
+                reported = self._deadline_from_receipt(body, self._lease_seconds)
+                self._deadline = reported or (self._last_verified + self._lease_seconds)
                 if bool(body.get("cancel_requested")):
                     self.cancel_requested.set()
                 return body
@@ -1423,6 +1460,14 @@ class ExecutionLeaseMonitor:
     def assert_active(self) -> None:
         if self.fenced.is_set():
             raise RemoteExecutionFenced(self.last_error or "remote execution is fenced")
+        if self._lease_window_exhausted():
+            # The lease window closed without a verified renewal: ownership can
+            # no longer be proven even though no request has failed yet.
+            self._mark_fenced(NodeExecutorHTTPError(
+                "EXECUTION_LEASE_UNVERIFIED",
+                "execution lease expired before it could be renewed",
+            ))
+            raise RemoteExecutionFenced(self.last_error)
         if self.cancel_requested.is_set():
             raise InterruptedError("remote task cancellation requested")
 

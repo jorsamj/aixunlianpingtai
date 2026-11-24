@@ -536,10 +536,20 @@ class AgentTrainingRunner:
                 lease, identity, reason="graceful_shutdown" if graceful else "terminate_active"
             )
             if graceful:
-                # An orderly shutdown verified the stop itself and leaves no
-                # execution behind, so the durable identity may be released
-                # (the abrupt/fenced path must keep it for recovery).
-                self._confirm_stop_cleanup(lease)
+                # Only release the unique recovery witness once the control
+                # plane has actually accepted the stop proof; if that cannot be
+                # confirmed, keep the identity so a restart can still prove what
+                # happened.
+                try:
+                    self._submit_stop_proof(lease)
+                except Exception as error:  # best effort: never block shutdown
+                    self._recovery_error = (
+                        "graceful shutdown could not confirm the stop proof: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                else:
+                    if not self._recovery_error:
+                        self._confirm_stop_cleanup(lease)
         self._clear_active_process()
         self._recovery_error = ""
         return True

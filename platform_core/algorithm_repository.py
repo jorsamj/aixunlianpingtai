@@ -13,6 +13,7 @@ Dialect boundary: SQL lives only in ``algorithm_sql_store`` (SQLite) and
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -166,10 +167,37 @@ class AlgorithmRepository(Protocol):
 #: Store method names that mutate algorithm state. Anything reached through the
 #: pass-through adapter with one of these prefixes is treated as a write and must
 #: pass the authority guard, so an undeclared helper cannot silently bypass it.
+_NON_WRITE_NAME_PREFIXES = ("read_", "list_", "get_", "load_", "count_", "describe_", "find_", "query_")
+
 _WRITE_NAME_PREFIXES = (
     "replace_", "create_", "patch_", "delete_", "attach_", "rollback_",
     "update_", "sync_", "save_", "write_", "set_", "remap_", "repair_",
 )
+
+
+class _GuardedStore:
+    """Pass-through store wrapper that gates mutating calls on write authority."""
+
+    def __init__(self, store: Any, guard: Any) -> None:
+        object.__setattr__(self, "_wrapped_store", store)
+        object.__setattr__(self, "_wrapped_guard", guard)
+
+    def __getattr__(self, name: str) -> Any:
+        store = object.__getattribute__(self, "_wrapped_store")
+        attribute = getattr(store, name)
+        if name.startswith("_") or name.startswith(_NON_WRITE_NAME_PREFIXES):
+            return attribute
+        if callable(attribute) and name.startswith(_WRITE_NAME_PREFIXES):
+            guard = object.__getattribute__(self, "_wrapped_guard")
+
+            def guarded(*args: Any, **kwargs: Any) -> Any:
+                with guard():
+                    return attribute(*args, **kwargs)
+            return guarded
+        return attribute
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(object.__getattribute__(self, "_wrapped_store"), name, value)
 
 
 class SqliteAlgorithmRepository:
@@ -183,24 +211,31 @@ class SqliteAlgorithmRepository:
         *,
         admission_path: str | Path | None = None,
     ):
-        self.store = AlgorithmSqlStore(Path(json_path))
-        self.project_id = self.store.project_id
-        self.db_path = self.store.db_path
-        self.json_path = self.store.json_path
+        store = AlgorithmSqlStore(Path(json_path))
+        self.project_id = store.project_id
+        self.db_path = store.db_path
+        self.json_path = store.json_path
         self.record_path = (
             Path(admission_path)
             if admission_path
             else admission_record_path(Path(json_path))
         )
+        # Every mutating store call is routed through the authority guard *and*
+        # the shared switch lock, so the check and the write cannot be separated
+        # by a cutover that lands in between.
+        self.store = _GuardedStore(store, self._write_guard)
+
+    @contextmanager
+    def _write_guard(self):
+        """Hold the switch mutex across (authority check -> store write)."""
+        with admission_switch_lock(self.record_path):
+            _refuse_stale_sqlite(Path(self.json_path), self.record_path)
+            yield
 
     def _guard_write(self) -> None:
-        """Re-check authority on every write, not just when the instance opened.
-
-        A long-lived SQLite instance created before a cutover must stop writing
-        the moment PostgreSQL becomes authoritative (or while a cutover is
-        unresolved), otherwise the factory check only protects new objects.
-        """
-        _refuse_stale_sqlite(Path(self.json_path), self.record_path)
+        """Compatibility helper: check authority under the switch mutex."""
+        with self._write_guard():
+            pass
 
     # -- provider metadata -------------------------------------------------
     def capabilities(self) -> frozenset[str]:
@@ -245,25 +280,20 @@ class SqliteAlgorithmRepository:
         return self.store.training_version_refs(task_id)
 
     def replace_all(self, algorithms: Sequence[Mapping[str, Any]]) -> None:
-        self._guard_write()
         self.store.replace_all(algorithms)
 
     def create_algorithm(self, item: Mapping[str, Any]) -> dict:
-        self._guard_write()
         return self.store.create_algorithm(item)
 
     def patch_algorithm(
         self, algorithm_id: str, patch: Mapping[str, Any], *, replace_analyses: bool = False
     ) -> dict:
-        self._guard_write()
         return self.store.patch_algorithm(algorithm_id, patch, replace_analyses=replace_analyses)
 
     def delete_algorithm(self, algorithm_id: str) -> None:
-        self._guard_write()
         self.store.delete_algorithm(algorithm_id)
 
     def attach_version(self, algorithm_id: str, version: Mapping[str, Any]) -> dict:
-        self._guard_write()
         return self.store.attach_version(algorithm_id, version)
 
     def attach_version_if_current(
@@ -273,7 +303,6 @@ class SqliteAlgorithmRepository:
         *,
         expected_current_version_id: str | None,
     ) -> dict:
-        self._guard_write()
         return self.store.attach_version_if_current(
             algorithm_id, version, expected_current_version_id=expected_current_version_id
         )
@@ -281,7 +310,6 @@ class SqliteAlgorithmRepository:
     def patch_version(
         self, algorithm_id: str, version_id: str, patch: Mapping[str, Any], *, now: str
     ) -> dict:
-        self._guard_write()
         return self.store.patch_version(algorithm_id, version_id, patch, now=now)
 
     def rollback_version(
@@ -294,7 +322,6 @@ class SqliteAlgorithmRepository:
         now: str,
         delete_current_version: bool,
     ) -> dict | None:
-        self._guard_write()
         return self.store.rollback_version(
             algorithm_id,
             target_version_id,
@@ -313,7 +340,6 @@ class SqliteAlgorithmRepository:
         operation: Mapping[str, Any],
         now: str,
     ) -> dict:
-        self._guard_write()
         return self.store.delete_version_with_operation(
             algorithm_id,
             version_id,
@@ -325,13 +351,11 @@ class SqliteAlgorithmRepository:
     def update_version_operation(
         self, algorithm_id: str, operation_id: str, patch: Mapping[str, Any]
     ) -> None:
-        self._guard_write()
         self.store.update_version_operation(algorithm_id, operation_id, patch)
 
     def sync_external_algorithms(
         self, incoming: Mapping[str, Mapping[str, Any]], *, provider: str, synced_at: str
     ) -> dict[str, int]:
-        self._guard_write()
         return self.store.sync_external_algorithms(
             incoming, provider=provider, synced_at=synced_at
         )
@@ -349,6 +373,20 @@ def admission_transition_path(record_path: str | Path) -> Path:
     """
     target = Path(record_path)
     return target.with_name(target.name + ".transition")
+
+
+def admission_switch_lock(record_path: str | Path, *, timeout: float = 5.0):
+    """One mutex shared by a switch publication and every SQLite write.
+
+    A SQLite writer holds it across (authority check -> store write) and a
+    cutover/rollback holds it across (marker/record publication), so a writer
+    that already passed the check cannot slip a write past the switch boundary.
+    """
+    from filelock import FileLock
+
+    target = Path(record_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return FileLock(str(target) + ".switch.lock", timeout=timeout, thread_local=False)
 
 
 def resolve_provider(

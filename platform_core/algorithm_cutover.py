@@ -394,13 +394,24 @@ def _emergency_revoke(connection, project_id: str, admission_id: str, *, reason:
 
 
 @contextmanager
-def cutover_transition(record_path: str | Path, *, project_id: str, kind: str):
+def cutover_transition(
+    record_path: str | Path,
+    *,
+    project_id: str,
+    kind: str,
+    expect_provider: str = PROVIDER_POSTGRESQL,
+):
     """Publish a persisted "switch in progress" marker for the whole switch.
 
     The marker exists from before PostgreSQL commits the new authority until the
     local admission record is durable, so a crash in that window leaves an
-    explicit, recoverable state in which neither provider accepts writes. It is
-    removed only after the local record has been written.
+    explicit, recoverable state in which neither provider accepts writes.
+
+    It is removed only when the switch actually completed: the body returned
+    normally *and* the durable admission record now names the expected
+    authoritative provider. Any exception keeps the marker, because an
+    unfinished or unproven switch must keep blocking writes instead of silently
+    erasing the evidence that it was interrupted.
     """
     marker = admission_transition_path(record_path)
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -408,20 +419,44 @@ def cutover_transition(record_path: str | Path, *, project_id: str, kind: str):
         "schema": "algorithm-cutover-transition/1",
         "project_id": str(project_id),
         "kind": str(kind),
+        "expected_provider": str(expect_provider),
         "started_at": datetime.now(timezone.utc).isoformat(),
         "note": (
             "an unresolved cutover blocks both providers; finish or roll back "
             "the cutover, then remove this marker"
         ),
     }
-    marker.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Hold the same switch lock the SQLite writers take, so no write can slip
+    # through between the authority change and the marker publication.
+    with admission_switch_lock(record_path):
+        marker.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         yield marker
-    finally:
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
+    except BaseException:
+        raise
+    else:
+        if not _admission_provider_is(record_path, project_id, expect_provider):
+            return
+        with admission_switch_lock(record_path):
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _admission_provider_is(record_path: str | Path, project_id: str, provider: str) -> bool:
+    """True only when the durable record proves the switch reached its target."""
+    try:
+        record = load_admission_record(record_path)
+    except Exception:
+        return False
+    if not isinstance(record, Mapping):
+        return False
+    return (
+        str(record.get("project_id") or "") == str(project_id)
+        and str(record.get("authoritative_provider") or "") == str(provider)
+        and not record.get("revoked_at")
+    )
 
 
 def write_admission_record(record: Mapping[str, Any], path: str | Path) -> Path:
