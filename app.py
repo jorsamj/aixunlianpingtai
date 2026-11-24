@@ -173,7 +173,12 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
-from platform_core.training_tasks import TrainingAdmissionError, freeze_training_inputs, resolve_training_selection
+from platform_core.training_tasks import (
+    TrainingAdmissionError,
+    freeze_training_inputs,
+    read_training_input_freeze,
+    resolve_training_selection,
+)
 from platform_core.training_label_tasks import (
     inherited_training_label_preview,
     project_training_rows,
@@ -1865,9 +1870,14 @@ def _active_storage_source_dependencies(source_id: str) -> list[str]:
             referenced = _payload_references_storage_source(payload, source_id)
             dependency_payloads = [payload]
             if task.kind is TaskKind.TRAINING:
-                frozen = artifacts.read_json(
-                    task.task_id, "input-freeze.json", default={}
-                )
+                try:
+                    frozen = read_training_input_freeze(
+                        artifacts, task.task_id, payload, default={},
+                    )
+                except (OSError, ValueError):
+                    frozen = {}
+                if not isinstance(frozen, Mapping):
+                    frozen = {}
                 dependency_payloads.append(frozen)
                 referenced = referenced or _payload_references_storage_source(
                     frozen, source_id,
@@ -1881,9 +1891,14 @@ def _active_storage_source_dependencies(source_id: str) -> list[str]:
                     parent_payload = artifacts.read_json(
                         parent.task_id, parent.payload_ref, default={}
                     )
-                    parent_frozen = artifacts.read_json(
-                        parent.task_id, "input-freeze.json", default={}
-                    )
+                    try:
+                        parent_frozen = read_training_input_freeze(
+                            artifacts, parent.task_id, parent_payload, default={},
+                        )
+                    except (OSError, ValueError):
+                        parent_frozen = {}
+                    if not isinstance(parent_frozen, Mapping):
+                        parent_frozen = {}
                     referenced = _payload_references_storage_source(
                         parent_payload, source_id,
                     ) or _payload_references_storage_source(
@@ -8967,6 +8982,10 @@ def _enqueue_explicit_training_locked(
         "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
         "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
         "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
+        # Creation-time iteration-base fence. TRAINING_PREPARE refuses to freeze
+        # a different base if the algorithm current pointer moves while queued.
+        # Historical payloads without this field keep the previous behavior.
+        "reference_version_id": reference_version_id,
         "algorithm_identity": {
             "id": str(asset_algorithm.get("id") or ""),
             "name": str(asset_algorithm.get("name") or "已删除算法"),

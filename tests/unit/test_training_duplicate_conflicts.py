@@ -465,3 +465,89 @@ def test_explicit_selection_adjustment_benchmark_normalization_preserves_kind(tm
     assert normalized['review_kind'] == review['review_kind']
     assert normalized['original_test_image_ids'] == ['t']
     assert normalized['excluded_image_ids'] == ['b']
+
+def _diagnosis_client(task, artifacts, project):
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.training_recovery_api import training_recovery_router
+
+    class Repository:
+        def get(self, task_id):
+            return task if task_id == task.task_id else None
+
+        def list(self, **kwargs):
+            return SimpleNamespace(items=[task], next_cursor=None)
+
+    app = FastAPI()
+    app.include_router(training_recovery_router(
+        lambda _: {"id": "p"}, lambda: Repository(), lambda: artifacts,
+        project_path_provider=lambda _: project))
+    return TestClient(app)
+
+
+def test_input_diagnosis_projects_new_format_freeze_publication_state(tmp_path):
+    from dataclasses import replace
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskStatus
+    from platform_core.training_tasks import _training_input_freeze_digest
+
+    project = seed(tmp_path, [row("a"), row("b")])
+    artifacts = ArtifactStore(tmp_path / "tasks")
+    frozen = {"schema_version": 1, "snapshot_id": "s", "images": [
+        {"image_id": "a", "role": "train", "content_sha256": row("a")["content_sha256"]}]}
+    frozen["input_freeze_id"] = _training_input_freeze_digest(frozen)
+    ref = artifacts.write_evidence_json("target", frozen)
+    artifacts.atomic_write_json("target", "payload.json", {
+        "schema_version": 4, "input_freeze_ref": ref,
+        "input_freeze_id": frozen["input_freeze_id"], "snapshot_id": "s",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": ["a"], "train_labels": ["fire"]})
+    task = replace(TaskRecord.new("target", "p", TaskKind.TRAINING, "payload.json", "cpu"),
+                   status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                   error="TRAINING_PREPARE_FAILED: interrupted after evidence write")
+    body = _diagnosis_client(task, artifacts, project).get(
+        "/api/v62/projects/p/training-tasks/target/input-diagnosis?limit=1").json()
+    freeze = body["freeze_publication"]
+    assert freeze["state"] == "evidence_unbound"
+    assert freeze["suggested_action"] == "retry_prepare"
+    assert freeze["input_freeze_state"] == "AVAILABLE"
+    assert freeze["input_freeze_ref"] == ref
+    # The read-only diagnostic resolves the new-format evidence, so the frozen
+    # contract digest is no longer reported as missing.
+    assert body["historical_evidence"]["status"] == "freeze_checksum_verified_not_source_revalidated"
+    assert body["historical_evidence"]["input_freeze_id"] == frozen["input_freeze_id"]
+
+    artifacts.atomic_write_json("target", "input-preparation-error.json", {
+        "schema_version": 1, "code": "TRAINING_FREEZE_PUBLICATION_INCOMPLETE",
+        "input_freeze_created": True})
+    body = _diagnosis_client(task, artifacts, project).get(
+        "/api/v62/projects/p/training-tasks/target/input-diagnosis?limit=1").json()
+    freeze = body["freeze_publication"]
+    assert freeze["state"] == "incomplete_unreplayable"
+    assert freeze["code"] == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    assert freeze["suggested_action"] == "recreate_task"
+
+
+def test_input_diagnosis_projects_legacy_unbound_freeze_without_touching_it(tmp_path):
+    from dataclasses import replace
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskStatus
+
+    project = seed(tmp_path, [row("a")])
+    artifacts = ArtifactStore(tmp_path / "tasks")
+    legacy = {"schema_version": 1, "input_freeze_id": "legacy", "snapshot_id": "legacy-s"}
+    artifacts.atomic_write_json("target", "input-freeze.json", legacy)
+    before = artifacts.artifact_path("target", "input-freeze.json").read_bytes()
+    artifacts.atomic_write_json("target", "payload.json", {
+        "schema_version": 3, "split_mode": "random_test_from_training_pool",
+        "train_image_ids": ["a"]})
+    task = replace(TaskRecord.new("target", "p", TaskKind.TRAINING, "payload.json", "cpu"),
+                   status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                   error="TRAINING_FREEZE_PUBLICATION_INCOMPLETE")
+    body = _diagnosis_client(task, artifacts, project).get(
+        "/api/v62/projects/p/training-tasks/target/input-diagnosis?limit=1").json()
+    freeze = body["freeze_publication"]
+    assert freeze["state"] == "incomplete_unreplayable"
+    assert freeze["code"] == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    assert freeze["legacy_input_freeze_present"] is True
+    assert freeze["suggested_action"] == "recreate_task"
+    assert artifacts.artifact_path("target", "input-freeze.json").read_bytes() == before

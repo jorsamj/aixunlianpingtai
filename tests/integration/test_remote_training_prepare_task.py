@@ -1385,3 +1385,194 @@ def test_fixed_zip_references_prepare_and_materialize_exact_three_roles(tmp_path
     store.patch({'image-2': {'source_available':False}})
     with pytest.raises(ValueError):
         validate_payload_references(data,pid,payload)
+
+# --- W11/W12 training lifecycle closure (P0-1 freezes, P0-3 base ancestry) ---
+
+def _freeze_context(artifacts, repository):
+    from types import SimpleNamespace
+    return SimpleNamespace(artifacts=artifacts, repository=repository,
+                           run_owned=lambda operation: operation())
+
+
+def test_freeze_retry_after_publication_interruption_replays_fixed_identity(tmp_path, monkeypatch):
+    """Evidence written before a crash must replay, never be overwritten."""
+    from platform_core.task_runtime.payload_publications import EVIDENCE_REF
+    from platform_core.training_tasks import (
+        _training_input_freeze_digest,
+        resolve_training_input_freeze,
+    )
+    from platform_core.training_splits import SplitMode, SplitRequest
+
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload.update(schema_version=4, train_labels=["fire"])
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    context = _freeze_context(artifacts, repository)
+
+    def interrupted(*_args, **_kwargs):
+        raise RuntimeError("simulated process death after immutable evidence write")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(remote_training_tasks_module, "publication", interrupted)
+        with pytest.raises(RuntimeError, match="simulated process death"):
+            handler._freeze_request_contract(context, repository.get(target_id), payload)
+    evidence_root = artifacts.root / target_id / "evidence-versions" / "v1"
+    original_evidence = {
+        path.name: path.read_bytes()
+        for path in evidence_root.iterdir() if path.is_file()
+    }
+    assert original_evidence
+    assert artifacts.artifact_path(target_id, "input-request-selection.json").is_file()
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+    updated = handler._freeze_request_contract(context, repository.get(target_id), payload)
+    refs = {key: str(updated[key]) for key in
+            ("input_freeze_ref", "snapshot_ref", "dataset_revision_ref")}
+    assert all(EVIDENCE_REF.fullmatch(value) for value in refs.values()), refs
+    frozen = artifacts.read_json(target_id, refs["input_freeze_ref"])
+    snapshot = artifacts.read_json(target_id, refs["snapshot_ref"])
+    revision = artifacts.read_json(target_id, refs["dataset_revision_ref"])
+    assert frozen["input_freeze_id"] == _training_input_freeze_digest(frozen)
+    assert snapshot["snapshot_id"] == frozen["snapshot_id"] == updated["snapshot_id"]
+    assert snapshot["dataset_revision_id"] == frozen["dataset_revision_id"] \
+        == revision["dataset_revision_id"] == updated["dataset_revision_id"]
+
+    split = frozen["split"]
+    _rows, _schema, _manifest, reproduced = resolve_training_input_freeze(
+        frozen,
+        SplitRequest(mode=SplitMode(split["mode"]),
+                     train_image_ids=tuple(split["train_image_ids"]),
+                     test_image_ids=tuple(split["test_image_ids"]),
+                     validation_percent=split["validation_percent"],
+                     experiment_percent=split["experiment_percent"]),
+        seed=split["seed"],
+    )
+    assert reproduced["snapshot_id"] == updated["snapshot_id"]
+    # The fixed publication identity is intact and no first-attempt receipt leaked.
+    assert len(list((artifacts.root / target_id / "payload-publications" / "v1").iterdir())) == 1
+    for name, raw in original_evidence.items():
+        path = evidence_root / name
+        assert path.is_file() and path.read_bytes() == raw
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+
+def test_legacy_unbound_freeze_evidence_fails_with_explicit_code_and_is_preserved(tmp_path):
+    """A legacy half-commit cannot be replayed, so it fails closed untouched."""
+    from platform_core.task_runtime import FencedTaskRepository, WorkerContext
+
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir, project_id, repository_type=FencedTaskRepository)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload.update(schema_version=4, train_labels=["fire"])
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    legacy_freeze = {"schema_version": 1, "snapshot_id": "legacy-unbound",
+                     "input_freeze_id": "legacy-half-commit"}
+    artifacts.atomic_write_json(target_id, "input-freeze.json", legacy_freeze)
+    original_bytes = artifacts.artifact_path(target_id, "input-freeze.json").read_bytes()
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    context = _freeze_context(artifacts, repository)
+
+    with pytest.raises(RemoteTrainingPreparationError) as direct:
+        handler._freeze_request_contract(context, repository.get(target_id), payload)
+    assert direct.value.code == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    assert artifacts.artifact_path(target_id, "input-freeze.json").read_bytes() == original_bytes
+    assert not artifacts.artifact_path(target_id, "input-request-selection.json").exists()
+
+    lease = repository.claim_next("legacy-preparer", [TaskKind.TRAINING_PREPARE],
+                                  {"training.prepare"})
+    assert lease is not None
+    with pytest.raises(RemoteTrainingPreparationError) as raised:
+        handler.run(WorkerContext(lease.task, lease, repository, artifacts))
+    assert raised.value.code == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    parent = repository.get(target_id)
+    assert parent is not None and parent.status is TaskStatus.FAILED
+    assert "TRAINING_FREEZE_PUBLICATION_INCOMPLETE" in str(parent.error)
+    evidence = artifacts.read_json(target_id, "input-preparation-error.json")
+    assert evidence["code"] == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    assert evidence["input_freeze_created"] is True
+    assert artifacts.artifact_path(target_id, "input-freeze.json").read_bytes() == original_bytes
+
+
+def _seed_algorithm_versions(data_dir, project_id, versions, current_version_id):
+    from platform_core.algorithms import save_algorithms
+    path = data_dir / "projects" / project_id / "algorithms.json"
+    save_algorithms(path, [{
+        "id": "algorithm-fire",
+        "name": "fire",
+        "source_type": "LOCAL",
+        "current_version_id": current_version_id,
+        "versions": versions,
+    }])
+
+
+def _iteration_version(project, version_id, created_at):
+    weight = project / f"{version_id}.pt"
+    weight.write_bytes(f"verified-checkpoint-{version_id}".encode())
+    return {
+        "id": version_id,
+        "version_name": version_id,
+        "created_at": created_at,
+        "finished_at": created_at,
+        "stored_path": str(weight),
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "label_schema": [{"code": "fire", "class_id": 0}],
+    }
+
+
+def test_create_time_reference_version_blocks_silent_iteration_base_drift(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    project = data_dir / "projects" / project_id
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    context = _freeze_context(artifacts, repository)
+    v1 = _iteration_version(project, "version-v1", "2026-01-01T00:00:00+00:00")
+    _seed_algorithm_versions(data_dir, project_id, [v1], "version-v1")
+    base_payload = artifacts.read_json(target_id, "payload.json")
+    base_payload.update(schema_version=4, train_labels=["fire"])
+
+    fenced_payload = {**base_payload, "reference_version_id": "version-v1"}
+    artifacts.atomic_write_json(target_id, "payload.json", fenced_payload)
+    updated = handler._freeze_request_contract(
+        context, repository.get(target_id), fenced_payload)
+    assert updated["base_version_id"] == "version-v1"
+    assert updated["reference_version_id"] == "version-v1"
+    assert updated["base_version_ancestry_verified"] is True
+
+    v2 = _iteration_version(project, "version-v2", "2026-02-01T00:00:00+00:00")
+    from platform_core.algorithms import attach_version
+    attach_version(data_dir / "projects" / project_id / "algorithms.json",
+                   "algorithm-fire", v2)
+
+    drifted_id = "train_remote_drifted"
+    drifted_payload = {**base_payload, "reference_version_id": "version-v1"}
+    artifacts.atomic_write_json(drifted_id, "payload.json", drifted_payload)
+    repository.create(TaskRecord.new(drifted_id, project_id, TaskKind.TRAINING,
+                                     "payload.json", "training:remote:scheduler",
+                                     required_capabilities=("training.ultralytics",)))
+    with pytest.raises(RemoteTrainingPreparationError) as raised:
+        handler._freeze_request_contract(
+            context, repository.get(drifted_id), drifted_payload)
+    assert raised.value.code == "TRAINING_BASE_ANCESTRY_CHANGED"
+    assert not artifacts.artifact_path(drifted_id, "input-freeze.json").exists()
+    assert artifacts.read_json(drifted_id, "input-request-selection.json") is not None
+
+    legacy_id = "train_remote_legacy_client"
+    legacy_payload = dict(base_payload)  # Old client/task: no create-time fence field.
+    artifacts.atomic_write_json(legacy_id, "payload.json", legacy_payload)
+    repository.create(TaskRecord.new(legacy_id, project_id, TaskKind.TRAINING,
+                                     "payload.json", "training:remote:scheduler",
+                                     required_capabilities=("training.ultralytics",)))
+    legacy_updated = handler._freeze_request_contract(
+        context, repository.get(legacy_id), legacy_payload)
+    assert legacy_updated["base_version_id"] == "version-v2"
+    assert legacy_updated["reference_version_id"] == ""
+    assert legacy_updated["base_version_ancestry_verified"] is False

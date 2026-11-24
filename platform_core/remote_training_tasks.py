@@ -59,6 +59,7 @@ from .training_tasks import (
     _selected_project_images,
     freeze_training_inputs,
     materialize_portable_dataset,
+    read_training_input_freeze,
     resolve_remote_training_bundle,
     resolve_frozen_training_base,
     resolve_training_selection,
@@ -300,13 +301,51 @@ class TrainingPrepareHandler:
                     "schema_version": 1, "task_id": training_task_id,
                     "project_id": current.project_id, "code": code,
                     "stage": "training_input_preparation_failed",
-                    "input_freeze_created": context.artifacts.artifact_path(
-                        training_task_id, "input-freeze.json").is_file(),
+                    "input_freeze_created": self._freeze_evidence_created(
+                        context.artifacts, current,
+                    ),
                     "preparation_task_id": context.task.task_id,
                 })
         except PermissionError as fenced:
             context.mark_lease_lost()
             raise ExecutionFencedError("training preparation lost parent failure ownership") from fenced
+
+    @staticmethod
+    def _freeze_evidence_created(artifacts, target) -> bool:
+        """Report frozen evidence presence for both publication formats.
+
+        Historical tasks wrote ``input-freeze.json``; current tasks bind an
+        immutable content-addressed ``input_freeze_ref``. A crash can also leave
+        a committed ``training.freeze`` publication receipt before the Task
+        pointer is published, so that fixed identity is checked as well. Failure
+        diagnostics must not claim "no freeze" merely because the legacy mirror
+        is absent.
+        """
+        try:
+            payload = artifacts.read_json(target.task_id, target.payload_ref, default={})
+        except (OSError, ValueError):
+            payload = {}
+        try:
+            frozen = read_training_input_freeze(
+                artifacts, target.task_id, payload, default=None)
+        except (OSError, ValueError):
+            frozen = None
+        if isinstance(frozen, Mapping) and str(frozen.get("input_freeze_id") or "").strip():
+            return True
+        from .task_runtime.payload_publications import PayloadPublicationIdentity
+        identity = PayloadPublicationIdentity(
+            task_id=target.task_id, project_id=target.project_id, kind='TRAINING',
+            phase='training.freeze', expected_ref=target.payload_ref,
+            expected_parent_attempt=target.attempt,
+            intent={'source_ref': target.payload_ref},
+        )
+        try:
+            artifacts.payload_reader.read_payload_publication_receipt(
+                target.task_id, identity.operation_id, identity=identity)
+            return True
+        except (PayloadPublicationError, OSError, ValueError):
+            pass
+        return False
 
     def _refresh_external_algorithm(self, project_id: str, algorithm: Mapping[str, Any]):
         if (
@@ -578,9 +617,20 @@ class TrainingPrepareHandler:
         # Keep network-backed refresh outside the project GT fence, but validate
         # Benchmark, expected revisions, selection and publication atomically.
         with material_annotation_lifecycle_fence(project):
-            if context.artifacts.artifact_path(target.task_id, "input-freeze.json").exists():
+            # A legacy half-commit wrote input-freeze.json before the frozen
+            # contract was bound to the Task. Current durable tasks never write
+            # that mirror: they keep content-addressed evidence plus the durable
+            # request-selection identity, so a retry can recompute/replay under
+            # the fixed publication identity. Legacy evidence has no such
+            # identity and cannot be proven identical to a recomputation, so it
+            # is preserved untouched and the task must be recreated.
+            legacy_freeze = context.artifacts.artifact_path(target.task_id, "input-freeze.json")
+            legacy_freeze_present = legacy_freeze.exists()
+            existing_request_selection = context.artifacts.read_json(
+                target.task_id, "input-request-selection.json", default=None)
+            if legacy_freeze_present and not isinstance(existing_request_selection, Mapping):
                 raise RemoteTrainingPreparationError("TRAINING_FREEZE_PUBLICATION_INCOMPLETE",
-                    "冻结证据已存在但任务尚未绑定，已保留原证据；请核验后重新创建任务",
+                    "旧格式冻结证据已存在但任务尚未绑定且无法重放，已保留原证据；请重新创建任务",
                     target_status=TaskStatus.FAILED)
             if fixed:
                 from .training_selection_reference import validate_payload_references
@@ -597,7 +647,7 @@ class TrainingPrepareHandler:
                 "expected_annotation_revision": payload.get("expected_annotation_revision"),
                 "duplicate_review": payload.get("duplicate_review"),
             }
-            artifacts_request = context.artifacts.read_json(target.task_id, "input-request-selection.json", default=None)
+            artifacts_request = existing_request_selection
             if artifacts_request is None:
                 context.artifacts.atomic_write_json(target.task_id, "input-request-selection.json", request_selection)
             elif artifacts_request != request_selection:
@@ -684,6 +734,19 @@ class TrainingPrepareHandler:
                 label_contract = resolve_training_label_contract(
                     self.data_dir, project, label_request, algorithm,
                 )
+                # Creation fences the algorithm current version; the freeze must
+                # not silently pick a newer iteration base if that pointer moved
+                # while the task sat in the queue. Requests without the field
+                # (historical tasks/clients) keep the previous resolution.
+                requested_reference_version = str(
+                    payload.get("reference_version_id") or "").strip()
+                resolved_base_version = str(
+                    label_contract.get("base_version_id") or "").strip()
+                if (requested_reference_version
+                        and requested_reference_version != resolved_base_version):
+                    raise RemoteTrainingPreparationError('TRAINING_BASE_ANCESTRY_CHANGED',
+                        '算法迭代基版本在任务创建后发生变化，不能静默改用新的基础模型；请重新创建任务',
+                        target_status=TaskStatus.FAILED)
                 admitted_sha = str(history_admission.get('base_model_sha256') or '')
                 frozen_sha = str(label_contract.get('base_model_sha256') or '')
                 if admitted_sha and admitted_sha != frozen_sha:
@@ -774,6 +837,14 @@ class TrainingPrepareHandler:
                 "base_model_sha256": label_contract.get("base_model_sha256") or "",
                 "base_model_size_bytes": int(label_contract.get("base_model_size_bytes") or 0),
                 "base_selection_reason": label_contract.get("base_selection_reason") or "",
+                # Creation-to-freeze ancestry identity; empty for historical
+                # requests that predate the create-time version fence.
+                "reference_version_id": requested_reference_version,
+                "base_version_ancestry_verified": bool(
+                    requested_reference_version
+                    and requested_reference_version == resolved_base_version
+                ),
+                **({"legacy_input_freeze_preserved": True} if legacy_freeze_present else {}),
             }
             updated['snapshot_ref']=context.artifacts.write_evidence_json(target.task_id,usage_snapshot)
             updated['dataset_revision_ref']=context.artifacts.write_evidence_json(target.task_id,dataset_revision_document(usage_snapshot))
@@ -811,6 +882,7 @@ class TrainingPrepareHandler:
             "base_version_id": payload.get("base_version_id"),
             "base_version_name": payload.get("base_version_name") or "",
             "base_training_mode": payload.get("base_training_mode") or "",
+            "reference_version_id": payload.get("reference_version_id") or "",
             "benchmark_reuse": payload.get("benchmark_reuse"),
             "supplement_candidate_set_id": str(
                 ((payload.get("supplement_candidate_set") or {}).get("candidate_set_id"))

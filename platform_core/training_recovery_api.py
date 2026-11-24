@@ -417,6 +417,96 @@ def _failure_diagnosis(
     }
 
 
+def training_freeze_publication_diagnosis(task, artifacts) -> dict[str, Any]:
+    """Read-only projection of the durable ``training.freeze`` publication state.
+
+    It never re-publishes, replays, deletes or repairs evidence; recovery remains
+    owned by the existing preparation/recovery endpoints. No endpoint or table is
+    added and historical task semantics are unchanged.
+    """
+    from .task_runtime.payload_publications import VERSION_REF
+    from .training_tasks import read_training_input_freeze
+
+    payload_state = "MISSING"
+    payload: Mapping[str, Any] = {}
+    try:
+        raw_payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        if isinstance(raw_payload, Mapping):
+            payload, payload_state = dict(raw_payload), "AVAILABLE"
+    except (OSError, ValueError):
+        payload_state = "ERROR"
+    receipt_phase = None
+    match = VERSION_REF.fullmatch(str(task.payload_ref))
+    if match:
+        try:
+            receipt = artifacts.payload_reader.read_payload_publication_receipt(
+                task.task_id, match["operation"],
+            )
+            receipt_phase = str(receipt.identity.data.get("phase") or "") or None
+        except (OSError, ValueError):
+            receipt_phase = None
+    freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+    frozen_state = "MISSING"
+    if freeze_ref:
+        try:
+            frozen = read_training_input_freeze(
+                artifacts, task.task_id, payload, default=None,
+            )
+        except (OSError, ValueError):
+            frozen = None
+            frozen_state = "ERROR"
+        if isinstance(frozen, Mapping):
+            frozen_state = "AVAILABLE"
+    preparation_error = artifacts.read_json(
+        task.task_id, "input-preparation-error.json", default=None,
+    )
+    preparation_code = (
+        str(preparation_error.get("code") or "")
+        if isinstance(preparation_error, Mapping) else ""
+    )
+    try:
+        legacy_present = artifacts.artifact_path(
+            task.task_id, "input-freeze.json").is_file()
+    except (OSError, ValueError):
+        legacy_present = False
+    incomplete = preparation_code == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    state, code, action = "not_frozen", None, "retry_prepare"
+    if (receipt_phase == "training.freeze"
+            or (str(payload.get("training_input_state") or "").upper() == "READY"
+                and freeze_ref)):
+        state, action = "published", None
+    elif freeze_ref or receipt_phase:
+        # Frozen contract prepared but the Task pointer is not committed yet.
+        # The publication identity is fixed, so a prepare retry replays/recomputes.
+        state, action = "evidence_unbound", "retry_prepare"
+        if incomplete:
+            state, code, action = (
+                "incomplete_unreplayable",
+                "TRAINING_FREEZE_PUBLICATION_INCOMPLETE",
+                "recreate_task",
+            )
+    elif incomplete or legacy_present:
+        # Legacy evidence without the durable request-selection identity cannot
+        # be proven identical to a recomputation; it is preserved untouched.
+        state, code, action = (
+            "incomplete_unreplayable",
+            "TRAINING_FREEZE_PUBLICATION_INCOMPLETE",
+            "recreate_task",
+        )
+    return {
+        "state": state,
+        "code": code,
+        "suggested_action": action,
+        "payload_ref": str(task.payload_ref),
+        "payload_state": payload_state,
+        "publication_phase": receipt_phase,
+        "input_freeze_ref": freeze_ref or None,
+        "input_freeze_state": frozen_state,
+        "legacy_input_freeze_present": bool(legacy_present),
+        "preparation_error_code": preparation_code or None,
+    }
+
+
 def training_recovery_truth(task, artifacts, *, verify_checkpoint_hash: bool = False) -> dict[str, Any]:
     """Project one task's durable recovery contract without mutating it."""
     if task.kind is not TaskKind.TRAINING:
@@ -606,11 +696,18 @@ def training_recovery_router(
         if project_path_provider is None:
             raise HTTPException(status_code=503, detail="训练输入诊断服务不可用")
         from .training_compatibility import compatibility_page, diagnose_training_duplicates
-        from .training_tasks import _training_input_freeze_digest
+        from .training_tasks import _training_input_freeze_digest, read_training_input_freeze
         from .material_batches import _historical_material_references, BatchRequestError
         artifacts = task_artifacts()
         payload = artifacts.read_json(task_id, task.payload_ref, default={})
-        frozen = artifacts.read_json(task_id, "input-freeze.json", default={})
+        try:
+            frozen = read_training_input_freeze(
+                artifacts, task_id, payload, default={},
+            )
+        except (OSError, ValueError):
+            frozen = {}
+        if not isinstance(frozen, Mapping):
+            frozen = {}
         valid_freeze = bool(isinstance(frozen, Mapping) and frozen.get("input_freeze_id")
             and frozen.get("input_freeze_id") == _training_input_freeze_digest(frozen))
         historical = {
@@ -623,6 +720,7 @@ def training_recovery_router(
             "preparation_error_recorded": isinstance(artifacts.read_json(task_id,
                 "input-preparation-error.json", default=None), Mapping),
         }
+        freeze_publication = training_freeze_publication_diagnosis(task, artifacts)
         current = {"evidence_basis": "current_canonical_annotations", "available": False}
         project = Path(project_path_provider(project_id))
         try:
@@ -638,7 +736,8 @@ def training_recovery_router(
             } for item in current["items"]]
         except (ValueError, KeyError, BatchRequestError) as error:
             current.update(available=False, message=_public_text(error))
-        return {"ok": True, "task_id": task_id, "historical_evidence": historical, "current_diagnosis": current}
+        return {"ok": True, "task_id": task_id, "historical_evidence": historical,
+            "freeze_publication": freeze_publication, "current_diagnosis": current}
 
     @recovery_router.get("/{task_id}/input-issues")
     def input_issues(

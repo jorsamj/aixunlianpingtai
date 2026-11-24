@@ -1337,6 +1337,50 @@ def _training_input_freeze_digest(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def read_training_input_freeze(
+    artifacts,
+    task_id: str,
+    payload: Mapping[str, Any] | None,
+    *,
+    default: Any = None,
+) -> Any:
+    """Read one Task's frozen training input contract.
+
+    New durable tasks bind a content-addressed ``input_freeze_ref`` in the Task
+    payload and never write the mutable legacy path.  Historical tasks refer to
+    the same document as ``input-freeze.json``.  A declared reference is
+    authoritative: only its absence falls back to the legacy file so an
+    already-frozen or executed task never switches evidence sources.  A corrupt
+    declared reference is therefore raised to the caller, never hidden behind a
+    different document.
+    """
+    document_payload = payload if isinstance(payload, Mapping) else {}
+    ref = str(document_payload.get("input_freeze_ref") or "").strip()
+    if ref:
+        return artifacts.read_json(task_id, ref, default=default)
+    return artifacts.read_json(task_id, "input-freeze.json", default=default)
+
+
+_REQUESTED_TRAIN_PARAM_FIELDS = (
+    "epochs", "imgsz", "batch", "workers", "cache", "precision", "device",
+)
+
+
+def requested_train_parameters(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Persist the verifiable requested subset beside the execution result.
+
+    This is the same comparable subset exposed by report_display(); it lets a
+    later reader compare requested versus actual runtime parameters without
+    trusting a mutable job file.
+    """
+    document = payload if isinstance(payload, Mapping) else {}
+    return {
+        key: document[key]
+        for key in _REQUESTED_TRAIN_PARAM_FIELDS
+        if key in document and document[key] is not None
+    }
+
+
 def _frozen_training_row(row: Mapping[str, Any]) -> dict[str, Any]:
     frozen = {
         key: row.get(key)
@@ -2872,6 +2916,7 @@ class TrainingHandler:
             "device_evidence": job.get("device_evidence"),
             "device_validation": job.get("device_evidence") or job.get("device_validation") or {},
             "actual_train_params": job.get("actual_train_params"),
+            "requested_train_params": requested_train_parameters(payload),
             "amp_preflight": job.get("amp_preflight"),
             "amp_check_method": job.get("amp_check_method"),
             "amp_check_result": job.get("amp_check_result"),
@@ -3035,6 +3080,11 @@ class TrainingHandler:
                         "snapshot_id": snapshot_id,
                         "dataset_revision_id": dataset_revision_id,
                         "training_lineage": training_lineage,
+                        # Durable requested/actual comparable subset. The
+                        # lineage already records both mappings; this keeps the
+                        # version object self-describing for report readers.
+                        "requested_train_params": result["requested_train_params"],
+                        "actual_train_params": result["actual_train_params"] or {},
                         "evaluation": evaluation,
                         "metric_credibility": metric_credibility,
                         "iteration_decision": iteration_decision,

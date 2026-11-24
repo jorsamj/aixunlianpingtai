@@ -455,3 +455,98 @@ def test_deleted_execution_is_not_reclassified_as_empty_history(tmp_path):
     index=TrainingMaterialUsage(repository)
     with index._connect() as database:
         assert index._empty_project_history(database,'project') is False
+
+def test_freeze_reader_prefers_content_addressed_reference_over_legacy_file(tmp_path):
+    from platform_core.task_runtime import ArtifactStore
+    from platform_core.training_tasks import read_training_input_freeze
+
+    artifacts = ArtifactStore(tmp_path / 'tasks')
+    legacy = {'input_freeze_id': 'legacy', 'snapshot_id': 'legacy-snapshot'}
+    artifacts.atomic_write_json('task', 'input-freeze.json', legacy)
+    modern = {'input_freeze_id': 'modern', 'snapshot_id': 'modern-snapshot'}
+    ref = artifacts.write_evidence_json('task', modern)
+    payload = {'input_freeze_ref': ref, 'input_freeze_id': 'modern'}
+    # New durable tasks read the payload-bound immutable evidence, never the
+    # legacy mirror that may still exist from a migrated task.
+    assert read_training_input_freeze(artifacts, 'task', payload) == modern
+    # Historical tasks with no payload reference still read the legacy file.
+    assert read_training_input_freeze(artifacts, 'task', {}) == legacy
+    assert read_training_input_freeze(
+        artifacts, 'task', {'input_freeze_ref': 'input-freeze.json'}) == legacy
+    # A declared modern reference that cannot be read fails closed instead of
+    # silently substituting unrelated legacy evidence.
+    with pytest.raises(ValueError):
+        read_training_input_freeze(artifacts, 'task', {
+            'input_freeze_ref': 'evidence-versions/v1/sha256-' + '0' * 64 + '.json',
+        })
+
+
+def test_new_format_parent_freeze_evidence_feeds_usage_inheritance(tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    from platform_core.algorithms import save_algorithms
+    from platform_core.material_repository import MaterialRepository
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+    from platform_core.training_material_usage import admit_history_selection
+    from platform_core.training_splits import SplitRequest, SplitMode
+    from platform_core.training_tasks import _training_input_freeze_digest
+
+    project = tmp_path / 'projects' / 'p'
+    project.mkdir(parents=True)
+    weight = project / 'parent.pt'
+    weight.write_bytes(b'verified parent checkpoint')
+    digest = hashlib.sha256(weight.read_bytes()).hexdigest()
+    repository = TaskRepository(tmp_path / 'task_runtime' / 'tasks.sqlite3')
+    artifacts = ArtifactStore(tmp_path / 'task_runtime' / 'artifacts')
+    materials = MaterialRepository(project)
+    materials.upsert_many([
+        {'id': 'parent-train', 'filename': 'parent.jpg', 'content_sha256': 'a' * 64},
+        {'id': 'new-train', 'filename': 'new.jpg', 'content_sha256': 'b' * 64},
+        {'id': 'new-test', 'filename': 'new-test.jpg', 'content_sha256': 'c' * 64},
+    ])
+    repository.create(TaskRecord.new(task_id='parent', project_id='p', kind=TaskKind.TRAINING,
+                                     resource_key='training', payload_ref='parent-payload.json'))
+    snapshot = {'snapshot_id': 'parent-snapshot', 'images': [
+        {'image_id': 'parent-train', 'role': 'train', 'content_sha256': 'a' * 64}]}
+    artifacts.atomic_write_json('parent', 'snapshot.json', snapshot)
+    frozen = {
+        'schema_version': 1,
+        'snapshot_id': 'parent-snapshot',
+        'dataset_revision_id': 'parent-revision',
+        'images': [{'id': 'parent-train', 'role': 'train', 'content_sha256': 'a' * 64,
+                    'camera_session_id': 'camera-session-1'}],
+    }
+    frozen['input_freeze_id'] = _training_input_freeze_digest(frozen)
+    freeze_ref = artifacts.write_evidence_json('parent', frozen)
+    artifacts.atomic_write_json('parent', 'parent-payload.json', {
+        'input_freeze_ref': freeze_ref,
+        'input_freeze_id': frozen['input_freeze_id'],
+        'snapshot_id': 'parent-snapshot',
+        'dataset_revision_id': 'parent-revision',
+    })
+    assert not artifacts.artifact_path('parent', 'input-freeze.json').exists()
+    version = {
+        'id': 'v', 'training_status': 'SUCCEEDED', 'artifact_verified': True,
+        'trainable': True, 'framework': 'ultralytics', 'training_job_id': 'parent',
+        'snapshot_id': 'parent-snapshot', 'stored_path': str(weight),
+        'verified_models': [{'sha256': digest, 'verified': True}],
+    }
+    save_algorithms(project / 'algorithms.json', [{'id': 'a', 'versions': [version]}])
+    index = TrainingMaterialUsage(repository)
+    index.mark_coverage('p', 'a', complete=True)
+    context = SimpleNamespace(repository=repository, artifacts=artifacts,
+                              run_owned=lambda operation: operation())
+    task = SimpleNamespace(project_id='p', task_id='new')
+    split = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL, ('new-train',),
+                         experiment_percent=20, validation_percent=20)
+    _admitted, history = admit_history_selection(
+        context, task, project, {'id': 'a', 'versions': [version]},
+        {'history_policy': 'new_for_algorithm'}, split)
+    assert history['parent_task_ids'] == ['parent']
+    with sqlite3.connect(index.path) as database:
+        tokens = database.execute(
+            "SELECT token_kind, token_value FROM training_usage_tokens WHERE task_id='parent'"
+        ).fetchall()
+    # Source-only freeze fields prove the payload-bound evidence was read; the
+    # snapshot row alone carries no camera-session identity.
+    assert ('camera_session', 'camera-session-1') in tokens

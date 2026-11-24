@@ -69,3 +69,31 @@ def test_training_reader_verifies_immutable_payload_and_keeps_display_budget(tmp
     assert historical['configuration']=={'batch':12}
     assert historical['actual_parameters']=={}
     assert historical['historical_parameters']=={'workers':0,'epochs':8}
+
+def test_report_display_warns_on_requested_actual_parameter_drift(tmp_path):
+    from platform_core.task_runtime import TaskRecord,TaskKind
+    from platform_core.task_runtime.artifacts import ArtifactStore
+    from platform_core.training_reader_views import report_display
+
+    store=ArtifactStore(tmp_path/'artifacts')
+    payload={'epochs':10,'batch':4,'workers':4,'cache':False,'precision':'fp16',
+             'imgsz':640,'device':'auto'}
+    store.atomic_write_json('t','payload.json',payload)
+    task=TaskRecord.new('t','p',TaskKind.TRAINING,'payload.json','training:auto')
+    actual={'epochs':10,'batch':16,'workers':4,'cache':False,'precision':'fp16',
+            'imgsz':640,'device':'cuda:0'}
+    store.atomic_write_json('t','result.json',{'training_report':{},
+        'actual_train_params':actual})
+    report=report_display('t',task,store,tmp_path/'missing.json')
+    assert report['configuration']['batch']==4
+    assert report['actual_parameters']['batch']==16
+    drift=[value for value in report['warnings'] if 'batch=' in value]
+    assert len(drift)==1
+    assert 'batch=16' in drift[0] and '冻结/请求值 batch=4' in drift[0]
+    # A resolved "auto" device is not an execution inconsistency.
+    assert not [value for value in report['warnings'] if 'device=' in value]
+
+    store.atomic_write_json('t','result.json',{'training_report':{},
+        'actual_train_params':{**actual,'batch':4}})
+    consistent=report_display('t',task,store,tmp_path/'missing.json')
+    assert not [value for value in consistent['warnings'] if '冻结/请求值' in value]

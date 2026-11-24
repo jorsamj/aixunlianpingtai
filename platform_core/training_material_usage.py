@@ -315,11 +315,16 @@ class TrainingMaterialUsage:
         return {'processed': len(ids)-len(unresolved), 'unresolved_task_ids': unresolved,
                 'revision': self.read_revision()}
 
-    def query_filter(self, project_id, algorithm_id, images, *, parent_task_ids=(), exclude_used=True, role='train'):
+    def query_filter(self, project_id, algorithm_id, images, *, parent_task_ids=(), exclude_used=True, role='train',
+                     exclude_task_ids=()):
         images = list(images)
         count("usage_candidate_rows",len(images))
         index = self._query_candidates(project_id, algorithm_id, images)
         parent_ids = set(map(str, parent_task_ids))
+        # A task being (re)prepared never inherits its own not-yet-executed
+        # selection as history: a crashed earlier attempt may only have left
+        # selected (evidence 0) rows that must not become self-exposure.
+        excluded_tasks = set(map(str, exclude_task_ids))
         token_rows = {}
         for row in index['records']:
             for token in json.loads(row['tokens_json']):
@@ -331,6 +336,9 @@ class TrainingMaterialUsage:
             all_matches = {}
             for token in [('image_id', image_id), *_relation_tokens(image)]:
                 for row in token_rows.get(token, ()):
+                    if (row['task_id'] in excluded_tasks
+                            and int(row.get('evidence') or 0) <= 0):
+                        continue
                     all_matches[(row['task_id'], row['image_id'], row['role'])] = row
                     if row['algorithm_id'] == str(algorithm_id) or row['task_id'] in parent_ids:
                         matches[(row['task_id'], row['image_id'], row['role'])] = row
@@ -692,7 +700,20 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
                 snapshot = context.artifacts.read_json(parent_task, 'snapshot.json', default={})
                 if snapshot_id and snapshot.get('snapshot_id') == snapshot_id and version.get('artifact_verified') is True:
                     parent_ids.append(parent_task)
-                    parent_freeze = context.artifacts.read_json(parent_task, 'input-freeze.json', default={})
+                    # Parent frozen evidence may be legacy input-freeze.json or
+                    # the current content-addressed payload reference. Read the
+                    # parent Task payload first so inheritance never loses the
+                    # new-format source set.
+                    from .training_tasks import read_training_input_freeze
+                    try:
+                        parent_payload = context.artifacts.read_json(
+                            parent_task, parent_record.payload_ref, default={})
+                        parent_freeze = read_training_input_freeze(
+                            context.artifacts, parent_task, parent_payload, default={})
+                    except (OSError, ValueError):
+                        parent_freeze = {}
+                    if not isinstance(parent_freeze, dict):
+                        parent_freeze = {}
                     sources = parent_freeze.get('images') or [] if parent_freeze.get('snapshot_id') == snapshot_id else []
                     context.run_owned(lambda: index.record_selected(task.project_id, algorithm_id, parent_task, snapshot,
                         source_images=sources, owner=usage_owner(context)))
@@ -734,8 +755,10 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
     rows = [row for offset in range(0, len(ids), 500) for row in materials.get_many(ids[offset:offset + 500])]
     try:
         train = index.query_filter(task.project_id, algorithm['id'], rows,
-                                   parent_task_ids=parent_ids, exclude_used=policy == 'new_for_algorithm')
-        test = index.query_filter(task.project_id, algorithm['id'], rows, parent_task_ids=parent_ids, role='test')
+                                   parent_task_ids=parent_ids, exclude_used=policy == 'new_for_algorithm',
+                                   exclude_task_ids=(task.task_id,))
+        test = index.query_filter(task.project_id, algorithm['id'], rows, parent_task_ids=parent_ids, role='test',
+                                  exclude_task_ids=(task.task_id,))
     except (sqlite3.DatabaseError, OSError, json.JSONDecodeError) as error:
         raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: indexed usage query failed') from error
     if train['index_health'] != 'healthy' or test['index_health'] != 'healthy':

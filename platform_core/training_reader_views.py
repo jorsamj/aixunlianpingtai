@@ -6,6 +6,31 @@ from .task_runtime.public import task_to_public
 from .task_runtime.payload_publications import VERSION_REF, PayloadPublicationError
 
 CONFIG=PARAMETERS+('framework','model','requested_device','gpu_policy','precision','target','training_target','resource_id','node_id')
+# Verifiable execution parameters only. Resolution-derived fields (for example a
+# requested "auto" device) are skipped rather than reported as inconsistencies.
+_COMPARABLE_PARAMS=('device','batch','workers','cache','precision','imgsz','epochs')
+
+
+def _comparable_param(value):
+    if value is None or isinstance(value,bool):return value
+    if isinstance(value,(int,float)):return float(value)
+    if isinstance(value,(list,tuple)):return tuple(_comparable_param(item) for item in value)
+    text=str(value).strip().lower()
+    return text or None
+
+
+def _parameter_consistency_warnings(requested,actual):
+    """Warn (never block) when recorded execution differs from the frozen request."""
+    warnings=[]
+    for key in _COMPARABLE_PARAMS:
+        if key not in requested or key not in actual:continue
+        frozen_value=_comparable_param(requested[key])
+        actual_value=_comparable_param(actual[key])
+        if frozen_value is None or actual_value is None:continue
+        if key=='device' and (frozen_value in ('auto','') or actual_value in ('auto','')):continue
+        if frozen_value==actual_value:continue
+        warnings.append(f"训练实际参数 {key}={actual[key]} 与冻结/请求值 {key}={requested[key]} 不一致（仅提示，不阻断提交）")
+    return warnings
 
 def attach_version_refs(rows,refs):
     for row in rows:
@@ -138,6 +163,18 @@ def report_display(job_id,task,artifacts,legacy_path,algorithm_id='',version_id=
         **fields(report.get('actual_train_params'),CONFIG),
         **fields(finalized.get('actual_train_params'),CONFIG),
     }
+    requested_comparable={
+        **fields(payload,_COMPARABLE_PARAMS),
+        **fields(report.get('requested_train_params'),_COMPARABLE_PARAMS),
+        **fields(legacy.get('requested_train_params'),_COMPARABLE_PARAMS),
+        **fields(finalized.get('requested_train_params'),_COMPARABLE_PARAMS),
+    }
+    actual_comparable={
+        **fields(legacy.get('actual_train_params'),_COMPARABLE_PARAMS),
+        **fields(report.get('actual_train_params'),_COMPARABLE_PARAMS),
+        **fields(finalized.get('actual_train_params'),_COMPARABLE_PARAMS),
+    }
+    warnings.extend(_parameter_consistency_warnings(requested_comparable,actual_comparable))
     historical={key:value for key,value in fields(legacy,CONFIG).items()
                 if key not in configuration and key not in actual}
     result=fields({**legacy,**finalized},('status','created_at','started_at','finished_at','elapsed_seconds',
