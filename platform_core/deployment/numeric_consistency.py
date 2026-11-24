@@ -9,6 +9,7 @@ import importlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -1615,3 +1616,282 @@ def run_verification_directory(directory: Path) -> dict:
              "stage": "数值比较已完成"}
     _write_result_json(directory, final)
     return final
+
+
+# ---------------------------------------------------------------------------
+# N5.2: read-only delivery-quality eligibility for publish/activation preflight.
+# This never mutates state, never re-runs inference and never trusts the mutable
+# ``numeric_status`` summary alone: everything is recomputed from the immutable
+# evidence file and the current conversion-identity owner.
+# ---------------------------------------------------------------------------
+ELIGIBILITY_SCHEMA = "delivery-quality-eligibility-v1"
+ELIGIBILITY_CONTENT_KEYS = (
+    "schema", "verification_id", "identity", "parameters", "sample_set",
+    "result_summary", "runtime_versions",
+)
+_SAFE_EVIDENCE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}")
+
+
+def evidence_path_from_ref(data_dir, evidence_ref) -> Path | None:
+    """Resolve ``numeric-validations/<dir>/evidence/<id>.json`` under data_dir.
+
+    Any absolute path, backslash, traversal segment, unknown shape or escaped
+    target is rejected; the caller treats ``None`` as unavailable, never as a
+    fallback to another evidence file.
+    """
+    raw = _clean(evidence_ref)
+    if not raw or "\\" in raw:
+        return None
+    parts = raw.split("/")
+    if len(parts) != 4 or parts[0] != "numeric-validations" or parts[2] != EVIDENCE_SUBDIRECTORY:
+        return None
+    if not all(_SAFE_EVIDENCE_TOKEN.fullmatch(part) and part not in {".", ".."}
+               for part in (parts[1], parts[3])):
+        return None
+    if not parts[3].endswith(".json"):
+        return None
+    try:
+        root = Path(data_dir).resolve()
+        path = (root / raw).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_relative_to(root):
+        return None
+    return path
+
+
+def _eligibility_identity_digest(identity: Mapping) -> str:
+    integrity = identity.get("manifest_integrity") if isinstance(identity.get("manifest_integrity"), Mapping) else {}
+    issues = identity.get("issues") if isinstance(identity.get("issues"), list) else []
+    return _safe_digest({
+        "fields": {key: _clean(identity.get(key)) for key in VERIFICATION_IDENTITY_FIELDS},
+        "availability": dict(identity.get("availability") or {}),
+        "manifest_integrity": _clean(integrity.get("status")),
+        "issues": sorted(str(item.get("code")) for item in issues if isinstance(item, Mapping)),
+    })
+
+
+def assert_delivery_quality_eligibility(directory, *, expected_identity=None) -> dict:
+    """Fail-closed, read-only delivery-quality eligibility verdict.
+
+    ``eligible`` is returned only when the immutable evidence file is readable,
+    its recomputed content/identity/verification digests match, every identity
+    field is present and still equals the current conversion record/artifact
+    bytes, the frozen sample set is unchanged, the frozen summary is an
+    interpretable ``consistent`` PT/ONNX verdict, and the conversion record's
+    published summary (when present) is bound to exactly this verification.
+
+    A ``numeric_status == "consistent"`` field on its own never influences the
+    verdict: the function does not read that mutable field as evidence.
+    """
+    directory = Path(directory)
+    verdict: dict = {
+        "schema": ELIGIBILITY_SCHEMA,
+        "eligible": False,
+        "code": "",
+        "reasons": [],
+        "directory": "",
+        "verification_id": "",
+        "evidence_ref": "",
+        "evidence_status": "unavailable",
+        "evidence_digest_verified": False,
+        "identity_status": "unavailable",
+        "current_identity_status": "unavailable",
+        "binding_status": "unavailable",
+        "identity_complete": False,
+        "missing_identity_fields": [],
+        "sample_set_status": "unavailable",
+        "projection_status": "missing",
+        "numeric_status": "unavailable",
+        "numeric_status_sufficient_for_eligibility": False,
+        "verdict": "unavailable",
+        "raw_verdict": "",
+        "detection_status": "unavailable",
+        "sample_count": None,
+        "hardware_verified": False,
+        "ground_truth_used": False,
+        "source_pt_sha256": "",
+        "onnx_sha256": "",
+        "target_artifact_sha256": "",
+        "manifest_digest": "",
+        "content_digest": "",
+        "identity_digest": "",
+        "evidence": {},
+    }
+
+    def refuse(code: str, reason: str, **extra) -> dict:
+        verdict.update(extra)
+        verdict["code"] = code
+        verdict["reasons"].append(str(reason)[:500])
+        return dict(verdict)
+
+    try:
+        resolved = directory.resolve()
+    except (OSError, RuntimeError):
+        return refuse("EVIDENCE_DIRECTORY_INVALID", "验证目录不可解析")
+    verdict["directory"] = str(resolved)
+    if resolved.parent.name != "numeric-validations":
+        return refuse("EVIDENCE_DIRECTORY_INVALID", "验证目录不在既有 numeric-validations 布局内")
+    request = _json_read(resolved / "request.json", None)
+    if not isinstance(request, Mapping):
+        return refuse("EVIDENCE_REQUEST_UNREADABLE", "冻结验证请求不可读取")
+    result = _json_read(resolved / "result.json", None)
+    if not isinstance(result, Mapping) or _clean(result.get("status")) != "completed":
+        return refuse("EVIDENCE_RESULT_UNAVAILABLE", "验证结果未完成或不可读取")
+    wrapper = result.get("verification") if isinstance(result.get("verification"), Mapping) else None
+    if not isinstance(wrapper, Mapping):
+        return refuse("EVIDENCE_BINDING_MISSING", "结果缺少不可变证据绑定，不能作为交付资格")
+    verification_id = _clean(wrapper.get("verification_id"))
+    if not _SAFE_EVIDENCE_TOKEN.fullmatch(verification_id):
+        return refuse("EVIDENCE_ID_INVALID", "证据 verification_id 格式非法")
+    verdict["verification_id"] = verification_id
+    data_dir = resolved.parent.parent
+    evidence_ref = _clean(wrapper.get("evidence_ref")) or _evidence_ref(resolved, verification_id)
+    verdict["evidence_ref"] = evidence_ref
+    path = evidence_path_from_ref(data_dir, evidence_ref)
+    if path is None:
+        return refuse("EVIDENCE_REF_UNSAFE", "证据引用路径越界或格式非法")
+    if not path.is_file():
+        return refuse("EVIDENCE_REF_UNREADABLE", "证据引用文件不存在")
+    document = _json_read(path, None)
+    stored = document.get("verification") if isinstance(document, Mapping) else None
+    if not isinstance(stored, Mapping):
+        return refuse("EVIDENCE_REF_UNREADABLE", "证据文件损坏或缺少 verification 块")
+    if _clean(stored.get("schema")) != EVIDENCE_SCHEMA:
+        return refuse("EVIDENCE_SCHEMA_UNSUPPORTED", "证据 schema 不受支持")
+    if _clean(stored.get("verification_id")) != verification_id:
+        return refuse("EVIDENCE_ID_MISMATCH", "证据文件身份与结果绑定不一致")
+    content = {key: stored.get(key) for key in ELIGIBILITY_CONTENT_KEYS}
+    content_digest = _safe_digest(content)
+    if not content_digest or content_digest != _clean(stored.get("content_digest")):
+        return refuse("EVIDENCE_DIGEST_MISMATCH", "证据内容摘要重算不一致（文件损坏或被修改）")
+    verdict.update(content_digest=content_digest, evidence_status="readable",
+                   evidence_digest_verified=True)
+    if _clean(wrapper.get("content_digest")) and _clean(wrapper.get("content_digest")) != content_digest:
+        return refuse("EVIDENCE_RESULT_MISMATCH", "结果包装内容摘要与证据文件不一致")
+    identity = stored.get("identity") if isinstance(stored.get("identity"), Mapping) else {}
+    verdict["evidence"] = {
+        "schema": EVIDENCE_SCHEMA,
+        "verification_id": verification_id,
+        "content_digest": content_digest,
+        "identity_status": _clean(identity.get("status")),
+        "verdict": _clean((stored.get("result_summary") or {}).get("verdict"))
+        if isinstance(stored.get("result_summary"), Mapping) else "",
+    }
+    missing = [key for key in VERIFICATION_IDENTITY_FIELDS if not _clean(identity.get(key))]
+    verdict["missing_identity_fields"] = missing
+    if missing:
+        return refuse("IDENTITY_INCOMPLETE", "验证证据身份字段不完整：" + ", ".join(missing))
+    verdict["identity_complete"] = True
+    identity_digest = _eligibility_identity_digest(identity)
+    if not identity_digest or identity_digest != _clean(identity.get("identity_digest")):
+        return refuse("IDENTITY_DIGEST_MISMATCH", "证据身份摘要重算不一致")
+    verdict["identity_digest"] = identity_digest
+    parameters = stored.get("parameters") if isinstance(stored.get("parameters"), Mapping) else {}
+    samples = stored.get("sample_set") if isinstance(stored.get("sample_set"), Mapping) else {}
+    expected_verification_id = "nv_" + hashlib.sha256(canonical_json_bytes({
+        "schema": EVIDENCE_SCHEMA,
+        "identity": {key: _clean(identity.get(key)) for key in VERIFICATION_IDENTITY_FIELDS},
+        "identity_digest": identity_digest,
+        "parameters_digest": _clean(parameters.get("digest")),
+        "sample_set_digest": _clean(samples.get("digest")),
+    })).hexdigest()[:32]
+    if expected_verification_id != verification_id:
+        return refuse("EVIDENCE_ID_MISMATCH", "证据确定性身份重算不一致")
+    current_identity = conversion_identity(resolved, request)
+    comparison = compare_verification_identity(identity, current_identity)
+    verdict.update(
+        identity_status=_clean(identity.get("status")),
+        current_identity_status=_clean(current_identity.get("status")),
+        binding_status=comparison["binding_status"],
+        source_pt_sha256=_clean(identity.get("source_pt_sha256")),
+        onnx_sha256=_clean(identity.get("onnx_sha256")),
+        target_artifact_sha256=_clean(identity.get("target_artifact_sha256")),
+        manifest_digest=_clean(identity.get("manifest_digest")),
+    )
+    if comparison["stale"]:
+        return refuse(STALE_VERIFICATION_CODE, comparison["reason"] or "当前转换记录/产物身份已变化")
+    if comparison["binding_status"] != "verified":
+        return refuse("EVIDENCE_IDENTITY_UNVERIFIED", "证据身份与当前转换记录不能证明为同一身份")
+    if isinstance(expected_identity, Mapping):
+        mismatch = [
+            key for key in VERIFICATION_IDENTITY_FIELDS
+            if _clean(expected_identity.get(key))
+            and _clean(expected_identity.get(key)).lower() != _clean(identity.get(key)).lower()
+        ]
+        if mismatch:
+            return refuse("IDENTITY_EXPECTATION_MISMATCH",
+                          "证据身份与预检期望身份不一致：" + ", ".join(mismatch))
+    samples_now = verification_sample_set(resolved, request)
+    verdict["sample_set_status"] = _clean(samples_now.get("status"))
+    if (_clean(samples.get("status")) != "available" or not _clean(samples.get("digest"))
+            or _clean(samples_now.get("status")) != "available"
+            or _clean(samples_now.get("digest")) != _clean(samples.get("digest"))):
+        return refuse("EVIDENCE_SAMPLE_SET_CHANGED", "验证样本集摘要与当前冻结样本不一致或不可用")
+    summary = stored.get("result_summary") if isinstance(stored.get("result_summary"), Mapping) else {}
+    metrics = summary.get("metrics") if isinstance(summary.get("metrics"), Mapping) else {}
+    detection = summary.get("detection") if isinstance(summary.get("detection"), Mapping) else {}
+    observed_verdict = _clean(summary.get("verdict"))
+    observed_detection = _clean(summary.get("detection_status"))
+    sample_count = summary.get("sample_count")
+    verdict.update(
+        verdict=observed_verdict or "unavailable",
+        raw_verdict=_clean(summary.get("raw_verdict")),
+        detection_status=observed_detection or "unavailable",
+        sample_count=sample_count if type(sample_count) is int else None,
+        hardware_verified=summary.get("hardware_verified") is True,
+        ground_truth_used=summary.get("ground_truth_used") is True,
+    )
+    failures: list[tuple[str, str]] = []
+    if _clean(summary.get("status")) != "completed":
+        failures.append(("VERDICT_STATUS_UNAVAILABLE", "冻结摘要状态不是 completed"))
+    if observed_verdict not in NUMERIC_STATUS_BY_VERDICT:
+        failures.append(("VERDICT_UNEXPLAINABLE", f"未知数值结论：{observed_verdict or '<empty>'}"))
+    elif observed_verdict != "consistent":
+        failures.append(("NUMERIC_VERDICT_NOT_ELIGIBLE", f"冻结数值结论不是 consistent：{observed_verdict}"))
+    if _clean(summary.get("raw_verdict")) != "consistent":
+        failures.append(("RAW_VERDICT_NOT_ELIGIBLE", "原始张量结论不是 consistent"))
+    if observed_detection != "consistent":
+        failures.append(("DETECTION_VERDICT_NOT_ELIGIBLE", "检测结果结论不是 consistent"))
+    if metrics.get("within_tolerance") is not True:
+        failures.append(("TENSOR_TOLERANCE_UNAVAILABLE", "冻结张量指标未证明在容差内"))
+    if detection.get("within_tolerance") is not True:
+        failures.append(("DETECTION_TOLERANCE_UNAVAILABLE", "冻结检测指标未证明在容差内"))
+    if type(sample_count) is not int or sample_count < 1:
+        failures.append(("SAMPLE_COUNT_UNAVAILABLE", "冻结样本数为空或非法"))
+    if summary.get("rejection") not in (None, {}):
+        failures.append(("VERDICT_REJECTED", "冻结结论包含不可比拒绝原因"))
+    if _clean(summary.get("label_identity_status")) in {"conflict", "mismatch"}:
+        failures.append(("LABEL_IDENTITY_CONFLICT", "冻结标签身份冲突"))
+    if summary.get("deployment_preprocessing_aligned") is not True:
+        failures.append(("PREPROCESSING_ALIGNMENT_UNVERIFIED", "部署前处理未证明与比较合同一致"))
+    if failures:
+        verdict["reasons"].extend(reason for _, reason in failures)
+        verdict["code"] = failures[0][0]
+        verdict["failure_codes"] = [code for code, _ in failures]
+        return dict(verdict)
+    # The conversion record's published summary is the mutable projection of the
+    # evidence. When present it must be bound to exactly this verification id and
+    # content digest; a different (newer) summary means this evidence is not the
+    # one delivery would be declaring.
+    job_path = _conversion_job_path(resolved, _clean(identity.get("conversion_job_id")))
+    job = _json_read(job_path, None) if job_path is not None else None
+    projection = job.get("numeric_validation") if isinstance(job, Mapping) else None
+    if isinstance(projection, Mapping):
+        bound_id = _clean(projection.get("verification_id"))
+        bound_digest = _clean(projection.get("content_digest"))
+        if bound_id != verification_id or bound_digest != content_digest:
+            return refuse(
+                "PROJECTION_BINDING_MISMATCH",
+                "转换记录当前数值摘要绑定了其他验证身份，不能把本证据用于正式交付",
+            )
+        if _clean(projection.get("identity_digest")) and \
+                _clean(projection.get("identity_digest")) != identity_digest:
+            return refuse("PROJECTION_IDENTITY_MISMATCH", "转换记录摘要的身份摘要与本证据不一致")
+        if _clean(projection.get("verdict")) != observed_verdict:
+            return refuse("PROJECTION_VERDICT_MISMATCH", "转换记录摘要结论与本证据不一致")
+        if projection.get("status") != "completed":
+            return refuse("PROJECTION_INCOMPLETE", "转换记录摘要不是 completed")
+        verdict["projection_status"] = "bound"
+    verdict.update(eligible=True, code="", numeric_status="consistent")
+    return dict(verdict)

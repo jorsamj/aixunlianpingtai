@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -39,7 +40,23 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, value: dict) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Write the conversion record under the shared job.json lock, atomically.
+
+    Same lock identity as ``deployment_worker.update`` and the numeric-evidence
+    projection (``<job.json>.lock``); a reader never sees a partial record and a
+    concurrent numeric summary is not silently overwritten by a torn write.
+    """
+    from filelock import FileLock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path) + ".lock", timeout=60):
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def conversion_outcome(job: dict) -> TaskStatus:

@@ -2083,3 +2083,294 @@ def test_artifact_metadata_downgrades_numeric_evidence_of_another_identity(tmp_p
     assert metadata["numeric_validation"]["status"] == "stale"
     assert metadata["numeric_validation"]["binding_status"] == "stale"
     assert metadata["numeric_validation"]["evidence_ref"].endswith(".json")
+
+
+# ---------------------------------------------------------------------------
+# N5.3: delivery quality preflight consuming model SHA / manifest digest /
+# numeric evidence / runtime / hardware status. Unverified attachments stay
+# deliverable but are never presented as formal activation or hardware pass.
+# ---------------------------------------------------------------------------
+def _seed_two_versions(root: Path):
+    project = _project_dir(root, "p1")
+    models = {}
+    for version_id in ("v1", "v2"):
+        model = project / "algorithm_versions" / "local-a1" / version_id / "best.pt"
+        model.parent.mkdir(parents=True, exist_ok=True)
+        model.write_bytes(f"best-model-{version_id}".encode())
+        models[version_id] = model
+    save_algorithms(_algorithms_file(root, "p1"), [{
+        "id": "local-a1", "name": "本平台自建算法",
+        "current_version_id": "v1",
+        "versions": [
+            {"id": version_id, "version_name": f"2026010{index}000000",
+             "training_status": "SUCCEEDED", "artifact_verified": True,
+             "stored_path": str(models[version_id]), "best_path": str(models[version_id]),
+             "model_name": "best.pt"}
+            for index, version_id in enumerate(("v1", "v2"), start=1)
+        ],
+        "version_operations": [],
+    }])
+    conversion = project / "deployment" / "jobs" / "convert-v2"
+    output = conversion / "artifacts" / "model.onnx"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"onnx-v2-bytes")
+    source_sha = hashlib.sha256(models["v2"].read_bytes()).hexdigest()
+    (conversion / "job.json").write_text(json.dumps({
+        "id": "convert-v2", "status": "done", "target": "onnx", "project_id": "p1",
+        "source_id": "version::local-a1::v2",
+        "source_meta": {"algorithm_id": "local-a1", "version_id": "v2"},
+        "source_trace": {"algorithm_id": "local-a1", "version_id": "v2",
+                         "sha256": source_sha},
+        "params": {"precision": "fp32"},
+        "outputs": [{"path": str(output), "available": True,
+                     "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                     "size_bytes": output.stat().st_size}],
+    }), encoding="utf-8")
+    return models, output
+
+
+def test_delivery_quality_preflight_unverified_conversion_is_attachment_only(tmp_path):
+    from platform_core.model_artifacts import delivery_artifact_quality_preflight
+
+    models, _ = _seed_two_versions(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = next(row for row in algorithm["versions"] if row["id"] == "v2")
+    discovered = service.discover_version_artifacts("p1", algorithm, version)
+    conversion = next(row for row in discovered if row["target"] == "onnx")
+    preflight = delivery_artifact_quality_preflight(tmp_path, conversion)
+    assert preflight["schema"] == "delivery-quality-preflight-v1"
+    assert preflight["formal_activation_eligible"] is False
+    assert preflight["present_as_formal_activation"] is False
+    assert preflight["delivery_presentation"] == "UNVERIFIED_ATTACHMENT"
+    assert preflight["attachment_delivery_allowed"] is True
+    assert preflight["present_as_hardware_accepted"] is False
+    assert preflight["hardware_acceptance"] == "NOT_VERIFIED"
+    assert preflight["numeric_status_alone_is_sufficient"] is False
+    assert preflight["model_sha_matches"] is True
+    assert preflight["model_sha256"] == conversion["sha256"]
+    # No bound manifest: its digest cannot be trusted even though the raw output
+    # bytes are self-consistent; numeric evidence is absent.
+    assert "MANIFEST_DIGEST_UNVERIFIED" in preflight["reasons"]
+    assert "NUMERIC_EVIDENCE_MISSING" in preflight["reasons"]
+    assert "RUNTIME_VERIFICATION_UNAVAILABLE" in preflight["reasons"]
+    original = next(row for row in discovered if row["target"] == "original")
+    original_preflight = delivery_artifact_quality_preflight(tmp_path, original)
+    assert original_preflight["formal_activation_eligible"] is True
+    assert original_preflight["delivery_presentation"] == "FORMAL_ACTIVATION"
+    assert original_preflight["hardware_acceptance"] == "NOT_VERIFIED"
+
+
+def test_delivery_quality_preflight_never_trusts_numeric_status_alone(tmp_path):
+    from platform_core.model_artifacts import delivery_artifact_quality_preflight
+
+    model = tmp_path / "artifact.onnx"
+    model.write_bytes(b"artifact-bytes")
+    sha = hashlib.sha256(model.read_bytes()).hexdigest()
+    metadata = {
+        "manifest_digest": "a" * 64, "manifest_integrity_status": "digest_verified",
+        "conversion_identity_verified": True, "runtime_verified": True,
+        "hardware_verified": False, "numeric_status": "consistent",
+        "numeric_validation": {},
+    }
+    artifact = {"artifact_id": "a1", "target": "onnx", "file_name": model.name,
+                "source_path": str(model), "sha256": sha, "metadata": metadata}
+    preflight = delivery_artifact_quality_preflight(tmp_path, artifact)
+    assert preflight["formal_activation_eligible"] is False
+    assert preflight["delivery_presentation"] == "UNVERIFIED_ATTACHMENT"
+    assert preflight["attachment_delivery_allowed"] is True
+    assert "NUMERIC_EVIDENCE_MISSING" in preflight["reasons"]
+    assert "NUMERIC_STATUS_WITHOUT_EVIDENCE" in preflight["reasons"]
+    # A published evidence reference that is missing on disk is fail-closed even
+    # though the mutable record claims a verified binding.
+    projected = {
+        **artifact,
+        "metadata": {**metadata, "numeric_validation": {
+            "verification_id": "nv_" + "1" * 32, "content_digest": "b" * 64,
+            "evidence_ref": "numeric-validations/nv_x/evidence/nv_x.json",
+        }},
+    }
+    missing = delivery_artifact_quality_preflight(tmp_path, projected)
+    assert missing["formal_activation_eligible"] is False
+    assert missing["numeric_evidence"]["code"] in {
+        "EVIDENCE_REQUEST_UNREADABLE", "EVIDENCE_REF_UNREADABLE",
+        "EVIDENCE_RESULT_UNAVAILABLE", "EVIDENCE_BINDING_MISSING",
+    }
+    # Artifact bytes changing after discovery invalidates the model SHA identity.
+    tampered = {**artifact, "sha256": "0" * 64}
+    changed = delivery_artifact_quality_preflight(tmp_path, tampered)
+    assert changed["formal_activation_eligible"] is False
+    assert changed["model_sha_matches"] is False
+    assert "MODEL_SHA_MISMATCH" in changed["reasons"]
+
+
+# ---------------------------------------------------------------------------
+# N5.4: read-only deployment activation / rollback dry-runs. Tests assert no
+# state change and cover operation_id, duplicates, lost response, late requests
+# and concurrency conflicts without touching a device or external platform.
+# ---------------------------------------------------------------------------
+def _version_operations(tmp_path: Path, operations: list[dict]):
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["version_operations"] = operations
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+
+
+def _dry_run_snapshot(tmp_path: Path, service) -> dict:
+    from platform_core.algorithms import algorithm_store_revision
+
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    return {
+        "revision": algorithm_store_revision(_algorithms_file(tmp_path, "p1")),
+        "current_version_id": algorithms[0]["current_version_id"],
+        "version_ids": sorted(row["id"] for row in algorithms[0]["versions"]),
+        "version_operations": json.loads(json.dumps(
+            algorithms[0].get("version_operations") or [])),
+        "artifact_rows": len(service.repository.list(project_id="p1", limit=500)),
+    }
+
+
+def test_deployment_activation_dry_run_is_read_only_and_guards_operations(tmp_path):
+    _seed_two_versions(tmp_path)
+    service = _service(tmp_path)
+    before = _dry_run_snapshot(tmp_path, service)
+    plan = service.deployment_activation_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-activate-1", expected_current_version_id="v1",
+    )
+    assert plan["schema"] == "deployment-activation-dry-run-v1"
+    assert plan["dry_run"] is True and plan["state_unchanged"] is True
+    assert plan["device_calls"] is False and plan["external_platform_calls"] is False
+    assert plan["project_id"] == "p1" and plan["algorithm_id"] == "local-a1"
+    assert plan["version_id"] == "v2" and plan["current_version_id"] == "v1"
+    assert plan["expected_current_version_id"] == "v1"
+    assert plan["already_current"] is False
+    assert plan["activation_eligible"] is True, plan
+    assert plan["would_change_state"] is True
+    assert plan["hardware_acceptance"] == "NOT_VERIFIED"
+    assert plan["dependency_check"] == "NOT_EVALUATED"
+    presentations = {row["target"]: row["delivery_presentation"] for row in plan["artifacts"]}
+    assert presentations["original"] == "FORMAL_ACTIVATION"
+    assert presentations["onnx"] == "UNVERIFIED_ATTACHMENT"
+    assert plan["unverified_attachment_artifacts"]
+    assert plan["side_effects"] == []
+    assert _dry_run_snapshot(tmp_path, service) == before
+    # Replayed dry-run is deterministic and still changes nothing (lost response).
+    replay = service.deployment_activation_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-activate-1", expected_current_version_id="v1",
+    )
+    assert replay == plan
+    assert _dry_run_snapshot(tmp_path, service) == before
+    # Late request built on an obsolete current pointer is refused, not replanned.
+    stale = service.deployment_activation_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-activate-2", expected_current_version_id="v0",
+    )
+    assert stale["stale_request"] is True
+    assert stale["code"] == "ALGORITHM_VERSION_CONFLICT"
+    assert stale["would_change_state"] is False
+    assert _dry_run_snapshot(tmp_path, service) == before
+    # Duplicate operation id / lost response converges without another plan.
+    _version_operations(tmp_path, [
+        {"id": "op-activate-1", "action": "activate", "to_version_id": "v2"},
+    ])
+    applied = service.deployment_activation_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-activate-1", expected_current_version_id="v1",
+    )
+    assert applied["already_applied"] is True and applied["idempotent"] is True
+    assert applied["would_change_state"] is False
+    assert applied["code"] == "OPERATION_ALREADY_APPLIED"
+    # Reusing the same operation id for another target is a conflict.
+    reused = service.deployment_activation_dry_run(
+        "p1", "local-a1", "v1",
+        operation_id="op-activate-1", expected_current_version_id="v1",
+    )
+    assert reused["operation_conflict"] is True
+    assert reused["code"] == "OPERATION_ID_CONFLICT"
+    # Concurrency: a pointer moved by another request makes this plan stale.
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["current_version_id"] = "v2"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    moved = service.deployment_activation_dry_run(
+        "p1", "local-a1", "v1",
+        operation_id="op-activate-3", expected_current_version_id="v1",
+    )
+    assert moved["stale_request"] is True
+    assert moved["code"] == "ALGORITHM_VERSION_CONFLICT"
+    after = _dry_run_snapshot(tmp_path, service)
+    assert after["current_version_id"] == "v2"
+
+
+def test_rollback_dry_run_is_read_only_and_guards_operations(tmp_path):
+    _seed_two_versions(tmp_path)
+    service = _service(tmp_path)
+    before = _dry_run_snapshot(tmp_path, service)
+    plan = service.rollback_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-rollback-1", expected_current_version_id="v1",
+    )
+    assert plan["schema"] == "deployment-rollback-dry-run-v1"
+    assert plan["dry_run"] is True and plan["state_unchanged"] is True
+    assert plan["device_calls"] is False and plan["external_platform_calls"] is False
+    assert plan["current_version_id"] == "v1"
+    assert plan["target_version_id"] == "v2"
+    assert plan["deleted_version_id"] == "v1"
+    assert plan["would_change_state"] is True
+    assert plan["remote_delete"] == "DRY_RUN_NOT_PERFORMED"
+    assert plan["cleanup"] == "DRY_RUN_NOT_PERFORMED"
+    assert plan["hardware_acceptance"] == "NOT_VERIFIED"
+    assert plan["deletion_artifacts"]
+    assert all(row["delivery_presentation"] for row in plan["deletion_artifacts"])
+    assert plan["side_effects"] == []
+    assert _dry_run_snapshot(tmp_path, service) == before
+    # Lost response: the same request is replanned identically, state untouched.
+    assert service.rollback_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-rollback-1", expected_current_version_id="v1",
+    ) == plan
+    assert _dry_run_snapshot(tmp_path, service) == before
+    # Late request on an obsolete pointer.
+    stale = service.rollback_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-rollback-2", expected_current_version_id="v0",
+    )
+    assert stale["stale_request"] is True
+    assert stale["code"] == "ALGORITHM_VERSION_CONFLICT"
+    assert stale["would_change_state"] is False
+    # Target already current: idempotent, no state change.
+    current = service.rollback_dry_run(
+        "p1", "local-a1", "v1",
+        operation_id="op-rollback-3", expected_current_version_id="v1",
+    )
+    assert current["code"] == "ALGORITHM_VERSION_ALREADY_CURRENT"
+    assert current["idempotent"] is True
+    assert current["would_change_state"] is False
+    # Missing target version never guesses.
+    missing = service.rollback_dry_run(
+        "p1", "local-a1", "v9",
+        operation_id="op-rollback-4", expected_current_version_id="v1",
+    )
+    assert missing["code"] == "ALGORITHM_VERSION_NOT_FOUND"
+    assert missing["would_change_state"] is False
+    # Duplicate operation id (already applied) converges without a second write.
+    _version_operations(tmp_path, [
+        {"id": "op-rollback-1", "action": "rollback_and_delete", "to_version_id": "v2"},
+    ])
+    applied = service.rollback_dry_run(
+        "p1", "local-a1", "v2",
+        operation_id="op-rollback-1", expected_current_version_id="v1",
+    )
+    assert applied["already_applied"] is True and applied["idempotent"] is True
+    assert applied["would_change_state"] is False
+    assert applied["code"] == "OPERATION_ALREADY_APPLIED"
+    # Same operation id aimed at another target is a conflict, not a retry.
+    conflict = service.rollback_dry_run(
+        "p1", "local-a1", "v1",
+        operation_id="op-rollback-1", expected_current_version_id="v1",
+    )
+    assert conflict["operation_conflict"] is True
+    assert conflict["code"] == "OPERATION_ID_CONFLICT"
+    after = _dry_run_snapshot(tmp_path, service)
+    assert after["current_version_id"] == "v1"
+    assert after["version_ids"] == ["v1", "v2"]

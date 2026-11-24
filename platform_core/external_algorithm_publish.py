@@ -41,6 +41,7 @@ from .model_artifacts import (
     ModelArtifactService,
     StorageTestPayload,
     SUCCESSFUL_CONVERSION_STATUSES as MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES,
+    delivery_artifact_quality_preflight,
     model_delivery_version_fence,
     conversion_completion_rank,
 )
@@ -3094,6 +3095,16 @@ class ExternalAlgorithmPublishService:
                    'metadata': local.get('metadata') or current.get('metadata') or {}, 'frozen_tags': item['weight_metadata'].get('tags')}
             row['compute_platform_id']=current.get('compute_platform_id') or row.get('compute_platform_id')
             plan=self._artifact_review({**row,**current},version,[*local_assets,*stored])
+            quality = delivery_artifact_quality_preflight(
+                self.data_dir,
+                {**row, 'metadata': item.get('metadata') or row.get('metadata') or {}},
+            )
+            row.update(
+                quality_preflight=quality,
+                formal_activation_eligible=quality['formal_activation_eligible'],
+                delivery_presentation=quality['delivery_presentation'],
+                hardware_acceptance=quality['hardware_acceptance'],
+            )
             # A remote Weight may exist under an old computePlatformId even
             # when no local Weight owner ID was recovered. The attempted
             # publish records an explicit migration refusal: surface that
@@ -3537,6 +3548,14 @@ class ExternalAlgorithmPublishService:
             "artifacts": self._publication_artifacts(str(publication["publication_key"])),
             "deferred_conversions": deferred,
             "conversion_failures": conversion_failures,
+            # Read-only delivery quality preflight consumed by the formal publish
+            # path: unverified conversions stay deliverable as attachments but are
+            # never presented here as formal activation or hardware acceptance.
+            "delivery_quality": [
+                {"artifact_id": str(item.get("artifact_id") or ""),
+                 **delivery_artifact_quality_preflight(self.data_dir, item)}
+                for item in discovered
+            ],
         }
 
     def publication_requires_sync(

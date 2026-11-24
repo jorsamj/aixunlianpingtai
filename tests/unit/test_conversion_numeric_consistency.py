@@ -1006,3 +1006,169 @@ def test_two_concurrent_verifications_of_same_identity_publish_exactly_once(tmp_
     assert job["numeric_status"] == "consistent"
     assert job["numeric_validation"]["verification_id"] == parsed[0]["verification_id"]
     assert job["numeric_validation"]["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# N5.2: read-only delivery quality eligibility (assert_delivery_quality_eligibility).
+# Eligible requires complete identity + readable immutable evidence + digest
+# match + interpretable verdict; the mutable numeric_status alone is never enough.
+# ---------------------------------------------------------------------------
+def _published_numeric_layout(tmp_path, monkeypatch, *, directory_name="nv_0123456789abcdef01234567"):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _full_numeric_layout(tmp_path, directory_name=directory_name)
+    _stub_verify(monkeypatch, _stub_numeric_result())
+    final = numeric.run_verification_directory(layout["verification"])
+    assert final["status_projection"]["status"] == "projected"
+    layout["verification_id"] = final["verification"]["verification_id"]
+    layout["content_digest"] = final["verification"]["content_digest"]
+    layout["evidence_path"] = (layout["verification"] / "evidence" /
+                               (layout["verification_id"] + ".json"))
+    return layout
+
+
+def test_delivery_quality_eligibility_requires_complete_bound_evidence(tmp_path, monkeypatch):
+    from platform_core.deployment.numeric_consistency import assert_delivery_quality_eligibility
+
+    layout = _published_numeric_layout(tmp_path, monkeypatch)
+    verdict = assert_delivery_quality_eligibility(layout["verification"])
+    assert verdict["schema"] == "delivery-quality-eligibility-v1"
+    assert verdict["eligible"] is True, verdict
+    assert verdict["code"] == ""
+    assert verdict["reasons"] == []
+    assert verdict["evidence_status"] == "readable"
+    assert verdict["evidence_digest_verified"] is True
+    assert verdict["identity_complete"] is True
+    assert verdict["missing_identity_fields"] == []
+    assert verdict["identity_status"] == "verified"
+    assert verdict["current_identity_status"] == "verified"
+    assert verdict["binding_status"] == "verified"
+    assert verdict["sample_set_status"] == "available"
+    assert verdict["projection_status"] == "bound"
+    assert verdict["verdict"] == "consistent"
+    assert verdict["raw_verdict"] == "consistent"
+    assert verdict["detection_status"] == "consistent"
+    assert verdict["sample_count"] == 2
+    assert verdict["numeric_status"] == "consistent"
+    # The mutable numeric_status is never itself treated as sufficient evidence.
+    assert verdict["numeric_status_sufficient_for_eligibility"] is False
+    assert verdict["hardware_verified"] is False
+    assert verdict["ground_truth_used"] is False
+    assert verdict["source_pt_sha256"] == layout["source_sha"]
+    assert verdict["onnx_sha256"] == layout["onnx_sha"]
+    assert verdict["target_artifact_sha256"] == layout["onnx_sha"]
+    assert verdict["manifest_digest"] == layout["manifest"]["manifest_digest"]
+    assert verdict["content_digest"] == layout["content_digest"]
+    # Explicit expected identity is checked field by field.
+    expected = {
+        "project_id": "p1", "algorithm_id": "a1", "version_id": "v1",
+        "conversion_job_id": "conversion-full-1",
+        "source_pt_sha256": layout["source_sha"], "onnx_sha256": layout["onnx_sha"],
+        "target_artifact_sha256": layout["onnx_sha"],
+        "manifest_digest": layout["manifest"]["manifest_digest"],
+    }
+    assert assert_delivery_quality_eligibility(
+        layout["verification"], expected_identity=expected)["eligible"] is True
+    mismatched = dict(expected, onnx_sha256="0" * 64)
+    refused = assert_delivery_quality_eligibility(
+        layout["verification"], expected_identity=mismatched)
+    assert refused["eligible"] is False and refused["code"] == "IDENTITY_EXPECTATION_MISMATCH"
+
+
+def test_delivery_quality_eligibility_never_trusts_numeric_status_or_missing_evidence(tmp_path, monkeypatch):
+    from platform_core.deployment.numeric_consistency import assert_delivery_quality_eligibility
+
+    layout = _published_numeric_layout(tmp_path, monkeypatch)
+    # A mutable summary claiming another verdict does not change the evidence verdict.
+    job = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    job["numeric_status"] = "difference_detected"
+    job["publication_status"] = "blocked_numeric_difference"
+    layout["job_path"].write_text(json.dumps(job), encoding="utf-8")
+    assert assert_delivery_quality_eligibility(layout["verification"])["eligible"] is True
+    # Current evidence missing: numeric_status alone can never claim eligibility.
+    layout["evidence_path"].unlink()
+    missing = assert_delivery_quality_eligibility(layout["verification"])
+    assert missing["eligible"] is False
+    assert missing["code"] == "EVIDENCE_REF_UNREADABLE"
+    assert missing["evidence_status"] == "unavailable"
+    # The conversion record still advertises numeric_status=consistent but the
+    # mutable field is explicitly not sufficient.
+    job = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    job["numeric_status"] = "consistent"
+    layout["job_path"].write_text(json.dumps(job), encoding="utf-8")
+    assert assert_delivery_quality_eligibility(layout["verification"])["eligible"] is False
+
+
+def test_delivery_quality_eligibility_fails_closed_on_evidence_sample_and_artifact_changes(
+    tmp_path, monkeypatch,
+):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _published_numeric_layout(tmp_path, monkeypatch)
+    evidence = layout["evidence_path"]
+    before = evidence.read_bytes()
+    tampered = json.loads(before.decode("utf-8"))
+    tampered["verification"]["result_summary"]["verdict"] = "difference_detected"
+    evidence.write_text(json.dumps(tampered), encoding="utf-8")
+    corrupt = numeric.assert_delivery_quality_eligibility(layout["verification"])
+    assert corrupt["eligible"] is False
+    assert corrupt["code"] == "EVIDENCE_DIGEST_MISMATCH"
+    evidence.write_bytes(before)
+    assert numeric.assert_delivery_quality_eligibility(layout["verification"])["eligible"] is True
+    # A frozen sample image change invalidates the sample-set digest.
+    sample = layout["verification"] / "images" / layout["image_names"][0]
+    original_sample = sample.read_bytes()
+    sample.write_bytes(b"replaced-sample-bytes")
+    changed_sample = numeric.assert_delivery_quality_eligibility(layout["verification"])
+    assert changed_sample["eligible"] is False
+    assert changed_sample["code"] == "EVIDENCE_SAMPLE_SET_CHANGED"
+    sample.write_bytes(original_sample)
+    # The real ONNX artifact bytes changing makes the bound identity stale.
+    original_onnx = layout["onnx"].read_bytes()
+    layout["onnx"].write_bytes(b"replaced-onnx-bytes")
+    stale = numeric.assert_delivery_quality_eligibility(layout["verification"])
+    assert stale["eligible"] is False
+    assert stale["code"] == numeric.STALE_VERIFICATION_CODE
+    assert stale["binding_status"] == "stale"
+    layout["onnx"].write_bytes(original_onnx)
+    # A tampered manifest digest is a fail-closed conflict, never a pass.
+    manifest_path = layout["job_dir"] / "artifacts" / "manifest.json"
+    original_manifest = manifest_path.read_bytes()
+    manifest = json.loads(original_manifest.decode("utf-8"))
+    manifest["outputs"][0]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    stale_manifest = numeric.assert_delivery_quality_eligibility(layout["verification"])
+    assert stale_manifest["eligible"] is False
+    assert stale_manifest["code"] == numeric.STALE_VERIFICATION_CODE
+    manifest_path.write_bytes(original_manifest)
+    assert numeric.assert_delivery_quality_eligibility(layout["verification"])["eligible"] is True
+
+
+def test_two_verifications_of_same_artifact_coexist_and_summary_binds_latest(tmp_path, monkeypatch):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    first = _published_numeric_layout(tmp_path, monkeypatch)
+    first_evidence = first["evidence_path"].read_bytes()
+    second = _full_numeric_layout(tmp_path, directory_name="nv_89abcdef0123456789abcdef")
+    second_receipt = dict(second["receipt"], confidence=0.5)
+    (second["verification"] / "request.json").write_text(
+        json.dumps(second_receipt), encoding="utf-8")
+    _stub_verify(monkeypatch, _stub_numeric_result())
+    final = numeric.run_verification_directory(second["verification"])
+    assert final["status_projection"]["status"] == "projected"
+    second_id = final["verification"]["verification_id"]
+    # Both immutable evidence files coexist; the first was never overwritten.
+    assert first["evidence_path"].is_file() and first["evidence_path"].read_bytes() == first_evidence
+    assert (second["verification"] / "evidence" / (second_id + ".json")).is_file()
+    assert first["verification_id"] != second_id
+    job = json.loads(first["job_path"].read_text(encoding="utf-8"))
+    assert job["numeric_validation"]["verification_id"] == second_id
+    assert job["numeric_validation"]["parameters"]["confidence"] == 0.5
+    # The summary is bound to the current verification identity: the older
+    # evidence stays readable but is not the declared delivery summary.
+    current = numeric.assert_delivery_quality_eligibility(second["verification"])
+    assert current["eligible"] is True and current["projection_status"] == "bound"
+    older = numeric.assert_delivery_quality_eligibility(first["verification"])
+    assert older["eligible"] is False
+    assert older["code"] == "PROJECTION_BINDING_MISMATCH"
+    assert older["evidence_digest_verified"] is True

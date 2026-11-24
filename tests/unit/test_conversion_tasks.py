@@ -178,3 +178,42 @@ def test_crash_between_evidence_and_state_converges_through_durable_recovery(tmp
         again, {"verification_dir": str(verification), "worker_path": str(worker)})
     assert status_again is TaskStatus.SUCCEEDED and calls["verify"] == 1
     assert job_path.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# N5.2: all conversion job.json writers (worker progress/finalize + numeric
+# evidence projection) must share the same lock identity and whole-file
+# replacement contract. The projection fields must never be lost or torn.
+# ---------------------------------------------------------------------------
+def test_conversion_job_writers_share_lock_and_keep_numeric_projection(tmp_path):
+    import deployment_worker as worker
+    from platform_core.deployment.conversion_tasks import _write
+
+    job_path = tmp_path / "job.json"
+    projection = {
+        "verification_id": "nv_" + "1" * 32, "status": "completed",
+        "verdict": "consistent", "content_digest": "d" * 64,
+        "evidence_ref": "numeric-validations/nv_x/evidence/nv_x.json",
+    }
+    job_path.write_text(json.dumps({
+        "id": "convert-1", "status": "running", "progress": 10,
+        "numeric_status": "consistent", "publication_status": "numeric_consistent_delivery_evidence_incomplete",
+        "numeric_validation": projection,
+    }), encoding="utf-8")
+    # The worker progress writer must keep an existing numeric projection intact
+    # and must not leave a torn temporary record behind.
+    updated = worker.update(job_path, progress=55, stage="导出 ONNX")
+    on_disk = json.loads(job_path.read_text(encoding="utf-8"))
+    assert updated["progress"] == 55 and on_disk["progress"] == 55
+    assert on_disk["numeric_status"] == "consistent"
+    assert on_disk["numeric_validation"] == projection
+    assert not list(job_path.parent.glob(".job.json.*.tmp"))
+    # The durable finalizer writes through the same lock + atomic replacement.
+    _write(job_path, {**on_disk, "status": "done", "progress": 100})
+    committed = json.loads(job_path.read_text(encoding="utf-8"))
+    assert committed["status"] == "done" and committed["progress"] == 100
+    assert committed["numeric_validation"] == projection
+    assert not list(job_path.parent.glob(".job.json.*.tmp"))
+    # Evidence-ref identity survives both writers byte-for-byte.
+    assert committed["numeric_validation"]["verification_id"] == projection["verification_id"]
+    assert committed["numeric_validation"]["content_digest"] == projection["content_digest"]

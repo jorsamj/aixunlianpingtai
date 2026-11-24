@@ -65,10 +65,19 @@ def append_log(path: Path, text: str):
 
 
 def update(job_file: Path, **kwargs):
-    job = read_json(job_file, {})
-    job.update(kwargs)
-    job['updated_at'] = now()
-    write_json(job_file, job)
+    """Update the conversion record under the shared job.json contract.
+
+    The numeric-evidence publisher uses ``<job.json>.lock`` plus whole-file
+    atomic replacement; the worker uses the same lock identity and replacement
+    so progress/finalization can never write a torn record or silently lose a
+    concurrent numeric-evidence projection.
+    """
+    from filelock import FileLock
+    with FileLock(str(job_file) + '.lock', timeout=60):
+        job = read_json(job_file, {})
+        job.update(kwargs)
+        job['updated_at'] = now()
+        write_json_atomic(job_file, job)
     return job
 
 

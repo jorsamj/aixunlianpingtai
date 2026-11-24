@@ -173,3 +173,100 @@ def test_runtime_load_failure_has_its_own_error_code(tmp_path, monkeypatch):
     with pytest.raises(ConversionError) as exc:
         worker.validate_onnx_runtime(path, {"kind": "onnx", "input_size": 640}, tmp_path / "log.txt")
     assert exc.value.code == "ONNX_RUNTIME_LOAD_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# N5.1: FP16 Cast->Conv chain with float16 Initializer and Constant nodes.
+# The order-only repair must not change tensor edges, Cast attributes, float16
+# weight bytes or Constant tensor attributes; output must stay bit-identical.
+# ---------------------------------------------------------------------------
+def _fp16_conv_constant_model(tmp_path, *, broken=True):
+    height = width = 96
+    inp = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, height, width])
+    out = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 2, height, width])
+    input_cast = helper.make_node(
+        "Cast", ["images"], ["x16"], to=TensorProto.FLOAT16, name="graph_input_cast")
+    conv = helper.make_node(
+        "Conv", ["x16", "w16"], ["conv16"], name="/model.0/conv/Conv")
+    constant = helper.make_node(
+        "Constant", [], ["c16"], name="fp16_bias_constant",
+        value=numpy_helper.from_array(np.full((1, 2, 1, 1), 0.25, dtype=np.float16), name="c16_value"))
+    add = helper.make_node("Add", ["conv16", "c16"], ["sum16"], name="fp16_add")
+    output_cast = helper.make_node(
+        "Cast", ["sum16"], ["output"], to=TensorProto.FLOAT, name="graph_output_cast")
+    initializer = [
+        numpy_helper.from_array(np.full((2, 3, 1, 1), 0.5, dtype=np.float16), "w16"),
+    ]
+    ordered = [input_cast, constant, conv, add, output_cast]
+    bad = [conv, output_cast, constant, add, input_cast]
+    graph = helper.make_graph(
+        bad if broken else ordered, "fp16_cast_conv_constant", [inp], [out], initializer)
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_operatorsetid("", 12)],
+    )
+    model.ir_version = min(model.ir_version, 8)
+    path = tmp_path / ("fp16_bad" if broken else "fp16_good")
+    path = path.with_suffix(".onnx")
+    onnx.save(model, str(path))
+    return path
+
+
+def test_fp16_cast_conv_constant_reorder_preserves_bytes_and_output(tmp_path):
+    ort = pytest.importorskip("onnxruntime")
+    original = _fp16_conv_constant_model(tmp_path)
+    expected = _fp16_conv_constant_model(tmp_path, broken=False)
+    with pytest.raises(onnx.checker.ValidationError):
+        onnx.checker.check_model(str(original))
+    before = original.read_bytes()
+    raw = onnx.load(str(original))
+    result, evidence = repair_onnx_topology(original, tmp_path)
+    assert result != original
+    assert evidence["status"] == "reordered"
+    assert evidence["applied"] is True
+    assert evidence["moved_nodes"] >= 4
+    assert evidence["checker"] == "passed"
+    assert original.read_bytes() == before
+    corrected = onnx.load(str(result))
+    onnx.checker.check_model(str(result))
+    # Node protobuf bytes (Cast attributes included) and the float16 Initializer
+    # are preserved as an exact multiset / byte sequence; only order changed.
+    assert sorted(n.SerializeToString() for n in raw.graph.node) == sorted(
+        n.SerializeToString() for n in corrected.graph.node)
+    assert [t.SerializeToString() for t in raw.graph.initializer] == [
+        t.SerializeToString() for t in corrected.graph.initializer]
+    assert {t.data_type for t in corrected.graph.initializer} == {TensorProto.FLOAT16}
+    casts = [n for n in corrected.graph.node if n.op_type == "Cast"]
+    assert {n.attribute[0].i for n in casts} == {TensorProto.FLOAT16, TensorProto.FLOAT}
+    constants = [n for n in corrected.graph.node if n.op_type == "Constant"]
+    assert len(constants) == 1
+    value_attr = next(a for a in constants[0].attribute if a.name == "value")
+    assert value_attr.t.data_type == TensorProto.FLOAT16
+    assert value_attr.t.SerializeToString() == \
+        raw_node_constant_bytes(raw, "fp16_bias_constant")
+    # The float16 Cast node must be produced before its Conv consumer.
+    ops = [n.op_type for n in corrected.graph.node]
+    assert ops.index("Cast") < ops.index("Conv")
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    left = ort.InferenceSession(str(expected), sess_options=options, providers=["CPUExecutionProvider"])
+    right = ort.InferenceSession(str(result), sess_options=options, providers=["CPUExecutionProvider"])
+    data = np.random.default_rng(23).random((1, 3, 96, 96)).astype(np.float32)
+    assert [meta.type for meta in right.get_inputs()] == ["tensor(float)"]
+    assert [meta.type for meta in right.get_outputs()] == ["tensor(float)"]
+    np.testing.assert_array_equal(
+        left.run(None, {"images": data})[0], right.run(None, {"images": data})[0])
+
+
+def raw_node_constant_bytes(model, node_name: str) -> bytes:
+    node = next(n for n in model.graph.node if n.name == node_name)
+    value = next(a for a in node.attribute if a.name == "value")
+    return value.t.SerializeToString()
+
+
+def test_fp16_cast_conv_constant_already_ordered_is_untouched(tmp_path):
+    correct = _fp16_conv_constant_model(tmp_path, broken=False)
+    digest = hashlib.sha256(correct.read_bytes()).hexdigest()
+    result, evidence = repair_onnx_topology(correct, tmp_path)
+    assert result == correct
+    assert evidence["applied"] is False
+    assert hashlib.sha256(correct.read_bytes()).hexdigest() == digest

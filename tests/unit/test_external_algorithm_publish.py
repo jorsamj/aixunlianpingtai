@@ -4922,3 +4922,59 @@ def test_historical_onnx_review_not_a_current_delivery_blocker(tmp_path):
     assert history["included_in_delivery"] is False
     assert history["delivery_role"]=="HISTORICAL"
     assert history["review_required"] is False
+
+
+# ---------------------------------------------------------------------------
+# N5.3: the real publish/publication-status preflight consumes model SHA,
+# manifest digest, numeric evidence summary, runtime and hardware status. Legal
+# unverified models keep archive/download/attachment delivery, but they are
+# never presented as formal activation or hardware acceptance.
+# ---------------------------------------------------------------------------
+def test_publication_status_and_publish_consume_delivery_quality_preflight(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(
+        tmp_path, target="onnx", job_id="convert-onnx", content=b"onnx-bytes",
+    )
+    service = _service(tmp_path, memory)
+
+    status = service.publication_status("p1", "a1", "v1")
+    conversion = next(row for row in status["artifacts"] if row.get("target") == "onnx")
+    quality = conversion["quality_preflight"]
+    assert quality["schema"] == "delivery-quality-preflight-v1"
+    # No manifest digest / numeric evidence: the attachment is deliverable, but
+    # it must not be presented as a formally activated or hardware-accepted model.
+    assert conversion["formal_activation_eligible"] is False
+    assert conversion["delivery_presentation"] == "UNVERIFIED_ATTACHMENT"
+    assert conversion["hardware_acceptance"] == "NOT_VERIFIED"
+    assert quality["formal_activation_eligible"] is False
+    assert quality["present_as_formal_activation"] is False
+    assert quality["attachment_delivery_allowed"] is True
+    assert quality["model_sha_matches"] is True
+    assert quality["model_sha256"] == conversion["sha256"]
+    assert quality["numeric_status_alone_is_sufficient"] is False
+    assert "NUMERIC_EVIDENCE_MISSING" in quality["reasons"]
+    assert "MANIFEST_DIGEST_UNVERIFIED" in quality["reasons"]
+    original = next(row for row in status["artifacts"] if row.get("target") == "original")
+    assert original["quality_preflight"]["formal_activation_eligible"] is True
+    assert original["quality_preflight"]["delivery_presentation"] == "FORMAL_ACTIVATION"
+    assert original["quality_preflight"]["hardware_acceptance"] == "NOT_VERIFIED"
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    published = {row.get("target"): row for row in result["delivery_quality"]}
+    assert published["original"]["formal_activation_eligible"] is True
+    assert published["onnx"]["formal_activation_eligible"] is False
+    assert published["onnx"]["delivery_presentation"] == "UNVERIFIED_ATTACHMENT"
+    assert published["onnx"]["present_as_hardware_accepted"] is False
+    assert published["onnx"]["attachment_delivery_allowed"] is True
+    # The unverified attachment is still deliverable as an attachment through the
+    # existing ModelArtifact owner (registered, archive/download path preserved);
+    # without an external mapping it is deferred, never silently dropped.
+    local_assets = service.model_assets.repository.list(project_id="p1", limit=50)
+    conversion_asset = next(row for row in local_assets if row.get("target") == "onnx")
+    assert conversion_asset["sha256"] == hashlib.sha256(b"onnx-bytes").hexdigest()
+    assert conversion_asset["storage_status"] in {"PENDING", "UPLOADED"}
+    assert any("onnx" in item and "model.onnx" in item for item in result["deferred_conversions"])
+    assert {row.get("target") for row in result["delivery_quality"]} == {"original", "onnx"}

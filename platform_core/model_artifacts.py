@@ -19,7 +19,7 @@ from urllib.parse import quote, urlsplit
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
-from .algorithms import list_algorithms
+from .algorithms import list_algorithms, resolve_current_version_id
 from .conversion import source_manifest_summary, verify_source_manifest_digest
 from .model_metadata import model_metadata
 from .errors import PlatformError
@@ -135,6 +135,193 @@ def _numeric_evidence_projection(
         "numeric_validation": projection,
         "numeric_validation_binding_status": binding_status,
     }
+
+
+# ---------------------------------------------------------------------------
+# N5.3: read-only delivery quality preflight for publish/activation consumers.
+# Model SHA, manifest digest, numeric evidence identity/summary, runtime and
+# hardware status are all consumed explicitly. Attachment delivery of a legal
+# but unverified model stays allowed, but it can never be presented as formal
+# activation or as an accepted hardware verification.
+# ---------------------------------------------------------------------------
+DELIVERY_QUALITY_SCHEMA = "delivery-quality-preflight-v1"
+_ORIGINAL_TARGETS = frozenset({"original", "training", "best", "last"})
+
+
+def _dry_run_operation_guard(
+    algorithm: Mapping[str, Any],
+    operation_id: str,
+    expected_current_version_id: str | None,
+    current_version_id: str,
+    *,
+    action: str,
+    target_version_id: str,
+) -> dict[str, Any]:
+    """Read-only operation_id / stale-request / duplicate guard for dry-runs."""
+    operations = algorithm.get("version_operations")
+    operations = operations if isinstance(operations, list) else []
+    existing = None
+    if str(operation_id or ""):
+        existing = next(
+            (row for row in operations
+             if isinstance(row, Mapping) and str(row.get("id") or "") == str(operation_id)),
+            None,
+        )
+    guard: dict[str, Any] = {
+        "already_applied": False, "operation_conflict": False,
+        "stale_request": False, "code": "", "reason": "",
+        "existing_operation_id": str(existing.get("id") or "") if isinstance(existing, Mapping) else "",
+    }
+    if (expected_current_version_id is not None
+            and str(expected_current_version_id) != str(current_version_id)):
+        guard.update(
+            stale_request=True, code="ALGORITHM_VERSION_CONFLICT",
+            reason="请求基于的当前版本已变化，迟到请求必须重新确认，不得按旧版本计划执行",
+        )
+        return guard
+    if isinstance(existing, Mapping):
+        same = (str(existing.get("action") or "") == action
+                and str(existing.get("to_version_id") or "") == str(target_version_id))
+        if same:
+            guard.update(
+                already_applied=True, code="OPERATION_ALREADY_APPLIED",
+                reason="同一 operation_id 已完成，重复请求不得再次变更状态",
+            )
+        else:
+            guard.update(
+                operation_conflict=True, code="OPERATION_ID_CONFLICT",
+                reason="operation_id 已用于其他操作，拒绝复用",
+            )
+    return guard
+
+
+def delivery_artifact_quality_preflight(
+    data_dir: str | Path, artifact: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail-closed, read-only delivery-quality preflight for one artifact row.
+
+    Never mutates state, never contacts a device or external platform. Returns
+    ``formal_activation_eligible`` only when every consumed identity (model
+    bytes SHA, conversion identity, manifest digest) and the immutable numeric
+    evidence are all readable, current and mutually bound; otherwise the row is
+    explicitly an ``UNVERIFIED_ATTACHMENT`` whose archive/download delivery
+    remains allowed.
+    """
+    artifact = artifact if isinstance(artifact, Mapping) else {}
+    metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), Mapping) else {}
+    target = str(artifact.get("target") or "").strip().lower()
+    original = target in _ORIGINAL_TARGETS
+    model_sha = str(artifact.get("sha256") or "").strip().lower()
+    manifest_digest = str(metadata.get("manifest_digest") or "").strip().lower()
+    integrity_status = str(metadata.get("manifest_integrity_status") or "unverified")
+    conversion_identity_verified = metadata.get("conversion_identity_verified") is True
+    runtime_verified = metadata.get("runtime_verified") is True
+    hardware_verified = metadata.get("hardware_verified") is True
+    numeric = metadata.get("numeric_validation") if isinstance(metadata.get("numeric_validation"), Mapping) else {}
+    numeric_status = str(metadata.get("numeric_status") or "unavailable")
+    reasons: list[str] = []
+    detail: dict[str, Any] = {}
+    model_present = False
+    model_sha_matches = False
+    try:
+        source_path = Path(str(artifact.get("source_path") or ""))
+        if str(artifact.get("source_path") or "").strip() and source_path.is_file() and model_sha:
+            model_present = True
+            model_sha_matches = _sha256(source_path) == model_sha
+    except (OSError, ValueError):
+        model_present = False
+    if not model_present:
+        reasons.append("MODEL_BYTES_MISSING")
+    elif not model_sha_matches:
+        reasons.append("MODEL_SHA_MISMATCH")
+    numeric_evidence: dict[str, Any] = {}
+    numeric_eligible = False
+    if not original:
+        if not conversion_identity_verified:
+            reasons.append("CONVERSION_IDENTITY_UNVERIFIED")
+        if integrity_status != "digest_verified" or not manifest_digest:
+            reasons.append("MANIFEST_DIGEST_UNVERIFIED")
+        evidence_ref = str(numeric.get("evidence_ref") or "").strip()
+        if not evidence_ref:
+            reasons.append("NUMERIC_EVIDENCE_MISSING")
+            if numeric_status == "consistent":
+                reasons.append("NUMERIC_STATUS_WITHOUT_EVIDENCE")
+        else:
+            try:
+                from .deployment.numeric_consistency import (
+                    assert_delivery_quality_eligibility, evidence_path_from_ref,
+                )
+                path = evidence_path_from_ref(data_dir, evidence_ref)
+                directory = path.parent.parent if path is not None else None
+                verdict = (assert_delivery_quality_eligibility(directory)
+                           if directory is not None else {
+                               "eligible": False, "code": "EVIDENCE_REF_UNSAFE",
+                               "reasons": ["证据引用路径越界"], "verification_id": "",
+                               "content_digest": "", "evidence_status": "unavailable"})
+                numeric_evidence = {
+                    "eligible": bool(verdict.get("eligible")),
+                    "code": str(verdict.get("code") or ""),
+                    "reasons": list(verdict.get("reasons") or [])[:8],
+                    "verification_id": str(verdict.get("verification_id") or ""),
+                    "content_digest": str(verdict.get("content_digest") or ""),
+                    "evidence_ref": evidence_ref,
+                    "verdict": str(verdict.get("verdict") or "unavailable"),
+                    "detection_status": str(verdict.get("detection_status") or "unavailable"),
+                    "sample_count": verdict.get("sample_count"),
+                    "binding_status": str(verdict.get("binding_status") or "unavailable"),
+                    "identity_status": str(verdict.get("identity_status") or "unavailable"),
+                    "manifest_digest": str(verdict.get("manifest_digest") or ""),
+                }
+                numeric_eligible = numeric_evidence["eligible"]
+                bound_id = str(numeric.get("verification_id") or "")
+                if numeric_evidence["verification_id"] and bound_id and \
+                        bound_id != numeric_evidence["verification_id"]:
+                    numeric_eligible = False
+                    reasons.append("PROJECTION_BINDING_MISMATCH")
+                bound_digest = str(numeric.get("content_digest") or "")
+                if numeric_evidence["content_digest"] and bound_digest and \
+                        bound_digest != numeric_evidence["content_digest"]:
+                    numeric_eligible = False
+                    reasons.append("PROJECTION_DIGEST_MISMATCH")
+                if not numeric_eligible and not numeric_evidence["reasons"]:
+                    reasons.append(str(numeric_evidence["code"] or "NUMERIC_EVIDENCE_NOT_ELIGIBLE"))
+            except Exception as error:  # noqa: BLE001 - preflight never breaks delivery
+                numeric_evidence = {"eligible": False, "code": "ELIGIBILITY_CHECK_FAILED",
+                                    "reasons": [f"{type(error).__name__}: {error}"[:300]]}
+                reasons.append("ELIGIBILITY_CHECK_FAILED")
+        if not runtime_verified:
+            reasons.append("RUNTIME_VERIFICATION_UNAVAILABLE")
+    formal_activation_eligible = not original and not reasons and numeric_eligible
+    if original:
+        formal_activation_eligible = not reasons
+    detail.update({
+        "schema": DELIVERY_QUALITY_SCHEMA,
+        "target": target,
+        "numeric_required": not original,
+        "model_sha256": model_sha,
+        "model_sha_matches": model_sha_matches,
+        "model_bytes_present": model_present,
+        "manifest_digest": manifest_digest,
+        "manifest_integrity_status": integrity_status,
+        "conversion_identity_verified": conversion_identity_verified,
+        "numeric_status": numeric_status,
+        "numeric_status_alone_is_sufficient": False,
+        "numeric_evidence": numeric_evidence,
+        "runtime_verified": runtime_verified,
+        "hardware_verified": hardware_verified,
+        "hardware_acceptance": "VERIFIED" if hardware_verified else "NOT_VERIFIED",
+        "present_as_hardware_accepted": bool(hardware_verified),
+        "formal_activation_eligible": bool(formal_activation_eligible),
+        "present_as_formal_activation": bool(formal_activation_eligible),
+        "attachment_delivery_allowed": bool(model_present),
+        "delivery_presentation": (
+            "FORMAL_ACTIVATION" if formal_activation_eligible else "UNVERIFIED_ATTACHMENT"
+        ),
+        "code": reasons[0] if reasons else "",
+        "reasons": list(dict.fromkeys(reasons)),
+    })
+    return detail
+
 
 
 def _safe_segment(value: Any, fallback: str = "item") -> str:
@@ -2496,6 +2683,230 @@ class ModelArtifactService:
                 "metadata": row.get("metadata") or {},
             }
             return self.ensure_uploaded(discovered, force=True)
+
+    def deployment_activation_dry_run(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        *,
+        operation_id: str = "",
+        expected_current_version_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read-only deployment activation plan; never mutates state or calls devices.
+
+        Covers operation_id idempotency, duplicate/lost-response requests, late
+        requests bound to an obsolete current version and concurrency conflicts
+        (the observed current pointer is returned so a caller can pass it back as
+        ``expected_current_version_id``). No real device or external platform is
+        contacted; hardware acceptance is explicitly NOT_VERIFIED.
+        """
+        result: dict[str, Any] = {
+            "schema": "deployment-activation-dry-run-v1",
+            "dry_run": True,
+            "state_unchanged": True,
+            "would_change_state": False,
+            "operation_id": str(operation_id or ""),
+            "project_id": str(project_id or ""),
+            "algorithm_id": str(algorithm_id or ""),
+            "version_id": str(version_id or ""),
+            "current_version_id": "",
+            "expected_current_version_id": (
+                None if expected_current_version_id is None else str(expected_current_version_id)
+            ),
+            "already_current": False,
+            "idempotent": False,
+            "already_applied": False,
+            "stale_request": False,
+            "operation_conflict": False,
+            "activation_eligible": False,
+            "artifacts": [],
+            "formal_activation_artifacts": [],
+            "unverified_attachment_artifacts": [],
+            "hardware_acceptance": "NOT_VERIFIED",
+            "device_calls": False,
+            "external_platform_calls": False,
+            "dependency_check": "NOT_EVALUATED",
+            "blockers": [],
+            "code": "",
+            "side_effects": [],
+        }
+        try:
+            algorithm, version = self._current_version(project_id, algorithm_id, version_id)
+        except Exception as error:  # noqa: BLE001 - dry-run returns a plan, never crashes
+            result.update(code="PLAN_UNAVAILABLE",
+                          blockers=[f"{type(error).__name__}: {error}"[:300]])
+            return result
+        if algorithm is None:
+            result.update(code="ALGORITHM_NOT_FOUND", blockers=["算法不存在"])
+            return result
+        try:
+            current = resolve_current_version_id(algorithm) or ""
+        except Exception as error:  # noqa: BLE001
+            result.update(code="ALGORITHM_CURRENT_VERSION_INVALID",
+                          blockers=[f"{type(error).__name__}: {error}"[:300]])
+            return result
+        result["current_version_id"] = str(current)
+        guard = _dry_run_operation_guard(
+            algorithm, operation_id, expected_current_version_id, current,
+            action="activate", target_version_id=version_id,
+        )
+        result.update(
+            already_applied=guard["already_applied"],
+            stale_request=guard["stale_request"],
+            operation_conflict=guard["operation_conflict"],
+            code=guard["code"],
+        )
+        if guard["code"]:
+            result["idempotent"] = bool(guard["already_applied"])
+            result["blockers"].append(guard["reason"] or guard["code"])
+            return result
+        if version is None:
+            result.update(code="ALGORITHM_VERSION_NOT_FOUND", blockers=["版本不存在"])
+            return result
+        result["already_current"] = str(current) == str(version_id)
+        discovered = self.discover_version_artifacts(project_id, algorithm, version)
+        formal: list[str] = []
+        attachments: list[str] = []
+        for item in discovered:
+            preflight = delivery_artifact_quality_preflight(self.data_dir, item)
+            artifact_id = str(item.get("artifact_id") or "")
+            result["artifacts"].append({
+                "artifact_id": artifact_id,
+                "target": str(item.get("target") or ""),
+                "file_name": str(item.get("file_name") or ""),
+                "sha256": str(item.get("sha256") or ""),
+                "formal_activation_eligible": bool(preflight["formal_activation_eligible"]),
+                "attachment_delivery_allowed": bool(preflight["attachment_delivery_allowed"]),
+                "delivery_presentation": preflight["delivery_presentation"],
+                "hardware_acceptance": preflight["hardware_acceptance"],
+                "code": preflight["code"],
+                "reasons": list(preflight["reasons"])[:6],
+            })
+            if preflight["formal_activation_eligible"]:
+                formal.append(artifact_id)
+            elif preflight["attachment_delivery_allowed"]:
+                attachments.append(artifact_id)
+        result["formal_activation_artifacts"] = formal
+        result["unverified_attachment_artifacts"] = attachments
+        blockers = result["blockers"]
+        if not discovered:
+            blockers.append("NO_DELIVERABLE_ARTIFACTS")
+        original_ready = any(
+            row["formal_activation_eligible"] and row["target"] in _ORIGINAL_TARGETS
+            for row in result["artifacts"]
+        )
+        if discovered and not original_ready:
+            blockers.append("ORIGINAL_MODEL_NOT_DELIVERABLE")
+        result["activation_eligible"] = not blockers
+        if result["already_current"] and not blockers:
+            result["idempotent"] = True
+            result["code"] = "ALGORITHM_VERSION_ALREADY_CURRENT"
+        result["would_change_state"] = bool(result["activation_eligible"] and not result["already_current"])
+        return result
+
+    def rollback_dry_run(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        target_version_id: str,
+        *,
+        operation_id: str = "",
+        expected_current_version_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read-only rollback plan (product invariant: rollback deletes current).
+
+        Returns the deletion/pointer plan and operation_id/concurrency guards
+        without changing the algorithm pointer, version rows, artifacts, remote
+        archives or any real device. ``state_unchanged`` is always True for the
+        dry-run itself; ``would_change_state`` describes the real operation.
+        """
+        result: dict[str, Any] = {
+            "schema": "deployment-rollback-dry-run-v1",
+            "dry_run": True,
+            "state_unchanged": True,
+            "would_change_state": False,
+            "operation_id": str(operation_id or ""),
+            "project_id": str(project_id or ""),
+            "algorithm_id": str(algorithm_id or ""),
+            "target_version_id": str(target_version_id or ""),
+            "current_version_id": "",
+            "expected_current_version_id": (
+                None if expected_current_version_id is None else str(expected_current_version_id)
+            ),
+            "idempotent": False,
+            "already_applied": False,
+            "stale_request": False,
+            "operation_conflict": False,
+            "deleted_version_id": "",
+            "deletion_artifacts": [],
+            "remote_delete": "DRY_RUN_NOT_PERFORMED",
+            "cleanup": "DRY_RUN_NOT_PERFORMED",
+            "hardware_acceptance": "NOT_VERIFIED",
+            "device_calls": False,
+            "external_platform_calls": False,
+            "dependency_check": "NOT_EVALUATED",
+            "blockers": [],
+            "code": "",
+            "side_effects": [],
+        }
+        try:
+            algorithm, _ = self._current_version(project_id, algorithm_id, target_version_id)
+        except Exception as error:  # noqa: BLE001
+            result.update(code="PLAN_UNAVAILABLE",
+                          blockers=[f"{type(error).__name__}: {error}"[:300]])
+            return result
+        if algorithm is None:
+            result.update(code="ALGORITHM_NOT_FOUND", blockers=["算法不存在"])
+            return result
+        try:
+            current = resolve_current_version_id(algorithm) or ""
+        except Exception as error:  # noqa: BLE001
+            result.update(code="ALGORITHM_CURRENT_VERSION_INVALID",
+                          blockers=[f"{type(error).__name__}: {error}"[:300]])
+            return result
+        result["current_version_id"] = str(current)
+        versions = [row for row in (algorithm.get("versions") or []) if isinstance(row, Mapping)]
+        target = next((row for row in versions if str(row.get("id") or "") == str(target_version_id)), None)
+        guard = _dry_run_operation_guard(
+            algorithm, operation_id, expected_current_version_id, current,
+            action="rollback_and_delete", target_version_id=target_version_id,
+        )
+        result.update(
+            already_applied=guard["already_applied"],
+            stale_request=guard["stale_request"],
+            operation_conflict=guard["operation_conflict"],
+            code=guard["code"],
+        )
+        if guard["code"]:
+            result["idempotent"] = bool(guard["already_applied"])
+            result["blockers"].append(guard["reason"] or guard["code"])
+            return result
+        if target is None:
+            result.update(code="ALGORITHM_VERSION_NOT_FOUND", blockers=["目标版本不存在"])
+            return result
+        if str(current) == str(target_version_id):
+            result.update(code="ALGORITHM_VERSION_ALREADY_CURRENT", idempotent=True,
+                          blockers=["目标版本已经是当前版本"])
+            return result
+        current_version = next(
+            (row for row in versions if str(row.get("id") or "") == str(current)), None,
+        )
+        if current_version is not None:
+            for item in self.discover_version_artifacts(
+                project_id, algorithm, dict(current_version),
+            ):
+                preflight = delivery_artifact_quality_preflight(self.data_dir, item)
+                result["deletion_artifacts"].append({
+                    "artifact_id": str(item.get("artifact_id") or ""),
+                    "target": str(item.get("target") or ""),
+                    "file_name": str(item.get("file_name") or ""),
+                    "sha256": str(item.get("sha256") or ""),
+                    "delivery_presentation": preflight["delivery_presentation"],
+                })
+        result["deleted_version_id"] = str(current)
+        result["would_change_state"] = True
+        return result
 
     def download(self, artifact_id: str):
         row = self.repository.get(artifact_id)
