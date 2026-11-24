@@ -187,16 +187,32 @@ class FakeRecoveryClient:
         return dict(self.status, task_id=task_id)
 
     def recover_execution(self, task_id, **kwargs):
+        # Model the real /recover response: the central side records a
+        # PROCESS_STOP_VERIFIED proof digest derived from the original identity,
+        # returns it, and exposes it again through the refreshed status.
         self.recovered.append((task_id, kwargs))
+        digest = hashlib.sha256(json.dumps({
+            "proof_type": "PROCESS_STOP_VERIFIED",
+            "node_id": self.node_id,
+            "task_id": str(task_id),
+            "assignment_generation": int(kwargs["assignment_generation"]),
+            "execution_attempt": int(kwargs["execution_generation"]),
+            "gpu_uuid": str(kwargs["gpu_uuid"]),
+            "process_identity": dict(kwargs["process_identity"]),
+            "stop_verified": True,
+            "no_process_launched": False,
+            "no_launch_evidence": {},
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         self.status = {
             **self.status,
             "status": "FAILED",
             "hold_state": "RELEASED",
+            "proof_type": "PROCESS_STOP_VERIFIED",
+            "proof_sha256": digest,
         }
-        return {"task_id": task_id, "state": "RELEASED"}
+        return {"task_id": task_id, "state": "RELEASED", "proof_sha256": digest}
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX recovery proof")
 @pytest.mark.parametrize("field,value", [
     ("node_id", "node-b"),
     ("execution_attempt", 3),
@@ -205,7 +221,8 @@ class FakeRecoveryClient:
     ("hold_gpu_uuid", "GPU-B"),
     ("process_identity_sha256", "0" * 64),
 ])
-def test_coordinator_fails_closed_on_central_identity_mismatch(tmp_path, field, value):
+def test_coordinator_fails_closed_on_central_identity_mismatch(tmp_path, monkeypatch, field, value):
+    _use_posix_recovery(monkeypatch)
     workdirs = FakeWorkdirs([record("a", 2, 11)])
     controller = FakeController()
     status = {
@@ -226,8 +243,8 @@ def test_coordinator_fails_closed_on_central_identity_mismatch(tmp_path, field, 
     assert controller.terminated == []
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX recovery proof")
-def test_coordinator_uses_central_recovery_and_clears_intent(tmp_path):
+def test_coordinator_uses_central_recovery_and_clears_intent(tmp_path, monkeypatch):
+    _use_posix_recovery(monkeypatch)
     workdirs = FakeWorkdirs([record("a", 2, 11)])
     controller = FakeController()
     intent = tmp_path / "dual-slot-intents.json"
