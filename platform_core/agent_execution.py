@@ -2537,7 +2537,8 @@ class AgentExecutionService:
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
             hold = database.execute(
-                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,proof_type "
+                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,"
+                "proof_type,proof_sha256 "
                 "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
             ).fetchone()
             assignment = database.execute(
@@ -2596,6 +2597,7 @@ class AgentExecutionService:
             "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
             "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
             "proof_type": str(hold["proof_type"]) if hold is not None else None,
+            "proof_sha256": str(hold["proof_sha256"]) if hold is not None else None,
         }
 
     def recover_execution(

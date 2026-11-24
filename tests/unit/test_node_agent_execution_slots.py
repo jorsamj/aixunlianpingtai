@@ -32,6 +32,22 @@ def child_slot_runner(controller, *, clean_on_stop=True):
     return run
 
 
+def test_slot_intent_persists_assignment_and_execution_generations_separately(tmp_path):
+    import json
+    slots = BoundedExecutionSlots(1, persist_path=tmp_path / "intents.json")
+    execution_lease = SimpleNamespace(
+        task_id="task-1", generation=2,
+        assignment={"generation": 5},
+    )
+    slot = slots.reserve(execution_lease, gpu_uuid="GPU-A")
+    slots.mark_started(slot, execution_lease)
+    records = json.loads((tmp_path / "intents.json").read_text(encoding="utf-8"))
+    assert records[0]["execution_attempt"] == 2
+    assert records[0]["assignment_generation"] == 5
+    assert records[0]["generation"] == 2
+    slots.abort_reserved(slot)
+
+
 def test_stop_proof_required_before_capacity_can_be_reused():
     controller = ProcessController()
     slots = BoundedExecutionSlots(2)

@@ -39,9 +39,11 @@ class FakeController:
         self.terminated.append((identity.pid, identity.create_time, identity.command_hash))
 
 
-def record(task_id="a", generation=1, pid=11, create_time=1.0, command_hash="h"):
+def record(task_id="a", generation=1, pid=11, create_time=1.0, command_hash="h",
+           assignment_generation=5, gpu_uuid="GPU-A"):
     return {"task_id": task_id, "generation": generation, "pid": pid,
-            "create_time": create_time, "command_hash": command_hash}
+            "create_time": create_time, "command_hash": command_hash,
+            "assignment_generation": assignment_generation, "gpu_uuid": gpu_uuid}
 
 
 def test_coordinator_skips_owned_slot_and_cleans_unowned(tmp_path, monkeypatch):

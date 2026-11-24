@@ -997,6 +997,32 @@ class AgentExecutionWorkdir:
         marker.unlink(missing_ok=True)
         path.unlink(missing_ok=True)
 
+    def read_execution_metadata(self, task_id: str, generation: int) -> dict[str, Any]:
+        lease = SimpleNamespace(task_id=str(task_id), generation=int(generation))
+        target = self.path_for(lease)
+        path = target / "execution.json"
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("persisted execution metadata path is unsafe")
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("persisted execution metadata is unreadable") from error
+        if not isinstance(raw, dict) or raw.get("task_id") != str(task_id):
+            raise ValueError("persisted execution metadata lineage mismatch")
+        assignment = raw.get("assignment")
+        if not isinstance(assignment, dict):
+            assignment = {}
+        selected = {}
+        config = assignment.get("resolved_execution_config")
+        if isinstance(config, dict):
+            selected = config.get("selected_gpu") if isinstance(config.get("selected_gpu"), dict) else {}
+        return {
+            "assignment_generation": int(assignment.get("generation") or 0),
+            "gpu_uuid": str((selected or {}).get("uuid") or ""),
+        }
+
     def list_process_identities(self) -> list[dict[str, Any]]:
         executions = self._contained_directory(
             self.root / "executions",
@@ -1045,9 +1071,13 @@ class AgentExecutionWorkdir:
                     or int(raw.get("generation") or 0) != generation
                 ):
                     raise ValueError("persisted process identity lineage mismatch")
+                execution_metadata = self.read_execution_metadata(task_id, generation)
                 result.append({
                     "task_id": task_id,
                     "generation": generation,
+                    "assignment_generation": int(
+                        execution_metadata.get("assignment_generation") or 0),
+                    "gpu_uuid": str(execution_metadata.get("gpu_uuid") or ""),
                     **identity,
                 })
         return result

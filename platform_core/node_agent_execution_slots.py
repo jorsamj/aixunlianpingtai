@@ -33,6 +33,7 @@ class ExecutionSlot:
     slot_id: str = ""
     state: str = "LOCAL_RESERVED"
     execution_attempt: int = 0
+    assignment_generation: int = 0
     stop_event: threading.Event = field(default_factory=threading.Event)
     identity: Any = None
     outcome: Any = None
@@ -69,7 +70,8 @@ class BoundedExecutionSlots:
         records = [
             {"task_id": slot.task_id, "generation": slot.generation,
              "gpu_uuid": slot.gpu_uuid, "state": slot.state,
-             "execution_attempt": slot.execution_attempt}
+             "execution_attempt": slot.execution_attempt,
+             "assignment_generation": slot.assignment_generation}
             for slot, _thread in self._slots.values() if not slot.released
         ]
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,9 @@ class BoundedExecutionSlots:
                 raise SlotNotReleased("local reservation is not in reserved state")
             slot.lease = lease
             slot.execution_attempt = int(getattr(lease, "generation", 0) or 0)
+            assignment = getattr(lease, "assignment", None)
+            if isinstance(assignment, dict):
+                slot.assignment_generation = int(assignment.get("generation") or 0)
             slot.state = "CENTRAL_STARTED"
             self._persist()
 

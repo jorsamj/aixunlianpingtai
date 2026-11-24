@@ -64,6 +64,14 @@ class NodeRecoveryCoordinator:
             return "central execution attempt mismatch"
         if int(status.get("hold_execution_attempt") or 0) != int(record["generation"]):
             return "central Hold execution attempt mismatch"
+        local_assignment = int(record.get("assignment_generation") or 0)
+        if local_assignment > 0 and int(
+            status.get("hold_assignment_generation") or 0
+        ) != local_assignment:
+            return "central Hold assignment generation mismatch"
+        local_gpu = str(record.get("gpu_uuid") or "")
+        if local_gpu and str(status.get("hold_gpu_uuid") or "") != local_gpu:
+            return "central Hold GPU UUID mismatch"
         if int(status.get("hold_assignment_generation") or 0) <= 0:
             return "central Hold assignment generation missing"
         if not str(status.get("hold_gpu_uuid") or "").strip():
@@ -76,6 +84,7 @@ class NodeRecoveryCoordinator:
         self, task_id: str, generation: int, *,
         execution_attempt: int | None = None,
         gpu_uuid: str | None = None,
+        assignment_generation: int | None = None,
     ) -> None:
         if self.intent_path is None or not self.intent_path.is_file():
             return
@@ -96,6 +105,10 @@ class NodeRecoveryCoordinator:
                     return False
             if gpu_uuid is not None and str(item.get("gpu_uuid") or ""):
                 if str(item.get("gpu_uuid")) != str(gpu_uuid):
+                    return False
+            if (assignment_generation is not None
+                    and item.get("assignment_generation") is not None):
+                if int(item.get("assignment_generation")) != int(assignment_generation):
                     return False
             return True
         remaining = [item for item in records if not matches(item)]
@@ -257,6 +270,7 @@ class NodeRecoveryCoordinator:
                         key[0], key[1],
                         execution_attempt=int(record["generation"]),
                         gpu_uuid=str(status.get("hold_gpu_uuid") or "") if status else None,
+                        assignment_generation=int(record.get("assignment_generation") or 0) or None,
                     )
                 except (OSError, ValueError) as error:
                     self._error = (
