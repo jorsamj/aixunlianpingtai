@@ -106,6 +106,30 @@ def test_local_provider_long_path_full_lifecycle(tmp_path):
     assert captured.value.code == "STORAGE_INVALID_OBJECT_KEY"
 
 
+def test_local_provider_pagination_hashes_only_the_returned_page(tmp_path, monkeypatch):
+    provider = LocalStorageProvider("local-a", tmp_path / "root")
+    for index in range(25):
+        provider.upload(f"materials/{index:02d}.jpg", BytesIO(f"image-{index}".encode()))
+    calls = []
+    original = local_module._sha256
+
+    def counting(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(local_module, "_sha256", counting)
+    first = provider.list_objects("materials", limit=5)
+    assert len(first.items) == 5
+    assert first.next_cursor == "materials/04.jpg"
+    assert len(calls) == 5
+    calls.clear()
+    second = provider.list_objects("materials", limit=5, cursor=first.next_cursor)
+    assert [item.key for item in second.items] == [
+        f"materials/{index:02d}.jpg" for index in range(5, 10)
+    ]
+    assert len(calls) == 5
+
+
 def test_iter_objects_scans_recursively_in_a_stable_depth_first_order(tmp_path):
     provider = LocalStorageProvider("local-a", tmp_path / "root")
     for key in ("z.jpg", "a/2.jpg", "a/1.jpg", "a/deep/3.jpg"):

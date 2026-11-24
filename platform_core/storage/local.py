@@ -215,9 +215,8 @@ class LocalStorageProvider:
         relative = self._relative_to_root(path)
         return bool(relative.parts) and self._is_import_staging_segment(relative.parts[0])
 
-    def iter_objects(
-        self, prefix: str = "", *, recursive: bool = True,
-    ) -> Iterator[ObjectMetadata]:
+    def _iter_keys(self, prefix: str = "", *, recursive: bool = True) -> Iterator[str]:
+        """Yield canonical object keys without hashing file contents."""
         base = self._path(prefix, allow_empty=True)
         requested = self.root / (Path(prefix) if prefix else Path())
         if self._is_import_staging_path(base) or self._has_symlink_component(requested):
@@ -225,16 +224,15 @@ class LocalStorageProvider:
         if not base.exists():
             return
         if base.is_file():
-            yield self._metadata(base)
+            yield self._relative_to_root(base).as_posix()
             return
         if not base.is_dir():
             return
-
         pending: list[tuple[bool, Path]] = [(True, base)]
         while pending:
             is_directory, path = pending.pop()
             if not is_directory:
-                yield self._metadata(path)
+                yield self._relative_to_root(path).as_posix()
                 continue
             directory = self._extended_path(path)
             with os.scandir(directory) as scan:
@@ -253,10 +251,17 @@ class LocalStorageProvider:
             for _key, is_child_directory, path in reversed(
                 sorted(descriptors, key=lambda descriptor: descriptor[0])
             ):
-                if is_child_directory:
-                    pending.append((True, path))
-                else:
-                    pending.append((False, path))
+                pending.append((is_child_directory, path))
+
+    def iter_objects(
+        self, prefix: str = "", *, recursive: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        for key in self._iter_keys(prefix, recursive=recursive):
+            try:
+                yield self.stat(key)
+            except StorageError:
+                # The object vanished between enumeration and metadata read.
+                continue
 
     def exists(self, object_key: str) -> bool:
         return self._path(object_key).is_file()
@@ -382,14 +387,19 @@ class LocalStorageProvider:
         base = self._path(prefix, allow_empty=True)
         if not base.exists():
             return ObjectPage(())
-        metadata = {item.key: item for item in self.iter_objects(prefix, recursive=recursive)}
-        keys = sorted(metadata)
+        keys = sorted(self._iter_keys(prefix, recursive=recursive))
         if cursor:
             keys = [key for key in keys if key > str(cursor)]
         bounded = max(1, min(10000, int(limit)))
         visible = keys[:bounded]
         next_cursor = visible[-1] if len(keys) > bounded else None
-        return ObjectPage(tuple(metadata[key] for key in visible), next_cursor)
+        items = []
+        for key in visible:
+            try:
+                items.append(self.stat(key))
+            except StorageError:
+                continue
+        return ObjectPage(tuple(items), next_cursor)
 
     def generate_preview_url(self, object_key: str, *, expires_seconds: int = 900) -> str | None:
         del expires_seconds
