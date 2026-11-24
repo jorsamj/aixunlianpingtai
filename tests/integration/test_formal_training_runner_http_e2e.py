@@ -193,7 +193,7 @@ def _start_formal(tmp_path, *, task_id="formal-1", gpu="GPU-A", mutate=None,
         "service": service, "client": client, "lease": lease, "runner": runner,
         "runtime_root": runtime_root, "workdirs": workdirs, "server": server,
         "thread": thread, "task_id": task_id, "token": token, "canceller": canceller,
-        "drop_state": drop_state,
+        "drop_state": drop_state, "app": app, "port": port,
     }
 
 
@@ -720,17 +720,35 @@ def test_finish_commit_then_hold_release_fault_recovers(tmp_path):
         assert task["status"] == "SUCCEEDED"
         assert hold["state"] == "STOP_VERIFIED"
         original_digest = str(hold["proof_sha256"])
-        stack["client"].recover_execution(
-            "formal-fault",
-            assignment_generation=int(hold["assignment_generation"]),
-            execution_generation=int(hold["execution_attempt"]),
-            gpu_uuid=str(hold["gpu_uuid"]),
-            process_identity={
-                "pid": int(task["process_pid"]),
-                "create_time": float(task["process_create_time"]),
-                "command_hash": str(task["process_command_hash"]),
-            },
-        )
+        # Restart the central HTTP service against the same durable database.
+        stack["server"].should_exit = True
+        stack["thread"].join(timeout=10)
+        restarted_port = _free_port()
+        restarted = uvicorn.Server(uvicorn.Config(
+            stack["app"], host="127.0.0.1", port=restarted_port, log_level="warning"))
+        restarted_thread = threading.Thread(target=restarted.run, daemon=True)
+        restarted_thread.start()
+        deadline = time.monotonic() + 10
+        while not restarted.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert restarted.started
+        restarted_client = NodeExecutorClient(
+            f"http://127.0.0.1:{restarted_port}", "formal-runner", stack["token"])
+        try:
+            restarted_client.recover_execution(
+                "formal-fault",
+                assignment_generation=int(hold["assignment_generation"]),
+                execution_generation=int(hold["execution_attempt"]),
+                gpu_uuid=str(hold["gpu_uuid"]),
+                process_identity={
+                    "pid": int(task["process_pid"]),
+                    "create_time": float(task["process_create_time"]),
+                    "command_hash": str(task["process_command_hash"]),
+                },
+            )
+        finally:
+            restarted.should_exit = True
+            restarted_thread.join(timeout=10)
         with stack["repository"]._connect() as database:
             recovered = database.execute(
                 "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
