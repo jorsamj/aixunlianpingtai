@@ -1,7 +1,9 @@
 """Bounded read-only projection of the original per-job conversion records."""
 from __future__ import annotations
 
+import stat
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,12 @@ import os
 
 _ACTIVE = frozenset({'queued', 'pending', 'running', 'preparing', 'converting', 'recovering',
                      'submitted', 'waiting', 'waiting_resource', 'starting', 'uploading', 'downloading', 'validating', 'stopping'})
+# Bounded per-refresh parallelism for the cold directory scan. Opening and parsing
+# 1,000 small job.json files is latency-bound on Windows (filter driver + per-open
+# cost), so a small fixed pool removes the serial open/parse queue without adding a
+# background thread or a second data owner. Results keep scandir order.
+_JOB_READ_WORKERS = 8
+
 
 
 def _time(value):
@@ -48,7 +56,10 @@ class ConversionHistoryProjection:
     The jobs_dir must be the already-authorized project's deploy/jobs directory.
     Directory polling is amortized for <=1 second. ``force`` bypasses that TTL;
     unchanged file signatures still reuse their parsed JSON. All callbacks run
-    under a short process-local lock, without writes or background threads.
+    under a short process-local lock, without writes. Changed job records are
+    parsed by a fixed, bounded worker pool that is joined before returning, so the
+    call stays synchronous and the cached state keeps one owner; order, errors and
+    counters stay identical to a serial scan.
     """
     def __init__(self, *, max_projects=16, refresh_seconds=1.0):
         self.max_projects = max(1, int(max_projects))
@@ -143,46 +154,78 @@ class ConversionHistoryProjection:
     def _refresh(root, state, read_json, stats):
         files = {}
         scan_errors = []
+        entries = []
         try:
-            with os.scandir(root) as entries:
-                for entry in entries:
+            with os.scandir(root) as scan:
+                for entry in scan:
                     # Do not follow directories outside the authorized job owner.
-                    if not entry.is_dir(follow_symlinks=False) or entry.is_symlink():
+                    try:
+                        directory_info = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if not stat.S_ISDIR(directory_info.st_mode):
                         continue
                     path = Path(entry.path) / 'job.json'
                     name = entry.name + '/job.json'
                     try:
                         info = path.stat(follow_symlinks=False)
-                        if path.is_symlink():
+                        if stat.S_ISLNK(info.st_mode):
                             raise ValueError('symlink job record')
                         signature = (info.st_mtime_ns, info.st_size, info.st_ctime_ns, info.st_ino)
                         stats['metadata_files'] += 1
                         old = state['files'].get(name)
                         if old and old['signature'] == signature and old['job'] is not None:
-                            files[name] = old
+                            entries.append((name, None, old, None))
                             stats['cache_hits'] += 1
                             continue
-                        stats['json_reads'] += 1
-                        # A sentinel distinguishes unreadable/malformed data from a
-                        # legitimate empty dict when the original reader catches IO.
-                        value = read_json(path, None)
-                        if not isinstance(value, dict) or not value or not value.get('status'):
-                            raise ValueError('unreadable or invalid job record')
-                        projected=dict(value)
-                        trace=projected.get('source_trace')
-                        if isinstance(trace,dict):
-                            # Version history never exposes frozen GT/snapshot bodies.
-                            # Preserve immutable source identity without retaining bulk evidence.
-                            projected['source_trace']={key:trace[key] for key in
-                                ('source_id','sha256','algorithm_id','version_id','artifact_id') if key in trace}
-                        files[name] = dict(signature=signature, job=projected, error='')
+                        entries.append((name, path, None, signature))
                     except FileNotFoundError:
                         # Incomplete directory creation is not an authoritative job.
                         continue
                     except Exception as error:
-                        files[name] = dict(signature=None, job=None, error=type(error).__name__)
+                        entries.append((name, None, dict(signature=None, job=None,
+                                                         error=type(error).__name__), None))
         except FileNotFoundError:
             pass
         except Exception as error:
             scan_errors.append({'file': str(root), 'error': type(error).__name__})
+        # Phase 2: parse the changed records with a bounded pool, preserving the
+        # scandir order of the assembled cache and one owner for the final state.
+        pending = [row for row in entries if row[3] is not None]
+        if len(pending) > 1:
+            with ThreadPoolExecutor(max_workers=min(_JOB_READ_WORKERS, len(pending))) as pool:
+                loaded = list(pool.map(
+                    lambda row: ConversionHistoryProjection._read_job(row[1], row[3], read_json),
+                    pending))
+            loaded_by_name = {row[0]: value for row, value in zip(pending, loaded)}
+        else:
+            loaded_by_name = {
+                row[0]: ConversionHistoryProjection._read_job(row[1], row[3], read_json)
+                for row in pending}
+        for name, path, cached, signature in entries:
+            if path is None:
+                files[name] = cached
+                continue
+            files[name] = loaded_by_name[name]
+            stats['json_reads'] += 1
         state.update(files=files, scan_errors=scan_errors)
+
+    @staticmethod
+    def _read_job(path, signature, read_json):
+        """Parse one owned job.json into the bounded projection (worker-safe)."""
+        try:
+            # A sentinel distinguishes unreadable/malformed data from a
+            # legitimate empty dict when the original reader catches IO.
+            value = read_json(path, None)
+            if not isinstance(value, dict) or not value or not value.get('status'):
+                raise ValueError('unreadable or invalid job record')
+            projected = dict(value)
+            trace = projected.get('source_trace')
+            if isinstance(trace, dict):
+                # Version history never exposes frozen GT/snapshot bodies.
+                # Preserve immutable source identity without retaining bulk evidence.
+                projected['source_trace'] = {key: trace[key] for key in
+                    ('source_id', 'sha256', 'algorithm_id', 'version_id', 'artifact_id') if key in trace}
+            return dict(signature=signature, job=projected, error='')
+        except Exception as error:
+            return dict(signature=None, job=None, error=type(error).__name__)

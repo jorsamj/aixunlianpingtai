@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS materials (
 CREATE INDEX IF NOT EXISTS ix_materials_source ON materials(storage_source_id, created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_reference ON materials(storage_source_id, object_key);
 CREATE INDEX IF NOT EXISTS ix_materials_status ON materials(processing_status, created_at, id);
+CREATE INDEX IF NOT EXISTS ix_materials_source_status ON materials(storage_source_id, processing_status);
 CREATE INDEX IF NOT EXISTS ix_materials_filename ON materials(filename COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS ix_materials_created ON materials(created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_import_batch ON materials(json_extract(payload_json,'$.import_batch_id'),created_at,id);
@@ -395,6 +396,18 @@ class MaterialRepository:
         database.execute("PRAGMA foreign_keys=ON")
         return observe_connection(database)
 
+    # Indexes that every supported schema version must have before a read skips
+    # initialization. Additive indexes are created in place without changing
+    # user_version, so an older build can still open the same database.
+    _REQUIRED_INDEXES = ('ix_materials_import_batch', 'ix_materials_source_status')
+
+    def _required_indexes_present(self, database: sqlite3.Connection) -> bool:
+        rows = database.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name IN (?,?)",
+            self._REQUIRED_INDEXES,
+        ).fetchall()
+        return len(rows) == len(self._REQUIRED_INDEXES)
+
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():
             return None
@@ -404,7 +417,7 @@ class MaterialRepository:
             ) as database:
                 database.execute("PRAGMA busy_timeout=250")
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
-                if version == _SCHEMA_VERSION and not database.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone():
+                if version == _SCHEMA_VERSION and not self._required_indexes_present(database):
                     return None
                 return version
         except sqlite3.Error:
@@ -421,7 +434,7 @@ class MaterialRepository:
         with lock:
             with closing(self._connect()) as database:
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
-                if version == _SCHEMA_VERSION and database.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone():
+                if version == _SCHEMA_VERSION and self._required_indexes_present(database):
                     return
                 if version > _SCHEMA_VERSION:
                     raise RuntimeError(
@@ -1080,9 +1093,20 @@ class MaterialRepository:
             )
             params.append(selected.annotation_state)
         if selected.labels:
+            placeholders = ",".join("?" for _ in selected.labels)
+            # A label absent from the whole library cannot match any material.
+            # The non-correlated probe states that as a constant predicate so the
+            # planner can prove an empty intersection without scanning the whole
+            # filtered pool first; it is implied by the per-material predicate
+            # below, so the matched set and counts stay exactly the same.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM material_labels WHERE label_code IN ("
+                + placeholders + "))"
+            )
+            params.extend(selected.labels)
             clauses.append(
                 "EXISTS (SELECT 1 FROM material_labels ml WHERE ml.material_id = m.id AND ml.label_code IN ("
-                + ",".join("?" for _ in selected.labels) + "))"
+                + placeholders + "))"
             )
             params.extend(selected.labels)
         return clauses, params
