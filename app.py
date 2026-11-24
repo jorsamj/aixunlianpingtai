@@ -102,6 +102,7 @@ from platform_core.material_store import MaterialStore
 from platform_core.model_artifacts import (
     ModelArtifactService,
     SUCCESSFUL_CONVERSION_STATUSES,
+    delivery_artifact_quality_preflight,
     model_delivery_version_fence,
 )
 from platform_core.mother_model_assets import (
@@ -1399,6 +1400,70 @@ def read_json(path: Path, default: Any):
 def write_json(path: Path, data: Any):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# N5 residual risk: app.py wrote jobs/<id>/job.json directly while the numeric
+# evidence publisher and the conversion worker use ``<job.json>.lock`` plus a
+# whole-file atomic replacement. Every app writer now shares that exact lock
+# identity so a concurrent projection can never be torn or silently lost.
+_JOB_JSON_PROJECTION_FIELDS = (
+    "numeric_status",
+    "publication_status",
+    "numeric_validation",
+    "numeric_validation_binding_status",
+    "delivery_quality",
+)
+
+
+def _write_job_json(job_file: Path, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """Persist one job record under the shared ``<job.json>.lock`` contract.
+
+    Read-modify-write callers elsewhere load a snapshot before publishing
+    progress. Under the lock, projection fields owned by the numeric/delivery
+    evidence path are carried forward when the incoming snapshot predates them,
+    then the whole file is replaced atomically (readers never see half a file).
+    JSON content semantics are otherwise unchanged.
+    """
+    job_file = Path(job_file)
+    job_file.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(job_file) + ".lock", timeout=30, thread_local=False)
+    try:
+        with lock:
+            value: Dict[str, Any] = dict(payload)
+            current = read_json(job_file, {})
+            if isinstance(current, Mapping):
+                for field in _JOB_JSON_PROJECTION_FIELDS:
+                    if field in current and not value.get(field):
+                        value[field] = current[field]
+            temporary = job_file.with_name(
+                f".{job_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            try:
+                temporary.write_text(
+                    json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                # Windows can transiently deny the atomic replace when another
+                # process/thread holds a read handle; the whole-file replace is
+                # retried briefly instead of failing the task update.
+                for attempt in range(5):
+                    try:
+                        os.replace(temporary, job_file)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.02 * (attempt + 1))
+            finally:
+                temporary.unlink(missing_ok=True)
+            return value
+    except Timeout as error:
+        raise PlatformError(
+            "JOB_RECORD_WRITE_BUSY",
+            "任务记录正在被其他写入者更新，请重试",
+            str(job_file),
+            "请保留当前页面并稍后重试；写入锁超时不代表任务状态已改变。",
+            409,
+        ) from error
 
 
 def project_dir(project_id: str) -> Path:
@@ -9496,7 +9561,7 @@ def stop_job(project_id: str, job_id: str):
         except Exception:
             pass
         job.update({"status": "stopped", "message": "用户手动停止远程训练", "updated_at": now_iso()})
-        write_json(job_file, job); sync_jobs_index(project_id)
+        _write_job_json(job_file, job); sync_jobs_index(project_id)
         return {"ok": True}
     proc = PROCESS_REGISTRY.get(job_id)
     if proc:
@@ -9510,7 +9575,7 @@ def stop_job(project_id: str, job_id: str):
     else:
         return {"ok": False, "message": "训练进程已经结束，当前没有可停止的进程"}
     job.update({"status": "stopped", "message": "用户手动停止", "finished_at": now_iso(), "updated_at": now_iso()})
-    write_json(job_file, job)
+    _write_job_json(job_file, job)
     sync_jobs_index(project_id)
     return {"ok": True}
 
@@ -9553,7 +9618,7 @@ def sync_remote_job(project_id: str, job_id: str) -> Dict[str, Any]:
             job["remote_models_pulled"] = True
             if pulled:
                 job["message"] = "远程训练完成，模型已拉回本机"
-        write_json(job_file, job)
+        _write_job_json(job_file, job)
     except Exception as e:
         log_file.write_text((log_file.read_text(encoding="utf-8", errors="ignore") if log_file.exists() else "") + f"\n[{now_iso()}] 同步远程任务失败：{e}\n", encoding="utf-8")
     return job
@@ -9869,7 +9934,7 @@ def export_onnx(project_id: str, model_name: str = Form(...)):
         entries.append({'path': str(dst), 'sha256': sha256_file(dst), 'source_path': str(model_path), 'format': 'onnx'})
         if source_job is not None:
             owner['exported_models'] = entries
-            write_json(source_job[0], owner)
+            _write_job_json(source_job[0], owner)
         else:
             update_algorithm_version(algorithms_file(project_id), source_version[0], owner['id'],
                                      {'exported_models': entries}, now=now_iso())
@@ -10467,7 +10532,7 @@ def _cleanup_algorithm_version_artifacts(
         if changed:
             job["source_version_status"] = "deleted"
             job["updated_at"] = now_iso()
-            write_json(job_file, job)
+            _write_job_json(job_file, job)
 
     return {
         "status": "cleanup_failed" if errors else "cleanup_completed",
@@ -12521,7 +12586,7 @@ def _v48_launch_saved_job(project_id: str, job: Dict[str, Any]) -> Dict[str, Any
             "remote":{"server_id":server.get("id"),"name":server.get("name"),"base_url":server["base_url"],"api_key":server.get("api_key", ""),"job_id":remote.get("job_id")},
             "updated_at":now_iso(),
         })
-        write_json(jf, job)
+        _write_job_json(jf, job)
         return job
 
     # local Ultralytics worker
@@ -12551,7 +12616,7 @@ def _v48_launch_saved_job(project_id: str, job: Dict[str, Any]) -> Dict[str, Any
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(BASE_DIR), env={**os.environ.copy(), "PYTHONUTF8":"1", "PYTHONIOENCODING":"utf-8"})
     PROCESS_REGISTRY[job_id] = proc
     job.update({"status":"running","message":"训练已启动","pid":proc.pid,"started_at":now_iso(),"updated_at":now_iso()})
-    write_json(jf, job)
+    _write_job_json(jf, job)
     return job
 
 
@@ -12588,7 +12653,7 @@ def _v56_migrate_queued_priority(job_file: Path, job: Dict[str, Any]) -> Dict[st
     migrated["priority_scheme"] = V56_PRIORITY_SCHEME
     migrated["priority_migrated_at"] = now_iso()
     try:
-        write_json(job_file, migrated)
+        _write_job_json(job_file, migrated)
     except Exception as exc:
         print(f"[priority-migration] {job_file}: {exc}")
     return migrated
@@ -12635,7 +12700,7 @@ def _v48_dispatch_training_queues_locked(project_id: str) -> Optional[tuple]:
         except Exception as error:
             job.update(status="failed", message=f"训练启动失败：{error}",
                        finished_at=now_iso(), updated_at=now_iso(), never_started=True)
-            write_json(jf, job)
+            _write_job_json(jf, job)
     return (history, repository, durable) if not rows else None
 
 
@@ -12732,7 +12797,7 @@ def v48_promote_job(project_id: str, job_id: str):
         if durable.status is not TaskStatus.QUEUED:
             raise HTTPException(status_code=400, detail="只有排队中的任务可以插队")
         promoted = shared_task_repository().promote(job_id)
-        job.update(queue_priority=promoted.priority,priority_scheme=V56_PRIORITY_SCHEME,promoted_at=now_iso(),message="已插队到当前资源队列最前",updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+        job.update(queue_priority=promoted.priority,priority_scheme=V56_PRIORITY_SCHEME,promoted_at=now_iso(),message="已插队到当前资源队列最前",updated_at=now_iso());_write_job_json(jf,job); sync_jobs_index(project_id)
         return job
     if job.get("status")!="queued": raise HTTPException(status_code=400,detail="只有排队中的任务可以插队")
     peers=[read_json(x,{}) for x in _v48_all_job_files(project_id)]
@@ -12742,7 +12807,7 @@ def v48_promote_job(project_id: str, job_id: str):
     job["priority_scheme"]=V56_PRIORITY_SCHEME
     if minimum==1:
         job["priority_tiebreaker"]=min([int(x.get("priority_tiebreaker") or 0) for x in queued_peers] or [0])-1
-    job["promoted_at"]=now_iso(); job["message"]="已插队到当前资源队列最前"; write_json(jf,job)
+    job["promoted_at"]=now_iso(); job["message"]="已插队到当前资源队列最前";_write_job_json(jf,job)
     _v48_dispatch_training_queues(project_id); sync_jobs_index(project_id)
     return read_json(jf,job)
 
@@ -12809,7 +12874,7 @@ def v48_pause_job(project_id: str, job_id: str):
     else:
         if not job.get("pid") or not _pid_alive(job.get("pid")): raise HTTPException(status_code=400,detail="训练进程不存在")
         _v48_suspend_tree(job.get("pid"),False)
-    job.update(status="paused",message="训练已暂停",paused_at=now_iso(),updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+    job.update(status="paused",message="训练已暂停",paused_at=now_iso(),updated_at=now_iso());_write_job_json(jf,job); sync_jobs_index(project_id)
     return job
 
 
@@ -12850,7 +12915,7 @@ def v48_resume_job(project_id: str, job_id: str):
         pdt = _parse_dt_value(job.get("paused_at"))
         if pdt:
             job["paused_seconds"] = int(job.get("paused_seconds") or 0) + max(0, int((datetime.now() - pdt).total_seconds()))
-    job.update(status="running",message="训练已继续",resumed_at=now_iso(),paused_at="",updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+    job.update(status="running",message="训练已继续",resumed_at=now_iso(),paused_at="",updated_at=now_iso());_write_job_json(jf,job); sync_jobs_index(project_id)
     return job
 
 
@@ -12882,12 +12947,12 @@ def v48_stop_job(project_id: str, job_id: str):
                 pass
             except PermissionError as error:
                 raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
-        job.update(status="stopped",message="用户取消排队" if was_queued else "用户手动停止",finished_at=now_iso(),updated_at=now_iso(),never_started=was_queued); write_json(jf,job); sync_jobs_index(project_id)
+        job.update(status="stopped",message="用户取消排队" if was_queued else "用户手动停止",finished_at=now_iso(),updated_at=now_iso(),never_started=was_queued);_write_job_json(jf,job); sync_jobs_index(project_id)
         return job
     legacy_status = str(job.get("status") or "").strip().lower()
     queued_like = legacy_status in {"queued", "waiting", "pending"}
     if queued_like:
-        job.update(status="stopped",message="用户取消排队",finished_at=now_iso(),updated_at=now_iso(),never_started=True); write_json(jf,job)
+        job.update(status="stopped",message="用户取消排队",finished_at=now_iso(),updated_at=now_iso(),never_started=True);_write_job_json(jf,job)
     elif legacy_status in {"running","paused"}:
         if job.get("target")=="remote":
             remote=job.get("remote") or {}
@@ -12911,7 +12976,7 @@ def v48_stop_job(project_id: str, job_id: str):
                 )
         else:
             _terminate_pid_tree(job.get("pid")); PROCESS_REGISTRY.pop(job_id,None)
-        job.update(status="stopped",message="用户手动停止",finished_at=now_iso(),updated_at=now_iso()); write_json(jf,job)
+        job.update(status="stopped",message="用户手动停止",finished_at=now_iso(),updated_at=now_iso());_write_job_json(jf,job)
     else:
         raise HTTPException(status_code=409, detail="训练任务已经结束或不处于可停止状态，未修改本地状态")
     # 只有真正开始过训练的任务才形成算法版本；排队/等待资源后取消不属于一次算法迭代。
@@ -13160,7 +13225,7 @@ def v12_create_algorithm(project_id: str, payload: AlgorithmReq, asset_view: boo
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
-def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False, version_id: str='', page: int=1, page_size: int=20, basic_only: bool=False):
+def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False, version_id: str='', page: int=1, page_size: int=20, basic_only: bool=False, quality_view: bool=False):
     get_project(project_id)
     if asset_view:
         from platform_core.algorithm_sql_store import AlgorithmSqlStore
@@ -13168,7 +13233,14 @@ def v12_get_algorithm(project_id: str, algorithm_id: str, asset_view: bool=False
         if basic_only:return {'ok':True,'project_id':project_id,'algorithm':store.asset_algorithm_basic(algorithm_id)}
         if version_id:
             version=store.asset_version(algorithm_id,version_id)
-            return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version':version,'artifacts':_conversion_catalog_repository(DATA_DIR).version_display(project_id,algorithm_id,version_id)}
+            response={'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version':version,'artifacts':_conversion_catalog_repository(DATA_DIR).version_display(project_id,algorithm_id,version_id)}
+            if quality_view:
+                # Opt-in read-only delivery quality; the default asset_view keeps
+                # its existing "no discovery/file hashing" contract.
+                response['delivery_quality']=_version_delivery_quality(
+                    project_id,algorithm_id,version_id,
+                )
+            return response
         return {'ok':True,**store.asset_versions(algorithm_id,page=page,page_size=page_size)}
     item = next(
         (row for row in list_algorithms_internal(project_id, algorithm_id=algorithm_id) if str(row.get("id") or "") == str(algorithm_id)),
@@ -13340,6 +13412,124 @@ def v12_rollback_version(
             "not_verifiable": ["online_deployment_instances"],
         },
     }
+
+
+def _dry_run_state_snapshot(
+    project_id: str, algorithm_id: str, service: ModelArtifactService,
+) -> Dict[str, Any]:
+    """Read-only row-set evidence for one dry-run (versions/operations/artifacts)."""
+    path = algorithms_file(project_id)
+    algorithms = list_algorithm_assets(path)
+    algorithm = next(
+        (row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)),
+        None,
+    )
+    versions = [
+        row for row in ((algorithm or {}).get("versions") or [])
+        if isinstance(row, Mapping)
+    ]
+    operations = [
+        row for row in ((algorithm or {}).get("version_operations") or [])
+        if isinstance(row, Mapping)
+    ]
+    try:
+        current = str(resolve_current_version_id(algorithm) or "") if algorithm else ""
+    except Exception:  # noqa: BLE001 - a broken pointer is itself evidence, never a 500
+        current = ""
+    try:
+        revision = int(algorithm_store_revision(path))
+    except Exception:  # noqa: BLE001
+        revision = -1
+    return {
+        "algorithm_revision": revision,
+        "algorithm_present": algorithm is not None,
+        "current_version_id": current,
+        "version_count": len(versions),
+        "version_ids": sorted(str(row.get("id") or "") for row in versions),
+        "version_operation_count": len(operations),
+        "version_operation_ids": sorted(str(row.get("id") or "") for row in operations),
+        "artifact_rows": int(service.repository.summary(project_id=project_id).get("total") or 0),
+    }
+
+
+def _dry_run_read_only_response(
+    plan: Mapping[str, Any], before: Mapping[str, Any], after: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Fail closed if a dry-run changed algorithm/version/artifact row counts."""
+    rows_unchanged = before == after
+    assertion = {
+        "state_unchanged": rows_unchanged,
+        "algorithm_revision_unchanged": before["algorithm_revision"] == after["algorithm_revision"],
+        "current_version_unchanged": before["current_version_id"] == after["current_version_id"],
+        "version_rows_unchanged": (
+            before["version_count"] == after["version_count"]
+            and before["version_ids"] == after["version_ids"]
+        ),
+        "version_operation_rows_unchanged": (
+            before["version_operation_count"] == after["version_operation_count"]
+            and before["version_operation_ids"] == after["version_operation_ids"]
+        ),
+        "artifact_rows_unchanged": before["artifact_rows"] == after["artifact_rows"],
+        "before": dict(before),
+        "after": dict(after),
+    }
+    if not rows_unchanged:
+        raise PlatformError(
+            "DRY_RUN_STATE_CHANGED",
+            "Dry-Run 调用前后检测到状态变化，拒绝返回计划",
+            json.dumps({"before": dict(before), "after": dict(after)}, ensure_ascii=False),
+            "Dry-Run 必须零写入；请重新读取一次计划并核对并发操作。",
+            409,
+        )
+    return {
+        "ok": True,
+        **dict(plan),
+        "dry_run": True,
+        "zero_write_assertion": "PASSED",
+        "read_only_assertion": assertion,
+    }
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/deployment-activation-dry-run")
+def v12_deployment_activation_dry_run(
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    operation_id: str = "",
+    expected_current_version_id: str = "",
+):
+    """Read-only deployment activation Dry-Run; reuses `_dry_run_operation_guard`."""
+    get_project(project_id)
+    service = _delivery_model_artifact_service()
+    before = _dry_run_state_snapshot(project_id, algorithm_id, service)
+    plan = service.deployment_activation_dry_run(
+        project_id, algorithm_id, version_id,
+        operation_id=operation_id,
+        expected_current_version_id=(expected_current_version_id or None),
+    )
+    after = _dry_run_state_snapshot(project_id, algorithm_id, service)
+    return _dry_run_read_only_response(plan, before, after)
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/rollback-dry-run")
+def v12_rollback_dry_run(
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    operation_id: str = "",
+    expected_current_version_id: str = "",
+):
+    """Read-only rollback Dry-Run; reuses `_dry_run_operation_guard`."""
+    get_project(project_id)
+    service = _delivery_model_artifact_service()
+    before = _dry_run_state_snapshot(project_id, algorithm_id, service)
+    plan = service.rollback_dry_run(
+        project_id, algorithm_id, version_id,
+        operation_id=operation_id,
+        expected_current_version_id=(expected_current_version_id or None),
+    )
+    after = _dry_run_state_snapshot(project_id, algorithm_id, service)
+    return _dry_run_read_only_response(plan, before, after)
 
 
 @app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/version-operations/{operation_id}/retry-cleanup")
@@ -13522,7 +13712,7 @@ def _v48_archive_training_version_locked(project_id: str, job: Dict[str, Any]) -
     existing=next((v for v in (algo.get("versions") or []) if v.get("job_id")==job.get("id")),None)
     if existing:
         job["auto_version_id"]=existing.get("id");job["auto_version_name"]=existing.get("version_name");
-        try:write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
+        try:_write_job_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
         except Exception:pass
         return existing
     model_path=_v48_find_job_model(project_id,job)
@@ -13700,7 +13890,7 @@ def _v48_archive_training_version_locked(project_id: str, job: Dict[str, Any]) -
     version_id = str(version.get("id") or version_id)
     version_name = str(version.get("version_name") or version_name)
     job["auto_version_id"]=version_id;job["auto_version_name"]=version_name
-    try:write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
+    try:_write_job_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
     auto_conversion=_v48_auto_convert_version(project_id,algorithm_id,version,job)
     version=update_algorithm_version(
@@ -13708,7 +13898,7 @@ def _v48_archive_training_version_locked(project_id: str, job: Dict[str, Any]) -
         {"auto_conversion":auto_conversion},now=now_iso(),
     )
     try:
-        job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
+        job["auto_conversion"]=version.get("auto_conversion");_write_job_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
     request_external_auto_publish_if_enabled(
         data_dir=DATA_DIR,
@@ -21305,7 +21495,7 @@ def v39_resolve_conversion(project_id: str, payload: DeployJobReq):
 
 
 def _write_deploy_job(project_id: str, job: Dict[str, Any]):
-    jd=_deploy_job_dir(project_id,job["id"]); jd.mkdir(parents=True,exist_ok=True); write_json(jd/"job.json",job)
+    jd=_deploy_job_dir(project_id,job["id"]); jd.mkdir(parents=True,exist_ok=True); _write_job_json(jd/"job.json",job)
 
 
 def _read_deploy_job(project_id: str, job_id: str) -> Dict[str, Any]:
@@ -21387,19 +21577,19 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
                 for p in cal_dir.rglob("*"):
                     if p.is_file(): zf.write(p,p.relative_to(cal_dir))
             files["calibration_zip"]=(cal_zip.name,cal_zip.open("rb"),"application/zip")
-        job.update({"status":"running","stage":"上传到转换服务器","progress":5,"message":"正在上传源模型","updated_at":now_iso()});write_json(jf,job)
+        job.update({"status":"running","stage":"上传到转换服务器","progress":5,"message":"正在上传源模型","updated_at":now_iso()});_write_job_json(jf,job)
         r=requests.post(base+"/api/deploy/convert",headers={"X-API-Key":key},files=files,data={"target":job.get("target"),"params_json":json.dumps(params,ensure_ascii=False),"source_trace_json":json.dumps(job.get("source_trace") or {},ensure_ascii=False)},timeout=600)
         for v in files.values():
             try:v[1].close()
             except:pass
         if not r.ok: raise RuntimeError(f"远程创建任务失败 HTTP {r.status_code}: {r.text[:1000]}")
-        rid=r.json().get("job_id"); job["remote_job_id"]=rid; job["stage"]="远程转换中"; job["progress"]=8; write_json(jf,job)
+        rid=r.json().get("job_id"); job["remote_job_id"]=rid; job["stage"]="远程转换中"; job["progress"]=8;_write_job_json(jf,job)
         while True:
             cur=read_json(jf,{})
             if cur.get("cancel_requested"):
                 try:requests.post(base+f"/api/deploy/jobs/{rid}/stop",headers={"X-API-Key":key},timeout=10)
                 except:pass
-                cur.update(status="stopped",stage="已停止",message="用户停止",updated_at=now_iso());write_json(jf,cur);return
+                cur.update(status="stopped",stage="已停止",message="用户停止",updated_at=now_iso());_write_job_json(jf,cur);return
             rr=requests.get(base+f"/api/deploy/jobs/{rid}",headers={"X-API-Key":key},timeout=15)
             if not rr.ok: raise RuntimeError(f"同步远程任务失败：{rr.text[:800]}")
             remote=rr.json()
@@ -21407,7 +21597,7 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
             if lr.ok:(jd/"convert.log").write_text(lr.text,encoding="utf-8",errors="ignore")
             cur=read_json(jf,{})
             cur.update(status=remote.get("status",cur.get("status")),stage=remote.get("stage",cur.get("stage")),progress=remote.get("progress",cur.get("progress",0)),message=remote.get("message",cur.get("message")),error=remote.get("error",""),updated_at=now_iso(),remote_status=remote)
-            write_json(jf,cur)
+            _write_job_json(jf,cur)
             if remote.get("status") in {"done","failed","stopped"}: break
             time.sleep(2)
         cur=read_json(jf,{})
@@ -21430,12 +21620,12 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
                        conversion_completion_source="local_artifact_receipt_utc",
                        manifest_path=str(manifest_path) if manifest_path.is_file() else "",
                        message="远程转换完成，部署产物已拉回平台",progress=100)
-            write_json(jf,cur)
+            _write_job_json(jf,cur)
             request_external_auto_publish_for_conversion_if_enabled(
                 data_dir=DATA_DIR, project_id=project_id, conversion_job=cur,
             )
     except Exception as e:
-        cur=read_json(jf,job);cur.update(status="failed",stage="转换失败",message=str(e),error=str(e),finished_at=now_iso(),updated_at=now_iso());write_json(jf,cur)
+        cur=read_json(jf,job);cur.update(status="failed",stage="转换失败",message=str(e),error=str(e),finished_at=now_iso(),updated_at=now_iso());_write_job_json(jf,cur)
         with (jd/"convert.log").open("a",encoding="utf-8",errors="ignore") as f:f.write(f"\n[{now_iso()}] 远程转换失败：{e}\n")
     finally:
         DEPLOY_REMOTE_THREADS.pop(job_id,None)
@@ -22078,6 +22268,12 @@ def _rknn_hardware_acceptance_report(project_id: str, job_id: str) -> dict[str, 
             "output_shapes": list(verification.get("output_shapes") or []),
         },
         "accuracy_verified": False,
+        # Read-only delivery quality projection for the same conversion job. The
+        # RKNN runtime report only proves hardware execution; formal activation
+        # still requires bound numeric evidence and is never inferred here.
+        "hardware_acceptance": "VERIFIED",
+        "device_calls_verified": True,
+        "delivery_quality": _conversion_delivery_quality_projection(project_id, job),
         "statement": "本报告仅证明该 RKNN 产物已在匹配 Rockchip 板卡上完成 RKNNLite Runtime 推理验证，不代表算法准确率或业务效果验收。",
     }
 
@@ -22236,9 +22432,187 @@ def v39_list_deploy_jobs(project_id: str):
     return {'ok':True,'items':rows[:100]}
 
 
+def _delivery_model_artifact_service() -> ModelArtifactService:
+    """Read-only ModelArtifact owner used by delivery quality projections."""
+    return ModelArtifactService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
+
+
+def _model_artifact_quality_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    """One fail-closed read-only quality row (never raises, never writes)."""
+    try:
+        quality = delivery_artifact_quality_preflight(DATA_DIR, row)
+    except Exception as error:  # noqa: BLE001 - projection degrades readably
+        quality = {
+            "schema": "delivery-quality-preflight-v1",
+            "target": str(row.get("target") or ""),
+            "formal_activation_eligible": False,
+            "present_as_formal_activation": False,
+            "delivery_presentation": "UNVERIFIED_ATTACHMENT",
+            "hardware_acceptance": "NOT_VERIFIED",
+            "present_as_hardware_accepted": False,
+            "attachment_delivery_allowed": False,
+            "numeric_status_alone_is_sufficient": False,
+            "code": "ELIGIBILITY_CHECK_FAILED",
+            "reasons": [f"{type(error).__name__}: {error}"[:300]],
+        }
+    return {
+        "artifact_id": str(row.get("artifact_id") or ""),
+        "target": str(row.get("target") or ""),
+        "file_name": str(row.get("file_name") or ""),
+        "sha256": str(row.get("sha256") or ""),
+        "quality_preflight": quality,
+        "formal_activation_eligible": bool(quality.get("formal_activation_eligible")),
+        "present_as_formal_activation": bool(quality.get("present_as_formal_activation")),
+        "delivery_presentation": str(quality.get("delivery_presentation") or "UNVERIFIED_ATTACHMENT"),
+        "hardware_acceptance": str(quality.get("hardware_acceptance") or "NOT_VERIFIED"),
+        "present_as_hardware_accepted": bool(quality.get("present_as_hardware_accepted")),
+        "attachment_delivery_allowed": bool(quality.get("attachment_delivery_allowed")),
+        "numeric_status_alone_is_sufficient": False,
+        "code": str(quality.get("code") or ""),
+        "reasons": list(quality.get("reasons") or []),
+    }
+
+
+def _version_delivery_quality(
+    project_id: str, algorithm_id: str, version_id: str,
+) -> Dict[str, Any]:
+    """Opt-in, read-only delivery quality for one algorithm version.
+
+    Uses the same ModelArtifact discovery as the delivery/publish path, so a
+    legal but unverified conversion remains an attachment while only really
+    eligible evidence can present as formal activation. No device/external
+    platform call and no write.
+    """
+    service = _delivery_model_artifact_service()
+    reasons: List[str] = []
+    rows: List[Mapping[str, Any]] = []
+    try:
+        algorithm, version = service._current_version(project_id, algorithm_id, version_id)
+        if algorithm is None:
+            reasons.append("ALGORITHM_NOT_FOUND")
+        elif version is None:
+            reasons.append("ALGORITHM_VERSION_NOT_FOUND")
+        else:
+            rows = service.discover_version_artifacts(project_id, algorithm, version)
+    except Exception as error:  # noqa: BLE001 - read projection never breaks
+        reasons.append(f"ARTIFACT_DISCOVERY_FAILED: {type(error).__name__}"[:300])
+    artifacts = [_model_artifact_quality_row(row) for row in rows]
+    formal = [row for row in artifacts if row["formal_activation_eligible"]]
+    attachments = [
+        row for row in artifacts
+        if row["attachment_delivery_allowed"] and not row["formal_activation_eligible"]
+    ]
+    if not artifacts:
+        reasons.append("NO_DELIVERABLE_ARTIFACTS")
+    formal_activation_eligible = bool(artifacts) and len(formal) == len(artifacts)
+    return {
+        "schema": "version-delivery-quality-v1",
+        "project_id": str(project_id),
+        "algorithm_id": str(algorithm_id),
+        "version_id": str(version_id),
+        "dry_run": False,
+        "device_calls": False,
+        "external_platform_calls": False,
+        "numeric_status_alone_is_sufficient": False,
+        "formal_activation_eligible": formal_activation_eligible,
+        "present_as_formal_activation": formal_activation_eligible,
+        "delivery_presentation": "FORMAL_ACTIVATION" if formal_activation_eligible else "UNVERIFIED_ATTACHMENT",
+        "hardware_acceptance": "NOT_VERIFIED",
+        "present_as_hardware_accepted": False,
+        "attachment_delivery_allowed": bool(attachments),
+        "artifacts": artifacts,
+        "reasons": list(dict.fromkeys(reasons)),
+    }
+
+
+def _conversion_delivery_quality_projection(
+    project_id: str, job: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Read-only conversion/delivery quality projection for one conversion job.
+
+    Reuses ``delivery_artifact_quality_preflight`` (and therefore
+    ``assert_delivery_quality_eligibility``) on the registered ModelArtifact
+    rows. Raw job outputs remain downloadable/archivable but are never
+    presented as formal activation or hardware acceptance. Never writes, never
+    calls a device or an external platform; failures degrade to readable
+    reasons instead of a 500.
+    """
+    job = job if isinstance(job, Mapping) else {}
+    job_id = str(job.get("id") or "")
+    artifacts: List[Dict[str, Any]] = []
+    reasons: List[str] = []
+    try:
+        rows = (
+            _delivery_model_artifact_service().repository.list_by_conversion_job(
+                project_id, job_id,
+            ) if job_id else []
+        )
+    except Exception as error:  # noqa: BLE001 - projection must never break reads
+        rows = []
+        reasons.append(f"MODEL_ARTIFACT_READ_FAILED: {type(error).__name__}"[:300])
+    for row in rows:
+        artifacts.append(_model_artifact_quality_row(row))
+    raw_outputs: List[Dict[str, Any]] = []
+    job_root = _deploy_job_dir(project_id, job_id) if job_id else None
+    for output in job.get("outputs") or []:
+        if not isinstance(output, Mapping) or not output.get("rel"):
+            continue
+        raw_path = Path(str(output.get("path") or ""))
+        available = bool(raw_path.is_file())
+        if not available and job_root is not None:
+            try:
+                available = _resolve_business_file(
+                    project_id, "deployment", f"jobs/{job_id}/{output.get('rel')}",
+                ).path.is_file()
+            except Exception:  # noqa: BLE001 - archive availability is evidence only
+                available = False
+        raw_outputs.append({
+            "name": str(output.get("name") or ""),
+            "rel": str(output.get("rel") or ""),
+            "sha256": str(output.get("sha256") or ""),
+            "archive_download_allowed": available,
+            "delivery_presentation": "ARCHIVE_DOWNLOAD_ONLY" if available else "UNAVAILABLE",
+            "formal_activation_eligible": False,
+            "present_as_formal_activation": False,
+            "hardware_acceptance": "NOT_VERIFIED",
+        })
+    formal = [row for row in artifacts if row["formal_activation_eligible"]]
+    attachments = [row for row in artifacts if row["attachment_delivery_allowed"] and not row["formal_activation_eligible"]]
+    if not artifacts:
+        reasons.append("MODEL_ARTIFACT_NOT_REGISTERED")
+    formal_activation_eligible = bool(artifacts) and len(formal) == len(artifacts)
+    return {
+        "schema": "conversion-delivery-quality-v1",
+        "conversion_job_id": job_id,
+        "project_id": str(project_id),
+        "dry_run": False,
+        "device_calls": False,
+        "external_platform_calls": False,
+        "numeric_status_alone_is_sufficient": False,
+        "hardware_verified": job.get("hardware_verified") is True,
+        "hardware_acceptance": "VERIFIED" if job.get("hardware_verified") is True else "NOT_VERIFIED",
+        "present_as_hardware_accepted": job.get("hardware_verified") is True,
+        "archive_download_allowed": any(row["archive_download_allowed"] for row in raw_outputs),
+        "attachment_delivery_allowed": bool(attachments),
+        "formal_activation_eligible": formal_activation_eligible,
+        "present_as_formal_activation": formal_activation_eligible,
+        "delivery_presentation": "FORMAL_ACTIVATION" if formal_activation_eligible else "UNVERIFIED_ATTACHMENT",
+        "artifacts": artifacts,
+        "unregistered_outputs": raw_outputs,
+        "reasons": list(dict.fromkeys(reasons)),
+    }
+
+
 @app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}")
 def v39_get_deploy_job(project_id: str, job_id: str):
-    return _read_deploy_job(project_id,job_id)
+    job = _read_deploy_job(project_id,job_id)
+    return {**job, "delivery_quality": _conversion_delivery_quality_projection(project_id, job)}
 
 
 def _numeric_conversion_dir(project_id: str, verification_id: str) -> Path:
@@ -24088,7 +24462,7 @@ def v45_error_cause_analysis(project_id: str, job_id: str, payload: V45ErrorCaus
         except Exception as ex:
             results.append({'image':name,'error':str(ex)})
     report['ai_error_analysis']={'model_config_id':payload.model_config_id,'model_name':cfg.get('name'),'generated_at':now_iso(),'items':results}
-    job['training_report']=report; write_json(jf,job); sync_jobs_index(project_id)
+    job['training_report']=report;_write_job_json(jf,job); sync_jobs_index(project_id)
     return {'ok':True,'analysis':report['ai_error_analysis']}
 
 @app.post('/api/v44/projects/{project_id}/jobs/{job_id}/supplement')
@@ -24112,7 +24486,7 @@ def v44_supplement_training_data(project_id: str, job_id: str):
             img['split']='train';img['updated_at']=updated;changed.append(str(img.get('id')))
         return changed
     changed=material_store(project_id).mutate(apply_supplement)
-    job['supplemented_image_ids']=changed;job['supplemented_at']=now_iso();write_json(jf,job);sync_jobs_index(project_id)
+    job['supplemented_image_ids']=changed;job['supplemented_at']=now_iso();_write_job_json(jf,job);sync_jobs_index(project_id)
     return {"ok":True,"changed":len(changed),"weak_labels":sorted(weak)}
 
 # ============================================================

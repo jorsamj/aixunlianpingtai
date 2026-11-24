@@ -41,6 +41,7 @@ from .model_artifacts import (
     ModelArtifactService,
     StorageTestPayload,
     SUCCESSFUL_CONVERSION_STATUSES as MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES,
+    DELIVERY_QUALITY_SCHEMA,
     delivery_artifact_quality_preflight,
     model_delivery_version_fence,
     conversion_completion_rank,
@@ -3186,6 +3187,30 @@ class ExternalAlgorithmPublishService:
                 'recovery_plan':plan})
         transport = self._publish_transport_state()
         identity = self._external_identity_state(algorithm, version)
+        # Reuse the per-Weight preflight for the diagnostic `discovered` rows so
+        # every read-only artifact projection carries the same quality fields.
+        quality_peers = [
+            row for row in weights if row.get("quality_preflight") is not None
+        ]
+        discovered: list[Dict[str, Any]] = []
+        for row in classified:
+            peer = next((
+                candidate for candidate in quality_peers
+                if _artifact_target_identity(candidate.get("target"))
+                == _artifact_target_identity(row.get("target"))
+                and str(candidate.get("sha256") or "") == str(row.get("sha256") or "")
+                and _canonical_chip_code(candidate.get("chip_code"))
+                == _canonical_chip_code(row.get("chip_code"))
+            ), None)
+            if peer is None:
+                discovered.append(row)
+            else:
+                discovered.append({**row, **{
+                    key: peer[key] for key in (
+                        "quality_preflight", "formal_activation_eligible",
+                        "delivery_presentation", "hardware_acceptance",
+                    ) if key in peer
+                }})
         return {
             "ok": True,
             "project_id":project_id,
@@ -3207,7 +3232,7 @@ class ExternalAlgorithmPublishService:
             "artifacts": weights,
             "weight_delivery_status": "PARTIAL" if any(r.get("review_required") or (r.get("sync_status") not in {"SYNCED",None} and r.get("publish_mapping_status")!="ignored") for r in weights if r.get("included_in_delivery",True)) else str((publication or {}).get("status") or "PENDING"),
             "requires_sync": self.publication_requires_sync(project_id, algorithm, version, publication),
-            "discovered": classified,
+            "discovered": discovered,
             "mapped_artifact_count": len(mapped),
             "blocked_artifact_count": len(blocked),
             "ignored_artifact_count": len(ignored),
@@ -4163,6 +4188,31 @@ class ExternalAlgorithmPublishService:
 
 
 
+def artifact_delivery_quality_projection(
+    data_dir: str | Path, artifact: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Read-only HTTP projection of one model artifact's delivery quality.
+
+    Reuses ``delivery_artifact_quality_preflight`` (and therefore
+    ``assert_delivery_quality_eligibility``). Archive/download/attachment
+    delivery of a legal but unverified model stays visible, while formal
+    activation and real hardware acceptance are only claimed with real evidence.
+    """
+    quality = delivery_artifact_quality_preflight(data_dir, artifact)
+    return {
+        "quality_preflight": quality,
+        "formal_activation_eligible": bool(quality.get("formal_activation_eligible")),
+        "delivery_presentation": str(quality.get("delivery_presentation") or "UNVERIFIED_ATTACHMENT"),
+        "hardware_acceptance": str(quality.get("hardware_acceptance") or "NOT_VERIFIED"),
+        "present_as_formal_activation": bool(quality.get("present_as_formal_activation")),
+        "present_as_hardware_accepted": bool(quality.get("present_as_hardware_accepted")),
+        "attachment_delivery_allowed": bool(quality.get("attachment_delivery_allowed")),
+        "numeric_status_alone_is_sufficient": False,
+        "code": str(quality.get("code") or ""),
+        "reasons": list(quality.get("reasons") or []),
+    }
+
+
 def external_algorithm_publish_router(
     *,
     data_dir: Path,
@@ -4235,13 +4285,59 @@ def external_algorithm_publish_router(
         version_id: str = Query(default=""), status: str = Query(default=""),
         limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0),
     ):
+        items = service.model_assets.repository.list(
+            project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
+            status=status, limit=limit, offset=offset,
+        )
+        quality_rows = []
+        for item in items:
+            # Read-only projection; unregistered/unreadable rows degrade to an
+            # explicit UNVERIFIED_ATTACHMENT instead of hiding archive/download.
+            try:
+                projection = artifact_delivery_quality_projection(service.data_dir, item)
+            except Exception as error:  # noqa: BLE001 - listing never fails on quality
+                projection = {
+                    "quality_preflight": {
+                        "schema": DELIVERY_QUALITY_SCHEMA,
+                        "target": str(item.get("target") or ""),
+                        "formal_activation_eligible": False,
+                        "delivery_presentation": "UNVERIFIED_ATTACHMENT",
+                        "hardware_acceptance": "NOT_VERIFIED",
+                        "attachment_delivery_allowed": False,
+                        "numeric_status_alone_is_sufficient": False,
+                        "code": "ELIGIBILITY_CHECK_FAILED",
+                        "reasons": [f"{type(error).__name__}: {error}"[:300]],
+                    },
+                    "formal_activation_eligible": False,
+                    "delivery_presentation": "UNVERIFIED_ATTACHMENT",
+                    "hardware_acceptance": "NOT_VERIFIED",
+                    "present_as_formal_activation": False,
+                    "present_as_hardware_accepted": False,
+                    "attachment_delivery_allowed": False,
+                    "numeric_status_alone_is_sufficient": False,
+                    "code": "ELIGIBILITY_CHECK_FAILED",
+                    "reasons": [f"{type(error).__name__}: {error}"[:300]],
+                }
+            item.update(projection)
+            quality_rows.append(projection)
         return {
             "ok": True,
-            "items": service.model_assets.repository.list(
-                project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
-                status=status, limit=limit, offset=offset,
-            ),
+            "items": items,
             "summary": service.model_assets.repository.summary(project_id=project_id),
+            "delivery_quality": {
+                "schema": DELIVERY_QUALITY_SCHEMA,
+                "formal_activation_eligible_count": sum(
+                    1 for row in quality_rows if row["formal_activation_eligible"]
+                ),
+                "attachment_delivery_allowed_count": sum(
+                    1 for row in quality_rows if row["attachment_delivery_allowed"]
+                ),
+                "hardware_accepted_count": sum(
+                    1 for row in quality_rows
+                    if row["hardware_acceptance"] == "VERIFIED"
+                ),
+                "numeric_status_alone_is_sufficient": False,
+            },
         }
 
     @router.post("/api/v64/model-artifacts/{artifact_id}/retry")
