@@ -42,7 +42,10 @@ export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/projects/:projectId/training/reports/:jobId',name:'training-report',component:()=>import('./NativeTrainingReport.vue')},
   {path:'/projects/:projectId/algorithms/:algorithmId/versions/:versionId/report',name:'version-report',component:()=>import('./NativeTrainingReport.vue')},
   {path:'/projects/:projectId/training/create',name:'training-create',component:()=>import('./TrainingCreate.vue')},
+  {path:'/projects/:projectId/ai/tasks',name:'ai-tasks',component:()=>import('./AiTasks.vue')},
   {path:'/projects/:projectId/ai/tasks/:taskId/review',name:'ai-review-native',props:true,meta:{immersive:true},component:()=>import('./AiReview.vue')},
+  {path:'/projects/:projectId/algorithms/:algorithmId/versions/:versionId/conversions',name:'version-conversions',props:true,component:()=>import('./ConversionHistory.vue')},
+  {path:'/projects/:projectId/nodes',name:'service-nodes-native',props:true,component:()=>import('./ServiceNodes.vue')},
   {path:'/projects/:projectId/legacy/:page',name:'legacy',component:{render:()=>null}},
   {path:'/:pathMatch(.*)*',name:'not-found',component:{render:()=>h('p','页面不存在，请从侧栏选择业务入口。')}},
 ]});

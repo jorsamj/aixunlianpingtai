@@ -166,7 +166,7 @@ const diagnosticFacts=computed(()=>{
    <div><h2>{{ review.task?.name || '候选审核' }}</h2>
     <p>任务 {{ taskId }} <template v-if="taskStatus"> · {{ taskStatus }}</template></p>
    </div>
-   <el-button tag="a" :href="legacy">返回原工作台</el-button>
+   <div class="review-heading-actions"><router-link :to="{name:'ai-tasks',params:{projectId}}">返回任务列表</router-link><el-button tag="a" :href="legacy">返回原工作台</el-button></div>
   </header>
   <div v-if="sessionError" role="alert" class="review-notice">
    {{ sessionError }} <el-button @click="verifySession()">重试会话核验</el-button>
@@ -455,7 +455,7 @@ const diagnosticFacts=computed(()=>{
 <style scoped>
 .review-workspace{color:#222;overflow-wrap:anywhere}
 .review-heading,.review-toolbar,.review-pagination{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
-.review-heading{margin-bottom:12px}.review-heading h2,.review-toolbar h3{margin:0}
+.review-heading{margin-bottom:12px}.review-heading h2,.review-toolbar h3{margin:0}.review-heading-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .review-heading p,.review-candidate-caption span,.review-pagination,small{color:#555;font-size:.85rem}
 .review-notice,.review-filters,.review-results,.review-inspector{background:#fff;border:1px solid #ddd;border-radius:8px;padding:12px;min-width:0}
 .review-columns{display:grid;grid-template-columns:184px minmax(0,1fr) 320px;align-items:start;gap:12px}

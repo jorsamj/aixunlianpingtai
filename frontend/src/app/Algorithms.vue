@@ -310,6 +310,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
        <router-link :to="versionReport(selected,row.id)">训练报告</router-link>
        <a v-if="row.has_lineage" :href="original(selected,'lineage',row.id)">训练溯源</a>
        <router-link v-if="row.has_evaluation" :to="versionReport(selected,row.id,true)">独立评测</router-link>
+       <router-link :to="{name:'version-conversions',params:{projectId,algorithmId:selected,versionId:row.id},query:{algorithm_name:versions?.algorithm.name,version_name:row.version_name}}">转换记录（原生）</router-link>
        <a :href="original(selected,'conversion',row.id)">转换 · 原流程</a>
        <a :href="original(selected,'delivery',row.id)">交付 · 原流程</a>
        <a v-if="row.has_model" :href="original(selected,'download',row.id)">下载模型</a>
