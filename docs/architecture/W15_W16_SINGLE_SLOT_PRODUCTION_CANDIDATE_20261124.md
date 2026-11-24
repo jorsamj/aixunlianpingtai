@@ -13,25 +13,25 @@
 ## 1. 候选身份（N6.3）
 
 ```text
-CANDIDATE_CODE_SHA_40HEX = "6032874814f6bcb821d0a0add23f7a3dc08095f7"
+CANDIDATE_CODE_SHA_40HEX = "a4aeb89ba5c15e69b7b3a0789f6bac8579fdc798"
 ```
 
-> 该行为唯一候选代码 SHA 占位：**由主代理在本轮全部代码提交完成后替换为远端实际 40 位
-> SHA；未替换前不得作为生产候选身份，也不得把本文档其余证据当作可部署候选。**
-> 占位值不是 40 位十六进制，工具会 fail-closed 拒绝（见 §5 的 N6.1 测试）；不得用
-> “当前 HEAD / 最终 SHA / CI 全绿”代替这个准确 SHA。
+> 该行为唯一候选代码 SHA：已由主代理在本轮全部代码提交完成后替换为远端实际 40 位 SHA
+> （2026-11-24 19:0x +08，branch `feature/external-algorithm-publishing`）。该 SHA **不是**
+> 生产部署授权；本文档其余证据只描述隔离环境能力与明确未验证边界。
 
 | 项 | 值 |
 |---|---|
 | 唯一开发分支 | `feature/external-algorithm-publishing` |
-| **代码候选 SHA（40 位）** | 见上方 `CANDIDATE_CODE_SHA_40HEX`（=`6032874814f6bcb821d0a0add23f7a3dc08095f7`，已推送远端） |
+| **代码候选 SHA（40 位）** | `a4aeb89ba5c15e69b7b3a0789f6bac8579fdc798`（已推送远端） |
 | VERSION.txt | `42.24.592`（本轮未修改） |
 | 运行时 build_id | 部署时必须等于代码候选 SHA：`MC_BUILD_REVISION=<候选SHA>`，或 Git worktree HEAD 恰为该 SHA；证据以 `/api/health` 的 build/version 与本地 `resolve_build_identity` 一致为准 |
 | 前端构建身份 | `static/vue-catalog/offline-assets.json` 与 `static/vue-app/offline-assets.json` 的 receipt（`sha`=候选SHA、`build_origin=github-actions`、逐资源 sha256/bytes）；`UI_BUILD_VERSION=42.25.0-dev` 仅为内部 UI 构建元数据，**不是产品版本**。本机开发 checkout 的 receipt 为 `local-check`/`sha=null` 且缺 app receipt，属未验证；生产候选必须以候选 SHA 的 CI artifact receipt 为准 |
-| Python 依赖身份 | `requirements*.txt` 内容摘要 + 已安装关键发行版版本指纹（见 §2.1）；不提供 wheelhouse 哈希清单 |
-| CI 事实 | **CI_PENDING**：代码候选 `6032874814f6bcb821d0a0add23f7a3dc08095f7` 已推送（2026-11-24 17:0x +08）；按 CI-first 规则仅查询一次，未完成前不称验收通过，接受状态以该 SHA 的实际 Actions 结果为准 |
+| Python 依赖身份 | `requirements*.txt` 内容摘要 + 已安装关键发行版版本指纹（见 §2.1）；`tools/offline_bundle.py` 可额外产出 wheelhouse 逐文件 sha256 清单（见 §2.2） |
+| CI 事实 | **CI_PENDING**：代码候选 `a4aeb89ba5c15e69b7b3a0789f6bac8579fdc798` 已推送（2026-11-24 19:0x +08）；按 CI-first 规则仅查询一次，未完成前不称验收通过，接受状态以该 SHA 的实际 Actions 结果为准 |
 | 双槽开关 | 生产默认关闭（见 §3.2） |
 | 生产升级工具 | `tools/production_upgrade.py`（预检 + 受控备份 + 数据库/应用/协调回滚） |
+| 离线交付工具 | `tools/offline_bundle.py`（build/verify：代码 SHA + VERSION + build_id + 前端资源摘要 + 依赖指纹 + 逐文件 sha256 清单 + 离线安装脚本）。**`OFFLINE_INSTALL_NOT_VERIFIED` 保持**：真实断网主机安装与真实 systemd 尚未执行 |
 
 候选定义：准确 40 位代码 SHA（占位替换后）+ VERSION + 前端构建身份 + 对应准确 SHA CI
 + 本文件验证边界。本文档、单槽绿色测试与 CI 均不等同生产部署安全。
@@ -170,14 +170,22 @@ CANDIDATE_CODE_SHA_40HEX = "6032874814f6bcb821d0a0add23f7a3dc08095f7"
 | 板端 Agent systemd 安装 | `tools/install_rockchip_agent.sh`：Linux/root、预装 Python/RKNNLite、doctor fail-closed、0600 EnvironmentFile、unit 生成；自身不联网安装依赖 | 已有（未在目标板执行） |
 | Python 依赖版本记录 | `requirements.txt`（19 行：3 个 `==`、16 个范围）、`requirements-dev.txt`、`remote_web_requirements.txt`；optional FiftyOne 哈希锁 `optional-dependencies/fiftyone-windows-py312.lock.txt`（仅可选 sidecar，含 `--no-index --find-links --require-hashes` 指引） | 部分（主依赖无锁无 wheelhouse） |
 | 升级/健康检查 | `tools/production_upgrade.py`、`/api/health` | 已有（隔离） |
+| **离线交付包构建/校验** | `tools/offline_bundle.py build/verify`：把准确 40hex 代码 SHA、`VERSION.txt`、build_id、前端资源集摘要、Python 依赖指纹与**逐文件 sha256/size 清单**（`sha256sum -c` 兼容）绑定为一个交付物；payload 白名单 + 拒绝密钥/数据库/`__pycache__`/符号链接；拒绝空 wheelhouse、缺前端构建、歧义 SHA、覆盖既有产物 | 已有（隔离 11 passed / 1 skipped） |
+| **断网安装脚本** | `tools/offline_bundle.py` 内嵌 `install_offline.sh`：先校验清单再复制、`pip install --no-index --find-links`（`PIP_NO_INDEX=1`）、拒绝非空非本包前缀、`OFFLINE_*` 稳定失败码、装后 `healthcheck.py`；bundle 同时生成主 unit 模板与 env 模板 | 已有（未在真实断网主机执行） |
 
 ### 4.2 缺失能力（准确阻断，不得宣称离线安装完成）
 
-- 无 `install_offline.sh`/`wheelhouse`/`pip download` 打包脚本（全仓搜索无此类脚本，`wheelhouse` 不存在）；
-- 无主 Web/Worker 的 systemd unit 安装脚本（仓库内无 `.service` 文件；生产依赖既有现场安装）；
-- 无 Python wheels（主依赖）及哈希清单、无系统库/驱动清单、无模型权重/字体离线包；
-- 无离线启动编排、断网 health check、安装后验证脚本；
+- ~~无 `install_offline.sh`/`wheelhouse`/`pip download` 打包脚本~~ → 本轮已提供
+  `tools/offline_bundle.py`（bundle 内嵌 `install_offline.sh` + `healthcheck.py` + unit/env 模板；
+  wheelhouse 由构建机 `pip download` 提供并逐文件哈希）。**仍未在真实断网主机运行**；
+- ~~无主 Web/Worker 的 systemd unit 安装脚本~~ → bundle 生成 `deploy/<service>.service` 并由
+  安装脚本安装到 `/etc/systemd/system`（`systemctl daemon-reload`，可选 `--start`）；真实
+  systemd 主机仍未执行；
+- 无 Python wheels（主依赖）实物与系统库/驱动清单、无模型权重/字体离线包（bundle 只校验
+  传入的 wheelhouse 是否覆盖已声明的一级依赖；**传递依赖解析标为 `not_verified`**）；
+- 无离线启动编排（安装脚本只在 `--start` 时启动服务）；
 - 依赖版本不可复现：主 requirements 19 行中仅 3 个精确 pin，16 个为范围；`remote_web_requirements.txt` 0 pin；
+  bundle 记录该事实但不改写依赖；
 - 本机工作区 `static/vue-catalog/offline-assets.json` 为 `local-check`/`sha=null` 且缺
   `static/vue-app/offline-assets.json`，说明本地构建 receipt **不是**候选身份；生产候选必须
   使用候选 SHA 的 CI artifact（`vue-catalog-preview-<SHA>`）再经 `package_vue_offline.py` 校验；
@@ -200,8 +208,14 @@ CANDIDATE_CODE_SHA_40HEX = "6032874814f6bcb821d0a0add23f7a3dc08095f7"
    → `No matching distribution found`，exit 1（无 wheelhouse 时不会隐式联网）。
 5. 离线脚本静态扫描：三份 `*offline*` 脚本无 `pip/curl/wget/urllib/npm install` 网络调用；
    `verify_vue_app_offline.mjs` 仅有“拒绝远程运行时依赖”的正则字面量。
+6. 离线交付包（本轮新增）：`tests/unit/test_offline_bundle.py` **11 passed / 1 skipped**
+   （跳过项为 POSIX `sh -n` 语法检查，Windows 无 `sh`；Linux CI 执行）。覆盖：身份绑定、
+   逐字节篡改检出、尺寸变化、非清单文件、空/不完整 wheelhouse、缺前端构建、密钥文件与
+   数据库拒绝、歧义 SHA、拒绝覆盖既有产物、安装脚本“先校验后复制/仅 `--no-index`/无 curl-wget”、
+   依赖行解析。
 - **未执行/未验证**：真实 Linux 断网安装、真实 CI artifact 下载、`npm ci/build` 断网构建、
   wheelhouse 生成与 `--require-hashes` 安装、主 Web/Worker systemd 安装、断网启动与健康检查。
+  因此 `OFFLINE_INSTALL_NOT_VERIFIED` 与 `REAL_SYSTEMD_HOST_NOT_EXECUTED` **保持有效**。
 
 ### 4.4 目标机断网验证的最小步骤（待授权执行）
 
@@ -235,9 +249,11 @@ python tools/production_upgrade.py --rollback --backup-dir /data/backups/pre   #
 
 ## 6. 明确未验证（不得宣称通过）
 
-- `CANDIDATE_CI_PENDING`：§1 代码候选 SHA 已回填为 `6032874814f6bcb821d0a0add23f7a3dc08095f7`；该 SHA 的 GitHub Actions 尚未全部完成（单次查询时 0 completed），在获得必要 CI 证据前不得称生产候选验收通过；
-  工具对占位值 fail-closed（`TARGET_SHA_REQUIRED`/`PREVIOUS_SHA_REQUIRED`，有测试断言）；
-  CI 事实 UNKNOWN（未联网查询）。
+- `CANDIDATE_CI_PENDING`：§1 代码候选 SHA 已回填为 `a4aeb89ba5c15e69b7b3a0789f6bac8579fdc798`；
+  该 SHA 的 GitHub Actions 在本轮仅按 CI-first 规则查询一次，**查询当时仍有工作流未完成**，
+  因此**不得**称生产候选验收通过；接受状态以该 SHA 的实际 Actions 最终结果为准。
+  同一轮已用准确 SHA 的实际失败日志定位并修复了两处真实缺陷（见 §6.1），修复后的 SHA 仍需
+  独立 CI 证据，不能用修复前的失败或通过代替。
 - `REAL_GPU_UAT_NOT_VERIFIED`：真实双卡 UAT 未执行（`W7B_GPU_UAT_CHECKLIST_20261123.md` 保持未执行）。
 - `REAL_HARDWARE_INFERENCE_NOT_VERIFIED`：RKNN/BMODEL/TensorRT 等板端推理未执行。
 - `A800_PREFLIGHT_REQUIRED`、`A800_PRODUCTION_UPGRADE_NOT_EXECUTED`：未接触 A800/4070/生产。
@@ -247,6 +263,36 @@ python tools/production_upgrade.py --rollback --backup-dir /data/backups/pre   #
   断网启动与健康检查均未验证。
 - 真实 20 万级素材、长稳、P95 性能：未在生产数据/主机测量。
 - 真实 Linux POSIX SIGKILL 全链路：以准确 SHA 的 GitHub Actions Linux job 实跑结果为准。
+
+### 6.1 本轮（2026-11-24 晚）已修复的真实缺陷
+
+1. **Agent 租约监视器把传输故障当成失锁**（生产缺陷，非仅测试）：
+   `ExecutionLeaseMonitor.beat()` 原本对任何 `NodeExecutorHTTPError`（含
+   `NODE_EXECUTOR_TRANSPORT_FAILED`/连接重置/超时）立刻 `on_fenced` →
+   `terminate_tree`：Worker 被杀、`process-identity.json`/`process-launch-intent.json`
+   被清除、workspace 被回收，而控制面从未收到终止上报，任务停在
+   `RUNNING / REMOTE_TRAINING_STARTING_WORKER` 且 GPU Hold 仍 `HELD`——即崩溃恢复 E2E
+   长期报告的现场。整改后：控制面**应答**（4xx/5xx，除 408/425/429）仍立即 fencing
+   （保持既有 503 分区合同，真实 loopback 测试继续通过）；仅**传输层无应答**在租约
+   有效窗口内有界重试，窗口耗尽才 fencing，且在 `execution-error.json` 记录有界、
+   不含密钥的失败原因。`tests/unit/test_node_agent_executor_runtime.py` 覆盖三种情形。
+2. **同一个 `job.json` 存在两套锁身份**：Worker 用 `<job.json>.state.lock`，应用/转换/
+   部署用 `<job.json>.lock`；整文件读改写因此在取消/进度之间互相覆盖（取消可被复活、
+   `finished_at` 可丢失）。已统一为 `<job.json>.lock` + 锁内读取 + 原子替换 + 执行
+   attempt 栅栏 + 取消保护；`remote_train_server.py` 六个写入点全部收敛。
+3. **CI 守卫引用过期 token**：`training-task-visibility.yml` 仍断言
+   `?v=4226386-timing`，而 `static/main.mjs` 已是 `-eta-stale`，导致 153 项测试全绿
+   但 job 以 `exit 1` 失败；`online-feedback-runtime.yml` 的编译与守卫列表在反馈业务
+   迁出 `app.py` 后同步指向新 Owner 模块（意图不变）。
+
+**已知风险（未在本轮整改，需后续/现场判定）**：
+- 执行节点 RAM 准入使用**瞬时**可用内存快照，`RESOURCE_HOST_MEMORY_INSUFFICIENT` 直接
+  终止为 `FAILED`；主机内存短时紧张即可让本可执行的任务永久失败。是否改为
+  `BLOCKED_BY_ENVIRONMENT`/延迟重排在现场确认前不改（属产品语义）。
+- 双槽 Windows 场景在真实 CI 上仍偶发（`dual-crash-task-a` Worker 在启动后消失）；
+  本轮补上了此前缺失的“停止原因”证据链，根因需下一次准确 SHA 的 CI 证据确认。
+- `frontend` 的 `static/vue-app` receipt 在本机为 `local-check`；候选身份仍须以候选 SHA 的
+  CI artifact 为准。
 
 ## 7. 建议的现场 UAT 顺序（需单独授权，本轮不执行）
 

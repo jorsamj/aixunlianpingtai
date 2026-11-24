@@ -332,3 +332,49 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
   `PRODUCTION_DUAL_SLOT_DISABLED` / `A800_PREFLIGHT_REQUIRED` /
   `A800_PRODUCTION_UPGRADE_NOT_EXECUTED` / `OFFLINE_INSTALL_NOT_VERIFIED` /
   `CANDIDATE_CI_PENDING`。
+
+### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
+
+起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`a4aeb89ba5c15e69b7b3a0789f6bac8579fdc798`**
+（本文件与候选文档的提交仅改文档，不改变代码候选身份）。
+
+环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
+https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.py`＋
+`.dsh-local/git-gh.ps1`（本机 CONNECT 代理钉住可达边缘 IP，TLS 仍端到端校验；`git` 需
+`-c credential.interactive=never`）完成 fetch/push。`.dsh-local/` 已加入
+`.git/info/exclude`，不入库。后台进程在本环境**没有外网**，push 必须前台执行。
+
+| 提交 | 内容 | 关键验证 |
+|---|---|---|
+| `3ada4245` / `f671e2ea` | **T0 真实缺陷**：`ExecutionLeaseMonitor` 把任何心跳失败当失锁 → 杀 Worker、清 ProcessIdentity、回收 workspace，却不上报控制面（任务停在 `RUNNING/STARTING_WORKER` + Hold `HELD`）。整改为“只有控制面**应答**才 fencing；传输层无应答在租约窗口内有界重试；窗口耗尽才 fencing”，并落 `execution-error.json` 有界证据。首版把 5xx 也当可重试，**被真实 loopback 503 分区测试判红**（该合同是既有安全合同），已收窄回“4xx/5xx 立 fencing，仅传输层重试” | 单测三情形通过；`test_two_agent_http_loopback` 分区用例本地通过；`test_execution_status_read_only_recovery_diagnostics` 的“两次 GET 完全相等”断言改为只比持久身份/证据字段（活任务 stage 会前进，只读性仍由中央快照不变断言证明） |
+| `c6c3919a` | **T1**：`job.json` 统一 `<job.json>.lock`（原 Worker 用 `.state.lock`，与 app/转换/部署不同锁 → 取消可被进度写入复活、`finished_at` 可丢）；锁内读改写 + 原子替换 + attempt 栅栏 + 取消保护；`remote_train_server.py` 六个写入点全部收敛 | 24 passed（含新增 `test_training_job_record_contract.py` 5 项）+ durable controls 1 passed |
+| `52bbe9e6` | **T2-C**：原生转换创建/详情（复用 v39 catalog/resolve/jobs/by-request/log/artifact 与既有 `delivery_quality` 只读投影），数值/运行时/硬件/发布准入分列，`FORMAL_ACTIVATION`/`UNVERIFIED_ATTACHMENT` 如实显示 | `vue-tsc` 0 error；`build:app` 成功；入口契约 2 passed |
+| `0c1d5010` | **T4**：`tools/offline_bundle.py`（build/verify：40hex SHA + VERSION + build_id + 前端资源摘要 + 依赖指纹 + 逐文件 sha256 + `sha256sum -c` 清单；白名单拒绝密钥/DB/`__pycache__`/符号链接；空 wheelhouse/缺前端/歧义 SHA/覆盖产物 fail-closed）＋内嵌 `install_offline.sh`（先校验后复制、仅 `--no-index`、拒绝非空非本包前缀、`OFFLINE_*` 码、装后 healthcheck）＋unit/env 模板 | 11 passed / 1 skipped（`sh -n` 由 Linux 执行） |
+| `f0cfd313` | **T8**：算法域 Provider 端口（SQLite 直通默认 + PostgreSQL 实现）、`w5_algorithm` 关系型 schema（版本/校验和/禁止降级/启动不迁移）、单域迁移工具（导出/导入/报告/幂等/断点续跑/dry-run/主键集合/外键/revision/JSON/NULL 语义/摘要；保留原 ID；不读 SecretStore）、切换准入与回滚阻断 | 真实 PostgreSQL 16.2：29 passed（provider 契约、迁移/对账/并发单写者/回滚阻断、SQLite↔PG 18 操作一致） |
+| `9693e3ea` | **CI 守卫过期**：`training-task-visibility.yml` 仍断言 `?v=4226386-timing`，实际 `static/main.mjs` 为 `-eta-stale` → 153 测试全绿但 job `exit 1` | 令牌同步，意图不变 |
+| `0ef0baca` | **T7**：在线反馈与 deploy artifact 查询迁出 `app.py`（`online_feedback_service.py`/`online_feedback_api.py`/`deployment/artifacts_api.py`），`OnlineFeedbackRepository` 仍是唯一持久化 Owner，`app.py` 保留装配/顺序/薄绑定；外部发布确认“已迁移，无需改动” | 有效路由表 535 项与 OpenAPI 473 paths/527 operations **逐项一致**（含 operationId/状态码/请求体 $ref/安全/标签）；`import app` OK；反馈 API 7 + artifact 可见性 5 passed |
+| `a4aeb89b` | **T2-A/B**：原生外部发布（按版本只读详情：发布记录/同步状态/失败原因/产物映射/三个独立质量事实）与平台对接（读 v63 配置 + v64 映射，复用既有 v63 保存契约；只显示掩码状态，密钥只写、保存后清空） | `vue-tsc` 0 error；`build:app` 成功；未调用任何真实发布/同步/连接测试 |
+
+本轮仍未完成 / 待判定：
+1. **准确 SHA 的 CI 最终证据**（单次查询时仍有工作流未完成）：代码候选 `a4aeb89b` 的
+   Actions 结果决定 `CANDIDATE_CI_PENDING` 能否转 ACCEPTED。
+2. **双槽 Windows 崩溃恢复**仍偶发（`dual-crash-task-a` Worker 启动后消失）。本轮补上了
+   “谁、因为什么停止”的证据链（`execution-error.json`），下一次 CI 将直接给出结论；
+   不得在无证据时改断言或加 sleep。
+3. **执行节点 RAM 准入**用瞬时可用内存，`RESOURCE_HOST_MEMORY_INSUFFICIENT` 直接 `FAILED`；
+   本机可复现（约 1/3），CI 失败签名不同故非当前 CI 根因。是否改 `BLOCKED_BY_ENVIRONMENT`/
+   延迟重排需产品判定，本轮未改。
+4. **T3 复核结论**：质量证据的“显示 vs 消费”边界无新增缺陷——发布路径按既有合同允许
+   未验证产物**附件交付**但不伪装正式激活，`assert_delivery_quality_eligibility` 已在
+   artifact 注册/预检侧真实生效；正式激活写入入口本身不存在（只有 dry-run），故无需新增闸门。
+5. **T7 剩余批次**：训练创建/管理、报告、素材、AI 任务、GT、项目配置/权限/节点/系统配置；
+   转换/质量引擎与旧 v42 iteration/quality 组必须整体一起迁（共享 `_v42_*` Owner）。
+   T7 提示：`include_router` 为惰性注册，后续批次须比对**展开后的有效路由表**，不能比
+   `app.routes`。
+6. **T8 剩余**：`app.py` 的 Provider 接线（本轮故意留给集成提交）、7 个 presentation-only
+   投影未移植（cutover 需显式 `--acknowledge-unported`）、存储源/模型产物/外部发布域、
+   素材/GT/负样本联合迁移单元（ATTACH/JSON/事务隔离）、TaskRepository/Hold 等安全域。
+7. 离线真机：wheelhouse 实物、系统库/驱动、模型权重/字体、真实断网安装与 systemd 未执行；
+   `OFFLINE_INSTALL_NOT_VERIFIED`、`REAL_SYSTEMD_HOST_NOT_EXECUTED` 保持。
+
