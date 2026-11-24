@@ -1415,6 +1415,19 @@ _JOB_JSON_PROJECTION_FIELDS = (
 )
 
 
+_JOB_JSON_IO_DEADLINE_SECONDS = 15.0
+
+
+def read_json_strict(path: Path) -> Any:
+    """Read a JSON record, propagating transient Windows sharing errors."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    value = json.loads(raw)
+    return value
+
+
 def _write_job_json(job_file: Path, payload: Mapping[str, Any]) -> Dict[str, Any]:
     """Persist one job record under the shared ``<job.json>.lock`` contract.
 
@@ -1430,7 +1443,24 @@ def _write_job_json(job_file: Path, payload: Mapping[str, Any]) -> Dict[str, Any
     try:
         with lock:
             value: Dict[str, Any] = dict(payload)
-            current = read_json(job_file, {})
+            # Never silently treat an unreadable current record as empty: that
+            # would drop evidence projections written by the numeric/delivery
+            # publisher. Readers may briefly hold the file on Windows, so retry
+            # within a bounded deadline instead of losing the projection.
+            current: Any = {}
+            read_deadline = time.monotonic() + _JOB_JSON_IO_DEADLINE_SECONDS
+            while True:
+                try:
+                    current = read_json_strict(job_file)
+                    break
+                except PermissionError:
+                    if time.monotonic() >= read_deadline:
+                        raise PlatformError(
+                            "JOB_RECORD_READ_BUSY",
+                            "任务记录正在被读取，暂时无法安全更新",
+                            str(job_file),
+                        )
+                    time.sleep(0.01)
             if isinstance(current, Mapping):
                 for field in _JOB_JSON_PROJECTION_FIELDS:
                     if field in current and not value.get(field):
@@ -1443,16 +1473,19 @@ def _write_job_json(job_file: Path, payload: Mapping[str, Any]) -> Dict[str, Any
                     json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 # Windows can transiently deny the atomic replace when another
-                # process/thread holds a read handle; the whole-file replace is
-                # retried briefly instead of failing the task update.
-                for attempt in range(5):
+                # process/thread holds a read handle; retry with backoff within a
+                # bounded deadline instead of failing the task update spuriously.
+                replace_deadline = time.monotonic() + _JOB_JSON_IO_DEADLINE_SECONDS
+                delay = 0.005
+                while True:
                     try:
                         os.replace(temporary, job_file)
                         break
                     except PermissionError:
-                        if attempt == 4:
+                        if time.monotonic() >= replace_deadline:
                             raise
-                        time.sleep(0.02 * (attempt + 1))
+                        time.sleep(delay)
+                        delay = min(0.2, delay * 2)
             finally:
                 temporary.unlink(missing_ok=True)
             return value
