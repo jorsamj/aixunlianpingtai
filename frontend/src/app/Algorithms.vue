@@ -82,6 +82,7 @@ const appliedTags=computed(()=>filterKeys.flatMap(key=>{
 }));
 function external(algorithm:AlgorithmSummary){return algorithm.source_type?.toLowerCase()==='external'}
 function canRetireVersion(algorithm:AlgorithmSummary){return !external(algorithm)||algorithm.provider_type?.toUpperCase()!=='CHANG_LIAN'}
+function canOpenExternalPublish(algorithm:AlgorithmSummary){return external(algorithm)&&algorithm.provider_type?.toUpperCase()==='CHANG_LIAN'}
 function sourceLabel(algorithm:AlgorithmSummary){
  if(!external(algorithm))return '本平台';
  return algorithm.source_name||(algorithm.provider_type?.toUpperCase()==='CHANG_LIAN'?'新畅联':'外部平台');
@@ -102,6 +103,9 @@ const algorithms=ref<Paged<AlgorithmSummary>|null>(null),versions=ref<VersionPag
 const selected=computed(()=>String(route.query.algorithm||'')),versionPage=ref(1),drawer=ref(false),editing=ref(false),editingId=ref(''),saving=ref(false),writeError=ref('');
 const readOnlyAlgorithm=computed(()=>!!editingId.value&&(!basic.value?.editable||basic.value.source_type?.toUpperCase()==='EXTERNAL'));
 const form=reactive<AlgorithmForm>({name:'',remark:'',industry:'',algorithm_type:''});
+function externalPublishTarget(versionId:string){
+ return {name:'external-publish-native',params:{projectId},query:{algorithm:selected.value,version:versionId,version_page:versionPage.value>1?String(versionPage.value):undefined}};
+}
 function load(){void reads.run('algorithms',signal=>api.algorithms(appliedFilters.value,signal),value=>{algorithms.value=value})}
 function filterQuery(next:typeof defaults){
  const query={...route.query};
@@ -311,6 +315,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
        <a v-if="row.has_lineage" :href="original(selected,'lineage',row.id)">训练溯源</a>
        <router-link v-if="row.has_evaluation" :to="versionReport(selected,row.id,true)">独立评测</router-link>
        <router-link :to="{name:'version-conversions',params:{projectId,algorithmId:selected,versionId:row.id},query:{algorithm_name:versions?.algorithm.name,version_name:row.version_name}}">转换记录（原生）</router-link>
+       <router-link v-if="canOpenExternalPublish(versions?.algorithm||selectedAlgorithm||{id:selected,name:''})" :to="externalPublishTarget(row.id)">新畅联交付（原生只读）</router-link>
        <a :href="original(selected,'conversion',row.id)">转换 · 原流程</a>
        <a :href="original(selected,'delivery',row.id)">交付 · 原流程</a>
        <a v-if="row.has_model" :href="original(selected,'download',row.id)">下载模型</a>
