@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -720,21 +722,62 @@ def test_finish_commit_then_hold_release_fault_recovers(tmp_path):
         assert task["status"] == "SUCCEEDED"
         assert hold["state"] == "STOP_VERIFIED"
         original_digest = str(hold["proof_sha256"])
-        # Restart the central HTTP service against the same durable database.
+        # Stop the original central OS process and start a brand-new Python
+        # process against the same SQLite database.
         stack["server"].should_exit = True
         stack["thread"].join(timeout=10)
         restarted_port = _free_port()
-        restarted = uvicorn.Server(uvicorn.Config(
-            stack["app"], host="127.0.0.1", port=restarted_port, log_level="warning"))
-        restarted_thread = threading.Thread(target=restarted.run, daemon=True)
-        restarted_thread.start()
-        deadline = time.monotonic() + 10
-        while not restarted.started and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert restarted.started
-        restarted_client = NodeExecutorClient(
-            f"http://127.0.0.1:{restarted_port}", "formal-runner", stack["token"])
+        script = tmp_path / "central_restart.py"
+        script.write_text(
+            "import sys\n"
+            "from fastapi import FastAPI\n"
+            "from platform_core.agent_execution import agent_executor_router\n"
+            "from platform_core.task_runtime import ArtifactStore, TaskRepository\n"
+            "import uvicorn\n"
+            "repo = TaskRepository(sys.argv[1])\n"
+            "artifacts = ArtifactStore(sys.argv[2])\n"
+            "app = FastAPI()\n"
+            "app.include_router(agent_executor_router(lambda: repo, lambda: artifacts))\n"
+            "uvicorn.run(app, host='127.0.0.1', port=int(sys.argv[3]), log_level='warning')\n",
+            encoding="utf-8",
+        )
+        child_log = (tmp_path / "central_restart.log").open("w+", encoding="utf-8")
+        child = subprocess.Popen(
+            [sys.executable, str(script), str(stack["repository"].path),
+             str(tmp_path / "artifacts"), str(restarted_port)],
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+            stdout=child_log, stderr=subprocess.STDOUT,
+        )
         try:
+            connected = False
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", restarted_port), timeout=0.2):
+                        connected = True
+                        break
+                except OSError:
+                    time.sleep(0.05)
+            if not connected:
+                child_log.flush()
+                child_log.seek(0)
+                raise AssertionError("restarted central did not start: "
+                                     + child_log.read()[-4000:])
+            restarted_client = NodeExecutorClient(
+                f"http://127.0.0.1:{restarted_port}", "formal-runner", stack["token"])
+            restarted_client.recover_execution(
+                "formal-fault",
+                assignment_generation=int(hold["assignment_generation"]),
+                execution_generation=int(hold["execution_attempt"]),
+                gpu_uuid=str(hold["gpu_uuid"]),
+                process_identity={
+                    "pid": int(task["process_pid"]),
+                    "create_time": float(task["process_create_time"]),
+                    "command_hash": str(task["process_command_hash"]),
+                },
+            )
+            # Repeated recovery is idempotent.
             restarted_client.recover_execution(
                 "formal-fault",
                 assignment_generation=int(hold["assignment_generation"]),
@@ -747,8 +790,9 @@ def test_finish_commit_then_hold_release_fault_recovers(tmp_path):
                 },
             )
         finally:
-            restarted.should_exit = True
-            restarted_thread.join(timeout=10)
+            child.kill()
+            child.wait(timeout=10)
+            child_log.close()
         with stack["repository"]._connect() as database:
             recovered = database.execute(
                 "SELECT state,proof_sha256,proof_type FROM execution_resource_holds "
