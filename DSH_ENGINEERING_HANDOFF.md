@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`1e89d10dd53ebf71c7308a65f82f0db6159541d1`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`ddf0fd651d56b316b37554c7c60ab5ad45f071db`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`1e89d10dd53ebf71c7308a65f82f0db6159541d1`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`ddf0fd651d56b316b37554c7c60ab5ad45f071db`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -392,7 +392,25 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 | `1e89d10d` | **CI 回归修复（本轮自引入）**：`ONLINE_FEEDBACK_MAX_IMAGE_BYTES` 守卫应指向 `online_feedback_service.py`（此前误指 api 模块，OFR 两 job 必然红）；两条 UI 文案守卫改回文件原文（此前按控制台乱码改写，其中一条改成了不存在的文案）；`_terminate_active(graceful=)` 恢复“有序关闭自行验证并清除身份”的既有 POSIX 合同，fenced/异常路径仍保留身份与停止证据 | 由 CI 验证 |
 
+### 9.16 第六轮（P0 安全收口 + T7）交付摘要（2026-11-24 21:xx +08）
+
+起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`ddf0fd651d56b316b37554c7c60ab5ad45f071db`**。
+纪律：单主 Agent + 至多 1 个活跃子 Agent（仅 T7 迁移使用），本地仅 `py_compile`/`import app`/
+定向用例/守卫 grep，无重型测试。
+
+| 提交 | 内容 | 验证 |
+|---|---|---|
+| `5aa76f41` | **切换证据**：`cutover_transition()` 不再在 `finally` 无条件删 marker——仅当函数正常返回**且**持久 admission 记录证明目标权威已到位时才删；异常一律保留 marker（“两侧都不可写”状态得以留存）。SQLite 写入改用共享 `<admission>.switch.lock` 覆盖“权威检查→真实写”，mutating store 调用统一走受控代理（关闭 TOCTOU，也覆盖未声明的 helper）。rollback 用同一锁并声明 `expect_provider=sqlite`。<br>**租约**：成功续租优先采用控制面回报的实际到期时间（无则不改变 receipt+TTL 规则）；续租请求超时按剩余租约收紧（可 <1s）；`assert_active()` 直接检查截止时间。503/4xx/5xx 应答 fencing 合同不变。<br>**训练停止证据**：`graceful` 路径不再自行清除持久身份，先提交 Stop Proof，控制面接受后才释放；否则保留身份与 `process-stop-verified.json` | 5 项 lease-monitor + 17 项 provider-boundary 定向通过；受控代理行为实测（切换中拒写、清除 marker 后恢复） |
+| `ddf0fd65` | **T7 训练报告域**：v44 训练报告读投影（reader_view 显示路径 + legacy `report_type=version` 组合 + 仅该报告使用的 `results.csv` epoch 历史回退）迁至 `platform_core/training_report_api.py`，router 工厂 + 全部依赖晚绑定注入，端点名保留 `v44_training_report` 以维持 operationId；`app.py` 保留装配、原位置 `include_router` 与两处薄绑定（测试仍调用/打补丁）。未迁 v49 算法报告、v45 错误归因、v44 supplement（属训练任务域共享 Owner） | 路由表/OpenAPI 前后**逐项一致**（routes=527 paths=473 operations=527 schemas=122；装饰器 335→334、include_router 12→13）；129 条 `grep app.py` 守卫逐条复核无丢失；报告 API 16 + 产品化 1 + 算法存储 3 通过；`import app` 353 条顶层路由 |
+
 本轮未完成 / 阻断：
+1. **PG 维护窗口编排**：切断→排空→SOURCE_FROZEN→对账→切换→恢复 的持久 phase machine、rollback 全流程编排、导入工具与切换的同一锁合同**未实现**（本轮只落地同事务权威核验、共享 switch 锁、marker 语义）。真实 PG 验证须走 GitHub Ubuntu + PG service container（本轮未新增 Job）。
+2. **`process-stop-verified.json` 尚未被恢复 Coordinator 消费**：仅写入并在诊断中展示。要接入需改 Coordinator 的 Stop Proof 发布路径，属 CI 验证过的 fail-closed 合同，本轮不据猜测放宽。
+3. **转换 Runner**（`node_agent_conversion_runtime.py`）仍在中央确认前清身份；转换有独立 supervisor 证明合同，需单独设计，未机械复制。
+4. **T8 正式接线**：`app.py`/API/Worker 接入 Provider、收口直接构造 `AlgorithmSqlStore` 的调用链**未开展**（依赖上面第 1 项证据）。
+5. **§5 资源准入**：等待机制确实存在（Scheduler 的 admission 回调 + `stage='resource_waiting'` + `resource_wait_reason`），但只从**中央 claim 路径**可达；远程 Agent 侧 prepare 失败没有 requeue 合同。且规划器只用 `effective_available_bytes`（`host_resource_snapshot` 已采样 `host_total_bytes` 却未使用），因此**当前无法**判定“暂时不足 vs 永久不足”。结论：区分所需数据已具备，缺失的是 Agent→中央的 requeue 协议与状态映射，未盲改。
+6. **近期稳定候选**：`1e89d10d` 全量 26 条 run = 25 success + 1 cancelled（`Remote Material Import`，被同一代码树的 `23227a50` 同名 run success 取代，等价证据成立）；`ddf0fd65` 的 CI 待查。
+
 1. **准确 SHA 的 CI**：本轮三次 push 后的 Actions 结果尚未取得（`CI_PENDING`）。
 2. **M2 剩余（已明确未做，不得当作已收口）**：完整维护窗口编排（阻断新写→排空→最终快照对账→切换→恢复）与持久 phase machine；rollback 路径的 marker 包裹；`algorithm_migration_cli rollback` 序列；直接构造 `AlgorithmSqlStore` 的正式调用链（M3）。
 3. **M3**：Provider 接入 `app.py`/正式 API/Worker 依赖 M2 的 CI 证据，本轮未动。
