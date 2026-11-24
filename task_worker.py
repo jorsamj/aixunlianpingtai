@@ -29,6 +29,7 @@ from platform_core.gpu_reservations_v2 import NodeScopedGPUResourceManager
 from platform_core.training_devices import training_python
 from platform_core.training_bundle_cache import (
     maintain_all_training_bundle_caches,
+    training_bundle_cache_maintenance_delete_enabled,
     training_bundle_cache_maintenance_interval_seconds,
 )
 from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle
@@ -226,9 +227,14 @@ def main(argv=None) -> int:
             return result
         last_bundle_cache_sweep[0] = now
         try:
+            # Scheduled cache maintenance is opt-in; even when enabled it only
+            # previews (dry-run) unless actual deletion is explicitly allowed.
+            delete_enabled = training_bundle_cache_maintenance_delete_enabled()
             result["bundle_cache"] = maintain_all_training_bundle_caches(
                 data_dir, repository, artifacts,
+                dry_run=not delete_enabled,
             )
+            result["bundle_cache"]["delete_enabled"] = delete_enabled
         except Exception as error:  # maintenance must never stop execution
             result["bundle_cache"] = {
                 "ran": False, "error": f"{type(error).__name__}: {error}",

@@ -865,7 +865,10 @@ class TrainingBundleCache:
 # ---------------------------------------------------------------------------
 
 TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV = "TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS"
-DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS = 3600
+# Scheduling is opt-in: an upgraded/new deployment must not silently start
+# scanning and deleting project bundle caches in the background.
+DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS = 0
+TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV = "TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE"
 _TERMINAL_TRAINING_STATUSES = (
     "SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED",
     "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
@@ -884,6 +887,17 @@ def training_bundle_cache_maintenance_interval_seconds() -> int:
     return max(0, value)
 
 
+def training_bundle_cache_maintenance_delete_enabled() -> bool:
+    """Actual scheduled deletion needs an explicit opt-in.
+
+    Even when the sweep interval is configured, the scheduled sweep only runs a
+    bounded dry-run preview unless this flag is set. Manual diagnostics never
+    delete either.
+    """
+    raw = str(os.environ.get(TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV) or "").strip().casefold()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
     """Read-only snapshot ids that a live/queued training task may still need.
 
@@ -893,6 +907,7 @@ def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
     """
     placeholders = ",".join("?" for _ in _TERMINAL_TRAINING_STATUSES)
     rows = []
+    hold_task_ids: set[str] = set()
     with repository._connect() as database:
         rows = database.execute(
             "SELECT task_id,payload_ref FROM tasks WHERE kind='TRAINING' "
@@ -900,7 +915,27 @@ def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
             "ORDER BY task_id LIMIT 2000",
             _TERMINAL_TRAINING_STATUSES,
         ).fetchall()
-    task_ids: list[str] = []
+        try:
+            hold_rows = database.execute(
+                "SELECT task_id FROM execution_resource_holds "
+                "WHERE state<>'RELEASED' LIMIT 2000"
+            ).fetchall()
+        except Exception:
+            hold_rows = []
+        hold_task_ids = {str(row[0]) for row in hold_rows}
+        hold_rows_by_task: dict[str, Any] = {}
+        missing = sorted(hold_task_ids - {str(row[0]) for row in rows})
+        for start in range(0, len(missing), 200):
+            chunk = missing[start:start + 200]
+            chunk_placeholders = ",".join("?" for _ in chunk)
+            extra = database.execute(
+                "SELECT task_id,payload_ref FROM tasks "
+                f"WHERE task_id IN ({chunk_placeholders})",
+                chunk,
+            ).fetchall()
+            for row in extra:
+                hold_rows_by_task.setdefault(str(row[0]), row)
+    task_ids = [str(row[0]) for row in rows]
     snapshot_ids: set[str] = set()
 
     def _add(value: object) -> None:
@@ -909,10 +944,9 @@ def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
         except (TypeError, ValueError):
             return
 
-    for row in rows:
+    for row in [*rows, *hold_rows_by_task.values()]:
         task_id = str(row[0])
         payload_ref = str(row[1] or "")
-        task_ids.append(task_id)
         if not payload_ref:
             continue
         try:
@@ -926,7 +960,11 @@ def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
         bundle = payload.get("bundle")
         if isinstance(bundle, Mapping):
             _add(bundle.get("snapshot_id"))
-    return {"task_ids": task_ids, "snapshot_ids": sorted(snapshot_ids)}
+    return {
+        "task_ids": task_ids,
+        "hold_task_ids": sorted(hold_task_ids),
+        "snapshot_ids": sorted(snapshot_ids),
+    }
 
 
 def maintain_all_training_bundle_caches(
@@ -934,29 +972,40 @@ def maintain_all_training_bundle_caches(
     repository,
     artifacts,
     *,
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> dict[str, Any]:
     """One bounded, idle-gated sweep over every project bundle cache.
 
-    Refuses to delete anything while a training task can still need a bundle:
-    the sweep is skipped entirely unless ``dry_run`` (which performs the same
-    protection checks and deletes nothing). Any per-project failure is reported
+    Dry-run is the default: callers that really may delete must pass
+    ``dry_run=False`` explicitly (the scheduled Worker does this only when the
+    delete opt-in environment flag is set). Any per-project failure is reported
     and does not abort the other projects.
+
+    Protection is re-read before *each* project: a task created or a resource
+    Hold released/changed after the initial snapshot aborts the remaining
+    deletions instead of trusting a stale scan.
     """
     protection = active_training_cache_protection(repository, artifacts)
     active_tasks = protection["task_ids"]
+    protected_snapshot_ids = set(protection["snapshot_ids"])
     base = Path(data_dir).resolve() / "cache" / _CACHE_ROOT_NAME
     summary: dict[str, Any] = {
         "ran": False,
         "dry_run": bool(dry_run),
         "active_task_count": len(active_tasks),
-        "protected_snapshot_count": len(protection["snapshot_ids"]),
+        "hold_task_count": len(protection.get("hold_task_ids") or ()),
+        "protected_snapshot_count": len(protected_snapshot_ids),
         "project_count": 0,
         "projects": [],
         "errors": [],
+        "protection_rechecks": 0,
     }
-    if active_tasks and not dry_run:
-        summary.update(skipped="active_training_tasks", active_tasks=active_tasks[:20])
+    if (active_tasks or protection.get("hold_task_ids")) and not dry_run:
+        summary.update(
+            skipped="active_training_tasks" if active_tasks else "unreleased_resource_holds",
+            active_tasks=active_tasks[:20],
+            hold_tasks=(protection.get("hold_task_ids") or [])[:20],
+        )
         return summary
     if not base.is_dir() or base.is_symlink():
         summary.update(skipped="no_cache_root" if not base.exists() else "unsafe_cache_root")
@@ -988,9 +1037,26 @@ def maintain_all_training_bundle_caches(
         except ValueError:
             errors.append({"project_id": entry.name, "error": "unsafe project directory"})
             continue
+        if not dry_run:
+            # A stale initial scan is not proof that no task started meanwhile.
+            current = active_training_cache_protection(repository, artifacts)
+            summary["protection_rechecks"] = int(summary["protection_rechecks"]) + 1
+            if current["task_ids"] or current.get("hold_task_ids"):
+                summary.update(
+                    ran=True,
+                    aborted="protection_changed_during_scan",
+                    active_task_count=len(current["task_ids"]),
+                    hold_task_count=len(current.get("hold_task_ids") or ()),
+                    project_count=len(projects),
+                    projects=projects,
+                    totals=totals,
+                    errors=errors,
+                )
+                return summary
+            protected_snapshot_ids.update(current["snapshot_ids"])
         try:
             result = TrainingBundleCache(data_dir, project_id).maintain(
-                protect_snapshot_ids=protection["snapshot_ids"],
+                protect_snapshot_ids=sorted(protected_snapshot_ids),
                 dry_run=dry_run,
             )
         except Exception as error:  # one broken project must not abort the sweep

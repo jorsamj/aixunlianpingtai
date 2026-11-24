@@ -473,7 +473,7 @@ def test_idle_bundle_cache_sweep_skips_while_training_task_active(monkeypatch, t
     )
 
     skipped = training_bundle_cache.maintain_all_training_bundle_caches(
-        tmp_path / "data", repository, artifacts,
+        tmp_path / "data", repository, artifacts, dry_run=False,
     )
     assert skipped["ran"] is False
     assert skipped["skipped"] == "active_training_tasks"
@@ -492,7 +492,7 @@ def test_idle_bundle_cache_sweep_skips_while_training_task_active(monkeypatch, t
     assert preview["totals"]["would_evict_entries"] == 2
 
     applied = training_bundle_cache.maintain_all_training_bundle_caches(
-        tmp_path / "data", repository, artifacts,
+        tmp_path / "data", repository, artifacts, dry_run=False,
     )
     assert applied["ran"] is True
     assert applied["totals"]["evicted_entries"] == 2
@@ -552,7 +552,7 @@ def test_idle_bundle_cache_sweep_isolates_broken_project(monkeypatch, tmp_path):
 
     monkeypatch.setattr(training_bundle_cache, "TrainingBundleCache", ExplodingCache)
     result = training_bundle_cache.maintain_all_training_bundle_caches(
-        tmp_path / "data", repository, artifacts,
+        tmp_path / "data", repository, artifacts, dry_run=False,
     )
     assert result["ran"] is True
     assert [item["project_id"] for item in result["errors"]] == ["project-broken"]
@@ -564,9 +564,12 @@ def test_bundle_cache_maintenance_interval_environment(monkeypatch):
         training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV,
         raising=False,
     )
+    # Scheduled cache maintenance is opt-in by default: a new/upgraded
+    # deployment must not start scanning project caches silently.
+    assert training_bundle_cache.DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS == 0
     assert (
         training_bundle_cache.training_bundle_cache_maintenance_interval_seconds()
-        == training_bundle_cache.DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+        == 0
     )
     monkeypatch.setenv(
         training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV, "0",
@@ -579,7 +582,119 @@ def test_bundle_cache_maintenance_interval_environment(monkeypatch):
     monkeypatch.setenv(
         training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV, "not-a-number",
     )
-    assert (
-        training_bundle_cache.training_bundle_cache_maintenance_interval_seconds()
-        == training_bundle_cache.DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    assert training_bundle_cache.training_bundle_cache_maintenance_interval_seconds() == 0
+    monkeypatch.setenv(
+        training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV, "3600",
     )
+    assert training_bundle_cache.training_bundle_cache_maintenance_interval_seconds() == 3600
+
+
+def test_scheduled_cache_maintenance_delete_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv(
+        training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV,
+        raising=False,
+    )
+    assert training_bundle_cache.training_bundle_cache_maintenance_delete_enabled() is False
+    for value in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv(
+            training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV, value,
+        )
+        assert (
+            training_bundle_cache.training_bundle_cache_maintenance_delete_enabled()
+            is False
+        ), value
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv(
+            training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV, value,
+        )
+        assert (
+            training_bundle_cache.training_bundle_cache_maintenance_delete_enabled()
+            is True
+        ), value
+
+
+def test_idle_bundle_cache_sweep_defaults_to_dry_run(monkeypatch, tmp_path):
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "1")
+    snapshot_id = "1" * 64
+    repository, artifacts = _training_task_with_snapshot(
+        tmp_path, task_id="done-training", snapshot_id=snapshot_id, status="SUCCEEDED",
+    )
+    _cache, entry = _publish_bundle(tmp_path, snapshot_id)
+    _expire_entries(entry)
+    monkeypatch.setattr(
+        training_bundle_cache.time, "time_ns", lambda: 600_000_000_000,
+    )
+    preview = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts,
+    )
+    assert preview["dry_run"] is True
+    assert preview["totals"]["would_evict_entries"] == 1
+    assert preview["totals"]["evicted_entries"] == 0
+    assert entry.root.exists(), "a scheduled sweep without opt-in must not delete"
+
+
+def test_sweep_aborts_deletion_when_a_task_appears_mid_scan(monkeypatch, tmp_path):
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "1")
+    snapshot_id = "2" * 64
+    repository, artifacts = _training_task_with_snapshot(
+        tmp_path, task_id="done-training", snapshot_id=snapshot_id, status="SUCCEEDED",
+    )
+    _cache, entry = _publish_bundle(tmp_path, snapshot_id)
+    _expire_entries(entry)
+    monkeypatch.setattr(
+        training_bundle_cache.time, "time_ns", lambda: 600_000_000_000,
+    )
+    initial = {"task_ids": [], "hold_task_ids": [], "snapshot_ids": []}
+    raced = {"task_ids": ["new-task"], "hold_task_ids": [], "snapshot_ids": []}
+    calls = {"count": 0}
+
+    def fake_protection(_repository, _artifacts):
+        calls["count"] += 1
+        return dict(initial if calls["count"] == 1 else raced)
+
+    monkeypatch.setattr(
+        training_bundle_cache, "active_training_cache_protection", fake_protection,
+    )
+    result = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts, dry_run=False,
+    )
+    assert result["ran"] is True
+    assert result["aborted"] == "protection_changed_during_scan"
+    assert result["protection_rechecks"] == 1
+    assert entry.root.exists(), "a task created during the scan must abort deletion"
+
+
+def test_unreleased_resource_hold_blocks_actual_cache_deletion(monkeypatch, tmp_path):
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "1")
+    snapshot_id = "3" * 64
+    repository, artifacts = _training_task_with_snapshot(
+        tmp_path, task_id="held-terminal", snapshot_id=snapshot_id, status="SUCCEEDED",
+    )
+    with repository._connect() as database:
+        database.execute(
+            "CREATE TABLE IF NOT EXISTS execution_resource_holds ("
+            "task_id TEXT PRIMARY KEY, node_id TEXT, assignment_generation INTEGER,"
+            "execution_attempt INTEGER, gpu_uuid TEXT, state TEXT,"
+            "proof_sha256 TEXT, proof_type TEXT, updated_at TEXT)"
+        )
+        database.execute(
+            "INSERT OR REPLACE INTO execution_resource_holds VALUES"
+            "('held-terminal','node-1',1,1,'GPU-A','HELD',NULL,NULL,'2026-11-24')"
+        )
+        database.commit()
+    _cache, entry = _publish_bundle(tmp_path, snapshot_id)
+    _expire_entries(entry)
+    monkeypatch.setattr(
+        training_bundle_cache.time, "time_ns", lambda: 600_000_000_000,
+    )
+    protection = training_bundle_cache.active_training_cache_protection(
+        repository, artifacts,
+    )
+    assert protection["hold_task_ids"] == ["held-terminal"]
+    assert snapshot_id in protection["snapshot_ids"]
+    result = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts, dry_run=False,
+    )
+    assert result["ran"] is False
+    assert result["skipped"] == "unreleased_resource_holds"
+    assert entry.root.exists()
