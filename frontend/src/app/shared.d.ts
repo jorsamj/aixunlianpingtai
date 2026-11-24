@@ -4,6 +4,46 @@ declare module '*static/modules/api.js' {
 }
 declare module '*static/auth-session.js' {}
 
+declare module '*static/modules/annotation-task-view.js' {
+  export interface AnnotationTaskViewModel {
+    status: string;
+    statusText: string;
+    percent: number;
+    completed: number;
+    total: number;
+    failed: number;
+    remaining: number;
+    generated: number;
+    boxes: number;
+    progressText: string;
+    queuePosition: number;
+    waitReason: string;
+    workerId: string;
+    attempt: number;
+    runtimeText: string;
+    executionText: string;
+    active: boolean;
+    canCancel: boolean;
+    canReview: boolean;
+    canRetry: boolean;
+    canRecoverReview: boolean;
+    accepted: boolean | null;
+    error: string;
+  }
+  export function annotationTaskView(task: Record<string, unknown>): AnnotationTaskViewModel;
+}
+
+// Existing legacy status/eligibility projection for training jobs. Reused so
+// the native page never re-derives pause/resume/delete permissions.
+declare module '*static/modules/training-task-runtime.js' {
+  export function trainingBatchActionEligible(
+    job: Record<string, unknown>, action: 'pause' | 'resume' | 'stop' | 'delete' | string,
+  ): boolean;
+}
+declare module '*static/modules/task-runtime-truth.js' {
+  export function trainingDisplayStatus(task: Record<string, unknown>): string;
+}
+
 declare module '*static/modules/annotation-geometry-adapter.js' {
   import type {AiEditorBox} from '../types/ai-editor';
   export function withLegacyBoxIdentities(boxes:Partial<AiEditorBox>[],options:{imageId:string}):AiEditorBox[];

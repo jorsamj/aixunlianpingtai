@@ -112,12 +112,35 @@ declare module '*static/modules/uppy-zip-adapter.js' {
 }
 
 declare module '*static/modules/zip-import-runtime.js' {
+  export interface ZipImportSnapshotJob {
+    id: string;
+    file_name?: string;
+    status?: string;
+    stage?: string;
+    message?: string;
+    progress?: number | null;
+    zip_display_progress?: number;
+    queue_position?: number | null;
+    report?: {imported_images?: number; annotated_images?: number; failed?: number};
+    error?: string;
+    created_at?: string;
+    updated_at?: string;
+    upload_id?: string;
+    verificationReason?: string;
+  }
   export interface ZipImportRuntime {
     getProjectId(): string;
     uploadBatch(input: unknown): Promise<unknown>;
     subscribeTransfers(listener: (event: Record<string, unknown>) => void): () => void;
+    // Sole durable/network status owner. The native page only reads this
+    // in-memory snapshot and may explicitly ask for a reconcile.
+    snapshot(): {jobs: ZipImportSnapshotJob[]; current?: ZipImportSnapshotJob | null};
+    reconcile(reason?: string): Promise<unknown>;
     openTask(taskId: string): Promise<unknown>;
-    cancelJob(taskId: string): Promise<unknown>;
+    cancelJob(taskId: string, skipConfirm?: boolean): Promise<unknown>;
+    pauseUpload(uploadId?: string): Promise<unknown>;
+    resumeTransfer(file: File, uploadId: string): Promise<unknown>;
+    resumeFromFile(input: HTMLInputElement, uploadId: string): Promise<unknown>;
     beforeModalClose(layer: HTMLElement): void;
     destroy(): void;
     [key: string]: unknown;

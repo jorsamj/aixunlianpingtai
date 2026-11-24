@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {computed,nextTick,onBeforeUnmount,onMounted,reactive,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
-import {request} from './http';
 import {legacyUrl} from './navigation';
 import {projectLabels} from '../api/upload-batches';
 import {mountUppyZipAdapter} from '../../../static/modules/uppy-zip-adapter.js';
@@ -20,7 +19,11 @@ const transfer=reactive({uploadId:'',jobId:'',phase:'',progress:0,error:''});
 const transfers=ref<{key:string;uploadId:string;jobId:string;phase:string;progress:number;error:string}[]>([]);
 const paused=ref(false);
 const compat:Record<string,unknown>={project:{id:projectId,labels:[]},page:'数据集',labels:[],import411:null,materialBatchFilter61:''};
-let runtime:ZipImportRuntime|null=null,handle:{uppy:unknown;destroy:()=>void}|null=null,timer:number|undefined;
+// One status Owner: the durable ZipImportRuntime keeps polling the existing
+// v19 list/detail endpoints. This page only mirrors its in-memory snapshot, so
+// the same upload task is never reconciled by two parallel list pollers.
+const MIRROR_INTERVAL_MS=1000, MAX_JOBS=50;
+let runtime:ZipImportRuntime|null=null,handle:{uppy:unknown;destroy:()=>void}|null=null,mirrorTimer:number|undefined;
 const controller=new AbortController();
 const alive=()=>!controller.signal.aborted;
 const savedGlobals:{[key:string]:unknown}={};
@@ -53,15 +56,16 @@ async function loadLabels(){
     (compat.project as {labels?:unknown}).labels=labels.value;
   }catch{/* the original label UI tells the user when nothing matches */}
 }
-async function loadJobs(){
+async function loadJobs(reason='native-page-refresh'){
   if(!alive())return;
-  try{
-    const result=await request<{ok:boolean;items:ZipJob[]}>(`/api/v19/projects/${encodeURIComponent(projectId)}/import/jobs`,{signal:controller.signal});
-    if(!alive())return;
-    jobs.value=(result.items||[]).slice(0,50);
-  }catch(cause){
-    if(alive()&&!jobs.value.length)error.value=cause instanceof Error?cause.message:'导入任务读取失败';
-  }
+  try{await runtime?.reconcile?.(reason)}
+  catch(cause){if(alive()&&!jobs.value.length)error.value=cause instanceof Error?cause.message:'导入任务读取失败'}
+  finally{syncJobs()}
+}
+function syncJobs(){
+  if(!alive())return;
+  const snapshot=runtime?.snapshot?.();
+  jobs.value=Array.isArray(snapshot?.jobs)?snapshot.jobs.slice(0,MAX_JOBS):[];
 }
 function jobStatus(job:ZipJob){return STATUS[String(job.status||'').toLowerCase()]||String(job.status||'未提供')}
 function jobProgress(job:ZipJob){
@@ -70,14 +74,14 @@ function jobProgress(job:ZipJob){
 }
 async function openJob(job:ZipJob){
   busy.value=true;
-  try{await runtime?.openTask?.(job.id)}
+  try{await runtime?.openTask?.(job.id);syncJobs()}
   catch(cause){error.value=cause instanceof Error?cause.message:'打开 ZIP 任务失败'}
   finally{busy.value=false}
 }
 async function cancelJob(job:ZipJob){
   if(!runtime)return;
   busy.value=true;
-  try{await runtime.cancelJob?.(job.id);await loadJobs()}
+  try{await runtime.cancelJob?.(job.id);syncJobs()}
   catch(cause){error.value=cause instanceof Error?cause.message:'取消 ZIP 任务失败'}
   finally{busy.value=false}
 }
@@ -125,8 +129,7 @@ async function pauseTransfer(){
   if(!runtime||!transfer.uploadId)return;
   busy.value=true;
   try{
-    const owner=runtime as unknown as {pauseUpload?:(id:string)=>Promise<unknown>};
-    await owner.pauseUpload?.(transfer.uploadId);
+    await runtime.pauseUpload?.(transfer.uploadId);
     paused.value=true;transfer.phase='已暂停传输';
     notice.value='传输已暂停；服务端已确认分片不会重复传输。';
   }catch(cause){error.value=cause instanceof Error?cause.message:'暂停 ZIP 传输失败'}
@@ -139,8 +142,7 @@ async function resumeTransfer(){
   if(!file){error.value='无法恢复原 ZIP 文件对象；请使用任务列表中的“重新选择原文件继续”。';return}
   busy.value=true;
   try{
-    const owner=runtime as unknown as {resumeTransfer?:(file:File,id:string)=>Promise<unknown>};
-    await owner.resumeTransfer?.(file,transfer.uploadId);
+    await runtime.resumeTransfer?.(file,transfer.uploadId);
     paused.value=false;transfer.phase='继续传输原 ZIP 会话';
   }catch(cause){error.value=cause instanceof Error?cause.message:'继续 ZIP 传输失败'}
   finally{busy.value=false}
@@ -149,7 +151,7 @@ async function resumeJob(job:ZipJob,event:Event){  const input=event.target as H
   if(!input.files?.length)return;
   const owner=runtime as unknown as {resumeFromFile?:(input:HTMLInputElement,id:string)=>Promise<unknown>};
   busy.value=true;
-  try{await owner.resumeFromFile?.(input,String(job.upload_id||job.id));await loadJobs()}
+  try{await owner.resumeFromFile?.(input,String(job.upload_id||job.id));syncJobs()}
   catch(cause){error.value=cause instanceof Error?cause.message:'ZIP 续传失败'}
   finally{busy.value=false;input.value=''}
 }
@@ -174,16 +176,16 @@ onMounted(async()=>{
     if(event.type==='session')transfer.uploadId=String(event.uploadId||'');
     if(event.type==='progress')transfer.progress=Math.round(Number(event.ratio||0)*100);
     if(event.type==='processing')transfer.phase=String(event.stage||event.message||'服务端处理中');
-    if(event.type==='success'){transfer.jobId=String(event.jobId||'');transfer.phase='服务器已受理导入任务';void loadJobs()}
+    if(event.type==='success'){transfer.jobId=String(event.jobId||'');transfer.phase='服务器已受理导入任务';syncJobs()}
     if(event.type==='error')transfer.error=String((event.error as Error)?.message||event.message||'ZIP 上传失败');
   });
-  await loadJobs();
+  await loadJobs('native-page-bootstrap');
   const requested=String(route.query.job||'').trim();
-  if(requested)await runtime?.openTask?.(requested);
-  timer=window.setInterval(()=>{void loadJobs()},2500);
+  if(requested){await runtime?.openTask?.(requested);syncJobs()}
+  mirrorTimer=window.setInterval(syncJobs,MIRROR_INTERVAL_MS);
 });
 onBeforeUnmount(()=>{
-  controller.abort();if(timer!==undefined)window.clearInterval(timer);
+  controller.abort();if(mirrorTimer!==undefined){window.clearInterval(mirrorTimer);mirrorTimer=undefined}
   handle?.destroy();handle=null;
   runtime?.destroy?.();runtime=null;
   restoreShims();
@@ -196,7 +198,7 @@ onBeforeUnmount(()=>{
   <div class="zip-transfer" aria-live="polite"><p><b>上传会话 upload_id：</b>{{ transfer.uploadId||'尚未建立' }}</p><p><b>正式导入任务 import_job_id：</b>{{ transfer.jobId||'尚未生成' }}</p><p v-if="transfer.phase">阶段：{{ transfer.phase }}</p><p v-if="transfer.progress">当前 ZIP 网络传输 {{ transfer.progress }}%</p><p v-if="transfer.error" class="zip-error">{{ transfer.error }}</p><div class="zip-transfer-actions"><el-button v-if="transfer.uploadId&&!paused" data-zip-pause size="small" :loading="busy" @click="pauseTransfer">暂停传输</el-button><el-button v-if="paused" data-zip-resume size="small" type="primary" :loading="busy" @click="resumeTransfer">继续传输</el-button></div><small>关闭此页面不会取消已受理的后台任务；取消必须使用任务操作。</small></div>
  </section>
  <div v-if="transfers.length" class="zip-live"><h4>活动传输（{{ transfers.length }}）</h4><ul><li v-for="row in transfers" :key="row.key" :data-transfer-key="row.key"><b>{{ row.phase||'传输中' }}</b><small>upload_id {{ row.uploadId||'待建立' }} · import_job_id {{ row.jobId||'待生成' }} · {{ row.progress }}%</small><small v-if="row.error" class="zip-error">{{ row.error }}</small></li></ul></div>
- <section class="zip-jobs"><header><h3>导入任务（{{ jobs.length }}）</h3><el-button size="small" :loading="busy" @click="loadJobs">刷新任务</el-button></header><el-table :data="jobs" row-key="id" empty-text="当前项目没有 ZIP 导入任务"><el-table-column label="文件 / 任务" min-width="200"><template #default="{row}"><b>{{ row.file_name||'ZIP 数据导入' }}</b><small>{{ row.id }}</small><small v-if="row.upload_id&&row.upload_id!==row.id">上传会话 {{ row.upload_id }}</small></template></el-table-column><el-table-column label="传输 / 服务端阶段" min-width="220"><template #default="{row}"><el-tag type="info">{{ jobStatus(row) }}</el-tag><el-progress :percentage="jobProgress(row)" :stroke-width="8"/><small>{{ row.stage||'阶段未提供' }}<template v-if="row.message"> · {{ row.message }}</template></small><small v-if="row.queue_position">队列第 {{ row.queue_position }} 位</small></template></el-table-column><el-table-column label="入库结果" min-width="150"><template #default="{row}"><p v-if="row.status==='done'">已入库 {{ row.report?.imported_images??0 }} 张</p><p v-else-if="row.status==='failed'">{{ row.error||'失败' }}</p><p v-else>尚未到正式入库终态</p></template></el-table-column><el-table-column label="操作" min-width="230"><template #default="{row}"><div class="zip-actions"><el-button link type="primary" :disabled="busy" @click="openJob(row)">查看 / 标签确认</el-button><el-button v-if="['selecting','queued','waiting','running','uploading','paused','validating','merging'].includes(String(row.status))" link type="danger" :disabled="busy" @click="cancelJob(row)">取消任务</el-button><el-button v-if="row.status==='done'" link @click="viewImported(row)">查看入库素材</el-button><label v-if="row.status==='paused'" class="zip-resume">重新选择原文件继续<input type="file" accept=".zip,application/zip" @change="resumeJob(row,$event)"></label></div></template></el-table-column></el-table><p class="zip-note">一次最多两个 ZIP 并发上传，单个 ZIP 最多 4 个分片并发；暂停后需重新选择原文件继续。任务数量较多时仅列出最近 50 条。</p></section>
+ <section class="zip-jobs"><header><h3>导入任务（{{ jobs.length }}）</h3><el-button size="small" :loading="busy" @click="loadJobs('native-page-manual')">刷新任务</el-button></header><el-table :data="jobs" row-key="id" empty-text="当前项目没有 ZIP 导入任务"><el-table-column label="文件 / 任务" min-width="200"><template #default="{row}"><b>{{ row.file_name||'ZIP 数据导入' }}</b><small>{{ row.id }}</small><small v-if="row.upload_id&&row.upload_id!==row.id">上传会话 {{ row.upload_id }}</small></template></el-table-column><el-table-column label="传输 / 服务端阶段" min-width="220"><template #default="{row}"><el-tag type="info">{{ jobStatus(row) }}</el-tag><el-progress :percentage="jobProgress(row)" :stroke-width="8"/><small>{{ row.stage||'阶段未提供' }}<template v-if="row.message"> · {{ row.message }}</template></small><small v-if="row.queue_position">队列第 {{ row.queue_position }} 位</small></template></el-table-column><el-table-column label="入库结果" min-width="150"><template #default="{row}"><p v-if="row.status==='done'">已入库 {{ row.report?.imported_images??0 }} 张</p><p v-else-if="row.status==='failed'">{{ row.error||'失败' }}</p><p v-else>尚未到正式入库终态</p></template></el-table-column><el-table-column label="操作" min-width="230"><template #default="{row}"><div class="zip-actions"><el-button link type="primary" :disabled="busy" @click="openJob(row)">查看 / 标签确认</el-button><el-button v-if="['selecting','queued','waiting','running','uploading','paused','validating','merging'].includes(String(row.status))" link type="danger" :disabled="busy" @click="cancelJob(row)">取消任务</el-button><el-button v-if="row.status==='done'" link @click="viewImported(row)">查看入库素材</el-button><label v-if="row.status==='paused'" class="zip-resume">重新选择原文件继续<input type="file" accept=".zip,application/zip" @change="resumeJob(row,$event)"></label></div></template></el-table-column></el-table><p class="zip-note">一次最多两个 ZIP 并发上传，单个 ZIP 最多 4 个分片并发；暂停后需重新选择原文件继续。任务数量较多时仅列出最近 50 条。</p></section>
  <div ref="modalRoot" id="native-zip-modal-root" aria-live="polite"></div>
 </section></template>
 <style scoped>

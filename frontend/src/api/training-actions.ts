@@ -1,4 +1,4 @@
-import {request} from '../app/http';
+import {request} from '../app/http.ts';
 import type {TrainingTask} from './training-reader';
 
 export interface TrainingRecoveryTruth {
@@ -18,6 +18,32 @@ export interface TrainingRecoveryTruth {
 
 const root = (projectId: string) =>
   `/api/v62/projects/${encodeURIComponent(projectId)}`;
+
+// Existing v48 training lifecycle endpoints. The native page sends the same
+// parameterless POST the original task wall sends; receipts are re-read from the
+// canonical v62 reader instead of trusting the legacy job.json projection.
+export type TrainingLifecycleAction = 'pause' | 'resume' | 'promote';
+
+export async function runTrainingLifecycleAction(
+  projectId: string, taskId: string, action: TrainingLifecycleAction, signal: AbortSignal,
+) {
+  return request<Record<string, unknown>>(
+    `/api/v48/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(taskId)}/${action}`,
+    { method: 'POST', signal },
+  );
+}
+
+// Terminal-only record deletion; the original endpoint refuses active tasks.
+export async function deleteTrainingTaskRecord(
+  projectId: string, taskId: string, signal: AbortSignal,
+) {
+  const result = await request<{ok?: boolean} | null>(
+    `/api/v12/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(taskId)}`,
+    { method: 'DELETE', signal },
+  );
+  if (result?.ok !== true) throw new Error('删除任务回执不完整');
+  return result;
+}
 
 export async function stopTrainingTask(
   projectId: string, taskId: string, signal: AbortSignal,
