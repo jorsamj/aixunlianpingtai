@@ -620,7 +620,15 @@ class TrainingBundleCache:
         self,
         *,
         protect_snapshot_ids: Sequence[str] = (),
+        dry_run: bool = False,
     ) -> dict[str, Any]:
+        """Evict stale/quota/invalid cache entries.
+
+        ``dry_run=True`` performs the same safety checks and reports what would
+        be evicted without deleting anything, so operators can preview a
+        maintenance sweep. Idle scheduling itself lives in the Worker (see
+        :func:`maintain_all_training_bundle_caches`).
+        """
         protected = {_snapshot_id(value) for value in protect_snapshot_ids}
         self.root.mkdir(parents=True, exist_ok=True)
         now_ns = time.time_ns()
@@ -638,6 +646,9 @@ class TrainingBundleCache:
             skipped_recent = 0
             eviction_failures = 0
             evicted_snapshot_ids: list[str] = []
+            would_evict_entries = 0
+            would_evict_bytes = 0
+            would_evict_snapshot_ids: list[str] = []
             removed: set[str] = set()
 
             def evict(candidate: _MaintenanceCandidate, *, reason: str) -> bool:
@@ -651,6 +662,8 @@ class TrainingBundleCache:
                 nonlocal skipped_protected
                 nonlocal skipped_recent
                 nonlocal eviction_failures
+                nonlocal would_evict_entries
+                nonlocal would_evict_bytes
 
                 if candidate.snapshot_id in protected:
                     skipped_protected += 1
@@ -672,6 +685,13 @@ class TrainingBundleCache:
                         if _is_link_like(candidate.root) or not stat.S_ISDIR(current_info.st_mode):
                             eviction_failures += 1
                             return False
+                        if dry_run:
+                            removed.add(candidate.snapshot_id)
+                            would_evict_entries += 1
+                            would_evict_bytes += candidate.bundle_bytes
+                            would_evict_snapshot_ids.append(candidate.snapshot_id)
+                            retained_bytes = max(0, retained_bytes - candidate.bundle_bytes)
+                            return True
                         _safe_rmtree(candidate.root, parent=self.root)
                 except Timeout:
                     skipped_locked += 1
@@ -746,6 +766,10 @@ class TrainingBundleCache:
                     else 0
                 ),
                 "evicted_snapshot_ids": evicted_snapshot_ids,
+                "dry_run": bool(dry_run),
+                "would_evict_entries": would_evict_entries,
+                "would_evict_bytes": would_evict_bytes,
+                "would_evict_snapshot_ids": would_evict_snapshot_ids,
             }
 
     def publish_verified(
@@ -834,3 +858,161 @@ class TrainingBundleCache:
             "published": published,
             "maintenance": maintenance,
         }
+
+
+# ---------------------------------------------------------------------------
+# Idle bundle-cache maintenance scheduling
+# ---------------------------------------------------------------------------
+
+TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV = "TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS"
+DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS = 3600
+_TERMINAL_TRAINING_STATUSES = (
+    "SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED",
+    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
+)
+
+
+def training_bundle_cache_maintenance_interval_seconds() -> int:
+    """Idle cache-maintenance cadence; 0 disables the scheduled sweep."""
+    raw = str(os.environ.get(TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    return max(0, value)
+
+
+def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
+    """Read-only snapshot ids that a live/queued training task may still need.
+
+    Cancellation-not-closed (CANCEL_REQUESTED) and pending-preparation tasks are
+    included: their bundle cache must survive until the task reaches a terminal
+    state and its own cleanup path has run.
+    """
+    placeholders = ",".join("?" for _ in _TERMINAL_TRAINING_STATUSES)
+    rows = []
+    with repository._connect() as database:
+        rows = database.execute(
+            "SELECT task_id,payload_ref FROM tasks WHERE kind='TRAINING' "
+            f"AND (status IS NULL OR status NOT IN ({placeholders})) "
+            "ORDER BY task_id LIMIT 2000",
+            _TERMINAL_TRAINING_STATUSES,
+        ).fetchall()
+    task_ids: list[str] = []
+    snapshot_ids: set[str] = set()
+
+    def _add(value: object) -> None:
+        try:
+            snapshot_ids.add(_snapshot_id(value))
+        except (TypeError, ValueError):
+            return
+
+    for row in rows:
+        task_id = str(row[0])
+        payload_ref = str(row[1] or "")
+        task_ids.append(task_id)
+        if not payload_ref:
+            continue
+        try:
+            payload = artifacts.read_json(task_id, payload_ref, default={})
+        except Exception:
+            payload = {}
+        if not isinstance(payload, Mapping):
+            continue
+        _add(payload.get("snapshot_id"))
+        _add(payload.get("dataset_revision_id"))
+        bundle = payload.get("bundle")
+        if isinstance(bundle, Mapping):
+            _add(bundle.get("snapshot_id"))
+    return {"task_ids": task_ids, "snapshot_ids": sorted(snapshot_ids)}
+
+
+def maintain_all_training_bundle_caches(
+    data_dir: str | Path,
+    repository,
+    artifacts,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """One bounded, idle-gated sweep over every project bundle cache.
+
+    Refuses to delete anything while a training task can still need a bundle:
+    the sweep is skipped entirely unless ``dry_run`` (which performs the same
+    protection checks and deletes nothing). Any per-project failure is reported
+    and does not abort the other projects.
+    """
+    protection = active_training_cache_protection(repository, artifacts)
+    active_tasks = protection["task_ids"]
+    base = Path(data_dir).resolve() / "cache" / _CACHE_ROOT_NAME
+    summary: dict[str, Any] = {
+        "ran": False,
+        "dry_run": bool(dry_run),
+        "active_task_count": len(active_tasks),
+        "protected_snapshot_count": len(protection["snapshot_ids"]),
+        "project_count": 0,
+        "projects": [],
+        "errors": [],
+    }
+    if active_tasks and not dry_run:
+        summary.update(skipped="active_training_tasks", active_tasks=active_tasks[:20])
+        return summary
+    if not base.is_dir() or base.is_symlink():
+        summary.update(skipped="no_cache_root" if not base.exists() else "unsafe_cache_root")
+        return summary
+    projects: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    totals = {
+        "scanned_entries": 0,
+        "before_bytes": 0,
+        "evicted_entries": 0,
+        "evicted_bytes": 0,
+        "would_evict_entries": 0,
+        "would_evict_bytes": 0,
+        "eviction_failures": 0,
+        "skipped_locked": 0,
+        "skipped_protected": 0,
+        "skipped_recent": 0,
+    }
+    try:
+        directories = sorted(base.iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        summary.update(errors=[{"project_id": "", "error": f"{type(error).__name__}: {error}"}])
+        return summary
+    for entry in directories:
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            project_id = _safe_component(entry.name, label="project_id")
+        except ValueError:
+            errors.append({"project_id": entry.name, "error": "unsafe project directory"})
+            continue
+        try:
+            result = TrainingBundleCache(data_dir, project_id).maintain(
+                protect_snapshot_ids=protection["snapshot_ids"],
+                dry_run=dry_run,
+            )
+        except Exception as error:  # one broken project must not abort the sweep
+            errors.append({"project_id": project_id, "error": f"{type(error).__name__}: {error}"})
+            continue
+        for key in totals:
+            totals[key] += int(result.get(key) or 0)
+        projects.append({
+            "project_id": project_id,
+            "after_bytes": result.get("after_bytes"),
+            "over_budget_bytes": result.get("over_budget_bytes"),
+            **{key: result.get(key) for key in (
+                "scanned_entries", "evicted_entries", "evicted_bytes",
+                "would_evict_entries", "would_evict_bytes", "eviction_failures",
+                "skipped_locked", "skipped_protected", "skipped_recent",
+            )},
+        })
+    summary.update(
+        ran=True,
+        project_count=len(projects),
+        projects=projects,
+        totals=totals,
+        errors=errors,
+    )
+    return summary

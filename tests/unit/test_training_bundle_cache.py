@@ -397,3 +397,189 @@ def test_cache_restore_preserves_dataset_revision_evidence(tmp_path):
     entry, _ = cache.publish_verified(source, snapshot_id, verified_files=1)
     restored, _ = cache.restore(entry, tmp_path / "work")
     assert (restored / "dataset-revision.json").read_bytes() == (source / "dataset-revision.json").read_bytes()
+
+
+def _publish_bundle(tmp_path, snapshot_id, project_id="project-idle"):
+    source = _write_bundle(tmp_path / ("source-" + snapshot_id[:6]), snapshot_id=snapshot_id)
+    (tmp_path / "data" / "cache" / "training-bundles").mkdir(parents=True, exist_ok=True)
+    cache = TrainingBundleCache(tmp_path / "data", project_id, max_bytes=0, ttl_seconds=1)
+    entry, _ = cache.publish_verified(source, snapshot_id, verified_files=2)
+    return cache, entry
+
+
+def _expire_entries(*entries):
+    for entry in entries:
+        _set_access_ns(entry.root, 1)
+
+
+def test_cache_maintenance_dry_run_reports_without_deleting(monkeypatch, tmp_path):
+    snapshot_id = "a" * 64
+    cache, entry = _publish_bundle(tmp_path, snapshot_id)
+    _expire_entries(entry)
+    monkeypatch.setattr(
+        training_bundle_cache.time, "time_ns", lambda: 600_000_000_000,
+    )
+    preview = cache.maintain(dry_run=True)
+    assert preview["dry_run"] is True
+    assert preview["evicted_entries"] == 0
+    assert preview["would_evict_entries"] == 1
+    assert preview["would_evict_snapshot_ids"] == [snapshot_id]
+    assert preview["after_bytes"] == 0
+    assert entry.root.exists(), "dry run must not delete cache content"
+
+    applied = cache.maintain()
+    assert applied["evicted_entries"] == 1
+    assert not entry.root.exists()
+
+
+def _training_task_with_snapshot(tmp_path, *, task_id, snapshot_id, status=None):
+    from platform_core.task_runtime import (
+        ArtifactStore, TaskKind, TaskRecord, TaskRepository,
+    )
+    runtime = tmp_path / "data" / "task_runtime"
+    repository = TaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "snapshot_id": snapshot_id, "schema_version": 4,
+    })
+    repository.create(TaskRecord.new(
+        task_id=task_id,
+        project_id="project-idle",
+        kind=TaskKind.TRAINING,
+        payload_ref="request.json",
+        resource_key=f"training:{task_id}",
+    ), artifacts=artifacts)
+    if status is not None:
+        with repository._connect() as database:
+            database.execute(
+                "UPDATE tasks SET status=? WHERE task_id=?", (status, task_id),
+            )
+            database.commit()
+    return repository, artifacts
+
+
+def test_idle_bundle_cache_sweep_skips_while_training_task_active(monkeypatch, tmp_path):
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "1")
+    active_snapshot = "b" * 64
+    stale_snapshot = "c" * 64
+    repository, artifacts = _training_task_with_snapshot(
+        tmp_path, task_id="active-training", snapshot_id=active_snapshot,
+    )
+    _cache_active, active_entry = _publish_bundle(tmp_path, active_snapshot)
+    _cache_stale, stale_entry = _publish_bundle(tmp_path, stale_snapshot)
+    _expire_entries(active_entry, stale_entry)
+    monkeypatch.setattr(
+        training_bundle_cache.time, "time_ns", lambda: 600_000_000_000,
+    )
+
+    skipped = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts,
+    )
+    assert skipped["ran"] is False
+    assert skipped["skipped"] == "active_training_tasks"
+    assert skipped["active_tasks"] == ["active-training"]
+    assert active_entry.root.exists() and stale_entry.root.exists()
+
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED' WHERE task_id='active-training'",
+        )
+        database.commit()
+    preview = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts, dry_run=True,
+    )
+    assert preview["ran"] is True and preview["dry_run"] is True
+    assert preview["totals"]["would_evict_entries"] == 2
+
+    applied = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts,
+    )
+    assert applied["ran"] is True
+    assert applied["totals"]["evicted_entries"] == 2
+    assert applied["errors"] == []
+    assert not active_entry.root.exists() and not stale_entry.root.exists()
+
+
+def test_idle_bundle_cache_sweep_protects_snapshot_of_active_task_in_dry_run(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "1")
+    protected_snapshot = "d" * 64
+    other_snapshot = "e" * 64
+    repository, artifacts = _training_task_with_snapshot(
+        tmp_path, task_id="cancel-requested", snapshot_id=protected_snapshot,
+    )
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCEL_REQUESTED' WHERE task_id='cancel-requested'",
+        )
+        database.commit()
+    _cache_a, protected_entry = _publish_bundle(tmp_path, protected_snapshot)
+    _cache_b, other_entry = _publish_bundle(tmp_path, other_snapshot)
+    _expire_entries(protected_entry, other_entry)
+    monkeypatch.setattr(
+        training_bundle_cache.time, "time_ns", lambda: 600_000_000_000,
+    )
+    preview = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts, dry_run=True,
+    )
+    assert preview["ran"] is True
+    assert preview["protected_snapshot_count"] == 1
+    assert preview["totals"]["would_evict_entries"] == 1
+    assert protected_entry.root.exists() and other_entry.root.exists()
+    project = preview["projects"][0]
+    assert project["skipped_protected"] >= 1
+
+
+def test_idle_bundle_cache_sweep_isolates_broken_project(monkeypatch, tmp_path):
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "1")
+    good_snapshot = "f" * 64
+    repository, artifacts = _training_task_with_snapshot(
+        tmp_path, task_id="done-training", snapshot_id="0" * 64, status="SUCCEEDED",
+    )
+    _cache, good_entry = _publish_bundle(tmp_path, good_snapshot, project_id="project-good")
+    base = tmp_path / "data" / "cache" / "training-bundles"
+    (base / "project-broken").mkdir(parents=True, exist_ok=True)
+    _expire_entries(good_entry)
+
+    original_init = training_bundle_cache.TrainingBundleCache
+
+    class ExplodingCache(original_init):
+        def __init__(self, data_dir, project_id, **kwargs):
+            super().__init__(data_dir, project_id, **kwargs)
+            if project_id == "project-broken":
+                raise RuntimeError("injected broken cache project")
+
+    monkeypatch.setattr(training_bundle_cache, "TrainingBundleCache", ExplodingCache)
+    result = training_bundle_cache.maintain_all_training_bundle_caches(
+        tmp_path / "data", repository, artifacts,
+    )
+    assert result["ran"] is True
+    assert [item["project_id"] for item in result["errors"]] == ["project-broken"]
+    assert not good_entry.root.exists()
+
+
+def test_bundle_cache_maintenance_interval_environment(monkeypatch):
+    monkeypatch.delenv(
+        training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV,
+        raising=False,
+    )
+    assert (
+        training_bundle_cache.training_bundle_cache_maintenance_interval_seconds()
+        == training_bundle_cache.DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    )
+    monkeypatch.setenv(
+        training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV, "0",
+    )
+    assert training_bundle_cache.training_bundle_cache_maintenance_interval_seconds() == 0
+    monkeypatch.setenv(
+        training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV, "-5",
+    )
+    assert training_bundle_cache.training_bundle_cache_maintenance_interval_seconds() == 0
+    monkeypatch.setenv(
+        training_bundle_cache.TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV, "not-a-number",
+    )
+    assert (
+        training_bundle_cache.training_bundle_cache_maintenance_interval_seconds()
+        == training_bundle_cache.DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    )

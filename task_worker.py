@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -26,6 +27,10 @@ from platform_core.task_runtime import (
 from platform_core.task_node_assignments import AssignmentAwareFencedTaskRepository
 from platform_core.gpu_reservations_v2 import NodeScopedGPUResourceManager
 from platform_core.training_devices import training_python
+from platform_core.training_bundle_cache import (
+    maintain_all_training_bundle_caches,
+    training_bundle_cache_maintenance_interval_seconds,
+)
 from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle
 from platform_core.worker_registry import resolve_worker_registration
 from platform_core.worker_supervisor import run_isolated_all_roles
@@ -205,6 +210,31 @@ def main(argv=None) -> int:
             pass
         instance_lease.add_renew_hook(external_sync_reporter.report)
 
+    workspace_lifecycle = TrainingWorkspaceLifecycle(data_dir, repository, artifacts)
+    bundle_cache_interval = training_bundle_cache_maintenance_interval_seconds()
+    last_bundle_cache_sweep = [0.0]
+
+    def maintenance():
+        # Workspace reclamation stays frequent; the bundle-cache sweep is
+        # idle-gated and throttled so a busy Worker never scans the cache tree
+        # on every maintenance tick.
+        result = {"workspace": workspace_lifecycle.maintain()}
+        if bundle_cache_interval <= 0:
+            return result
+        now = time.monotonic()
+        if now - last_bundle_cache_sweep[0] < bundle_cache_interval:
+            return result
+        last_bundle_cache_sweep[0] = now
+        try:
+            result["bundle_cache"] = maintain_all_training_bundle_caches(
+                data_dir, repository, artifacts,
+            )
+        except Exception as error:  # maintenance must never stop execution
+            result["bundle_cache"] = {
+                "ran": False, "error": f"{type(error).__name__}: {error}",
+            }
+        return result
+
     try:
         write_worker_build_marker(data_dir, build_id)
         scheduler = Scheduler(
@@ -222,7 +252,7 @@ def main(argv=None) -> int:
                 worker_id=worker_id,
             ) if "training.ultralytics" in capabilities else None,
             worker_instance=instance_lease,
-            maintenance=TrainingWorkspaceLifecycle(data_dir, repository, artifacts).maintain
+            maintenance=maintenance
                 if set(instance_roles) & {"storage", "training"} else None,
         )
         if args.once:
