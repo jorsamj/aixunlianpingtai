@@ -761,7 +761,7 @@ def worker_liveness_report(
                 parts.append(f"execution runtime.log tail ({log_path.parent.name}):\n{tail}")
             except OSError as error:
                 parts.append(f"runtime.log unreadable: {type(error).__name__}: {error}")
-            for name in ("execution.json", "workspace-cleanup.json"):
+            for name in ("execution.json", "workspace-cleanup.json", "execution-error.json"):
                 record_path = log_path.parent / name
                 try:
                     if record_path.is_file():
@@ -772,7 +772,8 @@ def worker_liveness_report(
                                     "task_id", "generation", "execution_generation",
                                     "status", "stage", "current_item", "error",
                                     "recovery_error", "cleanup", "state",
-                                    "worker_cleanup", "removed",
+                                    "worker_cleanup", "removed", "outcome",
+                                    "error_type", "recorded_at",
                                 ) if key in record
                             }
                             parts.append(

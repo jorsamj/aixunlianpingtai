@@ -1819,6 +1819,19 @@ def test_central_recover_response_loss_is_idempotent(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+_VOLATILE_STATUS_KEYS = frozenset({
+    "task", "updated_at", "progress", "current_item", "stage",
+})
+
+
+def _durable_projection(status: dict) -> dict:
+    """Identity/evidence fields only: a live execution keeps advancing."""
+    return {
+        key: value for key, value in status.items()
+        if key not in _VOLATILE_STATUS_KEYS
+    }
+
+
 def test_execution_status_read_only_recovery_diagnostics(tmp_path):
     """The central status projection is complete, GET-only and secret-free."""
     stack = _start_formal_dual_slot(tmp_path, [("a", "GPU-A", 30.0), ("b", "GPU-B", 2.0)])
@@ -1854,7 +1867,12 @@ def test_execution_status_read_only_recovery_diagnostics(tmp_path):
         assert status_a["recovery_state"] == "HELD"
         assert status_a["recovery_blocked_reason"] == "PROCESS_STOP_UNPROVEN"
         assert len(status_a["evidence_sha256"]) == 64
-        assert status_a_again == status_a
+        # The projection must not mutate anything, and every durable identity
+        # fact must read back identically. The nested task projection tracks a
+        # live execution (stage/progress advance between two reads), so only the
+        # durable identity and evidence fields are compared here - the read-only
+        # proof itself is the unchanged central snapshot asserted above.
+        assert _durable_projection(status_a_again) == _durable_projection(status_a)
         assert held_b["recovery_state"] == "HELD"
         assert held_b["hold_gpu_uuid"] == "GPU-B"
         assert held_b["evidence_sha256"] != status_a["evidence_sha256"]

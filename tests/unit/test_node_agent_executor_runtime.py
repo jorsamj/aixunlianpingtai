@@ -697,6 +697,31 @@ def test_lease_monitor_fences_immediately_on_an_authoritative_fencing_answer():
     assert monitor.fenced.is_set()
 
 
+def test_lease_monitor_fences_on_a_control_plane_5xx_answer():
+    """A reachable control plane that refuses the renewal still fences at once.
+
+    This is the established contract the real loopback partition test pins: an
+    HTTP answer means ownership can no longer be proven, unlike a transport
+    failure where the request produced no verdict at all.
+    """
+    calls = []
+    client = FakeHeartbeatClient(
+        NodeExecutorHTTPError(
+            "NODE_EXECUTOR_REQUEST_FAILED", "control plane unavailable",
+            status_code=503, retryable=True,
+        ),
+    )
+    monitor = ExecutionLeaseMonitor(
+        client, lease(), on_fenced=lambda: calls.append("terminate"),
+        lease_seconds=5.0, retry_sleep=0.01,
+    )
+
+    with pytest.raises(RemoteExecutionFenced):
+        monitor.beat()
+    assert client.calls == 1
+    assert calls == ["terminate"]
+
+
 def test_agent_executor_runtime_has_no_control_plane_database_imports():
     source_path = Path(__file__).resolve().parents[2] / "platform_core" / "node_agent_executor_runtime.py"
     source = source_path.read_text(encoding="utf-8")

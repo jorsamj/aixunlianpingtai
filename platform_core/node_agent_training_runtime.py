@@ -372,6 +372,32 @@ class AgentTrainingRunner:
         self._recovery_error = ""
         return True
 
+    def _record_execution_failure(self, lease, outcome: str, error: BaseException) -> None:
+        """Persist bounded, secret-free evidence of why this execution stopped.
+
+        Without it an operator sees a dead worker, a cleared ProcessIdentity and
+        a released workspace with nothing explaining which guard fired. Only
+        codes and the exception message are recorded; no lease token, no Node
+        token, no credential material.
+        """
+        try:
+            workdir = self.workdirs.path_for(lease)
+        except (OSError, ValueError):
+            return
+        record = {
+            "task_id": str(lease.task_id),
+            "generation": int(lease.generation),
+            "outcome": str(outcome),
+            "error_type": type(error).__name__,
+            "error": str(error)[:1500],
+            "recovery_error": str(self._recovery_error or "")[:600],
+            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        try:
+            self.workdirs._atomic_write_json(workdir / "execution-error.json", record)
+        except (OSError, ValueError):
+            pass  # Diagnostics must never mask the real failure.
+
     def _cleanup_training_workdir(self, lease, *, trainer_started, committed, model_evidence=None):
         """Process death is proven by the caller; retain uncommitted recovery evidence."""
         from .training_workspace_lifecycle import TrainingWorkspaceLifecycle
@@ -2102,10 +2128,12 @@ class AgentTrainingRunner:
                 "CANCELLED",
                 error=str(error),
             )
-        except RemoteExecutionFenced:
+        except RemoteExecutionFenced as fenced:
+            self._record_execution_failure(lease, "FENCED", fenced)
             self._terminate_active(strict=True)
             raise
         except Exception as error:
+            self._record_execution_failure(lease, "FAILED", error)
             self._terminate_active(strict=True)
             try:
                 self._assert_active(monitor)

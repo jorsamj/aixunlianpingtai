@@ -31,11 +31,16 @@ _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 DEFAULT_EXECUTOR_TIMEOUT_SECONDS = 15.0
 DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS = 300.0
 DEFAULT_EXECUTION_HEARTBEAT_SECONDS = 5.0
+# Fallback lease-validity window. The monitor normally derives the real window
+# from the execution lease the control plane granted at start; this value only
+# covers an unparseable/stale expiry and deliberately matches the control
+# plane's own default execution lease TTL. A deployment that configures a
+# *shorter* execution lease must pass ``lease_seconds`` explicitly, otherwise an
+# unproven renewal could outlive the moment the task may be reassigned.
 DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS = 30.0
-# Control-plane answers that prove this Agent no longer owns the execution.
-_FENCING_STATUS_CODES = frozenset({401, 403, 404, 409, 410})
-# Transport-level answers that say nothing about ownership yet.
-_TRANSIENT_STATUS_CODES = frozenset({0, 408, 425, 429})
+# Answers that carry no ownership verdict: the request never produced a
+# control-plane decision, so retrying it says nothing about the lease.
+_TRANSPORT_STATUS_CODES = frozenset({0, 408, 425, 429})
 
 
 class NodeExecutorHTTPError(RuntimeError):
@@ -110,7 +115,6 @@ def _lease_window_seconds(
     # renewed the lease on every heartbeat since. Fall back to the default TTL
     # instead of fencing on the first blip of a long-running execution.
     return DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS
-
 
 def _json_error(body: object, fallback: str) -> tuple[str, str]:
     detail = body.get("detail") if isinstance(body, Mapping) else None
@@ -1205,16 +1209,15 @@ class ExecutionLeaseMonitor:
     execution lease could still be valid.  Ownership is proven by the control
     plane, never by the absence of a local exception, so the monitor:
 
-    * treats an explicit fencing answer (HTTP 401/403/404/409/410, or a request
-      the control plane rejected outright) as authoritative and fences at once;
-    * treats a *transport* failure (connection reset, timeout, 5xx, invalid
-      response) as "ownership not yet proven" and retries, because a transient
-      reset is not evidence that the lease was lost and destroying a live
-      execution on one would strand the task RUNNING with its GPU Hold still
-      HELD while the worker is already dead;
-    * fences only once the lease validity window elapses without a verified
-      renewal.  At that instant the control plane may hand the task to another
-      node, so continuing would risk two workers on one GPU.
+    * fences at once on any control-plane *answer* that refuses the renewal
+      (an HTTP 4xx/5xx means the control plane is reachable and ownership can no
+      longer be proven);
+    * retries a *transport* failure (connection reset, timeout, no response,
+      invalid response) with a bounded backoff, because a reset is not evidence
+      that the lease was lost and destroying a live execution on one strands the
+      task RUNNING with its GPU Hold still HELD while the worker is already dead;
+    * fences once the lease validity window elapses without a verified renewal,
+      the instant the control plane could hand the task to another node.
     """
 
     def __init__(
@@ -1264,17 +1267,19 @@ class ExecutionLeaseMonitor:
 
     @staticmethod
     def _is_authoritative_fence(error: BaseException) -> bool:
-        """Only a control-plane answer about ownership may fence immediately."""
+        """Decide whether a failed renewal may fence and stop the worker.
+
+        Only a control-plane *answer* counts. An HTTP 4xx/5xx is an answer: the
+        control plane is reachable and refused the renewal, so ownership can no
+        longer be proven and the worker must stop (the established contract, and
+        the behaviour the loopback partition test pins). A transport failure -
+        connection reset, timeout, no response at all - is NOT an answer about
+        ownership; retrying it must never destroy a live execution.
+        """
         if not isinstance(error, NodeExecutorHTTPError):
             return False
         status = int(getattr(error, "status_code", 0) or 0)
-        if status in _FENCING_STATUS_CODES:
-            return True
-        if status in _TRANSIENT_STATUS_CODES or status >= 500:
-            return False
-        # Any other explicit rejection (malformed request, unsupported payload)
-        # is the control plane answering: stop instead of retrying for a window.
-        return status >= 400
+        return status >= 400 and status not in _TRANSPORT_STATUS_CODES
 
     def _lease_window_exhausted(self) -> bool:
         return (time.monotonic() - self._last_verified) >= self._lease_seconds
