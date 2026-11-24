@@ -491,7 +491,10 @@ def test_dual_slot_reaper_fails_closed_on_any_identity_mismatch():
         lease = RemoteExecutionLease(
             task_id="a", kind="TRAINING", project_id="p", generation=3,
             lease_token="t", lease_expires_at="2026-09-18T10:00:00+00:00",
-            worker_id="agent:node-1", payload={}, assignment={}, transport={},
+            worker_id="agent:node-1", payload={}, assignment={
+                "generation": 2,
+                "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+            transport={},
         )
         loop = NodeAgentExecutorLoop(
             StatusClient(status), object(), capabilities=["training"], max_slots=2,
@@ -581,7 +584,8 @@ def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
                 generation=1, lease_token="execution-secret",
                 lease_expires_at="2026-09-18T10:00:00+00:00",
                 worker_id="agent:node-1", payload={},
-                assignment={"resolved_execution_config": {"selected_gpu": {
+                assignment={"generation": 1,
+                            "resolved_execution_config": {"selected_gpu": {
                     "uuid": f"GPU-{task_id.upper()}"}}},
                 transport={},
             )

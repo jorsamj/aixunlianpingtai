@@ -116,6 +116,7 @@ class BoundedExecutionSlots:
             slot = ExecutionSlot(
                 key[0], key[1], lease=lease, gpu_uuid=str(gpu_uuid or ""),
                 slot_id=str(slot_id or ""), started_at=time.monotonic(),
+                assignment_generation=int(key[1]),
             )
             self._slots[key] = (slot, None)
             self._persist()
@@ -132,7 +133,14 @@ class BoundedExecutionSlots:
             slot.execution_attempt = int(getattr(lease, "generation", 0) or 0)
             assignment = getattr(lease, "assignment", None)
             if isinstance(assignment, dict):
-                slot.assignment_generation = int(assignment.get("generation") or 0)
+                central_generation = int(assignment.get("generation") or 0)
+                if central_generation != int(slot.assignment_generation):
+                    raise SlotNotReleased("central assignment generation mismatch")
+                config = assignment.get("resolved_execution_config")
+                selected = config.get("selected_gpu") if isinstance(config, dict) else None
+                central_gpu = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+                if slot.gpu_uuid and central_gpu != slot.gpu_uuid:
+                    raise SlotNotReleased("central assignment GPU mismatch")
             slot.state = "CENTRAL_STARTED"
             self._persist()
 

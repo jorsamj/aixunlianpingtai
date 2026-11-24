@@ -35,17 +35,34 @@ def child_slot_runner(controller, *, clean_on_stop=True):
 def test_slot_intent_persists_assignment_and_execution_generations_separately(tmp_path):
     import json
     slots = BoundedExecutionSlots(1, persist_path=tmp_path / "intents.json")
+    local_reservation = SimpleNamespace(task_id="task-1", generation=5)
     execution_lease = SimpleNamespace(
         task_id="task-1", generation=2,
-        assignment={"generation": 5},
+        assignment={"generation": 5, "resolved_execution_config": {
+            "selected_gpu": {"uuid": "GPU-A"}}},
     )
-    slot = slots.reserve(execution_lease, gpu_uuid="GPU-A")
+    slot = slots.reserve(local_reservation, gpu_uuid="GPU-A")
     slots.mark_started(slot, execution_lease)
     records = json.loads((tmp_path / "intents.json").read_text(encoding="utf-8"))
     assert records[0]["execution_attempt"] == 2
     assert records[0]["assignment_generation"] == 5
-    assert records[0]["generation"] == 2
+    assert records[0]["generation"] == 5
     slots.abort_reserved(slot)
+
+
+def test_mark_started_rejects_central_assignment_identity_mismatch(tmp_path):
+    slots = BoundedExecutionSlots(1, persist_path=tmp_path / "intents.json")
+    local_reservation = SimpleNamespace(task_id="task-1", generation=5)
+    slot = slots.reserve(local_reservation, gpu_uuid="GPU-A")
+    wrong = SimpleNamespace(
+        task_id="task-1", generation=2,
+        assignment={"generation": 9, "resolved_execution_config": {
+            "selected_gpu": {"uuid": "GPU-A"}}},
+    )
+    with pytest.raises(SlotNotReleased, match="assignment generation"):
+        slots.mark_started(slot, wrong)
+    assert slot.state == "LOCAL_RESERVED"
+    assert slot.generation == 5
 
 
 def test_stop_proof_required_before_capacity_can_be_reused():

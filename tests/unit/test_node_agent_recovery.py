@@ -46,6 +46,28 @@ def record(task_id="a", generation=1, pid=11, create_time=1.0, command_hash="h",
             "assignment_generation": assignment_generation, "gpu_uuid": gpu_uuid}
 
 
+def test_clear_intent_matches_assignment_and_execution_generations(tmp_path):
+    intent = tmp_path / "dual-slot-intents.json"
+    intent.write_text(json.dumps([
+        {"task_id": "a", "generation": 5, "execution_attempt": 2,
+         "assignment_generation": 5, "gpu_uuid": "GPU-A"},
+        {"task_id": "a", "generation": 6, "execution_attempt": 3,
+         "assignment_generation": 6, "gpu_uuid": "GPU-A"},
+        {"task_id": "b", "generation": 5, "execution_attempt": 2,
+         "assignment_generation": 5, "gpu_uuid": "GPU-B"},
+    ]), encoding="utf-8")
+    coordinator = NodeRecoveryCoordinator(
+        FakeWorkdirs(), FakeController(), intent_path=intent,
+    )
+    coordinator._clear_intent(
+        "a", 5, execution_attempt=2, gpu_uuid="GPU-A", assignment_generation=5,
+    )
+    remaining = json.loads(intent.read_text(encoding="utf-8"))
+    assert [(item["task_id"], item["generation"]) for item in remaining] == [
+        ("a", 6), ("b", 5),
+    ]
+
+
 def test_coordinator_skips_owned_slot_and_cleans_unowned(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "name", "posix")
     workdirs = FakeWorkdirs([record("a", 1, 11), record("b", 1, 22)])
@@ -210,10 +232,10 @@ def test_coordinator_uses_central_recovery_and_clears_intent(tmp_path):
     controller = FakeController()
     intent = tmp_path / "dual-slot-intents.json"
     intent.write_text(json.dumps([
-        {"task_id": "a", "generation": 2, "gpu_uuid": "GPU-A", "state": "CENTRAL_STARTED",
-         "execution_attempt": 2},
+        {"task_id": "a", "generation": 5, "gpu_uuid": "GPU-A", "state": "CENTRAL_STARTED",
+         "execution_attempt": 2, "assignment_generation": 5},
         {"task_id": "b", "generation": 1, "gpu_uuid": "GPU-B", "state": "CENTRAL_STARTED",
-         "execution_attempt": 1},
+         "execution_attempt": 1, "assignment_generation": 1},
     ]), encoding="utf-8")
     client = FakeRecoveryClient({
         "status": "RUNNING", "execution_attempt": 2, "hold_state": "HELD",

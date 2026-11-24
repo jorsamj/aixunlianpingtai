@@ -1009,7 +1009,8 @@ class AgentExecutionWorkdir:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError("persisted execution metadata is unreadable") from error
-        if not isinstance(raw, dict) or raw.get("task_id") != str(task_id):
+        if (not isinstance(raw, dict) or raw.get("task_id") != str(task_id)
+                or int(raw.get("generation") or 0) != int(generation)):
             raise ValueError("persisted execution metadata lineage mismatch")
         assignment = raw.get("assignment")
         if not isinstance(assignment, dict):

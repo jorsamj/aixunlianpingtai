@@ -65,11 +65,20 @@ class NodeRecoveryCoordinator:
         if int(status.get("hold_execution_attempt") or 0) != int(record["generation"]):
             return "central Hold execution attempt mismatch"
         local_assignment = int(record.get("assignment_generation") or 0)
+        local_gpu = str(record.get("gpu_uuid") or "")
+        has_hold = (status.get("hold_state") is not None
+                    or status.get("hold_execution_attempt") is not None)
+        if has_hold:
+            # A dual-slot execution must carry complete original Assignment
+            # evidence; missing local fields are corruption, not legacy.
+            if local_assignment <= 0:
+                return "local Assignment generation missing for dual-slot recovery"
+            if not local_gpu:
+                return "local GPU UUID missing for dual-slot recovery"
         if local_assignment > 0 and int(
             status.get("hold_assignment_generation") or 0
         ) != local_assignment:
             return "central Hold assignment generation mismatch"
-        local_gpu = str(record.get("gpu_uuid") or "")
         if local_gpu and str(status.get("hold_gpu_uuid") or "") != local_gpu:
             return "central Hold GPU UUID mismatch"
         if int(status.get("hold_assignment_generation") or 0) <= 0:
@@ -267,7 +276,8 @@ class NodeRecoveryCoordinator:
                 try:
                     self.workdirs.clear_process_identity_record(key[0], key[1])
                     self._clear_intent(
-                        key[0], key[1],
+                        key[0],
+                        int(record.get("assignment_generation") or 0) or key[1],
                         execution_attempt=int(record["generation"]),
                         gpu_uuid=str(status.get("hold_gpu_uuid") or "") if status else None,
                         assignment_generation=int(record.get("assignment_generation") or 0) or None,
