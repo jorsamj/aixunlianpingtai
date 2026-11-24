@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -394,7 +394,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.16 第六轮（P0 安全收口 + T7）交付摘要（2026-11-24 21:xx +08）
 
-起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**。
+起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**。
 纪律：单主 Agent + 至多 1 个活跃子 Agent（仅 T7 迁移使用），本地仅 `py_compile`/`import app`/
 定向用例/守卫 grep，无重型测试。
 
@@ -405,7 +405,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.17 第七轮（真实 PG CI + 算法访问收口）交付摘要（2026-11-24 22:xx +08）
 
-起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**。
+起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**。
 本轮按序推进第 1 项（真实 PG CI）与第 3 项（T8 业务接线）的可独立部分；本地仅
 `py_compile` / `import app` / pytest `--collect-only` / 守卫 grep，未执行任何 PG、集成或重型测试。
 
@@ -415,7 +415,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.18 第八轮（单一算法事实源 + PG CI 修复）交付摘要（2026-11-24 23:xx +08）
 
-起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`**。
+起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**。
 
 | 提交 | 内容 |
 |---|---|
@@ -452,7 +452,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.19 第九轮（PG 投影去遮蔽 + 准入合同）— 2026-11-24 23:xx +08
 
-代码候选：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
+代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
 被类尾同名占位方法**覆盖**（能力断言与实际不符），已删除占位；`algorithm_migration_cli.py` 调用
 `cutover_transition` 未导入（cutover-admit 必 NameError），已补 import 并复核调用链。CI 合同：
 parity 测试改为先按真实生产流程做隔离 admission 再打开 Provider（不取消写入准入、不加绕过开关）；
@@ -466,7 +466,7 @@ parity 测试改为先按真实生产流程做隔离 admission 再打开 Provide
 分页/筛选/排序/`filter_options` 与 revision 同快照。PG 正式切换保持关闭。
 ### 9.20 第九轮补记（PG 展示查询 6/7）
 
-代码候选：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`。本轮在 9.19 之后补齐四个 `asset_*` 展示查询的真实 PG 实现
+代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。本轮在 9.19 之后补齐四个 `asset_*` 展示查询的真实 PG 实现
 （`asset_algorithm_basic`/`asset_versions`/`asset_version`/`asset_algorithms`），复用
 `model_asset_views.version_record` 纯投影与 `_version_columns_sql` 的 JSONB 列合同；
 联表统一 `(project_id, algorithm_id)`，分页/筛选/排序/`filter_options`/revision 同快照。
@@ -481,7 +481,7 @@ parity 测试改为先按真实生产流程做隔离 admission 再打开 Provide
 PG 正式切换继续关闭。
 ### 9.21 第十轮（PG 七个展示方法收口 + 训练报告接 Provider）
 
-代码候选：`2f8d5cbf6e116e01836abbe7f99e558a75967bd3`。七个 `PRESENTATION_OPERATIONS` **全部具备真实 PG 实现**（能力缺口为空，
+代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。七个 `PRESENTATION_OPERATIONS` **全部具备真实 PG 实现**（能力缺口为空，
 `capabilities()` = CORE ∪ 七个），并修复审计指出的六项缺陷：`admission_switch_lock` 未导入、
 `capabilities()` 与实际不符、`self._json_object` 未定义、`#>>` 破坏数值类型、
 `training_display_refs` 把计数转成字符串、多语句读取无一致性快照。
@@ -495,3 +495,23 @@ Provider 中立的 `is_initialized()`。新增真实行为测试
 
 仍未完成/保留：维护窗口与 rollback 状态机、其他数据库域、FastAPI 剩余域、停止证明恢复、
 资源 requeue、离线交付；PG 正式切换保持关闭。
+### 9.22 第十一轮（PG 展示合同缺陷修复；维护窗口未完成）
+
+代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。本轮完成第 1、2 项：CI 两处断言与能力合同/双算法 fixture 对齐（保留
+single-writer、旧 SQLite 拒写、重复切换等安全断言；七个方法改为按 id 定位，避免一条断言失败
+掩盖其余六个方法的证据）；`library_algorithms` 的 `ready` CASE 统一为 BOOLEAN 并用
+`IS TRUE/IS FALSE` 过滤；mAP50 恢复“数值或合法数值字符串 + 八来源优先级 + 排除 NaN/Infinity +
+`pg_input_is_valid` 安全转换 + >1 原值否则 ×100 + 全无效 NULL + `DESC NULLS LAST`”，返回
+double precision 与 SQLite float 对齐。
+
+**第 3 项（维护窗口/安全切换/回滚）本轮未实现**——非硬阻断，是工作量未完成。已具备的部件：
+`cutover_state` + `FOR UPDATE` 同事务写入准入、`writer_generation`、`admission`、`switch.lock`、
+transition marker（按 operation/是否真实权威状态清理）、PG 侧 `evidence.phase` 非 steady 时拒写。
+**缺失的函数（需在 `algorithm_cutover.py` 实现）**：
+`begin_window()`（advisory lock + FOR UPDATE，写 phase=QUIESCING 与 operation_id/generation/摘要）、
+`freeze_source()`（SOURCE_FROZEN）、`switch_owner()`（SWITCHING → admit → POSTGRES_ACTIVE）、
+`resume_state()`（受控恢复入口，未知/中间态 fail-closed），以及把这些 phase 写入本地 transition
+marker 以让 SQLite 侧共同阻断；还需 rollback 的 `revoked_at` 完成判定与“PG 有新写入禁止回退”对账。
+**第 4 项（正式读写调用方收口）同样未完成**：`platform_core/algorithms.py` 仍有多处直接构造
+`AlgorithmSqlStore`，`training_report_api` 的 `_list_algorithms_internal` 历史兼容查询仍走 app 层
+原实现，需要统一到 Provider。
