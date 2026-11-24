@@ -14267,6 +14267,9 @@ _ONLINE_FEEDBACK_SERVICE = OnlineFeedbackService(
     material_governance_actor=_material_governance_actor,
     image_exts=IMAGE_EXTS,
     version_model_sha256_fn=_online_feedback_version_model_sha256,
+    # Late-bound wrapper: the app module keeps owning label_governance_fence,
+    # so a caller that replaces it still governs this service.
+    label_fence=lambda project_path: label_governance_fence(project_path),
 )
 app.include_router(create_online_feedback_router(_ONLINE_FEEDBACK_SERVICE))
 

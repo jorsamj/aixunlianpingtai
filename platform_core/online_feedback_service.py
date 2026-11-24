@@ -248,6 +248,7 @@ class OnlineFeedbackService:
         material_governance_actor,
         image_exts,
         version_model_sha256_fn=None,
+        label_fence=None,
     ):
         self._get_project = get_project
         self._project_dir = project_dir
@@ -272,6 +273,10 @@ class OnlineFeedbackService:
         self._version_model_sha256 = version_model_sha256_fn or (
             lambda version: version_model_sha256(version, self._sha256_file)
         )
+        # Injected so the application keeps owning the label-governance seam it
+        # already exposes (a caller may replace the fence); the module itself
+        # must not import the application.
+        self._label_fence = label_fence or label_governance_fence
 
     # -- shared helpers ---------------------------------------------------
     def repository(self, project_id: str) -> OnlineFeedbackRepository:
@@ -348,7 +353,7 @@ class OnlineFeedbackService:
                 self._data_dir, project_id, source["algorithm_id"], source["version_id"],
             ):
                 evidence, _, _, _ = self._evidence(project_id, prediction_id)
-                with label_governance_fence(self._project_dir(project_id)):
+                with self._label_fence(self._project_dir(project_id)):
                     if feedback_type == "correct":
                         self.prediction_boxes(self._get_project(project_id), evidence)
                     row, idempotent = self.repository(project_id).stage(
@@ -507,7 +512,7 @@ class OnlineFeedbackService:
                     raise HTTPException(
                         status_code=409, detail="正式算法版本在外部反馈写入期间发生变化",
                     )
-                with label_governance_fence(self._project_dir(project_id)):
+                with self._label_fence(self._project_dir(project_id)):
                     if feedback_type == "correct":
                         self.prediction_boxes(self._get_project(project_id), incoming)
                     row, repository_reused = self.repository(project_id).stage(
@@ -604,7 +609,7 @@ class OnlineFeedbackService:
                 annotation_action = "manual_review"
 
                 if truth_feedback:
-                    with label_governance_fence(self._project_dir(project_id)):
+                    with self._label_fence(self._project_dir(project_id)):
                         # Re-read after acquiring the governance fence. Human review
                         # freezes intent, not a stale active-label catalog/class id.
                         current_project = self._get_project(project_id)
