@@ -515,7 +515,7 @@ class AgentTrainingRunner:
                 f"{type(error).__name__}: {error}"
             )
 
-    def _terminate_active(self, *, strict: bool = False) -> bool:
+    def _terminate_active(self, *, strict: bool = False, graceful: bool = False) -> bool:
         lease, identity = self._active_process()
         if identity is None:
             return True
@@ -532,14 +532,21 @@ class AgentTrainingRunner:
                 raise RemoteExecutionFenced(self._recovery_error) from error
             return False
         if lease is not None:
-            self._persist_stop_evidence(lease, identity, reason="terminate_active")
+            self._persist_stop_evidence(
+                lease, identity, reason="graceful_shutdown" if graceful else "terminate_active"
+            )
+            if graceful:
+                # An orderly shutdown verified the stop itself and leaves no
+                # execution behind, so the durable identity may be released
+                # (the abrupt/fenced path must keep it for recovery).
+                self._confirm_stop_cleanup(lease)
         self._clear_active_process()
         self._recovery_error = ""
         return True
 
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
-        self._terminate_active()
+        self._terminate_active(graceful=True)
 
     def _assert_active(self, monitor: ExecutionLeaseMonitor) -> None:
         if self._shutdown_event.is_set():

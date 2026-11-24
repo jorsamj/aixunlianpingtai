@@ -89,7 +89,7 @@ jobs:
           grep -Fq '_legacy_iteration_write_disabled' app.py
           grep -Fq 'test_legacy_v42_feedback_and_auto_iteration_writes_are_gone' tests/api/test_online_feedback.py
           grep -Fq '/online-feedback/external-intake' platform_core/online_feedback_api.py
-          grep -Fq 'ONLINE_FEEDBACK_MAX_IMAGE_BYTES' platform_core/online_feedback_api.py
+          grep -Fq 'ONLINE_FEEDBACK_MAX_IMAGE_BYTES' platform_core/online_feedback_service.py
           grep -Fq 'test_external_feedback_intake_stages_review_without_material_or_training_side_effect' tests/api/test_online_feedback.py
           grep -Fq 'build_supplement_candidate_set' platform_core/online_feedback.py
           grep -Fq 'supplement-data-candidates/freeze' app.py
