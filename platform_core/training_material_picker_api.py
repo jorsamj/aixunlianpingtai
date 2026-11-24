@@ -2393,7 +2393,11 @@ def training_material_picker_router(
                         sort_order=str(body.get('sort_order') or 'newest'),filters=filters)
                     return
                 while True:
-                    result=_gt_material_filter_page(repository,annotations,limit=1000,cursor=cursor or None,
+                    # Wider server-side pages amortize the per-page connection,
+                    # ATTACH and revision-check cost of a filtered freeze. A 20k
+                    # selection drops from 20 pages to 4 without changing the
+                    # filtered row order or the frozen identity set.
+                    result=_gt_material_filter_page(repository,annotations,limit=5000,cursor=cursor or None,
                         query=query,labels=labels,sort_order=str(body.get('sort_order') or 'newest'),
                         filters=filters,count_mode='deferred')
                     yield from result['items']
