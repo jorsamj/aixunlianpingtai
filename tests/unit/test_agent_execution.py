@@ -1109,3 +1109,25 @@ def test_single_slot_contract_is_not_upgraded_into_dual_hold_requirement(tmp_pat
             "UPDATE tasks SET worker_id='agent:dual-agent' WHERE task_id='dual-one'",
         )
     assert service._dual_hold_verified("dual-one", 1) is False
+
+
+def test_execution_status_keeps_sql_null_fields_as_null(tmp_path):
+    """A live HELD execution has no stop proof yet; SQL NULL must stay null.
+
+    Stringifying NULL to "None" would look like proof fields were recorded and
+    make the Agent crash-recovery coordinator reject every real recovery.
+    """
+    repository, artifacts = runtime(tmp_path)
+    _nodes, token = _dual_slot_node(repository)
+    _remote_training_task(repository, artifacts, "dual-null")
+    service = AgentExecutionService(
+        repository, artifacts, auto_assign_enabled=True,
+        execution_payload_resolver=safe_remote_payload,
+    )
+    claimed = service.claim_assignment("dual-agent", token)
+    start(service, "dual-null", "dual-agent", token, claimed)
+    status = service.execution_status("dual-agent", token, "dual-null")
+    assert status["hold_state"] == "HELD"
+    assert status["proof_type"] is None
+    assert status["proof_sha256"] is None
+    assert status["assignment_lease_expires_at"] is None

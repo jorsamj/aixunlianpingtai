@@ -2600,14 +2600,25 @@ class AgentExecutionService:
             "assignment_state": str(assignment["state"]) if assignment is not None else None,
             "assignment_generation": int(assignment["generation"]) if assignment is not None else None,
             "assignment_lease_expires_at": (
-                str(assignment["lease_expires_at"]) if assignment is not None else None
+                None if assignment is None or assignment["lease_expires_at"] is None
+                else str(assignment["lease_expires_at"])
             ),
             "hold_state": str(hold["state"]) if hold is not None else None,
             "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
             "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
             "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
-            "proof_type": str(hold["proof_type"]) if hold is not None else None,
-            "proof_sha256": str(hold["proof_sha256"]) if hold is not None else None,
+            # SQL NULL must stay a JSON null. Stringifying it to "None" would
+            # look like a recorded stop proof to the Agent recovery coordinator
+            # (a HELD execution legitimately has no proof yet) and make every
+            # real crash recovery fail closed.
+            "proof_type": (
+                None if hold is None or hold["proof_type"] is None
+                else str(hold["proof_type"])
+            ),
+            "proof_sha256": (
+                None if hold is None or hold["proof_sha256"] is None
+                else str(hold["proof_sha256"])
+            ),
         }
 
     def recover_execution(
