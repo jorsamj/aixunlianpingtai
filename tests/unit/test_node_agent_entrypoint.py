@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import node_agent
 
 
@@ -532,7 +534,14 @@ def test_dual_slot_execution_is_explicit_opt_in_and_defaults_to_one_slot(tmp_pat
     (DSH_AGENT_EXECUTION_SLOTS=2) and the central authorization capability.
     Without the env opt-in the Agent must build a one-slot loop and advertises
     only its normal capability, never execution-slots:2.
+
+    Building the real training runner wiring needs the optional training
+    dependency surface; focused Agent contract jobs that do not install it must
+    skip instead of failing on an unrelated ImportError.
     """
+    pytest.importorskip("psutil", reason="training runner surface requires psutil")
+    pytest.importorskip("yaml", reason="training runner surface requires PyYAML")
+    pytest.importorskip("PIL", reason="training runner surface requires Pillow")
     monkeypatch.delenv("DSH_AGENT_EXECUTION_SLOTS", raising=False)
     single = node_agent._build_executor(
         control_plane="http://127.0.0.1:9",
