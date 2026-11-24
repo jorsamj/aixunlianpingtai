@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`b6e635cae2973edd493555a801bc0522109e2c31`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`b6e635cae2973edd493555a801bc0522109e2c31`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -394,7 +394,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.16 第六轮（P0 安全收口 + T7）交付摘要（2026-11-24 21:xx +08）
 
-起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`b6e635cae2973edd493555a801bc0522109e2c31`**。
+起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**。
 纪律：单主 Agent + 至多 1 个活跃子 Agent（仅 T7 迁移使用），本地仅 `py_compile`/`import app`/
 定向用例/守卫 grep，无重型测试。
 
@@ -405,7 +405,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.17 第七轮（真实 PG CI + 算法访问收口）交付摘要（2026-11-24 22:xx +08）
 
-起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`b6e635cae2973edd493555a801bc0522109e2c31`**。
+起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**。
 本轮按序推进第 1 项（真实 PG CI）与第 3 项（T8 业务接线）的可独立部分；本地仅
 `py_compile` / `import app` / pytest `--collect-only` / 守卫 grep，未执行任何 PG、集成或重型测试。
 
@@ -413,7 +413,21 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 |---|---|---|
 | `b6e635ca` | **真实 PostgreSQL CI**：新增 `.github/workflows/algorithm-postgres-runtime.yml`（ubuntu-24.04 + `postgres:16` service container + `pg_isready` 健康检查；仅小 fixture，无生产库）。两个 PG 合同测试模块改为优先读 `MC_TEST_POSTGRES_DSN`（CI 容器），本地仍回退 pgserver；模块结束时自清 `w5_algorithm`/`w5_shadow` schema。`MC_REQUIRE_POSTGRES=1` 把“没有 PG”从 skip 变成硬失败，末尾步骤解析 junit，**任何 skip 或少于 12 条合同即判红**。<br>**T8 接线**：`app.py` 新增唯一 Provider 访问器 `algorithm_repository(project_id)`（默认 SQLite、PG 仅准入后启用、不静默回退、未决切换两侧都拒写）与显式 `algorithm_presentation_store(project_id)`（SQLite 承载展示投影是设计而非回退）；`app.py` 内直接构造 `AlgorithmSqlStore` 的调用**全部清零**（仅剩该 helper 内部一处），核心读走 Provider、库/资产/总览/版本展示投影走命名 helper | `import app` 353 条顶层路由；`py_compile` 通过；PG 合同 collect-only 12 条；3 条 `algorithm-sql-store` 守卫复核仍命中；PG 真实执行交新 CI Job |
 
-本轮未完成 / 阻断（如实记录）：
+### 9.18 第八轮（单一算法事实源 + PG CI 修复）交付摘要（2026-11-24 23:xx +08）
+
+起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`490ed16d3015a7bc82e793f021470d49bfe51e8b`**。
+
+| 提交 | 内容 |
+|---|---|
+| `490ed16d` | **PG CI 修复**：新 Job 因根 `tests/conftest.py` 导入 PIL/TestClient/app.py 而失败 → 合同运行拆成两步并各自 `--confcutdir`，不增装重型依赖；“无 skip / 真实 PG16”要求不变（守卫步骤改为汇总两份 junit）；工作流触发路径加入 `app.py` 与 `training_report_api.py`。<br>**NAE 诊断**：`assign_next` 失败时输出 tasks/assignments/holds/node 能力/分配器拒绝原因，未改调度、超时或断言。<br>**算法域单一事实源**：PG 真实实现 `bootstrap_summary`（有界 boot 行 + `versions_deferred`）与 `training_display_refs`（task→version 索引、100 id 上限、同分组计数），能力缺口由 7 项降为 5 项；`algorithm_presentation_store()` **不再构造 AlgorithmSqlStore**，PG 切换后未移植投影 fail-closed 而非读过期 SQLite；`app.py` 直接构造 `AlgorithmSqlStore` 由 1 处降为 **0 处**；默认 SQLite 行为不变；3 条守卫复核通过 |
+
+未完成 / 阻断：
+1. **PG 业务投影未完成**：`library_algorithms`、`asset_algorithms`、`asset_algorithm_basic`、`asset_versions`、`asset_version` 仍未移植 → Provider 继续声明不支持，需要它们的正式切换仍 fail-closed。这是本轮第 2 项的主要剩余工作。
+2. **`training_report_api.py` 两处仍构造 SQLite store**：其 `training_version_refs` 快路径以 SQLite 专属 `db_path.is_file()` 作守卫，需先定义 Provider 中立的“catalog 是否存在”合同。
+3. **维护窗口与安全切换（第 3 项）未实现**：持久 phase + operation identity、排空、冻结、对账、rollback 的 `revoked_at` 判定、并发切换阻断、写入判定不依赖方法名前缀——全部未做。
+4. **T7（第 4 项）本轮未开展**。
+5. 第 5 项保留队列（停止证据消费、no-op Stop Proof 风险、转换 Runner、资源 requeue、离线/Vue/模型质量）未动。
+
 1. **PG 维护窗口与回滚未实现**：切断新增写入 → 排空 → SOURCE_FROZEN → 对账 → 切换 → 恢复 的持久 phase machine、operation identity、rollback 的 `revoked_at` 完成判定、导入工具与切换的统一事务/锁合同、并发切换阻断、`AlgorithmSqlStore` 原始写路径收口（当前靠 `_GuardedStore` 的**方法名前缀**判定写入，审计已指出不可依赖前缀）。
 2. **停止证据消费未实现**：`process-stop-verified.json` 仍未被 Coordinator 消费；`_submit_stop_proof` 在 `_require_stop_proof=False` 时是 no-op，graceful 路径存在把 no-op 当确认的风险（本轮未改，需按真实确认结果判定）。
 3. **转换 Runner 提前清身份**未整改。
