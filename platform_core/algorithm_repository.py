@@ -163,16 +163,44 @@ class AlgorithmRepository(Protocol):
     ) -> dict[str, int]: ...
 
 
+#: Store method names that mutate algorithm state. Anything reached through the
+#: pass-through adapter with one of these prefixes is treated as a write and must
+#: pass the authority guard, so an undeclared helper cannot silently bypass it.
+_WRITE_NAME_PREFIXES = (
+    "replace_", "create_", "patch_", "delete_", "attach_", "rollback_",
+    "update_", "sync_", "save_", "write_", "set_", "remap_", "repair_",
+)
+
+
 class SqliteAlgorithmRepository:
     """Default provider: the existing SQLite store, delegated unchanged."""
 
     provider_name = PROVIDER_SQLITE
 
-    def __init__(self, json_path: str | Path):
+    def __init__(
+        self,
+        json_path: str | Path,
+        *,
+        admission_path: str | Path | None = None,
+    ):
         self.store = AlgorithmSqlStore(Path(json_path))
         self.project_id = self.store.project_id
         self.db_path = self.store.db_path
         self.json_path = self.store.json_path
+        self.record_path = (
+            Path(admission_path)
+            if admission_path
+            else admission_record_path(Path(json_path))
+        )
+
+    def _guard_write(self) -> None:
+        """Re-check authority on every write, not just when the instance opened.
+
+        A long-lived SQLite instance created before a cutover must stop writing
+        the moment PostgreSQL becomes authoritative (or while a cutover is
+        unresolved), otherwise the factory check only protects new objects.
+        """
+        _refuse_stale_sqlite(Path(self.json_path), self.record_path)
 
     # -- provider metadata -------------------------------------------------
     def capabilities(self) -> frozenset[str]:
@@ -186,7 +214,13 @@ class SqliteAlgorithmRepository:
         # existing behaviour; the adapter is a pass-through, not a rewrite.
         if name.startswith("_"):
             raise AttributeError(name)
-        return getattr(self.store, name)
+        attribute = getattr(self.store, name)
+        if callable(attribute) and name.startswith(_WRITE_NAME_PREFIXES):
+            def guarded(*args: Any, **kwargs: Any) -> Any:
+                self._guard_write()
+                return attribute(*args, **kwargs)
+            return guarded
+        return attribute
 
     # -- contract ----------------------------------------------------------
     def ensure_ready(self) -> None:
@@ -211,20 +245,25 @@ class SqliteAlgorithmRepository:
         return self.store.training_version_refs(task_id)
 
     def replace_all(self, algorithms: Sequence[Mapping[str, Any]]) -> None:
+        self._guard_write()
         self.store.replace_all(algorithms)
 
     def create_algorithm(self, item: Mapping[str, Any]) -> dict:
+        self._guard_write()
         return self.store.create_algorithm(item)
 
     def patch_algorithm(
         self, algorithm_id: str, patch: Mapping[str, Any], *, replace_analyses: bool = False
     ) -> dict:
+        self._guard_write()
         return self.store.patch_algorithm(algorithm_id, patch, replace_analyses=replace_analyses)
 
     def delete_algorithm(self, algorithm_id: str) -> None:
+        self._guard_write()
         self.store.delete_algorithm(algorithm_id)
 
     def attach_version(self, algorithm_id: str, version: Mapping[str, Any]) -> dict:
+        self._guard_write()
         return self.store.attach_version(algorithm_id, version)
 
     def attach_version_if_current(
@@ -234,6 +273,7 @@ class SqliteAlgorithmRepository:
         *,
         expected_current_version_id: str | None,
     ) -> dict:
+        self._guard_write()
         return self.store.attach_version_if_current(
             algorithm_id, version, expected_current_version_id=expected_current_version_id
         )
@@ -241,6 +281,7 @@ class SqliteAlgorithmRepository:
     def patch_version(
         self, algorithm_id: str, version_id: str, patch: Mapping[str, Any], *, now: str
     ) -> dict:
+        self._guard_write()
         return self.store.patch_version(algorithm_id, version_id, patch, now=now)
 
     def rollback_version(
@@ -253,6 +294,7 @@ class SqliteAlgorithmRepository:
         now: str,
         delete_current_version: bool,
     ) -> dict | None:
+        self._guard_write()
         return self.store.rollback_version(
             algorithm_id,
             target_version_id,
@@ -271,6 +313,7 @@ class SqliteAlgorithmRepository:
         operation: Mapping[str, Any],
         now: str,
     ) -> dict:
+        self._guard_write()
         return self.store.delete_version_with_operation(
             algorithm_id,
             version_id,
@@ -282,11 +325,13 @@ class SqliteAlgorithmRepository:
     def update_version_operation(
         self, algorithm_id: str, operation_id: str, patch: Mapping[str, Any]
     ) -> None:
+        self._guard_write()
         self.store.update_version_operation(algorithm_id, operation_id, patch)
 
     def sync_external_algorithms(
         self, incoming: Mapping[str, Mapping[str, Any]], *, provider: str, synced_at: str
     ) -> dict[str, int]:
+        self._guard_write()
         return self.store.sync_external_algorithms(
             incoming, provider=provider, synced_at=synced_at
         )
@@ -294,6 +339,16 @@ class SqliteAlgorithmRepository:
 
 def admission_record_path(json_path: str | Path) -> Path:
     return Path(json_path).parent / ADMISSION_DIRNAME / ADMISSION_FILENAME
+
+
+def admission_transition_path(record_path: str | Path) -> Path:
+    """Marker written before a cutover/rollback changes the authoritative writer.
+
+    It is published *before* PostgreSQL commits the new authority, so a crash in
+    that window leaves "neither side may write" instead of two possible owners.
+    """
+    target = Path(record_path)
+    return target.with_name(target.name + ".transition")
 
 
 def resolve_provider(
@@ -335,7 +390,7 @@ def open_algorithm_repository(
     if selected == PROVIDER_SQLITE:
         if not allow_stale_sqlite:
             _refuse_stale_sqlite(json_path, record_path)
-        return SqliteAlgorithmRepository(json_path)
+        return SqliteAlgorithmRepository(json_path, admission_path=record_path)
 
     # PostgreSQL selection is fail-closed: no DSN and no admission means no
     # provider, never a silent SQLite fallback.
@@ -367,6 +422,15 @@ def open_algorithm_repository(
 
 
 def _refuse_stale_sqlite(json_path: Path, record_path: Path) -> None:
+    if admission_transition_path(record_path).exists():
+        raise AlgorithmAdmissionRequired(
+            "ALGORITHM_CUTOVER_IN_PROGRESS",
+            "an algorithm cutover is unresolved; neither provider may write",
+            detail=(
+                "a transition marker is present next to the admission record; "
+                "inspect it and finish or roll back the cutover before writing"
+            ),
+        )
     record = load_admission_record(record_path)
     if record is None:
         return

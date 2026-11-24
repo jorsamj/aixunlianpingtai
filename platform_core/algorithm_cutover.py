@@ -22,6 +22,7 @@ import json
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -43,6 +44,7 @@ from .algorithm_repository import (
     CONTRACT_VERSION,
     PROVIDER_POSTGRESQL,
     PROVIDER_SQLITE,
+    admission_transition_path,
     load_admission_record,
 )
 from .algorithm_shadow import validate_snapshot
@@ -391,6 +393,37 @@ def _emergency_revoke(connection, project_id: str, admission_id: str, *, reason:
             )
 
 
+@contextmanager
+def cutover_transition(record_path: str | Path, *, project_id: str, kind: str):
+    """Publish a persisted "switch in progress" marker for the whole switch.
+
+    The marker exists from before PostgreSQL commits the new authority until the
+    local admission record is durable, so a crash in that window leaves an
+    explicit, recoverable state in which neither provider accepts writes. It is
+    removed only after the local record has been written.
+    """
+    marker = admission_transition_path(record_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema": "algorithm-cutover-transition/1",
+        "project_id": str(project_id),
+        "kind": str(kind),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "note": (
+            "an unresolved cutover blocks both providers; finish or roll back "
+            "the cutover, then remove this marker"
+        ),
+    }
+    marker.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        yield marker
+    finally:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def write_admission_record(record: Mapping[str, Any], path: str | Path) -> Path:
     """Atomically persist the local admission record used by the provider factory."""
     target = Path(path)
@@ -654,5 +687,6 @@ __all__ = [
     "evaluate_admission",
     "revoke_admission",
     "rollback",
+    "cutover_transition",
     "write_admission_record",
 ]

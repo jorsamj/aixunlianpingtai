@@ -254,21 +254,28 @@ def main(argv=None) -> int:
             previous = None
             if args.report:
                 previous = json.loads(Path(args.report).read_text(encoding="utf-8"))
-            with _connect(_dsn(args.dsn)) as connection:
-                result = admit_cutover(
-                    connection,
-                    db_path=args.db,
-                    project_id=args.project,
-                    expected_generation=int(args.expected_generation),
-                    operator=args.operator,
-                    reason=args.reason,
-                    acknowledge_unported=bool(args.acknowledge_unported),
-                    previous_report=previous,
-                )
-            if not result.get("admitted"):
-                _emit(result)
-                return EXIT_REFUSED
-            path = write_admission_record(result["admission"], _record_path(args))
+            record_path = _record_path(args)
+            # The marker is published before PostgreSQL commits the new
+            # authority, so a crash before the local admission record lands
+            # leaves "neither provider may write" instead of two owners.
+            with cutover_transition(
+                record_path, project_id=args.project, kind="cutover_admit"
+            ):
+                with _connect(_dsn(args.dsn)) as connection:
+                    result = admit_cutover(
+                        connection,
+                        db_path=args.db,
+                        project_id=args.project,
+                        expected_generation=int(args.expected_generation),
+                        operator=args.operator,
+                        reason=args.reason,
+                        acknowledge_unported=bool(args.acknowledge_unported),
+                        previous_report=previous,
+                    )
+                if not result.get("admitted"):
+                    _emit(result)
+                    return EXIT_REFUSED
+                path = write_admission_record(result["admission"], record_path)
             result["admission_path"] = str(path)
             result.pop("report", None)
             _emit(result)

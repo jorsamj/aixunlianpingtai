@@ -151,6 +151,13 @@ class PostgresAlgorithmRepository:
         connection = self._connect()
         try:
             with connection.cursor() as cursor:
+                # The ownership verdict and the write must be one transaction:
+                # a separate ``ensure_ready`` connection let a cutover or
+                # rollback commit a different authority between the check and
+                # the write (TOCTOU). Locking the cutover row FOR UPDATE makes
+                # the switch wait for this write, and this write wait for an
+                # in-flight switch.
+                self._require_write_authority(cursor)
                 yield cursor
             connection.commit()
         except BaseException:
@@ -158,6 +165,49 @@ class PostgresAlgorithmRepository:
             raise
         finally:
             connection.close()
+
+    #: Transition phases during which neither provider may accept writes.
+    _WRITABLE_PHASES = frozenset({"steady", "switched"})
+
+    def _require_write_authority(self, cursor) -> None:
+        """Verify admission and writer generation inside the write transaction."""
+        record = self._admission
+        if not record:
+            raise AlgorithmAdmissionRequired(
+                "ALGORITHM_POSTGRES_WRITE_ADMISSION_REQUIRED",
+                "PostgreSQL writes require an explicit cutover admission",
+                detail="this provider instance has no admission record",
+            )
+        cursor.execute(
+            "SELECT authoritative_provider,admission_id,writer_generation,revoked_at,evidence "
+            "FROM w5_algorithm.cutover_state WHERE project_id=%s FOR UPDATE",
+            (self.project_id,),
+        )
+        row = cursor.fetchone()
+        stale_reason = ""
+        if row is None:
+            stale_reason = "no cutover state for this project"
+        elif str(row["authoritative_provider"]) != PROVIDER_POSTGRESQL:
+            stale_reason = f"authoritative provider is {row['authoritative_provider']}"
+        elif str(row["admission_id"]) != str(record.get("admission_id") or ""):
+            stale_reason = "admission id does not match the database"
+        elif int(row["writer_generation"]) != int(record.get("writer_generation") or 0):
+            stale_reason = "writer generation advanced; re-admit before using PostgreSQL"
+        elif row["revoked_at"] is not None:
+            stale_reason = "admission was revoked"
+        else:
+            evidence = row.get("evidence")
+            phase = ""
+            if isinstance(evidence, Mapping):
+                phase = str(evidence.get("phase") or "").strip()
+            if phase and phase not in self._WRITABLE_PHASES:
+                stale_reason = f"cutover transition is in phase {phase!r}"
+        if stale_reason:
+            raise AlgorithmAdmissionRequired(
+                "ALGORITHM_POSTGRES_ADMISSION_STALE",
+                "PostgreSQL admission is no longer valid",
+                detail=stale_reason,
+            )
 
     # -- schema and admission ---------------------------------------------
     def ensure_ready(self) -> None:

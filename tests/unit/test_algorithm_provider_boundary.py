@@ -25,6 +25,8 @@ from platform_core.algorithm_postgres_store import (
     UNSUPPORTED_OPERATIONS,
 )
 from platform_core.algorithm_repository import (
+    CONTRACT_VERSION,
+    admission_transition_path,
     CORE_OPERATIONS,
     PRESENTATION_OPERATIONS,
     AlgorithmAdmissionRequired,
@@ -308,3 +310,154 @@ def test_schema_migrations_are_monotonic_and_checksummed():
     assert len(migration_checksum(1)) == 64
     first = migration_checksum(1)
     assert re.fullmatch(r"[0-9a-f]{64}", first)
+
+def _admission_record(project_id: str, *, generation: int = 2, admission_id: str = "adm-1") -> dict:
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "admission_id": admission_id,
+        "project_id": project_id,
+        "authoritative_provider": "postgresql",
+        "writer_generation": generation,
+        "admitted_at": "2026-11-24T00:00:00+00:00",
+        "revoked_at": None,
+    }
+
+
+class _FakeCursor:
+    def __init__(self, row):
+        self._row = row
+        self.statements = []
+
+    def execute(self, statement, parameters=None):
+        self.statements.append((statement, parameters))
+
+    def fetchone(self):
+        return self._row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _FakeConnection:
+    def __init__(self, row):
+        self.cursor_obj = _FakeCursor(row)
+        self.committed = False
+
+    def cursor(self, *_args, **_kwargs):
+        return self.cursor_obj
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _postgres_repo(tmp_path: Path, row, *, admission=None):
+    repo = PostgresAlgorithmRepository("postgresql://example/db", "project-a", admission=admission)
+    connection = _FakeConnection(row)
+    repo._connect = lambda: connection  # never touch a real server
+    return repo, connection
+
+
+def test_postgres_write_requires_an_admission_and_locks_the_cutover_row(tmp_path):
+    """A missing admission must fail before any statement of the write lands."""
+    repo, connection = _postgres_repo(
+        tmp_path,
+        {"authoritative_provider": "postgresql", "admission_id": "adm-1",
+         "writer_generation": 2, "revoked_at": None, "evidence": {}},
+        admission=None,
+    )
+
+    with pytest.raises(AlgorithmAdmissionRequired) as excinfo:
+        with repo._write():
+            raise AssertionError("the write body must never run without authority")
+
+    assert excinfo.value.code == "ALGORITHM_POSTGRES_WRITE_ADMISSION_REQUIRED"
+    assert connection.committed is False
+
+
+def test_postgres_write_verifies_admission_inside_the_same_transaction(tmp_path):
+    """The verdict and the write share one transaction (closed TOCTOU window)."""
+    row = {"authoritative_provider": "postgresql", "admission_id": "adm-1",
+           "writer_generation": 2, "revoked_at": None, "evidence": {"phase": "steady"}}
+    repo, connection = _postgres_repo(
+        tmp_path, row, admission=_admission_record("project-a", generation=2)
+    )
+
+    with repo._write() as cursor:
+        cursor.execute("UPDATE w5_algorithm.algorithm SET name='x' WHERE project_id=%s", ("project-a",))
+
+    statements = [statement for statement, _ in connection.cursor_obj.statements]
+    authoritative = [s for s in statements if "cutover_state" in s]
+    assert authoritative, "the write transaction must lock and re-read the cutover state"
+    assert "FOR UPDATE" in authoritative[0]
+    assert connection.committed is True
+    assert statements.index(authoritative[0]) < len(statements) - 1
+
+
+def test_postgres_write_refuses_a_stale_generation_or_an_unresolved_transition(tmp_path):
+    stale_row = {"authoritative_provider": "postgresql", "admission_id": "adm-1",
+                 "writer_generation": 3, "revoked_at": None, "evidence": {"phase": "steady"}}
+    repo, _ = _postgres_repo(
+        tmp_path, stale_row, admission=_admission_record("project-a", generation=2)
+    )
+    with pytest.raises(AlgorithmAdmissionRequired) as excinfo:
+        with repo._write():
+            pass
+    assert excinfo.value.code == "ALGORITHM_POSTGRES_ADMISSION_STALE"
+
+    transition_row = {**stale_row, "writer_generation": 2,
+                      "evidence": {"phase": "writes_blocked"}}
+    repo2, _ = _postgres_repo(
+        tmp_path, transition_row, admission=_admission_record("project-a", generation=2)
+    )
+    with pytest.raises(AlgorithmAdmissionRequired) as excinfo2:
+        with repo2._write():
+            pass
+    assert excinfo2.value.code == "ALGORITHM_POSTGRES_ADMISSION_STALE"
+    assert "writes_blocked" in excinfo2.value.detail
+
+
+def test_long_lived_sqlite_repository_stops_writing_after_cutover(tmp_path):
+    """The guard re-checks authority per write, not only when the instance opens."""
+    project = tmp_path / "project-a"
+    project.mkdir()
+    repository = open_algorithm_repository(project / "algorithms.json")
+    algorithm = repository.create_algorithm({"id": "algo-1", "name": "demo"})
+    assert algorithm["id"] == "algo-1"
+
+    record_path = admission_record_path(project / "algorithms.json")
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps(_admission_record("project-a")), encoding="utf-8")
+
+    with pytest.raises(AlgorithmAdmissionRequired) as excinfo:
+        repository.create_algorithm({"id": "algo-2", "name": "second"})
+    assert excinfo.value.code == "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER"
+
+
+def test_unresolved_cutover_transition_blocks_both_providers(tmp_path):
+    project = tmp_path / "project-a"
+    project.mkdir()
+    json_path = project / "algorithms.json"
+    repository = open_algorithm_repository(json_path)
+    repository.create_algorithm({"id": "algo-1", "name": "demo"})
+
+    marker = admission_transition_path(admission_record_path(json_path))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(AlgorithmAdmissionRequired) as excinfo:
+        repository.create_algorithm({"id": "algo-2", "name": "second"})
+    assert excinfo.value.code == "ALGORITHM_CUTOVER_IN_PROGRESS"
+
+    # A fresh factory open is refused as well, so a restart cannot bypass it.
+    with pytest.raises(AlgorithmAdmissionRequired) as factory_error:
+        open_algorithm_repository(json_path)
+    assert factory_error.value.code == "ALGORITHM_CUTOVER_IN_PROGRESS"
