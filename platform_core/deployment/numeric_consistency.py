@@ -597,8 +597,6 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
                 raise ValueError("BMODEL SHA256 与转换产物不一致，不能出具数值报告")
     import numpy as np
     import onnxruntime as ort
-    import torch
-    from ultralytics import YOLO
 
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     inputs = session.get_inputs()
@@ -615,6 +613,16 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
             reason=str(input_contract.get("reason") or "输入尺寸合同无法安全确定"),
         )
     height, width = input_contract["resolved_input_shape"][2:]
+    # Load the PT model only after the ONNX session and its frozen input
+    # contract are validated: a not-comparable input contract must be decidable
+    # without requiring the torch/ultralytics stack.
+    try:
+        import torch  # noqa: F401
+        from ultralytics import YOLO
+    except ImportError as error:
+        raise ValueError(
+            "PT/ONNX 数值比较需要已配置的 torch/ultralytics 运行时: " + str(error)
+        ) from error
     detector = YOLO(str(source_path))
     pt = detector.model.cpu().eval().float()
     names = getattr(detector, "names", None) or getattr(pt, "names", None)

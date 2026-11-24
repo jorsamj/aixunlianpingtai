@@ -632,7 +632,7 @@ def test_stale_recovery_evidence_withdraws_non_training_capabilities(
     state_dir = tmp_path / "state-cleaning"
     _write_persisted_identity(state_dir)
 
-    executor = _build_for_recovery_test(state_dir, ["cleaning"])
+    executor = _build_for_recovery_test(state_dir, ["deployment-test"])
 
     assert FakeRecoveryCoordinator.instances, "recovery coordinator was not constructed"
     assert FakeRecoveryCoordinator.instances[0].prepare_calls >= 1
@@ -675,11 +675,12 @@ def test_safe_recovery_evidence_keeps_capabilities_and_no_evidence_is_unchanged(
     state_dir = tmp_path / "state-safe"
     _write_persisted_identity(state_dir)
 
-    executor = _build_for_recovery_test(state_dir, ["cleaning"])
+    executor = _build_for_recovery_test(state_dir, ["deployment-test"])
     assert FakeRecoveryCoordinator.instances
     assert executor is not None
     assert executor.enabled is True
-    assert executor.effective_capabilities() == ("cleaning",)
+    # deployment-test is registered by every Agent build without optional deps.
+    assert executor.effective_capabilities() == ("deployment-test",)
     assert executor.last_error() == ""
 
     # Evidence adjudicated successfully but no capability requested: keep the
