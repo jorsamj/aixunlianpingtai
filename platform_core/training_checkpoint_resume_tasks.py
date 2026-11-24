@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -194,6 +195,20 @@ def inspect_training_resume_candidate(context, data_dir: Path) -> dict[str, Any]
     if not snapshot_id or str(job.get("snapshot_id") or "").strip() != snapshot_id:
         return _resume_rejection("snapshot_identity_mismatch")
 
+    # A full resume must prove that the checkpoint class order still matches the
+    # frozen snapshot schema; otherwise labels would be remapped silently.
+    label_schema = snapshot.get("label_schema") or snapshot.get("classes") or []
+    ordered_schema: list[dict[str, Any]] = []
+    if isinstance(label_schema, (list, tuple)):
+        ordered_schema = sorted(
+            (dict(item) for item in label_schema
+             if isinstance(item, Mapping) and item.get("code")),
+            key=lambda item: (int(item.get("class_id", 10**9)), str(item["code"])),
+        )
+    expected_class_names = [str(item["code"]) for item in ordered_schema]
+    if not expected_class_names:
+        return _resume_rejection("class_schema_unavailable")
+
     manifest_path = context.artifacts.artifact_path(context.task.task_id, "work/bundle/manifest.json")
     try:
         verification = base._verify_materialized_dataset_evidence(manifest_path)
@@ -276,6 +291,8 @@ def inspect_training_resume_candidate(context, data_dir: Path) -> dict[str, Any]
         checkpoint_sha,
         "--resume-from-epoch",
         str(completed),
+        "--expected-class-names",
+        json.dumps(expected_class_names, ensure_ascii=False),
         "--epochs",
         str(requested),
         "--imgsz",
@@ -305,6 +322,7 @@ def inspect_training_resume_candidate(context, data_dir: Path) -> dict[str, Any]
         "resume_from_epoch": completed,
         "requested_epochs": requested,
         "checkpoint_path": checkpoint,
+        "expected_class_names": expected_class_names,
         "checkpoint_sha256": checkpoint_sha,
         "checkpoint_size_bytes": checkpoint.stat().st_size,
         "assigned_device": assigned_device,
