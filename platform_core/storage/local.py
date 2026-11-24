@@ -122,6 +122,13 @@ class LocalStorageProvider:
                 solution="请检查对象路径。",
                 context={"source_id": self.source_id},
             )
+        # Windows MAX_PATH: canonical artifact keys can exceed 260 characters
+        # once the project-local storage root is prepended. Use the extended
+        # length form for filesystem operations only; object keys and URLs keep
+        # the normal POSIX form.
+        text = str(resolved)
+        if os.name == "nt" and len(text) >= 240 and not text.startswith("\\\\?\\"):
+            return Path("\\\\?\\" + text)
         return resolved
 
     def health_check(self) -> StorageHealth:

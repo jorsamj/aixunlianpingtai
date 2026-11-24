@@ -1,4 +1,5 @@
 import hashlib
+import os
 import sqlite3
 import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -26,6 +27,14 @@ from platform_core.storage.source_repository import StorageSourceRepository
 def _project_dir(root: Path, project_id: str) -> Path:
     path = root / "projects" / project_id
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _stored_path(root: Path, object_key: str) -> Path:
+    path = _project_dir(root, "p1") / object_key
+    text = str(path)
+    if os.name == "nt" and len(text) >= 240 and not text.startswith("\\\\?\\"):
+        return Path("\\\\?\\" + text)
     return path
 
 
@@ -726,7 +735,6 @@ def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_pa
     service = _service(tmp_path)
 
     result = service.run_auto_upload_once()
-
     assert result["versions"] == 1
     assert result["discovered"] == 2
     assert result["uploaded"] == 2
@@ -735,7 +743,7 @@ def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_pa
     assert {row["target"] for row in rows} == {"original", "rockchip"}
     assert all(row["storage_status"] == "UPLOADED" for row in rows)
     for row in rows:
-        stored = _project_dir(tmp_path, "p1") / row["object_key"]
+        stored = _stored_path(tmp_path, row["object_key"])
         assert stored.is_file()
         expected = model.read_bytes() if row["target"] == "original" else output.read_bytes()
         assert stored.read_bytes() == expected
