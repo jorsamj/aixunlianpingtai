@@ -653,6 +653,79 @@ def expected_stop_proof_digest(
     return hashlib.sha256(canonical_json(proof).encode("utf-8")).hexdigest()
 
 
+def worker_liveness_report(
+    stack: dict, identity: dict, context: dict | None = None,
+) -> str:
+    """Bounded failure evidence without Node/Lease tokens or secrets."""
+    parts: list[str] = []
+    pid = int(identity["pid"])
+    parts.append(
+        f"worker identity: pid={pid} create_time={identity['create_time']!r} "
+        f"command_hash={str(identity['command_hash'])[:16]}..."
+    )
+    try:
+        process = psutil.Process(pid)
+        parts.append(
+            f"psutil: create_time={process.create_time()!r} "
+            f"status={process.status()!r} ppid={process.ppid()}"
+        )
+        try:
+            cmdline = " ".join(str(item) for item in process.cmdline()[:8])
+            parts.append(f"psutil cmdline[:8]: {cmdline[:300]}")
+        except (psutil.AccessDenied, psutil.ZombieProcess, OSError) as error:
+            parts.append(f"psutil cmdline: {type(error).__name__}: {error}")
+    except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied) as error:
+        parts.append(f"psutil: {type(error).__name__}: {error}")
+    try:
+        data_dir = Path(getattr(stack["repository"], "path")).parent.parent
+    except Exception as error:
+        data_dir = None
+        parts.append(f"data dir unavailable: {type(error).__name__}: {error}")
+    if data_dir is not None:
+        job_dir = data_dir / "projects" / "project-real-agent" / "jobs" / str(
+            identity.get("task_id") or "restart-original-task"
+        )
+        worker_log = job_dir / "train.log"
+        try:
+            if worker_log.is_file():
+                tail = worker_log.read_text(encoding="utf-8", errors="replace")[-2500:]
+                parts.append(f"worker train.log tail:\n{tail}")
+            else:
+                parts.append(f"worker train.log: missing ({worker_log})")
+        except OSError as error:
+            parts.append(f"worker train.log unreadable: {type(error).__name__}: {error}")
+        job_file = job_dir / "job.json"
+        try:
+            job = json.loads(job_file.read_text(encoding="utf-8"))
+            selected = {
+                key: job.get(key) for key in (
+                    "id", "task_id", "status", "progress_percent", "startup_stage",
+                    "current_item", "error", "recovery_state", "finished_at",
+                    "training_outcome", "runtime_resources",
+                ) if job.get(key) is not None
+            }
+            parts.append(
+                "job selected fields: "
+                + json.dumps(selected, ensure_ascii=False)[:1200]
+            )
+        except (OSError, ValueError) as error:
+            parts.append(f"job.json unavailable: {type(error).__name__}: {error}")
+    if context:
+        parts.append("context diagnostics:\n" + diagnostics(context))
+    return "\n".join(parts)
+
+
+def assert_worker_alive(
+    stack: dict, identity: dict, context: dict, message: str,
+) -> None:
+    if process_alive(identity):
+        return
+    raise AssertionError(
+        f"{message}\n--- worker liveness diagnostics ---\n"
+        f"{worker_liveness_report(stack, identity, context)}"
+    )
+
+
 def process_alive(identity: dict) -> bool:
     try:
         process = psutil.Process(int(identity["pid"]))
@@ -806,7 +879,10 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
         worker_identity = wait_worker_started(
             stack, staged, state_dir, context, task_id=RESTART_ORIGINAL_TASK,
         )
-        assert process_alive(worker_identity)
+        assert_worker_alive(
+            stack, worker_identity, context,
+            "training worker must stay alive after the Agent spawned it",
+        )
         assert task_row(stack["repository"], RESTART_ORIGINAL_TASK)["status"] == "RUNNING"
         held_status = central_status(stack, RESTART_ORIGINAL_TASK)
         assert held_status["hold_state"] == "HELD"
@@ -822,8 +898,9 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
         if os.name == "nt":
             # An abruptly stopped Windows Agent cannot prove descendant cleanup;
             # neither the worker nor its durable identity may be discarded.
-            assert process_alive(worker_identity), (
-                "forced Windows Agent stop must not kill the training worker"
+            assert_worker_alive(
+                stack, worker_identity, context,
+                "forced Windows Agent stop must not kill the training worker",
             )
             assert local_identity(state_dir, RESTART_ORIGINAL_TASK, 1) is not None
             assert [
@@ -885,8 +962,9 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
                 ),
                 context=context,
             )
-            assert process_alive(worker_identity), (
-                "fail-closed Windows restart must not kill an unproven worker"
+            assert_worker_alive(
+                stack, worker_identity, context,
+                "fail-closed Windows restart must not kill an unproven worker",
             )
             assert local_identity(state_dir, RESTART_ORIGINAL_TASK, 1) is not None, (
                 "fail-closed Windows restart must retain the persisted process identity"
