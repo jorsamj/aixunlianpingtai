@@ -67,6 +67,9 @@ on:
       - 'tests/integration/test_agent_dual_slot_http_e2e.py'
       - 'tests/integration/test_formal_training_runner_http_e2e.py'
       - 'tests/integration/test_agent_sigkill_recovery.py'
+      - 'tests/integration/test_real_node_agent_sigkill_recovery.py'
+      - 'tests/integration/test_real_node_agent_restart_fail_closed.py'
+      - 'tests/integration/_real_agent_crash_recovery_support.py'
       - 'tests/unit/task_runtime/test_process_control.py'
       - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
@@ -175,6 +178,9 @@ on:
       - 'tests/integration/test_agent_dual_slot_http_e2e.py'
       - 'tests/integration/test_formal_training_runner_http_e2e.py'
       - 'tests/integration/test_agent_sigkill_recovery.py'
+      - 'tests/integration/test_real_node_agent_sigkill_recovery.py'
+      - 'tests/integration/test_real_node_agent_restart_fail_closed.py'
+      - 'tests/integration/_real_agent_crash_recovery_support.py'
       - 'tests/unit/task_runtime/test_process_control.py'
       - 'platform_core/node_agent_model_install_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
@@ -391,6 +397,7 @@ jobs:
           tests/integration/test_agent_dual_slot_http_e2e.py
           tests/integration/test_formal_training_runner_http_e2e.py
           tests/integration/test_agent_sigkill_recovery.py
+          tests/integration/test_real_node_agent_restart_fail_closed.py
           tests/unit/task_runtime/test_process_control.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
@@ -406,6 +413,12 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_agent_launch_sigkill.py
+      - name: Real Node Agent OS SIGKILL recovery E2E (Linux, no GPU)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: >-
+          python -m pytest -q --maxfail=1 --confcutdir=tests/integration
+          tests/integration/test_real_node_agent_sigkill_recovery.py
 
       - name: P0-01C-2 portable cgroup PoC contracts (NO kernel stop proof)
         run: >-
