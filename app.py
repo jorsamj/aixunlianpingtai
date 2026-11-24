@@ -173,7 +173,7 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
-from platform_core.training_tasks import freeze_training_inputs, resolve_training_selection
+from platform_core.training_tasks import TrainingAdmissionError, freeze_training_inputs, resolve_training_selection
 from platform_core.training_label_tasks import (
     inherited_training_label_preview,
     project_training_rows,
@@ -9053,6 +9053,13 @@ def _enqueue_explicit_training_locked(
                 detail={"code": error.code, "message": str(error)},
             ) from error
         except ValueError as error:
+            if isinstance(error, TrainingAdmissionError):
+                # Keep the legacy 409 plus Chinese message; expose the stable
+                # admission code through the existing coded error shape.
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": error.code, "message": str(error)},
+                ) from error
             raise HTTPException(status_code=409, detail=str(error)) from error
         if compatibility is not None and compatibility.issues:
             page = compatibility_page(compatibility, limit=100)

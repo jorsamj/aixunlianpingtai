@@ -367,11 +367,19 @@ def _pool_filters(repository, filters):
         pool=NegativePool(repository)
         revision=pool.revision()
         category_ids = pool._ids(categories)
+        algorithm_id = str(body.get('algorithm_asset_id') or '').strip()
+        algorithm_available, algorithm_clause, algorithm_params = pool.algorithm_scope_sql(algorithm_id)
         with closing(repository._connect()) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'negative_pool_%'")}
         body['__negative_pool_sql'] = {
             'available': 'negative_pool_members' in tables and (not category_ids or 'negative_pool_links' in tables),
             'category_ids': category_ids,
+            # Selecting negatives for a concrete training target must use that
+            # algorithm's own pool; project-wide membership alone is not enough.
+            'algorithm_id': algorithm_id,
+            'algorithm_available': algorithm_available,
+            'algorithm_clause': algorithm_clause,
+            'algorithm_params': algorithm_params,
         }
         if pool.revision()!=revision:
             raise ValueError('负样本池已更新，请重试')
@@ -394,6 +402,12 @@ def _picker_filter_sql(filters=None):
             if pool['category_ids']:
                 clauses.append('EXISTS (SELECT 1 FROM negative_pool_links nl WHERE nl.material_id=m.id AND nl.category_id IN (SELECT value FROM json_each(?)))')
                 params.append(json.dumps(pool['category_ids']))
+            if pool.get('algorithm_id'):
+                if not pool.get('algorithm_available'):
+                    clauses.append('0')
+                else:
+                    clauses.append(pool['algorithm_clause'])
+                    params.extend(pool['algorithm_params'])
     if f.get('negative_pool_image_ids') is not None:
         clauses.append('m.id IN (SELECT value FROM json_each(?))')
         params.append(json.dumps(f['negative_pool_image_ids']))
@@ -2277,7 +2291,11 @@ def training_material_picker_router(
                     'negative_pool_only':True, 'sample_role':'confirmed_negative',
                 })
             elif negatives:
-                filters = _pool_filters(repository, {'negative_pool_only': True})
+                # Explicit negatives must belong to the target algorithm's pool,
+                # not merely the project-wide pool. The same shared predicate is
+                # used by the filtered picker pages.
+                filters = _pool_filters(repository, {'negative_pool_only': True,
+                    'algorithm_asset_id': str(payload['algorithm_asset_id'])})
                 conditions, params = _picker_filter_sql(filters)
                 with closing(repository._connect()) as db:
                     found = db.execute(
@@ -2285,7 +2303,7 @@ def training_material_picker_router(
                         + ' AND '.join(conditions), [json.dumps(negatives), *params]
                     ).fetchall()
                 if len(found) != len(negatives):
-                    raise ValueError('选中的负样本已不属于项目公共池，请重新选择')
+                    raise ValueError('选中的负样本不属于项目公共池或目标算法负样本池，请重新选择')
             if positive and not reference:
                 if len(repository.get_many(positive)) != len(positive):
                     raise ValueError('正样本已变化，请重新选择')

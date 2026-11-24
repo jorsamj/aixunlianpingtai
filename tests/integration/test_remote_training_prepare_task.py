@@ -1109,6 +1109,10 @@ def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_pa
     category=pool.category(name='reflections')['id']
     pool.members(['image-1','image-2'],category_ids=[category])
     assert pool.candidate_ids(algorithm_id='algorithm-fire')==[]
+    # Project-level membership alone no longer satisfies a target-algorithm
+    # negative filter; the legal flow must also associate the algorithm.
+    pool.members(['image-1','image-2'], algorithm_id='algorithm-fire')
+    assert pool.candidate_ids(algorithm_id='algorithm-fire')==['image-1','image-2']
     source=freeze_selection(data_dir,selection_context(data_dir,pid,payload),
                             [i for i in payload['train_image_ids'] if i != 'image-2'])
     app=FastAPI()

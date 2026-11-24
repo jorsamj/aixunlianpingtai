@@ -148,6 +148,26 @@ class NegativePool:
                 values.append(str(algorithm_id))
             return [r[0] for r in db.execute('SELECT m.id FROM negative_pool_members n JOIN materials m ON m.id=n.material_id WHERE '+_LIVE+clause+' ORDER BY m.id',values)]
 
+    def algorithm_scope_sql(self, algorithm_id, *, alias='m'):
+        """Read-only SQL predicate for algorithm-tier negative pool membership.
+
+        The picker/selection paths reuse this single ownership rule instead of
+        hand-writing a second algorithm-membership query. An absent member table
+        means no material was ever associated with any algorithm; callers treat
+        that as an empty algorithm pool rather than an error.
+        """
+        value = str(algorithm_id or '').strip()
+        if not value:
+            return True, '', []
+        alias = str(alias or 'm')
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', alias):
+            raise ValueError('invalid SQL alias')
+        with closing(self.materials._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_algorithm_members'").fetchone():
+                return False, '', []
+        return True, ('EXISTS (SELECT 1 FROM negative_pool_algorithm_members am '
+                      f'WHERE am.material_id={alias}.id AND am.algorithm_id=?)'), [value]
+
     def categories(self, query=''):
         with closing(self.materials._connect()) as db:
             if not self._exists(db):

@@ -53,6 +53,7 @@ from .training_splits import (
     exclude_reserved_test_components,
 )
 from .training_tasks import (
+    TrainingAdmissionError,
     _indexed_content_identity_ready,
     _label_schema,
     _selected_project_images,
@@ -83,6 +84,18 @@ class RemoteTrainingPreparationError(RuntimeError):
         self.code = str(code)
         self.target_status = target_status
         super().__init__(str(message))
+
+
+def _freeze_training_inputs(project, split, **kwargs):
+    """Keep typed training admission codes on the existing failure path."""
+    try:
+        return freeze_training_inputs(project, split, **kwargs)
+    except TrainingAdmissionError as error:
+        raise RemoteTrainingPreparationError(
+            error.code,
+            str(error),
+            target_status=TaskStatus.FAILED,
+        ) from error
 
 
 def _sha256(path: Path) -> str:
@@ -706,7 +719,7 @@ class TrainingPrepareHandler:
                     target_status=TaskStatus.FAILED,
                 )
             projected = project_training_rows(selection.effective_images, label_contract)
-            frozen = freeze_training_inputs(
+            frozen = _freeze_training_inputs(
                 project,
                 split,
                 seed=int(payload.get("seed") or 0),
@@ -1072,7 +1085,7 @@ class TrainingPrepareHandler:
                 selection = resolve_training_selection(project, split_request, label_contract=contract)
                 projected = (project_training_rows(selection.effective_images, contract)
                     if isinstance(contract, Mapping) and contract else None)
-                frozen = freeze_training_inputs(
+                frozen = _freeze_training_inputs(
                     project, split_request, seed=seed,
                     selection_resolution=selection, effective_images=projected,
                     supplement_candidate_set=payload.get("supplement_candidate_set"),

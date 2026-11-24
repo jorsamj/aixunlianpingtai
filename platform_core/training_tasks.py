@@ -78,6 +78,20 @@ _SUCCESSFUL_TRAINING_OUTCOMES = {
 }
 
 
+class TrainingAdmissionError(ValueError):
+    """A training admission refusal with a stable machine-readable code.
+
+    The original Chinese message stays the exception text so existing callers
+    and assertions keep working; ``code`` is consumed by remote preparation
+    evidence and the synchronous create API. Only the two first/negative-only
+    admission rules raise this type.
+    """
+
+    def __init__(self, code: str, message: str):
+        self.code = str(code)
+        super().__init__(str(message))
+
+
 def _request_external_publish_after_training(**kwargs) -> bool:
     """Wake the existing external publisher without widening training-core imports."""
     from .external_publish_request import request_external_auto_publish_if_enabled
@@ -1390,9 +1404,15 @@ def _training_split_quality(
         and role_box_counts["train"] <= 0
     )
     if negative_only_iteration and _requested_new_training_labels(label_contract):
-        raise ValueError("纯负样本继续训练只能使用已有模型继承的标签，不允许在没有正样本时新增目标类别")
+        raise TrainingAdmissionError(
+            "TRAINING_NEGATIVE_ONLY_NEW_LABEL_FORBIDDEN",
+            "纯负样本继续训练只能使用已有模型继承的标签，不允许在没有正样本时新增目标类别",
+        )
     if role_box_counts["train"] <= 0 and not negative_only_iteration:
-        raise ValueError("训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型")
+        raise TrainingAdmissionError(
+            "TRAINING_FIRST_TRAINING_REQUIRES_POSITIVE",
+            "训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型",
+        )
     acknowledged_scope = bool((label_contract or {}).get("task_negative_confirmations"))
     if role_box_counts["validation"] <= 0 and not (negative_only_iteration or acknowledged_scope):
         raise ValueError("验证集没有任何正样本标注框，无法得到有意义的检测指标；请增加正样本或调整划分")
