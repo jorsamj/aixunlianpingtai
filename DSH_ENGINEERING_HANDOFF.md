@@ -315,3 +315,20 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 3. N2 剩余候选：LIKE 搜索计划优化、冷统计覆盖索引（需评估写放大）。
 4. N5 剩余：`train_worker.py`/`remote_train_server.py` 的 job.json 写入统一锁（当前不在本批允许范围）。
 5. M12/W14 其余规模化整改与 M8/W13-14 剩余迁移。
+
+### 9.13 N1 收尾状态（第三轮末，2026-11-24 17:20 +08）
+
+- 候选代码 SHA `6032874814f6bcb821d0a0add23f7a3dc08095f7` 的 Actions：25 completed / 1 failure
+  （Node Agent Executor；Ubuntu + Windows contract 均失败，api success）。失败用例：
+  `test_real_agent_restart_is_fail_closed_without_stop_proof` 与 Windows 双槽同崩 fail-closed。
+- 现场证据：worker 进程已消失；中央 task 仍 `RUNNING / stage=REMOTE_TRAINING_STARTING_WORKER`、
+  `process_pid` 已登记；本地 `process-identity.json`/`process-launch-intent.json` 缺失；
+  中央 Hold 仍 HELD；Agent 存活且 executor 无 active_tasks。指向“launch 后注册身份成功、
+  但 worker 立刻退出或被 runner 清理，测试在 runner finalize 之前的窗口断言”的竞态。
+- 已推送 `50d15711`（仅测试基础设施）：失败诊断增加 execution `runtime.log` 尾部及
+  `execution.json`/`workspace-cleanup.json` 选字段，下一次 CI 将给出 worker 真实退出原因；
+  该提交到达后需再按准确 SHA 查询一次并根因修复。未删除/放宽任何存活与 fail-closed 断言。
+- 状态标签保持：`REAL_GPU_UAT_NOT_VERIFIED` / `REAL_HARDWARE_INFERENCE_NOT_VERIFIED` /
+  `PRODUCTION_DUAL_SLOT_DISABLED` / `A800_PREFLIGHT_REQUIRED` /
+  `A800_PRODUCTION_UPGRADE_NOT_EXECUTED` / `OFFLINE_INSTALL_NOT_VERIFIED` /
+  `CANDIDATE_CI_PENDING`。
