@@ -25,6 +25,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -40,7 +41,11 @@ import uvicorn
 from fastapi import FastAPI
 
 from platform_core.agent_execution import AgentExecutionService, agent_executor_router
-from platform_core.node_agent_executor_runtime import AgentExecutionWorkdir, NodeExecutorClient
+from platform_core.node_agent_executor_runtime import (
+    AgentExecutionWorkdir,
+    NodeExecutorClient,
+    NodeExecutorHTTPError,
+)
 from platform_core.service_nodes import ServiceNodeRepository, service_node_router
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
 
@@ -677,10 +682,27 @@ def worker_liveness_report(
     except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied) as error:
         parts.append(f"psutil: {type(error).__name__}: {error}")
     try:
-        data_dir = Path(getattr(stack["repository"], "path")).parent.parent
+        # start_central() stores tasks.sqlite3 directly in the test data dir.
+        data_dir = Path(getattr(stack["repository"], "path")).parent
     except Exception as error:
         data_dir = None
         parts.append(f"data dir unavailable: {type(error).__name__}: {error}")
+    try:
+        task = stack["repository"].get(
+            str(identity.get("task_id") or "restart-original-task"))
+        if task is not None:
+            parts.append(
+                "central task: "
+                + json.dumps({
+                    "status": task.status.value,
+                    "attempt": int(task.attempt),
+                    "stage": task.stage,
+                    "error": str(task.error or "")[:800],
+                    "process_pid": task.process_pid,
+                }, ensure_ascii=False)
+            )
+    except Exception as error:
+        parts.append(f"central task unavailable: {type(error).__name__}: {error}")
     if data_dir is not None:
         job_dir = data_dir / "projects" / "project-real-agent" / "jobs" / str(
             identity.get("task_id") or "restart-original-task"
@@ -788,6 +810,9 @@ def require_linux_posix() -> None:
 
 RESTART_ORIGINAL_TASK = "restart-original-task"
 RESTART_CANDIDATE_TASK = "restart-candidate-task"
+DUAL_SLOT_TASK_A = "dual-crash-task-a"
+DUAL_SLOT_TASK_B = "dual-crash-task-b"
+DUAL_SLOT_TASK_C = "dual-crash-task-c"
 JOB_OBJECT_ERROR = "Job Object descendant stop proof"
 INTENT_ERROR = "PERSISTED_DUAL_SLOT_INTENT_REQUIRES_RECONCILIATION"
 _TERMINAL_STATUSES = frozenset({
@@ -1015,15 +1040,438 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
         stop_central(stack)
 
 
+def _recovery_client(stack: dict) -> NodeExecutorClient:
+    return NodeExecutorClient(stack["base_url"], NODE_ID, stack["token"])
+
+
+def _identity_payload(identity: dict) -> dict:
+    return {
+        "pid": int(identity["pid"]),
+        "create_time": float(identity["create_time"]),
+        "command_hash": str(identity["command_hash"]),
+    }
+
+
+def _identity_sha256(identity: dict) -> str:
+    return hashlib.sha256(canonical_json(_identity_payload(identity)).encode("utf-8")).hexdigest()
+
+
+def _live_gpu_holders(repository: TaskRepository, gpu_uuid: str) -> list[str]:
+    with repository._connect() as database:
+        return [
+            str(row[0]) for row in database.execute(
+                "SELECT task_id FROM execution_resource_holds "
+                "WHERE gpu_uuid=? AND state<>'RELEASED' ORDER BY task_id",
+                (str(gpu_uuid),),
+            )
+        ]
+
+
+def _start_dual_slot_pair(tmp_path: Path, stack: dict, storage: BundleStorage, context: dict):
+    """Create/assign A on GPU-A and B on GPU-B, then start the real dual-slot Agent."""
+    state_dir = Path(context["state_dir"])
+    data_dir = Path(context["data_dir"])
+    staged = context["staged"]
+    create_training_task(stack, tmp_path, storage, task_id=DUAL_SLOT_TASK_A, gpu_uuid=GPU_A)
+    create_training_task(stack, tmp_path, storage, task_id=DUAL_SLOT_TASK_B, gpu_uuid=GPU_B)
+    assign_next(stack)
+    assign_next(stack)
+    agent = launch_agent(
+        staged, stack, state_dir=state_dir, data_dir=data_dir,
+        log_path=tmp_path / "agent-first.log",
+    )
+    context["agent"] = agent
+    identities: dict[str, dict] = {}
+    for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+        identities[task_id] = wait_worker_started(
+            stack, staged, state_dir, context, task_id=task_id,
+        )
+    return agent, identities
+
+
+def _assert_both_dual_slot_holds_held(stack: dict, identities: dict) -> dict[str, dict]:
+    holds: dict[str, dict] = {}
+    for task_id, gpu_uuid in ((DUAL_SLOT_TASK_A, GPU_A), (DUAL_SLOT_TASK_B, GPU_B)):
+        hold = hold_row(stack["repository"], task_id)
+        assert hold is not None, f"{task_id} has no dual-slot resource Hold"
+        assert hold["state"] == "HELD"
+        assert int(hold["execution_attempt"]) == 1
+        assert str(hold["gpu_uuid"]) == gpu_uuid
+        assert hold["proof_type"] is None
+        assert hold["proof_sha256"] is None
+        status = central_status(stack, task_id)
+        assert status["status"] == "RUNNING"
+        assert status["hold_state"] == "HELD"
+        assert status["execution_attempt"] == 1
+        assert status["proof_type"] is None
+        assert status["proof_sha256"] is None
+        assert status["process_identity_sha256"] == _identity_sha256(identities[task_id])
+        holds[task_id] = hold
+    return holds
+
+
+def _assert_cross_task_evidence_cannot_release(stack: dict, holds: dict, identities: dict) -> None:
+    """Sibling stop evidence must never release the other task's Hold/GPU."""
+    client = _recovery_client(stack)
+
+    def recover(victim: str, donor: str, *, gpu_uuid: str, identity: dict):
+        return client.recover_execution(
+            victim,
+            assignment_generation=int(holds[victim]["assignment_generation"]),
+            execution_generation=int(holds[victim]["execution_attempt"]),
+            gpu_uuid=str(gpu_uuid),
+            process_identity=_identity_payload(identity),
+        )
+
+    # Donor's GPU UUID with the victim's own identity.
+    for victim, donor in (
+        (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B),
+        (DUAL_SLOT_TASK_B, DUAL_SLOT_TASK_A),
+    ):
+        with pytest.raises(NodeExecutorHTTPError) as gpu_error:
+            recover(victim, donor, gpu_uuid=str(holds[donor]["gpu_uuid"]),
+                    identity=identities[victim])
+        assert gpu_error.value.status_code == 409
+        assert gpu_error.value.code == "STOP_PROOF_IDENTITY_MISMATCH"
+    # Victim's correct GPU/assignment, but the sibling's process identity.
+    for victim, donor in (
+        (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B),
+        (DUAL_SLOT_TASK_B, DUAL_SLOT_TASK_A),
+    ):
+        with pytest.raises(NodeExecutorHTTPError) as identity_error:
+            recover(victim, donor, gpu_uuid=str(holds[victim]["gpu_uuid"]),
+                    identity=identities[donor])
+        assert identity_error.value.status_code == 409
+        assert identity_error.value.code == "STOP_PROOF_IDENTITY_MISMATCH"
+    # Neither rejection may release a Hold, record a proof or create a terminal.
+    for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+        hold = hold_row(stack["repository"], task_id)
+        assert hold["state"] == "HELD"
+        assert hold["proof_type"] is None
+        assert hold["proof_sha256"] is None
+        status = central_status(stack, task_id)
+        assert status["status"] == "RUNNING"
+        assert status["hold_state"] == "HELD"
+        assert status["proof_type"] is None
+        assert status["proof_sha256"] is None
+
+
+def run_dual_slot_simultaneous_agent_sigkill_recovery(tmp_path: Path) -> None:
+    """Two concurrent dual-slot executions survive one Agent SIGKILL.
+
+    The production chain under test: real central HTTP + real ``node_agent.py``
+    dual-slot loop + two real child workers.  SIGKILL only the Agent; a new
+    Agent process recovers both original identities separately.  Proof: neither
+    sibling's evidence can release the other task/GPU, the still-HELD GPU is
+    never reused, and each Hold/attempt/GPU/stop-proof digest matches its own
+    original local ProcessIdentity.
+    """
+    unit_fixtures()
+    tmp_path = Path(tmp_path)
+    state_dir = tmp_path / "agent-state"
+    data_dir = tmp_path / "agent-data"
+    staged = write_staged_runtime(tmp_path / "runtime", sleep_seconds=900.0)
+    stack = start_central(tmp_path)
+    storage = BundleStorage()
+    agents: list[dict] = []
+    identities: dict[str, dict] = {}
+    context: dict = {
+        "state_dir": state_dir, "data_dir": data_dir, "staged": staged,
+        "repository": stack["repository"],
+    }
+    try:
+        first, identities = _start_dual_slot_pair(tmp_path, stack, storage, context)
+        agents.append(first)
+        assert int(identities[DUAL_SLOT_TASK_A]["pid"]) != int(
+            identities[DUAL_SLOT_TASK_B]["pid"])
+        holds = _assert_both_dual_slot_holds_held(stack, identities)
+        assert _live_gpu_holders(stack["repository"], GPU_A) == [DUAL_SLOT_TASK_A]
+        assert _live_gpu_holders(stack["repository"], GPU_B) == [DUAL_SLOT_TASK_B]
+
+        # --- simultaneous external Agent death: SIGKILL only the Agent --------
+        first["process"].send_signal(signal.SIGKILL)
+        assert first["process"].wait(timeout=20) == -signal.SIGKILL
+        for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+            assert_worker_alive(
+                stack, identities[task_id], context,
+                f"Agent SIGKILL must not stop the {task_id} worker",
+            )
+        # The central truth is frozen: both Holds still HELD, no terminal/proof.
+        for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+            status = central_status(stack, task_id)
+            assert status["status"] == "RUNNING"
+            assert status["hold_state"] == "HELD"
+            assert status["proof_type"] is None
+            assert task_row(stack["repository"], task_id)["process_pid"] == int(
+                identities[task_id]["pid"])
+
+        # Sibling evidence cannot release the other task/GPU.
+        _assert_cross_task_evidence_cannot_release(stack, holds, identities)
+
+        # While B has not proven its process stop, GPU-B must not be reusable.
+        heartbeat_with_gpus(stack)
+        create_training_task(
+            stack, tmp_path, storage, task_id=DUAL_SLOT_TASK_C, gpu_uuid=GPU_B,
+        )
+        assert stack["service"].allocator.assign_next() is None, (
+            "GPU-B was reused while B's stop proof was still missing"
+        )
+        assert task_row(stack["repository"], DUAL_SLOT_TASK_C)["status"] == "QUEUED"
+        assert hold_row(stack["repository"], DUAL_SLOT_TASK_C) is None
+        assert _live_gpu_holders(stack["repository"], GPU_B) == [DUAL_SLOT_TASK_B]
+
+        # --- new real Agent process on the same state directory --------------
+        second = launch_agent(
+            staged, stack, state_dir=state_dir, data_dir=data_dir,
+            log_path=tmp_path / "agent-second.log",
+            # Slow heartbeat keeps the harness GPU snapshot authoritative for
+            # the post-recovery admission check below.
+            interval=30.0,
+        )
+        agents.append(second)
+        context["agent"] = second
+
+        expectations = {
+            task_id: expected_stop_proof_digest(
+                node_id=NODE_ID,
+                task_id=task_id,
+                assignment_generation=int(holds[task_id]["assignment_generation"]),
+                execution_generation=int(holds[task_id]["execution_attempt"]),
+                gpu_uuid=str(holds[task_id]["gpu_uuid"]),
+                identity=identities[task_id],
+            )
+            for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B)
+        }
+        assert expectations[DUAL_SLOT_TASK_A] != expectations[DUAL_SLOT_TASK_B]
+
+        for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+            assert wait_process_gone(identities[task_id], timeout=60), (
+                f"restarted Agent did not stop the original {task_id} worker"
+            )
+
+            def recovered(task_id=task_id):
+                status = central_status(stack, task_id)
+                if (status["status"] == "FAILED"
+                        and status["hold_state"] == "RELEASED"
+                        and status["proof_type"] == "PROCESS_STOP_VERIFIED"
+                        and status["proof_sha256"] == expectations[task_id]):
+                    return status
+                return None
+
+            settled = wait_for(
+                recovered, timeout=90,
+                message=f"central did not record the recovered {task_id} stop proof",
+                context=context,
+            )
+            hold = hold_row(stack["repository"], task_id)
+            assert hold["state"] == "RELEASED"
+            assert hold["proof_type"] == "PROCESS_STOP_VERIFIED"
+            assert hold["proof_sha256"] == expectations[task_id]
+            assert int(hold["execution_attempt"]) == 1
+            assert str(hold["gpu_uuid"]) == (
+                GPU_A if task_id == DUAL_SLOT_TASK_A else GPU_B)
+            assert int(hold["assignment_generation"]) == int(
+                holds[task_id]["assignment_generation"])
+            task = task_row(stack["repository"], task_id)
+            assert task["status"] == "FAILED"
+            assert task["attempt"] == 1
+            assert task["process_pid"] == int(identities[task_id]["pid"])
+            assert settled["hold_execution_attempt"] == 1
+            assert settled["hold_gpu_uuid"] == hold["gpu_uuid"]
+            assert settled["hold_assignment_generation"] == int(
+                holds[task_id]["assignment_generation"])
+            assert settled["process_identity_sha256"] == _identity_sha256(
+                identities[task_id])
+            assert_no_duplicate_execution(stack["repository"], task_id)
+            wait_for(
+                lambda task_id=task_id: local_identity(state_dir, task_id, 1) is None,
+                timeout=30,
+                message=f"recovered {task_id} local ProcessIdentity was not cleared",
+                context=context,
+            )
+            assert [
+                record for record in intent_records(state_dir)
+                if record.get("task_id") == task_id
+            ] == [], f"recovered {task_id} dual-slot intent was not cleared"
+
+        # Each proof is bound to its own task/GPU/identity.
+        assert expectations[DUAL_SLOT_TASK_A] != expected_stop_proof_digest(
+            node_id=NODE_ID, task_id=DUAL_SLOT_TASK_B,
+            assignment_generation=int(holds[DUAL_SLOT_TASK_B]["assignment_generation"]),
+            execution_generation=1,
+            gpu_uuid=GPU_B, identity=identities[DUAL_SLOT_TASK_A],
+        )
+
+        # GPU-B becomes admissible only after B's verified release.
+        heartbeat_with_gpus(stack)
+        assignment = assign_next(stack)
+        assert assignment["task_id"] == DUAL_SLOT_TASK_C
+        assert assignment["resolved_execution_config"]["selected_gpu"]["uuid"] == GPU_B
+
+        def third_running():
+            status = central_status(stack, DUAL_SLOT_TASK_C)
+            hold = hold_row(stack["repository"], DUAL_SLOT_TASK_C)
+            if (status["status"] == "RUNNING" and hold is not None
+                    and hold["state"] == "HELD"):
+                return status
+            return None
+
+        third = wait_for(
+            third_running, timeout=120,
+            message="recovered Agent did not admit the GPU-B task after release",
+            context=context,
+        )
+        assert third["hold_gpu_uuid"] == GPU_B
+        assert _live_gpu_holders(stack["repository"], GPU_B) == [DUAL_SLOT_TASK_C]
+    finally:
+        for agent in agents:
+            stop_agent(agent)
+        for identity in identities.values():
+            kill_process_identity(identity)
+        try:
+            for record in local_workdirs(state_dir).list_process_identities():
+                kill_process_identity(record)
+        except Exception:
+            pass
+        storage.stop()
+        stop_central(stack)
+
+
+def run_dual_slot_simultaneous_agent_crash_fail_closed(tmp_path: Path) -> None:
+    """Windows contract: forced Agent termination with two live workers.
+
+    Without Job Object descendant stop proof the new Agent must fail closed:
+    neither Hold may be released, no worker/identity may be discarded, no GPU
+    may be reused and the candidate task must never be claimed.
+    """
+    unit_fixtures()
+    tmp_path = Path(tmp_path)
+    state_dir = tmp_path / "agent-state"
+    data_dir = tmp_path / "agent-data"
+    staged = write_staged_runtime(tmp_path / "runtime", sleep_seconds=900.0)
+    stack = start_central(tmp_path)
+    storage = BundleStorage()
+    agents: list[dict] = []
+    identities: dict[str, dict] = {}
+    context: dict = {
+        "state_dir": state_dir, "data_dir": data_dir, "staged": staged,
+        "repository": stack["repository"],
+    }
+    try:
+        first, identities = _start_dual_slot_pair(tmp_path, stack, storage, context)
+        agents.append(first)
+        holds = _assert_both_dual_slot_holds_held(stack, identities)
+
+        # Forced equivalent of an OS process kill on Windows.
+        first["process"].terminate()
+        first["process"].wait(timeout=60)
+        context["agent"] = None
+        for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+            assert_worker_alive(
+                stack, identities[task_id], context,
+                f"forced Agent termination must not stop the {task_id} worker",
+            )
+            assert local_identity(state_dir, task_id, 1) is not None
+            assert [
+                record for record in intent_records(state_dir)
+                if record.get("task_id") == task_id
+            ], f"{task_id} dual-slot intent must survive the forced Agent stop"
+
+        # Candidate GPU-B work must not be admitted while B's stop is unproven.
+        heartbeat_with_gpus(stack)
+        create_training_task(
+            stack, tmp_path, storage, task_id=DUAL_SLOT_TASK_C, gpu_uuid=GPU_B,
+        )
+        assert stack["service"].allocator.assign_next() is None
+        assert task_row(stack["repository"], DUAL_SLOT_TASK_C)["status"] == "QUEUED"
+        assert hold_row(stack["repository"], DUAL_SLOT_TASK_C) is None
+
+        restarted = launch_agent(
+            staged, stack, state_dir=state_dir, data_dir=data_dir,
+            log_path=tmp_path / "agent-restarted.log", interval=30.0,
+        )
+        agents.append(restarted)
+        context["agent"] = restarted
+
+        wait_for(
+            lambda: node_public(stack)["reported_capabilities"] == [],
+            timeout=90,
+            message="fail-closed restarted Agent did not withdraw remote capabilities",
+            context=context,
+        )
+        wait_for(
+            lambda: JOB_OBJECT_ERROR in (node_public(stack).get("last_error") or ""),
+            timeout=45,
+            message="fail-closed restarted Agent did not publish the Job Object error",
+            context=context,
+        )
+        assert_worker_alive(
+            stack, identities[DUAL_SLOT_TASK_A], context,
+            "fail-closed restart must not kill an unproven dual-slot worker",
+        )
+        assert_worker_alive(
+            stack, identities[DUAL_SLOT_TASK_B], context,
+            "fail-closed restart must not kill an unproven dual-slot worker",
+        )
+        for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+            assert local_identity(state_dir, task_id, 1) is not None, (
+                f"fail-closed restart must retain the {task_id} ProcessIdentity"
+            )
+            hold = hold_row(stack["repository"], task_id)
+            assert hold["state"] == "HELD", (
+                f"{task_id} Hold was released without stop proof"
+            )
+            assert hold["proof_type"] is None
+            assert hold["proof_sha256"] is None
+            status = central_status(stack, task_id)
+            assert status["status"] == "RUNNING"
+            assert status["hold_state"] == "HELD"
+            assert status["proof_type"] is None
+            assert task_row(stack["repository"], task_id)["process_pid"] == int(
+                identities[task_id]["pid"])
+            assert_no_duplicate_execution(stack["repository"], task_id)
+
+        # Candidate never claimed; GPU-B never reused.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            candidate = task_row(stack["repository"], DUAL_SLOT_TASK_C)
+            assert candidate["status"] == "QUEUED"
+            assert candidate["attempt"] == 0
+            assert hold_row(stack["repository"], DUAL_SLOT_TASK_C) is None
+            time.sleep(0.2)
+        assert _live_gpu_holders(stack["repository"], GPU_B) == [DUAL_SLOT_TASK_B]
+        assert stack["service"].allocator.assign_next() is None
+        for task_id in (DUAL_SLOT_TASK_A, DUAL_SLOT_TASK_B):
+            hold = hold_row(stack["repository"], task_id)
+            assert hold["state"] == "HELD"
+            assert int(hold["execution_attempt"]) == int(
+                holds[task_id]["execution_attempt"])
+    finally:
+        for agent in agents:
+            stop_agent(agent)
+        for identity in identities.values():
+            kill_process_identity(identity)
+        try:
+            for record in local_workdirs(state_dir).list_process_identities():
+                kill_process_identity(record)
+        except Exception:
+            pass
+        storage.stop()
+        stop_central(stack)
+
+
 __all__ = [
-    "AGENT_VERSION", "BundleStorage", "GPU_A", "GPU_B", "INTENT_ERROR",
+    "AGENT_VERSION", "BundleStorage", "DUAL_SLOT_TASK_A", "DUAL_SLOT_TASK_B",
+    "DUAL_SLOT_TASK_C", "GPU_A", "GPU_B", "INTENT_ERROR",
     "JOB_OBJECT_ERROR", "NODE_ID", "REPO_ROOT", "RESTART_CANDIDATE_TASK",
     "RESTART_ORIGINAL_TASK", "assert_no_duplicate_execution", "assign_next",
     "attempt_rows", "canonical_json", "central_status", "create_training_task",
     "diagnostics", "expected_stop_proof_digest", "free_port", "heartbeat_with_gpus",
     "hold_row", "intent_records", "kill_process_identity", "launch_agent",
     "local_identity", "local_workdirs", "node_public", "process_alive", "read_log",
-    "require_linux_posix", "run_restart_fail_closed_scenario", "start_central",
-    "stop_agent", "stop_central", "task_row", "unit_fixtures", "wait_for",
-    "wait_process_gone", "wait_worker_started", "write_staged_runtime",
+    "require_linux_posix", "run_dual_slot_simultaneous_agent_crash_fail_closed",
+    "run_dual_slot_simultaneous_agent_sigkill_recovery",
+    "run_restart_fail_closed_scenario", "start_central", "stop_agent",
+    "stop_central", "task_row", "unit_fixtures", "wait_for", "wait_process_gone",
+    "wait_worker_started", "write_staged_runtime",
 ]
