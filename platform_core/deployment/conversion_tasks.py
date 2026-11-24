@@ -216,11 +216,19 @@ class ConversionHandler:
         return run_conversion(context, data_dir=self.data_dir)
 
 
+def _reconcile_numeric_verification(directory: Path, result: dict) -> dict:
+    """Re-attempt the idempotent evidence publication after a worker crash."""
+    from platform_core.deployment.numeric_consistency import reconcile_numeric_verification
+    return reconcile_numeric_verification(directory, result)
+
+
 def run_numeric_verification(context, request: dict) -> tuple[TaskStatus, str]:
     """Reuse MODEL_CONVERSION leases/cancellation for a verification-only run.
 
     The conversion record remains immutable. Verification evidence lives in a
     distinct, project-scoped directory and the same durable artifact repository.
+    A completed evidence document is never recomputed: a restart only re-attempts
+    the identity-checked, idempotent publication of the bound summary.
     """
     directory = Path(str(request.get("verification_dir") or "")).resolve()
     worker = Path(str(request.get("worker_path") or "")).resolve()
@@ -230,6 +238,11 @@ def run_numeric_verification(context, request: dict) -> tuple[TaskStatus, str]:
         raise FileNotFoundError("数值验证请求或执行器不存在")
     previous = _read(result_path)
     if previous.get("status") == "completed":
+        context.assert_current_execution()
+        # The worker may have died after persisting complete evidence but before
+        # publishing the quality status; converge instead of silently reporting
+        # an unpublished verification as complete.
+        previous = _reconcile_numeric_verification(directory, previous)
         context.assert_current_execution()
         ref = "conversion/numeric-verification-result.json"
         context.artifacts.atomic_write_json(context.task.task_id, ref, previous)
@@ -261,6 +274,10 @@ def run_numeric_verification(context, request: dict) -> tuple[TaskStatus, str]:
             raise
     context.assert_current_execution()
     result = _read(result_path)
+    if str(result.get("status") or "") in {"completed", "failed"}:
+        # Idempotent: the worker already persisted the evidence and usually the
+        # summary. This converges a crash window and a lost publication.
+        result = _reconcile_numeric_verification(directory, result)
     result_ref = "conversion/numeric-verification-result.json"
     context.artifacts.atomic_write_json(context.task.task_id, result_ref, result)
     context.heartbeat(progress=100, stage=str(result.get("stage") or "数值比较结束"), current_item=str(request.get("conversion_job_id") or ""))

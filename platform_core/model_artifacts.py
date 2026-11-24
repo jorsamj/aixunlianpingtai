@@ -76,6 +76,67 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _numeric_evidence_projection(
+    job: Mapping[str, Any] | None, *, project_id: str, algorithm_id: str, version_id: str,
+    job_id: str, artifact_sha: str, manifest_digest: str, source_sha: str,
+    onnx_sha: str,
+) -> dict[str, Any]:
+    """Bounded read-only projection of the conversion record's numeric evidence.
+
+    The conversion job stays the single Owner. Published evidence is promoted
+    only while its bound conversion identity still equals this artifact's
+    current identity; a stale binding is downgraded to explicit unavailable so
+    an old verdict is never presented as the current artifact's quality proof.
+    """
+    job = job if isinstance(job, Mapping) else {}
+    numeric_status = str(job.get("numeric_status") or "")
+    publication_status = str(job.get("publication_status") or "")
+    numeric = job.get("numeric_validation")
+    projection: dict[str, Any] = {}
+    binding_status = "unavailable"
+    if isinstance(numeric, Mapping):
+        projection = {key: numeric.get(key) for key in (
+            "verification_id", "request_verification_id", "status", "verdict", "raw_verdict",
+            "detection_status", "sample_count", "protocol", "hardware_verified", "ground_truth_used",
+            "completed_at", "result_ref", "evidence_ref", "content_digest", "identity_digest",
+            "identity_status", "binding_status",
+        ) if key in numeric}
+        bound = numeric.get("identity") if isinstance(numeric.get("identity"), Mapping) else None
+        if isinstance(bound, Mapping):
+            from .deployment.numeric_consistency import (
+                VERIFICATION_IDENTITY_FIELDS, compare_verification_identity,
+            )
+            current = {
+                "project_id": str(project_id or ""),
+                "algorithm_id": str(algorithm_id or ""),
+                "version_id": str(version_id or ""),
+                "conversion_job_id": str(job_id or ""),
+                "source_pt_sha256": str(source_sha or ""),
+                "onnx_sha256": str(onnx_sha or ""),
+                "target_artifact_sha256": str(artifact_sha or ""),
+                "manifest_digest": str(manifest_digest or ""),
+            }
+            current["status"] = "verified" if all(
+                str(current.get(key) or "") for key in VERIFICATION_IDENTITY_FIELDS) else "unavailable"
+            comparison = compare_verification_identity(bound, current)
+            binding_status = comparison["binding_status"]
+            projection["binding_status"] = binding_status
+            projection["identity_digest"] = str(numeric.get("identity_digest") or "")
+            if comparison["stale"]:
+                numeric_status = "unavailable"
+                publication_status = "blocked_numeric_stale"
+                projection["status"] = "stale"
+                projection["stale_reason"] = comparison["reason"][:512]
+        else:
+            projection["binding_status"] = "unavailable"
+    return {
+        "numeric_status": numeric_status,
+        "publication_status": publication_status,
+        "numeric_validation": projection,
+        "numeric_validation_binding_status": binding_status,
+    }
+
+
 def _safe_segment(value: Any, fallback: str = "item") -> str:
     import re
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
@@ -710,7 +771,8 @@ class ModelArtifactRepository:
                      # a sparse delivery refresh must never erase them, and a later
                      # conflicting identity is still rejected above.
                      "manifest_digest", "manifest_integrity_status", "manifest_legacy", "source_manifest",
-                     "numeric_status", "publication_status", "numeric_validation"}
+                     "numeric_status", "publication_status", "numeric_validation",
+                     "numeric_validation_binding_status"}
             for key in owned:
                 if metadata.get(key) is None and key in previous:
                     metadata[key] = previous[key]
@@ -1610,11 +1672,13 @@ class ModelArtifactService:
         version_id = str(version.get("id") or "")
         candidates: list[tuple[str, str, Path, str, dict[str, Any]]] = []
         frozen_metadata = model_metadata(self.data_dir, version, algorithm=algorithm)
+        conversion_jobs = self._conversion_jobs(project_id, algorithm_id, version_id)
+        jobs_by_id = {str(row.get("id") or ""): row for row in conversion_jobs if isinstance(row, dict)}
         for key in ("stored_path", "best_path", "last_path", "path"):
             raw = str(version.get(key) or "").strip()
             if raw:
                 candidates.append(("original", "original", Path(raw).expanduser(), "", {"version_field": key, **frozen_metadata}))
-        for job in self._conversion_jobs(project_id, algorithm_id, version_id):
+        for job in conversion_jobs:
             status = str(job.get("status") or "").strip().lower()
             if status and status not in SUCCESSFUL_CONVERSION_STATUSES:
                 continue
@@ -1718,17 +1782,26 @@ class ModelArtifactService:
                         metadata["source_manifest"] = source_manifest_summary(manifest)
                     # Numeric/publication state is a bounded read-only projection of
                     # the existing conversion job; the job remains the single Owner.
-                    metadata["numeric_status"] = str(job.get("numeric_status") or "")
-                    metadata["publication_status"] = str(job.get("publication_status") or "")
-                    numeric = job.get("numeric_validation")
-                    if isinstance(numeric, Mapping):
-                        metadata["numeric_validation"] = {
-                            key: numeric.get(key) for key in (
-                                "verification_id", "status", "verdict", "raw_verdict", "detection_status",
-                                "sample_count", "protocol", "hardware_verified", "ground_truth_used",
-                                "completed_at", "result_ref",
-                            ) if key in numeric
-                        }
+                    # The projection is promoted only when the published evidence is
+                    # still bound to this exact artifact identity.
+                    onnx_sha = digest if target == "onnx" else str(
+                        (manifest.get("onnx") or {}).get("sha256")
+                        or next((row.get("sha256") for row in (manifest.get("outputs") or [])
+                                 if isinstance(row, Mapping)
+                                 and str(row.get("name") or "").lower().endswith(".onnx")), "")
+                    )
+                    projected_numeric = _numeric_evidence_projection(
+                        jobs_by_id.get(job_id) or job,
+                        project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
+                        job_id=job_id, artifact_sha=digest,
+                        manifest_digest=str(integrity.get("recorded") or ""),
+                        source_sha=source_sha, onnx_sha=onnx_sha,
+                    )
+                    metadata["numeric_status"] = projected_numeric["numeric_status"]
+                    metadata["publication_status"] = projected_numeric["publication_status"]
+                    metadata["numeric_validation_binding_status"] = projected_numeric["numeric_validation_binding_status"]
+                    if projected_numeric["numeric_validation"]:
+                        metadata["numeric_validation"] = projected_numeric["numeric_validation"]
                     # Conversion worker emits its manifest after producing
                     # outputs; only its timezone-qualified timestamp is trusted.
                     # Never guess a zone for legacy job times or file mtimes.

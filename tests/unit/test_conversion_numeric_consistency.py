@@ -648,3 +648,361 @@ def test_worker_success_path_writes_verdict_back_to_conversion_job(tmp_path, mon
     job = json.loads(job_path.read_text(encoding="utf-8"))
     assert job["numeric_status"] == "consistent"
     assert job["publication_status"] == "numeric_consistent_delivery_evidence_incomplete"
+
+
+# ---------------------------------------------------------------------------
+# M10-C: evidence-first publication bound to the conversion identity.
+# ---------------------------------------------------------------------------
+ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
+_STUB_PROTOCOL = "pt-onnx-raw-and-detection-v4"
+
+
+def _conversion_manifest(*, onnx_path, onnx_sha, source_sha, imgsz=(64, 64)):
+    import sys
+    from platform_core.conversion import build_source_manifest, source_manifest_digest
+
+    source_manifest = build_source_manifest(
+        source={"sha256": source_sha, "size_bytes": 1, "file_name": "best.pt",
+                "algorithm_id": "a1", "version_id": "v1", "label_codes": ["fire"]},
+        export={"opset": 12, "dynamic": False, "simplify": False, "batch": 1,
+                "imgsz": list(imgsz), "precision": "fp32", "half": False},
+        tool={"name": "ultralytics-export", "version": "8.4.0",
+              "python_path": sys.executable, "dependencies": {}},
+        onnx={"name": onnx_path.name, "sha256": onnx_sha,
+              "size_bytes": onnx_path.stat().st_size, "opset_imports": [],
+              "input_shapes": [[1, 3, *imgsz]], "input_types": ["tensor(float)"],
+              "input_names": ["images"], "output_shapes": [], "output_types": [],
+              "output_names": ["output0"], "output_inferred_shapes": [], "output_dtypes": [],
+              "floating_tensor_types": []},
+        outputs=[{"name": onnx_path.name, "sha256": onnx_sha,
+                  "size_bytes": onnx_path.stat().st_size}],
+    )
+    manifest = {
+        "job_id": "conversion-full-1", "status": "done",
+        "source": {"sha256": source_sha},
+        "onnx": {"sha256": onnx_sha, "input_shapes": [[1, 3, *imgsz]],
+                 "output_names": ["output0"]},
+        "tool": {"name": "ultralytics-export", "version": "8.4.0"},
+        "outputs": [{"name": onnx_path.name, "sha256": onnx_sha,
+                     "size_bytes": onnx_path.stat().st_size}],
+        "source_manifest": source_manifest,
+    }
+    manifest["manifest_digest"] = source_manifest_digest(manifest)
+    return manifest
+
+
+def _full_numeric_layout(tmp_path, *, directory_name="nv_0123456789abcdef01234567"):
+    from pathlib import Path
+    from platform_core.conversion import sha256_file
+
+    deploy = tmp_path / "deployment"
+    job_id, project_id = "conversion-full-1", "p1"
+    job_dir = deploy / "jobs" / job_id
+    (job_dir / "source").mkdir(parents=True, exist_ok=True)
+    (job_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    source = job_dir / "source" / "best.pt"
+    onnx = job_dir / "artifacts" / "model.onnx"
+    source.write_bytes(b"frozen-pt-bytes")
+    onnx.write_bytes(b"frozen-onnx-bytes")
+    source_sha, onnx_sha = sha256_file(source), sha256_file(onnx)
+    manifest = _conversion_manifest(onnx_path=onnx, onnx_sha=onnx_sha, source_sha=source_sha)
+    manifest_path = job_dir / "artifacts" / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    job = {
+        "id": job_id, "project_id": project_id, "status": "done", "target": "onnx",
+        "source_path": str(source),
+        "source_trace": {"algorithm_id": "a1", "version_id": "v1", "sha256": source_sha},
+        "params": {"precision": "fp32"},
+        "manifest_path": str(manifest_path), "manifest_digest": manifest["manifest_digest"],
+        "outputs": [{"name": onnx.name, "path": str(onnx), "sha256": onnx_sha,
+                     "size_bytes": onnx.stat().st_size}],
+    }
+    job_path = job_dir / "job.json"
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    verification = deploy / "numeric-validations" / directory_name
+    (verification / "images").mkdir(parents=True, exist_ok=True)
+    names = ["image_01.png", "image_02.png"]
+    for index, name in enumerate(names):
+        (verification / "images" / name).write_bytes(f"image-bytes-{index}".encode())
+    receipt = {
+        "id": verification.name, "project_id": project_id, "conversion_job_id": job_id,
+        "request_id": "request-identity-0001", "created_at": "2026-11-24T00:00:00+00:00",
+        "source_path": str(source), "onnx_path": str(onnx),
+        "source_sha256": source_sha, "onnx_sha256": onnx_sha,
+        "bmodel_path": "", "bmodel_sha256": "", "bmodel_expected": False,
+        "precision": "fp32", "confidence": 0.25, "nms_iou": 0.7,
+        "input_color_order": "rgb",
+        "preprocessing": {"pixel_format": "rgb", "channel_format": "nchw"},
+        "input_shapes": [[1, 3, 64, 64]], "frozen_imgsz": [64, 64], "frozen_batch": 1,
+        "label_codes": ["fire"], "label_schema": [], "image_names": names,
+    }
+    (verification / "request.json").write_text(json.dumps(receipt), encoding="utf-8")
+    return {"deploy": deploy, "job_dir": job_dir, "job_path": job_path,
+            "verification": verification, "receipt": receipt, "job": job,
+            "manifest": manifest, "source": source, "onnx": onnx,
+            "source_sha": source_sha, "onnx_sha": onnx_sha, "image_names": names}
+
+
+def _stub_numeric_result(*, verdict="consistent", unmatched=0):
+    return {
+        "protocol": _STUB_PROTOCOL, "status": "completed",
+        "raw_verdict": "consistent" if verdict == "consistent" else "difference_detected",
+        "verdict": verdict, "detection_status": verdict,
+        "comparison_confidence": 0.25, "comparison_nms_iou": 0.7,
+        "sample_count": 2, "precision": "fp32",
+        "hardware_verified": False, "ground_truth_used": False, "bmodel_verified": False,
+        "bmodel_numeric_status": "not_applicable", "bmodel_detection_status": "not_applicable",
+        "bmodel_numeric_error": "", "deployment_preprocessing_aligned": True,
+        "label_identity": {"status": "verified", "mapping_sha256": "a" * 64},
+        "input_color_space": "rgb",
+        "input_contract": {"status": "resolved", "resolved_input_shape": [1, 3, 64, 64],
+                           "input_shape_source": "frozen_manifest"},
+        "dynamic_resolution": "static", "dynamic_resolution_reason": "",
+        "runtime_versions": {"numpy": {"version": np.__version__, "error": None}},
+        "rejection": None, "scope_note": "",
+        "completed_at": "2026-11-24T00:00:00+00:00",
+        "images": [
+            {"image": "image_01.png", "comparable": True, "within_tolerance": verdict == "consistent",
+             "normalized_mae": 0.0001, "cosine_similarity": 0.99999, "max_abs_error": 0.01,
+             "detection": {"comparable": True, "within_tolerance": verdict == "consistent",
+                           "matched_pairs": 2, "unmatched_reference": unmatched,
+                           "unmatched_converted": 0, "threshold_crossings": 0,
+                           "mean_matched_iou": 0.998 if not unmatched else None,
+                           "original_coordinates": {"status": "mapped"}}},
+            {"image": "image_02.png", "comparable": True, "within_tolerance": True,
+             "normalized_mae": 0.0002, "cosine_similarity": 0.99998, "max_abs_error": 0.02,
+             "detection": {"comparable": True, "within_tolerance": verdict == "consistent",
+                           "matched_pairs": 1, "unmatched_reference": 0,
+                           "unmatched_converted": 0, "threshold_crossings": 0,
+                           "mean_matched_iou": 0.997,
+                           "original_coordinates": {"status": "mapped"}}},
+        ],
+    }
+
+
+def _stub_verify(monkeypatch, result=None, *, counter=None):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    payload = json.loads(json.dumps(result or _stub_numeric_result()))
+
+    def verify(*args, **kwargs):
+        if counter is not None:
+            counter["calls"] = counter.get("calls", 0) + 1
+        return json.loads(json.dumps(payload))
+
+    monkeypatch.setattr(numeric, "verify_images", verify)
+    return verify
+
+
+def test_complete_evidence_is_persisted_before_state_and_binds_conversion_identity(tmp_path, monkeypatch):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _full_numeric_layout(tmp_path)
+    _stub_verify(monkeypatch, _stub_numeric_result())
+    observed = {}
+    real_project = numeric.project_numeric_status
+
+    def guard(directory, request, result):
+        evidence_files = sorted((__import__("pathlib").Path(directory) / "evidence").glob("*.json"))
+        observed["evidence_before_projection"] = len(evidence_files) == 1
+        if evidence_files:
+            observed["evidence_complete"] = bool(
+                json.loads(evidence_files[0].read_text(encoding="utf-8"))["verification"]["content_digest"])
+        return real_project(directory, request, result)
+
+    monkeypatch.setattr(numeric, "project_numeric_status", guard)
+    final = numeric.run_verification_directory(layout["verification"])
+    assert observed == {"evidence_before_projection": True, "evidence_complete": True}
+    result = json.loads((layout["verification"] / "result.json").read_text(encoding="utf-8"))
+    verification = result["verification"]
+    identity = verification["identity"]
+    assert identity["status"] == "verified"
+    assert identity["availability"] == {key: "present" for key in numeric.VERIFICATION_IDENTITY_FIELDS}
+    assert identity["project_id"] == "p1"
+    assert identity["algorithm_id"] == "a1"
+    assert identity["version_id"] == "v1"
+    assert identity["conversion_job_id"] == "conversion-full-1"
+    assert identity["source_pt_sha256"] == layout["source_sha"]
+    assert identity["onnx_sha256"] == layout["onnx_sha"]
+    assert identity["target_artifact_sha256"] == layout["onnx_sha"]
+    assert identity["manifest_digest"] == layout["manifest"]["manifest_digest"]
+    assert identity["manifest_integrity"]["status"] == "digest_verified"
+    samples = verification["sample_set"]
+    assert samples["count"] == 2 and samples["status"] == "available"
+    assert [row["name"] for row in samples["images"]] == layout["image_names"]
+    for row in samples["images"]:
+        assert row["sha256"] == numeric.sha256_file(layout["verification"] / "images" / row["name"])
+    assert len(samples["digest"]) == 64
+    parameters = verification["parameters"]
+    assert parameters["precision"] == "fp32"
+    assert parameters["confidence"] == 0.25 and parameters["nms_iou"] == 0.7
+    assert parameters["imgsz"] == [64, 64] and parameters["batch"] == 1
+    assert parameters["input_color_order"] == "rgb"
+    assert len(parameters["digest"]) == 64
+    summary = verification["result_summary"]
+    assert summary["verdict"] == "consistent"
+    assert summary["detection"]["matched_pairs"] == 3
+    assert summary["metrics"]["cosine_similarity_min"] == 0.99998
+    assert final["status_projection"]["status"] == "projected"
+    job = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    published = job["numeric_validation"]
+    assert job["numeric_status"] == "consistent"
+    assert published["verification_id"] == verification["verification_id"]
+    assert published["binding_status"] == "verified"
+    assert published["identity"]["manifest_digest"] == layout["manifest"]["manifest_digest"]
+    assert published["identity"]["onnx_sha256"] == layout["onnx_sha"]
+    assert published["sample_set"]["digest"] == samples["digest"]
+    assert published["summary"]["verdict"] == "consistent"
+    assert published["evidence_ref"].endswith(verification["verification_id"] + ".json")
+    assert (layout["verification"] / "evidence" /
+            (verification["verification_id"] + ".json")).is_file()
+
+
+def test_publication_failure_after_evidence_leaves_state_unpublished_and_retry_converges(tmp_path, monkeypatch):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _full_numeric_layout(tmp_path)
+    counter = {}
+    _stub_verify(monkeypatch, _stub_numeric_result(), counter=counter)
+    real_project = numeric.project_numeric_status
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("state write failed")
+
+    monkeypatch.setattr(numeric, "project_numeric_status", crash)
+    with pytest.raises(RuntimeError, match="state write failed"):
+        numeric.run_verification_directory(layout["verification"])
+    result = json.loads((layout["verification"] / "result.json").read_text(encoding="utf-8"))
+    assert result["status"] == "completed"
+    evidence = result["verification"]
+    assert evidence["content_digest"] and evidence["verification_id"]
+    evidence_path = layout["verification"] / "evidence" / (evidence["verification_id"] + ".json")
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["verification"]["content_digest"] == evidence["content_digest"]
+    job = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    assert job.get("numeric_status") is None and not job.get("numeric_validation")
+    # Restart: inference is never rerun, only the idempotent publication.
+    monkeypatch.setattr(numeric, "project_numeric_status", real_project)
+    recovered = numeric.run_verification_directory(layout["verification"])
+    assert counter["calls"] == 1
+    assert recovered["status_projection"]["status"] == "projected"
+    job_after = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    assert job_after["numeric_status"] == "consistent"
+    assert job_after["numeric_validation"]["verification_id"] == evidence["verification_id"]
+    # A further replay of the same identity result must not rewrite the summary.
+    before_job = layout["job_path"].read_bytes()
+    before_evidence = evidence_path.read_bytes()
+    replay = numeric.run_verification_directory(layout["verification"])
+    assert counter["calls"] == 1
+    assert replay["status_projection"]["status"] == "already_projected"
+    assert layout["job_path"].read_bytes() == before_job
+    assert evidence_path.read_bytes() == before_evidence
+
+
+def test_identity_change_after_publication_returns_stale_and_preserves_old_evidence(tmp_path, monkeypatch):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _full_numeric_layout(tmp_path)
+    _stub_verify(monkeypatch, _stub_numeric_result())
+    numeric.run_verification_directory(layout["verification"])
+    job = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    published = dict(job["numeric_validation"])
+    evidence_id = published["verification_id"]
+    evidence_path = layout["verification"] / "evidence" / (evidence_id + ".json")
+    before_evidence = evidence_path.read_bytes()
+    before_result = json.loads((layout["verification"] / "result.json").read_text(encoding="utf-8"))
+    # 1) The conversion record now claims another source identity.
+    changed = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    changed["source_trace"]["sha256"] = "b" * 64
+    layout["job_path"].write_text(json.dumps(changed), encoding="utf-8")
+    stale = numeric.reconcile_numeric_verification(layout["verification"])
+    assert stale["status_projection"]["status"] == "stale"
+    assert stale["status_projection"]["code"] == numeric.STALE_VERIFICATION_CODE
+    after = json.loads(layout["job_path"].read_text(encoding="utf-8"))
+    assert after["numeric_status"] == "consistent"
+    assert after["numeric_validation"] == published
+    assert evidence_path.read_bytes() == before_evidence
+    assert stale["verification"]["content_digest"] == before_result["verification"]["content_digest"]
+    # 2) The artifact bytes themselves changed (record/request unchanged).
+    restored = json.loads(json.dumps(changed))
+    restored["source_trace"]["sha256"] = layout["source_sha"]
+    layout["job_path"].write_text(json.dumps(restored), encoding="utf-8")
+    layout["onnx"].write_bytes(b"replaced-onnx-bytes")
+    stale_again = numeric.reconcile_numeric_verification(layout["verification"])
+    assert stale_again["status_projection"]["status"] == "stale"
+    assert layout["job_path"].read_text(encoding="utf-8") and \
+        json.loads(layout["job_path"].read_text(encoding="utf-8"))["numeric_validation"] == published
+    assert evidence_path.read_bytes() == before_evidence
+
+
+def test_conflicting_evidence_for_same_identity_fails_closed_without_overwriting(tmp_path, monkeypatch):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _full_numeric_layout(tmp_path)
+    _stub_verify(monkeypatch, _stub_numeric_result())
+    numeric.run_verification_directory(layout["verification"])
+    result_path = layout["verification"] / "result.json"
+    first = json.loads(result_path.read_text(encoding="utf-8"))
+    evidence_path = layout["verification"] / "evidence" / (first["verification"]["verification_id"] + ".json")
+    before_evidence = evidence_path.read_bytes()
+    before_job = layout["job_path"].read_bytes()
+    result_path.unlink()  # force a full re-verification with the same identity/params
+    _stub_verify(monkeypatch, _stub_numeric_result(verdict="difference_detected", unmatched=1))
+    with pytest.raises(numeric.VerificationEvidenceConflict) as raised:
+        numeric.run_verification_directory(layout["verification"])
+    assert numeric.EVIDENCE_CONFLICT_CODE in str(raised.value)
+    assert evidence_path.read_bytes() == before_evidence
+    assert layout["job_path"].read_bytes() == before_job
+
+
+_CONCURRENCY_CHILD = '''
+import json, sys, time
+from pathlib import Path
+sys.path.insert(0, __ROOT__)
+from platform_core.deployment import numeric_consistency as numeric
+
+directory = Path(sys.argv[1])
+payload = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+def slow_verify(*args, **kwargs):
+    time.sleep(0.5)
+    return json.loads(json.dumps(payload))
+
+numeric.verify_images = slow_verify
+final = numeric.run_verification_directory(directory)
+print(json.dumps({"projection": (final.get("status_projection") or {}).get("status"),
+                  "verification_id": final["verification"]["verification_id"]}, ensure_ascii=False))
+'''
+
+
+def test_two_concurrent_verifications_of_same_identity_publish_exactly_once(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    from platform_core.deployment import numeric_consistency as numeric
+
+    first = _full_numeric_layout(tmp_path, directory_name="nv_0123456789abcdef01234567")
+    second = tmp_path / "deployment" / "numeric-validations" / "nv_89abcdef0123456789abcdef"
+    (second / "images").mkdir(parents=True)
+    for name in first["image_names"]:
+        (second / "images" / name).write_bytes((first["verification"] / "images" / name).read_bytes())
+    receipt = dict(first["receipt"])
+    receipt["id"] = second.name
+    (second / "request.json").write_text(json.dumps(receipt), encoding="utf-8")
+    script = tmp_path / "numeric_child.py"
+    script.write_text(_CONCURRENCY_CHILD.replace("__ROOT__", repr(str(ROOT))), encoding="utf-8")
+    stub = tmp_path / "stub-result.json"
+    stub.write_text(json.dumps(_stub_numeric_result()), encoding="utf-8")
+    processes = [
+        subprocess.Popen([sys.executable, str(script), str(directory), str(stub)],
+                         cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for directory in (first["verification"], second)
+    ]
+    outputs = [process.communicate(timeout=180) for process in processes]
+    for process, (stdout, stderr) in zip(processes, outputs):
+        assert process.returncode == 0, (stdout + stderr)[-8000:]
+    parsed = [json.loads(stdout.strip().splitlines()[-1]) for stdout, _ in outputs]
+    assert sorted(row["projection"] for row in parsed) == ["already_projected", "projected"]
+    assert len({row["verification_id"] for row in parsed}) == 1
+    job = json.loads(first["job_path"].read_text(encoding="utf-8"))
+    assert job["numeric_status"] == "consistent"
+    assert job["numeric_validation"]["verification_id"] == parsed[0]["verification_id"]
+    assert job["numeric_validation"]["status"] == "completed"

@@ -1970,6 +1970,9 @@ def test_artifact_metadata_recomputes_source_manifest_digest_and_projects_status
     assert metadata["publication_status"] == "numeric_consistent_delivery_evidence_incomplete"
     assert metadata["numeric_validation"]["verdict"] == "consistent"
     assert "internal_field" not in metadata["numeric_validation"]
+    # A legacy published summary carries no identity binding: it is copied as
+    # before but explicitly reported as unverifiable.
+    assert metadata["numeric_validation_binding_status"] == "unavailable"
     saved = service.repository.upsert(row)
     assert saved["metadata"]["manifest_digest"] == manifest["manifest_digest"]
     # A sparse metadata refresh must not erase the frozen manifest identity.
@@ -1997,3 +2000,86 @@ def test_artifact_metadata_recomputes_source_manifest_digest_and_projects_status
     assert "不匹配" in row["metadata"]["manifest_metadata_error"]
     saved = service.repository.upsert(row)
     assert saved["metadata"]["conversion_identity_verified"] is False
+
+
+def _numeric_bound_job(tmp_path, version, *, identity_overrides=None):
+    """Conversion job whose published numeric evidence is bound to its identity."""
+    path = tmp_path / "numeric-bound.onnx"
+    path.write_bytes(b"numeric-evidence-bound-onnx")
+    source_sha = hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    manifest_path = tmp_path / "numeric-manifest.json"
+    manifest, output_sha = _digest_bound_manifest(path, source_sha)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    identity = {
+        "project_id": "p1", "algorithm_id": "a1", "version_id": "v1",
+        "conversion_job_id": "c1", "source_pt_sha256": source_sha,
+        "onnx_sha256": output_sha, "target_artifact_sha256": output_sha,
+        "manifest_digest": manifest["manifest_digest"],
+        "status": "verified", "identity_digest": "a" * 64,
+    }
+    identity.update(identity_overrides or {})
+    job = {
+        "id": "c1", "status": "done", "target": "onnx",
+        "source_trace": {"sha256": source_sha, "algorithm_id": "a1", "version_id": "v1"},
+        "manifest_path": str(manifest_path),
+        "outputs": [{"path": str(path)}],
+        "numeric_status": "consistent",
+        "publication_status": "numeric_consistent_delivery_evidence_incomplete",
+        "numeric_validation": {
+            "verification_id": "nv_" + "1" * 32, "status": "completed",
+            "verdict": "consistent", "raw_verdict": "consistent",
+            "detection_status": "consistent", "sample_count": 2,
+            "protocol": "pt-onnx-raw-and-detection-v4", "precision": "fp32",
+            "hardware_verified": False, "ground_truth_used": False,
+            "completed_at": "2026-11-24T00:00:00+00:00",
+            "result_ref": "numeric-validations/nv_x/result.json",
+            "evidence_ref": "numeric-validations/nv_x/evidence/nv_x.json",
+            "identity": identity, "identity_digest": "a" * 64,
+            "content_digest": "b" * 64,
+        },
+    }
+    return job, path, manifest
+
+
+def test_artifact_metadata_promotes_numeric_evidence_bound_to_current_artifact(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    version = _metadata_model(tmp_path)
+    job, _, manifest = _numeric_bound_job(tmp_path, version)
+    monkeypatch.setattr(service, "_conversion_jobs", lambda *args: [job])
+    row = next(r for r in service.discover_version_artifacts("p1", {"id": "a1"}, version)
+               if r["target"] == "onnx")
+    metadata = row["metadata"]
+    assert metadata["conversion_identity_verified"] is True
+    assert metadata["numeric_validation_binding_status"] == "verified"
+    assert metadata["numeric_status"] == "consistent"
+    assert metadata["publication_status"] == "numeric_consistent_delivery_evidence_incomplete"
+    assert metadata["numeric_validation"]["binding_status"] == "verified"
+    assert metadata["numeric_validation"]["evidence_ref"].endswith(".json")
+    assert metadata["numeric_validation"]["identity_digest"] == "a" * 64
+    assert metadata["manifest_digest"] == manifest["manifest_digest"]
+    saved = service.repository.upsert(row)
+    assert saved["metadata"]["numeric_validation_binding_status"] == "verified"
+    replay = service.repository.upsert({**row, "metadata": {"version_field": "stored_path"}})
+    assert replay["metadata"]["numeric_validation_binding_status"] == "verified"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"onnx_sha256": "0" * 64},
+    {"manifest_digest": "0" * 64},
+    {"algorithm_id": "another-algorithm"},
+], ids=["changed_onnx", "changed_manifest", "changed_algorithm"])
+def test_artifact_metadata_downgrades_numeric_evidence_of_another_identity(tmp_path, monkeypatch, overrides):
+    service = _service(tmp_path)
+    version = _metadata_model(tmp_path)
+    job, _, _ = _numeric_bound_job(tmp_path, version, identity_overrides=overrides)
+    monkeypatch.setattr(service, "_conversion_jobs", lambda *args: [job])
+    row = next(r for r in service.discover_version_artifacts("p1", {"id": "a1"}, version)
+               if r["target"] == "onnx")
+    metadata = row["metadata"]
+    assert metadata["numeric_validation_binding_status"] == "stale"
+    # Stale evidence is never presented as the current artifact's quality proof.
+    assert metadata["numeric_status"] == "unavailable"
+    assert metadata["publication_status"] == "blocked_numeric_stale"
+    assert metadata["numeric_validation"]["status"] == "stale"
+    assert metadata["numeric_validation"]["binding_status"] == "stale"
+    assert metadata["numeric_validation"]["evidence_ref"].endswith(".json")
