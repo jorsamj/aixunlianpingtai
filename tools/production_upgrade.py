@@ -55,12 +55,36 @@ default and ``--force-idle`` only records the override without claiming
 consistency.  Raw material/media objects, model files, training
 artifacts/checkpoints and other project business files are explicitly out of
 scope: this tool must never be described as a disaster-recovery backup.
+
+N6.1 remaining safety boundaries
+--------------------------------
+* Application identity binding: ``backup.json`` records the deployed frontend
+  build identity (``static/vue-catalog/offline-assets.json`` and
+  ``static/vue-app/offline-assets.json`` receipts, ``UI_BUILD_VERSION`` and the
+  verified worktree asset hashes) and a Python dependency fingerprint
+  (``requirements*.txt`` digests plus installed key distributions).  Both are
+  explicit ``unavailable`` when they cannot be read; the frontend build
+  receipts are gitignored build output, so a coordinated rollback cannot
+  restore them from Git and the rollback result reports that explicitly.
+* systemd configuration: before/after ``--apply`` upgrade the unit files,
+  drop-ins and environment files are hashed read-only and compared.  A
+  difference is reported as an explicit risk field; this tool never edits a
+  unit or environment file.
+* After the services are stopped, the runtime activity probes (active tasks,
+  unreleased holds, agent heartbeats, worker build marker) are re-checked and
+  any positive evidence fails closed.  Only the explicit ``--force-idle``
+  override records a forced decision; the tool never forces automatically.
+* A coordinated rollback deliberately leaves the worktree on a detached HEAD.
+  A later ``--target`` upgrade is refused until the release branch is restored
+  explicitly (the exact ``git switch`` command is printed); this tool never
+  switches branches or merges on its own.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import hmac
+import importlib.metadata
 import json
 import os
 import re
@@ -74,7 +98,7 @@ import time
 import urllib.request
 from contextlib import closing
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 BRANCH = "feature/external-algorithm-publishing"
 TERMINAL_STATES = frozenset({
@@ -197,6 +221,44 @@ CONSISTENCY_STATEMENT = {
         "project business files are excluded (see exclusions)."
     ),
 }
+
+# N6.1: deployed frontend build identity receipts and the Python dependency
+# fingerprint bound into backup.json.  The frontend build output directories
+# are gitignored, so these receipts identify the deployed build but cannot be
+# restored by a Git checkout during a coordinated rollback.
+FRONTEND_BUILD_RECEIPTS = (
+    "static/vue-catalog/offline-assets.json",
+    "static/vue-app/offline-assets.json",
+)
+UI_BUILD_VERSION_PATH = "static/main.mjs"
+PYTHON_REQUIREMENTS_FILES = (
+    "requirements.txt",
+    "requirements-dev.txt",
+    "remote_web_requirements.txt",
+)
+KEY_PYTHON_DISTRIBUTIONS = (
+    "fastapi",
+    "uvicorn",
+    "starlette",
+    "pydantic",
+    "python-multipart",
+    "pillow",
+    "pyyaml",
+    "requests",
+    "ultralytics",
+    "opencv-python",
+    "onnx",
+    "onnxruntime",
+    "torch",
+    "torchvision",
+    "psutil",
+    "keyring",
+    "cryptography",
+    "filelock",
+    "boto3",
+    "oss2",
+)
+SYSTEMD_CONFIG_RISK_CODE = "SYSTEMD_CONFIGURATION_CHANGED_DURING_UPGRADE"
 
 # Read-only schema expectations used by the coordinated rollback fail-closed
 # check.  ``source_path``/``version_pattern`` describe where the running code
@@ -414,9 +476,706 @@ def resolve_build_identity(repo: Path | None) -> str:
     return f"src-{digest.hexdigest()[:20]}" if count else "unavailable"
 
 
+def _read_repo_bytes(
+    repo: Path | None, sha: str | None, relative_path: str,
+) -> bytes | None:
+    """Read one repository file as bytes from the worktree or a commit (read-only)."""
+    if repo is None:
+        return None
+    repo = Path(repo)
+    if sha is not None:
+        try:
+            proc = subprocess.run(
+                ["git", "show", f"{sha}:{relative_path}"],
+                cwd=repo, capture_output=True, check=False,
+            )
+        except OSError:
+            return None
+        return proc.stdout if proc.returncode == 0 and proc.stdout else None
+    candidate = repo / relative_path
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    try:
+        return candidate.read_bytes()
+    except OSError:
+        return None
+
+
+def _safe_relative_asset_name(name: object) -> str | None:
+    """Validate a receipt asset path; reject traversal, absolute and URI names."""
+    if not isinstance(name, str) or not name:
+        return None
+    if name.startswith("/") or "\\" in name or ":" in name:
+        return None
+    if any(part in ("", ".", "..") for part in name.split("/")):
+        return None
+    return name
+
+
+def _frontend_receipt_entry(
+    repo: Path,
+    relative_path: str,
+    *,
+    source_sha: str | None,
+) -> dict:
+    """Parse and (for a worktree read) re-hash one frontend build receipt."""
+    directory = PurePosixPath(relative_path).parent
+    entry: dict = {
+        "path": relative_path,
+        "status": "unavailable",
+        "reason": None,
+        "receipt_sha256": None,
+        "bytes": None,
+        "receipt_code_sha": None,
+        "build_origin": None,
+        "asset_count": None,
+        "assets_digest": None,
+        "asset_verification": "code_ref" if source_sha else "worktree_hashes",
+        "verified_asset_bytes": 0,
+        "verified_asset_errors": [],
+    }
+    raw = _read_repo_bytes(repo, source_sha, relative_path)
+    if raw is None:
+        entry["reason"] = "RECEIPT_MISSING"
+        return entry
+    entry["receipt_sha256"] = hashlib.sha256(raw).hexdigest()
+    entry["bytes"] = len(raw)
+    try:
+        receipt = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        entry["status"] = "invalid"
+        entry["reason"] = f"RECEIPT_UNPARSEABLE: {exc}"
+        return entry
+    assets = receipt.get("assets") if isinstance(receipt, dict) else None
+    if not isinstance(assets, dict):
+        entry["status"] = "invalid"
+        entry["reason"] = "RECEIPT_ASSETS_INVALID"
+        return entry
+    recorded_sha = receipt.get("sha")
+    entry["receipt_code_sha"] = recorded_sha if isinstance(recorded_sha, str) else None
+    origin = receipt.get("build_origin")
+    entry["build_origin"] = origin if isinstance(origin, str) else None
+    normalized: dict[str, dict] = {}
+    problems: list[str] = []
+    for name, record in assets.items():
+        safe_name = _safe_relative_asset_name(name)
+        if safe_name is None:
+            problems.append(f"UNSAFE_ASSET_NAME:{name!r}")
+            continue
+        sha256 = record.get("sha256") if isinstance(record, dict) else None
+        size = record.get("bytes") if isinstance(record, dict) else None
+        if (
+            not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
+            problems.append(f"INVALID_ASSET_RECORD:{name!r}")
+            continue
+        normalized[safe_name] = {"sha256": sha256, "bytes": size}
+    entry["asset_count"] = len(normalized)
+    entry["assets_digest"] = (
+        hashlib.sha256(_canonical_json(normalized)).hexdigest()
+        if normalized else None
+    )
+    if problems:
+        entry["status"] = "invalid"
+        entry["reason"] = "; ".join(problems[:5])
+        return entry
+    if source_sha is None:
+        # The receipt only proves something if the deployed bytes still match
+        # it.  A rebuilt or partially copied build must not read as clean.
+        for name, record in sorted(normalized.items()):
+            data = _read_repo_bytes(repo, None, str(directory / name))
+            if data is None:
+                entry["verified_asset_errors"].append(f"MISSING_ASSET:{name}")
+                continue
+            if len(data) != record["bytes"]:
+                entry["verified_asset_errors"].append(f"ASSET_SIZE_MISMATCH:{name}")
+                continue
+            if hashlib.sha256(data).hexdigest() != record["sha256"]:
+                entry["verified_asset_errors"].append(f"ASSET_SHA256_MISMATCH:{name}")
+                continue
+            entry["verified_asset_bytes"] += len(data)
+        if entry["verified_asset_errors"]:
+            entry["status"] = "invalid"
+            entry["reason"] = "; ".join(entry["verified_asset_errors"][:5])
+            return entry
+    entry["status"] = "ok"
+    return entry
+
+
+def resolve_frontend_build_identity(
+    repo: Path | None,
+    *,
+    code_sha: str | None = None,
+    expected_code_sha: str | None = None,
+) -> dict:
+    """Read-only deployed frontend build identity (N6.1).
+
+    ``repo`` is read from the worktree unless ``code_sha`` names a commit to
+    read instead.  The known build receipts are parsed, unsafe asset names are
+    rejected, every worktree asset is re-hashed (a receipt that no longer
+    matches the deployed bytes is ``invalid``), and the receipt code SHA is
+    compared with ``expected_code_sha`` when both are full 40-character SHAs.
+    The returned ``identity`` is a stable digest of the parsed receipts; it is
+    ``unavailable`` with an explicit reason when nothing can be proven.
+    """
+    result: dict = {
+        "status": "unavailable",
+        "reason": "NO_REPOSITORY_REFERENCE",
+        "identity": None,
+        "receipt_code_sha": None,
+        "build_origin": None,
+        "matches_code_sha": "unknown",
+        "expected_code_sha": expected_code_sha,
+        "source": "code" if code_sha is not None else "worktree",
+        "ui_build_version": None,
+        "verified_asset_bytes": 0,
+        "receipts": [],
+    }
+    if repo is None:
+        return result
+    repo = Path(repo)
+    receipts = [
+        _frontend_receipt_entry(repo, relative_path, source_sha=code_sha)
+        for relative_path in FRONTEND_BUILD_RECEIPTS
+    ]
+    result["receipts"] = receipts
+    ok = [entry for entry in receipts if entry["status"] == "ok"]
+    invalid = [entry for entry in receipts if entry["status"] == "invalid"]
+    missing = [entry["path"] for entry in receipts if entry["status"] == "unavailable"]
+    if ok:
+        result["identity"] = hashlib.sha256(_canonical_json(
+            {entry["path"]: entry["receipt_sha256"] for entry in ok}
+        )).hexdigest()
+        result["verified_asset_bytes"] = sum(
+            entry["verified_asset_bytes"] for entry in ok
+        )
+        receipt_code_sha = next(
+            (
+                entry["receipt_code_sha"]
+                for entry in ok
+                if isinstance(entry["receipt_code_sha"], str)
+                and re.fullmatch(r"[0-9a-f]{40}", entry["receipt_code_sha"])
+            ),
+            None,
+        )
+        result["receipt_code_sha"] = receipt_code_sha
+        result["build_origin"] = next(
+            (entry["build_origin"] for entry in ok if entry["build_origin"]),
+            None,
+        )
+        if (
+            receipt_code_sha is not None
+            and isinstance(expected_code_sha, str)
+            and re.fullmatch(r"[0-9a-f]{40}", expected_code_sha)
+        ):
+            result["matches_code_sha"] = receipt_code_sha == expected_code_sha
+    ui_build = _read_repo_bytes(repo, code_sha, UI_BUILD_VERSION_PATH)
+    if ui_build is not None:
+        try:
+            ui_build_text = ui_build.decode("utf-8")
+        except UnicodeDecodeError:
+            ui_build_text = ""
+        match = re.search(
+            r"UI_BUILD_VERSION\s*=\s*'([^'\r\n]{1,128})'", ui_build_text,
+        )
+        if match is not None:
+            result["ui_build_version"] = match.group(1)
+    if invalid:
+        result["status"] = "invalid"
+        result["reason"] = "; ".join(
+            f"{entry['path']}: {entry['reason']}" for entry in invalid[:3]
+        )
+    elif not ok:
+        result["status"] = "unavailable"
+        result["reason"] = "FRONTEND_BUILD_RECEIPTS_UNAVAILABLE: " + ", ".join(missing)
+    elif missing:
+        result["status"] = "partial"
+        result["reason"] = "MISSING_RECEIPTS: " + ", ".join(missing)
+    else:
+        result["status"] = "ok"
+    return result
+
+
+def _installed_distribution_version(name: str) -> str | None:
+    """Read one installed distribution version; ``None`` when unavailable."""
+    try:
+        return importlib.metadata.version(name)
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        return None
+    except Exception:  # noqa: BLE001 - never let a metadata quirk fail a backup
+        return None
+
+
+def resolve_python_dependency_fingerprint(
+    repo: Path | None, *, code_sha: str | None = None,
+) -> dict:
+    """Read-only Python dependency fingerprint (N6.1).
+
+    Records the digest of every present requirements file and the installed
+    versions of the key distributions.  Everything is best effort: missing
+    requirements and unavailable package metadata are recorded as explicit
+    ``unavailable`` values instead of being guessed, and this never installs or
+    upgrades anything.
+    """
+    result: dict = {
+        "status": "unavailable",
+        "reason": "NO_REQUIREMENTS_AND_NO_INSTALLED_PACKAGES",
+        "requirements": [],
+        "requirements_digest": None,
+        "installed": {},
+        "installed_count": 0,
+        "key_packages": list(KEY_PYTHON_DISTRIBUTIONS),
+        "fingerprint": None,
+        "source": "code" if code_sha is not None else "worktree",
+    }
+    requirements: list[dict] = []
+    if repo is not None:
+        for relative_path in PYTHON_REQUIREMENTS_FILES:
+            raw = _read_repo_bytes(repo, code_sha, relative_path)
+            if raw is None:
+                continue
+            requirements.append({
+                "path": relative_path,
+                "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+    result["requirements"] = requirements
+    if requirements:
+        result["requirements_digest"] = hashlib.sha256(_canonical_json(
+            {entry["path"]: entry["sha256"] for entry in requirements}
+        )).hexdigest()
+    installed: dict[str, str] = {}
+    for name in KEY_PYTHON_DISTRIBUTIONS:
+        version = _installed_distribution_version(name)
+        if version:
+            installed[name] = version
+    result["installed"] = installed
+    result["installed_count"] = len(installed)
+    payload = {
+        "requirements": result["requirements_digest"],
+        "installed": installed,
+    }
+    if result["requirements_digest"] is not None or installed:
+        result["fingerprint"] = hashlib.sha256(
+            _canonical_json(payload)
+        ).hexdigest()
+        result["status"] = (
+            "ok" if result["requirements_digest"] is not None and installed
+            else "partial"
+        )
+        result["reason"] = None
+    return result
+
+
+def _unavailable_frontend_identity(reason: str) -> dict:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "identity": None,
+        "receipt_code_sha": None,
+        "build_origin": None,
+        "matches_code_sha": "unknown",
+        "expected_code_sha": None,
+        "source": "none",
+        "ui_build_version": None,
+        "verified_asset_bytes": 0,
+        "receipts": [],
+    }
+
+
+def _unavailable_python_dependencies(reason: str) -> dict:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "requirements": [],
+        "requirements_digest": None,
+        "installed": {},
+        "installed_count": 0,
+        "key_packages": list(KEY_PYTHON_DISTRIBUTIONS),
+        "fingerprint": None,
+        "source": "none",
+    }
+
+
+def assess_application_identity_binding(
+    manifest: dict, repo: Path | None, *, app_sha: str | None,
+) -> dict:
+    """Compare the backup's recorded identities with what is deployed now.
+
+    This never changes data or code.  It records explicit ``risks`` when the
+    deployed frontend build changed since the backup, when that build receipt
+    is bound to a different code SHA than the rollback target, or when the
+    Python environment drifted.  The frontend build output is gitignored build
+    output, so ``frontend_build.restorable_by_git`` documents that a Git
+    checkout cannot restore it.
+    """
+    recorded_frontend = manifest.get("frontend_build")
+    if not isinstance(recorded_frontend, dict):
+        recorded_frontend = _unavailable_frontend_identity(
+            "MANIFEST_PREDATES_FRONTEND_BUILD_BINDING"
+        )
+    recorded_dependencies = manifest.get("python_dependencies")
+    if not isinstance(recorded_dependencies, dict):
+        recorded_dependencies = _unavailable_python_dependencies(
+            "MANIFEST_PREDATES_PYTHON_DEPENDENCY_BINDING"
+        )
+    if repo is None:
+        current_frontend = _unavailable_frontend_identity("NO_REPOSITORY_REFERENCE")
+        current_dependencies = _unavailable_python_dependencies(
+            "NO_REPOSITORY_REFERENCE"
+        )
+        target_frontend = _unavailable_frontend_identity("NO_REPOSITORY_REFERENCE")
+    else:
+        repo = Path(repo)
+        current_frontend = resolve_frontend_build_identity(repo)
+        current_dependencies = resolve_python_dependency_fingerprint(repo)
+        if isinstance(app_sha, str) and re.fullmatch(r"[0-9a-f]{40}", app_sha):
+            target_frontend = resolve_frontend_build_identity(
+                repo, code_sha=app_sha, expected_code_sha=app_sha,
+            )
+        else:
+            target_frontend = _unavailable_frontend_identity("NO_TARGET_CODE_SHA")
+
+    risks: list[str] = []
+
+    def _identity_state(
+        recorded: dict, current: dict,
+    ) -> bool | str:
+        recorded_ok = (
+            recorded.get("status") in ("ok", "partial")
+            and isinstance(recorded.get("identity"), str)
+        )
+        current_ok = (
+            current.get("status") in ("ok", "partial")
+            and isinstance(current.get("identity"), str)
+        )
+        if not recorded_ok or not current_ok:
+            return "unknown"
+        return hmac.compare_digest(recorded["identity"], current["identity"])
+
+    frontend_matches = _identity_state(recorded_frontend, current_frontend)
+    if frontend_matches is False:
+        risks.append("FRONTEND_BUILD_CHANGED_SINCE_BACKUP")
+    if recorded_frontend.get("status") == "unavailable":
+        risks.append("FRONTEND_BUILD_IDENTITY_UNAVAILABLE")
+    recorded_receipt_sha = recorded_frontend.get("receipt_code_sha")
+    recorded_receipt_matches_backup_code: bool | str = "unknown"
+    previous_sha = manifest.get("previous_sha")
+    if (
+        isinstance(recorded_receipt_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", recorded_receipt_sha)
+        and isinstance(previous_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", previous_sha)
+    ):
+        recorded_receipt_matches_backup_code = recorded_receipt_sha == previous_sha
+        if not recorded_receipt_matches_backup_code:
+            risks.append("FRONTEND_BUILD_BOUND_TO_DIFFERENT_BACKUP_CODE_SHA")
+    current_receipt_sha = current_frontend.get("receipt_code_sha")
+    receipt_sha_matches: bool | str = "unknown"
+    if (
+        isinstance(current_receipt_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", current_receipt_sha)
+        and isinstance(app_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", app_sha)
+    ):
+        receipt_sha_matches = current_receipt_sha == app_sha
+        if not receipt_sha_matches:
+            risks.append("FRONTEND_BUILD_BOUND_TO_DIFFERENT_CODE_SHA")
+    restorable_by_git = target_frontend.get("status") in ("ok", "partial")
+    frontend = {
+        "recorded_status": recorded_frontend.get("status"),
+        "recorded_identity": recorded_frontend.get("identity"),
+        "recorded_receipt_code_sha": recorded_receipt_sha,
+        "recorded_build_origin": recorded_frontend.get("build_origin"),
+        "recorded_ui_build_version": recorded_frontend.get("ui_build_version"),
+        "current_status": current_frontend.get("status"),
+        "current_identity": current_frontend.get("identity"),
+        "current_receipt_code_sha": current_frontend.get("receipt_code_sha"),
+        "matches_recorded": frontend_matches,
+        "target_code_sha": app_sha,
+        "recorded_receipt_sha_matches_backup_code": (
+            recorded_receipt_matches_backup_code
+        ),
+        "receipt_sha_matches_target_code": receipt_sha_matches,
+        "restorable_by_git": restorable_by_git,
+        "target_code_receipt_status": target_frontend.get("status"),
+        "target_code_receipt_reason": target_frontend.get("reason"),
+        "not_restorable_by_git_reason": (
+            None if restorable_by_git
+            else "frontend build receipts are gitignored build output; a Git "
+                 "checkout cannot restore static/vue-catalog or static/vue-app"
+        ),
+    }
+
+    recorded_installed = recorded_dependencies.get("installed")
+    if not isinstance(recorded_installed, dict):
+        recorded_installed = {}
+    current_installed = current_dependencies.get("installed")
+    if not isinstance(current_installed, dict):
+        current_installed = {}
+    changed_packages: dict[str, dict] = {}
+    for name in sorted(set(recorded_installed) | set(current_installed)):
+        before = recorded_installed.get(name)
+        after = current_installed.get(name)
+        if before != after:
+            changed_packages[name] = {"backup": before, "current": after}
+    if recorded_installed and current_installed:
+        installed_matches: bool | str = not changed_packages
+    else:
+        installed_matches = "unknown"
+    if installed_matches is False:
+        risks.append("PYTHON_DEPENDENCY_VERSION_DRIFT")
+    if recorded_dependencies.get("status") == "unavailable":
+        risks.append("PYTHON_DEPENDENCIES_IDENTITY_UNAVAILABLE")
+    recorded_requirements_digest = recorded_dependencies.get(
+        "requirements_digest"
+    )
+    current_requirements_digest = current_dependencies.get("requirements_digest")
+    if isinstance(recorded_requirements_digest, str) and isinstance(
+        current_requirements_digest, str
+    ):
+        requirements_match: bool | str = hmac.compare_digest(
+            recorded_requirements_digest, current_requirements_digest,
+        )
+        if requirements_match is False:
+            risks.append("PYTHON_REQUIREMENTS_CHANGED_SINCE_BACKUP")
+    else:
+        requirements_match = "unknown"
+    dependencies = {
+        "recorded_status": recorded_dependencies.get("status"),
+        "recorded_fingerprint": recorded_dependencies.get("fingerprint"),
+        "recorded_requirements_digest": recorded_requirements_digest,
+        "recorded_installed_count": recorded_dependencies.get("installed_count"),
+        "current_status": current_dependencies.get("status"),
+        "current_fingerprint": current_dependencies.get("fingerprint"),
+        "current_requirements_digest": current_requirements_digest,
+        "installed_matches": installed_matches,
+        "requirements_match": requirements_match,
+        "changed_packages": changed_packages,
+    }
+    return {
+        "status": "checked",
+        "target_code_sha": app_sha,
+        "frontend_build": frontend,
+        "python_dependencies": dependencies,
+        "risks": sorted(set(risks)),
+        "binding_note": (
+            "recorded identities come from backup.json and are compared with "
+            "the deployed worktree now; this tool does not mutate the frontend "
+            "build, Python packages, requirements or Git branches"
+        ),
+    }
+
+
 def _systemctl(*args: str) -> str:
     """Single, monkeypatchable entry point for every systemd interaction."""
     return command("systemctl", *args)
+
+
+def _hash_config_file(path: object) -> dict:
+    """Read-only hash of one unit/drop-in/environment file for later diffing."""
+    entry: dict = {
+        "path": str(path),
+        "status": "missing",
+        "sha256": None,
+        "bytes": None,
+        "symlink_target": None,
+    }
+    try:
+        candidate = Path(str(path))
+        if candidate.is_symlink():
+            entry["status"] = "symlink"
+            try:
+                entry["symlink_target"] = os.readlink(candidate)
+            except OSError:
+                entry["symlink_target"] = None
+        if not candidate.exists():
+            if entry["status"] == "symlink":
+                entry["status"] = "broken_symlink"
+            return entry
+        if candidate.is_dir():
+            entry["status"] = "not_a_file"
+            return entry
+        payload = candidate.read_bytes()
+        entry["sha256"] = hashlib.sha256(payload).hexdigest()
+        entry["bytes"] = len(payload)
+        if entry["status"] != "symlink":
+            entry["status"] = "readable"
+    except OSError as exc:
+        entry["status"] = "unreadable"
+        entry["error"] = str(exc)
+    return entry
+
+
+def _systemd_environment_file_paths(value: str) -> list[str]:
+    """Extract file paths from ``systemctl show -p EnvironmentFiles`` output."""
+    paths: list[str] = []
+    for token in (value or "").split():
+        stripped = token.strip().strip("\"'")
+        if not stripped or stripped.startswith("(") or stripped.startswith("-"):
+            continue
+        if (
+            stripped.startswith("/")
+            or stripped.startswith(".")
+            or Path(stripped).is_absolute()
+        ):
+            paths.append(stripped)
+    return paths
+
+
+def capture_systemd_configuration(
+    units: tuple[str, ...] = (WEB_UNIT, WORKER_UNIT),
+) -> dict:
+    """Read-only snapshot of unit files, drop-ins and environment files.
+
+    Raw ``Environment=`` values are never recorded (they may contain secrets);
+    only their digest and the number of keys are captured.  The snapshot is
+    used to detect configuration drift caused by an upgrade; nothing here
+    writes a unit file, drop-in or environment file.
+    """
+    snapshot: dict = {"probe": "ok", "units": {}, "errors": []}
+    for unit in units:
+        entry: dict = {
+            "unit": unit,
+            "probe": "ok",
+            "fragment_path": None,
+            "fragment": None,
+            "drop_in_paths": [],
+            "drop_ins": [],
+            "environment_files": [],
+            "environment_file_hashes": [],
+            "environment_digest": None,
+            "environment_key_count": None,
+        }
+        try:
+            fragment_path = command(
+                "systemctl", "show", unit, "--value", "-p", "FragmentPath",
+            ).strip()
+            drop_in_value = command(
+                "systemctl", "show", unit, "--value", "-p", "DropInPaths",
+            )
+            env_files_value = command(
+                "systemctl", "show", unit, "--value", "-p", "EnvironmentFiles",
+            )
+            environment_value = command(
+                "systemctl", "show", unit, "--value", "-p", "Environment",
+            )
+        except (UpgradeRefused, OSError) as exc:
+            entry["probe"] = "unavailable"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            snapshot["errors"].append(f"{unit}: {entry['error']}")
+            snapshot["probe"] = "partial"
+            snapshot["units"][unit] = entry
+            continue
+        entry["fragment_path"] = fragment_path or None
+        if fragment_path:
+            entry["fragment"] = _hash_config_file(fragment_path)
+            if entry["fragment"]["status"] not in ("readable", "symlink"):
+                snapshot["probe"] = "partial"
+                snapshot["errors"].append(
+                    f"{unit}: fragment {entry['fragment']['status']}"
+                )
+        for drop_in in (drop_in_value or "").split():
+            entry["drop_in_paths"].append(drop_in)
+            drop_in_hash = _hash_config_file(drop_in)
+            entry["drop_ins"].append(drop_in_hash)
+            if drop_in_hash["status"] not in ("readable", "symlink"):
+                snapshot["probe"] = "partial"
+        for env_file in _systemd_environment_file_paths(env_files_value):
+            entry["environment_files"].append(env_file)
+            env_hash = _hash_config_file(env_file)
+            entry["environment_file_hashes"].append(env_hash)
+            if env_hash["status"] not in ("readable", "symlink"):
+                snapshot["probe"] = "partial"
+        environment_text = environment_value or ""
+        entry["environment_digest"] = hashlib.sha256(
+            environment_text.encode("utf-8", "surrogatepass")
+        ).hexdigest()
+        entry["environment_key_count"] = len({
+            token.split("=", 1)[0]
+            for token in environment_text.split()
+            if "=" in token
+        })
+        snapshot["units"][unit] = entry
+    return snapshot
+
+
+def _systemd_config_fingerprint(entry: dict) -> object:
+    """Comparable projection of one unit snapshot (no raw environment values)."""
+    if not isinstance(entry, dict) or entry.get("probe") != "ok":
+        return None
+
+    def _file_state(config: object) -> object:
+        if not isinstance(config, dict):
+            return None
+        return (
+            config.get("status"),
+            config.get("sha256"),
+            config.get("symlink_target"),
+        )
+
+    return {
+        "fragment_path": entry.get("fragment_path"),
+        "fragment": _file_state(entry.get("fragment")),
+        "drop_in_paths": list(entry.get("drop_in_paths") or ()),
+        "drop_ins": [
+            _file_state(item) for item in entry.get("drop_ins") or ()
+        ],
+        "environment_files": list(entry.get("environment_files") or ()),
+        "environment_file_hashes": [
+            _file_state(item)
+            for item in entry.get("environment_file_hashes") or ()
+        ],
+        "environment_digest": entry.get("environment_digest"),
+        "environment_key_count": entry.get("environment_key_count"),
+    }
+
+
+def compare_systemd_configuration(before: dict, after: dict) -> dict:
+    """Compare two read-only snapshots; a difference is an explicit risk only."""
+    before_units = before.get("units") if isinstance(before, dict) else {}
+    after_units = after.get("units") if isinstance(after, dict) else {}
+    if not isinstance(before_units, dict) or not isinstance(after_units, dict):
+        return {
+            "status": "unavailable",
+            "risk": None,
+            "changed_units": [],
+            "detail": "SNAPSHOT_INVALID",
+        }
+    changed_units: list[str] = []
+    for unit in sorted(set(before_units) | set(after_units)):
+        before_state = _systemd_config_fingerprint(before_units.get(unit, {}))
+        after_state = _systemd_config_fingerprint(after_units.get(unit, {}))
+        if before_state != after_state:
+            changed_units.append(unit)
+    probes = {
+        str(before.get("probe")), str(after.get("probe")),
+    }
+    if "unavailable" in probes or before.get("probe") == "partial" or (
+        after.get("probe") == "partial"
+    ):
+        status = "partial" if changed_units else "unavailable"
+    elif changed_units:
+        status = "changed"
+    else:
+        status = "unchanged"
+    return {
+        "status": status,
+        "risk": SYSTEMD_CONFIG_RISK_CODE if changed_units else None,
+        "changed_units": changed_units,
+        "probe_before": before.get("probe"),
+        "probe_after": after.get("probe"),
+        "errors": list(before.get("errors") or ())
+        + list(after.get("errors") or ()),
+        "note": (
+            "read-only unit/environment file comparison; this tool never "
+            "rewrites a systemd unit, drop-in or environment file"
+        ),
+    }
 
 
 def require_idle_tasks(
@@ -897,6 +1656,43 @@ def enforce_backup_write_silence(
         "forced_reasons": [],
         "status": WRITE_SILENCE_UNVERIFIED,
         "reason": WRITE_SILENCE_REASON,
+    }
+
+
+def require_post_stop_idle(
+    data_dir: Path,
+    *,
+    repo: Path | None = None,
+    block_code: str,
+    force_idle: bool = False,
+) -> dict:
+    """Re-check runtime activity after the services were stopped (N6.1).
+
+    The pre-stop gates already refuse active tasks; this second read-only pass
+    covers the remaining evidence (unreleased execution-resource holds, recent
+    agent heartbeats and the worker build marker) once the services are down.
+    Positive evidence fails closed unless the operator passed the explicit
+    ``--force-idle`` override, which is recorded and never claims consistency.
+    """
+    activity = probe_runtime_activity(Path(data_dir), repo=repo)
+    try:
+        gate = enforce_backup_write_silence(
+            activity, force_idle=force_idle, require_idle_only=False,
+        )
+    except UpgradeRefused as exc:
+        raise UpgradeRefused(
+            f"{block_code}: the post-stop read-only activity recheck still "
+            f"observed runtime activity; refusing to continue automatically: {exc}"
+        ) from exc
+    return {
+        "block_code": block_code,
+        "status": "forced" if gate.get("forced") else "verified",
+        "forced": bool(gate.get("forced")),
+        "forced_reasons": list(gate.get("forced_reasons") or ()),
+        "unknown": list(activity.get("unknown") or ()),
+        "write_silence": WRITE_SILENCE_UNVERIFIED,
+        "write_silence_reason": WRITE_SILENCE_REASON,
+        "activity": activity,
     }
 
 
@@ -1411,7 +2207,10 @@ def load_backup_manifest(backup_dir: Path) -> dict:
     for key in ("application_version", "build_id", "write_silence"):
         if key in manifest and not isinstance(manifest[key], str):
             raise UpgradeRefused(f"BACKUP_MANIFEST_CORRUPT: {key} must be a string")
-    for key in ("application", "backup_scope", "write_silence_detail", "consistency"):
+    for key in (
+        "application", "backup_scope", "write_silence_detail", "consistency",
+        "frontend_build", "python_dependencies",
+    ):
         if key in manifest and not isinstance(manifest[key], dict):
             raise UpgradeRefused(f"BACKUP_MANIFEST_CORRUPT: {key} must be an object")
     for entry in entries:
@@ -1589,6 +2388,13 @@ def _create_backup(
         total_bytes = sum(entry["size_bytes"] for entry in entries)
         application_version = read_application_version(repo_path)
         build_id = resolve_build_identity(repo_path)
+        # N6.1: bind the snapshot to the deployed frontend build identity and
+        # to the Python dependency fingerprint (explicitly unavailable when it
+        # cannot be read; never guessed, never installed/updated here).
+        frontend_build = resolve_frontend_build_identity(
+            repo_path, expected_code_sha=previous_sha,
+        )
+        python_dependencies = resolve_python_dependency_fingerprint(repo_path)
         write_silence_detail = {
             **activity,
             "forced": forced_info["forced"],
@@ -1609,6 +2415,8 @@ def _create_backup(
             # Application identity the backup is bound to (M10-A).
             "application_version": application_version,
             "build_id": build_id,
+            "frontend_build": frontend_build,
+            "python_dependencies": python_dependencies,
             "application": {
                 "version": application_version,
                 "build_id": build_id,
@@ -2076,6 +2884,19 @@ def restore_data_backup(
         )
         _raise_for_schema_assessment(schema_assessment)
 
+    # N6.1: bind the recorded frontend build identity / Python dependency
+    # fingerprint to what is deployed now.  This is read-only and never blocks
+    # by itself; an explicit risk list is attached to the result.
+    identity_reference_sha = (
+        requested_sha if coordinated else (
+            _git_head(repo_path) if repo_path is not None else None
+        )
+    )
+    application_identity_binding = assess_application_identity_binding(
+        manifest, repo_path, app_sha=identity_reference_sha,
+    )
+    identity_risks = list(application_identity_binding.get("risks") or ())
+
     runtime_activity = probe_runtime_activity(data_dir, repo=repo_path)
     summary = {
         "backup_dir": str(backup_dir),
@@ -2090,7 +2911,26 @@ def restore_data_backup(
         "schema_status": schema_assessment.get("status"),
         "schema_assessment": schema_assessment,
         "runtime_activity": runtime_activity,
+        "application_identity_binding": application_identity_binding,
+        "identity_risks": identity_risks,
     }
+    if identity_risks:
+        print(
+            "APPLICATION_IDENTITY_RISK: "
+            + json.dumps(
+                {
+                    "risks": identity_risks,
+                    "frontend_build": application_identity_binding.get(
+                        "frontend_build"
+                    ),
+                    "python_dependencies": application_identity_binding.get(
+                        "python_dependencies"
+                    ),
+                },
+                ensure_ascii=False, sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
     if not apply:
         return {
             "mode": "DRY RUN",
@@ -2121,9 +2961,21 @@ def restore_data_backup(
         backup_dir, data_dir, manifest, repo=repo_path,
     )
     code_switched = False
+    post_stop_activity: dict | None = None
     try:
         _systemctl("stop", WORKER_UNIT)
         _systemctl("stop", WEB_UNIT)
+        post_stop_activity = require_post_stop_idle(
+            data_dir, repo=repo_path,
+            block_code="POST_STOP_ACTIVITY_BLOCK_ROLLBACK",
+            force_idle=override_idle,
+        )
+        print(
+            "POST-STOP IDLE PROBE: "
+            f"{post_stop_activity['status']} "
+            f"forced_reasons={post_stop_activity['forced_reasons']} "
+            "(write_silence stays unverified; this is not a consistency claim)."
+        )
         if coordinated:
             _checkout_application_version(repo_path, application_context)
             code_switched = True
@@ -2147,6 +2999,8 @@ def restore_data_backup(
                 ),
                 "services": "stopped",
                 "application_sha": requested_sha,
+                "post_stop_activity": post_stop_activity,
+                "identity_risks": identity_risks,
                 "retry": (
                     "Rerun the same command after re-verifying the backup; "
                     "databases that already match the manifest are re-verified "
@@ -2192,6 +3046,9 @@ def restore_data_backup(
         entries_restored = (
             len(restoration["restored"]) + len(restoration["already_restored"])
         )
+        branch_restore_command = (
+            f"git -C {repo_path} switch {BRANCH}" if coordinated else None
+        )
         result = {
             "mode": "APPLIED",
             "applied": True,
@@ -2199,6 +3056,7 @@ def restore_data_backup(
             **summary,
             "forced_idle": bool(force_idle),
             "runtime_gate": runtime_gate,
+            "post_stop_activity": post_stop_activity,
             "application_rollback": (
                 APPLICATION_ROLLBACK_APPLIED
                 if coordinated else APPLICATION_ROLLBACK_NOT_REQUESTED
@@ -2208,6 +3066,8 @@ def restore_data_backup(
             "application_context": application_context,
             "code_switched": code_switched,
             "detached_head": bool(coordinated),
+            "branch_restore_required": bool(coordinated),
+            "branch_restore_command": branch_restore_command,
             "database_sha256_verified": True,
             "schema_status": schema_assessment.get("status"),
             "health": health,
@@ -2225,13 +3085,24 @@ def restore_data_backup(
             f"database_sha256_verified=True "
             f"schema_status={result['schema_status']} "
             f"health={json.dumps(health, ensure_ascii=False, sort_keys=True)} "
-            f"entries_restored={entries_restored}"
+            f"entries_restored={entries_restored} "
+            f"identity_risks={identity_risks}"
         )
         if coordinated:
             print(
                 "CODE ROLLED BACK (detached): "
-                f"{requested_sha}. Resume normal upgrades explicitly; this tool "
-                "does not restore the previous branch checkout automatically."
+                f"{requested_sha}. A later --target upgrade is refused until "
+                "the release branch is restored explicitly: "
+                f"{branch_restore_command}. This tool does not restore the "
+                "previous branch checkout automatically and never auto-merges."
+            )
+            print(
+                "FRONTEND BUILD: not restorable by Git (gitignored build "
+                "output); restore static/vue-catalog and static/vue-app from "
+                "the matching build if the deployed UI must match the "
+                f"rollback target {requested_sha}. "
+                f"frontend_restorable_by_git="
+                f"{result['application_identity_binding']['frontend_build']['restorable_by_git']}"
             )
         return result
     except PartialRestoreFailed:
@@ -2276,7 +3147,25 @@ def upgrade(repo: Path, data_dir: Path, target: str, apply: bool,
     if not re.fullmatch(r"[0-9a-f]{40}", target):
         raise UpgradeRefused("TARGET_SHA_REQUIRED: supply a reviewed 40-character commit SHA")
     _require_upgrade_privileges(apply)
+    branch_restore_command = f"git -C {repo} switch {BRANCH}"
     current_branch = command("git", "branch", "--show-current", cwd=repo)
+    if not current_branch:
+        # N6.1: a coordinated rollback deliberately leaves a detached HEAD.
+        # This tool never switches branches or merges on its own; the operator
+        # must restore the release branch explicitly before the next upgrade.
+        _, detached_head, _ = _git_output(repo, "rev-parse", "HEAD")
+        detached_note = (
+            f" at {detached_head[:12]}" if re.fullmatch(r"[0-9a-f]{40}", detached_head)
+            else ""
+        )
+        raise UpgradeRefused(
+            "DETACHED_HEAD_UPGRADE_BLOCKED: the worktree is in detached HEAD "
+            f"state{detached_note}. A coordinated rollback leaves a detached "
+            "HEAD on purpose; this tool never switches branches automatically. "
+            "Restore the release branch explicitly first: "
+            f"{branch_restore_command}   (or: git -C {repo} checkout {BRANCH}) "
+            "then re-run --target."
+        )
     if current_branch != BRANCH:
         raise UpgradeRefused(f"WRONG_BRANCH: {current_branch}")
     if command("git", "status", "--porcelain", cwd=repo):
@@ -2286,6 +3175,9 @@ def upgrade(repo: Path, data_dir: Path, target: str, apply: bool,
     for unit in (WEB_UNIT, WORKER_UNIT):
         if command("systemctl", "is-active", unit) != "active":
             raise UpgradeRefused(f"SERVICE_NOT_HEALTHY_BEFORE_UPGRADE: {unit}")
+    # N6.1 item 2: read-only systemd configuration snapshot taken before the
+    # services are touched; it is compared after the upgrade and never edited.
+    systemd_config_before = capture_systemd_configuration() if apply else None
     command("git", "fetch", "--no-tags", "origin", BRANCH, cwd=repo)
     command("git", "merge-base", "--is-ancestor", previous, target, cwd=repo)
     command("git", "merge-base", "--is-ancestor", target, "FETCH_HEAD", cwd=repo)
@@ -2322,6 +3214,20 @@ def upgrade(repo: Path, data_dir: Path, target: str, apply: bool,
     switched = False
     try:
         require_idle_tasks(data_dir)
+        # N6.1 item 3: second read-only activity recheck after the services
+        # stopped (holds/heartbeats/worker marker); positive evidence fails
+        # closed and --force-idle is the only explicit override.
+        post_stop_activity = require_post_stop_idle(
+            data_dir, repo=repo,
+            block_code="POST_STOP_ACTIVITY_BLOCK_UPGRADE",
+            force_idle=force_idle,
+        )
+        print(
+            "POST-STOP IDLE PROBE: "
+            f"{post_stop_activity['status']} "
+            f"forced_reasons={post_stop_activity['forced_reasons']} "
+            "(write_silence stays unverified; this is not a consistency claim)."
+        )
         command("git", "merge", "--ff-only", target, cwd=repo)
         switched = True
         changed = restore_tracked_code_modes(repo)
@@ -2342,6 +3248,23 @@ def upgrade(repo: Path, data_dir: Path, target: str, apply: bool,
                 "BACKUP_TARGET_SHA_MISMATCH: backup manifest does not record "
                 f"the deployed target {target}"
             )
+        if systemd_config_before is not None:
+            systemd_configuration = compare_systemd_configuration(
+                systemd_config_before, capture_systemd_configuration(),
+            )
+            if systemd_configuration["risk"]:
+                print(
+                    "SYSTEMD_CONFIGURATION_RISK: "
+                    + json.dumps(systemd_configuration, ensure_ascii=False,
+                                 sort_keys=True),
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "SYSTEMD_CONFIGURATION: unchanged during the upgrade "
+                    "(read-only comparison; units/environment files were "
+                    "never edited by this tool)."
+                )
         if backup is None:
             # Preserve the historical output for the pre-existing invocation.
             print(f"SUCCESS: {target[:12]} Web={health.get('version')} Worker=active")
@@ -2352,6 +3275,20 @@ def upgrade(repo: Path, data_dir: Path, target: str, apply: bool,
                 f"manifest={backup['manifest_sha256'][:12]}"
             )
     except Exception:
+        if systemd_config_before is not None:
+            try:
+                observed_configuration = compare_systemd_configuration(
+                    systemd_config_before, capture_systemd_configuration(),
+                )
+                if observed_configuration["status"] in ("changed", "partial"):
+                    print(
+                        "SYSTEMD_CONFIGURATION_RISK_ON_FAILURE: "
+                        + json.dumps(observed_configuration, ensure_ascii=False,
+                                     sort_keys=True),
+                        file=sys.stderr,
+                    )
+            except Exception:  # noqa: BLE001 - never mask the original failure
+                pass
         if not switched:
             # No code was switched; restore the previous running services.
             subprocess.run(["systemctl", "start", WEB_UNIT], check=False)
@@ -2371,6 +3308,12 @@ def upgrade(repo: Path, data_dir: Path, target: str, apply: bool,
 
 
 def _print_backup_result(result: dict) -> None:
+    frontend_build = result.get("frontend_build")
+    if not isinstance(frontend_build, dict):
+        frontend_build = {}
+    python_dependencies = result.get("python_dependencies")
+    if not isinstance(python_dependencies, dict):
+        python_dependencies = {}
     print(json.dumps({
         "mode": "BACKUP_ONLY",
         "backup_dir": result["backup_dir"],
@@ -2382,6 +3325,21 @@ def _print_backup_result(result: dict) -> None:
         "entries_verified": result.get("entries_verified"),
         "application_version": result.get("application_version"),
         "build_id": result.get("build_id"),
+        "frontend_build": {
+            key: frontend_build.get(key)
+            for key in (
+                "status", "reason", "identity", "receipt_code_sha",
+                "build_origin", "matches_code_sha", "ui_build_version",
+                "verified_asset_bytes",
+            )
+        },
+        "python_dependencies": {
+            key: python_dependencies.get(key)
+            for key in (
+                "status", "reason", "fingerprint", "requirements_digest",
+                "installed_count",
+            )
+        },
         "schema_versions": result.get("schema_versions"),
         "write_silence": result.get("write_silence"),
         "write_silence_detail": result.get("write_silence_detail"),
@@ -2419,7 +3377,27 @@ def main() -> int:
             "--rollback-application-to <40-hex-SHA> to additionally require the "
             "target SHA to be the backup previous_sha or an ancestor, verify the "
             "backup database schema against that code (fail-closed) and perform "
-            "a non-destructive detached checkout before the restore."
+            "a non-destructive detached checkout before the restore.\n"
+            "Application identity binding: backup.json records the deployed "
+            "frontend build identity (static/vue-catalog/offline-assets.json and "
+            "static/vue-app/offline-assets.json receipts, UI_BUILD_VERSION) and "
+            "a Python dependency fingerprint (requirements*.txt digests plus "
+            "installed key distributions). Unreadable identities are recorded as "
+            "explicit 'unavailable', never guessed. The frontend build "
+            "directories are gitignored, so --rollback cannot restore them from "
+            "Git; the rollback result reports that risk explicitly.\n"
+            "Detached HEAD: a coordinated --rollback leaves a detached HEAD. A "
+            "later --target upgrade is refused with the exact 'git switch' "
+            "command until the release branch is restored explicitly; this tool "
+            "never switches branches or merges on its own.\n"
+            "systemd configuration: an --apply upgrade hashes the unit files, "
+            "drop-ins and environment files before and after and reports "
+            "SYSTEMD_CONFIGURATION_CHANGED_DURING_UPGRADE as an explicit risk; it "
+            "never edits them.\n"
+            "Post-stop recheck: after the services stop, runtime activity "
+            "(active tasks, unreleased holds, agent heartbeats, worker build "
+            "marker) is re-probed and positive evidence fails closed; only the "
+            "explicit --force-idle override records a forced decision."
         ),
     )
     parser.add_argument("--repo", type=Path, default=Path("/data/platform/aixunlianpingtai"))
