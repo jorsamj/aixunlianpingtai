@@ -998,13 +998,25 @@ class AgentExecutionWorkdir:
         path.unlink(missing_ok=True)
 
     def read_execution_metadata(self, task_id: str, generation: int) -> dict[str, Any]:
+        """Read the recovery metadata persisted with the start response.
+
+        The returned Assignment generation/GPU UUID come only from this
+        workdir's own execution.json, which was written from the verified start
+        response before any child process could be launched. They are never
+        filled in from a fresh central value during recovery.
+
+        Historical workdirs written before Assignment evidence was persisted
+        legitimately have no ``assignment`` object and are reported as not
+        recorded (0/""). An ``assignment`` object that exists but is unusable is
+        corruption: it must fail closed instead of degrading to the legacy shape.
+        """
         lease = SimpleNamespace(task_id=str(task_id), generation=int(generation))
         target = self.path_for(lease)
         path = target / "execution.json"
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ValueError("persisted execution metadata path is unsafe")
         if not path.is_file():
-            return {}
+            return {"assignment_generation": 0, "gpu_uuid": ""}
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -1013,15 +1025,34 @@ class AgentExecutionWorkdir:
                 or int(raw.get("generation") or 0) != int(generation)):
             raise ValueError("persisted execution metadata lineage mismatch")
         assignment = raw.get("assignment")
+        if assignment is None or assignment == {}:
+            return {"assignment_generation": 0, "gpu_uuid": ""}
         if not isinstance(assignment, dict):
-            assignment = {}
-        selected = {}
+            raise ValueError("persisted execution assignment evidence is invalid")
+        raw_generation = assignment.get("generation")
+        if raw_generation is None:
+            raw_generation = 0
+        if type(raw_generation) is not int or int(raw_generation) < 0:
+            raise ValueError("persisted execution assignment generation is invalid")
+        assignment_generation = int(raw_generation)
+        gpu_uuid = ""
         config = assignment.get("resolved_execution_config")
-        if isinstance(config, dict):
-            selected = config.get("selected_gpu") if isinstance(config.get("selected_gpu"), dict) else {}
+        if config is not None:
+            if not isinstance(config, dict):
+                raise ValueError("persisted execution config is invalid")
+            selected = config.get("selected_gpu")
+            if selected is not None:
+                if not isinstance(selected, dict):
+                    raise ValueError("persisted execution selected GPU is invalid")
+                raw_uuid = selected.get("uuid")
+                if raw_uuid is not None and not isinstance(raw_uuid, str):
+                    raise ValueError("persisted execution GPU UUID is invalid")
+                gpu_uuid = str(raw_uuid or "").strip()
+                if gpu_uuid and not _SAFE_COMPONENT.fullmatch(gpu_uuid):
+                    raise ValueError("persisted execution GPU UUID is invalid")
         return {
-            "assignment_generation": int(assignment.get("generation") or 0),
-            "gpu_uuid": str((selected or {}).get("uuid") or ""),
+            "assignment_generation": assignment_generation,
+            "gpu_uuid": gpu_uuid,
         }
 
     def list_process_identities(self) -> list[dict[str, Any]]:

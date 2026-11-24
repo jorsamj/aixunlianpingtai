@@ -406,9 +406,18 @@ def test_workdir_persists_only_exact_nonsecret_process_identity_for_recovery(tmp
         "command_hash": "a" * 64,
         "group_token": "",
     }
+    # list_process_identities() is the recovery projection: the exact
+    # process-identity.json fields plus Assignment/GPU metadata read only from
+    # this workdir's own execution.json (the start response persisted before
+    # launch), never from a fresh central query. The fixture's Assignment
+    # generation is 3 and the resolved config has no selected GPU, so the
+    # recovery metadata must be exactly that, not a fallback to the execution
+    # generation.
     assert workdirs.list_process_identities() == [{
         "task_id": current.task_id,
         "generation": current.generation,
+        "assignment_generation": 3,
+        "gpu_uuid": "",
         "pid": 4321,
         "create_time": 12345.5,
         "command_hash": "a" * 64,
@@ -422,6 +431,105 @@ def test_workdir_persists_only_exact_nonsecret_process_identity_for_recovery(tmp
     workdirs.clear_process_identity(current)
     assert not path.exists()
     workdirs.cleanup(current)
+    assert not target.exists()
+
+
+def test_recovery_metadata_separates_legacy_missing_from_corrupt_execution(tmp_path):
+    """Dual-slot recovery metadata must be local, exact, and fail closed.
+
+    The process-identity.json contract stays exactly as before. The two new
+    recovery fields are derived only from this Agent workdir's own
+    execution.json, which was persisted from the verified start response before
+    any child launch. Historical records written before those fields existed
+    legitimately lack Assignment evidence and must be reported as
+    "not recorded" (0/""); a record that does carry Assignment evidence but is
+    unreadable/lineage-broken is corruption and must never be downgraded to the
+    legacy shape.
+    """
+    body = start_body()
+    body["assignment"]["generation"] = 5
+    body["assignment"]["resolved_execution_config"] = {
+        "selected_device": "cuda:0",
+        "selected_gpu": {"uuid": "GPU-A"},
+    }
+    dual = RemoteExecutionLease.from_start_response(body)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    target = workdirs.prepare(dual)
+    workdirs.persist_process_identity(
+        dual,
+        ProcessIdentity(pid=77, create_time=9876.5, command_hash="c" * 64),
+    )
+
+    # process-identity.json has no recovery metadata and no transport secrets.
+    serialized = (target / "process-identity.json").read_text(encoding="utf-8")
+    assert json.loads(serialized) == {
+        "task_id": "task-1",
+        "generation": 1,
+        "pid": 77,
+        "create_time": 9876.5,
+        "command_hash": "c" * 64,
+        "group_token": "",
+    }
+    assert "GPU-A" not in serialized
+    assert dual.lease_token not in serialized
+
+    assert workdirs.list_process_identities() == [{
+        "task_id": "task-1",
+        "generation": 1,
+        "assignment_generation": 5,
+        "gpu_uuid": "GPU-A",
+        "pid": 77,
+        "create_time": 9876.5,
+        "command_hash": "c" * 64,
+        "group_token": "",
+    }]
+
+    execution_path = target / "execution.json"
+    dual_execution = json.loads(execution_path.read_text(encoding="utf-8"))
+
+    # Historical single-slot record: the persisted execution predates the
+    # Assignment evidence. Recovery must still expose the exact process identity
+    # and report the metadata as absent instead of borrowing the execution
+    # generation or any central current value.
+    legacy_execution = dict(dual_execution)
+    legacy_execution.pop("assignment", None)
+    execution_path.write_text(json.dumps(legacy_execution), encoding="utf-8")
+    assert workdirs.list_process_identities() == [{
+        "task_id": "task-1",
+        "generation": 1,
+        "assignment_generation": 0,
+        "gpu_uuid": "",
+        "pid": 77,
+        "create_time": 9876.5,
+        "command_hash": "c" * 64,
+        "group_token": "",
+    }]
+
+    # Corrupt dual-slot record: Assignment evidence exists but is unusable. This
+    # is not the legacy shape and must fail closed while retaining the identity.
+    for malformed in (
+        {"generation": "not-an-int"},
+        {"generation": -5},
+        {"generation": 5, "resolved_execution_config": "broken"},
+        {"generation": 5, "resolved_execution_config": {"selected_gpu": "broken"}},
+    ):
+        corrupt_execution = dict(dual_execution)
+        corrupt_execution["assignment"] = malformed
+        execution_path.write_text(json.dumps(corrupt_execution), encoding="utf-8")
+        with pytest.raises(ValueError):
+            workdirs.list_process_identities()
+        assert (target / "process-identity.json").is_file()
+
+    # Lineage corruption must also fail closed rather than read as legacy.
+    lineage_execution = dict(legacy_execution)
+    lineage_execution["task_id"] = "task-2"
+    execution_path.write_text(json.dumps(lineage_execution), encoding="utf-8")
+    with pytest.raises(ValueError, match="lineage"):
+        workdirs.list_process_identities()
+
+    execution_path.write_text(json.dumps(dual_execution), encoding="utf-8")
+    workdirs.clear_process_identity(dual)
+    workdirs.cleanup(dual)
     assert not target.exists()
 
 
