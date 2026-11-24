@@ -566,6 +566,13 @@ parser.add_argument("--resource-context", required=True)
 parser.add_argument("--resource-resolution", required=True)
 args, _unknown = parser.parse_known_args()
 
+# Mirror the production Worker: report the cache the frozen plan actually
+# resolved (False / "ram" / "disk"). Hard-coding False made the fake trainer
+# diverge from the resolved contract whenever the resolver picked a real cache
+# mode, so the platform correctly fenced the execution for a resource mismatch.
+_cache_text = str(getattr(args, "cache", "")).strip().lower()
+actual_cache = False if _cache_text in ("", "false", "0", "none") else _cache_text
+
 runtime_root = Path(__file__).resolve().parent
 runtime_root.joinpath("started.marker").write_text("started", encoding="utf-8")
 # Per-job marker: a shared marker lets a second concurrent task in the same
@@ -610,11 +617,11 @@ job.update({{
     "runtime_resources": {{
         "runtime_batch": int(args.batch),
         "runtime_workers": int(args.workers),
-        "runtime_cache": False,
+        "runtime_cache": actual_cache,
         "actual_device": args.assigned_device,
         "actual_batch": int(args.batch),
         "actual_workers": int(args.workers),
-        "actual_cache": False,
+        "actual_cache": actual_cache,
         "actual_precision": args.precision,
     }},
 }})

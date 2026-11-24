@@ -465,6 +465,56 @@ class AgentTrainingRunner:
             except OSError:
                 pass  # Retain files when even the local audit write is unavailable.
 
+    def _persist_stop_evidence(self, lease, identity, *, reason: str) -> None:
+        """Record a verified local stop without discarding the original identity.
+
+        The durable ProcessIdentity is the only local witness that a specific
+        PID/create_time existed. Deleting it before the control plane confirms
+        the stop proof leaves the task RUNNING with its GPU Hold HELD and no
+        evidence that could ever prove otherwise, so the verified stop is
+        recorded *next to* the identity and the identity is cleared only after
+        an authoritative central answer.
+        """
+        try:
+            workdir = self.workdirs.path_for(lease)
+        except (OSError, ValueError):
+            return
+        record = {
+            "task_id": str(lease.task_id),
+            "execution_attempt": int(lease.generation),
+            "proof_type": "PROCESS_STOP_VERIFIED",
+            "stop_verified": True,
+            "no_process_launched": False,
+            "reason": str(reason)[:300],
+            "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "process_identity": {
+                "pid": int(getattr(identity, "pid", 0) or 0),
+                "create_time": float(getattr(identity, "create_time", 0.0) or 0.0),
+                "command_hash": str(getattr(identity, "command_hash", "") or ""),
+            },
+        }
+        try:
+            self.workdirs._atomic_write_json(
+                workdir / "process-stop-verified.json", record
+            )
+        except (OSError, ValueError):
+            pass  # Never mask the stop result with a diagnostics failure.
+
+    def _confirm_stop_cleanup(self, lease) -> None:
+        """Drop the durable process identity now that the control plane agrees.
+
+        Only callers holding an authoritative terminal answer (or a completed
+        recovery proof) may remove it; clearing it earlier destroys the only
+        evidence a restart needs.
+        """
+        try:
+            self.workdirs.clear_process_identity(lease)
+        except (OSError, ValueError) as error:
+            self._recovery_error = (
+                "training process identity cleanup could not be persisted: "
+                f"{type(error).__name__}: {error}"
+            )
+
     def _terminate_active(self, *, strict: bool = False) -> bool:
         lease, identity = self._active_process()
         if identity is None:
@@ -482,16 +532,7 @@ class AgentTrainingRunner:
                 raise RemoteExecutionFenced(self._recovery_error) from error
             return False
         if lease is not None:
-            try:
-                self.workdirs.clear_process_identity(lease)
-            except (OSError, ValueError) as error:
-                self._recovery_error = (
-                    "training process identity cleanup could not be persisted: "
-                    f"{type(error).__name__}: {error}"
-                )
-                if strict:
-                    raise RemoteExecutionFenced(self._recovery_error) from error
-                return False
+            self._persist_stop_evidence(lease, identity, reason="terminate_active")
         self._clear_active_process()
         self._recovery_error = ""
         return True
@@ -1435,7 +1476,7 @@ class AgentTrainingRunner:
     ) -> dict[str, Any] | None:
         try:
             self._submit_stop_proof(lease)
-            return self.client.finish(
+            body = self.client.finish(
                 lease,
                 status,
                 result_ref=result_ref,
@@ -1443,6 +1484,10 @@ class AgentTrainingRunner:
             )
         except (NodeExecutorHTTPError, OSError, requests.RequestException, AgentTrainingRuntimeError):
             return None
+        # The control plane just accepted this terminal state, so the durable
+        # process identity may now be dropped safely.
+        self._confirm_stop_cleanup(lease)
+        return body
 
     def _runtime_result(self, job: Mapping[str, Any]) -> dict[str, Any]:
         keys = (
@@ -2099,6 +2144,9 @@ class AgentTrainingRunner:
                     "control plane returned unexpected training terminal "
                     f"status: {status or '<empty>'}"
                 )
+            # Confirmed terminal state: the durable process identity is no
+            # longer the only witness and may be released.
+            self._confirm_stop_cleanup(lease)
             committed = True
             return AgentTrainingOutcome(
                 lease.task_id,

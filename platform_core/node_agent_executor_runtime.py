@@ -116,6 +116,27 @@ def _lease_window_seconds(
     # instead of fencing on the first blip of a long-running execution.
     return DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS
 
+def _granted_lease_seconds(lease: RemoteExecutionLease, ttl: float) -> float:
+    """Seconds this execution is provably owned for, from the granted lease.
+
+    The start response carries the exact deadline the control plane granted.
+    A monitor constructed late must not be handed a full TTL on top of it, so
+    the initial deadline is the smaller of that remaining time and one TTL.
+    """
+    raw = str(getattr(lease, "lease_expires_at", "") or "").strip()
+    try:
+        expiry = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ttl
+    now_wall = datetime.now(expiry.tzinfo) if expiry.tzinfo is not None else datetime.now()
+    remaining = (expiry - now_wall).total_seconds()
+    if remaining <= 0:
+        # Already past the granted deadline: allow exactly one bounded renewal
+        # attempt (a control plane that is up will renew), never a full TTL.
+        return min(float(ttl), 1.0)
+    return min(float(ttl), remaining)
+
+
 def _json_error(body: object, fallback: str) -> tuple[str, str]:
     detail = body.get("detail") if isinstance(body, Mapping) else None
     if isinstance(detail, Mapping):
@@ -451,6 +472,7 @@ class NodeExecutorClient:
         current_item: str | None = None,
         resource_resolution: Mapping[str, Any] | None = None,
         runtime_resources: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "execution_lease_token": lease.lease_token,
@@ -469,6 +491,7 @@ class NodeExecutorClient:
         return self._post(
             f"/executions/{quote(lease.task_id, safe='')}/heartbeat",
             payload,
+            timeout=timeout,
         )
 
     def append_log(self, lease: RemoteExecutionLease, text: str) -> dict[str, Any]:
@@ -1242,7 +1265,15 @@ class ExecutionLeaseMonitor:
         self.last_transport_error = ""
         self._lease_seconds = _lease_window_seconds(lease, lease_seconds)
         self._retry_sleep = max(0.0, float(retry_sleep))
-        self._last_verified = time.monotonic()
+        # Monotonic deadline of the lease we were actually granted. It never
+        # extends a lease the control plane has not renewed: a successful beat
+        # moves it to now + TTL (the control plane renews on every beat), and
+        # nothing else moves it forward.
+        now = time.monotonic()
+        granted = _granted_lease_seconds(lease, self._lease_seconds)
+        self._deadline = now + granted
+        self._last_verified = now
+        self._beat_lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
     @property
@@ -1253,6 +1284,11 @@ class ExecutionLeaseMonitor:
     @property
     def lease_seconds(self) -> float:
         return self._lease_seconds
+
+    @property
+    def remaining_lease_seconds(self) -> float:
+        """Seconds left before ownership would have to be dropped (never negative)."""
+        return max(0.0, self._deadline - time.monotonic())
 
     def _mark_fenced(self, error: BaseException) -> None:
         detail = f"{type(error).__name__}: {error}"
@@ -1282,7 +1318,14 @@ class ExecutionLeaseMonitor:
         return status >= 400 and status not in _TRANSPORT_STATUS_CODES
 
     def _lease_window_exhausted(self) -> bool:
-        return (time.monotonic() - self._last_verified) >= self._lease_seconds
+        return time.monotonic() >= self._deadline
+
+    def _request_timeout(self) -> float:
+        """Never let a renewal request outlive the lease it is renewing."""
+        client_timeout = float(getattr(self.client, "timeout", 0) or 0)
+        remaining = self.remaining_lease_seconds
+        ceiling = client_timeout if client_timeout > 0 else DEFAULT_EXECUTOR_TIMEOUT_SECONDS
+        return max(1.0, min(ceiling, remaining))
 
     def beat(
         self,
@@ -1293,8 +1336,6 @@ class ExecutionLeaseMonitor:
         resource_resolution: Mapping[str, Any] | None = None,
         runtime_resources: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if self.fenced.is_set():
-            raise RemoteExecutionFenced(self.last_error or "remote execution is fenced")
         heartbeat_kwargs = {
             "progress": progress,
             "stage": stage,
@@ -1303,31 +1344,58 @@ class ExecutionLeaseMonitor:
         }
         if runtime_resources is not None:
             heartbeat_kwargs["runtime_resources"] = runtime_resources
-        while True:
-            try:
-                body = self.client.heartbeat(self.lease, **heartbeat_kwargs)
-            except (NodeExecutorHTTPError, requests.RequestException, OSError) as error:
-                if self._is_authoritative_fence(error):
-                    self._mark_fenced(error)
-                    raise RemoteExecutionFenced(self.last_error) from error
-                self.transport_failures += 1
-                self.last_transport_error = f"{type(error).__name__}: {error}"[:400]
-                if self._lease_window_exhausted():
-                    self._mark_fenced(NodeExecutorHTTPError(
-                        "EXECUTION_LEASE_UNVERIFIED",
-                        "execution lease was not renewed within its validity window "
-                        f"({self._lease_seconds:.1f}s): {self.last_transport_error}",
-                    ))
-                    raise RemoteExecutionFenced(self.last_error) from error
-                if self._retry_sleep:
-                    time.sleep(self._retry_sleep)
-                continue
-            self.transport_failures = 0
-            self.last_transport_error = ""
-            self._last_verified = time.monotonic()
-            if bool(body.get("cancel_requested")):
-                self.cancel_requested.set()
-            return body
+        # Single-flight: foreground stage beats and the background renewal may
+        # not interleave their state updates, and a response that arrives after
+        # another thread fenced must not resurrect the execution.
+        with self._beat_lock:
+            if self.fenced.is_set():
+                raise RemoteExecutionFenced(
+                    self.last_error or "remote execution is fenced"
+                )
+            while True:
+                if self.stop_event.is_set():
+                    raise RemoteExecutionFenced(
+                        "execution monitor was stopped before the lease was renewed"
+                    )
+                # Always attempt the renewal first: an expired granted deadline
+                # is not proof of loss until the control plane also refuses it.
+                try:
+                    body = self.client.heartbeat(
+                        self.lease, timeout=self._request_timeout(), **heartbeat_kwargs
+                    )
+                except (NodeExecutorHTTPError, requests.RequestException, OSError) as error:
+                    if self._is_authoritative_fence(error):
+                        self._mark_fenced(error)
+                        raise RemoteExecutionFenced(self.last_error) from error
+                    self.transport_failures += 1
+                    self.last_transport_error = f"{type(error).__name__}: {error}"[:400]
+                    if self._lease_window_exhausted():
+                        self._mark_fenced(NodeExecutorHTTPError(
+                            "EXECUTION_LEASE_UNVERIFIED",
+                            "execution lease was not renewed within its validity window "
+                            f"({self._lease_seconds:.1f}s): {self.last_transport_error}",
+                        ))
+                        raise RemoteExecutionFenced(self.last_error) from error
+                    if self._retry_sleep:
+                        # Cancellable wait: a stopped monitor must not keep the
+                        # runner alive for the rest of the lease window.
+                        if self.stop_event.wait(self._retry_sleep):
+                            raise RemoteExecutionFenced(
+                                "execution monitor was stopped before the lease was renewed"
+                            )
+                    continue
+                if self.fenced.is_set():
+                    # Another beat fenced while this request was in flight.
+                    raise RemoteExecutionFenced(
+                        self.last_error or "remote execution is fenced"
+                    )
+                self.transport_failures = 0
+                self.last_transport_error = ""
+                self._last_verified = time.monotonic()
+                self._deadline = self._last_verified + self._lease_seconds
+                if bool(body.get("cancel_requested")):
+                    self.cancel_requested.set()
+                return body
 
     def _serve(self) -> None:
         while not self.stop_event.wait(self.interval):
