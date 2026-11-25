@@ -60,3 +60,23 @@ bootstrap 列表只读复用与发布仍检查原项目、SQL revision、原锁�
 前端未修改，算法卡片、素材人工标注入口、AI 三栏、菜单和业务流程保持。保护文档/VERSION/AGENTS 未改，未访问 A800/4070/生产或启用双槽、自动清理、supervisor-required、PostgreSQL 正式切换。
 
 本轮完成后停止，交 GPT 独立审计；CI_PENDING 不等于验收通过。
+
+## 后续批次：素材目录与只读标签投影（2026-11-25）
+
+起点 c183ab3d；A 832e168d 修复实际 CI 失效守卫，保留全部业务语义；B 327023ff399263e93b261c68cf08f5c534622bfc。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，不沿用旧 CI 验收新代码。
+
+完整迁移单元为“素材浏览、数据集目录管理及只读标签/质量投影”，不是全部素材/标签业务：
+- v61 素材分页、筛选、ID/跨页解析、状态统计、授权原内容、授权缩略图，共 5 接口。
+- 数据集目录读取/创建/编辑共 3 接口。
+- 兼容图片列表、标签目录、数据集质量、数据集统计共 4 接口。
+- dataset_quality_report 的业务投影同时迁出；原 DatasetReq 字段/默认值保留。
+
+material_catalog_api 只承担 HTTP，material_catalog_service 持有上述业务唯一实现，contracts 保留原 DatasetReq。无反向 app 导入，无新 Repository/SQL、共享全局复制或第二缓存。使用多组 Router 原位装配以保留原有穿插的存储生命周期接口顺序，不通过集中提前注册改变匹配次序。
+
+原 MaterialRepository 的 list_page/list_ids/iter_filtered_ids/revision/processing_status_counts，原 AnnotationRepository 对外读取访问器、StorageManager 的内容/thumbnail 验证锁、后台标注索引调度 Owner 保留。数据集元数据沿原 ensure_default_datasets/datasets_file/write_json 访问器；未改变原锁或事务。分页入口不新增整库读取，兼容旧图片全量读取行为保持，未借迁移声称修复其历史性能问题。
+
+已定向定位迁出路由/函数/模型/URL 与测试/Workflow 引用。现有兼容调用保留；未发现 B 需要迁移的额外旧源码守卫。A 将 intranet-mode-contract 的本地创建检查改查真实 Router 委派/Service 和原 LOCAL 来源，Label Normalization 的算法详情声明使用 AST 检查真实 GET，避免引号耦合，其余守卫不删。
+
+静态证据：app.py 28,264→28,001 行，直接 HTTP 316→304+新 Router 12；展开后有序 HTTP 声明/签名/说明及其他 Router 注册相同。13 个业务/辅助函数依赖名称还原后 AST 一致；未定义名称检查通过。原 material_reader_views 补旧 12 接口 OpenAPI/operationId/DatasetReq 检查；原 Algorithm SQL Store HTTP Job 复用分页、统计、过滤、内容测试，无新 workflow。本机仅 py_compile、node --check（守卫语法）、定向 AST/符号检查和 git diff --check，未执行任何运行期测试。
+
+剩余明确边界：素材删除与引用/恢复事务、GT 提交回执、标签写入/合并、AI 审核、治理执行，以及已模块化的 material_batches、训练 Picker/公共负池继续原 Owner。后续需沿这些共享锁和生命周期边界迁移，不伪称已经迁完，不改 UI。生产/硬件、运行时展开及准确新 SHA CI 尚待验证。
