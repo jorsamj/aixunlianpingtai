@@ -13,6 +13,7 @@ from __future__ import annotations
 import hmac
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -2692,11 +2693,15 @@ class AgentExecutionService:
     def execution_status(self, node_id: str, node_token: str, task_id: str) -> dict[str, Any]:
         """Read-only ownership/terminal/Hold truth for the original Agent."""
         self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
-        task = self.repository.get(str(task_id))
-        if task is None:
-            raise AgentExecutionError("TASK_NOT_FOUND", "task does not exist", 404)
         with closing(self.repository._connect()) as database:
             _ensure_resource_hold_schema(database)
+            database.execute("BEGIN")
+            identity = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+            if identity is None:
+                raise AgentExecutionError("TASK_NOT_FOUND", "task does not exist", 404)
+            task = _from_row(identity)
             hold = database.execute(
                 "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,"
                 "proof_type,proof_sha256 "
@@ -2746,11 +2751,6 @@ class AgentExecutionService:
             raise AgentExecutionError(
                 "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
             )
-        with closing(self.repository._connect()) as database:
-            identity = database.execute(
-                "SELECT process_pid,process_create_time,process_command_hash "
-                "FROM tasks WHERE task_id=?", (str(task_id),)
-            ).fetchone()
         identity_sha = None
         if identity is not None and identity["process_pid"] is not None:
             identity_sha = hashlib.sha256(_canonical_json({
@@ -2846,12 +2846,18 @@ class AgentExecutionService:
     ) -> dict[str, Any]:
         """Authenticated, fenced recovery of an already-stopped original execution."""
         self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
-        try:
-            pid = int(process_identity.get("pid"))
-            create_time = float(process_identity.get("create_time"))
-            command_hash = str(process_identity.get("command_hash") or "")
-        except (TypeError, ValueError):
+        if (not isinstance(process_identity, Mapping)
+                or type(process_identity.get("pid")) is not int
+                or process_identity["pid"] <= 0
+                or type(process_identity.get("create_time")) not in (int, float)
+                or not math.isfinite(process_identity["create_time"])
+                or process_identity["create_time"] <= 0
+                or not isinstance(process_identity.get("command_hash"), str)
+                or re.fullmatch(r"[0-9a-fA-F]{64}", process_identity["command_hash"]) is None):
             raise AgentExecutionError("RECOVERY_PROOF_INVALID", "process identity is invalid", 422)
+        pid = process_identity["pid"]
+        create_time = float(process_identity["create_time"])
+        command_hash = process_identity["command_hash"]
         proof = {
             "proof_type": "PROCESS_STOP_VERIFIED", "node_id": str(node_id),
             "task_id": str(task_id), "assignment_generation": int(assignment_generation),
@@ -2991,62 +2997,43 @@ class AgentExecutionService:
         ProcessIdentity. A dual-slot contract (or a pre-marker record on a
         node that still reports two slots) must never be downgraded to it.
         """
-        contract = self._persisted_execution_slots(database, task_id, execution_generation)
-        if contract == 2:
-            raise AgentExecutionError(
-                "STOP_PROOF_REQUIRED",
-                "dual-slot execution has no resource hold",
-                409,
-            )
-        if contract == 0 and self._node_reports_dual_slots(database, node_id):
-            raise AgentExecutionError(
-                "STOP_PROOF_REQUIRED",
-                "execution slot contract is unverified and the node reports two slots",
-                409,
-            )
-        if contract == 1:
-            assignment = database.execute(
-                "SELECT generation,state,resolved_execution_config FROM task_node_assignments "
-                "WHERE task_id=? AND state='RELEASED' "
-                "AND json_extract(resolved_execution_config,'$.execution_attempt')=? "
-                "ORDER BY generation DESC LIMIT 1",
-                (str(task_id), int(execution_generation)),
-            ).fetchone()
-        else:
-            assignment = database.execute(
-                "SELECT generation,state,resolved_execution_config FROM task_node_assignments "
-                "WHERE task_id=? AND state='RELEASED' "
-                "ORDER BY generation DESC LIMIT 1",
-                (str(task_id),),
-            ).fetchone()
-        if assignment is None:
-            raise AgentExecutionError(
-                "SINGLE_SLOT_EVIDENCE_MISSING",
-                "original single-slot Assignment evidence is missing",
-                409,
-            )
-        if str(assignment["state"]) != "RELEASED":
-            raise AgentExecutionError(
-                "SINGLE_SLOT_EVIDENCE_MISSING",
-                "original single-slot Assignment was not released",
-                409,
-            )
-        if int(assignment_generation) > 0 and int(assignment["generation"]) != int(assignment_generation):
-            raise AgentExecutionError(
-                "STOP_PROOF_IDENTITY_MISMATCH",
-                "recovery Assignment generation mismatch",
-                409,
-            )
-        if gpu_uuid:
-            config = _json(assignment["resolved_execution_config"], {})
-            selected = config.get("selected_gpu") if isinstance(config, dict) else None
-            selected_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
-            if selected_uuid and selected_uuid != gpu_uuid:
-                raise AgentExecutionError(
-                    "STOP_PROOF_IDENTITY_MISMATCH",
-                    "recovery GPU UUID mismatch",
-                    409,
-                )
+        # Select the current Assignment, never an older released row from
+        # another node or attempt. All checks and CAS writes share this txn.
+        assignment = database.execute(
+            "SELECT node_id,generation,state,resolved_execution_config "
+            "FROM task_node_assignments WHERE task_id=? "
+            "ORDER BY generation DESC LIMIT 1", (str(task_id),),
+        ).fetchone()
+        if assignment is None or str(assignment["state"]) != "RELEASED":
+            raise AgentExecutionError("SINGLE_SLOT_EVIDENCE_MISSING",
+                                      "original released Assignment is missing", 409)
+        if str(assignment["node_id"]) != str(node_id):
+            raise AgentExecutionError("EXECUTION_NOT_OWNED", "Assignment belongs to another node", 409)
+        config = _json(assignment["resolved_execution_config"], None)
+        if not isinstance(config, dict):
+            raise AgentExecutionError("SINGLE_SLOT_EVIDENCE_MISSING", "invalid Assignment metadata", 409)
+        formal = "execution_slots" in config or "execution_attempt" in config
+        if formal:
+            if (type(config.get("execution_slots")) is not int
+                    or config["execution_slots"] != 1
+                    or type(config.get("execution_attempt")) is not int
+                    or config["execution_attempt"] != execution_generation):
+                raise AgentExecutionError("STOP_PROOF_REQUIRED", "original slot/attempt contract is invalid", 409)
+            if assignment_generation <= 0:
+                raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "Assignment generation is required", 409)
+        elif self._node_reports_dual_slots(database, node_id):
+            raise AgentExecutionError("STOP_PROOF_REQUIRED", "legacy slot contract is unverified", 409)
+        if assignment_generation > 0 and int(assignment["generation"]) != assignment_generation:
+            raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "recovery Assignment generation mismatch", 409)
+        selected = config.get("selected_gpu")
+        selected_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+        device = str(config.get("selected_device") or "")
+        if ((not formal and device != "cpu" and not selected_uuid)
+                or (formal and (selected_uuid != gpu_uuid
+                         or (not selected_uuid and device != "cpu")
+                         or (selected is not None and not isinstance(selected, dict))))
+                or (not formal and gpu_uuid and selected_uuid and selected_uuid != gpu_uuid)):
+            raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "recovery GPU identity mismatch", 409)
         task = database.execute(
             "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
         ).fetchone()
@@ -3064,6 +3051,8 @@ class AgentExecutionService:
                 )
         task_status = str(task["status"])
         if task_status in {"RUNNING", "CANCEL_REQUESTED"}:
+            if str(task["worker_id"] or "") != _agent_worker_id(node_id):
+                raise AgentExecutionError("EXECUTION_NOT_OWNED", "execution belongs to another worker", 409)
             terminal = "CANCELLED" if task_status == "CANCEL_REQUESTED" else "FAILED"
             if registered_pid is None:
                 # Durable identity evidence: the exact stopped process this
@@ -3073,9 +3062,9 @@ class AgentExecutionService:
                     "process_command_hash=?,updated_at=? "
                     "WHERE task_id=? AND attempt=? AND process_pid IS NULL "
                     "AND process_create_time IS NULL AND process_command_hash IS NULL "
-                    "AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                    "AND status IN ('RUNNING','CANCEL_REQUESTED') AND worker_id=?",
                     (pid, create_time, command_hash, now,
-                     str(task_id), int(execution_generation)),
+                     str(task_id), int(execution_generation), _agent_worker_id(node_id)),
                 ).rowcount
                 if changed != 1:
                     raise AgentExecutionError(
@@ -3086,9 +3075,9 @@ class AgentExecutionService:
             changed = database.execute(
                 "UPDATE tasks SET status=?,stage=?,error=COALESCE(error,?),finished_at=?,"
                 "updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL "
-                "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED') AND worker_id=?",
                 (terminal, terminal.lower(), "RECOVERED_AFTER_AGENT_CRASH",
-                 now, now, str(task_id), int(execution_generation)),
+                 now, now, str(task_id), int(execution_generation), _agent_worker_id(node_id)),
             ).rowcount
             if changed != 1:
                 raise AgentExecutionError(

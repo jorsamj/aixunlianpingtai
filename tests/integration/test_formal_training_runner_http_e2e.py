@@ -1654,7 +1654,8 @@ def test_formal_training_runner_start_execution_response_loss(tmp_path):
         _stop_formal(stack)
 
 
-def test_formal_training_runner_finish_response_loss(tmp_path):
+@pytest.mark.parametrize("readback", ["complete", "unavailable", "bad-digest"])
+def test_formal_training_runner_finish_response_loss(tmp_path, monkeypatch, readback):
     """A committed finish whose response is lost is never re-forged.
 
     The terminal status, its finished_at and the RELEASED Hold with a real stop
@@ -1667,8 +1668,43 @@ def test_formal_training_runner_finish_response_loss(tmp_path):
         drop_response_path="/finish",
     )
     try:
-        with pytest.raises(RemoteExecutionFenced):
-            stack["runner"].run(stack["lease"])
+        finish_calls = []
+        status_reads = []
+        original_finish = stack["client"].finish
+        original_status = stack["client"].execution_status
+
+        def finish_once(lease, status, **kwargs):
+            finish_calls.append(status)
+            return original_finish(lease, status, **kwargs)
+
+        def checked_status(task_id):
+            status = original_status(task_id)
+            status_reads.append(status)
+            if status["status"] == "SUCCEEDED":
+                if readback == "unavailable":
+                    raise OSError("central status readback unavailable")
+                if readback == "bad-digest":
+                    return {**status, "proof_sha256": "0" * 64}
+            return status
+
+        monkeypatch.setattr(stack["client"], "finish", finish_once)
+        monkeypatch.setattr(stack["client"], "execution_status", checked_status)
+        if readback == "complete":
+            outcome = stack["runner"].run(stack["lease"])
+            assert outcome.status == "SUCCEEDED"
+            assert outcome.task_id == task_id
+            assert stack["workdirs"].read_process_identity(stack["lease"]) is None
+        else:
+            with pytest.raises(RemoteExecutionFenced):
+                stack["runner"].run(stack["lease"])
+            assert stack["workdirs"].read_process_identity(stack["lease"]) is not None
+            assert stack["workdirs"].read_stop_evidence_present(task_id, 1)
+        assert finish_calls == ["SUCCEEDED"]
+        assert status_reads[-1]["task_id"] == task_id
+        assert status_reads[-1]["node_id"] == "formal-runner"
+        assert status_reads[-1]["execution_attempt"] == 1
+        assert status_reads[-1]["status"] == "SUCCEEDED"
+        assert status_reads[-1]["hold_state"] == "RELEASED"
 
         with stack["repository"]._connect() as database:
             row = database.execute(
@@ -1695,14 +1731,19 @@ def test_formal_training_runner_finish_response_loss(tmp_path):
             gpu_uuid=str(hold["gpu_uuid"]), process_identity=identity,
         )
         assert hold["proof_sha256"] == expected_digest
+        assert status_reads[-1]["proof_sha256"] == expected_digest
+        assert status_reads[-1]["process_identity_sha256"] == hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
         # Retrying the lost finish must not duplicate a terminal transition.
         stack["drop_state"][0] = False
-        with pytest.raises(NodeExecutorHTTPError) as retry:
-            stack["client"].finish(stack["lease"], "FAILED",
-                                   error="retry after lost finish")
-        assert retry.value.status_code == 409
-        assert retry.value.code == "EXECUTION_FENCED"
+        for overwrite in ("FAILED", "CANCELLED"):
+            with pytest.raises(NodeExecutorHTTPError) as retry:
+                stack["client"].finish(stack["lease"], overwrite,
+                                       error="retry after lost finish")
+            assert retry.value.status_code == 409
+            assert retry.value.code == "EXECUTION_FENCED"
         with stack["repository"]._connect() as database:
             row_after = database.execute(
                 "SELECT status,attempt,finished_at,process_pid,process_create_time,"

@@ -88,6 +88,19 @@ def has_hold(status: Mapping[str, Any]) -> bool:
     )
 
 
+def no_launch_evidence(record: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = {
+        "launch_boundary_entered": False,
+        "persisted_launch_intent": False,
+        "persisted_process_identity": False,
+        "task_id": str(record["task_id"]),
+        "assignment_generation": int(record.get("assignment_generation") or 0),
+        "execution_attempt": int(record["generation"]),
+        "gpu_uuid": str(record.get("gpu_uuid") or ""),
+    }
+    return {**evidence, "intent_sha256": canonical_digest(evidence)}
+
+
 def stop_proof_digests(
     status: Mapping[str, Any], record: Mapping[str, Any],
 ) -> tuple[str, str]:
@@ -102,17 +115,22 @@ def stop_proof_digests(
         "assignment_generation": int(record.get("assignment_generation") or 0),
         "execution_attempt": int(record["generation"]),
         "gpu_uuid": str(record.get("gpu_uuid") or ""),
-        "process_identity": {
+        "process_identity": {} if record.get("no_process_launched") is True else {
             "pid": int(record["pid"]),
             "create_time": float(record["create_time"]),
             "command_hash": str(record["command_hash"]),
         },
         "stop_verified": True,
     }
+    no_launch = record.get("no_process_launched") is True
+    evidence = no_launch_evidence(record) if no_launch else {}
     current = dict(base)
-    current["proof_type"] = PROCESS_STOP_VERIFIED
-    current["no_process_launched"] = False
-    current["no_launch_evidence"] = {}
+    current["proof_type"] = NO_PROCESS_LAUNCHED if no_launch else PROCESS_STOP_VERIFIED
+    current["no_process_launched"] = no_launch
+    current["no_launch_evidence"] = evidence
+    if no_launch:
+        base["no_process_launched"] = True
+        base["no_launch_evidence"] = evidence
     return canonical_digest(current), canonical_digest(base)
 
 
@@ -137,7 +155,8 @@ def proof_error(status: Mapping[str, Any], record: Mapping[str, Any]) -> str:
     proof_type = str(status.get("proof_type") or "")
     proof_sha256 = str(status.get("proof_sha256") or "")
     if hold_state in {HOLD_STOP_VERIFIED, HOLD_RELEASED}:
-        if proof_type != PROCESS_STOP_VERIFIED:
+        expected_type = NO_PROCESS_LAUNCHED if record.get("no_process_launched") is True else PROCESS_STOP_VERIFIED
+        if proof_type != expected_type:
             return "central stop proof type mismatch"
         if not proof_sha256:
             return "central stop proof digest is missing"
@@ -185,7 +204,8 @@ def execution_slots(record: Mapping[str, Any]) -> int:
 
 def is_dual_slot(record: Mapping[str, Any], status: Mapping[str, Any]) -> bool:
     slots = execution_slots(record)
-    return slots == 2 or (slots == 0 and has_hold(status))
+    return (slots == 2 or strict_int(status.get("execution_slots")) == 2
+            or (slots == 0 and has_hold(status)))
 
 
 def _identity_digest_error(
@@ -195,6 +215,10 @@ def _identity_digest_error(
     required: bool,
 ) -> str:
     central = status.get("process_identity_sha256")
+    if record.get("no_process_launched") is True:
+        if record.get("no_launch_evidence") != no_launch_evidence(record):
+            return "local no-launch evidence is invalid"
+        return "central ProcessIdentity exists for an unlaunched execution" if central is not None else ""
     if central is None:
         # Single-slot executions only register their exact identity when the
         # control plane accepted a start identity or a recovery proof; a
@@ -223,6 +247,15 @@ def status_identity_error(
     if attempt != int(record["generation"]):
         return "central execution attempt mismatch"
 
+    local_slots = execution_slots(record)
+    if "execution_slots" in record and strict_int(record["execution_slots"]) not in (0, 1, 2):
+        return "local execution slot contract is invalid"
+    central_slots = strict_int(status.get("execution_slots"))
+    if "execution_slots" in status:
+        if central_slots not in (1, 2):
+            return "central execution slot contract is invalid"
+        if local_slots and central_slots != local_slots:
+            return "central execution slot contract mismatch"
     local_assignment = int(record.get("assignment_generation") or 0)
     local_gpu = str(record.get("gpu_uuid") or "")
     if is_dual_slot(record, status):
@@ -269,6 +302,8 @@ def assignment_settlement_error(
     elif local_assignment > 0:
         return "central Assignment evidence is missing"
     state = status.get("assignment_state")
+    if (local_assignment > 0 or central_assignment is not None) and state is None:
+        return "central Assignment state is missing"
     if state is not None and str(state) != HOLD_RELEASED:
         return "central Assignment was not released"
     return ""
@@ -395,6 +430,7 @@ __all__ = [
     "has_hold",
     "hold_identity_error",
     "is_dual_slot",
+    "no_launch_evidence",
     "process_identity_sha256",
     "proof_error",
     "record_identity_sha256",

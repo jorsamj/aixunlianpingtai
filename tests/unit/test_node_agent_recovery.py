@@ -950,3 +950,45 @@ def test_real_workdir_stop_evidence_blocks_cleanup_and_is_cleared_idempotently(t
         workdirs.read_stop_evidence("../escape", 1)
     with pytest.raises(ValueError):
         workdirs.clear_stop_evidence("../escape", 1)
+
+
+@pytest.mark.parametrize("fault", ["missing-state", "slot-mismatch", "missing-hold"])
+def test_shared_settlement_rejects_incomplete_slot_contract(fault):
+    from platform_core.node_agent_settlement import settlement_error
+
+    local = {**record(), "execution_slots": 1}
+    status = {"task_id": "a", "node_id": "node-a", "status": "FAILED",
+              "execution_attempt": 1, "execution_slots": 1,
+              "assignment_generation": 5, "assignment_state": "RELEASED"}
+    if fault == "missing-state":
+        status.pop("assignment_state")
+    elif fault == "slot-mismatch":
+        status["execution_slots"] = 2
+    else:
+        local["execution_slots"] = status["execution_slots"] = 2
+    assert settlement_error(status, local, node_id="node-a")
+
+
+@pytest.mark.parametrize("fault", [None, "missing-proof", "wrong-proof", "central-process"])
+def test_shared_no_launch_settlement_requires_real_dual_proof(fault):
+    from platform_core.node_agent_settlement import (
+        no_launch_evidence, settlement_error, stop_proof_digests,
+    )
+
+    local = {"task_id": "a", "generation": 1, "assignment_generation": 5,
+             "gpu_uuid": "GPU-A", "execution_slots": 2, "no_process_launched": True}
+    local["no_launch_evidence"] = no_launch_evidence(local)
+    status = {"task_id": "a", "node_id": "node-a", "status": "FAILED",
+              "execution_attempt": 1, "execution_slots": 2,
+              "hold_state": "RELEASED", "hold_execution_attempt": 1,
+              "hold_assignment_generation": 5, "hold_gpu_uuid": "GPU-A",
+              "proof_type": "NO_PROCESS_LAUNCHED", "process_identity_sha256": None}
+    status["proof_sha256"] = stop_proof_digests(status, local)[0]
+    if fault == "missing-proof":
+        status.pop("proof_sha256")
+    elif fault == "wrong-proof":
+        status["proof_sha256"] = "0" * 64
+    elif fault == "central-process":
+        status["process_identity_sha256"] = "a" * 64
+    error = settlement_error(status, local, node_id="node-a", expected_status="FAILED")
+    assert bool(error) == (fault is not None)

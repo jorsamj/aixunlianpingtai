@@ -1153,7 +1153,7 @@ def test_conversion_lost_finish_response_is_verified_and_not_downgraded(tmp_path
     ).exists()
 
 
-def test_conversion_nested_cancel_is_not_reported_without_confirmation(tmp_path):
+def test_conversion_nested_cancel_is_not_reported_without_confirmation(tmp_path, monkeypatch):
     """The nested cancellation branch must never claim CANCELLED locally."""
     source = b"portable-source-model"
     runtime_root = tmp_path / "runtime"
@@ -1171,8 +1171,42 @@ def test_conversion_nested_cancel_is_not_reported_without_confirmation(tmp_path)
         heartbeat_interval=60,
         process_poll_interval=0.05,
     )
-    runner.request_shutdown()
+    entered = []
 
-    with pytest.raises(RemoteExecutionFenced):
-        runner.run(_lease(source, digest="0" * 64))
-    assert client.finish_calls and client.finish_calls[-1]["status"] == "CANCELLED"
+    def download_then_cancel(contract, destination, monitor):
+        # Enter the generic download failure handler first; only its nested
+        # activity check observes cancellation. Shutdown would fence earlier.
+        entered.append("download")
+        monitor.cancel_requested.set()
+        raise AgentConversionRuntimeError("injected source download failure")
+
+    monkeypatch.setattr(runner, "_download", download_then_cancel)
+    with pytest.raises(RemoteExecutionFenced, match="did not confirm.*cancellation"):
+        runner.run(_lease(source))
+    assert entered == ["download"]
+    assert [call["status"] for call in client.finish_calls] == ["CANCELLED"]
+    assert client.status == "RUNNING"
+
+
+@pytest.mark.parametrize("hazard", ["boundary", "intent"])
+def test_conversion_unknown_launch_cannot_publish_terminal_state(tmp_path, hazard):
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeClient()
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(client, workdirs, runtime_root=runtime_root,
+                                   ultralytics_python=sys.executable,
+                                   transfer_session=FakeSession(source))
+    lease = _lease(source)
+    workdirs.prepare(lease)
+    if hazard == "boundary":
+        runner._launch_boundary_entered = True
+    else:
+        workdirs.begin_process_launch(lease)
+    assert runner._execution_record(lease) is None
+    assert runner._finish_best_effort(lease, "FAILED", error="unknown launch") is None
+    assert client.finish_calls == []
+    if hazard == "intent":
+        assert workdirs.read_process_launch_intent(lease) is not None

@@ -1768,3 +1768,20 @@ def test_training_graceful_shutdown_never_cleans_when_evidence_write_fails(
     assert workdirs.read_process_identity(current) is not None
     assert client.terminal_status != "FAILED"
     assert client.finish_calls == []
+
+
+@pytest.mark.parametrize("hazard", ["boundary", "intent"])
+def test_training_unknown_launch_cannot_publish_terminal_state(tmp_path, hazard):
+    lease, downloads = training_lease(tmp_path)
+    client = FakeControlClient()
+    runner, _runtime_root, workdirs = build_runner(tmp_path, client, FakeTransferSession(downloads))
+    workdirs.prepare(lease)
+    if hazard == "boundary":
+        runner._launch_boundary_entered = True
+    else:
+        workdirs.begin_process_launch(lease)
+    assert runner._execution_record(lease) is None
+    assert runner._finish_best_effort(lease, "FAILED", error="unknown launch") is None
+    assert client.finish_calls == []
+    if hazard == "intent":
+        assert workdirs.read_process_launch_intent(lease) is not None

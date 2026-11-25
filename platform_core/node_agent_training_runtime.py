@@ -29,6 +29,7 @@ from .node_agent_settlement import (
     TERMINAL_TASK_STATUSES,
     recover_and_verify,
     settlement_of,
+    no_launch_evidence,
     strict_int,
 )
 from .node_agent_supervisor_gate import (
@@ -254,6 +255,7 @@ class AgentTrainingRunner:
         self._recovery_coordinator = recovery_coordinator
         self._on_process_started = on_process_started
         self._require_stop_proof = bool(require_stop_proof)
+        self._launch_boundary_entered = False
         self._last_process_identity = None
         self._recover_persisted_processes()
 
@@ -506,22 +508,33 @@ class AgentTrainingRunner:
     def _execution_record(self, lease) -> dict[str, Any] | None:
         """The original durable execution facts this settlement must bind to."""
         identity = self._last_process_identity
-        if identity is None:
-            return None
         try:
             assignment_generation, gpu_uuid = self._assignment_identity(lease)
         except (TypeError, ValueError):
             return None
-        return {
+        record = {
             "task_id": str(lease.task_id),
             "generation": int(lease.generation),
-            "pid": int(identity.pid),
-            "create_time": float(identity.create_time),
-            "command_hash": str(identity.command_hash),
             "assignment_generation": int(assignment_generation),
             "gpu_uuid": str(gpu_uuid or ""),
             "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
         }
+        if identity is not None:
+            record.update(pid=int(identity.pid), create_time=float(identity.create_time),
+                          command_hash=str(identity.command_hash))
+        else:
+            # Identity absence alone proves nothing: the persisted launch
+            # intent and the in-memory boundary must both exclude a spawn.
+            try:
+                if (self._launch_boundary_entered
+                        or self.workdirs.read_process_launch_intent(lease) is not None
+                        or self.workdirs.read_process_identity(lease) is not None):
+                    return None
+            except (OSError, ValueError):
+                return None
+            record["no_process_launched"] = True
+            record["no_launch_evidence"] = no_launch_evidence(record)
+        return record
 
     def _settlement_problem(self, lease, expected: str | None = None) -> str:
         record = self._execution_record(lease)
@@ -1572,7 +1585,7 @@ class AgentTrainingRunner:
         return int(assignment.get("generation") or 0), str(selected.get("uuid") or "")
 
     def _submit_no_launch_proof(self, lease: RemoteExecutionLease) -> None:
-        if self.workdirs.read_process_launch_intent(lease) is not None:
+        if self._launch_boundary_entered or self.workdirs.read_process_launch_intent(lease) is not None:
             raise AgentTrainingRuntimeError("STOP_PROOF_LAUNCH_INTENT_PRESENT")
         if self.workdirs.read_process_identity(lease) is not None:
             raise AgentTrainingRuntimeError("STOP_PROOF_IDENTITY_PRESENT")
@@ -1634,6 +1647,10 @@ class AgentTrainingRunner:
         error: str | None = None,
     ) -> str | None:
         """Publish and verify one terminal state; return it only when settled."""
+        if self._execution_record(lease) is None:
+            # An unknown launch must retain its lease/resources and evidence;
+            # never publish a terminal state before proving a process boundary.
+            return None
         try:
             self._submit_stop_proof(lease)
             body = self.client.finish(
@@ -1725,6 +1742,8 @@ class AgentTrainingRunner:
                 self._recovery_error
                 or "stale training process cleanup could not be verified"
             )
+        self._last_process_identity = None
+        self._launch_boundary_entered = False
         if self._shutdown_event.is_set():
             raise RemoteExecutionFenced("Agent process shutdown requested")
         if lease.kind != "TRAINING":
@@ -1883,6 +1902,7 @@ class AgentTrainingRunner:
                 except (SupervisorExecutionBoundaryRequired,
                         SupervisorExecutionBoundaryInvalid) as error:
                     raise RemoteExecutionFenced(str(error)) from error
+                self._launch_boundary_entered = True
                 self.workdirs.begin_process_launch(lease)
                 try:
                     launched = launch_process(

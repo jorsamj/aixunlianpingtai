@@ -1327,3 +1327,106 @@ def test_stale_agent_generation_cannot_mutate_a_newer_execution_identity(tmp_pat
     stale = service.execution_status("dual-agent", token, "generation-guard")
     assert stale["execution_attempt"] >= 2
     assert stale["hold_state"] == "HELD"
+
+
+@pytest.mark.parametrize("fault", [
+    "other-node", "worker-other-node", "assignment-other-node", "stale-attempt",
+    "zero-generation", "empty-gpu", "wrong-gpu", "broken-config", "missing-slot",
+    "pid-bool", "pid-string", "time-nan", "time-inf", "hash-invalid",
+])
+def test_single_slot_recovery_rejects_unowned_or_invalid_evidence(tmp_path, fault):
+    import json
+
+    repository, artifacts = runtime(tmp_path)
+    _remote_training_task(repository, artifacts, "single-recovery")
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(repository, artifacts, auto_assign_enabled=True,
+                                    execution_payload_resolver=safe_remote_payload)
+    claimed = service.claim_assignment("gpu-agent", token)
+    started = start(service, "single-recovery", "gpu-agent", token, claimed)
+    _other, other_token = create_node(repository, "other-agent")
+    kwargs = dict(assignment_generation=claimed["assignment"]["generation"],
+                  execution_generation=started["execution"]["generation"],
+                  gpu_uuid="GPU-gpu-agent",
+                  process_identity={"pid": 123, "create_time": 1.0, "command_hash": "a" * 64})
+    node_id = "gpu-agent"
+    if fault == "other-node":
+        node_id, token = "other-agent", other_token
+    elif fault == "stale-attempt":
+        kwargs["execution_generation"] += 1
+    elif fault == "zero-generation":
+        kwargs["assignment_generation"] = 0
+    elif fault in {"empty-gpu", "wrong-gpu"}:
+        kwargs["gpu_uuid"] = "" if fault == "empty-gpu" else "GPU-other-agent"
+    elif fault in {"pid-bool", "pid-string", "time-nan", "time-inf", "hash-invalid"}:
+        key, value = {
+            "pid-bool": ("pid", True), "pid-string": ("pid", "123"),
+            "time-nan": ("create_time", float("nan")),
+            "time-inf": ("create_time", float("inf")),
+            "hash-invalid": ("command_hash", "z" * 64),
+        }[fault]
+        kwargs["process_identity"][key] = value
+    else:
+        with repository._connect() as database:
+            if fault == "worker-other-node":
+                database.execute("UPDATE tasks SET worker_id='agent:other-agent' WHERE task_id=?",
+                                 ("single-recovery",))
+            elif fault == "assignment-other-node":
+                database.execute("UPDATE task_node_assignments SET node_id='other-agent' WHERE task_id=?",
+                                 ("single-recovery",))
+            else:
+                config = _assignment_contract(repository, "single-recovery")[1]
+                config.pop("execution_slots")
+                database.execute("UPDATE task_node_assignments SET resolved_execution_config=? WHERE task_id=?",
+                                 ("{broken" if fault == "broken-config" else json.dumps(config), "single-recovery"))
+
+    def snapshot():
+        with repository._connect() as database:
+            return {table: [dict(row) for row in database.execute(
+                f"SELECT * FROM {table} WHERE task_id=?", ("single-recovery",))]
+                for table in ("tasks", "task_node_assignments", "execution_resource_holds")}
+
+    before = snapshot()
+    with pytest.raises(AgentExecutionError):
+        service.recover_execution(node_id, token, "single-recovery", **kwargs)
+    assert snapshot() == before  # Rejection cannot register identity, finish or release resources.
+
+
+@pytest.mark.parametrize("contract", ["gpu", "cpu", "legacy"])
+def test_single_slot_recovery_and_terminal_retry_are_idempotent(tmp_path, contract):
+    import json
+
+    repository, artifacts = runtime(tmp_path)
+    _remote_training_task(repository, artifacts, "single-recovery")
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(repository, artifacts, auto_assign_enabled=True,
+                                    execution_payload_resolver=safe_remote_payload)
+    claimed = service.claim_assignment("gpu-agent", token)
+    started = start(service, "single-recovery", "gpu-agent", token, claimed)
+    config = _assignment_contract(repository, "single-recovery")[1]
+    if contract == "cpu":
+        config.update(selected_gpu=None, selected_device="cpu")
+    if contract == "legacy":
+        config.pop("execution_slots")
+        config.pop("execution_attempt")
+    with repository._connect() as database:
+        database.execute("UPDATE task_node_assignments SET resolved_execution_config=? WHERE task_id=?",
+                         (json.dumps(config), "single-recovery"))
+    kwargs = dict(assignment_generation=0 if contract == "legacy" else claimed["assignment"]["generation"],
+                  execution_generation=started["execution"]["generation"],
+                  gpu_uuid="" if contract in {"cpu", "legacy"} else "GPU-gpu-agent",
+                  process_identity={"pid": 123, "create_time": 1.0, "command_hash": "a" * 64})
+    first = service.recover_execution("gpu-agent", token, "single-recovery", **kwargs)
+    with repository._connect() as database:
+        before = dict(database.execute("SELECT * FROM tasks WHERE task_id='single-recovery'").fetchone())
+    second = service.recover_execution("gpu-agent", token, "single-recovery", **kwargs)
+    with repository._connect() as database:
+        after = dict(database.execute("SELECT * FROM tasks WHERE task_id='single-recovery'").fetchone())
+        assert database.execute("SELECT COUNT(*) FROM execution_resource_holds WHERE task_id='single-recovery'").fetchone()[0] == 0
+    assert first == second
+    assert before == after
+    assert before["status"] == "FAILED"
+    status = service.execution_status("gpu-agent", token, "single-recovery")
+    assert status["assignment_state"] == "RELEASED"
+    assert status["execution_slots"] == 1
+    assert status["process_identity_sha256"] == first["process_identity_sha256"]
