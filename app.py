@@ -4610,10 +4610,30 @@ def _require_material_delete_preview(project_id: str):
     })
 
 
-@app.delete("/api/projects/{project_id}/datasets/{dataset_id}")
+from platform_core.material_governance_service import MaterialGovernanceDependencies, MaterialGovernanceService
+from platform_core.material_governance_api import create_material_governance_router_1, create_material_governance_router_2, create_material_governance_router_3, create_material_governance_router_4, create_material_governance_router_5
+
+
+def _material_governance_service() -> MaterialGovernanceService:
+    return MaterialGovernanceService(MaterialGovernanceDependencies(
+        _V50DatasetSourceChanged=_V50DatasetSourceChanged,
+        _require_material_delete_preview=lambda *args, **kwargs: _require_material_delete_preview(*args, **kwargs),
+        _v50_assert_dataset_writable_locked=lambda *args, **kwargs: _v50_assert_dataset_writable_locked(*args, **kwargs),
+        _v50_dataset_locks=lambda *args, **kwargs: _v50_dataset_locks(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        load_images=lambda *args, **kwargs: load_images(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        read_annotation=lambda *args, **kwargs: read_annotation(*args, **kwargs),
+    ))
+
+
+app.include_router(create_material_governance_router_1(_material_governance_service))
+
+
 def delete_dataset(project_id: str, dataset_id: str):
-    get_project(project_id)
-    _require_material_delete_preview(project_id)
+    return _material_governance_service().delete_dataset(project_id, dataset_id)
 
 
 def _system_recommendation_payload(cuda: Optional[bool] = None, gpu_name: str = "训练节点未确认"):
@@ -5341,27 +5361,20 @@ def v52_annotation_index_status(project_id: str):
     return {'ok': True, **status}
 
 
-@app.delete("/api/projects/{project_id}/images/{image_id}")
-def delete_image(
-    project_id: str, image_id: str,
-    delete_source: Optional[bool] = None, confirmation: str = "",
-):
-    get_project(project_id)
-    _require_material_delete_preview(project_id)
+app.include_router(create_material_governance_router_2(_material_governance_service))
+
+
+def delete_image(project_id: str, image_id: str, delete_source: Optional[bool]=None, confirmation: str=''):
+    return _material_governance_service().delete_image(project_id, image_id, delete_source, confirmation)
 
 
 
 
-class V46BatchDeleteImagesReq(BaseModel):
-    image_ids: List[str]
-    delete_source: Optional[bool] = None
-    confirmation: str = ""
+from platform_core.material_governance_contracts import V46BatchDeleteImagesReq
 
 
-@app.post("/api/v46/projects/{project_id}/images/batch-delete")
 def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
-    get_project(project_id)
-    _require_material_delete_preview(project_id)
+    return _material_governance_service().v46_batch_delete_images(project_id, payload)
 
 
 LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
@@ -9441,15 +9454,9 @@ def export_onnx(project_id: str, model_name: str = Form(...)):
 
 APP_DISPLAY_NAME = "算法训练"
 
-class ImagePatchReq(BaseModel):
-    split: Optional[str] = None  # train / val / test
-    dataset_id: Optional[str] = None
+from platform_core.material_governance_contracts import ImagePatchReq
 
-class BatchSplitReq(BaseModel):
-    train: float = 0.7
-    val: float = 0.2
-    test: float = 0.1
-    include_unannotated: bool = True
+from platform_core.material_governance_contracts import BatchSplitReq
 
 class LabelUpdateReq(BaseModel):
     code: Optional[str] = None
@@ -10005,191 +10012,22 @@ def _v12_delete_label_locked(project_id: str, class_id: int):
     return {"ok": True, "items": active_label_options(project_label_items(project))}
 
 
-@app.patch("/api/v12/projects/{project_id}/images/{image_id}")
+app.include_router(create_material_governance_router_3(_material_governance_service))
+
+
 def v12_patch_image(project_id: str, image_id: str, payload: ImagePatchReq):
-    get_project(project_id)
-    patch = {"updated_at": now_iso()}
-    if payload.split is not None:
-        split = (payload.split or "unassigned").lower()
-        if split not in {"train", "val", "test", "unassigned"}:
-            raise HTTPException(status_code=400, detail="数据用途只能是未处理、训练集、试验集或评测集")
-        patch["split"] = split
-    if payload.dataset_id is not None:
-        target_dataset_id = payload.dataset_id or "default"
-        patch["dataset_id"] = target_dataset_id
-        for _attempt in range(16):
-            current = material_store(project_id).get(image_id)
-            if current is None:
-                raise HTTPException(status_code=404, detail="图片不存在")
-            source_dataset_id = str(current.get("dataset_id") or "default")
-            try:
-                with _v50_dataset_locks(
-                    project_id, [source_dataset_id, target_dataset_id]
-                ):
-                    _v50_assert_dataset_writable_locked(
-                        project_id, source_dataset_id
-                    )
-                    if target_dataset_id != source_dataset_id:
-                        _v50_assert_dataset_writable_locked(
-                            project_id, target_dataset_id
-                        )
-
-                    def apply_dataset_patch(rows):
-                        for row in rows:
-                            if str(row.get("id")) != str(image_id):
-                                continue
-                            latest_source = str(
-                                row.get("dataset_id") or "default"
-                            )
-                            if latest_source != source_dataset_id:
-                                raise _V50DatasetSourceChanged()
-                            row.update(patch)
-                            return dict(row)
-                        raise HTTPException(status_code=404, detail="图片不存在")
-
-                    changed = material_store(project_id).mutate_ids(
-                        [image_id], apply_dataset_patch
-                    )
-                break
-            except _V50DatasetSourceChanged:
-                continue
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail="图片所属数据集频繁变化，请重试",
-            )
-    else:
-        changed = material_store(project_id).patch({image_id: patch})
-    if not changed:
-        raise HTTPException(status_code=404, detail="图片不存在")
-    return {"ok": True}
+    return _material_governance_service().v12_patch_image(project_id, image_id, payload)
 
 
-class BatchImageSplitReq(BaseModel):
-    image_ids: List[str] = []
-    split: str = "unassigned"
-    dataset_id: Optional[str] = None
-    filter: Optional[str] = None  # all / marked / unmarked / train / val / test
-    scope: str = "selected"  # selected / filtered / dataset
+from platform_core.material_governance_contracts import BatchImageSplitReq
 
 
-@app.post("/api/v20/projects/{project_id}/images/batch_split")
 def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
-    get_project(project_id)
-    split = (payload.split or "unassigned").lower()
-    if split not in {"train", "val", "test", "unassigned"}:
-        raise HTTPException(status_code=400, detail="数据用途只能是未处理、训练集、试验集或评测集")
-    target_ids = {str(image_id) for image_id in (payload.image_ids or [])}
-    scope = (payload.scope or "selected").lower()
-    dataset_id = payload.dataset_id or None
-    filt = (payload.filter or "all").lower()
-    updated = now_iso()
-    materials = material_store(project_id)
-
-    if scope == "selected":
-        if not target_ids:
-            raise HTTPException(status_code=400, detail="请先选择要移动的素材")
-        changed_rows = materials.patch({
-            image_id: {"split": split, "updated_at": updated}
-            for image_id in target_ids
-        })
-        if not changed_rows:
-            raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
-        return {"ok": True, "changed": len(changed_rows), "split": split}
-
-    annotation_box_counts = {}
-    if scope == "filtered" and filt in {"marked", "unmarked"}:
-        images = load_images(project_id)
-        image_ids = [str(img.get("id") or "") for img in images if str(img.get("id") or "")]
-        annotations = AnnotationRepository(project_dir(project_id))
-        for offset in range(0, len(image_ids), 500):
-            batch_ids = image_ids[offset:offset + 500]
-            for image_id, annotation in annotations.get_many(batch_ids).items():
-                annotation_box_counts[str(image_id)] = len(annotation.get("boxes", []))
-
-    def match_latest(img: Dict[str, Any]) -> bool:
-        if not material_dataset_matches(img, dataset_id):
-            return False
-        if scope == "dataset":
-            return True
-        if scope == "filtered":
-            image_id = str(img.get("id"))
-            cur_split = (img.get("split") or "unassigned").lower()
-            if filt == "marked":
-                box_count = annotation_box_counts.get(image_id)
-                return box_count is not None and box_count > 0
-            if filt == "unmarked":
-                # A row appearing after annotation facts were read is unknown,
-                # not proven empty, so both annotation filters exclude it.
-                box_count = annotation_box_counts.get(image_id)
-                return box_count is not None and box_count == 0
-            if filt in {"train", "val", "test", "unassigned"}:
-                return cur_split == filt
-            return True
-        return str(img.get("id")) in target_ids
-
-    def apply_split(rows):
-        changed = 0
-        for img in rows:
-            if not match_latest(img):
-                continue
-            img["split"] = split
-            img["updated_at"] = updated
-            changed += 1
-        if not changed:
-            raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
-        return changed
-
-    if scope == "dataset":
-        changed = materials.mutate_dataset(dataset_id, apply_split)
-    else:
-        changed = materials.mutate(apply_split)
-    return {"ok": True, "changed": changed, "split": split}
+    return _material_governance_service().v20_batch_image_split(project_id, payload)
 
 
-@app.post("/api/v12/projects/{project_id}/datasets/{dataset_id}/auto_split")
 def v12_auto_split(project_id: str, dataset_id: str, payload: BatchSplitReq):
-    get_project(project_id)
-    annotation_presence = {}
-    if not payload.include_unannotated:
-        for img in load_images(project_id):
-            image_id = str(img.get("id"))
-            annotation_presence[image_id] = bool(
-                read_annotation(project_id, image_id).get("boxes")
-            )
-
-    def apply_auto_split(rows):
-        images = [
-            img
-            for img in rows
-            if img.get("dataset_id", "default") == dataset_id
-            and (
-                payload.include_unannotated
-                or annotation_presence.get(str(img.get("id")), False)
-            )
-        ]
-        if not images:
-            raise HTTPException(status_code=400, detail="该数据集暂无图片")
-        images.sort(key=lambda img: str(img.get("id", "")))
-        total = len(images)
-        train_n = max(1, int(total * payload.train))
-        val_n = max(0, int(total * payload.val))
-        if train_n + val_n > total:
-            val_n = max(0, total - train_n)
-        counts = {"train": 0, "val": 0, "test": 0}
-        for index, img in enumerate(images):
-            if index < train_n:
-                split = "train"
-            elif index < train_n + val_n:
-                split = "val"
-            else:
-                split = "test"
-            img["split"] = split
-            counts[split] += 1
-        return counts
-
-    counts = material_store(project_id).mutate(apply_auto_split)
-    return {"ok": True, "counts": counts}
+    return _material_governance_service().v12_auto_split(project_id, dataset_id, payload)
 
 
 def dataset_items_by_split(project_id: str, dataset_id: Optional[str], include_empty: bool = False) -> Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]]:
@@ -26934,8 +26772,7 @@ class V52LabelRemapReq(BaseModel):
     source_label: str
     target_label: str
 
-class V52ReadyReq(BaseModel):
-    image_ids: List[str]
+from platform_core.material_governance_contracts import V52ReadyReq
 
 @app.post('/api/v52/projects/{project_id}/labels/remap')
 def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
@@ -26984,33 +26821,11 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
         ),
     )
 
-@app.post('/api/v52/projects/{project_id}/images/mark-ready')
+app.include_router(create_material_governance_router_4(_material_governance_service))
+
+
 def v52_mark_ready(project_id: str, payload: V52ReadyReq):
-    get_project(project_id)
-    ids = list(dict.fromkeys(
-        str(value).strip() for value in (payload.image_ids or []) if str(value).strip()
-    ))
-    if not ids:
-        return {'ok': True, 'changed': 0, 'image_ids': [], 'images': []}
-    now = now_iso()
-    materials = material_store(project_id)
-    current = materials.get_many(ids)
-    existing_ids = [str(row.get('id')) for row in current if str(row.get('id') or '')]
-    patch = {
-        'processing_status': 'processed',
-        'clean_skipped': True,
-        'clean_decision': 'skipped',
-        'clean_decision_at': now,
-        'updated_at': now,
-    }
-    materials.patch_many(existing_ids, patch, batch_size=500)
-    changed_images = [mark_ready(row, now) for row in current]
-    return {
-        'ok': True,
-        'changed': len(existing_ids),
-        'image_ids': existing_ids,
-        'images': changed_images,
-    }
+    return _material_governance_service().v52_mark_ready(project_id, payload)
 
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
 def v52_import_review(project_id: str, job_id: str):
@@ -27207,23 +27022,11 @@ def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool =
             'version_quality_truncated':len(versions)>40,
             'current_quality':current_quality}
 
-@app.post('/api/v49/projects/{project_id}/images/mark-processed')
+app.include_router(create_material_governance_router_5(_material_governance_service))
+
+
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
-    ids={str(x) for x in payload.image_ids or []}; cleaned_at=now_iso()
-    def apply_processed(rows):
-        changed=0
-        for img in rows:
-            if str(img.get('id')) in ids:
-                img['processing_status']='processed';img['cleaned_at']=cleaned_at;changed+=1
-        return changed
-    # Measured crossover on 50k rows: 5k explicit IDs is faster through
-    # mutate_ids (1.33s vs 2.17s); 10k is already slower (3.45s vs 2.94s).
-    # Keep the one full-table transaction above the measured boundary.
-    if len(ids)<=5000:
-        changed=material_store(project_id).mutate_ids(ids,apply_processed)
-    else:
-        changed=material_store(project_id).mutate(apply_processed)
-    return {'ok':True,'changed':changed}
+    return _material_governance_service().v49_mark_processed(project_id, payload)
 
 
 # ============================================================

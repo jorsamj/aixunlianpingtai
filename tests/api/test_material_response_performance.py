@@ -220,7 +220,8 @@ def test_selected_batch_split_uses_indexed_patch_without_full_table_mutate(monke
     assert set(materials.patches[0]) == {"a", "b"}
     assert all(patch["split"] == "train" for patch in materials.patches[0].values())
 
-    source = inspect.getsource(app_module.v20_batch_image_split)
+    from platform_core.material_governance_service import MaterialGovernanceService
+    source = inspect.getsource(MaterialGovernanceService.v20_batch_image_split)
     filtered = source[source.index('if scope == "filtered"'):]
     assert "read_annotation(project_id" not in filtered
     assert "annotations.get_many(batch_ids)" in filtered
@@ -255,7 +256,8 @@ def test_dataset_batch_split_uses_transactional_dataset_scope(monkeypatch):
     )
     assert result == {"ok": True, "changed": 1, "split": "test"}
     assert materials.calls == ["target"]
-    source = inspect.getsource(app_module.v20_batch_image_split)
+    from platform_core.material_governance_service import MaterialGovernanceService
+    source = inspect.getsource(MaterialGovernanceService.v20_batch_image_split)
     assert "mutate_dataset(dataset_id" in source
     assert "materials.mutate(apply_split)" in source
 
