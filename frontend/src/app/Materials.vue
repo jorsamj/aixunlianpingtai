@@ -59,6 +59,14 @@ const context:MaterialContext={
     },
   },
   legacyMaterials(action,id){location.assign(original(action==='annotate'?'material-annotate':action==='upload'?'material-upload':'material-manage','数据集',id))},
+  async renameMaterial(id,name){
+    const result=await request<{ok:boolean;image:{id:string;filename:string}}>(
+      `/api/v47/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(id)}`,
+      {method:'PUT',body:JSON.stringify({name})},
+    );
+    if(result.ok!==true||result.image?.id!==id||!result.image.filename)throw new Error('改名结果待核对');
+    return result.image.filename;
+  },
   openNativeUpload(){void router.push({name:'material-upload',params:{projectId}})},
   openNativeZip(){void router.push({name:'material-zip-import',params:{projectId}})},
   openUploadTasks(){void router.push({name:'upload-tasks',params:{projectId}})},

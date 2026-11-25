@@ -4,6 +4,8 @@ import {resolve} from 'node:path';
 test('native material library keeps scoped browsing, selection and original workflow links',async({page})=>{
   await page.setViewportSize({width:1920,height:1080});
   const queries:URL[]=[];
+  const names=new Map<string,string>();
+  let renameRequests=0;
   let releaseSlow!:()=>void,notifySlow!:()=>void;
   const slowGate=new Promise<void>(done=>{releaseSlow=done});
   const slowStarted=new Promise<void>(done=>{notifySlow=done});
@@ -16,10 +18,17 @@ test('native material library keeps scoped browsing, selection and original work
     if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'tester'}}});
     if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目甲'},{id:'q',name:'项目乙'}]});
     const project=path.includes('/projects/q/')?'q':'p';
-    const row=(id:string)=>({id,filename:id+'.png',width:32,height:32,annotation_state:'annotated',box_count:1,quality_status:'processed',
+    const row=(id:string)=>({id,filename:names.get(id)||id+'.png',width:32,height:32,annotation_state:'annotated',box_count:1,quality_status:'processed',
       storage_source_id:'local',content_url:'/api/v61/projects/'+project+'/materials/'+id+'/content',
       thumbnail_url:'/api/v61/projects/'+project+'/materials/'+id+'/content/thumbnail',
       annotation_preview:[{label:'smoke',x1:1,y1:1,x2:7,y2:7}]});
+    if(path==='/api/v47/projects/p/images/p1'&&route.request().method()==='PUT'){
+      renameRequests++;
+      expect(route.request().postDataJSON()).toEqual({name:'现场照片.png'});
+      names.set('p1','现场照片.png');
+      // The write may have committed even when the client misses the response.
+      return route.abort('failed');
+    }
     if(path.endsWith('/materials')){
       queries.push(url);
       const itemPage=Number(url.searchParams.get('page'));
@@ -45,6 +54,15 @@ test('native material library keeps scoped browsing, selection and original work
   await expect(image).toHaveAttribute('loading','lazy');
   for(const [key,value] of Object.entries({label:'smoke',annotation_state:'annotated',quality_status:'processed',source_batch_id:'zip-1'}))
     expect(queries[0].searchParams.get(key)).toBe(value);
+  await expect(page.locator('.material-card').getByRole('button',{name:'人工标注',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'改名',exact:true}).click();
+  await page.getByRole('textbox',{name:'新素材名称'}).fill('现场照片.png');
+  await page.getByRole('button',{name:'保存名称'}).click();
+  await expect(page.getByText('未收到改名回执，请核对当前名称。')).toBeVisible();
+  await page.getByRole('button',{name:'核对名称',exact:true}).click();
+  await expect(page.getByRole('img',{name:'现场照片.png',exact:true})).toBeVisible();
+  expect(renameRequests).toBe(1);
+  expect(queries).toHaveLength(1);
   await page.getByRole('button',{name:'选择本页'}).click();
   await page.getByRole('button',{name:'下一页',exact:true}).click();
   await expect(page.getByRole('img',{name:'p2.png',exact:true})).toBeVisible();
