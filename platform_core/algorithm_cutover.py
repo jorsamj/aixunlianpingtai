@@ -30,6 +30,7 @@ from typing import Any, Mapping
 
 from .algorithm_migration import (
     build_report,
+    export_source_snapshot_v2,
     content_digest,
     export_source_snapshot,
     restore_source_snapshot,
@@ -49,7 +50,7 @@ from .algorithm_repository import (
     admission_transition_path,
     load_admission_record,
 )
-from .algorithm_shadow import validate_snapshot
+from .algorithm_shadow import CONTRACT_VERSION_V2, validate_snapshot
 
 
 class AlgorithmCutoverError(RuntimeError):
@@ -649,7 +650,7 @@ def assess_rollback(
         and not state.get("revoked_at")
         and str(state["admission_id"]) == str(admission.get("admission_id") or "")
     )
-    target = export_target_snapshot(connection, project_id) if active else None
+    target = export_target_snapshot(connection, project_id, include_cleanup=_admission_is_v2(admission)) if active else None
     admitted_revision = int(state["algorithm_revision"]) if active else None
     admitted_content = str(state["content_digest"]) if active else None
     target_revision = int(target["algorithm_revision"]) if target is not None else None
@@ -658,7 +659,7 @@ def assess_rollback(
     source_error = ""
     if active:
         try:
-            source = export_source_snapshot(db_path, project_id)
+            source = (export_source_snapshot_v2(db_path, project_id) if _admission_is_v2(admission) else export_source_snapshot(db_path, project_id))
         except Exception as error:  # missing/unreadable SQLite must fail closed
             source_error = f"{type(error).__name__}: {error}"
     source_content = content_digest(source) if source is not None else None
@@ -726,6 +727,7 @@ def revoke_admission(
     reason: str,
     assessment: Mapping[str, Any],
     operation_id: str | None = None,
+    include_cleanup: bool = False,
 ) -> dict[str, Any]:
     """Flip authority back to SQLite only after a passing rollback assessment."""
     from psycopg.rows import dict_row
@@ -821,7 +823,9 @@ def revoke_admission(
                 )
                 revision_row = interior.fetchone()
             target_revision = int(revision_row[0]) if revision_row else 0
-            target_snapshot = export_target_snapshot(connection, project_id)
+            target_snapshot = export_target_snapshot(
+                connection, project_id, include_cleanup=include_cleanup,
+            )
             target_content = (
                 None if target_snapshot is None else content_digest(target_snapshot)
             )
@@ -890,6 +894,11 @@ def revoke_admission(
         "reason": str(reason).strip(),
         "committed_generation": committed_generation,
     }
+
+
+def _admission_is_v2(admission: Mapping[str, Any] | None) -> bool:
+    """Whether the persisted admission was created against a V2 snapshot."""
+    return str((admission or {}).get("snapshot_contract") or "") == CONTRACT_VERSION_V2
 
 
 def rollback(
@@ -990,7 +999,20 @@ def rollback(
 
     # 2. Re-verify the target after the block: the assessment digest must still
     #    describe what PostgreSQL holds now.
-    snapshot = export_target_snapshot(connection, project_id)
+    admission_is_v2 = _admission_is_v2(admission)
+    snapshot = export_target_snapshot(
+        connection, project_id, include_cleanup=True,
+    )
+    if (snapshot.get("tables") or {}).get("cleanup") and not admission_is_v2:
+        # A legacy admission cannot prove the cleanup domain: refuse instead of
+        # restoring three domains and silently dropping the ledger.
+        raise AlgorithmCutoverError(
+            "ALGORITHM_ROLLBACK_V2_REQUIRED",
+            "the project owns cleanup receipts but its admission is V1",
+            detail=f"cleanup_rows={len(snapshot['tables']['cleanup'])}",
+        )
+    if not admission_is_v2:
+        snapshot = export_target_snapshot(connection, project_id)
     if snapshot is None:
         raise AlgorithmCutoverError(
             "ALGORITHM_ROLLBACK_TARGET_MISSING", "PostgreSQL project content is missing"
@@ -1011,7 +1033,10 @@ def rollback(
     )
     # Prove the SQLite restore really happened before the authority is handed
     # back: the revoked admission must describe the copy SQLite will serve.
-    restored_snapshot = export_source_snapshot(db_path, project_id)
+    restored_snapshot = (
+        export_source_snapshot_v2(db_path, project_id) if admission_is_v2
+        else export_source_snapshot(db_path, project_id)
+    )
     if content_digest(restored_snapshot) != content_digest(snapshot):
         raise AlgorithmCutoverError(
             "ALGORITHM_ROLLBACK_RESTORE_UNPROVEN",
@@ -1026,6 +1051,7 @@ def rollback(
         reason=reason,
         assessment=assessment,
         operation_id=operation_id,
+        include_cleanup=admission_is_v2,
     )
     if str(revoked.get("authoritative_provider") or "") != PROVIDER_SQLITE:
         raise AlgorithmCutoverError(
@@ -1139,6 +1165,7 @@ def _maintenance_record(
     verification_digest: str = "",
     content_digest: str = "",
     source_revision: int | None = None,
+    snapshot_contract: str = "",
     operator: str = "",
     reason: str = "",
 ) -> dict[str, Any]:
@@ -1164,6 +1191,7 @@ def _maintenance_record(
         "snapshot_digest": str(snapshot_digest or ""),
         "content_digest": str(content_digest or ""),
         "source_revision": None if source_revision is None else int(source_revision),
+        "snapshot_contract": str(snapshot_contract or ""),
         "verification_digest": str(verification_digest or ""),
         "operator": str(operator or ""),
         "reason": str(reason or ""),
@@ -1592,6 +1620,7 @@ def freeze_maintenance_source(
         snapshot_digest=str(snapshot["snapshot_digest"]),
         content_digest=digest,
         source_revision=int(snapshot["algorithm_revision"]),
+        snapshot_contract=str(snapshot.get("contract_version") or CONTRACT_VERSION),
         operator=str(current.get("operator") or ""),
         reason=str(current.get("reason") or ""),
     )
@@ -1774,6 +1803,9 @@ def switch_maintenance_owner(
     # a legacy one, so the provider can refuse a missing phase only here.
     admission["admission_mode"] = "maintenance"
     admission["verification_digest"] = str(current.get("verification_digest") or "")
+    admission["snapshot_contract"] = str(
+        current.get("snapshot_contract") or CONTRACT_VERSION_V2
+    )
     path = write_admission_record(admission, record_path)
     # Prove the local record against the durable row before the marker is
     # cleared: only a proven switch may unblock SQLite (a marker that outlives a

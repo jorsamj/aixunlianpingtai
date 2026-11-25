@@ -1367,7 +1367,11 @@ def _seeded_cleanup_store(root, project):
             "product_id": product_id, "generation": operation_id,
             "state": "CONFIRMED_DELETED", "phase": "confirmed",
             "created_at": stamp, "updated_at": stamp, "error": "", "counts": {},
-            "evidence": {"source": "event", "contract_id": "v1", "evidence_id": "e1"},
+            "evidence": {
+                "provider": "CHANG_LIAN", "product_id": product_id,
+                "source": "event", "contract_id": "v1", "evidence_id": "e1",
+                "observed_at": stamp, "scope": "PRODUCT_DELETED",
+            },
             "history": [],
         }
         result = store.cleanup_confirm_deleted(
@@ -1605,3 +1609,50 @@ def test_target_only_completed_receipt_cannot_be_dropped(pg):
         with pytest.raises(AlgorithmMigrationError) as lost:
             import_snapshot(connection, dropped)
     assert lost.value.code == "ALGORITHM_MIGRATION_TARGET_RECEIPT_LOST"
+
+def test_v2_restore_rebuilds_the_ledger_and_keeps_the_barrier(pg):
+    """A four-domain restore is verified before commit and cannot drop evidence."""
+    from platform_core.algorithm_migration import (
+        content_digest,
+        restore_source_snapshot,
+    )
+    from platform_core.algorithm_repository import write_authority_barrier
+
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8restore-"))
+    store = _seeded_cleanup_store(root, "restore")
+    snapshot = export_source_snapshot_v2(store.db_path, "restore")
+    assert write_authority_barrier(
+        store.json_path, project_id="restore", phase="POSTGRES_ACTIVE",
+        operation_id="op-restore", writer_generation=2, admission_id="admit-r",
+    ) is True
+    # Wipe the live ledger and algorithms to prove the restore really rebuilds.
+    store.replace_all([])
+    restored = restore_source_snapshot(
+        store.db_path, "restore", snapshot,
+        assessment={
+            "allowed": True, "blocking": [],
+            "restore_content_digest": content_digest(snapshot),
+        },
+        confirmed=True,
+    )
+    assert restored["verified"] is True
+    after = export_source_snapshot_v2(store.db_path, "restore")
+    assert content_digest(after) == content_digest(snapshot)
+    rows = {row["operation_id"]: row for row in after["tables"]["cleanup"]}
+    assert set(rows) == {"op-live", "op-done"}
+    assert rows["op-done"]["state"] == "CLEANUP_COMPLETED"
+    assert rows["op-live"]["created_at"].startswith("2026-11-01T00:00:00.123456")
+    assert after["algorithm_revision"] == snapshot["algorithm_revision"]
+    barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
+    assert barrier["phase"] == "POSTGRES_ACTIVE"
+    assert barrier["operation_id"] == "op-restore"
+    # The V1 restore refuses to run on a four-domain project, and an assessment
+    # that does not describe the snapshot is refused before any write.
+    with pytest.raises(AlgorithmMigrationError) as mismatch:
+        restore_source_snapshot(
+            store.db_path, "restore", snapshot,
+            assessment={"allowed": True, "blocking": [], "restore_content_digest": "0" * 64},
+            confirmed=True,
+        )
+    assert mismatch.value.code == "ALGORITHM_ROLLBACK_SNAPSHOT_CHANGED"
