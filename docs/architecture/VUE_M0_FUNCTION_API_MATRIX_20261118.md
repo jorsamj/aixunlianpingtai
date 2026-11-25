@@ -189,3 +189,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 - `/app` 现有 8 条具名业务路由，复用 7 个页面组件（`training-report` 与 `version-report` 共用 `NativeTrainingReport.vue`）。
 - 本文件多处早于代码提交（例如正式 GT 提交晚于本文档记录），属于**文档落后于代码**，不是代码夸大文档。
 - 后续状态以[接续入口](AI_DEVELOPMENT_HANDOFF.md)、[架构审计](PLATFORM_ARCHITECTURE_AUDIT_20261121.md)与[路线](PLATFORM_EVOLUTION_ROADMAP_20261121.md)为准；本矩阵只维护功能/API 对照。
+
+## 2026-11-25 P0-01C 后端定向修复
+
+本轮无 Vue/菜单/页面迁移，既有训练、转换、取消及恢复 API 路径与唯一 Owner 保持一致；仅修复执行身份、启动前失败与中央结算证据核验。实现/测试合同见 [收口记录](P0_01C_FINAL_TARGETED_CLOSEOUT_20261125.md)，开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，本机未运行期验证。

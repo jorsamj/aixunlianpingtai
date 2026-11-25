@@ -65,3 +65,7 @@
 4. GPU UUID→CUDA_VISIBLE_DEVICES 映射；
 5. 中央授权 + Agent 验证容量；
 6. 真实 Linux/NVIDIA 验收前保持单槽。
+
+## 2026-11-25 定向结算合同更新
+
+实现 `b8c61ec6d0218ee1958aee82ec9aeafec015b9e7`：保留现有 Coordinator/Runner 分工，中央单槽恢复和活跃任务 CAS 绑定原节点/worker；状态回查以一个只读事务读取全部执行事实。共享结算核验 Assignment state、slot 与 Hold；训练/转换区分已启动、证明未启动及身份未知。详情见 [P0-01C 收口](P0_01C_FINAL_TARGETED_CLOSEOUT_20261125.md)。本次本机仅语法/静态核验，运行期 CI_PENDING，生产未验；不沿用历史本地测试结论验收新提交。

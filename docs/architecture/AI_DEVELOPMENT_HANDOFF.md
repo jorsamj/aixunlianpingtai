@@ -252,3 +252,7 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 - legacy GT：空 `annotations/` 目录不再逐图 `is_file`；隔离 20 万合成、无持久 GT 下 `/projects` 4.65s→1.75s，`/datasets` 6.5s→3.63s，`/images` 仍约 2.15s/106MB。
 - 标签：正式标签页 Owner 为 `renderLabelManagement414` / `saveLabel414` / `refreshLabels414`，已具备局部刷新；`b74766b9` 的 `refreshLabelsOnly` 属历史路径，本阶段仅补项目切换与失败保护。
 - 未实施：`/images` 有界化、`/datasets` 聚合重构、FTS5、生产 Worker 生命周期验收。
+
+## 2026-11-25 P0-01C 最终定向收口
+
+实现 SHA：`b8c61ec6d0218ee1958aee82ec9aeafec015b9e7`（起点 `8d2c7fe9486f547c6758491e8997f68959aa9707`）。开发 `FUNCTIONAL_COMPLETE` / 验收 `CI_PENDING`；本机只做语法/静态/Git 核验，运行期和生产未验。中央单槽恢复绑定原节点、Assignment、attempt、worker、GPU/CPU、ProcessIdentity；Runner 未启动证明与身份未知分开，未知不得 finish；中央结算使用单一事务快照。测试合同与边界见 [本轮记录](P0_01C_FINAL_TARGETED_CLOSEOUT_20261125.md)。准确最终 SHA 与一次性 CI 快照见交付消息。无已知源码阻断，下一步交 GPT 独立审计；本轮到此停止。
