@@ -56,6 +56,7 @@ from platform_core.algorithm_cutover import (
     verify_maintenance_window,
 )
 from platform_core.algorithm_migration import (
+    verify_migration,
     AlgorithmMigrationError,
     _scan_secret_material,
     build_report,
@@ -282,10 +283,7 @@ def test_report_proves_ids_counts_associations_json_null_and_digest(pg):
     _import(pg, snapshot)
     with _connect(pg) as connection:
         target = export_target_snapshot(connection, "reporting")
-        report = build_report(
-            snapshot, target, schema=schema_status(connection),
-            target_v2_evidence=True,
-        )
+        report = build_report(snapshot, target, schema=schema_status(connection))
     assert report["verdict"] == "OK", report["blocking_findings"]
     assert all(check["ok"] for check in report["checks"].values())
     assert report["checks"]["primary_keys"]["tables"]["algorithms"]["missing"] == []
@@ -1425,10 +1423,7 @@ def test_v2_snapshot_roundtrip_preserves_the_cleanup_ledger(pg):
     with _connect(pg) as connection:
         imported = import_snapshot(connection, snapshot)
         target = export_target_snapshot(connection, "v2rt", include_cleanup=True)
-        report = build_report(
-            snapshot, target, schema=schema_status(connection),
-            target_v2_evidence=True,
-        )
+        report = verify_migration(connection, snapshot)
     assert imported["action"] == "apply" and imported["changed"] is True
     assert report["verdict"] == "OK", report["blocking_findings"]
     assert target["cleanup_capability"] == "PRESENT"
@@ -1572,10 +1567,7 @@ def test_empty_v2_project_keeps_its_downgrade_protection(pg):
     with _connect(pg) as connection:
         assert import_snapshot(connection, snapshot)["action"] == "apply"
         target = export_target_snapshot(connection, "emptyv2", include_cleanup=True)
-        report = build_report(
-            snapshot, target, schema=schema_status(connection),
-            target_v2_evidence=True,
-        )
+        report = verify_migration(connection, snapshot)
     # ABSENT source vs a legal empty PRESENT target is provable equal content.
     assert target["cleanup_capability"] == "PRESENT"
     assert report["verdict"] == "OK", report["blocking_findings"]

@@ -595,17 +595,34 @@ def import_snapshot(
     return result
 
 
-def _v2_completed_evidence(connection, project_id: str) -> bool:
-    """Whether a COMPLETED APPLY run recorded a V2 (four-domain) migration."""
+def _v2_completed_evidence(
+    connection, project_id: str, *,
+    revision: int | None = None, content: str | None = None,
+) -> bool:
+    """Whether a COMPLETED APPLY run recorded a V2 (four-domain) migration.
+
+    Without ``revision``/``content`` this only proves that some V2 migration
+    completed for the project (the historical fact that protects a V1 document
+    from downgrading it). With them it proves *this* migration: the completed run
+    must match the revision and content digest the caller is verifying.
+    """
     from psycopg.rows import dict_row
 
+    statement = (
+        "SELECT 1 AS present FROM w5_algorithm.migration_run "
+        "WHERE project_id=%s AND status='COMPLETED' AND mode='APPLY' "
+        "AND detail->>'contract_version'=%s"
+    )
+    parameters: list[Any] = [str(project_id), SNAPSHOT_CONTRACT_V2]
+    if revision is not None:
+        statement += " AND detail->>'algorithm_revision'=%s"
+        parameters.append(str(int(revision)))
+    if content is not None:
+        statement += " AND detail->>'content_digest'=%s"
+        parameters.append(str(content))
+    statement += " LIMIT 1"
     with connection.cursor(row_factory=dict_row) as cursor:
-        cursor.execute(
-            "SELECT 1 AS present FROM w5_algorithm.migration_run "
-            "WHERE project_id=%s AND status='COMPLETED' AND mode='APPLY' "
-            "AND detail->>'contract_version'=%s LIMIT 1",
-            (str(project_id), SNAPSHOT_CONTRACT_V2),
-        )
+        cursor.execute(statement, tuple(parameters))
         return cursor.fetchone() is not None
 
 
@@ -1170,6 +1187,7 @@ def build_report(
     *,
     schema: Mapping[str, Any] | None = None,
     target_v2_evidence: bool = False,
+    target_v2_completion: bool = False,
 ) -> dict[str, Any]:
     """Full migration report: isolation, counts, keys, relations, JSON, NULLs."""
     source = validate_snapshot(source)
@@ -1203,7 +1221,7 @@ def build_report(
         table_names.append("cleanup")
     if True:
         target_cleanup_rows = (target_tables or {}).get("cleanup") or []
-        same_contract = (
+        same_contract = target is not None and (
             str(source.get("contract_version")) == str(target.get("contract_version"))
             and (
                 str(source.get("cleanup_capability") or "")
@@ -1225,7 +1243,7 @@ def build_report(
             and not target_cleanup_rows
         )
         v2_complete = (
-            source_has_cleanup and target_has_cleanup and target_v2_evidence
+            source_has_cleanup and target_has_cleanup and target_v2_completion
         )
         checks["snapshot_contract"] = _check(
             target is not None and (same_contract or v1_over_v1) and
@@ -1242,12 +1260,13 @@ def build_report(
         # table or field merely existing.
         checks["capability_evidence"] = _check(
             (not source_has_cleanup and not target_v2_evidence)
-            or (source_has_cleanup and target_has_cleanup),
+            or (source_has_cleanup and target_has_cleanup and target_v2_completion),
             source_contract=str(source.get("contract_version")),
             target_contract=None if target is None else str(target.get("contract_version")),
             source_has_cleanup=source_has_cleanup,
             target_has_cleanup=target_has_cleanup,
             target_v2_evidence=target_v2_evidence,
+            target_v2_completion=target_v2_completion,
         )
     source_counts = {name: len(source_tables.get(name) or []) for name in table_names}
     target_counts = (
@@ -1557,11 +1576,17 @@ def verify_migration(connection, source: Mapping[str, Any]) -> dict[str, Any]:
     # over a project that already holds V2 data.
     target = export_target_snapshot(connection, project_id, include_cleanup=True)
     target_rows = (target or {}).get("tables", {}).get("cleanup") or []
+    historical = bool(target_rows) or _v2_completed_evidence(connection, project_id)
+    completion = False
+    if str(snapshot.get("contract_version")) == SNAPSHOT_CONTRACT_V2:
+        completion = _v2_completed_evidence(
+            connection, project_id,
+            revision=int(snapshot["algorithm_revision"]),
+            content=content_digest(snapshot),
+        )
     return build_report(
         snapshot, target, schema=schema_status(connection),
-        target_v2_evidence=bool(target_rows) or _v2_completed_evidence(
-            connection, project_id,
-        ),
+        target_v2_evidence=historical, target_v2_completion=completion,
     )
 
 def restore_source_snapshot(
