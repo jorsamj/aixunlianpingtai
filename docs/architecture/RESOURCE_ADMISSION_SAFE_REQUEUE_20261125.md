@@ -49,3 +49,15 @@ job.json 检查：train_worker 的 --execution-attempt 仍取 TaskRuntime attemp
 最终 SHA 正常推送后核验远端，只查询一次 CI，不轮询、取消或重跑。暂无已知源码阻断；准确 SHA CI、运行期效果和 GPT 独立审计待完成。网络持续不可用的保守 fenced 边界见上文，不提供强制释放入口。
 
 未访问 A800/4070、生产服务/数据/权重，未启用双槽、自动清理、supervisor-required 或 PostgreSQL 切换；无 Vue/UI 整体迁移。完成后停止，交 GPT 独立审计。
+
+## 2026-11-25 持久资源等待请求的重启恢复（A）
+
+实现 dd8ee530924e79b87ed876d309b4dc0017d650bc；以用户已验收的 21fb70de 为基线，仅补之前未直接消费 resource-wait-request.json 的缺口。开发 FUNCTIONAL_COMPLETE / 本轮验收 CI_PENDING。
+
+原 Workdir 严格核验路径、请求结构、原 TRAINING 执行元数据、节点/Assignment/attempt/GPU/slot 与 no-launch 摘要；存在进程身份、启动意图或冲突停止证据即拒绝。通用 cleanup 不再删除未结算请求。凭据仅留原受保护请求文件，不进入恢复错误文本、普通日志或交付记录。
+
+原 NodeRecoveryCoordinator 先查原 Assignment 回执；中央任务进入其他 attempt 时仍核验该原回执。只有明确 RESOURCE_WAIT_RECEIPT_NOT_FOUND/404 才精确重放原请求，由原中央事务判断节点、有效 lease、attempt 与取消竞争；不改已验收中央合同。重放响应丢失后再读原回执；中央不可用进入原 retryable/有界重查机制。损坏、冲突、取消或身份未知永久 fail-closed，证据保留。
+
+仅当 resource_wait_receipt_error 完整验证成功后先清理对应旧 slot intent，再按请求摘要删除原请求；新 Assignment intent 保留。单/双槽与重启容量在原 BoundedExecutionSlots 一致核验。原 Runner 的成功/已确认取消路径经同一 Workdir 清除原请求，避免被新 cleanup 保护误判为未结算。
+
+现有恢复测试增加真实 Workdir 的单/双槽回执、新 attempt、精确重放/响应丢失、中央不可用后同实例恢复、取消及损坏/错误节点/GPU/启动/坏 proof 拒绝、cleanup 证据保护和容量一致性。语法/定向静态检查通过，运行期测试未本机执行，交现有 CI；不宣称通过。

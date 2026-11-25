@@ -197,3 +197,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 ## 2026-11-25 资源等待合同
 
 前端未改。原训练任务 API/详情展示 TaskRuntime 的 QUEUED/resource_waiting 与 resource_wait_reason，等待与 FAILED 分开；TrainingTasks、训练投影及菜单/操作保持。原 Node Executor router 增加按任务和原 Assignment 提交/回查资源等待回执，使用原节点 token，Agent 不访问数据库。实现 13a5cecf79d3ca677929e0f77c356cab19c56e0a，开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，详见[本轮记录](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)。
+
+## 2026-11-25 算法目录后端模块化
+
+前端不变。原 v12 算法列表/CRUD、待归属模型、版本备注/删除/回退、dry-run、重试清理、授权下载共 14 个接口改由 algorithm_catalog_api/contract/service 实现；Method/URL/签名/默认值/鉴权/错误/请求模型保持，原 Repository 与外部 Owner 不变。app 只保留装配、单一 bootstrap 生命周期状态及必要兼容调用。静态 HTTP 序列和模型逐项一致，运行期/OpenAPI CI_PENDING；见[域边界及验证](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。A 的恢复请求只影响原 Agent 恢复链，不新增前端页面或操作。

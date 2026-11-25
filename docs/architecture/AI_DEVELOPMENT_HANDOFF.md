@@ -260,3 +260,9 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 ## 2026-11-25 资源准入与安全 Requeue
 
 P0-01C 已结束：用户独立核验基线 aaeebd06c608ab58b2317767dacff2351556606b 的 22 个 PR workflow 全部 SUCCESS。新实现 13a5cecf79d3ca677929e0f77c356cab19c56e0a 补齐资源规划→Agent 未启动证明→中央原子退回→原 Assignment 幂等回执→按节点等待/其他节点选择。保留原 TaskRuntime attempt、Owner、Hold 和 job.json 栅栏，无新 schema。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；本机仅源码/语法/静态/Git 检查通过，运行期/生产未验。准确最终 SHA 和一次性 CI 快照见交付消息。[合同、测试及网络未知边界](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)。完成后停止，交 GPT 独立审计。
+
+## 2026-11-25 资源等待重启恢复与后端模块化
+
+基线 21fb70de23c3be40006cb27579a031ca487abf60 的 22/22 PR workflow SUCCESS 为用户独立核验结论，P0-01C/准入不重做。A：dd8ee530924e79b87ed876d309b4dc0017d650bc，原 Coordinator 消费资源等待持久请求，先查旧 Assignment 回执，明确 404 才按原 lease/attempt 精确重放，未知保留证据；见[资源记录](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)。
+
+B：da45ae7a46458cad0c8ce469f6083ae6c4613c21，算法库目录与版本生命周期 14 个接口和约 900 行业务/辅助逻辑迁到 Router/Contracts/Service，原 Repository/事务/锁/权限/Owner 保持。app.py 29,124→28,264 行，直接 HTTP 330→316+新 Router 14；静态有序合同逐项一致，运行时/OpenAPI 交 CI。新模块不 import app，不复制全局状态；原 bootstrap Owner、必要兼容入口保留。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，准确最终 SHA 和一次性 CI 快照见交付消息。[模块边界、证据、剩余域与依赖](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。本轮停止，交 GPT 独立审计，不自动扩展下一域。
