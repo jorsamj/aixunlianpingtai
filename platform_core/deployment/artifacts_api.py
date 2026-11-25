@@ -19,6 +19,26 @@ _ARTIFACT_EXTENSIONS = frozenset({
 })
 
 
+def list_deploy_artifacts(project_id: str, *, list_jobs, resolve_business_file):
+    rows = []
+    for j in list_jobs(project_id):
+        if j.get("status") not in {"done", "blocked_by_hardware"}:
+            continue
+        for o in j.get("outputs", []) or []:
+            p = Path(str(o.get("path") or ""))
+            if not p.exists():
+                continue
+            ext = p.suffix.lower().lstrip('.')
+            if ext not in _ARTIFACT_EXTENSIONS:
+                continue
+            try:
+                resolve_business_file(project_id, 'deployment', f"jobs/{j.get('id')}/{o.get('rel') or ''}")
+            except HTTPException:
+                continue
+            rows.append({**o, "job_id": j.get("id"), "target": j.get("target"), "resource_name": j.get("resource", {}).get("name"), "source_name": j.get("source_name"), "params": j.get("params", {}), "created_at": j.get("finished_at") or j.get("created_at"), "download_url": f"/api/v39/projects/{project_id}/deploy/jobs/{j.get('id')}/artifact?rel={requests.utils.quote(str(o.get('rel') or ''))}"})
+    return {"ok": True, "items": rows}
+
+
 def create_deploy_artifact_router(
     *,
     list_jobs,
@@ -35,23 +55,9 @@ def create_deploy_artifact_router(
 
     @router.get("/api/v39/projects/{project_id}/deploy/artifacts")
     def v39_list_deploy_artifacts(project_id: str):
-        rows = []
-        for j in list_jobs(project_id):
-            if j.get("status") not in {"done", "blocked_by_hardware"}:
-                continue
-            for o in j.get("outputs", []) or []:
-                p = Path(str(o.get("path") or ""))
-                if not p.exists():
-                    continue
-                ext = p.suffix.lower().lstrip('.')
-                if ext not in _ARTIFACT_EXTENSIONS:
-                    continue
-                try:
-                    resolve_business_file(project_id, 'deployment', f"jobs/{j.get('id')}/{o.get('rel') or ''}")
-                except HTTPException:
-                    continue
-                rows.append({**o, "job_id": j.get("id"), "target": j.get("target"), "resource_name": j.get("resource", {}).get("name"), "source_name": j.get("source_name"), "params": j.get("params", {}), "created_at": j.get("finished_at") or j.get("created_at"), "download_url": f"/api/v39/projects/{project_id}/deploy/jobs/{j.get('id')}/artifact?rel={requests.utils.quote(str(o.get('rel') or ''))}"})
-        return {"ok": True, "items": rows}
+        return list_deploy_artifacts(
+            project_id, list_jobs=list_jobs, resolve_business_file=resolve_business_file,
+        )
 
     @router.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/artifact")
     def v39_download_deploy_artifact(project_id: str, job_id: str, rel: str):

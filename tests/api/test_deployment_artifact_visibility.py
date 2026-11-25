@@ -43,6 +43,13 @@ def test_completed_deployment_artifact_is_listed_downloadable_and_persistent(cli
     assert download.status_code == 200
     assert download.content == b"real-conversion-output"
 
+    legacy = client.get(f"/api/v12/projects/{project_id}/test_models?probe_optional=false")
+    assert legacy.status_code == 200, legacy.text
+    selected = next(row for row in legacy.json()["items"]
+                    if row.get("model_source") == "deployment_artifact" and row.get("path") == str(model))
+    assert selected["model_name"] == "model.onnx"
+    assert selected["framework"] == "ultralytics" and selected["runtime_format"] == "onnx"
+
     # The listing is rebuilt from persisted job metadata + real files, so another API read
     # after in-memory state changes still returns the artifact.
     second = client.get(f"/api/v39/projects/{project_id}/deploy/artifacts")
@@ -172,3 +179,21 @@ def test_failed_conversion_record_with_canonical_artifact_reference_is_blocked(
     assert response.status_code == 409
     assert "CONVERSION_JOB_ARTIFACT_REFERENCED" in response.text
     assert job_dir.exists()
+
+
+def test_legacy_artifact_query_reuses_canonical_reader_and_file_authority(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"authorized-conversion")
+    monkeypatch.setattr(platform_app, "v39_list_deploy_jobs", lambda project_id: {"items": [{
+        "id": "conversion", "status": "done", "target": "onnx",
+        "outputs": [{"path": str(model), "rel": "artifacts/model.onnx", "name": "model.onnx"}],
+    }]})
+    calls = []
+    def deny(project_id, kind, identifier):
+        calls.append((project_id, kind, identifier))
+        raise HTTPException(403, detail="not authorized")
+    monkeypatch.setattr(platform_app, "_resolve_business_file", deny)
+    result = platform_app.v39_list_deploy_artifacts("project")
+    assert result == {"ok": True, "items": []}
+    assert calls == [("project", "deployment", "jobs/conversion/artifacts/model.onnx")]

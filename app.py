@@ -14834,7 +14834,20 @@ def v39_delete_deploy_job(project_id: str, job_id: str):
     return _conversion_management_service().v39_delete_deploy_job(project_id, job_id)
 
 
-from platform_core.deployment.artifacts_api import create_deploy_artifact_router
+from platform_core.deployment.artifacts_api import (
+    create_deploy_artifact_router,
+    list_deploy_artifacts as _list_deploy_artifacts,
+)
+
+
+def v39_list_deploy_artifacts(project_id: str):
+    """Compatibility query over the canonical artifact reader and file authority."""
+    return _list_deploy_artifacts(
+        project_id,
+        list_jobs=lambda identity: v39_list_deploy_jobs(identity)["items"],
+        resolve_business_file=_resolve_business_file,
+    )
+
 
 app.include_router(create_deploy_artifact_router(
     list_jobs=lambda project_id: v39_list_deploy_jobs(project_id)["items"],

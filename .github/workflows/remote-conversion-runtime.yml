@@ -7,6 +7,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/deployment/artifacts_api.py'
+      - 'tests/api/test_deployment_artifact_visibility.py'
       - platform_core/conversion_management_*.py
       - platform_core/deployment_validation_*.py
       - 'node_agent.py'
@@ -76,6 +78,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - 'platform_core/deployment/artifacts_api.py'
+      - 'tests/api/test_deployment_artifact_visibility.py'
       - platform_core/conversion_management_*.py
       - platform_core/deployment_validation_*.py
       - 'node_agent.py'
