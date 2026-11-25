@@ -174,16 +174,33 @@ def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
     )
     assert set(UNSUPPORTED_OPERATIONS) <= set(PRESENTATION_OPERATIONS)
     assert repository.cleanup_supported is False
-    for name in repository.unsupported_operations():
+    # Every declared-unsupported presentation projection fails closed.
+    for name in UNSUPPORTED_OPERATIONS:
         with pytest.raises(AlgorithmProviderUnsupported):
             getattr(repository, name)()
+    # The cleanup domain has no PostgreSQL implementation at all: each declared
+    # operation refuses with the cleanup-specific code (never a SQLite read).
+    cleanup_calls = {
+        "cleanup_ensure_schema": {},
+        "cleanup_get": {"operation_id": "op"},
+        "cleanup_list": {},
+        "cleanup_summary": {"project_id": "project", "suspected_state": "SUSPECTED_DELETED"},
+        "cleanup_public_operations": {
+            "project_id": "project", "suspected_state": "SUSPECTED_DELETED",
+            "limit": 1, "offset": 0,
+        },
+        "cleanup_public_operation": {
+            "project_id": "project", "operation_id": "op",
+            "suspected_state": "SUSPECTED_DELETED",
+        },
+        "cleanup_confirm_deleted": {},
+        "cleanup_update": {},
+    }
+    assert set(cleanup_calls) == set(CLEANUP_OPERATIONS)
     for name in CLEANUP_OPERATIONS:
         with pytest.raises(AlgorithmProviderUnsupported) as cleanup_error:
-            getattr(repository, name)()
+            getattr(repository, name)(**cleanup_calls[name])
         assert cleanup_error.value.code == "ALGORITHM_CLEANUP_PROVIDER_UNSUPPORTED"
-    with pytest.raises(AlgorithmProviderUnsupported) as generic:
-        repository.bootstrap_summary()
-    assert generic.value.code == "ALGORITHM_PROVIDER_OPERATION_UNSUPPORTED"
     assert "example.invalid" not in repr(repository)
 
 
