@@ -49,6 +49,9 @@ class FakeWorkdirs:
     def clear_process_identity_record(self, task_id, generation):
         self.cleared.append((task_id, generation))
 
+    def clear_stop_evidence(self, task_id, generation):
+        self.evidence.pop((str(task_id), int(generation)), None)
+
 
 class FakeController:
     def __init__(self):
@@ -408,11 +411,18 @@ def test_legacy_single_slot_recovery_without_hold_is_not_blocked(monkeypatch):
     }
     workdirs = FakeWorkdirs([record])
     controller = FakeController()
-    client = RecoveringClient(status)
+    client = SingleSlotRecoveryClient(status)
     coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
     assert coordinator.prepare() == ""
     assert controller.terminated == [(11, 1.0, "h")]
-    assert client.recovered == []
+    # A single-slot execution has no Hold, so the control plane must settle the
+    # exact original attempt through the shared fenced recovery contract.
+    assert client.recovered == [("a", {
+        "assignment_generation": 5,
+        "execution_generation": 2,
+        "gpu_uuid": "",
+        "process_identity": {"pid": 11, "create_time": 1.0, "command_hash": "h"},
+    })]
     assert workdirs.cleared == [("a", 2)]
 
 
@@ -653,6 +663,12 @@ def test_corrupt_stop_evidence_blocks_recovery(tmp_path, monkeypatch):
     assert workdirs.cleared == []
 
 class _SingleSlotClient:
+    """Real single-slot status projection: no Hold, no stop proof.
+
+    ``node_id`` is part of the central contract and must be present in the
+    status body; identity is only bound when the control plane registered it.
+    """
+
     def __init__(self, status):
         self.status = status
         self.node_id = "node-a"
@@ -661,17 +677,54 @@ class _SingleSlotClient:
         return dict(self.status, task_id=task_id)
 
 
+class SingleSlotRecoveryClient(_SingleSlotClient):
+    """Models the extended single-slot recovery response of the real API."""
+
+    def __init__(self, status, *, recovered_status="FAILED", fail_first=False):
+        super().__init__(status)
+        self.recovered_status = recovered_status
+        self.fail_first = bool(fail_first)
+        self.recovered = []
+        self.calls = 0
+
+    def recover_execution(self, task_id, **kwargs):
+        self.calls += 1
+        if self.fail_first and self.calls == 1:
+            raise OSError("central recovery response was lost")
+        self.recovered.append((task_id, kwargs))
+        identity = dict(kwargs["process_identity"])
+        digest = NodeRecoveryCoordinator._identity_sha256({
+            "pid": identity["pid"],
+            "create_time": identity["create_time"],
+            "command_hash": identity["command_hash"],
+        })
+        self.status = {
+            **self.status,
+            "status": self.recovered_status,
+            "process_identity_sha256": digest,
+        }
+        return {
+            "task_id": task_id,
+            "state": "SETTLED",
+            "terminal_status": self.recovered_status,
+            "execution_attempt": int(kwargs["execution_generation"]),
+            "proof_sha256": "",
+        }
+
+
 def test_single_slot_unsettled_execution_retains_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "name", "posix")
     record_value = record("a", 1, 11, assignment_generation=0, gpu_uuid="")
     workdirs = FakeWorkdirs([record_value])
     client = _SingleSlotClient({
         "status": "RUNNING", "execution_attempt": 1, "hold_state": None,
-        "process_identity_sha256": NodeRecoveryCoordinator._identity_sha256(record_value),
+        "node_id": "node-a",
+        "process_identity_sha256": None,
     })
     coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
     error = coordinator.prepare()
     assert "not centrally settled" in error
+    assert coordinator.retryable is True
     assert workdirs.cleared == []
 
 
@@ -681,8 +734,219 @@ def test_single_slot_settled_execution_is_cleaned(tmp_path, monkeypatch):
     workdirs = FakeWorkdirs([record_value])
     client = _SingleSlotClient({
         "status": "CANCELLED", "execution_attempt": 1, "hold_state": None,
-        "process_identity_sha256": NodeRecoveryCoordinator._identity_sha256(record_value),
+        "node_id": "node-a",
+        "process_identity_sha256": None,
     })
     coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
     assert coordinator.prepare() == ""
     assert workdirs.cleared == [("a", 1)]
+
+
+def test_single_slot_transient_block_is_reverified_and_converges(monkeypatch):
+    """Same coordinator instance: unsettled -> evidence kept -> later settled."""
+    _use_posix_recovery(monkeypatch)
+    record_value = {"task_id": "a", "generation": 2, "pid": 11, "create_time": 1.0,
+                    "command_hash": "h", "assignment_generation": 5,
+                    "gpu_uuid": "", "execution_slots": 1}
+    status = {
+        "status": "RUNNING", "execution_attempt": 2, "node_id": "node-a",
+        "assignment_generation": 5, "assignment_state": "RELEASED",
+        "hold_state": None, "hold_execution_attempt": None,
+        "hold_assignment_generation": None, "hold_gpu_uuid": None,
+        "proof_type": None, "proof_sha256": None,
+        "process_identity_sha256": None,
+    }
+    workdirs = FakeWorkdirs([record_value])
+    client = SingleSlotRecoveryClient(status, fail_first=True)
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
+
+    first = coordinator.prepare()
+    assert "not centrally settled" in first
+    assert coordinator.retryable is True
+    assert workdirs.cleared == []
+    assert len(workdirs.records) == 1
+
+    # The control plane is reachable again: the same instance re-verifies the
+    # exact original execution and only then releases the evidence.
+    assert coordinator.prepare() == ""
+    assert coordinator.retryable is False
+    assert client.calls == 2
+    assert workdirs.cleared == [("a", 2)]
+    # A settled scan stays cached; no duplicate recovery owner is created.
+    assert coordinator.prepare() == ""
+    assert client.calls == 2
+
+
+def test_permanent_recovery_block_is_cached_not_retried(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    record_value = record("a", 1, 11, assignment_generation=0, gpu_uuid="")
+    workdirs = FakeWorkdirs([record_value])
+    client = _SingleSlotClient({
+        "status": "RUNNING", "execution_attempt": 1, "hold_state": None,
+        "node_id": "node-b",
+        "process_identity_sha256": None,
+    })
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
+    first = coordinator.prepare()
+    assert "central node identity mismatch" in first
+    assert coordinator.retryable is False
+    # Even if the control plane would now agree, a permanent identity mismatch
+    # is not silently re-adjudicated by a retry.
+    client.status["node_id"] = "node-a"
+    assert coordinator.prepare() == first
+    assert workdirs.cleared == []
+
+
+def test_dual_slot_accepted_stop_proof_without_release_retains_evidence(monkeypatch):
+    """proof accepted is not a settlement: the Hold must actually be RELEASED."""
+    _use_posix_recovery(monkeypatch)
+    digest = stop_proof_digest()
+    status = dual_status(
+        status="RUNNING", hold_state="STOP_VERIFIED",
+        proof_type="PROCESS_STOP_VERIFIED", proof_sha256=digest,
+    )
+    workdirs = FakeWorkdirs([dual_record()])
+    controller = FakeController()
+    client = RecoveringClient(
+        status, digest=digest, refreshed={"hold_state": "STOP_VERIFIED"},
+    )
+    coordinator = NodeRecoveryCoordinator(workdirs, controller, client=client)
+    error = coordinator.prepare()
+    assert "did not release the original Hold" in error
+    assert coordinator.retryable is True
+    assert workdirs.cleared == []
+
+
+def _lost_response_client(status, digest):
+    class LostResponseClient(RecoveringClient):
+        def recover_execution(self, task_id, **kwargs):
+            RecoveringClient.recover_execution(self, task_id, **kwargs)
+            raise OSError("central recovery response was lost")
+
+    return LostResponseClient(status, digest=digest)
+
+
+def test_lost_recovery_response_converges_on_the_next_verification(monkeypatch):
+    _use_posix_recovery(monkeypatch)
+    digest = stop_proof_digest()
+    status = dual_status()
+    workdirs = FakeWorkdirs([dual_record()])
+    client = _lost_response_client(status, digest)
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
+
+    first = coordinator.prepare()
+    assert "central recovery could not release original execution" in first
+    assert workdirs.cleared == []
+    assert len(client.recovered) == 1
+
+    # The control plane did commit the recovery before the response was lost:
+    # the refreshed status alone now proves the settlement, idempotently.
+    assert coordinator.prepare() == ""
+    assert len(client.recovered) == 1
+    assert workdirs.cleared == [("a", 2)]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("execution_attempt", True),
+    ("execution_attempt", "2"),
+    ("execution_attempt", 2.0),
+    ("assignment_generation", "5"),
+    ("assignment_generation", True),
+    ("gpu_uuid", 5),
+])
+def test_stop_evidence_rejects_coerced_top_level_fields(tmp_path, monkeypatch, field, value):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11)
+    evidence = _stop_evidence(tmp_path, "a-1.json", record_value, **{field: value})
+    workdirs = FakeWorkdirs([record_value], evidence={("a", 1): evidence})
+    controller = FakeController()
+    coordinator = NodeRecoveryCoordinator(workdirs, controller)
+    error = coordinator.prepare()
+    assert "persisted stop evidence" in error
+    assert coordinator.retryable is False
+    assert controller.terminated == []
+    assert workdirs.cleared == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("pid", "11"),
+    ("pid", True),
+    ("pid", 0),
+    ("create_time", "1.0"),
+    ("create_time", True),
+    ("create_time", float("nan")),
+    ("create_time", float("inf")),
+    ("create_time", 0.0),
+    ("create_time", -1.0),
+    ("command_hash", None),
+    ("command_hash", 11),
+])
+def test_stop_evidence_rejects_invalid_process_identity_fields(
+    tmp_path, monkeypatch, field, value,
+):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11)
+    evidence = _stop_evidence(tmp_path, "a-1.json", record_value)
+    raw = json.loads(evidence.read_text(encoding="utf-8"))
+    raw["process_identity"][field] = value
+    evidence.write_text(json.dumps(raw), encoding="utf-8")
+    workdirs = FakeWorkdirs([record_value], evidence={("a", 1): evidence})
+    controller = FakeController()
+    coordinator = NodeRecoveryCoordinator(workdirs, controller)
+    error = coordinator.prepare()
+    assert "persisted stop evidence" in error
+    assert coordinator.retryable is False
+    assert controller.terminated == []
+    assert workdirs.cleared == []
+
+
+def test_real_workdir_stop_evidence_blocks_cleanup_and_is_cleared_idempotently(tmp_path):
+    """The real persisted witness, not a fake: unsafe evidence fails closed."""
+    from platform_core.node_agent_executor_runtime import AgentExecutionWorkdir
+    from types import SimpleNamespace
+
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    lease = SimpleNamespace(task_id="task-a", generation=2, kind="TRAINING")
+    target = workdirs.path_for(lease)
+    identity = {"pid": 11, "create_time": 1.0, "command_hash": "a" * 64}
+    witness = {
+        "task_id": "task-a", "execution_attempt": 2, "assignment_generation": 0,
+        "gpu_uuid": "", "proof_type": "PROCESS_STOP_VERIFIED",
+        "stop_verified": True, "no_process_launched": False,
+        "process_identity": identity,
+    }
+    workdirs._atomic_write_json(target / "process-stop-verified.json", witness)
+    assert workdirs.read_stop_evidence("task-a", 2) == witness
+    assert workdirs.read_stop_evidence_present("task-a", 2) is True
+    with pytest.raises(ValueError, match="unsettled stop evidence"):
+        workdirs.cleanup(lease)
+
+    workdirs.clear_stop_evidence("task-a", 2)
+    workdirs.clear_stop_evidence("task-a", 2)
+    assert workdirs.read_stop_evidence_present("task-a", 2) is False
+    assert workdirs.read_stop_evidence("task-a", 2) is None
+
+    # Coerced lineage fields are not accepted as this execution attempt.
+    workdirs._atomic_write_json(
+        target / "process-stop-verified.json", dict(witness, execution_attempt="2"),
+    )
+    with pytest.raises(ValueError, match="lineage mismatch"):
+        workdirs.read_stop_evidence("task-a", 2)
+
+    # A directory/symlink-looking witness is unsafe, never "no evidence".
+    (target / "process-stop-verified.json").unlink()
+    (target / "process-stop-verified.json").mkdir()
+    with pytest.raises(ValueError, match="path is unsafe"):
+        workdirs.read_stop_evidence("task-a", 2)
+    with pytest.raises(ValueError, match="path is unsafe"):
+        workdirs.clear_stop_evidence("task-a", 2)
+
+    (target / "process-stop-verified.json").rmdir()
+    workdirs.cleanup(lease)
+    assert not target.exists()
+
+    # A path-escaping identity is refused before touching the filesystem.
+    with pytest.raises(ValueError):
+        workdirs.read_stop_evidence("../escape", 1)
+    with pytest.raises(ValueError):
+        workdirs.clear_stop_evidence("../escape", 1)

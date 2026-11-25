@@ -2880,7 +2880,26 @@ class AgentExecutionService:
                     "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
                 ).fetchone()
                 if hold is None:
-                    raise AgentExecutionError("STOP_PROOF_NOT_APPLICABLE", "task has no resource hold", 409)
+                    # A single-slot execution never created a resource Hold, so
+                    # "no Hold" is not by itself unrecoverable. Its legal
+                    # settlement is the same fenced recovery: the exact
+                    # attempt/Assignment/ProcessIdentity is verified, the
+                    # terminal status is CASed, and the identity is registered
+                    # durably so the refreshed status can prove it.
+                    settled = self._settle_single_slot_recovery(
+                        database,
+                        node_id=node_id,
+                        task_id=str(task_id),
+                        assignment_generation=int(assignment_generation),
+                        execution_generation=int(execution_generation),
+                        gpu_uuid=str(gpu_uuid),
+                        pid=pid,
+                        create_time=create_time,
+                        command_hash=command_hash,
+                        now=now,
+                    )
+                    database.commit()
+                    return settled
                 if (str(hold["node_id"]) != str(node_id)
                         or int(hold["assignment_generation"]) != int(assignment_generation)
                         or int(hold["execution_attempt"]) != int(execution_generation)
@@ -2950,6 +2969,187 @@ class AgentExecutionService:
                 database.rollback()
                 raise
         return {"task_id": str(task_id), "state": final_state, "proof_sha256": final_digest}
+
+    def _settle_single_slot_recovery(
+        self,
+        database,
+        *,
+        node_id: str,
+        task_id: str,
+        assignment_generation: int,
+        execution_generation: int,
+        gpu_uuid: str,
+        pid: int,
+        create_time: float,
+        command_hash: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Settle one original single-slot execution without inventing a Hold.
+
+        The durable evidence of a single-slot execution is the execution
+        attempt, the RELEASED Assignment that started it and the exact
+        ProcessIdentity. A dual-slot contract (or a pre-marker record on a
+        node that still reports two slots) must never be downgraded to it.
+        """
+        contract = self._persisted_execution_slots(database, task_id, execution_generation)
+        if contract == 2:
+            raise AgentExecutionError(
+                "STOP_PROOF_REQUIRED",
+                "dual-slot execution has no resource hold",
+                409,
+            )
+        if contract == 0 and self._node_reports_dual_slots(database, node_id):
+            raise AgentExecutionError(
+                "STOP_PROOF_REQUIRED",
+                "execution slot contract is unverified and the node reports two slots",
+                409,
+            )
+        if contract == 1:
+            assignment = database.execute(
+                "SELECT generation,state,resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? AND state='RELEASED' "
+                "AND json_extract(resolved_execution_config,'$.execution_attempt')=? "
+                "ORDER BY generation DESC LIMIT 1",
+                (str(task_id), int(execution_generation)),
+            ).fetchone()
+        else:
+            assignment = database.execute(
+                "SELECT generation,state,resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? AND state='RELEASED' "
+                "ORDER BY generation DESC LIMIT 1",
+                (str(task_id),),
+            ).fetchone()
+        if assignment is None:
+            raise AgentExecutionError(
+                "SINGLE_SLOT_EVIDENCE_MISSING",
+                "original single-slot Assignment evidence is missing",
+                409,
+            )
+        if str(assignment["state"]) != "RELEASED":
+            raise AgentExecutionError(
+                "SINGLE_SLOT_EVIDENCE_MISSING",
+                "original single-slot Assignment was not released",
+                409,
+            )
+        if int(assignment_generation) > 0 and int(assignment["generation"]) != int(assignment_generation):
+            raise AgentExecutionError(
+                "STOP_PROOF_IDENTITY_MISMATCH",
+                "recovery Assignment generation mismatch",
+                409,
+            )
+        if gpu_uuid:
+            config = _json(assignment["resolved_execution_config"], {})
+            selected = config.get("selected_gpu") if isinstance(config, dict) else None
+            selected_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+            if selected_uuid and selected_uuid != gpu_uuid:
+                raise AgentExecutionError(
+                    "STOP_PROOF_IDENTITY_MISMATCH",
+                    "recovery GPU UUID mismatch",
+                    409,
+                )
+        task = database.execute(
+            "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
+        ).fetchone()
+        if task is None or int(task["attempt"]) != int(execution_generation):
+            raise AgentExecutionError("EXECUTION_FENCED", "stale execution attempt", 409)
+        registered_pid = task["process_pid"]
+        if registered_pid is not None:
+            if (int(registered_pid) != pid
+                    or float(task["process_create_time"] or 0) != create_time
+                    or str(task["process_command_hash"] or "") != command_hash):
+                raise AgentExecutionError(
+                    "STOP_PROOF_IDENTITY_MISMATCH",
+                    "recovery does not match registered process",
+                    409,
+                )
+        task_status = str(task["status"])
+        if task_status in {"RUNNING", "CANCEL_REQUESTED"}:
+            terminal = "CANCELLED" if task_status == "CANCEL_REQUESTED" else "FAILED"
+            if registered_pid is None:
+                # Durable identity evidence: the exact stopped process this
+                # execution owned, CASed only while the attempt is still live.
+                changed = database.execute(
+                    "UPDATE tasks SET process_pid=?,process_create_time=?,"
+                    "process_command_hash=?,updated_at=? "
+                    "WHERE task_id=? AND attempt=? AND process_pid IS NULL "
+                    "AND process_create_time IS NULL AND process_command_hash IS NULL "
+                    "AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                    (pid, create_time, command_hash, now,
+                     str(task_id), int(execution_generation)),
+                ).rowcount
+                if changed != 1:
+                    raise AgentExecutionError(
+                        "STOP_PROOF_IDENTITY_MISMATCH",
+                        "recovery process identity could not be registered",
+                        409,
+                    )
+            changed = database.execute(
+                "UPDATE tasks SET status=?,stage=?,error=COALESCE(error,?),finished_at=?,"
+                "updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL "
+                "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                (terminal, terminal.lower(), "RECOVERED_AFTER_AGENT_CRASH",
+                 now, now, str(task_id), int(execution_generation)),
+            ).rowcount
+            if changed != 1:
+                raise AgentExecutionError(
+                    "EXECUTION_FENCED", "recovery terminal CAS lost", 409,
+                )
+        elif task_status in {
+                "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+                "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}:
+            # Idempotent retry after a lost response: the settle decision is
+            # already durable, so only the identity registration may be missing.
+            if registered_pid is None:
+                database.execute(
+                    "UPDATE tasks SET process_pid=?,process_create_time=?,"
+                    "process_command_hash=?,updated_at=? "
+                    "WHERE task_id=? AND attempt=? AND process_pid IS NULL "
+                    "AND process_create_time IS NULL AND process_command_hash IS NULL",
+                    (pid, create_time, command_hash, now,
+                     str(task_id), int(execution_generation)),
+                )
+            terminal = task_status
+        else:
+            raise AgentExecutionError(
+                "RECOVERY_STATE_INVALID", "task state cannot be recovered", 409,
+            )
+        registered = database.execute(
+            "SELECT process_pid,process_create_time,process_command_hash "
+            "FROM tasks WHERE task_id=?", (str(task_id),)
+        ).fetchone()
+        if (registered is None or int(registered["process_pid"] or 0) != pid
+                or float(registered["process_create_time"] or 0) != create_time
+                or str(registered["process_command_hash"] or "") != command_hash):
+            raise AgentExecutionError(
+                "STOP_PROOF_IDENTITY_MISMATCH",
+                "recovery process identity was not persisted",
+                409,
+            )
+        identity_sha256 = hashlib.sha256(_canonical_json({
+            "pid": pid,
+            "create_time": create_time,
+            "command_hash": command_hash,
+        }).encode("utf-8")).hexdigest()
+        return {
+            "task_id": str(task_id),
+            "state": "SETTLED",
+            "execution_attempt": int(execution_generation),
+            "terminal_status": str(terminal),
+            "process_identity_sha256": identity_sha256,
+            "proof_sha256": "",
+        }
+
+    @staticmethod
+    def _node_reports_dual_slots(database, node_id: str) -> bool:
+        node = database.execute(
+            "SELECT allowed_capabilities,reported_capabilities FROM service_nodes "
+            "WHERE node_id=?", (str(node_id),)
+        ).fetchone()
+        if node is None:
+            return False
+        allowed = set(_json(node["allowed_capabilities"], []))
+        reported = set(_json(node["reported_capabilities"], []))
+        return "execution-slots:2" in allowed and "execution-slots:2" in reported
 
     @staticmethod
     def _persisted_execution_slots(database, task_id: str, execution_attempt: int) -> int:

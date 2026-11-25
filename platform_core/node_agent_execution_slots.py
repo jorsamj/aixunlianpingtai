@@ -91,6 +91,30 @@ class BoundedExecutionSlots:
                 pass
             raise
 
+    def reconcile_persisted_intent(self) -> bool:
+        """Re-read a persisted-intent block after node recovery settled it.
+
+        Only the single node recovery owner may call this. It never releases a
+        slot or invents capacity: it re-reads the durable intent list and clears
+        the block only when every record was reconciled and removed.
+        """
+        if not self.blocked_reason:
+            return True
+        if self._persist_path is None:
+            return False
+        try:
+            if not self._persist_path.is_file():
+                records: object = []
+            else:
+                records = json.loads(self._persist_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(records, list) or records:
+            return False
+        with self._lock:
+            self.blocked_reason = ""
+        return True
+
     def active(self) -> tuple[ExecutionSlot, ...]:
         """All occupied slots, including exited/quarantined-but-unreleased."""
         with self._lock:

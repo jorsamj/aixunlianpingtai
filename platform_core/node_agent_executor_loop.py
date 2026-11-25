@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
@@ -89,6 +90,8 @@ class NodeAgentExecutorLoop:
         slot_controller: object | None = None,
         slot_intent_path: object | None = None,
         recovery_error: str = "",
+        recovery_retry: Callable[[], str] | None = None,
+        recovery_retry_interval: float = 60.0,
     ) -> None:
         self.client = client
         self.deployment_runner = deployment_runner
@@ -109,8 +112,13 @@ class NodeAgentExecutorLoop:
         self._completed_tasks = 0
         # A node-level recovery verdict that blocks this Agent from safely
         # owning any new remote execution. It is not cleared by later runner
-        # status: the durable recovery evidence is still unresolved.
+        # status: the durable recovery evidence is still unresolved. Only the
+        # single node-wide coordinator may clear it, and only by re-verifying
+        # that same durable evidence (``recovery_retry``).
         self._recovery_error = str(recovery_error or "").strip()
+        self._recovery_retry = recovery_retry
+        self._recovery_retry_interval = max(5.0, float(recovery_retry_interval))
+        self._next_recovery_retry = 0.0
         self.max_slots = 2 if max_slots == 2 and slot_runner_factory and slot_controller else 1
         self._slot_factory = slot_runner_factory
         self._slot_controller = slot_controller
@@ -240,8 +248,57 @@ class NodeAgentExecutorLoop:
             raise ValueError("claimed executor item is incomplete")
         return task_id, kind, assignment_token, capability
 
+    def _retry_recovery(self) -> None:
+        """Re-verify a transient node recovery verdict, at most once per interval.
+
+        Only the single executor thread calls this, and the coordinator's own
+        lock/ownership keeps one recovery owner. A permanent block keeps
+        returning the same verdict, so this cannot unblock unsafe evidence.
+        """
+        retry = self._recovery_retry
+        if not self._recovery_error or retry is None:
+            return
+        now = time.monotonic()
+        if now < self._next_recovery_retry:
+            return
+        self._next_recovery_retry = now + self._recovery_retry_interval
+        try:
+            error = str(retry() or "")
+        except Exception as exc:  # noqa: BLE001 - stays fail-closed
+            error = f"{type(exc).__name__}: {exc}"
+        if error:
+            with self._lock:
+                self._recovery_error = error
+            self._publish_status()
+            return
+        if self._slots is not None and not self._slots.reconcile_persisted_intent():
+            # The coordinator settled every process record, but a persisted
+            # dual-slot intent still has no reconciled owner: stay fail-closed
+            # and stop re-checking (this is not a transient central state).
+            with self._lock:
+                self._recovery_error = (
+                    self._slots.blocked_reason
+                    or "persisted dual-slot intent requires reconciliation"
+                )
+            self._next_recovery_retry = float("inf")
+            self._publish_status()
+            return
+        # The coordinator verified there is no unresolved evidence: let the
+        # runners re-consume that verdict so their capabilities are restored.
+        for runner in self.runners.values():
+            refresh = getattr(runner, "refresh_recovery", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:  # noqa: BLE001 - runner stays not-ready
+                    pass
+        with self._lock:
+            self._recovery_error = ""
+        self._publish_status()
+
     def run_once(self) -> bool:
         """Claim and execute at most one task. Return True when a task was claimed."""
+        self._retry_recovery()
         if not self.enabled or self.stop_event.is_set():
             return False
         try:
@@ -443,6 +500,7 @@ class NodeAgentExecutorLoop:
                 )
 
     def _run_dual_once(self) -> bool:
+        self._retry_recovery()
         if self._slots is None or len(self._slots.active()) >= self.max_slots:
             return False
         if self._slots.blocked_reason:
@@ -613,7 +671,7 @@ class NodeAgentExecutorLoop:
             self.stop_event.wait(self.poll_interval)
 
     def start(self) -> None:
-        if not self.enabled:
+        if not self.capabilities:
             return
         with self._lock:
             if self._thread is not None and self._thread.is_alive():

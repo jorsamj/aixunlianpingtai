@@ -163,6 +163,63 @@ class FakeControlClient:
         self.confirm_calls = []
         self.begin_calls = 0
         self.finish_calls = []
+        self.terminal_status = ""
+        self.terminal_generation = 3
+        self.identity_sha256 = None
+        self.recovered = []
+        self.status_checks = 0
+        self.settle_finish = True
+
+    def execution_status(self, task_id):
+        """The real central settlement projection (single-slot, no Hold)."""
+        self.status_checks += 1
+        return {
+            "task_id": str(task_id),
+            "node_id": self.node_id,
+            "status": self.terminal_status or "RUNNING",
+            "execution_attempt": int(self.terminal_generation),
+            "execution_slots": 1,
+            "assignment_state": None,
+            "assignment_generation": None,
+            "hold_state": None,
+            "hold_execution_attempt": None,
+            "hold_assignment_generation": None,
+            "hold_gpu_uuid": None,
+            "proof_type": None,
+            "proof_sha256": None,
+            "process_identity_sha256": self.identity_sha256,
+        }
+
+    def recover_execution(
+        self,
+        task_id,
+        *,
+        assignment_generation,
+        execution_generation,
+        gpu_uuid,
+        process_identity,
+    ):
+        self.recovered.append({
+            "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_generation": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid),
+            "process_identity": dict(process_identity),
+        })
+        self.identity_sha256 = hashlib.sha256(json.dumps(
+            dict(process_identity),
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        self.terminal_status = "FAILED"
+        self.terminal_generation = int(execution_generation)
+        return {
+            "task_id": str(task_id),
+            "state": "SETTLED",
+            "execution_attempt": int(execution_generation),
+            "terminal_status": "FAILED",
+            "process_identity_sha256": self.identity_sha256,
+            "proof_sha256": "",
+        }
 
     def heartbeat(self, _lease, **kwargs):
         self.heartbeat_calls += 1
@@ -364,7 +421,19 @@ class FakeControlClient:
             "error": error,
             "accepted": accepted,
         })
-        return {"task": {"status": status}}
+        self.terminal_status = status
+        self.terminal_generation = lease.generation
+        if not self.settle_finish:
+            # The ACK claims the terminal state but the control plane did not
+            # actually settle this execution.
+            self.terminal_status = ""
+        return {
+            "task": {
+                "task_id": lease.task_id,
+                "status": status,
+                "attempt": lease.generation,
+            },
+        }
 
 
 def _sha(path: Path) -> str:
@@ -1184,6 +1253,19 @@ def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_
             assert runner.ready is True
             assert runner.recovery_error == ""
             assert workdirs.list_process_identities() == []
+            # The local stop is not a settlement: the exact original execution
+            # was settled centrally through the shared recovery contract.
+            assert client.recovered == [{
+                "task_id": current.task_id,
+                "assignment_generation": 0,
+                "execution_generation": current.generation,
+                "gpu_uuid": "",
+                "process_identity": {
+                    "pid": int(launched.identity.pid),
+                    "create_time": float(launched.identity.create_time),
+                    "command_hash": str(launched.identity.command_hash),
+                },
+            }]
             launched.process.wait(timeout=5)
             assert (recovered / "input").exists() == checkpoint
         if checkpoint:
@@ -1624,3 +1706,65 @@ def test_resource_resolver_subprocess_only_sees_assigned_gpu_uuid(tmp_path, monk
         "/tmp/model.pt", tmp_path / "resource-resolution.json",
     )
     assert captured["CUDA_VISIBLE_DEVICES"] == "GPU-ASSIGNED"
+
+
+def test_training_success_path_uses_the_unified_central_settlement(tmp_path):
+    """The normal success path must verify the settlement, not trust the ACK."""
+    current, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, _, workdirs = build_runner(tmp_path, client, transfer)
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "SUCCEEDED"
+    assert client.finish_calls[-1]["status"] == "SUCCEEDED"
+    assert client.status_checks >= 1
+    assert client.terminal_status == "SUCCEEDED"
+    # Settled: the local identity and trusted-stop witness are both released.
+    assert workdirs.read_process_identity(current) is None
+    assert workdirs.read_stop_evidence(current.task_id, current.generation) is None
+
+
+def test_training_unsettled_terminal_ack_keeps_recovery_evidence(tmp_path):
+    """An accepted finish is not a settlement: never report a false success."""
+    current, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    client.settle_finish = False
+    runner, _, workdirs = build_runner(tmp_path, client, transfer)
+
+    with pytest.raises(RemoteExecutionFenced, match="did not confirm the training"):
+        runner.run(current)
+
+    assert client.finish_calls[-1]["status"] == "SUCCEEDED"
+    assert workdirs.read_process_identity(current) is not None
+    evidence = workdirs.read_stop_evidence(current.task_id, current.generation)
+    assert evidence is not None
+    assert evidence["process_identity"]["pid"] == int(
+        workdirs.read_process_identity(current)["pid"]
+    )
+
+
+def test_training_graceful_shutdown_never_cleans_when_evidence_write_fails(
+    tmp_path, monkeypatch,
+):
+    from platform_core.task_runtime.process_control import ProcessIdentity
+
+    current, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, _, workdirs = build_runner(tmp_path, client, transfer)
+    workdirs.prepare(current)
+    identity = ProcessIdentity(pid=2_147_483_647, create_time=12345.5, command_hash="a" * 64)
+    workdirs.persist_process_identity(current, identity)
+    runner._set_active_process(current, identity)
+    monkeypatch.setattr(runner.controller, "terminate_tree", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_persist_stop_evidence", lambda *a, **k: False)
+
+    runner._terminate_active(graceful=True)
+
+    assert "could not be persisted" in runner._shutdown_error
+    assert workdirs.read_process_identity(current) is not None
+    assert client.terminal_status != "FAILED"
+    assert client.finish_calls == []

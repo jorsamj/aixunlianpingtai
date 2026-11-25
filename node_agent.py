@@ -341,6 +341,10 @@ def _build_executor(
         slot_controller=slot_controller,
         slot_intent_path=(state_dir / "dual-slot-intents.json") if slot_factory is not None else None,
         recovery_error=recovery_error,
+        # Only the single node-wide coordinator may clear a transient verdict,
+        # and only by re-verifying the same durable evidence.
+        recovery_retry=recovery.prepare if recovery is not None else None,
+        recovery_retry_interval=_env_float("MC_NODE_RECOVERY_RETRY_SECONDS", 60.0),
     )
     if not reported_capabilities and not recovery_error:
         # Recovery evidence (if any) was adjudicated without a blocking error.

@@ -57,9 +57,39 @@ class FakeSession:
 
 
 class FakeClient:
+    """Models the real central execution contract, not just a finish ACK.
+
+    The settlement contract never trusts a finish body: the runner re-reads the
+    ``execution_status`` projection (task/node/attempt/status/Assignment/Hold)
+    before it may release local recovery evidence.
+    """
+
+    node_id = "node-1"
+
     def __init__(self):
         self.events = []
         self.finish_calls = []
+        self.status = "RUNNING"
+        self.finish_raises = False
+        self.commit_before_raise = False
+
+    def execution_status(self, task_id):
+        return {
+            "task_id": str(task_id),
+            "node_id": self.node_id,
+            "status": self.status,
+            "execution_attempt": 3,
+            "execution_slots": 1,
+            "assignment_state": None,
+            "assignment_generation": None,
+            "hold_state": None,
+            "hold_execution_attempt": None,
+            "hold_assignment_generation": None,
+            "hold_gpu_uuid": None,
+            "proof_type": None,
+            "proof_sha256": None,
+            "process_identity_sha256": None,
+        }
 
     def heartbeat(self, lease, **kwargs):
         self.events.append(("heartbeat", dict(kwargs)))
@@ -105,7 +135,20 @@ class FakeClient:
             "result_ref": result_ref,
             "error": error,
         })
-        return {"task": {"status": status}}
+        if self.finish_raises:
+            if self.commit_before_raise:
+                # The control plane committed the terminal state; only the
+                # response was lost.
+                self.status = status
+            raise OSError("control plane response was lost")
+        self.status = status
+        return {
+            "task": {
+                "task_id": lease.task_id,
+                "status": status,
+                "attempt": lease.generation,
+            },
+        }
 
 
 def _lease(source_bytes: bytes, *, source_name="source.pt", digest=None):
@@ -937,3 +980,199 @@ def test_windows_conversion_restart_never_erases_persisted_pid_without_job_objec
     with pytest.raises(ValueError, match="unverified process identity"):
         workdirs.cleanup(current)
     assert workspace.is_dir()
+
+
+class FakeAssignedClient(FakeClient):
+    """Single-slot execution whose original Assignment carried a real GPU."""
+
+    def __init__(self, *, confirm=True, assignment_generation=7,
+                 gpu_uuid="GPU-real", execution_slots=1):
+        super().__init__()
+        self.confirm = bool(confirm)
+        self.assignment_generation = int(assignment_generation)
+        self.gpu_uuid = str(gpu_uuid)
+        self.execution_slots = int(execution_slots)
+
+    def execution_status(self, task_id):
+        status = super().execution_status(task_id)
+        status.update({
+            "execution_slots": self.execution_slots,
+            "assignment_state": "RELEASED",
+            "assignment_generation": self.assignment_generation,
+        })
+        if self.execution_slots == 2:
+            status.update({
+                "hold_state": "RELEASED",
+                "hold_execution_attempt": 3,
+                "hold_assignment_generation": self.assignment_generation,
+                "hold_gpu_uuid": self.gpu_uuid,
+                "proof_type": "PROCESS_STOP_VERIFIED",
+                "proof_sha256": "f" * 64,
+            })
+        return status
+
+    def finish(self, lease, status, *, result_ref=None, error=None, accepted=None):
+        body = super().finish(lease, status, result_ref=result_ref, error=error)
+        if not self.confirm:
+            # The ACK claims success but the control plane did not settle it.
+            self.status = "RUNNING"
+        return body
+
+
+def _assigned_lease(source_bytes, *, generation=3, assignment_generation=7,
+                    gpu_uuid="GPU-real", execution_slots=1):
+    from dataclasses import replace
+
+    return replace(
+        _lease(source_bytes),
+        generation=int(generation),
+        execution_slots=int(execution_slots),
+        assignment={
+            "generation": int(assignment_generation),
+            "resolved_execution_config": {"selected_gpu": {"uuid": str(gpu_uuid)}},
+        },
+    )
+
+
+def test_conversion_stop_evidence_binds_the_real_assignment_gpu(tmp_path):
+    """The witness must name the Assignment GPU, not an invented field."""
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeAssignedClient(confirm=False)
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(
+        client,
+        workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    with pytest.raises(RemoteExecutionFenced, match="did not confirm the conversion"):
+        runner.run(_assigned_lease(source))
+
+    evidence = json.loads(
+        (tmp_path / "state" / "executions" / "convert-agent-task" / "3" /
+         "process-stop-verified.json").read_text(encoding="utf-8")
+    )
+    assert evidence["assignment_generation"] == 7
+    assert evidence["gpu_uuid"] == "GPU-real"
+    assert evidence["execution_slots"] == 1
+    assert evidence["proof_type"] == "PROCESS_STOP_VERIFIED"
+    # Unsettled: the workdir and its recovery evidence are retained.
+    assert (tmp_path / "state" / "executions" / "convert-agent-task" / "3").is_dir()
+    assert workdirs.read_process_identity(_assigned_lease(source)) is not None
+
+
+def test_conversion_settled_assignment_cleans_evidence_and_workdir(tmp_path):
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeAssignedClient(confirm=True)
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(
+        client,
+        workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_assigned_lease(source))
+
+    assert outcome.status == "SUCCEEDED"
+    assert not (
+        tmp_path / "state" / "executions" / "convert-agent-task" / "3"
+    ).exists()
+
+
+def test_conversion_rejects_a_finish_body_for_another_terminal_status(tmp_path):
+    """A contradictory ACK is fail-closed even if the request looked applied."""
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeClient()
+
+    def contradictory_finish(lease, status, *, result_ref=None, error=None, accepted=None):
+        client.finish_calls.append({"status": status, "result_ref": result_ref, "error": error})
+        client.status = "FAILED"
+        return {"task": {"task_id": lease.task_id, "status": "FAILED", "attempt": lease.generation}}
+
+    client.finish = contradictory_finish
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(
+        client,
+        workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    with pytest.raises(RemoteExecutionFenced):
+        runner.run(_lease(source))
+    assert (tmp_path / "state" / "executions" / "convert-agent-task" / "3").is_dir()
+
+
+def test_conversion_lost_finish_response_is_verified_and_not_downgraded(tmp_path):
+    """The committed success survives a lost response instead of becoming FAILED."""
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeClient()
+    client.finish_raises = True
+    client.commit_before_raise = True
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(
+        client,
+        workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_lease(source))
+
+    assert outcome.status == "SUCCEEDED"
+    # Exactly one finish attempt; the committed result was never overwritten.
+    assert [call["status"] for call in client.finish_calls] == ["SUCCEEDED"]
+    assert not (
+        tmp_path / "state" / "executions" / "convert-agent-task" / "3"
+    ).exists()
+
+
+def test_conversion_nested_cancel_is_not_reported_without_confirmation(tmp_path):
+    """The nested cancellation branch must never claim CANCELLED locally."""
+    source = b"portable-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _worker_script(runtime_root)
+    client = FakeClient()
+    client.finish_raises = True
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    runner = AgentConversionRunner(
+        client,
+        workdirs,
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+    runner.request_shutdown()
+
+    with pytest.raises(RemoteExecutionFenced):
+        runner.run(_lease(source, digest="0" * 64))
+    assert client.finish_calls and client.finish_calls[-1]["status"] == "CANCELLED"

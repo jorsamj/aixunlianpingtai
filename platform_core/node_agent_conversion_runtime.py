@@ -16,6 +16,10 @@ from urllib.parse import urlparse
 
 import requests
 
+from .node_agent_settlement import (
+    settlement_of,
+    strict_int,
+)
 from .node_agent_supervisor_gate import (
     assert_direct_remote_launch_permitted,
     SupervisorExecutionBoundaryRequired,
@@ -40,11 +44,6 @@ _MAX_REMOTE_LOG_FORWARD_BYTES = 60 * 1024
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_SOURCE_SUFFIXES = {".pt", ".pth", ".onnx"}
 
-
-_SETTLED_TASK_STATUSES = frozenset({
-    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
-    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
-})
 
 class AgentConversionRuntimeError(RuntimeError):
     pass
@@ -169,6 +168,9 @@ class AgentConversionRunner:
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
         self._active_lease: RemoteExecutionLease | None = None
+        # The launched identity survives the in-memory release: every central
+        # settlement check must still bind to the process this execution owned.
+        self._last_process_identity: ProcessIdentity | None = None
         self._shutdown_event = threading.Event()
         self._recovery_error = ""
         self._recovery_coordinator = recovery_coordinator
@@ -182,6 +184,10 @@ class AgentConversionRunner:
     @property
     def recovery_error(self) -> str:
         return str(self._recovery_error or "")
+
+    def refresh_recovery(self) -> bool:
+        """Re-consume the node-wide recovery verdict (coordinator-owned)."""
+        return self._recover_persisted_processes()
 
     def _active_process(
         self,
@@ -197,6 +203,7 @@ class AgentConversionRunner:
         with self._identity_lock:
             self._active_lease = lease
             self._active_identity = identity
+            self._last_process_identity = identity
         callback = self._on_process_started
         if callable(callback):
             callback(identity)
@@ -260,24 +267,28 @@ class AgentConversionRunner:
                 return False
             if self.client is not None:
                 # The legacy no-coordinator path still needs the central fact: a
-                # verified local stop is not a settlement.
-                try:
-                    status = self.client.execution_status(str(record["task_id"]))
-                except Exception as error:
-                    self._recovery_error = (
-                        "central conversion recovery status is unavailable: "
-                        f"{type(error).__name__}: {error}"
-                    )
-                    return False
-                if (str(status.get("status") or "") not in _SETTLED_TASK_STATUSES
-                        or int(status.get("execution_attempt") or 0)
-                        != int(record["generation"])):
+                # verified local stop is not a settlement. One authenticated,
+                # fenced recovery request settles the exact original execution;
+                # the refreshed status must then prove the terminal state, the
+                # ProcessIdentity and the released Assignment/Hold.
+                _status, problem = recover_and_verify(
+                    self.client,
+                    record,
+                    node_id=str(getattr(self.client, "node_id", "") or ""),
+                )
+                if problem:
                     self._recovery_error = (
                         "conversion execution is not centrally settled; the original "
-                        "process identity is retained"
+                        f"process identity is retained: {problem}"
                     )
                     return False
             try:
+                # Settled: the intent marker, the trusted-stop witness and the
+                # unique ProcessIdentity are released in that order, last one
+                # first only when everything above succeeded.
+                self.workdirs.clear_stop_evidence(
+                    str(record["task_id"]), int(record["generation"]),
+                )
                 self.workdirs.clear_process_identity_record(
                     str(record["task_id"]),
                     int(record["generation"]),
@@ -299,37 +310,71 @@ class AgentConversionRunner:
         selected = selected if isinstance(selected, Mapping) else {}
         return int(assignment.get("generation") or 0), str(selected.get("uuid") or "")
 
-    def _central_settlement(self, lease) -> bool:
-        client = self.client
-        if client is None:
-            return False
+    def _node_id(self) -> str:
+        return str(getattr(self.client, "node_id", "") or "")
+
+    def _execution_record(self, lease) -> dict[str, Any] | None:
+        """The original durable execution facts this settlement must bind to."""
+        identity = self._last_process_identity
+        if identity is None:
+            return None
         try:
-            status = client.execution_status(str(lease.task_id))
-        except Exception:
+            assignment_generation, gpu_uuid = self._assignment_identity(lease)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "task_id": str(lease.task_id),
+            "generation": int(lease.generation),
+            "pid": int(identity.pid),
+            "create_time": float(identity.create_time),
+            "command_hash": str(identity.command_hash),
+            "assignment_generation": int(assignment_generation),
+            "gpu_uuid": str(gpu_uuid or ""),
+            "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
+        }
+
+    def _settlement_problem(self, lease, expected: str | None = None) -> str:
+        record = self._execution_record(lease)
+        if record is None:
+            return "original conversion process identity is unavailable"
+        status, error = settlement_of(
+            self.client,
+            record,
+            node_id=self._node_id(),
+            expected_status=expected,
+        )
+        return error
+
+    def _central_settlement(self, lease) -> bool:
+        return not self._settlement_problem(lease)
+
+    @staticmethod
+    def _body_matches(body, lease, expected: str) -> bool | None:
+        """``True`` agrees, ``False`` contradicts, ``None`` is incomplete.
+
+        The body is never the settlement itself; a contradictory body is a
+        fail-closed answer while an incomplete one is re-verified centrally.
+        """
+        if not isinstance(body, Mapping):
+            return None
+        task = body.get("task")
+        if not isinstance(task, Mapping):
+            return None
+        if task.get("task_id") is not None and str(task.get("task_id")) != str(lease.task_id):
             return False
-        if not isinstance(status, Mapping):
+        declared = task.get("status")
+        if declared is not None and str(declared) != str(expected):
             return False
-        if str(status.get("status") or "") not in _SETTLED_TASK_STATUSES:
-            return False
-        if int(status.get("execution_attempt") or 0) != int(lease.generation):
-            return False
-        hold_state = status.get("hold_state")
-        if hold_state is not None and str(hold_state) != "RELEASED":
+        attempt = task.get("execution_attempt", task.get("attempt"))
+        if attempt is not None and strict_int(attempt) != int(lease.generation):
             return False
         return True
 
-    def _terminal_body_settled(self, body, lease, status: str) -> bool:
-        if not isinstance(body, Mapping):
+    def _verified_settlement(self, lease, expected: str, body=None) -> bool:
+        """Confirm the exact expected terminal state from the control plane."""
+        if body is not None and self._body_matches(body, lease, expected) is False:
             return False
-        task = body.get("task")
-        if isinstance(task, Mapping):
-            if str(task.get("status") or "") != str(status):
-                return False
-            attempt = task.get("execution_attempt")
-            if attempt is not None and int(attempt) != int(lease.generation):
-                return False
-            return True
-        return self._central_settlement(lease)
+        return not self._settlement_problem(lease, expected)
 
     def _persist_stop_evidence(self, lease, identity, *, reason: str) -> bool:
         """Record the verified local stop next to the durable process identity."""
@@ -346,6 +391,7 @@ class AgentConversionRunner:
             "execution_attempt": int(lease.generation),
             "assignment_generation": assignment_generation,
             "gpu_uuid": gpu_uuid,
+            "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
             "proof_type": "PROCESS_STOP_VERIFIED",
             "stop_verified": True,
             "no_process_launched": False,
@@ -366,7 +412,20 @@ class AgentConversionRunner:
         return True
 
     def _confirm_stop_cleanup(self, lease) -> None:
-        """Drop the durable identity only after an authoritative settlement."""
+        """Drop the local recovery evidence only after an authoritative settlement.
+
+        The trusted-stop witness is removed first: if the cleanup is interrupted
+        before the ProcessIdentity is released, the identity (the unique
+        recovery witness) survives and a restart converges. It is idempotent.
+        """
+        try:
+            self.workdirs.clear_stop_evidence(str(lease.task_id), int(lease.generation))
+        except (OSError, ValueError) as error:
+            self._recovery_error = (
+                "conversion stop evidence cleanup could not be persisted: "
+                f"{type(error).__name__}: {error}"
+            )
+            return
         try:
             self.workdirs.clear_process_identity(lease)
         except (OSError, ValueError) as error:
@@ -394,9 +453,14 @@ class AgentConversionRunner:
         if lease is not None:
             # A verified local stop is not a central settlement: keep the durable
             # identity (the only recovery witness) and record the stop evidence.
-            self._persist_stop_evidence(
+            persisted = self._persist_stop_evidence(
                 lease, identity, reason="terminate_active",
             )
+            if not persisted:
+                self._recovery_error = (
+                    "the verified conversion stop could not be persisted; the "
+                    "original process identity is retained"
+                )
         self._clear_active_process()
         return True
 
@@ -622,7 +686,8 @@ class AgentConversionRunner:
         *,
         result_ref: str | None = None,
         error: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> str | None:
+        """Publish and verify one terminal state; return it only when settled."""
         try:
             body = self.client.finish(
                 lease,
@@ -631,11 +696,13 @@ class AgentConversionRunner:
                 error=error,
             )
         except (NodeExecutorHTTPError, OSError, requests.RequestException):
+            body = None
+        if body is not None and self._body_matches(body, lease, status) is False:
             return None
-        if not self._terminal_body_settled(body, lease, status):
+        if not self._verified_settlement(lease, status, body):
             return None
         self._confirm_stop_cleanup(lease)
-        return body
+        return str(status)
 
     def _prepare_job(
         self,
@@ -943,6 +1010,9 @@ class AgentConversionRunner:
         )
         monitor.start()
         log_offset = 0
+        # Once the verified conversion result is committed centrally, a later
+        # failure must never be published as FAILED/CANCELLED over it.
+        result_committed = False
         try:
             download = source["download"]
             source_name = _safe_filename(download.get("file_name"), "source.pt")
@@ -1266,6 +1336,7 @@ class AgentConversionRunner:
                 raise AgentConversionRuntimeError(
                     "confirmed conversion result has no result_ref"
                 )
+            result_committed = True
 
             terminal_status = (
                 "SUCCEEDED"
@@ -1273,15 +1344,19 @@ class AgentConversionRunner:
                 else "BLOCKED_BY_HARDWARE"
             )
             self.client.begin_finalization(lease)
-            finished = self.client.finish(
-                lease,
-                terminal_status,
-                result_ref=result_ref,
-            )
-            status = str((finished.get("task") or {}).get("status") or "")
-            if status != terminal_status:
-                raise AgentConversionRuntimeError(
-                    f"control plane returned unexpected conversion terminal status: {status or '<empty>'}"
+            # The finished result is already committed centrally: a lost or
+            # unconfirmed response may never be re-published as FAILED, so this
+            # path fences instead of falling through to the generic failure.
+            try:
+                finish_body = self.client.finish(
+                    lease, terminal_status, result_ref=result_ref,
+                )
+            except (NodeExecutorHTTPError, OSError, requests.RequestException):
+                finish_body = None
+            if not self._verified_settlement(lease, terminal_status, finish_body):
+                raise RemoteExecutionFenced(
+                    "control plane did not confirm the conversion terminal state "
+                    "for the current execution"
                 )
             self._confirm_stop_cleanup(lease)
             return AgentConversionOutcome(
@@ -1292,6 +1367,11 @@ class AgentConversionRunner:
             )
         except InterruptedError as error:
             self._terminate_active(strict=True)
+            if result_committed:
+                raise RemoteExecutionFenced(
+                    "the conversion result is committed centrally; a cancellation "
+                    "must not overwrite it"
+                ) from error
             self._append_log(
                 lease,
                 f"[agent] conversion cancelled: {error}\n",
@@ -1318,6 +1398,11 @@ class AgentConversionRunner:
             raise
         except Exception as error:
             self._terminate_active(strict=True)
+            if result_committed:
+                raise RemoteExecutionFenced(
+                    "the conversion result is committed centrally; no other "
+                    "terminal state may overwrite it"
+                ) from error
             try:
                 self._assert_active(monitor)
             except InterruptedError as cancelled:
@@ -1326,11 +1411,16 @@ class AgentConversionRunner:
                     lease,
                     f"[agent] conversion cancelled: {message}\n",
                 )
-                self._finish_best_effort(
+                if self._finish_best_effort(
                     lease,
                     "CANCELLED",
                     error=message,
-                )
+                ) is None:
+                    # Never report CANCELLED locally when the control plane did
+                    # not confirm it; the durable identity is retained instead.
+                    raise RemoteExecutionFenced(
+                        "control plane did not confirm the conversion cancellation"
+                    ) from cancelled
                 return AgentConversionOutcome(
                     lease.task_id,
                     lease.generation,
@@ -1360,20 +1450,23 @@ class AgentConversionRunner:
                 error=message,
             )
         finally:
-            monitor.stop()
-            _lease, identity = self._active_process()
-            if identity is None and self.workdirs.read_process_launch_intent(lease) is None:
-                # Never delete a workdir that still holds recovery evidence.
-                try:
+            # Cleanup diagnostics must never replace the business outcome.
+            try:
+                monitor.stop()
+                _lease, identity = self._active_process()
+                if identity is None and self.workdirs.read_process_launch_intent(lease) is None:
+                    # Never delete a workdir that still holds recovery evidence.
                     evidence_free = (
                         self.workdirs.read_process_identity(lease) is None
-                        and self.workdirs.read_stop_evidence(
-                            lease.task_id, lease.generation) is None
+                        and not self.workdirs.read_stop_evidence_present(
+                            lease.task_id, lease.generation)
                     )
-                except (OSError, ValueError):
-                    evidence_free = False
-                if evidence_free:
-                    self.workdirs.cleanup(lease)
+                    if evidence_free:
+                        self.workdirs.cleanup(lease)
+            except (OSError, ValueError):
+                # An unsettled attempt keeps its evidence for the next
+                # reconciliation; the conversion result is already final.
+                pass
 
 
 __all__ = [

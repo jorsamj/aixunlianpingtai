@@ -964,16 +964,18 @@ def wait_worker_started(
 
 
 def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
-    """Real Agent restart boundary: cross-platform fail-closed contract.
+    """Real Agent restart boundary: cross-platform recovery contract.
 
     Windows: forced Agent stop leaves the worker and its identity behind; the
     restarted Agent must fail closed because no Job Object descendant stop proof
     exists, publish that error in the node heartbeat and never claim new work.
 
     POSIX: the first Agent performs its ordinary graceful shutdown (worker
-    stopped, identity cleared) but the persisted dual-slot intent still requires
-    central reconciliation, so the restarted Agent must not advertise remote
-    capabilities or claim new work either.
+    stopped, trusted-stop witness persisted) but the execution is still running
+    centrally, so the exact ProcessIdentity and the dual-slot intent survive.
+    The restarted Agent must settle that original execution through the fenced
+    central recovery contract, release the local evidence only afterwards, and
+    only then become usable again.
     """
     unit_fixtures()
     tmp_path = Path(tmp_path)
@@ -1032,9 +1034,20 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
             assert wait_process_gone(worker_identity, timeout=30), (
                 "graceful POSIX Agent shutdown must stop the owned training worker"
             )
-            assert local_identity(state_dir, RESTART_ORIGINAL_TASK, 1) is None, (
-                "graceful POSIX Agent shutdown must clear the verified process identity"
+            # A verified local stop is not a settlement: the exact ProcessIdentity
+            # and trusted-stop witness survive until the control plane settles
+            # this execution, so a restart can still prove what happened.
+            assert local_identity(state_dir, RESTART_ORIGINAL_TASK, 1) is not None, (
+                "graceful POSIX shutdown must retain the identity until the "
+                "control plane settles the execution"
             )
+            assert local_workdirs(state_dir).read_stop_evidence(
+                RESTART_ORIGINAL_TASK, 1) is not None, (
+                "graceful POSIX shutdown must persist the trusted-stop witness"
+            )
+            unanswered = central_status(stack, RESTART_ORIGINAL_TASK)
+            assert unanswered["status"] == "RUNNING"
+            assert unanswered["hold_state"] == "STOP_VERIFIED"
 
         # A new task is already assigned to the node before the restarted Agent
         # comes up.  The restarted Agent must never turn it into a RUNNING lease
@@ -1059,20 +1072,19 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
             heartbeat_errors.append(str(node.get("last_error") or ""))
             return node if node["reported_capabilities"] == [] else None
 
-        wait_for(
-            node_withdrew_capabilities,
-            timeout=90,
-            message="restarted real Agent did not withdraw all remote capabilities",
-            context=context,
-        )
-        node = node_public(stack)
-        assert "training" not in node["reported_capabilities"]
-        assert "execution-slots:2" not in node["reported_capabilities"]
-        assert restarted["process"].poll() is None, (
-            "restarted real Agent must stay alive while failing closed"
-        )
-
         if os.name == "nt":
+            wait_for(
+                node_withdrew_capabilities,
+                timeout=90,
+                message="restarted real Agent did not withdraw all remote capabilities",
+                context=context,
+            )
+            node = node_public(stack)
+            assert "training" not in node["reported_capabilities"]
+            assert "execution-slots:2" not in node["reported_capabilities"]
+            assert restarted["process"].poll() is None, (
+                "restarted real Agent must stay alive while failing closed"
+            )
             wait_for(
                 lambda: JOB_OBJECT_ERROR in (node_public(stack).get("last_error") or ""),
                 timeout=45,
@@ -1089,37 +1101,71 @@ def run_restart_fail_closed_scenario(tmp_path: Path) -> None:
             assert local_identity(state_dir, RESTART_ORIGINAL_TASK, 1) is not None, (
                 "fail-closed Windows restart must retain the persisted process identity"
             )
+
+            # Give the restarted executor several poll cycles to prove it never claims.
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                candidate = task_row(stack["repository"], RESTART_CANDIDATE_TASK)
+                assert candidate["status"] == "QUEUED", (
+                    f"fail-closed restart claimed the candidate task: {candidate}"
+                )
+                assert int(candidate["attempt"]) == 0
+                assert hold_row(stack["repository"], RESTART_CANDIDATE_TASK) is None
+                time.sleep(0.2)
+            assignments = assignment_rows(stack["repository"], RESTART_CANDIDATE_TASK)
+            assert len(assignments) == 1
+            assert assignments[0]["state"] == "ASSIGNED", (
+                f"restarted Agent must not claim the assignment: {assignments}"
+            )
+            original = task_row(stack["repository"], RESTART_ORIGINAL_TASK)
+            assert original["status"] == "RUNNING", (
+                "the original execution must stay RUNNING until a central stop proof exists: "
+                f"{original}"
+            )
         else:
+            # POSIX: the restarted Agent reconciles the persisted intent through
+            # the fenced central recovery contract. Only after the exact original
+            # execution is terminally settled (Hold RELEASED, stop proof bound to
+            # the registered identity) may it release the local evidence and
+            # become usable again.
             wait_for(
-                lambda: INTENT_ERROR in (node_public(stack).get("last_error") or ""),
-                timeout=45,
+                lambda: task_row(
+                    stack["repository"], RESTART_ORIGINAL_TASK)["status"] == "FAILED",
+                timeout=90,
                 message=(
-                    "POSIX restart must keep blocking on the persisted dual-slot intent; "
+                    "restarted POSIX Agent did not settle the original execution centrally; "
                     f"observed errors={heartbeat_errors[-10:]}"
                 ),
                 context=context,
             )
-
-        # Give the restarted executor several poll cycles to prove it never claims.
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            candidate = task_row(stack["repository"], RESTART_CANDIDATE_TASK)
-            assert candidate["status"] == "QUEUED", (
-                f"fail-closed restart claimed the candidate task: {candidate}"
+            wait_for(
+                lambda: local_identity(state_dir, RESTART_ORIGINAL_TASK, 1) is None,
+                timeout=60,
+                message="restarted POSIX Agent did not release the settled identity",
+                context=context,
             )
-            assert int(candidate["attempt"]) == 0
-            assert hold_row(stack["repository"], RESTART_CANDIDATE_TASK) is None
-            time.sleep(0.2)
-        assignments = assignment_rows(stack["repository"], RESTART_CANDIDATE_TASK)
-        assert len(assignments) == 1
-        assert assignments[0]["state"] == "ASSIGNED", (
-            f"restarted Agent must not claim the assignment: {assignments}"
-        )
-        original = task_row(stack["repository"], RESTART_ORIGINAL_TASK)
-        assert original["status"] == "RUNNING", (
-            "the original execution must stay RUNNING until a central stop proof exists: "
-            f"{original}"
-        )
+            settled = central_status(stack, RESTART_ORIGINAL_TASK)
+            assert settled["hold_state"] == "RELEASED"
+            assert settled["proof_type"] == "PROCESS_STOP_VERIFIED"
+            assert settled["proof_sha256"]
+            assert not [
+                record for record in intent_records(state_dir)
+                if record.get("task_id") == RESTART_ORIGINAL_TASK
+            ], "settled POSIX intent must be cleared exactly once"
+            assert local_workdirs(state_dir).read_stop_evidence(
+                RESTART_ORIGINAL_TASK, 1) is None
+            wait_for(
+                lambda: "training" in (node_public(stack)["reported_capabilities"] or []),
+                timeout=90,
+                message=(
+                    "restarted POSIX Agent did not become usable after the central "
+                    f"settlement; observed errors={heartbeat_errors[-10:]}"
+                ),
+                context=context,
+            )
+            assert restarted["process"].poll() is None, (
+                "restarted POSIX Agent must stay alive after converging"
+            )
         assert_no_duplicate_execution(stack["repository"], RESTART_ORIGINAL_TASK)
     finally:
         for agent in agents:

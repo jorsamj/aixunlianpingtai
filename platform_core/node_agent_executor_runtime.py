@@ -1107,10 +1107,58 @@ class AgentExecutionWorkdir:
             raise ValueError("persisted stop evidence is unreadable") from error
         if not isinstance(raw, dict):
             raise ValueError("persisted stop evidence is invalid")
-        if (str(raw.get("task_id") or "") != task
-                or int(raw.get("execution_attempt") or 0) != int(generation)):
+        # The lineage fields are never coerced: ``int("3")`` or ``int(True)``
+        # must not be accepted as this execution attempt.
+        if (type(raw.get("task_id")) is not str
+                or raw["task_id"] != task
+                or type(raw.get("execution_attempt")) is not int
+                or raw["execution_attempt"] != int(generation)):
             raise ValueError("persisted stop evidence lineage mismatch")
         return raw
+
+    def clear_stop_evidence(self, task_id: str, generation: int) -> None:
+        """Remove the trusted-stop witness of exactly this settled attempt.
+
+        Only a caller that already verified an authoritative central settlement
+        for this execution may call this.  The operation is idempotent and
+        never follows a symlink or deletes anything but the witness itself, so
+        an interrupted cleanup simply converges on the next attempt.
+        """
+        task = _safe_component(task_id, "task_id")
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return
+        task_dir = self._contained_directory(Path(executions) / task, create=False)
+        if task_dir is None:
+            return
+        target = self._contained_directory(
+            Path(task_dir) / str(int(generation)), create=False,
+        )
+        if target is None:
+            return
+        path = Path(target) / "process-stop-verified.json"
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("persisted stop evidence path is unsafe")
+        path.unlink(missing_ok=True)
+
+    def read_stop_evidence_present(self, task_id: str, generation: int) -> bool:
+        """Whether an unverified trusted-stop witness is still stored."""
+        task = _safe_component(task_id, "task_id")
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return False
+        task_dir = self._contained_directory(Path(executions) / task, create=False)
+        if task_dir is None:
+            return False
+        target = self._contained_directory(
+            Path(task_dir) / str(int(generation)), create=False,
+        )
+        if target is None:
+            return False
+        path = Path(target) / "process-stop-verified.json"
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("persisted stop evidence path is unsafe")
+        return path.exists()
 
     def read_execution_metadata(self, task_id: str, generation: int) -> dict[str, Any]:
         """Read the recovery metadata persisted with the start response.
@@ -1263,6 +1311,11 @@ class AgentExecutionWorkdir:
             # last recovery evidence through the general workspace cleanup.
             if self.read_process_identity(lease) is not None:
                 raise ValueError("unverified process identity blocks workspace cleanup")
+            # A trusted-stop witness is local recovery evidence too. It is
+            # removed by the settlement that verified the stop, never by the
+            # general workspace cleanup of an unsettled execution.
+            if self.read_stop_evidence(task_id, int(generation)) is not None:
+                raise ValueError("unsettled stop evidence blocks workspace cleanup")
             shutil.rmtree(target)
 
 

@@ -5,30 +5,48 @@ ProcessController.  It does not create a second task-state database.
 """
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
-import math
 import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
+
+from .node_agent_settlement import (
+    HOLD_RELEASED,
+    PROCESS_STOP_VERIFIED,
+    TERMINAL_TASK_STATUSES,
+    canonical_digest,
+    fetch_status,
+    hold_identity_error,
+    is_dual_slot,
+    process_identity_sha256,
+    proof_error,
+    settlement_error,
+    single_slot_contract_error,
+    status_identity_error,
+    stop_proof_digests,
+    strict_int,
+    strict_positive_number,
+)
 
 if TYPE_CHECKING:
     from .node_agent_training_runtime import AgentExecutionWorkdir
     from .task_runtime.process_control import ProcessController
 
 
-TERMINAL_TASK_STATUSES = frozenset({
-    "SUCCEEDED",
-    "PARTIAL_SUCCESS",
-    "CANCELLED",
-    "FAILED",
-    "BLOCKED_BY_ENVIRONMENT",
-    "BLOCKED_BY_HARDWARE",
-})
-PROCESS_STOP_VERIFIED = "PROCESS_STOP_VERIFIED"
+# A scan result is either final (the node must stay blocked until an operator
+# resolves the durable evidence) or retryable (the control plane was simply not
+# at a terminal state yet, or was unreachable).  Only a retryable verdict may be
+# re-evaluated by a later ``prepare()`` call; a permanent one is cached.
+DISPOSITION_OK = "OK"
+DISPOSITION_PERMANENT = "PERMANENT"
+DISPOSITION_RETRYABLE = "RETRYABLE"
+
+_UNCONFIRMED_SINGLE_SLOT = (
+    "single-slot execution is not centrally settled; original process identity retained"
+)
 
 
 class NodeRecoveryCoordinator:
@@ -36,7 +54,8 @@ class NodeRecoveryCoordinator:
 
     A runner must not scan and terminate every persisted process independently.
     The coordinator scans once, skips records owned by a registered active slot,
-    and only cleans an unowned record when process death/cleanup is verifiable.
+    and only cleans an unowned record when process death/cleanup is verifiable
+    *and* the control plane has settled that exact execution.
     """
 
     def __init__(
@@ -54,49 +73,26 @@ class NodeRecoveryCoordinator:
         self._lock = threading.RLock()
         self._owners: set[tuple[str, int]] = set()
         self._prepared = False
+        self._disposition = ""
         self._error = ""
+
+    # -- shared settlement contract -------------------------------------------
 
     @staticmethod
     def _digest(value: dict[str, Any]) -> str:
-        return hashlib.sha256(json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
+        return canonical_digest(value)
 
     @classmethod
     def _identity_sha256(cls, record: dict[str, Any]) -> str:
-        return cls._digest({
-            "pid": int(record["pid"]),
-            "create_time": float(record["create_time"]),
-            "command_hash": str(record["command_hash"]),
-        })
+        return process_identity_sha256(
+            record["pid"], record["create_time"], record["command_hash"],
+        )
 
     @classmethod
     def _stop_proof_digests(
         cls, status: dict[str, Any], record: dict[str, Any],
     ) -> tuple[str, str]:
-        """Recompute the acceptable stop-proof digests from local evidence.
-
-        The first digest is the current proof schema, the second the frozen
-        schema-6/7 legacy digest that predates proof_type/no-launch fields.
-        """
-        base = {
-            "node_id": str(status.get("node_id") or ""),
-            "task_id": str(record["task_id"]),
-            "assignment_generation": int(record.get("assignment_generation") or 0),
-            "execution_attempt": int(record["generation"]),
-            "gpu_uuid": str(record.get("gpu_uuid") or ""),
-            "process_identity": {
-                "pid": int(record["pid"]),
-                "create_time": float(record["create_time"]),
-                "command_hash": str(record["command_hash"]),
-            },
-            "stop_verified": True,
-        }
-        current = dict(base)
-        current["proof_type"] = PROCESS_STOP_VERIFIED
-        current["no_process_launched"] = False
-        current["no_launch_evidence"] = {}
-        return cls._digest(current), cls._digest(base)
+        return stop_proof_digests(status, record)
 
     def _hold_identity_error(
         self,
@@ -105,34 +101,10 @@ class NodeRecoveryCoordinator:
         local_assignment: int,
         local_gpu: str,
     ) -> str:
-        if int(status.get("hold_execution_attempt") or 0) != int(record["generation"]):
-            return "central Hold execution attempt mismatch"
-        if int(status.get("hold_assignment_generation") or 0) != int(local_assignment):
-            return "central Hold assignment generation mismatch"
-        if str(status.get("hold_gpu_uuid") or "") != local_gpu:
-            return "central Hold GPU UUID mismatch"
-        return ""
+        return hold_identity_error(status, record, local_assignment, local_gpu)
 
     def _proof_error(self, status: dict[str, Any], record: dict[str, Any]) -> str:
-        """Post-verify the recorded stop proof against the original identity."""
-        hold_state = str(status.get("hold_state") or "")
-        proof_type = str(status.get("proof_type") or "")
-        proof_sha256 = str(status.get("proof_sha256") or "")
-        if hold_state in {"STOP_VERIFIED", "RELEASED"}:
-            if proof_type != PROCESS_STOP_VERIFIED:
-                return "central stop proof type mismatch"
-            if not proof_sha256:
-                return "central stop proof digest is missing"
-            current, legacy = self._stop_proof_digests(status, record)
-            if not (hmac.compare_digest(proof_sha256, current)
-                    or hmac.compare_digest(proof_sha256, legacy)):
-                return "central stop proof digest mismatch"
-            return ""
-        if hold_state == "HELD":
-            if proof_sha256 or proof_type:
-                return "central stop proof recorded for a held execution"
-            return ""
-        return "central Hold state is invalid"
+        return proof_error(status, record)
 
     def _single_slot_contract_error(
         self,
@@ -140,60 +112,15 @@ class NodeRecoveryCoordinator:
         record: dict[str, Any],
         local_assignment: int,
     ) -> str:
-        """Validate the original single-slot recovery contract.
+        return single_slot_contract_error(status, record, local_assignment)
 
-        A single-slot execution never created a resource Hold, so its durable
-        evidence is the execution attempt, the released Assignment that started
-        it, and the registered ProcessIdentity. It must not be blocked merely
-        because no Hold exists, and it must not borrow the dual-slot proof.
-        """
-        if status.get("hold_state") is not None or status.get("hold_execution_attempt") is not None:
-            return "central Hold present for single-slot execution"
-        if status.get("proof_type") or status.get("proof_sha256"):
-            return "central stop proof present without a Hold"
-        central_assignment = status.get("assignment_generation")
-        if local_assignment > 0 and central_assignment is not None:
-            if int(central_assignment) != int(local_assignment):
-                return "central assignment generation mismatch"
-        return ""
+    def _node_id(self) -> str:
+        return str(getattr(self.client, "node_id", "") or "")
 
     def _status_matches_identity(self, status: dict[str, Any], record: dict[str, Any]) -> str:
-        if str(status.get("task_id")) != str(record["task_id"]):
-            return "central task identity mismatch"
-        node_id = str(getattr(self.client, "node_id", "") or "")
-        if node_id and str(status.get("node_id")) != node_id:
-            return "central node identity mismatch"
-        if int(status.get("execution_attempt") or 0) != int(record["generation"]):
-            return "central execution attempt mismatch"
-        if str(status.get("process_identity_sha256") or "") != self._identity_sha256(record):
-            return "central ProcessIdentity digest mismatch"
+        return status_identity_error(status, record, node_id=self._node_id())
 
-        local_assignment = int(record.get("assignment_generation") or 0)
-        local_gpu = str(record.get("gpu_uuid") or "")
-        local_slots = int(record.get("execution_slots") or 0)
-        has_hold = (
-            status.get("hold_state") is not None
-            or status.get("hold_execution_attempt") is not None
-        )
-        if local_slots == 2 or (local_slots == 0 and has_hold):
-            # The original contract is a dual slot: either recorded explicitly
-            # by the control plane at start, or a pre-marker record that owns a
-            # central Hold. A dual-slot execution must carry complete original
-            # Assignment/GPU evidence; missing local fields are corruption, not
-            # legacy, and a missing central Hold is never bypassed.
-            if not has_hold:
-                return "central Hold missing for dual-slot execution"
-            if local_assignment <= 0:
-                return "local Assignment generation missing for dual-slot recovery"
-            if not local_gpu:
-                return "local GPU UUID missing for dual-slot recovery"
-            error = self._hold_identity_error(status, record, local_assignment, local_gpu)
-            if error:
-                return error
-            return self._proof_error(status, record)
-        if local_slots == 1 and has_hold:
-            return "central Hold present for single-slot execution"
-        return self._single_slot_contract_error(status, record, local_assignment)
+    # -- persisted trusted-stop witness ---------------------------------------
 
     def _stop_evidence_error(self, record: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         """Strictly read and bind the persisted trusted-stop witness.
@@ -223,35 +150,68 @@ class NodeRecoveryCoordinator:
     def _validated_stop_evidence(
         self, record: dict[str, Any], value: dict[str, Any],
     ) -> tuple[dict[str, Any] | None, str]:
+        """Validate every persisted field without any implicit coercion.
+
+        ``int("11")``, ``int(True)`` or ``float("NaN")`` must never be accepted
+        as a match for the real process identity: a corrupted witness is a
+        fail-closed recovery block, not legacy evidence.
+        """
+        if not isinstance(value, Mapping):
+            return None, "persisted stop evidence is invalid"
         if str(value.get("proof_type") or "") != PROCESS_STOP_VERIFIED:
             return None, "persisted stop evidence has an unknown proof type"
         if value.get("stop_verified") is not True:
             return None, "persisted stop evidence does not verify a stop"
         if value.get("no_process_launched") is not False:
             return None, "persisted stop evidence contradicts the recorded identity"
-        if str(value.get("task_id") or "") != str(record["task_id"]):
+        task_id = value.get("task_id")
+        if not isinstance(task_id, str) or task_id != str(record["task_id"]):
             return None, "persisted stop evidence names another task"
-        if int(value.get("execution_attempt") or 0) != int(record["generation"]):
+        attempt = strict_int(value.get("execution_attempt"))
+        if attempt is None or attempt <= 0:
+            return None, "persisted stop evidence has an invalid execution attempt"
+        if attempt != int(record["generation"]):
             return None, "persisted stop evidence names another execution attempt"
         identity = value.get("process_identity")
-        if not isinstance(identity, dict):
+        if not isinstance(identity, Mapping):
             return None, "persisted stop evidence has no process identity"
-        create_time = float(identity.get("create_time") or 0.0)
-        if not math.isfinite(create_time) or create_time <= 0.0:
+        pid = strict_int(identity.get("pid"))
+        if pid is None or pid <= 0:
+            return None, "persisted stop evidence has an invalid pid"
+        create_time = strict_positive_number(identity.get("create_time"))
+        if create_time is None:
             return None, "persisted stop evidence has an invalid create time"
+        command_hash = identity.get("command_hash")
+        if not isinstance(command_hash, str) or not command_hash:
+            return None, "persisted stop evidence has an invalid command hash"
         if (
-            int(identity.get("pid") or 0) != int(record["pid"])
+            pid != int(record["pid"])
             or create_time != float(record["create_time"])
-            or str(identity.get("command_hash") or "") != str(record["command_hash"])
+            or command_hash != str(record["command_hash"])
         ):
             return None, "persisted stop evidence names another process identity"
+        assignment = value.get("assignment_generation")
+        assignment = 0 if assignment is None else strict_int(assignment)
+        if assignment is None or assignment < 0:
+            return None, "persisted stop evidence has an invalid assignment generation"
         local_assignment = int(record.get("assignment_generation") or 0)
-        if local_assignment > 0 and int(value.get("assignment_generation") or 0) != local_assignment:
+        if local_assignment > 0 and assignment != local_assignment:
             return None, "persisted stop evidence names another assignment generation"
+        gpu_uuid = value.get("gpu_uuid")
+        if gpu_uuid is not None and not isinstance(gpu_uuid, str):
+            return None, "persisted stop evidence has an invalid GPU UUID"
         local_gpu = str(record.get("gpu_uuid") or "")
-        if local_gpu and str(value.get("gpu_uuid") or "") != local_gpu:
+        if local_gpu and str(gpu_uuid or "") != local_gpu:
             return None, "persisted stop evidence names another GPU"
         return value, ""
+
+    def _clear_stop_evidence(self, task_id: str, generation: int) -> None:
+        """Remove the settled attempt's trusted-stop witness (idempotent)."""
+        clearer = getattr(self.workdirs, "clear_stop_evidence", None)
+        if callable(clearer):
+            clearer(str(task_id), int(generation))
+
+    # -- persisted slot intent ------------------------------------------------
 
     def _clear_intent(
         self, task_id: str, generation: int, *,
@@ -321,6 +281,8 @@ class NodeRecoveryCoordinator:
             raise
         return len(matched)
 
+    # -- ownership ------------------------------------------------------------
+
     def register_owner(self, task_id: str, generation: int) -> bool:
         with self._lock:
             key = (str(task_id), int(generation))
@@ -337,174 +299,231 @@ class NodeRecoveryCoordinator:
         with self._lock:
             return tuple(sorted(self._owners))
 
-    def prepare(self) -> str:
-        """Scan once; return empty string on success, otherwise a fail-closed reason."""
+    @property
+    def retryable(self) -> bool:
+        """True when the last verdict may be re-evaluated by a later prepare()."""
         with self._lock:
-            if self._prepared:
+            return self._disposition == DISPOSITION_RETRYABLE
+
+    def prepare(self) -> str:
+        """Scan and reconcile; empty string means every record is settled.
+
+        A settled scan is cached.  A permanent block is cached.  A transient
+        block (control plane unreachable or not terminal yet) is re-evaluated on
+        the next call, under the same lock, so exactly one owner can converge.
+        """
+        with self._lock:
+            if self._prepared and self._disposition != DISPOSITION_RETRYABLE:
                 return self._error
             self._prepared = True
-            try:
-                unverified = self.workdirs.list_unverified_process_launch_intents()
-                if unverified:
-                    if self.client is None:
-                        item = unverified[0]
-                        self._error = (
-                            "remote launch outcome is unverified; exact process identity "
-                            f"was not persisted for {item.get('kind')} task "
-                            f"{item.get('task_id')}"
-                        )
-                        return self._error
-                    for item in unverified:
-                        try:
-                            status = self.client.execution_status(str(item["task_id"]))
-                        except Exception as error:
-                            self._error = (
-                                "central recovery status is unavailable: "
-                                f"{type(error).__name__}: {error}"
-                            )
-                            return self._error
-                        if (int(status.get("execution_attempt") or 0) != int(item["generation"])
-                                or str(status.get("status")) not in TERMINAL_TASK_STATUSES
-                                or str(status.get("hold_state")) != "RELEASED"
-                                or str(status.get("proof_type") or "") != "NO_PROCESS_LAUNCHED"
-                                or status.get("process_identity_sha256") is not None):
-                            self._error = (
-                                "remote launch outcome is unverified and not proven no-launch "
-                                f"for task {item.get('task_id')}"
-                            )
-                            return self._error
-                    for item in unverified:
-                        self.workdirs.clear_process_launch_intent(
-                            str(item["task_id"]), int(item["generation"]),
-                        )
-                records = self.workdirs.list_process_identities()
-            except (OSError, ValueError) as error:
-                self._error = f"persisted process identity is unsafe or unreadable: {error}"
-                return self._error
-            if os.name == "nt" and records:
-                self._error = (
-                    "Windows training recovery lacks Job Object descendant stop proof; "
-                    "persisted process identity retained"
-                )
-                return self._error
-
-            from .task_runtime.process_control import ProcessIdentity
-            for record in records:
-                key = (str(record["task_id"]), int(record["generation"]))
-                if key in self._owners:
-                    continue
-                identity = ProcessIdentity(
-                    pid=int(record["pid"]),
-                    create_time=float(record["create_time"]),
-                    command_hash=str(record["command_hash"]),
-                    group_token=str(record.get("group_token") or ""),
-                )
-                evidence, evidence_error = self._stop_evidence_error(record)
-                if evidence_error:
-                    self._error = evidence_error
-                    return self._error
-                status = None
-                if self.client is not None:
-                    try:
-                        status = self.client.execution_status(str(record["task_id"]))
-                    except Exception as error:
-                        self._error = (
-                            "central recovery status is unavailable: "
-                            f"{type(error).__name__}: {error}"
-                        )
-                        return self._error
-                    error = self._status_matches_identity(status, record)
-                    if error:
-                        self._error = error
-                        return self._error
-                try:
-                    self.controller.terminate_tree(identity, timeout=8.0)
-                except ProcessLookupError:
-                    pass
-                except (PermissionError, OSError) as error:
-                    self._error = (
-                        "unowned training process cleanup could not be verified: "
-                        f"{type(error).__name__}: {error}"
-                    )
-                    return self._error
-                if self.client is not None:
-                    hold_state = status.get("hold_state")
-                    if (str(status.get("status")) not in TERMINAL_TASK_STATUSES
-                            or str(hold_state or "") != "RELEASED"):
-                        if hold_state is None:
-                            # A single-slot execution has no Hold, but that is not a
-                            # central settlement. Until the control plane reports a
-                            # terminal task for this exact attempt, the original
-                            # identity is the only evidence and must survive; the
-                            # existing central lease expiry is the legal path to
-                            # that terminal state.
-                            if str(status.get("status")) not in TERMINAL_TASK_STATUSES:
-                                self._error = (
-                                    "single-slot execution is not centrally settled; "
-                                    "original process identity retained"
-                                )
-                                return self._error
-                        else:
-                            try:
-                                recovered = self.client.recover_execution(
-                                    str(record["task_id"]),
-                                    assignment_generation=int(
-                                        record.get("assignment_generation") or 0),
-                                    execution_generation=int(record["generation"]),
-                                    gpu_uuid=str(record.get("gpu_uuid") or ""),
-                                    process_identity={
-                                        "pid": int(record["pid"]),
-                                        "create_time": float(record["create_time"]),
-                                        "command_hash": str(record["command_hash"]),
-                                    },
-                                )
-                                refreshed = self.client.execution_status(
-                                    str(record["task_id"]))
-                            except Exception as error:
-                                self._error = (
-                                    "central recovery could not release original execution: "
-                                    f"{type(error).__name__}: {error}"
-                                )
-                                return self._error
-                            recovered_digest = str(
-                                (recovered or {}).get("proof_sha256") or "")
-                            if str(refreshed.get("hold_state")) != "RELEASED":
-                                self._error = "central recovery did not release the original Hold"
-                                return self._error
-                            if (not recovered_digest
-                                    or not hmac.compare_digest(
-                                        str(refreshed.get("proof_sha256") or ""),
-                                        recovered_digest)):
-                                self._error = (
-                                    "central recovery stop proof does not match the "
-                                    "original execution identity"
-                                )
-                                return self._error
-                            refreshed_error = self._status_matches_identity(
-                                refreshed, record)
-                            if refreshed_error:
-                                self._error = refreshed_error
-                                return self._error
-                            status = refreshed
-                try:
-                    assignment_generation = int(record.get("assignment_generation") or 0)
-                    # Clear the intent first: the persisted ProcessIdentity is the
-                    # unique original execution evidence and must survive any
-                    # interruption before the second step. Both steps are
-                    # idempotent, so a retried preparation converges.
-                    self._clear_intent(
-                        key[0],
-                        assignment_generation or key[1],
-                        execution_attempt=int(record["generation"]),
-                        gpu_uuid=str(record.get("gpu_uuid") or ""),
-                        assignment_generation=assignment_generation,
-                    )
-                    self.workdirs.clear_process_identity_record(key[0], key[1])
-                except (OSError, ValueError) as error:
-                    self._error = (
-                        "unowned process identity cleanup could not be persisted: "
-                        f"{type(error).__name__}: {error}"
-                    )
-                    return self._error
             self._error = ""
-            return ""
+            self._disposition = DISPOSITION_OK
+            try:
+                return self._prepare_locked()
+            except (OSError, ValueError) as error:
+                return self._block(
+                    f"persisted process identity is unsafe or unreadable: {error}",
+                )
+
+    def _block(self, message: str, *, retryable: bool = False) -> str:
+        self._error = message
+        self._disposition = (
+            DISPOSITION_RETRYABLE if retryable else DISPOSITION_PERMANENT
+        )
+        return message
+
+    def _prepare_locked(self) -> str:
+        try:
+            unverified = self.workdirs.list_unverified_process_launch_intents()
+            if unverified:
+                if self.client is None:
+                    item = unverified[0]
+                    return self._block(
+                        "remote launch outcome is unverified; exact process identity "
+                        f"was not persisted for {item.get('kind')} task "
+                        f"{item.get('task_id')}"
+                    )
+                for item in unverified:
+                    status, error = fetch_status(self.client, str(item["task_id"]))
+                    if error:
+                        return self._block(error, retryable=True)
+                    if (strict_int(status.get("execution_attempt")) != int(item["generation"])
+                            or str(status.get("status")) not in TERMINAL_TASK_STATUSES
+                            or str(status.get("hold_state")) != HOLD_RELEASED
+                            or str(status.get("proof_type") or "") != "NO_PROCESS_LAUNCHED"
+                            or status.get("process_identity_sha256") is not None):
+                        return self._block(
+                            "remote launch outcome is unverified and not proven no-launch "
+                            f"for task {item.get('task_id')}"
+                        )
+                for item in unverified:
+                    self.workdirs.clear_process_launch_intent(
+                        str(item["task_id"]), int(item["generation"]),
+                    )
+            records = self.workdirs.list_process_identities()
+        except (OSError, ValueError) as error:
+            return self._block(
+                f"persisted process identity is unsafe or unreadable: {error}",
+            )
+        if os.name == "nt" and records:
+            return self._block(
+                "Windows training recovery lacks Job Object descendant stop proof; "
+                "persisted process identity retained"
+            )
+
+        from .task_runtime.process_control import ProcessIdentity
+        for record in records:
+            key = (str(record["task_id"]), int(record["generation"]))
+            if key in self._owners:
+                continue
+            identity = ProcessIdentity(
+                pid=int(record["pid"]),
+                create_time=float(record["create_time"]),
+                command_hash=str(record["command_hash"]),
+                group_token=str(record.get("group_token") or ""),
+            )
+            evidence, evidence_error = self._stop_evidence_error(record)
+            if evidence_error:
+                return self._block(evidence_error)
+            status: dict[str, Any] | None = None
+            if self.client is not None:
+                status, status_error = fetch_status(self.client, key[0])
+                if status_error:
+                    return self._block(status_error, retryable=True)
+                error = self._status_matches_identity(status, record)
+                if error:
+                    return self._block(error)
+            try:
+                self.controller.terminate_tree(identity, timeout=8.0)
+            except ProcessLookupError:
+                pass
+            except (PermissionError, OSError) as error:
+                return self._block(
+                    "unowned training process cleanup could not be verified: "
+                    f"{type(error).__name__}: {error}"
+                )
+            if self.client is not None:
+                if status is None:
+                    return self._block(
+                        "central recovery status is unavailable", retryable=True,
+                    )
+                error = settlement_error(
+                    status, record,
+                    node_id=self._node_id(),
+                    require_process_identity=is_dual_slot(record, status),
+                )
+                if error:
+                    recovered = self._recover_original_execution(record, status)
+                    if isinstance(recovered, str):
+                        return recovered
+                    status = recovered
+            try:
+                assignment_generation = int(record.get("assignment_generation") or 0)
+                # Clear the intent first: the persisted ProcessIdentity is the
+                # unique original execution evidence and must survive any
+                # interruption before the second step. Both steps are
+                # idempotent, so a retried preparation converges.
+                self._clear_intent(
+                    key[0],
+                    assignment_generation or key[1],
+                    execution_attempt=int(record["generation"]),
+                    gpu_uuid=str(record.get("gpu_uuid") or ""),
+                    assignment_generation=assignment_generation,
+                )
+                # Order matters: the intent is already gone, the witness goes
+                # next and the ProcessIdentity (the unique recovery evidence)
+                # is released last. Every step is idempotent, so an interrupted
+                # cleanup simply converges on the next verification.
+                self._clear_stop_evidence(key[0], key[1])
+                self.workdirs.clear_process_identity_record(key[0], key[1])
+            except (OSError, ValueError) as error:
+                return self._block(
+                    "unowned process identity cleanup could not be persisted: "
+                    f"{type(error).__name__}: {error}"
+                )
+        self._error = ""
+        self._disposition = DISPOSITION_OK
+        return ""
+
+    def _recover_original_execution(
+        self,
+        record: dict[str, Any],
+        status: dict[str, Any],
+    ):
+        """Ask the control plane to settle this exact original execution.
+
+        Returns the refreshed, verified status, or a blocking error string.
+        Dual-slot executions are released through the existing Hold/stop-proof
+        contract.  A single-slot execution has no Hold, so its legal settlement
+        is the same fenced recovery: the control plane CASes the terminal status
+        and durably registers the exact ProcessIdentity, which the refreshed
+        status must then prove.
+        """
+        client = self.client
+        dual = is_dual_slot(record, status)
+        try:
+            recovered = client.recover_execution(
+                str(record["task_id"]),
+                assignment_generation=int(record.get("assignment_generation") or 0),
+                execution_generation=int(record["generation"]),
+                gpu_uuid=str(record.get("gpu_uuid") or ""),
+                process_identity={
+                    "pid": int(record["pid"]),
+                    "create_time": float(record["create_time"]),
+                    "command_hash": str(record["command_hash"]),
+                },
+            )
+            refreshed, refresh_error = fetch_status(client, str(record["task_id"]))
+        except Exception as error:  # noqa: BLE001 - fail closed, retryable
+            if dual:
+                return self._block(
+                    "central recovery could not release original execution: "
+                    f"{type(error).__name__}: {error}",
+                    retryable=True,
+                )
+            return self._block(
+                f"{_UNCONFIRMED_SINGLE_SLOT}; central recovery could not be "
+                f"confirmed: {type(error).__name__}: {error}",
+                retryable=True,
+            )
+        if refresh_error:
+            return self._block(refresh_error, retryable=True)
+        if not isinstance(recovered, Mapping):
+            return self._block(
+                "central recovery returned no settlement evidence",
+                retryable=not dual,
+            )
+        if dual:
+            recovered_digest = str(recovered.get("proof_sha256") or "")
+            if str(refreshed.get("hold_state")) != HOLD_RELEASED:
+                return self._block(
+                    "central recovery did not release the original Hold",
+                    retryable=True,
+                )
+            if (not recovered_digest
+                    or not hmac.compare_digest(
+                        str(refreshed.get("proof_sha256") or ""),
+                        recovered_digest)):
+                return self._block(
+                    "central recovery stop proof does not match the "
+                    "original execution identity"
+                )
+        else:
+            if str(recovered.get("state") or "") not in {"SETTLED", HOLD_RELEASED}:
+                return self._block(
+                    "central recovery did not settle the single-slot execution",
+                    retryable=True,
+                )
+            if str(refreshed.get("status") or "") not in TERMINAL_TASK_STATUSES:
+                return self._block(_UNCONFIRMED_SINGLE_SLOT, retryable=True)
+        error = settlement_error(
+            refreshed, record,
+            node_id=self._node_id(),
+            require_process_identity=True,
+        )
+        if error:
+            return self._block(error)
+        return refreshed
+
+
+__all__ = ["NodeRecoveryCoordinator"]

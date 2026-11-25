@@ -25,6 +25,12 @@ from urllib.parse import urlparse
 
 import requests
 
+from .node_agent_settlement import (
+    TERMINAL_TASK_STATUSES,
+    recover_and_verify,
+    settlement_of,
+    strict_int,
+)
 from .node_agent_supervisor_gate import (
     assert_direct_remote_launch_permitted,
     SupervisorExecutionBoundaryRequired,
@@ -58,10 +64,7 @@ _MAX_PROGRESS_HEARTBEAT_SECONDS = 1.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-_SETTLED_TASK_STATUSES = frozenset({
-    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
-    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
-})
+_SETTLED_TASK_STATUSES = TERMINAL_TASK_STATUSES
 
 class AgentTrainingRuntimeError(RuntimeError):
     pass
@@ -262,6 +265,10 @@ class AgentTrainingRunner:
     def recovery_error(self) -> str:
         return str(self._recovery_error or "")
 
+    def refresh_recovery(self) -> bool:
+        """Re-consume the node-wide recovery verdict (coordinator-owned)."""
+        return self._recover_persisted_processes()
+
     def _set_active_process(
         self,
         lease: RemoteExecutionLease,
@@ -352,7 +359,29 @@ class AgentTrainingRunner:
                     f"{type(error).__name__}: {error}"
                 )
                 return False
+            if self.client is not None:
+                # The legacy no-coordinator path still needs the central fact: a
+                # verified local stop is not a settlement. One authenticated,
+                # fenced recovery request settles the exact original execution;
+                # the refreshed status must then prove the terminal state, the
+                # ProcessIdentity and the released Assignment/Hold.
+                _status, problem = recover_and_verify(
+                    self.client,
+                    record,
+                    node_id=str(getattr(self.client, "node_id", "") or ""),
+                )
+                if problem:
+                    self._recovery_error = (
+                        "training execution is not centrally settled; the original "
+                        f"process identity is retained: {problem}"
+                    )
+                    return False
             try:
+                # Settled: the trusted-stop witness goes before the unique
+                # ProcessIdentity so an interruption keeps the recovery witness.
+                self.workdirs.clear_stop_evidence(
+                    str(record["task_id"]), int(record["generation"]),
+                )
                 self.workdirs.clear_process_identity_record(
                     str(record["task_id"]),
                     int(record["generation"]),
@@ -471,40 +500,72 @@ class AgentTrainingRunner:
             except OSError:
                 pass  # Retain files when even the local audit write is unavailable.
 
+    def _node_id(self) -> str:
+        return str(getattr(self.client, "node_id", "") or "")
+
+    def _execution_record(self, lease) -> dict[str, Any] | None:
+        """The original durable execution facts this settlement must bind to."""
+        identity = self._last_process_identity
+        if identity is None:
+            return None
+        try:
+            assignment_generation, gpu_uuid = self._assignment_identity(lease)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "task_id": str(lease.task_id),
+            "generation": int(lease.generation),
+            "pid": int(identity.pid),
+            "create_time": float(identity.create_time),
+            "command_hash": str(identity.command_hash),
+            "assignment_generation": int(assignment_generation),
+            "gpu_uuid": str(gpu_uuid or ""),
+            "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
+        }
+
+    def _settlement_problem(self, lease, expected: str | None = None) -> str:
+        record = self._execution_record(lease)
+        if record is None:
+            return "original training process identity is unavailable"
+        _status, error = settlement_of(
+            self.client,
+            record,
+            node_id=self._node_id(),
+            expected_status=expected,
+        )
+        return error
+
     def _central_settlement(self, lease) -> bool:
         """Whether the control plane already settled this exact execution."""
-        client = self.client
-        if client is None:
+        return not self._settlement_problem(lease)
+
+    @staticmethod
+    def _body_matches(body, lease, expected: str) -> bool | None:
+        """``True`` agrees, ``False`` contradicts, ``None`` is incomplete.
+
+        The body is never the settlement itself; a contradictory body is a
+        fail-closed answer while an incomplete one is re-verified centrally.
+        """
+        if not isinstance(body, Mapping):
+            return None
+        task = body.get("task")
+        if not isinstance(task, Mapping):
+            return None
+        if task.get("task_id") is not None and str(task.get("task_id")) != str(lease.task_id):
             return False
-        try:
-            status = client.execution_status(str(lease.task_id))
-        except Exception:
+        declared = task.get("status")
+        if declared is not None and str(declared) != str(expected):
             return False
-        if not isinstance(status, Mapping):
-            return False
-        if str(status.get("status") or "") not in _SETTLED_TASK_STATUSES:
-            return False
-        if int(status.get("execution_attempt") or 0) != int(lease.generation):
-            return False
-        hold_state = status.get("hold_state")
-        if hold_state is not None and str(hold_state) != "RELEASED":
+        attempt = task.get("execution_attempt", task.get("attempt"))
+        if attempt is not None and strict_int(attempt) != int(lease.generation):
             return False
         return True
 
-    def _terminal_body_settled(self, body, lease, status: str) -> bool:
-        """A finish body alone is not a settlement unless it names this task."""
-        if not isinstance(body, Mapping):
+    def _verified_settlement(self, lease, expected: str, body=None) -> bool:
+        """Confirm the exact expected terminal state from the control plane."""
+        if body is not None and self._body_matches(body, lease, expected) is False:
             return False
-        task = body.get("task")
-        if isinstance(task, Mapping):
-            if str(task.get("status") or "") != str(status):
-                return False
-            attempt = task.get("execution_attempt")
-            if attempt is not None and int(attempt) != int(lease.generation):
-                return False
-            return True
-        # The control plane answered without a task body: verify the real fact.
-        return self._central_settlement(lease)
+        return not self._settlement_problem(lease, expected)
 
     def _persist_stop_evidence(self, lease, identity, *, reason: str) -> bool:
         """Record a verified local stop without discarding the original identity.
@@ -526,6 +587,7 @@ class AgentTrainingRunner:
             "execution_attempt": int(lease.generation),
             "assignment_generation": int(assignment_generation or 0),
             "gpu_uuid": str(gpu_uuid or ""),
+            "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
             "proof_type": "PROCESS_STOP_VERIFIED",
             "stop_verified": True,
             "no_process_launched": False,
@@ -548,12 +610,21 @@ class AgentTrainingRunner:
         return True
 
     def _confirm_stop_cleanup(self, lease) -> None:
-        """Drop the durable process identity now that the control plane agrees.
+        """Drop the local recovery evidence now that the control plane agrees.
 
-        Only callers holding an authoritative terminal answer (or a completed
-        recovery proof) may remove it; clearing it earlier destroys the only
-        evidence a restart needs.
+        Only callers holding an authoritative terminal answer may remove it;
+        clearing it earlier destroys the only evidence a restart needs. The
+        trusted-stop witness is removed before the ProcessIdentity so that an
+        interruption leaves the unique recovery witness behind.
         """
+        try:
+            self.workdirs.clear_stop_evidence(str(lease.task_id), int(lease.generation))
+        except (OSError, ValueError) as error:
+            self._recovery_error = (
+                "training stop evidence cleanup could not be persisted: "
+                f"{type(error).__name__}: {error}"
+            )
+            return
         try:
             self.workdirs.clear_process_identity(lease)
         except (OSError, ValueError) as error:
@@ -583,10 +654,10 @@ class AgentTrainingRunner:
                 lease, identity, reason="graceful_shutdown" if graceful else "terminate_active"
             )
             if graceful:
-                # Only release the unique recovery witness once the control
-                # plane has actually accepted the stop proof; if that cannot be
-                # confirmed, keep the identity so a restart can still prove what
-                # happened.
+                # Only release the unique recovery witness once the stop proof is
+                # durably written, accepted by the control plane AND the
+                # execution is actually settled; otherwise keep the identity so
+                # a restart can still prove what happened.
                 confirmed = False
                 try:
                     confirmed = self._submit_stop_proof(lease)
@@ -601,8 +672,12 @@ class AgentTrainingRunner:
                             "stop proof was not confirmed by the control plane; "
                             "the original process identity is retained"
                         )
-                if (confirmed and not self._shutdown_error
-                        and self._central_settlement(lease)):
+                if not persisted:
+                    self._shutdown_error = (
+                        "the verified local stop could not be persisted; the original "
+                        "process identity is retained"
+                    )
+                elif confirmed and not self._shutdown_error and self._central_settlement(lease):
                     self._confirm_stop_cleanup(lease)
                 elif confirmed and not self._shutdown_error:
                     self._shutdown_error = (
@@ -1557,7 +1632,8 @@ class AgentTrainingRunner:
         *,
         result_ref: str | None = None,
         error: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> str | None:
+        """Publish and verify one terminal state; return it only when settled."""
         try:
             self._submit_stop_proof(lease)
             body = self.client.finish(
@@ -1567,13 +1643,15 @@ class AgentTrainingRunner:
                 error=error,
             )
         except (NodeExecutorHTTPError, OSError, requests.RequestException, AgentTrainingRuntimeError):
+            body = None
+        if body is not None and self._body_matches(body, lease, status) is False:
             return None
-        if not self._terminal_body_settled(body, lease, status):
+        if not self._verified_settlement(lease, status, body):
             # A lost or unexpected response is not a settlement: keep the
             # durable identity so a restart can recover idempotently.
             return None
         self._confirm_stop_cleanup(lease)
-        return body
+        return str(status)
 
     def _runtime_result(self, job: Mapping[str, Any]) -> dict[str, Any]:
         keys = (
@@ -1627,8 +1705,11 @@ class AgentTrainingRunner:
         except Exception as error:
             if self._require_stop_proof and self._last_process_identity is None:
                 try:
-                    self._submit_no_launch_proof(lease)
-                    self.client.finish(lease, "FAILED", error=f"{type(error).__name__}: {error}")
+                    # Same unified terminal contract: the no-launch proof is
+                    # submitted and the FAILED finish is verified, never trusted.
+                    self._finish_best_effort(
+                        lease, "FAILED", error=f"{type(error).__name__}: {error}",
+                    )
                 except Exception:
                     pass
             raise
@@ -1681,6 +1762,9 @@ class AgentTrainingRunner:
         log_offset = 0
         trainer_started = False
         committed = False
+        # Once the verified result is committed centrally, a later failure must
+        # never be published as FAILED over it.
+        result_committed = False
         model_evidence: list[dict[str, Any]] = []
         try:
             self._heartbeat(
@@ -2209,6 +2293,7 @@ class AgentTrainingRunner:
             # confirm_result_upload already crossed the atomic finalization gate
             # and committed the verified model/version. Keep the explicit call
             # for protocol idempotency and observability.
+            result_committed = True
             self.client.begin_finalization(lease)
             report = job.get("training_report")
             report = report if isinstance(report, Mapping) else {}
@@ -2219,16 +2304,20 @@ class AgentTrainingRunner:
             )
             terminal_status = "PARTIAL_SUCCESS" if partial else "SUCCEEDED"
             self._submit_stop_proof(lease)
-            finished = self.client.finish(
-                lease,
-                terminal_status,
-                result_ref=result_ref,
-            )
-            status = str((finished.get("task") or {}).get("status") or "")
-            if status != terminal_status:
-                raise AgentTrainingRuntimeError(
-                    "control plane returned unexpected training terminal "
-                    f"status: {status or '<empty>'}"
+            # The verified result is already committed centrally: a lost or
+            # unconfirmed response must never fall through to a FAILED finish.
+            try:
+                finish_body = self.client.finish(
+                    lease,
+                    terminal_status,
+                    result_ref=result_ref,
+                )
+            except (NodeExecutorHTTPError, OSError, requests.RequestException):
+                finish_body = None
+            if not self._verified_settlement(lease, terminal_status, finish_body):
+                raise RemoteExecutionFenced(
+                    "control plane did not confirm the training terminal state "
+                    "for the current execution"
                 )
             # Confirmed terminal state: the durable process identity is no
             # longer the only witness and may be released.
@@ -2242,6 +2331,11 @@ class AgentTrainingRunner:
             )
         except InterruptedError as error:
             self._terminate_active(strict=True)
+            if result_committed:
+                raise RemoteExecutionFenced(
+                    "the training result is committed centrally; a cancellation "
+                    "must not overwrite it"
+                ) from error
             self._append_log(
                 lease,
                 f"[agent] training cancelled: {error}\n",
@@ -2251,8 +2345,7 @@ class AgentTrainingRunner:
                 "CANCELLED",
                 error=str(error),
             )
-            if (finished is None
-                    or str((finished.get("task") or {}).get("status") or "") != "CANCELLED"):
+            if finished is None:
                 raise RemoteExecutionFenced(
                     "could not confirm CANCELLED terminal state for current training execution"
                 )
@@ -2267,8 +2360,15 @@ class AgentTrainingRunner:
             self._terminate_active(strict=True)
             raise
         except Exception as error:
-            self._record_execution_failure(lease, "FAILED", error)
+            self._record_execution_failure(
+                lease, "FENCED" if result_committed else "FAILED", error,
+            )
             self._terminate_active(strict=True)
+            if result_committed:
+                raise RemoteExecutionFenced(
+                    "the training result is committed centrally; no other "
+                    "terminal state may overwrite it"
+                ) from error
             try:
                 self._assert_active(monitor)
             except InterruptedError as cancelled:
@@ -2282,8 +2382,7 @@ class AgentTrainingRunner:
                     "CANCELLED",
                     error=message,
                 )
-                if (finished is None
-                        or str((finished.get("task") or {}).get("status") or "") != "CANCELLED"):
+                if finished is None:
                     raise RemoteExecutionFenced(
                         "could not confirm CANCELLED terminal state for current training execution"
                     )
@@ -2318,12 +2417,17 @@ class AgentTrainingRunner:
                 error=message,
             )
         finally:
-            monitor.stop()
-            _active_lease, active_identity = self._active_process()
-            if (active_identity is None
-                    and self.workdirs.read_process_launch_intent(lease) is None):
-                self._cleanup_training_workdir(lease, trainer_started=trainer_started,
-                    committed=committed, model_evidence=model_evidence)
+            # Cleanup diagnostics must never replace the business outcome.
+            try:
+                monitor.stop()
+                _active_lease, active_identity = self._active_process()
+                if (active_identity is None
+                        and self.workdirs.read_process_launch_intent(lease) is None):
+                    self._cleanup_training_workdir(lease, trainer_started=trainer_started,
+                        committed=committed, model_evidence=model_evidence)
+            except (OSError, ValueError):
+                # Unsettled evidence stays on disk for the next reconciliation.
+                pass
             # If exact process cleanup could not be proven, preserve both the
             # in-memory identity and generation workdir for retry/restart
             # recovery. Never erase the only evidence of a possibly live GPU
