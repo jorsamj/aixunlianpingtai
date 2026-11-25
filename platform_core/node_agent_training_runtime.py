@@ -242,6 +242,7 @@ class AgentTrainingRunner:
         self._active_lease: RemoteExecutionLease | None = None
         self._shutdown_event = threading.Event()
         self._recovery_error = ""
+        self._shutdown_error = ""
         self._recovery_coordinator = recovery_coordinator
         self._on_process_started = on_process_started
         self._require_stop_proof = bool(require_stop_proof)
@@ -465,7 +466,7 @@ class AgentTrainingRunner:
             except OSError:
                 pass  # Retain files when even the local audit write is unavailable.
 
-    def _persist_stop_evidence(self, lease, identity, *, reason: str) -> None:
+    def _persist_stop_evidence(self, lease, identity, *, reason: str) -> bool:
         """Record a verified local stop without discarding the original identity.
 
         The durable ProcessIdentity is the only local witness that a specific
@@ -477,11 +478,14 @@ class AgentTrainingRunner:
         """
         try:
             workdir = self.workdirs.path_for(lease)
-        except (OSError, ValueError):
-            return
+            assignment_generation, gpu_uuid = self._assignment_identity(lease)
+        except (OSError, ValueError, AttributeError, TypeError):
+            return False
         record = {
             "task_id": str(lease.task_id),
             "execution_attempt": int(lease.generation),
+            "assignment_generation": int(assignment_generation or 0),
+            "gpu_uuid": str(gpu_uuid or ""),
             "proof_type": "PROCESS_STOP_VERIFIED",
             "stop_verified": True,
             "no_process_launched": False,
@@ -498,7 +502,10 @@ class AgentTrainingRunner:
                 workdir / "process-stop-verified.json", record
             )
         except (OSError, ValueError):
-            pass  # Never mask the stop result with a diagnostics failure.
+            # Never mask the stop result with a diagnostics failure - but never
+            # report the stop as persisted either.
+            return False
+        return True
 
     def _confirm_stop_cleanup(self, lease) -> None:
         """Drop the durable process identity now that the control plane agrees.
@@ -532,7 +539,7 @@ class AgentTrainingRunner:
                 raise RemoteExecutionFenced(self._recovery_error) from error
             return False
         if lease is not None:
-            self._persist_stop_evidence(
+            persisted = self._persist_stop_evidence(
                 lease, identity, reason="graceful_shutdown" if graceful else "terminate_active"
             )
             if graceful:
@@ -540,18 +547,28 @@ class AgentTrainingRunner:
                 # plane has actually accepted the stop proof; if that cannot be
                 # confirmed, keep the identity so a restart can still prove what
                 # happened.
+                confirmed = False
                 try:
-                    self._submit_stop_proof(lease)
+                    confirmed = self._submit_stop_proof(lease)
                 except Exception as error:  # best effort: never block shutdown
-                    self._recovery_error = (
+                    self._shutdown_error = (
                         "graceful shutdown could not confirm the stop proof: "
                         f"{type(error).__name__}: {error}"
                     )
                 else:
-                    if not self._recovery_error:
-                        self._confirm_stop_cleanup(lease)
+                    if not confirmed:
+                        self._shutdown_error = (
+                            "stop proof was not confirmed by the control plane; "
+                            "the original process identity is retained"
+                        )
+                if confirmed and not self._shutdown_error:
+                    self._confirm_stop_cleanup(lease)
+            elif not persisted:
+                self._shutdown_error = (
+                    "the verified local stop could not be persisted; the original "
+                    "process identity is retained"
+                )
         self._clear_active_process()
-        self._recovery_error = ""
         return True
 
     def request_shutdown(self) -> None:
@@ -1461,13 +1478,16 @@ class AgentTrainingRunner:
             no_launch_evidence={**evidence, "intent_sha256": digest},
         )
 
-    def _submit_stop_proof(self, lease: RemoteExecutionLease) -> None:
+    def _submit_stop_proof(self, lease: RemoteExecutionLease) -> bool:
+        """Return True only when the control plane accepted the stop proof."""
         if not self._require_stop_proof:
-            return
+            # Single-slot execution: the caller has no central stop-proof
+            # contract, so this is not an authoritative confirmation.
+            return False
         identity = self._last_process_identity
         if identity is None:
             self._submit_no_launch_proof(lease)
-            return
+            return True
         # Verify the OS process group/token boundary before attesting stop.
         self.controller.terminate_tree(identity, timeout=5.0)
         assignment_generation, gpu_uuid = self._assignment_identity(lease)
@@ -1482,6 +1502,7 @@ class AgentTrainingRunner:
             },
             stop_verified=True,
         )
+        return True
 
     def _finish_best_effort(
         self,

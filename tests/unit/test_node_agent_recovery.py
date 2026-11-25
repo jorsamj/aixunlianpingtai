@@ -13,10 +13,17 @@ from platform_core.task_runtime.process_control import launch_process
 
 
 class FakeWorkdirs:
-    def __init__(self, records=None, unverified=None):
+    def __init__(self, records=None, unverified=None, evidence=None):
         self.records = list(records or [])
         self.unverified = list(unverified or [])
+        self.evidence = dict(evidence or {})
         self.cleared = []
+
+    def stop_evidence_path(self, task_id, generation):
+        path = self.evidence.get((str(task_id), int(generation)))
+        if path is None:
+            raise ValueError("execution workdir is missing")
+        return path
 
     def list_process_identities(self):
         return list(self.records)
@@ -570,3 +577,62 @@ def test_unmatched_same_task_intent_blocks_instead_of_silently_ignoring(tmp_path
     assert workdirs.cleared == []
     remaining = json.loads(intent.read_text(encoding="utf-8"))
     assert remaining[0]["execution_attempt"] == 3
+
+def _stop_evidence(tmp_path, name, record_value, **overrides):
+    value = {
+        "task_id": record_value["task_id"],
+        "execution_attempt": record_value["generation"],
+        "assignment_generation": record_value["assignment_generation"],
+        "gpu_uuid": record_value["gpu_uuid"],
+        "proof_type": "PROCESS_STOP_VERIFIED",
+        "stop_verified": True,
+        "no_process_launched": False,
+        "reason": "terminate_active",
+        "verified_at": "2026-11-25T08:00:00Z",
+        "process_identity": {
+            "pid": record_value["pid"],
+            "create_time": record_value["create_time"],
+            "command_hash": record_value["command_hash"],
+        },
+    }
+    value.update(overrides)
+    path = tmp_path / name
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
+def test_valid_stop_evidence_is_consumed_before_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11)
+    evidence = _stop_evidence(tmp_path, "a-1.json", record_value)
+    workdirs = FakeWorkdirs([record_value], evidence={("a", 1): evidence})
+    controller = FakeController()
+    coordinator = NodeRecoveryCoordinator(workdirs, controller)
+    assert coordinator.prepare() == ""
+    # The trusted stop is still re-verified against the real OS boundary.
+    assert controller.terminated == [(11, 1.0, "h")]
+    assert workdirs.cleared == [("a", 1)]
+
+
+def test_stop_evidence_for_another_identity_blocks_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11)
+    evidence = _stop_evidence(tmp_path, "a-1.json", record_value, task_id="b")
+    workdirs = FakeWorkdirs([record_value], evidence={("a", 1): evidence})
+    controller = FakeController()
+    coordinator = NodeRecoveryCoordinator(workdirs, controller)
+    error = coordinator.prepare()
+    assert "persisted stop evidence" in error
+    assert controller.terminated == []
+    assert workdirs.cleared == []
+
+
+def test_corrupt_stop_evidence_blocks_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11)
+    path = tmp_path / "a-1.json"
+    path.write_text("{not json", encoding="utf-8")
+    workdirs = FakeWorkdirs([record_value], evidence={("a", 1): path})
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController())
+    assert coordinator.prepare() == "persisted stop evidence is unreadable"
+    assert workdirs.cleared == []

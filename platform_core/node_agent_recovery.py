@@ -194,6 +194,55 @@ class NodeRecoveryCoordinator:
             return "central Hold present for single-slot execution"
         return self._single_slot_contract_error(status, record, local_assignment)
 
+    def _stop_evidence_error(self, record: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        """Strictly read and bind the persisted trusted-stop witness.
+
+        Returns ``(evidence, "")`` only for a proof that names exactly this
+        execution and process identity. A missing file is legacy (``(None, "")``);
+        an unreadable, corrupt or mismatching file is fail-closed.
+        """
+        resolver = getattr(self.workdirs, "stop_evidence_path", None)
+        if resolver is None:
+            return None, ""
+        try:
+            path = resolver(str(record["task_id"]), int(record["generation"]))
+        except (OSError, ValueError):
+            return None, ""
+        if not path.is_file():
+            return None, ""
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, "persisted stop evidence is unreadable"
+        if not isinstance(value, dict):
+            return None, "persisted stop evidence is invalid"
+        if str(value.get("proof_type") or "") != PROCESS_STOP_VERIFIED:
+            return None, "persisted stop evidence has an unknown proof type"
+        if value.get("stop_verified") is not True:
+            return None, "persisted stop evidence does not verify a stop"
+        if value.get("no_process_launched") is not False:
+            return None, "persisted stop evidence contradicts the recorded identity"
+        if str(value.get("task_id") or "") != str(record["task_id"]):
+            return None, "persisted stop evidence names another task"
+        if int(value.get("execution_attempt") or 0) != int(record["generation"]):
+            return None, "persisted stop evidence names another execution attempt"
+        identity = value.get("process_identity")
+        if not isinstance(identity, dict):
+            return None, "persisted stop evidence has no process identity"
+        if (
+            int(identity.get("pid") or 0) != int(record["pid"])
+            or float(identity.get("create_time") or 0.0) != float(record["create_time"])
+            or str(identity.get("command_hash") or "") != str(record["command_hash"])
+        ):
+            return None, "persisted stop evidence names another process identity"
+        local_assignment = int(record.get("assignment_generation") or 0)
+        if local_assignment > 0 and int(value.get("assignment_generation") or 0) != local_assignment:
+            return None, "persisted stop evidence names another assignment generation"
+        local_gpu = str(record.get("gpu_uuid") or "")
+        if local_gpu and str(value.get("gpu_uuid") or "") != local_gpu:
+            return None, "persisted stop evidence names another GPU"
+        return value, ""
+
     def _clear_intent(
         self, task_id: str, generation: int, *,
         execution_attempt: int | None = None,
@@ -340,6 +389,10 @@ class NodeRecoveryCoordinator:
                     command_hash=str(record["command_hash"]),
                     group_token=str(record.get("group_token") or ""),
                 )
+                evidence, evidence_error = self._stop_evidence_error(record)
+                if evidence_error:
+                    self._error = evidence_error
+                    return self._error
                 status = None
                 if self.client is not None:
                     try:

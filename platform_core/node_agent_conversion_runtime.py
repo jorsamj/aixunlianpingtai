@@ -267,6 +267,55 @@ class AgentConversionRunner:
         self._recovery_error = ""
         return True
 
+    def _persist_stop_evidence(self, lease, identity, *, reason: str) -> bool:
+        """Record the verified local stop next to the durable process identity."""
+        try:
+            workdir = self.workdirs.path_for(lease)
+        except (OSError, ValueError):
+            return False
+        assignment_generation = 0
+        gpu_uuid = ""
+        assignment = getattr(lease, "assignment", None)
+        if isinstance(assignment, Mapping):
+            try:
+                assignment_generation = int(assignment.get("generation") or 0)
+            except (TypeError, ValueError):
+                assignment_generation = 0
+            gpu_uuid = str(assignment.get("gpu_uuid") or "")
+        record = {
+            "task_id": str(lease.task_id),
+            "execution_attempt": int(lease.generation),
+            "assignment_generation": assignment_generation,
+            "gpu_uuid": gpu_uuid,
+            "proof_type": "PROCESS_STOP_VERIFIED",
+            "stop_verified": True,
+            "no_process_launched": False,
+            "reason": str(reason)[:300],
+            "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "process_identity": {
+                "pid": int(getattr(identity, "pid", 0) or 0),
+                "create_time": float(getattr(identity, "create_time", 0.0) or 0.0),
+                "command_hash": str(getattr(identity, "command_hash", "") or ""),
+            },
+        }
+        try:
+            self.workdirs._atomic_write_json(
+                workdir / "process-stop-verified.json", record,
+            )
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def _confirm_stop_cleanup(self, lease) -> None:
+        """Drop the durable identity only after an authoritative settlement."""
+        try:
+            self.workdirs.clear_process_identity(lease)
+        except (OSError, ValueError) as error:
+            self._recovery_error = (
+                "conversion process identity cleanup could not be persisted: "
+                f"{type(error).__name__}: {error}"
+            )
+
     def _terminate_active(self, *, strict: bool = False) -> bool:
         lease, identity = self._active_process()
         if identity is None:
@@ -284,18 +333,12 @@ class AgentConversionRunner:
                 raise RemoteExecutionFenced(self._recovery_error) from error
             return False
         if lease is not None:
-            try:
-                self.workdirs.clear_process_identity(lease)
-            except (OSError, ValueError) as error:
-                self._recovery_error = (
-                    "conversion process identity cleanup could not be persisted: "
-                    f"{type(error).__name__}: {error}"
-                )
-                if strict:
-                    raise RemoteExecutionFenced(self._recovery_error) from error
-                return False
+            # A verified local stop is not a central settlement: keep the durable
+            # identity (the only recovery witness) and record the stop evidence.
+            self._persist_stop_evidence(
+                lease, identity, reason="terminate_active",
+            )
         self._clear_active_process()
-        self._recovery_error = ""
         return True
 
     def request_shutdown(self) -> None:
@@ -522,7 +565,7 @@ class AgentConversionRunner:
         error: str | None = None,
     ) -> dict[str, Any] | None:
         try:
-            return self.client.finish(
+            body = self.client.finish(
                 lease,
                 status,
                 result_ref=result_ref,
@@ -530,6 +573,8 @@ class AgentConversionRunner:
             )
         except (NodeExecutorHTTPError, OSError, requests.RequestException):
             return None
+        self._confirm_stop_cleanup(lease)
+        return body
 
     def _prepare_job(
         self,
@@ -1177,6 +1222,7 @@ class AgentConversionRunner:
                 raise AgentConversionRuntimeError(
                     f"control plane returned unexpected conversion terminal status: {status or '<empty>'}"
                 )
+            self._confirm_stop_cleanup(lease)
             return AgentConversionOutcome(
                 lease.task_id,
                 lease.generation,

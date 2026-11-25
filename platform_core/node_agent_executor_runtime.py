@@ -813,6 +813,15 @@ class AgentExecutionWorkdir:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    def stop_evidence_path(self, task_id: str, generation: int) -> Path:
+        """The persisted trusted-stop witness for one execution attempt."""
+        task = _safe_component(task_id, "task_id")
+        target = self.root / "executions" / task / str(int(generation))
+        resolved = self._contained_directory(target, create=False)
+        if resolved is None:
+            raise ValueError("execution workdir is missing")
+        return resolved / "process-stop-verified.json"
+
     def prepare(self, lease: RemoteExecutionLease) -> Path:
         target = self.path_for(lease)
         self._atomic_write_json(
