@@ -738,20 +738,29 @@ class PostgresAlgorithmRepository:
             "LEFT JOIN w5_algorithm.algorithm_version v ON v.project_id=a.project_id "
             "AND v.algorithm_id=a.id AND v.id=a.current_version_id "
             "LEFT JOIN stats ON stats.algorithm_id=a.id "
-            "LEFT JOIN LATERAL (SELECT CASE WHEN c.value>1 THEN c.value ELSE c.value*100 END"
-            "::double precision AS map50_percent FROM (SELECT (candidate #>> '{}')::numeric AS value "
-            "FROM " + metric_candidates + " AS raw(ord,candidate) "
-            "WHERE jsonb_typeof(candidate) IN ('number','string') "
-            "AND lower(btrim(candidate #>> '{}')) NOT IN ('nan','-nan','infinity','-infinity','inf','-inf') "
-            "AND pg_input_is_valid(btrim(candidate #>> '{}'), 'numeric') "
-            # Bound the value so the double-precision cast cannot overflow;
-            # The rule scales values <= 1 by 100, so the *scaled* magnitude is
-            # what must fit in double precision; an unrepresentable candidate
-            # falls through to the next priority instead of failing the query.
-            "AND abs((candidate #>> '{}')::numeric) * "
-            "(CASE WHEN (candidate #>> '{}')::numeric > 1 THEN 1 ELSE 100 END) "
-            "<= 1e308 "
-            "ORDER BY ord LIMIT 1) c) m ON TRUE "
+            # The candidate is parsed inside a CASE, never by relying on WHERE
+            # evaluation order: PostgreSQL may reorder conditions, so a cast in a
+            # sibling predicate is not a safety guarantee. Strings, booleans,
+            # objects and arrays yield NULL; non-finite spellings are rejected;
+            # a value whose *scaled* magnitude cannot be represented as double
+            # precision (upper or lower bound) yields NULL as well, so the next
+            # priority candidate wins instead of the whole page failing.
+            "LEFT JOIN LATERAL (SELECT CASE WHEN c.value>1 THEN c.value "
+            "ELSE c.value*100 END"
+            "::double precision AS map50_percent FROM ("
+            "SELECT candidate_value.value FROM " + metric_candidates + " AS raw(ord,candidate) "
+            "CROSS JOIN LATERAL (SELECT CASE "
+            "WHEN jsonb_typeof(raw.candidate) IN ('number','string') "
+            "AND lower(btrim(raw.candidate #>> '{}')) NOT IN "
+            "('nan','-nan','infinity','-infinity','inf','-inf') "
+            "AND pg_input_is_valid(btrim(raw.candidate #>> '{}'), 'numeric') "
+            "THEN btrim(raw.candidate #>> '{}')::numeric END AS value"
+            ") AS candidate_value "
+            "WHERE candidate_value.value IS NOT NULL "
+            "AND (candidate_value.value = 0 OR (abs(candidate_value.value) * "
+            "(CASE WHEN candidate_value.value>1 THEN 1 ELSE 100 END)) "
+            "BETWEEN 1e-300 AND 1e308) "
+            "ORDER BY raw.ord LIMIT 1) c) m ON TRUE "
             "WHERE a.project_id=%s)"
         )
         args: list[Any] = [

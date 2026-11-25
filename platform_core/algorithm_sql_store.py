@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import decimal
 import hashlib
 import json
 import shutil
@@ -30,8 +31,17 @@ _LEGACY_REMOTE_VERSION_FIELDS = frozenset({
     "external_algo_version_id",
     "external_publish_status",
 })
-
-
+#: Metric candidate priority for the algorithm-library card (first legal wins).
+_LIBRARY_METRIC_PATHS = (
+    ("map50",),
+    ("mAP50",),
+    ("metrics", "map50"),
+    ("metrics", "mAP50"),
+    ("metrics", "metrics/mAP50(B)"),
+    ("evaluation", "metrics", "map50"),
+    ("evaluation", "metrics", "mAP50"),
+    ("evaluation", "metrics", "metrics/mAP50(B)"),
+)
 class AlgorithmSqlStore:
     """SQL-backed algorithm asset store with lossless JSON migration.
 
@@ -278,11 +288,40 @@ class AlgorithmSqlStore:
         if sort not in sorts or training_state not in ('','all','trainable','training','trained','untrained','blocked') or source_type not in ('','all','internal','external'):
             raise PlatformError('ASSET_INVALID_QUERY','算法库查询参数非法','',status_code=422)
         def metric(raw):
-            for value in json.loads(raw).values():
-                if value is None or isinstance(value,bool) or not isinstance(value,(str,int,float)) or str(value).strip()=='':continue
-                try:number=float(value)
-                except (ValueError,TypeError):continue
-                if math.isfinite(number):return number if number>1 else number*100
+            """First legal metric candidate, in the documented priority order.
+
+            The payload is parsed here (not pre-flattened with json_extract) so a
+            JSON ``true`` cannot arrive as an integer, a string is parsed as a
+            decimal to keep extreme magnitudes exact, and only a value whose
+            *scaled* magnitude is representable as a finite double wins - the same
+            rule the PostgreSQL projection applies.
+            """
+            try:payload=json.loads(raw) if raw else {}
+            except (TypeError,ValueError):return None
+            if not isinstance(payload,dict):return None
+            for path in _LIBRARY_METRIC_PATHS:
+                value=payload
+                for key in path:
+                    value=value.get(key) if isinstance(value,dict) else None
+                if value is None or isinstance(value,bool):continue
+                if isinstance(value,str):
+                    text=value.strip()
+                    if not text:continue
+                    try:exact=decimal.Decimal(text)
+                    except (decimal.InvalidOperation,ValueError):continue
+                    if not exact.is_finite():continue
+                    scaled=exact if exact>1 else exact*100
+                    if scaled!=0 and not (decimal.Decimal('1e-300')<=abs(scaled)<=decimal.Decimal('1e308')):continue
+                    try:number=float(scaled)
+                    except (OverflowError,ValueError):continue
+                    if math.isfinite(number):return number
+                    continue
+                if not isinstance(value,(int,float)):continue
+                number=float(value)
+                if not math.isfinite(number):continue
+                scaled=number if number>1 else number*100
+                if scaled==0 or 1e-300<=abs(scaled)<=1e308:
+                    return scaled
             return None
         self.ensure_ready()
         external="upper(COALESCE(a.source_type,''))='EXTERNAL'"
@@ -298,11 +337,7 @@ class AlgorithmSqlStore:
             stats.active AS training_status,COALESCE(stats.filter_active,0) AS filter_active,
             (SELECT COUNT(*) FROM algorithm_versions n WHERE n.algorithm_id=a.id) AS version_count,
             v.id AS current_record_id,v.version_name AS current_version_name,
-            library_map50(json_object('map50',json_extract(v.payload_json,'$.map50'),'mAP50',json_extract(v.payload_json,'$.mAP50'),
-              'metric1',json_extract(v.payload_json,'$.metrics.map50'),'metric2',json_extract(v.payload_json,'$.metrics.mAP50'),
-              'metric3',json_extract(v.payload_json,'$.metrics."metrics/mAP50(B)"'),
-              'eval1',json_extract(v.payload_json,'$.evaluation.metrics.map50'),'eval2',json_extract(v.payload_json,'$.evaluation.metrics.mAP50'),
-              'eval3',json_extract(v.payload_json,'$.evaluation.metrics."metrics/mAP50(B)"'))) AS map50_percent
+            library_map50(v.payload_json) AS map50_percent
           FROM algorithms a LEFT JOIN algorithm_versions v ON v.algorithm_id=a.id AND v.id=a.current_version_id
           LEFT JOIN stats ON stats.algorithm_id=a.id WHERE a.project_id=?) """
         args=[self._dumps(statistics),str(master_digest),str(master_digest),self.project_id]

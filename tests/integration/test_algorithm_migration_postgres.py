@@ -1,4 +1,4 @@
-﻿"""T8.1-T8.3 real PostgreSQL verification for the algorithm domain.
+"""T8.1-T8.3 real PostgreSQL verification for the algorithm domain.
 
 Runs only with an isolated local PostgreSQL (``pgserver`` + ``psycopg`` 3).
 Every test uses a throwaway server rooted in a temporary directory; nothing
@@ -793,6 +793,120 @@ def test_maintenance_window_blocks_both_writers_until_it_settles(pg):
             operation_id=operation,
         )
     assert settled["settled"] is True and settled["write_blocked"] is False
+
+
+def test_recovery_refuses_a_source_that_moved_after_the_freeze(pg):
+    """Recovery may only replay the frozen source, never a newer one."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8moved-"))
+    store = _store(root, "moved")
+    record_path, window = _window_setup(pg, root, store, "moved")
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="moved", db_path=store.db_path,
+            operation_id=window["operation_id"],
+        )
+    assert frozen["phase"] == MAINTENANCE_SOURCE_FROZEN
+
+    # A write that slipped in after the freeze (crash window, stale process) must
+    # never be imported as if it were the frozen snapshot.
+    store.patch_algorithm("algo-a", {"remark": "changed after the freeze"})
+    with _connect(pg) as connection:
+        recovered = recover_maintenance(
+            connection, project_id="moved", db_path=store.db_path,
+            record_path=record_path, apply=True,
+        )
+    assert recovered["applied"] is False
+    assert recovered["write_blocked"] is True
+    assert "changed after the freeze" in recovered["next_step"]
+
+
+def test_recovery_never_replays_a_completed_final_import(pg):
+    """Import committed, verification not committed: resume without re-inserting."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8imp-"))
+    store = _store(root, "imp")
+    record_path, window = _window_setup(pg, root, store, "imp")
+    operation = window["operation_id"]
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="imp", db_path=store.db_path,
+            operation_id=operation,
+        )
+        # The final import committed under the operation's run id, then the
+        # process died before verify_maintenance_window().
+        snapshot = export_source_snapshot(store.db_path, "imp")
+        assert content_digest(snapshot) == frozen["snapshot_digest"]
+        import_snapshot(connection, snapshot, run_id=operation)
+
+    with _connect(pg) as connection:
+        recovered = recover_maintenance(
+            connection, project_id="imp", db_path=store.db_path,
+            record_path=record_path, apply=True,
+        )
+        runs = run_status(connection, "imp")["runs"]
+        status = cutover_status(connection, "imp")
+    assert recovered["settled"] is True
+    assert recovered["phase"] == MAINTENANCE_POSTGRES_ACTIVE
+    # Exactly one run row for the operation: a completed import is proven, not
+    # re-inserted under a new id that would hide the identity conflict.
+    recorded = [row for row in runs if row["run_id"] == operation]
+    assert len(recorded) == 1
+    assert recorded[0]["status"] == "COMPLETED"
+    assert status["authoritative_provider"] == "postgresql"
+
+
+def test_library_map50_skips_hostile_candidates_without_failing(pg):
+    """mAP50 stays a presentation metric: a broken historical value never fails
+    the page, never overflows the cast, and never wins over a legal candidate."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8map-"))
+    cases = {
+        "m-str": {"map50": "abc"},
+        "m-nan": {"map50": "NaN"},
+        "m-inf": {"map50": "Infinity"},
+        "m-huge": {"map50": "1e400"},
+        "m-tiny": {"map50": "1e-400"},
+        "m-bool": {"map50": True},
+        "m-obj": {"map50": {"nested": 1}},
+        "m-space": {"map50": "  0.5  "},
+        "m-zero": {"map50": 0},
+        "m-fallback": {"map50": "1e400", "mAP50": 0.42},
+    }
+    rows = [
+        {
+            "id": key,
+            "name": key,
+            "algorithm_type": "yolo_ultralytics",
+            "current_version_id": key + "-v",
+            "versions": [{"id": key + "-v", "version_name": "1", **payload}],
+            "external_analyses": [],
+        }
+        for key, payload in cases.items()
+    ]
+    store = _store(root, "map", rows=rows)
+    repo = _presentation_repository(pg, store, "map")
+    library = repo.library_algorithms(
+        statistics=[], master_digest="", categories=(), page=1, page_size=20,
+    )
+    assert library["total"] == len(cases)
+    metrics = {item["id"]: item["map50_percent"] for item in library["items"]}
+    for unreadable in ("m-str", "m-nan", "m-inf", "m-huge", "m-tiny", "m-bool", "m-obj"):
+        assert metrics[unreadable] is None, (unreadable, metrics[unreadable])
+    assert metrics["m-space"] == pytest.approx(50.0)
+    assert metrics["m-zero"] == pytest.approx(0.0)
+    # The unrepresentable first candidate is skipped, so the next priority wins.
+    assert metrics["m-fallback"] == pytest.approx(42.0)
+
+    ordered = repo.library_algorithms(
+        statistics=[], master_digest="", categories=(), page=1, page_size=20,
+        sort="metric",
+    )
+    values = [item["map50_percent"] for item in ordered["items"]]
+    assert values[0] == pytest.approx(50.0)
+    assert values[1] == pytest.approx(42.0)
+    assert values[2] == pytest.approx(0.0)
+    assert all(value is None for value in values[3:])
 
 
 def read_maintenance_result(server, project_id):
