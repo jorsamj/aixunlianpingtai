@@ -8150,6 +8150,7 @@ def gpu_resources():
 from platform_core.training_create_service import (  # noqa: E402
     TrainingCreateAdmission,
     TrainingIdentityDependencies,
+    build_training_create_payload,
     confirmed_training_iteration_action,
     freeze_training_mother_model,
     prepare_training_create_admission,
@@ -8862,60 +8863,17 @@ def _enqueue_explicit_training_locked(
             frozen_robustness = {"robustness_policy": resolve_policy(DATA_DIR, payload.robustness_policy)}
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-    request_payload = {
-        **raw_request,
-        **frozen_robustness,
-        "schema_version": 4,
-        "request_identity": request_identity,
-        "reference_request_identity": reference_request_identity,
-        "admission_request": raw_request,
-        "training_input_state": "PREPARING",
-        "training_prepare_task_id": prepare_task_id,
-        "requested_split": {
-            "mode": requested_split.mode.value,
-            **({'validation_image_ids': list(requested_split.validation_image_ids)} if requested_split.validation_image_ids else {}),
-            "train_image_ids": list(requested_split.train_image_ids),
-            "test_image_ids": list(requested_split.test_image_ids),
-            "experiment_percent": requested_split.experiment_percent,
-            "validation_percent": requested_split.validation_percent,
-        },
-        "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
-        "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
-        "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
-        # Creation-time iteration-base fence. TRAINING_PREPARE refuses to freeze
-        # a different base if the algorithm current pointer moves while queued.
-        # Historical payloads without this field keep the previous behavior.
-        "reference_version_id": reference_version_id,
-        "algorithm_identity": {
-            "id": str(asset_algorithm.get("id") or ""),
-            "name": str(asset_algorithm.get("name") or "已删除算法"),
-            "source_type": str(asset_algorithm.get("source_type") or "LOCAL"),
-            "provider_type": str(asset_algorithm.get("provider_type") or ""),
-            "external_product_id": str(asset_algorithm.get("external_product_id") or ""),
-            "external_category_id": str(asset_algorithm.get("external_category_id") or ""),
-        },
-        "confirmed_iteration_action": confirmed_iteration_action,
-        "requested_device": payload.device,
-        "requested_resources": {
-            "resource_strategy": str(payload.resource_strategy or "auto").lower(),
-            "resource_profile": str(payload.resource_profile or "performance").lower(),
-            "gpu_policy": str(payload.gpu_policy or "exclusive").lower(),
-            "requested_device": str(payload.device or "auto"),
-            "batch": int(payload.batch),
-            "workers": int(payload.workers),
-            "precision": str(payload.precision or "auto").lower(),
-            "cache": raw_request.get("cache", False),
-        },
-        "target_resource_key": resource_key,
-        "target_required_capabilities": [f"training.{framework}"],
-        **(
-            {
-                "remote_input_state": "PREPARING",
-                "remote_prepare_task_id": prepare_task_id,
-            }
-            if target == "remote" else {}
-        ),
-    }
+    request_payload = build_training_create_payload(
+        project_id=project_id, task_id=task_id, payload=payload,
+        asset_algorithm=asset_algorithm,
+        reference_version_id=reference_version_id,
+        confirmed_iteration_action=confirmed_iteration_action,
+        requested_split=requested_split, raw_request=raw_request,
+        request_identity=request_identity,
+        reference_request_identity=reference_request_identity,
+        prepare_task_id=prepare_task_id, frozen_robustness=frozen_robustness,
+        framework=framework, target=target, resource_key=resource_key,
+    )
     with _storage_source_fence(), _algorithm_version_reference_fence(
         project_id,
         str(asset_algorithm.get("id") or ""),

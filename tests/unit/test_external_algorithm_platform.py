@@ -1568,6 +1568,12 @@ def test_training_create_has_one_external_truth_owner_plus_compatibility_delegat
     enqueue_start = source.index("def _ensure_training_prepare_child(")
     enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
     enqueue_block = source[enqueue_start:enqueue_end]
+    # The frozen creation payload now lives in the training-create service; app.py
+    # keeps returning the same PREPARING state on the creation response.
+    service_source = (root / "platform_core" / "training_create_service.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"training_input_state": "PREPARING"' in service_source
     assert '"training_input_state": "PREPARING"' in enqueue_block
     # Deterministic child creation is owned by the isolated prepare helper;
     # the HTTP entrypoint intentionally delegates and must not duplicate it.

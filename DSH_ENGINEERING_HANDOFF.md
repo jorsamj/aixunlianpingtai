@@ -651,3 +651,21 @@ Snapshot/冻结标签/数据集合同、训练身份幂等与并发锁、TRAININ
 （按调用时解析，测试可替换绑定），调用顺序、错误码、version 引用与 TRAINING_PREPARE 复检合同不变。
 
 **状态**：A/C = CODE_IMPLEMENTED，CI_PENDING；U1 仍为 CUTOVER_NOT_VERIFIED；PG 清理域仍为明确阻断（未迁移）。
+
+### 9.28 第十七轮（A CI 收口；B1 PG 清理 Schema V2 + Repository；C 冻结请求 Service）
+
+- A 代码 SHA：`bf971c184491c939732ce74bd82e588a5ad04b08`
+- B1 代码 SHA：`d0a5163a50f61fb1880cb365c3b1df062f6b64ad`
+- B2/B3：本轮未实施（缺口见交付简报）
+- C 代码 SHA：本轮最后一个提交
+
+**A1**：最终导入先证明窗口 operation 归属、再绑定 run_id（错误码优先级恢复 `OPERATION_MISMATCH`）；记录 run 的 revision=0 不再被 `0 or -1` 读成缺失；revision=0 合同改用真正空目录 `ensure_ready()` + 真实 revision-0 快照导入。
+**A2**：`remote-training-runtime.yml` 两条阈值守卫改指 `training_create_api.py`，并把创建模块/服务加入 push 与 pull_request path triggers。
+**A3**：栅栏 `writer_generation` 语义收敛为“已声明代际”——切换尝试记录当前代际、仅在准入提交后结算为目标代际；结算要求存在栅栏且 operation/前置 phase（或允许集合）匹配，缺失栅栏即拒绝；SWITCHING 崩溃恢复接受同一 operation 的 SWITCHING 或已结算 POSTGRES_ACTIVE（受控幂等收尾）。
+**A4**：旧 `admit_cutover` 入口不再新增独立安全逻辑，仅沿用同一栅栏写入/结算；正式切换仍以维护窗口为主。
+
+**B1**：`algorithm_postgres_schema.py` 新增 append-only `_V2`（`w5_algorithm.external_algorithm_cleanup`，含项目/算法/产品身份、generation、state、payload、时间戳、项目+创建时间索引与活动周期部分唯一索引；COMPLETED 回执不随算法删除级联丢失），`SCHEMA_VERSION=2`，升级仍由显式 `schema-init --allow-upgrade` 执行；`algorithm_postgres_store.py` 实现八个 `cleanup_*`（读走一致快照、写走 `_write` admission FOR UPDATE，含幂等确认、退役状态+ledger+revision 同事务、已完成回执保护、项目隔离、分页投影）。**业务门禁保持关闭**：`cleanup_supported=False`、`CLEANUP_OPERATIONS` 仍在 `unsupported_operations()`、`CLEANUP_DOMAIN_MIGRATED` 继续阻断。
+
+**C**：`training_create_service.build_training_create_payload()` 承接冻结创建请求的装配（schema_version/request_identity/reference_request_identity/training_input_state/training_prepare_task_id/requested_split 投影/算法身份与父版本/资源与远端准备字段），app.py 只调用并传入解析后的身份；字段与顺序不变。
+
+**状态**：A/B1/C = CODE_IMPLEMENTED，CI_PENDING；B2/B3 = NOT_MIGRATED；U1 = CUTOVER_NOT_VERIFIED。
