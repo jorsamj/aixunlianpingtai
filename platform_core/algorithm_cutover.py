@@ -831,6 +831,12 @@ def rollback(
         and str(current.get("phase") or "") == MAINTENANCE_ROLLBACK_QUIESCING
         and str(current.get("project_id") or "") == project_id
     )
+    # The CAS must name what the database actually records *now*: the operation
+    # that settled the switch (a first rollback) or this rollback operation
+    # itself (a resumed one). The new operation id is what gets written, never
+    # what is expected to be there already.
+    previous_operation = str((current or {}).get("operation_id") or "")
+    previous_phase = str((current or {}).get("phase") or "")
     if not operation_id or not resuming:
         operation_id = uuid.uuid4().hex
 
@@ -851,10 +857,8 @@ def rollback(
     try:
         _set_maintenance(
             connection, project_id, quiescing,
-            expected_phase=(
-                str(current.get("phase")) if current is not None else None
-            ),
-            expected_operation_id=operation_id if current is not None else None,
+            expected_phase=previous_phase if current is not None else None,
+            expected_operation_id=previous_operation if current is not None else None,
             expected_generation=int(admission.get("writer_generation") or 0),
         )
     except BaseException:
@@ -994,10 +998,22 @@ def _maintenance_record(
     target_provider: str,
     snapshot_digest: str = "",
     verification_digest: str = "",
+    content_digest: str = "",
+    source_revision: int | None = None,
     operator: str = "",
     reason: str = "",
 ) -> dict[str, Any]:
-    """One immutable phase record: the identity a phase is allowed to act on."""
+    """One immutable phase record: the identity a phase is allowed to act on.
+
+    The digests are distinct facts and are never interchangeable:
+
+    * ``snapshot_digest`` is the snapshot contract digest (it changes with every
+      export because it covers ``captured_at``);
+    * ``content_digest`` is the normalized project content - the identity of the
+      frozen source that a recovery may replay;
+    * ``verification_digest`` is the real source/target reconciliation summary;
+    * ``source_revision`` is the frozen algorithm revision.
+    """
     return {
         "schema": MAINTENANCE_SCHEMA,
         "phase": str(phase),
@@ -1007,6 +1023,8 @@ def _maintenance_record(
         "source_provider": str(source_provider),
         "target_provider": str(target_provider),
         "snapshot_digest": str(snapshot_digest or ""),
+        "content_digest": str(content_digest or ""),
+        "source_revision": None if source_revision is None else int(source_revision),
         "verification_digest": str(verification_digest or ""),
         "operator": str(operator or ""),
         "reason": str(reason or ""),
@@ -1331,7 +1349,12 @@ def freeze_maintenance_source(
         generation=int(current["generation"]),
         source_provider=PROVIDER_SQLITE,
         target_provider=PROVIDER_POSTGRESQL,
-        snapshot_digest=digest,
+        # Keep the three identities apart: the contract digest changes with every
+        # export, the content digest is what a recovery must replay, and the
+        # revision pins the frozen catalog version.
+        snapshot_digest=str(snapshot["snapshot_digest"]),
+        content_digest=digest,
+        source_revision=int(snapshot["algorithm_revision"]),
         operator=str(current.get("operator") or ""),
         reason=str(current.get("reason") or ""),
     )
@@ -1362,6 +1385,8 @@ def verify_maintenance_window(
         source_provider=PROVIDER_SQLITE,
         target_provider=PROVIDER_POSTGRESQL,
         snapshot_digest=str(current.get("snapshot_digest") or ""),
+        content_digest=str(current.get("content_digest") or ""),
+        source_revision=current.get("source_revision"),
         verification_digest=str(verification_digest or ""),
         operator=str(current.get("operator") or ""),
         reason=str(current.get("reason") or ""),
@@ -1405,6 +1430,8 @@ def switch_maintenance_owner(
         source_provider=PROVIDER_SQLITE,
         target_provider=PROVIDER_POSTGRESQL,
         snapshot_digest=str(current.get("snapshot_digest") or ""),
+        content_digest=str(current.get("content_digest") or ""),
+        source_revision=current.get("source_revision"),
         verification_digest=str(current.get("verification_digest") or ""),
         operator=operator, reason=reason,
     )
@@ -1449,6 +1476,8 @@ def switch_maintenance_owner(
             source_provider=PROVIDER_SQLITE,
             target_provider=PROVIDER_POSTGRESQL,
             snapshot_digest=str(current.get("snapshot_digest") or ""),
+            content_digest=str(current.get("content_digest") or ""),
+            source_revision=current.get("source_revision"),
             verification_digest=str(current.get("verification_digest") or ""),
             operator=operator, reason=reason,
         )
@@ -1475,6 +1504,8 @@ def switch_maintenance_owner(
         source_provider=PROVIDER_POSTGRESQL,
         target_provider=PROVIDER_SQLITE,
         snapshot_digest=str(current.get("snapshot_digest") or ""),
+        content_digest=str(current.get("content_digest") or ""),
+        source_revision=current.get("source_revision"),
         verification_digest=str(current.get("verification_digest") or ""),
         operator=operator, reason=reason,
     )
@@ -1880,11 +1911,26 @@ def recover_maintenance(
         if str(current.get("phase")) == MAINTENANCE_SOURCE_FROZEN:
             from .algorithm_migration import build_report, import_snapshot
 
-            frozen_digest = str(current.get("snapshot_digest") or "")
+            # The frozen *content* is the identity a recovery may replay. Older
+            # records stored it in snapshot_digest (before the fields were split),
+            # so a record without content_digest still proves the same content.
+            frozen_content = str(
+                current.get("content_digest") or current.get("snapshot_digest") or ""
+            )
+            frozen_revision = current.get("source_revision")
+            stored_operator = str(current.get("operator") or "").strip()
+            stored_reason = str(current.get("reason") or "").strip()
+            effective_operator = str(operator or stored_operator).strip()
+            effective_reason = str(reason or stored_reason).strip()
+            if not effective_operator or not effective_reason:
+                result["next_step"] = (
+                    "the window has no recorded operator/reason; supply them explicitly"
+                )
+                return result
             final_snapshot = export_source_snapshot(db_path, project_id)
             # Recovery may only replay the *frozen* source. A source that moved
             # after the freeze is a different dataset and must stay blocked.
-            if not frozen_digest or content_digest(final_snapshot) != frozen_digest:
+            if not frozen_content or content_digest(final_snapshot) != frozen_content:
                 result["next_step"] = (
                     "the source changed after the freeze; the window stays blocked"
                 )
@@ -1899,9 +1945,14 @@ def recover_maintenance(
                     )
                     return result
                 if (
-                    str(recorded.get("snapshot_digest") or "") != frozen_digest
+                    str(recorded.get("content_digest") or "") != frozen_content
                     or int(recorded.get("algorithm_revision") or -1)
                     != int(final_snapshot["algorithm_revision"])
+                    or (
+                        frozen_revision is not None
+                        and int(recorded.get("algorithm_revision") or -1)
+                        != int(frozen_revision)
+                    )
                 ):
                     result["next_step"] = (
                         "the recorded import belongs to different frozen content; "
@@ -1929,12 +1980,12 @@ def recover_maintenance(
                     # FAILED/ABORTED/INVALID: the same run identity is revived,
                     # never replaced by a new id that hides the conflict.
                     import_snapshot(
-                        connection, final_snapshot, actor=operator or "recovery",
+                        connection, final_snapshot, actor=effective_operator,
                         run_id=operation, resume=True,
                     )
             else:
                 import_snapshot(
-                    connection, final_snapshot, actor=operator or "recovery",
+                    connection, final_snapshot, actor=effective_operator,
                     run_id=operation, resume=True,
                 )
             if str(current.get("phase")) == MAINTENANCE_SOURCE_FROZEN:
@@ -1956,8 +2007,8 @@ def recover_maintenance(
             record_path=record_path,
             operation_id=operation,
             expected_generation=int(current.get("generation") or 0),
-            operator=operator,
-            reason=reason or str(current.get("reason") or ""),
+            operator=effective_operator,
+            reason=effective_reason,
             acknowledge_unported=acknowledge_unported,
         )
         result.update(
@@ -2004,6 +2055,8 @@ def recover_maintenance(
             generation=int(current.get("generation") or 0),
             source_provider=PROVIDER_SQLITE, target_provider=PROVIDER_POSTGRESQL,
             snapshot_digest=str(current.get("snapshot_digest") or ""),
+            content_digest=str(current.get("content_digest") or ""),
+            source_revision=current.get("source_revision"),
             verification_digest=str(current.get("verification_digest") or ""),
             operator=operator, reason=reason or "switch did not commit",
         ),
@@ -2039,13 +2092,20 @@ def recover_maintenance(
             result.update(applied=True, settled=True, phase=MAINTENANCE_ROLLBACK_APPLIED,
                           write_blocked=False)
             return result
+        effective_operator = str(operator or current.get("operator") or "").strip()
+        effective_reason = str(reason or current.get("reason") or "").strip()
+        if not effective_operator or not effective_reason:
+            result["next_step"] = (
+                "the window has no recorded operator/reason; supply them explicitly"
+            )
+            return result
         rolled = rollback(
             connection,
             db_path=db_path,
             admission_path=record_path,
             confirmed=True,
-            operator=operator or "recovery",
-            reason=reason or "resume interrupted rollback",
+            operator=effective_operator,
+            reason=effective_reason,
         )
         result.update(
             applied=bool(rolled.get("rolled_back")),

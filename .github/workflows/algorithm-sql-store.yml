@@ -37,6 +37,7 @@ on:
       - static/modules/training-submit.js
       - tests/browser/algorithm-list-performance.spec.mjs
       - tests/unit/test_algorithm_sql_store.py
+      - tests/unit/test_algorithm_repository_readiness.py
       - platform_core/algorithm_shadow.py
       - platform_core/algorithm_shadow_cli.py
       - tests/unit/test_algorithm_shadow.py
@@ -80,7 +81,7 @@ jobs:
           node --check static/modules/external-algorithm-publish.js
           node --check static/modules/training-submit.js
       - name: SQL migration and row CRUD contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_algorithm_repository_readiness.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
       - name: W5 algorithm shadow SQLite and PostgreSQL contracts
         run: |
           python -c "import psycopg, pgserver"
@@ -133,6 +134,11 @@ jobs:
           grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
           grep -Fq 'if "external_analysis_ids" in item:' platform_core/algorithm_sql_store.py
           grep -Fq 'def _analysis_is_active' platform_core/algorithm_sql_store.py
+          grep -Fq 'def test_repository_initialization_runs_once_and_never_recurses' tests/unit/test_algorithm_repository_readiness.py
+          grep -Fq 'def test_persistent_initialization_is_refused_for_a_stale_writer' tests/unit/test_algorithm_repository_readiness.py
+          grep -Fq 'def test_transition_marker_blocks_an_already_open_sqlite_provider' tests/unit/test_algorithm_repository_readiness.py
+          grep -Fq 'def test_cleanup_domain_is_served_by_the_contract_and_fails_closed' tests/unit/test_algorithm_repository_readiness.py
+          grep -Fq 'def test_no_module_defines_the_same_class_method_twice' tests/unit/test_algorithm_repository_readiness.py
           if grep -Fq 'payload.pop("external_analysis_ids", None)' platform_core/algorithm_sql_store.py; then echo "trainable analysis subset must survive payload_json round-trip" >&2; exit 1; fi
           grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
           grep -Fq 'test_legacy_sql_rows_without_trainable_subset_infer_only_active_visual_ids' tests/unit/test_algorithm_sql_store.py

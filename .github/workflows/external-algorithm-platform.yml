@@ -242,7 +242,8 @@ jobs:
           grep -Fq 'model_delivery_version_fence(' platform_core/external_algorithm_cleanup.py
           grep -Fq 'client.products(status="")' platform_core/external_algorithm_platform.py
           grep -Fq 'class ExternalAlgorithmLocalPurger' platform_core/external_algorithm_platform.py
-          grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/external_algorithm_cleanup.py
+          grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/algorithm_sql_store.py
+          if grep -Fq 'DELETE FROM algorithms' platform_core/external_algorithm_cleanup.py; then echo "cleanup deletes must stay in the SQL store owner, not the business layer" >&2; exit 1; fi
           if grep -Fq 'self.local_purger.purge(' platform_core/external_algorithm_platform.py; then echo "sync must never perform destructive cleanup" >&2; exit 1; fi
           grep -Fq 'EXTERNAL_ALGORITHM_CLEANUP' platform_core/task_runtime/models.py
           grep -Fq 'scope != "PRODUCT_DELETED"' platform_core/external_algorithm_cleanup.py
