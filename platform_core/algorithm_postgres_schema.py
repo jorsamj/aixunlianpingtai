@@ -16,7 +16,7 @@ import hashlib
 from typing import Any
 
 SCHEMA_NAME = "w5_algorithm"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LOCK_KEY = "w5_algorithm:schema"
 APPLIED_BY_DEFAULT = "algorithm-migration-cli"
 
@@ -28,6 +28,7 @@ _TABLE_NAMES = (
     "store_revision",
     "migration_run",
     "cutover_state",
+    "external_algorithm_cleanup",
 )
 
 _V1 = (
@@ -188,9 +189,48 @@ _V1 = (
     ),
 )
 
+#: V2 adds the external-algorithm cleanup ledger to the same domain schema. It
+#: is an append-only migration: an upgraded database keeps every V1 row, and the
+#: cleanup receipts survive the deletion of their algorithm (the ledger has no
+#: foreign key to ``algorithm`` on purpose).
+_V2 = (
+    2,
+    "algorithm-domain-cleanup-v2",
+    (
+        """
+        CREATE TABLE IF NOT EXISTS w5_algorithm.external_algorithm_cleanup (
+            project_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            algorithm_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            generation TEXT NOT NULL,
+            state TEXT NOT NULL,
+            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (project_id, operation_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_w5_algorithm_cleanup_project_created
+            ON w5_algorithm.external_algorithm_cleanup(
+                project_id, created_at, operation_id
+            )
+        """,
+        # The same rule as the SQLite ledger: one active cleanup cycle per
+        # (project, algorithm, product); completed receipts are history.
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_w5_algorithm_cleanup_active
+            ON w5_algorithm.external_algorithm_cleanup(
+                project_id, algorithm_id, product_id
+            ) WHERE state <> 'CLEANUP_COMPLETED'
+        """,
+    ),
+)
+
 #: Ordered, append-only migration list.  Never edit an applied migration; add a
 #: new tuple entry and bump ``SCHEMA_VERSION``.
-MIGRATIONS = (_V1,)
+MIGRATIONS = (_V1, _V2)
 _MIGRATIONS_BY_VERSION = {
     version: (name, statements) for version, name, statements in MIGRATIONS
 }

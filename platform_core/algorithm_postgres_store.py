@@ -204,51 +204,277 @@ class PostgresAlgorithmRepository:
         # tool refuses admission while a project still owns cleanup receipts.
         return tuple(_UNSUPPORTED) + tuple(CLEANUP_OPERATIONS)
 
-    # -- external algorithm cleanup: declared gap, never a SQLite fallback ---
-    # The cleanup ledger shares a transaction with the algorithm retirement
-    # flags and is not part of the migrated schema yet, so this provider refuses
-    # the whole domain. The cutover tool additionally refuses admission while a
-    # project still owns cleanup receipts (see ``CLEANUP_DOMAIN_MIGRATED``).
+    # -- external algorithm cleanup -----------------------------------------
+    # The ledger is part of schema V2 and shares one transaction with the
+    # algorithm retirement flags and the revision bump. The business gate stays
+    # closed until the snapshot/import/report/restore contract covers this domain
+    # (see ``cleanup_supported`` and the cutover's CLEANUP_DOMAIN_MIGRATED gate),
+    # so these methods are reachable by isolated contracts only.
     cleanup_supported = False
 
-    def _cleanup_gap(self) -> None:
-        raise AlgorithmProviderUnsupported(
-            "ALGORITHM_CLEANUP_PROVIDER_UNSUPPORTED",
-            "the external algorithm cleanup domain is not migrated to PostgreSQL",
-            detail=(
-                "cleanup receipts and the algorithm retirement flags share one "
-                "transaction; keep this project on SQLite until the cleanup "
-                "schema is part of the migration"
-            ),
-        )
+    _CLEANUP_COLUMNS = (
+        "project_id, operation_id, algorithm_id, product_id, generation, state, "
+        "payload, created_at, updated_at"
+    )
+
+    def _cleanup_row(self, row) -> dict | None:
+        if row is None:
+            return None
+        payload = row.get("payload")
+        if isinstance(payload, Mapping):
+            return dict(payload)
+        return json.loads(payload) if payload else None
 
     def cleanup_ensure_schema(self) -> None:
-        self._cleanup_gap()
+        self.ensure_ready()
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT to_regclass(%s) AS present",
+                ("w5_algorithm.external_algorithm_cleanup",),
+            )
+            present = cursor.fetchone()["present"]
+        if present is None:
+            raise AlgorithmRepositoryError(
+                "ALGORITHM_PG_CLEANUP_SCHEMA_MISSING",
+                "the cleanup ledger table is not installed",
+                detail="run the explicit schema upgrade (schema-init --allow-upgrade)",
+            )
 
     def cleanup_get(self, operation_id: str) -> dict | None:
-        self._cleanup_gap()
+        self.ensure_ready()
+        with self._read() as cursor:
+            cursor.execute(
+                f"SELECT {self._CLEANUP_COLUMNS} FROM "
+                "w5_algorithm.external_algorithm_cleanup "
+                "WHERE project_id=%s AND operation_id=%s",
+                (self.project_id, str(operation_id)),
+            )
+            return self._cleanup_row(cursor.fetchone())
 
     def cleanup_list(self) -> list[dict]:
-        self._cleanup_gap()
+        self.ensure_ready()
+        with self._read() as cursor:
+            cursor.execute(
+                f"SELECT {self._CLEANUP_COLUMNS} FROM "
+                "w5_algorithm.external_algorithm_cleanup WHERE project_id=%s "
+                "ORDER BY created_at, operation_id",
+                (self.project_id,),
+            )
+            return [
+                value for value in (self._cleanup_row(row) for row in cursor.fetchall())
+                if value is not None
+            ]
 
     def cleanup_summary(self, *, project_id: str, suspected_state: str) -> dict[str, int]:
-        self._cleanup_gap()
+        self.ensure_ready()
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT state,count(*) AS total FROM "
+                "w5_algorithm.external_algorithm_cleanup WHERE project_id=%s "
+                "GROUP BY state",
+                (str(project_id),),
+            )
+            counts = {str(row["state"]): int(row["total"]) for row in cursor.fetchall()}
+            cursor.execute(
+                "SELECT count(*) AS total FROM w5_algorithm.algorithm "
+                "WHERE project_id=%s AND payload->>'external_deletion_status'=%s",
+                (str(project_id), str(suspected_state)),
+            )
+            counts[str(suspected_state)] = int(cursor.fetchone()["total"])
+        return counts
 
     def cleanup_public_operations(
         self, *, project_id: str, suspected_state: str, limit: int, offset: int
     ) -> list[dict]:
-        self._cleanup_gap()
+        self.ensure_ready()
+        with self._read_snapshot() as cursor:
+            cursor.execute(
+                """
+                SELECT operation_id,updated_at,'operation' AS kind,payload,payload,
+                       '' AS id,'' AS name,'' AS external_product_id
+                FROM w5_algorithm.external_algorithm_cleanup WHERE project_id=%s
+                UNION ALL
+                SELECT 'suspect:'||id,
+                       CASE WHEN COALESCE(
+                                NULLIF(payload->>'external_deletion_checked_at',''),
+                                NULLIF(payload->>'external_deletion_since','')
+                            ) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                            THEN COALESCE(
+                                NULLIF(payload->>'external_deletion_checked_at',''),
+                                NULLIF(payload->>'external_deletion_since','')
+                            )::timestamptz END,
+                       'suspect',payload,payload,id,name,external_product_id
+                FROM w5_algorithm.algorithm
+                WHERE project_id=%s AND payload->>'external_deletion_status'=%s
+                ORDER BY updated_at DESC NULLS LAST,operation_id DESC
+                LIMIT %s OFFSET %s
+                """,
+                (str(project_id), str(project_id), str(suspected_state),
+                 int(limit), int(offset)),
+            )
+            rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            if str(row["kind"]) == "suspect":
+                result.append({"kind": "suspect", "row": {
+                    "id": row["id"], "name": row["name"],
+                    "external_product_id": row["external_product_id"],
+                    "payload_json": json.dumps(row["payload"], ensure_ascii=False),
+                }})
+            else:
+                result.append({"kind": "operation", "operation": self._cleanup_row(row)})
+        return result
 
     def cleanup_public_operation(
         self, *, project_id: str, operation_id: str, suspected_state: str
     ) -> dict | None:
-        self._cleanup_gap()
+        if not str(operation_id).startswith("suspect:"):
+            return self.cleanup_get(operation_id)
+        self.ensure_ready()
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT id,name,external_product_id,payload FROM w5_algorithm.algorithm "
+                "WHERE project_id=%s AND id=%s AND "
+                "payload->>'external_deletion_status'=%s",
+                (str(project_id), str(operation_id)[len("suspect:"):],
+                 str(suspected_state)),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return {"kind": "suspect", "row": {
+            "id": row["id"], "name": row["name"],
+            "external_product_id": row["external_product_id"],
+            "payload_json": json.dumps(row["payload"], ensure_ascii=False),
+        }}
 
-    def cleanup_confirm_deleted(self, **fields: Any) -> dict[str, Any]:
-        self._cleanup_gap()
+    def cleanup_confirm_deleted(
+        self,
+        *,
+        operation_id: str,
+        algorithm_id: str,
+        product_id: str,
+        provider: str,
+        completed_state: str,
+        algorithm_patch: Mapping[str, Any],
+        operation: Mapping[str, Any],
+        now: str,
+    ) -> dict[str, Any]:
+        """Persist the confirmed intent and the algorithm retirement atomically."""
+        with self._write() as cursor:
+            cursor.execute(
+                "SELECT payload FROM w5_algorithm.external_algorithm_cleanup "
+                "WHERE project_id=%s AND operation_id=%s FOR UPDATE",
+                (self.project_id, str(operation_id)),
+            )
+            old = self._cleanup_row(cursor.fetchone())
+            if old is not None:
+                return {"outcome": "existing", "operation": old}
+            row = self._read_one(cursor, str(algorithm_id))
+            if (
+                not row
+                or row.get("source_type") != "EXTERNAL"
+                or row.get("provider_type") != str(provider)
+                or str(row.get("external_product_id")) != str(product_id)
+            ):
+                return {"outcome": "identity_changed", "operation": None}
+            cursor.execute(
+                "SELECT payload FROM w5_algorithm.external_algorithm_cleanup "
+                "WHERE project_id=%s AND algorithm_id=%s AND product_id=%s "
+                "AND state<>%s FOR UPDATE",
+                (self.project_id, str(algorithm_id), str(product_id),
+                 str(completed_state)),
+            )
+            active = self._cleanup_row(cursor.fetchone())
+            if active is not None:
+                if row.get("external_cleanup_operation_id") != active["operation_id"]:
+                    return {"outcome": "generation_changed", "operation": None}
+                return {"outcome": "existing", "operation": active}
+            row.update(dict(algorithm_patch))
+            row["external_cleanup_operation_id"] = str(operation_id)
+            self._update_algorithm(cursor, row)
+            self._bump_revision(cursor)
+            record = dict(operation)
+            record["name"] = str(row.get("name") or algorithm_id)
+            cursor.execute(
+                "INSERT INTO w5_algorithm.external_algorithm_cleanup ("
+                + self._CLEANUP_COLUMNS + ") VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,"
+                "%s::timestamptz,%s::timestamptz)",
+                (
+                    self.project_id, str(operation_id), str(algorithm_id),
+                    str(product_id), str(record.get("generation") or operation_id),
+                    str(record["state"]),
+                    json.dumps(record, ensure_ascii=False),
+                    str(now), str(now),
+                ),
+            )
+        return {"outcome": "created", "operation": record}
 
-    def cleanup_update(self, **fields: Any) -> dict[str, Any]:
-        self._cleanup_gap()
+    def cleanup_update(
+        self,
+        *,
+        project_id: str,
+        operation_id: str,
+        patch: Mapping[str, Any],
+        remove_algorithm: bool,
+        expected_states: Sequence[str] | None,
+        completed_state: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Advance one receipt, keeping the algorithm status in the same txn."""
+        with self._write() as cursor:
+            cursor.execute(
+                "SELECT " + self._CLEANUP_COLUMNS + " FROM "
+                "w5_algorithm.external_algorithm_cleanup "
+                "WHERE project_id=%s AND operation_id=%s FOR UPDATE",
+                (self.project_id, str(operation_id)),
+            )
+            op = self._cleanup_row(cursor.fetchone())
+            if op is None:
+                return {"outcome": "missing", "operation": None}
+            row = self._read_one(cursor, str(op["algorithm_id"]))
+            if op["state"] == str(completed_state):
+                return {"outcome": "completed", "operation": op}
+            if expected_states is not None and op["state"] not in expected_states:
+                return {"outcome": "state_changed", "operation": op}
+            if (
+                not row
+                or row.get("external_cleanup_operation_id") != str(operation_id)
+                or not row.get("external_delete_pending")
+                or str(row.get("external_product_id")) != op["product_id"]
+            ):
+                return {"outcome": "generation_changed", "operation": op}
+            if any(patch.get(key, op.get(key)) != op.get(key) for key in ("state", "phase")):
+                op.setdefault("history", []).append({
+                    "state": patch.get("state", op["state"]),
+                    "phase": patch.get("phase", op["phase"]),
+                    "observed_at": str(now),
+                })
+            op.update(dict(patch), updated_at=str(now))
+            if remove_algorithm:
+                if op["state"] != str(completed_state):
+                    return {"outcome": "not_complete", "operation": op}
+                cursor.execute(
+                    "DELETE FROM w5_algorithm.algorithm WHERE project_id=%s AND id=%s",
+                    (str(project_id), str(op["algorithm_id"])),
+                )
+            elif row:
+                if row.get("external_deletion_status") != op["state"]:
+                    row.update(external_deletion_status=op["state"])
+                    self._update_algorithm(cursor, row)
+                    self._bump_revision(cursor)
+            cursor.execute(
+                "UPDATE w5_algorithm.external_algorithm_cleanup SET state=%s,"
+                "payload=%s::jsonb,updated_at=%s::timestamptz "
+                "WHERE project_id=%s AND operation_id=%s",
+                (
+                    op["state"], json.dumps(op, ensure_ascii=False),
+                    op["updated_at"], self.project_id, str(operation_id),
+                ),
+            )
+            if remove_algorithm:
+                self._bump_revision(cursor)
+        return {"outcome": "updated", "operation": op}
 
     def __repr__(self) -> str:  # never render the DSN
         return f"PostgresAlgorithmRepository(project_id={self.project_id!r})"

@@ -64,6 +64,7 @@ from platform_core.algorithm_migration import (
     run_status,
 )
 from platform_core.algorithm_postgres_schema import (
+    SCHEMA_VERSION,
     AlgorithmSchemaError,
     ensure_schema,
     schema_status,
@@ -194,14 +195,18 @@ def test_schema_init_is_explicit_versioned_and_idempotent(pg):
         assert schema_status(connection)["present"] is False
 
         applied = ensure_schema(connection, allow_upgrade=True)
-        assert [item["version"] for item in applied["applied"]] == [1]
+        assert [item["version"] for item in applied["applied"]] == list(
+            range(1, SCHEMA_VERSION + 1)
+        )
         current = schema_status(connection)
-        assert current["up_to_date"] is True and current["version"] == 1
+        assert current["up_to_date"] is True and current["version"] == SCHEMA_VERSION
         assert current["checksum_mismatch"] == [] and current["missing_tables"] == []
 
         again = ensure_schema(connection, allow_upgrade=True)
         assert again["already_current"] is True and again["applied"] == []
-        assert [row["version"] for row in current["applied"]] == [1]
+        assert [row["version"] for row in current["applied"]] == list(
+            range(1, SCHEMA_VERSION + 1)
+        )
 
 
 def test_import_is_idempotent_resumable_and_refuses_unsafe_overwrites(pg):
@@ -1269,3 +1274,64 @@ def test_recovery_clears_only_its_own_settled_marker(pg):
             )
     assert foreign.value.code == "ALGORITHM_MAINTENANCE_OPERATION_MISMATCH"
     assert marker.exists()
+
+def test_cleanup_ledger_is_served_by_the_postgres_repository(pg):
+    """Schema V2 ledger: atomic confirmation, receipts, deletion, project scope."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8clean-"))
+    store = _store(root, "clean")
+    repo = _presentation_repository(pg, store, "clean")
+    repo.cleanup_ensure_schema()
+    assert repo.cleanup_list() == []
+    assert repo.cleanup_get("missing") is None
+
+    stamp = "2026-11-01T00:00:00+00:00"
+    operation = {
+        "operation_id": "op-1", "task_id": "external-cleanup-op-1",
+        "project_id": "clean", "algorithm_id": "algo-b", "name": "B",
+        "product_id": "prod-1", "generation": "op-1", "state": "CONFIRMED_DELETED",
+        "phase": "confirmed", "created_at": stamp, "updated_at": stamp,
+        "error": "", "counts": {}, "history": [],
+    }
+    fields = dict(
+        operation_id="op-1", algorithm_id="algo-b", product_id="prod-1",
+        provider="CHANG_LIAN", completed_state="CLEANUP_COMPLETED",
+        algorithm_patch={
+            "external_active": False, "external_delete_pending": True,
+            "external_deletion_status": "CONFIRMED_DELETED",
+        },
+        operation=operation, now=stamp,
+    )
+    created = repo.cleanup_confirm_deleted(**fields)
+    assert created["outcome"] == "created"
+    # Idempotent replay returns the same receipt and never duplicates the row.
+    assert repo.cleanup_confirm_deleted(**fields)["outcome"] == "existing"
+    assert [row["operation_id"] for row in repo.cleanup_list()] == ["op-1"]
+    summary = repo.cleanup_summary(
+        project_id="clean", suspected_state="SUSPECTED_DELETED",
+    )
+    assert summary["CONFIRMED_DELETED"] == 1
+    public = repo.cleanup_public_operations(
+        project_id="clean", suspected_state="SUSPECTED_DELETED", limit=10, offset=0,
+    )
+    assert [row["kind"] for row in public] == ["operation"]
+    assert repo.cleanup_public_operation(
+        project_id="clean", operation_id="op-1",
+        suspected_state="SUSPECTED_DELETED",
+    )["operation_id"] == "op-1"
+
+    updated = repo.cleanup_update(
+        project_id="clean", operation_id="op-1",
+        patch={"state": "CLEANUP_COMPLETED", "phase": "completed"},
+        remove_algorithm=True, expected_states=None,
+        completed_state="CLEANUP_COMPLETED", now="2026-11-01T01:00:00+00:00",
+    )
+    assert updated["outcome"] == "updated"
+    # The algorithm is retired, the completed receipt survives it.
+    assert repo.read_one("algo-b") is None
+    assert [row["state"] for row in repo.cleanup_list()] == ["CLEANUP_COMPLETED"]
+
+    # Project isolation: another project's provider never sees this ledger.
+    other = PostgresAlgorithmRepository(pg.get_uri(), "clean-other",
+                                        admission=repo._admission)
+    assert other.cleanup_list() == []

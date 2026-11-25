@@ -178,29 +178,13 @@ def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
     for name in UNSUPPORTED_OPERATIONS:
         with pytest.raises(AlgorithmProviderUnsupported):
             getattr(repository, name)()
-    # The cleanup domain has no PostgreSQL implementation at all: each declared
-    # operation refuses with the cleanup-specific code (never a SQLite read).
-    cleanup_calls = {
-        "cleanup_ensure_schema": {},
-        "cleanup_get": {"operation_id": "op"},
-        "cleanup_list": {},
-        "cleanup_summary": {"project_id": "project", "suspected_state": "SUSPECTED_DELETED"},
-        "cleanup_public_operations": {
-            "project_id": "project", "suspected_state": "SUSPECTED_DELETED",
-            "limit": 1, "offset": 0,
-        },
-        "cleanup_public_operation": {
-            "project_id": "project", "operation_id": "op",
-            "suspected_state": "SUSPECTED_DELETED",
-        },
-        "cleanup_confirm_deleted": {},
-        "cleanup_update": {},
-    }
-    assert set(cleanup_calls) == set(CLEANUP_OPERATIONS)
-    for name in CLEANUP_OPERATIONS:
-        with pytest.raises(AlgorithmProviderUnsupported) as cleanup_error:
-            getattr(repository, name)(**cleanup_calls[name])
-        assert cleanup_error.value.code == "ALGORITHM_CLEANUP_PROVIDER_UNSUPPORTED"
+    # The cleanup ledger is implemented (schema V2) but the business gate stays
+    # closed until the snapshot/import/report/restore contract covers it: the
+    # capability declaration is what keeps the domain off, and without an
+    # admission record every cleanup call still fails closed.
+    assert set(CLEANUP_OPERATIONS) <= set(repository.unsupported_operations())
+    with pytest.raises(AlgorithmAdmissionRequired):
+        repository.cleanup_list()
     assert "example.invalid" not in repr(repository)
 
 
