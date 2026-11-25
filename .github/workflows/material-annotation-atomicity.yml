@@ -9,6 +9,8 @@ on:
     paths:
       - .github/workflows/material-annotation-atomicity.yml
       - app.py
+      - platform_core/material_governance_*.py
+      - platform_core/annotation_governance_*.py
       - platform_core/annotation_repository.py
       - platform_core/smart_material_audit/**
       - tests/unit/test_smart_material_audit_*.py

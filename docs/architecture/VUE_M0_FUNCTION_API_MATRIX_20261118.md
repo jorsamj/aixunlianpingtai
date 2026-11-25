@@ -204,4 +204,6 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 
 ## 2026-11-25 素材目录后端模块化
 
+后续治理与标签/人工 GT：8 个素材准入/成员/用途/状态接口进入 material_governance_api/service/contracts；10 个标签创建/编辑/删除/引用/重映射/统一、人工标注查询/保存接口进入 annotation_governance_api/service/contracts。原 HTTP 和权限合同、底层 Repository/GT/标签锁/删除恢复及回执 Owner 保持；前端、专业组件及所有菜单/入口不变。起点 6111b541，A e3764889，B/最终 SHA 见交付消息。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，仅静态验证；AI 创建/清洗/审核与 C2-B 编排未迁移。详见[实际业务范围与剩余依赖](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。
+
 12 个既有素材浏览、数据集目录、只读标签/质量/统计接口迁入 material_catalog_api/service/contracts；静态 URL/Method/签名/顺序保持。原分页/跨页 ID/缩略图锁/权限与 Repository 不变，原前端、删除、GT、标签写入、AI 审核及治理任务 Owner 不动。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，运行期 OpenAPI/原测试交现有 CI；见[迁移边界](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。

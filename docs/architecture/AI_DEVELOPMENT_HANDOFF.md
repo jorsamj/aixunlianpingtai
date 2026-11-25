@@ -269,6 +269,8 @@ B：da45ae7a46458cad0c8ce469f6083ae6c4613c21，算法库目录与版本生命周
 
 ## 2026-11-25 算法守卫收口与素材目录模块化
 
+后续接续（2026-11-25）：基线已推进至 6111b541d617def129ac8ed51b1841782417ee8f（用户核验 22/22 SUCCESS）。本轮 A e3764889 完成素材成员/用途/状态及旧删除准入 8 接口迁移；B 完成标签 CRUD/引用/重映射/统一和人工标注读取/保存 10 接口及关联业务迁移。原 MaterialRepository、AnnotationRepository、GT write_annotation、数据集锁、标签锁和 material_batches 回执 Owner 保留。app.py 28,001→27,303 行、直接 HTTP 304→286，原序列与模型 AST 保持。相关源码守卫转向真实 Service/Contracts，未弱化断言。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；只做语法/AST/符号/Git 检查，运行期交既有 CI。B/最终实现 SHA 与一次性准确 CI 快照见交付消息及提交记录；详情见[模块化记录](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节。下一边界是 AI 创建/清洗/审核的完整候选 CAS、冻结、GT 屏障和 C2-B 回执编排，本轮不拆散迁移；停止等待独立审计。
+
 基线 c183ab3d49b82346ce2866468a92fd1bb4a2b8d3 开工一次查询：22 个 PR workflow，20 SUCCESS/2 FAILURE，无其他失败；资源恢复不重复整改。A：832e168d，两项实际静态守卫跟随算法 Router/Service，保留本地创建无外部授权、LOCAL 来源、原创建调用和标签合同。
 
 B：327023ff399263e93b261c68cf08f5c534622bfc，完成素材浏览、数据集目录管理及只读标签/质量投影单元，12 接口迁到 material_catalog_api/contracts/service，原 MaterialRepository/AnnotationRepository、StorageManager、索引生命周期及数据集元数据访问器保持。删除/引用保护、标签写入/合并、人工 GT、AI 审核和既有 material_batches/Picker/负池留原 Owner，未声称全素材域完成。app.py 28,264→28,001 行；直接 HTTP 316→304+新 Router 12，有序静态合同与 13 个业务体比对一致。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；本机仅语法/定向静态/Git 检查，运行期交现有 CI。准确最终 SHA/一次性 CI 快照见交付消息，详见[模块化记录](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。本轮停止，交独立审计。

@@ -80,3 +80,17 @@ material_catalog_api 只承担 HTTP，material_catalog_service 持有上述业�
 静态证据：app.py 28,264→28,001 行，直接 HTTP 316→304+新 Router 12；展开后有序 HTTP 声明/签名/说明及其他 Router 注册相同。13 个业务/辅助函数依赖名称还原后 AST 一致；未定义名称检查通过。原 material_reader_views 补旧 12 接口 OpenAPI/operationId/DatasetReq 检查；原 Algorithm SQL Store HTTP Job 复用分页、统计、过滤、内容测试，无新 workflow。本机仅 py_compile、node --check（守卫语法）、定向 AST/符号检查和 git diff --check，未执行任何运行期测试。
 
 剩余明确边界：素材删除与引用/恢复事务、GT 提交回执、标签写入/合并、AI 审核、治理执行，以及已模块化的 material_batches、训练 Picker/公共负池继续原 Owner。后续需沿这些共享锁和生命周期边界迁移，不伪称已经迁完，不改 UI。生产/硬件、运行时展开及准确新 SHA CI 尚待验证。
+
+## 后续批次：素材治理、标签写入与人工 GT（2026-11-25）
+
+基线 6111b541d617def129ac8ed51b1841782417ee8f，用户已独立核验 22/22 PR workflows SUCCESS。A 实现 e3764889；B 与最终 SHA 见本轮提交及交付消息。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；不沿用基线 CI 验收新代码。
+
+- material_governance_api/service/contracts：8 个原接口，覆盖单图/数据集/批量旧删除入口的统一预检准入、素材成员移动、选中/筛选/数据集批量用途分配、自动分配、标记就绪和处理状态。旧删除入口仍要求原预检协议，不重新开放直接删除；实际删除、引用保护、恢复日志和文件回收继续由既有 material_batches、StorageManager 及原生命周期协议负责。
+- annotation_governance_api/service/contracts：10 个原接口与 5 个关联辅助函数，覆盖标签创建/编辑/软删除与引用保护、人工标注详情/保存、导入标签重映射、正式标签引用统计/合并预检/单源及多源统一。正式 GT 写入仍调用原 write_annotation / AnnotationRepository；标签合并任务仍调用 material_batches 的冻结、幂等、持久回执和退役协议。
+- 不复制共享状态，不新增 Repository/SQL/缓存；显式依赖装配复用原数据集锁、label_governance_fence、项目元数据访问器、TaskRuntime/ArtifactStore。兼容函数保留既有内部调用和测试替身入口，业务实现只有 Service 一份。HTTP 分组原位注册，保留中间穿插的其他 Router 顺序和应用原鉴权。
+
+静态证据：app.py 28,001→27,303 行，直接 HTTP（含 async）304→286，新 Router 补回 18；有序 Method/URL、函数名、签名/默认值、说明、返回注解及其他 Router 注册一致。23 个业务/辅助函数经依赖名还原后 AST 一致，12 个请求模型 AST 一致，依赖字段与装配参数匹配，无新增未定义全局名称或反向 app 导入。保留 GT 版本 CAS、素材代际、审核 actor 私有字段、空标注/负样本范围、标签锁及历史训练映射。
+
+旧源码守卫已转向真实 Owner：批量分组性能检查、Label Normalization 的标签引用/编码/空标注合同、Online Feedback 的审核状态合同。未删断言；新增两个现有 API 文件内的 18 接口 OpenAPI/唯一注册/请求模型回归，运行期全部交现有 CI。既有 material-annotation-atomicity、label-normalization、online-feedback 与 Algorithm SQL Store workflow 跟随新模块路径，无新 workflow。本机仅语法、符号、AST/接口合同和 git diff --check，未执行测试、应用或浏览器。
+
+剩余边界：AI 创建/清洗/审核的原 HTTP 编排仍在 app，与候选草稿 CAS、冻结选择、正式 GT 屏障、负池和 C2-B 续批/取消对账共享上下文；本轮未拆出这些流程的一部分。原删除恢复日志及 write_annotation 底层事务访问器继续为其他导入/审核入口共享，未借迁移重构生命周期。旧 /images 全量读取和自动分配的既有读取行为保留，不声称完成其性能治理。前端、VERSION、AGENTS、四份保护文档及生产均未改；完成后停止，交独立审计。

@@ -6,6 +6,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/annotation_governance_*.py
       - platform_core/online_feedback.py
       - platform_core/material_repository.py
       - platform_core/annotation_repository.py
@@ -21,6 +22,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/annotation_governance_*.py
       - platform_core/online_feedback.py
       - platform_core/material_repository.py
       - platform_core/annotation_repository.py
@@ -81,7 +83,7 @@ jobs:
           grep -Fq 'confirm_all_labels_absent' platform_core/online_feedback_api.py
           grep -Fq 'get_by_content_sha256' platform_core/material_repository.py
           grep -Fq 'OnlineFeedbackRepository' platform_core/online_feedback.py
-          grep -Fq 'online_feedback_needs_review' app.py
+          grep -Fq 'online_feedback_needs_review' platform_core/annotation_governance_service.py
           grep -Fq '正式算法版本可提交抽检反馈' static/app.js
           grep -Fq '不会自动修改素材、数据集或训练任务' static/app.js
           grep -Fq 'test_feedback_confirm_rejects_changed_prediction_input' tests/api/test_online_feedback.py

@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/annotation_governance_*.py'
       - 'platform_core/labels.py'
       - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
@@ -46,6 +47,7 @@ on:
   pull_request:
     paths:
       - 'app.py'
+      - 'platform_core/annotation_governance_*.py'
       - 'platform_core/labels.py'
       - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
@@ -150,9 +152,17 @@ jobs:
         shell: python
         run: |
           import re
+          import ast
           from pathlib import Path
 
           app = Path('app.py').read_text(encoding='utf-8')
+          governance = Path('platform_core/annotation_governance_service.py').read_text(encoding='utf-8')
+          governance_contracts = Path('platform_core/annotation_governance_contracts.py').read_text(encoding='utf-8')
+          governance_api = Path('platform_core/annotation_governance_api.py').read_text(encoding='utf-8')
+          def governance_method(name):
+              tree = ast.parse(governance)
+              owner = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'AnnotationGovernanceService')
+              return ast.get_source_segment(governance, next(n for n in owner.body if isinstance(n, ast.FunctionDef) and n.name == name))
           labels = Path('platform_core/labels.py').read_text(encoding='utf-8')
           import_confirmation = Path('platform_core/storage/import_confirmation.py').read_text(encoding='utf-8')
           auto_label = Path('platform_core/auto_label.py').read_text(encoding='utf-8')
@@ -189,7 +199,6 @@ jobs:
                   'label_confirmation_required',
                   'resolve_external_label_mapping(',
                   'label_mapping: Dict[str, str] = Field(default_factory=dict)',
-                  're.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code)',
                   'resume_after_review_confirmation',
                   'V36_ANNOTATED_IMPORT_BLOCKED_DETAIL',
                   'def _v36_detect_annotated_formats(',
@@ -204,13 +213,16 @@ jobs:
                   "external_classes = external_label_facts(",
                   "task.status is TaskStatus.AWAITING_CONFIRMATION",
                   "AI 标注标签必须显式使用当前标签库中的英文编码",
-                  "目标标签必须来自当前有效标签库",
                   'IMPORT_LABEL_CREATION_BLOCKED_DETAIL',
                   'if payload.create_labels:',
                   'LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL',
                   'def _reject_legacy_annotated_import(project_id: str)',
                   'LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL',
                   'def _reject_legacy_direct_prelabel(project_id: str)',
+              ),
+              'platform_core/annotation_governance_service.py': (
+                  "目标标签必须来自当前有效标签库",
+                  're.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code)',
                   ').label_reference_usage()',
                   ').label_reference_preview(sources)',
               ),
@@ -317,6 +329,7 @@ jobs:
               ),
           }
           bodies = {
+              'platform_core/annotation_governance_service.py': governance,
               'platform_core/labels.py': labels,
               'platform_core/storage/import_confirmation.py': import_confirmation,
               'app.py': app,
@@ -413,6 +426,10 @@ jobs:
                   'mapping_suggestions(',
                   'suggest_label_code(',
               ),
+              'platform_core/annotation_governance_service.py': (
+                  'mapping_suggestions(',
+                  'suggest_label_code(',
+              ),
               'platform_core/auto_label.py': (
                   'if any(alias and label == alias for alias in values):',
               ),
@@ -429,33 +446,23 @@ jobs:
                           f'retired automatic label-decision path must stay absent: {token}'
                       )
 
-          label_schema_start = app.index("def v54_label_schema(")
-          label_schema_end = app.index(
-              "@app.post('/api/v54/projects/{project_id}/labels/unify/preview')",
-              label_schema_start,
-          )
-          label_schema_block = app[label_schema_start:label_schema_end]
+          label_schema_block = governance_method('v54_label_schema')
           if (
               'AnnotationRepository(' not in label_schema_block
               or '.label_reference_usage()' not in label_schema_block
               or 'material_store(' in label_schema_block
           ):
-              missing.setdefault('app.py', []).append(
+              missing.setdefault('platform_core/annotation_governance_service.py', []).append(
                   'v54 label schema must derive reference counts from AnnotationRepository'
               )
 
-          preview_start = app.index("def v54_preview_unify_labels(")
-          preview_end = app.index(
-              "@app.post('/api/v54/projects/{project_id}/labels/unify')",
-              preview_start,
-          )
-          preview_block = app[preview_start:preview_end]
+          preview_block = governance_method('v54_preview_unify_labels')
           if (
               'AnnotationRepository(' not in preview_block
               or '.label_reference_preview(sources)' not in preview_block
               or 'material_store(' in preview_block
           ):
-              missing.setdefault('app.py', []).append(
+              missing.setdefault('platform_core/annotation_governance_service.py', []).append(
                   'v54 label-unify preview must derive impact from AnnotationRepository'
               )
 
@@ -498,13 +505,16 @@ jobs:
           ):
               if route not in app:
                   missing.setdefault('app.py', []).append(route)
-          for token in (
-              'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED',
-              'annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]]',
-              'train_completed_count',
+          for body, owner, token in (
+              (governance_method('save_annotation'), 'platform_core/annotation_governance_service.py', 'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED'),
+              (governance_contracts, 'platform_core/annotation_governance_contracts.py', 'annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]]'),
+              (app, 'app.py', 'train_completed_count'),
           ):
-              if token not in app:
-                  missing.setdefault('app.py', []).append(token)
+              if token not in body:
+                  missing.setdefault(owner, []).append(token)
+          assert 'return service().save_annotation(' in governance_api
+          assert 'return service().v54_label_schema(' in governance_api
+          assert 'return service().v54_preview_unify_labels(' in governance_api
           import ast
           catalog_api = Path('platform_core/algorithm_catalog_api.py').read_text(encoding='utf-8')
           catalog_service = Path('platform_core/algorithm_catalog_service.py').read_text(encoding='utf-8')
