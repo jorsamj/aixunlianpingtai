@@ -8144,6 +8144,14 @@ def gpu_resources():
     return GPUResourceManager(shared_task_repository(), shared_task_artifacts()).summary()
 
 
+# The creation admission (background confirmation, material-input admission and
+# the opt-in synchronous preflight) is owned by
+# platform_core.training_create_service; app.py only supplies the collaborators.
+from platform_core.training_create_service import (  # noqa: E402
+    TrainingCreateAdmission,
+    prepare_training_create_admission,
+)
+
 # Training creation contract, validation and HTTP entry points are owned by
 # platform_core.training_create_api. They are imported into this module so the
 # existing internal references (automation, tests) keep working; app.py only
@@ -8694,6 +8702,29 @@ def _reconcile_training_create_replay(
     return repository.get(task_id) or parent
 
 
+# Creation admission collaborators: the service never imports app, so every
+# store, artifact root and project helper is resolved through a callable at use
+# time (tests and callers may replace these module-level bindings).
+_TRAINING_CREATE_ADMISSION = TrainingCreateAdmission(
+    data_dir=lambda: DATA_DIR,
+    repository=lambda: shared_task_repository(),
+    artifacts=lambda: shared_task_artifacts(),
+    material_store=lambda project_id: material_store(project_id),
+    compatibility_request=lambda project_id, asset_algorithm, request: (
+        _training_compatibility_request(project_id, asset_algorithm, request)
+    ),
+    selected_input_fingerprint=lambda path, image_ids: (
+        training_background_selection_fingerprint(path, image_ids)
+    ),
+    compatibility_evaluator=lambda data_dir, project_path, request, asset: (
+        evaluate_training_compatibility(data_dir, project_path, request, asset)
+    ),
+    compatibility_page=lambda compatibility, **kwargs: compatibility_page(
+        compatibility, **kwargs
+    ),
+)
+
+
 def _enqueue_explicit_training(
     project_id: str, payload: TrainReq, *, review_actor_id: str = "",
 ) -> JSONResponse:
@@ -8879,83 +8910,20 @@ def _enqueue_explicit_training_locked(
         require_current=True,
     ), material_annotation_lifecycle_fence(project_dir(project_id)):
         try:
-            if payload.review_all_training_backgrounds:
-                # Bind consent to the exact selected source/GT rows. Unrelated
-                # uploads or reviews must not invalidate this queued task.
-                project_path = project_dir(project_id)
-                request_payload["training_background_confirmation"] = {
-                    "schema_version": 2,
-                    "task_id": task_id,
-                    "project_id": project_id,
-                    "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
-                    "actor_id": review_actor_id.strip(),
-                    "request_identity": request_identity,
-                    "train_image_ids": list(requested_split.train_image_ids),
-                    "test_image_ids": list(requested_split.test_image_ids),
-                    "selected_input_fingerprint": training_background_selection_fingerprint(
-                        project_path, [*requested_split.train_image_ids, *requested_split.test_image_ids],
-                    ),
-                }
-            with performance_measure("training.create.source_admission"):
-                assert_material_input_admission(
-                    project_id,
-                    requested_split.image_ids,
-                    material_store(project_id),
-                    shared_task_repository(),
-                    shared_task_artifacts(),
-                )
-            # The prepare child independently performs the authoritative GT,
-            # duplicate, history, benchmark and label checks before the parent
-            # becomes runnable. Repeating that full scan on the HTTP thread
-            # defeats durable asynchronous creation for large selections.
-            compatibility = None
-            if payload.admission_mode == "synchronous":
-                compatibility_request = _training_compatibility_request(
-                    project_id,
-                    asset_algorithm,
-                    raw_request,
-                )
-                with performance_measure("training.create.full_preflight"):
-                    compatibility = evaluate_training_compatibility(
-                        DATA_DIR,
-                        project_dir(project_id),
-                        compatibility_request,
-                        asset_algorithm,
-                    )
-        except MaterialBatchRequestError as error:
-            raise HTTPException(
-                status_code=error.status_code,
-                detail={"code": error.code, "message": str(error)},
-            ) from error
-        except ValueError as error:
-            if isinstance(error, TrainingAdmissionError):
-                # Keep the legacy 409 plus Chinese message; expose the stable
-                # admission code through the existing coded error shape.
-                raise HTTPException(
-                    status_code=409,
-                    detail={"code": error.code, "message": str(error)},
-                ) from error
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        if compatibility is not None and compatibility.issues:
-            page = compatibility_page(compatibility, limit=100)
-            duplicate_types = {item["issue_type"] for item in compatibility.issues}
-            error_code = (
-                "CONTENT_HASH_LEAKAGE" if "content_hash_leakage" in duplicate_types else
-                "DUPLICATE_ANNOTATION_CONFLICT" if "duplicate_annotation_conflict" in duplicate_types else
-                "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+            confirmation_block, compatibility = prepare_training_create_admission(
+                project_id=project_id,
+                task_id=task_id,
+                payload=payload,
+                asset_algorithm=asset_algorithm,
+                requested_split=requested_split,
+                raw_request=raw_request,
+                request_identity=request_identity,
+                review_actor_id=review_actor_id,
+                project_path=project_dir(project_id),
+                admission=_TRAINING_CREATE_ADMISSION,
             )
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": error_code,
-                    "message": ("训练与独立试验素材存在同内容图片，请重新划分素材角色" if error_code == "CONTENT_HASH_LEAKAGE" else
-                        "重复图片的原始标注不一致，请核对标注或明确排除本次训练输入" if error_code == "DUPLICATE_ANNOTATION_CONFLICT" else
-                        "所选素材的审核范围未覆盖本次训练标签，请先补审或排除素材"),
-                    **compatibility.summary(),
-                    **page,
-                },
-            )
-        try:
+            if confirmation_block:
+                request_payload["training_background_confirmation"] = confirmation_block
             from platform_core.training_selection_reference import mark_selection_submitted
             for reference in (payload.train_selection_ref,payload.validation_selection_ref,payload.test_selection_ref):
                 if reference:mark_selection_submitted(DATA_DIR,reference,task_id)

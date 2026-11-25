@@ -593,3 +593,39 @@ marker 清理前必须证明本地记录与权威状态一致；marker 未落库
 源码守卫测试改为检查新属主，并断言 app.py 不再定义这两个 URL。
 
 **状态**：A/B/C 均 CODE_IMPLEMENTED，CI_PENDING；U1 仍为 CUTOVER_NOT_VERIFIED，PG 清理域正式切换继续阻断。
+
+### 9.26 第十五轮（A CI 收口 + B U1 本地写栅栏 + C 训练创建准入 Service）
+
+- A 代码 SHA：`127c62610d152c050efb2ff25d36d79acd9ccc7d`
+- B 代码 SHA：`6b5bc283dd45cbf6c43a99174e7e303d44126c60`
+- C 代码 SHA：见本轮最后一个提交（`platform_core/training_create_service.py` + app.py 装配）
+
+**A1**：`external-algorithm-platform.yml` 的清理守卫改查真正属主 `algorithm_sql_store.py`，并额外拒绝任何残留在业务层的
+`DELETE FROM algorithms`，保留原安全断言。
+**A2**：首次回滚以数据库真实记录的 operation（已完成切换）做 CAS，再原子写入新的回滚 operation；续跑回滚以该回滚 operation 做 CAS。
+**A3**：维护记录区分 `snapshot_digest`（快照合同摘要，每次导出变化）、`content_digest`（规范化内容，恢复可重放的唯一身份）、
+`source_revision` 与 `verification_digest`；恢复按内容摘要+修订核验源与 `migration_run`，并复用已持久化的 operator/reason，
+证据缺失时明确拒绝。
+**A4**：`test_algorithm_repository_readiness.py` 纳入 `Algorithm SQL Store` workflow（path trigger + 执行步骤 + 静态守卫），
+真正执行初始化无递归、旧实例拒写、清理 Provider 边界与 AST 重复方法检查。
+
+**B1 本地持久写栅栏**：SQLite 目录内的 `algorithm-authority-barrier/1` 元数据记录从未切换/切换中/已切换/已回滚；
+在 PG 提交前（持有 switch 锁）写入，切换完成后更新，只有完整验证的回滚才改为 `ROLLBACK_APPLIED`。
+`_refuse_stale_sqlite()` 先查栅栏再查 admission，admission 丢失/损坏时已切换项目仍 fail-closed；外来或损坏栅栏拒绝；
+从未切换项目行为不变；PG Provider 打开时用真实的 admission 自愈栅栏（覆盖旧合同已切换项目）。
+**B2 恢复阶段矛盾**：`_write_local_from_durable()` 区分真实记录阶段与目标阶段，仅允许
+`SWITCHING→POSTGRES_ACTIVE`、`ROLLBACK_QUIESCING→ROLLBACK_APPLIED` 两个收尾转换；所有恢复路径在清除 marker 前
+用 durable 行再次证明确实一致；admission 写入增加目录 fsync。
+**B3 导入工具写权限**：`import_snapshot()` 在真正的数据写事务内（cutover 咨询锁在前、import 槽在后）校验 Owner/phase/operation/generation；
+阻塞窗口只允许命名该 operation 的最终导入，PG 已权威时拒绝直接导入，回滚已结算后才允许影子工具；
+维护窗口的 RUNNING run 不会被隐式接管。
+**B4 回滚与提交不确定性**：`revoke_admission()` 在撤销事务内重读权威修订与内容并拒绝漂移，不再只信调用方 assessment；
+窗口开启与回滚仅在证明阶段未提交时清除 marker，其余（含提交结果未知）保留阻断证据。
+
+**C 训练创建准入 Service**：新增 `platform_core/training_create_service.py`，迁出创建准入这一完整职责：
+后台批量人工确认块（绑定任务/算法/请求身份与素材指纹）、素材输入准入、可选同步兼容性预检、以及既有编码冲突
+（CONTENT_HASH_LEAKAGE / DUPLICATE_ANNOTATION_CONFLICT / TRAINING_MATERIAL_SCOPE_INCOMPATIBLE）映射。
+app.py 只装配 `TrainingCreateAdmission`（全部按调用时解析，保持测试可替换绑定）；URL/产品行为、split_mode 门禁、
+Snapshot/冻结标签/数据集合同、训练身份幂等与并发锁、TRAINING_PREPARE/TRAINING 职责、外部母数据预检时机均未改变。
+
+**状态**：A/B/C 均 CODE_IMPLEMENTED，CI_PENDING；U1 仍为 CUTOVER_NOT_VERIFIED，PG 清理域正式切换继续阻断。
