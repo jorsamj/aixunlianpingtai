@@ -312,7 +312,12 @@ def main(argv=None) -> int:
                 # digest copied across: a shadow import that fell behind a
                 # later legitimate SQLite write is caught here.
                 final_snapshot = export_source_snapshot(args.db, args.project)
-                if content_digest(final_snapshot) != str(frozen.get("snapshot_digest") or ""):
+                # The frozen *content* is what must not move; snapshot_digest is
+                # the snapshot contract digest and changes with every export.
+                frozen_content = str(
+                    frozen.get("content_digest") or frozen.get("snapshot_digest") or ""
+                )
+                if not frozen_content or content_digest(final_snapshot) != frozen_content:
                     raise AlgorithmCutoverError(
                         "ALGORITHM_MAINTENANCE_SOURCE_MOVED",
                         "the source changed after the final freeze",

@@ -33,7 +33,8 @@ def _legacy_project(tmp_path, name="p", rows=None):
     path = tmp_path / "projects" / name / "algorithms.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(rows or [{"id": "a", "name": "A"}]), encoding="utf-8"
+        json.dumps([{"id": "a", "name": "A"}] if rows is None else rows),
+        encoding="utf-8",
     )
     return path
 
@@ -102,7 +103,7 @@ def test_persistent_initialization_is_refused_for_a_stale_writer(tmp_path):
 
 
 def test_transition_marker_blocks_an_already_open_sqlite_provider(tmp_path):
-    path = _legacy_project(tmp_path)
+    path = _legacy_project(tmp_path, rows=[])
     repository = open_algorithm_repository(path)
     repository.create_algorithm({"id": "first", "name": "first"})
     marker = admission_transition_path(admission_record_path(path))
@@ -138,7 +139,7 @@ def test_lost_admission_keeps_a_switched_project_closed(tmp_path):
         write_authority_barrier,
     )
 
-    path = _legacy_project(tmp_path)
+    path = _legacy_project(tmp_path, rows=[])
     repository = open_algorithm_repository(path)
     repository.create_algorithm({"id": "first", "name": "first"})
     assert authority_barrier_path(path).is_file()
@@ -164,8 +165,7 @@ def test_lost_admission_keeps_a_switched_project_closed(tmp_path):
     assert repository.create_algorithm({"id": "restored", "name": "restored"})["id"] == "restored"
 
     # A barrier that names another project, or is damaged, fails closed.
-    authority_barrier_path(path).unlink()
-    fresh = _legacy_project(tmp_path, "q")
+    fresh = _legacy_project(tmp_path, "q", rows=[])
     fresh_repository = open_algorithm_repository(fresh)
     fresh_repository.create_algorithm({"id": "base", "name": "base"})
     assert write_authority_barrier(
