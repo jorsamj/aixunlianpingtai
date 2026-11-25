@@ -7,6 +7,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - platform_core/conversion_management_*.py
+      - platform_core/deployment_validation_*.py
       - 'platform_core/agent_execution.py'
       - 'platform_core/scenario_models.py'
       - 'platform_core/node_agent_executor_runtime.py'
@@ -44,6 +46,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - platform_core/conversion_management_*.py
+      - platform_core/deployment_validation_*.py
       - 'platform_core/agent_execution.py'
       - 'platform_core/scenario_models.py'
       - 'platform_core/node_agent_executor_runtime.py'
@@ -189,7 +193,7 @@ jobs:
           grep -Fq 'result-upload/confirm' platform_core/agent_execution.py
           grep -Fq 'REMOTE_RESULT_NOT_CONFIRMED' platform_core/agent_execution.py
           grep -Fq 'self.fenced.begin_finalization(' platform_core/agent_execution.py
-          grep -Fq 'stage_deployment_test(' app.py
+          grep -Fq 'stage_deployment_test(' platform_core/deployment_validation_service.py
           grep -Fq 'agent_execution_payload_resolver=_resolve_agent_execution_payload' app.py
           grep -Fq 'agent_result_upload_preparer=_prepare_agent_result_upload' app.py
           grep -Fq 'agent_result_upload_confirmer=_confirm_agent_result_upload' app.py

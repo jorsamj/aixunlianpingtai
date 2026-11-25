@@ -7,6 +7,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - platform_core/conversion_management_*.py
+      - platform_core/deployment_validation_*.py
       - 'static/app.js'
       - 'static/index.html'
       - 'tests/browser/model-and-conversion.spec.mjs'
@@ -36,6 +38,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - platform_core/conversion_management_*.py
+      - platform_core/deployment_validation_*.py
       - 'static/app.js'
       - 'static/index.html'
       - 'tests/browser/model-and-conversion.spec.mjs'
@@ -161,11 +165,11 @@ jobs:
       - name: API fail-closed guards
         shell: bash
         run: |
-          grep -Fq 'RKNN_BOARD_NODE_UNAVAILABLE' app.py
-          grep -Fq 'required_capabilities=("agent.remote",)' app.py
-          grep -Fq 'stage_rknn_board_validation' app.py
+          grep -Fq 'RKNN_BOARD_NODE_UNAVAILABLE' platform_core/conversion_management_service.py
+          grep -Fq 'required_capabilities=("agent.remote",)' platform_core/conversion_management_service.py
+          grep -Fq 'stage_rknn_board_validation' platform_core/conversion_management_service.py
           grep -Fq 'v39_rknn_hardware_acceptance_report' app.py
-          grep -Fq 'rknn_runtime_hardware' app.py
+          grep -Fq 'rknn_runtime_hardware' platform_core/conversion_management_service.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 

@@ -5,7 +5,8 @@ import fs from 'node:fs';
 const ui=fs.readFileSync(new URL('../../static/modules/conversion-workbench-ui.js',import.meta.url),'utf8');
 const quality=fs.readFileSync(new URL('../../static/modules/quality-detection-workbench.js',import.meta.url),'utf8');
 const app=fs.readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
-const backend=fs.readFileSync(new URL('../../app.py',import.meta.url),'utf8');
+const backend=fs.readFileSync(new URL('../../platform_core/conversion_management_service.py',import.meta.url),'utf8');
+const backendApi=fs.readFileSync(new URL('../../platform_core/conversion_management_api.py',import.meta.url),'utf8');
 const handler=fs.readFileSync(new URL('../../platform_core/deployment/conversion_tasks.py',import.meta.url),'utf8');
 
 test('conversion editor is not nested over conversion history',()=>{
@@ -37,7 +38,7 @@ test('conversion list and quality center share one numerical verification entry'
 });
 
 test('verification uses persistent tasks, uploads actual images, and never promotes BMODEL quality',()=>{
-  assert.match(backend,/deploy\/jobs\/\{job_id\}\/numeric-validations/);
+  assert.match(backendApi,/deploy\/jobs\/\{job_id\}\/numeric-validations/);
   assert.match(backend,/shared_task_repository\(\)\.create\(TaskRecord\.new/);
   assert.match(handler,/request\.get\("execution_mode"\) == "numeric_verification"/);
   assert.match(quality,/PT／ONNX/);

@@ -1,3 +1,5 @@
+from platform_core.conversion_management_service import ConversionManagementService
+import platform_core.conversion_management_service as conversion_management_owner
 import hashlib
 import io
 import json
@@ -1817,9 +1819,9 @@ def test_rockchip_auto_conversion_uses_single_detected_supported_chip(tmp_path, 
     )
     monkeypatch.setattr(app_module, "_load_saved_deploy_resources", lambda: [])
     monkeypatch.setattr(
-        app_module,
+        ConversionManagementService,
         "v39_create_deploy_job",
-        lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "convert-rk3568"}},
+        staticmethod(lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "convert-rk3568"}}),
     )
 
     result = app_module._v48_auto_convert_version(
@@ -1866,9 +1868,9 @@ def test_rockchip_auto_conversion_fails_closed_when_chip_is_ambiguous(tmp_path, 
     )
     monkeypatch.setattr(app_module, "_load_saved_deploy_resources", lambda: [])
     monkeypatch.setattr(
-        app_module,
+        ConversionManagementService,
         "v39_create_deploy_job",
-        lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "should-not-run"}},
+        staticmethod(lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "should-not-run"}}),
     )
 
     result = app_module._v48_auto_convert_version(
@@ -2196,6 +2198,7 @@ def test_training_create_lock_timeout_has_uncertain_machine_code(client, seeded_
         def __enter__(self): raise Timeout('isolated-create-lock')
         def __exit__(self,*args): pass
     monkeypatch.setattr(platform,'FileLock',BusyLock)
+    monkeypatch.setattr(conversion_management_owner, 'FileLock', platform.FileLock)
     response=client.post(f'/api/v12/projects/{project_id}/train/start',json=payload)
     assert response.status_code==409
     assert response.json()['code']=='TRAINING_CREATE_IN_PROGRESS'

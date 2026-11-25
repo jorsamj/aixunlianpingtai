@@ -1,4 +1,6 @@
 from __future__ import annotations
+from platform_core.conversion_management_service import ConversionManagementService
+import platform_core.conversion_management_service as conversion_management_owner
 
 from pathlib import Path
 from datetime import datetime, timezone
@@ -266,14 +268,14 @@ def _patch_creation(monkeypatch, tmp_path, transport):
     )
     monkeypatch.setattr(app_module, "_deploy_resource_by_id", lambda _resource_id: _resource())
     monkeypatch.setattr(
-        app_module,
+        ConversionManagementService,
         "_deploy_job_dir",
-        lambda _project_id, job_id: tmp_path / "deploy" / "jobs" / str(job_id),
+        staticmethod(lambda _project_id, job_id: tmp_path / "deploy" / "jobs" / str(job_id)),
     )
     monkeypatch.setattr(
-        app_module,
+        ConversionManagementService,
         "_write_deploy_job",
-        lambda _project_id, job: jobs.__setitem__(str(job["id"]), dict(job)),
+        staticmethod(lambda _project_id, job: jobs.__setitem__(str(job["id"]), dict(job))),
     )
     monkeypatch.setattr(app_module, "get_active_ultralytics_env", lambda: {})
     monkeypatch.setattr(app_module, "get_active_paddle_env", lambda: {})
@@ -290,6 +292,7 @@ def _patch_creation(monkeypatch, tmp_path, transport):
             "expected_inputs": list(kwargs.get("expected_inputs") or []),
         }),
     )
+    monkeypatch.setattr(conversion_management_owner, 'assert_material_input_admission', app_module.assert_material_input_admission)
     return model, jobs, artifacts, repository
 
 
@@ -442,6 +445,7 @@ def test_agent_resource_detection_requires_fresh_effective_conversion_capability
             ]
 
     monkeypatch.setattr(app_module, "ServiceNodeRepository", FakeNodes)
+    monkeypatch.setattr(conversion_management_owner, 'ServiceNodeRepository', app_module.ServiceNodeRepository)
     monkeypatch.setattr(app_module, "shared_task_repository", lambda: object())
 
     checked = app_module._detect_agent_deploy_resource(_agent_resource())
@@ -473,6 +477,7 @@ def test_agent_resource_detection_is_missing_without_eligible_conversion_node(mo
             }]
 
     monkeypatch.setattr(app_module, "ServiceNodeRepository", FakeNodes)
+    monkeypatch.setattr(conversion_management_owner, 'ServiceNodeRepository', app_module.ServiceNodeRepository)
     monkeypatch.setattr(app_module, "shared_task_repository", lambda: object())
 
     checked = app_module._detect_agent_deploy_resource(_agent_resource())
@@ -585,6 +590,7 @@ def test_agent_rknn_resource_requires_effective_rknn_capability_and_probe(monkey
             ]
 
     monkeypatch.setattr(app_module, "ServiceNodeRepository", FakeNodes)
+    monkeypatch.setattr(conversion_management_owner, 'ServiceNodeRepository', app_module.ServiceNodeRepository)
     monkeypatch.setattr(app_module, "shared_task_repository", lambda: object())
 
     checked = app_module._detect_agent_deploy_resource(_agent_rknn_resource())
@@ -663,11 +669,11 @@ def test_agent_rknn_int8_freezes_calibration_snapshot_before_task_staging(
         lambda resource: dict(resource),
     )
     monkeypatch.setattr(
-        app_module,
+        ConversionManagementService,
         "_deploy_prepare_calibration",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("Agent INT8 must not build a central calibration_dir")
-        ),
+        )),
     )
 
     response = app_module.v39_create_deploy_job(

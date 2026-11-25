@@ -1,3 +1,4 @@
+from platform_core.deployment_validation_service import DeploymentValidationService
 from pathlib import Path
 import pytest
 import app as app_module
@@ -199,10 +200,10 @@ def test_retry_refuses_live_process_without_erasing_its_identity(client, seeded_
 
 def test_lost_http_response_after_commit_is_found_without_another_task(client, seeded_project, monkeypatch):
     project = seed(seeded_project)
-    public = app_module.public_deployment_test
-    monkeypatch.setattr(app_module, "public_deployment_test", lambda task: (_ for _ in ()).throw(RuntimeError("response lost after durable commit")))
+    public = app_module._deployment_validation_service().public_deployment_test
+    monkeypatch.setattr(DeploymentValidationService, "public_deployment_test", staticmethod(lambda task: (_ for _ in ()).throw(RuntimeError("response lost after durable commit"))))
     with pytest.raises(RuntimeError): post(client, project)
-    monkeypatch.setattr(app_module, "public_deployment_test", public)
+    monkeypatch.setattr(DeploymentValidationService, "public_deployment_test", staticmethod(public))
     reply = client.get(f"/api/v61/projects/{project}/deployment-test-creations/stable-creation").json()
     assert reply["creation_state"] == "CREATED"
     assert post(client, project).json()["id"] == reply["task_id"]

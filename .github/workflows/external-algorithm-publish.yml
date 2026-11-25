@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/conversion_management_*.py
+      - platform_core/deployment_validation_*.py
       - platform_core/algorithm_catalog_api.py
       - platform_core/algorithm_catalog_contracts.py
       - platform_core/algorithm_catalog_service.py
@@ -44,6 +46,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/conversion_management_*.py
+      - platform_core/deployment_validation_*.py
       - platform_core/algorithm_catalog_api.py
       - platform_core/algorithm_catalog_contracts.py
       - platform_core/algorithm_catalog_service.py
@@ -194,9 +198,9 @@ jobs:
           grep -Fq 'ALGORITHM_VERSION_REFERENCE_STALE' platform_core/algorithm_catalog_service.py
           grep -Fq 'dependencies.current_version_id(asset_algorithm)' platform_core/training_create_service.py
           grep -Fq 'reference_version_id = str(' platform_core/training_create_service.py
-          grep -Fq 'def _v39_create_deploy_job_under_version_fence(' app.py
-          grep -Fq 'async def _v39_create_rknn_hardware_test_under_version_fence(' app.py
-          grep -Fq 'async def _create_deployment_test_under_version_fence(' app.py
+          grep -Fq 'def _v39_create_deploy_job_under_version_fence(' platform_core/conversion_management_service.py
+          grep -Fq 'async def _v39_create_rknn_hardware_test_under_version_fence(' platform_core/conversion_management_service.py
+          grep -Fq 'async def _create_deployment_test_under_version_fence(' platform_core/deployment_validation_service.py
           grep -Fq 'test_version_reference_fence_rechecks_live_version_and_current_truth' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'def retry_algorithm_version_cleanup(' platform_core/algorithms.py
           grep -Fq 'version-operations/{operation_id}/retry-cleanup' platform_core/algorithm_catalog_api.py
@@ -310,7 +314,7 @@ jobs:
           grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/deployment/conversion_tasks.py
           grep -Fq 'ConversionHandler(_data_dir)' platform_core/deployment/conversion_tasks.py
           grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/remote_execution_transport.py
-          grep -Fq 'data_dir=DATA_DIR, project_id=project_id, conversion_job=cur' app.py
+          grep -Fq 'data_dir=self.dependencies.DATA_DIR(), project_id=project_id, conversion_job=cur' platform_core/conversion_management_service.py
           if grep -Eq 'threading\.Thread|while True|Scheduler|fastapi|APIRouter' platform_core/external_publish_request.py; then echo "conversion publish request must stay lightweight and reuse the existing owner" >&2; exit 1; fi
           test "$(grep -Fc 'threading.Thread(target=worker_loop, name="external-algorithm-auto-publish"' platform_core/external_algorithm_publish.py)" = "1"
           grep -q "test_published_weight_mapping_change_requires_review_without_changing_identity" tests/unit/test_external_algorithm_publish.py

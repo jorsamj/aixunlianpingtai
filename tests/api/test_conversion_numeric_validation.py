@@ -1,3 +1,6 @@
+from platform_core.conversion_management_service import ConversionManagementService
+import platform_core.conversion_management_service as conversion_management_owner
+import platform_core.deployment_validation_service as deployment_validation_owner
 import hashlib
 import io
 import json
@@ -46,11 +49,13 @@ def _setup(monkeypatch, tmp_path):
     tasks, artifacts = FakeTasks(), FakeArtifacts()
     monkeypatch.setattr(api, "DATA_DIR", tmp_path)
     monkeypatch.setattr(api, "deploy_root", lambda project_id: root)
-    monkeypatch.setattr(api, "_deploy_job_dir", lambda project_id, job_id: job_dir)
-    monkeypatch.setattr(api, "_read_deploy_job", lambda project_id, job_id: job)
+    monkeypatch.setattr(ConversionManagementService, "_deploy_job_dir", staticmethod(lambda project_id, job_id: job_dir))
+    monkeypatch.setattr(ConversionManagementService, "_read_deploy_job", staticmethod(lambda project_id, job_id: job))
     monkeypatch.setattr(api, "shared_task_repository", lambda: tasks)
     monkeypatch.setattr(api, "shared_task_artifacts", lambda: artifacts)
     monkeypatch.setattr(api, "task_to_public", lambda task, repository: {"status": task.status.value})
+    monkeypatch.setattr(conversion_management_owner, 'task_to_public', api.task_to_public)
+    monkeypatch.setattr(deployment_validation_owner, 'task_to_public', api.task_to_public)
     return root, tasks, artifacts
 
 

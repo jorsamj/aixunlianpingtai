@@ -6,7 +6,8 @@ const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8'
 const workbench = readFileSync(new URL('../../static/modules/quality-detection-workbench.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const navigation = readFileSync(new URL('../../static/modules/navigation-stability.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
-const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const backendApi = readFileSync(new URL('../../platform_core/deployment_validation_api.py', import.meta.url), 'utf8');
+const backend = readFileSync(new URL('../../platform_core/deployment_validation_service.py', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('collapsed product navigation has only overview, algorithm generation and data center groups', () => {
   const start = app.lastIndexOf('const icon414=');
@@ -137,7 +138,7 @@ test('quality center renders the reviewed feedback and external-intake panel', (
 });
 
 test('backend feedback-evidence promotion is explicit, formal-version-only and success-only', () => {
-  assert.match(backend, /@app\.post\("\/api\/v64\/projects\/\{project_id\}\/deployment-tests\/\{task_id\}\/feedback-evidence"\)/);
+  assert.match(backendApi, /@router\.post\(['"]\/api\/v64\/projects\/\{project_id\}\/deployment-tests\/\{task_id\}\/feedback-evidence['"]\)/);
   assert.match(backend, /只有真实检测成功后才能提交抽检反馈/);
   assert.match(backend, /只有正式算法版本检测可以进入抽检反馈/);
   assert.match(backend, /_online_feedback_version_model_sha256\(version\)/);

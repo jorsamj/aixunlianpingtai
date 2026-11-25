@@ -1,3 +1,4 @@
+from platform_core.conversion_management_service import ConversionManagementService
 import pytest
 import app as api
 from fastapi import HTTPException
@@ -37,7 +38,7 @@ def test_job_cannot_bypass_dictionary_with_disabled_chip(tmp_path,monkeypatch):
     monkeypatch.setattr(api,"_resolve_deploy_source",lambda *a:{"kind":"imported","path":str(source)})
     monkeypatch.setattr(api,"_deploy_resource_by_id",lambda *a:live())
     monkeypatch.setattr(api,"_detect_local_deploy_resource",lambda r:r)
-    monkeypatch.setattr(api,"_deploy_job_dir",lambda *a:pytest.fail("invalid job must fail before staging"))
+    monkeypatch.setattr(ConversionManagementService,"_deploy_job_dir",staticmethod(lambda *a:pytest.fail("invalid job must fail before staging")))
     with pytest.raises(HTTPException) as e:
         api._v39_create_deploy_job_under_version_fence("p",api.DeployJobReq(source_id="s",target="sophon",resource_id="s",
             params={"chip":"bm1684","precision":"fp32","constraint_id":"tpu-mlir-1.30.2","local_vendor_id":"local-s","local_chip_id":"chip-84"}))
@@ -56,7 +57,7 @@ def test_auto_conversion_can_resolve_unique_local_bm1684_without_fp16_override(t
     monkeypatch.setattr(api,"_detect_remote_deploy_resource",lambda r:r)
     monkeypatch.setattr(api,"_v48_quality_reached",lambda j:True)
     submissions=[]
-    monkeypatch.setattr(api,"v39_create_deploy_job",lambda p,b:submissions.append(b) or {"job":{"id":"auto"}})
+    monkeypatch.setattr(ConversionManagementService,"v39_create_deploy_job",staticmethod(lambda p,b:submissions.append(b) or {"job":{"id":"auto"}}))
     result=api._v48_auto_convert_version("p","a",{"id":"v","stored_path":"best.pt"},{"auto_convert_targets":["sophon"]})
     assert not result["errors"] and len(submissions)==1
     assert submissions[0].params["chip"]=="bm1684" and submissions[0].params["precision"]=="fp32"
@@ -100,7 +101,7 @@ def test_existing_onnx_shape_is_the_default_input_contract(tmp_path,monkeypatch)
 def test_catalog_management_metadata_does_not_change_saved_identities_or_external_config(tmp_path,monkeypatch):
     from platform_core.model_artifacts import ModelArtifactRepository
     monkeypatch.setattr(api,"DATA_DIR",tmp_path)
-    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda **_:{"items":[live()]})
+    monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda **_:{"items":[live()]}))
     repo=ModelArtifactRepository(tmp_path);repo.save_conversion_catalog(catalog(),expected_revision=0)
     external=tmp_path/"external_algorithm_publish"/"config.json"
     external.parent.mkdir();external.write_text('{"keep":"mapping"}')
@@ -130,7 +131,7 @@ def test_catalog_management_never_admits_jobs_without_verified_sdk_evidence(tmp_
     monkeypatch.setattr(api,"_resolve_deploy_source",lambda *a:{"kind":"imported","path":str(source)})
     monkeypatch.setattr(api,"_deploy_resource_by_id",lambda *a:resource)
     monkeypatch.setattr(api,"_detect_local_deploy_resource",lambda r:r)
-    monkeypatch.setattr(api,"_deploy_job_dir",lambda *a:pytest.fail("unverified dictionary must never stage a conversion"))
+    monkeypatch.setattr(ConversionManagementService,"_deploy_job_dir",staticmethod(lambda *a:pytest.fail("unverified dictionary must never stage a conversion")))
     with pytest.raises(HTTPException) as error:
         api._v39_create_deploy_job_under_version_fence("p",api.DeployJobReq(source_id="s",target="sophon",resource_id="s",
             params={"local_vendor_id":"local-s","local_chip_id":"chip-84"}))
@@ -146,7 +147,7 @@ def test_catalog_observe_only_reads_never_trigger_resource_detection(tmp_path, m
         calls.append(detect_missing)
         assert detect_missing is False
         return {"items": []}
-    monkeypatch.setattr(api, "v39_list_deploy_resources", resources)
+    monkeypatch.setattr(ConversionManagementService, "v39_list_deploy_resources", staticmethod(resources))
     assert catalog_endpoint("v39_catalog_records")(entity="chips", observe_only=True)["items"]
     assert catalog_endpoint("v39_catalog_record")("chips", "chip-84", observe_only=True)["item"]["id"] == "chip-84"
     assert calls == [False, False]
@@ -154,7 +155,7 @@ def test_catalog_observe_only_reads_never_trigger_resource_detection(tmp_path, m
 
 def test_catalog_crud_api_uses_one_record_operations_and_authoritative_query(tmp_path,monkeypatch):
     monkeypatch.setattr(api,"DATA_DIR",tmp_path)
-    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})
+    monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda:{"items":[]}))
     body={"entity":"vendors","action":"create","operation_id":"api-create","expected_revision":0,"record":{"name":"vendor","template_id":"rknn"}}
     result=catalog_endpoint("v39_catalog_operation")(body)
     replay=catalog_endpoint("v39_catalog_operation")(body)
@@ -176,7 +177,7 @@ def test_original_conversion_admission_holds_catalog_fence_until_durable_accepta
         with pytest.raises(Timeout):
             FileLock(str(tmp_path/"model_artifacts"/".conversion-catalog.lock")).acquire(timeout=0)
         return {"accepted":True}
-    monkeypatch.setattr(api,"_v39_create_deploy_job_under_version_fence",admitted)
+    monkeypatch.setattr(ConversionManagementService,"_v39_create_deploy_job_under_version_fence",staticmethod(admitted))
     assert api.v39_create_deploy_job("p",api.DeployJobReq(source_id="s",target="sophon",resource_id="r"))["accepted"]
 
 
@@ -188,10 +189,10 @@ def test_chip_detection_reuses_resource_owner_once_and_keeps_each_sdk_fact(tmp_p
     good={**live(),"id":"good","name":"remote good","mode":"remote"}
     bad={**live(),"id":"bad","name":"local invalid","mode":"local","status":"missing","message":"API Key 鉴权失败","targets":[],"supported_chips":[],"sophon_probe":{"available":False,"version":"1.29.0","error":"authentication failed"}}
     resources=[good,bad];seen=[]
-    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":resources})
+    monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda:{"items":resources}))
     def detect(identity):
         seen.append(identity);return next(r for r in resources if r["id"]==identity)
-    monkeypatch.setattr(api,"v39_detect_deploy_resource",detect)
+    monkeypatch.setattr(ConversionManagementService,"v39_detect_deploy_resource",staticmethod(detect))
     result=catalog_endpoint("v39_catalog_detect_chip")("chip-84",{})
     assert seen==["good","bad"] and result["capability"]["sdk_ready"]
     facts={f["resource_id"]:f for f in result["capability"]["resources"]}
@@ -211,7 +212,7 @@ def test_missing_job_record_http_allows_rename_and_toggle_but_never_identity_or_
     from fastapi.testclient import TestClient
     from platform_core.model_artifacts import ModelArtifactRepository
     from tests.unit.test_conversion_catalog_crud import seed,missing_job_task
-    monkeypatch.setattr(api,"DATA_DIR",tmp_path);monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path);monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda:{"items":[]}))
     repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo);missing_job_task(tmp_path)
     client=TestClient(api.app)
     client.cookies.set(api.SESSION_COOKIE_NAME,api._CHANGLIAN_AUTH_SESSIONS.issue('isolated-catalog-user'))
@@ -248,14 +249,14 @@ def test_onnx_admission_records_requested_options_and_only_marks_actual_reuse(tm
     monkeypatch.setattr(api,"get_active_ultralytics_env",lambda:{})
     monkeypatch.setattr(api,"get_active_paddle_env",lambda:{})
     monkeypatch.setattr(api,"project_dir",lambda *a:tmp_path)
-    monkeypatch.setattr(api,"_deploy_job_dir",lambda p,j:tmp_path/"jobs"/j)
+    monkeypatch.setattr(ConversionManagementService,"_deploy_job_dir",staticmethod(lambda p,j:tmp_path/"jobs"/j))
     monkeypatch.setattr(api,"_storage_source_fence",lambda:nullcontext())
     jobs=[];staged=[]
     def stage(**kwargs):
         staged.append(kwargs)
         return {"params":RemoteExecutionTransportService._portable_conversion_params("onnx",kwargs["params"])}
     monkeypatch.setattr(api,"_remote_execution_transport_service",lambda:SimpleNamespace(stage_model_conversion=stage))
-    monkeypatch.setattr(api,"_write_deploy_job",lambda p,j:jobs.append(j))
+    monkeypatch.setattr(ConversionManagementService,"_write_deploy_job",staticmethod(lambda p,j:jobs.append(j)))
     monkeypatch.setattr(api,"shared_task_repository",lambda:SimpleNamespace(create=lambda t:None))
     monkeypatch.setattr(api,"shared_task_artifacts",lambda:SimpleNamespace(atomic_write_json=lambda *a:None))
     requested={"precision":"fp32","opset":17,"dynamic":True,"simplify":True,"onnx_source_reused":True}
@@ -308,7 +309,7 @@ def test_version_resolve_reads_only_selected_sql_algorithm_not_project_history(t
                 'versions':[{'id':'v1','stored_path':str(source)},version]}
     monkeypatch.setattr(AlgorithmSqlStore, 'read_one', one)
     monkeypatch.setattr(api, 'get_project', lambda *_:{'id':'p'})
-    monkeypatch.setattr(api, '_deploy_source_models', lambda *_:pytest.fail('version lookup must not browse entire project'))
+    monkeypatch.setattr(ConversionManagementService, '_deploy_source_models', staticmethod(lambda *_:pytest.fail('version lookup must not browse entire project')))
     monkeypatch.setattr(api, 'list_algorithms_internal', lambda *_:pytest.fail('no second full algorithm list'))
     monkeypatch.setattr(api, 'list_models_internal', lambda *_:pytest.fail('no training job.json scan'))
     monkeypatch.setattr(api, '_deploy_resource_by_id', lambda *_:live())
@@ -684,7 +685,7 @@ def test_catalog_router_http_and_original_auth_guard(tmp_path, monkeypatch):
         response = client.get("/api/v39/deploy/catalog/records?observe_only=true")
         assert response.status_code == 401
         monkeypatch.setattr(api, "_verify_browser_session", lambda token: {"username": "isolated"})
-        monkeypatch.setattr(api, "v39_list_deploy_resources", lambda **kwargs: {"items": []})
+        monkeypatch.setattr(ConversionManagementService, "v39_list_deploy_resources", staticmethod(lambda **kwargs: {"items": []}))
         response = client.get("/api/v39/deploy/catalog/records?entity=chips&observe_only=true&page_size=2")
         assert response.status_code == 200
         assert len(response.json()["items"]) <= 2

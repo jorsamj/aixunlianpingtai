@@ -1,3 +1,4 @@
+from platform_core.conversion_management_service import ConversionManagementService
 import pytest
 import app as api
 from datetime import datetime, timezone
@@ -41,10 +42,10 @@ def test_remote_sophon_admission_uses_existing_durable_owner(tmp_path,monkeypatc
     monkeypatch.setattr(api,'get_active_ultralytics_env',lambda:{})
     monkeypatch.setattr(api,'get_active_paddle_env',lambda:{})
     monkeypatch.setattr(api,'project_dir',lambda *a:tmp_path)
-    monkeypatch.setattr(api,'_deploy_job_dir',lambda p,j:tmp_path/'jobs'/j)
+    monkeypatch.setattr(ConversionManagementService,'_deploy_job_dir',staticmethod(lambda p,j:tmp_path/'jobs'/j))
     monkeypatch.setattr(api,'_storage_source_fence',lambda:nullcontext())
     jobs=[];tasks=[];payloads=[]
-    monkeypatch.setattr(api,'_write_deploy_job',lambda p,j:jobs.append(j))
+    monkeypatch.setattr(ConversionManagementService,'_write_deploy_job',staticmethod(lambda p,j:jobs.append(j)))
     monkeypatch.setattr(api,'shared_task_repository',lambda:SimpleNamespace(create=lambda t:tasks.append(t)))
     monkeypatch.setattr(api,'shared_task_artifacts',lambda:SimpleNamespace(atomic_write_json=lambda t,r,p:payloads.append(p)))
     monkeypatch.setattr(api.threading,'Thread',lambda *a,**k:pytest.fail('Sophon must not start a detached sync thread'))
@@ -68,7 +69,7 @@ def test_auto_sophon_does_not_default_to_bm1684x(tmp_path,monkeypatch):
     monkeypatch.setattr(api,'_v48_quality_reached',lambda j:True)
     calls=[]
     monkeypatch.setattr(api,'_detect_remote_deploy_resource',lambda r:calls.append('probe') or {**r,'supported_chips':['bm1684x','bm1688']})
-    monkeypatch.setattr(api,'v39_create_deploy_job',lambda *a,**k:calls.append('create') or {'job':{'id':'bad'}})
+    monkeypatch.setattr(ConversionManagementService,'v39_create_deploy_job',staticmethod(lambda *a,**k:calls.append('create') or {'job':{'id':'bad'}}))
     result=api._v48_auto_convert_version('p','a',{'id':'v','stored_path':'model.pt'},{'auto_convert_targets':['sophon']})
     assert result['errors']
     assert calls==['probe']

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from platform_core.conversion_management_service import ConversionManagementService
+import platform_core.conversion_management_service as conversion_management_owner
 
 import hashlib
 import json
@@ -130,6 +132,7 @@ def test_rknn_hardware_test_creates_agent_only_deployment_task(
     job_id, _digest = seed_rknn_job(project_id)
     transport = FakeBoardTransport()
     monkeypatch.setattr(app_module, "ServiceNodeRepository", ReadyBoardNodes)
+    monkeypatch.setattr(conversion_management_owner, 'ServiceNodeRepository', app_module.ServiceNodeRepository)
     monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: transport)
 
     preflight = client.get(
@@ -169,6 +172,7 @@ def test_rknn_hardware_test_fails_before_task_creation_without_matching_board(
     project_id, _image = seeded_project
     job_id, _digest = seed_rknn_job(project_id, "convert-no-board")
     monkeypatch.setattr(app_module, "ServiceNodeRepository", NoBoardNodes)
+    monkeypatch.setattr(conversion_management_owner, 'ServiceNodeRepository', app_module.ServiceNodeRepository)
 
     preflight = client.get(
         f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight"
@@ -215,6 +219,7 @@ def test_rknn_hardware_preflight_reports_already_verified_without_allowing_new_t
     manifest["status"] = "hardware_verified"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(app_module, "ServiceNodeRepository", ReadyBoardNodes)
+    monkeypatch.setattr(conversion_management_owner, 'ServiceNodeRepository', app_module.ServiceNodeRepository)
 
     preflight = client.get(
         f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight"
@@ -324,7 +329,7 @@ def test_version_deployment_projection_preserves_rknn_hardware_truth(monkeypatch
             "stored_path": "/models/best.pt",
         }],
     }])
-    monkeypatch.setattr(app_module, "_conversion_history_page", lambda _project_id, **_query: {"items": [{
+    monkeypatch.setattr(ConversionManagementService, "_conversion_history_page", staticmethod(lambda _project_id, **_query: {"items": [{
         "id": "job-projection",
         "source_id": "version::algorithm-projection::version-projection",
         "source_name": "best.pt",
@@ -350,7 +355,7 @@ def test_version_deployment_projection_preserves_rknn_hardware_truth(monkeypatch
         "task_status": "SUCCEEDED",
         "worker_id": "agent:rknn",
         "outputs": [],
-    }]})
+    }]}))
 
     body = app_module.v423_version_deployments(
         "project-projection",

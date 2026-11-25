@@ -1,3 +1,4 @@
+from platform_core.conversion_management_service import ConversionManagementService
 import json
 import app as api
 from platform_core.algorithms import save_algorithms
@@ -16,7 +17,7 @@ def test_opt_in_views_use_scoped_repository_without_full_algorithm_or_model_scan
     detail=api.v12_get_algorithm('p','a',asset_view=True,version_id='v')
     assert detail['version']['metrics']['map50']==0 and detail['artifacts']['total']==0
     assert '/secret' not in json.dumps(detail) and 'FROZEN_GT_SENTINEL' not in json.dumps(detail)
-    monkeypatch.setattr(api,'_conversion_history_page',lambda project,**q:{'items':[{'id':'j','status':'done','source_trace':{'algorithm_id':'a','version_id':'v','sha256':'saved-sha'},'params':{'precision':'fp16','secret':'PRIVATE'},'outputs':[]}],'total':1,'page':q['page'],'page_size':q['page_size'],'complete':True,'filter_options':{'target':['onnx'],'chip':['rk3568','token=SECRET_SENTINEL','/private/sdk']}})
+    monkeypatch.setattr(ConversionManagementService,'_conversion_history_page',staticmethod(lambda project,**q:{'items':[{'id':'j','status':'done','source_trace':{'algorithm_id':'a','version_id':'v','sha256':'saved-sha'},'params':{'precision':'fp16','secret':'PRIVATE'},'outputs':[]}],'total':1,'page':q['page'],'page_size':q['page_size'],'complete':True,'filter_options':{'target':['onnx'],'chip':['rk3568','token=SECRET_SENTINEL','/private/sdk']}}))
     history=api.v423_version_deployments('p','a','v',asset_view=True,page_size=20)
     assert history['project_id']=='p' and history['algorithm_id']=='a' and history['version_id']=='v'
     assert history['items'][0]['source_identity']['sha256']=='saved-sha'

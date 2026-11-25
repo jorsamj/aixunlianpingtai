@@ -5,6 +5,8 @@ The numeric evidence publisher and the conversion worker persist through
 uses the same identity, so concurrent progress writes can neither tear the
 record nor silently drop a delivered quality projection.
 """
+from platform_core.conversion_management_service import ConversionManagementService
+import platform_core.conversion_management_service as conversion_management_owner
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +52,7 @@ def _record_lock_paths(monkeypatch):
             return self._lock.__exit__(*exc_info)
 
     monkeypatch.setattr(api, "FileLock", _RecordingLock)
+    monkeypatch.setattr(conversion_management_owner, 'FileLock', api.FileLock)
     return acquired
 
 
@@ -139,8 +142,8 @@ def test_concurrent_app_job_writes_never_tear_or_drop_the_projection(tmp_path, m
 def test_write_deploy_job_uses_the_same_job_json_lock(tmp_path, monkeypatch):
     root = tmp_path / "project"
     monkeypatch.setattr(
-        api, "_deploy_job_dir",
-        lambda project_id, job_id: root / "deployment" / "jobs" / job_id,
+        ConversionManagementService, "_deploy_job_dir",
+        staticmethod(lambda project_id, job_id: root / "deployment" / "jobs" / job_id),
     )
     job_dir = root / "deployment" / "jobs" / "job-1"
     job_file = job_dir / "job.json"

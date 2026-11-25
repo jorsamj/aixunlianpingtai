@@ -1,4 +1,6 @@
 """Regression: the legacy remote uploader must not treat an empty config path as '.'."""
+from platform_core.conversion_management_service import ConversionManagementService
+import platform_core.conversion_management_service as conversion_management_owner
 
 import io
 import json
@@ -26,7 +28,7 @@ def _probe_remote_upload(tmp_path, monkeypatch, params, *, source_override=None)
         "params": params,
         "status": "queued",
     })
-    monkeypatch.setattr(api, "_deploy_job_dir", lambda _project, _job_id: job_dir)
+    monkeypatch.setattr(ConversionManagementService, "_deploy_job_dir", staticmethod(lambda _project, _job_id: job_dir))
     monkeypatch.setattr(api, "_deploy_resource_by_id", lambda _resource_id: {
         "base_url": "https://remote-fixture.invalid", "api_key": "fixture-key",
     })
@@ -34,6 +36,7 @@ def _probe_remote_upload(tmp_path, monkeypatch, params, *, source_override=None)
         api, "request_external_auto_publish_for_conversion_if_enabled",
         lambda **_kwargs: None,
     )
+    monkeypatch.setattr(conversion_management_owner, 'request_external_auto_publish_for_conversion_if_enabled', api.request_external_auto_publish_for_conversion_if_enabled)
 
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:

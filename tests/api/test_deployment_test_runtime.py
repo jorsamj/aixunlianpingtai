@@ -1,3 +1,4 @@
+from platform_core.deployment_validation_service import DeploymentValidationService
 from pathlib import Path
 
 import app as app_module
@@ -19,7 +20,7 @@ def _create_deployment_task(client, seeded_project, tmp_path, monkeypatch, extra
         environment_status="AVAILABLE",
         searched_locations=(str(model),),
     )
-    monkeypatch.setattr(app_module, "_resolve_v61_test_model", lambda *args, **kwargs: resolution)
+    monkeypatch.setattr(DeploymentValidationService, "_resolve_v61_test_model", staticmethod(lambda *args, **kwargs: resolution))
     monkeypatch.setattr(app_module, "resolve_inference_python", lambda *args, **kwargs: str(Path(app_module.sys.executable)))
     payload = {"model_name": "model.onnx", "model_source": "project", "inference_framework": "ultralytics"}
     payload.update(extra_data or {})
@@ -120,9 +121,9 @@ def test_deployment_test_transport_error_does_not_publish_durable_task(
         searched_locations=(str(model),),
     )
     monkeypatch.setattr(
-        app_module,
+        DeploymentValidationService,
         "_resolve_v61_test_model",
-        lambda *args, **kwargs: resolution,
+        staticmethod(lambda *args, **kwargs: resolution),
     )
     monkeypatch.setattr(
         app_module,
@@ -391,7 +392,7 @@ def test_detection_batch_rejects_invalid_identity(client, seeded_project, tmp_pa
         environment_status="AVAILABLE",
         searched_locations=(str(model),),
     )
-    monkeypatch.setattr(app_module, "_resolve_v61_test_model", lambda *args, **kwargs: resolution)
+    monkeypatch.setattr(DeploymentValidationService, "_resolve_v61_test_model", staticmethod(lambda *args, **kwargs: resolution))
     monkeypatch.setattr(app_module, "resolve_inference_python", lambda *args, **kwargs: str(Path(app_module.sys.executable)))
     response = client.post(
         f"/api/v61/projects/{project_id}/deployment-tests",
