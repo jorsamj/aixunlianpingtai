@@ -1541,19 +1541,19 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
 
 
 def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
-    source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
-    start = source.index('@app.post("/api/v12/projects/{project_id}/train/start"')
-    end = source.index("def _v48_resource_key", start)
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "platform_core" / "training_create_api.py").read_text(encoding="utf-8")
+    start = source.index("def start_training(")
+    end = source.index("def build_training_create_router", start)
     block = source[start:end]
 
     split_gate = "if not payload.split_mode:"
-    enqueue = "return _enqueue_explicit_training("
+    enqueue = "return dependencies.enqueue("
 
     for marker in (split_gate, enqueue):
         assert marker in block
     assert block.index(split_gate) < block.index(enqueue)
-    assert "return v12_start_train(project_id, payload, request=request)" in block
-    assert "review_actor_id = _material_governance_actor(request, project_id)[\"actor_id\"]" in block
+    assert 'dependencies.actor_resolver(request, project_id)["actor_id"]' in block
     assert "project_id, payload, review_actor_id=review_actor_id" in block
     assert "_refresh_external_training_algorithm(" not in block
     assert "assert_external_algorithm_master_data_current(" not in block
@@ -1561,7 +1561,9 @@ def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
 
 
 def test_training_create_has_one_external_truth_owner_plus_compatibility_delegate():
-    source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "app.py").read_text(encoding="utf-8")
+    module = (root / "platform_core" / "training_create_api.py").read_text(encoding="utf-8")
 
     enqueue_start = source.index("def _ensure_training_prepare_child(")
     enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
@@ -1579,20 +1581,20 @@ def test_training_create_has_one_external_truth_owner_plus_compatibility_delegat
     assert "assert_external_algorithm_master_data_current(" not in enqueue_block
     assert "resolve_external_training_analysis(" not in enqueue_block
 
-    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start"')
-    v12_end = source.index("def _v48_resource_key", v12_start)
-    v12_block = source[v12_start:v12_end]
-    assert "return _enqueue_explicit_training(" in v12_block
-    assert "_refresh_external_training_algorithm(" not in v12_block
-    assert "assert_external_algorithm_master_data_current(" not in v12_block
-    assert "resolve_external_training_analysis(" not in v12_block
+    # The creation domain moved to platform_core.training_create_api: app.py no
+    # longer defines either URL and registers both through one builder.
+    assert '@app.post("/api/v12/projects/{project_id}/train/start"' not in source
+    assert '@app.post("/api/projects/{project_id}/train/start")' not in source
+    assert "app.include_router(build_training_create_router(" in source
 
-    compatibility_start = source.index('@app.post("/api/projects/{project_id}/train/start")')
-    compatibility_end = source.index("def resolve_server", compatibility_start)
-    compatibility_block = source[compatibility_start:compatibility_end]
-    assert "return v12_start_train(project_id, payload)" in compatibility_block
-    assert "_refresh_external_training_algorithm(" not in compatibility_block
-    assert "assert_external_algorithm_master_data_current(" not in compatibility_block
+    v12_start = module.index("def build_training_create_router")
+    v12_block = module[v12_start:]
+    assert '"/api/v12/projects/{project_id}/train/start", name="v12_start_train"' in v12_block
+    assert '"/api/projects/{project_id}/train/start"' in v12_block
+    assert "return start_training(project_id, payload, dependencies=dependencies)" in v12_block
+    assert "_refresh_external_training_algorithm(" not in module
+    assert "assert_external_algorithm_master_data_current(" not in module
+    assert "resolve_external_training_analysis(" not in module
 
     prepare = (
         Path(__file__).resolve().parents[2] / "platform_core" / "remote_training_tasks.py"

@@ -551,3 +551,45 @@ marker 以让 SQLite 侧共同阻断；还需 rollback 的 `revoked_at` 完成�
 
 **B**：`v62 promote/cancel` 两个统一任务管理端点迁入 `platform_core/task_runtime/management_api.py`（工厂 + 全依赖注入，operationId 与路径/错误码不变，OpenAPI 仍 473 paths）。
 **状态**：A/B 均 CODE_IMPLEMENTED，CI_PENDING；真实 PG 下的窗口/恢复/回滚执行仍 `CUTOVER_NOT_VERIFIED`。
+
+### 9.25 第十四轮（A 真实回归修复 + B mAP50/恢复证据 + C 训练创建域模块化）
+
+- A 代码 SHA：`98fcb290a73515b5dfe35fa91401fda7ac5c0e82`
+- B 代码 SHA：`07dbbc75519e85fc4c264651e580814696edd830`
+- C 代码 SHA：见本轮最后一次提交（`platform_core/training_create_api.py` + app.py 装配）
+
+**A1 初始化递归/隐含写入**：`SqliteAlgorithmRepository` 只保留一个 `ensure_ready`；`_GuardedStore` 不再把
+`ensure_ready` 转发回 Repository（原循环导致任何调用递归）。持久初始化（WAL、Schema bootstrap、历史 JSON 导入、
+备份）改为在 Repository 安装的 `initialization_guard`（同一 switch 锁 + 陈旧写入拒绝）内执行，
+`read_all/read_one/revision` 等触发的初始化同样受保护；ready 判定改用 `_ready_without_init_lock()`，
+不再以文件存在/mtime 为依据；稳态读取不额外取独占锁。同线程重入由 thread-local 深度计数避免 Windows 自死锁。
+
+**A2 外部清理回归**：清理记录 SQL 迁入 `AlgorithmSqlStore`（确认意图 + 算法退役字段 + revision 同一事务），
+`CleanupRepository` 只调用声明的 Provider 操作（`cleanup_*`），不再访问 `_connect` 等私有方法。
+PostgreSQL Provider 明确声明不支持清理域（`unsupported_operations()` 含 `CLEANUP_OPERATIONS`），
+`CleanupRepository` 在非权威 Provider 上直接 fail-closed；U1 准入新增硬条件 `CLEANUP_DOMAIN_MIGRATED`，
+项目仍持有清理回执/待删除标记时拒绝切换，不静默写回 SQLite。
+
+**A3 CI 真实失败**：`cutover-admit` 的准入拒绝恢复退出码 3（新增 `AlgorithmCutoverRefused`，CLI 单独映射），
+`admit_cutover()` 补上缺失的 `maintenance` 参数（原每次维护切换都会 TypeError→退出码 1）；
+legacy `admit_cutover/cutover_transition/revoke_admission` 不再绕过打开的维护窗口；
+PG 集成测试在切换后显式选择 PostgreSQL Provider 并传 `pg.get_uri()`。
+
+**B1–B3 维护合同收口**（与 A 同函数，随 A 提交）：所有阶段写入均为 advisory+row 锁内 CAS（phase/operation/generation），
+`_set_maintenance()` 要求事务空闲并独立提交，避免 savepoint 假持久；`begin_maintenance_window` 改为对“上一操作”做 CAS
+（修复要求历史 operation 等于新 operation）；恢复只允许重放冻结源，导入按 `migration_run` 身份区分
+未创建/RUNNING 拒绝接管/失败受控复活/已完成仅核验（`_begin_run` 支持同 run_id 复活，不新增 id 隐藏冲突）；
+`_local_record_matches` 逐字段对照 durable 行（project/operation/admission/generation/phase/三类摘要/provider/revoked_at），
+marker 清理前必须证明本地记录与权威状态一致；marker 未落库时的采纳增加项目/generation/源目标校验，外来 marker 报 operation 冲突。
+
+**B4 mAP50**：候选在 CASE 内解析（不依赖 WHERE 求值顺序），布尔/对象/数组/非法或非有限字符串、以及缩放后无法表示为
+有限 double 的极端值（上界与下界）一律跳过，取首个合法有限值；SQLite 端用 Decimal 对齐同一量级规则，候选顺序、
+>1 不缩放、NULLS LAST 不变。
+
+**C 训练创建域模块化**：新增 `platform_core/training_create_api.py`（`TrainReq`、`validate_train_request`、
+`start_training` 编排入口、`build_training_create_router` 两条 URL），app.py 只做依赖装配
+（`TrainingCreateDependencies`）并保留进程内 `v12_start_train` 绑定；路径/方法/权限/响应/错误码与
+“外部母数据预检延后到 TRAINING_PREPARE”合同不变；新模块不反向 import app。
+源码守卫测试改为检查新属主，并断言 app.py 不再定义这两个 URL。
+
+**状态**：A/B/C 均 CODE_IMPLEMENTED，CI_PENDING；U1 仍为 CUTOVER_NOT_VERIFIED，PG 清理域正式切换继续阻断。
