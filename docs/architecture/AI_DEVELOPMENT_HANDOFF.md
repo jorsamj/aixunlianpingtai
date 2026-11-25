@@ -256,3 +256,7 @@ Task reader_view若因证据缺失/大小限制不能提供算法身份，原生
 ## 2026-11-25 P0-01C 最终定向收口
 
 实现 SHA：`b8c61ec6d0218ee1958aee82ec9aeafec015b9e7`（起点 `8d2c7fe9486f547c6758491e8997f68959aa9707`）。开发 `FUNCTIONAL_COMPLETE` / 验收 `CI_PENDING`；本机只做语法/静态/Git 核验，运行期和生产未验。中央单槽恢复绑定原节点、Assignment、attempt、worker、GPU/CPU、ProcessIdentity；Runner 未启动证明与身份未知分开，未知不得 finish；中央结算使用单一事务快照。测试合同与边界见 [本轮记录](P0_01C_FINAL_TARGETED_CLOSEOUT_20261125.md)。准确最终 SHA 与一次性 CI 快照见交付消息。无已知源码阻断，下一步交 GPT 独立审计；本轮到此停止。
+
+## 2026-11-25 资源准入与安全 Requeue
+
+P0-01C 已结束：用户独立核验基线 aaeebd06c608ab58b2317767dacff2351556606b 的 22 个 PR workflow 全部 SUCCESS。新实现 13a5cecf79d3ca677929e0f77c356cab19c56e0a 补齐资源规划→Agent 未启动证明→中央原子退回→原 Assignment 幂等回执→按节点等待/其他节点选择。保留原 TaskRuntime attempt、Owner、Hold 和 job.json 栅栏，无新 schema。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；本机仅源码/语法/静态/Git 检查通过，运行期/生产未验。准确最终 SHA 和一次性 CI 快照见交付消息。[合同、测试及网络未知边界](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)。完成后停止，交 GPT 独立审计。

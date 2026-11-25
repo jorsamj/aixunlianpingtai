@@ -193,3 +193,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 ## 2026-11-25 P0-01C 后端定向修复
 
 本轮无 Vue/菜单/页面迁移，既有训练、转换、取消及恢复 API 路径与唯一 Owner 保持一致；仅修复执行身份、启动前失败与中央结算证据核验。实现/测试合同见 [收口记录](P0_01C_FINAL_TARGETED_CLOSEOUT_20261125.md)，开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，本机未运行期验证。
+
+## 2026-11-25 资源等待合同
+
+前端未改。原训练任务 API/详情展示 TaskRuntime 的 QUEUED/resource_waiting 与 resource_wait_reason，等待与 FAILED 分开；TrainingTasks、训练投影及菜单/操作保持。原 Node Executor router 增加按任务和原 Assignment 提交/回查资源等待回执，使用原节点 token，Agent 不访问数据库。实现 13a5cecf79d3ca677929e0f77c356cab19c56e0a，开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，详见[本轮记录](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)。

@@ -69,3 +69,7 @@
 ## 2026-11-25 定向结算合同更新
 
 实现 `b8c61ec6d0218ee1958aee82ec9aeafec015b9e7`：保留现有 Coordinator/Runner 分工，中央单槽恢复和活跃任务 CAS 绑定原节点/worker；状态回查以一个只读事务读取全部执行事实。共享结算核验 Assignment state、slot 与 Hold；训练/转换区分已启动、证明未启动及身份未知。详情见 [P0-01C 收口](P0_01C_FINAL_TARGETED_CLOSEOUT_20261125.md)。本次本机仅语法/静态核验，运行期 CI_PENDING，生产未验；不沿用历史本地测试结论验收新提交。
+
+## 2026-11-25 未启动资源不足的原子退回
+
+实现 13a5cecf79d3ca677929e0f77c356cab19c56e0a：经原节点/lease/Assignment/attempt/GPU 及 no-launch 合同，原子释放 Hold 并回 QUEUED。原 Assignment 持有回执，响应丢失回查该回执，不混用新 attempt；未知则 fenced 保留请求。双槽本地回收需精确 slot 与真实 proof 回执，不因线程退出释放。未重写 Coordinator 或新增状态 Owner。[合同及验证边界](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)，运行期 CI_PENDING、生产未验。

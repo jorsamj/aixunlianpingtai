@@ -147,3 +147,7 @@
 - 任务取消/租约过期/孤儿进程；
 - Supervisor/fencing 端到端；
 - 真实 Linux/NVIDIA 验收前不启用生产多槽。
+
+## 2026-11-25 资源准入语义更新
+
+实现 13a5cecf79d3ca677929e0f77c356cab19c56e0a：原 _hard_admission 保留需求与预留 Owner，增加总容量/有效余量/未知分型、等待原因及其他节点选择。Agent 原心跳补充有效 RAM 与采样时间，原在线 TTL 保留。失败候选不直接推成全局环境/硬件终态。现有 Job 增加已有硬准入测试，无新 workflow。本机仅语法/静态检查，运行期 CI_PENDING；见[本轮记录](RESOURCE_ADMISSION_SAFE_REQUEUE_20261125.md)。
