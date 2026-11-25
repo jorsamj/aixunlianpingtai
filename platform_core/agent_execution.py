@@ -3677,7 +3677,7 @@ def agent_executor_router(
     training_inputs_provider=None,
     model_install_asset_provider=None,
 ):
-    from fastapi import APIRouter, Body, Header, HTTPException
+    from fastapi import APIRouter, Body, Header, HTTPException, Query
 
     router = APIRouter(prefix="/api/v63/node-executor/{node_id}")
 
