@@ -429,7 +429,11 @@ class PostgresAlgorithmRepository:
                 "WHERE project_id=%s AND operation_id=%s FOR UPDATE",
                 (self.project_id, str(operation_id)),
             )
-            op = self._cleanup_row(cursor.fetchone())
+            stored = cursor.fetchone()
+            before = json.dumps(
+                self._cleanup_row(stored) or {}, ensure_ascii=False, sort_keys=True
+            )
+            op = self._cleanup_row(stored)
             if op is None:
                 return {"outcome": "missing", "operation": None}
             row = self._read_one(cursor, str(op["algorithm_id"]))
@@ -451,6 +455,7 @@ class PostgresAlgorithmRepository:
                     "observed_at": str(now),
                 })
             op.update(dict(patch), updated_at=str(now))
+            algorithm_changed = False
             if remove_algorithm:
                 if op["state"] != str(completed_state):
                     return {"outcome": "not_complete", "operation": op}
@@ -458,11 +463,13 @@ class PostgresAlgorithmRepository:
                     "DELETE FROM w5_algorithm.algorithm WHERE project_id=%s AND id=%s",
                     (str(project_id), str(op["algorithm_id"])),
                 )
+                algorithm_changed = True
             elif row:
                 if row.get("external_deletion_status") != op["state"]:
                     row.update(external_deletion_status=op["state"])
                     self._update_algorithm(cursor, row)
-                    self._bump_revision(cursor)
+                    algorithm_changed = True
+            after = json.dumps(op, ensure_ascii=False, sort_keys=True)
             cursor.execute(
                 "UPDATE w5_algorithm.external_algorithm_cleanup SET state=%s,"
                 "payload=%s::jsonb,updated_at=%s::timestamptz "
@@ -472,7 +479,9 @@ class PostgresAlgorithmRepository:
                     op["updated_at"], self.project_id, str(operation_id),
                 ),
             )
-            if remove_algorithm:
+            # A ledger change is migrated content: it must move the revision, or a
+            # later V2 snapshot would differ at the same revision.
+            if algorithm_changed or after != before:
                 self._bump_revision(cursor)
         return {"outcome": "updated", "operation": op}
 
