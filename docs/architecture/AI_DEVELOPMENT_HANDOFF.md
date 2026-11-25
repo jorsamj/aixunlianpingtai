@@ -2,6 +2,20 @@
 
 项目：畅联云算法训练平台；仓库 `jorsamj/aixunlianpingtai`；唯一分支 `feature/external-algorithm-publishing`。
 
+## 当前接续摘要（2026-11-26，Vue 产品化增量）
+
+- 目录 `D:\lab\p2b2-backend`；分支 `feature/external-algorithm-publishing`；FastAPI 模块化单体、既有 SQLite/Repository、同工程独立 Vue `/app/`；旧 `/` 保留。当前任务为后端准确 CI 收口与 Vue 全面产品化，历史阶段停止条款不限制本次明确授权。
+- 起始代码 `11bec61774dd903f01729c82350170eac1512c7b`；CI 修复提交 `89d492f8eada11ff2df3344e5ad1ee63ce5cf1f4`。本批代码候选 `53f413cd7343763aaf0bfeb08a060e6af6417735`；后续三份记录提交只维护文档，含文档最终 HEAD 以本记录所在提交及远端 SHA 为准。整个 Vue 迁移仍 `IN_PROGRESS`，不得据旧结果标作验收通过。
+- 基线完整快照含 48 个 PR/push workflow：37 SUCCESS、7 FAILURE、4 IN_PROGRESS。PR 包装器仅返回 22 项，不能代替 push 前端验收。失败来自 Remote Conversion、Training Create First Open、Release Regression、Algorithm SQL Store、Material Annotation Atomicity、ZIP Import（转换在 PR/push 各一条）。准确失败 Job 已读取，修复测试注入/守卫与独立 Job fixture 范围，未放宽生产合同。其余运行中结果本次未持续等待。
+- 本批实现 `FUNCTIONAL_COMPLETE`：原生标签目录维护与后台统一标签两个关联单元（既有引用预检/正式 GT/MaterialBatch Owner）；源文件 `frontend/src/app/Labels.vue`、`frontend/src/components/LabelEditor.vue`、`frontend/src/components/LabelUnify.vue`、`frontend/src/api/label-management.ts`。原菜单名/顺序及素材库标签按钮位置保持，自动配色默认保留。原预设、标签审计/修复继续明确跳转旧 Owner，所以整个标签菜单为 `NATIVE_PARTIAL`。
+- 静态验证：6 个 A 包修改 Python 文件 AST、两个 Node 守卫语法、Vue `vue-tsc --noEmit`、新增浏览器用例 TS 语法、`git diff --check` 通过。未执行本机测试、应用、浏览器或构建。新增3个 Playwright 合同覆盖目录CRUD/引用拒绝、精确来源/目标/取消/刷新恢复、未知创建及错误任务拒绝；复用现有 Vue CI，不新增 workflow。三档目录与统一面板截图由同 Job 产出，当前尚无本轮渲染证据。验收 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`，不是 CI_PASS。
+- 工作区保留四份用户未跟踪保护文档，未纳入提交；VERSION42.24.592、AGENTS 不改。无生产、GPU、数据、执行模式或数据库切换操作。
+- 当前 CI 记录：上段为真实基线快照；新代码和含文档 HEAD 的准确 PR/push 状态在统一推送后仅取一次，交付消息报告具体最终 SHA，不持续等待。未取得结果前不能写 CI_PASS，当前无新候选运行验收结论。
+- 下一阶段可直接执行：按最终 SHA 一次核查实际失败 Job（特别 Frontend Runtime 的类型/双构建/离线/浏览器及截图制品）；通过后取得本轮实际渲染证据，再推进标签审计/修复或完整人工标注/AI创建中的独立单元。前者仍旧 Owner，后者不得把旧 DOM/全局 app.js 借入 `/app/`。完整14菜单及具体未完成动作见[功能矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md)，历史产品问题及状态见[保护台账](EXISTING_FEATURE_PRESERVATION.md)。本批不继续后端机械拆分，不重复执行恢复/资源调度/GT 专项。
+- 产品确认：本批未改变菜单分组/名称、核心流程或删除能力，无新增待产品经理批准项；后续重大调整仍须明确确认。
+
+以下为历史阶段证据和决策索引，不代表当前候选验收状态。
+
 ## 当前阶段与准确提交
 
 D2B2-C2B-F1 已实现专用正式 GT 写入屏障与取消后只读对账。详细实现、隔离验证和自动续批接入条件见 [审核工作台](../AI_REVIEW_WORKBENCH_2026_11_06.md#d2b2-c2b-f1-正式-gt-写入屏障与取消对账)。F1 以 `54e35ddb32346e368125f96a886e125f7015cd92` 为基线，最终提交及 CI 状态见交付记录。

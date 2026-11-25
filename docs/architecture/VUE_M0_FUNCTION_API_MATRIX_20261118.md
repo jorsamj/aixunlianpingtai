@@ -1,5 +1,39 @@
 # 功能/API迁移矩阵（M0基线2026-11-18，当前M4-D0）
 
+## 当前增量：标签维护与统一（2026-11-26）
+
+迁移状态与验收分别记录。下列 `NATIVE_COMPLETE` 仅指已实现本行操作闭环，不表示整个菜单完整、CI 通过或视觉验收通过。代码候选与最终 SHA 见[接续入口](AI_DEVELOPMENT_HANDOFF.md)。未改原菜单名、分组及顺序。
+
+|原菜单/操作|旧位置 → 原生位置|原 API / 唯一业务 Owner|迁移状态|旧系统依赖与具体未完成项|功能/视觉验证|
+|---|---|---|---|---|---|
+|标签管理：目录搜索、新增、编辑、别名、颜色/快捷键、删除及引用拒绝|static/app.js newLabel/editLabel/delLabel → app/Labels.vue、components/LabelEditor.vue；素材库原标签按钮保持位置|GET v12 labels；POST /api/projects/{p}/labels；PUT/DELETE v12 labels/{class_id}；MaterialCatalogService/AnnotationGovernanceService、原项目标签与 AnnotationRepository|NATIVE_COMPLETE|快捷标签预设仍由旧页承担；本行不包含预设、审计/修复、逐图 GT 编辑|vue-tsc 静态通过；新增 label-management.spec.ts 复用现有浏览器 CI，未在本机执行；CI_PENDING、UAT_PENDING|
+|标签管理：读取引用统计、选择≤50个来源、显式目标、影响预检、后台统一、取消、刷新恢复及完整日志|static/app.js openLabelBulkUnify414/pollImportRemap414 → components/LabelUnify.vue|GET v54 label-schema；POST labels/unify/preview、labels/unify；GET/POST v62 material-batches/{t}、/{t}/cancel；原 MaterialBatch/TaskRepository/AnnotationRepository|NATIVE_COMPLETE|Full Audit、投影修复与映射修复仍旧 Owner；部分失败/取消不冒充来源已清零；无新逐图结果接口|源码核对原公开任务 source_labels/target_label/retire_sources_on_success；响应未知不自动重发，URL保留请求范围；仅原任务 GET 恢复；CI_PENDING、UAT_PENDING|
+|标签管理：快速预设、审计、修复及历史治理|static/app.js 原标签完整页；新页“标签审计与修复”链接|原 labels/integrity API、material_batches、GT Owner|LEGACY_BRIDGE|完整旧页保留，下一步应原生化审计/修复闭环，不删除入口|本轮仅核对入口源码；实际操作尚未核实|
+
+技术决定：标签目录读写只有本页一份展示状态；专业 GT/候选与持久任务不迁到前端。目录首屏不等待引用统计，统一面板才按需读已有 label-schema，不读取素材全集。统一面板保留原两列来源/目标与影响数量；取消/恢复共享一个可取消任务读取 Owner；无普通操作二次确认，危险删除保留确认和服务端引用保护。依赖不新增，沿用既有同源 request、Element Plus 和离线 Vite 资源闭包。宽度由 Grid/Flex 适配三档桌面，不开发三套页面。
+
+### 当前 14 菜单覆盖摘要
+
+这是已有矩阵及当前原生路由/整页入口的接续索引，不是本轮重新验收全部菜单；未列入新增闭环的功能不据文件存在宣称完成。原 AI算法底座独立演示入口继续另列保留。
+
+|菜单|状态|当前原生位置 / 尚缺操作|
+|---|---|---|
+|总览|LEGACY_BRIDGE|原总览；独立原生总览未完成|
+|质量中心|LEGACY_BRIDGE|原质量中心/治理 Owner，未改|
+|算法库|NATIVE_PARTIAL|app/Algorithms.vue 卡片/CRUD/版本；算法报告、删除/回退等原流程仍保留|
+|训练任务|NATIVE_PARTIAL|TrainingTasks/Create/NativeTrainingReport；完整操作/高级参数仍按原矩阵逐项验收|
+|素材库|NATIVE_PARTIAL|Materials/MaterialLibrary/原生上传与 ZIP 等；正式人工标注、若干治理仍原 Owner|
+|视频切帧|LEGACY_BRIDGE|原视频任务页，尚未原生化|
+|自动标注及清洗|NATIVE_PARTIAL|AiTasks/AiReview 与原批量 GT；创建及清洗仍旧入口，不将任务列表当整个模块完成|
+|标签管理|NATIVE_PARTIAL|本轮目录维护+后台统一；预设/审计/修复仍旧入口|
+|算力与节点|NATIVE_PARTIAL|ServiceNodes 只读总览；配置、环境、诊断仍原入口|
+|模型转换环境|LEGACY_BRIDGE|原环境、资源与字典管理；现有 ConversionCreate/Detail/History 属转换业务，不能据此标环境菜单完成|
+|AI 辅助配置|LEGACY_BRIDGE|原模型/Prompt配置 Owner|
+|存储管理|LEGACY_BRIDGE|原存储源、密钥、空间/缓存管理|
+|平台对接|NATIVE_PARTIAL|PlatformIntegration/ExternalPublish；总开关、同步、连接测试与诊断尚需原流程|
+|畅联云数据|LEGACY_BRIDGE|原数据页，尚未原生化|
+
+
 M4-B1 的项目公共负样本池和训练正负样本选择复用 v61 负样本池、v62 训练选材及原冻结服务。历史算法级操作保留 v1，项目级成员操作使用 v2 回执，恢复状态按登录账号和项目隔离。冻结合并复用原引用幂等机制并校验提交时的证据修订。真实训练、现场和生产验收待确认。详见[接续入口](AI_DEVELOPMENT_HANDOFF.md#m4-b1-项目公共负样本池)。
 
 当前以文末M3-A及M2功能对照及[接续入口](AI_DEVELOPMENT_HANDOFF.md)为准；M1段落为历史范围，不代表M2仍缺少已实现功能。
