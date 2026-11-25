@@ -9,12 +9,16 @@ const integration = readFileSync('static/modules/external-algorithm-platform.js'
 const platform = readFileSync('platform_core/external_algorithm_platform.py', 'utf8');
 
 test('internal create endpoint never asks external platform permission', () => {
-  const start = app.indexOf('def v12_create_algorithm(');
-  const end = app.indexOf('@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")', start);
-  const endpoint = app.slice(start, end);
+  const router = readFileSync('platform_core/algorithm_catalog_api.py', 'utf8');
+  const service = readFileSync('platform_core/algorithm_catalog_service.py', 'utf8');
+  const start = service.indexOf('    def v12_create_algorithm(');
+  const end = service.indexOf('    def v12_get_algorithm(', start);
+  const endpoint = service.slice(start, end);
   assert.ok(start >= 0 && end > start);
+  assert.match(router, /@router\.post\(['"]\/api\/v12\/projects\/\{project_id\}\/algorithms['"]\)/);
+  assert.match(router, /return service\(\)\.v12_create_algorithm\(/);
   assert.doesNotMatch(endpoint, /assert_local_algorithm_create_allowed|_CHANGLIAN_LOGIN_CLIENT|\.sync\(/);
-  assert.match(endpoint, /create_algorithm_asset\(algorithms_file\(project_id\)/);
+  assert.match(endpoint, /create_algorithm_asset\(self\.dependencies\.algorithms_file\(project_id\)/);
   assert.match(algorithms, /"source_type": "LOCAL"/);
 });
 

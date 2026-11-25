@@ -501,11 +501,21 @@ jobs:
           for token in (
               'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED',
               'annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]]',
-              '@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")',
               'train_completed_count',
           ):
               if token not in app:
                   missing.setdefault('app.py', []).append(token)
+          import ast
+          catalog_api = Path('platform_core/algorithm_catalog_api.py').read_text(encoding='utf-8')
+          catalog_service = Path('platform_core/algorithm_catalog_service.py').read_text(encoding='utf-8')
+          catalog_tree = ast.parse(catalog_api)
+          assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'get'
+                     and n.args and isinstance(n.args[0], ast.Constant)
+                     and n.args[0].value == '/api/v12/projects/{project_id}/algorithms/{algorithm_id}'
+                     for n in ast.walk(catalog_tree))
+          assert 'return service().v12_get_algorithm(' in catalog_api
+          assert 'def v12_get_algorithm(' in catalog_service
+          assert 'self.dependencies.get_project(project_id)' in catalog_service
           for token in ('ann420SaveReview', 'saveAndConfirmAnnotationReview420', '暂无已结束训练可统计'):
               if token not in static_app:
                   missing.setdefault('static/app.js', []).append(token)
