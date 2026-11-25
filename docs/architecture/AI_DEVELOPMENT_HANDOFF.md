@@ -274,3 +274,9 @@ B：da45ae7a46458cad0c8ce469f6083ae6c4613c21，算法库目录与版本生命周
 基线 c183ab3d49b82346ce2866468a92fd1bb4a2b8d3 开工一次查询：22 个 PR workflow，20 SUCCESS/2 FAILURE，无其他失败；资源恢复不重复整改。A：832e168d，两项实际静态守卫跟随算法 Router/Service，保留本地创建无外部授权、LOCAL 来源、原创建调用和标签合同。
 
 B：327023ff399263e93b261c68cf08f5c534622bfc，完成素材浏览、数据集目录管理及只读标签/质量投影单元，12 接口迁到 material_catalog_api/contracts/service，原 MaterialRepository/AnnotationRepository、StorageManager、索引生命周期及数据集元数据访问器保持。删除/引用保护、标签写入/合并、人工 GT、AI 审核和既有 material_batches/Picker/负池留原 Owner，未声称全素材域完成。app.py 28,264→28,001 行；直接 HTTP 316→304+新 Router 12，有序静态合同与 13 个业务体比对一致。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；本机仅语法/定向静态/Git 检查，运行期交现有 CI。准确最终 SHA/一次性 CI 快照见交付消息，详见[模块化记录](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。本轮停止，交独立审计。
+
+## 2026-11-25 路由合同、AI 审核与训练业务接续
+
+基线 47b7900b4b1dffc9594b14bff9f7e392269d132b，用户核验 22 个 PR workflow 为 21 SUCCESS / 1 FAILURE。A f68fa3669609304cad0b2a48174d372bac814ef7：两处唯一性测试使用 FastAPI iter_route_contexts，有旧版扁平路由回退；唯一注册、真实 endpoint、OpenAPI、请求模型及私有审核字段断言保留。B 7044815c295777ab335da4526c0f16ba271ca423：AI 创建/查询/草稿/冻结/审核/正式入库/转池/C2-B 33 接口及清洗全生命周期 7 接口迁入两个业务模块。C/最终实现 SHA 见本节所在提交及交付消息：训练管理 11 接口、评测/对比/意见/难样本/补充数据冻结/算法报告 14 接口迁入 training_management 与 training_evaluation。
+
+原 CandidateStore、AnnotationRepository、TaskRuntime、Worker、冻结、GT 屏障、幂等及取消对账 Owner 保留；无新任务体系或数据库。app.py 27,303→23,708 行、直接 HTTP 286→221；112 个业务/辅助函数及 19 个模型 AST、接口有序签名与两个同名选择模型绑定保持。旧守卫和故障注入定位至真实 Owner。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；仅语法/符号/AST/装配/Git 检查，运行期和新增 65 接口有效路由合同交既有 CI。前端、VERSION、AGENTS、四份保护文档和生产未动。剩余与验证边界见[模块记录](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节。统一推送后一次准确完整 SHA CI 快照，停止等待独立审计。

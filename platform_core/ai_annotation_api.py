@@ -43,7 +43,7 @@ def create_ai_annotation_router_2(service: Callable[[], AiAnnotationService], An
     @router.post('/api/v60/projects/{project_id}/annotation-preview')
     def preview_annotation_image(project_id: str, payload: AnnotationTaskCreateReq):
         """Explicit one-image model dry run; never create a task, candidate or GT.
-    
+
         Reuse the same frozen model, prompt, label contract and inference adapter as
         AI_ANNOTATION. A preview is deliberately bounded and opt-in because the
         configured provider may be remote and may charge for each inference.

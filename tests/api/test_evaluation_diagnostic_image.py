@@ -1,4 +1,5 @@
 from __future__ import annotations
+from platform_core.training_evaluation_service import TrainingEvaluationService
 
 import json
 import hashlib
@@ -56,7 +57,7 @@ def test_p2_frozen_evaluation_review_is_only_opinion_and_idempotent(monkeypatch,
     evaluation.update(evaluation_id='e' * 64, task_id='training-v1', model_sha256='f' * 64)
     sample = evaluation['error_samples'][0]
     sample.update(image_id='test-image', image_content_sha256='d' * 64, image_width=120, image_height=80)
-    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *args: (version, {'model_sha256': 'f' * 64, 'training_task_id': 'training-v1'}))
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_evaluation_context', staticmethod(lambda *args: (version, {'model_sha256': 'f' * 64, 'training_task_id': 'training-v1'})))
     repository = OnlineFeedbackRepository(root)
     monkeypatch.setattr(platform, '_online_feedback_repository', lambda _: repository)
     before = image.read_bytes()
@@ -103,7 +104,7 @@ def test_p2_sample_pages_distinguish_missing_evidence_and_never_rescore(monkeypa
         sample_outcomes=[{'image': f'{i}.jpg', 'image_id': str(i), 'image_content_sha256': 'f' * 64,
                           'tp_count': 1 if i == 0 else 0, 'fp_count': 0, 'fn_count': 1 if i else 0}
                          for i in range(3)])
-    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *args: (version, {}))
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_evaluation_context', staticmethod(lambda *args: (version, {})))
     page = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1', issue='fn', limit=1)
     assert page['total'] == 2 and len(page['items']) == 1
     assert page['items'][0]['box_evidence_available'] is False
@@ -134,15 +135,15 @@ def test_p2_deep_comparison_revalidates_both_models_and_rejects_benchmark_drift(
     def context(project_id, algorithm_id, version_id):
         calls.append(version_id)
         return versions[version_id], {'model_sha256': 'd' * 64, 'training_task_id': version_id}
-    monkeypatch.setattr(platform, '_advanced_evaluation_context', context)
-    monkeypatch.setattr(platform, '_advanced_trust_evidence', lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'passed'}]})
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_evaluation_context', staticmethod(context))
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_trust_evidence', staticmethod(lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'passed'}]}))
     result = platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
     assert calls == ['v2', 'v1'] and result['comparison']['comparable'] is True
     assert result['comparison']['sample_cohort_complete'] is False
     versions['v1']['evaluation']['benchmark_scope']['ground_truth_digest'] = 'e' * 64
     result = platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
     assert result['comparison']['comparable'] is False and result['comparison']['metrics'] == {}
-    monkeypatch.setattr(platform, '_advanced_trust_evidence', lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'insufficient_evidence'}]})
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_trust_evidence', staticmethod(lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'insufficient_evidence'}]}))
     assert platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')['comparison']['reason_codes'] == ['benchmark_trust_not_verified']
     versions['v1']['evaluation']['task_id'] = 'wrong'
     with pytest.raises(HTTPException) as denied:

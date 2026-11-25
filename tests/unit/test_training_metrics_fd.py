@@ -1,3 +1,4 @@
+from platform_core.training_management_service import TrainingManagementService
 import os
 import sqlite3
 from pathlib import Path
@@ -32,7 +33,7 @@ def test_training_job_status_keeps_history_opt_in():
     import app
     signature = inspect.signature(app.job_status)
     assert signature.parameters['include_history'].default is False
-    source = inspect.getsource(app.job_status)
+    source = inspect.getsource(TrainingManagementService.job_status)
     assert 'include_history=include_history' in source
 
 

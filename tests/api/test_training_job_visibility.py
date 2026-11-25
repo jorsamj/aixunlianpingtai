@@ -1,4 +1,5 @@
 from __future__ import annotations
+from platform_core.training_management_service import TrainingManagementService
 
 import json
 
@@ -238,8 +239,31 @@ def test_training_job_log_endpoint_uses_bounded_tail_helper():
     import inspect
     import app as app_module
 
-    source = inspect.getsource(app_module.job_log)
+    source = inspect.getsource(TrainingManagementService.job_log)
     assert "_tail_training_log_text(log_file)" in source
     assert "_tail_training_log_text(durable_log)" in source
     assert ".read_text(" not in source
 
+
+
+def test_training_migration_preserves_effective_http_contracts():
+    import re
+    import app as application
+    from types import SimpleNamespace
+    try:
+        from fastapi.routing import iter_route_contexts
+        contexts = list(iter_route_contexts(application.app.routes))
+    except ImportError:
+        contexts = [SimpleNamespace(path=r.path, original_route=r) for r in application.app.routes if hasattr(r, "path")]
+    expected = [('get', '/api/projects/{project_id}/jobs', 'list_jobs', None, 'training_management'), ('get', '/api/v64/projects/{project_id}/training-events', 'v64_training_events', None, 'training_management'), ('get', '/api/projects/{project_id}/jobs/{job_id}', 'job_status', None, 'training_management'), ('get', '/api/projects/{project_id}/jobs/{job_id}/log', 'job_log', None, 'training_management'), ('post', '/api/projects/{project_id}/jobs/{job_id}/stop', 'stop_job', None, 'training_management'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/images/{image_name}', 'evaluation_diagnostic_image_v1', None, 'training_evaluation'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust', 'evaluation_trust_analysis', None, 'training_evaluation'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/samples', 'evaluation_sample_page', None, 'training_evaluation'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/report', 'advanced_evaluation_report', None, 'training_evaluation'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}', 'compare_version_evaluation', None, 'training_evaluation'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/deep-compare/{other_version_id}', 'deep_compare_evaluation', None, 'training_evaluation'), ('get', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/{task_id}/reviewed', 'preview_reviewed_mining', None, 'training_evaluation'), ('post', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/{task_id}/adopt', 'adopt_reviewed_mining', 'FreezeReviewedMiningReq', 'training_evaluation'), ('post', '/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/review', 'review_evaluation_sample', 'EvaluationReviewReq', 'training_evaluation'), ('get', '/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates', 'list_supplement_feedback_candidates', None, 'training_evaluation'), ('post', '/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates/freeze', 'freeze_supplement_feedback_candidates', 'FreezeSupplementFeedbackCandidatesReq', 'training_evaluation'), ('post', '/api/v48/projects/{project_id}/jobs/{job_id}/promote', 'v48_promote_job', None, 'training_management'), ('post', '/api/v48/projects/{project_id}/jobs/{job_id}/pause', 'v48_pause_job', None, 'training_management'), ('post', '/api/v48/projects/{project_id}/jobs/{job_id}/resume', 'v48_resume_job', None, 'training_management'), ('post', '/api/v48/projects/{project_id}/jobs/{job_id}/stop', 'v48_stop_job', None, 'training_management'), ('post', '/api/v48/projects/{project_id}/jobs/batch-delete', 'v48_batch_delete_jobs', 'V48TrainingBatchDeleteReq', 'training_management'), ('delete', '/api/v12/projects/{project_id}/jobs/{job_id}', 'v12_delete_job', None, 'training_management'), ('get', '/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/eligible', 'eligible_hard_sample_materials', None, 'training_evaluation'), ('post', '/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining', 'create_hard_sample_mining', 'HardSampleMiningCreateReq', 'training_evaluation'), ('get', '/api/v49/projects/{project_id}/algorithms/{algorithm_id}/report', 'v49_algorithm_report', None, 'training_evaluation')]
+    schema = application.app.openapi()
+    for method, path, name, payload, owner in expected:
+        operation = schema["paths"][path][method]
+        assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
+        matches = [c.original_route for c in contexts if c.path == path and method.upper() in getattr(c.original_route, "methods", set())]
+        assert len(matches) == 1
+        assert matches[0].endpoint.__module__ == "platform_core." + owner + "_api"
+        if payload:
+            assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/" + payload
+    parameters = schema["paths"]["/api/projects/{project_id}/jobs/{job_id}"]["get"]["parameters"]
+    assert next(p for p in parameters if p["name"] == "include_history")["schema"]["default"] is False

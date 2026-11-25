@@ -231,6 +231,6 @@ jobs:
         shell: bash
         run: |
           python -m platform_core.build_identity --check-version-file VERSION.txt
-          grep -Fq "for item in active_label_options(project_label_items(project))" app.py
+          grep -Fq "for item in active_label_options(self.dependencies.project_label_items(project))" platform_core/ai_annotation_service.py
           grep -Fq "test_canonical_annotation_catalog_excludes_all_inactive_label_shapes" tests/api/test_annotation_task_runtime.py
           git diff --check

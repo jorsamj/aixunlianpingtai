@@ -8529,22 +8529,49 @@ def add_job_to_index(project_id: str, job: Dict[str, Any]):
     write_json(jobs_index_file, jobs[:50])
 
 
-@app.get("/api/projects/{project_id}/jobs")
-def list_jobs(project_id: str, summary_only: bool = False):
-    get_project(project_id)
-    if summary_only:
-        # A card overview never needs to re-project every archived training
-        # task. This path reads the last durable index and overlays recent +
-        # live canonical task truth; the original full endpoint is unchanged.
-        return _v53_fast_jobs_summary(project_id)
-    # GET is a live projection, never a scheduling or legacy archival trigger.
-    # Old queues are maintained independently by the startup maintenance owner.
-    rows = sync_jobs_index(project_id, read_only=True)
-    if not isinstance(rows, list):
-        rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
-    # Algorithm list and similar overview consumers only need display metadata.
-    # Preserve the complete default response for reports and legacy callers.
-    return [_v53_job_summary(row) for row in rows] if summary_only else rows
+from platform_core.training_management_service import TrainingManagementDependencies, TrainingManagementService
+from platform_core.training_management_api import create_training_management_router_1, create_training_management_router_2
+
+
+def _training_management_service() -> TrainingManagementService:
+    return TrainingManagementService(TrainingManagementDependencies(
+        PROCESS_REGISTRY=lambda: PROCESS_REGISTRY,
+        V56_PRIORITY_SCHEME=lambda: V56_PRIORITY_SCHEME,
+        _TRAINING_DURABLE_TERMINAL_STATUSES=lambda: _TRAINING_DURABLE_TERMINAL_STATUSES,
+        _TRAINING_LEGACY_TERMINAL_STATUSES=lambda: _TRAINING_LEGACY_TERMINAL_STATUSES,
+        _TRAINING_STREAM_ACTIVE_STATUSES=lambda: _TRAINING_STREAM_ACTIVE_STATUSES,
+        _cancel_training_prepare_child=lambda *args, **kwargs: _cancel_training_prepare_child(*args, **kwargs),
+        _durable_process_identity=lambda *args, **kwargs: _durable_process_identity(*args, **kwargs),
+        _durable_training_task=lambda *args, **kwargs: _durable_training_task(*args, **kwargs),
+        _parse_dt_value=lambda *args, **kwargs: _parse_dt_value(*args, **kwargs),
+        _pid_alive=lambda *args, **kwargs: _pid_alive(*args, **kwargs),
+        _terminate_pid_tree=lambda *args, **kwargs: _terminate_pid_tree(*args, **kwargs),
+        _v48_all_job_files=lambda *args, **kwargs: _v48_all_job_files(*args, **kwargs),
+        _v48_archive_training_version=lambda *args, **kwargs: _v48_archive_training_version(*args, **kwargs),
+        _v48_dispatch_training_queues=lambda *args, **kwargs: _v48_dispatch_training_queues(*args, **kwargs),
+        _v48_resource_key=lambda *args, **kwargs: _v48_resource_key(*args, **kwargs),
+        _v48_suspend_tree=lambda *args, **kwargs: _v48_suspend_tree(*args, **kwargs),
+        _v53_fast_jobs_summary=lambda *args, **kwargs: _v53_fast_jobs_summary(*args, **kwargs),
+        _v53_job_summary=lambda *args, **kwargs: _v53_job_summary(*args, **kwargs),
+        _v56_normalize_priority=lambda *args, **kwargs: _v56_normalize_priority(*args, **kwargs),
+        _write_job_json=lambda *args, **kwargs: _write_job_json(*args, **kwargs),
+        enrich_job_runtime=lambda *args, **kwargs: enrich_job_runtime(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+        sync_jobs_index=lambda *args, **kwargs: sync_jobs_index(*args, **kwargs),
+        sync_remote_job=lambda *args, **kwargs: sync_remote_job(*args, **kwargs),
+    ))
+
+
+app.include_router(create_training_management_router_1(_training_management_service))
+
+
+def list_jobs(project_id: str, summary_only: bool=False):
+    return _training_management_service().list_jobs(project_id, summary_only)
 
 
 
@@ -8556,265 +8583,39 @@ _TRAINING_STREAM_ACTIVE_STATUSES = (
 
 
 def _training_event_row(project_id: str, task: TaskRecord) -> Dict[str, Any]:
-    """Build the same canonical training display truth used by HTTP reads."""
-    runtime = task_to_public(task)
-    job_file = project_dir(project_id) / "jobs" / task.task_id / "job.json"
-    worker_job = read_json(job_file, {}) if job_file.exists() else {}
-    display = build_training_display_progress(worker_job, runtime)
-    row = dict(runtime)
-    row.update(
-        progress_percent=display["overall_progress"],
-        current_item=display["message"] or runtime.get("current_item"),
-        current_epoch=display["current_epoch"],
-        total_epochs=display["total_epochs"],
-        current_batch=display["current_batch"],
-        total_batches=display["total_batches"],
-        elapsed_seconds=display["elapsed_seconds"],
-        eta_seconds=display["eta_seconds"],
-        phase_progress=display["phase_progress"],
-        telemetry_source=display["telemetry_source"],
-        display_revision=display["revision"],
-        training_display_progress=display,
-    )
-    if isinstance(worker_job.get("training_progress"), dict):
-        row["training_progress"] = worker_job["training_progress"]
-    return row
+    return _training_management_service()._training_event_row(project_id, task)
 
 
-def _training_event_rows(
-    project_id: str,
-    repository: Optional[TaskRepository] = None,
-) -> List[Dict[str, Any]]:
-    """Return canonical display truth for active Durable training tasks."""
-    repo = repository or shared_task_repository()
-    page = repo.list(
-        project_id=project_id,
-        kinds=(TaskKind.TRAINING,),
-        statuses=_TRAINING_STREAM_ACTIVE_STATUSES,
-        limit=100,
-    )
-    return [_training_event_row(project_id, task) for task in page.items]
+def _training_event_rows(project_id: str, repository: Optional[TaskRepository]=None) -> List[Dict[str, Any]]:
+    return _training_management_service()._training_event_rows(project_id, repository)
 
 
 def _training_event_signature(row: Mapping[str, Any]) -> Tuple[Any, ...]:
-    return (
-        row.get("status"),
-        row.get("persisted_status"),
-        row.get("phase"),
-        row.get("progress_percent"),
-        row.get("current_item"),
-        row.get("worker_id"),
-        row.get("resource_wait_reason"),
-        row.get("updated_at"),
-        row.get("finished_at"),
-        row.get("error"),
-        row.get("current_epoch"),
-        row.get("total_epochs"),
-        row.get("current_batch"),
-        row.get("total_batches"),
-        row.get("elapsed_seconds"),
-        row.get("eta_seconds"),
-        row.get("telemetry_source"),
-    )
+    return _training_management_service()._training_event_signature(row)
 
 
 def _training_sse_message(row: Mapping[str, Any]) -> str:
-    payload = json.dumps(dict(row), ensure_ascii=False, separators=(",", ":"))
-    return f"event: training.task\ndata: {payload}\n\n"
+    return _training_management_service()._training_sse_message(row)
 
 
-@app.get("/api/v64/projects/{project_id}/training-events")
 async def v64_training_events(project_id: str, request: Request):
-    get_project(project_id)
-    repository = shared_task_repository()
-
-    async def event_stream():
-        signatures: Dict[str, Tuple[Any, ...]] = {}
-        watched: set[str] = set()
-        last_keepalive = time.monotonic()
-        yield "retry: 2000\n\n"
-
-        while True:
-            if await request.is_disconnected():
-                return
-
-            rows = _training_event_rows(project_id, repository)
-            active_ids = {str(row.get("task_id") or "") for row in rows}
-            announced_ids = getattr(event_stream, "_announced_ids", None)
-            if announced_ids != active_ids:
-                ready = json.dumps(
-                    {"task_ids": sorted(active_ids), "interval_ms": 750},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                yield f"event: training.ready\ndata: {ready}\n\n"
-                event_stream._announced_ids = set(active_ids)
-            for row in rows:
-                task_id = str(row.get("task_id") or "")
-                if not task_id:
-                    continue
-                watched.add(task_id)
-                signature = _training_event_signature(row)
-                if signatures.get(task_id) == signature:
-                    continue
-                signatures[task_id] = signature
-                yield _training_sse_message(row)
-
-            # A task disappears from the active query exactly when it becomes
-            # terminal. Read that task once so the browser receives its final
-            # durable state before this stream stops watching it.
-            for task_id in tuple(watched - active_ids):
-                task = repository.get(task_id)
-                if (
-                    task is not None
-                    and task.project_id == project_id
-                    and task.kind is TaskKind.TRAINING
-                ):
-                    row = _training_event_row(project_id, task)
-                    signature = _training_event_signature(row)
-                    if signatures.get(task_id) != signature:
-                        signatures[task_id] = signature
-                        yield _training_sse_message(row)
-                watched.discard(task_id)
-
-            now = time.monotonic()
-            if now - last_keepalive >= 15:
-                yield ": keepalive\n\n"
-                last_keepalive = now
-            await asyncio.sleep(0.75)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return await _training_management_service().v64_training_events(project_id, request)
 
 
-@app.get("/api/projects/{project_id}/jobs/{job_id}")
-def job_status(project_id: str, job_id: str, include_history: bool = False):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    get_project(project_id)
-    job_file = project_dir(project_id) / "jobs" / job_id / "job.json"
-    if not job_file.exists():
-        raise HTTPException(status_code=404, detail="训练任务不存在")
-    job = read_json(job_file, {})
-    if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
-        job = sync_remote_job(project_id, job_id)
-    job = enrich_job_runtime(project_id, job, allow_version_archive=False)
-    # Detail refresh is a single-task read projection. Do not dispatch queues or
-    # rebuild the global jobs index from a 1.5s detail/log poll.
-    # Return the enriched in-memory projection. Re-reading the worker-owned
-    # job.json here would discard canonical task truth we just overlaid.
-    response = dict(job)
-    from platform_core.training_metrics import read_metrics
-    task = _durable_training_task(project_id, job_id)
-    metrics_path = (shared_task_artifacts().artifact_path(job_id, "training-metrics.sqlite3")
-                    if task else job_file.parent / "training-metrics.sqlite3")
-    response["runtime_metrics"] = read_metrics(metrics_path, include_history=include_history)
-    if task:
-        artifacts = shared_task_artifacts()
-        response["resolved_resources"] = artifacts.read_json(
-            job_id,
-            "resolved-resources.json",
-            default=response.get("resolved_resources") or {},
-        )
-        response["runtime_resources"] = artifacts.read_json(
-            job_id,
-            "runtime-resources.json",
-            default=response.get("runtime_resources") or {},
-        )
-    return response
+def job_status(project_id: str, job_id: str, include_history: bool=False):
+    return _training_management_service().job_status(project_id, job_id, include_history)
 
 
-def _tail_training_log_text(path: Path, max_chars: int = 120000) -> str:
-    """Read only a bounded suffix of a potentially very large UTF-8 task log."""
-    try:
-        size = int(path.stat().st_size)
-        if size <= 0:
-            return ""
-        # UTF-8 uses at most four bytes per code point. Reading this many bytes
-        # is enough to recover max_chars from the suffix without scanning the
-        # entire log. Starting inside a multibyte sequence can lose at most one
-        # partial code point because decoding is intentionally best-effort.
-        max_bytes = max(4096, int(max_chars) * 4 + 4)
-        start = max(0, size - max_bytes)
-        with path.open("rb") as stream:
-            stream.seek(start)
-            value = stream.read(max_bytes)
-        return value.decode("utf-8", errors="ignore")[-int(max_chars):].strip()
-    except (OSError, ValueError):
-        return ""
+def _tail_training_log_text(path: Path, max_chars: int=120000) -> str:
+    return _training_management_service()._tail_training_log_text(path, max_chars)
 
 
-@app.get("/api/projects/{project_id}/jobs/{job_id}/log", response_class=PlainTextResponse)
 def job_log(project_id: str, job_id: str):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    get_project(project_id)
-    job = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
-    if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
-        job = sync_remote_job(project_id, job_id)
-
-    sections: List[str] = []
-    log_file = project_dir(project_id) / "jobs" / job_id / "train.log"
-    text = _tail_training_log_text(log_file)
-    if text:
-        sections.append(text)
-
-    # Durable task logs contain scheduler/worker/remote-execution lifecycle
-    # evidence that train.log alone cannot provide. Merge them into the same
-    # read-only endpoint so the frontend has one canonical log source.
-    task = _durable_training_task(project_id, job_id)
-    if task is not None and str(task.log_ref or "").strip():
-        try:
-            durable_log = shared_task_artifacts().artifact_path(job_id, task.log_ref)
-            text = _tail_training_log_text(durable_log)
-            if text and (not sections or text != sections[-1]):
-                sections.append("[任务运行日志]\n" + text)
-        except (OSError, ValueError):
-            pass
-
-    if not sections:
-        return "暂无日志"
-    return "\n\n".join(sections)[-120000:]
+    return _training_management_service().job_log(project_id, job_id)
 
 
-@app.post("/api/projects/{project_id}/jobs/{job_id}/stop")
 def stop_job(project_id: str, job_id: str):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    get_project(project_id)
-    job_file = project_dir(project_id) / "jobs" / job_id / "job.json"
-    job = read_json(job_file, {})
-    if job.get("target") == "remote" and job.get("remote"):
-        try:
-            remote = job["remote"]
-            headers = {"X-API-Key": remote.get("api_key", "")}
-            requests.post(f"{remote['base_url'].rstrip('/')}/api/remote/jobs/{remote['job_id']}/stop", headers=headers, timeout=8)
-        except Exception:
-            pass
-        job.update({"status": "stopped", "message": "用户手动停止远程训练", "updated_at": now_iso()})
-        _write_job_json(job_file, job); sync_jobs_index(project_id)
-        return {"ok": True}
-    proc = PROCESS_REGISTRY.get(job_id)
-    if proc:
-        proc.terminate(); time.sleep(1)
-        if proc.poll() is None:
-            proc.kill()
-        PROCESS_REGISTRY.pop(job_id, None)
-    elif job.get("pid") and _pid_alive(job.get("pid")):
-        if not _terminate_pid_tree(job.get("pid")):
-            return {"ok": False, "message": "训练进程仍在运行，但平台无法停止它。请查看任务 PID 并手工结束。"}
-    else:
-        return {"ok": False, "message": "训练进程已经结束，当前没有可停止的进程"}
-    job.update({"status": "stopped", "message": "用户手动停止", "finished_at": now_iso(), "updated_at": now_iso()})
-    _write_job_json(job_file, job)
-    sync_jobs_index(project_id)
-    return {"ok": True}
+    return _training_management_service().stop_job(project_id, job_id)
 
 
 def sync_remote_job(project_id: str, job_id: str) -> Dict[str, Any]:
@@ -9970,13 +9771,10 @@ class ConfirmIterationActionReq(BaseModel):
     action: Literal["supplement_data", "continue_training", "business_validation", "manual_review"]
 
 
-class SupplementFeedbackCandidateSelection(BaseModel):
-    feedback_id: str
-    candidate_digest: str
+from platform_core.training_evaluation_contracts import SupplementFeedbackCandidateSelection
 
 
-class FreezeSupplementFeedbackCandidatesReq(BaseModel):
-    candidates: List[SupplementFeedbackCandidateSelection] = Field(min_length=1, max_length=500)
+from platform_core.training_evaluation_contracts import FreezeSupplementFeedbackCandidatesReq
 
 
 def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id: str):
@@ -10009,675 +9807,116 @@ class _EvaluationSnapshotIndexError(ValueError):
 
 
 def _evaluation_snapshot_preview_path(project_id, version, evaluation, snapshot_id):
-    """Resolve missing legacy project Snapshot from its exact durable TRAINING task.
-
-    Read-only: never reconstruct from today's materials, write a project file,
-    or relax the downstream frozen Test/image-byte verification.
-    """
-    canonical = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
-    if canonical.is_file():
-        return canonical, False
-    if canonical.exists() or canonical.is_symlink():
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结快照路径不是有效文件')
-    lineage = version.get('training_lineage') or {}
-    ids = [
-        str(value).strip() for value in (
-            evaluation.get('task_id'), version.get('job_id'),
-            lineage.get('task_id') if isinstance(lineage, dict) else None,
-        ) if value
-    ]
-    if not ids:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '冻结快照文件不存在')
-    if len(set(ids)) != 1:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结评测与训练任务身份冲突')
-    if version.get('snapshot_id') and str(version['snapshot_id']).lower() != snapshot_id:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '算法版本冻结快照身份不一致')
-    task_id = ids[0]
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '历史任务身份不可验证')
-    task = shared_task_repository().get(task_id)
-    if task is None or str(task.project_id) != str(project_id) or task.kind is not TaskKind.TRAINING:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '未找到同项目的可信训练任务')
-    candidate = shared_task_artifacts().artifact_path(task_id, 'snapshot.json')
-    if (candidate.is_symlink() or candidate.parent.is_symlink()
-            or not candidate.is_file()):
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '训练任务原始冻结快照不存在')
-    return candidate, True
+    return _training_evaluation_service()._evaluation_snapshot_preview_path(project_id, version, evaluation, snapshot_id)
 
 
 def _evaluation_snapshot_identity_index(path: Path, snapshot_id: str, *, verify_digest=False):
-    """Return one bounded, immutable identity projection for a frozen Snapshot.
-
-    The cache owns only parsed Snapshot metadata. It never caches Material rows,
-    provider objects, decoded images, or response bytes. File stat identity makes
-    replacement invalidate the projection while every response still verifies
-    the selected material and actual file SHA256.
-    """
-    try:
-        stat = path.stat()
-    except OSError as error:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '冻结快照文件不存在') from error
-    key = (str(path.resolve()), ('verified:' if verify_digest else '') + snapshot_id,
-           int(stat.st_mtime_ns), int(stat.st_size))
-    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
-        cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
-        if cached is not None:
-            _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
-            return cached
-    snapshot = read_json(path, {})
-    if not isinstance(snapshot, dict) or snapshot.get('snapshot_id') != snapshot_id:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结快照与评测身份不一致')
-    if verify_digest:
-        from platform_core.snapshots import snapshot_content_matches_identity
-        if not snapshot_content_matches_identity(snapshot, snapshot_id):
-            raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '训练任务冻结快照内容摘要校验失败')
-    ids = snapshot.get('test_image_ids')
-    if ids is None and isinstance(snapshot.get('ids'), dict):
-        ids = snapshot['ids'].get('test')
-    test_ids = tuple(dict.fromkeys(str(value) for value in (ids or []) if str(value)))
-    if not test_ids or len(test_ids) > 30000:
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结测试集身份无法验证')
-    test_id_set = frozenset(test_ids)
-    frozen_rows = tuple(
-        dict(row) for row in (snapshot.get('images') or [])
-        if isinstance(row, dict) and str(row.get('image_id') or '') in test_id_set
-    )
-    frozen = {str(row['image_id']): row for row in frozen_rows}
-    if len(frozen_rows) != len(test_ids) or len(frozen) != len(test_ids):
-        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结测试集图片身份不完整')
-    stored_names = {}
-    for image_id, row in frozen.items():
-        stored_name = str(row.get('stored_name') or '')
-        if stored_name:
-            stored_names.setdefault(stored_name, []).append(image_id)
-    result = {
-        'test_ids': test_ids,
-        'frozen': frozen,
-        'stored_names': {name: tuple(values) for name, values in stored_names.items()},
-        'all_have_stored_name': len(stored_names) == len(test_ids),
-    }
-    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
-        for old_key in tuple(_EVALUATION_SNAPSHOT_INDEX_CACHE):
-            if old_key[0] == key[0] and old_key != key:
-                _EVALUATION_SNAPSHOT_INDEX_CACHE.pop(old_key, None)
-        _EVALUATION_SNAPSHOT_INDEX_CACHE[key] = result
-        _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
-        while len(_EVALUATION_SNAPSHOT_INDEX_CACHE) > _EVALUATION_SNAPSHOT_INDEX_LIMIT:
-            _EVALUATION_SNAPSHOT_INDEX_CACHE.popitem(last=False)
-    return result
+    return _training_evaluation_service()._evaluation_snapshot_identity_index(path, snapshot_id, verify_digest=verify_digest)
 
 
 def _evaluation_bundle_identity_index(path: Path, snapshot_id: str):
-    """Share the bounded metadata cache; never cache files or provider state."""
-    try:
-        stat = path.stat()
-    except OSError:
-        return {}
-    key = (str(path.resolve()), 'bundle:' + snapshot_id, int(stat.st_mtime_ns), int(stat.st_size))
-    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
-        cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
-        if cached is not None:
-            _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
-            return cached
-    manifest = read_json(path, {})
-    if not isinstance(manifest, dict) or manifest.get('snapshot_id') != snapshot_id:
-        return {}
-    members = (manifest.get('splits') or {}).get('test', [])
-    if not isinstance(members, list) or len(members) > 30000:
-        return {}
-    by_name = {}
-    for row in members:
-        if isinstance(row, dict):
-            by_name.setdefault(Path(str(row.get('image_ref') or '')).name, []).append(dict(row))
-    result = {'snapshot_id': snapshot_id, 'by_name': by_name}
-    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
-        for old_key in tuple(_EVALUATION_SNAPSHOT_INDEX_CACHE):
-            if old_key[0] == key[0] and old_key != key:
-                _EVALUATION_SNAPSHOT_INDEX_CACHE.pop(old_key, None)
-        _EVALUATION_SNAPSHOT_INDEX_CACHE[key] = result
-        while len(_EVALUATION_SNAPSHOT_INDEX_CACHE) > _EVALUATION_SNAPSHOT_INDEX_LIMIT:
-            _EVALUATION_SNAPSHOT_INDEX_CACHE.popitem(last=False)
-    return result
+    return _training_evaluation_service()._evaluation_bundle_identity_index(path, snapshot_id)
 
 
 def _evaluation_legacy_name_index(path: Path, repository, test_ids):
-    stat = path.stat()
-    key = (str(path.resolve()), 'legacy:' + str(repository.current_revision()), int(stat.st_mtime_ns), int(stat.st_size))
-    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
-        cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
-        if cached is not None:
-            _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
-            return cached
-    names = {}
-    for offset in range(0, len(test_ids), 500):
-        for row in repository.get_many(test_ids[offset:offset + 500]):
-            names.setdefault(str(row.get('stored_name') or ''), []).append(str(row['id']))
-    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
-        _EVALUATION_SNAPSHOT_INDEX_CACHE[key] = names
-        while len(_EVALUATION_SNAPSHOT_INDEX_CACHE) > _EVALUATION_SNAPSHOT_INDEX_LIMIT:
-            _EVALUATION_SNAPSHOT_INDEX_CACHE.popitem(last=False)
-    return names
+    return _training_evaluation_service()._evaluation_legacy_name_index(path, repository, test_ids)
 
 
-@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/images/{image_name}")
-def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str,
-        expected_evaluation_id: str = '', expected_image_id: str = '', expected_sha256: str = ''):
-    """Read-only frozen Test Split preview, never a source of training candidates.
+from platform_core.training_evaluation_service import TrainingEvaluationDependencies, TrainingEvaluationService
+from platform_core.training_evaluation_api import create_training_evaluation_router_1, create_training_evaluation_router_2, create_training_evaluation_router_3, create_training_evaluation_router_4
 
-    Authorize the version/evaluation and the exact snapshot/material digest
-    before returning bytes. Historical or unbound test snapshots fail closed.
-    """
-    _authorize_business_file_project(project_id)
-    def reject(code, message, status=409, retryable=False):
-        raise HTTPException(status_code=status, detail={
-            'code': code, 'message': message, 'retryable': retryable,
-            'solution': '请稍后重试；持续失败时检查存储连接。' if retryable else '请恢复原始证据；无法恢复时需要重新评测。',
-        })
 
-    def verified_image_response(candidate: Path, evidence_source: str, evidence_sha256: str):
-        media_types = {
-            'JPEG': 'image/jpeg',
-            'PNG': 'image/png',
-            'WEBP': 'image/webp',
-            'BMP': 'image/bmp',
-        }
-        try:
-            from PIL import Image
-            with Image.open(candidate) as decoded:
-                image_format = str(decoded.format or '').upper()
-                width, height = decoded.size
-                decoded.verify()
-            with Image.open(candidate) as decoded:
-                orientation = decoded.getexif().get(274, 1)
-        except (OSError, ValueError):
-            reject('IMAGE_DECODE_FAILED', '评测图片证据无法解码')
-        if image_format not in media_types or width <= 0 or height <= 0:
-            reject('IMAGE_DECODE_FAILED', '评测图片格式不受支持')
-        headers = {
-            'Cache-Control': 'private, no-store',
-            'X-Content-Type-Options': 'nosniff',
-            'X-Evaluation-Image-Format': image_format,
-            'X-Evaluation-Image-Width': str(width),
-            'X-Evaluation-Image-Height': str(height),
-            'X-Evaluation-Evidence-Source': evidence_source,
-            'X-Evaluation-Original-SHA256': evidence_sha256,
-            'X-Evaluation-Snapshot-Source': (
-                'verified-task-artifact' if task_snapshot_fallback else 'project'),
-        }
-        if orientation not in (None, 1):
-            # The scorer records Pillow's raw pixel grid. Strip orientation in
-            # an in-memory display derivative so browser auto-rotation cannot
-            # move boxes; the frozen file and its identity remain unchanged.
-            try:
-                with Image.open(candidate) as decoded:
-                    with decoded.convert('RGBA' if 'A' in decoded.getbands() else 'RGB') as display:
-                        output = BytesIO()
-                        display.save(output, format='PNG', exif=b'')
-            except (OSError, ValueError):
-                reject('IMAGE_DECODE_FAILED', '评测图片证据无法解码')
-            headers.update({'X-Evaluation-Image-Format': 'PNG',
-                            'X-Evaluation-Original-Format': image_format,
-                            'X-Evaluation-Display-Derived': 'true'})
-            return Response(output.getvalue(), media_type='image/png', headers=headers)
-        response_class = FileResponse
-        response_kwargs = {}
-        if evidence_source == 'bundle':
-            from platform_core.training_workspace_http import TrainingEvidenceFileResponse
-            response_class = TrainingEvidenceFileResponse
-            response_kwargs = {'workspace_root': bundle.parent.parent, 'expected_sha256': evidence_sha256}
-        elif evidence_source == 'material':
-            from platform_core.storage.http import StoredSourceFileResponse
-            response_class = StoredSourceFileResponse
-            response_kwargs = {'manager': manager, 'material': material}
-        return response_class(
-            candidate,
-            **response_kwargs,
-            media_type=media_types[image_format],
-            headers=headers,
-        )
+def _training_evaluation_service() -> TrainingEvaluationService:
+    return TrainingEvaluationService(TrainingEvaluationDependencies(
+        _EVALUATION_SNAPSHOT_INDEX_CACHE=lambda: _EVALUATION_SNAPSHOT_INDEX_CACHE,
+        _EVALUATION_SNAPSHOT_INDEX_LIMIT=lambda: _EVALUATION_SNAPSHOT_INDEX_LIMIT,
+        _EVALUATION_SNAPSHOT_INDEX_LOCK=lambda: _EVALUATION_SNAPSHOT_INDEX_LOCK,
+        _EVALUATION_TASK_SNAPSHOT_READ_LOCK=lambda: _EVALUATION_TASK_SNAPSHOT_READ_LOCK,
+        _EvaluationSnapshotIndexError=_EvaluationSnapshotIndexError,
+        _TRAINING_COUNT_PAYLOADS=lambda: _TRAINING_COUNT_PAYLOADS,
+        _TRAINING_JOB_PROJECTION_LOCK=lambda: _TRAINING_JOB_PROJECTION_LOCK,
+        _algorithm_version_for_action=lambda *args, **kwargs: _algorithm_version_for_action(*args, **kwargs),
+        _annotation_label_catalog=lambda *args, **kwargs: _annotation_label_catalog(*args, **kwargs),
+        _authorize_business_file_project=lambda *args, **kwargs: _authorize_business_file_project(*args, **kwargs),
+        _online_feedback_repository=lambda *args, **kwargs: _online_feedback_repository(*args, **kwargs),
+        _require_annotation_review_task=lambda *args, **kwargs: _require_annotation_review_task(*args, **kwargs),
+        _storage_source_fence=lambda *args, **kwargs: _storage_source_fence(*args, **kwargs),
+        _successful_training_counts=lambda *args, **kwargs: _successful_training_counts(*args, **kwargs),
+        _testable_version_pt_path=lambda *args, **kwargs: _testable_version_pt_path(*args, **kwargs),
+        _training_history_context=lambda *args, **kwargs: _training_history_context(*args, **kwargs),
+        algorithms_file=lambda *args, **kwargs: algorithms_file(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        list_algorithms_internal=lambda *args, **kwargs: list_algorithms_internal(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        public_annotation_task=lambda *args, **kwargs: public_annotation_task(*args, **kwargs),
+        read_annotations_many=lambda *args, **kwargs: read_annotations_many(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+        storage_manager=lambda *args, **kwargs: storage_manager(*args, **kwargs),
+    ))
 
-    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
-    evaluation = version.get("evaluation") or {}
-    if not isinstance(evaluation, dict) or evaluation.get("status") != "succeeded":
-        raise HTTPException(status_code=404, detail="评测记录不存在")
-    if image_name != Path(image_name).name or '\\' in image_name or not image_name or image_name in {".", ".."}:
-        raise HTTPException(status_code=404, detail="评测图片不存在")
-    matches = []
-    for evidence_key in ('sample_evidence', 'error_samples', 'sample_outcomes'):
-        matches = [row for row in list(evaluation.get(evidence_key) or [])
-                   if isinstance(row, dict) and row.get("image") == image_name]
-        if matches:
-            break
-    if len(matches) > 1:
-        reject('IMAGE_IDENTITY_AMBIGUOUS', '评测样本图片身份不唯一')
-    if not matches:
-        raise HTTPException(status_code=404, detail="图片不属于本版本的冻结评测样本")
-    sample = matches[0]
-    if expected_evaluation_id or expected_image_id or expected_sha256:
-        if (not re.fullmatch(r'[0-9a-f]{64}', expected_evaluation_id)
-                or not re.fullmatch(r'[0-9a-f]{64}', expected_sha256)
-                or expected_evaluation_id != evaluation.get('evaluation_id')
-                or expected_sha256 != sample.get('image_content_sha256')
-                or (expected_image_id and expected_image_id != str(sample.get('image_id') or ''))):
-            reject('EVALUATION_IDENTITY_CHANGED', '报告冻结评测或图片身份已变化，请刷新当前版本')
-    snapshot_id = str(evaluation.get("snapshot_id") or "").lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
-        reject('SNAPSHOT_MISSING', '历史评测缺少可验证的冻结快照')
-    try:
-        path, task_snapshot_fallback = _evaluation_snapshot_preview_path(
-            project_id, version, evaluation, snapshot_id)
-        if task_snapshot_fallback:
-            with _EVALUATION_TASK_SNAPSHOT_READ_LOCK:
-                snapshot_index = _evaluation_snapshot_identity_index(
-                    path, snapshot_id, verify_digest=True)
-        else:
-            snapshot_index = _evaluation_snapshot_identity_index(path, snapshot_id)
-    except _EvaluationSnapshotIndexError as error:
-        reject(error.code, error.message)
-    test_ids = snapshot_index['test_ids']
-    frozen = snapshot_index['frozen']
-    task_id = str(evaluation.get('task_id') or version.get('job_id') or '')
-    evaluated_hash = str(sample.get('image_content_sha256') or '').lower()
-    bundle = None
-    manifest = {}
-    if re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
-        bundle = shared_task_artifacts().artifact_path(task_id, 'work/bundle').resolve()
-        if not (bundle / 'manifest.json').is_file():
-            bundle = shared_task_artifacts().artifact_path(task_id, 'evidence/bundle').resolve()
-        manifest_path = bundle / 'manifest.json'
-        manifest = _evaluation_bundle_identity_index(manifest_path, snapshot_id)
-        if manifest.get('snapshot_id') != snapshot_id:
-            bundle = shared_task_artifacts().artifact_path(task_id, 'evidence/bundle').resolve()
-            manifest = _evaluation_bundle_identity_index(bundle / 'manifest.json', snapshot_id)
-            if manifest.get('snapshot_id') != snapshot_id:
-                manifest = {}
-    # V3 frozen snapshots carry stored_name. Resolve a unique frozen ID
-    # before querying MaterialRepository; legacy snapshots use bounded reads.
-    repository = MaterialRepository(project_dir(project_id))
-    stable_id = str(sample.get('image_id') or '')
-    if stable_id and stable_id not in frozen:
-        reject('IMAGE_NOT_IN_SNAPSHOT', '评测图片不属于冻结测试集')
-    if stable_id:
-        selected_ids = [stable_id]
-    else:
-        # Historical samples have no stable ID. A filename stem is not an
-        # identity: it may collide with a different frozen Image ID. Prefer
-        # proven evaluated Bundle identity, then unique frozen stored_name.
-        stored_ids = list(snapshot_index['stored_names'].get(image_name, ()))
-        if manifest.get('by_name', {}).get(image_name):
-            # Portable training bundles rename members to {image_id}.{ext}.
-            # Old evaluation rows did not persist image_id, so a strict
-            # stored_name-only lookup rejects valid archived evidence. Recover
-            # through the bundle only when its snapshot, member identity and
-            # source/evaluated hashes form a complete proof chain.
-            portable = [
-                row for row in manifest.get('by_name', {}).get(image_name, [])
-                if isinstance(row, dict)
-                and Path(str(row.get('image_ref') or '')).name == image_name
-                and str(row.get('image_id') or '') in frozen
-            ]
-            if len(portable) > 1:
-                reject('IMAGE_IDENTITY_AMBIGUOUS', '归档评测图片身份不唯一')
-            if len(portable) != 1:
-                reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
-            portable_id = str(portable[0]['image_id'])
-            source_hash = str(portable[0].get('source_content_sha256') or '').lower()
-            member_hash = str(portable[0].get('content_sha256') or '').lower()
-            expected_source = str(frozen[portable_id].get('content_sha256') or '').lower()
-            if (not re.fullmatch(r'[0-9a-f]{64}', source_hash)
-                or source_hash != expected_source
-                or not re.fullmatch(r'[0-9a-f]{64}', member_hash)
-                or (evaluated_hash and evaluated_hash != member_hash)):
-                reject('IMAGE_HASH_MISMATCH', '归档评测图片与冻结身份不一致')
-            selected_ids = [portable_id]
-        elif len(stored_ids) > 1:
-            reject('IMAGE_IDENTITY_AMBIGUOUS', '冻结图片文件名不唯一')
-        elif len(stored_ids) == 1:
-            selected_ids = stored_ids
-        else:
-            if snapshot_index['all_have_stored_name']:
-                reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
-            # Old Snapshots without stored_name can still recover a real image,
-            # but only through an exact Material stored_name match below.
-            selected_ids = _evaluation_legacy_name_index(path, repository, test_ids).get(image_name, [])
-            if len(selected_ids) > 1:
-                reject('IMAGE_IDENTITY_AMBIGUOUS', '图片同名，无法唯一绑定冻结身份')
-    material_rows = []
-    for offset in range(0, len(selected_ids), 500):
-        material_rows.extend(repository.get_many(selected_ids[offset:offset + 500]))
-    candidates = [row for row in material_rows if str(row.get('id') or '') in frozen
-                  and (len(selected_ids) == 1 or str(row.get('stored_name') or '') == image_name)]
-    if len(candidates) > 1:
-        reject('IMAGE_IDENTITY_AMBIGUOUS', '图片同名，无法唯一绑定冻结身份')
-    image_id = selected_ids[0] if len(selected_ids) == 1 else str(candidates[0]['id']) if candidates else ''
-    if not image_id:
-        reject('ORIGINAL_IMAGE_MISSING', '原始图片索引已不存在')
-    expected = str(frozen[image_id].get('content_sha256') or '').lower()
-    if not re.fullmatch(r'[0-9a-f]{64}', expected):
-        reject('SNAPSHOT_INCOMPLETE', '冻结图片缺少有效 SHA256')
-    if not evaluated_hash:
-        bound_members = [row for row in manifest.get('by_name', {}).get(image_name, [])
-                         if isinstance(row, dict) and str(row.get('image_id') or '') == image_id
-                         and Path(str(row.get('image_ref') or '')).name == image_name]
-        if len(bound_members) == 1:
-            member = bound_members[0]
-            if str(member.get('source_content_sha256') or '').lower() == expected:
-                member_hash = str(member.get('content_sha256') or '').lower()
-                if re.fullmatch(r'[0-9a-f]{64}', member_hash):
-                    evaluated_hash = member_hash
-    from platform_core.storage.cache import file_sha256
-    # Prefer the actual evaluated portable bytes. Normalization or label-scope
-    # redaction can legitimately make their hash differ from the original.
-    # Both source and evaluated hashes must be bound by the frozen manifest.
-    preview_path = None
-    if bundle is not None and manifest:
-        if manifest.get('snapshot_id') == snapshot_id:
-            members = [row for row in manifest.get('by_name', {}).get(image_name, [])
-                       if isinstance(row, dict) and str(row.get('image_id') or '') == image_id
-                       and Path(str(row.get('image_ref') or '')).name == image_name]
-            if len(members) == 1:
-                member = members[0]
-                ref = str(member.get('image_ref') or '')
-                candidate = (bundle / ref).resolve()
-                preview_root = bundle
-                if not candidate.is_file():
-                    retained = shared_task_artifacts().artifact_path(task_id, 'evidence/bundle').resolve()
-                    candidate = (retained / ref).resolve()
-                    preview_root = retained
-                member_hash = str(member.get('content_sha256') or '').lower()
-                if (candidate.is_relative_to(preview_root / 'dataset' / 'images' / 'test')
-                    and str(member.get('source_content_sha256') or '').lower() == expected
-                    and re.fullmatch(r'[0-9a-f]{64}', member_hash)
-                    and (not evaluated_hash or evaluated_hash == member_hash)
-                    and candidate.is_file()):
-                    if file_sha256(candidate) != member_hash:
-                        reject('IMAGE_HASH_MISMATCH', '已归档评测图片内容发生变化')
-                    preview_path = candidate
-    if preview_path is not None:
-        return verified_image_response(preview_path, 'bundle', member_hash)
-    if evaluated_hash and evaluated_hash != expected:
-        reject('ORIGINAL_IMAGE_MISSING', '本次评测使用了归一化图片，其原始评测字节已缺失')
-    manager = storage_manager(project_id)
-    material = candidates[0] if candidates else None
-    if material is None and hasattr(repository, 'get_by_content_sha256'):
-        material = repository.get_by_content_sha256(expected)
-    if material is None:
-        reject('ORIGINAL_IMAGE_MISSING', '原始图片已不存在，未找到相同 SHA256 的可信对象')
-    if str(material.get('content_sha256') or '').lower() != expected:
-        reject('IMAGE_HASH_MISMATCH', '当前素材与冻结图片内容不同，禁止替代展示')
-    try:
-        resolved = manager.materialize(manager.material(str(material['id'])), read_only=True)
-    except StorageError as error:
-        if error.code in {'SOURCE_CONTENT_CHANGED', 'STORAGE_SHA256_MISMATCH'}:
-            reject('IMAGE_HASH_MISMATCH', '存储对象与冻结图片哈希不同')
-        if error.code in {'MATERIAL_NOT_FOUND', 'STORAGE_OBJECT_NOT_FOUND', 'SOURCE_UNAVAILABLE'}:
-            reject('ORIGINAL_IMAGE_MISSING', '原始图片证据已不存在')
-        if 'DENIED' in error.code or 'AUTH' in error.code or 'CREDENTIAL' in error.code:
-            reject('ACCESS_DENIED', '当前存储凭据无法读取该图片', 403)
-        reject('STORAGE_UNAVAILABLE', '图片存储暂时不可用', 503, True)
-    if file_sha256(Path(resolved.path)) != expected:
-        reject('IMAGE_HASH_MISMATCH', '实际图片字节与冻结 SHA256 不一致')
-    return verified_image_response(Path(resolved.path), 'material', expected)
+
+app.include_router(create_training_evaluation_router_1(_training_evaluation_service))
+
+
+def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str, expected_evaluation_id: str='', expected_image_id: str='', expected_sha256: str=''):
+    return _training_evaluation_service().evaluation_diagnostic_image_v1(project_id, algorithm_id, version_id, image_name, expected_evaluation_id, expected_image_id, expected_sha256)
 
 
 def _advanced_evaluation_context(project_id: str, algorithm_id: str, version_id: str):
-    from platform_core.scenario_models import resolve_scenario_model, ScenarioModelUnavailable
-    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
-    try:
-        model = resolve_scenario_model(project_id, project_dir(project_id), algorithm, version,
-            shared_task_repository(), shared_task_artifacts(), use_list_cache=True)
-    except ScenarioModelUnavailable as error:
-        raise HTTPException(status_code=409, detail=f"SCENARIO_MODEL_INELIGIBLE: {error}") from error
-    model['current_version_id'] = str(algorithm.get('current_version_id') or '')
-    return version, model
+    return _training_evaluation_service()._advanced_evaluation_context(project_id, algorithm_id, version_id)
 
 
 def _advanced_trust_evidence(project_id, algorithm_id, version, model, *, offset=0, limit=20):
-    from platform_core.evaluation_analysis import analyze_evaluation_trust, append_historical_test_independence
-    from platform_core.training_material_usage import TrainingMaterialUsage
-    evaluation = version.get('evaluation') or {}
-    snapshot_id = str(evaluation.get('snapshot_id') or '')
-    snapshot = {}
-    if re.fullmatch(r'[a-f0-9]{64}', snapshot_id):
-        snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
-    analysis = analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
-                                        detail_offset=offset, detail_limit=limit)
-    ancestry = (version.get('training_lineage') or {}).get('model_ancestry') or []
-    return append_historical_test_independence(
-        analysis, snapshot, TrainingMaterialUsage(shared_task_repository()), project_id, algorithm_id,
-        offset=offset, limit=limit,
-        parent_task_ids=[str(item.get('task_id') or '') for item in ancestry if isinstance(item, dict) and item.get('task_id')])
+    return _training_evaluation_service()._advanced_trust_evidence(project_id, algorithm_id, version, model, offset=offset, limit=limit)
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust')
-def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: str,
-                              offset: int = 0, limit: int = 20):
-    if offset < 0 or not 1 <= limit <= 50:
-        raise HTTPException(status_code=422, detail="可信度明细分页范围无效")
-    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    result = _advanced_trust_evidence(project_id, algorithm_id, version, model, offset=offset, limit=limit)
-    return {'ok': True, 'analysis': result, 'project_id': project_id,
-            'algorithm_id': algorithm_id, 'version_id': version_id}
+def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: str, offset: int=0, limit: int=20):
+    return _training_evaluation_service().evaluation_trust_analysis(project_id, algorithm_id, version_id, offset, limit)
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/samples')
-def evaluation_sample_page(project_id: str, algorithm_id: str, version_id: str,
-                           offset: int = 0, limit: int = 24, issue: str = '', class_id: Optional[int] = None,
-                           sort: str = 'severity', reader_view: bool=False):
-    from platform_core.evaluation_analysis import evaluation_samples
-    if (offset < 0 or not 1 <= limit <= 50 or issue not in {'', 'tp', 'fp', 'fn', 'wrong_class',
-            'localization', 'low_confidence', 'duplicate'} or sort not in {'severity', 'high_confidence_fp'}
-            or class_id is not None and class_id < 0):
-        raise HTTPException(status_code=422, detail='样本筛选或分页范围无效')
-    version, _ = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    evaluation = version.get('evaluation') or {}
-    result = evaluation_samples(evaluation, offset=offset, limit=limit, issue=issue, class_id=class_id, sort=sort)
-    if reader_view:
-        from platform_core.evaluation_reader_views import samples_display
-        result=samples_display(project_id,algorithm_id,version_id,result)
-    return {'ok': True, 'project_id': project_id, 'algorithm_id': algorithm_id, 'version_id': version_id, **result}
+def evaluation_sample_page(project_id: str, algorithm_id: str, version_id: str, offset: int=0, limit: int=24, issue: str='', class_id: Optional[int]=None, sort: str='severity', reader_view: bool=False):
+    return _training_evaluation_service().evaluation_sample_page(project_id, algorithm_id, version_id, offset, limit, issue, class_id, sort, reader_view)
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/report')
-def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: str, reader_view: bool=False, section: str="summary", offset: int=0, limit: int=20, class_id: Optional[int]=None):
-    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    if reader_view:
-        if section not in {'summary','classes','curves','confusion'} or offset<0 or not 1<=limit<=100 or class_id is not None and class_id<0:raise HTTPException(422,detail='评测报告分段范围无效')
-        from platform_core.evaluation_reader_views import report_section
-        return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version_id':version_id,**report_section(version.get('evaluation') or {},section,offset,limit,class_id)}
-    # All-cohort outcomes are available only via the paged sample endpoint.
-    evaluation = {key: value for key, value in (version.get('evaluation') or {}).items()
-                  if key not in {'sample_outcomes', 'sample_evidence'}}
-    public = {key: version[key] for key in ('id', 'version_name', 'iteration_decision',
-              'confirmed_iteration_action', 'supplement_data_candidate_set', 'feedback_adoption_outcome') if key in version}
-    public['evaluation'] = evaluation
-    return {'ok': True, 'algorithm': {'id': algorithm_id, 'current_version_id': model.get('current_version_id', ''), 'versions': [public]}}
+def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: str, reader_view: bool=False, section: str='summary', offset: int=0, limit: int=20, class_id: Optional[int]=None):
+    return _training_evaluation_service().advanced_evaluation_report(project_id, algorithm_id, version_id, reader_view, section, offset, limit, class_id)
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')
 def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str, reader_view: bool=False, offset: int=0, limit: int=20):
-    from platform_core.training_evaluation import compare_evaluations
-    _, current = _algorithm_version_for_action(project_id, algorithm_id, version_id)
-    _, previous = _algorithm_version_for_action(project_id, algorithm_id, other_version_id)
-    result = compare_evaluations(previous.get('evaluation') or {}, current.get('evaluation') or {})
-    before_params = (previous.get('training_lineage') or {}).get('parameters') or {}
-    after_params = (current.get('training_lineage') or {}).get('parameters') or {}
-    # Only public training parameters; never return model paths or storage secrets.
-    allowed = ('epochs', 'imgsz', 'batch', 'workers', 'precision', 'optimizer', 'lr0')
-    before = before_params.get('actual') or {}
-    after = after_params.get('actual') or {}
-    result['parameter_differences'] = {key: {'before': before.get(key), 'after': after.get(key)}
-                                       for key in allowed if before.get(key) != after.get(key)}
-    result.update(source_version_id=other_version_id, current_version_id=version_id)
-    if reader_view:
-        if offset<0 or not 1<=limit<=100:raise HTTPException(422,detail='版本比较分页范围无效')
-        from platform_core.evaluation_reader_views import comparison_display
-        return {'ok':True,'project_id':project_id,'algorithm_id':algorithm_id,'version_id':version_id,'comparison':comparison_display(result,offset,limit)}
-    return {'ok': True, 'comparison': result}
+    return _training_evaluation_service().compare_version_evaluation(project_id, algorithm_id, version_id, other_version_id, reader_view, offset, limit)
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/deep-compare/{other_version_id}')
-def deep_compare_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str,
-                            offset: int = 0, limit: int = 24, category: str = ''):
-    from platform_core.evaluation_analysis import compare_sample_outcomes
-    if offset < 0 or not 1 <= limit <= 50 or category not in {'', 'improved', 'regressed',
-            'persistent_error', 'persistent_correct', 'unknown'} or version_id == other_version_id:
-        raise HTTPException(status_code=422, detail='版本对比范围无效')
-    current, current_model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    previous, previous_model = _advanced_evaluation_context(project_id, algorithm_id, other_version_id)
-    for version, model in ((current, current_model), (previous, previous_model)):
-        evidence = version.get('evaluation') or {}
-        if (evidence.get('model_sha256') != model.get('model_sha256')
-                or evidence.get('task_id') != model.get('training_task_id')):
-            raise HTTPException(status_code=409, detail='评测与正式模型任务身份不一致')
-    trust_checks = [check for version, model in ((current, current_model), (previous, previous_model))
-                    for check in _advanced_trust_evidence(project_id, algorithm_id, version, model)['checks']]
-    blocking = [check['code'] for check in trust_checks if check['status'] == 'risk'
-                or check['code'] == 'identity' and check['status'] != 'passed']
-    if blocking:
-        return {'ok': True, 'comparison': {'comparable': False, 'reason_codes': ['benchmark_trust_not_verified'],
-                'blocking_checks': sorted(set(blocking)), 'metrics': {}, 'classes': [], 'samples': [],
-                'source_version_id': other_version_id, 'current_version_id': version_id}}
-    result = compare_sample_outcomes(previous.get('evaluation') or {}, current.get('evaluation') or {},
-                                    offset=offset, limit=limit, category=category)
-    result.update(source_version_id=other_version_id, current_version_id=version_id)
-    result['trust_warnings'] = sorted({check['code'] for check in trust_checks if check['status'] != 'passed'})
-    return {'ok': True, 'comparison': result}
+def deep_compare_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str, offset: int=0, limit: int=24, category: str=''):
+    return _training_evaluation_service().deep_compare_evaluation(project_id, algorithm_id, version_id, other_version_id, offset, limit, category)
 
 
-class EvaluationReviewReq(BaseModel):
-    expected_evaluation_id: str
-    image_id: str
-    observation: str = ''
-    note: str = ''
+from platform_core.training_evaluation_contracts import EvaluationReviewReq
 
 
-class ReviewedMiningSelection(BaseModel):
-    image_id: str
-    candidate_digest: str
+from platform_core.training_evaluation_contracts import ReviewedMiningSelection
 
 
-class FreezeReviewedMiningReq(BaseModel):
-    candidates: List[ReviewedMiningSelection]
-    confirmed: bool = False
+from platform_core.training_evaluation_contracts import FreezeReviewedMiningReq
 
 
 def _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, *, offset=0, limit=24, image_ids=None):
-    from itertools import islice
-    from platform_core.hard_sample_mining import reviewed_mining_feedback_evidence, assert_not_frozen_test
-    _, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    task = _require_annotation_review_task(project_id, task_id)
-    if task.kind is not TaskKind.AI_ANNOTATION or task.status is not TaskStatus.SUCCEEDED or not task.result_ref:
-        raise HTTPException(status_code=409, detail='困难样本任务尚未完成正式人工审核入库')
-    artifacts = shared_task_artifacts()
-    request = artifacts.read_json(task_id, task.payload_ref, default={})
-    if (request.get('mode') != 'hard_sample_yolo' or request.get('mining_algorithm_id') != algorithm_id
-            or request.get('mining_version_id') != version_id or request.get('mining_model_sha256') != model.get('model_sha256')):
-        raise HTTPException(status_code=409, detail='困难样本任务来源模型不匹配')
-    store = CandidateStore(artifacts, task_id=task_id)
-    if not store.path.is_file():
-        raise HTTPException(status_code=409, detail='已审核候选索引不可用，不自动重建历史审核事实')
-    items = list(store.get_many(image_ids).values()) if image_ids is not None else list(islice(store.iter_accepted_items(include_committed=True), offset, offset + limit))
-    ids = [str(row.get('image_id') or '') for row in items]
-    if image_ids is not None and set(ids) != set(image_ids):
-        raise HTTPException(status_code=409, detail='部分候选已不存在')
-    materials = {str(row['id']): row for row in material_store(project_id).get_many(ids)}
-    annotations = AnnotationRepository(project_dir(project_id)).get_many(ids)
-    journals = store.get_commit_summaries(ids)
-    try:
-        if ids:
-            assert_not_frozen_test(project_dir(project_id), ids, {key: row.get('content_sha256', '') for key, row in materials.items()})
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    result = []
-    for item in items:
-        image_id = str(item.get('image_id') or '')
-        try:
-            evidence = reviewed_mining_feedback_evidence(task_id=task_id, request=request, candidate=item,
-                material=materials.get(image_id) or {}, annotation=annotations.get(image_id) or {},
-                commit_summary=journals.get(image_id), project_id=project_id)
-            result.append({'image_id': image_id, 'eligible': True, **evidence})
-        except ValueError as error:
-            result.append({'image_id': image_id, 'eligible': False, 'reason': str(error)})
-    return result
+    return _training_evaluation_service()._reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, offset=offset, limit=limit, image_ids=image_ids)
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/{task_id}/reviewed')
-def preview_reviewed_mining(project_id: str, algorithm_id: str, version_id: str, task_id: str, offset: int = 0, limit: int = 24):
-    if offset < 0 or not 1 <= limit <= 50:
-        raise HTTPException(status_code=422, detail='审核候选分页范围无效')
-    items = _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, offset=offset, limit=limit)
-    return {'ok': True, 'items': items, 'offset': offset, 'limit': limit, 'has_more': len(items) == limit,
-            'automatic_execution': False, 'requires_confirmation': True}
+def preview_reviewed_mining(project_id: str, algorithm_id: str, version_id: str, task_id: str, offset: int=0, limit: int=24):
+    return _training_evaluation_service().preview_reviewed_mining(project_id, algorithm_id, version_id, task_id, offset, limit)
 
 
-@app.post('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/{task_id}/adopt')
 def adopt_reviewed_mining(project_id: str, algorithm_id: str, version_id: str, task_id: str, payload: FreezeReviewedMiningReq):
-    if not payload.confirmed or not 1 <= len(payload.candidates) <= 50:
-        raise HTTPException(status_code=422, detail='请选择1至50项并明确确认采纳')
-    requested = {row.image_id: row.candidate_digest for row in payload.candidates}
-    if len(requested) != len(payload.candidates):
-        raise HTTPException(status_code=422, detail='采纳候选不能重复')
-    _supplement_data_action(project_id, algorithm_id, version_id)
-    with _storage_source_fence():
-        items = _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, image_ids=list(requested))
-        if any(not row['eligible'] or row['candidate_digest'] != requested[row['image_id']] for row in items):
-            raise HTTPException(status_code=409, detail='审核候选、素材或正式GT已变化，请重新预览')
-        repository = _online_feedback_repository(project_id)
-        selections = []
-        for item in items:
-            staged, _ = repository.stage(item['evidence'], feedback_type='needs_correction',
-                note=f"人工审核困难样本 · {task_id}", created_at=now_iso())
-            finalized, _ = repository.finalize(staged['id'], expected_feedback_type='needs_correction',
-                material_id=item['image_id'], result={'annotation_action': 'reviewed_existing_gt',
-                'formal_gt_changed': False, 'source_task_id': task_id, 'automatic_execution': False}, confirmed_at=now_iso())
-            candidate = _supplement_feedback_candidates(project_id, [finalized])[0]
-            if not candidate['eligible']:
-                raise HTTPException(status_code=409, detail='审核候选尚不可训练')
-            selections.append(SupplementFeedbackCandidateSelection(feedback_id=candidate['feedback_id'], candidate_digest=candidate['candidate_digest']))
-        return freeze_supplement_feedback_candidates(project_id, algorithm_id, version_id,
-            FreezeSupplementFeedbackCandidatesReq(candidates=selections))
+    return _training_evaluation_service().adopt_reviewed_mining(project_id, algorithm_id, version_id, task_id, payload)
 
 
-@app.post('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/review')
 def review_evaluation_sample(project_id: str, algorithm_id: str, version_id: str, payload: EvaluationReviewReq):
-    from platform_core.online_feedback import public_feedback
-    if payload.observation not in {'', 'model_error', 'gt_error', 'model_correct', 'unknown', 'hard_sample'} or len(payload.note) > 1000:
-        raise HTTPException(status_code=422, detail='复核意见无效')
-    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    evaluation = version.get('evaluation') or {}
-    if evaluation.get('evaluation_id') != payload.expected_evaluation_id or not re.fullmatch(r'[a-f0-9]{64}', payload.expected_evaluation_id):
-        raise HTTPException(status_code=409, detail='评测身份已变化，请重新读取报告')
-    if evaluation.get('model_sha256') != model.get('model_sha256') or evaluation.get('task_id') != model.get('training_task_id'):
-        raise HTTPException(status_code=409, detail='评测模型与正式任务身份不一致')
-    samples = evaluation.get('sample_outcomes') or evaluation.get('error_samples') or []
-    matches = [row for row in samples if str(row.get('image_id') or '') == payload.image_id]
-    if len(matches) != 1:
-        raise HTTPException(status_code=409, detail='冻结样本身份不唯一或未保存')
-    sample = matches[0]
-    # Persist only an opinion in the existing feedback owner. No image/GT write.
-    prediction_id = 'evalreview_' + hashlib.sha256((payload.expected_evaluation_id + ':' + payload.image_id).encode()).hexdigest()[:48]
-    source = {'schema_version': 1, 'prediction_id': prediction_id, 'project_id': project_id,
-              'algorithm_id': algorithm_id,
-              'version_id': version_id, 'model_sha256': model['model_sha256'],
-              'input_sha256': sample.get('image_content_sha256'), 'width': sample.get('image_width'),
-              'height': sample.get('image_height'), 'detections': [], 'engine': 'formal_evaluation',
-              'original_filename': sample.get('image'), 'input_file': '', 'created_at': evaluation.get('finished_at', ''),
-              'source_channel': 'evaluation', 'external_source': payload.expected_evaluation_id,
-              'external_sample_id': payload.image_id}
-    repository = _online_feedback_repository(project_id)
-    try:
-        row, reused = repository.stage(source, feedback_type='needs_correction', note=payload.note, created_at=now_iso())
-        if payload.observation and payload.observation != 'unknown':
-            row, reused = repository.finalize(row['id'], expected_feedback_type='needs_correction',
-                material_id='', result={'review_observation': payload.observation, 'formal_gt_changed': False,
-                    'evaluation_id': payload.expected_evaluation_id, 'image_id': payload.image_id,
-                    'frozen_test_protected': True, 'automatic_execution': False, 'requires_confirmation': True},
-                confirmed_at=now_iso())
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return {'ok': True, 'idempotent': reused, 'feedback': public_feedback(row),
-            'automatic_execution': False, 'requires_confirmation': True, 'frozen_test_protected': True}
+    return _training_evaluation_service().review_evaluation_sample(project_id, algorithm_id, version_id, payload)
 
 
 @app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
@@ -10737,146 +9976,23 @@ def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: Tra
     return stored
 
 
-def _supplement_data_action(
-    project_id: str, algorithm_id: str, version_id: str,
-):
-    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
-    if str(algorithm.get("current_version_id") or "") != str(version_id):
-        raise HTTPException(status_code=409, detail="补数据候选只能基于算法当前版本，请刷新后重试")
-    action = version.get("confirmed_iteration_action")
-    source = dict(action.get("source") or {}) if isinstance(action, dict) else {}
-    if (
-        not isinstance(action, dict)
-        or str(action.get("status") or "") != "confirmed"
-        or str(action.get("action") or "") != "supplement_data"
-        or str(source.get("algorithm_id") or "") != str(algorithm_id)
-        or str(source.get("version_id") or "") != str(version_id)
-    ):
-        raise HTTPException(status_code=409, detail="当前版本没有已确认的补数据动作")
-    return algorithm, version, action
+def _supplement_data_action(project_id: str, algorithm_id: str, version_id: str):
+    return _training_evaluation_service()._supplement_data_action(project_id, algorithm_id, version_id)
 
 
 def _supplement_feedback_candidates(project_id: str, feedback_rows):
-    from platform_core.online_feedback import build_supplement_candidate
-    materials = material_store(project_id)
-    material_ids = [
-        str(row.get("material_id") or "")
-        for row in feedback_rows
-        if str(row.get("material_id") or "")
-    ]
-    material_rows = {
-        str(row.get("id") or ""): row
-        for row in materials.get_many(material_ids)
-    }
-    annotations = AnnotationRepository(project_dir(project_id))
-    annotation_rows = annotations.get_many(list(material_rows)) if material_rows else {}
-    return [
-        build_supplement_candidate(
-            row,
-            material_rows.get(str(row.get("material_id") or "")),
-            annotation_rows.get(str(row.get("material_id") or "")),
-        )
-        for row in feedback_rows
-    ]
+    return _training_evaluation_service()._supplement_feedback_candidates(project_id, feedback_rows)
 
 
-@app.get("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates")
-def list_supplement_feedback_candidates(
-    project_id: str, algorithm_id: str, version_id: str,
-):
-    _, version, action = _supplement_data_action(project_id, algorithm_id, version_id)
-    repository = _online_feedback_repository(project_id)
-    rows, total = repository.list_confirmed_for_version(algorithm_id, version_id, limit=500)
-    candidates = _supplement_feedback_candidates(project_id, rows)
-    eligible = sum(1 for row in candidates if row.get("eligible") is True)
-    annotation_required = sum(
-        1 for row in candidates if "ANNOTATION_REQUIRED" in set(row.get("reason_codes") or [])
-    )
-    return {
-        "ok": True,
-        "action_id": str(action.get("action_id") or ""),
-        "total": total,
-        "returned": len(candidates),
-        "truncated": total > len(candidates),
-        "eligible": eligible,
-        "annotation_required": annotation_required,
-        "items": candidates,
-        "candidate_set": version.get("supplement_data_candidate_set"),
-    }
+app.include_router(create_training_evaluation_router_2(_training_evaluation_service))
 
 
-@app.post("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates/freeze")
-def freeze_supplement_feedback_candidates(
-    project_id: str, algorithm_id: str, version_id: str,
-    payload: FreezeSupplementFeedbackCandidatesReq,
-):
-    from filelock import FileLock
-    from platform_core.online_feedback import build_supplement_candidate_set
+def list_supplement_feedback_candidates(project_id: str, algorithm_id: str, version_id: str):
+    return _training_evaluation_service().list_supplement_feedback_candidates(project_id, algorithm_id, version_id)
 
-    _, _, action = _supplement_data_action(project_id, algorithm_id, version_id)
-    requested = {
-        str(row.feedback_id): str(row.candidate_digest).strip().lower()
-        for row in payload.candidates
-    }
-    if len(requested) != len(payload.candidates):
-        raise HTTPException(status_code=409, detail="补数据候选包含重复 feedback ID")
-    if any(
-        len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
-        for digest in requested.values()
-    ):
-        raise HTTPException(status_code=400, detail="补数据候选 digest 无效")
 
-    repository = _online_feedback_repository(project_id)
-    feedback_rows = repository.get_many(requested)
-    if len(feedback_rows) != len(requested):
-        raise HTTPException(status_code=409, detail="部分补数据反馈已经不存在，请刷新后重试")
-    for row in feedback_rows:
-        if (
-            str(row.get("status") or "") != "confirmed"
-            or str(row.get("algorithm_id") or "") != str(algorithm_id)
-            or str(row.get("version_id") or "") != str(version_id)
-        ):
-            raise HTTPException(status_code=409, detail="补数据反馈状态或版本已经变化，请刷新后重试")
-
-    candidates = _supplement_feedback_candidates(project_id, feedback_rows)
-    by_id = {str(row["feedback_id"]): row for row in candidates}
-    for feedback_id, digest in requested.items():
-        candidate = by_id.get(feedback_id)
-        if candidate is None or str(candidate.get("candidate_digest") or "") != digest:
-            raise HTTPException(status_code=409, detail="补数据候选素材或标注已经变化，请刷新后重试")
-        if candidate.get("eligible") is not True:
-            raise HTTPException(status_code=409, detail="所选反馈尚未具备可训练的正式标注，请先完成复核")
-    try:
-        candidate_set = build_supplement_candidate_set(
-            action,
-            [by_id[feedback_id] for feedback_id in requested],
-            frozen_at=now_iso(),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-
-    lock_path = str(algorithms_file(project_id).resolve()) + ".supplement-feedback.lock"
-    with FileLock(lock_path, timeout=30):
-        _, latest_version, latest_action = _supplement_data_action(
-            project_id, algorithm_id, version_id,
-        )
-        if str(latest_action.get("action_id") or "") != str(candidate_set["action_id"]):
-            raise HTTPException(status_code=409, detail="补数据动作已经变化，请刷新后重试")
-        previous = latest_version.get("supplement_data_candidate_set")
-        if isinstance(previous, dict) and str(previous.get("candidate_set_id") or ""):
-            if str(previous.get("candidate_set_id")) == candidate_set["candidate_set_id"]:
-                return {"ok": True, "idempotent": True, "candidate_set": previous}
-            raise HTTPException(status_code=409, detail="该版本已经冻结另一组补数据候选，不能覆盖")
-        stored = update_algorithm_version(
-            algorithms_file(project_id), algorithm_id, version_id,
-            {"supplement_data_candidate_set": candidate_set},
-            now=now_iso(),
-        )
-    return {
-        "ok": True,
-        "idempotent": False,
-        "candidate_set": stored.get("supplement_data_candidate_set") or candidate_set,
-    }
+def freeze_supplement_feedback_candidates(project_id: str, algorithm_id: str, version_id: str, payload: FreezeSupplementFeedbackCandidatesReq):
+    return _training_evaluation_service().freeze_supplement_feedback_candidates(project_id, algorithm_id, version_id, payload)
 
 
 # --- training creation domain (owned by platform_core.training_create_api) ---
@@ -11168,30 +10284,11 @@ def _v48_stop_legacy_training_maintenance() -> None:
     _LEGACY_TRAINING_MAINTENANCE_STOP.set()
 
 
-@app.post("/api/v48/projects/{project_id}/jobs/{job_id}/promote")
+app.include_router(create_training_management_router_2(_training_management_service))
+
+
 def v48_promote_job(project_id: str, job_id: str):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
-    if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
-    durable = _durable_training_task(project_id, job_id)
-    if durable is not None:
-        if durable.status is not TaskStatus.QUEUED:
-            raise HTTPException(status_code=400, detail="只有排队中的任务可以插队")
-        promoted = shared_task_repository().promote(job_id)
-        job.update(queue_priority=promoted.priority,priority_scheme=V56_PRIORITY_SCHEME,promoted_at=now_iso(),message="已插队到当前资源队列最前",updated_at=now_iso());_write_job_json(jf,job); sync_jobs_index(project_id)
-        return job
-    if job.get("status")!="queued": raise HTTPException(status_code=400,detail="只有排队中的任务可以插队")
-    peers=[read_json(x,{}) for x in _v48_all_job_files(project_id)]
-    queued_peers=[x for x in peers if x.get("status")=="queued" and _v48_resource_key(x)==_v48_resource_key(job)]
-    minimum=min([_v56_normalize_priority(x) for x in queued_peers] or [50])
-    job["queue_priority"]=max(1,minimum-1)
-    job["priority_scheme"]=V56_PRIORITY_SCHEME
-    if minimum==1:
-        job["priority_tiebreaker"]=min([int(x.get("priority_tiebreaker") or 0) for x in queued_peers] or [0])-1
-    job["promoted_at"]=now_iso(); job["message"]="已插队到当前资源队列最前";_write_job_json(jf,job)
-    _v48_dispatch_training_queues(project_id); sync_jobs_index(project_id)
-    return read_json(jf,job)
+    return _training_management_service().v48_promote_job(project_id, job_id)
 
 
 def _v48_suspend_tree(pid: Any, resume: bool=False):
@@ -11223,149 +10320,16 @@ def _durable_process_identity(task: TaskRecord) -> ProcessIdentity:
     )
 
 
-@app.post("/api/v48/projects/{project_id}/jobs/{job_id}/pause")
 def v48_pause_job(project_id: str, job_id: str):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
-    if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
-    durable = _durable_training_task(project_id, job_id)
-    if durable is not None:
-        if durable.status is not TaskStatus.RUNNING or durable.stage == "paused":
-            raise HTTPException(status_code=400, detail="只有训练中的任务可以暂停")
-        from platform_core.training_timing import update_job as update_timed_job, now_utc
-        updates = {"status": "paused", "message": "训练已暂停"}
-        def transition():
-            ProcessController().suspend_tree(_durable_process_identity(durable))
-            updates["paused_at"] = now_utc()
-            shared_task_repository().set_stage(job_id, "paused")
-        try:
-            # Acquire the shared state lock before suspending the child. A
-            # suspended callback must never own the lock needed to finish pause.
-            job = update_timed_job(jf, updates, before_update=transition)
-        except (ProcessLookupError, PermissionError) as error:
-            raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
-        sync_jobs_index(project_id)
-        return job
-    if job.get("status")!="running": raise HTTPException(status_code=400,detail="只有训练中的任务可以暂停")
-    if job.get("target")=="remote":
-        remote=job.get("remote") or {}; base=str(remote.get("base_url") or "").rstrip("/")
-        if not base: raise HTTPException(status_code=400,detail="远程任务缺少服务地址")
-        r=requests.post(f"{base}/api/remote/jobs/{remote.get('job_id')}/pause",headers={"X-API-Key":remote.get("api_key","")},timeout=10)
-        if not r.ok: raise HTTPException(status_code=400,detail="远程服务器暂不支持暂停："+r.text[:300])
-    else:
-        if not job.get("pid") or not _pid_alive(job.get("pid")): raise HTTPException(status_code=400,detail="训练进程不存在")
-        _v48_suspend_tree(job.get("pid"),False)
-    job.update(status="paused",message="训练已暂停",paused_at=now_iso(),updated_at=now_iso());_write_job_json(jf,job); sync_jobs_index(project_id)
-    return job
+    return _training_management_service().v48_pause_job(project_id, job_id)
 
 
-@app.post("/api/v48/projects/{project_id}/jobs/{job_id}/resume")
 def v48_resume_job(project_id: str, job_id: str):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
-    if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
-    durable = _durable_training_task(project_id, job_id)
-    if durable is not None:
-        if durable.status is not TaskStatus.RUNNING or durable.stage != "paused":
-            raise HTTPException(status_code=400, detail="只有已暂停任务可以继续")
-        from platform_core.training_timing import update_job as update_timed_job, now_utc
-        updates = {"status": "running", "message": "训练已继续"}
-        def transition():
-            ProcessController().resume_tree(_durable_process_identity(durable))
-            updates["resumed_at"] = now_utc()
-            shared_task_repository().set_stage(job_id, "training")
-            updates["paused_at"] = ""
-        try:
-            # Acquire the shared state lock before suspending the child. A
-            # suspended callback must never own the lock needed to finish pause.
-            job = update_timed_job(jf, updates, before_update=transition)
-        except (ProcessLookupError, PermissionError) as error:
-            raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
-        sync_jobs_index(project_id)
-        return job
-    if job.get("status")!="paused": raise HTTPException(status_code=400,detail="只有已暂停任务可以继续")
-    if job.get("target")=="remote":
-        remote=job.get("remote") or {}; base=str(remote.get("base_url") or "").rstrip("/")
-        r=requests.post(f"{base}/api/remote/jobs/{remote.get('job_id')}/resume",headers={"X-API-Key":remote.get("api_key","")},timeout=10)
-        if not r.ok: raise HTTPException(status_code=400,detail="远程服务器继续失败："+r.text[:300])
-    else:
-        if not job.get("pid") or not _pid_alive(job.get("pid")): raise HTTPException(status_code=400,detail="训练进程不存在")
-        _v48_suspend_tree(job.get("pid"),True)
-    if job.get("paused_at"):
-        pdt = _parse_dt_value(job.get("paused_at"))
-        if pdt:
-            job["paused_seconds"] = int(job.get("paused_seconds") or 0) + max(0, int((datetime.now() - pdt).total_seconds()))
-    job.update(status="running",message="训练已继续",resumed_at=now_iso(),paused_at="",updated_at=now_iso());_write_job_json(jf,job); sync_jobs_index(project_id)
-    return job
+    return _training_management_service().v48_resume_job(project_id, job_id)
 
 
-@app.post("/api/v48/projects/{project_id}/jobs/{job_id}/stop")
 def v48_stop_job(project_id: str, job_id: str):
-    if shared_task_repository().is_deleted(job_id,project_id=project_id):
-        raise HTTPException(status_code=404,detail="训练任务已删除，证据仅供审计")
-    jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
-    if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
-    durable = _durable_training_task(project_id, job_id)
-    if durable is not None:
-        if durable.status not in {
-            TaskStatus.QUEUED,
-            TaskStatus.RUNNING,
-            TaskStatus.CANCEL_REQUESTED,
-        }:
-            raise HTTPException(status_code=409, detail="训练任务已经结束，不能再次停止")
-        was_queued = durable.status is TaskStatus.QUEUED
-        try:
-            repository = shared_task_repository()
-            updated = repository.request_cancel(job_id)
-            _cancel_training_prepare_child(repository, durable)
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        if not was_queued and updated.process_pid is not None:
-            try:
-                ProcessController().terminate_tree(_durable_process_identity(updated))
-            except ProcessLookupError:
-                pass
-            except PermissionError as error:
-                raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
-        job.update(status="stopped",message="用户取消排队" if was_queued else "用户手动停止",finished_at=now_iso(),updated_at=now_iso(),never_started=was_queued);_write_job_json(jf,job); sync_jobs_index(project_id)
-        return job
-    legacy_status = str(job.get("status") or "").strip().lower()
-    queued_like = legacy_status in {"queued", "waiting", "pending"}
-    if queued_like:
-        job.update(status="stopped",message="用户取消排队",finished_at=now_iso(),updated_at=now_iso(),never_started=True);_write_job_json(jf,job)
-    elif legacy_status in {"running","paused"}:
-        if job.get("target")=="remote":
-            remote=job.get("remote") or {}
-            base=str(remote.get("base_url") or "").rstrip("/")
-            remote_job_id=str(remote.get("job_id") or "").strip()
-            if not base or not remote_job_id:
-                raise HTTPException(status_code=409,detail="远程训练缺少可校验的停止地址或任务 ID，未修改本地状态")
-            try:
-                response=requests.post(
-                    f"{base}/api/remote/jobs/{remote_job_id}/stop",
-                    headers={"X-API-Key":remote.get("api_key","")},
-                    timeout=10,
-                )
-            except requests.RequestException as error:
-                raise HTTPException(status_code=502,detail=f"远程训练停止请求失败，本地状态保持不变：{error}") from error
-            if not response.ok:
-                detail=(response.text or "").strip()[:300]
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"远程训练停止失败，本地状态保持不变：HTTP {response.status_code}{' · '+detail if detail else ''}",
-                )
-        else:
-            _terminate_pid_tree(job.get("pid")); PROCESS_REGISTRY.pop(job_id,None)
-        job.update(status="stopped",message="用户手动停止",finished_at=now_iso(),updated_at=now_iso());_write_job_json(jf,job)
-    else:
-        raise HTTPException(status_code=409, detail="训练任务已经结束或不处于可停止状态，未修改本地状态")
-    # 只有真正开始过训练的任务才形成算法版本；排队/等待资源后取消不属于一次算法迭代。
-    if not queued_like:
-        _v48_archive_training_version(project_id,job)
-    _v48_dispatch_training_queues(project_id); sync_jobs_index(project_id)
-    return read_json(jf,job)
+    return _training_management_service().v48_stop_job(project_id, job_id)
 
 
 _TRAINING_LEGACY_TERMINAL_STATUSES = {
@@ -11383,139 +10347,20 @@ _TRAINING_DURABLE_TERMINAL_STATUSES = {
 }
 
 
-class V48TrainingBatchDeleteReq(BaseModel):
-    job_ids: List[str] = Field(default_factory=list)
+from platform_core.training_management_contracts import V48TrainingBatchDeleteReq
 
 
 def _purge_terminal_training_job_record(project_id: str, job_id: str) -> Dict[str, Any]:
-    job_id = str(job_id or "").strip()
-    if not job_id or job_id in {".", ".."} or "/" in job_id or "\\" in job_id:
-        raise ValueError("训练任务 ID 不合法")
-    job_dir = project_dir(project_id) / "jobs" / job_id
-    job = read_json(job_dir / "job.json", {})
-    durable = _durable_training_task(project_id, job_id)
-    if durable is None and not job:
-        return {"status": "missing", "job_id": job_id}
-
-    if durable is not None:
-        if durable.status not in _TRAINING_DURABLE_TERMINAL_STATUSES:
-            return {"status": "active", "job_id": job_id}
-    else:
-        status = str(job.get("status") or "").strip().lower()
-        if status not in _TRAINING_LEGACY_TERMINAL_STATUSES:
-            return {"status": "active", "job_id": job_id}
-
-    proc = PROCESS_REGISTRY.get(job_id)
-    if proc and proc.poll() is None:
-        return {"status": "active", "job_id": job_id}
-
-    repository=shared_task_repository()
-    artifacts=shared_task_artifacts()
-    retained=artifacts.retention_required(job_id) or bool(durable and durable.attempt>0) or bool(job.get('snapshot_id') or job.get('models'))
-    retained=retained or any((artifacts.root/job_id/name).exists() for name in ('input-freeze.json','snapshot.json','dataset-revision.json'))
-    if durable is not None:
-        removed=repository.delete_terminal(job_id,project_id=project_id,kind=TaskKind.TRAINING)
-        if not removed and not repository.is_deleted(job_id,project_id=project_id):
-            raise ValueError('task changed during deletion')
-    else:
-        repository.record_legacy_deletion(job_id,project_id)
-    if not retained:
-        try:
-            artifacts.delete_task(job_id)
-            shutil.rmtree(job_dir)
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError):
-            retained=True  # Logical deletion committed; report deferred cleanup.
-    PROCESS_REGISTRY.pop(job_id,None)
-    return {'status':'deleted','job_id':job_id,'artifacts_retained':retained}
+    return _training_management_service()._purge_terminal_training_job_record(project_id, job_id)
 
 
 
-@app.post("/api/v48/projects/{project_id}/jobs/batch-delete")
 def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
-    get_project(project_id)
-    job_ids = list(dict.fromkeys(str(value or "").strip() for value in payload.job_ids if str(value or "").strip()))
-    if not job_ids:
-        raise HTTPException(status_code=400, detail="请选择需要删除的训练记录")
-    if len(job_ids) > 200:
-        raise HTTPException(status_code=400, detail="单次最多批量删除 200 条训练记录")
-
-    deleted_ids: List[str] = []
-    retained_ids: List[str] = []
-    skipped_active_ids: List[str] = []
-    missing_ids: List[str] = []
-    failures: List[Dict[str, str]] = []
-    for job_id in job_ids:
-        try:
-            result = _purge_terminal_training_job_record(project_id, job_id)
-            status = str(result.get("status") or "")
-            if status == "deleted":
-                deleted_ids.append(job_id)
-                if result.get('artifacts_retained'):
-                    retained_ids.append(job_id)
-            elif status == "active":
-                skipped_active_ids.append(job_id)
-            else:
-                missing_ids.append(job_id)
-        except Exception as error:
-            failures.append({"job_id": job_id, "message": str(error)})
-
-    try:
-        _v48_dispatch_training_queues(project_id)
-    except Exception:
-        pass
-    sync_jobs_index(project_id)
-    return {
-        "ok": not failures,
-        "requested": len(job_ids),
-        "deleted": len(deleted_ids),
-        "deleted_ids": deleted_ids,
-        "audit_retained_ids": retained_ids,
-        "skipped_active": len(skipped_active_ids),
-        "skipped_active_ids": skipped_active_ids,
-        "missing": len(missing_ids),
-        "missing_ids": missing_ids,
-        "failed": len(failures),
-        "failures": failures,
-    }
+    return _training_management_service().v48_batch_delete_jobs(project_id, payload)
 
 
-@app.delete("/api/v12/projects/{project_id}/jobs/{job_id}")
 def v12_delete_job(project_id: str, job_id: str):
-    get_project(project_id)
-    job_dir = project_dir(project_id) / "jobs" / job_id
-    job = read_json(job_dir / "job.json", {})
-    durable = _durable_training_task(project_id, job_id)
-
-    # Durable truth is authoritative when present. A stale legacy job.json must
-    # never make a finished durable task look active, nor may a cleanup request
-    # erase live durable work without cancellation first.
-    durable_active = durable is not None and durable.status in {
-        TaskStatus.QUEUED,
-        TaskStatus.RUNNING,
-        TaskStatus.CANCEL_REQUESTED,
-    }
-    legacy_active = durable is None and str(job.get("status") or "").lower() in {
-        "queued", "waiting", "pending", "running", "paused",
-    }
-    if durable_active or legacy_active:
-        v48_stop_job(project_id, job_id)
-        # Preserve durable task artifacts while cancellation/finalization may
-        # still be completing. This keeps the existing single-record behavior.
-        shutil.rmtree(job_dir, ignore_errors=True)
-    else:
-        try:
-            _purge_terminal_training_job_record(project_id, job_id)
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-
-    try:
-        _v48_dispatch_training_queues(project_id)
-    except Exception:
-        pass
-    sync_jobs_index(project_id)
-    return {"ok": True}
+    return _training_management_service().v12_delete_job(project_id, job_id)
 
 
 
@@ -23004,169 +21849,22 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
 
 # P1 hard samples extend the existing AI_ANNOTATION task, CandidateStore and
 # formal annotation review; no independent task/annotation owner is introduced.
-class HardSampleMiningCreateReq(BaseModel):
-    image_ids: List[str]
-    source: Literal["existing", "upload"] = "existing"
-    request_key: str = ""
+from platform_core.training_evaluation_contracts import HardSampleMiningCreateReq
 
 
-def _enqueue_hard_sample_mining(
-    project_id: str, algorithm_id: str, version_id: str, image_ids: Sequence[str],
-    *, source: str, request_key: str = "",
-):
-    from platform_core.hard_sample_mining import (
-        HardSampleSafetyError, assert_not_frozen_test, sha256_file,
-    )
-    from platform_core.task_runtime import TaskRecord, TaskKind
-    if source not in {"existing", "upload"}:
-        raise HTTPException(status_code=422, detail="困难样本来源无效")
-    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
-    path = _testable_version_pt_path(version)
-    if path is None:
-        raise HTTPException(status_code=409, detail="当前算法版本没有可用的本地正式 PT，不能挖掘")
-    requested = list(dict.fromkeys(str(value).strip() for value in image_ids if str(value).strip()))
-    if not requested or len(requested) > 500:
-        raise HTTPException(status_code=422, detail="单次困难样本挖掘必须选择 1 至 500 张素材")
-    rows = []
-    for offset in range(0, len(requested), 500):
-        rows.extend(material_store(project_id).get_many(requested[offset:offset + 500]))
-    by_id = {str(row.get("id") or ""): row for row in rows}
-    if set(by_id) != set(requested):
-        raise HTTPException(status_code=409, detail="选择的素材已经变化或不存在，请刷新")
-    source_hashes = {key: str(by_id[key].get("content_sha256") or "").strip().lower() for key in requested}
-    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in source_hashes.values()):
-        raise HTTPException(status_code=409, detail="素材缺少可信内容 SHA256，无法挖掘")
-    if any(by_id[key].get("source_available") is False
-           or by_id[key].get("dataset_delete_claim")
-           or by_id[key].get("material_batch_delete_claim") for key in requested):
-        raise HTTPException(status_code=409, detail="素材处于不可用或删除状态")
-    if source == "upload" and any(
-        str(by_id[key].get("annotation_state") or "").lower() in {"annotated", "confirmed_empty"}
-        or int(by_id[key].get("box_count") or 0) > 0 for key in requested
-    ):
-        raise HTTPException(status_code=409, detail="上传自动筛选仅允许未标注的正式素材")
-    try:
-        assert_not_frozen_test(project_dir(project_id), requested, source_hashes)
-    except HardSampleSafetyError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    # Scope a human confirmation to the source model's TRAINING schema,
-    # not every label on the project. Never mis-mark unrelated labels empty.
-    snapshot_id = str(version.get("snapshot_id") or "").lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
-        raise HTTPException(status_code=409, detail="算法版本缺少可信训练标签快照")
-    snapshot_path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
-    source_snapshot = read_json(snapshot_path, {}) if snapshot_path.is_file() else {}
-    if (not isinstance(source_snapshot, dict)
-        or source_snapshot.get("snapshot_id") != snapshot_id
-        or not isinstance(source_snapshot.get("label_schema"), list)):
-        raise HTTPException(status_code=409, detail="算法版本的冻结标签结构无法验证")
-    labels = list(dict.fromkeys(
-        str(row.get("code") or "").strip()
-        for row in source_snapshot["label_schema"]
-        if isinstance(row, dict) and str(row.get("code") or "").strip()
-    ))
-    active_codes = {
-        str(row.get("code") or "")
-        for row in _annotation_label_catalog(get_project(project_id))
-    }
-    if not labels or not set(labels).issubset(active_codes):
-        raise HTTPException(status_code=409, detail="冻结模型标签与当前 canonical 标签不一致，请先核查")
-    snapshot_hash = sha256_file(snapshot_path)
-    digest = sha256_file(path)
-    identity = {
-        "algorithm_id": str(algorithm_id),
-        "version_id": str(version_id),
-        "model_sha256": digest,
-        "image_ids": requested,
-        "source_hashes": source_hashes,
-        "source": source,
-        "request_key": str(request_key or "")[:120],
-    }
-    # Deduplicate retry for the same upload receipt without adding another
-    # persistent idempotency table. The existing TaskRepository remains truth.
-    key = json.dumps(identity, sort_keys=True, ensure_ascii=False)
-    task_id = "hm" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:14] if request_key else "hm" + uuid.uuid4().hex[:14]
-    repository = shared_task_repository()
-    previous = repository.get(task_id)
-    if previous is not None:
-        if previous.project_id != project_id or previous.kind is not TaskKind.AI_ANNOTATION:
-            raise HTTPException(status_code=409, detail="困难样本任务身份冲突")
-        return public_annotation_task(previous)
-    request = {
-        "schema_version": 2,
-        "mode": "hard_sample_yolo",
-        "source": source,
-        "task_name": "YOLO 困难样本挖掘",
-        "image_ids": requested,
-        "source_hashes": source_hashes,
-        "labels": labels,
-        "overwrite": False,
-        "mining_algorithm_id": str(algorithm_id),
-        "mining_version_id": str(version_id),
-        "mining_model_path": str(path),
-        "mining_model_sha256": digest,
-        "mining_snapshot_id": snapshot_id,
-        "mining_snapshot_sha256": snapshot_hash,
-        "source_request_key": str(request_key or "")[:120],
-    }
-    with _storage_source_fence():
-        shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
-        task = repository.create(TaskRecord.new(
-            task_id, project_id, TaskKind.AI_ANNOTATION,
-            "request.json", f"mining:{digest[:16]}",
-            priority=60, required_capabilities=("mining.ultralytics",),
-        ))
-    return public_annotation_task(task)
+def _enqueue_hard_sample_mining(project_id: str, algorithm_id: str, version_id: str, image_ids: Sequence[str], *, source: str, request_key: str=''):
+    return _training_evaluation_service()._enqueue_hard_sample_mining(project_id, algorithm_id, version_id, image_ids, source=source, request_key=request_key)
 
 
 
-@app.get("/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/eligible")
-def eligible_hard_sample_materials(project_id: str, algorithm_id: str, version_id: str, limit: int = 100):
-    """A bounded read-only filter over canonical Materials and frozen Test truth.
+app.include_router(create_training_evaluation_router_3(_training_evaluation_service))
 
-    This is not a separate candidate database. Final POST revalidates everything.
-    """
-    from platform_core.hard_sample_mining import (
-        HardSampleSafetyError, frozen_test_identifiers,
-    )
-    _algorithm_version_for_action(project_id, algorithm_id, version_id)
-    count = max(1, min(100, int(limit)))
-    try:
-        blocked_ids, blocked_hashes = frozen_test_identifiers(project_dir(project_id))
-    except HardSampleSafetyError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    materials = material_store(project_id)
-    eligible: list[str] = []
-    cursor = None
-    # Two fixed 500-ID pages: no unbounded Material scan on the API thread.
-    for _ in range(2):
-        page = materials.list_ids(cursor=cursor, limit=500, annotated=False)
-        ids = [str(value) for value in page.items if str(value) and str(value) not in blocked_ids]
-        for offset in range(0, len(ids), 500):
-            for item in materials.get_many(ids[offset:offset + 500]):
-                image_id = str(item.get("id") or "")
-                digest = str(item.get("content_sha256") or "").lower()
-                if (image_id in blocked_ids or digest in blocked_hashes
-                    or not re.fullmatch(r"[0-9a-f]{64}", digest)
-                    or item.get("source_available") is False):
-                    continue
-                eligible.append(image_id)
-                if len(eligible) >= count:
-                    break
-            if len(eligible) >= count:
-                break
-        if len(eligible) >= count or not page.next_cursor:
-            break
-        cursor = page.next_cursor
-    return {"items": eligible, "returned": len(eligible), "limit": count}
 
-@app.post("/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining", status_code=202)
-def create_hard_sample_mining(project_id: str, algorithm_id: str, version_id: str,
-                              payload: HardSampleMiningCreateReq):
-    return _enqueue_hard_sample_mining(
-        project_id, algorithm_id, version_id, payload.image_ids,
-        source=payload.source, request_key=payload.request_key,
-    )
+def eligible_hard_sample_materials(project_id: str, algorithm_id: str, version_id: str, limit: int=100):
+    return _training_evaluation_service().eligible_hard_sample_materials(project_id, algorithm_id, version_id, limit)
+
+def create_hard_sample_mining(project_id: str, algorithm_id: str, version_id: str, payload: HardSampleMiningCreateReq):
+    return _training_evaluation_service().create_hard_sample_mining(project_id, algorithm_id, version_id, payload)
 
 
 def _persist_annotation_task_create(project_id: str, payload: AnnotationTaskCreateReq, task_id: str, *, identity: str=''):
@@ -24290,166 +22988,16 @@ def v52_import_review(project_id: str, job_id: str):
 # ============================================================
 
 def _v49_metric_from_report(report: Dict[str, Any], *keys: str):
-    metrics = report.get('metrics') or {}
-    for key in keys:
-        if key in metrics and metrics.get(key) is not None:
-            try: return float(metrics.get(key))
-            except Exception: pass
-    return None
+    return _training_evaluation_service()._v49_metric_from_report(report, *keys)
 
 def _v49_job_label_counts(project_id: str, job: Dict[str, Any]) -> Dict[str, int]:
-    snapshot_id = str(job.get('snapshot_id') or '').strip().lower()
-    if re.fullmatch(r'[0-9a-f]{64}', snapshot_id):
-        snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
-        if (
-            isinstance(snapshot, dict)
-            and str(snapshot.get('snapshot_id') or '').strip().lower() == snapshot_id
-            and isinstance(snapshot.get('label_counts'), dict)
-        ):
-            counts: Dict[str, int] = {}
-            for label, value in snapshot['label_counts'].items():
-                code = str(label or '').strip()
-                try:
-                    count = int(value)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if code and count > 0:
-                    counts[code] = count
-            return counts
+    return _training_evaluation_service()._v49_job_label_counts(project_id, job)
 
-    selected = job.get('dataset_selected_ids') or {}
-    ids = list(dict.fromkeys(
-        str(value).strip()
-        for value in (
-            selected.get('train')
-            or selected.get('train_image_ids')
-            or (job.get('data_summary') or {}).get('selected_ids', {}).get('train')
-            or []
-        )
-        if str(value).strip()
-    ))
-    annotations: Dict[str, Dict[str, Any]] = {}
-    for offset in range(0, len(ids), 500):
-        annotations.update(read_annotations_many(project_id, ids[offset:offset + 500]))
-    counts: Dict[str, int] = {}
-    for image_id in ids:
-        ann = annotations.get(image_id) or {}
-        for box in ann.get('boxes', []):
-            label = str(box.get('label') or '').strip()
-            if label:
-                counts[label] = counts.get(label, 0) + 1
-    return counts
+app.include_router(create_training_evaluation_router_4(_training_evaluation_service))
 
-@app.get('/api/v49/projects/{project_id}/algorithms/{algorithm_id}/report')
-def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool = False):
-    algo = next((x for x in list_algorithms_internal(project_id, algorithm_id=algorithm_id) if x.get('id') == algorithm_id), None)
-    if not algo:
-        raise HTTPException(status_code=404, detail='算法不存在')
-    rows, repository, durable = _training_history_context(project_id)
-    canonical = {}
-    for row in rows:
-        if row.get('project_id') and str(row['project_id']) != str(project_id):
-            continue
-        identity = str(row.get('task_id') or row.get('id') or '').strip()
-        if identity and (identity not in canonical or str(row.get('id') or '') == identity):
-            canonical[identity] = dict(row)
-    for identity, task in durable.items():
-        if identity not in canonical:
-            # The existing task-owned payload restores archived task identity;
-            # it does not invent missing runtime duration or report evidence.
-            key = (str(repository.path), identity)
-            with _TRAINING_JOB_PROJECTION_LOCK:
-                cached = _TRAINING_COUNT_PAYLOADS.get(key)
-                if cached is None or cached[0] != task.updated_at:
-                    payload = shared_task_artifacts().read_json(identity, task.payload_ref, default={})
-                    _TRAINING_COUNT_PAYLOADS[key] = (task.updated_at, payload)
-                else:
-                    payload = cached[1]
-            if isinstance(payload, dict):
-                canonical[identity] = {**payload, 'id': identity, 'task_id': identity}
-    jobs = []
-    for identity, row in canonical.items():
-        task = durable.get(identity)
-        kind = task.kind.value if task else str(row.get('task_kind') or row.get('kind') or 'TRAINING').upper()
-        if kind != 'TRAINING' or row.get('never_started'):
-            continue
-        if str(row.get('asset_algorithm_id') or row.get('algorithm_asset_id') or '') != str(algorithm_id):
-            continue
-        row['id'] = identity
-        if task:
-            row['status'] = task.status.value
-            row['task_status'] = task.status.value
-            row.setdefault('created_at', task.created_at)
-            if task.finished_at:
-                row.setdefault('finished_at', task.finished_at)
-        jobs.append(row)
-    jobs.sort(key=lambda x: str(x.get('finished_at') or x.get('created_at') or ''))
-    trend=[]; total_label_counts: Dict[str,int]={}; duration=0; duration_records=0
-    for j in jobs:
-        rep=j.get('training_report') or {}
-        m=_v49_metric_from_report(rep,'metrics/mAP50(B)','map50','mAP50')
-        if m is None:
-            try: m=float((j.get('metrics') or {}).get('map50'))
-            except Exception: m=None
-        # Historical label counts are expensive when frozen project Snapshots
-        # are unavailable: the legacy helper reopens mutable annotations for
-        # every selected image of every attempt. The report workbench requests
-        # lightweight=True to preserve truthful, fast historical metadata.
-        lc = {} if lightweight else _v49_job_label_counts(project_id, j)
-        for k, v in lc.items():
-            total_label_counts[k] = total_label_counts.get(k, 0) + int(v)
-        elapsed = j.get('elapsed_seconds')
-        try:
-            measured = float(elapsed) if elapsed is not None and elapsed != '' and not isinstance(elapsed, bool) else None
-        except (TypeError, ValueError, OverflowError):
-            measured = None
-        if measured is not None and math.isfinite(measured) and measured >= 0:
-            duration += measured
-            duration_records += 1
-        trend.append({'job_id':j.get('id'),'version':j.get('auto_version_name') or '', 'finished_at':j.get('finished_at') or j.get('updated_at') or j.get('created_at'), 'map50':m, 'status':j.get('status'), 'labels':lc, 'images':int((j.get('dataset_counts') or {}).get('train') or 0)})
-    versions=algo.get('versions') or []
-    current_id=str(algo.get('current_version_id') or '')
-    current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
-    aggregate=build_algorithm_report(versions)
-    val_by_version_id = {str(item.get('version_id')): item.get('map50') for item in aggregate['trend']}
-    # Summaries are derived only from immutable/current-version catalog facts.
-    # Never infer historical Test quality from a Val mAP or mutable GT.
-    quality_rows = []
-    for version in sorted(versions, key=lambda v: str(
-        v.get('finished_at') or v.get('created_at') or v.get('version_name') or ''
-    ))[-40:]:
-        evaluation = version.get('evaluation') or {}
-        if not isinstance(evaluation, dict):
-            evaluation = {}
-        ev_metrics = evaluation.get('metrics') or {}
-        if not isinstance(ev_metrics, dict):
-            ev_metrics = {}
-        test_map50 = _v49_metric_from_report(
-            {'metrics': ev_metrics}, 'metrics/mAP50(B)', 'map50', 'mAP50'
-        ) if evaluation.get('status') == 'succeeded' else None
-        quality_rows.append({
-            'version_id': version.get('id'),
-            'version_name': version.get('version_name') or '',
-            'finished_at': version.get('finished_at') or version.get('created_at') or '',
-            'val_map50': val_by_version_id.get(str(version.get('id') or '')),
-            'test_map50': test_map50,
-            'test_status': evaluation.get('status') or 'unavailable',
-            'test_snapshot_id': evaluation.get('snapshot_id') or '',
-            'train_snapshot_id': version.get('snapshot_id') or '',
-            'is_current': str(version.get('id') or '') == current_id,
-        })
-    current_quality = next(
-        (row for row in quality_rows if row['is_current']), None
-    )
-    success = _successful_training_counts(project_id, history_context=(rows, repository, durable)).get(str(algorithm_id), 0)
-    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,
-       'label_counts_scope': 'not_computed_fast' if lightweight else 'cumulative_training_boxes',
-       'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': val_by_version_id.get(str(current.get('id') or '')) if current else None}, 'trend':trend, 'jobs':trend[-20:] if lightweight else jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,
-            'jobs_truncated':len(jobs)>20,
-            'version_quality':quality_rows,
-            'version_quality_total':len(versions),
-            'version_quality_truncated':len(versions)>40,
-            'current_quality':current_quality}
+
+def v49_algorithm_report(project_id: str, algorithm_id: str, lightweight: bool=False):
+    return _training_evaluation_service().v49_algorithm_report(project_id, algorithm_id, lightweight)
 
 app.include_router(create_material_governance_router_5(_material_governance_service))
 

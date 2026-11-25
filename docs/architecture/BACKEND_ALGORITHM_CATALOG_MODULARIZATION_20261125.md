@@ -94,3 +94,23 @@ material_catalog_api 只承担 HTTP，material_catalog_service 持有上述业�
 旧源码守卫已转向真实 Owner：批量分组性能检查、Label Normalization 的标签引用/编码/空标注合同、Online Feedback 的审核状态合同。未删断言；新增两个现有 API 文件内的 18 接口 OpenAPI/唯一注册/请求模型回归，运行期全部交现有 CI。既有 material-annotation-atomicity、label-normalization、online-feedback 与 Algorithm SQL Store workflow 跟随新模块路径，无新 workflow。本机仅语法、符号、AST/接口合同和 git diff --check，未执行测试、应用或浏览器。
 
 剩余边界：AI 创建/清洗/审核的原 HTTP 编排仍在 app，与候选草稿 CAS、冻结选择、正式 GT 屏障、负池和 C2-B 续批/取消对账共享上下文；本轮未拆出这些流程的一部分。原删除恢复日志及 write_annotation 底层事务访问器继续为其他导入/审核入口共享，未借迁移重构生命周期。旧 /images 全量读取和自动分配的既有读取行为保留，不声称完成其性能治理。前端、VERSION、AGENTS、四份保护文档及生产均未改；完成后停止，交独立审计。
+
+## 后续批次：路由合同、AI 审核与训练管理（2026-11-25）
+
+起点 47b7900b；用户核验 21/22 成功，唯一失败是 FastAPI 新版嵌套路由的测试枚举假设。A f68fa3669609304cad0b2a48174d372bac814ef7 改用官方 iter_route_contexts 的有效路径/original_route，保留旧版扁平路由回退和全部安全断言；未改生产注册或依赖版本。
+
+B 7044815c295777ab335da4526c0f16ba271ca423：
+- ai_annotation_api/service/contracts：33 个接口、57 个业务/辅助函数，完整覆盖持久创建及按 request_id 查回、分页/进度、取消/重试/结束审核、候选与诊断、单图及批量草稿、冻结/排除/分页、单图及批量决定/回执、正式 GT 入库、转负池/预览/撤销及 C2-B 执行/续批恢复/取消对账。
+- cleaning_management_api/service/contracts：7 接口、12 个业务/辅助函数，覆盖清洗列表、预检、创建、取消、结果、标注审计及确认。原 prepare/publish、冻结 SQLite 选择、资源准入、实际 Worker 和文件删除协议仍为唯一 Owner。
+- 原两个 AnnotationSelectionReq 同名但不同字段的 DTO 留在原声明位置，分别注入对应 Router factory；API 刻意在 factory 闭包求值类型，避免未来注解将两种选择解析成同一模型。其余 12 个模型迁出，继承的批量草稿模型和 StrictInt 不变。原搜索/统计后台线程、错误容器和锁留应用生命周期，Service 使用原访问器。
+
+C/最终 SHA 见本节所在代码提交及交付消息：
+- training_management_api/service/contracts：11 接口、17 个函数，训练列表、事件流、详情/资源及按需指标历史、有界日志、停止/插队/暂停/恢复、批量及单任务终态删除。唯一 TaskRepository、执行进程注册表、历史归档、删除保留策略及原 legacy 控制访问器保持。
+- training_evaluation_api/service/contracts：14 接口、26 个函数，冻结评测图片的安全读取、可信证据/样本/报告、版本与深度对比、评测意见、已审核难样本预览/采用、合格样本筛选/创建、补充数据候选/冻结及算法级训练报告。原评测身份、不可变快照、反馈 Repository、已审核范围和训练联动 Owner 保留。
+- 已迁移 training_create_api/service、TaskRuntime management/query、training_report_api 不重复开发。评测索引缓存/锁、历史计数缓存/锁通过原访问器引用，不复制状态，不新增 SQL 或 Repository。
+
+静态证据：app.py 27,303→23,708 行、直接 HTTP 286→221，65 接口原位补回；有序 URL/Method/operationId 输入、参数/默认值、说明、返回注解、其他 Router 相对顺序及旧双选择 DTO 字段绑定一致。112 个函数经依赖名还原后 AST 一致，19 个模型 AST 一致，注入字段对应，无新增未定义全局名称或反向 app 导入。多行字面量保留原值。没有新增全量 hydration/N+1/重复 I/O；旧算法报告及历史路径的已有读取行为不借迁移改写。
+
+定向守卫：标签归一化的恢复合同、AI 有效标签过滤、有界日志/指标历史、训练停止/删除/只读不归档及补充数据冻结 URL 改查真实 Owner；原故障注入/测试替身转向实际 Service 方法，原断言保留。两项既有 API 文件新增 40+25 接口的有效路由唯一性、endpoint Owner、OpenAPI/模型、双选择字段和历史默认值合同，沿既有 AI Recovery、Remote Cleaning、Training Visibility、Remote Training 等 workflow 执行，无新 workflow。本机不执行 pytest、应用、测试函数、浏览器、服务或构建；运行期、生产及实机均未验，开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING。
+
+剩余职责：app 继续持有装配、认证/存储/配置、导入与检测批次审核、旧停用 AI 入口、共享后台索引及原 legacy 生命周期访问器；旧 V45 辅助归因和 V44 补充素材编排仍有 job.json/素材联动，未借本轮另改其写入语义。没有本轮已知安全阻断；上述剩余单元不是已迁移范围的隐藏第二 Owner。前端、VERSION、AGENTS、四份保护文档不变，无生产、GPU、服务器或正式 PostgreSQL 操作；完成后停止交独立审计。

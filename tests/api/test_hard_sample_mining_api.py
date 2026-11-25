@@ -1,4 +1,5 @@
 from __future__ import annotations
+from platform_core.training_evaluation_service import TrainingEvaluationService
 from platform_core.ai_annotation_service import AiAnnotationService
 
 import json
@@ -33,13 +34,13 @@ def test_p2_reviewed_mining_preview_adoption_reuses_original_candidate_set_and_p
         def get_many(self, ids): return {key: dict(annotation) for key in ids}
     task = SimpleNamespace(kind=TaskKind.AI_ANNOTATION, status=TaskStatus.SUCCEEDED, result_ref='result.json', payload_ref='request.json')
     version = {'id': 'v1'}
-    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *a: (version, {'model_sha256': 'f' * 64}))
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_evaluation_context', staticmethod(lambda *a: (version, {'model_sha256': 'f' * 64})))
     monkeypatch.setattr(AiAnnotationService, '_require_annotation_review_task', staticmethod(lambda *a: task))
     monkeypatch.setattr(platform, 'shared_task_artifacts', lambda: artifacts)
     monkeypatch.setattr(platform, 'AnnotationRepository', Annotations)
     action = {'status': 'confirmed', 'action': 'supplement_data', 'action_id': 'e' * 64,
               'source': {'algorithm_id': 'algo', 'version_id': 'v1'}}
-    monkeypatch.setattr(platform, '_supplement_data_action', lambda *a: ({'id': 'algo'}, version, action))
+    monkeypatch.setattr(TrainingEvaluationService, '_supplement_data_action', staticmethod(lambda *a: ({'id': 'algo'}, version, action)))
     monkeypatch.setattr(platform, 'algorithms_file', lambda _: project / 'algorithms.json')
     def update(path, algorithm_id, version_id, patch, **kwargs):
         version.update(patch);return dict(version)

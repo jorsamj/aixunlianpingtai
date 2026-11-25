@@ -7,6 +7,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/training_management_*.py
       - platform_core/training_recovery_api.py
       - platform_core/training_hardened_tasks.py
       - platform_core/training_recovery_tasks.py
@@ -100,7 +101,7 @@ jobs:
           fi
           grep -Fq 'window.PollRegistryRuntime?.startTimeout?.(' static/modules/training-recovery-runtime.js
           grep -Fq 'window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);' static/modules/training-progress-stream.js
-          grep -Fq 'allow_version_archive=False' app.py
+          grep -Fq 'allow_version_archive=False' platform_core/training_management_service.py
           grep -Fq 'terminal live event performs one final canonical detail and log reconciliation' tests/frontend/training-recovery-runtime.test.mjs
           grep -Fq 'incomingStatusSource = job?.task_status ?? job?.persisted_status ?? job?.status' static/modules/training-recovery-runtime.js
           grep -Fq 'function patchTrainingDetailDom(current, next)' static/modules/training-recovery-runtime.js

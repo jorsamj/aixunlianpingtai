@@ -1,3 +1,4 @@
+from platform_core.training_evaluation_service import TrainingEvaluationService
 import json
 from types import SimpleNamespace
 import pytest
@@ -8,7 +9,7 @@ def test_original_evaluation_endpoints_offer_opt_in_safe_pages(monkeypatch):
     calls=[]
     def owner(p,a,v):
         calls.append((p,a,v));return {'id':v,'evaluation':evidence},{'current_version_id':v}
-    monkeypatch.setattr(api,'_advanced_evaluation_context',owner)
+    monkeypatch.setattr(TrainingEvaluationService,'_advanced_evaluation_context',staticmethod(owner))
     safe=api.advanced_evaluation_report('p','a','v',reader_view=True,section='classes',limit=1)
     assert safe['project_id']=='p' and safe['version_id']=='v' and safe['total']==1
     assert safe['evaluation']['per_class'][0]['map50']==0 and 'PRIVATE' not in json.dumps(safe)

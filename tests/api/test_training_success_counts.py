@@ -1,3 +1,4 @@
+from platform_core.training_evaluation_service import TrainingEvaluationService
 from dataclasses import replace
 import json
 
@@ -230,7 +231,7 @@ def test_algorithm_report_lightweight_avoids_mutable_history_annotation_scans(cl
     def forbidden(*args, **kwargs):
         pytest.fail('lightweight report scanned historical mutable annotations')
 
-    monkeypatch.setattr(platform, '_v49_job_label_counts', forbidden)
+    monkeypatch.setattr(TrainingEvaluationService, '_v49_job_label_counts', staticmethod(forbidden))
     response = client.get(f'/api/v49/projects/{project}/algorithms/{algorithm}/report?lightweight=true')
     assert response.status_code == 200
     report = response.json()
