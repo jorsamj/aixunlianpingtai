@@ -1,4 +1,5 @@
 from __future__ import annotations
+from platform_core.storage_ingestion_service import StorageIngestionService
 
 import uuid
 
@@ -113,13 +114,13 @@ def test_storage_rescan_agent_creation_freezes_baseline_and_uses_portable_contra
     assert created.status_code == 201, created.text
 
     monkeypatch.setattr(
-        app_module,
+        StorageIngestionService,
         "_storage_rescan_agent_preflight",
-        lambda _project_id, _source_id: {
+        staticmethod(lambda _project_id, _source_id: {
             "agent_available": True,
             "reason": "",
             "eligible_nodes": [{"node_id": "material-agent-1", "display_name": "素材节点"}],
-        },
+        }),
     )
     calls = {}
 

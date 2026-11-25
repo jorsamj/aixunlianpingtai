@@ -331,7 +331,7 @@ jobs:
           grep -Fq '"execution_mode": resource_mode' platform_core/conversion_management_service.py
           grep -Fq 'if resource_mode=="remote" and conversion_target != "sophon":' platform_core/conversion_management_service.py
           grep -Fq 'request_payload["remote_connection"]' platform_core/conversion_management_service.py
-          grep -Fq '("agent.remote",)' app.py
+          grep -Fq '("agent.remote",)' platform_core/conversion_management_service.py
           grep -Fq 'def _commit_conversion_result' platform_core/remote_execution_transport.py
           grep -Fq 'conversion_artifact_committed' platform_core/remote_execution_transport.py
           grep -Fq 'created_destination = False' platform_core/remote_execution_transport.py

@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - platform_core/material_ingestion_*.py
       - 'requirements.txt'
       - 'platform_core/secrets.py'
       - 'platform_core/zip_multipart.py'
@@ -164,8 +165,8 @@ jobs:
           grep -Fq 'knownJobs.delete(id)' static/modules/zip-import-runtime.js
           grep -Fq 'DEFAULT_TTL_SECONDS = 24 * 60 * 60' platform_core/zip_multipart.py
           grep -Fq 'cleanup_expired_if_due' platform_core/zip_multipart.py
-          grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' app.py
-          grep -Fq '@app.delete("/api/v19/projects/{project_id}/import/jobs")' app.py
+          grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' platform_core/material_ingestion_service.py
+          grep -Fq "@router.delete('/api/v19/projects/{project_id}/import/jobs')" platform_core/material_ingestion_api.py
           grep -Fq 'window.clearFinishedImportJobs=async' static/app.js
           grep -Fq '>清空已结束</button>' static/app.js
           grep -Fq 'released_bytes' platform_core/zip_multipart.py
@@ -231,10 +232,10 @@ jobs:
         shell: bash
         run: |
           python -m py_compile app.py platform_core/secrets.py platform_core/zip_multipart.py platform_core/storage/import_tasks.py tools/audit_v19_partial_import.py
-          grep -Fq 'class V19MultipartUploadReq' app.py
+          grep -Fq 'class V19MultipartUploadReq' platform_core/material_ingestion_contracts.py
           grep -Fq 'ZipMultipartRepository' app.py
           grep -Fq '正在合并 ZIP 分片' app.py
-          grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' app.py
+          grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' platform_core/material_ingestion_service.py
           grep -Fq 'mapping_labels' platform_core/storage/import_tasks.py
           grep -Fq 'writing_annotations' platform_core/storage/import_tasks.py
           grep -Fq 'SECRET_STORE_UNAVAILABLE' platform_core/secrets.py

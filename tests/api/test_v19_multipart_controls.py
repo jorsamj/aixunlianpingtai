@@ -1,4 +1,5 @@
 """Multipart ZIP upload controls must align UI actions and durable server truth."""
+from platform_core.material_ingestion_service import MaterialIngestionService
 
 import io
 import threading
@@ -74,10 +75,10 @@ def test_legacy_upload_cancel_preserves_nonterminal_server_truth(client, monkeyp
     project_id = _project(client)
     import app as app_module
 
-    monkeypatch.setattr(app_module, '_v19_cancel_import_job', lambda *_args, **_kwargs: {
+    monkeypatch.setattr(MaterialIngestionService, '_v19_cancel_import_job', staticmethod(lambda *_args, **_kwargs: {
         'id': 'racing-upload', 'status': 'merging', 'phase': 'MERGE',
         'cancel_requested': True, 'cleanup_status': 'pending',
-    })
+    }))
     response = client.post(
         f'/api/v19/projects/{project_id}/import/uploads/racing-upload/cancel',
     )
@@ -196,7 +197,7 @@ def test_start_and_cancel_are_serialized_by_the_same_job_fence(client, monkeypat
     entered_start = threading.Event()
     release_start = threading.Event()
     release_worker = threading.Event()
-    original_start = app_module._v19_start_import_job_locked
+    original_start = app_module._material_ingestion_service()._v19_start_import_job_locked
 
     def blocking_start(*args, **kwargs):
         entered_start.set()
@@ -206,7 +207,7 @@ def test_start_and_cancel_are_serialized_by_the_same_job_fence(client, monkeypat
     def parked_worker(*_args, **_kwargs):
         release_worker.wait(5)
 
-    monkeypatch.setattr(app_module, '_v19_start_import_job_locked', blocking_start)
+    monkeypatch.setattr(MaterialIngestionService, '_v19_start_import_job_locked', staticmethod(blocking_start))
     monkeypatch.setattr(app_module, 'v19_import_worker', parked_worker)
 
     start_result = {}
@@ -277,3 +278,67 @@ def test_late_multipart_finalizer_cannot_overwrite_cancelled_terminal_state(clie
     assert durable['status'] == 'cancelled'
     assert durable['phase'] == 'CANCELLED'
     assert durable['cleanup_status'] == 'complete'
+
+
+def test_remaining_material_ingestion_effective_http_contract():
+    import re
+    import app as application
+    from types import SimpleNamespace
+    try:
+        from fastapi.routing import iter_route_contexts
+        contexts = list(iter_route_contexts(application.app.routes))
+    except ImportError:
+        contexts = [SimpleNamespace(path=r.path, original_route=r) for r in application.app.routes if hasattr(r, "path")]
+    expected = [
+        ('get', '/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans/preflight', 'storage_rescan_preflight', None, 'storage_ingestion'),
+        ('post', '/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans', 'create_storage_rescan', None, 'storage_ingestion'),
+        ('get', '/api/v61/projects/{project_id}/storage-rescans/{task_id}', 'get_storage_rescan', None, 'storage_ingestion'),
+        ('post', '/api/v61/projects/{project_id}/storage-rescans/{task_id}/confirm', 'confirm_storage_rescan', 'StorageRescanConfirmReq', 'storage_ingestion'),
+        ('post', '/api/v61/projects/{project_id}/storage-rescans/{task_id}/cancel', 'cancel_storage_rescan', None, 'storage_ingestion'),
+        ('post', '/api/v61/projects/{project_id}/storage-imports/scan', 'create_storage_import_scan', 'StorageImportScanReq', 'storage_ingestion'),
+        ('get', '/api/v61/projects/{project_id}/storage-imports/{task_id}', 'get_storage_import_scan', None, 'storage_ingestion'),
+        ('post', '/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm', 'confirm_storage_import', 'StorageImportConfirmReq', 'storage_ingestion'),
+        ('get', '/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/samples', 'label_review_samples_v61', None, 'storage_ingestion'),
+        ('get', '/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/sample-content', 'label_review_sample_content_v61', None, 'storage_ingestion'),
+        ('post', '/api/projects/{project_id}/images', 'upload_images', None, 'material_ingestion'),
+        ('get', '/api/v19/projects/{project_id}/import/jobs/{job_id}/unannotated', 'v19_unannotated_import_page', None, 'material_ingestion'),
+        ('get', '/api/v19/projects/{project_id}/import/jobs/{job_id}/folders', 'v19_import_folders', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/jobs/{job_id}/retry-folder-classification', 'v19_retry_folder_classification', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/datasets/{dataset_id}/import/uploads', 'v19_create_multipart_upload', 'V19MultipartUploadReq', 'material_ingestion'),
+        ('put', '/api/v19/projects/{project_id}/import/uploads/{upload_id}/parts/{part_number}', 'v19_upload_multipart_part', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/uploads/{upload_id}/pause', 'v19_pause_multipart_upload', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/uploads/{upload_id}/cancel', 'v19_cancel_multipart_upload', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete', 'v19_complete_multipart_upload', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs', 'v19_create_import_job', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/jobs/{job_id}/cancel', 'v19_cancel_import_job', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/jobs/{job_id}/stop', 'v19_stop_import_job', None, 'material_ingestion'),
+        ('post', '/api/v19/projects/{project_id}/import/jobs/{job_id}/start', 'v19_start_import_job', 'V19ImportStartReq', 'material_ingestion'),
+        ('get', '/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/samples', 'v19_label_samples', None, 'material_ingestion'),
+        ('get', '/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/sample-content', 'v19_label_sample_content', None, 'material_ingestion'),
+        ('get', '/api/v19/projects/{project_id}/import/jobs', 'v19_list_import_jobs', None, 'material_ingestion'),
+        ('get', '/api/v19/projects/{project_id}/import/jobs/{job_id}', 'v19_get_import_job', None, 'material_ingestion'),
+        ('delete', '/api/v19/projects/{project_id}/import/jobs', 'v19_clear_terminal_import_jobs', None, 'material_ingestion'),
+        ('delete', '/api/v19/projects/{project_id}/import/jobs/{job_id}', 'v19_delete_import_job', None, 'material_ingestion'),
+        ('get', '/api/v33/projects/{project_id}/video-tasks', 'v33_list_video_tasks', None, 'video_tasks'),
+        ('get', '/api/v33/projects/{project_id}/video-tasks/{task_id}', 'v33_get_video_task', None, 'video_tasks'),
+        ('post', '/api/v33/projects/{project_id}/video-tasks/{task_id}/stop', 'v33_stop_video_task', None, 'video_tasks'),
+        ('post', '/api/v33/projects/{project_id}/video-tasks', 'v33_create_video_task', None, 'video_tasks'),
+        ('post', '/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/scan', 'v36_scan_source_import', 'V36SourceImportScanReq', 'material_ingestion'),
+        ('get', '/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs', 'v36_list_source_import_jobs', None, 'material_ingestion'),
+        ('post', '/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs', 'v36_start_source_import_job', 'V36SourceImportStartReq', 'material_ingestion'),
+        ('get', '/api/v55/projects/{project_id}/upload-batches/{batch_id}', 'v55_get_upload_batch', None, 'material_ingestion'),
+        ('post', '/api/v55/projects/{project_id}/upload-batches/{batch_id}/decisions', 'v55_apply_upload_batch_decisions', 'V55UploadDecisionsReq', 'material_ingestion'),
+        ('get', '/api/v64/projects/{project_id}/detection-batches', 'list_detection_batches', None, 'detection_batches'),
+        ('get', '/api/v64/projects/{project_id}/detection-batches/{batch_id}', 'get_detection_batch', None, 'detection_batches'),
+        ('post', '/api/v64/projects/{project_id}/detection-batches/{batch_id}/items/{item_index}/review', 'review_detection_batch_item', 'DetectionBatchReviewReq', 'detection_batches'),
+        ('get', '/api/v52/projects/{project_id}/import/jobs/{job_id}/review', 'v52_import_review', None, 'material_ingestion'),
+    ]
+    schema = application.app.openapi()
+    for method, path, name, payload, owner in expected:
+        operation = schema["paths"][path][method]
+        assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
+        matches = [c.original_route for c in contexts if c.path == path and method.upper() in getattr(c.original_route, "methods", set())]
+        assert len(matches) == 1
+        assert matches[0].endpoint.__module__ == "platform_core." + owner + "_api"
+        if payload:
+            assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/" + payload

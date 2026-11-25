@@ -1,4 +1,5 @@
 """v19 scan confirmation freezes upload kind independently from formal GT."""
+from platform_core.material_ingestion_service import MaterialIngestionService
 import copy
 import threading
 
@@ -19,7 +20,7 @@ def test_new_classless_zip_waits_for_kind_and_freezes_negative_category(tmp_path
     monkeypatch.setattr(api, 'material_store', lambda _: repository)
     monkeypatch.setattr(api, 'v19_read_job', lambda *_: copy.deepcopy(job))
     monkeypatch.setattr(api, 'v19_write_job', lambda _, updated, **__: job.update(copy.deepcopy(updated)))
-    monkeypatch.setattr(api, 'v19_public_job', lambda _, updated: dict(updated))
+    monkeypatch.setattr(MaterialIngestionService, 'v19_public_job', staticmethod(lambda _, updated: dict(updated)))
     monkeypatch.setattr(api, 'v19_import_jobs_dir', lambda _: tmp_path)
     monkeypatch.setattr(api, 'v19_read_import_report', lambda *_: {'imported_image_ids': []})
     monkeypatch.setattr(threading.Thread, 'start', lambda _: None)

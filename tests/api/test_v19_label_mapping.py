@@ -1,3 +1,4 @@
+from platform_core.material_ingestion_service import MaterialIngestionService
 import io
 import json
 import time
@@ -515,7 +516,7 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
     assert created.status_code == 200, created.text
     job = created.json()
 
-    original = app_module._v19_assert_frozen_mapping_targets_active
+    original = app_module._material_ingestion_service()._v19_assert_frozen_mapping_targets_active
     calls = {"count": 0}
     captured_image_ids = []
 
@@ -533,9 +534,9 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
         return original(project_id, mapping)
 
     monkeypatch.setattr(
-        app_module,
+        MaterialIngestionService,
         "_v19_assert_frozen_mapping_targets_active",
-        change_label_before_final_check,
+        staticmethod(change_label_before_final_check),
     )
     started = client.post(
         f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",

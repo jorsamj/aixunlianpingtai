@@ -1,4 +1,7 @@
 from __future__ import annotations
+from platform_core.storage_ingestion_service import StorageIngestionService
+import platform_core.material_ingestion_service as material_ingestion_owner
+import platform_core.storage_ingestion_service as storage_ingestion_owner
 
 import io
 import uuid
@@ -697,15 +700,15 @@ def test_agent_yolo_storage_rescan_uses_same_durable_owner_and_format_contract(
             }
 
     monkeypatch.setattr(
-        app_module,
+        StorageIngestionService,
         "_storage_rescan_agent_preflight",
-        lambda _project_id, _source_id: {
+        staticmethod(lambda _project_id, _source_id: {
             "agent_available": True,
             "reason": "",
             "agent_supported_formats": ["images", "yolo"],
             "local_supported_formats": ["images", "yolo"],
             "eligible_nodes": [{"node_id": "agent-1", "display_name": "Agent 1"}],
-        },
+        }),
     )
     monkeypatch.setattr(
         app_module,
@@ -803,6 +806,8 @@ def test_yolo_rescan_confirmation_freezes_intent_after_explicit_label_creation(
 
     monkeypatch.setattr(rescan_tasks, "confirm_rescan", fake_confirm)
     monkeypatch.setattr(app_module, "resolve_external_label_mapping", fake_resolve)
+    monkeypatch.setattr(material_ingestion_owner, 'resolve_external_label_mapping', app_module.resolve_external_label_mapping)
+    monkeypatch.setattr(storage_ingestion_owner, 'resolve_external_label_mapping', app_module.resolve_external_label_mapping)
     monkeypatch.setattr(app_module, "ensure_label", fake_ensure_label)
 
     response = client.post(
@@ -864,15 +869,15 @@ def test_agent_coco_storage_rescan_uses_same_durable_owner_and_format_contract(
             }
 
     monkeypatch.setattr(
-        app_module,
+        StorageIngestionService,
         "_storage_rescan_agent_preflight",
-        lambda _project_id, _source_id: {
+        staticmethod(lambda _project_id, _source_id: {
             "agent_available": True,
             "reason": "",
             "agent_supported_formats": ["images", "yolo", "coco"],
             "local_supported_formats": ["images", "yolo", "coco"],
             "eligible_nodes": [{"node_id": "agent-1", "display_name": "Agent 1"}],
-        },
+        }),
     )
     monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: FakeTransport())
 
@@ -936,15 +941,15 @@ def test_agent_voc_storage_rescan_uses_same_durable_owner_and_product_contract(
             }
 
     monkeypatch.setattr(
-        app_module,
+        StorageIngestionService,
         "_storage_rescan_agent_preflight",
-        lambda _project_id, _source_id: {
+        staticmethod(lambda _project_id, _source_id: {
             "agent_available": True,
             "reason": "",
             "agent_supported_formats": ["images", "yolo", "coco", "voc"],
             "local_supported_formats": ["images", "yolo", "coco", "voc"],
             "eligible_nodes": [{"node_id": "agent-voc", "display_name": "VOC Agent"}],
-        },
+        }),
     )
     monkeypatch.setattr(
         app_module,

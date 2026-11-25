@@ -2071,64 +2071,10 @@ class StorageSourceUpdateReq(BaseModel):
     enabled: Optional[bool] = None
 
 
-class StorageImportScanReq(BaseModel):
-    mode: Literal["storage_scan", "directory_scan", "server_zip"] = "storage_scan"
-    execution_mode: Literal["local", "agent"] = "local"
-    storage_source_id: str
-    prefix: str = ""
-    recursive: bool = True
-    zip_path: Optional[str] = None
-    target_prefix: str = ""
-    import_format: Literal['auto', 'images', 'yolo', 'coco', 'voc'] = 'images'
-    dataset_yaml: Optional[str] = None
-
-    @model_validator(mode="after")
-    def validate_mode_fields(self):
-        if self.import_format in {'coco', 'voc'} and not (
-            self.execution_mode == "agent"
-            and self.mode in {"storage_scan", "server_zip"}
-        ):
-            raise ValueError('COCO/VOC 当前仅支持远程 Agent 的对象存储目录或服务器 ZIP 导入')
-        if self.dataset_yaml:
-            value = self.dataset_yaml.replace('\\', '/')
-            if value.startswith('/') or ':' in value or '..' in value.split('/'):
-                raise ValueError('dataset_yaml 必须是存储源内的相对路径')
-            if self.import_format != 'yolo':
-                raise ValueError('只有 YOLO 模式可以提交 dataset_yaml')
-        zip_path = str(self.zip_path or "").strip()
-        target_prefix = str(self.target_prefix or "").strip()
-        if self.execution_mode == "agent":
-            if self.mode not in {"server_zip", "storage_scan"}:
-                raise ValueError("Agent 素材导入仅支持对象存储扫描或服务器 ZIP 模式")
-            allowed_formats = {"images", "yolo", "coco", "voc"}
-            if self.import_format not in allowed_formats:
-                raise ValueError("Agent 当前模式不支持所选素材格式")
-            if self.import_format == "images" and self.dataset_yaml:
-                raise ValueError("Agent 仅图片模式不接受 dataset_yaml")
-            if self.dataset_yaml:
-                try:
-                    safe_member_path(str(self.dataset_yaml)).as_posix()
-                except ServerZipImportError as error:
-                    raise ValueError("Agent dataset_yaml 必须是扫描目录或 ZIP 根内的安全相对路径") from error
-        if self.mode == "server_zip":
-            if not zip_path:
-                raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
-            if not target_prefix:
-                raise ValueError("服务器 ZIP 模式必须填写目标目录")
-            if str(self.prefix or "").strip():
-                raise ValueError("服务器 ZIP 模式不能同时提交扫描目录")
-        elif zip_path:
-            raise ValueError("非服务器 ZIP 模式不能提交 ZIP 文件")
-        elif target_prefix:
-            raise ValueError("非服务器 ZIP 模式不能提交 ZIP 目标目录")
-        return self
+from platform_core.storage_ingestion_contracts import StorageImportScanReq
 
 
-class StorageImportConfirmReq(BaseModel):
-    object_keys: Optional[List[str]] = None
-    label_mapping: Dict[str, str] = Field(default_factory=dict)
-    create_labels: List[str] = Field(default_factory=list)
-    accept_quality_report: bool = False
+from platform_core.storage_ingestion_contracts import StorageImportConfirmReq
 
 
 def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) -> str:
@@ -2471,40 +2417,14 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
     }
 
 
-class StorageRescanCreateReq(BaseModel):
-    execution_mode: Literal["local", "agent"] = "local"
-    import_format: Literal["images", "yolo", "coco", "voc"] = "images"
-    dataset_yaml: str = ""
-
-    @model_validator(mode="after")
-    def validate_rescan_format(self):
-        self.dataset_yaml = str(self.dataset_yaml or "").strip().replace("\\", "/")
-        if self.import_format != "yolo" and self.dataset_yaml:
-            raise ValueError("dataset_yaml 仅适用于 YOLO 重新扫描")
-        return self
+from platform_core.storage_ingestion_contracts import StorageRescanCreateReq
 
 
-class StorageRescanConfirmReq(BaseModel):
-    new: Literal['import', 'ignore'] = 'import'
-    missing: Literal['mark_unavailable', 'ignore'] = 'mark_unavailable'
-    changed: Literal['update', 'ignore'] = 'update'
-    annotation_changed: Literal['update', 'ignore'] = 'update'
-    annotation_removed: Literal['clear', 'keep'] = 'keep'
-    annotation_conflicts: Literal['overwrite', 'keep'] = 'keep'
-    label_mapping: Dict[str, str] = Field(default_factory=dict)
-    create_labels: List[str] = Field(default_factory=list)
-    accept_quality_report: bool = False
+from platform_core.storage_ingestion_contracts import StorageRescanConfirmReq
 
 
 def _storage_rescan_task(project_id: str, task_id: str):
-    get_project(project_id)
-    task = shared_task_repository().get(task_id)
-    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
-        raise HTTPException(status_code=404, detail='重扫描任务不存在')
-    request = shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
-    if request.get('mode') != 'storage_rescan':
-        raise HTTPException(status_code=404, detail='重扫描任务不存在')
-    return task
+    return _storage_ingestion_service()._storage_rescan_task(project_id, task_id)
 
 
 def _public_storage_rescan(task):
@@ -2563,429 +2483,73 @@ def _public_storage_rescan(task):
 
 
 def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str, Any]:
-    get_project(project_id)
-    source = storage_source_repository().get(source_id)
-    if source is None:
-        return {'agent_available': False, 'reason': '存储源不存在', 'eligible_nodes': []}
-    if not source.enabled:
-        return {'agent_available': False, 'reason': '存储源已停用', 'eligible_nodes': []}
-    try:
-        source_type = StorageType.parse(source.type)
-    except ValueError:
-        return {'agent_available': False, 'reason': '存储源类型无效', 'eligible_nodes': []}
-    if source_type not in {StorageType.OSS, StorageType.S3}:
-        return {
-            'agent_available': False,
-            'reason': '远程重扫描仅支持 OSS / S3 / MinIO 对象存储',
-            'eligible_nodes': [],
-        }
-    nodes = [
-        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
-        if str(node.get('connection_mode') or '') == 'agent'
-        and bool(node.get('online'))
-        and 'material-import' in set(node.get('effective_capabilities') or [])
-    ]
-    if not nodes:
-        return {
-            'agent_available': False,
-            'reason': '当前没有在线且已授权素材导入能力的 Agent 节点',
-            'eligible_nodes': [],
-        }
-    try:
-        _remote_execution_transport_service().stage_material_storage_scan(
-            project_id=project_id,
-            task_id='storage-rescan-preflight',
-            storage_source_id=source_id,
-            prefix='',
-            recursive=True,
-            import_format='images',
-            allow_root=True,
-            intent='storage_rescan',
-        )
-    except RemoteExecutionTransportError as error:
-        return {'agent_available': False, 'reason': str(error), 'eligible_nodes': []}
-    return {
-        'agent_available': True,
-        'reason': '',
-        'agent_supported_formats': ['images', 'yolo', 'coco', 'voc'],
-        'local_supported_formats': ['images', 'yolo', 'coco', 'voc'],
-        'eligible_nodes': [
-            {
-                'node_id': str(node.get('node_id') or ''),
-                'display_name': str(node.get('display_name') or ''),
-                'build_id': str(node.get('build_id') or ''),
-            }
-            for node in nodes
-        ],
-    }
+    return _storage_ingestion_service()._storage_rescan_agent_preflight(project_id, source_id)
 
 
-@app.get('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans/preflight')
+from platform_core.storage_ingestion_service import StorageIngestionDependencies, StorageIngestionService
+from platform_core.storage_ingestion_api import create_storage_ingestion_router_1
+
+
+def _storage_ingestion_service() -> StorageIngestionService:
+    return StorageIngestionService(StorageIngestionDependencies(
+        DATA_DIR=lambda: DATA_DIR,
+        _authorize_business_file_project=lambda *args, **kwargs: _authorize_business_file_project(*args, **kwargs),
+        _label_sample_content_type=lambda *args, **kwargs: _label_sample_content_type(*args, **kwargs),
+        _public_storage_import_task=lambda *args, **kwargs: _public_storage_import_task(*args, **kwargs),
+        _public_storage_import_text=lambda *args, **kwargs: _public_storage_import_text(*args, **kwargs),
+        _public_storage_rescan=lambda *args, **kwargs: _public_storage_rescan(*args, **kwargs),
+        _raise_file_storage_error=lambda *args, **kwargs: _raise_file_storage_error(*args, **kwargs),
+        _remote_execution_transport_service=lambda *args, **kwargs: _remote_execution_transport_service(*args, **kwargs),
+        _storage_source_fence=lambda *args, **kwargs: _storage_source_fence(*args, **kwargs),
+        _storage_source_runtime_generation=lambda *args, **kwargs: _storage_source_runtime_generation(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        project_label_items=lambda *args, **kwargs: project_label_items(*args, **kwargs),
+        remember_project_label_aliases=lambda *args, **kwargs: remember_project_label_aliases(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+        storage_manager=lambda *args, **kwargs: storage_manager(*args, **kwargs),
+        storage_source_repository=lambda *args, **kwargs: storage_source_repository(*args, **kwargs),
+    ))
+
+
+app.include_router(create_storage_ingestion_router_1(_storage_ingestion_service))
+
+
 def storage_rescan_preflight(project_id: str, source_id: str):
-    result = _storage_rescan_agent_preflight(project_id, source_id)
-    result.setdefault('agent_supported_formats', [])
-    result.setdefault('local_supported_formats', ['images', 'yolo', 'coco', 'voc'])
-    return {
-        'local_available': True,
-        'default_execution_mode': 'local',
-        **result,
-    }
+    return _storage_ingestion_service().storage_rescan_preflight(project_id, source_id)
 
 
-@app.post('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans', status_code=202)
-def create_storage_rescan(
-    project_id: str,
-    source_id: str,
-    payload: Optional[StorageRescanCreateReq] = None,
-):
-    get_project(project_id)
-    source = storage_source_repository().get(source_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail='存储源不存在')
-    if not source.enabled:
-        raise HTTPException(status_code=409, detail='存储源已停用')
-    request = payload or StorageRescanCreateReq()
-    execution_mode = str(request.execution_mode or 'local')
-    task_id = uuid.uuid4().hex[:12]
-    import_format = str(request.import_format or 'images')
-    request_payload: Dict[str, Any] = {
-        'mode': 'storage_rescan',
-        'execution_mode': execution_mode,
-        'storage_source_id': source_id,
-        'import_format': import_format,
-        'dataset_yaml': str(request.dataset_yaml or ''),
-    }
-    capabilities = ('storage.rescan',)
-    resource_key = f'storage:{source_id}'
-    if execution_mode == 'agent':
-        preflight = _storage_rescan_agent_preflight(project_id, source_id)
-        if not preflight.get('agent_available'):
-            raise HTTPException(
-                status_code=409,
-                detail=str(preflight.get('reason') or '远程重扫描当前不可用'),
-            )
-        try:
-            request_payload['remote_execution'] = (
-                _remote_execution_transport_service().stage_material_storage_scan(
-                    project_id=project_id,
-                    task_id=task_id,
-                    storage_source_id=source_id,
-                    prefix='',
-                    recursive=True,
-                    import_format=import_format,
-                    dataset_yaml=str(request.dataset_yaml or ''),
-                    allow_root=True,
-                    intent='storage_rescan',
-                )
-            )
-        except RemoteExecutionTransportError as error:
-            raise PlatformError(
-                code=error.code,
-                message='远程存储重扫描准备失败',
-                detail=str(error),
-                solution='请检查对象存储连接和远程素材节点后重试。',
-                status_code=error.status_code,
-            ) from error
-        capabilities = ('agent.remote',)
-        resource_key = f'material-rescan:agent:{source_id}'
-
-    with _storage_source_fence():
-        admitted_source = storage_source_repository().get(source_id)
-        if (
-            admitted_source is None
-            or not admitted_source.enabled
-            or _storage_source_runtime_generation(admitted_source)
-            != _storage_source_runtime_generation(source)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail='存储源配置在任务准备期间已变化，请刷新后重试',
-            )
-        manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
-        store = RescanCandidateStore(manifest)
-        store.set_meta(
-            'source_fingerprint',
-            hashlib.sha256(json.dumps(
-                [admitted_source.id, admitted_source.type, admitted_source.config],
-                sort_keys=True,
-            ).encode()).hexdigest(),
-        )
-        material_store(project_id).snapshot_storage_references(manifest, source_id)
-        shared_task_artifacts().atomic_write_json(task_id, 'request.json', request_payload)
-        task = shared_task_repository().create(TaskRecord.new(
-            task_id,
-            project_id,
-            TaskKind.MATERIAL_IMPORT,
-            'request.json',
-            resource_key,
-            required_capabilities=capabilities,
-        ))
-    return _public_storage_rescan(task)
+def create_storage_rescan(project_id: str, source_id: str, payload: Optional[StorageRescanCreateReq]=None):
+    return _storage_ingestion_service().create_storage_rescan(project_id, source_id, payload)
 
 
-@app.get('/api/v61/projects/{project_id}/storage-rescans/{task_id}')
 def get_storage_rescan(project_id: str, task_id: str):
-    return _public_storage_rescan(_storage_rescan_task(project_id, task_id))
+    return _storage_ingestion_service().get_storage_rescan(project_id, task_id)
 
 
-@app.post('/api/v61/projects/{project_id}/storage-rescans/{task_id}/confirm', status_code=202)
 def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescanConfirmReq):
-    from platform_core.storage.rescan_tasks import confirm_rescan
-    task = _storage_rescan_task(project_id, task_id)
-    if task.status is not TaskStatus.AWAITING_CONFIRMATION and task.accepted is not True:
-        raise HTTPException(status_code=409, detail='重扫描尚未进入待确认状态')
-    artifacts = shared_task_artifacts()
-    request = artifacts.read_json(task_id, task.payload_ref, default={})
-    import_format = str(request.get('import_format') or 'images')
-    policy = {
-        'new': payload.new,
-        'missing': payload.missing,
-        'changed': payload.changed,
-        'annotation_changed': payload.annotation_changed,
-        'annotation_removed': payload.annotation_removed,
-        'annotation_conflicts': payload.annotation_conflicts,
-    }
-    annotation_confirmation = None
-    try:
-        if payload.create_labels:
-            raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
-        if import_format in {'yolo', 'coco', 'voc'}:
-            manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
-            store = RescanCandidateStore(manifest)
-            quality = store.quality_summary()
-            if quality.get('issues') and not payload.accept_quality_report:
-                raise ValueError('请先确认并接受标注数据质量报告')
-            project = get_project(project_id)
-            external_classes = store.external_classes()
-            resolved, _ = resolve_external_label_mapping(
-                external_classes,
-                label_mapping=payload.label_mapping,
-                create_labels=[],
-                labels=project_label_items(project),
-            )
-            annotation_confirmation = {
-                'label_mapping': resolved,
-                'create_labels': [],
-                'external_classes': [
-                    {'class_id': str(row.get('class_id')), 'name': str(row.get('name') or '')}
-                    for row in external_classes
-                ],
-                'accept_quality_report': payload.accept_quality_report,
-            }
-        elif payload.label_mapping:
-            raise ValueError('仅标注重新扫描允许提交外部类别映射')
-        confirm_rescan(
-            artifacts,
-            task_id,
-            policy,
-            annotation_confirmation=annotation_confirmation,
-        )
-        if annotation_confirmation:
-            remember_project_label_aliases(
-                project_id,
-                annotation_confirmation.get('external_classes') or [],
-                annotation_confirmation.get('label_mapping') or {},
-            )
-        task = shared_task_repository().resume_after_confirmation(
-            task_id,
-            required_capabilities=('storage.rescan',),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return _public_storage_rescan(task)
+    return _storage_ingestion_service().confirm_storage_rescan(project_id, task_id, payload)
 
 
-@app.post('/api/v61/projects/{project_id}/storage-rescans/{task_id}/cancel')
 def cancel_storage_rescan(project_id: str, task_id: str):
-    _storage_rescan_task(project_id, task_id)
-    return _public_storage_rescan(shared_task_repository().request_cancel(task_id))
+    return _storage_ingestion_service().cancel_storage_rescan(project_id, task_id)
 
 
-@app.post("/api/v61/projects/{project_id}/storage-imports/scan", status_code=202)
 def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
-    get_project(project_id)
-    source = storage_source_repository().get(payload.storage_source_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="存储源不存在")
-    if not source.enabled:
-        raise HTTPException(status_code=409, detail="存储源已停用")
-    source_type = StorageType.parse(source.type)
-    if payload.mode == "directory_scan" and source_type is not StorageType.LOCAL:
-        raise HTTPException(status_code=422, detail="目录扫描只能使用已启用的本地存储")
-    if (
-        payload.mode == "server_zip"
-        and payload.execution_mode == "local"
-        and source_type is not StorageType.LOCAL
-    ):
-        raise HTTPException(status_code=422, detail="本地服务器 ZIP 导入只能使用本地目标存储")
-    if (
-        payload.execution_mode == "agent"
-        and payload.mode in {"server_zip", "storage_scan"}
-        and source_type not in {StorageType.OSS, StorageType.S3}
-    ):
-        raise HTTPException(status_code=422, detail="Agent 素材导入必须选择 OSS/S3/MinIO 对象存储")
-    request_payload = payload.model_dump(mode="json")
-    resolved_zip = None
-    if payload.mode == "server_zip":
-        relative_zip = str(payload.zip_path or "").strip()
-        try:
-            resolved_zip = resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
-            target_prefix = safe_member_path(
-                str(payload.target_prefix or "").strip()
-            ).as_posix()
-        except ServerZipImportError as error:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": error.code,
-                    "message": _public_storage_import_text(error.message),
-                    "detail": _public_storage_import_text(error.detail),
-                    "solution": _public_storage_import_text(error.solution),
-                },
-            ) from error
-        request_payload["zip_path"] = relative_zip
-        request_payload["target_prefix"] = target_prefix
-    task_id = uuid.uuid4().hex[:12]
-    if payload.execution_mode == "agent":
-        try:
-            transport = _remote_execution_transport_service()
-            if payload.mode == "storage_scan":
-                request_payload["remote_execution"] = transport.stage_material_storage_scan(
-                    project_id=project_id,
-                    task_id=task_id,
-                    storage_source_id=source.id,
-                    prefix=str(payload.prefix or ""),
-                    recursive=bool(payload.recursive),
-                    import_format=payload.import_format,
-                    dataset_yaml=str(payload.dataset_yaml or ""),
-                )
-            else:
-                request_payload["remote_execution"] = transport.stage_material_import(
-                    project_id=project_id,
-                    task_id=task_id,
-                    archive_path=resolved_zip,
-                    storage_source_id=source.id,
-                    target_prefix=request_payload["target_prefix"],
-                    import_format=payload.import_format,
-                    dataset_yaml=str(payload.dataset_yaml or ""),
-                )
-        except RemoteExecutionTransportError as error:
-            raise PlatformError(
-                code=error.code,
-                message="远程素材导入准备失败",
-                detail=str(error),
-                solution="请检查目标对象存储、服务器 ZIP 文件和访问凭据后重试。",
-                status_code=error.status_code,
-            ) from error
-    with _storage_source_fence():
-        admitted_source = storage_source_repository().get(source.id)
-        if (
-            admitted_source is None
-            or not admitted_source.enabled
-            or _storage_source_runtime_generation(admitted_source)
-            != _storage_source_runtime_generation(source)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="存储源配置在任务准备期间已变化，请刷新后重试",
-            )
-        shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
-        task = shared_task_repository().create(TaskRecord.new(
-            task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
-            (
-                f"material-import:agent:{source.id}"
-                if payload.execution_mode == "agent"
-                else f"storage:{source.id}"
-            ),
-            required_capabilities=(
-                ("agent.remote",)
-                if payload.execution_mode == "agent"
-                else ("storage.import",)
-            ),
-        ))
-    return _public_storage_import_task(task)
+    return _storage_ingestion_service().create_storage_import_scan(project_id, payload)
 
 
-@app.get("/api/v61/projects/{project_id}/storage-imports/{task_id}")
 def get_storage_import_scan(project_id: str, task_id: str):
-    get_project(project_id)
-    task = shared_task_repository().get(task_id)
-    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
-        raise HTTPException(status_code=404, detail="存储导入任务不存在")
-    return _public_storage_import_task(task)
+    return _storage_ingestion_service().get_storage_import_scan(project_id, task_id)
 
 
-@app.post("/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm", status_code=202)
 def confirm_storage_import(project_id: str, task_id: str, payload: StorageImportConfirmReq):
-    request_task = shared_task_repository().get(task_id)
-    if request_task and request_task.project_id == project_id:
-        request = shared_task_artifacts().read_json(task_id, request_task.payload_ref, default={})
-        if request.get('mode') == 'storage_rescan':
-            raise HTTPException(status_code=409, detail='请使用重扫描确认接口选择恢复策略')
-    get_project(project_id)
-    task = shared_task_repository().get(task_id)
-    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
-        raise HTTPException(status_code=404, detail="存储导入任务不存在")
-    repeatable = (
-        task.accepted is True
-        and task.status in {
-            TaskStatus.QUEUED, TaskStatus.RUNNING,
-            TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS,
-        }
-    )
-    if task.status is not TaskStatus.AWAITING_CONFIRMATION and not repeatable:
-        raise HTTPException(status_code=409, detail="存储扫描尚未进入待确认状态")
-
-    artifacts = shared_task_artifacts()
-    manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
-    scan_result = artifacts.read_json(task_id, "scan/result.json", default=None)
-    if not manifest.is_file() and not (
-        isinstance(scan_result, dict) and isinstance(scan_result.get("candidates"), list)
-    ):
-        raise HTTPException(status_code=409, detail="存储扫描候选清单不存在")
-    candidate_store = ImportCandidateStore(manifest)
-    load_legacy_candidates(artifacts, task_id, candidate_store)
-    try:
-        if payload.create_labels:
-            raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
-        project = get_project(project_id)
-        confirmation = confirm_import(candidate_store, artifacts, task_id,
-            object_keys=payload.object_keys, label_mapping=payload.label_mapping,
-            create_labels=[], accept_quality_report=payload.accept_quality_report,
-            labels=project_label_items(project), create_label=None)
-        remember_project_label_aliases(
-            project_id,
-            confirmation.get('external_classes') or [],
-            confirmation.get('label_mapping') or {},
-        )
-        updated = shared_task_repository().resume_after_confirmation(
-            task_id,
-            required_capabilities=("storage.import",),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return _public_storage_import_task(updated)
+    return _storage_ingestion_service().confirm_storage_import(project_id, task_id, payload)
 
 
 def _label_review_candidate_store(project_id: str, task_id: str):
-    get_project(project_id)
-    task = shared_task_repository().get(task_id)
-    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
-        raise HTTPException(status_code=404, detail="标签审查任务不存在")
-    artifacts = shared_task_artifacts()
-    request = artifacts.read_json(task_id, task.payload_ref, default={})
-    mode = str(request.get("mode") or "storage_scan")
-    if mode not in {"storage_scan", "directory_scan", "server_zip", "storage_rescan"}:
-        raise HTTPException(status_code=404, detail="标签审查任务不存在")
-    manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
-    if not manifest.is_file():
-        scan_result = artifacts.read_json(task_id, "scan/result.json", default={})
-        if isinstance(scan_result, dict) and isinstance(scan_result.get("candidates"), list):
-            store = ImportCandidateStore(manifest)
-            load_legacy_candidates(artifacts, task_id, store)
-        else:
-            raise HTTPException(status_code=409, detail="标签审查候选清单尚未就绪")
-    return task, request, ImportCandidateStore(manifest)
+    return _storage_ingestion_service()._label_review_candidate_store(project_id, task_id)
 
 
 def _label_sample_content_type(filename: str) -> str:
@@ -2993,86 +2557,12 @@ def _label_sample_content_type(filename: str) -> str:
     return detected if detected.startswith("image/") else "application/octet-stream"
 
 
-@app.get("/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/samples")
-def label_review_samples_v61(
-    project_id: str,
-    task_id: str,
-    class_id: str,
-    limit: int = Query(default=8, ge=1, le=12),
-):
-    _task, _request, store = _label_review_candidate_store(project_id, task_id)
-    samples = store.external_class_samples(class_id, limit=limit)
-    result = []
-    for sample in samples:
-        object_key = str(sample.get("object_key") or "")
-        content_url = (
-            f"/api/v61/projects/{quote(project_id, safe='')}/label-review/"
-            f"{quote(task_id, safe='')}/classes/{quote(str(class_id), safe='')}/sample-content"
-            f"?object_key={quote(object_key, safe='')}"
-        )
-        result.append({
-            "object_key": object_key,
-            "filename": str(sample.get("filename") or Path(object_key).name),
-            "width": max(0, int(sample.get("width") or 0)),
-            "height": max(0, int(sample.get("height") or 0)),
-            "bbox": {
-                "cx": float(sample.get("cx") or 0),
-                "cy": float(sample.get("cy") or 0),
-                "w": float(sample.get("w") or 0),
-                "h": float(sample.get("h") or 0),
-                "clipped": bool(sample.get("clipped")),
-            },
-            "preview_url": content_url,
-            "content_url": content_url,
-        })
-    return {
-        "task_id": task_id,
-        "class_id": str(class_id),
-        "count": len(result),
-        "samples": result,
-    }
+def label_review_samples_v61(project_id: str, task_id: str, class_id: str, limit: int=Query(default=8, ge=1, le=12)):
+    return _storage_ingestion_service().label_review_samples_v61(project_id, task_id, class_id, limit)
 
 
-@app.get("/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/sample-content")
-def label_review_sample_content_v61(
-    project_id: str,
-    task_id: str,
-    class_id: str,
-    object_key: str = Query(..., min_length=1, max_length=4096),
-):
-    _authorize_business_file_project(project_id)
-    _task, _request, store = _label_review_candidate_store(project_id, task_id)
-    sample = store.external_class_sample(class_id, object_key)
-    if sample is None:
-        raise HTTPException(status_code=404, detail="该对象不属于当前外部标签样本")
-    try:
-        provider = storage_manager(project_id).provider_for(
-            str(sample.get("storage_source_id") or "")
-        )
-        stream = provider.open_reader(str(sample["object_key"]))
-    except StorageError as error:
-        _raise_file_storage_error(
-            error,
-            status_code=404 if error.code == "STORAGE_OBJECT_NOT_FOUND" else 503,
-        )
-
-    def body():
-        try:
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
-
-    return StreamingResponse(
-        body(),
-        media_type=_label_sample_content_type(str(sample.get("filename") or "")),
-        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
-    )
+def label_review_sample_content_v61(project_id: str, task_id: str, class_id: str, object_key: str=Query(..., min_length=1, max_length=4096)):
+    return _storage_ingestion_service().label_review_sample_content_v61(project_id, task_id, class_id, object_key)
 
 
 def _material_legacy_zip_batch_ids(project_id, source_batch_id):
@@ -5031,33 +4521,76 @@ def _plain_upload_assert_source_generation(
         )
 
 
-@app.post("/api/projects/{project_id}/images")
-async def upload_images(
-    project_id: str, files: List[UploadFile] = File(...),
-    dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
-    upload_request_id: Optional[str] = Form(None),
-    mining_algorithm_id: str = Form(""), mining_version_id: str = Form(""),
-):
-    request_id = str(upload_request_id or "").strip()
-    if request_id:
-        store = upload_batch_store(project_id)
-        try:
-            async with store.claim_upload_request(request_id):
-                return await _plain_upload_images_claimed(
-                    project_id, files, dataset_id, storage_source_id, request_id,
-                    mining_algorithm_id, mining_version_id,
-                )
-        except UploadRequestBusy as error:
-            raise PlatformError(
-                "UPLOAD_REQUEST_IN_PROGRESS", "该上传请求正在执行",
-                str(error), "请等待已有请求完成，不要重复提交", 409,
-            ) from error
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-    return await _plain_upload_images_claimed(
-        project_id, files, dataset_id, storage_source_id, None,
-        mining_algorithm_id, mining_version_id,
-    )
+from platform_core.material_ingestion_service import MaterialIngestionDependencies, MaterialIngestionService
+from platform_core.material_ingestion_api import create_material_ingestion_router_1, create_material_ingestion_router_2, create_material_ingestion_router_3, create_material_ingestion_router_4, create_material_ingestion_router_5
+
+
+def _material_ingestion_service() -> MaterialIngestionService:
+    return MaterialIngestionService(MaterialIngestionDependencies(
+        V19_ZIP_PHASE_LABELS=lambda: V19_ZIP_PHASE_LABELS,
+        V19_ZIP_PHASE_WINDOWS=lambda: V19_ZIP_PHASE_WINDOWS,
+        V36_ANNOTATED_IMPORT_BLOCKED_DETAIL=lambda: V36_ANNOTATED_IMPORT_BLOCKED_DETAIL,
+        _authorize_business_file_project=lambda *args, **kwargs: _authorize_business_file_project(*args, **kwargs),
+        _plain_upload_images_claimed=lambda *args, **kwargs: _plain_upload_images_claimed(*args, **kwargs),
+        _v19_cleanup_uncommitted_job=lambda *args, **kwargs: _v19_cleanup_uncommitted_job(*args, **kwargs),
+        _v19_fifo_import_jobs=lambda *args, **kwargs: _v19_fifo_import_jobs(*args, **kwargs),
+        _v19_fifo_queue_position=lambda *args, **kwargs: _v19_fifo_queue_position(*args, **kwargs),
+        _v19_finish_cancel=lambda *args, **kwargs: _v19_finish_cancel(*args, **kwargs),
+        _v19_job_record_token=lambda *args, **kwargs: _v19_job_record_token(*args, **kwargs),
+        _v19_multipart_repository=lambda *args, **kwargs: _v19_multipart_repository(*args, **kwargs),
+        _v19_prepare_scan=lambda *args, **kwargs: _v19_prepare_scan(*args, **kwargs),
+        _v19_recover_multipart_finalize=lambda *args, **kwargs: _v19_recover_multipart_finalize(*args, **kwargs),
+        _v19_schedule_multipart_finalize=lambda *args, **kwargs: _v19_schedule_multipart_finalize(*args, **kwargs),
+        _v19_stop_fence=lambda *args, **kwargs: _v19_stop_fence(*args, **kwargs),
+        _v19_store_folder_scan=lambda *args, **kwargs: _v19_store_folder_scan(*args, **kwargs),
+        _v19_write_job_locked=lambda *args, **kwargs: _v19_write_job_locked(*args, **kwargs),
+        _v33_get_task=lambda *args, **kwargs: _v33_get_task(*args, **kwargs),
+        _v36_detect_source_annotation_formats=lambda *args, **kwargs: _v36_detect_source_annotation_formats(*args, **kwargs),
+        _v36_is_url=lambda *args, **kwargs: _v36_is_url(*args, **kwargs),
+        _v36_load_source_jobs=lambda *args, **kwargs: _v36_load_source_jobs(*args, **kwargs),
+        _v36_normalize_source=lambda *args, **kwargs: _v36_normalize_source(*args, **kwargs),
+        _v36_run_source_import=lambda *args, **kwargs: _v36_run_source_import(*args, **kwargs),
+        _v36_scan_local_root=lambda *args, **kwargs: _v36_scan_local_root(*args, **kwargs),
+        _v36_scan_url=lambda *args, **kwargs: _v36_scan_url(*args, **kwargs),
+        _v36_write_source_job=lambda *args, **kwargs: _v36_write_source_job(*args, **kwargs),
+        _v47_remove_prepared_clean_task_record=lambda *args, **kwargs: _v47_remove_prepared_clean_task_record(*args, **kwargs),
+        _v47_reset_failed_clean_task_record=lambda *args, **kwargs: _v47_reset_failed_clean_task_record(*args, **kwargs),
+        _v47_restore_clean_task_record=lambda *args, **kwargs: _v47_restore_clean_task_record(*args, **kwargs),
+        _v55_read_upload_batch=lambda *args, **kwargs: _v55_read_upload_batch(*args, **kwargs),
+        _v62_prepare_clean_compat=lambda *args, **kwargs: _v62_prepare_clean_compat(*args, **kwargs),
+        _v62_publish_clean_compat=lambda *args, **kwargs: _v62_publish_clean_compat(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        list_algorithms_internal=lambda *args, **kwargs: list_algorithms_internal(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_label_items=lambda *args, **kwargs: project_label_items(*args, **kwargs),
+        read_annotations_many=lambda *args, **kwargs: read_annotations_many(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        remember_project_label_aliases=lambda *args, **kwargs: remember_project_label_aliases(*args, **kwargs),
+        safe_filename=lambda *args, **kwargs: safe_filename(*args, **kwargs),
+        upload_batch_store=lambda *args, **kwargs: upload_batch_store(*args, **kwargs),
+        v19_import_jobs_dir=lambda *args, **kwargs: v19_import_jobs_dir(*args, **kwargs),
+        v19_import_worker=lambda *args, **kwargs: v19_import_worker(*args, **kwargs),
+        v19_job_dir=lambda *args, **kwargs: v19_job_dir(*args, **kwargs),
+        v19_job_file=lambda *args, **kwargs: v19_job_file(*args, **kwargs),
+        v19_normalize_zip_path=lambda *args, **kwargs: v19_normalize_zip_path(*args, **kwargs),
+        v19_read_class_samples=lambda *args, **kwargs: v19_read_class_samples(*args, **kwargs),
+        v19_read_import_report=lambda *args, **kwargs: v19_read_import_report(*args, **kwargs),
+        v19_read_job=lambda *args, **kwargs: v19_read_job(*args, **kwargs),
+        v19_read_scan_images=lambda *args, **kwargs: v19_read_scan_images(*args, **kwargs),
+        v19_scan_zip=lambda *args, **kwargs: v19_scan_zip(*args, **kwargs),
+        v19_update_job=lambda *args, **kwargs: v19_update_job(*args, **kwargs),
+        v19_write_class_samples=lambda *args, **kwargs: v19_write_class_samples(*args, **kwargs),
+        v19_write_job=lambda *args, **kwargs: v19_write_job(*args, **kwargs),
+        v19_write_scan_images=lambda *args, **kwargs: v19_write_scan_images(*args, **kwargs),
+    ))
+
+
+app.include_router(create_material_ingestion_router_1(_material_ingestion_service))
+
+
+async def upload_images(project_id: str, files: List[UploadFile]=File(...), dataset_id: str=Form('default'), storage_source_id: str=Form('default_local'), upload_request_id: Optional[str]=Form(None), mining_algorithm_id: str=Form(''), mining_version_id: str=Form('')):
+    return await _material_ingestion_service().upload_images(project_id, files, dataset_id, storage_source_id, upload_request_id, mining_algorithm_id, mining_version_id)
 
 
 
@@ -12007,16 +11540,7 @@ async def v18_import_dataset_auto(project_id: str, dataset_id: str, file: Upload
 # -----------------------------
 # v19 background import jobs + selectable parsing
 # -----------------------------
-class V19ImportStartReq(BaseModel):
-    source_scan_digest: str = ""
-    folder_rules: Optional[List[Dict[str, Any]]] = None
-    selected_paths: Optional[List[str]] = None
-    label_mapping: Dict[str, str] = Field(default_factory=dict)
-    create_labels: List[str] = Field(default_factory=list)
-    sample_type: str = ""
-    intended_label_codes: List[str] = Field(default_factory=list)
-    negative_category_ids: List[str] = Field(default_factory=list)
-    algorithm_id: str = ""
+from platform_core.material_ingestion_contracts import V19ImportStartReq
 
 
 def v19_import_jobs_dir(project_id: str) -> Path:
@@ -12068,28 +11592,11 @@ def _v19_read_import_report_locked(project_id: str, job_id: str, job: Optional[D
     return dict(value) if isinstance(value, dict) else {}
 
 
-@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/unannotated")
-def v19_unannotated_import_page(project_id: str, job_id: str, cursor: int = 0, limit: int = 150):
-    """Materialized ZIP subset, bounded pages; never send all 10k IDs to UI."""
-    if not 1 <= limit <= 200 or cursor < 0:
-        raise HTTPException(status_code=422, detail="素材分页范围不正确")
-    job = v19_read_job(project_id, job_id)
-    if job.get("status") != "done":
-        raise HTTPException(status_code=409, detail="ZIP 尚未完成导入，不能开始人工标注")
-    ids = list(dict.fromkeys(str(item) for item in v19_read_import_report(project_id, job_id, job).get("imported_image_ids") or [] if str(item)))
-    selected: list[str] = []
-    index = cursor
-    while index < len(ids) and len(selected) < limit:
-        chunk = ids[index:index + min(200, len(ids) - index)]
-        current = read_annotations_many(project_id, chunk)
-        for image_id in chunk:
-            if str((current.get(image_id) or {}).get("annotation_state") or "unannotated") == "unannotated":
-                selected.append(image_id)
-            index += 1
-            if len(selected) >= limit:
-                break
-    return {"image_ids": selected, "next_cursor": index if index < len(ids) else None,
-            "source_batch_id": job_id, "total_imported": len(ids)}
+app.include_router(create_material_ingestion_router_2(_material_ingestion_service))
+
+
+def v19_unannotated_import_page(project_id: str, job_id: str, cursor: int=0, limit: int=150):
+    return _material_ingestion_service().v19_unannotated_import_page(project_id, job_id, cursor, limit)
 
 
 def v19_write_scan_images(project_id: str, job_id: str, images: List[Dict[str, Any]]):
@@ -12225,124 +11732,16 @@ V19_ZIP_PHASE_LABELS = {
 }
 
 
-def _v19_phase_metrics(
-    phase: str,
-    completed: int | float | None,
-    total: int | float | None,
-    *,
-    started_at: float | None = None,
-) -> Dict[str, Any]:
-    done = max(0.0, float(completed or 0))
-    target = max(0.0, float(total or 0))
-    phase_progress = round(min(100.0, done / target * 100.0), 2) if target > 0 else None
-    elapsed = None
-    eta = None
-    if started_at is not None:
-        elapsed = round(max(0.0, time.time() - float(started_at)), 2)
-        if done > 0 and target > done:
-            eta = round(max(0.0, elapsed / done * (target - done)), 2)
-        elif target > 0 and done >= target:
-            eta = 0.0
-    return {
-        "phase": str(phase or "").upper(),
-        "phase_completed": completed,
-        "phase_total": total,
-        "phase_progress": phase_progress,
-        "phase_elapsed_seconds": elapsed,
-        "eta_seconds": eta,
-    }
+def _v19_phase_metrics(phase: str, completed: int | float | None, total: int | float | None, *, started_at: float | None=None) -> Dict[str, Any]:
+    return _material_ingestion_service()._v19_phase_metrics(phase, completed, total, started_at=started_at)
 
 
 def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
-    """Canonical product-facing ZIP progress projection.
-
-    phase counters are factual. overall_progress is only a stable display
-    projection over those server-owned phases; browser code must not invent
-    a second set of phase weights.
-    """
-    status = str(job.get("status") or "").strip().lower()
-    phase = str(job.get("phase") or "").strip().upper()
-    if not phase:
-        phase = {
-            "uploading": "UPLOAD",
-            "merging": "MERGE",
-            "validating": "SCAN",
-            "selecting": "WAITING_CONFIRMATION" if job.get("label_confirmation_required") else "READY",
-            "queued": "QUEUE",
-            "waiting": "QUEUE",
-            "running": "ANNOTATION_PARSE",
-            "done": "DONE",
-            "failed": "FAILED",
-        }.get(status, "")
-
-    try:
-        done = max(0.0, float(job.get("phase_completed") or 0))
-    except (TypeError, ValueError):
-        done = 0.0
-    try:
-        total = max(0.0, float(job.get("phase_total") or 0))
-    except (TypeError, ValueError):
-        total = 0.0
-    if total > 0:
-        phase_progress: Optional[float] = min(100.0, done / total * 100.0)
-    else:
-        raw_phase_progress = job.get("phase_progress")
-        if raw_phase_progress in (None, ""):
-            phase_progress = None
-        else:
-            try:
-                phase_progress = max(0.0, min(100.0, float(raw_phase_progress)))
-            except (TypeError, ValueError):
-                phase_progress = None
-
-    if status == "done" or phase == "DONE":
-        overall = 100.0
-        phase_progress = 100.0
-    elif status == "failed" or phase == "FAILED":
-        try:
-            overall = max(0.0, min(99.0, float(job.get("progress") or 0)))
-        except (TypeError, ValueError):
-            overall = 0.0
-    else:
-        start, end = V19_ZIP_PHASE_WINDOWS.get(phase, (0.0, 99.0))
-        overall = start if phase_progress is None else start + (end - start) * phase_progress / 100.0
-        overall = max(0.0, min(99.0, overall))
-
-    return {
-        "phase": phase or None,
-        "phase_label": V19_ZIP_PHASE_LABELS.get(phase, str(job.get("stage") or phase or "ZIP 导入")),
-        "phase_progress": round(phase_progress, 2) if phase_progress is not None else None,
-        "overall_progress": round(overall, 2),
-        "completed": job.get("phase_completed"),
-        "total": job.get("phase_total"),
-        "unit": str(job.get("phase_unit") or ""),
-        "elapsed_seconds": job.get("phase_elapsed_seconds"),
-        "eta_seconds": job.get("eta_seconds") if phase_progress is not None else None,
-        "message": str(job.get("message") or ""),
-        "updated_at": job.get("updated_at"),
-    }
+    return _material_ingestion_service().v19_zip_display_progress(job)
 
 
-def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
-    result = dict(job or {})
-    result.pop("images", None)
-    result.pop('folder_confirmation', None)
-    if result.get('folder_confirmation_required'):
-        image_limit = 0
-    # A readable but stale job.json is not proof that a worker still runs after
-    # a failed state write. A diagnostic only invalidates that exact file
-    # revision; a later successful write restores the original authority.
-    if str(result.get("status") or "").lower() not in {"done", "failed", "cancelled", "canceled"}:
-        if _v19_unresolved_diagnostic(project_id, str(result.get("id"))):
-            result.update(last_known_status=result.get("status"), status="unknown",
-                          verificationReason="UNAVAILABLE", error="任务状态写入或执行异常，最后记录不能代表实际执行状态；请核验任务诊断。")
-    result["zip_display_progress"] = v19_zip_display_progress(result)
-    limit = max(0, min(500, int(image_limit or 0)))
-    if limit:
-        images = v19_read_scan_images(project_id, str(result.get("id") or ""))
-        result["images"] = images[:limit]
-        result["images_truncated"] = len(images) > limit
-    return result
+def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int=0) -> Dict[str, Any]:
+    return _material_ingestion_service().v19_public_job(project_id, job, image_limit)
 
 
 def v19_update_job(project_id: str, job_id: str, **kwargs):
@@ -12368,47 +11767,11 @@ def _v19_job_record_token(project_id, job_id):
 
 
 def _v19_unresolved_diagnostic(project_id, job_id):
-    diagnostic = read_json(v19_import_jobs_dir(project_id) / ".diagnostics" / (str(job_id) + ".json"), {})
-    if diagnostic.get("operation") not in {"state_update", "worker_failure", "worker_exit", "finalize_exit", "rollback"}:
-        return None
-    token = _v19_job_record_token(project_id, job_id)
-    return diagnostic if token and diagnostic.get("observed_record") == token else None
+    return _material_ingestion_service()._v19_unresolved_diagnostic(project_id, job_id)
 
 
-def _v19_job_diagnostic(project_id: str, job_id: str, error: Exception, *, operation: str,
-                        job=None, report=None, committed=False):
-    """Independent failure evidence, never a replacement successful task record."""
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.error("ZIP job %s/%s %s failed: %s", project_id, job_id, operation, error, exc_info=True)
-    evidence = {
-        "project_id": project_id, "job_id": job_id, "operation": operation,
-        "code": "ZIP_JOB_RECORD_UNAVAILABLE", "outcome": "unknown",
-        "error": str(getattr(error, "detail", error)), "recorded_at": now_iso(),
-        "file_name": (job or {}).get("file_name"),
-        "formal_commit_completed": bool(committed),
-        "observed_record": _v19_job_record_token(project_id, job_id),
-        "report": {k: v for k, v in (report or {}).items() if k in {
-            "imported_images", "annotated_images", "boxes", "missing_images",
-            "skipped_images", "invalid_boxes", "unmatched_labels", "batch_id",
-        }},
-    }
-    try:
-        path = v19_import_jobs_dir(project_id) / ".diagnostics" / (str(job_id) + ".json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        previous = read_json(path, {})
-        decisive = {"state_update", "worker_failure", "worker_exit", "finalize_exit", "rollback"}
-        if (operation not in decisive and previous.get("operation") in decisive
-                and previous.get("observed_record") == evidence.get("observed_record")):
-            # Secondary temp-cleanup errors must never erase proof that the
-            # worker stopped, or resurrect its stale RUNNING FIFO predecessor.
-            evidence = {**previous, "secondary_error": {
-                "operation": operation, "error": evidence["error"],
-                "recorded_at": evidence["recorded_at"],
-            }}
-        atomic_write_json(path, evidence)
-    except Exception:
-        logger.exception("ZIP diagnostic persistence failed for %s/%s", project_id, job_id)
+def _v19_job_diagnostic(project_id: str, job_id: str, error: Exception, *, operation: str, job=None, report=None, committed=False):
+    return _material_ingestion_service()._v19_job_diagnostic(project_id, job_id, error, operation=operation, job=job, report=report, committed=committed)
 
 
 def _v19_fail_worker(project_id, job_id, error, *, job, report, started, committed=False):
@@ -12871,18 +12234,8 @@ def _v19_store_folder_scan(project_id, job_id, zip_path, scan, check_stop=None):
     })
 
 
-@app.get('/api/v19/projects/{project_id}/import/jobs/{job_id}/folders')
-def v19_import_folders(project_id: str, job_id: str, offset: int = Query(0, ge=0),
-                       limit: int = Query(50, ge=1, le=100)):
-    get_project(project_id)
-    job = v19_read_job(project_id, job_id)
-    scan = read_json(v19_job_dir(project_id, job_id) / 'scan-folders.json', {})
-    if not job.get('folder_confirmation_required') or not scan or scan.get('source_scan_digest') != job.get('source_scan_digest'):
-        raise HTTPException(409, detail='当前任务没有可用的文件夹扫描证据')
-    rows = scan['items']
-    return dict(source_scan_digest=scan['source_scan_digest'], total=len(rows),
-                items=rows[offset:offset + limit],
-                next_offset=offset + limit if offset + limit < len(rows) else None)
+def v19_import_folders(project_id: str, job_id: str, offset: int=Query(0, ge=0), limit: int=Query(50, ge=1, le=100)):
+    return _material_ingestion_service().v19_import_folders(project_id, job_id, offset, limit)
 
 
 def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -12907,31 +12260,8 @@ def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _v19_assert_frozen_mapping_targets_active(
-    project_id: str,
-    label_mapping: Optional[Dict[str, str]],
-) -> None:
-    targets = sorted({
-        str(value).strip()
-        for value in dict(label_mapping or {}).values()
-        if str(value).strip()
-    })
-    if not targets:
-        return
-    active = {
-        str(item.get("code") or "").strip()
-        for item in active_label_options(project_label_items(get_project(project_id)))
-        if str(item.get("code") or "").strip()
-    }
-    unavailable = [code for code in targets if code not in active]
-    if unavailable:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "ZIP 标签映射目标已失效，请恢复标签后重试或重新创建导入任务："
-                + "、".join(unavailable[:10])
-            ),
-        )
+def _v19_assert_frozen_mapping_targets_active(project_id: str, label_mapping: Optional[Dict[str, str]]) -> None:
+    return _material_ingestion_service()._v19_assert_frozen_mapping_targets_active(project_id, label_mapping)
 
 
 class _V19ImportStopped(RuntimeError):
@@ -13103,70 +12433,11 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
 
 
 def _v19_apply_folder_classification(project_id, job, report):
-    from platform_core.negative_pool import NegativePool
-
-    plan = job['folder_confirmation']
-    rule_digest = job['folder_confirmation_digest']
-    if (zip_folders.digest(plan) != rule_digest or plan['project_id'] != project_id or plan['job_id'] != job['id']):
-        raise ValueError('冻结的文件夹归集身份已变化')
-    materials = material_store(project_id)
-    pool = NegativePool(materials)
-    applied, pending = 0, 0
-    errors = {}
-    examples = []
-    ids = report.get('imported_image_ids') or []
-    for offset in range(0, len(ids), 500):
-        grouped = {}
-        for row in materials.get_many(ids[offset:offset + 500]):
-            source = row.get('zip_folder_source') or {}
-            key = source.get('folder_key')
-            rule = plan['rules'].get(key)
-            if (not rule or row.get('import_batch_id') != job['id'] or source.get('job_id') != job['id']
-                    or source.get('rule_digest') != rule_digest or source.get('source_zip_sha256') != plan['source_zip_sha256']
-                    or source.get('source_scan_digest') != plan['scan_digest']
-                    or zip_folders.folder_key(source.get('source_path') or '.') != key
-                    or any(source.get(field) != value for field, value in rule.items())):
-                continue
-            if len(examples) < 10:
-                examples.append({'source_path': source['source_path'], 'material_id': row['id'],
-                                 'usage_intent': source['usage_intent']})
-            if source.get('classification_status') == 'applied':
-                applied += 1
-            elif rule['sample_type'] == 'negative':
-                grouped.setdefault(key, []).append(row['id'])
-        for key, chunk in grouped.items():
-            try:
-                pool.members(chunk, category_ids=plan['rules'][key]['negative_category_ids'],
-                             zip_folder={'job_id': job['id'], 'rule_digest': rule_digest, 'folder_key': key})
-                applied += len(chunk)
-            except Exception as error:
-                pending += len(chunk)
-                if len(errors) < 20:
-                    errors.setdefault(key, str(error)[:180])
-    report['folder_classification'] = {
-        'status': 'pending' if pending else 'applied', 'applied': applied, 'pending': pending,
-        'unavailable': max(0, len(ids) - applied - pending),
-        'examples': examples, 'errors': [{'folder_key': key, 'error': reason} for key, reason in errors.items()],
-    }
+    return _material_ingestion_service()._v19_apply_folder_classification(project_id, job, report)
 
 
-@app.post('/api/v19/projects/{project_id}/import/jobs/{job_id}/retry-folder-classification')
 def v19_retry_folder_classification(project_id: str, job_id: str):
-    get_project(project_id)
-    with _v19_stop_fence(project_id, job_id):
-        job = v19_read_job(project_id, job_id)
-        if (job.get('status') not in {'done', 'failed'} or job.get('history_hidden')
-                or not job.get('folder_confirmation')):
-            raise HTTPException(409, detail='当前任务不具备归集恢复条件')
-        report = v19_read_import_report(project_id, job_id, job)
-        if not report.get('imported_image_ids'):
-            raise HTTPException(409, detail='没有已入库的素材身份可供修复')
-        _v19_apply_folder_classification(project_id, job, report)
-        if not (report['folder_classification']['applied'] or report['folder_classification']['pending']):
-            raise HTTPException(409, detail='没有可核验的正式素材可供修复')
-        job['report'] = report
-        _v19_write_job_locked(project_id, job)
-        return v19_public_job(project_id, v19_read_job(project_id, job_id))
+    return _material_ingestion_service().v19_retry_folder_classification(project_id, job_id)
 
 
 def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
@@ -13472,154 +12743,27 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
 
 
 
-class V19MultipartUploadReq(BaseModel):
-    folder_confirmation: bool = False
-    file_name: str
-    file_size: int = Field(gt=0)
-    fingerprint: str = ""
-    part_size: int = 8 * 1024 * 1024
-    resume_upload_id: str = ""
-    algorithm_id: str = ""
+from platform_core.material_ingestion_contracts import V19MultipartUploadReq
 
 
 def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
     return ZipMultipartRepository(project_dir(project_id))
 
 
-@app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/uploads")
 def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19MultipartUploadReq):
-    get_project(project_id)
-    if payload.algorithm_id and not any(str(row.get('id')) == payload.algorithm_id for row in list_algorithms_internal(project_id)):
-        raise HTTPException(422, detail='目标算法不存在，请刷新负样本池')
-    filename = safe_filename(payload.file_name or "dataset.zip")
-    if Path(filename).suffix.lower() != ".zip":
-        raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
-    repository = _v19_multipart_repository(project_id)
-    if payload.resume_upload_id:
-        # An explicit resume must never create a new empty task on a file mismatch.
-        try:
-            previous = repository.get(payload.resume_upload_id)
-        except FileNotFoundError as error:
-            raise HTTPException(status_code=409, detail="原 ZIP 上传会话已失效，请重新选择上传") from error
-        if (
-            str(previous.get("fingerprint") or "") != str(payload.fingerprint or "")
-            or str(previous.get("dataset_id") or "") != str(dataset_id)
-            or str(previous.get("file_name") or "") != filename
-            or int(previous.get("file_size") or 0) != int(payload.file_size)
-            or str(previous.get("status") or "") not in {"uploading", "paused"}
-        ):
-            raise HTTPException(status_code=409, detail="ZIP 文件身份与原上传会话不一致，已拒绝创建新任务")
-    try:
-        session = repository.create_or_resume(
-            dataset_id=dataset_id, file_name=filename, file_size=int(payload.file_size),
-            fingerprint=str(payload.fingerprint or ""), part_size=int(payload.part_size or 0),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    job_id = str(session["upload_id"])
-    current = read_json(v19_job_file(project_id, job_id), {})
-    if not isinstance(current, dict) or not current:
-        current = {
-            "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
-            "batch_id": job_id, "file_name": filename,
-            "folder_confirmation_requested": payload.folder_confirmation and not payload.algorithm_id,
-            "file_size_mb": round(int(payload.file_size) / 1024 / 1024, 2),
-            "uploaded_bytes": int(session.get("received_bytes") or 0),
-            "upload_progress": float(session.get("upload_progress") or 0),
-            "status": "uploading", "stage": "正在上传 ZIP", "progress": 0,
-            "phase": "UPLOAD", "phase_completed": int(session.get("received_bytes") or 0),
-            "phase_total": int(payload.file_size), "phase_unit": "bytes",
-            "message": "分片上传已创建，可断点续传",
-            "upload_session_id": job_id, "total_parts": int(session.get("total_parts") or 0),
-            "created_at": now_iso(), "updated_at": now_iso(),
-        }
-    else:
-        current.update({
-            "status": "uploading", "stage": "正在上传 ZIP",
-            "uploaded_bytes": int(session.get("received_bytes") or 0),
-            "upload_progress": float(session.get("upload_progress") or 0),
-            "phase": "UPLOAD", "phase_completed": int(session.get("received_bytes") or 0),
-            "phase_total": int(payload.file_size), "phase_unit": "bytes",
-            "message": f"继续上传：已完成 {len(session.get('completed_parts') or [])}/{int(session.get('total_parts') or 0)} 个分片",
-            "updated_at": now_iso(),
-        })
-    frozen_algorithm = str(current.get('upload_algorithm_id') or '')
-    if payload.algorithm_id and frozen_algorithm and frozen_algorithm != payload.algorithm_id:
-        raise HTTPException(409, detail='ZIP 目标算法已冻结，不能切换算法续传')
-    if payload.algorithm_id:
-        if current.get('folder_confirmation_requested'):
-            raise HTTPException(409, detail='文件夹确认任务不绑定算法')
-        current['upload_algorithm_id'] = payload.algorithm_id
-    v19_write_job(project_id, current)
-    return {"ok": True, **session, "job": v19_public_job(project_id, current, image_limit=0)}
+    return _material_ingestion_service().v19_create_multipart_upload(project_id, dataset_id, payload)
 
 
-@app.put("/api/v19/projects/{project_id}/import/uploads/{upload_id}/parts/{part_number}")
 async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number: int, request: Request):
-    get_project(project_id)
-    repository = _v19_multipart_repository(project_id)
-    try:
-        payload = await request.body()
-        result = repository.write_part(upload_id, part_number, BytesIO(payload))
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    job = read_json(v19_job_file(project_id, upload_id), {})
-    if isinstance(job, dict) and job and job.get("status") == "uploading" and result.get("status") == "uploading":
-        completed = len(result.get("completed_parts") or [])
-        total_parts = int(result.get("total_parts") or 0)
-        job.update({
-            "status": "uploading", "stage": "正在上传 ZIP",
-            "uploaded_bytes": int(result.get("received_bytes") or 0),
-            "upload_progress": float(result.get("upload_progress") or 0),
-            "phase": "UPLOAD",
-            "phase_completed": int(result.get("received_bytes") or 0),
-            "phase_total": int(result.get("file_size") or job.get("phase_total") or 0),
-            "phase_unit": "bytes",
-            "message": f"已完成 {completed}/{total_parts} 个分片",
-            "updated_at": now_iso(),
-        })
-        v19_write_job(project_id, job)
-    return {"ok": True, **result}
+    return await _material_ingestion_service().v19_upload_multipart_part(project_id, upload_id, part_number, request)
 
 
-@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/pause")
 def v19_pause_multipart_upload(project_id: str, upload_id: str):
-    get_project(project_id)
-    job = v19_read_job(project_id, upload_id)
-    if str(job.get("status") or "") not in {"uploading", "paused"}:
-        raise HTTPException(status_code=409, detail="已进入合并或正式导入阶段，不能暂停上传")
-    try:
-        session = _v19_multipart_repository(project_id).pause(upload_id)
-    except (FileNotFoundError, ValueError) as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    v19_update_job(
-        project_id, upload_id, status="paused", stage="已暂停，等待继续上传",
-        phase="UPLOAD", uploaded_bytes=int(session.get("received_bytes") or 0),
-        upload_progress=float(session.get("upload_progress") or 0),
-        phase_completed=int(session.get("received_bytes") or 0),
-        message=f"已暂停，保存 {len(session.get('completed_parts') or [])}/{session.get('total_parts')} 个分片",
-    )
-    return {"ok": True, **session}
+    return _material_ingestion_service().v19_pause_multipart_upload(project_id, upload_id)
 
 
-@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/cancel")
 def v19_cancel_multipart_upload(project_id: str, upload_id: str):
-    # Compatibility route for older clients.  Cancellation ownership and its
-    # safety/cleanup contract remain in the one unified job service below.
-    try:
-        session = _v19_multipart_repository(project_id).get(upload_id)
-    except FileNotFoundError:
-        session = {}
-    result = _v19_cancel_import_job(project_id, upload_id)
-    legacy_result = {**session, **result, "ok": True}
-    if (
-        str(result.get("status") or "").strip().lower() in {"cancelled", "canceled"}
-        and result.get("cleanup_status") == "complete"
-    ):
-        legacy_result.update(completed_parts=[], received_bytes=0)
-    return legacy_result
+    return _material_ingestion_service().v19_cancel_multipart_upload(project_id, upload_id)
 
 
 _V19_UPLOAD_FINALIZE_GUARD = threading.Lock()
@@ -13856,597 +13000,68 @@ def _v19_recover_multipart_finalize(project_id: str, job: Mapping[str, Any]) -> 
         _v19_schedule_multipart_finalize(project_id, str(job.get("id") or ""))
 
 
-@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete")
 def v19_complete_multipart_upload(project_id: str, upload_id: str):
-    get_project(project_id)
-    job = v19_read_job(project_id, upload_id)
-    status = str(job.get("status") or "").strip().lower()
-    if status in {"cancelled", "canceled"} or job.get("cancel_requested"):
-        raise HTTPException(status_code=409, detail="ZIP 任务已取消，无法合并")
-    repository = _v19_multipart_repository(project_id)
-    try:
-        session = repository.get(upload_id)
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
-    if str(session.get("status") or "") in {"paused", "cancelled"}:
-        raise HTTPException(status_code=409, detail="ZIP 会话已暂停或取消，无法合并")
-
-    if status in {"selecting", "running", "done"}:
-        return v19_public_job(project_id, job, image_limit=500 if status == "selecting" else 0)
-    if status not in {"merging", "validating"}:
-        completed = len(session.get("completed_parts") or [])
-        total = int(session.get("total_parts") or 0)
-        if str(session.get("status") or "") != "completed" and completed != total:
-            raise HTTPException(
-                status_code=409,
-                detail=f"ZIP 分片尚未全部上传：{completed}/{total}",
-            )
-        with _v19_stop_fence(project_id, upload_id):
-            if v19_read_job(project_id, upload_id).get("cancel_requested"):
-                raise HTTPException(status_code=409, detail="ZIP 任务正在取消，不能继续合并")
-            v19_update_job(
-                project_id, upload_id,
-                status="merging", stage="正在合并 ZIP 分片", progress=35,
-                upload_progress=100,
-                phase="MERGE", phase_completed=0,
-                phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
-                phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
-                message="所有分片已上传，后台正在合并 ZIP；页面可以关闭",
-            )
-
-    _v19_schedule_multipart_finalize(project_id, upload_id)
-    current = v19_read_job(project_id, upload_id)
-    return JSONResponse(
-        status_code=202,
-        content=v19_public_job(project_id, current, image_limit=0),
-    )
+    return _material_ingestion_service().v19_complete_multipart_upload(project_id, upload_id)
 
 
-@app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs")
-async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFile = File(...),
-                                folder_confirmation: bool = Form(False)):
-    get_project(project_id)
-    filename = safe_filename(file.filename or "dataset.zip")
-    if Path(filename).suffix.lower() != ".zip":
-        raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
-    job_id = uuid.uuid4().hex[:10]
-    jd = v19_job_dir(project_id, job_id)
-    jd.mkdir(parents=True, exist_ok=True)
-    zip_path = jd / "source.zip"
-    upload_started = time.time()
-    uploaded_bytes = 0
-    try:
-        # 分块落盘，避免大 ZIP 一次性读入内存。
-        with zip_path.open("wb") as out:
-            while True:
-                chunk = await file.read(8 * 1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-                uploaded_bytes += len(chunk)
-    except Exception as e:
-        shutil.rmtree(jd, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"文件接收失败：{e}")
-    upload_seconds = round(max(0.0, time.time() - upload_started), 2)
-    if uploaded_bytes <= 0:
-        shutil.rmtree(jd, ignore_errors=True)
-        raise HTTPException(status_code=400, detail="上传失败：ZIP 文件为空。")
-    scan_started = time.time()
-    try:
-        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, folder_confirmation=True)
-                                 if folder_confirmation is True else v19_scan_zip(zip_path))
-        if folder_confirmation is True:
-            _v19_store_folder_scan(project_id, job_id, zip_path, scan)
-    except zipfile.BadZipFile:
-        shutil.rmtree(jd, ignore_errors=True)
-        raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。")
-    except Exception as e:
-        shutil.rmtree(jd, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"ZIP 校验失败：{e}")
-    scan_seconds = round(max(0.0, time.time() - scan_started), 2)
-    if scan.get("image_count", 0) == 0:
-        shutil.rmtree(jd, ignore_errors=True)
-        raise HTTPException(status_code=400, detail="ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
-    scan_images = list(scan.pop("images", []) or [])
-    scan_class_samples = dict(scan.pop("class_samples", {}) or {})
-    v19_write_scan_images(project_id, job_id, scan_images)
-    v19_write_class_samples(project_id, job_id, scan_class_samples)
-    job = {
-        "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
-        "batch_id": job_id,
-        "file_name": filename, "file_size_mb": round(uploaded_bytes / 1024 / 1024, 2),
-        "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
-        "status": "selecting", "stage": "上传与校验完成", "progress": 48,
-        "sample_classification_required": scan.get("scan_kind") != "RAW_UNANNOTATED",
-        "phase": "WAITING_CONFIRMATION",
-        "phase_completed": 1, "phase_total": 1, "phase_unit": "step",
-        "phase_progress": 100, "eta_seconds": None,
-        "message": (
-            "上传与ZIP校验完成，等待确认标签并开始后台导入"
-            if scan.get("label_confirmation_required")
-            else "ZIP 扫描完成，未检测到标注，可按原图直接入库" if scan.get("scan_kind") == "RAW_UNANNOTATED"
-            else "上传与ZIP校验完成，请选择正样本标签或负样本分类后导入"
-        ),
-        "scan_images_ref": "scan-images.json",
-        "class_samples_ref": "scan-class-samples.json",
-        "created_at": now_iso(), "uploaded_at": now_iso(), "updated_at": now_iso(), **scan,
-    }
-    v19_write_job(project_id, job)
-    return v19_public_job(project_id, job, image_limit=500)
+async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFile=File(...), folder_confirmation: bool=Form(False)):
+    return await _material_ingestion_service().v19_create_import_job(project_id, dataset_id, file, folder_confirmation)
 
 
 def _v19_cancel_import_job(project_id: str, job_id: str) -> Dict[str, Any]:
-    get_project(project_id)
-    schedule_finalize = False
-    with _v19_stop_fence(project_id, job_id):
-        job = v19_read_job(project_id, job_id)
-        status = str(job.get("status") or "").strip().lower()
-        phase = str(job.get("phase") or "").strip().upper()
-
-        if status in {"cancelled", "canceled"} and job.get("cleanup_status") == "complete":
-            return v19_public_job(project_id, job)
-        if status == "done" or phase == "DB_COMMIT":
-            raise HTTPException(
-                status_code=409,
-                detail="该任务已进入正式提交或已完成，不能伪装为取消；如需撤销必须使用独立的安全撤销流程。",
-            )
-        if status == "failed" and job.get("cleanup_status") != "failed":
-            raise HTTPException(
-                status_code=409,
-                detail="失败任务可能已产生正式数据，必须先完成完整性审计，不能直接取消清理。",
-            )
-
-        cleanup_retry = status in {"cancelled", "canceled"} or (
-            status == "failed" and job.get("cleanup_status") == "failed"
-        )
-        worker_cancellable = status in {"running", "queued", "waiting"} and phase in {
-            "QUEUE", "EXTRACT", "ANNOTATION_PARSE", "UPLOAD", "MERGE", "VERIFY", "SCAN",
-        }
-        if status not in {"uploading", "paused", "selecting", "merging", "validating"} and not cleanup_retry and not worker_cancellable:
-            raise HTTPException(
-                status_code=409,
-                detail="当前任务阶段不能安全取消；服务器未删除任何任务或正式数据。",
-            )
-
-        job.update(
-            cancel_requested=True, cancel_requested_at=job.get("cancel_requested_at") or now_iso(),
-            stage="正在安全取消并清理", message="服务器已收到取消请求，正在停止当前阶段",
-        )
-        v19_write_job(project_id, job)
-
-        if status in {"uploading", "paused"}:
-            try:
-                _v19_multipart_repository(project_id).cancel(job_id)
-            except FileNotFoundError:
-                pass
-            except ValueError as error:
-                raise HTTPException(status_code=409, detail=str(error)) from error
-            job = _v19_finish_cancel(
-                project_id, job_id,
-                message="已取消上传并清理本任务尚未提交的 ZIP 分片缓存",
-            )
-            return v19_public_job(project_id, job)
-
-        if status == "selecting" or cleanup_retry:
-            job = _v19_finish_cancel(
-                project_id, job_id,
-                message="已取消导入并清理本任务尚未提交的 ZIP 与扫描缓存",
-            )
-            return v19_public_job(project_id, job)
-
-        if status in {"merging", "validating"}:
-            schedule_finalize = True
-        elif worker_cancellable:
-            return v19_public_job(project_id, v19_read_job(project_id, job_id))
-
-    if schedule_finalize:
-        _v19_schedule_multipart_finalize(project_id, job_id)
-    return v19_public_job(project_id, v19_read_job(project_id, job_id))
+    return _material_ingestion_service()._v19_cancel_import_job(project_id, job_id)
 
 
-@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/cancel")
 def v19_cancel_import_job(project_id: str, job_id: str):
-    return _v19_cancel_import_job(project_id, job_id)
+    return _material_ingestion_service().v19_cancel_import_job(project_id, job_id)
 
 
-@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/stop")
 def v19_stop_import_job(project_id: str, job_id: str):
-    # Backward-compatible alias for historical clients; one service owns safety.
-    return _v19_cancel_import_job(project_id, job_id)
+    return _material_ingestion_service().v19_stop_import_job(project_id, job_id)
 
 
-@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/start")
 def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartReq):
-    # Same-project submit is one atomic operation even across API processes.
-    with FileLock(str(v19_import_jobs_dir(project_id) / ".enqueue.lock"), timeout=120):
-        # Starting and cancelling share the same per-job fence.  Once a
-        # cancellation request is durable no concurrent tab/process can queue
-        # the job or freeze a new label mapping behind it.
-        with _v19_stop_fence(project_id, job_id):
-            return _v19_start_import_job_locked(project_id, job_id, payload)
+    return _material_ingestion_service().v19_start_import_job(project_id, job_id, payload)
 
 
 def _v19_confirm_folder_rules(project_id, job_id, job, payload):
-    from platform_core.negative_pool import NegativePool
-
-    frozen = job.get('folder_confirmation')
-    if (not payload.source_scan_digest or payload.source_scan_digest != job.get('source_scan_digest')
-            or payload.folder_rules is None):
-        raise HTTPException(409, detail='文件夹待确认或扫描证据已变化，请重新读取当前任务')
-    if payload.algorithm_id or payload.sample_type or payload.intended_label_codes or payload.negative_category_ids:
-        raise HTTPException(422, detail='文件夹规则不能与整包归类或算法绑定混用')
-    if job.get('folder_mapping_conflict'):
-        raise HTTPException(409, detail='外部类别身份或标注路径不唯一，请修正目录或拆分 ZIP 后导入')
-    if job.get('unreadable_annotation_files') or (job.get('scan_kind') == 'ANNOTATION_INVALID' and not job.get('external_classes')):
-        raise HTTPException(409, detail='ZIP 中的外部标注无法核验，请修复标注后重新上传')
-    images = v19_read_scan_images(project_id, job_id)
-    if zip_folders.scan_identity(project_id, job_id, job['source_zip_sha256'], images, job) != payload.source_scan_digest:
-        raise HTTPException(409, detail='扫描图片清单已变化，无法确认')
-    if frozen:
-        active = {code for rule in frozen['rules'].values() for code in rule['intended_label_codes']}
-        categories = {cat for rule in frozen['rules'].values() for cat in rule['negative_category_ids']}
-    else:
-        active = {str(row['code']) for row in active_label_options(project_label_items(get_project(project_id)))}
-        categories = {str(row['id']) for row in NegativePool(material_store(project_id)).categories() if row.get('enabled')}
-    try:
-        selected, rules = zip_folders.normalize_rules(images, payload.selected_paths, payload.folder_rules, active, categories)
-    except (TypeError, ValueError) as error:
-        raise HTTPException(409 if frozen else 422, detail=str(error)) from error
-    if frozen and (rules != frozen['rules'] or selected != frozen['selected_paths']
-                   or (payload.label_mapping and payload.label_mapping != frozen['label_mapping'])):
-        raise HTTPException(409, detail='该任务的文件夹或标签映射已冻结，不能更改')
-    return {'scan_digest': payload.source_scan_digest, 'selected_paths': selected, 'rules': rules}
+    return _material_ingestion_service()._v19_confirm_folder_rules(project_id, job_id, job, payload)
 
 
 def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19ImportStartReq):
-    job = v19_read_job(project_id, job_id)
-    if job.get("history_hidden"):
-        raise HTTPException(status_code=409, detail="该记录已清空历史并释放临时文件，不能重复启动")
-    if job.get("cancel_requested"):
-        raise HTTPException(status_code=409, detail="该 ZIP 任务正在取消，不能确认标签或启动正式导入")
-    folder_plan = None
-    if job.get('folder_confirmation_required'):
-        folder_plan = _v19_confirm_folder_rules(project_id, job_id, job, payload)
-        if job.get('folder_confirmation') and job.get('status') == 'done':
-            return v19_public_job(project_id, job)
-    elif payload.folder_rules is not None or payload.source_scan_digest:
-        raise HTTPException(409, detail='该任务没有文件夹扫描证据')
-    if job.get("status") == "running":
-        return v19_public_job(project_id, job)
-    if job.get("status") not in {"selecting", "failed"}:
-        raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
-
-    if job.get("status") == "failed":
-        # The legacy ZIP worker committed Material before bounded formal GT.
-        # Never restart a partially indexed failed import: re-running it
-        # generates new image IDs and silently duplicates source material.
-        imported_ids = list(v19_read_import_report(project_id, job_id, job).get("imported_image_ids") or [])
-        materials = material_store(project_id)
-        for offset in range(0, len(imported_ids), 500):
-            if materials.get_many(imported_ids[offset:offset + 500]):
-                raise HTTPException(
-                    status_code=409,
-                    detail="该失败任务已有素材写入正式索引，禁止重复导入；请先完成 Material/Annotation 完整性审计与恢复。",
-                )
-
-    if payload.create_labels:
-        raise HTTPException(status_code=409, detail=IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
-
-    classes = list(job.get("external_classes") or [])
-    if classes:
-        project = get_project(project_id)
-        existing_digest = str(job.get("label_confirmation_digest") or "")
-        existing_mapping = {
-            str(key): str(value)
-            for key, value in dict(job.get("label_mapping") or {}).items()
-        }
-        if existing_digest:
-            requested_mapping = {
-                str(key): str(value)
-                for key, value in dict(payload.label_mapping or {}).items()
-            }
-            if requested_mapping and requested_mapping != existing_mapping:
-                raise HTTPException(
-                    status_code=409,
-                    detail="该 ZIP 任务的标签映射已经确认冻结，失败重试不能更换映射",
-                )
-            try:
-                resolved, _ = resolve_external_label_mapping(
-                    classes,
-                    label_mapping=existing_mapping,
-                    create_labels=[],
-                    labels=project_label_items(project),
-                )
-            except ValueError as error:
-                raise HTTPException(status_code=409, detail=str(error)) from error
-            create = []
-        else:
-            try:
-                resolved, _ = resolve_external_label_mapping(
-                    classes,
-                    label_mapping=payload.label_mapping,
-                    create_labels=[],
-                    labels=project_label_items(project),
-                )
-                create = []
-            except ValueError as error:
-                raise HTTPException(status_code=409, detail=str(error)) from error
-            confirmation = {
-                "label_mapping": resolved,
-                "create_labels": [],
-                "external_classes": [
-                    {"class_id": str(row.get("class_id")), "name": str(row.get("name") or "")}
-                    for row in classes
-                ],
-            }
-            job.update({
-                "label_mapping": resolved,
-                "create_labels": create,
-                "label_confirmation_required": False,
-                "label_confirmed_at": now_iso(),
-                "label_confirmation_digest": hashlib.sha256(json.dumps(
-                    confirmation, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-                ).encode("utf-8")).hexdigest(),
-            })
-            if folder_plan is None:
-                v19_write_job(project_id, job)
-        remember_project_label_aliases(project_id, classes, resolved)
-    elif payload.label_mapping:
-        raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
-
-    # Raw ZIPs default to unclassified import, but an explicit positive/negative
-    # upload intent remains optional and must retain its existing association.
-    # The classification is never formal GT, even for empty sidecar files.
-    if folder_plan is None and (job.get("sample_classification_required") or str(payload.sample_type or "").strip()
-                                or payload.intended_label_codes or payload.negative_category_ids):
-        from platform_core.negative_pool import NegativePool
-        chosen_type = str(
-            payload.sample_type
-            or job.get("upload_sample_type")
-            or ("unclassified" if job.get("scan_kind") == "RAW_UNANNOTATED" else "")
-        ).strip()
-        frozen_type = str(job.get("upload_sample_type") or "")
-        if chosen_type not in {"positive", "negative", "unclassified"}:
-            raise HTTPException(status_code=422, detail="请选择原图暂存、正样本标签或负样本分类")
-        if chosen_type == "unclassified" and job.get("scan_kind") != "RAW_UNANNOTATED":
-            raise HTTPException(status_code=422, detail="仅未标注原图可跳过正负样本分类")
-        if frozen_type and chosen_type != frozen_type:
-            raise HTTPException(status_code=409, detail="本次 ZIP 的正负样本选择已冻结，不能在失败重试时改变")
-        codes = sorted(set(str(v).strip() for v in (payload.intended_label_codes or job.get("upload_intended_label_codes") or []) if str(v).strip()))
-        categories = sorted(set(str(v).strip() for v in (payload.negative_category_ids or job.get("upload_negative_category_ids") or []) if str(v).strip()))
-        if chosen_type == "unclassified":
-            if codes or categories:
-                raise HTTPException(status_code=422, detail="原图暂存不得隐式指定正负样本或正式标签")
-        elif chosen_type == "positive":
-            active = {str(item.get("code") or "") for item in active_label_options(project_label_items(get_project(project_id)))}
-            if not codes or any(code not in active for code in codes) or categories:
-                raise HTTPException(status_code=422, detail="正样本须选择至少一个有效目标标签，不能选择负样本分类")
-        else:
-            valid = {str(row['id']) for row in NegativePool(material_store(project_id)).categories() if row.get('enabled')}
-            if not categories or any(code not in valid for code in categories) or codes:
-                raise HTTPException(status_code=422, detail="负样本须选择至少一个有效分类，不能选择目标标签")
-        if frozen_type and (codes != sorted(job.get("upload_intended_label_codes") or [])
-                            or categories != sorted(job.get("upload_negative_category_ids") or [])):
-            raise HTTPException(status_code=409, detail="本次 ZIP 样本选择已冻结，失败重试不能更改")
-        job.update(upload_sample_type=chosen_type, upload_intended_label_codes=codes,
-                   upload_negative_category_ids=categories)
-
-    target_algorithm = str(job.get('upload_algorithm_id') or payload.algorithm_id or '')
-    if target_algorithm:
-        if payload.algorithm_id and payload.algorithm_id != target_algorithm:
-            raise HTTPException(409, detail='ZIP 目标算法已冻结，不能在重试时切换')
-        if not any(str(row.get('id')) == target_algorithm for row in list_algorithms_internal(project_id)):
-            raise HTTPException(422, detail='目标算法已不存在')
-        if job.get('upload_sample_type') != 'negative':
-            raise HTTPException(422, detail='负样本池上传必须确认负样本类型及分类')
-        job['upload_algorithm_id'] = target_algorithm
-
-    selected_paths = payload.selected_paths or []
-    if folder_plan is not None:
-        selected_paths = folder_plan['selected_paths']
-        if not job.get('folder_confirmation'):
-            folder_plan.update(label_mapping=dict(job.get('label_mapping') or {}),
-                               source_zip_sha256=job['source_zip_sha256'], project_id=project_id, job_id=job_id)
-            job['folder_confirmation'] = folder_plan
-            job['folder_confirmation_digest'] = zip_folders.digest(folder_plan)
-    elif selected_paths:
-        allowed = {x.get("path") for x in v19_read_scan_images(project_id, job_id)}
-        selected_paths = [x for x in selected_paths if x in allowed]
-        if not selected_paths:
-            raise HTTPException(status_code=400, detail="没有选择有效图片")
-    import threading
-    highest_sequence = max(
-        (int(read_json(filename, {}).get("enqueue_sequence") or 0)
-         for filename in v19_import_jobs_dir(project_id).glob("*/job.json")),
-        default=0,
-    )
-    job.update(
-        enqueued_at=now_iso(), enqueue_sequence=highest_sequence + 1,
-        status="running",
-        stage="等待项目导入资源",
-        progress=48,
-        phase="QUEUE", phase_completed=0, phase_total=1, phase_unit="step",
-        phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
-        selected_count=len(selected_paths) or job.get("image_count", 0),
-        message="标签确认已冻结，正在等待项目级导入锁",
-    )
-    v19_write_job(project_id, job, allow_restart=True)
-    th = threading.Thread(
-        target=v19_import_worker,
-        args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths),
-        daemon=True,
-    )
-    th.start()
-    return v19_public_job(project_id, v19_read_job(project_id, job_id))
+    return _material_ingestion_service()._v19_start_import_job_locked(project_id, job_id, payload)
 
 
 def _v19_zip_class_sample(project_id: str, job_id: str, class_id: str, index: int) -> Dict[str, Any]:
-    get_project(project_id)
-    job = v19_read_job(project_id, job_id)
-    if str(job.get("status") or "").lower() != "selecting":
-        raise HTTPException(status_code=409, detail="仅待确认的 ZIP 导入任务可查看原始标签样本")
-    if str(class_id) not in {str(row.get("class_id")) for row in job.get("external_classes", [])}:
-        raise HTTPException(status_code=404, detail="外部标签不存在")
-    samples = v19_read_class_samples(project_id, job_id).get(str(class_id), [])
-    if index < 0 or index >= len(samples):
-        raise HTTPException(status_code=404, detail="该标签没有可预览的样本")
-    return dict(samples[index])
+    return _material_ingestion_service()._v19_zip_class_sample(project_id, job_id, class_id, index)
 
 
-@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/samples")
 def v19_label_samples(project_id: str, job_id: str, class_id: str):
-    get_project(project_id)
-    job = v19_read_job(project_id, job_id)
-    if str(job.get("status") or "").lower() != "selecting":
-        raise HTTPException(status_code=409, detail="当前 ZIP 已不在标签确认阶段")
-    if str(class_id) not in {str(row.get("class_id")) for row in job.get("external_classes", [])}:
-        raise HTTPException(status_code=404, detail="外部标签不存在")
-    samples = v19_read_class_samples(project_id, job_id).get(str(class_id), [])[:8]
-    route = (
-        f"/api/v19/projects/{quote(project_id, safe='')}/import/jobs/{quote(job_id, safe='')}"
-        f"/classes/{quote(str(class_id), safe='')}/sample-content"
-    )
-    return {"job_id": job_id, "class_id": str(class_id), "samples": [
-        {
-            "filename": row.get("filename") or "",
-            "bbox": row.get("bbox") or {},
-            "bboxes": (row.get("bboxes") or [row.get("bbox") or {}])[:256],
-            "preview_url": f"{route}?index={index}",
-            "content_url": f"{route}?index={index}",
-        }
-        for index, row in enumerate(samples)
-    ], "count": len(samples)}
+    return _material_ingestion_service().v19_label_samples(project_id, job_id, class_id)
 
 
-@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/sample-content")
-def v19_label_sample_content(project_id: str, job_id: str, class_id: str, index: int = Query(ge=0, le=11)):
-    _authorize_business_file_project(project_id)
-    sample = _v19_zip_class_sample(project_id, job_id, class_id, index)
-    image_path = str(sample.get("image_path") or "")
-    suffix = Path(image_path).suffix.lower()
-    content_types = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
-    if suffix not in content_types:
-        raise HTTPException(status_code=415, detail="不支持预览此图片格式")
-    archive = v19_job_dir(project_id, job_id) / "source.zip"
-    if not archive.is_file():
-        raise HTTPException(status_code=409, detail="ZIP 原始文件已不可用，无法查看样本")
-    try:
-        with zipfile.ZipFile(archive) as zf:
-            entries = [
-                info for info in zf.infolist()
-                if v19_normalize_zip_path(info.filename) == image_path
-            ]
-            if len(entries) != 1:
-                raise HTTPException(status_code=404, detail="ZIP 原图不存在或路径有歧义")
-            entry = entries[0]
-            if entry.is_dir() or entry.file_size > 12 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="预览图片超过 12 MiB 限制")
-            with zf.open(entry) as source:
-                content = source.read(12 * 1024 * 1024 + 1)
-            if len(content) > 12 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="预览图片超过 12 MiB 限制")
-    except (KeyError, zipfile.BadZipFile, RuntimeError, OSError) as error:
-        raise HTTPException(status_code=404, detail="ZIP 样本已不可用") from error
-    return Response(content=content, media_type=content_types[suffix], headers={
-        "Cache-Control": "private, max-age=60",
-        "X-Content-Type-Options": "nosniff",
-    })
+def v19_label_sample_content(project_id: str, job_id: str, class_id: str, index: int=Query(ge=0, le=11)):
+    return _material_ingestion_service().v19_label_sample_content(project_id, job_id, class_id, index)
 
 
-@app.get("/api/v19/projects/{project_id}/import/jobs")
 def v19_list_import_jobs(project_id: str):
-    get_project(project_id)
-    _v19_multipart_repository(project_id).cleanup_expired_if_due(interval_seconds=60)
-    jobs = []
-    d = v19_import_jobs_dir(project_id)
-    for jf in d.glob("*/job.json"):
-        job = read_json(jf, {})
-        if job and not job.get("history_hidden"):
-            _v19_recover_multipart_finalize(project_id, job)
-            # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
-            preview = 300 if job.get("status") == "selecting" else 0
-            jobs.append(v19_public_job(project_id, job, image_limit=preview))
-    positions = {
-        str(job.get("id") or ""): pos
-        for pos, job in enumerate(_v19_fifo_import_jobs(project_id), 1)
-    }
-    for job in jobs:
-        job["queue_position"] = positions.get(str(job.get("id") or ""))
-    jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return {"ok": True, "items": jobs}
+    return _material_ingestion_service().v19_list_import_jobs(project_id)
 
 
-@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}")
-def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
-    get_project(project_id)
-    job = v19_read_job(project_id, job_id)
-    _v19_recover_multipart_finalize(project_id, job)
-    result = v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
-    queue_phase = str(job.get("phase") or "").upper()
-    result["queue_position"] = _v19_fifo_queue_position(project_id, job_id) if queue_phase == "QUEUE" or (not queue_phase and job.get("status") == "running") else None
-    return result
+def v19_get_import_job(project_id: str, job_id: str, include_images: bool=False, image_limit: int=500):
+    return _material_ingestion_service().v19_get_import_job(project_id, job_id, include_images, image_limit)
 
 
-@app.delete("/api/v19/projects/{project_id}/import/jobs")
-def v19_clear_terminal_import_jobs(project_id: str, job_ids: str = ""):
-    get_project(project_id)
-    requested = [value for value in job_ids.split(",") if value]
-    if len(requested) > 200 or len(job_ids) > 26000:
-        raise HTTPException(status_code=422, detail="一次核验的历史任务过多，请分批清空")
-    deleted = []
-    kept = []
-    candidates = {path.parent.name for path in v19_import_jobs_dir(project_id).glob("*/job.json")}
-    for job_id in sorted(candidates | set(requested)):
-        try:
-            _v19_hide_terminal_job(project_id, job_id)
-            deleted.append(job_id)
-        except HTTPException as error:
-            kept.append({"id": job_id, "reason": error.detail, "http_status": error.status_code})
-        except Exception as error:
-            _v19_job_diagnostic(project_id, job_id, error, operation="history_cleanup")
-            kept.append({"id": job_id, "reason": "临时文件清理失败，记录已保留", "http_status": 503})
-    return {"ok": True, "deleted": len(deleted), "deleted_ids": deleted, "kept": kept}
+def v19_clear_terminal_import_jobs(project_id: str, job_ids: str=''):
+    return _material_ingestion_service().v19_clear_terminal_import_jobs(project_id, job_ids)
 
 
 def _v19_hide_terminal_job(project_id: str, job_id: str):
-    get_project(project_id)
-    with _v19_stop_fence(project_id, job_id):
-        job = v19_read_job(project_id, job_id)
-        if str(job.get("status") or "").lower() not in {"done", "failed", "cancelled", "canceled"}:
-            raise HTTPException(status_code=409, detail="任务正在执行或等待确认，不能直接删除；如需终止，请使用正式取消流程。")
-        try:
-            cleanup = _v19_cleanup_uncommitted_job(project_id, job_id, preserve_report=True)
-        except Exception as error:
-            _v19_job_diagnostic(project_id, job_id, error, operation="history_cleanup", job=job)
-            raise HTTPException(status_code=503, detail="临时文件清理失败，任务记录与导入证据已保留，可安全重试") from error
-        # Preserve the original task and bounded report: UI history dismissal
-        # must never erase evidence or unlink the shared stop fence.
-        job.update(project_id=project_id, batch_id=job.get("batch_id") or job_id,
-                   history_hidden=True, history_hidden_at=now_iso(),
-                   temporary_cleanup=cleanup)
-        v19_write_job(project_id, job)
-        # Keep history addressable by the original project+job ID, but outside
-        # normal */job.json discovery. Leave the existing stop-lock inode in
-        # place so concurrent waiters can never acquire a second lock.
-        archive = v19_import_jobs_dir(project_id) / ".history" / job_id
-        try:
-            archive.mkdir(parents=True, exist_ok=True)
-            source_report = v19_job_dir(project_id, job_id) / "report.json"
-            if source_report.is_file():
-                os.replace(source_report, archive / "report.json")
-            source_job = v19_job_dir(project_id, job_id) / "job.json"
-            if source_job.is_file():
-                os.replace(source_job, archive / "job.json")
-        except OSError as error:
-            _v19_job_diagnostic(project_id, job_id, error, operation="history_archive", job=job)
-            raise HTTPException(status_code=503, detail="历史归档未完成，证据仍保留；请按同一任务 ID 重试清理") from error
-        return {"ok": True, "id": job_id, "history_hidden": True,
-                "evidence_retained": True, "cleanup": cleanup}
+    return _material_ingestion_service()._v19_hide_terminal_job(project_id, job_id)
 
 
-@app.delete("/api/v19/projects/{project_id}/import/jobs/{job_id}")
 def v19_delete_import_job(project_id: str, job_id: str):
-    return _v19_hide_terminal_job(project_id, job_id)
+    return _material_ingestion_service().v19_delete_import_job(project_id, job_id)
 
 # ============================================================
 # v30: 模型/算法导出包 + 部署环境选择
@@ -14947,37 +13562,7 @@ def _public_task(
 
 
 def _public_video_task(task: TaskRecord, *, worker_runtime=None, queued_candidates=None) -> Dict[str, Any]:
-    response = _public_task(
-        task,
-        worker_runtime=worker_runtime,
-        queued_candidates=queued_candidates,
-    )
-    payload = shared_task_artifacts().read_json(
-        task.task_id,
-        task.payload_ref,
-        default={},
-    )
-    if isinstance(payload, dict):
-        response.update(
-            {
-                "video_name": payload.get("original_name"),
-                "dataset_id": payload.get("dataset_id") or "default",
-                "split": payload.get("split") or "unassigned",
-                "mode": payload.get("mode"),
-                "interval_seconds": payload.get("interval_seconds"),
-                "extract_fps": payload.get("extract_fps"),
-                "fixed_count": payload.get("fixed_count"),
-                "max_frames": payload.get("max_frames"),
-                "backend": payload.get("backend"),
-            }
-        )
-    if task.result_ref:
-        response["result"] = shared_task_artifacts().read_json(
-            task.task_id,
-            task.result_ref,
-            default={},
-        )
-    return response
+    return _video_tasks_service()._public_video_task(task, worker_runtime=worker_runtime, queued_candidates=queued_candidates)
 
 
 def _require_shared_task(project_id: str, task_id: str, kind: TaskKind) -> TaskRecord:
@@ -14987,114 +13572,40 @@ def _require_shared_task(project_id: str, task_id: str, kind: TaskKind) -> TaskR
     return task
 
 
-@app.get("/api/v33/projects/{project_id}/video-tasks")
-def v33_list_video_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
-    get_project(project_id)
-    repository = shared_task_repository()
-    page = repository.list(
-        project_id=project_id,
-        kinds={TaskKind.VIDEO_FRAMES},
-        limit=max(1, min(100, int(limit))),
-        cursor=cursor,
-    )
-    worker_runtime = WorkerInstanceService(repository).list_runtime()
-    queued_candidates = repository.queued_candidates()
-    return {
-        "items": [
-            _public_video_task(
-                task,
-                worker_runtime=worker_runtime,
-                queued_candidates=queued_candidates,
-            )
-            for task in page.items
-        ],
-        "next_cursor": page.next_cursor,
-    }
+from platform_core.video_tasks_service import VideoTasksDependencies, VideoTasksService
+from platform_core.video_tasks_api import create_video_tasks_router_1
 
 
-@app.get("/api/v33/projects/{project_id}/video-tasks/{task_id}")
+def _video_tasks_service() -> VideoTasksService:
+    return VideoTasksService(VideoTasksDependencies(
+        VIDEO_EXTS_V33=lambda: VIDEO_EXTS_V33,
+        _public_task=lambda *args, **kwargs: _public_task(*args, **kwargs),
+        _require_shared_task=lambda *args, **kwargs: _require_shared_task(*args, **kwargs),
+        ensure_project_dirs=lambda *args, **kwargs: ensure_project_dirs(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        safe_filename=lambda *args, **kwargs: safe_filename(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+    ))
+
+
+app.include_router(create_video_tasks_router_1(_video_tasks_service))
+
+
+def v33_list_video_tasks(project_id: str, limit: int=50, cursor: Optional[str]=None):
+    return _video_tasks_service().v33_list_video_tasks(project_id, limit, cursor)
+
+
 def v33_get_video_task(project_id: str, task_id: str):
-    get_project(project_id)
-    task = _require_shared_task(project_id, task_id, TaskKind.VIDEO_FRAMES)
-    return _public_video_task(task)
+    return _video_tasks_service().v33_get_video_task(project_id, task_id)
 
 
-@app.post("/api/v33/projects/{project_id}/video-tasks/{task_id}/stop")
 def v33_stop_video_task(project_id: str, task_id: str):
-    get_project(project_id)
-    _require_shared_task(project_id, task_id, TaskKind.VIDEO_FRAMES)
-    return _public_task(shared_task_repository().request_cancel(task_id))
+    return _video_tasks_service().v33_stop_video_task(project_id, task_id)
 
 
-@app.post("/api/v33/projects/{project_id}/video-tasks")
-async def v33_create_video_task(
-    project_id: str,
-    video: UploadFile = File(...),
-    dataset_id: str = Form("default"),
-    split: str = Form("unassigned"),
-    mode: str = Form("interval_seconds"),
-    interval_seconds: Optional[float] = Form(None),
-    extract_fps: Optional[float] = Form(None),
-    fixed_count: Optional[int] = Form(None),
-    max_frames: Optional[int] = Form(None),
-    backend: str = Form("auto"),
-    priority: int = Form(50),
-):
-    get_project(project_id)
-    ensure_project_dirs(project_id)
-    filename = safe_filename(video.filename or "video.mp4")
-    ext = Path(filename).suffix.lower()
-    if ext not in VIDEO_EXTS_V33:
-        raise HTTPException(status_code=400, detail="仅支持 mp4、avi、mov、mkv、flv、wmv、webm 等常见视频格式")
-    try:
-        sampling_mode = SamplingMode(mode)
-        request = VideoSampleRequest(
-            mode=sampling_mode,
-            interval_seconds=interval_seconds if sampling_mode is SamplingMode.INTERVAL_SECONDS else None,
-            extract_fps=extract_fps if sampling_mode is SamplingMode.FPS else None,
-            fixed_count=fixed_count if sampling_mode is SamplingMode.FIXED_COUNT else None,
-            max_frames=max_frames if max_frames and max_frames > 0 else None,
-        )
-    except (TypeError, ValueError) as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    task_id = uuid.uuid4().hex[:12]
-    source_ref = f"inputs/{filename}"
-    video_path = shared_task_artifacts().artifact_path(task_id, source_ref)
-    video_path.parent.mkdir(parents=True, exist_ok=True)
-    with video_path.open("wb") as fp:
-        while True:
-            chunk = await video.read(1024 * 1024)
-            if not chunk:
-                break
-            fp.write(chunk)
-    if video_path.stat().st_size <= 0:
-        video_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="上传的视频为空")
-    payload = {
-        "source_ref": source_ref,
-        "original_name": filename,
-        "dataset_id": dataset_id or "default",
-        "split": split or "unassigned",
-        "mode": request.mode.value,
-        "interval_seconds": request.interval_seconds,
-        "extract_fps": request.extract_fps,
-        "fixed_count": request.fixed_count,
-        "max_frames": request.max_frames,
-        "backend": str(backend or "auto").lower(),
-    }
-    shared_task_artifacts().atomic_write_json(task_id, "payload.json", payload)
-    record = shared_task_repository().create(
-        TaskRecord.new(
-            task_id,
-            project_id,
-            TaskKind.VIDEO_FRAMES,
-            "payload.json",
-            "cpu:video",
-            priority=priority,
-            required_capabilities=("opencv",),
-        )
-    )
-    return JSONResponse(status_code=202, content=_public_video_task(record))
+async def v33_create_video_task(project_id: str, video: UploadFile=File(...), dataset_id: str=Form('default'), split: str=Form('unassigned'), mode: str=Form('interval_seconds'), interval_seconds: Optional[float]=Form(None), extract_fps: Optional[float]=Form(None), fixed_count: Optional[int]=Form(None), max_frames: Optional[int]=Form(None), backend: str=Form('auto'), priority: int=Form(50)):
+    return await _video_tasks_service().v33_create_video_task(project_id, video, dataset_id, split, mode, interval_seconds, extract_fps, fixed_count, max_frames, backend, priority)
 
 
 class V33PrelabelTaskReq(BaseModel):
@@ -16082,23 +14593,10 @@ def v35_create_prelabel_task(project_id: str, payload: V35PrelabelTaskReq):
 # ============================================================
 # v36: path / URL source import for local folders, servers, zip/images
 # ============================================================
-class V36SourceImportScanReq(BaseModel):
-    source: str
-    source_type: str = "auto"  # auto / local_path / url
-    dataset_kind: str = "auto"  # auto / images / yolo / coco / voc
+from platform_core.material_ingestion_contracts import V36SourceImportScanReq
 
 
-class V36SourceImportStartReq(BaseModel):
-    source: str
-    source_type: str = "auto"
-    dataset_kind: str = "auto"
-    task_name: Optional[str] = "地址读取导入"
-    split_policy: str = "annotated_train_unannotated_test"  # source / annotated_train_unannotated_test / ratio
-    train_ratio: float = 0.8
-    val_ratio: float = 0.2
-    test_ratio: float = 0.0
-    copy_mode: str = "copy"  # reserved
-    selected_paths: Optional[List[str]] = None
+from platform_core.material_ingestion_contracts import V36SourceImportStartReq
 
 
 def _v36_source_jobs_dir(project_id: str) -> Path:
@@ -16478,79 +14976,19 @@ def _v36_run_source_import(project_id: str, dataset_id: str, job_id: str, payloa
         shutil.rmtree(job_dir / "work", ignore_errors=True)
 
 
-@app.post("/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/scan")
+app.include_router(create_material_ingestion_router_3(_material_ingestion_service))
+
+
 def v36_scan_source_import(project_id: str, dataset_id: str, payload: V36SourceImportScanReq):
-    get_project(project_id)
-    source = _v36_normalize_source(payload.source)
-    if not source:
-        raise HTTPException(status_code=400, detail="请填写本机路径或服务器 URL")
-    if _v36_is_url(source):
-        scan = _v36_scan_url(source)
-        return {
-            "ok": True,
-            **scan,
-            "label_confirmation_required": False,
-            "legacy_annotated_import_blocked": False,
-            "annotation_check": "worker_preflight",
-        }
-
-    root = Path(source).expanduser()
-    scan = _v36_scan_local_root(root)
-    formats = _v36_detect_source_annotation_formats(root)
-    blocked = bool(formats)
-    return {
-        "ok": True,
-        **scan,
-        "detected_annotation_formats": formats,
-        "label_confirmation_required": blocked,
-        "legacy_annotated_import_blocked": blocked,
-        "import_block_reason": V36_ANNOTATED_IMPORT_BLOCKED_DETAIL if blocked else "",
-    }
+    return _material_ingestion_service().v36_scan_source_import(project_id, dataset_id, payload)
 
 
-@app.get("/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs")
 def v36_list_source_import_jobs(project_id: str, dataset_id: str):
-    get_project(project_id)
-    items = [x for x in _v36_load_source_jobs(project_id) if x.get("dataset_id") == dataset_id]
-    return {"items": items[:100]}
+    return _material_ingestion_service().v36_list_source_import_jobs(project_id, dataset_id)
 
 
-@app.post("/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs")
 def v36_start_source_import_job(project_id: str, dataset_id: str, payload: V36SourceImportStartReq):
-    get_project(project_id)
-    source = _v36_normalize_source(payload.source)
-    if not source:
-        raise HTTPException(status_code=400, detail="请填写本机路径或服务器 URL")
-    if not _v36_is_url(source):
-        root = Path(source).expanduser()
-        if not root.exists():
-            raise HTTPException(status_code=400, detail=f"路径不存在：{root}")
-        formats = _v36_detect_source_annotation_formats(root)
-        if formats:
-            raise HTTPException(
-                status_code=409,
-                detail=f"{V36_ANNOTATED_IMPORT_BLOCKED_DETAIL}（检测到：{' / '.join(formats)}）",
-            )
-    job_id = uuid.uuid4().hex[:12]
-    task = {
-        "id": job_id,
-        "name": payload.task_name or "地址读取导入",
-        "source": source,
-        "source_type": "url" if _v36_is_url(source) else "local_path",
-        "dataset_id": dataset_id,
-        "status": "queued",
-        "status_text": "排队中",
-        "stage": "等待开始",
-        "progress": 0,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
-    _v36_write_source_job(project_id, task)
-    data = payload.dict()
-    import threading as _threading
-    th = _threading.Thread(target=_v36_run_source_import, args=(project_id, dataset_id, job_id, data), daemon=True)
-    th.start()
-    return task
+    return _material_ingestion_service().v36_start_source_import_job(project_id, dataset_id, payload)
 
 # ============================================================
 # v39: 部署转换中心（真实工具链）
@@ -19652,9 +18090,7 @@ def v47_create_clean_task(project_id: str, payload: V47CleanReq):
     return _cleaning_management_service().v47_create_clean_task(project_id, payload)
 
 
-class V55UploadDecisionsReq(BaseModel):
-    clean_image_ids: Optional[List[Any]] = None
-    ready_image_ids: Optional[List[Any]] = None
+from platform_core.material_ingestion_contracts import V55UploadDecisionsReq
 
 
 def _v55_read_upload_batch(
@@ -19670,254 +18106,22 @@ def _v55_read_upload_batch(
 
 
 def _v55_enrich_upload_batch(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
-    image_ids = list(dict.fromkeys(
-        str(item.get('image_id') or '')
-        for item in (batch.get('items') or [])
-        if str(item.get('image_id') or '')
-    ))
-    images: Dict[str, Dict[str, Any]] = {}
-    materials = material_store(project_id)
-    for offset in range(0, len(image_ids), 500):
-        for image in materials.get_many(image_ids[offset:offset + 500]):
-            image_id = str(image.get('id') or '')
-            if image_id:
-                images[image_id] = dict(image)
-    enriched = dict(batch)
-    enriched['items'] = []
-    for stored_item in batch.get('items', []):
-        item = dict(stored_item)
-        image = images.get(str(item.get('image_id')))
-        item['image'] = image
-        item['missing'] = image is None
-        enriched['items'].append(item)
-    enriched['clean_task_id'] = batch.get('clean_task_id')
-    return enriched
+    return _material_ingestion_service()._v55_enrich_upload_batch(project_id, batch)
 
 
-def _v55_upload_clean_task_id(
-    project_id: str,
-    batch_id: str,
-    image_ids: List[str],
-) -> str:
-    identity = json.dumps(
-        [str(project_id), str(batch_id), [str(image_id) for image_id in image_ids]],
-        ensure_ascii=False,
-        separators=(',', ':'),
-    )
-    return hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
+def _v55_upload_clean_task_id(project_id: str, batch_id: str, image_ids: List[str]) -> str:
+    return _material_ingestion_service()._v55_upload_clean_task_id(project_id, batch_id, image_ids)
 
 
-@app.get('/api/v55/projects/{project_id}/upload-batches/{batch_id}')
+app.include_router(create_material_ingestion_router_4(_material_ingestion_service))
+
+
 def v55_get_upload_batch(project_id: str, batch_id: str):
-    get_project(project_id)
-    batch = _v55_read_upload_batch(upload_batch_store(project_id), batch_id)
-    return _v55_enrich_upload_batch(project_id, batch)
+    return _material_ingestion_service().v55_get_upload_batch(project_id, batch_id)
 
 
-@app.post('/api/v55/projects/{project_id}/upload-batches/{batch_id}/decisions')
-def v55_apply_upload_batch_decisions(
-    project_id: str,
-    batch_id: str,
-    payload: V55UploadDecisionsReq,
-):
-    get_project(project_id)
-    clean_ids = {
-        str(image_id).strip()
-        for image_id in (payload.clean_image_ids or [])
-        if str(image_id).strip()
-    }
-    ready_ids = {
-        str(image_id).strip()
-        for image_id in (payload.ready_image_ids or [])
-        if str(image_id).strip()
-    }
-    store = upload_batch_store(project_id)
-    try:
-        store._path(batch_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail='上传批次不存在')
-    with store.locked(batch_id):
-        original = _v55_read_upload_batch(store, batch_id, locked=True)
-        upload_request_status = str(original.get('upload_request_status') or 'SUCCEEDED').upper()
-        if upload_request_status != 'SUCCEEDED':
-            raise HTTPException(status_code=409, detail='上传批次尚未完成，不能提交清洗决策')
-        clean_task_id = str(original.get('clean_task_id') or '')
-        associated_clean_ids = [
-            str(image_id)
-            for image_id in original.get('clean_task_image_ids', [])
-        ]
-        if bool(clean_task_id) != bool(associated_clean_ids):
-            raise HTTPException(status_code=400, detail='上传批次清洗任务关联不完整')
-        associated_clean_set = set(associated_clean_ids)
-        if clean_ids:
-            materials = material_store(project_id)
-            indexed = {}
-            sorted_clean_ids = sorted(clean_ids)
-            for offset in range(0, len(sorted_clean_ids), 500):
-                indexed.update({
-                    str(row.get('id')): row
-                    for row in materials.get_many(sorted_clean_ids[offset:offset + 500])
-                })
-            not_unannotated = []
-            for image_id in sorted(clean_ids):
-                row = indexed.get(image_id) or {}
-                annotation_state = str(
-                    row.get('annotation_state')
-                    or row.get('annotation_status')
-                    or ('annotated' if row.get('annotated') else 'unannotated')
-                ).strip().lower()
-                if annotation_state != 'unannotated':
-                    not_unannotated.append(image_id)
-            if not_unannotated:
-                raise HTTPException(
-                    status_code=409,
-                    detail='批量上传入口只允许把未标注素材送入图片质量清洗；带标注素材请使用标注质量审计',
-                )
-        if clean_task_id and clean_ids - associated_clean_set:
-            raise HTTPException(
-                status_code=400,
-                detail='每个上传批次只支持一个清洗任务，不能追加新的清洗图片',
-            )
-        if clean_task_id and ready_ids & associated_clean_set:
-            raise HTTPException(
-                status_code=400,
-                detail='已提交清洗的图片不能改为无需清洗',
-            )
-        try:
-            updated = apply_decisions(original, clean_ids, ready_ids)
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error))
-
-        if not clean_task_id and clean_ids:
-            associated_clean_ids = [
-                str(item.get('image_id'))
-                for item in updated.get('items', [])
-                if str(item.get('image_id')) in clean_ids
-            ]
-            associated_clean_set = set(associated_clean_ids)
-            clean_task_id = _v55_upload_clean_task_id(
-                project_id,
-                batch_id,
-                associated_clean_ids,
-            )
-            updated['clean_task_id'] = clean_task_id
-            updated['clean_task_image_ids'] = associated_clean_ids
-
-        clean_request = None
-        prepared_created = False
-        failed_task_snapshot: Optional[Dict[str, Any]] = None
-        terminal_clean_task = False
-        if clean_task_id:
-            clean_request = V47CleanReq(
-                image_ids=associated_clean_ids,
-                task_name=f'上传批次 {batch_id} 清洗',
-            )
-            existing_task = _v33_get_task(project_id, 'clean_tasks', clean_task_id)
-            existing_status = str((existing_task or {}).get('status') or '')
-            terminal_clean_task = existing_status in {
-                'awaiting_confirmation', 'done', 'succeeded', 'success', 'completed',
-            }
-            if existing_status == 'failed':
-                failed_task_snapshot = dict(existing_task or {})
-                _v47_reset_failed_clean_task_record(project_id, clean_task_id)
-            try:
-                _, prepared_created = _v62_prepare_clean_compat(
-                    project_id,
-                    clean_request,
-                    task_id=clean_task_id,
-                )
-            except ValueError as error:
-                raise HTTPException(status_code=400, detail=str(error))
-
-        decided_at = now_iso()
-        updated['updated_at'] = decided_at
-        # A replay after a successful/awaiting task only records the same
-        # decision in the batch; it must not regress confirmed material back
-        # to ``cleaning``. Failed tasks are explicitly reset above and may be
-        # retried with the same deterministic task id.
-        material_clean_ids = set() if terminal_clean_task else set(clean_ids)
-        affected_ids = material_clean_ids | ready_ids
-        decision_fields = (
-            'processing_status',
-            'clean_skipped',
-            'clean_decision',
-            'clean_decision_at',
-            'updated_at',
-        )
-        backups: Dict[str, Dict[str, Tuple[bool, Any]]] = {}
-        applied_values: Dict[str, Dict[str, Any]] = {}
-
-        def apply_material_decisions(rows):
-            found = {
-                str(row.get('id'))
-                for row in rows
-                if str(row.get('id')) in affected_ids
-            }
-            missing = affected_ids - found
-            if missing:
-                raise ValueError(f"图片不存在：{', '.join(sorted(missing))}")
-            for index, row in enumerate(rows):
-                image_id = str(row.get('id'))
-                if image_id not in affected_ids:
-                    continue
-                backups[image_id] = {
-                    field: (field in row, row.get(field))
-                    for field in decision_fields
-                }
-                if image_id in ready_ids:
-                    rows[index] = mark_ready(row, decided_at)
-                elif image_id in material_clean_ids:
-                    changed = dict(row)
-                    changed.update({
-                        'processing_status': 'cleaning',
-                        'clean_skipped': False,
-                        'clean_decision': 'clean',
-                        'clean_decision_at': decided_at,
-                        'updated_at': decided_at,
-                    })
-                    rows[index] = changed
-                applied_values[image_id] = {
-                    field: rows[index].get(field)
-                    for field in decision_fields
-                }
-            return None
-
-        try:
-            store._write_unlocked(batch_id, updated)
-            material_store(project_id).mutate_ids(affected_ids, apply_material_decisions)
-            if clean_task_id:
-                _v62_publish_clean_compat(project_id, clean_task_id)
-        except Exception as error:
-            store._write_unlocked(batch_id, original)
-            if backups:
-                def restore_material_decisions(rows):
-                    for row in rows:
-                        image_id = str(row.get('id'))
-                        before = backups.get(image_id)
-                        expected = applied_values.get(image_id)
-                        if before is None or expected is None:
-                            continue
-                        for field, (existed, value) in before.items():
-                            # Restore only fields still owned by this
-                            # transaction. A concurrent filename/updated_at
-                            # edit must survive the rollback.
-                            if row.get(field) != expected.get(field):
-                                continue
-                            if existed:
-                                row[field] = value
-                            else:
-                                row.pop(field, None)
-                material_store(project_id).mutate_ids(backups, restore_material_decisions)
-            if prepared_created and clean_task_id:
-                _v47_remove_prepared_clean_task_record(project_id, clean_task_id)
-            elif failed_task_snapshot and clean_task_id:
-                _v47_restore_clean_task_record(project_id, clean_task_id, failed_task_snapshot)
-            if isinstance(error, ValueError):
-                raise HTTPException(status_code=400, detail=str(error))
-            raise HTTPException(status_code=500, detail=f'保存上传决策失败：{error}')
-
-        persisted = store._read_unlocked(batch_id)
-    return _v55_enrich_upload_batch(project_id, persisted)
+def v55_apply_upload_batch_decisions(project_id: str, batch_id: str, payload: V55UploadDecisionsReq):
+    return _material_ingestion_service().v55_apply_upload_batch_decisions(project_id, batch_id, payload)
 
 
 app.include_router(create_cleaning_management_router_2(_cleaning_management_service))
@@ -20548,177 +18752,44 @@ def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
     return _deployment_validation_service().promote_deployment_test_to_feedback_evidence(project_id, task_id)
 
 
-class DetectionBatchReviewReq(BaseModel):
-    review: Literal["correct", "missed", "false_positive", "box_inaccurate", "wrong_class"]
-    note: str = ""
+from platform_core.detection_batches_contracts import DetectionBatchReviewReq
 
 
-def _iter_detection_batch_rows(project_id: str, batch_id: str = "", *, scan_limit: int = 2000):
-    repository = shared_task_repository()
-    artifacts = shared_task_artifacts()
-    cursor = None
-    scanned = 0
-    expected = str(batch_id or "").strip()
-    while scanned < scan_limit:
-        page = repository.list(
-            project_id=project_id,
-            kinds=(TaskKind.DEPLOYMENT_TEST,),
-            limit=min(100, scan_limit - scanned),
-            cursor=cursor,
-        )
-        if not page.items:
-            break
-        scanned += len(page.items)
-        for task in page.items:
-            request = artifacts.read_json(task.task_id, task.payload_ref, default={})
-            batch = request.get("detection_batch") if isinstance(request, dict) else None
-            if not isinstance(batch, dict) or not batch.get("batch_id"):
-                continue
-            if expected and str(batch.get("batch_id")) != expected:
-                continue
-            result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
-            review = artifacts.read_json(task.task_id, "detection_review.json", default={})
-            yield task, request, result if isinstance(result, dict) else {}, review if isinstance(review, dict) else {}
-        cursor = page.next_cursor
-        if not cursor:
-            break
+def _iter_detection_batch_rows(project_id: str, batch_id: str='', *, scan_limit: int=2000):
+    return _detection_batches_service()._iter_detection_batch_rows(project_id, batch_id, scan_limit=scan_limit)
 
 
 def _public_detection_batch(project_id: str, batch_id: str, rows):
-    repository = shared_task_repository()
-    grouped: Dict[int, Dict[str, Any]] = {}
-    created_values: List[str] = []
-    total = 0
-    for task, request, result, review in rows:
-        meta = request.get("detection_batch") or {}
-        index = int(meta.get("item_index") or 0)
-        total = max(total, int(meta.get("item_total") or 0))
-        item = grouped.setdefault(index, {
-            "index": index,
-            "original_filename": str(meta.get("original_filename") or ""),
-            "review": {},
-            "models": {},
-            "expected_sides": [],
-        })
-        side = str(meta.get("side") or "").upper()
-        item['expected_sides'] = sorted(set(item['expected_sides']) | set(meta.get('expected_sides') or [side]))
-        truth = public_deployment_test(task)
-        model = request.get("model_identity") if isinstance(request.get("model_identity"), dict) else {}
-        public_result = {
-            "task_id": task.task_id,
-            "status": truth.get("status"),
-            "progress_percent": truth.get("progress_percent"),
-            "phase": truth.get("phase"),
-            "creation_id": request.get("creation_id"),
-            "model": model,
-            "input_image_url": str(request.get("input_image_url") or ""),
-            "result_image_url": str((result or {}).get("image_url") or request.get("image_url") or ""),
-            "detections": list((result or {}).get("detections") or []),
-            "preprocess_ms": (result or {}).get("preprocess_ms"),
-            "inference_ms": (result or {}).get("inference_ms"),
-            "postprocess_ms": (result or {}).get("postprocess_ms"),
-            "total_elapsed_ms": (result or {}).get("total_elapsed_ms"),
-            "error": truth.get("error") or truth.get("error_message") or "",
-        }
-        if side in {"A", "B"}:
-            item["models"][side] = public_result
-        if review and review.get("review"):
-            item["review"] = {
-                "review": str(review.get("review") or ""),
-                "note": str(review.get("note") or ""),
-                "updated_at": str(review.get("updated_at") or ""),
-            }
-        created = str(getattr(task, "created_at", "") or truth.get("created_at") or "")
-        if created:
-            created_values.append(created)
-    items = [grouped[index] for index in sorted(grouped)]
-    completed = sum(
-        1 for item in items
-        if set(item['expected_sides']) <= set(item['models']) and item["models"] and all(
-            str(model.get("status") or "") in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
-            for model in item["models"].values()
-        )
-    )
-    failed = sum(
-        1 for item in items
-        if any(str(model.get("status") or "") == "FAILED" for model in item["models"].values())
-    )
-    return {
-        "batch_id": batch_id,
-        "total": total or len(items),
-        "created_items": len(items),
-        "completed_items": completed,
-        "failed_items": failed,
-        "created_at": min(created_values) if created_values else "",
-        "updated_at": max(created_values) if created_values else "",
-        "items": items,
-        "expected_sides": sorted({side for item in items for side in item['expected_sides']}),
-    }
+    return _detection_batches_service()._public_detection_batch(project_id, batch_id, rows)
 
 
-@app.get("/api/v64/projects/{project_id}/detection-batches")
-def list_detection_batches(project_id: str, limit: int = Query(default=12, ge=1, le=50)):
-    get_project(project_id)
-    grouped: Dict[str, list] = {}
-    order: List[str] = []
-    for row in _iter_detection_batch_rows(project_id, scan_limit=1500):
-        meta = row[1].get("detection_batch") or {}
-        batch_id = str(meta.get("batch_id") or "")
-        if not batch_id:
-            continue
-        if batch_id not in grouped:
-            if len(order) >= limit:
-                continue
-            grouped[batch_id] = []
-            order.append(batch_id)
-        grouped[batch_id].append(row)
-    return {
-        "ok": True,
-        "items": [
-            {key: value for key, value in _public_detection_batch(project_id, batch_id, grouped[batch_id]).items() if key != "items"}
-            for batch_id in order
-        ],
-    }
+from platform_core.detection_batches_service import DetectionBatchesDependencies, DetectionBatchesService
+from platform_core.detection_batches_api import create_detection_batches_router_1
 
 
-@app.get("/api/v64/projects/{project_id}/detection-batches/{batch_id}")
+def _detection_batches_service() -> DetectionBatchesService:
+    return DetectionBatchesService(DetectionBatchesDependencies(
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        public_deployment_test=lambda *args, **kwargs: public_deployment_test(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+    ))
+
+
+app.include_router(create_detection_batches_router_1(_detection_batches_service))
+
+
+def list_detection_batches(project_id: str, limit: int=Query(default=12, ge=1, le=50)):
+    return _detection_batches_service().list_detection_batches(project_id, limit)
+
+
 def get_detection_batch(project_id: str, batch_id: str):
-    get_project(project_id)
-    rows = list(_iter_detection_batch_rows(project_id, batch_id, scan_limit=5000))
-    if not rows:
-        raise HTTPException(status_code=404, detail="检测批次不存在")
-    return {"ok": True, "batch": _public_detection_batch(project_id, batch_id, rows)}
+    return _detection_batches_service().get_detection_batch(project_id, batch_id)
 
 
-@app.post("/api/v64/projects/{project_id}/detection-batches/{batch_id}/items/{item_index}/review")
 def review_detection_batch_item(project_id: str, batch_id: str, item_index: int, payload: DetectionBatchReviewReq):
-    get_project(project_id)
-    rows = [
-        row for row in _iter_detection_batch_rows(project_id, batch_id, scan_limit=5000)
-        if int((row[1].get("detection_batch") or {}).get("item_index") or 0) == int(item_index)
-    ]
-    if not rows:
-        raise HTTPException(status_code=404, detail="检测结果不存在")
-    terminal = {
-        TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.FAILED,
-        TaskStatus.CANCELLED, TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE,
-    }
-    if any(task.status not in terminal for task, _, _, _ in rows):
-        raise HTTPException(status_code=409, detail="检测任务尚未结束，暂不能人工核验")
-    if not any(task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS} for task, _, _, _ in rows):
-        raise HTTPException(status_code=409, detail="该图片没有成功的真实检测结果，暂不能人工核验")
-    review = {
-        "schema_version": 1,
-        "batch_id": str(batch_id),
-        "item_index": int(item_index),
-        "review": payload.review,
-        "note": str(payload.note or "").strip()[:1000],
-        "updated_at": now_iso(),
-    }
-    artifacts = shared_task_artifacts()
-    for task, _, _, _ in rows:
-        artifacts.atomic_write_json(task.task_id, "detection_review.json", review)
-    return {"ok": True, "review": review}
+    return _detection_batches_service().review_detection_batch_item(project_id, batch_id, item_index, payload)
 
 
 # ============================================================
@@ -20741,34 +18812,11 @@ app.include_router(create_material_governance_router_4(_material_governance_serv
 def v52_mark_ready(project_id: str, payload: V52ReadyReq):
     return _material_governance_service().v52_mark_ready(project_id, payload)
 
-@app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
+app.include_router(create_material_ingestion_router_5(_material_ingestion_service))
+
+
 def v52_import_review(project_id: str, job_id: str):
-    job = v19_read_job(project_id, job_id)
-    report = v19_read_import_report(project_id, job_id, job)
-    ids = list(dict.fromkeys(
-        str(value).strip()
-        for value in (report.get('imported_image_ids') or [])
-        if str(value).strip()
-    ))
-    images = material_store(project_id).get_many(ids)
-    annotations: Dict[str, Dict[str, Any]] = {}
-    for offset in range(0, len(ids), 500):
-        annotations.update(read_annotations_many(project_id, ids[offset:offset + 500]))
-    counts: Dict[str, int] = {}
-    for img in images:
-        ann = annotations.get(str(img.get('id'))) or {}
-        for b in ann.get('boxes', []):
-            label = str(b.get('label') or '').strip()
-            if label:
-                counts[label] = counts.get(label, 0) + 1
-    return {
-        'ok': True,
-        'job': {'id': job.get('id'), 'file_name': job.get('file_name'), 'status': job.get('status'), 'detected_format': report.get('detected_format')},
-        'report': report,
-        'image_ids': ids,
-        'images': images,
-        'label_box_counts': counts,
-    }
+    return _material_ingestion_service().v52_import_review(project_id, job_id)
 
 # ============================================================
 # v42.9 — processed/unprocessed data pool + algorithm report
