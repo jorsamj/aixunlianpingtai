@@ -508,8 +508,10 @@ def import_snapshot(
                                     "the import revision differs from the frozen window",
                                     detail=f"frozen={frozen_revision} import={revision}",
                                 )
+                # The target is always exported with its ledger: the safety
+                # evidence must not depend on what the source claims to be.
                 target = export_target_snapshot(
-                    connection, project_id, include_cleanup=is_v2,
+                    connection, project_id, include_cleanup=True,
                 )
                 target_revision = (
                     int(target["algorithm_revision"]) if target is not None else None
@@ -518,6 +520,12 @@ def import_snapshot(
                 action = _import_action(
                     target, revision, content,
                     source_is_v2=is_v2, legacy_content=legacy_content,
+                    target_legacy_content=(
+                        None if target is None else _legacy_content(target)
+                    ),
+                    target_has_v2_evidence=_v2_completed_evidence(
+                        connection, project_id,
+                    ),
                 )
                 result["action"] = action
                 if action == "apply":
@@ -550,8 +558,36 @@ def import_snapshot(
         "counts": counts,
         "content_digest": content,
         "mode": mode,
+        "contract_version": str(snapshot.get("contract_version") or ""),
+        "cleanup_rows": int(counts.get("cleanup") or 0),
     })
     return result
+
+
+def _v2_completed_evidence(connection, project_id: str) -> bool:
+    """Whether a COMPLETED APPLY run recorded a V2 (four-domain) migration."""
+    from psycopg.rows import dict_row
+
+    with connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            "SELECT 1 AS present FROM w5_algorithm.migration_run "
+            "WHERE project_id=%s AND status='COMPLETED' AND mode='APPLY' "
+            "AND detail->>'contract_version'=%s LIMIT 1",
+            (str(project_id), CONTRACT_VERSION_V2),
+        )
+        return cursor.fetchone() is not None
+
+
+def _legacy_content(snapshot: Mapping[str, Any]) -> str:
+    """Content digest over the three legacy domains only."""
+    tables = snapshot.get("tables") or {}
+    return _digest({
+        "project_id": str(snapshot["project_id"]),
+        "algorithm_revision": int(snapshot["algorithm_revision"]),
+        "tables": normalized_tables({
+            "tables": {name: tables[name] for name in TABLES if name in tables},
+        }),
+    })
 
 
 def _import_action(
@@ -561,6 +597,8 @@ def _import_action(
     *,
     source_is_v2: bool = False,
     legacy_content: str | None = None,
+    target_legacy_content: str | None = None,
+    target_has_v2_evidence: bool = False,
 ) -> str:
     if target is None:
         return "apply"
@@ -572,27 +610,33 @@ def _import_action(
             detail=f"target={target_revision} source={revision}",
         )
     target_rows = (target.get("tables") or {}).get("cleanup") or []
-    if not source_is_v2 and target_rows:
+    if not source_is_v2 and (target_rows or target_has_v2_evidence):
         # A V1 document carries no cleanup evidence: it can never replace a
-        # target that already owns receipts.
+        # target that already owns receipts or completed V2 migration evidence.
         raise AlgorithmMigrationError(
             "ALGORITHM_MIGRATION_V1_CANNOT_OVERWRITE_V2",
-            "a V1 snapshot cannot overwrite an existing cleanup ledger",
-            detail=f"target_cleanup_rows={len(target_rows)}",
+            "a V1 snapshot cannot overwrite a V2 project",
+            detail=(
+                f"target_cleanup_rows={len(target_rows)} "
+                f"v2_evidence={target_has_v2_evidence}"
+            ),
         )
     if target_revision == revision:
-        if content_digest(target) == content:
-            return "noop"
         if source_is_v2:
-            # V1 -> V2 upgrade at the same revision is legal only when the three
-            # legacy domains are byte-identical content and the target owns no
-            # cleanup rows yet; the fourth domain then comes from the source.
+            if content_digest(target) == content:
+                return "noop"
+            # V1 -> V2 upgrade: identical three-domain content, no receipts and
+            # no prior V2 evidence; the fourth domain then comes from the source.
             if (
                 legacy_content is not None
+                and target_legacy_content is not None
                 and not target_rows
-                and content_digest(target) == legacy_content
+                and not target_has_v2_evidence
+                and legacy_content == target_legacy_content
             ):
                 return "apply"
+        elif target_legacy_content is not None and target_legacy_content == content:
+            return "noop"
         raise AlgorithmMigrationError(
             "ALGORITHM_MIGRATION_DIGEST_CONFLICT",
             "same algorithm revision has different content",
@@ -1052,9 +1096,23 @@ def build_report(
     )
 
     # row counts ------------------------------------------------------------
-    source_counts = {name: len(source_tables[name]) for name in TABLES}
+    table_names = list(TABLES)
+    if "cleanup" in source_tables or (target_tables is not None and "cleanup" in target_tables):
+        table_names.append("cleanup")
+        checks["snapshot_contract"] = _check(
+            target is not None
+            and str(source.get("contract_version")) == str(target.get("contract_version"))
+            and str(source.get("cleanup_capability") or "")
+            == str((target or {}).get("cleanup_capability") or ""),
+            source=str(source.get("contract_version")),
+            target=None if target is None else str(target.get("contract_version")),
+            source_capability=source.get("cleanup_capability"),
+            target_capability=None if target is None else target.get("cleanup_capability"),
+        )
+    source_counts = {name: len(source_tables.get(name) or []) for name in table_names}
     target_counts = (
-        {name: len(target_tables[name]) for name in TABLES} if target_tables is not None else None
+        {name: len(target_tables.get(name) or []) for name in table_names}
+        if target_tables is not None else None
     )
     checks["row_counts"] = _check(
         target_counts is not None and target_counts == source_counts,
@@ -1299,15 +1357,17 @@ def build_report(
 
 
 def verify_migration(connection, source: Mapping[str, Any]) -> dict[str, Any]:
-    """Fresh target read plus full report; never trusts a previous run."""
-    source = validate_snapshot(source)
-    target = export_target_snapshot(connection, str(source["project_id"]))
-    return build_report(source, target, schema=schema_status(connection))
+    """Fresh four-domain comparison of a snapshot against the live target.
 
+    The target is always re-read from the database (never the import request),
+    and it is exported with its ledger so a V2 source is compared as V2.
+    """
+    snapshot = validate_snapshot(source)
+    project_id = str(snapshot["project_id"])
+    is_v2 = str(snapshot.get("contract_version")) == CONTRACT_VERSION_V2
+    target = export_target_snapshot(connection, project_id, include_cleanup=is_v2)
+    return build_report(snapshot, target, schema=schema_status(connection))
 
-# ---------------------------------------------------------------------------
-# reverse restoration (blocked unless safety evidence exists)
-# ---------------------------------------------------------------------------
 def restore_source_snapshot(
     db_path: str | Path,
     project_id: str,

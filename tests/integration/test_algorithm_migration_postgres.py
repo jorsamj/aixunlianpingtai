@@ -60,6 +60,7 @@ from platform_core.algorithm_migration import (
     build_report,
     content_digest,
     export_source_snapshot,
+    export_source_snapshot_v2,
     import_snapshot,
     run_status,
 )
@@ -80,7 +81,12 @@ from platform_core.algorithm_repository import (
     admission_transition_path,
     open_algorithm_repository,
 )
-from platform_core.algorithm_shadow import _digest, _snapshot_body
+from platform_core.algorithm_shadow import (
+    CONTRACT_VERSION_V2,
+    _digest,
+    _snapshot_body,
+    validate_snapshot,
+)
 from platform_core.algorithm_sql_store import AlgorithmSqlStore
 
 
@@ -1345,3 +1351,167 @@ def test_cleanup_ledger_is_served_by_the_postgres_repository(pg):
     with pytest.raises(AlgorithmRepositoryError) as mismatch:
         other.cleanup_summary(project_id="clean", suspected_state="SUSPECTED_DELETED")
     assert mismatch.value.code == "ALGORITHM_CLEANUP_PROJECT_MISMATCH"
+
+def _seeded_cleanup_store(root):
+    """A SQLite project whose ledger holds one active and one completed receipt."""
+    store = _store(root, "ledger")
+    store.cleanup_ensure_schema()
+    stamp = "2026-11-01T00:00:00.123456+00:00"
+
+    def confirm(operation_id, algorithm_id, product_id, completed=False):
+        operation = {
+            "operation_id": operation_id, "task_id": "external-cleanup-" + operation_id,
+            "project_id": "ledger", "algorithm_id": algorithm_id, "name": algorithm_id,
+            "product_id": product_id, "generation": operation_id,
+            "state": "CONFIRMED_DELETED", "phase": "confirmed",
+            "created_at": stamp, "updated_at": stamp, "error": "", "counts": {},
+            "evidence": {"source": "event", "contract_id": "v1", "evidence_id": "e1"},
+            "history": [],
+        }
+        result = store.cleanup_confirm_deleted(
+            operation_id=operation_id, algorithm_id=algorithm_id, product_id=product_id,
+            provider="CHANG_LIAN", completed_state="CLEANUP_COMPLETED",
+            algorithm_patch={
+                "external_active": False, "external_delete_pending": True,
+                "external_deletion_status": "CONFIRMED_DELETED",
+            },
+            operation=operation, now=stamp,
+        )
+        assert result["outcome"] in {"created", "existing"}
+        if completed:
+            store.cleanup_update(
+                project_id="ledger", operation_id=operation_id,
+                patch={"state": "CLEANUP_COMPLETED", "phase": "completed"},
+                remove_algorithm=True, expected_states=None,
+                completed_state="CLEANUP_COMPLETED",
+                now="2026-11-01T01:00:00.654321+00:00",
+            )
+        return operation
+
+    # algo-b carries the active cycle; a second external algorithm is created for
+    # the completed receipt so it can be deleted while its receipt survives.
+    store.create_algorithm({
+        "id": "algo-c", "name": "C", "source_type": "EXTERNAL",
+        "provider_type": "CHANG_LIAN", "external_product_id": "prod-2",
+    })
+    confirm("op-live", "algo-b", "prod-1")
+    confirm("op-done", "algo-c", "prod-2", completed=True)
+    return store
+
+
+def test_v2_snapshot_roundtrip_preserves_the_cleanup_ledger(pg):
+    """Four domains export, import, re-export and reconcile with full evidence."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8v2-"))
+    store = _seeded_cleanup_store(root)
+    snapshot = export_source_snapshot_v2(store.db_path, "ledger")
+    assert snapshot["contract_version"] == CONTRACT_VERSION_V2
+    assert snapshot["cleanup_capability"] == "PRESENT"
+    assert snapshot["counts"]["cleanup"] == 2
+    rows = {row["operation_id"]: row for row in snapshot["tables"]["cleanup"]}
+    assert rows["op-live"]["generation"] == "op-live"
+    assert rows["op-live"]["created_at"] == "2026-11-01T00:00:00.123456+00:00"
+    assert rows["op-done"]["created_at"] == "2026-11-01T00:00:00.123456+00:00"
+
+    with _connect(pg) as connection:
+        imported = import_snapshot(connection, snapshot)
+        target = export_target_snapshot(connection, "ledger", include_cleanup=True)
+        report = build_report(snapshot, target, schema=schema_status(connection))
+    assert imported["action"] == "apply" and imported["changed"] is True
+    assert report["verdict"] == "OK", report["blocking_findings"]
+    assert target["cleanup_capability"] == "PRESENT"
+    target_rows = {row["operation_id"]: row for row in target["tables"]["cleanup"]}
+    assert set(target_rows) == {"op-live", "op-done"}
+    assert target_rows["op-done"]["state"] == "CLEANUP_COMPLETED"
+    assert target_rows["op-done"]["algorithm_id"] == "algo-c"
+
+    # Replaying the same document is a no-op; a real ledger change imports
+    # incrementally because the revision moved with it.
+    with _connect(pg) as connection:
+        assert import_snapshot(connection, snapshot)["action"] == "noop"
+    store.cleanup_update(
+        project_id="ledger", operation_id="op-live",
+        patch={"phase": "waiting_for_tasks"}, remove_algorithm=False,
+        expected_states=None, completed_state="CLEANUP_COMPLETED",
+        now="2026-11-01T02:00:00.000001+00:00",
+    )
+    changed = export_source_snapshot_v2(store.db_path, "ledger")
+    assert changed["algorithm_revision"] > snapshot["algorithm_revision"]
+    with _connect(pg) as connection:
+        assert import_snapshot(connection, changed)["action"] == "apply"
+
+
+def test_v1_cannot_overwrite_v2_and_the_upgrade_is_legal(pg):
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8up-"))
+    store = _seeded_cleanup_store(root)
+    legacy = export_source_snapshot(store.db_path, "ledger")
+    four = export_source_snapshot_v2(store.db_path, "ledger")
+    # Same revision, same three domains: the V2 document completes the target.
+    assert legacy["algorithm_revision"] == four["algorithm_revision"]
+    with _connect(pg) as connection:
+        assert import_snapshot(connection, legacy)["action"] == "apply"
+        assert import_snapshot(connection, four)["action"] == "apply"
+    # A V1 document can never replace the V2 project afterwards.
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as downgrade:
+            import_snapshot(connection, legacy)
+    assert downgrade.value.code == "ALGORITHM_MIGRATION_V1_CANNOT_OVERWRITE_V2"
+
+
+def test_v2_snapshot_rejects_tampered_identity_and_absent_evidence(pg):
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8bad-"))
+    store = _seeded_cleanup_store(root)
+    snapshot = export_source_snapshot_v2(store.db_path, "ledger")
+    tampered = copy.deepcopy(snapshot)
+    tampered["tables"]["cleanup"][0]["product_id"] = "prod-other"
+    with pytest.raises(Exception):
+        validate_snapshot(tampered)
+    absent = copy.deepcopy(snapshot)
+    absent["cleanup_capability"] = "ABSENT"
+    with pytest.raises(Exception):
+        validate_snapshot(absent)
+    secret = copy.deepcopy(snapshot)
+    secret["tables"]["cleanup"][0]["api_key"] = "secret"
+    with pytest.raises(Exception):
+        validate_snapshot(secret)
+
+
+def test_cleanup_ledger_idempotent_update_does_not_move_the_revision(tmp_path):
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+    store = _store(pathlib.Path(tempfile.mkdtemp(prefix="t8rev-")), "rev")
+    store.cleanup_ensure_schema()
+    stamp = "2026-11-01T00:00:00+00:00"
+    operation = {
+        "operation_id": "op-r", "task_id": "external-cleanup-op-r",
+        "project_id": "rev", "algorithm_id": "algo-b", "name": "B",
+        "product_id": "prod-1", "generation": "op-r",
+        "state": "CONFIRMED_DELETED", "phase": "confirmed",
+        "created_at": stamp, "updated_at": stamp, "error": "", "counts": {},
+        "evidence": {"source": "event", "contract_id": "v1", "evidence_id": "e1"},
+        "history": [],
+    }
+    store.cleanup_confirm_deleted(
+        operation_id="op-r", algorithm_id="algo-b", product_id="prod-1",
+        provider="CHANG_LIAN", completed_state="CLEANUP_COMPLETED",
+        algorithm_patch={
+            "external_active": False, "external_delete_pending": True,
+            "external_deletion_status": "CONFIRMED_DELETED",
+        },
+        operation=operation, now=stamp,
+    )
+    before = store.revision()
+    store.cleanup_update(
+        project_id="rev", operation_id="op-r", patch={"phase": "confirmed"},
+        remove_algorithm=False, expected_states=None,
+        completed_state="CLEANUP_COMPLETED", now="2026-11-01T03:00:00+00:00",
+    )
+    assert store.revision() == before
+    store.cleanup_update(
+        project_id="rev", operation_id="op-r", patch={"phase": "waiting_for_tasks"},
+        remove_algorithm=False, expected_states=None,
+        completed_state="CLEANUP_COMPLETED", now="2026-11-01T04:00:00+00:00",
+    )
+    assert store.revision() == before + 1

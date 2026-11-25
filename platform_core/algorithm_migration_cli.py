@@ -45,6 +45,8 @@ from .algorithm_cutover import (
     write_admission_record,
 )
 from .algorithm_migration import (
+    CONTRACT_VERSION_V2,
+    export_source_snapshot_v2,
     AlgorithmMigrationError,
     build_report,
     content_digest,
@@ -131,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--db", required=True)
     export.add_argument("--project", required=True)
     export.add_argument("--out", required=True)
+    export.add_argument("--v2", action="store_true")
 
     imp = sub.add_parser("import", help="import one snapshot into PostgreSQL")
     imp.add_argument("--snapshot", required=True)
@@ -150,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--project", required=True)
     verify.add_argument("--dsn")
     verify.add_argument("--out")
+    verify.add_argument("--v2", action="store_true")
 
     runs = sub.add_parser("status", help="import runs for a project")
     runs.add_argument("--dsn")
@@ -225,7 +229,11 @@ def main(argv=None) -> int:
             return EXIT_OK
 
         if args.command == "export":
-            snapshot = export_source_snapshot(args.db, args.project)
+            snapshot = (
+                export_source_snapshot_v2(args.db, args.project)
+                if getattr(args, "v2", False) else
+                export_source_snapshot(args.db, args.project)
+            )
             path = write_snapshot(snapshot, args.out)
             _emit({
                 "out": str(path),
@@ -253,7 +261,10 @@ def main(argv=None) -> int:
         if args.command == "report":
             snapshot = load_snapshot(args.snapshot)
             with _connect(_dsn(args.dsn)) as connection:
-                target = export_target_snapshot(connection, snapshot["project_id"])
+                target = export_target_snapshot(
+                    connection, snapshot["project_id"],
+                    include_cleanup=str(snapshot.get("contract_version")) == CONTRACT_VERSION_V2,
+                )
                 report = build_report(snapshot, target, schema=schema_status(connection))
             if args.out:
                 Path(args.out).write_text(
@@ -263,9 +274,16 @@ def main(argv=None) -> int:
             return EXIT_REFUSED if report["verdict"] in _REFUSAL_VERDICTS else EXIT_OK
 
         if args.command == "verify":
-            snapshot = export_source_snapshot(args.db, args.project)
+            snapshot = (
+                export_source_snapshot_v2(args.db, args.project)
+                if getattr(args, "v2", False) else
+                export_source_snapshot(args.db, args.project)
+            )
             with _connect(_dsn(args.dsn)) as connection:
-                target = export_target_snapshot(connection, args.project)
+                target = export_target_snapshot(
+                    connection, args.project,
+                    include_cleanup=str(snapshot.get("contract_version")) == CONTRACT_VERSION_V2,
+                )
                 report = build_report(snapshot, target, schema=schema_status(connection))
             if args.out:
                 Path(args.out).write_text(
