@@ -2314,7 +2314,9 @@ def _decode_json(text: Any, *, expect: type) -> Any:
     return value
 
 
-def export_target_snapshot(connection, project_id: str) -> dict[str, Any] | None:
+def export_target_snapshot(
+    connection, project_id: str, *, include_cleanup: bool = False,
+) -> dict[str, Any] | None:
     """Read one consistent PostgreSQL project snapshot in the U1 contract shape.
 
     Payloads are returned as parsed JSON (not JSONB text) so source and target
@@ -2353,6 +2355,25 @@ def export_target_snapshot(connection, project_id: str) -> dict[str, Any] | None
             (project_id,),
         )
         analyses = [dict(row) for row in cursor.fetchall()]
+        cleanup: list[dict] = []
+        cleanup_capability = None
+        if include_cleanup:
+            cursor.execute(
+                "SELECT to_regclass(%s) AS present",
+                ("w5_algorithm.external_algorithm_cleanup",),
+            )
+            present = cursor.fetchone()["present"] is not None
+            cleanup_capability = "PRESENT" if present else "ABSENT"
+            if present:
+                cursor.execute(
+                    "SELECT project_id,operation_id,algorithm_id,product_id,generation,"
+                    "state,payload::text AS payload_json,created_at::text AS created_at,"
+                    "updated_at::text AS updated_at "
+                    "FROM w5_algorithm.external_algorithm_cleanup "
+                    "WHERE project_id=%s ORDER BY created_at, operation_id",
+                    (project_id,),
+                )
+                cleanup = [dict(row) for row in cursor.fetchall()]
     for row in algorithms:
         row["payload_json"] = _decode_json(row["payload_json"], expect=dict)
     for row in versions:
@@ -2363,7 +2384,14 @@ def export_target_snapshot(connection, project_id: str) -> dict[str, Any] | None
             row["compute_platform_ids_json"], expect=list
         )
     tables = {"algorithms": algorithms, "versions": versions, "analyses": analyses}
-    body = _snapshot_body(project_id, revision, tables)
+    if include_cleanup:
+        tables["cleanup"] = cleanup
+    body = _snapshot_body(
+        project_id, revision, tables,
+        contract_version=CONTRACT_VERSION_V2 if include_cleanup else CONTRACT_VERSION,
+        schema_version=SCHEMA_VERSION_V2 if include_cleanup else SCHEMA_VERSION,
+        cleanup_capability=cleanup_capability,
+    )
     body["snapshot_digest"] = _digest(body)
     from datetime import datetime, timezone
 

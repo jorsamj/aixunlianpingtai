@@ -35,7 +35,13 @@ from .algorithm_postgres_schema import (
     schema_status,
 )
 from .algorithm_postgres_store import export_target_snapshot
-from .algorithm_shadow import _digest, _snapshot_body, export_snapshot_from_path, validate_snapshot
+from .algorithm_shadow import (
+    CONTRACT_VERSION_V2,
+    _digest,
+    _snapshot_body,
+    export_snapshot_from_path,
+    validate_snapshot,
+)
 from .algorithm_sql_store import SCHEMA_VERSION as SQLITE_SCHEMA_VERSION
 from .algorithm_sql_store import AlgorithmSqlStore
 
@@ -138,15 +144,53 @@ def normalize_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _normalized_timestamp(value: Any) -> str:
+    """One UTC representation for SQLite TEXT and PostgreSQL timestamptz."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        # Keep the raw evidence; comparing an unparsable value as-is is safer
+        # than silently dropping it.
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _normalized_cleanup_row(row: Mapping[str, Any]) -> dict:
+    payload = row.get("payload")
+    if payload is None:
+        payload = row.get("payload_json")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = {}
+    return {
+        "project_id": str(row.get("project_id") or ""),
+        "operation_id": str(row.get("operation_id") or ""),
+        "algorithm_id": str(row.get("algorithm_id") or ""),
+        "product_id": str(row.get("product_id") or ""),
+        "generation": str(row.get("generation") or ""),
+        "state": str(row.get("state") or ""),
+        "created_at": _normalized_timestamp(row.get("created_at")),
+        "updated_at": _normalized_timestamp(row.get("updated_at")),
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+
+
 def normalized_tables(snapshot: Mapping[str, Any]) -> dict[str, list[dict]]:
     tables = snapshot.get("tables") or {}
     names = tuple(TABLES) + (("cleanup",) if "cleanup" in tables else ())
     normalized: dict[str, list[dict]] = {}
     for name in names:
         if name == "cleanup":
-            # The ledger payload is already a project-scoped JSON document;
-            # keep its text so no field is lost while comparing snapshots.
-            normalized[name] = [dict(row) for row in tables.get(name) or []]
+            normalized[name] = [
+                _normalized_cleanup_row(row) for row in tables.get(name) or []
+            ]
         else:
             normalized[name] = [
                 normalize_row(name, row) for row in tables.get(name) or []
@@ -177,6 +221,8 @@ def content_digest(snapshot: Mapping[str, Any]) -> str:
 def _natural_key(name: str, row: Mapping[str, Any]) -> str:
     if name == "algorithms" or name == "versions":
         return str(row.get("id") or "")
+    if name == "cleanup":
+        return str(row.get("operation_id") or "")
     return f"{row.get('algorithm_id')}:{row.get('external_analysis_id')}"
 
 
@@ -333,6 +379,20 @@ def import_snapshot(
     revision = int(snapshot["algorithm_revision"])
     digest = str(snapshot["snapshot_digest"])
     content = content_digest(snapshot)
+    is_v2 = str(snapshot.get("contract_version") or "") == CONTRACT_VERSION_V2
+    # The three legacy domains are the upgrade comparison basis for V1 -> V2.
+    legacy_tables = {
+        name: snapshot["tables"][name] for name in TABLES if name in snapshot["tables"]
+    }
+    legacy_content = (
+        content if not is_v2 else _digest({
+            "project_id": project_id,
+            "algorithm_revision": revision,
+            "tables": normalized_tables({"tables": legacy_tables, **{
+                key: value for key, value in snapshot.items() if key != "tables"
+            }}),
+        })
+    )
     mode = "DRY_RUN" if dry_run else "APPLY"
     if maintenance_operation is not None:
         # The final import is an APPLY step of one frozen window and one run id:
@@ -377,7 +437,9 @@ def import_snapshot(
         stale_after_seconds=int(stale_after_seconds),
         refuse_running_reopen=maintenance_operation is not None,
     )
-    counts = {name: len(snapshot["tables"][name]) for name in TABLES}
+    counts = {
+        name: len(rows) for name, rows in snapshot["tables"].items()
+    }
     result: dict[str, Any] = {
         "contract_version": CONTRACT_VERSION,
         "run_id": run,
@@ -446,17 +508,26 @@ def import_snapshot(
                                     "the import revision differs from the frozen window",
                                     detail=f"frozen={frozen_revision} import={revision}",
                                 )
-                target = export_target_snapshot(connection, project_id)
+                target = export_target_snapshot(
+                    connection, project_id, include_cleanup=is_v2,
+                )
                 target_revision = (
                     int(target["algorithm_revision"]) if target is not None else None
                 )
                 result["target_revision_before"] = target_revision
-                action = _import_action(target, revision, content)
+                action = _import_action(
+                    target, revision, content,
+                    source_is_v2=is_v2, legacy_content=legacy_content,
+                )
                 result["action"] = action
                 if action == "apply":
                     with connection.cursor() as cursor:
-                        _delete_target_graph(cursor, project_id)
+                        _delete_target_graph(
+                            cursor, project_id, include_cleanup=is_v2,
+                        )
                         _write_target_rows(cursor, snapshot)
+                        if is_v2:
+                            _write_target_cleanup_rows(cursor, snapshot)
                         _set_target_revision(cursor, project_id, revision)
                     result["target_revision_after"] = revision
                     if not dry_run:
@@ -483,7 +554,14 @@ def import_snapshot(
     return result
 
 
-def _import_action(target: Mapping[str, Any] | None, revision: int, content: str) -> str:
+def _import_action(
+    target: Mapping[str, Any] | None,
+    revision: int,
+    content: str,
+    *,
+    source_is_v2: bool = False,
+    legacy_content: str | None = None,
+) -> str:
     if target is None:
         return "apply"
     target_revision = int(target["algorithm_revision"])
@@ -493,9 +571,28 @@ def _import_action(target: Mapping[str, Any] | None, revision: int, content: str
             "target already holds newer algorithm writes",
             detail=f"target={target_revision} source={revision}",
         )
+    target_rows = (target.get("tables") or {}).get("cleanup") or []
+    if not source_is_v2 and target_rows:
+        # A V1 document carries no cleanup evidence: it can never replace a
+        # target that already owns receipts.
+        raise AlgorithmMigrationError(
+            "ALGORITHM_MIGRATION_V1_CANNOT_OVERWRITE_V2",
+            "a V1 snapshot cannot overwrite an existing cleanup ledger",
+            detail=f"target_cleanup_rows={len(target_rows)}",
+        )
     if target_revision == revision:
         if content_digest(target) == content:
             return "noop"
+        if source_is_v2:
+            # V1 -> V2 upgrade at the same revision is legal only when the three
+            # legacy domains are byte-identical content and the target owns no
+            # cleanup rows yet; the fourth domain then comes from the source.
+            if (
+                legacy_content is not None
+                and not target_rows
+                and content_digest(target) == legacy_content
+            ):
+                return "apply"
         raise AlgorithmMigrationError(
             "ALGORITHM_MIGRATION_DIGEST_CONFLICT",
             "same algorithm revision has different content",
@@ -504,7 +601,12 @@ def _import_action(target: Mapping[str, Any] | None, revision: int, content: str
     return "apply"
 
 
-def _delete_target_graph(cursor, project_id: str) -> None:
+def _delete_target_graph(cursor, project_id: str, *, include_cleanup: bool = False) -> None:
+    if include_cleanup:
+        cursor.execute(
+            "DELETE FROM w5_algorithm.external_algorithm_cleanup WHERE project_id=%s",
+            (project_id,),
+        )
     cursor.execute(
         "DELETE FROM w5_algorithm.algorithm_version WHERE project_id=%s",
         (project_id,),
@@ -531,6 +633,31 @@ def _json_text(value: Any, field: str) -> str:
             detail=f"field={field}",
         )
     return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+
+
+def _write_target_cleanup_rows(cursor, snapshot: Mapping[str, Any]) -> None:
+    rows = snapshot["tables"].get("cleanup") or []
+    if not rows:
+        return
+    project_id = str(snapshot["project_id"])
+    cursor.executemany(
+        "INSERT INTO w5_algorithm.external_algorithm_cleanup (project_id,operation_id,"
+        "algorithm_id,product_id,generation,state,payload,created_at,updated_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::timestamptz,%s::timestamptz)",
+        [
+            (
+                project_id, str(row["operation_id"]), str(row["algorithm_id"]),
+                str(row["product_id"]), str(row.get("generation") or ""),
+                str(row["state"]), json.dumps(
+                    _normalized_cleanup_row(row)["payload"], ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                _normalized_timestamp(row.get("created_at")),
+                _normalized_timestamp(row.get("updated_at")),
+            )
+            for row in rows
+        ],
+    )
 
 
 def _write_target_rows(cursor, snapshot: Mapping[str, Any]) -> None:
@@ -1190,6 +1317,14 @@ def restore_source_snapshot(
     confirmed: bool,
 ) -> dict[str, Any]:
     """Restore SQLite from a snapshot only with an allowed rollback assessment."""
+    if str(snapshot.get("contract_version") or "") == CONTRACT_VERSION_V2:
+        # The V2 restore path is not implemented yet: falling through to the V1
+        # restore would silently drop the cleanup ledger, so it is refused.
+        raise AlgorithmMigrationError(
+            "ALGORITHM_MIGRATION_V2_RESTORE_UNSUPPORTED",
+            "a four-domain snapshot cannot be restored by this version",
+            detail="the cleanup ledger restore contract is not implemented",
+        )
     if not confirmed:
         raise AlgorithmMigrationError(
             "ALGORITHM_ROLLBACK_CONFIRMATION_REQUIRED",

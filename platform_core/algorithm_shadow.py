@@ -22,7 +22,20 @@ from .algorithm_sql_store import AlgorithmSqlStore
 
 CONTRACT_VERSION = "w5-algorithm-shadow-v1"
 SCHEMA_VERSION = 1
-_SUPPORTED_CONTRACTS = {CONTRACT_VERSION}
+#: V2 adds the external-algorithm cleanup ledger to the snapshot. V1 remains
+#: readable and verifiable with its original digest; it carries no evidence about
+#: the cleanup domain and is never silently upgraded.
+CONTRACT_VERSION_V2 = "w5-algorithm-shadow-v2"
+SCHEMA_VERSION_V2 = 2
+_SUPPORTED_CONTRACTS = {CONTRACT_VERSION, CONTRACT_VERSION_V2}
+_V1_TABLES = frozenset({"algorithms", "versions", "analyses"})
+_V2_TABLES = _V1_TABLES | {"cleanup"}
+_CLEANUP_TABLE = "external_algorithm_cleanup"
+_CLEANUP_SQL = (
+    "SELECT operation_id,algorithm_id,product_id,state,payload_json,"
+    "created_at,updated_at FROM external_algorithm_cleanup "
+    "ORDER BY created_at,operation_id"
+)
 _PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SENSITIVE_KEYS = {"password", "secret", "token", "credential", "api_key", "access_key", "secret_key"}
 _TABLES = (
