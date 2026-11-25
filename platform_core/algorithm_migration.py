@@ -36,10 +36,10 @@ from .algorithm_postgres_schema import (
 )
 from .algorithm_postgres_store import export_target_snapshot
 from .algorithm_shadow import (
-    CONTRACT_VERSION,
-    CONTRACT_VERSION_V2,
-    SCHEMA_VERSION,
-    SCHEMA_VERSION_V2,
+    CONTRACT_VERSION as SNAPSHOT_CONTRACT_V1,
+    CONTRACT_VERSION_V2 as SNAPSHOT_CONTRACT_V2,
+    SCHEMA_VERSION as SNAPSHOT_SCHEMA_V1,
+    SCHEMA_VERSION_V2 as SNAPSHOT_SCHEMA_V2,
     _digest,
     _snapshot_body,
     export_snapshot_from_path,
@@ -216,8 +216,8 @@ def normalize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     tables = normalized_tables(snapshot)
     body = _snapshot_body(
         str(snapshot["project_id"]), int(snapshot["algorithm_revision"]), tables,
-        contract_version=str(snapshot.get("contract_version") or CONTRACT_VERSION),
-        schema_version=int(snapshot.get("schema_version") or SCHEMA_VERSION),
+        contract_version=str(snapshot.get("contract_version") or SNAPSHOT_CONTRACT_V1),
+        schema_version=int(snapshot.get("schema_version") or SNAPSHOT_SCHEMA_V1),
         cleanup_capability=snapshot.get("cleanup_capability"),
     )
     body["snapshot_digest"] = _digest(body)
@@ -395,7 +395,7 @@ def import_snapshot(
     revision = int(snapshot["algorithm_revision"])
     digest = str(snapshot["snapshot_digest"])
     content = content_digest(snapshot)
-    is_v2 = str(snapshot.get("contract_version") or "") == CONTRACT_VERSION_V2
+    is_v2 = str(snapshot.get("contract_version") or "") == SNAPSHOT_CONTRACT_V2
     # The three legacy domains are the upgrade comparison basis for V1 -> V2.
     legacy_tables = {
         name: snapshot["tables"][name] for name in TABLES if name in snapshot["tables"]
@@ -539,7 +539,7 @@ def import_snapshot(
                     target_legacy_content=(
                         None if target is None else _legacy_content(target)
                     ),
-                    target_has_v2_evidence=_v2_completed_evidence(
+                    target_v2_evidence=_v2_completed_evidence(
                         connection, project_id,
                     ),
                 )
@@ -604,7 +604,7 @@ def _v2_completed_evidence(connection, project_id: str) -> bool:
             "SELECT 1 AS present FROM w5_algorithm.migration_run "
             "WHERE project_id=%s AND status='COMPLETED' AND mode='APPLY' "
             "AND detail->>'contract_version'=%s LIMIT 1",
-            (str(project_id), CONTRACT_VERSION_V2),
+            (str(project_id), SNAPSHOT_CONTRACT_V2),
         )
         return cursor.fetchone() is not None
 
@@ -633,7 +633,7 @@ def _record_v2_completion(
         "WHERE run_id=%s AND project_id=%s",
         (
             json.dumps({
-                "contract_version": CONTRACT_VERSION_V2,
+                "contract_version": SNAPSHOT_CONTRACT_V2,
                 "cleanup_rows": int(counts.get("cleanup") or 0),
                 "algorithm_revision": int(revision),
                 "content_digest": str(content),
@@ -684,7 +684,7 @@ def _import_action(
     source_is_v2: bool = False,
     legacy_content: str | None = None,
     target_legacy_content: str | None = None,
-    target_has_v2_evidence: bool = False,
+    target_v2_evidence: bool = False,
 ) -> str:
     if target is None:
         return "apply"
@@ -696,7 +696,7 @@ def _import_action(
             detail=f"target={target_revision} source={revision}",
         )
     target_rows = (target.get("tables") or {}).get("cleanup") or []
-    if not source_is_v2 and (target_rows or target_has_v2_evidence):
+    if not source_is_v2 and (target_rows or target_v2_evidence):
         # A V1 document carries no cleanup evidence: it can never replace a
         # target that already owns receipts or completed V2 migration evidence.
         raise AlgorithmMigrationError(
@@ -704,7 +704,7 @@ def _import_action(
             "a V1 snapshot cannot overwrite a V2 project",
             detail=(
                 f"target_cleanup_rows={len(target_rows)} "
-                f"v2_evidence={target_has_v2_evidence}"
+                f"v2_evidence={target_v2_evidence}"
             ),
         )
     if target_revision == revision:
@@ -717,7 +717,7 @@ def _import_action(
                 legacy_content is not None
                 and target_legacy_content is not None
                 and not target_rows
-                and not target_has_v2_evidence
+                and not target_v2_evidence
                 and legacy_content == target_legacy_content
             ):
                 return "apply"
@@ -1224,13 +1224,13 @@ def build_report(
         # from its persisted evidence (rows / completed V2 run), never from a
         # table or field merely existing.
         checks["capability_evidence"] = _check(
-            (not source_has_cleanup and not target_has_v2_evidence)
+            (not source_has_cleanup and not target_v2_evidence)
             or (source_has_cleanup and target_has_cleanup),
             source_contract=str(source.get("contract_version")),
             target_contract=None if target is None else str(target.get("contract_version")),
             source_has_cleanup=source_has_cleanup,
             target_has_cleanup=target_has_cleanup,
-            target_v2_evidence=target_has_v2_evidence,
+            target_v2_evidence=target_v2_evidence,
         )
     source_counts = {name: len(source_tables.get(name) or []) for name in table_names}
     target_counts = (
@@ -1536,7 +1536,7 @@ def restore_source_snapshot(
     confirmed: bool,
 ) -> dict[str, Any]:
     """Restore SQLite from a snapshot only with an allowed rollback assessment."""
-    is_v2 = str(snapshot.get("contract_version") or "") == CONTRACT_VERSION_V2
+    is_v2 = str(snapshot.get("contract_version") or "") == SNAPSHOT_CONTRACT_V2
     if not confirmed:
         raise AlgorithmMigrationError(
             "ALGORITHM_ROLLBACK_CONFIRMATION_REQUIRED",
@@ -1577,6 +1577,8 @@ def restore_source_snapshot(
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
         try:
+            if not is_v2:
+                _assert_v1_restore_allowed(connection)
             connection.execute("DELETE FROM algorithm_external_analyses")
             connection.execute("DELETE FROM algorithm_versions")
             connection.execute("DELETE FROM algorithms")
@@ -1608,8 +1610,8 @@ def restore_source_snapshot(
             )
             restored_snapshot = _snapshot_from_tables(
                 str(project_id), int(snapshot["algorithm_revision"]), restored,
-                contract_version=CONTRACT_VERSION_V2 if is_v2 else CONTRACT_VERSION,
-                schema_version=SCHEMA_VERSION_V2 if is_v2 else SCHEMA_VERSION,
+                contract_version=SNAPSHOT_CONTRACT_V2 if is_v2 else CONTRACT_VERSION,
+                schema_version=SNAPSHOT_SCHEMA_V2 if is_v2 else SCHEMA_VERSION,
                 cleanup_capability=(
                     str(snapshot.get("cleanup_capability") or "PRESENT")
                     if is_v2 else None
@@ -1669,6 +1671,34 @@ def _cleanup_ddl_statements() -> tuple[str, ...]:
     return tuple(
         part.strip() for part in CLEANUP_SCHEMA.split(";") if part.strip()
     )
+
+
+def _assert_v1_restore_allowed(connection) -> None:
+    """A three-domain restore must not erase a project's cleanup evidence."""
+    present = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        ("external_algorithm_cleanup",),
+    ).fetchone()
+    if present is not None:
+        rows = int(connection.execute(
+            "SELECT COUNT(*) FROM external_algorithm_cleanup"
+        ).fetchone()[0])
+        if rows:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_ROLLBACK_V1_CANNOT_OVERWRITE_V2",
+                "a V1 snapshot cannot overwrite an existing cleanup ledger",
+                detail=f"cleanup_rows={rows}",
+            )
+    pending = int(connection.execute(
+        "SELECT COUNT(*) FROM algorithms WHERE "
+        "json_extract(payload_json,'$.external_delete_pending') IN (1,'true')"
+    ).fetchone()[0])
+    if pending:
+        raise AlgorithmMigrationError(
+            "ALGORITHM_ROLLBACK_V1_CANNOT_OVERWRITE_V2",
+            "a V1 snapshot cannot overwrite a pending external retirement",
+            detail=f"pending_algorithms={pending}",
+        )
 
 
 def _insert_sqlite_cleanup_rows(connection, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -1744,8 +1774,8 @@ def _read_sqlite_tables(
 
 def _snapshot_from_tables(
     project_id: str, revision: int, tables: dict[str, list[dict]],
-    *, contract_version: str = CONTRACT_VERSION,
-    schema_version: int = SCHEMA_VERSION,
+    *, contract_version: str = SNAPSHOT_CONTRACT_V1,
+    schema_version: int = SNAPSHOT_SCHEMA_V1,
     cleanup_capability: str | None = None,
 ) -> dict[str, Any]:
     names = tuple(TABLES) + (("cleanup",) if "cleanup" in tables else ())

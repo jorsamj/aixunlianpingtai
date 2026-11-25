@@ -50,7 +50,11 @@ from .algorithm_repository import (
     admission_transition_path,
     load_admission_record,
 )
-from .algorithm_shadow import CONTRACT_VERSION_V2, validate_snapshot
+from .algorithm_shadow import (
+    CONTRACT_VERSION as SNAPSHOT_CONTRACT_V1,
+    CONTRACT_VERSION_V2 as SNAPSHOT_CONTRACT_V2,
+    validate_snapshot,
+)
 
 
 class AlgorithmCutoverError(RuntimeError):
@@ -797,6 +801,7 @@ def revoke_admission(
             # is rolling back.
             maintenance = evidence.get("maintenance")
             maintenance = dict(maintenance) if isinstance(maintenance, Mapping) else {}
+            central_contract = str(maintenance.get("snapshot_contract") or "")
             durable_phase = str(maintenance.get("phase") or "")
             durable_operation = str(maintenance.get("operation_id") or "")
             if durable_phase != MAINTENANCE_ROLLBACK_QUIESCING:
@@ -824,7 +829,8 @@ def revoke_admission(
                 revision_row = interior.fetchone()
             target_revision = int(revision_row[0]) if revision_row else 0
             target_snapshot = export_target_snapshot(
-                connection, project_id, include_cleanup=_admission_is_v2(admission),
+                connection, project_id,
+                include_cleanup=central_contract == SNAPSHOT_CONTRACT_V2,
             )
             target_content = (
                 None if target_snapshot is None else content_digest(target_snapshot)
@@ -898,7 +904,7 @@ def revoke_admission(
 
 def _admission_is_v2(admission: Mapping[str, Any] | None) -> bool:
     """Whether the persisted admission was created against a V2 snapshot."""
-    return str((admission or {}).get("snapshot_contract") or "") == CONTRACT_VERSION_V2
+    return str((admission or {}).get("snapshot_contract") or "") == SNAPSHOT_CONTRACT_V2
 
 
 def rollback(
@@ -973,6 +979,7 @@ def rollback(
         target_provider=PROVIDER_SQLITE,
         snapshot_digest=str(admission.get("snapshot_digest") or ""),
         verification_digest=str(assessment.get("restore_content_digest") or ""),
+        snapshot_contract=str(admission.get("snapshot_contract") or ""),
         operator=operator,
         reason=reason,
     )
@@ -1075,6 +1082,7 @@ def rollback(
         target_provider=PROVIDER_POSTGRESQL,
         snapshot_digest=str(admission.get("snapshot_digest") or ""),
         verification_digest=str(assessment.get("restore_content_digest") or ""),
+        snapshot_contract=str(admission.get("snapshot_contract") or ""),
         operator=operator,
         reason=reason,
     )
@@ -1808,7 +1816,7 @@ def switch_maintenance_owner(
     admission["admission_mode"] = "maintenance"
     admission["verification_digest"] = str(current.get("verification_digest") or "")
     admission["snapshot_contract"] = str(
-        current.get("snapshot_contract") or CONTRACT_VERSION
+        current.get("snapshot_contract") or SNAPSHOT_CONTRACT_V1
     )
     path = write_admission_record(admission, record_path)
     # Prove the local record against the durable row before the marker is
@@ -2066,6 +2074,7 @@ def _write_local_from_durable(
         "snapshot_digest": str(state.get("snapshot_digest") or ""),
         "content_digest": str(state.get("content_digest") or ""),
         "verification_digest": str(maintenance.get("verification_digest") or ""),
+        "snapshot_contract": str(maintenance.get("snapshot_contract") or ""),
         "writer_generation": int(state.get("writer_generation") or 0),
         "admitted_at": str(state.get("admitted_at") or ""),
         "revoked_at": state.get("revoked_at"),
@@ -2459,7 +2468,7 @@ def recover_maintenance(
             rolled_contract = str(record.get("snapshot_contract") or "")
             restored_source = (
                 export_source_snapshot_v2(db_path, project_id)
-                if rolled_contract == CONTRACT_VERSION_V2
+                if rolled_contract == SNAPSHOT_CONTRACT_V2
                 else export_source_snapshot(db_path, project_id)
             )
             if content_digest(restored_source) != str(record.get("content_digest") or ""):

@@ -45,6 +45,7 @@ from .algorithm_cutover import (
     write_admission_record,
 )
 from .algorithm_migration import (
+    verify_migration,
     CONTRACT_VERSION_V2,
     export_source_snapshot_v2,
     AlgorithmMigrationError,
@@ -261,10 +262,7 @@ def main(argv=None) -> int:
         if args.command == "report":
             snapshot = load_snapshot(args.snapshot)
             with _connect(_dsn(args.dsn)) as connection:
-                target = export_target_snapshot(
-                    connection, snapshot["project_id"], include_cleanup=True,
-                )
-                report = build_report(snapshot, target, schema=schema_status(connection))
+                report = verify_migration(connection, snapshot)
             if args.out:
                 Path(args.out).write_text(
                     json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -279,10 +277,7 @@ def main(argv=None) -> int:
                 export_source_snapshot(args.db, args.project)
             )
             with _connect(_dsn(args.dsn)) as connection:
-                target = export_target_snapshot(
-                    connection, args.project, include_cleanup=True,
-                )
-                report = build_report(snapshot, target, schema=schema_status(connection))
+                report = verify_migration(connection, snapshot)
             if args.out:
                 Path(args.out).write_text(
                     json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -1657,8 +1657,9 @@ def test_v2_restore_rebuilds_the_ledger_and_keeps_the_barrier(pg):
         )
     assert mismatch.value.code == "ALGORITHM_ROLLBACK_SNAPSHOT_CHANGED"
 
-def test_v2_restore_is_atomic_when_a_write_fails(pg):
-    """A failing restore leaves the four domains and the barrier untouched."""
+def test_v2_restore_is_atomic_when_a_write_fails(pg, monkeypatch):
+    """A failing ledger write rolls back every domain and keeps the barrier."""
+    from platform_core import algorithm_migration as migration_module
     from platform_core.algorithm_migration import (
         content_digest,
         restore_source_snapshot,
@@ -1674,28 +1675,31 @@ def test_v2_restore_is_atomic_when_a_write_fails(pg):
         operation_id="op-atomic", writer_generation=3, admission_id="admit-a",
     ) is True
     before = export_source_snapshot_v2(store.db_path, "atomic")
-    broken = copy.deepcopy(snapshot)
-    # A row that passes validation but whose insert violates the ledger's unique
-    # identity forces the transaction to fail after DELETE/INSERT already ran.
-    broken["tables"]["cleanup"][1]["operation_id"] = broken["tables"]["cleanup"][0]["operation_id"]
-    body = _snapshot_body(
-        "atomic", broken["algorithm_revision"], broken["tables"],
-        contract_version=CONTRACT_VERSION_V2, schema_version=2,
-        cleanup_capability=broken["cleanup_capability"],
-    )
-    broken["snapshot_digest"] = _digest(body)
-    with pytest.raises(Exception):
+    injected = {"ran": False}
+
+    def _fail(connection, rows):
+        # This runs after DELETE + the three algorithm-domain inserts, i.e. the
+        # transaction is already dirty when the failure is injected.
+        injected["ran"] = True
+        raise RuntimeError("injected ledger write failure")
+
+    monkeypatch.setattr(migration_module, "_insert_sqlite_cleanup_rows", _fail)
+    with pytest.raises(RuntimeError) as failure:
         restore_source_snapshot(
-            store.db_path, "atomic", broken,
+            store.db_path, "atomic", snapshot,
             assessment={
                 "allowed": True, "blocking": [],
-                "restore_content_digest": content_digest(broken),
+                "restore_content_digest": content_digest(snapshot),
             },
             confirmed=True,
         )
+    assert "injected ledger write failure" in str(failure.value)
+    assert injected["ran"] is True
     after = export_source_snapshot_v2(store.db_path, "atomic")
     assert content_digest(after) == content_digest(before)
     assert after["algorithm_revision"] == before["algorithm_revision"]
     assert after["tables"]["cleanup"] == before["tables"]["cleanup"]
+    assert after["tables"]["algorithms"] == before["tables"]["algorithms"]
     barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
-    assert barrier["phase"] == "POSTGRES_ACTIVE" and barrier["operation_id"] == "op-atomic"
+    assert barrier["phase"] == "POSTGRES_ACTIVE"
+    assert barrier["operation_id"] == "op-atomic"
