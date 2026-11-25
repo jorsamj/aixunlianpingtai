@@ -37,10 +37,22 @@ psycopg = _require_or_skip("psycopg", "psycopg 3 is required for PostgreSQL prov
 _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
 from platform_core.algorithm_cutover import (
+    AlgorithmCutoverError,
+    MAINTENANCE_POSTGRES_ACTIVE,
+    MAINTENANCE_QUIESCING,
+    MAINTENANCE_ROLLBACK_APPLIED,
+    MAINTENANCE_SOURCE_FROZEN,
+    MAINTENANCE_VERIFIED,
     admit_cutover,
     assess_rollback,
+    begin_maintenance_window,
     cutover_status,
+    freeze_maintenance_source,
+    read_maintenance,
+    resume_maintenance,
     rollback,
+    switch_maintenance_owner,
+    verify_maintenance_window,
 )
 from platform_core.algorithm_migration import (
     AlgorithmMigrationError,
@@ -62,6 +74,7 @@ from platform_core.algorithm_postgres_store import (
 from platform_core.algorithm_repository import (
     AlgorithmAdmissionRequired,
     admission_record_path,
+    admission_transition_path,
     open_algorithm_repository,
 )
 from platform_core.algorithm_shadow import _digest, _snapshot_body
@@ -686,3 +699,160 @@ def test_all_seven_presentations_answer_real_business_queries(pg):
     )
     with pytest.raises(AlgorithmAdmissionRequired):
         stale_repo.create_algorithm({"id": "leak", "name": "leak"})
+
+
+def _window_setup(server, root, store, project_id):
+    """An imported project plus an open maintenance window."""
+    snapshot = export_source_snapshot(store.db_path, project_id)
+    _import(server, snapshot)
+    record_path = admission_record_path(store.db_path)
+    with _connect(server) as connection:
+        window = begin_maintenance_window(
+            connection,
+            project_id=project_id,
+            db_path=store.db_path,
+            record_path=record_path,
+            expected_generation=0,
+            operator="ops",
+            reason="window",
+        )
+    return record_path, window
+
+
+def test_maintenance_window_blocks_both_writers_until_it_settles(pg):
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8win-"))
+    store = _store(root, "win")
+    # Hold a SQLite provider instance from *before* the window: it must stop
+    # writing once the window opens.
+    sqlite_side = open_algorithm_repository(store.json_path)
+    record_path, window = _window_setup(pg, root, store, "win")
+    operation = window["operation_id"]
+
+    # QUIESCING: both providers refuse business writes.
+    assert read_maintenance_result(pg, "win")["phase"] == MAINTENANCE_QUIESCING
+    with pytest.raises(AlgorithmAdmissionRequired) as sqlite_blocked:
+        sqlite_side.create_algorithm({"id": "late", "name": "late"})
+    assert sqlite_blocked.value.code == "ALGORITHM_CUTOVER_IN_PROGRESS"
+
+    # A concurrent window on the same project is refused.
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmCutoverError) as conflict:
+            begin_maintenance_window(
+                connection, project_id="win", db_path=store.db_path,
+                record_path=record_path, expected_generation=0,
+            )
+    assert conflict.value.code == "ALGORITHM_MAINTENANCE_IN_PROGRESS"
+
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="win", db_path=store.db_path, operation_id=operation,
+        )
+        assert frozen["phase"] == MAINTENANCE_SOURCE_FROZEN
+        assert len(str(frozen["snapshot_digest"])) == 64
+        verified = verify_maintenance_window(
+            connection, project_id="win", operation_id=operation,
+            verification_digest=str(frozen["snapshot_digest"]),
+        )
+        assert verified["phase"] == MAINTENANCE_VERIFIED
+        # A stale generation may not switch the owner.
+        with pytest.raises(AlgorithmCutoverError) as stale:
+            switch_maintenance_owner(
+                connection, project_id="win", db_path=store.db_path,
+                record_path=record_path, operation_id=operation,
+                expected_generation=7, operator="ops", reason="stale",
+                acknowledge_unported=True,
+            )
+        assert stale.value.code == "ALGORITHM_MAINTENANCE_GENERATION_MISMATCH"
+        switched = switch_maintenance_owner(
+            connection, project_id="win", db_path=store.db_path,
+            record_path=record_path, operation_id=operation,
+            expected_generation=0, operator="ops", reason="switch",
+            acknowledge_unported=True,
+        )
+    assert switched["phase"] == MAINTENANCE_POSTGRES_ACTIVE
+    assert not admission_transition_path(record_path).exists()
+    assert (switched["admission"] or {}).get("operation_id") == operation
+
+    # The window is settled, so the provider writes again and SQLite does not.
+    repository = open_algorithm_repository(
+        store.json_path,
+        admission_path=record_path,
+    )
+    assert repository.create_algorithm({"id": "after", "name": "after"})["id"] == "after"
+    with pytest.raises(AlgorithmAdmissionRequired):
+        sqlite_side.create_algorithm({"id": "stale", "name": "stale"})
+
+    # resume_maintenance() proves the settled state and is repeatable.
+    with _connect(pg) as connection:
+        settled = resume_maintenance(
+            connection, project_id="win", record_path=record_path,
+            operation_id=operation,
+        )
+    assert settled["settled"] is True and settled["write_blocked"] is False
+
+
+def read_maintenance_result(server, project_id):
+    with _connect(server) as connection:
+        return read_maintenance(connection, project_id) or {}
+
+
+def test_resume_reports_unfinished_window_without_clearing_it(pg):
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8res-"))
+    store = _store(root, "res")
+    record_path, window = _window_setup(pg, root, store, "res")
+    with _connect(pg) as connection:
+        report = resume_maintenance(
+            connection, project_id="res", record_path=record_path,
+            operation_id=window["operation_id"],
+        )
+    assert report["settled"] is False
+    assert report["write_blocked"] is True
+    assert report["next_step"] == "freeze_maintenance_source"
+    assert admission_transition_path(record_path).exists()
+
+
+def test_rollback_blocks_postgres_and_refuses_after_new_writes(pg):
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8rb-"))
+    store = _store(root, "rb")
+    record_path, window = _window_setup(pg, root, store, "rb")
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="rb", db_path=store.db_path,
+            operation_id=window["operation_id"],
+        )
+        verify_maintenance_window(
+            connection, project_id="rb", operation_id=window["operation_id"],
+            verification_digest=str(frozen["snapshot_digest"]),
+        )
+        switched = switch_maintenance_owner(
+            connection, project_id="rb", db_path=store.db_path,
+            record_path=record_path, operation_id=window["operation_id"],
+            expected_generation=0, operator="ops", reason="switch",
+            acknowledge_unported=True,
+        )
+    admission = switched["admission"]
+    repository = open_algorithm_repository(
+        store.json_path, admission_path=record_path,
+    )
+
+    # PostgreSQL writes after admission make a rollback unsafe.
+    repository.create_algorithm({"id": "newer", "name": "newer"})
+    with _connect(pg) as connection:
+        refused = rollback(
+            connection, db_path=store.db_path, admission_path=record_path,
+            confirmed=True, operator="ops", reason="undo",
+        )
+    assert refused["rolled_back"] is False
+    codes = {item["code"] for item in refused["assessment"]["conditions"] if not item["ok"]}
+    assert "TARGET_HAS_NO_NEW_WRITES" in codes
+    # The refusal left the project writable on PostgreSQL and SQLite blocked.
+    assert admission["writer_generation"] >= 1
+
+    # Removing the new write is impossible, so this project legitimately keeps
+    # PostgreSQL as the only writer; the local admission still proves it.
+    assert open_algorithm_repository(
+        store.json_path, admission_path=record_path,
+    ).revision() >= 1

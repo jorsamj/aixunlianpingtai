@@ -29,6 +29,11 @@ import sys
 from pathlib import Path
 
 from .algorithm_cutover import (
+    verify_maintenance_window,
+    switch_maintenance_owner,
+    resume_maintenance,
+    freeze_maintenance_source,
+    begin_maintenance_window,
     AlgorithmCutoverError,
     admit_cutover,
     assess_rollback,
@@ -158,6 +163,13 @@ def build_parser() -> argparse.ArgumentParser:
     admit.add_argument("--report", help="optional earlier report file to reject staleness")
     admit.add_argument("--admission", help="admission record path")
 
+    maintenance = sub.add_parser(
+        "maintenance-status", help="persisted maintenance phase and next step"
+    )
+    maintenance.add_argument("--dsn")
+    maintenance.add_argument("--project", required=True)
+    maintenance.add_argument("--operation-id", default="")
+
     cutover = sub.add_parser("cutover-status", help="authoritative provider and generation")
     cutover.add_argument("--dsn")
     cutover.add_argument("--project", required=True)
@@ -256,30 +268,62 @@ def main(argv=None) -> int:
             if args.report:
                 previous = json.loads(Path(args.report).read_text(encoding="utf-8"))
             record_path = _record_path(args)
-            # The marker is published before PostgreSQL commits the new
-            # authority, so a crash before the local admission record lands
-            # leaves "neither provider may write" instead of two owners.
-            with cutover_transition(
-                record_path, project_id=args.project, kind="cutover_admit"
-            ):
-                with _connect(_dsn(args.dsn)) as connection:
-                    result = admit_cutover(
-                        connection,
-                        db_path=args.db,
-                        project_id=args.project,
-                        expected_generation=int(args.expected_generation),
-                        operator=args.operator,
-                        reason=args.reason,
-                        acknowledge_unported=bool(args.acknowledge_unported),
-                        previous_report=previous,
-                    )
-                if not result.get("admitted"):
-                    _emit(result)
-                    return EXIT_REFUSED
-                path = write_admission_record(result["admission"], record_path)
-            result["admission_path"] = str(path)
+            generation = int(args.expected_generation)
+            # The whole switch runs inside one persisted maintenance window:
+            # both providers block first (QUIESCING), the source snapshot is
+            # frozen and verified, and only then does the admission switch the
+            # writer. A crash at any step leaves a blocking, resumable phase
+            # instead of two possible owners.
+            with _connect(_dsn(args.dsn)) as connection:
+                window = begin_maintenance_window(
+                    connection,
+                    project_id=args.project,
+                    db_path=args.db,
+                    record_path=record_path,
+                    expected_generation=generation,
+                    operator=args.operator,
+                    reason=args.reason,
+                )
+                frozen = freeze_maintenance_source(
+                    connection,
+                    project_id=args.project,
+                    db_path=args.db,
+                    operation_id=window["operation_id"],
+                )
+                verify_maintenance_window(
+                    connection,
+                    project_id=args.project,
+                    operation_id=window["operation_id"],
+                    verification_digest=str(frozen.get("snapshot_digest") or ""),
+                )
+                result = switch_maintenance_owner(
+                    connection,
+                    project_id=args.project,
+                    db_path=args.db,
+                    record_path=record_path,
+                    operation_id=window["operation_id"],
+                    expected_generation=generation,
+                    operator=args.operator,
+                    reason=args.reason,
+                    acknowledge_unported=bool(args.acknowledge_unported),
+                    previous_report=previous,
+                )
             result.pop("report", None)
             _emit(result)
+            return EXIT_OK
+
+        if args.command == "maintenance-status":
+            # Repeatable recovery entry: reports the persisted phase and the next
+            # step, and settles only when the phase and the admission agree.
+            with _connect(_dsn(args.dsn)) as connection:
+                _emit(
+                    resume_maintenance(
+                        connection,
+                        project_id=args.project,
+                        record_path=_record_path(args),
+                        operation_id=args.operation_id or None,
+                    )
+                )
             return EXIT_OK
 
         if args.command == "cutover-status":

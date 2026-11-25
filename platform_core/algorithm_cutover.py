@@ -812,6 +812,7 @@ def rollback(
 # silently letting one side write the other's stale data.
 
 MAINTENANCE_SCHEMA = "algorithm-maintenance/1"
+MAINTENANCE_SQLITE_ACTIVE = "SQLITE_ACTIVE"
 MAINTENANCE_QUIESCING = "QUIESCING"
 MAINTENANCE_SOURCE_FROZEN = "SOURCE_FROZEN"
 MAINTENANCE_VERIFIED = "VERIFIED"
@@ -830,6 +831,7 @@ BLOCKING_MAINTENANCE_PHASES = frozenset({
 })
 #: Phases that prove the window finished (marker may be cleared).
 SETTLED_MAINTENANCE_PHASES = frozenset({
+    MAINTENANCE_SQLITE_ACTIVE,
     MAINTENANCE_POSTGRES_ACTIVE,
     MAINTENANCE_ROLLBACK_APPLIED,
 })
@@ -1023,6 +1025,7 @@ def begin_maintenance_window(
 ) -> dict[str, Any]:
     """Open the window: block both writers first, then record the operation."""
     current = read_maintenance(connection, project_id)
+    previous_phase = str((current or {}).get("phase") or MAINTENANCE_SQLITE_ACTIVE)
     if current is not None and str(current.get("phase") or "") in BLOCKING_MAINTENANCE_PHASES:
         raise AlgorithmCutoverError(
             "ALGORITHM_MAINTENANCE_IN_PROGRESS",
@@ -1040,6 +1043,7 @@ def begin_maintenance_window(
         operator=operator,
         reason=reason,
     )
+    record["previous_phase"] = previous_phase
     marker = _publish_marker(admission_transition_path(record_path), record)
     try:
         _set_maintenance(connection, project_id, record)
@@ -1049,7 +1053,8 @@ def begin_maintenance_window(
         finally:
             raise
     return {"operation_id": operation, "phase": MAINTENANCE_QUIESCING,
-            "marker": str(marker), "write_blocked": True}
+            "previous_phase": previous_phase, "marker": str(marker),
+            "write_blocked": True}
 
 
 def _require_phase(
@@ -1179,7 +1184,31 @@ def switch_maintenance_owner(
         previous_report=previous_report,
     )
     if not admitted.get("admitted"):
-        # Stay in SWITCHING: the window remains blocking and recoverable.
+        # Nothing was written, so restore the phase the project was in and
+        # release the marker: an unchanged project must not stay blocked.
+        # Restore what the durable state actually says, not a guess: the
+        # refusal may be "PostgreSQL is already the writer".
+        state_now = _state_row(connection, project_id)
+        restore_phase = (
+            MAINTENANCE_POSTGRES_ACTIVE
+            if state_now is not None
+            and str(state_now["authoritative_provider"]) == PROVIDER_POSTGRESQL
+            and not state_now.get("revoked_at")
+            else MAINTENANCE_SQLITE_ACTIVE
+        )
+        restore = _maintenance_record(
+            str(restore_phase),
+            operation_id=operation_id,
+            project_id=project_id,
+            generation=int(expected_generation),
+            source_provider=PROVIDER_SQLITE,
+            target_provider=PROVIDER_POSTGRESQL,
+            snapshot_digest=str(current.get("snapshot_digest") or ""),
+            verification_digest=str(current.get("verification_digest") or ""),
+            operator=operator, reason=reason,
+        )
+        _set_maintenance(connection, project_id, restore)
+        _remove_marker(admission_transition_path(record_path), operation_id)
         raise AlgorithmCutoverError(
             "ALGORITHM_MAINTENANCE_SWITCH_REFUSED",
             "cutover admission refused inside the maintenance window",

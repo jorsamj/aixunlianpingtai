@@ -677,6 +677,8 @@ class PostgresAlgorithmRepository:
             "WHERE jsonb_typeof(candidate) IN ('number','string') "
             "AND lower(btrim(candidate #>> '{}')) NOT IN ('nan','-nan','infinity','-infinity','inf','-inf') "
             "AND pg_input_is_valid(btrim(candidate #>> '{}'), 'numeric') "
+            # Bound the value so the double-precision cast cannot overflow;
+            "AND abs((candidate #>> '{}')::numeric) <= 1e308 "
             "ORDER BY ord LIMIT 1) c) m ON TRUE "
             "WHERE a.project_id=%s)"
         )
