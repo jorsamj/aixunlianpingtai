@@ -536,3 +536,18 @@ marker 以让 SQLite 侧共同阻断；还需 rollback 的 `revoked_at` 完成�
 
 **CI**：`Algorithm PostgreSQL Runtime` 新增 3 条真实 PG 合同（窗口双写阻断/并发窗口与旧 generation 拒绝、未完成窗口 resume 不清理、PG 新写入后拒绝回滚）。全部 `CI_PENDING`，未轮询。
 **未验证**：真实 PG 下的窗口/回滚执行结果、并发压力、生产切换；`CUTOVER_NOT_VERIFIED` 保持。
+### 9.24 第十三轮（A 安全收口；B 训练任务管理域模块化）
+
+- **A 代码 SHA：`d3896f0dff09bc7623dfe4216602462e219c5c03`**（A1–A6 全部 CODE_IMPLEMENTED）
+- **B 代码 SHA：`87a42516b5e99d5968106121997aaef1a06350ba`**
+- 最终远端 HEAD：`87a42516b5e99d5968106121997aaef1a06350ba`
+
+**A1 锁身份**：`admission_switch_lock()` 统一归一到 admission record（marker 路径自动去 `.transition` 后缀），因此发布阻断 marker 会先排空已准入 SQLite 写事务；`ensure_ready()` 改为“需要初始化/历史迁移时才取写锁，稳态只校验版本”，避免给正常读加独占锁。
+**A2 权威移交**：`admit_cutover()` 接受并保留 maintenance 记录（不再用 `EXCLUDED.evidence` 抹掉 SWITCHING），PG 写门禁对 maintenance 准入的**空 phase 拒写**（legacy 准入显式区分），并拒绝 operation 不匹配；`_set_maintenance()` 改为 advisory+row 锁内的 CAS（phase/operation/generation 前置校验）。
+**A3 真实对账**：`cutover-admit` 冻结后重读源、源变动即拒绝、以 operation_id 为 run_id 做**最终导入**，再跑真实 source/target 报告，只有 verdict=OK 才把 `summary_digest` 作为 verification_digest。
+**A4 可执行恢复**：新增 `recover_maintenance()`（CLI `maintenance-recover --apply`，默认只读）：marker 未落库则采纳、未完成切换按阶段续跑、PG 已切换但本地未发布则回填、回滚中断可续、settled 只清自己的 marker，外来 operation 拒绝；`_admission_provider_is()` 按 provider 区分 `revoked_at` 语义。
+**A5 其余接线**：`negative_pool_api.algorithm_scope` 不再以文件存在性判定算法存在；mAP50 以**缩放后**量级设界（≤1 会 ×100），不可表示候选落回下一优先级。
+**A6 CI**：新增 3 条真实 PG 恢复合同（marker 未落库采纳、本地 admission 丢失回填、settled marker 仅清自身）；`14 passed`（collect 15）交 CI。
+
+**B**：`v62 promote/cancel` 两个统一任务管理端点迁入 `platform_core/task_runtime/management_api.py`（工厂 + 全依赖注入，operationId 与路径/错误码不变，OpenAPI 仍 473 paths）。
+**状态**：A/B 均 CODE_IMPLEMENTED，CI_PENDING；真实 PG 下的窗口/恢复/回滚执行仍 `CUTOVER_NOT_VERIFIED`。
