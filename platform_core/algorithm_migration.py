@@ -435,6 +435,62 @@ def _begin_run(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 (f"algorithm-import:{project_id}",),
             )
+            # A caller may supply a stable run id for one logical operation (the
+            # maintenance switch does). Re-running it must reuse that recorded
+            # attempt instead of inserting a second row that hides the identity
+            # conflict: completed runs are never reopened, and an interrupted or
+            # failed attempt is revived under the same id.
+            cursor.execute(
+                "SELECT run_id,project_id,status,snapshot_digest,content_digest,"
+                "algorithm_revision,mode,"
+                "EXTRACT(EPOCH FROM (now()-heartbeat_at)) AS age_seconds "
+                "FROM w5_algorithm.migration_run WHERE run_id=%s",
+                (run,),
+            )
+            recorded = cursor.fetchone()
+            if recorded is not None:
+                if (
+                    str(recorded["project_id"]) != project_id
+                    or str(recorded["snapshot_digest"]) != digest
+                    or str(recorded["content_digest"]) != content
+                    or int(recorded["algorithm_revision"]) != revision
+                    or str(recorded["mode"]) != mode
+                ):
+                    raise AlgorithmMigrationError(
+                        "ALGORITHM_MIGRATION_RUN_CONFLICT",
+                        "this run id belongs to different import content",
+                        detail=f"run_id={run}",
+                    )
+                recorded_status = str(recorded["status"])
+                if recorded_status == "COMPLETED":
+                    raise AlgorithmMigrationError(
+                        "ALGORITHM_MIGRATION_RUN_ALREADY_COMPLETED",
+                        "this run id already completed; prove the target instead",
+                        detail=f"run_id={run}",
+                    )
+                if recorded_status == "RUNNING":
+                    if not resume:
+                        raise AlgorithmMigrationError(
+                            "ALGORITHM_MIGRATION_RUN_IN_PROGRESS",
+                            "this run id is already running",
+                            detail=f"run_id={run} age={int(recorded['age_seconds'])}s",
+                        )
+                    if float(recorded["age_seconds"]) < stale_after_seconds:
+                        raise AlgorithmMigrationError(
+                            "ALGORITHM_MIGRATION_RUN_ACTIVE",
+                            "the running import is still heartbeating; refusing takeover",
+                            detail=f"run_id={run} age={int(recorded['age_seconds'])}s",
+                        )
+                cursor.execute(
+                    "UPDATE w5_algorithm.migration_run SET status='RUNNING',"
+                    "heartbeat_at=now(),finished_at=NULL,"
+                    "detail=COALESCE(detail,'{}'::jsonb) || %s::jsonb WHERE run_id=%s",
+                    (
+                        json.dumps({"reopened": True, "previous_status": recorded_status}),
+                        run,
+                    ),
+                )
+                return run, True
             cursor.execute(
                 "SELECT run_id,snapshot_digest,content_digest,algorithm_revision,mode,"
                 "EXTRACT(EPOCH FROM (now()-heartbeat_at)) AS age_seconds "

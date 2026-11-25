@@ -1,4 +1,4 @@
-"""T8.1-T8.3 real PostgreSQL verification for the algorithm domain.
+﻿"""T8.1-T8.3 real PostgreSQL verification for the algorithm domain.
 
 Runs only with an isolated local PostgreSQL (``pgserver`` + ``psycopg`` 3).
 Every test uses a throwaway server rooted in a temporary directory; nothing
@@ -124,7 +124,7 @@ def _rows():
     return [
         {
             "id": "algo-a",
-            "name": "烟火 A",
+            "name": "鐑熺伀 A",
             "remark": "",
             "industry": "fire",
             "algorithm_type": "yolo_ultralytics",
@@ -215,7 +215,7 @@ def test_import_is_idempotent_resumable_and_refuses_unsafe_overwrites(pg):
     assert second["action"] == "noop" and second["changed"] is False
 
     # A newer SQLite revision is applied, a dry run never persists it.
-    store.patch_algorithm("algo-a", {"name": "烟火 A v2"})
+    store.patch_algorithm("algo-a", {"name": "鐑熺伀 A v2"})
     newer = export_source_snapshot(store.db_path, "imports")
     dry = _import(pg, newer, dry_run=True)
     assert dry["action"] == "apply" and dry["dry_run"] is True and dry["changed"] is False
@@ -451,7 +451,7 @@ def test_cutover_admission_gates_single_writer_and_stale_sqlite(pg):
     provider = open_algorithm_repository(
         store.json_path, provider="postgresql", dsn=pg.get_uri()
     )
-    assert provider.read_one("algo-a")["name"] == "烟火 A"
+    assert provider.read_one("algo-a")["name"] == "鐑熺伀 A"
     assert provider.read_all() == store.read_all()
 
     with _connect(pg) as connection:
@@ -649,7 +649,7 @@ def test_all_seven_presentations_answer_real_business_queries(pg):
     assert repo.training_display_refs(["no-such-task"]) == {}
 
     basic = repo.asset_algorithm_basic("algo-a")
-    assert basic["name"] == "烟火 A" and basic["editable"] is True
+    assert basic["name"] == "鐑熺伀 A" and basic["editable"] is True
     assert basic["deferred_fields"] == []
 
     page = repo.asset_versions("algo-a", page=1, page_size=10)
@@ -778,6 +778,8 @@ def test_maintenance_window_blocks_both_writers_until_it_settles(pg):
     # The window is settled, so the provider writes again and SQLite does not.
     repository = open_algorithm_repository(
         store.json_path,
+        provider="postgresql",
+        dsn=pg.get_uri(),
         admission_path=record_path,
     )
     assert repository.create_algorithm({"id": "after", "name": "after"})["id"] == "after"
@@ -836,7 +838,10 @@ def test_rollback_blocks_postgres_and_refuses_after_new_writes(pg):
         )
     admission = switched["admission"]
     repository = open_algorithm_repository(
-        store.json_path, admission_path=record_path,
+        store.json_path,
+        provider="postgresql",
+        dsn=pg.get_uri(),
+        admission_path=record_path,
     )
 
     # PostgreSQL writes after admission make a rollback unsafe.
@@ -855,7 +860,10 @@ def test_rollback_blocks_postgres_and_refuses_after_new_writes(pg):
     # Removing the new write is impossible, so this project legitimately keeps
     # PostgreSQL as the only writer; the local admission still proves it.
     assert open_algorithm_repository(
-        store.json_path, admission_path=record_path,
+        store.json_path,
+        provider="postgresql",
+        dsn=pg.get_uri(),
+        admission_path=record_path,
     ).revision() >= 1
 
 

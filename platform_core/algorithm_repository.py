@@ -13,6 +13,7 @@ Dialect boundary: SQL lives only in ``algorithm_sql_store`` (SQLite) and
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -52,6 +53,22 @@ PRESENTATION_OPERATIONS = (
     "asset_version",
     "bootstrap_summary",
     "training_display_refs",
+)
+
+#: External-algorithm cleanup receipts. The ledger row and the algorithm
+#: retirement flags change in one transaction, so this is a real part of the
+#: domain contract: the default SQLite provider serves it, and a provider that
+#: does not must declare the gap instead of reaching into SQLite behind the
+#: caller's back.
+CLEANUP_OPERATIONS = (
+    "cleanup_ensure_schema",
+    "cleanup_get",
+    "cleanup_list",
+    "cleanup_summary",
+    "cleanup_public_operations",
+    "cleanup_public_operation",
+    "cleanup_confirm_deleted",
+    "cleanup_update",
 )
 
 PROVIDER_SQLITE = "sqlite"
@@ -163,6 +180,27 @@ class AlgorithmRepository(Protocol):
         self, incoming: Mapping[str, Mapping[str, Any]], *, provider: str, synced_at: str
     ) -> dict[str, int]: ...
 
+    # -- external algorithm cleanup ---------------------------------------
+    def cleanup_ensure_schema(self) -> None: ...
+
+    def cleanup_get(self, operation_id: str) -> dict | None: ...
+
+    def cleanup_list(self) -> list[dict]: ...
+
+    def cleanup_summary(self, *, project_id: str, suspected_state: str) -> dict[str, int]: ...
+
+    def cleanup_public_operations(
+        self, *, project_id: str, suspected_state: str, limit: int, offset: int
+    ) -> list[dict]: ...
+
+    def cleanup_public_operation(
+        self, *, project_id: str, operation_id: str, suspected_state: str
+    ) -> dict | None: ...
+
+    def cleanup_confirm_deleted(self, **fields: Any) -> dict[str, Any]: ...
+
+    def cleanup_update(self, **fields: Any) -> dict[str, Any]: ...
+
 
 #: Store method names that mutate algorithm state. Anything reached through the
 #: pass-through adapter with one of these prefixes is treated as a write and must
@@ -181,13 +219,20 @@ WRITE_OPERATIONS = frozenset({
     "delete_version_with_operation",
     "update_version_operation",
     "sync_external_algorithms",
+    "cleanup_ensure_schema",
+    "cleanup_confirm_deleted",
+    "cleanup_update",
 })
 
 #: Operations a pass-through adapter may serve without a write check. Anything
 #: outside this set is treated as a write (fail closed), so an undeclared helper
 #: cannot bypass the authority guard.
-_KNOWN_READ_OPERATIONS = frozenset(CORE_OPERATIONS) | frozenset(PRESENTATION_OPERATIONS) | frozenset({
-})
+_KNOWN_READ_OPERATIONS = (
+    frozenset(CORE_OPERATIONS)
+    | frozenset(PRESENTATION_OPERATIONS)
+    | frozenset(CLEANUP_OPERATIONS)
+    | frozenset()
+)
 
 
 def is_write_operation(name: str) -> bool:
@@ -202,18 +247,18 @@ def is_write_operation(name: str) -> bool:
 class _GuardedStore:
     """Pass-through store wrapper that gates mutating calls on write authority."""
 
-    def __init__(self, store: Any, guard: Any, ensure_ready: Any = None) -> None:
+    def __init__(self, store: Any, guard: Any) -> None:
         object.__setattr__(self, "_wrapped_store", store)
         object.__setattr__(self, "_wrapped_guard", guard)
-        object.__setattr__(self, "_wrapped_ensure_ready", ensure_ready)
 
     def __getattr__(self, name: str) -> Any:
         store = object.__getattribute__(self, "_wrapped_store")
         if name == "ensure_ready":
-            # Initialization may create schema/history, so it goes through the
-            # adapter's classifier instead of the generic write gate.
-            classified = object.__getattribute__(self, "_wrapped_ensure_ready")
-            return classified or store.ensure_ready
+            # Initialization is *not* forwarded back to the repository (that
+            # cycle made every call recurse). It goes straight to the store,
+            # whose persistent path already runs inside the write owner that the
+            # repository installed as ``initialization_guard``.
+            return store.ensure_ready
         attribute = getattr(store, name)
         if name.startswith("_"):
             return attribute
@@ -234,6 +279,9 @@ class SqliteAlgorithmRepository:
     """Default provider: the existing SQLite store, delegated unchanged."""
 
     provider_name = PROVIDER_SQLITE
+    #: The cleanup ledger lives in this store's schema, so this provider serves
+    #: the whole cleanup domain (PostgreSQL declares it unsupported instead).
+    cleanup_supported = True
 
     def __init__(
         self,
@@ -241,61 +289,78 @@ class SqliteAlgorithmRepository:
         *,
         admission_path: str | Path | None = None,
     ):
-        store = AlgorithmSqlStore(Path(json_path))
+        path = Path(json_path)
+        # The guard needs the paths first: the store is handed
+        # ``self._initialization_guard`` at construction time, so persistent
+        # initialization always runs as the admitted writer.
+        self.json_path = path
+        self.record_path = (
+            Path(admission_path) if admission_path else admission_record_path(path)
+        )
+        store = AlgorithmSqlStore(
+            path, initialization_guard=self._initialization_guard
+        )
         self.project_id = store.project_id
         self.db_path = store.db_path
-        self.json_path = store.json_path
-        self.record_path = (
-            Path(admission_path)
-            if admission_path
-            else admission_record_path(Path(json_path))
-        )
+        self._store = store
+        # Re-entrancy bookkeeping for this project's write authority. A write
+        # can legitimately call another write on the same connection path (a
+        # store call that must first initialise the catalog, for instance);
+        # taking the same cross-process file lock twice on Windows self-deadlocks,
+        # so the thread that already owns the guard keeps it.
+        self._guard_state = threading.local()
         # Every mutating store call is routed through the authority guard *and*
         # the shared switch lock, so the check and the write cannot be separated
         # by a cutover that lands in between.
-        self.store = _GuardedStore(store, self._write_guard, self.ensure_ready)
+        self.store = _GuardedStore(store, self._write_guard)
 
     @contextmanager
     def _write_guard(self):
         """Hold the switch mutex across (authority check -> store write)."""
+        depth = int(getattr(self._guard_state, "depth", 0) or 0)
+        if depth:
+            self._guard_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._guard_state.depth -= 1
+            return
         with admission_switch_lock(self.record_path):
             _refuse_stale_sqlite(Path(self.json_path), self.record_path)
+            self._guard_state.depth = 1
+            try:
+                yield
+            finally:
+                self._guard_state.depth = 0
+
+    @contextmanager
+    def _initialization_guard(self):
+        """Write owner around the store's persistent initialization boundary."""
+        with self._write_guard():
             yield
 
     def ensure_ready(self) -> None:
         """Create/migrate the catalog under the write owner; validate otherwise.
 
-        ``ensure_ready`` is listed as a read capability, yet on a fresh project
-        (or when a legacy JSON is newer than the SQLite copy) it creates the
-        schema and imports history - a real write. A steady-state catalog only
-        validates its version, so it must not take the switch lock: that would
-        serialise every read behind the maintenance mutex.
+        The store performs a short read-only readiness probe. Only a store that
+        cannot prove readiness (missing database, non-WAL journal, incomplete
+        schema/history import) enters the persistent initialization body, which
+        runs inside ``_initialization_guard`` - i.e. under the same switch mutex
+        and stale-writer refusal as any other algorithm write. A steady-state
+        catalog therefore costs one probe and takes no exclusive lock.
         """
-        if self._needs_initialization():
-            with self._write_guard():
-                self.store.ensure_ready()
-            return
-        self.store.ensure_ready()
-
-    def _needs_initialization(self) -> bool:
-        database = Path(self.store.db_path)
-        if not database.is_file():
-            return True
-        legacy = Path(self.store.json_path)
-        try:
-            return legacy.is_file() and legacy.stat().st_mtime > database.stat().st_mtime
-        except OSError:
-            # Unreadable timestamps must not silently skip the guard.
-            return True
+        self._store.ensure_ready()
 
     def is_initialized(self) -> bool:
-        """True when this project's algorithm catalog already exists on disk.
+        """True when this project's algorithm catalog is already serviceable.
 
         Provider-neutral replacement for the SQLite-only ``db_path.is_file()``
-        probe: "not initialized yet" is a state, not an error, and a provider
-        failure must never be reported as an empty catalog.
+        probe: file existence alone proves nothing (an empty or half-migrated
+        database exists too), so readiness is decided by the same short probe
+        the store uses before it refuses the persistent initialization path.
         """
-        return Path(self.store.db_path).is_file()
+        return self._store._ready_without_init_lock()
+
     def _guard_write(self) -> None:
         """Compatibility helper: check authority under the switch mutex."""
         with self._write_guard():
@@ -303,7 +368,7 @@ class SqliteAlgorithmRepository:
 
     # -- provider metadata -------------------------------------------------
     def capabilities(self) -> frozenset[str]:
-        return frozenset(CORE_OPERATIONS + PRESENTATION_OPERATIONS)
+        return frozenset(CORE_OPERATIONS + PRESENTATION_OPERATIONS + CLEANUP_OPERATIONS)
 
     def unsupported_operations(self) -> tuple[str, ...]:
         return ()
@@ -322,9 +387,6 @@ class SqliteAlgorithmRepository:
         return attribute
 
     # -- contract ----------------------------------------------------------
-    def ensure_ready(self) -> None:
-        self.store.ensure_ready()
-
     def revision(self) -> int:
         return self.store.revision()
 
@@ -423,6 +485,46 @@ class SqliteAlgorithmRepository:
         return self.store.sync_external_algorithms(
             incoming, provider=provider, synced_at=synced_at
         )
+
+    # -- external algorithm cleanup ---------------------------------------
+    def cleanup_ensure_schema(self) -> None:
+        self.store.cleanup_ensure_schema()
+
+    def cleanup_get(self, operation_id: str) -> dict | None:
+        return self.store.cleanup_get(operation_id)
+
+    def cleanup_list(self) -> list[dict]:
+        return self.store.cleanup_list()
+
+    def cleanup_summary(self, *, project_id: str, suspected_state: str) -> dict[str, int]:
+        return self.store.cleanup_summary(
+            project_id=project_id, suspected_state=suspected_state
+        )
+
+    def cleanup_public_operations(
+        self, *, project_id: str, suspected_state: str, limit: int, offset: int
+    ) -> list[dict]:
+        return self.store.cleanup_public_operations(
+            project_id=project_id,
+            suspected_state=suspected_state,
+            limit=limit,
+            offset=offset,
+        )
+
+    def cleanup_public_operation(
+        self, *, project_id: str, operation_id: str, suspected_state: str
+    ) -> dict | None:
+        return self.store.cleanup_public_operation(
+            project_id=project_id,
+            operation_id=operation_id,
+            suspected_state=suspected_state,
+        )
+
+    def cleanup_confirm_deleted(self, **fields: Any) -> dict[str, Any]:
+        return self.store.cleanup_confirm_deleted(**fields)
+
+    def cleanup_update(self, **fields: Any) -> dict[str, Any]:
+        return self.store.cleanup_update(**fields)
 
 
 def admission_record_path(json_path: str | Path) -> Path:

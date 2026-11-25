@@ -36,6 +36,7 @@ from .algorithm_cutover import (
     freeze_maintenance_source,
     begin_maintenance_window,
     AlgorithmCutoverError,
+    AlgorithmCutoverRefused,
     admit_cutover,
     assess_rollback,
     cutover_status,
@@ -422,6 +423,15 @@ def main(argv=None) -> int:
             return EXIT_OK if result.get("rolled_back") else EXIT_REFUSED
 
         return 2
+    except AlgorithmCutoverRefused as error:
+        # A policy refusal (stale generation, window already open, admission
+        # gate not met) is the documented exit code 3, not an internal error.
+        _emit({
+            "refused": getattr(error, "code", type(error).__name__),
+            "message": str(error),
+            "detail": getattr(error, "detail", ""),
+        }, stream=sys.stderr)
+        return EXIT_REFUSED
     except (
         AlgorithmMigrationError,
         AlgorithmCutoverError,

@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 from .algorithm_postgres_schema import require_current_schema
 from .algorithm_repository import (
+    CLEANUP_OPERATIONS,
     CORE_OPERATIONS,
     PRESENTATION_OPERATIONS,
     PROVIDER_POSTGRESQL,
@@ -199,7 +200,55 @@ class PostgresAlgorithmRepository:
         return frozenset(CORE_OPERATIONS) | frozenset(_PORTED_PRESENTATION)
 
     def unsupported_operations(self) -> tuple[str, ...]:
-        return _UNSUPPORTED
+        # The cleanup domain is a declared gap, not a silent absence: the cutover
+        # tool refuses admission while a project still owns cleanup receipts.
+        return tuple(_UNSUPPORTED) + tuple(CLEANUP_OPERATIONS)
+
+    # -- external algorithm cleanup: declared gap, never a SQLite fallback ---
+    # The cleanup ledger shares a transaction with the algorithm retirement
+    # flags and is not part of the migrated schema yet, so this provider refuses
+    # the whole domain. The cutover tool additionally refuses admission while a
+    # project still owns cleanup receipts (see ``CLEANUP_DOMAIN_MIGRATED``).
+    cleanup_supported = False
+
+    def _cleanup_gap(self) -> None:
+        raise AlgorithmProviderUnsupported(
+            "ALGORITHM_CLEANUP_PROVIDER_UNSUPPORTED",
+            "the external algorithm cleanup domain is not migrated to PostgreSQL",
+            detail=(
+                "cleanup receipts and the algorithm retirement flags share one "
+                "transaction; keep this project on SQLite until the cleanup "
+                "schema is part of the migration"
+            ),
+        )
+
+    def cleanup_ensure_schema(self) -> None:
+        self._cleanup_gap()
+
+    def cleanup_get(self, operation_id: str) -> dict | None:
+        self._cleanup_gap()
+
+    def cleanup_list(self) -> list[dict]:
+        self._cleanup_gap()
+
+    def cleanup_summary(self, *, project_id: str, suspected_state: str) -> dict[str, int]:
+        self._cleanup_gap()
+
+    def cleanup_public_operations(
+        self, *, project_id: str, suspected_state: str, limit: int, offset: int
+    ) -> list[dict]:
+        self._cleanup_gap()
+
+    def cleanup_public_operation(
+        self, *, project_id: str, operation_id: str, suspected_state: str
+    ) -> dict | None:
+        self._cleanup_gap()
+
+    def cleanup_confirm_deleted(self, **fields: Any) -> dict[str, Any]:
+        self._cleanup_gap()
+
+    def cleanup_update(self, **fields: Any) -> dict[str, Any]:
+        self._cleanup_gap()
 
     def __repr__(self) -> str:  # never render the DSN
         return f"PostgresAlgorithmRepository(project_id={self.project_id!r})"

@@ -32,11 +32,6 @@ PENDING = "CLEANUP_PENDING"
 RUNNING = "CLEANUP_RUNNING"
 FAILED = "CLEANUP_FAILED"
 COMPLETED = "CLEANUP_COMPLETED"
-_SCHEMA = """CREATE TABLE IF NOT EXISTS external_algorithm_cleanup (
-    operation_id TEXT PRIMARY KEY, algorithm_id TEXT NOT NULL, product_id TEXT NOT NULL,
-    state TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-); CREATE UNIQUE INDEX IF NOT EXISTS external_algorithm_cleanup_identity
-ON external_algorithm_cleanup(algorithm_id,product_id) WHERE state<>'CLEANUP_COMPLETED';"""
 
 
 def _error(code, message):
@@ -68,24 +63,30 @@ class VerifiedDeletionContract:
 
 
 class CleanupRepository:
+    """Cleaning records of one project, reached only through the provider contract.
+
+    The ledger row, the algorithm retirement flags and the revision bump are one
+    atomic write, so they live in the repository's store (the SQL owner) and are
+    called through declared operations. A provider that cannot serve the cleanup
+    domain fails closed here instead of falling back to SQLite.
+    """
+
     def __init__(self, algorithms_path: Path, *, contracts=()):
         self.store = open_algorithm_repository(algorithms_path)
         self.contracts = tuple(contracts)
+        if "cleanup_confirm_deleted" in tuple(getattr(self.store, "unsupported_operations", lambda: ())()):
+            raise _error(
+                "EXTERNAL_ALGORITHM_CLEANUP_PROVIDER_UNSUPPORTED",
+                "当前存储 Provider 尚未迁移外部算法清理域，拒绝在非权威副本上写入",
+            )
         self.store.ensure_ready()
-        with closing(self.store._connect()) as db:
-            db.executescript(_SCHEMA)
-
-    @staticmethod
-    def _value(row):
-        return json.loads(row["payload_json"]) if row else None
+        self.store.cleanup_ensure_schema()
 
     def get(self, operation_id):
-        with closing(self.store._connect()) as db:
-            return self._value(db.execute("SELECT * FROM external_algorithm_cleanup WHERE operation_id=?", (operation_id,)).fetchone())
+        return self.store.cleanup_get(operation_id)
 
     def list_operations(self):
-        with closing(self.store._connect()) as db:
-            return [self._value(row) for row in db.execute("SELECT * FROM external_algorithm_cleanup ORDER BY created_at,operation_id")]
+        return self.store.cleanup_list()
 
     def confirm_deleted(self, algorithm_id, evidence: DeletionEvidence):
         if not isinstance(evidence, DeletionEvidence) or evidence.scope != "PRODUCT_DELETED":
@@ -100,74 +101,58 @@ class CleanupRepository:
                                evidence.contract_id, evidence.evidence_id], separators=(",", ":"))
         operation_id = hashlib.sha256(identity.encode()).hexdigest()[:32]
         stamp = utc_now()
-        with closing(self.store._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
-            old = self._value(db.execute("SELECT * FROM external_algorithm_cleanup WHERE operation_id=?", (operation_id,)).fetchone())
-            if old:
-                return old
-            row = self.store._read_one_conn(db, algorithm_id)
-            if (not row or row.get("source_type") != "EXTERNAL" or row.get("provider_type") != evidence.provider
-                    or str(row.get("external_product_id")) != evidence.product_id):
-                raise _error("EXTERNAL_DELETE_IDENTITY_CHANGED", "产品删除证据与算法身份不一致")
-            active = self._value(db.execute("SELECT * FROM external_algorithm_cleanup WHERE algorithm_id=? AND product_id=? AND state<>?",
-                                 (algorithm_id, evidence.product_id, COMPLETED)).fetchone())
-            if active:
-                if row.get("external_cleanup_operation_id") != active["operation_id"]:
-                    raise _error("EXTERNAL_CLEANUP_GENERATION_CHANGED", "算法删除状态与清理意图不一致")
-                return active
-            operation = dict(operation_id=operation_id, task_id="external-cleanup-" + operation_id,
-                             project_id=self.store.project_id, algorithm_id=algorithm_id,
-                             name=str(row.get("name") or algorithm_id),
-                             product_id=evidence.product_id, generation=operation_id,
-                             state=CONFIRMED, phase="confirmed", evidence=asdict(evidence),
-                             created_at=stamp, updated_at=stamp, error="", counts={},
-                             history=[{"state": CONFIRMED, "phase": "confirmed", "observed_at": stamp}])
-            row.update(external_active=False, external_delete_pending=True,
-                       external_delete_pending_at=stamp, external_deletion_status=CONFIRMED,
-                       external_deletion_since=stamp, external_deletion_reason="已取得可信产品删除证据，等待安全清理",
-                       external_cleanup_operation_id=operation_id)
-            self.store._update_algorithm_conn(db, row)
-            self.store._bump_revision(db)
-            db.execute("INSERT INTO external_algorithm_cleanup VALUES(?,?,?,?,?,?,?)",
-                       (operation_id, algorithm_id, evidence.product_id, CONFIRMED,
-                        json.dumps(operation, ensure_ascii=False), stamp, stamp))
-            db.commit()
-        return operation
+        operation = dict(operation_id=operation_id, task_id="external-cleanup-" + operation_id,
+                         project_id=self.store.project_id, algorithm_id=algorithm_id,
+                         product_id=evidence.product_id, generation=operation_id,
+                         state=CONFIRMED, phase="confirmed", evidence=asdict(evidence),
+                         created_at=stamp, updated_at=stamp, error="", counts={},
+                         history=[{"state": CONFIRMED, "phase": "confirmed", "observed_at": stamp}])
+        result = self.store.cleanup_confirm_deleted(
+            operation_id=operation_id,
+            algorithm_id=algorithm_id,
+            product_id=evidence.product_id,
+            provider=evidence.provider,
+            completed_state=COMPLETED,
+            algorithm_patch=dict(
+                external_active=False, external_delete_pending=True,
+                external_delete_pending_at=stamp, external_deletion_status=CONFIRMED,
+                external_deletion_since=stamp,
+                external_deletion_reason="已取得可信产品删除证据，等待安全清理",
+            ),
+            operation=operation,
+            now=stamp,
+        )
+        outcome = str(result.get("outcome") or "")
+        if outcome == "existing":
+            return result["operation"]
+        if outcome == "identity_changed":
+            raise _error("EXTERNAL_DELETE_IDENTITY_CHANGED", "产品删除证据与算法身份不一致")
+        if outcome == "generation_changed":
+            raise _error("EXTERNAL_CLEANUP_GENERATION_CHANGED", "算法删除状态与清理意图不一致")
+        return result["operation"]
 
     def update(self, operation_id, *, remove_algorithm=False, expected_states=None, **patch):
-        with closing(self.store._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
-            op = self._value(db.execute("SELECT * FROM external_algorithm_cleanup WHERE operation_id=?", (operation_id,)).fetchone())
-            if not op:
-                raise _error("EXTERNAL_CLEANUP_OPERATION_MISSING", "清理记录不存在")
-            row = self.store._read_one_conn(db, op["algorithm_id"])
-            if op["state"] == COMPLETED:
-                raise _error("EXTERNAL_CLEANUP_ALREADY_COMPLETED", "已完成清理回执不可重写")
-            if expected_states is not None and op["state"] not in expected_states:
-                raise _error("EXTERNAL_CLEANUP_STATE_CHANGED", "清理状态已变化，请刷新状态")
-            if (not row or row.get("external_cleanup_operation_id") != operation_id
-                    or not row.get("external_delete_pending") or str(row.get("external_product_id")) != op["product_id"]):
-                raise _error("EXTERNAL_CLEANUP_GENERATION_CHANGED", "清理身份或归属已变化")
-            stamp = utc_now()
-            if any(patch.get(key, op.get(key)) != op.get(key) for key in ("state", "phase")):
-                op.setdefault("history", []).append({"state": patch.get("state", op["state"]),
-                    "phase": patch.get("phase", op["phase"]), "observed_at": stamp})
-            op.update(patch, updated_at=stamp)
-            if remove_algorithm:
-                if op["state"] != COMPLETED:
-                    raise _error("EXTERNAL_CLEANUP_NOT_COMPLETE", "清理未完成，不能移除算法")
-                db.execute("DELETE FROM algorithms WHERE project_id=? AND id=?", (self.store.project_id, op["algorithm_id"]))
-            elif row:
-                if row.get("external_deletion_status") != op["state"]:
-                    row.update(external_deletion_status=op["state"])
-                    self.store._update_algorithm_conn(db, row)
-                    self.store._bump_revision(db)
-            db.execute("UPDATE external_algorithm_cleanup SET state=?,payload_json=?,updated_at=? WHERE operation_id=?",
-                       (op["state"], json.dumps(op, ensure_ascii=False), op["updated_at"], operation_id))
-            if remove_algorithm:
-                self.store._bump_revision(db)
-            db.commit()
-        return op
+        result = self.store.cleanup_update(
+            project_id=self.store.project_id,
+            operation_id=operation_id,
+            patch=patch,
+            remove_algorithm=bool(remove_algorithm),
+            expected_states=None if expected_states is None else list(expected_states),
+            completed_state=COMPLETED,
+            now=utc_now(),
+        )
+        outcome = str(result.get("outcome") or "")
+        if outcome == "missing":
+            raise _error("EXTERNAL_CLEANUP_OPERATION_MISSING", "清理记录不存在")
+        if outcome == "completed":
+            raise _error("EXTERNAL_CLEANUP_ALREADY_COMPLETED", "已完成清理回执不可重写")
+        if outcome == "state_changed":
+            raise _error("EXTERNAL_CLEANUP_STATE_CHANGED", "清理状态已变化，请刷新状态")
+        if outcome == "generation_changed":
+            raise _error("EXTERNAL_CLEANUP_GENERATION_CHANGED", "清理身份或归属已变化")
+        if outcome == "not_complete":
+            raise _error("EXTERNAL_CLEANUP_NOT_COMPLETE", "清理未完成，不能移除算法")
+        return result["operation"]
 
     def dispatch(self, data_dir: Path, *, retry_failed=False, operation_id=None):
         """Outbox delivery only. No remote I/O or destructive work here."""
@@ -216,34 +201,28 @@ class CleanupRepository:
             task_id="", error="", counts={})
 
     def summary(self):
-        with closing(self.store._connect()) as db:
-            result = {str(row[0]): int(row[1]) for row in db.execute(
-                "SELECT state,COUNT(*) FROM external_algorithm_cleanup GROUP BY state")}
-            result[SUSPECTED] = int(db.execute(
-                "SELECT COUNT(*) FROM algorithms WHERE project_id=? AND json_extract(payload_json,'$.external_deletion_status')=?",
-                (self.store.project_id, SUSPECTED)).fetchone()[0])
+        result = self.store.cleanup_summary(
+            project_id=self.store.project_id, suspected_state=SUSPECTED
+        )
         return {state: result.get(state, 0) for state in (SUSPECTED, CONFIRMED, PENDING, RUNNING, FAILED, COMPLETED)}
 
     def public_operations(self, *, limit=25, offset=0):
         limit, offset = max(1, min(100, int(limit))), max(0, int(offset))
-        with closing(self.store._connect()) as db:
-            rows = db.execute("""
-                SELECT operation_id,updated_at,'operation' AS kind,payload_json,'' AS id,'' AS name,'' AS external_product_id
-                FROM external_algorithm_cleanup
-                UNION ALL
-                SELECT 'suspect:'||id,COALESCE(json_extract(payload_json,'$.external_deletion_checked_at'),json_extract(payload_json,'$.external_deletion_since')),'suspect',payload_json,id,name,external_product_id
-                FROM algorithms WHERE project_id=? AND json_extract(payload_json,'$.external_deletion_status')=?
-                ORDER BY updated_at DESC,operation_id DESC LIMIT ? OFFSET ?
-                """, (self.store.project_id, SUSPECTED, limit, offset)).fetchall()
-        return [self._suspected(row) if row["kind"] == "suspect" else self._value(row) for row in rows]
+        rows = self.store.cleanup_public_operations(
+            project_id=self.store.project_id, suspected_state=SUSPECTED,
+            limit=limit, offset=offset,
+        )
+        return [self._suspected(row["row"]) if row["kind"] == "suspect" else row["operation"]
+                for row in rows]
 
     def public_operation(self, operation_id):
-        if not operation_id.startswith("suspect:"):
-            return self.get(operation_id)
-        with closing(self.store._connect()) as db:
-            row = db.execute("SELECT id,name,external_product_id,payload_json FROM algorithms WHERE project_id=? AND id=? AND json_extract(payload_json,'$.external_deletion_status')=?",
-                (self.store.project_id, operation_id[len("suspect:"):], SUSPECTED)).fetchone()
-        return self._suspected(row) if row else None
+        row = self.store.cleanup_public_operation(
+            project_id=self.store.project_id, operation_id=operation_id,
+            suspected_state=SUSPECTED,
+        )
+        if row is None:
+            return None
+        return self._suspected(row["row"]) if row.get("kind") == "suspect" else row
 
 
 def dispatch_cleanup_outboxes(data_dir: Path):

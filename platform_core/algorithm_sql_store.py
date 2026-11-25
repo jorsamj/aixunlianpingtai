@@ -17,6 +17,14 @@ from .performance_diagnostics import connect_sqlite
 SCHEMA_VERSION = 4
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
+#: Ledger of confirmed external-product deletions plus the durable outbox
+#: receipt. It shares a transaction with the algorithm retirement flags, so it
+#: is part of this store's schema and never a second cleanup system.
+CLEANUP_SCHEMA = """CREATE TABLE IF NOT EXISTS external_algorithm_cleanup (
+    operation_id TEXT PRIMARY KEY, algorithm_id TEXT NOT NULL, product_id TEXT NOT NULL,
+    state TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+); CREATE UNIQUE INDEX IF NOT EXISTS external_algorithm_cleanup_identity
+ON external_algorithm_cleanup(algorithm_id,product_id) WHERE state<>'CLEANUP_COMPLETED';"""
 _INIT_LOCK_TIMEOUT = 30
 _LEGACY_REMOTE_VERSION_FIELDS = frozenset({
     "external_algo_version_id",
@@ -33,13 +41,18 @@ class AlgorithmSqlStore:
     forward compatible.
     """
 
-    def __init__(self, json_path: Path):
+    def __init__(self, json_path: Path, *, initialization_guard=None):
         self.json_path = Path(json_path)
         self.project_dir = self.json_path.parent
         self.db_path = self.project_dir / DB_FILENAME
         self.backup_path = self.project_dir / BACKUP_FILENAME
         self.project_id = self.project_dir.name
         self.project_dir.mkdir(parents=True, exist_ok=True)
+        # The repository that owns write authority for this project installs a
+        # guard here, so WAL transition, schema bootstrap, legacy import and the
+        # legacy backup are performed *by the admitted writer only* - not by a
+        # stale SQLite reader that happens to call ``read_all`` after a cutover.
+        self._initialization_guard = initialization_guard
 
     def _connect(self) -> sqlite3.Connection:
         conn = connect_sqlite(self.db_path, timeout=30.0)
@@ -90,7 +103,18 @@ class AlgorithmSqlStore:
         # Only an uninitialized/uncertain store enters the persistent init lock.
         if self._ready_without_init_lock():
             return
+        guard = self._initialization_guard
+        if guard is None:
+            self._initialize_persistent_state()
+            return
+        # Persistent initialization is a real write: it must run inside the
+        # caller's write-authority guard (one project, one writer), never
+        # beside it. The guard is not re-entered below, and the init body only
+        # touches this store, so there is no cycle back into ``ensure_ready``.
+        with guard():
+            self._initialize_persistent_state()
 
+    def _initialize_persistent_state(self) -> None:
         # WAL transition, schema bootstrap and legacy migration are persistent
         # database initialization. Keep them under one store-owned cross-process
         # lock; normal CRUD transactions remain independently concurrent.
@@ -1217,6 +1241,250 @@ class AlgorithmSqlStore:
                 "algorithm_revision": int(self._meta(conn, "algorithm_revision") or 0),
                 "legacy_json_migrated": self._meta(conn, "legacy_json_migrated") == "1",
             }
+
+    # -- external algorithm cleanup ledger ---------------------------------
+    # The cleanup ledger and the algorithm retirement flags are one atomic
+    # transaction, so this SQL lives here, with the other SQL of this store, and
+    # is reached through the provider contract instead of a private connection.
+    def cleanup_ensure_schema(self) -> None:
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            db.executescript(CLEANUP_SCHEMA)
+
+    @staticmethod
+    def _cleanup_payload(row) -> dict | None:
+        return json.loads(row["payload_json"]) if row else None
+
+    def cleanup_get(self, operation_id: str) -> dict | None:
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM external_algorithm_cleanup WHERE operation_id=?",
+                (str(operation_id),),
+            ).fetchone()
+        return self._cleanup_payload(row)
+
+    def cleanup_list(self) -> list[dict]:
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT * FROM external_algorithm_cleanup ORDER BY created_at,operation_id"
+            ).fetchall()
+        return [self._cleanup_payload(row) for row in rows]
+
+    def cleanup_summary(self, *, project_id: str, suspected_state: str) -> dict[str, int]:
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            counts = {
+                str(row[0]): int(row[1])
+                for row in db.execute(
+                    "SELECT state,COUNT(*) FROM external_algorithm_cleanup GROUP BY state"
+                )
+            }
+            counts[suspected_state] = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM algorithms WHERE project_id=? AND "
+                    "json_extract(payload_json,'$.external_deletion_status')=?",
+                    (str(project_id), str(suspected_state)),
+                ).fetchone()[0]
+            )
+        return counts
+
+    def cleanup_public_operations(
+        self, *, project_id: str, suspected_state: str, limit: int, offset: int
+    ) -> list[dict]:
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """
+                SELECT operation_id,updated_at,'operation' AS kind,payload_json,
+                       '' AS id,'' AS name,'' AS external_product_id
+                FROM external_algorithm_cleanup
+                UNION ALL
+                SELECT 'suspect:'||id,
+                       COALESCE(json_extract(payload_json,'$.external_deletion_checked_at'),
+                                json_extract(payload_json,'$.external_deletion_since')),
+                       'suspect',payload_json,id,name,external_product_id
+                FROM algorithms WHERE project_id=? AND
+                       json_extract(payload_json,'$.external_deletion_status')=?
+                ORDER BY updated_at DESC,operation_id DESC LIMIT ? OFFSET ?
+                """,
+                (str(project_id), str(suspected_state), int(limit), int(offset)),
+            ).fetchall()
+        result = []
+        for row in rows:
+            if row["kind"] == "suspect":
+                result.append({
+                    "kind": "suspect",
+                    "row": {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "external_product_id": row["external_product_id"],
+                        "payload_json": row["payload_json"],
+                    },
+                })
+            else:
+                result.append({"kind": "operation", "operation": self._cleanup_payload(row)})
+        return result
+
+    def cleanup_public_operation(
+        self, *, project_id: str, operation_id: str, suspected_state: str
+    ) -> dict | None:
+        """One operation receipt, or the algorithm row behind a ``suspect:`` id."""
+        if not str(operation_id).startswith("suspect:"):
+            return self.cleanup_get(operation_id)
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT id,name,external_product_id,payload_json FROM algorithms "
+                "WHERE project_id=? AND id=? AND "
+                "json_extract(payload_json,'$.external_deletion_status')=?",
+                (
+                    str(project_id),
+                    str(operation_id)[len("suspect:"):],
+                    str(suspected_state),
+                ),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "kind": "suspect",
+            "row": {
+                "id": row["id"],
+                "name": row["name"],
+                "external_product_id": row["external_product_id"],
+                "payload_json": row["payload_json"],
+            },
+        }
+
+    def cleanup_confirm_deleted(
+        self,
+        *,
+        operation_id: str,
+        algorithm_id: str,
+        product_id: str,
+        provider: str,
+        completed_state: str,
+        algorithm_patch: Mapping[str, Any],
+        operation: Mapping[str, Any],
+        now: str,
+    ) -> dict[str, Any]:
+        """Persist the confirmed intent and the algorithm retirement atomically.
+
+        Returns an outcome instead of raising product errors, so the caller keeps
+        the user-facing wording: ``created`` / ``existing`` / ``identity_changed``
+        / ``generation_changed``. Anything but ``created``/``existing`` writes
+        nothing at all.
+        """
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            old = self._cleanup_payload(db.execute(
+                "SELECT * FROM external_algorithm_cleanup WHERE operation_id=?",
+                (str(operation_id),),
+            ).fetchone())
+            if old:
+                return {"outcome": "existing", "operation": old}
+            row = self._read_one_conn(db, str(algorithm_id))
+            if (
+                not row
+                or row.get("source_type") != "EXTERNAL"
+                or row.get("provider_type") != str(provider)
+                or str(row.get("external_product_id")) != str(product_id)
+            ):
+                return {"outcome": "identity_changed", "operation": None}
+            active = self._cleanup_payload(db.execute(
+                "SELECT * FROM external_algorithm_cleanup WHERE algorithm_id=? "
+                "AND product_id=? AND state<>?",
+                (str(algorithm_id), str(product_id), str(completed_state)),
+            ).fetchone())
+            if active:
+                if row.get("external_cleanup_operation_id") != active["operation_id"]:
+                    return {"outcome": "generation_changed", "operation": None}
+                return {"outcome": "existing", "operation": active}
+            row.update(dict(algorithm_patch))
+            row["external_cleanup_operation_id"] = str(operation_id)
+            self._update_algorithm_conn(db, row)
+            self._bump_revision(db)
+            # The ledger keeps the *verified* algorithm name, never a caller
+            # supplied label.
+            record = dict(operation)
+            record["name"] = str(row.get("name") or algorithm_id)
+            value = json.dumps(record, ensure_ascii=False)
+            db.execute(
+                "INSERT INTO external_algorithm_cleanup VALUES(?,?,?,?,?,?,?)",
+                (
+                    str(operation_id), str(algorithm_id), str(product_id),
+                    str(record["state"]), value, str(now), str(now),
+                ),
+            )
+            db.commit()
+        return {"outcome": "created", "operation": record}
+
+    def cleanup_update(
+        self,
+        *,
+        project_id: str,
+        operation_id: str,
+        patch: Mapping[str, Any],
+        remove_algorithm: bool,
+        expected_states: Sequence[str] | None,
+        completed_state: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Advance one cleanup receipt, keeping algorithm status in the same txn."""
+        self.ensure_ready()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            op = self._cleanup_payload(db.execute(
+                "SELECT * FROM external_algorithm_cleanup WHERE operation_id=?",
+                (str(operation_id),),
+            ).fetchone())
+            if not op:
+                return {"outcome": "missing", "operation": None}
+            row = self._read_one_conn(db, str(op["algorithm_id"]))
+            if op["state"] == str(completed_state):
+                return {"outcome": "completed", "operation": op}
+            if expected_states is not None and op["state"] not in expected_states:
+                return {"outcome": "state_changed", "operation": op}
+            if (
+                not row
+                or row.get("external_cleanup_operation_id") != str(operation_id)
+                or not row.get("external_delete_pending")
+                or str(row.get("external_product_id")) != op["product_id"]
+            ):
+                return {"outcome": "generation_changed", "operation": op}
+            if any(patch.get(key, op.get(key)) != op.get(key) for key in ("state", "phase")):
+                op.setdefault("history", []).append({
+                    "state": patch.get("state", op["state"]),
+                    "phase": patch.get("phase", op["phase"]),
+                    "observed_at": str(now),
+                })
+            op.update(dict(patch), updated_at=str(now))
+            if remove_algorithm:
+                if op["state"] != str(completed_state):
+                    return {"outcome": "not_complete", "operation": op}
+                db.execute(
+                    "DELETE FROM algorithms WHERE project_id=? AND id=?",
+                    (str(project_id), str(op["algorithm_id"])),
+                )
+            elif row:
+                if row.get("external_deletion_status") != op["state"]:
+                    row.update(external_deletion_status=op["state"])
+                    self._update_algorithm_conn(db, row)
+                    self._bump_revision(db)
+            db.execute(
+                "UPDATE external_algorithm_cleanup SET state=?,payload_json=?,updated_at=? "
+                "WHERE operation_id=?",
+                (
+                    op["state"], json.dumps(op, ensure_ascii=False),
+                    op["updated_at"], str(operation_id),
+                ),
+            )
+            if remove_algorithm:
+                self._bump_revision(db)
+            db.commit()
+        return {"outcome": "updated", "operation": op}
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(

@@ -25,6 +25,7 @@ from platform_core.algorithm_postgres_store import (
     UNSUPPORTED_OPERATIONS,
 )
 from platform_core.algorithm_repository import (
+    CLEANUP_OPERATIONS,
     CONTRACT_VERSION,
     admission_transition_path,
     CORE_OPERATIONS,
@@ -162,16 +163,27 @@ def test_malformed_admission_record_is_refused(tmp_path):
 def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
     repository = PostgresAlgorithmRepository("postgresql://example.invalid/db", "project")
     # Declared capabilities must equal what the class really serves: core plus
-    # the presentation projections that are ported, never the whole set.
+    # the presentation projections that are ported, never the whole set. The
+    # external-algorithm cleanup domain is served by SQLite only, and is declared
+    # unsupported instead of silently reaching into a SQLite copy.
     assert set(repository.capabilities()) == set(CORE_OPERATIONS) | set(
         PRESENTATION_OPERATIONS
     ) - set(UNSUPPORTED_OPERATIONS)
-    assert repository.unsupported_operations() == tuple(UNSUPPORTED_OPERATIONS)
+    assert set(repository.unsupported_operations()) == set(UNSUPPORTED_OPERATIONS) | set(
+        CLEANUP_OPERATIONS
+    )
     assert set(UNSUPPORTED_OPERATIONS) <= set(PRESENTATION_OPERATIONS)
-    for name in UNSUPPORTED_OPERATIONS:
-        with pytest.raises(AlgorithmProviderUnsupported) as error:
+    assert repository.cleanup_supported is False
+    for name in repository.unsupported_operations():
+        with pytest.raises(AlgorithmProviderUnsupported):
             getattr(repository, name)()
-        assert error.value.code == "ALGORITHM_PROVIDER_OPERATION_UNSUPPORTED"
+    for name in CLEANUP_OPERATIONS:
+        with pytest.raises(AlgorithmProviderUnsupported) as cleanup_error:
+            getattr(repository, name)()
+        assert cleanup_error.value.code == "ALGORITHM_CLEANUP_PROVIDER_UNSUPPORTED"
+    with pytest.raises(AlgorithmProviderUnsupported) as generic:
+        repository.bootstrap_summary()
+    assert generic.value.code == "ALGORITHM_PROVIDER_OPERATION_UNSUPPORTED"
     assert "example.invalid" not in repr(repository)
 
 
