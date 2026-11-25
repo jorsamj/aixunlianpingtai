@@ -1,3 +1,4 @@
+import platform_core.quality_analysis_service as quality_owner
 from platform_core.cleaning_management_service import CleaningManagementService
 import json
 from types import SimpleNamespace
@@ -622,7 +623,7 @@ def test_selected_training_quality_uses_indexed_materials_batched_annotations_an
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError()),
     )
     monkeypatch.setattr(
-        app_module,
+        quality_owner,
         "compute_quality",
         lambda rows, **_kwargs: {
             "scores": {

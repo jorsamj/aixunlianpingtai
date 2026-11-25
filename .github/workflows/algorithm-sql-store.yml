@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing-sql-crud
     paths:
       - app.py
+      - platform_core/quality_analysis_*.py
       - platform_core/training_management_*.py
       - platform_core/training_evaluation_*.py
       - platform_core/material_governance_*.py

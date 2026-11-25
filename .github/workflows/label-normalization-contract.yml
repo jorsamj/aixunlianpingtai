@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - platform_core/quality_analysis_*.py
       - platform_core/material_ingestion_*.py
       - platform_core/storage_ingestion_*.py
       - 'platform_core/ai_annotation_*.py'
@@ -50,6 +51,7 @@ on:
   pull_request:
     paths:
       - 'app.py'
+      - platform_core/quality_analysis_*.py
       - platform_core/material_ingestion_*.py
       - platform_core/storage_ingestion_*.py
       - 'platform_core/ai_annotation_*.py'
@@ -528,7 +530,7 @@ jobs:
           for body, owner, token in (
               (governance_method('save_annotation'), 'platform_core/annotation_governance_service.py', 'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED'),
               (governance_contracts, 'platform_core/annotation_governance_contracts.py', 'annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]]'),
-              (app, 'app.py', 'train_completed_count'),
+              (Path('platform_core/quality_analysis_service.py').read_text(encoding='utf-8'), 'platform_core/quality_analysis_service.py', 'train_completed_count'),
           ):
               if token not in body:
                   missing.setdefault(owner, []).append(token)

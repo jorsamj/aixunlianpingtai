@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Literal, Optional, Mapping, Tuple
 from fastapi import APIRouter, Body, Query, Request
 from .material_governance_service import MaterialGovernanceService
-from .material_governance_contracts import BatchImageSplitReq, BatchSplitReq, ImagePatchReq, V46BatchDeleteImagesReq, V52ReadyReq
+from .material_governance_contracts import V47ImageEditReq, BatchImageSplitReq, BatchSplitReq, ImagePatchReq, V46BatchDeleteImagesReq, V52ReadyReq
 
 
 def create_material_governance_router_1(service: Callable[[], MaterialGovernanceService]) -> APIRouter:
@@ -64,5 +64,15 @@ def create_material_governance_router_5(service: Callable[[], MaterialGovernance
     @router.post('/api/v49/projects/{project_id}/images/mark-processed')
     def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
         return service().v49_mark_processed(project_id, payload)
+
+    return router
+
+
+def create_material_governance_router_6(service: Callable[[], MaterialGovernanceService]) -> APIRouter:
+    router = APIRouter()
+
+    @router.put('/api/v47/projects/{project_id}/images/{image_id}')
+    def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
+        return service().v47_edit_image(project_id, image_id, payload)
 
     return router

@@ -288,3 +288,13 @@ B：327023ff399263e93b261c68cf08f5c534622bfc，完成素材浏览、数据集目
 累计迁出 143 个接口、198 个业务/辅助函数和 30 个模型；app.py 23,708→18,503 行，直接 HTTP 221→78。原 URL/Method/operationId 输入、参数/默认值/响应、顺序、鉴权和事务保持。转换器、Worker、TaskRuntime、发布仓储、GT、ZIP 引擎、SecretStore、缓存/锁及 Session 唯一 Owner 继续复用，未新增执行模式。select_ultralytics_env 因原全局环境生命周期写入留在应用根；认证、后台恢复和共享文件/仓储访问器亦保留。迁入母模型沙箱探测的历史未绑定 logger 依赖接到原 logging，未改验证器。
 
 开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING。本机仅语法/符号/AST/装配/守卫/Git 检查，143 接口有效路由与既有运行期合同全部交现有 CI；保护文档、VERSION、AGENTS、产品前端与生产不变。尚余旧推理/数据集构建导出、v42 编排、bootstrap、认证及生命周期等原根职责；旧 v12_test_models 的历史未定义 artifact 兼容符号仍需定向核验，不掩盖为本轮完成。详见[本批真实范围与边界](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节。统一推送后只查一次最终完整 SHA CI，停止交独立审计。
+
+## 2026-11-26 后端集中收尾与已知 CI 整改
+
+起点 92022115750d8354e88a431416abd1c94916f980。用户独立核验：4d98b1f7 为 20 SUCCESS/2 FAILURE，92022115 为 19 SUCCESS/3 FAILURE，22 workflows 均结束。本轮直接读取三个实际失败 Job 139311756414/139311755167/139311754146，没有重查无关绿色 Job。
+
+A dd8254b8ef00c8974a2384cc0146ecabed3f8f3b：30 项失败逐组收口（3 个 AI prepare 替身、1 个旧源码守卫；19 个评测素材 Repo 替身、1 个难样本 GT Repo/版本写入替身、2 个投影 summary 签名；4 个目录关键字委派）。保留全部原断言，生产只修兼容入口/API 的 detect_missing 关键字传递，不改模型准入或转换器。B b3b419ee347f468fd8f91df8ddc2d966039e0377：确认旧 test_models 仍被前端调用，将真实 artifact Reader 从原 Router 提为同模块共享函数，原 Router 与兼容入口共用；消除被旧 try/except 吞掉的未定义符号和产物漏项，原授权/过滤/返回字段与错误处理保持。
+
+C/最终见本节所在提交及交付消息：推理/模型 6、数据集导出 6、活动旧 v42 编排 17、质量分析/辅助归因/补充素材 5、复用素材治理的显示名编辑 1，共迁出 35 接口、49 函数、8 模型。app.py 18,503→17,657 行，直接路由 78→43；累计 330→43（迁出 287），不以此宣称所有辅助函数均已迁出。根 43 路由完整分类及各共享 Owner 见[模块记录](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节；认证、Session、文件授权、生命周期、bootstrap 与兼容拒绝不强拆，旧入口未删除或重新启用。
+
+开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING。本机仅语法、符号、AST/接口/装配/守卫及 Git 检查，未运行 pytest、应用、服务、浏览器或构建；35 接口有效路由与原业务合同交现有 CI。VERSION/AGENTS/四份保护文档、前端和生产未改，无 Vue/正式 PostgreSQL 扩展。统一推送后只取一次完整最终 SHA CI 快照即停止，交 GPT 独立审计。

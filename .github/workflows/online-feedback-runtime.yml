@@ -6,6 +6,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/model_inference_*.py
       - platform_core/training_evaluation_*.py
       - platform_core/annotation_governance_*.py
       - platform_core/online_feedback.py
@@ -23,6 +24,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/model_inference_*.py
       - platform_core/training_evaluation_*.py
       - platform_core/annotation_governance_*.py
       - platform_core/online_feedback.py
@@ -74,7 +76,7 @@ jobs:
         shell: bash
         run: |
           python -m platform_core.build_identity --check-version-file VERSION.txt
-          grep -Fq 'feedback_eligible' app.py
+          grep -Fq 'feedback_eligible' platform_core/model_inference_service.py
           grep -Fq 'window.predictCore12=async()=>{' static/app.js
           grep -Fq 'window.predict=async function predictCanonicalFeedback63()' static/app.js
           if grep -Fq 'predictBeforeFeedback63' static/app.js; then echo 'retired inference feedback wrapper capture was reintroduced' >&2; exit 1; fi

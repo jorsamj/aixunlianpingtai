@@ -258,3 +258,25 @@ class MaterialGovernanceService:
         else:
             changed=self.dependencies.material_store(project_id).mutate(apply_processed)
         return {'ok':True,'changed':changed}
+
+    def v47_edit_image(self, project_id: str, image_id: str, payload: V47ImageEditReq):
+        self.dependencies.get_project(project_id)
+        materials = self.dependencies.material_store(project_id)
+        rows = materials.get_many([str(image_id)])
+        target = rows[0] if rows else None
+        if not target:
+            raise HTTPException(status_code=404, detail='图片不存在')
+        name = (payload.name or '').strip()
+        # Display name may contain Chinese and spaces because the physical stored_name is never changed.
+        # Strip path/control characters only, so renaming cannot escape the project or break JSON/UI.
+        name = name.replace('\\', '_').replace('/', '_').replace('\x00', '')
+        name = ''.join(ch for ch in name if ord(ch) >= 32).strip()[:220]
+        if not name:
+            raise HTTPException(status_code=400, detail='名称不能为空')
+        # Only the business/display name is changed. The stored file name stays stable so annotations and snapshots remain traceable.
+        changed = materials.patch({image_id: {'filename': name, 'updated_at': self.dependencies.now_iso()}})
+        if not changed:
+            raise HTTPException(status_code=404, detail='图片不存在')
+        target = changed[0]
+        ann = self.dependencies.read_annotation(project_id, image_id)
+        return {'ok': True, 'image': target, 'annotation': ann}

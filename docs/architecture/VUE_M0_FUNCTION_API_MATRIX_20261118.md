@@ -215,3 +215,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 ## 2026-11-25 剩余后端集中迁移
 
 前端、菜单、入口及 HTTP 产品合同保持。转换交付/部署验证 34、统一导入/存储扫描/视频/检测审核 42、项目/存储/AI/运行资源配置 67 个既有接口进入对应领域 API/Service（有实际模型才设 Contracts）；原转换器、上传/ZIP/存储、GT、TaskRuntime、发布、SecretStore/Session 与 Worker 唯一 Owner 不变，无新执行模式。A 1c5f6de6 / B 4492a17d；C/最终见所在提交和交付消息。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，仅静态核验，运行期、生产和实际体验未验；根生命周期及未迁旧业务见[本批边界](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。
+
+## 2026-11-26 后端集中收尾
+
+前端与全部菜单/入口保持。model_inference 6、dataset_export 6、legacy_automation 17、quality_analysis 5，以及原 material_governance 增量 1，共 35 原接口完成 HTTP/业务迁移；真实 GT、数据集/模型/任务身份、原事务和共享访问器不变。旧 test_models 仍有实际调用，artifact 兼容符号接回唯一正式 Reader，未删除旧 API。根 43 接口按认证/文件 8、生命周期/环境 9、训练/确认共享入口 5、bootstrap 3、拒绝兼容 16、历史控制 2 保留。A dd8254b8 / B b3b419ee，C/最终见所在提交与交付消息；开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，仅静态核验，运行期/产品体验未验，不提前进入 Vue/正式 PostgreSQL。见[完整清单与遗留](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节。

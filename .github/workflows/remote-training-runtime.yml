@@ -7,6 +7,11 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - platform_core/model_inference_*.py
+      - platform_core/dataset_export_*.py
+      - platform_core/quality_analysis_*.py
+      - platform_core/legacy_automation_*.py
+      - tests/api/test_training_ground_truth_gate.py
       - platform_core/runtime_catalog_*.py
       - 'platform_core/training_create_api.py'
       - 'platform_core/training_create_service.py'
@@ -99,6 +104,11 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - platform_core/model_inference_*.py
+      - platform_core/dataset_export_*.py
+      - platform_core/quality_analysis_*.py
+      - platform_core/legacy_automation_*.py
+      - tests/api/test_training_ground_truth_gate.py
       - platform_core/runtime_catalog_*.py
       - 'platform_core/training_create_api.py'
       - 'platform_core/training_create_service.py'
@@ -387,6 +397,8 @@ jobs:
           tests/api/test_mother_model_registry_isolated.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py
+          tests/api/test_training_ground_truth_gate.py::test_legacy_include_empty_cannot_reenable_unannotated_training_source
+          tests/api/test_training_ground_truth_gate.py::test_remaining_model_inference_effective_http_contract
       - name: Permanent remote training preparation guards
         shell: bash
         run: |

@@ -3978,7 +3978,7 @@ def _require_material_delete_preview(project_id: str):
 
 
 from platform_core.material_governance_service import MaterialGovernanceDependencies, MaterialGovernanceService
-from platform_core.material_governance_api import create_material_governance_router_1, create_material_governance_router_2, create_material_governance_router_3, create_material_governance_router_4, create_material_governance_router_5
+from platform_core.material_governance_api import create_material_governance_router_1, create_material_governance_router_2, create_material_governance_router_3, create_material_governance_router_4, create_material_governance_router_5, create_material_governance_router_6
 
 
 def _material_governance_service() -> MaterialGovernanceService:
@@ -4980,83 +4980,38 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
     return _annotation_governance_service().save_annotation(project_id, image_id, payload)
 
 
-class BuildDatasetReq(BaseModel):
-    train_ratio: float = 0.8
-    include_empty: bool = False
-    dataset_id: Optional[str] = None
+from platform_core.dataset_export_contracts import BuildDatasetReq
 
 
-@app.post("/api/projects/{project_id}/dataset/build")
+from platform_core.dataset_export_service import DatasetExportDependencies, DatasetExportService
+from platform_core.dataset_export_api import create_dataset_export_router_1, create_dataset_export_router_2, create_dataset_export_router_3
+
+
+def _dataset_export_service() -> DatasetExportService:
+    return DatasetExportService(DatasetExportDependencies(
+        _authorize_business_file_project=lambda *args, **kwargs: _authorize_business_file_project(*args, **kwargs),
+        box_to_yolo_line=lambda *args, **kwargs: box_to_yolo_line(*args, **kwargs),
+        dataset_quality_report=lambda *args, **kwargs: dataset_quality_report(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        load_images=lambda *args, **kwargs: load_images(*args, **kwargs),
+        normalize_box_for_project=lambda *args, **kwargs: normalize_box_for_project(*args, **kwargs),
+        normalize_label=lambda *args, **kwargs: normalize_label(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        read_annotation=lambda *args, **kwargs: read_annotation(*args, **kwargs),
+        resolve_material_path=lambda *args, **kwargs: resolve_material_path(*args, **kwargs),
+        zip_dir=lambda *args, **kwargs: zip_dir(*args, **kwargs),
+    ))
+
+
+app.include_router(create_dataset_export_router_1(_dataset_export_service))
+
+
 def build_dataset(project_id: str, payload: BuildDatasetReq):
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    images = load_images(project_id)
-    if payload.dataset_id:
-        images = [img for img in images if img.get("dataset_id", "default") == payload.dataset_id]
-    selected = []
-    empty_count = 0
-    for img in images:
-        ann = read_annotation(project_id, img["id"])
-        if is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
-            selected.append((img, ann))
-            if ann.get("annotation_state") == "confirmed_empty":
-                empty_count += 1
-    if not selected:
-        raise HTTPException(status_code=400, detail="没有可生成的数据。请先完成标注；无目标图片请先明确“确认无目标”。")
-    ratio = max(0.5, min(float(payload.train_ratio), 0.95))
-    selected = sorted(selected, key=lambda x: x[0]["id"])
-    if len(selected) == 1:
-        train_items = selected
-        val_items = selected
-    else:
-        split = max(1, min(len(selected) - 1, int(len(selected) * ratio)))
-        train_items = selected[:split]
-        val_items = selected[split:]
-    dataset = p / "dataset"
-    if dataset.exists():
-        shutil.rmtree(dataset)
-    for sub in ["images/train", "images/val", "labels/train", "labels/val"]:
-        (dataset / sub).mkdir(parents=True, exist_ok=True)
-    counts = {"train": 0, "val": 0, "boxes": 0, "empty_images": empty_count}
-
-    def copy_items(items: List[Tuple[Dict[str, Any], Dict[str, Any]]], part: str):
-        for img, ann in items:
-            src = resolve_material_path(project_id, img)
-            dst_img = dataset / "images" / part / img["stored_name"]
-            shutil.copy2(src, dst_img)
-            label_path = dataset / "labels" / part / f"{Path(img['stored_name']).stem}.txt"
-            lines = []
-            for b in ann.get("boxes", []):
-                if int(b.get("class_id", -1)) < 0 or int(b.get("class_id", -1)) >= len(project["labels"]):
-                    continue
-                lines.append(box_to_yolo_line(b, img["width"], img["height"]))
-                counts["boxes"] += 1
-            label_path.write_text("\n".join(lines), encoding="utf-8")
-            counts[part] += 1
-
-    copy_items(train_items, "train")
-    copy_items(val_items, "val")
-    data_yaml = {
-        "path": str(dataset).replace("\\", "/"),
-        "train": "images/train",
-        "val": "images/val",
-        "names": {i: label for i, label in enumerate(project["labels"])},
-    }
-    yaml_path = dataset / "data.yaml"
-    yaml_path.write_text(yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    return {"ok": True, "dataset": str(dataset), "data_yaml": str(yaml_path), "counts": counts, "labels": project["labels"]}
+    return _dataset_export_service().build_dataset(project_id, payload)
 
 
-@app.get("/api/projects/{project_id}/dataset/download")
 def download_dataset(project_id: str):
-    _authorize_business_file_project(project_id)
-    dataset = project_dir(project_id) / "dataset"
-    yaml_path = dataset / "data.yaml"
-    if not yaml_path.exists():
-        raise HTTPException(status_code=404, detail="请先生成数据集")
-    zip_path = project_dir(project_id) / "exports" / "yolo_dataset.zip"
-    zip_dir(dataset, zip_path)
-    return FileResponse(zip_path, filename=f"{project_id}_yolo_dataset.zip")
+    return _dataset_export_service().download_dataset(project_id)
 
 
 
@@ -5066,149 +5021,27 @@ def download_dataset(project_id: str):
 # -----------------------------
 # Paddle / COCO dataset export
 # -----------------------------
-class BuildPaddleDatasetReq(BaseModel):
-    train_ratio: float = 0.8
-    include_empty: bool = False
+from platform_core.dataset_export_contracts import BuildPaddleDatasetReq
 
 
 def _coco_image_item(img: Dict[str, Any], idx: int, file_name: str) -> Dict[str, Any]:
-    return {
-        "id": idx,
-        "file_name": file_name,
-        "width": int(img["width"]),
-        "height": int(img["height"]),
-    }
+    return _dataset_export_service()._coco_image_item(img, idx, file_name)
 
 
 def _coco_ann_item(ann_id: int, img_id: int, b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    try:
-        x1 = float(b["x1"]); y1 = float(b["y1"]); x2 = float(b["x2"]); y2 = float(b["y2"])
-        w = max(0.0, x2 - x1); h = max(0.0, y2 - y1)
-        if w < 1 or h < 1:
-            return None
-        return {
-            "id": ann_id,
-            "image_id": img_id,
-            "category_id": int(b["class_id"]) + 1,
-            "bbox": [round(x1, 2), round(y1, 2), round(w, 2), round(h, 2)],
-            "area": round(w * h, 2),
-            "iscrowd": 0,
-            "segmentation": [],
-        }
-    except Exception:
-        return None
+    return _dataset_export_service()._coco_ann_item(ann_id, img_id, b)
 
 
-def build_paddle_dataset_internal(project_id: str, train_ratio: float = 0.8, include_empty: bool = False, dataset_id: Optional[str] = None) -> Dict[str, Any]:
-    """Export internal annotations to a COCO-style dataset usable by PaddleX/PaddleDetection."""
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    images = load_images(project_id)
-    if dataset_id:
-        images = [img for img in images if img.get("dataset_id", "default") == dataset_id]
-    selected: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
-    empty_count = 0
-    for img in images:
-        ann = read_annotation(project_id, img["id"])
-        if is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
-            selected.append((img, ann))
-            if ann.get("annotation_state") == "confirmed_empty":
-                empty_count += 1
-    if not selected:
-        raise HTTPException(status_code=400, detail="没有可生成的飞桨数据。请先完成标注；无目标图片请先明确“确认无目标”。")
-    ratio = max(0.5, min(float(train_ratio), 0.95))
-    selected = sorted(selected, key=lambda x: x[0]["id"])
-    if len(selected) == 1:
-        train_items = selected
-        val_items = selected
-    else:
-        split = max(1, min(len(selected) - 1, int(len(selected) * ratio)))
-        train_items = selected[:split]
-        val_items = selected[split:]
-
-    dataset = p / "paddle_dataset"
-    if dataset.exists():
-        shutil.rmtree(dataset)
-    for sub in ["images/train", "images/val", "annotations"]:
-        (dataset / sub).mkdir(parents=True, exist_ok=True)
-
-    labels = [str(x) for x in project.get("labels", []) if str(x).strip()]
-    if not labels:
-        raise HTTPException(status_code=400, detail="当前项目没有标签，无法生成飞桨数据集。请先在标签库中添加类别。")
-    # PaddleDetection + COCO：categories 使用 1-based id；模型输出 class index 是 0-based，
-    # PaddleDetection 会按 categories 顺序建立 label_to_cat_id_map。
-    # 关键是：annotation.category_id 必须只出现在 categories 里，同时训练配置 num_classes 必须等于 len(labels)。
-    categories = [{"id": i + 1, "name": label, "supercategory": "object"} for i, label in enumerate(labels)]
-    counts = {"train": 0, "val": 0, "boxes": 0, "train_boxes": 0, "val_boxes": 0, "empty_images": empty_count, "class_count": len(labels)}
-
-    def write_part(items: List[Tuple[Dict[str, Any], Dict[str, Any]]], part: str, json_name: str):
-        coco_images = []
-        coco_anns = []
-        ann_id = 1
-        for idx, (img, ann) in enumerate(items, start=1):
-            src = resolve_material_path(project_id, img)
-            dst_name = img["stored_name"]
-            dst = dataset / "images" / part / dst_name
-            shutil.copy2(src, dst)
-            coco_images.append(_coco_image_item(img, idx, f"images/{part}/{dst_name}"))
-            for b in ann.get("boxes", []):
-                cid = int(b.get("class_id", -1))
-                if cid < 0 or cid >= len(labels):
-                    continue
-                item = _coco_ann_item(ann_id, idx, b)
-                if item:
-                    # 再次兜底：确保 COCO category_id 落在 categories 里，避免评估阶段 KeyError。
-                    if int(item.get("category_id", -1)) not in {c["id"] for c in categories}:
-                        continue
-                    coco_anns.append(item)
-                    ann_id += 1
-                    counts["boxes"] += 1
-                    counts[f"{part}_boxes"] += 1
-            counts[part] += 1
-        payload = {"images": coco_images, "annotations": coco_anns, "categories": categories}
-        out = dataset / "annotations" / json_name
-        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return str(out)
-
-    train_json = write_part(train_items, "train", "instance_train.json")
-    val_json = write_part(val_items, "val", "instance_val.json")
-    label_list = dataset / "label_list.txt"
-    label_list.write_text("\n".join(project.get("labels", [])), encoding="utf-8")
-    readme = dataset / "README.txt"
-    readme.write_text(
-        "这是平台导出的 COCO/Paddle 数据集。\n"
-        "常见用途：PaddleX/PaddleDetection 训练。\n"
-        "训练集标注：annotations/instance_train.json\n"
-        "验证集标注：annotations/instance_val.json\n"
-        "图片目录：images/train、images/val\n",
-        encoding="utf-8",
-    )
-    return {
-        "ok": True,
-        "dataset": str(dataset),
-        "train_json": train_json,
-        "val_json": val_json,
-        "label_list": str(label_list),
-        "counts": counts,
-        "labels": labels,
-        "message": "已生成飞桨/COCO格式数据集。可用于 PaddleX/PaddleDetection 训练命令。",
-    }
+def build_paddle_dataset_internal(project_id: str, train_ratio: float=0.8, include_empty: bool=False, dataset_id: Optional[str]=None) -> Dict[str, Any]:
+    return _dataset_export_service().build_paddle_dataset_internal(project_id, train_ratio, include_empty, dataset_id)
 
 
-@app.post("/api/projects/{project_id}/dataset/build_paddle")
 def build_paddle_dataset(project_id: str, payload: BuildPaddleDatasetReq):
-    return build_paddle_dataset_internal(project_id, payload.train_ratio, payload.include_empty, getattr(payload, "dataset_id", None))
+    return _dataset_export_service().build_paddle_dataset(project_id, payload)
 
 
-@app.get("/api/projects/{project_id}/dataset/download_paddle")
 def download_paddle_dataset(project_id: str):
-    _authorize_business_file_project(project_id)
-    dataset = project_dir(project_id) / "paddle_dataset"
-    if not (dataset / "annotations" / "instance_train.json").exists():
-        raise HTTPException(status_code=404, detail="请先生成飞桨/COCO数据集")
-    zip_path = project_dir(project_id) / "exports" / "paddle_coco_dataset.zip"
-    zip_dir(dataset, zip_path)
-    return FileResponse(zip_path, filename=f"{project_id}_paddle_coco_dataset.zip")
+    return _dataset_export_service().download_paddle_dataset(project_id)
 
 
 # -----------------------------
@@ -7690,112 +7523,62 @@ def list_models_internal(project_id: str) -> List[Dict[str, Any]]:
     return rows
 
 
-@app.get("/api/projects/{project_id}/models")
+from platform_core.model_inference_service import ModelInferenceDependencies, ModelInferenceService
+from platform_core.model_inference_api import create_model_inference_router_1, create_model_inference_router_2, create_model_inference_router_3
+
+
+def _model_inference_service() -> ModelInferenceService:
+    return ModelInferenceService(ModelInferenceDependencies(
+        IMAGE_EXTS=lambda: IMAGE_EXTS,
+        LOCAL_MODELS_FILE=lambda: LOCAL_MODELS_FILE,
+        _authorize_business_file_project=lambda *args, **kwargs: _authorize_business_file_project(*args, **kwargs),
+        _business_file_response=lambda *args, **kwargs: _business_file_response(*args, **kwargs),
+        _business_file_url=lambda *args, **kwargs: _business_file_url(*args, **kwargs),
+        _labels_b64=lambda *args, **kwargs: _labels_b64(*args, **kwargs),
+        _module_available=lambda *args, **kwargs: _module_available(*args, **kwargs),
+        _project_label_names=lambda *args, **kwargs: _project_label_names(*args, **kwargs),
+        _register_prediction_files=lambda *args, **kwargs: _register_prediction_files(*args, **kwargs),
+        _resolve_business_file=lambda *args, **kwargs: _resolve_business_file(*args, **kwargs),
+        _testable_version_pt_path=lambda *args, **kwargs: _testable_version_pt_path(*args, **kwargs),
+        _write_job_json=lambda *args, **kwargs: _write_job_json(*args, **kwargs),
+        algorithms_file=lambda *args, **kwargs: algorithms_file(*args, **kwargs),
+        get_active_paddle_env=lambda *args, **kwargs: get_active_paddle_env(*args, **kwargs),
+        get_active_ultralytics_env=lambda *args, **kwargs: get_active_ultralytics_env(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        image_info=lambda *args, **kwargs: image_info(*args, **kwargs),
+        list_algorithms_internal=lambda *args, **kwargs: list_algorithms_internal(*args, **kwargs),
+        list_models_internal=lambda *args, **kwargs: list_models_internal(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        resolve_any_model_path=lambda *args, **kwargs: resolve_any_model_path(*args, **kwargs),
+        resolve_inference_python=lambda *args, **kwargs: resolve_inference_python(*args, **kwargs),
+        resolve_ultralytics_model_path=lambda *args, **kwargs: resolve_ultralytics_model_path(*args, **kwargs),
+        run_predict_by_env=lambda *args, **kwargs: run_predict_by_env(*args, **kwargs),
+        safe_filename=lambda *args, **kwargs: safe_filename(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+        v39_list_deploy_artifacts=lambda *args, **kwargs: v39_list_deploy_artifacts(*args, **kwargs),
+    ))
+
+
+app.include_router(create_model_inference_router_1(_model_inference_service))
+
+
 def list_models(project_id: str):
-    get_project(project_id)
-    return list_models_internal(project_id)
+    return _model_inference_service().list_models(project_id)
 
 
-@app.get("/api/projects/{project_id}/models/{model_name}/download")
 def download_model(project_id: str, model_name: str):
-    return _business_file_response(project_id, 'models', model_name, download=True)
+    return _model_inference_service().download_model(project_id, model_name)
 
 
-@app.post("/api/projects/{project_id}/predict")
-async def predict_image(
-    project_id: str,
-    model_name: str = Form(...),
-    conf: float = Form(0.25),
-    file: UploadFile = File(...),
-):
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    model_path = p / "models" / safe_filename(model_name)
-    if not model_path.exists():
-        raise HTTPException(status_code=404, detail="模型不存在，请先训练模型")
-    ext = Path(file.filename or "test.jpg").suffix.lower()
-    if ext not in IMAGE_EXTS:
-        ext = ".jpg"
-    pred_id = uuid.uuid4().hex[:12]
-    in_path = p / "predictions" / f"{pred_id}_input{ext}"
-    out_path = p / "predictions" / f"{pred_id}_result.jpg"
-    in_path.write_bytes(await file.read())
-    try:
-        from ultralytics import YOLO
-        model = YOLO(str(model_path))
-        results = model.predict(source=str(in_path), conf=float(conf), save=False, verbose=False)
-        result = results[0]
-        detections = []
-        names = result.names
-        img = Image.open(in_path).convert("RGB")
-        draw = ImageDraw.Draw(img)
-        for box in result.boxes:
-            xyxy = box.xyxy[0].tolist()
-            cls_id = int(box.cls[0])
-            score = float(box.conf[0])
-            label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
-            detections.append({
-                "class_id": cls_id,
-                "label": label,
-                "confidence": round(score, 4),
-                "x1": round(xyxy[0], 2), "y1": round(xyxy[1], 2), "x2": round(xyxy[2], 2), "y2": round(xyxy[3], 2),
-            })
-            x1, y1, x2, y2 = xyxy
-            draw.rectangle([x1, y1, x2, y2], outline=(255, 30, 30), width=3)
-            text = f"{label} {score:.2f}"
-            draw.rectangle([x1, max(0, y1 - 24), x1 + min(320, len(text) * 12 + 10), y1], fill=(255, 30, 30))
-            draw.text((x1 + 4, max(0, y1 - 21)), text, fill=(255, 255, 255))
-        img.save(out_path, quality=92)
-        _register_prediction_files(project_id, pred_id, in_path, out_path)
-        return {"ok": True, "detections": detections, "image_url": _business_file_url(project_id, 'predictions', out_path.name), "labels": project["labels"]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"预测失败：{e}")
+async def predict_image(project_id: str, model_name: str=Form(...), conf: float=Form(0.25), file: UploadFile=File(...)):
+    return await _model_inference_service().predict_image(project_id, model_name, conf, file)
 
 
-@app.post("/api/projects/{project_id}/export/onnx")
-def export_onnx(project_id: str, model_name: str = Form(...)):
-    _authorize_business_file_project(project_id)
-    p = project_dir(project_id)
-    model_path = _resolve_business_file(project_id, 'models', model_name).path
-    if model_path.suffix.lower() == ".onnx":
-        return {"ok": True, "onnx": str(model_path), "download_url": _business_file_url(project_id, 'models', model_path.name)}
-    # Extend the existing training record. Unbound standalone files cannot
-    # manufacture a new model registry merely by being exportable.
-    source_job = None
-    source_version = None
-    for jf in (p / 'jobs').glob('*/job.json'):
-        job = read_json(jf, {})
-        if any(Path(str(raw)).absolute() == model_path for raw in job.get('models') or []):
-            source_job = (jf, job)
-            break
-    if source_job is None:
-        for algorithm in list_algorithm_assets(algorithms_file(project_id)):
-            for version in algorithm.get('versions') or []:
-                if Path(str(version.get('stored_path') or '')).absolute() == model_path:
-                    source_version = (algorithm['id'], version)
-                    break
-    if source_job is None and source_version is None:
-        raise HTTPException(409, detail='模型缺少可追加导出记录的原训练任务，请从正式模型转换入口导出。')
-    try:
-        from ultralytics import YOLO
-        model = YOLO(str(model_path))
-        exported = model.export(format="onnx")
-        exported_path = Path(exported)
-        dst = p / "models" / f"{model_path.stem}.onnx"
-        if exported_path.exists():
-            shutil.copy2(exported_path, dst)
-        owner = source_job[1] if source_job is not None else source_version[1]
-        entries = [row for row in owner.get('exported_models') or [] if row.get('path') != str(dst)]
-        entries.append({'path': str(dst), 'sha256': sha256_file(dst), 'source_path': str(model_path), 'format': 'onnx'})
-        if source_job is not None:
-            owner['exported_models'] = entries
-            _write_job_json(source_job[0], owner)
-        else:
-            update_algorithm_version(algorithms_file(project_id), source_version[0], owner['id'],
-                                     {'exported_models': entries}, now=now_iso())
-        return {"ok": True, "onnx": str(dst), "download_url": _business_file_url(project_id, 'models', dst.name)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导出失败：{e}")
+def export_onnx(project_id: str, model_name: str=Form(...)):
+    return _model_inference_service().export_onnx(project_id, model_name)
 
 # ============================================================
 # v12 产品化接口：数据集分组、训练任务删除、算法版本、模型测试耗时
@@ -8266,88 +8049,19 @@ def v12_auto_split(project_id: str, dataset_id: str, payload: BatchSplitReq):
     return _material_governance_service().v12_auto_split(project_id, dataset_id, payload)
 
 
-def dataset_items_by_split(project_id: str, dataset_id: Optional[str], include_empty: bool = False) -> Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]]:
-    images = load_images(project_id)
-    if dataset_id:
-        images = [img for img in images if img.get("dataset_id", "default") == dataset_id]
-    result = {"train": [], "val": [], "test": []}
-    for img in sorted(images, key=lambda x: x.get("id", "")):
-        ann = read_annotation(project_id, img["id"])
-        if not is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
-            continue
-        split = (img.get("split") or "train").lower()
-        if split not in result:
-            split = "train"
-        result[split].append((img, ann))
-    # 若用户只传了训练集，自动给评测集兜底，避免 YOLO val 为空
-    if not result["val"] and result["train"]:
-        result["val"] = result["train"][-max(1, min(len(result["train"]), max(1, len(result["train"]) // 5))):]
-    if not result["test"]:
-        result["test"] = []
-    return result
+def dataset_items_by_split(project_id: str, dataset_id: Optional[str], include_empty: bool=False) -> Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]]:
+    return _dataset_export_service().dataset_items_by_split(project_id, dataset_id, include_empty)
 
 
-def build_yolo_dataset_v12(project_id: str, dataset_id: Optional[str] = None, include_empty: bool = False) -> Dict[str, Any]:
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    parts = dataset_items_by_split(project_id, dataset_id, include_empty)
-    if not any(parts.values()):
-        raise HTTPException(status_code=400, detail="没有可训练数据。请先上传并标注图片。")
-    # 训练前质检：有图片不等于有训练目标，必须有有效标注框。
-    report = dataset_quality_report(project_id, dataset_id, include_empty)
-    if not report.get("can_train"):
-        raise HTTPException(status_code=400, detail="当前数据集没有有效训练框：" + "；".join(report.get("warnings", [])))
-    dataset = p / "dataset"
-    if dataset.exists():
-        shutil.rmtree(dataset)
-    for sub in ["images/train", "images/val", "images/test", "labels/train", "labels/val", "labels/test"]:
-        (dataset / sub).mkdir(parents=True, exist_ok=True)
-    counts = {"train": 0, "val": 0, "test": 0, "boxes": 0, "train_boxes": 0, "val_boxes": 0, "test_boxes": 0, "invalid_boxes": 0}
-    for part, items in parts.items():
-        for img, ann in items:
-            src = resolve_material_path(project_id, img)
-            clean = []
-            for b in ann.get("boxes", []):
-                nb = normalize_box_for_project(project_id, img, b, create_label=False)
-                if nb:
-                    clean.append(nb)
-                else:
-                    counts["invalid_boxes"] += 1
-            if not is_training_ground_truth(ann.get("annotation_state"), clean):
-                continue
-            shutil.copy2(src, dataset / "images" / part / img["stored_name"])
-            lines = []
-            for b in clean:
-                lines.append(box_to_yolo_line(b, img["width"], img["height"]))
-            (dataset / "labels" / part / f"{Path(img['stored_name']).stem}.txt").write_text("\n".join(lines), encoding="utf-8")
-            counts[part] += 1
-            counts["boxes"] += len(lines)
-            counts[f"{part}_boxes"] += len(lines)
-    if counts["train_boxes"] == 0:
-        raise HTTPException(status_code=400, detail="训练集没有有效标注框，请先在数据集里保存标注并重新生成训练文件。")
-    if counts["val_boxes"] == 0 and counts["train_boxes"] > 0:
-        # 兜底：若评测集为空，用训练集副本做 val，保证 Ultralytics 不会出现 no labels found。
-        for f in (dataset / "images" / "train").glob("*"):
-            shutil.copy2(f, dataset / "images" / "val" / f.name)
-        for f in (dataset / "labels" / "train").glob("*.txt"):
-            shutil.copy2(f, dataset / "labels" / "val" / f.name)
-        counts["val"] = counts["train"]
-        counts["val_boxes"] = counts["train_boxes"]
-    data_yaml = {
-        "path": str(dataset).replace("\\", "/"),
-        "train": "images/train",
-        "val": "images/val",
-        "test": "images/test",
-        "names": {i: label for i, label in enumerate(get_project(project_id).get("labels", []))},
-    }
-    yaml_path = dataset / "data.yaml"
-    yaml_path.write_text(yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    return {"ok": True, "dataset": str(dataset), "data_yaml": str(yaml_path), "counts": counts, "labels": get_project(project_id).get("labels", []), "quality": report}
+def build_yolo_dataset_v12(project_id: str, dataset_id: Optional[str]=None, include_empty: bool=False) -> Dict[str, Any]:
+    return _dataset_export_service().build_yolo_dataset_v12(project_id, dataset_id, include_empty)
 
 
-@app.post("/api/v12/projects/{project_id}/dataset/build")
+app.include_router(create_dataset_export_router_2(_dataset_export_service))
+
+
 def v12_build_dataset(project_id: str, payload: BuildDatasetReq):
-    return build_yolo_dataset_v12(project_id, payload.dataset_id, payload.include_empty)
+    return _dataset_export_service().v12_build_dataset(project_id, payload)
 
 
 app.include_router(create_dataset_quality_router(_material_catalog_service))
@@ -8357,58 +8071,15 @@ def v17_dataset_quality(project_id: str, dataset_id: str, include_empty: bool=Fa
     return _material_catalog_service().v17_dataset_quality(project_id, dataset_id, include_empty)
 
 
-def build_coco_dataset_v12(project_id: str, dataset_id: Optional[str] = None, include_empty: bool = False) -> Dict[str, Any]:
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    parts = dataset_items_by_split(project_id, dataset_id, include_empty)
-    if not any(parts.values()):
-        raise HTTPException(status_code=400, detail="没有可导出的数据")
-    dataset = p / "paddle_dataset"
-    if dataset.exists():
-        shutil.rmtree(dataset)
-    for sub in ["images/train", "images/val", "images/test", "annotations"]:
-        (dataset / sub).mkdir(parents=True, exist_ok=True)
-    categories = [{"id": i + 1, "name": label, "supercategory": "object"} for i, label in enumerate(project.get("labels", []))]
-    counts = {"train": 0, "val": 0, "test": 0, "boxes": 0}
-    def write_part(part: str, json_name: str):
-        coco_images = []; coco_anns = []; ann_id = 1
-        for idx, (img, ann) in enumerate(parts[part], start=1):
-            src = resolve_material_path(project_id, img)
-            shutil.copy2(src, dataset / "images" / part / img["stored_name"])
-            coco_images.append(_coco_image_item(img, idx, f"images/{part}/{img['stored_name']}"))
-            for b in ann.get("boxes", []):
-                item = _coco_ann_item(ann_id, idx, b)
-                if item:
-                    coco_anns.append(item); ann_id += 1; counts["boxes"] += 1
-            counts[part] += 1
-        out = dataset / "annotations" / json_name
-        out.write_text(json.dumps({"images": coco_images, "annotations": coco_anns, "categories": categories}, ensure_ascii=False, indent=2), encoding="utf-8")
-        return str(out)
-    train_json = write_part("train", "instance_train.json")
-    val_json = write_part("val", "instance_val.json")
-    test_json = write_part("test", "instance_test.json")
-    label_list = dataset / "label_list.txt"
-    label_list.write_text("\n".join(project.get("labels", [])), encoding="utf-8")
-    return {"ok": True, "dataset": str(dataset), "train_json": train_json, "val_json": val_json, "test_json": test_json, "label_list": str(label_list), "counts": counts, "labels": project.get("labels", [])}
+def build_coco_dataset_v12(project_id: str, dataset_id: Optional[str]=None, include_empty: bool=False) -> Dict[str, Any]:
+    return _dataset_export_service().build_coco_dataset_v12(project_id, dataset_id, include_empty)
 
 
-@app.get("/api/v12/projects/{project_id}/datasets/{dataset_id}/export/{fmt}")
+app.include_router(create_dataset_export_router_3(_dataset_export_service))
+
+
 def v12_export_dataset(project_id: str, dataset_id: str, fmt: str):
-    _authorize_business_file_project(project_id)
-    fmt = fmt.lower()
-    if fmt in {"yolo", "ultralytics"}:
-        build = build_yolo_dataset_v12(project_id, dataset_id, include_empty=True)
-        src = Path(build["dataset"])
-        filename = f"{project_id}_{dataset_id}_YOLO数据集.zip"
-    elif fmt in {"coco", "paddle"}:
-        build = build_coco_dataset_v12(project_id, dataset_id, include_empty=True)
-        src = Path(build["dataset"])
-        filename = f"{project_id}_{dataset_id}_COCO数据集.zip"
-    else:
-        raise HTTPException(status_code=400, detail="导出格式只支持 YOLO 或 COCO")
-    zip_path = project_dir(project_id) / "exports" / filename
-    zip_dir(src, zip_path)
-    return FileResponse(zip_path, filename=filename)
+    return _dataset_export_service().v12_export_dataset(project_id, dataset_id, fmt)
 
 
 app.include_router(create_dataset_summary_router(_material_catalog_service))
@@ -8423,98 +8094,7 @@ def _v44_labels_in_ann(ann: Dict[str, Any]) -> set:
     return {str(b.get("label") or "").strip() for b in ann.get("boxes", []) if str(b.get("label") or "").strip()}
 
 def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]:
-    """Build one immutable training snapshot from the project's single logical data pool.
-    train uses split=train, validation/试验集 uses split=val, final evaluation uses split=test.
-    Optional label filters only select samples; source annotations are never modified.
-    """
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    train_filter = {normalize_label(x) for x in (payload.train_labels or []) if normalize_label(x)}
-    val_filter = {normalize_label(x) for x in (payload.val_labels or []) if normalize_label(x)}
-    train_ids = set(payload.train_image_ids or [])
-    val_ids = set(payload.val_image_ids or [])
-    groups = {"train": [], "val": [], "test": []}
-    requested_ids = {str(value) for value in (payload.selected_image_ids or []) if str(value).strip()}
-    split_seed = int(payload.seed or 0)
-    # The product training flow sends one candidate pool and asks the backend
-    # to draw a fresh experiment set for this run.  A non-zero seed keeps the
-    # run reproducible; the default seed deliberately uses secure entropy so
-    # repeated runs do not reuse the same holdout by accident.
-    random_pool = bool(payload.random_experiment_split and requested_ids)
-    if random_pool:
-        if not split_seed:
-            split_seed = random.SystemRandom().randrange(1, 2**31 - 1)
-        candidates = []
-        combined_filter = train_filter | val_filter
-        for img in sorted(load_images(project_id), key=lambda x: x.get("id", "")):
-            if str(img.get("id")) not in requested_ids:
-                continue
-            source_split = (img.get("split") or "unassigned").lower()
-            # Only persisted training/experiment roles can enter a run; test
-            # and unassigned materials stay available for later assignment.
-            if source_split not in {"train", "val", "unassigned"}:
-                continue
-            ann = read_annotation(project_id, img["id"])
-            clean = []
-            for b in ann.get("boxes", []):
-                nb = normalize_box_for_project(project_id, img, b, create_label=False)
-                if nb:
-                    clean.append(nb)
-            if not is_training_ground_truth(ann.get("annotation_state"), clean):
-                continue
-            labs = {str(b.get("label") or "") for b in clean}
-            if combined_filter and not labs.intersection(combined_filter):
-                continue
-            candidates.append((img, {"boxes": clean}))
-        random.Random(split_seed).shuffle(candidates)
-        if len(candidates) >= 2:
-            val_count = max(1, min(len(candidates) - 1, round(len(candidates) * float(payload.experiment_percent) / 100.0)))
-            groups["val"] = candidates[:val_count]
-            groups["train"] = candidates[val_count:]
-    else:
-        for img in sorted(load_images(project_id), key=lambda x: x.get("id", "")):
-            split = (img.get("split") or "unassigned").lower()
-            if split not in groups:
-                continue
-            if split == "train" and train_ids and img.get("id") not in train_ids:
-                continue
-            if split == "val" and val_ids and img.get("id") not in val_ids:
-                continue
-            ann = read_annotation(project_id, img["id"])
-            clean=[]
-            for b in ann.get("boxes", []):
-                nb=normalize_box_for_project(project_id,img,b,create_label=False)
-                if nb: clean.append(nb)
-            if not is_training_ground_truth(ann.get("annotation_state"), clean):
-                continue
-            labs={str(b.get("label") or "") for b in clean}
-            filt=train_filter if split=="train" else val_filter if split=="val" else set()
-            if filt and not labs.intersection(filt):
-                continue
-            groups[split].append((img,{"boxes":clean}))
-    if payload.train_max_samples and payload.train_max_samples>0:
-        groups["train"]=groups["train"][:int(payload.train_max_samples)]
-    # v42.8：试验集快照保留全部所选数据。val_max_samples 只控制“每隔 N 轮门禁检查”时的随机抽样数量；
-    # 0 表示每次检查使用全部试验集，避免把抽样数量错误地固化成整个训练任务的试验集大小。
-    if not groups["train"]:
-        raise HTTPException(status_code=400,detail="训练集没有符合条件的已标注素材")
-    if not groups["val"]:
-        raise HTTPException(status_code=400,detail="试验集没有符合条件的已标注素材。请先把素材划入试验集。")
-    dataset = p / "dataset_snapshots" / f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
-    for sub in ["images/train","images/val","images/test","labels/train","labels/val","labels/test"]:
-        (dataset/sub).mkdir(parents=True,exist_ok=True)
-    counts={"train":0,"val":0,"test":0,"boxes":0,"train_boxes":0,"val_boxes":0,"test_boxes":0}
-    selected_ids={"train":[],"val":[],"test":[]}
-    for part,items in groups.items():
-        for img,ann in items:
-            src=resolve_material_path(project_id,img)
-            shutil.copy2(src,dataset/"images"/part/img["stored_name"])
-            lines=[box_to_yolo_line(b,img["width"],img["height"]) for b in ann.get("boxes",[])]
-            (dataset/"labels"/part/f"{Path(img['stored_name']).stem}.txt").write_text("\n".join(lines),encoding="utf-8")
-            counts[part]+=1;counts["boxes"]+=len(lines);counts[f"{part}_boxes"]+=len(lines);selected_ids[part].append(img["id"])
-    data_yaml={"path":str(dataset).replace("\\\\","/"),"train":"images/train","val":"images/val","test":"images/test","names":{i:l for i,l in enumerate(project.get("labels",[]))}}
-    yaml_path=dataset/"data.yaml";yaml_path.write_text(yaml.safe_dump(data_yaml,allow_unicode=True,sort_keys=False),encoding="utf-8")
-    return {"ok":True,"dataset":str(dataset),"data_yaml":str(yaml_path),"counts":counts,"labels":project.get("labels",[]),"selected_ids":selected_ids,"split_seed":split_seed,"experiment_percent":float(payload.experiment_percent),"filters":{"train_labels":sorted(train_filter),"val_labels":sorted(val_filter),"train_image_ids":sorted(train_ids),"val_image_ids":sorted(val_ids),"selected_image_ids":sorted(requested_ids)}}
+    return _dataset_export_service().build_yolo_dataset_v44(project_id, payload)
 
 
 
@@ -9749,120 +9329,11 @@ def run_predict_by_env(framework: str, python_path: str, model_value: str, input
         raise HTTPException(status_code=500, detail=f"测试失败：{e}")
 
 
-@app.post("/api/v12/projects/{project_id}/predict")
-async def v12_predict_image(
-    project_id: str,
-    model_name: str = Form(""),
-    model_source: str = Form("project"),
-    local_path: str = Form(""),
-    algorithm_id: str = Form(""),
-    version_id: str = Form(""),
-    conf: float = Form(0.25),
-    inference_framework: str = Form("ultralytics"),
-    inference_env_id: str = Form(""),
-    file: UploadFile = File(...),
-):
-    project = get_project(project_id)
-    p = project_dir(project_id)
-    (p / "predictions").mkdir(parents=True, exist_ok=True)
-    framework = (inference_framework or "ultralytics").lower()
-    source = (model_source or "project").lower()
-    model_value = ""
-    feedback_version = None
+app.include_router(create_model_inference_router_2(_model_inference_service))
 
-    # 解析模型来源。v27 修复：原始模型 builtin、算法版本、项目模型、本机模型、飞桨模型统一收口，避免 model_path 未定义。
-    try:
-        if framework == "paddle" or source in {"paddle_builtin", "paddle_model"} or str(model_name).startswith("paddledet::"):
-            framework = "paddle"
-            if source == "local" and local_path:
-                model_value = local_path.replace("local::", "", 1)
-            else:
-                model_value = model_name or "PP-YOLOE-S_human"
-        else:
-            framework = "ultralytics"
-            if source == "builtin":
-                model_value = resolve_ultralytics_model_path(model_name or "yolo11n.pt", project_id)
-            elif algorithm_id and version_id:
-                algos = list_algorithms_internal(project_id)
-                version = None
-                for a in algos:
-                    if a.get("id") == algorithm_id:
-                        version = next((x for x in a.get("versions", []) if x.get("id") == version_id), None)
-                        break
-                if not version:
-                    raise HTTPException(status_code=404, detail="算法版本不存在")
-                feedback_version = dict(version)
-                model_path = Path(version.get("stored_path", ""))
-                if not model_path.exists():
-                    raise HTTPException(status_code=404, detail="算法版本模型文件不存在")
-                model_value = str(model_path)
-            else:
-                model_path, _, _ = resolve_any_model_path(project_id, model_name, source, local_path)
-                model_value = str(model_path)
-        if not model_value:
-            raise HTTPException(status_code=400, detail="测试模型为空，请重新选择模型。")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"解析测试模型失败：{e}")
 
-    ext = Path(file.filename or "test.jpg").suffix.lower()
-    if ext not in IMAGE_EXTS:
-        ext = ".jpg"
-    pred_id = uuid.uuid4().hex[:12]
-    in_path = p / "predictions" / f"{pred_id}_input{ext}"
-    out_path = p / "predictions" / f"{pred_id}_result.jpg"
-    in_path.write_bytes(await file.read())
-
-    python_path = resolve_inference_python(framework, inference_env_id)
-    data = run_predict_by_env(framework, python_path, str(model_value), in_path, out_path, float(conf))
-    response = {
-        "ok": True,
-        "prediction_id": pred_id,
-        "feedback_eligible": False,
-        "detections": data.get("detections", []),
-        "image_url": _business_file_url(project_id, 'predictions', out_path.name),
-        "labels": project.get("labels", []),
-        "elapsed_ms": data.get("elapsed_ms", 0),
-        "model": data.get("model") or Path(str(model_value)).name,
-        "engine": data.get("engine") or framework,
-        "python_path": python_path,
-        "note": data.get("note", ""),
-    }
-    if feedback_version is not None and algorithm_id and version_id:
-        try:
-            from platform_core.online_feedback import validate_prediction_evidence
-            info = image_info(in_path)
-            evidence = validate_prediction_evidence({
-                "schema_version": 1,
-                "prediction_id": pred_id,
-                "algorithm_id": str(algorithm_id),
-                "version_id": str(version_id),
-                "model_sha256": sha256_file(Path(str(model_value))),
-                "input_sha256": sha256_file(in_path),
-                "original_filename": safe_filename(file.filename or f"{pred_id}{ext}"),
-                "input_file": in_path.name,
-                "width": int(info["width"]),
-                "height": int(info["height"]),
-                "confidence": float(conf),
-                "engine": data.get("engine") or framework,
-                "detections": list(data.get("detections") or []),
-                "created_at": now_iso(),
-                "source_channel": "platform_test",
-            })
-            _register_prediction_files(project_id, pred_id, in_path, out_path, evidence)
-            response.update({
-                "feedback_eligible": True,
-                "algorithm_id": evidence["algorithm_id"],
-                "version_id": evidence["version_id"],
-                "model_sha256": evidence["model_sha256"],
-                "input_sha256": evidence["input_sha256"],
-            })
-        except (OSError, ValueError):
-            # Prediction remains usable even when evidence cannot be promoted.
-            response["feedback_eligible"] = False
-    _register_prediction_files(project_id, pred_id, in_path, out_path)
-    return response
+async def v12_predict_image(project_id: str, model_name: str=Form(''), model_source: str=Form('project'), local_path: str=Form(''), algorithm_id: str=Form(''), version_id: str=Form(''), conf: float=Form(0.25), inference_framework: str=Form('ultralytics'), inference_env_id: str=Form(''), file: UploadFile=File(...)):
+    return await _model_inference_service().v12_predict_image(project_id, model_name, model_source, local_path, algorithm_id, version_id, conf, inference_framework, inference_env_id, file)
 
 
 # Online feedback (v63) business implementation now lives in
@@ -9969,95 +9440,11 @@ def _testable_version_pt_path(version: Mapping[str, Any]) -> Optional[Path]:
     return None
 
 
-@app.get("/api/v12/projects/{project_id}/test_models")
-def v12_test_models(project_id: str, probe_optional: bool = True, model_scope: str = ""):
-    project = get_project(project_id)
-    if model_scope == "scenario":
-        from platform_core.scenario_models import resolve_scenario_model, ScenarioModelUnavailable
-        items = []
-        for algorithm in list_algorithms_internal(project_id):
-            for version in algorithm.get("versions") or []:
-                try:
-                    item = resolve_scenario_model(project_id, project_dir(project_id), algorithm, version,
-                        shared_task_repository(), shared_task_artifacts(), use_list_cache=True)
-                except ScenarioModelUnavailable:
-                    continue
-                item["is_current_version"] = str(version.get("id")) == str(algorithm.get("current_version_id"))
-                items.append(item)
-        items.sort(key=lambda row: (str(row.get("finished_at") or row.get("created_at") or ""), str(row.get("version_id"))), reverse=True)
-        return {"ok": True, "items": items}
-    project_label_names = _project_label_names(project)
-    project_labels_token = _labels_b64(project_label_names)
-    items = []
-    # 检测台常用“原始模型”，用于和训练后的新模型做同图对比。
-    items.append({"label": "原始模型：YOLO11n 官方预训练", "model_name": "yolo11n.pt", "model_source": "builtin", "framework": "ultralytics", "path": "yolo11n.pt"})
-    items.append({"label": "原始模型：YOLO11s 官方预训练", "model_name": "yolo11s.pt", "model_source": "builtin", "framework": "ultralytics", "path": "yolo11s.pt"})
-    for m in list_models_internal(project_id):
-        if m.get("type") == "pt":
-            items.append({"label": f"项目模型：{m['name']}", "model_name": m["name"], "model_source": "project", "framework": "ultralytics", "path": m.get("path")})
-        elif m.get("type") in {"pdparams", "pdmodel", "pdiparams"}:
-            cfg = m.get("config_path", "") or ""
-            fam = m.get("family_key", "") or ""
-            nc = m.get("num_classes", 0) or 0
-            labels_token = project_labels_token
-            encoded = f"paddledet::{m.get('path','')}::{cfg}::{fam}::{nc}::{labels_token}"
-            items.append({"label": f"飞桨模型：{m['name']}", "model_name": encoded, "model_source": "paddle_model", "framework": "paddle", "path": m.get("path"), "config_path": cfg, "labels": project_label_names})
-    local = read_json(LOCAL_MODELS_FILE, {})
-    for m in (local.get("items", []) if isinstance(local, dict) else []):
-        if str(m.get("path", "")).lower().endswith(".pt"):
-            items.append({"label": f"本机模型：{m.get('name')}", "model_name": f"local::{m.get('path')}", "model_source": "local", "path": m.get("path")})
-    active_env = get_active_ultralytics_env()
-    for m in active_env.get("models", []) if isinstance(active_env.get("models", []), list) else []:
-        candidate = Path(str(m.get("path") or ""))
-        if candidate.suffix.lower() == ".pt" and candidate.is_file() and candidate.stat().st_size >= 1024:
-            items.append({"label": f"Ultralytics环境：{m.get('name')}", "model_name": f"local::{m.get('path')}", "model_source": "local", "path": m.get("path")})
-    # 飞桨内置/配置模型：只有检测到 paddlex 时才展示，避免误选后 Internal Server Error。
-    p_env = get_active_paddle_env()
-    if probe_optional and p_env and p_env.get("python_path") and Path(str(p_env.get("python_path"))).exists():
-        try:
-            px = _module_available(str(p_env.get("python_path")), "paddlex")
-        except Exception:
-            px = {"ok": False}
-        if px.get("ok"):
-            items.append({"label": "飞桨内置：PP-YOLOE-S_human 人员检测", "model_name": "PP-YOLOE-S_human", "model_source": "paddle_builtin", "framework": "paddle", "path": "PP-YOLOE-S_human"})
-    # 算法版本
-    for a in list_algorithms_internal(project_id):
-        current_version_id = str(a.get("current_version_id") or "")
-        versions = list(a.get("versions", []) or [])
-        versions.sort(key=lambda version: (
-            str(version.get("id") or "") == current_version_id,
-            str(version.get("finished_at") or version.get("created_at") or ""),
-        ), reverse=True)
-        for v in versions:
-            verified_path = _testable_version_pt_path(v)
-            if verified_path is None:
-                continue
-            is_current = str(v.get("id") or "") == current_version_id
-            current_suffix = "（当前）" if is_current else ""
-            items.append({
-                "label": f"算法版本：{a.get('name')} / {v.get('version_name') or v.get('id')}{current_suffix}",
-                "algorithm_id": a.get("id"), "version_id": v.get("id"),
-                "version_name": v.get("version_name") or v.get("id"),
-                "is_current_version": is_current, "model_source": "algorithm_version",
-                "framework": "ultralytics", "path": str(verified_path),
-                "artifact_name": verified_path.name, "is_verified_training_weight": True,
-            })
-    # Real conversion artifacts are selectable in the deployment test page.
-    try:
-        for artifact in v39_list_deploy_artifacts(project_id).get("items", []):
-            suffix = Path(str(artifact.get("path") or "")).suffix.lower()
-            if suffix not in {".onnx", ".engine", ".om", ".rknn", ".bmodel"}:
-                continue
-            framework = "ultralytics" if suffix in {".onnx", ".engine"} else "vendor"
-            items.append({
-                "label": f"转换产物：{artifact.get('name')}",
-                "model_name": artifact.get("name") or "", "model_source": "deployment_artifact",
-                "framework": framework, "runtime_format": suffix.lstrip("."),
-                "path": artifact.get("path") or "",
-            })
-    except Exception:
-        pass
-    return {"ok": True, "items": items}
+app.include_router(create_model_inference_router_3(_model_inference_service))
+
+
+def v12_test_models(project_id: str, probe_optional: bool=True, model_scope: str=''):
+    return _model_inference_service().v12_test_models(project_id, probe_optional, model_scope)
 
 
 # -----------------------------
@@ -15267,55 +14654,56 @@ def _v42_get(project_id: str, name: str, item_id: str) -> Optional[Dict[str, Any
     return next((x for x in _v42_list(project_id, name) if x.get("id") == item_id), None)
 
 
-class V42AlgorithmBlueprintReq(BaseModel):
-    name: str
-    remark: Optional[str] = ""
-    industry: Optional[str] = ""
-    algorithm_type: Optional[str] = "yolo_ultralytics"
-    template_id: Optional[str] = "custom"
-    labels: List[str] = []
-    focus_scenes: Optional[str] = ""
-    negative_scenes: Optional[str] = ""
+from platform_core.legacy_automation_contracts import V42AlgorithmBlueprintReq
 
 
-@app.get('/api/v42/industry-templates')
-def v42_industry_templates():
-    return {"ok": True, "items": V42_INDUSTRY_TEMPLATES}
+from platform_core.legacy_automation_service import LegacyAutomationDependencies, LegacyAutomationService
+from platform_core.legacy_automation_api import create_legacy_automation_router_1, create_legacy_automation_router_2, create_legacy_automation_router_3, create_legacy_automation_router_4, create_legacy_automation_router_5, create_legacy_automation_router_6
 
 
-@app.get('/api/v42/projects/{project_id}/algorithm-blueprints')
-def v42_list_algorithm_blueprints(project_id: str):
-    get_project(project_id)
-    return {"ok": True, "items": _v42_list(project_id, 'algorithm_blueprints')}
-
-
-@app.post('/api/v42/projects/{project_id}/algorithm-blueprints')
-def v42_create_algorithm_blueprint(project_id: str, payload: V42AlgorithmBlueprintReq):
-    get_project(project_id)
-    if not payload.name.strip():
-        raise HTTPException(status_code=400, detail='算法名称不能为空')
-    alg = v12_create_algorithm(project_id, AlgorithmReq(
-        name=payload.name.strip(), remark=payload.remark or '', industry=payload.industry or '',
-        algorithm_type=payload.algorithm_type or 'yolo_ultralytics'
+def _legacy_automation_service() -> LegacyAutomationService:
+    return LegacyAutomationService(LegacyAutomationDependencies(
+        MODEL_CONFIGS_FILE=lambda: MODEL_CONFIGS_FILE,
+        V42_INDUSTRY_TEMPLATES=lambda: V42_INDUSTRY_TEMPLATES,
+        _parse_dt_value=lambda *args, **kwargs: _parse_dt_value(*args, **kwargs),
+        _v35_is_vision_provider=lambda *args, **kwargs: _v35_is_vision_provider(*args, **kwargs),
+        _v35_items=lambda *args, **kwargs: _v35_items(*args, **kwargs),
+        _v42_get=lambda *args, **kwargs: _v42_get(*args, **kwargs),
+        _v42_latest_algorithm_job=lambda *args, **kwargs: _v42_latest_algorithm_job(*args, **kwargs),
+        _v42_list=lambda *args, **kwargs: _v42_list(*args, **kwargs),
+        _v42_metrics_from_job=lambda *args, **kwargs: _v42_metrics_from_job(*args, **kwargs),
+        _v42_run_collect=lambda *args, **kwargs: _v42_run_collect(*args, **kwargs),
+        _v42_save=lambda *args, **kwargs: _v42_save(*args, **kwargs),
+        _v42_source_test=lambda *args, **kwargs: _v42_source_test(*args, **kwargs),
+        dataset_quality_report=lambda *args, **kwargs: dataset_quality_report(*args, **kwargs),
+        ensure_default_datasets=lambda *args, **kwargs: ensure_default_datasets(*args, **kwargs),
+        ensure_label=lambda *args, **kwargs: ensure_label(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        list_algorithms_internal=lambda *args, **kwargs: list_algorithms_internal(*args, **kwargs),
+        load_images=lambda *args, **kwargs: load_images(*args, **kwargs),
+        normalize_label=lambda *args, **kwargs: normalize_label(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        resolve_material_path=lambda *args, **kwargs: resolve_material_path(*args, **kwargs),
+        v12_create_algorithm=lambda *args, **kwargs: v12_create_algorithm(*args, **kwargs),
+        v35_test_model_config=lambda *args, **kwargs: v35_test_model_config(*args, **kwargs),
+        v35_test_saved_model_annotation=lambda *args, **kwargs: v35_test_saved_model_annotation(*args, **kwargs),
     ))
-    with label_governance_fence(project_dir(project_id)):
-        project = get_project(project_id)
-        for raw in payload.labels or []:
-            code = normalize_label(raw)
-            if code:
-                ensure_label(project, code)
-                project = get_project(project_id)
-    blueprints = _v42_list(project_id, 'algorithm_blueprints')
-    item = {
-        "id": uuid.uuid4().hex[:12], "algorithm_id": alg.get("id"), "name": payload.name.strip(),
-        "industry": payload.industry or '', "algorithm_type": payload.algorithm_type or 'yolo_ultralytics',
-        "template_id": payload.template_id or 'custom',
-        "labels": [normalize_label(x) for x in payload.labels if normalize_label(x)],
-        "focus_scenes": payload.focus_scenes or '', "negative_scenes": payload.negative_scenes or '',
-        "created_at": now_iso(), "updated_at": now_iso()
-    }
-    blueprints.insert(0, item); _v42_save(project_id, 'algorithm_blueprints', blueprints[:200])
-    return {"ok": True, "algorithm": alg, "blueprint": item, "labels": get_project(project_id).get('labels', [])}
+
+
+app.include_router(create_legacy_automation_router_1(_legacy_automation_service))
+
+
+def v42_industry_templates():
+    return _legacy_automation_service().v42_industry_templates()
+
+
+def v42_list_algorithm_blueprints(project_id: str):
+    return _legacy_automation_service().v42_list_algorithm_blueprints(project_id)
+
+
+def v42_create_algorithm_blueprint(project_id: str, payload: V42AlgorithmBlueprintReq):
+    return _legacy_automation_service().v42_create_algorithm_blueprint(project_id, payload)
 
 
 V423_DEPLOY_TARGET_NAMES = {
@@ -15346,103 +14734,38 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
     return _conversion_management_service().v423_version_deployments(project_id, algorithm_id, version_id, page, page_size, status, target, chip, precision, csc, created_from, created_to, force, asset_view)
 
 
-class V42SourceReq(BaseModel):
-    name: str
-    type: str = 'folder'  # folder / rtsp / http_json
-    source: str
-    headers_json: Optional[str] = ''
-    items_path: Optional[str] = 'items'
-    image_url_field: Optional[str] = 'image_url'
-    enabled: bool = True
-    collect_mode: str = 'manual'  # manual / auto
-    schedule_type: str = 'interval'  # interval / daily
-    schedule_value: str = '60'  # minutes for interval; HH:MM for daily
-    dataset_id: str = 'default'
-    max_items: int = 50
-    interval_seconds: float = 2.0
-    remark: Optional[str] = ''
+from platform_core.legacy_automation_contracts import V42SourceReq
 
 
-class V42CollectReq(BaseModel):
-    dataset_id: str = 'default'
-    max_items: int = 50
-    interval_seconds: float = 2.0
+from platform_core.legacy_automation_contracts import V42CollectReq
 
 
 def _v42_source_last_run(project_id: str, source_id: str) -> Optional[Dict[str, Any]]:
-    runs=[r for r in _v42_list(project_id,'collection_runs') if r.get('source_id')==source_id]
-    if not runs:return None
-    runs.sort(key=lambda x:str(x.get('created_at') or ''),reverse=True)
-    return runs[0]
+    return _legacy_automation_service()._v42_source_last_run(project_id, source_id)
 
 def _v42_source_next_run(item: Dict[str, Any], last_run: Optional[Dict[str, Any]]=None, now: Optional[datetime]=None) -> Optional[str]:
-    if not item.get('enabled', True) or item.get('collect_mode','manual')!='auto':return None
-    now=now or datetime.now(); typ=item.get('schedule_type') or 'interval'; raw=str(item.get('schedule_value') or '60').strip()
-    if typ=='daily':
-        try:
-            hh,mm=[int(x) for x in raw.split(':',1)]
-            hh=max(0,min(23,hh));mm=max(0,min(59,mm))
-        except Exception:
-            hh,mm=2,0
-        candidate=now.replace(hour=hh,minute=mm,second=0,microsecond=0)
-        if candidate<=now:
-            from datetime import timedelta
-            candidate+=timedelta(days=1)
-        return candidate.strftime('%Y-%m-%d %H:%M:%S')
-    try: minutes=max(1,int(float(raw)))
-    except Exception: minutes=60
-    from datetime import timedelta
-    base=_parse_dt_value((last_run or {}).get('finished_at') or (last_run or {}).get('created_at') or item.get('created_at')) or now
-    candidate=base+timedelta(minutes=minutes)
-    # New auto sources should be eligible quickly rather than waiting from an old creation timestamp.
-    if not last_run and candidate<now:candidate=now
-    return candidate.strftime('%Y-%m-%d %H:%M:%S')
+    return _legacy_automation_service()._v42_source_next_run(item, last_run, now)
 
 def _v42_enrich_source(project_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
-    out=dict(item); last=_v42_source_last_run(project_id,item.get('id') or '')
-    out['last_run']=last
-    out['last_completed_at']=(last or {}).get('finished_at') or ''
-    out['last_imported']=(last or {}).get('imported',0)
-    out['next_run_at']=_v42_source_next_run(item,last)
-    if last and last.get('status') in {'queued','running'}:out['runtime_status']=last.get('status')
-    elif item.get('enabled') is False:out['runtime_status']='disabled'
-    elif last and last.get('status')=='failed':out['runtime_status']='failed'
-    else:out['runtime_status']=item.get('status') or 'unchecked'
-    return out
+    return _legacy_automation_service()._v42_enrich_source(project_id, item)
 
-@app.get('/api/v42/projects/{project_id}/sources')
+app.include_router(create_legacy_automation_router_2(_legacy_automation_service))
+
+
 def v42_list_sources(project_id: str):
-    get_project(project_id); return {"ok": True, "items": [_v42_enrich_source(project_id,x) for x in _v42_list(project_id, 'sources')]}
+    return _legacy_automation_service().v42_list_sources(project_id)
 
 
-@app.post('/api/v42/projects/{project_id}/sources')
 def v42_create_source(project_id: str, payload: V42SourceReq):
-    get_project(project_id)
-    if not payload.name.strip() or not payload.source.strip():
-        raise HTTPException(status_code=400, detail='名称和来源地址不能为空')
-    if payload.type not in {'folder','rtsp','http_json'}:
-        raise HTTPException(status_code=400, detail='来源类型只支持 folder / rtsp / http_json')
-    if payload.collect_mode not in {'manual','auto'}:
-        raise HTTPException(status_code=400, detail='执行方式只支持 manual / auto')
-    if payload.schedule_type not in {'interval','daily'}:
-        raise HTTPException(status_code=400, detail='自动执行周期只支持 interval / daily')
-    rows = _v42_list(project_id, 'sources')
-    item = {"id": uuid.uuid4().hex[:12], **payload.dict(), "status":"unchecked", "message":"未检测", "created_at":now_iso(), "updated_at":now_iso()}
-    rows.insert(0, item); _v42_save(project_id, 'sources', rows[:100]); return item
+    return _legacy_automation_service().v42_create_source(project_id, payload)
 
 
-@app.put('/api/v42/projects/{project_id}/sources/{source_id}')
 def v42_update_source(project_id: str, source_id: str, payload: V42SourceReq):
-    rows=_v42_list(project_id,'sources')
-    for i,x in enumerate(rows):
-        if x.get('id')==source_id:
-            rows[i]={**x,**payload.dict(),"updated_at":now_iso()};_v42_save(project_id,'sources',rows);return rows[i]
-    raise HTTPException(status_code=404,detail='素材源不存在')
+    return _legacy_automation_service().v42_update_source(project_id, source_id, payload)
 
 
-@app.delete('/api/v42/projects/{project_id}/sources/{source_id}')
 def v42_delete_source(project_id: str, source_id: str):
-    rows=_v42_list(project_id,'sources');_v42_save(project_id,'sources',[x for x in rows if x.get('id')!=source_id]);return {"ok":True}
+    return _legacy_automation_service().v42_delete_source(project_id, source_id)
 
 
 def _v42_json_path(data: Any, path: str) -> Any:
@@ -15474,16 +14797,8 @@ def _v42_source_test(item: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok":False,"message":"不支持的素材源类型"}
 
 
-@app.post('/api/v42/projects/{project_id}/sources/{source_id}/test')
 def v42_test_source(project_id: str, source_id: str):
-    rows=_v42_list(project_id,'sources');item=next((x for x in rows if x.get('id')==source_id),None)
-    if not item:raise HTTPException(status_code=404,detail='素材源不存在')
-    result=_v42_source_test(item)
-    for x in rows:
-        if x.get('id')==source_id:x.update(status='ready' if result['ok'] else 'failed',message=result['message'],last_checked_at=now_iso(),updated_at=now_iso())
-    _v42_save(project_id,'sources',rows)
-    if not result['ok']: raise HTTPException(status_code=400,detail=result['message'])
-    return {"ok":True,**result}
+    return _legacy_automation_service().v42_test_source(project_id, source_id)
 
 
 def _v42_collect_status(project_id: str, run_id: str, **kw):
@@ -15537,17 +14852,12 @@ def _v42_run_collect(project_id: str, run_id: str, source: Dict[str, Any], paylo
         _v42_collect_status(project_id,run_id,status='failed',stage='失败',error=str(e),finished_at=now_iso())
 
 
-@app.get('/api/v42/projects/{project_id}/collection-runs')
-def v42_collection_runs(project_id: str):return {"ok":True,"items":_v42_list(project_id,'collection_runs')}
+def v42_collection_runs(project_id: str):
+    return _legacy_automation_service().v42_collection_runs(project_id)
 
 
-@app.post('/api/v42/projects/{project_id}/sources/{source_id}/collect')
 def v42_collect(project_id: str, source_id: str, payload: V42CollectReq):
-    source=_v42_get(project_id,'sources',source_id)
-    if not source:raise HTTPException(status_code=404,detail='素材源不存在')
-    run={"id":uuid.uuid4().hex[:12],"source_id":source_id,"source_name":source.get('name'),"dataset_id":payload.dataset_id,"status":"queued","stage":"等待采集","progress":0,"imported":0,"created_at":now_iso(),"updated_at":now_iso()}
-    rows=_v42_list(project_id,'collection_runs');rows.insert(0,run);_v42_save(project_id,'collection_runs',rows[:100])
-    th=threading.Thread(target=_v42_run_collect,args=(project_id,run['id'],source,payload.dict()),daemon=True);th.start();return run
+    return _legacy_automation_service().v42_collect(project_id, source_id, payload)
 
 
 
@@ -15595,11 +14905,8 @@ def _v42_start_source_scheduler():
 def _v42_startup_scheduler():
     _v42_start_source_scheduler()
 
-@app.post('/api/v42/model-configs/{config_id}/test')
 def v42_test_saved_model_config(config_id: str):
-    item=next((x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get('id')==config_id),None)
-    if not item:raise HTTPException(status_code=404,detail='模型配置不存在')
-    return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(item) else v35_test_model_config(V35ModelConfigReq(**item))
+    return _legacy_automation_service().v42_test_saved_model_config(config_id)
 
 @app.post('/api/v42/projects/{project_id}/prelabel-tasks/{task_id}/retry')
 def v42_retry_prelabel_task(project_id: str, task_id: str):
@@ -15641,8 +14948,11 @@ class V42PolicyReq(BaseModel):
     enabled: bool = True
 
 
-@app.get('/api/v42/projects/{project_id}/iteration-policies')
-def v42_policies(project_id: str):get_project(project_id);return {"ok":True,"items":_v42_list(project_id,'iteration_policies')}
+app.include_router(create_legacy_automation_router_3(_legacy_automation_service))
+
+
+def v42_policies(project_id: str):
+    return _legacy_automation_service().v42_policies(project_id)
 
 
 def _legacy_iteration_write_disabled() -> None:
@@ -15667,9 +14977,11 @@ def v42_update_policy(project_id:str,policy_id:str,payload:V42PolicyReq):
     _legacy_iteration_write_disabled()
 
 
-@app.delete('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
-def v42_delete_policy(project_id:str,policy_id:str):
-    rows=_v42_list(project_id,'iteration_policies');_v42_save(project_id,'iteration_policies',[x for x in rows if x.get('id')!=policy_id]);return {"ok":True}
+app.include_router(create_legacy_automation_router_4(_legacy_automation_service))
+
+
+def v42_delete_policy(project_id: str, policy_id: str):
+    return _legacy_automation_service().v42_delete_policy(project_id, policy_id)
 
 
 class V42OnlineFeedbackReq(BaseModel):
@@ -15684,21 +14996,12 @@ class V42OnlineFeedbackReq(BaseModel):
     raw: Optional[Dict[str, Any]] = None
 
 
-def _v42_audit_summary(project_id: str, algorithm_id: str, limit: int = 500) -> Dict[str, Any]:
-    rows=[x for x in _v42_list(project_id,'online_feedback') if x.get('algorithm_id')==algorithm_id][:max(1,limit)]
-    total=len(rows);correct=sum(1 for x in rows if bool(x.get('correct')))
-    cats={}
-    for x in rows:
-        if x.get('correct'):continue
-        k=str(x.get('category') or '其他问题').strip() or '其他问题';cats[k]=cats.get(k,0)+1
-    return {"total":total,"correct":correct,"incorrect":total-correct,"accuracy":(correct/total if total else None),"error_categories":cats,"recent":rows[:30]}
+def _v42_audit_summary(project_id: str, algorithm_id: str, limit: int=500) -> Dict[str, Any]:
+    return _legacy_automation_service()._v42_audit_summary(project_id, algorithm_id, limit)
 
 
-@app.get('/api/v42/projects/{project_id}/online-feedback')
-def v42_online_feedback(project_id: str, algorithm_id: Optional[str] = None):
-    get_project(project_id);rows=_v42_list(project_id,'online_feedback')
-    if algorithm_id:rows=[x for x in rows if x.get('algorithm_id')==algorithm_id]
-    return {"ok":True,"items":rows[:500],"summary":_v42_audit_summary(project_id,algorithm_id) if algorithm_id else None}
+def v42_online_feedback(project_id: str, algorithm_id: Optional[str]=None):
+    return _legacy_automation_service().v42_online_feedback(project_id, algorithm_id)
 
 
 @app.post('/api/v42/projects/{project_id}/online-feedback')
@@ -15707,37 +15010,15 @@ def v42_submit_online_feedback(project_id: str, payload: V42OnlineFeedbackReq):
     _legacy_iteration_write_disabled()
 
 
-def _v42_hygiene_report(project_id: str, dataset_id: str, max_scan: int = 1000) -> Dict[str, Any]:
-    import hashlib
-    get_project(project_id);rows=[]
-    for x in load_images(project_id) or []:
-        if str(x.get('dataset_id') or 'default')==str(dataset_id):rows.append(x)
-    rows=rows[:max(1,min(5000,max_scan))]
-    seen={};dups=[];broken=[];blurry=[];lowres=[];extreme=[]
-    try:import cv2
-    except Exception:cv2=None
-    for x in rows:
-        try:
-            fp=resolve_material_path(project_id,x)
-            h=hashlib.sha256(fp.read_bytes()).hexdigest()
-            if h in seen:dups.append({"id":x.get('id'),"same_as":seen[h]})
-            else:seen[h]=x.get('id')
-            if cv2 is not None:
-                im=cv2.imread(str(fp))
-                if im is None:broken.append(x.get('id'));continue
-                hh,ww=im.shape[:2]
-                if min(hh,ww)<320:lowres.append(x.get('id'))
-                gray=cv2.cvtColor(im,cv2.COLOR_BGR2GRAY)
-                if float(cv2.Laplacian(gray,cv2.CV_64F).var())<45.0:blurry.append(x.get('id'))
-                mean=float(gray.mean())
-                if mean<20 or mean>235:extreme.append(x.get('id'))
-        except Exception:broken.append(x.get('id'))
-    return {"scanned":len(rows),"duplicates":dups,"duplicate_count":len(dups),"broken":broken,"broken_count":len(broken),"blurry":blurry,"blurry_count":len(blurry),"low_resolution":lowres,"low_resolution_count":len(lowres),"extreme_brightness":extreme,"extreme_brightness_count":len(extreme),"note":"自动质检只标记风险样本，不自动删除，避免误删行业难样本。"}
+def _v42_hygiene_report(project_id: str, dataset_id: str, max_scan: int=1000) -> Dict[str, Any]:
+    return _legacy_automation_service()._v42_hygiene_report(project_id, dataset_id, max_scan)
 
 
-@app.get('/api/v42/projects/{project_id}/datasets/{dataset_id}/hygiene')
-def v42_dataset_hygiene(project_id: str, dataset_id: str, max_scan: int = 1000):
-    return {"ok":True,"report":_v42_hygiene_report(project_id,dataset_id,max_scan)}
+app.include_router(create_legacy_automation_router_5(_legacy_automation_service))
+
+
+def v42_dataset_hygiene(project_id: str, dataset_id: str, max_scan: int=1000):
+    return _legacy_automation_service().v42_dataset_hygiene(project_id, dataset_id, max_scan)
 
 
 def _v42_publish_job_version(project_id: str, algorithm_id: str, job_id: str) -> Optional[Dict[str, Any]]:
@@ -15885,8 +15166,8 @@ def _v42_run_iteration(project_id: str, run_id: str, policy: Dict[str, Any]):
         _v42_iteration_update(project_id,run_id,status='failed',stage='迭代失败',result='failed',history=history,error=str(e),finished_at=now_iso())
 
 
-@app.get('/api/v42/projects/{project_id}/iteration-runs')
-def v42_iteration_runs(project_id:str):return {"ok":True,"items":_v42_list(project_id,'iteration_runs')}
+def v42_iteration_runs(project_id: str):
+    return _legacy_automation_service().v42_iteration_runs(project_id)
 
 
 @app.post('/api/v42/projects/{project_id}/iteration-policies/{policy_id}/run')
@@ -15895,96 +15176,25 @@ def v42_run_policy(project_id:str,policy_id:str):
     _legacy_iteration_write_disabled()
 
 
-@app.get('/api/v42/projects/{project_id}/quality-overview')
-def v42_quality_overview(project_id:str):
-    get_project(project_id);datasets=ensure_default_datasets(project_id);ds=[]
-    for d in datasets:
-        try:q=dataset_quality_report(project_id,d.get('id') or 'default',False)
-        except Exception as e:q={"image_count":0,"box_count":0,"can_train":False,"warnings":[str(e)]}
-        try:hygiene=_v42_hygiene_report(project_id,d.get('id') or 'default',500)
-        except Exception as e:hygiene={"scanned":0,"duplicate_count":0,"blurry_count":0,"low_resolution_count":0,"broken_count":0,"error":str(e)}
-        ds.append({"id":d.get('id'),"name":d.get('name'),"quality":q,"hygiene":hygiene})
-    algos=[]
-    for a in list_algorithms_internal(project_id):
-        jid=_v42_latest_algorithm_job(project_id,a.get('id') or '');metrics=_v42_metrics_from_job(project_id,jid) if jid else {"precision":None,"recall":None,"map50":None,"report":{}}
-        algos.append({"id":a.get('id'),"name":a.get('name'),"versions":len(a.get('versions') or []),"job_id":jid,"metrics":metrics,"online_audit":_v42_audit_summary(project_id,a.get('id') or '')})
-    return {"ok":True,"datasets":ds,"algorithms":algos,"sources":_v42_list(project_id,'sources'),"policies":_v42_list(project_id,'iteration_policies'),"runs":_v42_list(project_id,'iteration_runs')[:20]}
+app.include_router(create_legacy_automation_router_6(_legacy_automation_service))
+
+
+def v42_quality_overview(project_id: str):
+    return _legacy_automation_service().v42_quality_overview(project_id)
 
 
 # ============================================================
 # v42.4: single-pool dataset quality + algorithm quality + reports
 # ============================================================
-class V44QualityReq(BaseModel):
-    split: Optional[str] = None
-    labels: Optional[List[str]] = None
-    image_ids: Optional[List[str]] = None
-    max_samples: int = 0
-    snapshot_id: Optional[str] = None
+from platform_core.quality_analysis_contracts import V44QualityReq
 
 
 def _v44_image_quality(project_id: str, images: List[Dict[str, Any]]) -> Dict[str, Any]:
-    hashes={};low_res=0;total_bytes=0;res_buckets={"small":0,"medium":0,"large":0}
-    for img in images[:1500]:
-        try:
-            path=resolve_material_path(project_id,img)
-            total_bytes+=path.stat().st_size
-            if min(int(img.get("width") or 0),int(img.get("height") or 0))<320: low_res+=1
-            area=int(img.get("width") or 0)*int(img.get("height") or 0)
-            res_buckets["small" if area<640*480 else "medium" if area<1920*1080 else "large"]+=1
-            h=hashlib.sha1(path.read_bytes()).hexdigest();hashes[h]=hashes.get(h,0)+1
-        except Exception: pass
-    dup=sum(max(0,n-1) for n in hashes.values())
-    return {"duplicate_images":dup,"low_resolution":low_res,"total_size_bytes":total_bytes,"resolution_buckets":res_buckets}
+    return _quality_analysis_service()._v44_image_quality(project_id, images)
 
 
 def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> Dict[str, Any]:
-    project=get_project(project_id);req=req or V44QualityReq()
-    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids={str(x) for x in (req.image_ids or []) if str(x)}
-    if req.snapshot_id:
-        snapshot_file=project_dir(project_id)/"snapshots"/f"{req.snapshot_id}.json"
-        if not snapshot_file.is_file():raise HTTPException(status_code=404,detail="训练 Snapshot 不存在")
-        snapshot=read_json(snapshot_file,{})
-        wanted_ids={str(x) for x in (snapshot.get("train_image_ids") or [])+(snapshot.get("val_image_ids") or []) if str(x)}
-    if wanted_ids:
-        images=[]
-        materials=material_store(project_id)
-        ordered_ids=sorted(wanted_ids)
-        for offset in range(0,len(ordered_ids),500):
-            images.extend(materials.get_many(ordered_ids[offset:offset+500]))
-    else:
-        images=load_images(project_id)
-    annotation_ids=[str(img.get("id") or "") for img in images if str(img.get("id") or "")]
-    annotations: Dict[str, Dict[str, Any]]={}
-    for offset in range(0,len(annotation_ids),500):
-        annotations.update(read_annotations_many(project_id,annotation_ids[offset:offset+500]))
-    candidates=[]
-    for img in sorted(images,key=lambda row:str(row.get("id") or "")):
-        sp=(img.get("split") or "unassigned").lower();sp=sp if sp in {"unassigned","train","val","test"} else "unassigned"
-        ann=annotations.get(str(img.get("id") or "")) or {};clean=[];invalid=0
-        for box in ann.get("boxes",[]):
-            normalized=normalize_box_for_project(project_id,img,box,create_label=False,project_state=project)
-            if normalized:clean.append(normalized)
-            else:invalid+=1
-        labels={box["label"] for box in clean}
-        if split and sp!=split:continue
-        if wanted and not labels.intersection(wanted):continue
-        candidates.append({**img,"split":sp,"boxes":clean,"valid_box_count":len(clean),"invalid_box_count":invalid})
-    if req.max_samples and req.max_samples>0:candidates=candidates[:int(req.max_samples)]
-    total_bytes=0;resolution_buckets={"small":0,"medium":0,"large":0};label_images={label:0 for label in project.get("labels",[])}
-    for row in candidates:
-        try:
-            path=resolve_material_path(project_id,row)
-            row["content_hash"]=hashlib.sha1(path.read_bytes()).hexdigest();total_bytes+=path.stat().st_size
-        except Exception:pass
-        area=int(row.get("width") or 0)*int(row.get("height") or 0);resolution_buckets["small" if area<640*480 else "medium" if area<1920*1080 else "large"]+=1
-        for label in {box["label"] for box in row.get("boxes") or []}:label_images[label]=label_images.get(label,0)+1
-    quality=compute_quality(candidates,min_width=640,min_height=480)
-    quality["dimensions"]=dict(quality["scores"])
-    names={"annotation_completeness":"标注完整度","box_validity":"标注有效性","label_balance":"标签均衡度","duplicate_control":"重复控制","resolution_quality":"分辨率质量","split_coverage":"划分完整度"}
-    quality["scores"]={names[key]:value for key,value in quality["scores"].items()}
-    quality["label_images"]=label_images;quality["total_size_bytes"]=total_bytes;quality["resolution_buckets"]=resolution_buckets
-    quality["split_counts"]={key:int(quality.get("split_counts",{}).get(key,0)) for key in ("unassigned","train","val","test")}
-    return quality
+    return _quality_analysis_service()._v44_dataset_quality(project_id, req)
 
 def _training_success_rate_stats(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     success_statuses = {"done", "finished", "completed", "succeeded", "success"}
@@ -16001,46 +15211,49 @@ def _training_success_rate_stats(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-@app.get('/api/v44/projects/{project_id}/quality-center')
+from platform_core.quality_analysis_service import QualityAnalysisDependencies, QualityAnalysisService
+from platform_core.quality_analysis_api import create_quality_analysis_router_1, create_quality_analysis_router_2
+
+
+def _quality_analysis_service() -> QualityAnalysisService:
+    return QualityAnalysisService(QualityAnalysisDependencies(
+        MODEL_CONFIGS_FILE=lambda: MODEL_CONFIGS_FILE,
+        _training_success_rate_stats=lambda *args, **kwargs: _training_success_rate_stats(*args, **kwargs),
+        _v35_call_model=lambda *args, **kwargs: _v35_call_model(*args, **kwargs),
+        _v35_is_vision_provider=lambda *args, **kwargs: _v35_is_vision_provider(*args, **kwargs),
+        _v35_items=lambda *args, **kwargs: _v35_items(*args, **kwargs),
+        _v44_labels_in_ann=lambda *args, **kwargs: _v44_labels_in_ann(*args, **kwargs),
+        _write_job_json=lambda *args, **kwargs: _write_job_json(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        list_algorithms_internal=lambda *args, **kwargs: list_algorithms_internal(*args, **kwargs),
+        list_jobs=lambda *args, **kwargs: list_jobs(*args, **kwargs),
+        load_images=lambda *args, **kwargs: load_images(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        normalize_box_for_project=lambda *args, **kwargs: normalize_box_for_project(*args, **kwargs),
+        normalize_label=lambda *args, **kwargs: normalize_label(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        read_annotation=lambda *args, **kwargs: read_annotation(*args, **kwargs),
+        read_annotations_many=lambda *args, **kwargs: read_annotations_many(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        resolve_material_path=lambda *args, **kwargs: resolve_material_path(*args, **kwargs),
+        sync_jobs_index=lambda *args, **kwargs: sync_jobs_index(*args, **kwargs),
+        v35_test_model_config=lambda *args, **kwargs: v35_test_model_config(*args, **kwargs),
+        v35_test_saved_model_annotation=lambda *args, **kwargs: v35_test_saved_model_annotation(*args, **kwargs),
+    ))
+
+
+app.include_router(create_quality_analysis_router_1(_quality_analysis_service))
+
+
 def v44_quality_center(project_id: str):
-    dq=_v44_dataset_quality(project_id)
-    algs=list_algorithms_internal(project_id);alg_rows=[]
-    for a in algs:
-        vers=a.get("versions") or [];v=vers[0] if vers else {};rep=v.get("report") or {}
-        def metric(name):
-            for k,val in rep.items():
-                if name in str(k).lower().replace(' ',''):
-                    try: return float(val)
-                    except Exception: pass
-            return None
-        p=metric('precision');r=metric('recall');m=metric('map50')
-        vals=[x*100 if x is not None and x<=1 else x for x in [p,r,m] if x is not None]
-        score=round(sum(vals)/len(vals),1) if vals else None
-        alg_rows.append({"id":a.get("id"),"name":a.get("name"),"version":v.get("version_name") or "", "precision":p,"recall":r,"map50":m,"score":score})
-    jobs=list_jobs(project_id)
-    training_stats=_training_success_rate_stats(jobs)
-    terminal_training_count=training_stats["ended_count"]
-    train_success_rate=training_stats["success_rate"]
-    trained_count=sum(1 for x in alg_rows if x['score'] is not None)
-    def avg_metric(k):
-        vals=[]
-        for x in alg_rows:
-            v=x.get(k)
-            if v is not None: vals.append(v*100 if v<=1 else v)
-        return round(sum(vals)/max(1,len(vals)),1)
-    version_coverage=round(sum(1 for a in algs if a.get('versions'))/max(1,len(algs))*100,1)
-    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":train_success_rate,"train_success_count":training_stats["success_count"],"train_failure_count":training_stats["failure_count"],"train_completed_count":terminal_training_count,"version_coverage":version_coverage}
-    return {"ok":True,"dataset":dq,"algorithm":alg_quality,"time":now_iso()}
+    return _quality_analysis_service().v44_quality_center(project_id)
 
-@app.post('/api/v44/projects/{project_id}/data-quality')
 def v44_data_quality(project_id: str, payload: V44QualityReq):
-    return {"ok":True,"quality":_v44_dataset_quality(project_id,payload)}
+    return _quality_analysis_service().v44_data_quality(project_id, payload)
 
-@app.post('/api/v44/model-configs/{config_id}/test')
 def v44_test_saved_model_config(config_id: str):
-    cfg=next((x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get('id')==config_id),None)
-    if not cfg: raise HTTPException(status_code=404,detail='模型配置不存在')
-    return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(cfg) else v35_test_model_config(V35ModelConfigReq(**cfg))
+    return _quality_analysis_service().v44_test_saved_model_config(config_id)
 
 # Training report (v44) read/projection now lives in
 # platform_core/training_report_api.py (router + legacy version-report
@@ -16086,101 +15299,29 @@ def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', ve
     )
 
 
-class V45ErrorCauseReq(BaseModel):
-    model_config_id: str
-    limit: int = 12
+from platform_core.quality_analysis_contracts import V45ErrorCauseReq
 
-@app.post('/api/v45/projects/{project_id}/jobs/{job_id}/error-cause-analysis')
+app.include_router(create_quality_analysis_router_2(_quality_analysis_service))
+
+
 def v45_error_cause_analysis(project_id: str, job_id: str, payload: V45ErrorCauseReq):
-    """VLM只做错误原因辅助归因。检测是否正确仍由预测框与人工Ground Truth通过IoU/类别客观计算。"""
-    get_project(project_id)
-    jf=project_dir(project_id)/'jobs'/job_id/'job.json'; job=read_json(jf,{})
-    if not job: raise HTTPException(status_code=404,detail='训练任务不存在')
-    cfg=next((x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get('id')==payload.model_config_id),None)
-    if not cfg: raise HTTPException(status_code=404,detail='模型配置不存在')
-    report=job.get('training_report') or {}; errors=[x for x in (report.get('error_samples') or []) if not x.get('analysis_error')][:max(1,min(30,int(payload.limit or 12)))]
-    if not errors: raise HTTPException(status_code=400,detail='当前报告没有可分析的错误样本')
-    snapshot=Path(job.get('dataset_snapshot') or job.get('dataset_dir') or '')
-    if not snapshot.is_dir():
-        # v42.4 job没有单独字段时，从data.yaml父目录回推
-        sy=Path(job.get('data_yaml') or '')
-        if sy.is_file(): snapshot=sy.parent
-    results=[]
-    for e in errors:
-        name=str(e.get('image') or '')
-        ip=None
-        for part in ('val','train','test'):
-            candidate=snapshot/'images'/part/name
-            if candidate.is_file(): ip=candidate;break
-        if not ip:
-            results.append({'image':name,'error':'找不到训练快照图片'});continue
-        prompt=(f"你是视觉算法错误归因助手。程序已根据人工Ground Truth和IoU客观确认该图片存在检测错误。"
-                f"漏检标签：{','.join(e.get('false_negative_labels') or []) or '无'}；误检标签：{','.join(e.get('false_positive_labels') or []) or '无'}。"
-                "请不要重新判断对错，只分析可能导致模型错误的视觉原因，例如小目标、遮挡、夜间、逆光、模糊、相似干扰物、目标边界不清等。"
-                "只返回JSON：{\"cause\":\"主要原因\",\"scene\":[\"场景标签\"],\"data_suggestion\":\"建议补充什么训练数据\"}。")
-        try:
-            raw=_v35_call_model(cfg,ip,{},prompt,0.0)
-            results.append({'image':name,'result':raw})
-        except Exception as ex:
-            results.append({'image':name,'error':str(ex)})
-    report['ai_error_analysis']={'model_config_id':payload.model_config_id,'model_name':cfg.get('name'),'generated_at':now_iso(),'items':results}
-    job['training_report']=report;_write_job_json(jf,job); sync_jobs_index(project_id)
-    return {'ok':True,'analysis':report['ai_error_analysis']}
+    return _quality_analysis_service().v45_error_cause_analysis(project_id, job_id, payload)
 
-@app.post('/api/v44/projects/{project_id}/jobs/{job_id}/supplement')
 def v44_supplement_training_data(project_id: str, job_id: str):
-    jf=project_dir(project_id)/'jobs'/job_id/'job.json';job=read_json(jf,{})
-    if not job: raise HTTPException(status_code=404,detail='训练任务不存在')
-    weak=set((job.get('training_report') or {}).get('weak_labels') or [])
-    if not weak: raise HTTPException(status_code=400,detail='当前报告没有识别出弱标签')
-    limit=int((job.get('quality_gate') or {}).get('supplement_count') or 50);images=load_images(project_id);eligible=[]
-    for img in images:
-        if (img.get('split') or 'unassigned')!='unassigned': continue
-        labs=_v44_labels_in_ann(read_annotation(project_id,img['id']))
-        if labs.intersection(weak): eligible.append(str(img['id']))
-    eligible_set=set(eligible); updated=now_iso()
-    def apply_supplement(rows):
-        changed=[]
-        for img in rows:
-            if len(changed)>=limit: break
-            if str(img.get('id')) not in eligible_set: continue
-            if (img.get('split') or 'unassigned')!='unassigned': continue
-            img['split']='train';img['updated_at']=updated;changed.append(str(img.get('id')))
-        return changed
-    changed=material_store(project_id).mutate(apply_supplement)
-    job['supplemented_image_ids']=changed;job['supplemented_at']=now_iso();_write_job_json(jf,job);sync_jobs_index(project_id)
-    return {"ok":True,"changed":len(changed),"weak_labels":sorted(weak)}
+    return _quality_analysis_service().v44_supplement_training_data(project_id, job_id)
 
 # ============================================================
 # v42.7: ordinary-user data curation + staged AI annotation
 # ============================================================
 from collections import defaultdict
 
-class V47ImageEditReq(BaseModel):
-    name: Optional[str] = None
+from platform_core.material_governance_contracts import V47ImageEditReq
 
-@app.put('/api/v47/projects/{project_id}/images/{image_id}')
+app.include_router(create_material_governance_router_6(_material_governance_service))
+
+
 def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
-    get_project(project_id)
-    materials = material_store(project_id)
-    rows = materials.get_many([str(image_id)])
-    target = rows[0] if rows else None
-    if not target:
-        raise HTTPException(status_code=404, detail='图片不存在')
-    name = (payload.name or '').strip()
-    # Display name may contain Chinese and spaces because the physical stored_name is never changed.
-    # Strip path/control characters only, so renaming cannot escape the project or break JSON/UI.
-    name = name.replace('\\', '_').replace('/', '_').replace('\x00', '')
-    name = ''.join(ch for ch in name if ord(ch) >= 32).strip()[:220]
-    if not name:
-        raise HTTPException(status_code=400, detail='名称不能为空')
-    # Only the business/display name is changed. The stored file name stays stable so annotations and snapshots remain traceable.
-    changed = materials.patch({image_id: {'filename': name, 'updated_at': now_iso()}})
-    if not changed:
-        raise HTTPException(status_code=404, detail='图片不存在')
-    target = changed[0]
-    ann = read_annotation(project_id, image_id)
-    return {'ok': True, 'image': target, 'annotation': ann}
+    return _material_governance_service().v47_edit_image(project_id, image_id, payload)
 
 
 def _v47_file_for(project_id: str, folder: str, task_id: str) -> Path:

@@ -30,3 +30,7 @@ class BatchImageSplitReq(BaseModel):
 
 class V52ReadyReq(BaseModel):
     image_ids: List[str]
+
+
+class V47ImageEditReq(BaseModel):
+    name: Optional[str] = None

@@ -1,3 +1,4 @@
+from platform_core.dataset_export_service import DatasetExportService
 import pytest
 from types import SimpleNamespace
 
@@ -110,11 +111,11 @@ def test_legacy_include_empty_cannot_reenable_unannotated_training_source():
     import inspect
     import app as app_module
 
-    source = inspect.getsource(app_module.dataset_items_by_split)
+    source = inspect.getsource(DatasetExportService.dataset_items_by_split)
     assert "is_training_ground_truth" in source
     assert "not include_empty" not in source
 
-    source = inspect.getsource(app_module.build_yolo_dataset_v44)
+    source = inspect.getsource(DatasetExportService.build_yolo_dataset_v44)
     assert source.count("is_training_ground_truth") >= 2
     assert "not payload.include_empty" not in source
 
@@ -630,3 +631,60 @@ def test_all_pending_training_selection_fails_before_queue(monkeypatch, tmp_path
 
     with pytest.raises(ValueError, match="本轮没有任何正式标注素材"):
         training_tasks.resolve_training_selection(tmp_path, requested)
+
+
+def test_remaining_model_inference_effective_http_contract():
+    import re
+    import app as application
+    from types import SimpleNamespace
+    try:
+        from fastapi.routing import iter_route_contexts
+        contexts = list(iter_route_contexts(application.app.routes))
+    except ImportError:
+        contexts = [SimpleNamespace(path=r.path, original_route=r) for r in application.app.routes if hasattr(r, "path")]
+    expected = [
+        ('post', '/api/projects/{project_id}/dataset/build', 'build_dataset', 'BuildDatasetReq', 'dataset_export'),
+        ('get', '/api/projects/{project_id}/dataset/download', 'download_dataset', None, 'dataset_export'),
+        ('post', '/api/projects/{project_id}/dataset/build_paddle', 'build_paddle_dataset', 'BuildPaddleDatasetReq', 'dataset_export'),
+        ('get', '/api/projects/{project_id}/dataset/download_paddle', 'download_paddle_dataset', None, 'dataset_export'),
+        ('get', '/api/projects/{project_id}/models', 'list_models', None, 'model_inference'),
+        ('get', '/api/projects/{project_id}/models/{model_name}/download', 'download_model', None, 'model_inference'),
+        ('post', '/api/projects/{project_id}/predict', 'predict_image', None, 'model_inference'),
+        ('post', '/api/projects/{project_id}/export/onnx', 'export_onnx', None, 'model_inference'),
+        ('post', '/api/v12/projects/{project_id}/dataset/build', 'v12_build_dataset', 'BuildDatasetReq', 'dataset_export'),
+        ('get', '/api/v12/projects/{project_id}/datasets/{dataset_id}/export/{fmt}', 'v12_export_dataset', None, 'dataset_export'),
+        ('post', '/api/v12/projects/{project_id}/predict', 'v12_predict_image', None, 'model_inference'),
+        ('get', '/api/v12/projects/{project_id}/test_models', 'v12_test_models', None, 'model_inference'),
+        ('get', '/api/v42/industry-templates', 'v42_industry_templates', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/algorithm-blueprints', 'v42_list_algorithm_blueprints', None, 'legacy_automation'),
+        ('post', '/api/v42/projects/{project_id}/algorithm-blueprints', 'v42_create_algorithm_blueprint', 'V42AlgorithmBlueprintReq', 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/sources', 'v42_list_sources', None, 'legacy_automation'),
+        ('post', '/api/v42/projects/{project_id}/sources', 'v42_create_source', 'V42SourceReq', 'legacy_automation'),
+        ('put', '/api/v42/projects/{project_id}/sources/{source_id}', 'v42_update_source', 'V42SourceReq', 'legacy_automation'),
+        ('delete', '/api/v42/projects/{project_id}/sources/{source_id}', 'v42_delete_source', None, 'legacy_automation'),
+        ('post', '/api/v42/projects/{project_id}/sources/{source_id}/test', 'v42_test_source', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/collection-runs', 'v42_collection_runs', None, 'legacy_automation'),
+        ('post', '/api/v42/projects/{project_id}/sources/{source_id}/collect', 'v42_collect', 'V42CollectReq', 'legacy_automation'),
+        ('post', '/api/v42/model-configs/{config_id}/test', 'v42_test_saved_model_config', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/iteration-policies', 'v42_policies', None, 'legacy_automation'),
+        ('delete', '/api/v42/projects/{project_id}/iteration-policies/{policy_id}', 'v42_delete_policy', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/online-feedback', 'v42_online_feedback', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/datasets/{dataset_id}/hygiene', 'v42_dataset_hygiene', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/iteration-runs', 'v42_iteration_runs', None, 'legacy_automation'),
+        ('get', '/api/v42/projects/{project_id}/quality-overview', 'v42_quality_overview', None, 'legacy_automation'),
+        ('get', '/api/v44/projects/{project_id}/quality-center', 'v44_quality_center', None, 'quality_analysis'),
+        ('post', '/api/v44/projects/{project_id}/data-quality', 'v44_data_quality', 'V44QualityReq', 'quality_analysis'),
+        ('post', '/api/v44/model-configs/{config_id}/test', 'v44_test_saved_model_config', None, 'quality_analysis'),
+        ('post', '/api/v45/projects/{project_id}/jobs/{job_id}/error-cause-analysis', 'v45_error_cause_analysis', 'V45ErrorCauseReq', 'quality_analysis'),
+        ('post', '/api/v44/projects/{project_id}/jobs/{job_id}/supplement', 'v44_supplement_training_data', None, 'quality_analysis'),
+        ('put', '/api/v47/projects/{project_id}/images/{image_id}', 'v47_edit_image', 'V47ImageEditReq', 'material_governance'),
+    ]
+    schema = application.app.openapi()
+    for method, path, name, payload, owner in expected:
+        operation = schema["paths"][path][method]
+        assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
+        matches = [c.original_route for c in contexts if c.path == path and method.upper() in getattr(c.original_route, "methods", set())]
+        assert len(matches) == 1
+        assert matches[0].endpoint.__module__ == "platform_core." + owner + "_api"
+        if payload:
+            assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/" + payload
