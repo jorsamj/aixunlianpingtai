@@ -3094,127 +3094,59 @@ def _material_legacy_zip_batch_ids(project_id, source_batch_id):
     return tuple(dict.fromkeys(str(value) for value in v19_read_import_report(project_id,source_batch_id,job).get('imported_image_ids') or [] if value))
 
 
-@app.get("/api/v61/projects/{project_id}/materials")
-def list_materials_v61(
-    project_id: str, cursor: Optional[str] = None, limit: int = 100,
-    page: Optional[int] = None, page_size: Optional[int] = None,
-    query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
-    processing_status: Optional[str] = None,
-    label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
-    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial", "needs_review"]] = None,
-    source_batch_id: Optional[str] = None, quality_status: Optional[Literal["pending_decision", "processed", "issue"]] = None,
-    created_from: Optional[str] = None, created_to: Optional[str] = None,
-    reader_view: bool = False,
-):
-    get_project(project_id)
-    numbered = page is not None or page_size is not None
-    requested_page = int(1 if page is None else page) if numbered else None
-    requested_size = int(page_size if page_size is not None else limit)
-    if reader_view and requested_size>120:raise HTTPException(422,detail='素材浏览每页最多120条')
-    if numbered and (requested_page is None or requested_page < 1):
-        raise HTTPException(status_code=422, detail="page must be at least 1")
-    if requested_size < 1 or requested_size > 1000:
-        raise HTTPException(
-            status_code=422,
-            detail="page_size must be between 1 and 1000",
-        )
-    try:
-        material_page = material_store(project_id).list_page(
-            cursor=cursor, page=requested_page, limit=requested_size, query=query,
-            storage_source_ids=storage_source_id, processing_status=processing_status,
-            labels=label, annotated=annotated, annotation_state=annotation_state,
-            source_batch_id=source_batch_id, source_batch_image_ids=_material_legacy_zip_batch_ids(project_id,source_batch_id), quality_status=quality_status, created_from=created_from, created_to=created_to,
-            partial_labels=[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if annotation_state=="partial" else (),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    response = {
-        "items": [
-            public_material(project_id, item) for item in material_page.items
-        ],
-        "next_cursor": material_page.next_cursor,
-        "total": material_page.total,
-    }
-    if numbered:
-        total_pages = max(
-            1,
-            (int(material_page.total) + requested_size - 1) // requested_size,
-        )
-        response.update({
-            "page": requested_page,
-            "page_size": requested_size,
-            "total_pages": total_pages,
-            "has_previous": requested_page > 1,
-            "has_next": requested_page < total_pages,
-        })
-    if reader_view:
-        from platform_core.material_reader_views import material_display
-        response.update(ok=True,project_id=project_id)
-        response['items']=[material_display(project_id,item) for item in material_page.items]
-    return response
+from platform_core.material_catalog_service import MaterialCatalogDependencies, MaterialCatalogService
+from platform_core.material_catalog_api import (
+    create_material_reader_router,
+    create_material_thumbnail_router,
+    create_dataset_directory_router,
+    create_legacy_material_reader_router,
+    create_label_directory_router,
+    create_dataset_quality_router,
+    create_dataset_summary_router,
+)
 
 
-@app.get("/api/v61/projects/{project_id}/materials/ids")
-def list_material_ids_v61(
-    project_id: str, cursor: Optional[str] = None, limit: int = 1000,
-    query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
-    processing_status: Optional[str] = None,
-    label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
-    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial", "needs_review"]] = None,
-    source_batch_id: Optional[str] = None, quality_status: Optional[Literal["pending_decision", "processed", "issue"]] = None,
-    created_from: Optional[str] = None, created_to: Optional[str] = None,
-    narrow: bool = False, expected_revision: Optional[int] = None,
-):
-    get_project(project_id)
-    repository = material_store(project_id)
-    revision = repository.current_revision()
-    if expected_revision is not None and revision != expected_revision:
-        raise HTTPException(status_code=409, detail="素材库已更新，请重新解析当前筛选结果")
-    filters = dict(query=query, storage_source_ids=storage_source_id or (),
-                   source_batch_id=source_batch_id, source_batch_image_ids=_material_legacy_zip_batch_ids(project_id,source_batch_id), quality_status=quality_status, created_from=created_from, created_to=created_to,
-                   processing_status=processing_status, labels=label or (), annotated=annotated, annotation_state=annotation_state, partial_labels=[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if annotation_state=="partial" else ())
-    from platform_core.material_selection import MaterialFilters
-    try:
-        filters=MaterialFilters.from_mapping(filters).as_dict() | {"source_batch_image_ids":filters.get("source_batch_image_ids",())}
-    except (ValueError, TypeError) as error:
-        raise HTTPException(400,detail=str(error)) from error
-    if narrow:
-        # Bulk selection needs only IDs. Reuse the canonical material predicate,
-        # avoiding list_page() JSON/detail hydration for every selected image.
-        page = repository.iter_filtered_ids(filters, cursor=cursor, limit=limit,
-                                            include_total=cursor is None)
-    else:
-        page = repository.list_ids(cursor=cursor, limit=limit, **filters)
-    if repository.current_revision() != revision:
-        raise HTTPException(status_code=409, detail="素材库在解析期间发生变化，请重试")
-    return {"items": page.items, "next_cursor": page.next_cursor,
-            "total": page.total, "repository_revision": revision}
+def _material_catalog_service() -> MaterialCatalogService:
+    return MaterialCatalogService(MaterialCatalogDependencies(
+        _annotation_label_catalog=lambda *args, **kwargs: _annotation_label_catalog(*args, **kwargs),
+        _authorize_business_file_project=lambda *args, **kwargs: _authorize_business_file_project(*args, **kwargs),
+        _material_legacy_zip_batch_ids=lambda *args, **kwargs: _material_legacy_zip_batch_ids(*args, **kwargs),
+        _raise_file_storage_error=lambda *args, **kwargs: _raise_file_storage_error(*args, **kwargs),
+        _v52_schedule_annotation_index=lambda *args, **kwargs: _v52_schedule_annotation_index(*args, **kwargs),
+        datasets_file=lambda *args, **kwargs: datasets_file(*args, **kwargs),
+        ensure_default_datasets=lambda *args, **kwargs: ensure_default_datasets(*args, **kwargs),
+        fast_json_response=lambda *args, **kwargs: fast_json_response(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        load_images=lambda *args, **kwargs: load_images(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        normalize_box_for_project=lambda *args, **kwargs: normalize_box_for_project(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_label_items=lambda *args, **kwargs: project_label_items(*args, **kwargs),
+        public_material=lambda *args, **kwargs: public_material(*args, **kwargs),
+        read_annotation=lambda *args, **kwargs: read_annotation(*args, **kwargs),
+        read_annotations_many=lambda *args, **kwargs: read_annotations_many(*args, **kwargs),
+        storage_manager=lambda *args, **kwargs: storage_manager(*args, **kwargs),
+        write_json=lambda *args, **kwargs: write_json(*args, **kwargs),
+    ))
 
 
-@app.get("/api/v61/projects/{project_id}/materials/status-counts")
-def material_status_counts_v61(
-    project_id: str, storage_source_id: Optional[List[str]] = Query(default=None),
-):
-    get_project(project_id)
-    # One database snapshot, one aggregation on cache miss; unlike two
-    # page-size=1 requests this never hydrates image JSON or a page of cards.
-    return material_store(project_id).processing_status_counts(storage_source_id)
+app.include_router(create_material_reader_router(_material_catalog_service))
 
 
-@app.get("/api/v61/projects/{project_id}/materials/{image_id}/content")
+def list_materials_v61(project_id: str, cursor: Optional[str]=None, limit: int=100, page: Optional[int]=None, page_size: Optional[int]=None, query: str='', storage_source_id: Optional[List[str]]=Query(default=None), processing_status: Optional[str]=None, label: Optional[List[str]]=Query(default=None), annotated: Optional[bool]=None, annotation_state: Optional[Literal['unannotated', 'annotated', 'confirmed_empty', 'partial', 'needs_review']]=None, source_batch_id: Optional[str]=None, quality_status: Optional[Literal['pending_decision', 'processed', 'issue']]=None, created_from: Optional[str]=None, created_to: Optional[str]=None, reader_view: bool=False):
+    return _material_catalog_service().list_materials_v61(project_id, cursor, limit, page, page_size, query, storage_source_id, processing_status, label, annotated, annotation_state, source_batch_id, quality_status, created_from, created_to, reader_view)
+
+
+def list_material_ids_v61(project_id: str, cursor: Optional[str]=None, limit: int=1000, query: str='', storage_source_id: Optional[List[str]]=Query(default=None), processing_status: Optional[str]=None, label: Optional[List[str]]=Query(default=None), annotated: Optional[bool]=None, annotation_state: Optional[Literal['unannotated', 'annotated', 'confirmed_empty', 'partial', 'needs_review']]=None, source_batch_id: Optional[str]=None, quality_status: Optional[Literal['pending_decision', 'processed', 'issue']]=None, created_from: Optional[str]=None, created_to: Optional[str]=None, narrow: bool=False, expected_revision: Optional[int]=None):
+    return _material_catalog_service().list_material_ids_v61(project_id, cursor, limit, query, storage_source_id, processing_status, label, annotated, annotation_state, source_batch_id, quality_status, created_from, created_to, narrow, expected_revision)
+
+
+def material_status_counts_v61(project_id: str, storage_source_id: Optional[List[str]]=Query(default=None)):
+    return _material_catalog_service().material_status_counts_v61(project_id, storage_source_id)
+
+
 def material_content_v61(project_id: str, image_id: str):
-    _authorize_business_file_project(project_id)
-    try:
-        manager = storage_manager(project_id)
-        row = manager.material(image_id)
-        resolved = manager.materialize(row)
-        from platform_core.storage.http import StoredSourceFileResponse
-        return StoredSourceFileResponse(resolved.path, manager=manager, material=row,
-            headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
-    except StorageError as error:
-        _raise_file_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
-    except (OSError, ValueError):
-        raise HTTPException(404, detail='文件不存在或无权访问') from None
+    return _material_catalog_service().material_content_v61(project_id, image_id)
 
 
 @app.get('/api/v62/projects/{project_id}/storage/lifecycle-summary')
@@ -3224,52 +3156,11 @@ def storage_lifecycle_summary_v62(project_id: str):
     return {'ok':True, **storage_lifecycle_summary(DATA_DIR, project_id)}
 
 
-@app.get("/api/v61/projects/{project_id}/materials/{image_id}/content/thumbnail")
-def material_thumbnail_v61(project_id: str, image_id: str, request: Request, edge: int = Query(384, ge=16, le=1024)):
-    """Read-derived cache only. Keep the verified bytes locked through delivery."""
-    from starlette.background import BackgroundTask
-    _authorize_business_file_project(project_id)
-    try:
-        manager = storage_manager(project_id)
-        # Validation happens exactly once under the payload lock inside cache.
-        # Passing that same lock to the response closes the former release/
-        # reacquire race without hashing the payload for a second time.
-        path, lock = manager.thumbnail(image_id, max_edge=edge, hold_verified_lock=True)
-        etag = f'"{path.stem}"'
-        cache_headers = {
-            'Cache-Control':'private, no-cache, must-revalidate',
-            'ETag':etag,
-            'Vary':'Cookie, Authorization',
-            'X-Content-Type-Options':'nosniff',
-        }
-        # Authorization occurs above even for 304; the browser must revalidate
-        # each reuse and can never obtain a shared/public thumbnail cache hit.
-        if etag in (part.strip() for part in request.headers.get('if-none-match','').split(',')):
-            lock.release()
-            return Response(status_code=304, headers=cache_headers)
-        try:
-            stream = path.open('rb')
-            size = path.stat().st_size
-        except BaseException:
-            lock.release()
-            raise
-        def close():
-            if not stream.closed:
-                stream.close()
-                lock.release()
-        def chunks():
-            try:
-                while chunk := stream.read(64 * 1024):
-                    yield chunk
-            finally:
-                close()
-        return StreamingResponse(chunks(), media_type='image/jpeg',
-            headers={**cache_headers,'Content-Length':str(size)},
-            background=BackgroundTask(close))
-    except StorageError as error:
-        _raise_file_storage_error(error, status_code=503)
-    except (OSError, ValueError) as error:
-        raise HTTPException(503, detail='缩略图暂不可用，可重试；原图和正式 GT 未修改') from error
+app.include_router(create_material_thumbnail_router(_material_catalog_service))
+
+
+def material_thumbnail_v61(project_id: str, image_id: str, request: Request, edge: int=Query(384, ge=16, le=1024)):
+    return _material_catalog_service().material_thumbnail_v61(project_id, image_id, request, edge)
 
 
 def normalize_label(name: str) -> str:
@@ -4085,77 +3976,22 @@ def ensure_default_datasets(project_id: str) -> List[Dict[str, Any]]:
     return ds
 
 
-class DatasetReq(BaseModel):
-    name: str
-    description: Optional[str] = ""
+from platform_core.material_catalog_contracts import DatasetReq
 
 
-@app.get("/api/projects/{project_id}/datasets")
+app.include_router(create_dataset_directory_router(_material_catalog_service))
+
+
 def list_datasets(project_id: str):
-    get_project(project_id)
-    datasets = ensure_default_datasets(project_id)
-    images = load_images(project_id)
-    image_ids = [
-        str(image.get("id") or "")
-        for image in images
-        if str(image.get("id") or "")
-    ]
-    annotations: Dict[str, Dict[str, Any]] = {}
-    for offset in range(0, len(image_ids), 500):
-        annotations.update(
-            read_annotations_many(project_id, image_ids[offset:offset + 500])
-        )
-    stats: Dict[str, Dict[str, int]] = {}
-    for image in images:
-        dataset_id = str(image.get("dataset_id") or "default")
-        row = stats.setdefault(
-            dataset_id, {"images": 0, "annotated_images": 0, "boxes": 0}
-        )
-        row["images"] += 1
-        annotation = annotations.get(str(image.get("id") or "")) or {}
-        count = len(annotation.get("boxes") or [])
-        row["boxes"] += count
-        if count:
-            row["annotated_images"] += 1
-    return {
-        "ok": True,
-        "items": [
-            {
-                **dataset,
-                **stats.get(
-                    str(dataset.get("id") or "default"),
-                    {"images": 0, "annotated_images": 0, "boxes": 0},
-                ),
-            }
-            for dataset in datasets
-        ],
-    }
+    return _material_catalog_service().list_datasets(project_id)
 
 
-@app.post("/api/projects/{project_id}/datasets")
 def create_dataset(project_id: str, payload: DatasetReq):
-    get_project(project_id)
-    if not payload.name.strip():
-        raise HTTPException(status_code=400, detail="数据集名称不能为空")
-    ds = ensure_default_datasets(project_id)
-    item = {"id": uuid.uuid4().hex[:12], "name": payload.name.strip(), "description": payload.description or "", "created_at": now_iso(), "updated_at": now_iso()}
-    ds.append(item)
-    write_json(datasets_file(project_id), ds)
-    return item
+    return _material_catalog_service().create_dataset(project_id, payload)
 
 
-@app.put("/api/projects/{project_id}/datasets/{dataset_id}")
 def update_dataset(project_id: str, dataset_id: str, payload: DatasetReq):
-    get_project(project_id)
-    ds = ensure_default_datasets(project_id)
-    for item in ds:
-        if item.get("id") == dataset_id:
-            item["name"] = payload.name.strip() or item.get("name", "数据集")
-            item["description"] = payload.description or ""
-            item["updated_at"] = now_iso()
-            write_json(datasets_file(project_id), ds)
-            return item
-    raise HTTPException(status_code=404, detail="数据集不存在")
+    return _material_catalog_service().update_dataset(project_id, dataset_id, payload)
 
 
 _V50_DATASET_DELETE_CLAIM_FIELD = DATASET_DELETE_CLAIM_FIELD
@@ -5486,43 +5322,11 @@ def _v52_schedule_annotation_index(project_id: str, images: Optional[List[Dict[s
     _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": pending, "processed": 0, "queued_at": now_iso()}
     threading.Thread(target=_v52_annotation_index_worker, args=(project_id,), daemon=True).start()
 
-@app.get("/api/projects/{project_id}/images")
-def list_images(project_id: str, dataset_id: Optional[str] = None):
-    get_project(project_id)
-    all_images = load_images(project_id)
-    manager = storage_manager(project_id)
-    size_patches = {}
-    # v42.12：旧数据的标注摘要迁移改为后台索引，首屏不再逐张读取 annotation JSON。
-    # 已有摘要直接返回；缺摘要的图片先以轻量元数据返回，后台完成后前端自动刷新一次。
-    if any(not x.get("annotation_summary_at") for x in all_images):
-        _v52_schedule_annotation_index(project_id, all_images)
-    for img in all_images:
-        img.update(public_material(project_id, img))
-        img.setdefault("box_count", 0)
-        img.setdefault("annotated", bool(img.get("box_count")))
-        img.setdefault("labels", [])
-        img.setdefault("annotation_preview", [])
-        if not img.get("size_bytes"):
-            try:
-                normalized = manager.material(img)
-                img["size_bytes"] = int(
-                    manager.provider_for(str(normalized["storage_source_id"]))
-                    .stat(str(normalized["object_key"]))
-                    .size_bytes
-                )
-            except Exception:
-                img["size_bytes"] = 0
-            if img.get("id") is not None:
-                size_patches[str(img.get("id"))] = {"size_bytes": img["size_bytes"]}
-        img["split"] = (img.get("split") or "unassigned").lower()
-        img["processing_status"] = "processed" if int(img.get("box_count") or 0)>0 else (img.get("processing_status") or ("processed" if img.get("cleaned_at") else "unprocessed"))
-        img["annotation_index_pending"] = not bool(img.get("annotation_summary_at"))
-    if size_patches:
-        material_store(project_id).patch(size_patches)
-    images = all_images
-    if dataset_id:
-        images = [img for img in images if img.get("dataset_id", "default") == dataset_id]
-    return fast_json_response(images)
+app.include_router(create_legacy_material_reader_router(_material_catalog_service))
+
+
+def list_images(project_id: str, dataset_id: Optional[str]=None):
+    return _material_catalog_service().list_images(project_id, dataset_id)
 
 @app.get('/api/v52/projects/{project_id}/annotation-index/status')
 def v52_annotation_index_status(project_id: str):
@@ -10056,63 +9860,8 @@ def normalize_box_for_project(
     }
 
 
-def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, include_empty: bool = False) -> Dict[str, Any]:
-    project = get_project(project_id)
-    images = load_images(project_id)
-    if dataset_id:
-        images = [img for img in images if img.get("dataset_id", "default") == dataset_id]
-    result = {
-        "image_count": len(images),
-        "annotated_images": 0,
-        "box_count": 0,
-        "splits": {"unassigned": {"images": 0, "boxes": 0}, "train": {"images": 0, "boxes": 0}, "val": {"images": 0, "boxes": 0}, "test": {"images": 0, "boxes": 0}},
-        "label_usage": {label: 0 for label in project.get("labels", [])},
-        "invalid_boxes": 0,
-        "empty_images": 0,
-        "unannotated_images": 0,
-        "can_train": False,
-        "warnings": [],
-    }
-    for img in images:
-        split = (img.get("split") or "unassigned").lower()
-        if split not in result["splits"]:
-            split = "unassigned"
-        ann = read_annotation(project_id, img["id"])
-        clean = []
-        for b in ann.get("boxes", []):
-            nb = normalize_box_for_project(project_id, img, b, create_label=False)
-            if nb:
-                clean.append(nb)
-            else:
-                result["invalid_boxes"] += 1
-        if is_training_ground_truth(ann.get("annotation_state"), clean):
-            result["splits"][split]["images"] += 1
-        if clean and ann.get("annotation_state") == "annotated":
-            result["annotated_images"] += 1
-        elif ann.get("annotation_state") == "confirmed_empty":
-            result["empty_images"] += 1
-        else:
-            result["unannotated_images"] += 1
-        for b in clean:
-            result["box_count"] += 1
-            result["splits"][split]["boxes"] += 1
-            label = project.get("labels", [])[int(b["class_id"])] if int(b["class_id"]) < len(project.get("labels", [])) else str(b["class_id"])
-            result["label_usage"][label] = result["label_usage"].get(label, 0) + 1
-    if result["image_count"] == 0:
-        result["warnings"].append("当前数据集没有图片")
-    if result["box_count"] == 0:
-        result["warnings"].append("当前数据集没有有效标注框，无法训练出目标检测模型")
-    if result["splits"]["train"]["boxes"] == 0:
-        result["warnings"].append("训练集没有有效标注框")
-    if result["splits"]["val"]["boxes"] == 0:
-        result["warnings"].append("试验集没有有效标注框，训练过程中无法进行独立验证")
-    if result["splits"]["test"]["boxes"] == 0:
-        result["warnings"].append("评测集没有有效标注框，训练完成后无法进行独立最终评测")
-    unused = [k for k, v in result["label_usage"].items() if v == 0]
-    if unused:
-        result["warnings"].append("以下标签没有样本：" + "、".join(unused))
-    result["can_train"] = result["splits"]["train"]["images"] > 0
-    return result
+def dataset_quality_report(project_id: str, dataset_id: Optional[str]=None, include_empty: bool=False) -> Dict[str, Any]:
+    return _material_catalog_service().dataset_quality_report(project_id, dataset_id, include_empty)
 
 
 @app.get("/api/v12/app_info")
@@ -10120,15 +9869,11 @@ def v12_app_info():
     return {"ok": True, "name": APP_DISPLAY_NAME, "version": APP_VERSION}
 
 
-@app.get("/api/v12/projects/{project_id}/labels")
+app.include_router(create_label_directory_router(_material_catalog_service))
+
+
 def v12_list_labels(project_id: str):
-    project = get_project(project_id)
-    governance = project_label_items(project)
-    return {
-        "ok": True,
-        "items": active_label_options(governance),
-        "governance": governance,
-    }
+    return _material_catalog_service().v12_list_labels(project_id)
 
 
 @app.put("/api/v12/projects/{project_id}/labels/{class_id}")
@@ -10531,9 +10276,11 @@ def v12_build_dataset(project_id: str, payload: BuildDatasetReq):
     return build_yolo_dataset_v12(project_id, payload.dataset_id, payload.include_empty)
 
 
-@app.get("/api/v17/projects/{project_id}/datasets/{dataset_id}/quality")
-def v17_dataset_quality(project_id: str, dataset_id: str, include_empty: bool = False):
-    return {"ok": True, "quality": dataset_quality_report(project_id, dataset_id, include_empty)}
+app.include_router(create_dataset_quality_router(_material_catalog_service))
+
+
+def v17_dataset_quality(project_id: str, dataset_id: str, include_empty: bool=False):
+    return _material_catalog_service().v17_dataset_quality(project_id, dataset_id, include_empty)
 
 
 def build_coco_dataset_v12(project_id: str, dataset_id: Optional[str] = None, include_empty: bool = False) -> Dict[str, Any]:
@@ -10590,21 +10337,11 @@ def v12_export_dataset(project_id: str, dataset_id: str, fmt: str):
     return FileResponse(zip_path, filename=filename)
 
 
-@app.get("/api/v12/projects/{project_id}/datasets/{dataset_id}/summary")
+app.include_router(create_dataset_summary_router(_material_catalog_service))
+
+
 def v12_dataset_summary(project_id: str, dataset_id: str):
-    get_project(project_id)
-    images = [x for x in load_images(project_id) if x.get("dataset_id", "default") == dataset_id]
-    counts = {"train": 0, "val": 0, "test": 0, "unmarked": 0, "images": len(images), "boxes": 0, "annotated": 0}
-    for img in images:
-        split = (img.get("split") or "train").lower()
-        if split not in {"train", "val", "test"}: split = "train"
-        counts[split] += 1
-        ann = read_annotation(project_id, img["id"])
-        boxes = len(ann.get("boxes", []))
-        counts["boxes"] += boxes
-        if boxes: counts["annotated"] += 1
-        else: counts["unmarked"] += 1
-    return {"ok": True, "summary": counts}
+    return _material_catalog_service().v12_dataset_summary(project_id, dataset_id)
 
 
 

@@ -8,6 +8,9 @@ on:
       - feature/external-algorithm-publishing-sql-crud
     paths:
       - app.py
+      - platform_core/material_catalog_api.py
+      - platform_core/material_catalog_service.py
+      - platform_core/material_catalog_contracts.py
       - platform_core/algorithm_catalog_api.py
       - platform_core/algorithm_catalog_contracts.py
       - platform_core/algorithm_catalog_service.py
@@ -182,7 +185,7 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
           boto3 oss2 cryptography pydantic
       - name: Read-only model HTTP projection contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/api tests/api/test_model_asset_views.py tests/api/test_core_productization_views.py tests/api/test_material_reader_views.py tests/api/test_annotation_reader_views.py tests/api/test_evaluation_reader_views.py tests/api/test_algorithm_version_rollback.py
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/api tests/api/test_model_asset_views.py tests/api/test_core_productization_views.py tests/api/test_material_reader_views.py tests/api/test_annotation_reader_views.py tests/api/test_evaluation_reader_views.py tests/api/test_algorithm_version_rollback.py tests/api/test_material_response_performance.py tests/api/test_material_status_summary_api.py tests/api/test_material_library_filters_api.py tests/api/test_material_content.py
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome algorithm version lineage

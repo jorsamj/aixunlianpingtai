@@ -14,3 +14,15 @@ def test_material_reader_projection_is_paged_safe_and_full_detail_is_explicit(mo
     assert detail['boxes_total']==40 and len(detail['annotation']['boxes'])==40 and detail['annotation']['boxes'][0]['x2']==50
     assert detail['boxes_truncated'] is False and detail['annotation']['annotation_version']==9
     assert '/private' not in json.dumps(detail)
+
+
+def test_material_catalog_migration_preserves_original_openapi_surface():
+    import re
+    import app as application
+    expected = [('get', '/api/v61/projects/{project_id}/materials', 'list_materials_v61'), ('get', '/api/v61/projects/{project_id}/materials/ids', 'list_material_ids_v61'), ('get', '/api/v61/projects/{project_id}/materials/status-counts', 'material_status_counts_v61'), ('get', '/api/v61/projects/{project_id}/materials/{image_id}/content', 'material_content_v61'), ('get', '/api/v61/projects/{project_id}/materials/{image_id}/content/thumbnail', 'material_thumbnail_v61'), ('get', '/api/projects/{project_id}/datasets', 'list_datasets'), ('post', '/api/projects/{project_id}/datasets', 'create_dataset'), ('put', '/api/projects/{project_id}/datasets/{dataset_id}', 'update_dataset'), ('get', '/api/projects/{project_id}/images', 'list_images'), ('get', '/api/v12/projects/{project_id}/labels', 'v12_list_labels'), ('get', '/api/v17/projects/{project_id}/datasets/{dataset_id}/quality', 'v17_dataset_quality'), ('get', '/api/v12/projects/{project_id}/datasets/{dataset_id}/summary', 'v12_dataset_summary')]
+    schema = application.app.openapi()
+    for method, path, name in expected:
+        operation = schema["paths"][path][method]
+        assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
+    for method, path in (("post", "/api/projects/{project_id}/datasets"), ("put", "/api/projects/{project_id}/datasets/{dataset_id}")):
+        assert schema["paths"][path][method]["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/DatasetReq"
