@@ -1,3 +1,4 @@
+from platform_core.project_management_service import ProjectManagementService
 import json
 import threading
 import app as api
@@ -97,7 +98,7 @@ def test_many_cold_requests_share_one_background_build(client,seeded_project,mon
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{'status':'idle'})
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_THREAD',None)
     monkeypatch.setattr(api,'_v53_build_snapshot',build)
-    monkeypatch.setattr(api,'list_projects',lambda:[cached['project']])
+    monkeypatch.setattr(ProjectManagementService,'list_projects',staticmethod(lambda:[cached['project']]))
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
             results=list(pool.map(lambda _:api.v53_bootstrap_snapshot(project),range(6)))
@@ -124,7 +125,7 @@ def test_noncritical_recovery_failure_does_not_retire_ready_core(client,seeded_p
     project,_=seeded_project
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_THREAD',None)
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{'status':'ready','progress':100})
-    monkeypatch.setattr(api,'list_projects',lambda:[{'id':project}])
+    monkeypatch.setattr(ProjectManagementService,'list_projects',staticmethod(lambda:[{'id':project}]))
     monkeypatch.setattr(api,'_v50_recover_dataset_deletions',lambda _:(_ for _ in ()).throw(RuntimeError('isolated recovery failure')))
     api._v53_post_bootstrap_recovery()
     assert api._V53_BOOTSTRAP_STATUS['status']=='ready'
@@ -136,7 +137,7 @@ def test_failed_core_build_can_be_retried_without_publishing_partial_snapshot(cl
     good=api._v53_build_snapshot(project,core_only=True)
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{})
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_SNAPSHOT',{})
-    monkeypatch.setattr(api,'list_projects',lambda:[good['project']])
+    monkeypatch.setattr(ProjectManagementService,'list_projects',staticmethod(lambda:[good['project']]))
     monkeypatch.setattr(api,'_v53_build_snapshot',lambda *a,**kw:(_ for _ in ()).throw(RuntimeError('isolated build failure')))
     api._v53_bootstrap_worker(project)
     assert api._V53_BOOTSTRAP_STATUS['status']=='failed'

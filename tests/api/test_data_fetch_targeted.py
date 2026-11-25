@@ -1,4 +1,7 @@
 """Non-mutating data-fetch projections: optional UI summaries cannot drop canonical truth."""
+from platform_core.runtime_catalog_service import RuntimeCatalogService
+import platform_core.conversion_management_service as conversion_management_owner
+import platform_core.deployment_validation_service as deployment_validation_owner
 
 import app as api
 import pytest
@@ -65,6 +68,8 @@ def test_fast_jobs_summary_uses_bounded_index_and_live_task_truth(tmp_path, monk
         "status": "RUNNING", "phase": "training", "persisted_status": "RUNNING",
         "progress_percent": 37, "current_item": "epoch 2", "worker_id": "worker-1",
     })
+    monkeypatch.setattr(conversion_management_owner, 'task_to_public', api.task_to_public)
+    monkeypatch.setattr(deployment_validation_owner, 'task_to_public', api.task_to_public)
     monkeypatch.setattr(api, "sync_jobs_index", lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("summary cannot scan all archived training jobs")
     ))
@@ -147,7 +152,7 @@ def test_fast_summary_enrichment_failure_keeps_only_deletion_verified_index(tmp_
 
 
 def test_recommendation_is_neutral_and_never_probes_web_cuda_by_default(monkeypatch):
-    monkeypatch.setattr(api, "gpu_runtime_truth", lambda: {"workers": [], "gpus": []})
+    monkeypatch.setattr(RuntimeCatalogService, "gpu_runtime_truth", staticmethod(lambda: {"workers": [], "gpus": []}))
     monkeypatch.setattr(api.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("default recommendation must not start a GPU probe")
     ))
@@ -180,7 +185,7 @@ def test_recommendation_uses_only_fresh_gpu_visible_to_live_training_worker(monk
              "metrics_fresh": True, "telemetry_available": True},
         ],
     }
-    monkeypatch.setattr(api, "gpu_runtime_truth", lambda: runtime)
+    monkeypatch.setattr(RuntimeCatalogService, "gpu_runtime_truth", staticmethod(lambda: runtime))
     recommendation = api.system_recommendation()
     assert recommendation["recommendation_source"] == "worker_gpu_telemetry"
     assert recommendation["worker_verified"] is True

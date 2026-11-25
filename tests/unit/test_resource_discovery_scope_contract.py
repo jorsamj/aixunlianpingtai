@@ -51,7 +51,7 @@ def test_non_full_scope_preserves_only_explicit_roots(tmp_path):
 
 
 def test_api_freezes_full_scan_roots_before_both_durable_tasks():
-    source = Path("app.py").read_text(encoding="utf-8")
+    source = Path("platform_core/runtime_catalog_service.py").read_text(encoding="utf-8")
     assert "roots = resolve_discovery_request_roots(payload.scope, payload.roots)" in source
     assert "roots = resolve_discovery_request_roots(scope, submitted_roots)" in source
     assert '_create_discovery_task("ultralytics_environment", payload.scope, roots)' in source

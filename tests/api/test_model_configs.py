@@ -468,3 +468,92 @@ def test_legacy_secret_reference_and_new_configs_share_real_account_domain(clien
     assert legacy["inference_capacity"]["domain"] != different.json()["inference_capacity"]["domain"]
     assert "same-account-key" not in listed.text
     assert "inference_account_identity" not in listed.text
+
+
+def test_remaining_project_management_effective_http_contract():
+    import re
+    import app as application
+    from types import SimpleNamespace
+    try:
+        from fastapi.routing import iter_route_contexts
+        contexts = list(iter_route_contexts(application.app.routes))
+    except ImportError:
+        contexts = [SimpleNamespace(path=r.path, original_route=r) for r in application.app.routes if hasattr(r, "path")]
+    expected = [
+        ('get', '/api/system/version', 'system_version', None, 'runtime_catalog'),
+        ('get', '/api/v62/workers', 'list_worker_runtime', None, 'runtime_catalog'),
+        ('get', '/api/v62/gpu-runtime', 'gpu_runtime_truth', None, 'runtime_catalog'),
+        ('get', '/api/v61/storage-sources', 'list_storage_sources', None, 'storage_configuration'),
+        ('post', '/api/v61/storage-sources', 'create_storage_source', 'StorageSourceCreateReq', 'storage_configuration'),
+        ('patch', '/api/v61/storage-sources/{source_id}', 'update_storage_source', 'StorageSourceUpdateReq', 'storage_configuration'),
+        ('post', '/api/v61/storage-sources/{source_id}/default', 'set_default_storage_source', None, 'storage_configuration'),
+        ('post', '/api/v61/storage-sources/{source_id}/test', 'test_storage_source', None, 'storage_configuration'),
+        ('delete', '/api/v61/storage-sources/{source_id}', 'delete_storage_source', None, 'storage_configuration'),
+        ('get', '/api/projects', 'list_projects', None, 'project_management'),
+        ('put', '/api/projects/{project_id}', 'update_project', 'ProjectUpdate', 'project_management'),
+        ('delete', '/api/projects/{project_id}', 'delete_project', None, 'project_management'),
+        ('get', '/api/v62/training/robustness-policy', 'training_robustness_policy', None, 'runtime_catalog'),
+        ('put', '/api/v62/training/robustness-policy', 'save_training_robustness_policy', 'TrainingRobustnessPolicyReq', 'runtime_catalog'),
+        ('get', '/api/system/recommendation', 'system_recommendation', None, 'runtime_catalog'),
+        ('post', '/api/projects', 'create_project', 'ProjectCreate', 'project_management'),
+        ('get', '/api/projects/{project_id}', 'read_project', None, 'project_management'),
+        ('get', '/api/prelabel_services', 'list_prelabel_services', None, 'ai_configuration'),
+        ('post', '/api/prelabel_services', 'save_prelabel_service', 'PrelabelServiceReq', 'ai_configuration'),
+        ('delete', '/api/prelabel_services/{service_id}', 'delete_prelabel_service', None, 'ai_configuration'),
+        ('post', '/api/prelabel_services/test', 'test_prelabel_service', 'PrelabelServiceReq', 'ai_configuration'),
+        ('get', '/api/local_models', 'list_local_models', None, 'runtime_catalog'),
+        ('post', '/api/local_models/scan', 'scan_local_models', 'LocalModelScanReq', 'runtime_catalog'),
+        ('get', '/api/ultralytics_env', 'get_ultralytics_env', None, 'runtime_catalog'),
+        ('post', '/api/ultralytics_env/detect', 'detect_ultralytics_env', 'UltralyticsEnvDetectReq', 'runtime_catalog'),
+        ('get', '/api/resource-discovery/tasks/{task_id}', 'get_resource_discovery_task', None, 'runtime_catalog'),
+        ('post', '/api/resource-discovery/tasks/{task_id}/cancel', 'cancel_resource_discovery_task', None, 'runtime_catalog'),
+        ('get', '/api/training_catalog', 'training_catalog', None, 'runtime_catalog'),
+        ('post', '/api/v63/base-models/upload', 'upload_preinstalled_base_model', None, 'runtime_catalog'),
+        ('get', '/api/v63/base-models/assets', 'list_mother_model_assets', None, 'runtime_catalog'),
+        ('get', '/api/v63/base-models/node-inventory', 'list_mother_model_node_inventory', None, 'runtime_catalog'),
+        ('post', '/api/v63/base-models/assets/{asset_id}/install', 'install_mother_model_to_node', None, 'runtime_catalog'),
+        ('get', '/api/v63/base-models/installations', 'list_mother_model_installations', None, 'runtime_catalog'),
+        ('post', '/api/v63/base-models/installations/{task_id}/cancel', 'cancel_mother_model_installation', None, 'runtime_catalog'),
+        ('post', '/api/v63/base-models/discovered/register', 'register_discovered_mother_model', None, 'runtime_catalog'),
+        ('post', '/api/v63/base-models/assets/{asset_id}/verify', 'verify_mother_model_asset', None, 'runtime_catalog'),
+        ('get', '/api/base_models', 'list_base_models', None, 'runtime_catalog'),
+        ('get', '/api/paddle_env', 'get_paddle_env', None, 'runtime_catalog'),
+        ('post', '/api/paddle_env/select', 'select_paddle_env', 'PaddleEnvReq', 'runtime_catalog'),
+        ('post', '/api/paddle_env/test', 'test_paddle_env', 'PaddleEnvReq', 'runtime_catalog'),
+        ('get', '/api/paddle_env/algorithms', 'list_paddle_env_algorithms', None, 'runtime_catalog'),
+        ('post', '/api/paddle_env/algorithms/scan', 'scan_paddle_env_algorithms', 'PaddleEnvReq', 'runtime_catalog'),
+        ('post', '/api/paddle_env/detect', 'detect_paddle_env', 'PaddleDetectReq', 'runtime_catalog'),
+        ('get', '/api/train_servers', 'list_train_servers', None, 'runtime_catalog'),
+        ('post', '/api/train_servers', 'save_train_server', 'TrainServerReq', 'runtime_catalog'),
+        ('delete', '/api/train_servers/{server_id}', 'delete_train_server', None, 'runtime_catalog'),
+        ('post', '/api/train_servers/test', 'test_train_server', 'TrainServerReq', 'runtime_catalog'),
+        ('post', '/api/train_servers/{server_id}/test', 'test_saved_train_server', None, 'runtime_catalog'),
+        ('get', '/api/v62/training-devices', 'training_devices', None, 'runtime_catalog'),
+        ('get', '/api/v62/gpu-resources', 'gpu_resources', None, 'runtime_catalog'),
+        ('get', '/api/v12/app_info', 'v12_app_info', None, 'runtime_catalog'),
+        ('get', '/api/v16/inference_envs', 'v16_inference_envs', None, 'runtime_catalog'),
+        ('get', '/api/v35/model-configs', 'v35_list_model_configs', None, 'ai_configuration'),
+        ('post', '/api/v35/model-configs', 'v35_save_model_config', 'V35ModelConfigReq', 'ai_configuration'),
+        ('put', '/api/v35/model-configs/{config_id}', 'v35_update_model_config', 'V35ModelConfigReq', 'ai_configuration'),
+        ('post', '/api/v35/model-configs/{config_id}/capacity-check', 'v35_check_model_capacity', None, 'ai_configuration'),
+        ('delete', '/api/v35/model-configs/{config_id}', 'v35_delete_model_config', None, 'ai_configuration'),
+        ('patch', '/api/v35/model-configs/{config_id}/availability', 'v35_set_model_availability', 'V35ModelAvailabilityReq', 'ai_configuration'),
+        ('post', '/api/v35/model-configs/test', 'v35_test_model_config', 'V35ModelConfigReq', 'ai_configuration'),
+        ('post', '/api/v35/model-configs/{config_id}/test-annotation', 'v35_test_saved_model_annotation', None, 'ai_configuration'),
+        ('post', '/api/v35/model-configs/{config_id}/verify-coordinates', 'v35_verify_model_coordinates', 'V35CoordinateSampleReq', 'ai_configuration'),
+        ('post', '/api/v35/model-configs/{config_id}/confirm-coordinates', 'v35_confirm_model_coordinates', 'V35CoordinateConfirmationReq', 'ai_configuration'),
+        ('get', '/api/v35/prompt-templates', 'v35_list_prompt_templates', None, 'ai_configuration'),
+        ('post', '/api/v35/prompt-templates', 'v35_save_prompt_template', 'V35PromptTemplateReq', 'ai_configuration'),
+        ('put', '/api/v35/prompt-templates/{template_id}', 'v35_update_prompt_template', 'V35PromptTemplateReq', 'ai_configuration'),
+        ('delete', '/api/v35/prompt-templates/{template_id}', 'v35_delete_prompt_template', None, 'ai_configuration'),
+        ('post', '/api/v35/prompt-templates/preview', 'v35_preview_prompt_template', 'V35PromptPreviewReq', 'ai_configuration'),
+    ]
+    schema = application.app.openapi()
+    for method, path, name, payload, owner in expected:
+        operation = schema["paths"][path][method]
+        assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
+        matches = [c.original_route for c in contexts if c.path == path and method.upper() in getattr(c.original_route, "methods", set())]
+        assert len(matches) == 1
+        assert matches[0].endpoint.__module__ == "platform_core." + owner + "_api"
+        if payload:
+            assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/" + payload

@@ -7,6 +7,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - app.py
+      - platform_core/runtime_catalog_*.py
+      - platform_core/ai_configuration_*.py
       - platform_core/ai_annotation_*.py
       - platform_core/labels.py
       - platform_core/annotation_candidates.py
@@ -57,6 +59,8 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/runtime_catalog_*.py
+      - platform_core/ai_configuration_*.py
       - platform_core/ai_annotation_*.py
       - platform_core/labels.py
       - platform_core/annotation_candidates.py

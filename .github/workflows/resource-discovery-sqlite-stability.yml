@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - app.py
+      - platform_core/runtime_catalog_*.py
       - static/modules/resource-discovery.js
       - platform_core/resource_discovery/cache.py
       - platform_core/resource_discovery/request_scope.py
@@ -20,6 +21,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/runtime_catalog_*.py
       - static/modules/resource-discovery.js
       - platform_core/resource_discovery/cache.py
       - platform_core/resource_discovery/request_scope.py

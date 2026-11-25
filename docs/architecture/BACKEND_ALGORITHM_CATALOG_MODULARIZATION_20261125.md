@@ -114,3 +114,27 @@ C/最终 SHA 见本节所在代码提交及交付消息：
 定向守卫：标签归一化的恢复合同、AI 有效标签过滤、有界日志/指标历史、训练停止/删除/只读不归档及补充数据冻结 URL 改查真实 Owner；原故障注入/测试替身转向实际 Service 方法，原断言保留。两项既有 API 文件新增 40+25 接口的有效路由唯一性、endpoint Owner、OpenAPI/模型、双选择字段和历史默认值合同，沿既有 AI Recovery、Remote Cleaning、Training Visibility、Remote Training 等 workflow 执行，无新 workflow。本机不执行 pytest、应用、测试函数、浏览器、服务或构建；运行期、生产及实机均未验，开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING。
 
 剩余职责：app 继续持有装配、认证/存储/配置、导入与检测批次审核、旧停用 AI 入口、共享后台索引及原 legacy 生命周期访问器；旧 V45 辅助归因和 V44 补充素材编排仍有 job.json/素材联动，未借本轮另改其写入语义。没有本轮已知安全阻断；上述剩余单元不是已迁移范围的隐藏第二 Owner。前端、VERSION、AGENTS、四份保护文档不变，无生产、GPU、服务器或正式 PostgreSQL 操作；完成后停止交独立审计。
+
+## 后续批次：转换交付、导入与系统配置集中迁移（2026-11-25）
+
+起点 4d98b1f7bc7de3f7ed55f2e566017532db78517b，开工插件一次查询为 22 个 PR workflow：2 SUCCESS / 20 QUEUED，无已完成失败；未将排队视为验收。A 1c5f6de615254137a6326a81c7f37fd02869bb69，B 4492a17d2518a5bf0bf66107902093b4fb546332；C/最终见所在代码提交及交付消息。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING。
+
+|单元|实际迁出职责|保留的权威与安全边界|
+|---|---|---|
+|conversion_management：27 接口、59 函数|转换资源管理/探测编排、来源/参数解析、创建幂等查回、任务管理、数值验证、硬件预检/证据、交付质量、版本转换历史、授权产物打包及旧模型导出编排|ConversionCatalog、原转换器/任务 Runtime、版本 fence、ModelArtifact、SecretStore、进程/远程线程注册表、发布请求 Owner、性能/缓存访问器；不将未硬件验收的产物升级为正式验收。|
+|deployment_validation：7 接口、10 函数|部署检测创建/原提交 fence、回执恢复/查询、重试/取消、正式版本成功结果的反馈证据提升|原 TaskRuntime、stage_deployment_test、执行身份、不可变输入/版本、反馈与文件注册 Owner。|
+|material_ingestion：25 接口、39 函数|统一图片上传入口、ZIP 导入/多段上传任务管理、用途/标签映射确认、样本和报告、终态隐藏、原来源导入与上传批次决策|原上传幂等仓储、ZIP 安全解析/扫描/解包、FIFO/停止 fence、标签/GT 写入、文件锁及后台 finalize/恢复 Worker；未重新实现导入引擎。|
+|storage_ingestion：10 接口、13 函数|存储重扫预检/创建/确认/取消、素材扫描/确认及标签样本授权读取|StorageManager、来源代际 fence、原 TaskRuntime/Agent staging、冻结范围及正式映射回执。|
+|video_tasks：4 接口、5 函数；detection_batches：3 接口、5 函数|视频创建/列表/详情/停止及进度；检测批次有界查询、单图人工结果意见|原视频 Worker/任务身份、Candidate/正式 GT 隔离、检测持久证据与审核 revision；无新切帧器。无 DTO 的单元只保留 API/Service，不留空 Contracts 文件。|
+|project_management：5；storage_configuration：6|项目创建/读取/更新/删除/统计；存储源 CRUD、默认和测试|原 get_project/元数据访问器、MaterialRepository、来源变更屏障、凭据和存储仓储；鉴权仍为原 Session/中间件。|
+|ai_configuration：19；runtime_catalog：37|AI 模型/容量/坐标和 Prompt、原辅助服务配置；节点/环境/母模型资产及安装验证入口、资源发现、原稳健性策略和运行资源只读目录|原 SecretStore/文件访问器、节点与资产仓储、后台探测/安装任务、配置和缓存 Owner；无真实配置、安装或网络探测执行。|
+
+后三个配置分组共 67 个原 HTTP 业务体迁出，未复制全局状态、连接、缓存或锁。select_ultralytics_env 明确保留：它直接修改原全局环境及相关生命周期，不能为搬移而另建状态 Owner。母模型沙箱探测旧异常分支原引用未绑定 logger，本轮仅将其依赖接到已存在 logging，原失败处理、任务和验证器不改。
+
+证据：app.py 23,708→18,503 行，直接 HTTP 221→78；143 个接口按原位置分组注册，URL/Method、签名、默认值、说明、返回注解及其他 Router 相对次序一致，原 operationId 输入未变。198 个函数依赖名还原后 AST 一致，30 个模型 AST 一致，多行字符串/f-string 原值保留；装配字段对应，无局部/自由变量误捕获、反向 app 导入或新未定义名称。未增加 SQL、全量 hydration、N+1 或额外业务 I/O。
+
+旧守卫/故障注入已跟随真实 Service/API/Contracts。显式保留转换不可变成果与引用删除禁令、硬件能力、发布 fence、ZIP 到期清理/停止/创建、资源扫描冻结根等断言；标签 create_labels 的三处拒绝从旧 app 分布到素材服务 1 处和存储服务 2 处，数量和拒绝语义未降低。现有三个 API 文件新增 34+42+67 接口的有效路由上下文唯一性/endpoint Owner/OpenAPI/请求模型合同，沿现有 CI 执行，无新 workflow。前端产品未改，仅两个现有 Node 源码守卫改查实际后端 Owner。
+
+本机只做源码语法、符号、AST/接口/依赖及源码守卫/YAML、Node 守卫语法、git diff --check；未运行 pytest、测试函数、应用、浏览器、GPU、服务或构建。运行期、硬件、真实安装/存储/外部发布均未验。VERSION 42.24.592、AGENTS 与四份保护文档保持，未操作生产、A800/4070、正式数据库或新执行模式。
+
+剩余 app 根并非只有装配：仍有认证/Session、受控文件、bootstrap、共享缓存/锁/凭据工厂、Worker 与恢复、装饰的性能/缓存/版本锁访问器；还有旧推理、数据集构建/导出、v42 策略/采集/质量编排、旧辅助归因/补充素材、停用的旧导入/预标注接口。已模块化的外部发布、字典、执行/调度、GT 与报告不重复开发。旧 v12_test_models 仍有基线即存在的未定义 v39_list_deploy_artifacts 兼容引用，属于未迁旧查询入口，留待定向核验，未以测试通过或迁移掩盖。根权限和生命周期 Owner 不强行拆分。完成后停止，交 GPT 独立审计。

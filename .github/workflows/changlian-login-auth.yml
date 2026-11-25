@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/project_management_*.py
       - platform_core/changlian_login_auth.py
       - platform_core/local_login_auth.py
       - platform_core/algorithms.py
@@ -29,6 +30,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/project_management_*.py
       - platform_core/changlian_login_auth.py
       - platform_core/local_login_auth.py
       - platform_core/algorithms.py

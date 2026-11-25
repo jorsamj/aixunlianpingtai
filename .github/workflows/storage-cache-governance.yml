@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'platform_core/storage/**'
+      - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
       - 'static/modules/storage.js'
@@ -20,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'platform_core/storage/**'
+      - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
       - 'static/modules/storage.js'

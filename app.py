@@ -707,26 +707,59 @@ def changlian_auth_logout(request: Request):
     return response
 
 
-@app.get("/api/system/version")
+from platform_core.runtime_catalog_service import RuntimeCatalogDependencies, RuntimeCatalogService
+from platform_core.runtime_catalog_api import create_runtime_catalog_router_1, create_runtime_catalog_router_2, create_runtime_catalog_router_3, create_runtime_catalog_router_4, create_runtime_catalog_router_5, create_runtime_catalog_router_6, create_runtime_catalog_router_7
+
+
+def _runtime_catalog_service() -> RuntimeCatalogService:
+    return RuntimeCatalogService(RuntimeCatalogDependencies(
+        APP_DISPLAY_NAME=lambda: APP_DISPLAY_NAME,
+        APP_VERSION=lambda: APP_VERSION,
+        BASE_DIR=lambda: BASE_DIR,
+        BUILD_ID=lambda: BUILD_ID,
+        DATA_DIR=lambda: DATA_DIR,
+        LOCAL_MODELS_FILE=lambda: LOCAL_MODELS_FILE,
+        PADDLE_ENV_FILE=lambda: PADDLE_ENV_FILE,
+        SERVERS_FILE=lambda: SERVERS_FILE,
+        TRAINING_CATALOG=lambda: TRAINING_CATALOG,
+        _create_discovery_task=lambda *args, **kwargs: _create_discovery_task(*args, **kwargs),
+        _detect_paddle_candidate=lambda *args, **kwargs: _detect_paddle_candidate(*args, **kwargs),
+        _discovery_cache=lambda *args, **kwargs: _discovery_cache(*args, **kwargs),
+        _prepared_mother_model_rows=lambda *args, **kwargs: _prepared_mother_model_rows(*args, **kwargs),
+        _public_discovery_task=lambda *args, **kwargs: _public_discovery_task(*args, **kwargs),
+        _record_legacy_health=lambda *args, **kwargs: _record_legacy_health(*args, **kwargs),
+        _remote_capabilities=lambda *args, **kwargs: _remote_capabilities(*args, **kwargs),
+        _system_recommendation_payload=lambda *args, **kwargs: _system_recommendation_payload(*args, **kwargs),
+        _worker_gpu_recommendation=lambda *args, **kwargs: _worker_gpu_recommendation(*args, **kwargs),
+        default_paddle_roots=lambda *args, **kwargs: default_paddle_roots(*args, **kwargs),
+        get_active_paddle_env=lambda *args, **kwargs: get_active_paddle_env(*args, **kwargs),
+        get_active_ultralytics_env=lambda *args, **kwargs: get_active_ultralytics_env(*args, **kwargs),
+        inference_env_items=lambda *args, **kwargs: inference_env_items(*args, **kwargs),
+        list_models_internal=lambda *args, **kwargs: list_models_internal(*args, **kwargs),
+        logger=lambda: logging,
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        resolve_ultralytics_model=lambda *args, **kwargs: resolve_ultralytics_model(*args, **kwargs),
+        scan_paddle_weights=lambda *args, **kwargs: scan_paddle_weights(*args, **kwargs),
+        scan_paddledet_algorithms=lambda *args, **kwargs: scan_paddledet_algorithms(*args, **kwargs),
+        shared_task_artifacts=lambda *args, **kwargs: shared_task_artifacts(*args, **kwargs),
+        shared_task_repository=lambda *args, **kwargs: shared_task_repository(*args, **kwargs),
+    ))
+
+
+app.include_router(create_runtime_catalog_router_1(_runtime_catalog_service))
+
+
 def system_version():
-    return {
-        "version": APP_VERSION,
-        "build_id": BUILD_ID,
-        "name": "算法训练",
-        "data_dir": str(DATA_DIR),
-        "base_dir": str(BASE_DIR),
-        "persistent": True,
-    }
+    return _runtime_catalog_service().system_version()
 
 
-@app.get("/api/v62/workers")
 def list_worker_runtime():
-    return {"items": WorkerInstanceService(shared_task_repository()).list_runtime()}
+    return _runtime_catalog_service().list_worker_runtime()
 
 
-@app.get("/api/v62/gpu-runtime")
 def gpu_runtime_truth():
-    return read_gpu_runtime_truth(shared_task_repository())
+    return _runtime_catalog_service().gpu_runtime_truth()
 
 
 def _runtime_task_for_project(project_id: str, task_id: str) -> TaskRecord:
@@ -2054,21 +2087,10 @@ def load_images(project_id: str) -> list[dict]:
     return material_store(project_id).read().rows
 
 
-class StorageSourceCreateReq(BaseModel):
-    id: Optional[str] = None
-    name: str
-    type: str
-    config: Dict[str, Any] = {}
-    credentials: Dict[str, str] = {}
-    enabled: bool = True
+from platform_core.storage_configuration_contracts import StorageSourceCreateReq
 
 
-class StorageSourceUpdateReq(BaseModel):
-    name: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
-    credentials: Optional[Dict[str, str]] = None
-    clear_credentials: bool = False
-    enabled: Optional[bool] = None
+from platform_core.storage_configuration_contracts import StorageSourceUpdateReq
 
 
 from platform_core.storage_ingestion_contracts import StorageImportScanReq
@@ -2123,185 +2145,50 @@ def _raise_storage_error(error: StorageError, *, status_code: int = 503):
     ) from error
 
 
-@app.get("/api/v61/storage-sources")
+from platform_core.storage_configuration_service import StorageConfigurationDependencies, StorageConfigurationService
+from platform_core.storage_configuration_api import create_storage_configuration_router_1
+
+
+def _storage_configuration_service() -> StorageConfigurationService:
+    return StorageConfigurationService(StorageConfigurationDependencies(
+        DATA_DIR=lambda: DATA_DIR,
+        _assert_storage_source_mutation_allowed=lambda *args, **kwargs: _assert_storage_source_mutation_allowed(*args, **kwargs),
+        _public_storage_source=lambda *args, **kwargs: _public_storage_source(*args, **kwargs),
+        _raise_storage_error=lambda *args, **kwargs: _raise_storage_error(*args, **kwargs),
+        _storage_source_fence=lambda *args, **kwargs: _storage_source_fence(*args, **kwargs),
+        _validate_storage_source_config=lambda *args, **kwargs: _validate_storage_source_config(*args, **kwargs),
+        algorithms_file=lambda *args, **kwargs: algorithms_file(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        storage_credentials=lambda *args, **kwargs: storage_credentials(*args, **kwargs),
+        storage_source_repository=lambda *args, **kwargs: storage_source_repository(*args, **kwargs),
+    ))
+
+
+app.include_router(create_storage_configuration_router_1(_storage_configuration_service))
+
+
 def list_storage_sources():
-    return {"items": [_public_storage_source(source) for source in storage_source_repository().list()]}
+    return _storage_configuration_service().list_storage_sources()
 
 
-@app.post("/api/v61/storage-sources", status_code=201)
 def create_storage_source(payload: StorageSourceCreateReq):
-    source_id = str(payload.id or f"storage_{uuid.uuid4().hex[:12]}")
-    source_type = _validate_storage_source_config(payload.type, payload.config)
-    reference = secret_ref("storage-source", source_id) if payload.credentials else ""
-    repository = storage_source_repository()
-    try:
-        # Source creation and retirement share a canonical lifecycle fence.
-        # This also protects a retired credential reference from being reused
-        # by a concurrent create with the same source ID.
-        with _storage_source_fence():
-            source = repository.create({
-                "id": source_id, "name": payload.name, "type": source_type,
-                "config": payload.config, "secret_ref": reference, "enabled": payload.enabled,
-            })
-            if payload.credentials:
-                try:
-                    storage_credentials().set(reference, payload.credentials)
-                except Exception:
-                    repository.delete(source_id)
-                    raise
-            return _public_storage_source(source)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    except sqlite3.IntegrityError as error:
-        raise HTTPException(status_code=409, detail="存储源名称或 ID 已存在") from error
+    return _storage_configuration_service().create_storage_source(payload)
 
 
-@app.patch("/api/v61/storage-sources/{source_id}")
 def update_storage_source(source_id: str, payload: StorageSourceUpdateReq):
-    repository = storage_source_repository()
-    changes = payload.model_dump(exclude_unset=True)
-    credentials = changes.pop("credentials", None)
-    clear_credentials = bool(changes.pop("clear_credentials", False))
-    changes = {key: value for key, value in changes.items() if value is not None}
-    with _storage_source_fence():
-        current = repository.get(source_id)
-        if current is None:
-            raise HTTPException(status_code=404, detail="存储源不存在")
-        if "config" in changes:
-            _validate_storage_source_config(current.type, changes["config"])
-        destructive = (
-            ("config" in changes and changes["config"] != current.config)
-            or (changes.get("enabled") is False and current.enabled)
-            or credentials is not None
-            or clear_credentials
-        )
-        if destructive:
-            _assert_storage_source_mutation_allowed(source_id)
-
-        secret_store = storage_credentials()
-        old_reference = str(current.secret_ref or "")
-        new_reference = ""
-        replace_credentials = credentials is not None and bool(credentials)
-        clear_secret = (credentials is not None and not credentials) or clear_credentials
-        if replace_credentials:
-            # Version the Keyring reference.  A failed SQLite commit can then
-            # delete only the unpublished value without damaging generation A.
-            new_reference = secret_ref(
-                "storage-source",
-                f"{source_id}-generation-{uuid.uuid4().hex}",
-            )
-            secret_store.set(new_reference, credentials)
-            changes["secret_ref"] = new_reference
-        elif clear_secret:
-            changes["secret_ref"] = ""
-
-        original = {
-            "name": current.name,
-            "config": current.config,
-            "secret_ref": current.secret_ref,
-            "enabled": current.enabled,
-        }
-        try:
-            updated = repository.update(source_id, changes)
-            if old_reference and (replace_credentials or clear_secret):
-                try:
-                    secret_store.delete(old_reference)
-                except Exception:
-                    # Restore the complete previous source generation.  The
-                    # newly written Secret is not published after rollback.
-                    repository.update(source_id, original)
-                    if new_reference:
-                        try:
-                            secret_store.delete(new_reference)
-                        except Exception:
-                            pass
-                    raise
-            return _public_storage_source(updated)
-        except Exception as error:
-            if new_reference:
-                try:
-                    secret_store.delete(new_reference)
-                except Exception:
-                    pass
-            if isinstance(error, ValueError):
-                raise HTTPException(status_code=409, detail=str(error)) from error
-            if isinstance(error, sqlite3.IntegrityError):
-                raise HTTPException(status_code=409, detail="存储源名称已存在") from error
-            raise
+    return _storage_configuration_service().update_storage_source(source_id, payload)
 
 
-@app.post("/api/v61/storage-sources/{source_id}/default")
 def set_default_storage_source(source_id: str):
-    try:
-        # Default selection must not race source retirement, which could
-        # otherwise leave the repository without a valid default source.
-        with _storage_source_fence():
-            return _public_storage_source(storage_source_repository().set_default(source_id))
-    except KeyError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _storage_configuration_service().set_default_storage_source(source_id)
 
 
-@app.post("/api/v61/storage-sources/{source_id}/test")
 def test_storage_source(source_id: str):
-    repository = storage_source_repository()
-    source = repository.get(source_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="存储源不存在")
-    try:
-        result = ModelArtifactService(
-            data_dir=DATA_DIR,
-            project_dir=project_dir,
-            algorithms_file=algorithms_file,
-            storage_sources_factory=storage_source_repository,
-            storage_credentials_factory=storage_credentials,
-        ).test_storage(source_id)
-    except StorageError as error:
-        repository.record_health(source_id, ok=False, message=str(error))
-        _raise_storage_error(error)
-    except PlatformError as error:
-        repository.record_health(source_id, ok=False, message=str(error.message or error))
-        raise PlatformError(
-            "STORAGE_HEALTH_CHECK_FAILED",
-            "存储连接或完整读写测试失败",
-            str(error.detail or error.message or error),
-            str(error.solution or "请检查存储源配置和权限后重试。"),
-            int(error.status_code or 503),
-        ) from error
-    message = str(result.get("message") or "存储连接与读写删除测试通过")
-    repository.record_health(source_id, ok=True, message=message)
-    return {
-        "ok": True,
-        "health": {
-            "ok": True,
-            "status": "AVAILABLE",
-            "message": message,
-            "details": dict(result.get("stages") or {}),
-        },
-        "source": _public_storage_source(repository.get(source_id)),
-    }
+    return _storage_configuration_service().test_storage_source(source_id)
 
 
-@app.delete("/api/v61/storage-sources/{source_id}")
 def delete_storage_source(source_id: str):
-    repository = storage_source_repository()
-    # Match update_source's existing canonical lifecycle fence. In-flight
-    # final Material commits and destructive source retirement must serialize.
-    with _storage_source_fence():
-        source = repository.get(source_id)
-        if source is None:
-            raise HTTPException(status_code=404, detail="存储源不存在")
-        _assert_storage_source_mutation_allowed(source_id)
-        try:
-            repository.delete(source_id)
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        # Retired credentials are no longer available to any committed
-        # material. Keep deletion within the fence to prevent reuse races.
-        if source.secret_ref:
-            storage_credentials().delete(source.secret_ref)
-    return {"ok": True, "deleted_id": source_id}
+    return _storage_configuration_service().delete_storage_source(source_id)
 
 
 _STORAGE_IMPORT_COUNTERS = {
@@ -3396,61 +3283,51 @@ def health():
     return {"ok": True, "version": APP_VERSION, "time": now_iso(), "base_dir": str(BASE_DIR), "engines": ["ultralytics", "paddle_command"], "ui": f"v{APP_VERSION}"}
 
 
-class ProjectCreate(BaseModel):
-    name: str
-    labels: Optional[List[Any]] = None
-    description: Optional[str] = ""
-    label_meta: Optional[List[Dict[str, Any]]] = None
+from platform_core.project_management_contracts import ProjectCreate
 
-class ProjectUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+from platform_core.project_management_contracts import ProjectUpdate
 
 
-@app.get("/api/projects")
+from platform_core.project_management_service import ProjectManagementDependencies, ProjectManagementService
+from platform_core.project_management_api import create_project_management_router_1, create_project_management_router_2
+
+
+def _project_management_service() -> ProjectManagementService:
+    return ProjectManagementService(ProjectManagementDependencies(
+        ALLOW_MULTIPLE_PROJECTS_FOR_TESTS=lambda: ALLOW_MULTIPLE_PROJECTS_FOR_TESTS,
+        DEFAULT_PROJECT_ID=lambda: DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_NAME=lambda: DEFAULT_PROJECT_NAME,
+        PROJECTS_FILE=lambda: PROJECTS_FILE,
+        _prune_canonical_label_alias_conflicts=lambda *args, **kwargs: _prune_canonical_label_alias_conflicts(*args, **kwargs),
+        default_label_color=lambda *args, **kwargs: default_label_color(*args, **kwargs),
+        ensure_project_dirs=lambda *args, **kwargs: ensure_project_dirs(*args, **kwargs),
+        get_project=lambda *args, **kwargs: get_project(*args, **kwargs),
+        list_models_internal=lambda *args, **kwargs: list_models_internal(*args, **kwargs),
+        material_store=lambda *args, **kwargs: material_store(*args, **kwargs),
+        normalize_label=lambda *args, **kwargs: normalize_label(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        project_dir=lambda *args, **kwargs: project_dir(*args, **kwargs),
+        read_annotations_many=lambda *args, **kwargs: read_annotations_many(*args, **kwargs),
+        read_json=lambda *args, **kwargs: read_json(*args, **kwargs),
+        save_project=lambda *args, **kwargs: save_project(*args, **kwargs),
+        sync_jobs_index=lambda *args, **kwargs: sync_jobs_index(*args, **kwargs),
+        write_json=lambda *args, **kwargs: write_json(*args, **kwargs),
+    ))
+
+
+app.include_router(create_project_management_router_1(_project_management_service))
+
+
 def list_projects():
-    projects = read_json(PROJECTS_FILE, [])
-    projects = projects if isinstance(projects, list) else []
-    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
-        return projects
-    canonical = next(
-        (item for item in projects if str(item.get("id") or "") == DEFAULT_PROJECT_ID),
-        projects[0] if projects else None,
-    )
-    if not canonical:
-        return []
-    return [{**canonical, "name": DEFAULT_PROJECT_NAME}]
+    return _project_management_service().list_projects()
 
 
-@app.put("/api/projects/{project_id}")
 def update_project(project_id: str, payload: ProjectUpdate):
-    project = get_project(project_id)
-    if (
-        not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS
-        and payload.name is not None
-        and payload.name.strip() != DEFAULT_PROJECT_NAME
-    ):
-        raise HTTPException(status_code=409, detail="当前仅支持固定的默认空间")
-    if payload.name is not None:
-        if not payload.name.strip():
-            raise HTTPException(status_code=400, detail="项目名称不能为空")
-        project["name"] = payload.name.strip()
-    if payload.description is not None:
-        project["description"] = payload.description or ""
-    save_project(project)
-    return project
+    return _project_management_service().update_project(project_id, payload)
 
 
-@app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str):
-    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
-        raise HTTPException(status_code=409, detail="默认空间不允许删除")
-    projects = read_json(PROJECTS_FILE, [])
-    if not any(p.get("id") == project_id for p in projects):
-        raise HTTPException(status_code=404, detail="项目不存在")
-    write_json(PROJECTS_FILE, [p for p in projects if p.get("id") != project_id])
-    shutil.rmtree(project_dir(project_id), ignore_errors=True)
-    return {"ok": True}
+    return _project_management_service().delete_project(project_id)
 
 
 def datasets_file(project_id: str) -> Path:
@@ -4192,146 +4069,33 @@ def _worker_gpu_recommendation(runtime: Mapping[str, Any]) -> Optional[Dict[str,
     return result
 
 
-class TrainingRobustnessPolicyReq(BaseModel):
-    policy: Dict[str, Any]
-    expected_revision: str
+from platform_core.runtime_catalog_contracts import TrainingRobustnessPolicyReq
 
 
-@app.get('/api/v62/training/robustness-policy')
+app.include_router(create_runtime_catalog_router_2(_runtime_catalog_service))
+
+
 def training_robustness_policy():
-    from platform_core.training_robustness import read_global_policy
-    return read_global_policy(DATA_DIR)
+    return _runtime_catalog_service().training_robustness_policy()
 
 
-@app.put('/api/v62/training/robustness-policy')
 def save_training_robustness_policy(payload: TrainingRobustnessPolicyReq):
-    from platform_core.training_robustness import save_global_policy
-    try:
-        return save_global_policy(DATA_DIR, payload.policy, payload.expected_revision)
-    except ValueError as error:
-        raise HTTPException(status_code=409 if 'revision' in str(error) else 422, detail=str(error)) from error
+    return _runtime_catalog_service().save_training_robustness_policy(payload)
 
 
-@app.get("/api/system/recommendation")
-def system_recommendation(probe_local_cuda: bool = False):
-    # Routine reads are fast and neutral: a Web host's GPU is not evidence
-    # about the Worker selected for training. Local CUDA probing is diagnostic
-    # opt-in, not part of opening the training creation form.
-    if not probe_local_cuda:
-        try:
-            confirmed = _worker_gpu_recommendation(gpu_runtime_truth())
-            if confirmed is not None:
-                return confirmed
-        except Exception:
-            # The recommendation is advisory. A telemetry outage must not
-            # block creation or change the actual training admission owner.
-            pass
-        return _system_recommendation_payload()
-    cuda = False
-    gpu_name = "未检测到可用 CUDA"
-    try:
-        probe = subprocess.run(
-            [sys.executable, "-c", "import json,torch; c=bool(torch.cuda.is_available()); print(json.dumps({'cuda':c,'gpu':torch.cuda.get_device_name(0) if c else ''},ensure_ascii=False))"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=8,
-        )
-        if probe.returncode == 0 and probe.stdout.strip():
-            info = json.loads(probe.stdout.strip().splitlines()[-1])
-            cuda = bool(info.get("cuda"))
-            gpu_name = str(info.get("gpu") or gpu_name)
-    except subprocess.TimeoutExpired:
-        gpu_name = "CUDA 探测超时（平台仍可使用）"
-    except Exception:
-        pass
-    return _system_recommendation_payload(cuda, gpu_name)
+def system_recommendation(probe_local_cuda: bool=False):
+    return _runtime_catalog_service().system_recommendation(probe_local_cuda)
 
 
-@app.post("/api/projects")
+app.include_router(create_project_management_router_2(_project_management_service))
+
+
 def create_project(payload: ProjectCreate):
-    existing_projects = read_json(PROJECTS_FILE, [])
-    existing_projects = existing_projects if isinstance(existing_projects, list) else []
-    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and existing_projects:
-        raise HTTPException(status_code=409, detail="系统仅支持一个默认空间")
-    labels = []
-    label_meta = []
-    raw_label_meta = payload.label_meta or []
-    for idx, x in enumerate(payload.labels or []):
-        display_name = ""
-        color = ""
-        aliases: List[str] = []
-        if isinstance(x, dict):
-            code = normalize_label(x.get("code") or x.get("name") or x.get("label") or "")
-            display_name = str(x.get("display_name") or x.get("zh") or x.get("name") or code)
-            color = str(x.get("color") or "")
-            try:
-                aliases = normalize_label_aliases(x.get("aliases") or [])
-            except ValueError as error:
-                raise HTTPException(status_code=400, detail=f"标签别名无效：{error}") from error
-        else:
-            code = normalize_label(x)
-            if idx < len(raw_label_meta) and isinstance(raw_label_meta[idx], dict):
-                display_name = str(raw_label_meta[idx].get("display_name") or raw_label_meta[idx].get("name") or code)
-                color = str(raw_label_meta[idx].get("color") or "")
-                try:
-                    aliases = normalize_label_aliases(raw_label_meta[idx].get("aliases") or [])
-                except ValueError as error:
-                    raise HTTPException(status_code=400, detail=f"标签别名无效：{error}") from error
-            else:
-                display_name = code
-        if code and code not in labels:
-            labels.append(code)
-            label_meta.append({
-                "code": code,
-                "display_name": display_name or code,
-                "color": color or default_label_color(len(labels)-1),
-                "type": "bbox",
-                "hotkey": str(len(labels)) if len(labels) <= 9 else "",
-                "aliases": aliases,
-            })
-    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and not payload.name.strip():
-        raise HTTPException(status_code=400, detail="项目名称不能为空")
-    # 项目创建不再强制填写标签；标签在数据集/标注环节维护。
-    pid = uuid.uuid4().hex[:12] if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else DEFAULT_PROJECT_ID
-    ensure_project_dirs(pid)
-    project = {
-        "id": pid,
-        "name": payload.name.strip() if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else DEFAULT_PROJECT_NAME,
-        "description": payload.description or "",
-        "labels": labels,
-        "label_meta": label_meta,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
-    _prune_canonical_label_alias_conflicts(project)
-    save_project(project)
-    material_store(pid).mutate(lambda rows: rows.clear())
-    return project
+    return _project_management_service().create_project(payload)
 
 
-@app.get("/api/projects/{project_id}")
 def read_project(project_id: str):
-    project = get_project(project_id)
-    # The legacy response only needs the image count plus GT totals; reading
-    # ids (not every payload document) keeps the same response with far less
-    # hydration on 100k+ projects.
-    image_ids = material_store(project_id).list_all_ids()
-    jobs = sync_jobs_index(project_id, read_only=True)
-    models = list_models_internal(project_id)
-    annotated = 0
-    boxes = 0
-    # Batched formal-GT reads keep the legacy totals exactly, but replace the
-    # previous one-connection-per-image N+1 with ceil(N/500) queries. The batch
-    # reader keeps the same legacy JSON fallback as read_annotation().
-    for offset in range(0, len(image_ids), 500):
-        for ann in read_annotations_many(project_id, image_ids[offset:offset + 500]).values():
-            cnt = len(ann.get("boxes", []))
-            boxes += cnt
-            if cnt:
-                annotated += 1
-    return {"project": project, "images": len(image_ids), "annotated_images": annotated, "boxes": boxes, "jobs": jobs, "models": models}
+    return _project_management_service().read_project(project_id)
 
 
 from platform_core.annotation_governance_contracts import AddLabelReq
@@ -5450,14 +5214,7 @@ def download_paddle_dataset(project_id: str):
 # -----------------------------
 # Pre-label service integration
 # -----------------------------
-class PrelabelServiceReq(BaseModel):
-    name: str
-    detect_url: str
-    health_url: Optional[str] = ""
-    request_mode: str = "json_base64"  # json_base64 / multipart_file
-    image_field: str = "image"
-    threshold: float = 0.5
-    target_label: str = "person"
+from platform_core.ai_configuration_contracts import PrelabelServiceReq
 
 
 class PrelabelRunReq(BaseModel):
@@ -5486,49 +5243,51 @@ def list_prelabel_services_internal() -> List[Dict[str, Any]]:
     return read_json(PRELABEL_SERVICES_FILE, [])
 
 
-@app.get("/api/prelabel_services")
+from platform_core.ai_configuration_service import AiConfigurationDependencies, AiConfigurationService
+from platform_core.ai_configuration_api import create_ai_configuration_router_1, create_ai_configuration_router_2
+
+
+def _ai_configuration_service() -> AiConfigurationService:
+    return AiConfigurationService(AiConfigurationDependencies(
+        MODEL_CONFIGS_FILE=lambda: MODEL_CONFIGS_FILE,
+        PRELABEL_SERVICES_FILE=lambda: PRELABEL_SERVICES_FILE,
+        PROMPT_LIBRARY_FILE=lambda: PROMPT_LIBRARY_FILE,
+        _v35_clean_headers=lambda *args, **kwargs: _v35_clean_headers(*args, **kwargs),
+        _v35_is_vision_provider=lambda *args, **kwargs: _v35_is_vision_provider(*args, **kwargs),
+        _v35_model_items=lambda *args, **kwargs: _v35_model_items(*args, **kwargs),
+        _v35_normalize_adapter=lambda *args, **kwargs: _v35_normalize_adapter(*args, **kwargs),
+        _v35_prompt_items=lambda *args, **kwargs: _v35_prompt_items(*args, **kwargs),
+        _v35_publish_model_config=lambda *args, **kwargs: _v35_publish_model_config(*args, **kwargs),
+        _v35_sanitize_secret=lambda *args, **kwargs: _v35_sanitize_secret(*args, **kwargs),
+        _v35_save_items=lambda *args, **kwargs: _v35_save_items(*args, **kwargs),
+        _v35_secret_store=lambda *args, **kwargs: _v35_secret_store(*args, **kwargs),
+        _v35_test_annotation=lambda *args, **kwargs: _v35_test_annotation(*args, **kwargs),
+        _v35_unique_default=lambda *args, **kwargs: _v35_unique_default(*args, **kwargs),
+        _v35_validate_prompt=lambda *args, **kwargs: _v35_validate_prompt(*args, **kwargs),
+        list_prelabel_services_internal=lambda *args, **kwargs: list_prelabel_services_internal(*args, **kwargs),
+        normalize_label=lambda *args, **kwargs: normalize_label(*args, **kwargs),
+        now_iso=lambda *args, **kwargs: now_iso(*args, **kwargs),
+        write_json=lambda *args, **kwargs: write_json(*args, **kwargs),
+    ))
+
+
+app.include_router(create_ai_configuration_router_1(_ai_configuration_service))
+
+
 def list_prelabel_services():
-    return list_prelabel_services_internal()
+    return _ai_configuration_service().list_prelabel_services()
 
 
-@app.post("/api/prelabel_services")
 def save_prelabel_service(payload: PrelabelServiceReq):
-    name = payload.name.strip()
-    detect_url = payload.detect_url.strip()
-    if not name or not detect_url:
-        raise HTTPException(status_code=400, detail="服务名称和检测地址不能为空")
-    item = {
-        "id": uuid.uuid4().hex[:10],
-        "name": name,
-        "detect_url": detect_url,
-        "health_url": (payload.health_url or "").strip(),
-        "request_mode": payload.request_mode,
-        "image_field": payload.image_field or "image",
-        "threshold": float(payload.threshold),
-        "target_label": normalize_label(payload.target_label or "person"),
-        "created_at": now_iso(),
-    }
-    services = list_prelabel_services_internal()
-    services.insert(0, item)
-    write_json(PRELABEL_SERVICES_FILE, services[:30])
-    return item
+    return _ai_configuration_service().save_prelabel_service(payload)
 
 
-@app.delete("/api/prelabel_services/{service_id}")
 def delete_prelabel_service(service_id: str):
-    services = [s for s in list_prelabel_services_internal() if s.get("id") != service_id]
-    write_json(PRELABEL_SERVICES_FILE, services)
-    return {"ok": True}
+    return _ai_configuration_service().delete_prelabel_service(service_id)
 
 
-@app.post("/api/prelabel_services/test")
 def test_prelabel_service(payload: PrelabelServiceReq):
-    url = (payload.health_url or payload.detect_url).strip()
-    try:
-        r = requests.get(url, timeout=8)
-        return {"ok": True, "status_code": r.status_code, "response": r.json() if "json" in r.headers.get("content-type", "") else r.text[:1000]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"连接失败：{e}")
+    return _ai_configuration_service().test_prelabel_service(payload)
 
 
 def resolve_prelabel_config(payload: PrelabelRunReq) -> Dict[str, Any]:
@@ -5673,15 +5432,10 @@ def run_prelabel(project_id: str, payload: PrelabelRunReq):
             errors.append({"image": img.get("filename"), "error": str(e)})
     return {"ok": True, "processed_images": processed, "boxes_added": total_boxes, "target_label": target_label, "labels": get_project(project_id).get("labels", []), "errors": errors[:20]}
 
-class LocalModelScanReq(BaseModel):
-    roots: Optional[List[str]] = None
-    max_results: int = 3000
-    scope: Optional[Literal["directory", "full"]] = None
+from platform_core.runtime_catalog_contracts import LocalModelScanReq
 
 
-class UltralyticsEnvDetectReq(BaseModel):
-    roots: Optional[List[str]] = None
-    scope: Literal["auto", "fast", "full"] = "auto"
+from platform_core.runtime_catalog_contracts import UltralyticsEnvDetectReq
 
 
 class UltralyticsEnvSelectReq(BaseModel):
@@ -6280,70 +6034,23 @@ def _create_discovery_task(
     )
 
 
-@app.get("/api/local_models")
-def list_local_models(limit: int = 200, cursor: Optional[str] = None):
-    cache = _discovery_cache()
-    metadata = cache.metadata()["models"]
-    if metadata["completed_generation"] > 0:
-        try:
-            page = cache.list_models(limit=max(1, min(5000, int(limit))), cursor=cursor)
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        return {
-            "ok": True,
-            "items": list(page.items),
-            "total": metadata["row_count"],
-            "next_cursor": page.next_cursor,
-            "roots": [],
-            "updated_at": metadata["completed_at"] or "",
-            "scan_id": metadata["scan_id"],
-            "generation": metadata["completed_generation"],
-        }
-    # Preserve an existing pre-migration cache until the first durable scan.
-    data = read_json(LOCAL_MODELS_FILE, {})
-    if isinstance(data, list):
-        return {"ok": True, "items": data, "total": len(data), "roots": [], "updated_at": ""}
-    return data or {"ok": True, "items": [], "total": 0, "roots": [], "updated_at": ""}
+app.include_router(create_runtime_catalog_router_3(_runtime_catalog_service))
 
 
-@app.post("/api/local_models/scan", status_code=202)
+def list_local_models(limit: int=200, cursor: Optional[str]=None):
+    return _runtime_catalog_service().list_local_models(limit, cursor)
+
+
 def scan_local_models(payload: LocalModelScanReq):
-    submitted_roots = [value for value in (payload.roots or []) if str(value).strip()]
-    scope = payload.scope or ("directory" if submitted_roots else "full")
-    if scope == "directory" and not submitted_roots:
-        raise HTTPException(status_code=422, detail="指定目录扫描至少需要一个目录")
-    try:
-        roots = resolve_discovery_request_roots(scope, submitted_roots)
-    except ValueError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    return _public_discovery_task(_create_discovery_task("local_models", scope, roots))
+    return _runtime_catalog_service().scan_local_models(payload)
 
 
-@app.get("/api/ultralytics_env")
 def get_ultralytics_env():
-    cache = _discovery_cache()
-    metadata = cache.metadata()["environment"]
-    candidates = cache.list_environments()
-    return {
-        "ok": True,
-        "active": get_active_ultralytics_env(),
-        "candidates": candidates,
-        "items": candidates,
-        "updated_at": metadata["completed_at"] or "",
-        "scan_id": metadata["scan_id"],
-        "generation": metadata["completed_generation"],
-    }
+    return _runtime_catalog_service().get_ultralytics_env()
 
 
-@app.post("/api/ultralytics_env/detect", status_code=202)
 def detect_ultralytics_env(payload: UltralyticsEnvDetectReq):
-    try:
-        roots = resolve_discovery_request_roots(payload.scope, payload.roots)
-    except ValueError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    return _public_discovery_task(
-        _create_discovery_task("ultralytics_environment", payload.scope, roots)
-    )
+    return _runtime_catalog_service().detect_ultralytics_env(payload)
 
 
 @app.post("/api/ultralytics_env/select")
@@ -6375,372 +6082,55 @@ def select_ultralytics_env(payload: UltralyticsEnvSelectReq):
     return {"ok": True, "active": found}
 
 
-@app.get("/api/resource-discovery/tasks/{task_id}")
+app.include_router(create_runtime_catalog_router_4(_runtime_catalog_service))
+
+
 def get_resource_discovery_task(task_id: str):
-    task = shared_task_repository().get(task_id)
-    if (
-        task is None
-        or task.project_id != "__system__"
-        or task.kind is not TaskKind.RESOURCE_DISCOVERY
-    ):
-        raise HTTPException(status_code=404, detail="资源检测任务不存在")
-    return _public_discovery_task(task)
+    return _runtime_catalog_service().get_resource_discovery_task(task_id)
 
 
-@app.post("/api/resource-discovery/tasks/{task_id}/cancel")
 def cancel_resource_discovery_task(task_id: str):
-    task = shared_task_repository().get(task_id)
-    if (
-        task is None
-        or task.project_id != "__system__"
-        or task.kind is not TaskKind.RESOURCE_DISCOVERY
-    ):
-        raise HTTPException(status_code=404, detail="资源检测任务不存在")
-    return _public_discovery_task(shared_task_repository().request_cancel(task_id))
+    return _runtime_catalog_service().cancel_resource_discovery_task(task_id)
 
 
-@app.get("/api/training_catalog")
 def training_catalog():
-    return {"ok": True, **TRAINING_CATALOG}
+    return _runtime_catalog_service().training_catalog()
 
 
-@app.post("/api/v63/base-models/upload")
-async def upload_preinstalled_base_model(file: UploadFile = File(...)):
-    """Explicit opt-in preload to durable storage. Does not invoke Ultralytics."""
-    filename = str(file.filename or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}\.pt", filename, re.IGNORECASE):
-        raise HTTPException(status_code=422, detail="母模型文件名仅支持字母数字点横线下划线，必须为 .pt")
-    root = DATA_DIR / "models"
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / filename
-    temp = root / f".{uuid.uuid4().hex}.model-upload"
-    digest = hashlib.sha256()
-    size = 0
-    try:
-        with temp.open("xb") as stream:
-            while chunk := await file.read(4 * 1024 * 1024):
-                size += len(chunk)
-                if size > 1024 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="母模型最大允许 1 GiB")
-                digest.update(chunk)
-                stream.write(chunk)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if size < 1024:
-            raise HTTPException(status_code=422, detail="母模型文件过小")
-        with FileLock(str(root / f".{filename}.lock"), timeout=30):
-            if path.is_file():
-                if path.stat().st_size != size or sha256_file(path) != digest.hexdigest():
-                    raise HTTPException(status_code=409, detail="同名权重内容不同；请换名称上传，不能静默覆盖母模型")
-                reused = True
-            else:
-                os.replace(temp, path)
-                reused = False
-        asset = _register_mother_model_asset(DATA_DIR, path, digest.hexdigest())
-        # Official, byte-for-byte pinned weights need no pickle load or sandbox.
-        # All unknown or repacked PT files retain the explicit sandbox gate.
-        official = _verify_official_mother_model_checkpoint(path)
-        if official:
-            asset = _update_mother_model_asset(DATA_DIR, {
-                "asset_id": asset["asset_id"], "name": filename,
-                "path": str(path.resolve()), "size_bytes": size,
-                "node_locations": [{"node_id": "controller", "state": "PRESENT", "sha256": digest.hexdigest()}],
-                **official, "verified_at": time.time(),
-            })
-        return {"ok": True, "reused": reused, "name": filename, "path": str(path.resolve()),
-                "asset_id": asset["asset_id"], "validation_status": asset["validation_status"],
-                "size_bytes": size, "sha256": digest.hexdigest(), "model_status": "FOUND"}
-    except Timeout as error:
-        raise HTTPException(status_code=409, detail="相同母模型正在上传，请稍后重试") from error
-    finally:
-        temp.unlink(missing_ok=True)
-        await file.close()
+async def upload_preinstalled_base_model(file: UploadFile=File(...)):
+    return await _runtime_catalog_service().upload_preinstalled_base_model(file)
 
 
-@app.get("/api/v63/base-models/assets")
 def list_mother_model_assets():
-    """Cached evidence only. GET must never import torch or scan Agent disks."""
-    return {"items": [_public_mother_model_asset_status(item) for item in _list_mother_model_assets(DATA_DIR)],
-            "verification_environment": _mother_model_verifier_environment()}
+    return _runtime_catalog_service().list_mother_model_assets()
 
 
-@app.get("/api/v63/base-models/node-inventory")
 def list_mother_model_node_inventory():
-    """Show bounded Agent-discovered paths; never infer verified/installed PT."""
-    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
-    return {"items": _project_node_mother_models(nodes)}
+    return _runtime_catalog_service().list_mother_model_node_inventory()
 
 
-@app.post("/api/v63/base-models/assets/{asset_id}/install", status_code=202)
 def install_mother_model_to_node(asset_id: str, payload: Dict[str, Any]):
-    """Queue an Agent-owned installation; never write to a remote path in Web."""
-    if not re.fullmatch(r"pt_[0-9a-f]{24}", asset_id):
-        raise HTTPException(422, detail="母模型资产编号无效")
-    node_id = str(payload.get("node_id") or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", node_id):
-        raise HTTPException(422, detail="请从现有服务节点中选择目标服务器")
-    asset = _verified_mother_model_asset(DATA_DIR, asset_id)
-    if asset is None:
-        raise HTTPException(409, detail="母模型尚未通过安全校验，或文件已变化；请先重新校验")
-    try:
-        node = ServiceNodeRepository(shared_task_repository()).get_public(node_id)
-    except Exception as error:
-        if getattr(error, "status_code", 0) == 404:
-            raise HTTPException(404, detail="目标服务节点不存在") from error
-        raise
-    if (not node.get("online") or node.get("connection_mode") != "agent"
-            or "model-upload" not in (node.get("effective_capabilities") or [])):
-        raise HTTPException(409, detail="目标节点离线或未启用模型安装能力；请在节点配置和 Agent 中启用 model-upload")
-    repository = shared_task_repository()
-    for candidate in repository.list(project_id="__system__", kinds=(TaskKind.MODEL_INSTALL,), limit=100).items:
-        if candidate.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
-            continue
-        previous = shared_task_artifacts().read_json(candidate.task_id, candidate.payload_ref, default={})
-        if (isinstance(previous, dict) and previous.get("asset_id") == asset_id
-                and previous.get("node_id") == node_id):
-            return {"ok": True, "deduplicated": True, "task_id": candidate.task_id,
-                    "status": candidate.status.value}
-    task_id = "minstall_" + uuid.uuid4().hex
-    request = {"asset_id": asset_id, "node_id": node_id, "sha256": asset["sha256"],
-               "size_bytes": int(asset["size_bytes"]), "execution_mode": "agent",
-               "scheduling": {"mode": "node", "node_id": node_id},
-               "remote_execution": {"version": 1, "task_kind": "MODEL_INSTALL",
-                                    "transport": "agent-artifact-v1"}}
-    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
-    task = repository.create(TaskRecord.new(
-        task_id, "__system__", TaskKind.MODEL_INSTALL, "request.json",
-        f"model-install:{node_id}", required_capabilities=("agent.model.install",),
-    ))
-    return {"ok": True, "deduplicated": False, "task_id": task.task_id, "status": task.status.value}
+    return _runtime_catalog_service().install_mother_model_to_node(asset_id, payload)
 
 
-@app.get("/api/v63/base-models/installations")
-def list_mother_model_installations(cursor: Optional[str] = None):
-    """Project only authoritative task status and same-generation Agent receipt."""
-    page = shared_task_repository().list(project_id="__system__", kinds=(TaskKind.MODEL_INSTALL,),
-                                         limit=100, cursor=cursor)
-    artifacts = shared_task_artifacts()
-    rows = []
-    for task in page.items:
-        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
-        if not isinstance(payload, dict):
-            continue
-        receipt = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
-        valid_receipt = (task.status is TaskStatus.SUCCEEDED and isinstance(receipt, dict)
-                         and receipt.get("sha256") == payload.get("sha256")
-                         and receipt.get("asset_id") == payload.get("asset_id")
-                         and receipt.get("node_id") == payload.get("node_id")
-                         and receipt.get("execution_generation") == task.attempt)
-        rows.append({"task_id": task.task_id, "asset_id": payload.get("asset_id"),
-                     "node_id": payload.get("node_id"), "status": task.status.value,
-                     "progress": task.progress, "stage": task.stage, "error": task.error,
-                     "created_at": task.created_at, "finished_at": task.finished_at,
-                     "installed": bool(valid_receipt),
-                     "verified_sha256": receipt.get("sha256") if valid_receipt else None})
-    return {"items": rows, "next_cursor": page.next_cursor}
+def list_mother_model_installations(cursor: Optional[str]=None):
+    return _runtime_catalog_service().list_mother_model_installations(cursor)
 
 
-@app.post("/api/v63/base-models/installations/{task_id}/cancel")
 def cancel_mother_model_installation(task_id: str):
-    task = shared_task_repository().get(task_id)
-    if task is None or task.kind is not TaskKind.MODEL_INSTALL or task.project_id != "__system__":
-        raise HTTPException(404, detail="母模型安装任务不存在")
-    if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
-        return {"ok": True, "task_id": task_id, "status": task.status.value}
-    try:
-        result = shared_task_repository().request_cancel(task_id)
-    except ValueError as error:
-        raise HTTPException(409, detail=str(error)) from error
-    return {"ok": True, "task_id": task_id, "status": result.status.value}
+    return _runtime_catalog_service().cancel_mother_model_installation(task_id)
 
 
-@app.post("/api/v63/base-models/discovered/register")
 def register_discovered_mother_model(payload: Dict[str, Any]):
-    """Import an *exact cached controller discovery result* into managed assets.
-
-    This is an explicit user action. It cannot copy an arbitrary local path or
-    treat an unverified remote heartbeat path as a training-ready checkpoint.
-    """
-    reference = str(payload.get("path") or "").strip()
-    if not reference or len(reference) > 1000:
-        raise HTTPException(status_code=422, detail="请指定已发现的模型路径")
-    cache = _discovery_cache()
-    if cache.metadata()["models"]["completed_generation"] < 1:
-        raise HTTPException(status_code=409, detail="尚未完成本机模型扫描，请先检测目录")
-    discovered = cache.find_model_by_path(reference)
-    if not discovered or str(discovered.get("format") or "").lower() != "pt":
-        raise HTTPException(status_code=404, detail="此文件不在上次成功的本机 .pt 扫描结果中")
-    source = Path(str(discovered["path"]))
-    if source.is_symlink() or not source.is_file():
-        raise HTTPException(status_code=409, detail="发现的母模型已移动或不是普通文件，请重新扫描")
-    size = source.stat().st_size
-    if size < 1024 or size > 1024 * 1024 * 1024 or size != discovered.get("size_bytes"):
-        raise HTTPException(status_code=409, detail="模型大小已变化或超出 1GiB 限制，请重新扫描")
-    root = DATA_DIR / "models"
-    root.mkdir(parents=True, exist_ok=True)
-    temp = root / f".{uuid.uuid4().hex}.discovered-model"
-    digest = hashlib.sha256()
-    copied = 0
-    try:
-        with source.open("rb") as origin, temp.open("xb") as target:
-            while chunk := origin.read(4 * 1024 * 1024):
-                copied += len(chunk)
-                if copied > 1024 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="发现的母模型超过 1GiB")
-                digest.update(chunk)
-                target.write(chunk)
-            target.flush()
-            os.fsync(target.fileno())
-        if copied != size:
-            raise HTTPException(status_code=409, detail="扫描后模型内容已变化，请重新扫描")
-        suffix = digest.hexdigest()[:16]
-        destination = root / f"discovered-{suffix}.pt"
-        with FileLock(str(root / f".discovered-{suffix}.lock"), timeout=30):
-            if destination.exists():
-                if destination.stat().st_size != copied or sha256_file(destination) != digest.hexdigest():
-                    raise HTTPException(status_code=409, detail="已存在同名但内容不同的母模型")
-                reused = True
-            else:
-                os.replace(temp, destination)
-                reused = False
-        asset = _register_mother_model_asset(DATA_DIR, destination, digest.hexdigest(), source="controller_discovery")
-        return {"ok": True, "reused": reused, "asset_id": asset["asset_id"],
-                "validation_status": asset["validation_status"], "sha256": digest.hexdigest()}
-    except Timeout as error:
-        raise HTTPException(status_code=409, detail="模型正在登记，请稍后重试") from error
-    finally:
-        temp.unlink(missing_ok=True)
+    return _runtime_catalog_service().register_discovered_mother_model(payload)
 
 
-@app.post("/api/v63/base-models/assets/{asset_id}/verify", status_code=202)
 def verify_mother_model_asset(asset_id: str):
-    """Trigger a fenced, local sandbox probe; never deserialize in Web."""
-    if not re.fullmatch(r"pt_[0-9a-f]{24}", asset_id):
-        raise HTTPException(status_code=422, detail="母模型资产编号格式不正确")
-    asset = _get_mother_model_asset(DATA_DIR, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="母模型资产不存在")
-    path = Path(str(asset.get("path") or ""))
-    if not path.is_file() or path.stat().st_size != asset.get("size_bytes"):
-        raise HTTPException(status_code=409, detail="母模型文件已丢失或大小变化，请重新上传")
-    # The registry already uses FileLock. Keep the same asset owner and use a
-    # per-asset OS lock across Web workers, not a process-local _active set.
-    lock = FileLock(str(DATA_DIR / "models" / f".{asset_id}.verify.lock"), timeout=0, thread_local=False)
-    try:
-        lock.acquire(timeout=0)
-    except Timeout:
-        return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING", "deduplicated": True}
-
-    def run_probe():
-        try:
-            result = _verify_official_mother_model_checkpoint(path) or _verify_mother_model_checkpoint(path)
-            if path.is_file() and sha256_file(path) == asset["sha256"]:
-                _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, **result, "verified_at": time.time()})
-            else:
-                _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "INVALID", "trainable": False, "validation_error": "PT_SHA256_CHANGED"})
-        except Exception:
-            logger.exception("Mother model sandbox probe failed for asset %s", asset_id)
-            _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "FAILED", "trainable": False, "validation_error": "PT_PROBE_FAILED"})
-        finally:
-            lock.release()
-
-    try:
-        _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "CHECKING", "trainable": False, "validation_started_at": time.time()})
-        threading.Thread(target=run_probe, name=f"mother-model-verify-{asset_id}", daemon=True).start()
-    except Exception:
-        lock.release()
-        raise
-    return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING"}
+    return _runtime_catalog_service().verify_mother_model_asset(asset_id)
 
 
-@app.get("/api/base_models")
-def list_base_models(project_id: Optional[str] = None):
-    """训练页基础模型下拉框。区分 Ultralytics 可训练权重和飞桨模型源。"""
-    items: List[Dict[str, Any]] = _prepared_mother_model_rows()
-    for name in ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt"]:
-        resolution = resolve_ultralytics_model(name, project_id)
-        items.append({
-            "label": f"官方 Ultralytics：{name}",
-            "value": name,
-            "source": "official",
-            "framework_key": "ultralytics",
-            "train_framework": "ultralytics",
-            "trainable": True,
-            "note": "已发现本地权重。" if resolution.found else "尚未预置，须先在训练资源上传，训练时不自动下载。",
-            **resolution.as_dict(),
-        })
-    active_env = get_active_ultralytics_env()
-    for m in active_env.get("models", []) if isinstance(active_env.get("models", []), list) else []:
-        candidate = Path(str(m.get("path") or ""))
-        if candidate.suffix.lower() == ".pt" and candidate.is_file() and candidate.stat().st_size >= 1024:
-            items.append({
-                "label": f"已检测 Ultralytics 环境模型：{m.get('name')}",
-                "value": m.get("path"),
-                "source": "ultralytics_env",
-                "framework_key": "ultralytics",
-                "train_framework": "ultralytics",
-                "trainable": True,
-                "note": f"来自已保存 Ultralytics 环境：{active_env.get('root', '')}",
-                "model_status": "FOUND",
-                "downloadable": False,
-                "environment_status": str(active_env.get("status") or "AVAILABLE").upper(),
-            })
-    if project_id:
-        try:
-            for m in list_models_internal(project_id):
-                if m.get("type") == "pt":
-                    items.append({
-                        "label": f"当前项目模型：{m['name']}",
-                        "value": m["path"],
-                        "source": "project",
-                        "framework_key": "ultralytics",
-                        "train_framework": "ultralytics",
-                        "trainable": True,
-                        "note": "可基于上一次 best.pt 继续训练。",
-                        "model_status": "FOUND",
-                        "downloadable": False,
-                        "environment_status": str(active_env.get("status") or "AVAILABLE").upper(),
-                    })
-        except Exception:
-            pass
-    local = read_json(LOCAL_MODELS_FILE, {})
-    for m in (local.get("items", []) if isinstance(local, dict) else []):
-        local_candidate = Path(str(m.get("path") or ""))
-        if m.get("trainable_current_platform") and local_candidate.suffix.lower() == ".pt" and local_candidate.is_file() and local_candidate.stat().st_size >= 1024:
-            items.append({
-                "label": f"本机 .pt：{m.get('name')}",
-                "value": m.get("path"),
-                "source": "local_scan",
-                "framework_key": "ultralytics",
-                "train_framework": "ultralytics",
-                "trainable": True,
-                "note": m.get("note") or "本机路径只适合本机训练。",
-                "model_status": "FOUND",
-                "downloadable": False,
-                "environment_status": str(active_env.get("status") or "AVAILABLE").upper(),
-            })
-        elif m.get("trainable_paddle"):
-            items.append({
-                "label": f"本机飞桨权重：{m.get('name')}",
-                "value": m.get("path"),
-                "source": "local_scan",
-                "framework_key": "paddle",
-                "train_framework": "paddle",
-                "trainable": False,
-                "note": "这是飞桨训练权重，需要 PaddleX/PaddleDetection 训练执行器；不能直接用于 Ultralytics 训练。"
-            })
-        elif m.get("framework_key") == "paddle_service":
-            model_name = m.get("detected_model_name") or "PP-YOLOE-S_human"
-            items.append({
-                "label": f"飞桨服务脚本：{model_name}",
-                "value": model_name,
-                "source": "local_scan",
-                "framework_key": "paddle_service",
-                "train_framework": "paddle",
-                "trainable": False,
-                "note": "这是通过 create_model 加载的服务脚本，可用于推理/预标注；不是独立训练权重。"
-            })
-    return {"ok": True, "items": items}
+def list_base_models(project_id: Optional[str]=None):
+    return _runtime_catalog_service().list_base_models(project_id)
 
 
 
@@ -6993,19 +6383,12 @@ def training_options(project_id: Optional[str] = None):
     return {"ok": True, "targets": options}
 
 
-class TrainServerReq(BaseModel):
-    name: str
-    base_url: str
-    api_key: Optional[str] = ""
+from platform_core.runtime_catalog_contracts import TrainServerReq
 
 
 
 
-class PaddleEnvReq(BaseModel):
-    name: str = "本机飞桨"
-    python_path: Optional[str] = ""
-    paddledet_dir: Optional[str] = ""
-    paddlex_dir: Optional[str] = ""
+from platform_core.runtime_catalog_contracts import PaddleEnvReq
 
 
 def get_active_paddle_env() -> Dict[str, Any]:
@@ -7015,47 +6398,19 @@ def get_active_paddle_env() -> Dict[str, Any]:
     return env
 
 
-@app.get("/api/paddle_env")
+app.include_router(create_runtime_catalog_router_5(_runtime_catalog_service))
+
+
 def get_paddle_env():
-    return {"ok": True, "active": get_active_paddle_env(), "updated_at": now_iso()}
+    return _runtime_catalog_service().get_paddle_env()
 
 
-@app.post("/api/paddle_env/select")
 def select_paddle_env(payload: PaddleEnvReq):
-    env = {
-        "name": payload.name or "本机飞桨",
-        "python_path": (payload.python_path or sys.executable).strip().strip('"'),
-        "paddledet_dir": (payload.paddledet_dir or os.environ.get("MC_PADDLEDET_DIR", "")).strip().strip('"'),
-        "paddlex_dir": (payload.paddlex_dir or os.environ.get("MC_PADDLEX_DIR", "")).strip().strip('"'),
-        "updated_at": now_iso(),
-    }
-    if env["python_path"] and not Path(env["python_path"]).exists():
-        raise HTTPException(status_code=400, detail="飞桨 Python 路径不存在")
-    if env["paddledet_dir"] and not Path(env["paddledet_dir"]).exists():
-        # 允许先保存但标记不可训练，避免用户只是先配置地址
-        env["warning"] = "PaddleDetection 目录不存在，飞桨训练会失败；请先安装或修正目录。"
-    elif env["paddledet_dir"]:
-        scan = scan_paddledet_algorithms(env["paddledet_dir"])
-        env["algorithm_scan"] = scan
-        env["weight_scan"] = scan_paddle_weights(env["paddledet_dir"])
-    atomic_write_json(PADDLE_ENV_FILE, env)
-    return {"ok": True, "active": env}
+    return _runtime_catalog_service().select_paddle_env(payload)
 
 
-@app.post("/api/paddle_env/test")
 def test_paddle_env(payload: PaddleEnvReq):
-    py = (payload.python_path or sys.executable).strip().strip('"')
-    if not Path(py).exists():
-        raise HTTPException(status_code=400, detail="Python 路径不存在")
-    code = "import json\nmods={}\nfor m in ['paddle','paddlex']:\n    try:\n        mod=__import__(m); mods[m]=getattr(mod,'__version__','installed')\n    except Exception as e:\n        mods[m]='missing:'+str(e)\nprint(json.dumps(mods, ensure_ascii=False))"
-    try:
-        cp = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=20)
-        out = (cp.stdout or cp.stderr or "").strip()
-        data = json.loads(out.splitlines()[-1]) if out else {}
-        alg_scan = scan_paddledet_algorithms(payload.paddledet_dir or "") if payload.paddledet_dir else {"ok": False, "items": [], "total": 0, "families": {}, "error": "未填写 PaddleDetection 目录"}
-        return {"ok": True, "python_path": py, "modules": data, "paddledet_exists": Path(payload.paddledet_dir or "").exists(), "paddlex_exists": Path(payload.paddlex_dir or "").exists(), "algorithm_scan": {"ok": alg_scan.get("ok"), "total": alg_scan.get("total",0), "families": alg_scan.get("families",{}), "error": alg_scan.get("error","")}}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"检测失败：{e}")
+    return _runtime_catalog_service().test_paddle_env(payload)
 
 
 def default_paddle_roots() -> List[str]:
@@ -7112,117 +6467,46 @@ def _detect_paddle_candidate(root: Path) -> Optional[Dict[str, Any]]:
 
 
 
-@app.get("/api/paddle_env/algorithms")
 def list_paddle_env_algorithms():
-    env = get_active_paddle_env()
-    scan = scan_paddledet_algorithms(env.get("paddledet_dir", "")) if env.get("paddledet_dir") else {"ok": False, "items": [], "total": 0, "families": {}, "error": "未配置 PaddleDetection 目录"}
-    return {"ok": True, **scan}
+    return _runtime_catalog_service().list_paddle_env_algorithms()
 
 
-@app.post("/api/paddle_env/algorithms/scan")
 def scan_paddle_env_algorithms(payload: PaddleEnvReq):
-    scan = scan_paddledet_algorithms(payload.paddledet_dir or "")
-    return {"ok": True, **scan}
+    return _runtime_catalog_service().scan_paddle_env_algorithms(payload)
 
 
-class PaddleDetectReq(BaseModel):
-    roots: Optional[List[str]] = None
+from platform_core.runtime_catalog_contracts import PaddleDetectReq
 
 
-@app.post("/api/paddle_env/detect")
 def detect_paddle_env(payload: PaddleDetectReq):
-    roots = payload.roots or default_paddle_roots()
-    candidates=[]
-    seen=set()
-    for r in roots:
-        if not r:
-            continue
-        root = Path(str(r).strip().strip('"')).expanduser()
-        key=str(root).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            c=_detect_paddle_candidate(root)
-            if c:
-                candidates.append(c)
-        except Exception:
-            pass
-        if len(candidates)>=10:
-            break
-    active = candidates[0] if candidates else {}
-    return {"ok": True, "candidates": candidates, "active": active}
+    return _runtime_catalog_service().detect_paddle_env(payload)
 
-@app.get("/api/train_servers")
 def list_train_servers():
-    return read_json(SERVERS_FILE, [])
+    return _runtime_catalog_service().list_train_servers()
 
 
-@app.post("/api/train_servers")
 def save_train_server(payload: TrainServerReq):
-    name = payload.name.strip()
-    base_url = payload.base_url.strip().rstrip("/")
-    if not name or not base_url:
-        raise HTTPException(status_code=400, detail="服务器名称和地址不能为空")
-    server_id = uuid.uuid4().hex[:10]
-    item = {"id": server_id, "name": name, "base_url": base_url, "api_key": payload.api_key or "", "created_at": now_iso()}
-    with FileLock(str(SERVERS_FILE) + ".lock", timeout=30):
-        servers = read_json(SERVERS_FILE, [])
-        servers.insert(0, item)
-        atomic_write_json(SERVERS_FILE, servers[:20])
-    return item
+    return _runtime_catalog_service().save_train_server(payload)
 
 
-@app.delete("/api/train_servers/{server_id}")
 def delete_train_server(server_id: str):
-    with FileLock(str(SERVERS_FILE) + ".lock", timeout=30):
-        servers = [s for s in read_json(SERVERS_FILE, []) if s.get("id") != server_id]
-        atomic_write_json(SERVERS_FILE, servers)
-    return {"ok": True}
+    return _runtime_catalog_service().delete_train_server(server_id)
 
 
-@app.post("/api/train_servers/test")
 def test_train_server(payload: TrainServerReq):
-    base_url = payload.base_url.strip().rstrip("/")
-    try:
-        headers = {"X-API-Key": payload.api_key or ""}
-        r = requests.get(f"{base_url}/api/remote/health", headers=headers, timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        # A draft connection test must never overwrite a different saved
-        # identity. Saved entries may reuse the measured capabilities on GET.
-        for saved in read_json(SERVERS_FILE, []):
-            if (str(saved.get("base_url") or "").rstrip("/") == base_url
-                    and str(saved.get("api_key") or "") == str(payload.api_key or "")
-                    and str(saved.get("name") or "") == str(payload.name or "").strip()):
-                caps = {"ok": True, **data} if isinstance(data, dict) else {"ok": False}
-                _record_legacy_health(str(saved.get("id") or ""), saved, caps)
-        return {"ok": True, "response": data}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"连接失败：{e}")
+    return _runtime_catalog_service().test_train_server(payload)
 
 
-@app.post("/api/train_servers/{server_id}/test")
 def test_saved_train_server(server_id: str):
-    """Explicitly probe a configured legacy target; no probe on list/read."""
-    server = next((row for row in read_json(SERVERS_FILE, []) if row.get("id") == server_id), None)
-    if server is None:
-        raise HTTPException(status_code=404, detail="训练服务器不存在")
-    capabilities = _remote_capabilities(server)
-    _record_legacy_health(server_id, server, capabilities)
-    if not capabilities.get("ok"):
-        raise HTTPException(status_code=503, detail="训练服务器检测失败，请检查网络或服务配置")
-    return {"ok": True, "last_checked_at": now_iso()}
+    return _runtime_catalog_service().test_saved_train_server(server_id)
 
 
-@app.get("/api/v62/training-devices")
 def training_devices():
-    return discover_training_devices(training_python(DATA_DIR))
+    return _runtime_catalog_service().training_devices()
 
 
-@app.get("/api/v62/gpu-resources")
 def gpu_resources():
-    return GPUResourceManager(shared_task_repository(), shared_task_artifacts()).summary()
+    return _runtime_catalog_service().gpu_resources()
 
 
 # The creation admission (background confirmation, material-input admission and
@@ -8931,9 +8215,11 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str]=None, incl
     return _material_catalog_service().dataset_quality_report(project_id, dataset_id, include_empty)
 
 
-@app.get("/api/v12/app_info")
+app.include_router(create_runtime_catalog_router_6(_runtime_catalog_service))
+
+
 def v12_app_info():
-    return {"ok": True, "name": APP_DISPLAY_NAME, "version": APP_VERSION}
+    return _runtime_catalog_service().v12_app_info()
 
 
 app.include_router(create_label_directory_router(_material_catalog_service))
@@ -10396,9 +9682,11 @@ def inference_env_items(probe_modules: bool = True) -> List[Dict[str, Any]]:
     return items
 
 
-@app.get("/api/v16/inference_envs")
+app.include_router(create_runtime_catalog_router_7(_runtime_catalog_service))
+
+
 def v16_inference_envs():
-    return {"ok": True, "items": inference_env_items()}
+    return _runtime_catalog_service().v16_inference_envs()
 
 
 def resolve_inference_python(framework: str, env_id: str = "") -> str:
@@ -13733,60 +13021,13 @@ def v33_create_prelabel_task(project_id: str, payload: V33PrelabelTaskReq):
 # ============================================================
 # v35: model configuration + prompt library + framework-aware auto labeling
 # ============================================================
-class V35ModelConfigReq(BaseModel):
-    name: str
-    provider_type: str = "local"  # local / cloud
-    provider_adapter: Optional[str] = ""
-    api_protocol: Literal["auto", "chat_completions", "responses"] = "auto"
-    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] = "auto"
-    coordinate_space: Literal["pixel", "normalized_01", "normalized_1000"] = "pixel"
-    coordinate_order: Literal["xyxy", "yxyx"] = "xyxy"
-    output_protocol: Literal["json_boxes"] = "json_boxes"
-    coordinate_origin: Literal["top_left", "bottom_left"] = "top_left"
-    coordinate_image_space: Literal["original_input", "processed_image"] = "original_input"
-    coordinate_contract_version: Literal[1] = 1
-    model_kind: str = "vision_detect"  # vision_detect / vlm / custom_http
-    base_url: Optional[str] = ""
-    detect_url: Optional[str] = ""
-    health_url: Optional[str] = ""
-    api_key: Optional[str] = ""
-    model_name: Optional[str] = ""
-    request_mode: str = "json_base64"  # json_base64 / multipart_file
-    image_field: str = "image"
-    prompt_field: str = "prompt"
-    threshold_field: str = "threshold"
-    headers_json: Optional[Dict[str, Any]] = None
-    remark: Optional[str] = ""
-    # v42.7: keep ordinary-user workflows simple; the system uses these templates automatically.
-    annotation_prompt_template: Optional[str] = ""
-    # Native WeVisOne detection query for each durable class code; not a chat prompt.
-    wevisone_label_queries: Optional[Dict[str, str]] = None
-    training_intervention_prompt: Optional[str] = ""
-    default_for_annotation: bool = False
-    default_for_training_ai: bool = False
-    enabled: bool = True
+from platform_core.ai_configuration_contracts import V35ModelConfigReq
 
 
-class V35PromptTemplateReq(BaseModel):
-    name: str
-    framework: str = "ultralytics"  # ultralytics / paddle / common
-    task_type: str = "目标检测"
-    labels: Optional[List[str]] = None
-    prompt: str
-    output_schema: str = "bbox_json"
-    model_config_id: Optional[str] = ""
-    threshold: float = 0.5
-    save_format: str = "internal"  # internal / yolo / paddle
-    overwrite: bool = False
-    remark: Optional[str] = ""
+from platform_core.ai_configuration_contracts import V35PromptTemplateReq
 
 
-class V35PromptPreviewReq(BaseModel):
-    prompt: str
-    labels: Optional[List[Dict[str, Any]]] = None
-    image_width: int = 640
-    image_height: int = 480
-    business_instruction: str = ""
+from platform_core.ai_configuration_contracts import V35PromptPreviewReq
 
 
 class V35PrelabelTaskReq(BaseModel):
@@ -13970,299 +13211,60 @@ def _v35_publish_model_config(item=None, *, removed_id=""):
     return public
 
 
-@app.get("/api/v35/model-configs")
+app.include_router(create_ai_configuration_router_2(_ai_configuration_service))
+
+
 def v35_list_model_configs():
-    return {"items": [_v35_sanitize_secret(x) for x in _v35_model_items()]}
+    return _ai_configuration_service().v35_list_model_configs()
 
 
-@app.post("/api/v35/model-configs")
 def v35_save_model_config(payload: V35ModelConfigReq):
-    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-        name = (payload.name or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="模型名称不能为空")
-        detect_url = (payload.detect_url or payload.base_url or "").strip()
-        if not detect_url:
-            raise HTTPException(status_code=400, detail="检测接口地址不能为空")
-        config_id = uuid.uuid4().hex[:12]
-        item = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-        _v35_normalize_adapter(item)
-        api_key = str(item.pop("api_key", "") or "")
-        if api_key:
-            item["inference_account_identity"] = hashlib.sha256(api_key.encode()).hexdigest()
-        item["headers_json"] = _v35_clean_headers(item.get("headers_json"))
-        if api_key:
-            reference = secret_ref("model-config", config_id)
-            _v35_secret_store().set(reference, api_key)
-            item["secret_ref"] = reference
-        item.update({"coordinate_config_revision": uuid.uuid4().hex, "id": config_id, "name": name, "detect_url": detect_url, "created_at": now_iso(), "updated_at": now_iso()})
-        items = _v35_model_items()
-        _v35_unique_default(items, item)
-        items.insert(0, item)
-        _v35_save_items(MODEL_CONFIGS_FILE, items[:100])
-        return _v35_publish_model_config(item)
+    return _ai_configuration_service().v35_save_model_config(payload)
 
 
-@app.put("/api/v35/model-configs/{config_id}")
 def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
-    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-        items = _v35_model_items()
-        found = False
-        for i, item in enumerate(items):
-            if item.get("id") == config_id:
-                data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-                for field in ("api_protocol", "structured_output"):
-                    if field not in payload.model_fields_set:
-                        data[field] = item.get(field) or "auto"
-                if "enabled" not in payload.model_fields_set:
-                    data["enabled"] = item.get("enabled", True)
-                if "wevisone_label_queries" not in payload.model_fields_set and "wevisone_label_queries" in item:
-                    data["wevisone_label_queries"] = item["wevisone_label_queries"]
-                for field in ("coordinate_space", "coordinate_order", "coordinate_origin", "coordinate_image_space", "output_protocol", "coordinate_contract_version"):
-                    if field not in payload.model_fields_set:
-                        if field in item:
-                            data[field] = item[field]
-                        else:
-                            data.pop(field, None)
-                _v35_normalize_adapter(data)
-                api_key = str(data.pop("api_key", "") or "")
-                if api_key:
-                    data["inference_account_identity"] = hashlib.sha256(api_key.encode()).hexdigest()
-                elif item.get("inference_account_identity"):
-                    data["inference_account_identity"] = item["inference_account_identity"]
-                reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
-                if api_key:
-                    _v35_secret_store().set(reference, api_key)
-                    data["secret_ref"] = reference
-                elif item.get("secret_ref"):
-                    data["secret_ref"] = item.get("secret_ref")
-                data["headers_json"] = _v35_clean_headers(data.get("headers_json"))
-                data.update({"coordinate_config_revision": uuid.uuid4().hex, "id": config_id, "created_at": item.get("created_at") or now_iso(), "updated_at": now_iso()})
-                if not data.get("detect_url"):
-                    data["detect_url"] = data.get("base_url") or item.get("detect_url") or ""
-                data["coordinate_validation"] = {"status": "unverified", "reason": "配置已保存，请重新验证真实样本"}
-                items[i] = data
-                _v35_unique_default(items, data)
-                found = True
-                break
-        if not found:
-            raise HTTPException(status_code=404, detail="模型配置不存在")
-        _v35_save_items(MODEL_CONFIGS_FILE, items)
-        return _v35_publish_model_config(items[i])
+    return _ai_configuration_service().v35_update_model_config(config_id, payload)
 
 
-@app.post("/api/v35/model-configs/{config_id}/capacity-check")
 def v35_check_model_capacity(config_id: str):
-    """Read server evidence only; connection/image checks remain separate."""
-    from platform_core.inference_policy import resolve_inference_policy, config_fingerprint
-    cfg = next((row for row in _v35_model_items() if row.get("id") == config_id), None)
-    if cfg is None:
-        raise HTTPException(status_code=404, detail="模型配置不存在")
-    return {"policy": resolve_inference_policy(cfg), "config_fingerprint": config_fingerprint(cfg),
-            "message": "容量依据运维证据；连接成功或图片解析通过不能证明双实例。未证明时串行。"}
+    return _ai_configuration_service().v35_check_model_capacity(config_id)
 
 
-@app.delete("/api/v35/model-configs/{config_id}")
 def v35_delete_model_config(config_id: str):
-    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-        current = _v35_model_items()
-        removed = next((x for x in current if x.get("id") == config_id), None)
-        items = [x for x in current if x.get("id") != config_id]
-        _v35_save_items(MODEL_CONFIGS_FILE, items)
-        if removed and removed.get("secret_ref"):
-            _v35_secret_store().delete(str(removed.get("secret_ref")))
-        _v35_publish_model_config(removed_id=config_id)
-        return {"ok": True}
+    return _ai_configuration_service().v35_delete_model_config(config_id)
 
 
-class V35ModelAvailabilityReq(BaseModel):
-    enabled: bool
+from platform_core.ai_configuration_contracts import V35ModelAvailabilityReq
 
 
-@app.patch("/api/v35/model-configs/{config_id}/availability")
 def v35_set_model_availability(config_id: str, payload: V35ModelAvailabilityReq):
-    """Change availability without invalidating a saved coordinate proof."""
-    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-        items = _v35_model_items()
-        current = next((row for row in items if row.get("id") == config_id), None)
-        if not current:
-            raise HTTPException(status_code=404, detail="模型配置不存在")
-        current["enabled"] = payload.enabled
-        if not payload.enabled:
-            current["default_for_annotation"] = False
-        _v35_save_items(MODEL_CONFIGS_FILE, items)
-        return _v35_publish_model_config(current)
+    return _ai_configuration_service().v35_set_model_availability(config_id, payload)
 
 
 def _v35_is_vision_provider(config):
     return config.get("model_kind") == "vlm" or config.get("request_mode") == "openai_vision" or (config.get("provider_adapter") or config.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai", "ollama", "wevisone_vl"}
 
 
-@app.post("/api/v35/model-configs/test")
 def v35_test_model_config(payload: V35ModelConfigReq):
-    config = payload.model_dump()
-    if _v35_is_vision_provider(config):
-        _v35_normalize_adapter(config)
-        config["_api_key"] = config.pop("api_key", "") or ""
-        return _v35_test_annotation(config)
-    url = (payload.health_url or payload.detect_url or payload.base_url or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="接口地址为空")
-    headers = dict(payload.headers_json or {})
-    if payload.api_key:
-        headers.setdefault("Authorization", f"Bearer {payload.api_key}")
-    try:
-        r = requests.get(url, headers=headers, timeout=8)
-        text = r.text[:1200]
-        body: Any = text
-        if "json" in r.headers.get("content-type", ""):
-            try:
-                body = r.json()
-            except Exception:
-                pass
-        return {"ok": True, "status_code": r.status_code, "response": body}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"连接失败：{e}")
+    return _ai_configuration_service().v35_test_model_config(payload)
 
 
-@app.post("/api/v35/model-configs/{config_id}/test-annotation")
 def v35_test_saved_model_annotation(config_id: str):
-    cfg = next((item for item in _v35_model_items() if item.get("id") == config_id), None)
-    if not cfg:
-        raise HTTPException(status_code=404, detail="模型配置不存在")
-    if cfg.get("enabled") is False:
-        raise HTTPException(status_code=409, detail="模型配置已停用，请先启用后再测试")
-    runtime_cfg = dict(cfg)
-    reference = str(cfg.get("secret_ref") or "")
-    runtime_cfg["_api_key"] = _v35_secret_store().get(reference) if reference else ""
-    try:
-        result = _v35_test_annotation(runtime_cfg)
-        record = {"status": "protocol_passed", "checked_at": now_iso(),
-                  "no_target": result["no_target"], "model_loaded": result.get("model_loaded"),
-                  "latency_ms": result.get("latency_ms")}
-    except PlatformError as error:
-        record = {"status": "failed", "checked_at": now_iso(),
-                  "code": str(getattr(error, "code", "MODEL_CONNECTION_TEST_FAILED"))}
-        result = None
-        failure = error
-    # Legacy probe used to be read-only; do not silently rewrite pre-revision
-    # configurations merely because someone checks their existing service.
-    if cfg.get("coordinate_config_revision"):
-        with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-            items = _v35_model_items()
-            current = next((item for item in items if item.get("id") == config_id), None)
-            if current and current.get("coordinate_config_revision") == cfg.get("coordinate_config_revision"):
-                current["last_test"] = record
-                _v35_save_items(MODEL_CONFIGS_FILE, items)
-                _v35_publish_model_config(current)
-    if result is None:
-        raise failure
-    return result
+    return _ai_configuration_service().v35_test_saved_model_annotation(config_id)
 
 
-class V35CoordinateSampleReq(BaseModel):
-    image_base64: str
-    labels: List[str]
-    operation: Literal["detect", "segment", "matting"] = "detect"
+from platform_core.ai_configuration_contracts import V35CoordinateSampleReq
 
 
-@app.post("/api/v35/model-configs/{config_id}/verify-coordinates")
 def v35_verify_model_coordinates(config_id: str, payload: V35CoordinateSampleReq):
-    from PIL import ImageOps
-    from platform_core.annotation_runtime import build_annotation_prompt
-    cfg = next((x for x in _v35_model_items() if x.get("id") == config_id), None)
-    if not cfg:
-        raise HTTPException(status_code=404, detail="模型配置不存在")
-    if cfg.get("enabled") is False:
-        raise HTTPException(status_code=409, detail="模型配置已停用，请先启用再验证")
-    if len(payload.image_base64) > 14_000_000 or not payload.labels or len(payload.labels) > 100:
-        raise HTTPException(status_code=400, detail="样本最大 10MB，需提供 1～100 个目标标签")
-    try:
-        raw = base64.b64decode(payload.image_base64, validate=True)
-        if len(raw) > 10_000_000:
-            raise ValueError("图片超过 10MB")
-        with Image.open(BytesIO(raw)) as source:
-            if source.width * source.height > 25_000_000:
-                raise ValueError("图片超过 2500 万像素")
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            width, height = image.size
-            buffer = BytesIO()
-            image.save(buffer, format="JPEG", quality=95)
-    except Exception as error:
-        raise HTTPException(status_code=400, detail="无效或过大的真实样本图片") from error
-    runtime_cfg = dict(cfg)
-    reference = str(cfg.get("secret_ref") or "")
-    runtime_cfg["_api_key"] = os.environ.get(reference[4:], "") if reference.startswith("env:") else (_v35_secret_store().get(reference) if reference else "")
-    labels = list(dict.fromkeys(x.strip() for x in payload.labels if x.strip()))
-    if not labels:
-        raise HTTPException(status_code=400, detail="目标标签不能为空")
-    if payload.operation != "detect":
-        if (cfg.get("provider_adapter") or cfg.get("provider_type")) != "wevisone_vl":
-            raise HTTPException(status_code=400, detail="当前模型适配器不支持分割或抠图预览")
-        from platform_core.providers.base import ProviderRequestError
-        try:
-            provider = auto_label_core.provider_factory(runtime_cfg)
-            provider.inspect_model()
-            return provider.preview(payload.operation, image_bytes=buffer.getvalue(), labels=labels)
-        except ProviderRequestError as error:
-            raise PlatformError(code=error.code, message="专用视觉预览失败", detail=str(error), solution=error.solution, status_code=400) from error
-    contract = auto_label_core.coordinate_contract(cfg, legacy=True)
-    if contract["coordinate_space"] == "legacy_auto":
-        raise HTTPException(status_code=400, detail="请先明确并保存坐标范围，再验证样本")
-    prompt = build_annotation_prompt(cfg, [{"code": x, "class_id": i} for i, x in enumerate(labels)], width=width, height=height, business_instruction="")
-    try:
-        result = _v35_test_annotation(runtime_cfg, image_bytes=buffer.getvalue(), sample_prompt=prompt, sample_labels=labels, sample_size=(width, height))
-    except PlatformError:
-        with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-            items = _v35_model_items()
-            current = next((x for x in items if x.get("id") == config_id), None)
-            if current is not None and (current.get("coordinate_config_revision") or current.get("updated_at")) == (cfg.get("coordinate_config_revision") or cfg.get("updated_at")) and current.get("coordinate_validation") == cfg.get("coordinate_validation"):
-                current["coordinate_validation"] = {"status": "failed", "checked_at": now_iso(), "reason": "样本调用或坐标解析不通过，请检查连接、原始输出和坐标合同"}
-                _v35_save_items(MODEL_CONFIGS_FILE, items)
-                _v35_publish_model_config(current)
-        raise
-    # Evidence belongs to this exact saved revision, and is never accepted from clients.
-    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-        revision = cfg.get("coordinate_config_revision") or cfg.get("updated_at")
-        items = _v35_model_items()
-        current = next((x for x in items if x.get("id") == config_id), None)
-        if current is None or (current.get("coordinate_config_revision") or current.get("updated_at")) != revision or current.get("coordinate_validation") != cfg.get("coordinate_validation"):
-            raise HTTPException(status_code=409, detail="验证期间配置已改变，请重试")
-        evidence = {"status": "unverified", "reason": "样本解析通过，需人工检查原始输出与最终框；不代表识别准确率通过", "checked_at": now_iso(), "config_revision": revision, "sample_sha256": hashlib.sha256(raw).hexdigest(), "box_count": len(result["parsed_boxes"]), "receipt": uuid.uuid4().hex, "expires_at_epoch": time.time() + 900, "parsed_boxes_sha256": hashlib.sha256(json.dumps(result["parsed_boxes"], sort_keys=True).encode()).hexdigest()}
-        current["coordinate_validation"] = evidence
-        _v35_save_items(MODEL_CONFIGS_FILE, items)
-        _v35_publish_model_config(current)
-    return {**result, "coordinate_validation": evidence, "coordinate_contract": contract, "image_width": width, "image_height": height, "input_image_url": "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"), "geometry": "EXIF 已校正；发送的 JPEG 与展示图片尺寸一致；无平台裁剪或填充。模型内部变换须由服务按该输入坐标返回。"}
+    return _ai_configuration_service().v35_verify_model_coordinates(config_id, payload)
 
 
-class V35CoordinateConfirmationReq(BaseModel):
-    receipt: str
-    config_revision: str
-    sample_sha256: str
-    positions_confirmed: Literal[True]
+from platform_core.ai_configuration_contracts import V35CoordinateConfirmationReq
 
 
-@app.post("/api/v35/model-configs/{config_id}/confirm-coordinates")
 def v35_confirm_model_coordinates(config_id: str, payload: V35CoordinateConfirmationReq):
-    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
-        items = _v35_model_items()
-        cfg = next((x for x in items if x.get("id") == config_id), None)
-        if not cfg:
-            raise HTTPException(status_code=404, detail="模型配置不存在")
-        evidence = cfg.get("coordinate_validation") or {}
-        if (evidence.get("status") != "unverified" or not evidence.get("receipt")
-            or evidence.get("receipt") != payload.receipt
-            or evidence.get("config_revision") != payload.config_revision
-            or (cfg.get("coordinate_config_revision") or cfg.get("updated_at")) != payload.config_revision
-            or evidence.get("sample_sha256") != payload.sample_sha256
-            or evidence.get("expires_at_epoch", 0) < time.time()
-            or not evidence.get("box_count")):
-            raise HTTPException(status_code=409, detail="样本验证已失效或无有效框，请重新验证含目标的真实样本")
-        evidence.update({"status": "verified", "confirmed_at": now_iso(), "reason": "已人工确认此真实样本的框位置；仅验证当前配置和样本，不代表模型整体准确率"})
-        evidence.pop("receipt", None)
-        cfg["coordinate_contract_version"] = 1
-        _v35_save_items(MODEL_CONFIGS_FILE, items)
-        return _v35_publish_model_config(cfg)
+    return _ai_configuration_service().v35_confirm_model_coordinates(config_id, payload)
 
 
 def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, sample_labels=None, sample_size=(128, 128)):
@@ -14332,66 +13334,24 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
         ) from error
 
 
-@app.get("/api/v35/prompt-templates")
 def v35_list_prompt_templates():
-    return {"items": _v35_prompt_items()}
+    return _ai_configuration_service().v35_list_prompt_templates()
 
 
-@app.post("/api/v35/prompt-templates")
 def v35_save_prompt_template(payload: V35PromptTemplateReq):
-    name = (payload.name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="模板名称不能为空")
-    if not (payload.prompt or "").strip():
-        raise HTTPException(status_code=400, detail="提示词不能为空")
-    _v35_validate_prompt(payload.prompt)
-    data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-    data["name"] = name
-    item = version_template(data, template_id=uuid.uuid4().hex[:12], now=now_iso())
-    items = _v35_prompt_items()
-    items.insert(0, item)
-    _v35_save_items(PROMPT_LIBRARY_FILE, items[:200])
-    return item
+    return _ai_configuration_service().v35_save_prompt_template(payload)
 
 
-@app.put("/api/v35/prompt-templates/{template_id}")
 def v35_update_prompt_template(template_id: str, payload: V35PromptTemplateReq):
-    if not (payload.name or "").strip():
-        raise HTTPException(status_code=400, detail="模板名称不能为空")
-    if not (payload.prompt or "").strip():
-        raise HTTPException(status_code=400, detail="提示词不能为空")
-    _v35_validate_prompt(payload.prompt)
-    items = _v35_prompt_items()
-    for i, item in enumerate(items):
-        if item.get("id") == template_id:
-            payload_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-            data = version_template(payload_data, template_id=template_id, now=now_iso(), previous=item)
-            items[i] = data
-            _v35_save_items(PROMPT_LIBRARY_FILE, items)
-            return data
-    raise HTTPException(status_code=404, detail="提示词模板不存在")
+    return _ai_configuration_service().v35_update_prompt_template(template_id, payload)
 
 
-@app.delete("/api/v35/prompt-templates/{template_id}")
 def v35_delete_prompt_template(template_id: str):
-    items = [x for x in _v35_prompt_items() if x.get("id") != template_id]
-    _v35_save_items(PROMPT_LIBRARY_FILE, items)
-    return {"ok": True}
+    return _ai_configuration_service().v35_delete_prompt_template(template_id)
 
 
-@app.post("/api/v35/prompt-templates/preview")
 def v35_preview_prompt_template(payload: V35PromptPreviewReq):
-    try:
-        rendered = render_prompt(
-            payload.prompt,
-            labels=payload.labels or [],
-            width=payload.image_width,
-            height=payload.image_height,
-            business_instruction=payload.business_instruction,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"rendered_prompt": rendered, "version_id": template_version_id(payload.prompt)}
+    return _ai_configuration_service().v35_preview_prompt_template(payload)
 
 
 def _v35_resolve_model_and_prompt(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:

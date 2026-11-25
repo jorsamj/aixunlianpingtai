@@ -3,6 +3,7 @@
 MC_PERF_AUDIT_OUTPUT may name an isolated report directory. SQL values/paths are
 never recorded. Timings are instrumented Windows/Linux test data, not production.
 """
+from platform_core.project_management_service import ProjectManagementService
 import json
 import math
 import os
@@ -160,7 +161,7 @@ def test_bootstrap_cached_snapshot_history_scaling(tmp_path, monkeypatch):
     repository=TaskRepository(tmp_path/'task_runtime'/'tasks.sqlite3')
     monkeypatch.setattr(api,'get_project',lambda p:{'id':p})
     monkeypatch.setattr(api,'project_dir',lambda p:project)
-    monkeypatch.setattr(api,'list_projects',lambda:[{'id':'audit'}])
+    monkeypatch.setattr(ProjectManagementService,'list_projects',staticmethod(lambda:[{'id':'audit'}]))
     monkeypatch.setattr(api,'shared_task_repository',lambda:repository)
     monkeypatch.setattr(api,'algorithm_store_revision',lambda _:0)
     monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{'status':'ready','active_project_id':'audit'})
@@ -583,7 +584,7 @@ def test_legacy_maintenance_dispatches_without_a_get(tmp_path,monkeypatch):
     repository=TaskRepository(tmp_path/'task_runtime'/'tasks.sqlite3')
     monkeypatch.setattr(api,'get_project',lambda p:{'id':p})
     monkeypatch.setattr(api,'project_dir',lambda p:project)
-    monkeypatch.setattr(api,'list_projects',lambda:[{'id':'legacy'}])
+    monkeypatch.setattr(ProjectManagementService,'list_projects',staticmethod(lambda:[{'id':'legacy'}]))
     monkeypatch.setattr(api,'shared_task_repository',lambda:repository)
     monkeypatch.setattr(api,'_TRAINING_HISTORY_PROJECTION',TrainingHistoryProjection())
     monkeypatch.setattr(api,'_TRAINING_JOB_PROJECTIONS',{})

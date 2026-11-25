@@ -211,3 +211,7 @@ M3-C 审计整改后，报告将请求配置、实际执行值和来源未标注
 ## 2026-11-25 AI 审核与训练管理后端模块化
 
 前端和全部入口不变。AI 33、清洗 7、训练管理 11、评测/难样本/补充数据/算法报告 14 个原接口分别由 ai_annotation、cleaning_management、training_management、training_evaluation 的 API/Service/Contracts 持有；正式 GT、CandidateStore、冻结、TaskRuntime、反馈 Repository、Worker 与 legacy 运行访问器仍唯一。两种同名选择请求保留原字段与各自绑定。A f68fa366 / B 7044815c，C/最终见所在提交及交付消息。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；仅静态核验，运行期/实际体验未验，不代表后端所有业务已迁完。见[本批范围与剩余 Owner](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。
+
+## 2026-11-25 剩余后端集中迁移
+
+前端、菜单、入口及 HTTP 产品合同保持。转换交付/部署验证 34、统一导入/存储扫描/视频/检测审核 42、项目/存储/AI/运行资源配置 67 个既有接口进入对应领域 API/Service（有实际模型才设 Contracts）；原转换器、上传/ZIP/存储、GT、TaskRuntime、发布、SecretStore/Session 与 Worker 唯一 Owner 不变，无新执行模式。A 1c5f6de6 / B 4492a17d；C/最终见所在提交和交付消息。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING，仅静态核验，运行期、生产和实际体验未验；根生命周期及未迁旧业务见[本批边界](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)。

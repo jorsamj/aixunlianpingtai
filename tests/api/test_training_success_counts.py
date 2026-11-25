@@ -1,3 +1,4 @@
+from platform_core.project_management_service import ProjectManagementService
 from platform_core.training_evaluation_service import TrainingEvaluationService
 from dataclasses import replace
 import json
@@ -68,7 +69,7 @@ def test_bootstrap_core_does_not_wait_for_background_ready(client, monkeypatch):
     project = client.post('/api/projects', json={'name': 'cold-core', 'labels': []}).json()
     monkeypatch.setattr(platform, '_V53_BOOTSTRAP_STATUS', {'status': 'running', 'stage': '读取素材索引'})
     monkeypatch.setattr(platform, '_V53_BOOTSTRAP_SNAPSHOT', {})
-    monkeypatch.setattr(platform, 'list_projects', lambda: [project])
+    monkeypatch.setattr(ProjectManagementService, 'list_projects', staticmethod(lambda: [project]))
     response = client.get('/api/v53/bootstrap/snapshot',params={'core':False})
     assert response.status_code == 200, response.text
     assert response.json()['project']['id'] == project['id']

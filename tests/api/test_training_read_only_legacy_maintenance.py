@@ -1,4 +1,5 @@
 """Old training queues must not depend on an operator opening a GET page."""
+from platform_core.project_management_service import ProjectManagementService
 import json
 
 import app as api
@@ -20,7 +21,7 @@ def _legacy_fixture(tmp_path, monkeypatch):
     repository = TaskRepository(tmp_path / "runtime" / "tasks.sqlite3")
     monkeypatch.setattr(api, "get_project", lambda _project_id: {"id": "legacy"})
     monkeypatch.setattr(api, "project_dir", lambda _project_id: project)
-    monkeypatch.setattr(api, "list_projects", lambda: [{"id": "legacy"}])
+    monkeypatch.setattr(ProjectManagementService, "list_projects", staticmethod(lambda: [{"id": "legacy"}]))
     monkeypatch.setattr(api, "shared_task_repository", lambda: repository)
     monkeypatch.setattr(api, "_TRAINING_HISTORY_PROJECTION", TrainingHistoryProjection())
     monkeypatch.setattr(api, "_TRAINING_JOB_PROJECTIONS", {})

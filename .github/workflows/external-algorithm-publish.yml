@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/storage_configuration_*.py
       - platform_core/conversion_management_*.py
       - platform_core/deployment_validation_*.py
       - platform_core/algorithm_catalog_api.py
@@ -46,6 +47,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/storage_configuration_*.py
       - platform_core/conversion_management_*.py
       - platform_core/deployment_validation_*.py
       - platform_core/algorithm_catalog_api.py
@@ -113,7 +115,7 @@ jobs:
         run: |
           grep -Fq 'def test_artifact_storage(' platform_core/model_artifacts.py
           grep -Fq 'service.model_assets.test_artifact_storage(' platform_core/external_algorithm_publish.py
-          grep -Fq ').test_storage(source_id)' app.py
+          grep -Fq ').test_storage(source_id)' platform_core/storage_configuration_service.py
           grep -Fq 'self.bucket.get_bucket_info()' platform_core/storage/oss.py
           if grep -Fq 'list_buckets' platform_core/model_artifacts.py; then
             echo 'artifact storage test must not require ListBuckets' >&2

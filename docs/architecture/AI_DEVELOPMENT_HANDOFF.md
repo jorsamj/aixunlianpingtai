@@ -280,3 +280,11 @@ B：327023ff399263e93b261c68cf08f5c534622bfc，完成素材浏览、数据集目
 基线 47b7900b4b1dffc9594b14bff9f7e392269d132b，用户核验 22 个 PR workflow 为 21 SUCCESS / 1 FAILURE。A f68fa3669609304cad0b2a48174d372bac814ef7：两处唯一性测试使用 FastAPI iter_route_contexts，有旧版扁平路由回退；唯一注册、真实 endpoint、OpenAPI、请求模型及私有审核字段断言保留。B 7044815c295777ab335da4526c0f16ba271ca423：AI 创建/查询/草稿/冻结/审核/正式入库/转池/C2-B 33 接口及清洗全生命周期 7 接口迁入两个业务模块。C/最终实现 SHA 见本节所在提交及交付消息：训练管理 11 接口、评测/对比/意见/难样本/补充数据冻结/算法报告 14 接口迁入 training_management 与 training_evaluation。
 
 原 CandidateStore、AnnotationRepository、TaskRuntime、Worker、冻结、GT 屏障、幂等及取消对账 Owner 保留；无新任务体系或数据库。app.py 27,303→23,708 行、直接 HTTP 286→221；112 个业务/辅助函数及 19 个模型 AST、接口有序签名与两个同名选择模型绑定保持。旧守卫和故障注入定位至真实 Owner。开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING；仅语法/符号/AST/装配/Git 检查，运行期和新增 65 接口有效路由合同交既有 CI。前端、VERSION、AGENTS、四份保护文档和生产未动。剩余与验证边界见[模块记录](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节。统一推送后一次准确完整 SHA CI 快照，停止等待独立审计。
+
+## 2026-11-25 剩余后端业务集中迁移
+
+起点 4d98b1f7bc7de3f7ed55f2e566017532db78517b；开工准确 SHA 的 22 项 PR CI 快照为 2 SUCCESS / 20 QUEUED，无已完成失败，未据此宣称验收。A 1c5f6de615254137a6326a81c7f37fd02869bb69：转换管理/交付 27 接口、部署验证 7 接口。B 4492a17d2518a5bf0bf66107902093b4fb546332：统一素材/ZIP/上传导入 25、存储扫描/确认 10、视频 4、检测批次 3 接口。C/最终 SHA 见本节所在提交及交付消息：项目 5、存储配置 6、AI 模型/Prompt/旧服务配置 19、运行资源目录与配置 37 接口。
+
+累计迁出 143 个接口、198 个业务/辅助函数和 30 个模型；app.py 23,708→18,503 行，直接 HTTP 221→78。原 URL/Method/operationId 输入、参数/默认值/响应、顺序、鉴权和事务保持。转换器、Worker、TaskRuntime、发布仓储、GT、ZIP 引擎、SecretStore、缓存/锁及 Session 唯一 Owner 继续复用，未新增执行模式。select_ultralytics_env 因原全局环境生命周期写入留在应用根；认证、后台恢复和共享文件/仓储访问器亦保留。迁入母模型沙箱探测的历史未绑定 logger 依赖接到原 logging，未改验证器。
+
+开发 FUNCTIONAL_COMPLETE / 验收 CI_PENDING。本机仅语法/符号/AST/装配/守卫/Git 检查，143 接口有效路由与既有运行期合同全部交现有 CI；保护文档、VERSION、AGENTS、产品前端与生产不变。尚余旧推理/数据集构建导出、v42 编排、bootstrap、认证及生命周期等原根职责；旧 v12_test_models 的历史未定义 artifact 兼容符号仍需定向核验，不掩盖为本轮完成。详见[本批真实范围与边界](BACKEND_ALGORITHM_CATALOG_MODULARIZATION_20261125.md)末节。统一推送后只查一次最终完整 SHA CI，停止交独立审计。
