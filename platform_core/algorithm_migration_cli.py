@@ -46,7 +46,6 @@ from .algorithm_cutover import (
 )
 from .algorithm_migration import (
     verify_migration,
-    CONTRACT_VERSION_V2,
     export_source_snapshot_v2,
     AlgorithmMigrationError,
     build_report,

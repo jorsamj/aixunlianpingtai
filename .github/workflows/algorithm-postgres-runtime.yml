@@ -94,6 +94,21 @@ jobs:
             --junitxml=postgres-contracts.xml \
             tests/integration/test_algorithm_shadow_postgres.py \
             tests/integration/test_algorithm_migration_postgres.py
+      - name: Static migration-surface checks
+        if: always()
+        run: |
+          # Import-time failures (a renamed constant) and undefined names are
+          # caught here before any database contract runs.
+          python -c "import platform_core.algorithm_migration, platform_core.algorithm_migration_cli, platform_core.algorithm_cutover"
+          python -m pip install --disable-pip-version-check ruff
+          python -m ruff check --select F821,F823,F811 --no-fix \
+            platform_core/algorithm_migration.py \
+            platform_core/algorithm_migration_cli.py \
+            platform_core/algorithm_cutover.py \
+            platform_core/algorithm_shadow.py \
+            platform_core/algorithm_postgres_store.py \
+            platform_core/algorithm_repository.py \
+            platform_core/algorithm_sql_store.py
       - name: Algorithm provider boundary contracts
         if: always()
         run: |

@@ -2465,7 +2465,16 @@ def recover_maintenance(
                 operation_id=operation, phase=MAINTENANCE_ROLLBACK_APPLIED,
                 durable_phase=MAINTENANCE_ROLLBACK_QUIESCING,
             )
-            rolled_contract = str(record.get("snapshot_contract") or "")
+            rolled_contract = str(
+                record.get("snapshot_contract")
+                or current.get("snapshot_contract") or ""
+            )
+            if rolled_contract not in (SNAPSHOT_CONTRACT_V1, SNAPSHOT_CONTRACT_V2):
+                result["next_step"] = (
+                    "the durable rollback evidence does not name a provable "
+                    "snapshot contract; the marker and barrier are kept"
+                )
+                return result
             restored_source = (
                 export_source_snapshot_v2(db_path, project_id)
                 if rolled_contract == SNAPSHOT_CONTRACT_V2
@@ -2483,6 +2492,12 @@ def recover_maintenance(
                 generation=int(record["writer_generation"]),
                 source_provider=PROVIDER_SQLITE, target_provider=PROVIDER_POSTGRESQL,
                 snapshot_digest=str(record.get("snapshot_digest") or ""),
+                content_digest=str(record.get("content_digest") or ""),
+                source_revision=current.get("source_revision"),
+                snapshot_contract=str(
+                    record.get("snapshot_contract")
+                    or current.get("snapshot_contract") or ""
+                ),
                 verification_digest=str(current.get("verification_digest") or ""),
                 operator=operator, reason=reason,
             ),

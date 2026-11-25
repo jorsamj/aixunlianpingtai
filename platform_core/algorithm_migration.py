@@ -1452,8 +1452,28 @@ def build_report(
     )
 
     # content digest --------------------------------------------------------
-    source_content = content_digest(source)
-    target_content = content_digest(target) if target is not None else None
+    # The comparison domain set is the source's real domain set: a V1 document
+    # is compared over three domains even when the target export carries the
+    # fourth (empty) domain, and a V2 document over four.
+    comparable_names = [
+        *TABLES, *(("cleanup",) if source_has_cleanup else ()),
+    ]
+    source_content = _digest({
+        "project_id": project_id,
+        "algorithm_revision": int(source["algorithm_revision"]),
+        "tables": {name: source_tables.get(name) or [] for name in comparable_names},
+    })
+    target_content = (
+        _digest({
+            "project_id": project_id,
+            "algorithm_revision": int(target.get("algorithm_revision") or 0),
+            "tables": {
+                name: (target_tables or {}).get(name) or []
+                for name in comparable_names
+            },
+        })
+        if target is not None and target_tables is not None else None
+    )
     checks["content_digest"] = _check(
         target is not None and source_content == target_content,
         source=source_content,
@@ -1557,7 +1577,7 @@ def restore_source_snapshot(
         )
     expected = str(assessment.get("restore_content_digest") or "")
     normalized = normalized_tables(snapshot)
-    if expected and content_digest(snapshot) != expected:
+    if not expected or content_digest(snapshot) != expected:
         raise AlgorithmMigrationError(
             "ALGORITHM_ROLLBACK_SNAPSHOT_CHANGED",
             "snapshot content no longer matches the assessed rollback evidence",
@@ -1610,8 +1630,8 @@ def restore_source_snapshot(
             )
             restored_snapshot = _snapshot_from_tables(
                 str(project_id), int(snapshot["algorithm_revision"]), restored,
-                contract_version=SNAPSHOT_CONTRACT_V2 if is_v2 else CONTRACT_VERSION,
-                schema_version=SNAPSHOT_SCHEMA_V2 if is_v2 else SCHEMA_VERSION,
+                contract_version=SNAPSHOT_CONTRACT_V2 if is_v2 else SNAPSHOT_CONTRACT_V1,
+                schema_version=SNAPSHOT_SCHEMA_V2 if is_v2 else SNAPSHOT_SCHEMA_V1,
                 cleanup_capability=(
                     str(snapshot.get("cleanup_capability") or "PRESENT")
                     if is_v2 else None
