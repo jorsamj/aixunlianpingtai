@@ -26,7 +26,6 @@ def create_task_query_router(
         get_project(project_id)
         if reader_view:
             from platform_core.training_reader_views import task_display,attach_version_refs
-            from platform_core.algorithm_sql_store import AlgorithmSqlStore
             try:
                 kinds=(TaskKind.TRAINING,TaskKind.TRAINING_PREPARE) if not kind else (TaskKind(str(kind).upper()),)
                 if any(item not in (TaskKind.TRAINING,TaskKind.TRAINING_PREPARE) for item in kinds):raise ValueError('只读训练中心仅支持训练及准备任务')
@@ -78,7 +77,6 @@ def create_task_query_router(
     def get_unified_runtime_task(project_id: str, task_id: str, reader_view: bool=False):
         if reader_view:
             from platform_core.training_reader_views import task_display,attach_version_refs
-            from platform_core.algorithm_sql_store import AlgorithmSqlStore
             task=_runtime_task_for_project(project_id,task_id)
             if task.kind not in (TaskKind.TRAINING,TaskKind.TRAINING_PREPARE):raise HTTPException(404,detail='训练任务不存在')
             rows=attach_version_refs([task_display(task,shared_task_artifacts(),detail=True)],open_algorithm_repository(algorithms_file(project_id)).training_display_refs([task_id]))

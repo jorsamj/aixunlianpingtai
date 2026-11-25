@@ -15,7 +15,6 @@ from fastapi import APIRouter, Query, Request
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
-from .algorithm_sql_store import AlgorithmSqlStore
 from .compute_platform_catalog import compute_platform_catalog
 from .algorithms import list_algorithms
 from .annotations import atomic_write_json

@@ -23,7 +23,6 @@ from pathlib import Path
 import psutil
 from filelock import FileLock, Timeout
 
-from .algorithm_sql_store import AlgorithmSqlStore
 from .task_runtime.models import TaskKind, TaskStatus, utc_now
 from .task_runtime.repository import TERMINAL_STATUSES
 from .task_runtime.payload_publications import VERSION_REF, _native_name

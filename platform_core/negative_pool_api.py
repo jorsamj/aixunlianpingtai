@@ -16,7 +16,6 @@ def create_negative_pool_router(material_store, get_project, public_material, us
         if not algorithm_id:
             return ''  # Legacy project-wide associations remain unconfirmed.
         store = material_store(project_id)
-        from .algorithm_sql_store import AlgorithmSqlStore
         path = store.project_path / 'algorithms.json'
         if not (path.exists() or (path.parent / 'algorithms.sqlite3').exists()):
             raise ValueError('algorithm not found')
@@ -53,7 +52,6 @@ def create_negative_pool_router(material_store, get_project, public_material, us
         result = invoke(lambda: pool(project_id).query(page=page,page_size=page_size,**selected))
         scope_kind = 'requested_labels'
         if selected.get('algorithm_id'):
-            from .algorithm_sql_store import AlgorithmSqlStore
             store = material_store(project_id)
             algorithm = open_algorithm_repository(store.project_path/'algorithms.json').read_one(selected['algorithm_id'])
             if algorithm is None:
