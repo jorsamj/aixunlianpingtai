@@ -17,11 +17,19 @@ def create_negative_pool_router(material_store, get_project, public_material, us
             return ''  # Legacy project-wide associations remain unconfirmed.
         store = material_store(project_id)
         path = store.project_path / 'algorithms.json'
-        if not (path.exists() or (path.parent / 'algorithms.sqlite3').exists()):
-            raise ValueError('algorithm not found')
         identity = str(algorithm_id).strip()
-        if not open_algorithm_repository(path).exists(identity):
-            raise ValueError('algorithm not found')
+        # Existence is decided by the authoritative provider, not by which
+        # SQLite file happens to be on disk: after a cutover the answer lives in
+        # PostgreSQL, and a missing file must not be reported as "not found"
+        # when the project simply uses the other provider.
+        try:
+            repository = open_algorithm_repository(path)
+            if not repository.exists(identity):
+                raise ValueError('algorithm not found')
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError('algorithm not found') from error
         return identity
 
     def invoke(call):

@@ -49,6 +49,7 @@ from platform_core.algorithm_cutover import (
     cutover_status,
     freeze_maintenance_source,
     read_maintenance,
+    recover_maintenance,
     resume_maintenance,
     rollback,
     switch_maintenance_owner,
@@ -856,3 +857,133 @@ def test_rollback_blocks_postgres_and_refuses_after_new_writes(pg):
     assert open_algorithm_repository(
         store.json_path, admission_path=record_path,
     ).revision() >= 1
+
+
+def test_recovery_publishes_a_marker_that_never_reached_postgres(pg):
+    """A marker published before the phase commit is adopted, never guessed."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8rec1-"))
+    store = _store(root, "rec1")
+    snapshot = export_source_snapshot(store.db_path, "rec1")
+    _import(pg, snapshot)
+    record_path = admission_record_path(store.db_path)
+    marker = admission_transition_path(record_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({
+            "schema": "algorithm-maintenance/1",
+            "phase": "QUIESCING",
+            "operation_id": "op-crash-1",
+            "project_id": "rec1",
+            "generation": 0,
+            "source_provider": "sqlite",
+            "target_provider": "postgresql",
+            "write_blocked": True,
+        }),
+        encoding="utf-8",
+    )
+
+    with _connect(pg) as connection:
+        status = recover_maintenance(
+            connection, project_id="rec1", db_path=store.db_path,
+            record_path=record_path,
+        )
+        assert status["applied"] is False
+        assert status["phase"] == "QUIESCING" and status["write_blocked"] is True
+        applied = recover_maintenance(
+            connection, project_id="rec1", db_path=store.db_path,
+            record_path=record_path, apply=True,
+        )
+    assert applied["applied"] is True
+    assert applied["phase"] == "QUIESCING"
+    # The phase is now durable, so PostgreSQL refuses writes even though the
+    # marker could be lost: recovery adopted the marker instead of trusting it.
+    assert read_maintenance_result(pg, "rec1")["operation_id"] == "op-crash-1"
+
+
+def test_recovery_republishes_a_missing_local_admission(pg):
+    """PG owner switched, local admission lost: recovery proves and republishes."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8rec2-"))
+    store = _store(root, "rec2")
+    record_path, window = _window_setup(pg, root, store, "rec2")
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="rec2", db_path=store.db_path,
+            operation_id=window["operation_id"],
+        )
+        verify_maintenance_window(
+            connection, project_id="rec2", operation_id=window["operation_id"],
+            verification_digest=str(frozen["snapshot_digest"]),
+        )
+        switch_maintenance_owner(
+            connection, project_id="rec2", db_path=store.db_path,
+            record_path=record_path, operation_id=window["operation_id"],
+            expected_generation=0, operator="ops", reason="switch",
+            acknowledge_unported=True,
+        )
+    # Simulate the crash window: the settled phase landed, the record did not.
+    record_path.unlink()
+    with _connect(pg) as connection:
+        recovered = recover_maintenance(
+            connection, project_id="rec2", db_path=store.db_path,
+            record_path=record_path, apply=True,
+        )
+    assert recovered["settled"] is True and recovered["write_blocked"] is False
+    republished = json.loads(record_path.read_text(encoding="utf-8"))
+    assert republished["authoritative_provider"] == "postgresql"
+    assert republished["operation_id"] == window["operation_id"]
+    assert republished["writer_generation"] >= 1
+
+
+def test_recovery_clears_only_its_own_settled_marker(pg):
+    """A stale marker on a settled window is cleared; a foreign one is refused."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8rec3-"))
+    store = _store(root, "rec3")
+    record_path, window = _window_setup(pg, root, store, "rec3")
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="rec3", db_path=store.db_path,
+            operation_id=window["operation_id"],
+        )
+        verify_maintenance_window(
+            connection, project_id="rec3", operation_id=window["operation_id"],
+            verification_digest=str(frozen["snapshot_digest"]),
+        )
+        switch_maintenance_owner(
+            connection, project_id="rec3", db_path=store.db_path,
+            record_path=record_path, operation_id=window["operation_id"],
+            expected_generation=0, operator="ops", reason="switch",
+            acknowledge_unported=True,
+        )
+    marker = admission_transition_path(record_path)
+    marker.write_text(
+        json.dumps({
+            "schema": "algorithm-maintenance/1",
+            "phase": "POSTGRES_ACTIVE",
+            "operation_id": window["operation_id"],
+            "project_id": "rec3",
+        }),
+        encoding="utf-8",
+    )
+    with _connect(pg) as connection:
+        settled = recover_maintenance(
+            connection, project_id="rec3", db_path=store.db_path,
+            record_path=record_path, operation_id=window["operation_id"], apply=True,
+        )
+    assert settled["settled"] is True
+    assert not marker.exists()
+    # A foreign operation is refused rather than served or cleared.
+    marker.write_text(
+        json.dumps({"phase": "POSTGRES_ACTIVE", "operation_id": "someone-else"}),
+        encoding="utf-8",
+    )
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmCutoverError) as foreign:
+            recover_maintenance(
+                connection, project_id="rec3", db_path=store.db_path,
+                record_path=record_path, operation_id=window["operation_id"], apply=True,
+            )
+    assert foreign.value.code == "ALGORITHM_MAINTENANCE_OPERATION_MISMATCH"
+    assert marker.exists()

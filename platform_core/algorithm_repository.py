@@ -187,7 +187,6 @@ WRITE_OPERATIONS = frozenset({
 #: outside this set is treated as a write (fail closed), so an undeclared helper
 #: cannot bypass the authority guard.
 _KNOWN_READ_OPERATIONS = frozenset(CORE_OPERATIONS) | frozenset(PRESENTATION_OPERATIONS) | frozenset({
-    "ensure_ready",
 })
 
 
@@ -203,12 +202,18 @@ def is_write_operation(name: str) -> bool:
 class _GuardedStore:
     """Pass-through store wrapper that gates mutating calls on write authority."""
 
-    def __init__(self, store: Any, guard: Any) -> None:
+    def __init__(self, store: Any, guard: Any, ensure_ready: Any = None) -> None:
         object.__setattr__(self, "_wrapped_store", store)
         object.__setattr__(self, "_wrapped_guard", guard)
+        object.__setattr__(self, "_wrapped_ensure_ready", ensure_ready)
 
     def __getattr__(self, name: str) -> Any:
         store = object.__getattribute__(self, "_wrapped_store")
+        if name == "ensure_ready":
+            # Initialization may create schema/history, so it goes through the
+            # adapter's classifier instead of the generic write gate.
+            classified = object.__getattribute__(self, "_wrapped_ensure_ready")
+            return classified or store.ensure_ready
         attribute = getattr(store, name)
         if name.startswith("_"):
             return attribute
@@ -248,7 +253,7 @@ class SqliteAlgorithmRepository:
         # Every mutating store call is routed through the authority guard *and*
         # the shared switch lock, so the check and the write cannot be separated
         # by a cutover that lands in between.
-        self.store = _GuardedStore(store, self._write_guard)
+        self.store = _GuardedStore(store, self._write_guard, self.ensure_ready)
 
     @contextmanager
     def _write_guard(self):
@@ -256,6 +261,32 @@ class SqliteAlgorithmRepository:
         with admission_switch_lock(self.record_path):
             _refuse_stale_sqlite(Path(self.json_path), self.record_path)
             yield
+
+    def ensure_ready(self) -> None:
+        """Create/migrate the catalog under the write owner; validate otherwise.
+
+        ``ensure_ready`` is listed as a read capability, yet on a fresh project
+        (or when a legacy JSON is newer than the SQLite copy) it creates the
+        schema and imports history - a real write. A steady-state catalog only
+        validates its version, so it must not take the switch lock: that would
+        serialise every read behind the maintenance mutex.
+        """
+        if self._needs_initialization():
+            with self._write_guard():
+                self.store.ensure_ready()
+            return
+        self.store.ensure_ready()
+
+    def _needs_initialization(self) -> bool:
+        database = Path(self.store.db_path)
+        if not database.is_file():
+            return True
+        legacy = Path(self.store.json_path)
+        try:
+            return legacy.is_file() and legacy.stat().st_mtime > database.stat().st_mtime
+        except OSError:
+            # Unreadable timestamps must not silently skip the guard.
+            return True
 
     def is_initialized(self) -> bool:
         """True when this project's algorithm catalog already exists on disk.
@@ -408,16 +439,34 @@ def admission_transition_path(record_path: str | Path) -> Path:
     return target.with_name(target.name + ".transition")
 
 
-def admission_switch_lock(record_path: str | Path, *, timeout: float = 5.0):
+#: Suffix of the transition marker that sits next to an admission record.
+_TRANSITION_SUFFIX = ".transition"
+
+
+def _lock_owner_path(path: str | Path) -> Path:
+    """The admission record a lock path belongs to (marker paths included).
+
+    A SQLite writer and the marker publication must contend on the *same* file
+    lock, otherwise publishing the marker does not wait for an already admitted
+    write transaction and the "drain, then block" guarantee is void.
+    """
+    target = Path(path)
+    if target.name.endswith(_TRANSITION_SUFFIX):
+        return target.with_name(target.name[: -len(_TRANSITION_SUFFIX)])
+    return target
+
+
+def admission_switch_lock(path: str | Path, *, timeout: float = 5.0):
     """One mutex shared by a switch publication and every SQLite write.
 
     A SQLite writer holds it across (authority check -> store write) and a
     cutover/rollback holds it across (marker/record publication), so a writer
-    that already passed the check cannot slip a write past the switch boundary.
+    that already passed the check cannot slip a write past the switch boundary
+    and a marker publish always happens after admitted writers drained.
     """
     from filelock import FileLock
 
-    target = Path(record_path)
+    target = _lock_owner_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     return FileLock(str(target) + ".switch.lock", timeout=timeout, thread_local=False)
 

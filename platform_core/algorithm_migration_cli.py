@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 from .algorithm_cutover import (
+    recover_maintenance,
     verify_maintenance_window,
     switch_maintenance_owner,
     resume_maintenance,
@@ -45,6 +46,7 @@ from .algorithm_cutover import (
 from .algorithm_migration import (
     AlgorithmMigrationError,
     build_report,
+    content_digest,
     export_source_snapshot,
     import_snapshot,
     run_status,
@@ -162,6 +164,19 @@ def build_parser() -> argparse.ArgumentParser:
     admit.add_argument("--acknowledge-unported", action="store_true")
     admit.add_argument("--report", help="optional earlier report file to reject staleness")
     admit.add_argument("--admission", help="admission record path")
+
+    recover = sub.add_parser(
+        "maintenance-recover", help="idempotently finish or settle an interrupted window"
+    )
+    recover.add_argument("--db", required=True)
+    recover.add_argument("--dsn")
+    recover.add_argument("--project", required=True)
+    recover.add_argument("--admission")
+    recover.add_argument("--operation-id", default="")
+    recover.add_argument("--operator", default="")
+    recover.add_argument("--reason", default="")
+    recover.add_argument("--acknowledge-unported", action="store_true")
+    recover.add_argument("--apply", action="store_true")
 
     maintenance = sub.add_parser(
         "maintenance-status", help="persisted maintenance phase and next step"
@@ -290,11 +305,41 @@ def main(argv=None) -> int:
                     db_path=args.db,
                     operation_id=window["operation_id"],
                 )
+                # Final import of the *frozen* source, then a real
+                # reconciliation of source against target. The verification
+                # digest is the reconciliation summary, never the frozen source
+                # digest copied across: a shadow import that fell behind a
+                # later legitimate SQLite write is caught here.
+                final_snapshot = export_source_snapshot(args.db, args.project)
+                if content_digest(final_snapshot) != str(frozen.get("snapshot_digest") or ""):
+                    raise AlgorithmCutoverError(
+                        "ALGORITHM_MAINTENANCE_SOURCE_MOVED",
+                        "the source changed after the final freeze",
+                    )
+                import_snapshot(
+                    connection,
+                    final_snapshot,
+                    actor=args.operator or "cutover",
+                    run_id=window["operation_id"],
+                )
+                target_snapshot = export_target_snapshot(connection, args.project)
+                reconciliation = build_report(
+                    final_snapshot, target_snapshot, schema=schema_status(connection)
+                )
+                if reconciliation.get("verdict") != "OK":
+                    raise AlgorithmCutoverError(
+                        "ALGORITHM_MAINTENANCE_RECONCILIATION_FAILED",
+                        "source and target do not reconcile; the window stays blocked",
+                        detail=json.dumps(
+                            reconciliation.get("conditions") or [],
+                            ensure_ascii=False,
+                        )[:800],
+                    )
                 verify_maintenance_window(
                     connection,
                     project_id=args.project,
                     operation_id=window["operation_id"],
-                    verification_digest=str(frozen.get("snapshot_digest") or ""),
+                    verification_digest=str(reconciliation["summary_digest"]),
                 )
                 result = switch_maintenance_owner(
                     connection,
@@ -310,6 +355,24 @@ def main(argv=None) -> int:
                 )
             result.pop("report", None)
             _emit(result)
+            return EXIT_OK
+
+        if args.command == "maintenance-recover":
+            # Explicitly authorised execution; without --apply it is a status read.
+            with _connect(_dsn(args.dsn)) as connection:
+                _emit(
+                    recover_maintenance(
+                        connection,
+                        project_id=args.project,
+                        db_path=args.db,
+                        record_path=_record_path(args),
+                        operation_id=args.operation_id or None,
+                        operator=args.operator,
+                        reason=args.reason,
+                        acknowledge_unported=bool(args.acknowledge_unported),
+                        apply=bool(args.apply),
+                    )
+                )
             return EXIT_OK
 
         if args.command == "maintenance-status":

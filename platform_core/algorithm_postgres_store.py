@@ -290,12 +290,30 @@ class PostgresAlgorithmRepository:
         elif row["revoked_at"] is not None:
             stale_reason = "admission was revoked"
         else:
-            evidence = row.get("evidence")
+            evidence = row.get("evidence") if isinstance(row, Mapping) else None
             phase = ""
+            maintenance: Mapping[str, Any] = {}
             if isinstance(evidence, Mapping):
                 phase = str(evidence.get("phase") or "").strip()
+                raw_maintenance = evidence.get("maintenance")
+                if isinstance(raw_maintenance, Mapping):
+                    maintenance = raw_maintenance
             if phase and phase not in self._WRITABLE_PHASES:
                 stale_reason = f"cutover transition is in phase {phase!r}"
+            elif not phase and str(record.get("admission_mode") or "") == "maintenance":
+                # A maintenance admission always carries its settled phase; an
+                # empty one means the hand-off never completed, so writes are
+                # not provably owned. Legacy admissions predate that contract.
+                stale_reason = "maintenance admission has no persisted phase"
+            elif str(record.get("operation_id") or "") and maintenance and (
+                str(maintenance.get("operation_id") or "")
+                != str(record.get("operation_id") or "")
+            ):
+                stale_reason = (
+                    "persisted maintenance operation "
+                    f"{maintenance.get('operation_id')!r} is not this admission's "
+                    f"{record.get('operation_id')!r}"
+                )
         if stale_reason:
             raise AlgorithmAdmissionRequired(
                 "ALGORITHM_POSTGRES_ADMISSION_STALE",
@@ -678,7 +696,12 @@ class PostgresAlgorithmRepository:
             "AND lower(btrim(candidate #>> '{}')) NOT IN ('nan','-nan','infinity','-infinity','inf','-inf') "
             "AND pg_input_is_valid(btrim(candidate #>> '{}'), 'numeric') "
             # Bound the value so the double-precision cast cannot overflow;
-            "AND abs((candidate #>> '{}')::numeric) <= 1e308 "
+            # The rule scales values <= 1 by 100, so the *scaled* magnitude is
+            # what must fit in double precision; an unrepresentable candidate
+            # falls through to the next priority instead of failing the query.
+            "AND abs((candidate #>> '{}')::numeric) * "
+            "(CASE WHEN (candidate #>> '{}')::numeric > 1 THEN 1 ELSE 100 END) "
+            "<= 1e308 "
             "ORDER BY ord LIMIT 1) c) m ON TRUE "
             "WHERE a.project_id=%s)"
         )
