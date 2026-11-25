@@ -262,8 +262,7 @@ def main(argv=None) -> int:
             snapshot = load_snapshot(args.snapshot)
             with _connect(_dsn(args.dsn)) as connection:
                 target = export_target_snapshot(
-                    connection, snapshot["project_id"],
-                    include_cleanup=str(snapshot.get("contract_version")) == CONTRACT_VERSION_V2,
+                    connection, snapshot["project_id"], include_cleanup=True,
                 )
                 report = build_report(snapshot, target, schema=schema_status(connection))
             if args.out:
@@ -281,8 +280,7 @@ def main(argv=None) -> int:
             )
             with _connect(_dsn(args.dsn)) as connection:
                 target = export_target_snapshot(
-                    connection, args.project,
-                    include_cleanup=str(snapshot.get("contract_version")) == CONTRACT_VERSION_V2,
+                    connection, args.project, include_cleanup=True,
                 )
                 report = build_report(snapshot, target, schema=schema_status(connection))
             if args.out:

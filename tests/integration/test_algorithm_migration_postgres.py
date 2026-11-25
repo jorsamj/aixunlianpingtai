@@ -57,6 +57,7 @@ from platform_core.algorithm_cutover import (
 )
 from platform_core.algorithm_migration import (
     AlgorithmMigrationError,
+    _scan_secret_material,
     build_report,
     content_digest,
     export_source_snapshot,
@@ -83,6 +84,7 @@ from platform_core.algorithm_repository import (
 )
 from platform_core.algorithm_shadow import (
     CONTRACT_VERSION_V2,
+    AlgorithmShadowError,
     _digest,
     _snapshot_body,
     validate_snapshot,
@@ -1352,16 +1354,16 @@ def test_cleanup_ledger_is_served_by_the_postgres_repository(pg):
         other.cleanup_summary(project_id="clean", suspected_state="SUSPECTED_DELETED")
     assert mismatch.value.code == "ALGORITHM_CLEANUP_PROJECT_MISMATCH"
 
-def _seeded_cleanup_store(root):
+def _seeded_cleanup_store(root, project):
     """A SQLite project whose ledger holds one active and one completed receipt."""
-    store = _store(root, "ledger")
+    store = _store(root, project)
     store.cleanup_ensure_schema()
     stamp = "2026-11-01T00:00:00.123456+00:00"
 
     def confirm(operation_id, algorithm_id, product_id, completed=False):
         operation = {
             "operation_id": operation_id, "task_id": "external-cleanup-" + operation_id,
-            "project_id": "ledger", "algorithm_id": algorithm_id, "name": algorithm_id,
+            "project_id": project, "algorithm_id": algorithm_id, "name": algorithm_id,
             "product_id": product_id, "generation": operation_id,
             "state": "CONFIRMED_DELETED", "phase": "confirmed",
             "created_at": stamp, "updated_at": stamp, "error": "", "counts": {},
@@ -1380,7 +1382,7 @@ def _seeded_cleanup_store(root):
         assert result["outcome"] in {"created", "existing"}
         if completed:
             store.cleanup_update(
-                project_id="ledger", operation_id=operation_id,
+                project_id=project, operation_id=operation_id,
                 patch={"state": "CLEANUP_COMPLETED", "phase": "completed"},
                 remove_algorithm=True, expected_states=None,
                 completed_state="CLEANUP_COMPLETED",
@@ -1403,8 +1405,8 @@ def test_v2_snapshot_roundtrip_preserves_the_cleanup_ledger(pg):
     """Four domains export, import, re-export and reconcile with full evidence."""
     _initialized(pg)
     root = pathlib.Path(tempfile.mkdtemp(prefix="t8v2-"))
-    store = _seeded_cleanup_store(root)
-    snapshot = export_source_snapshot_v2(store.db_path, "ledger")
+    store = _seeded_cleanup_store(root, "v2rt")
+    snapshot = export_source_snapshot_v2(store.db_path, "v2rt")
     assert snapshot["contract_version"] == CONTRACT_VERSION_V2
     assert snapshot["cleanup_capability"] == "PRESENT"
     assert snapshot["counts"]["cleanup"] == 2
@@ -1415,7 +1417,7 @@ def test_v2_snapshot_roundtrip_preserves_the_cleanup_ledger(pg):
 
     with _connect(pg) as connection:
         imported = import_snapshot(connection, snapshot)
-        target = export_target_snapshot(connection, "ledger", include_cleanup=True)
+        target = export_target_snapshot(connection, "v2rt", include_cleanup=True)
         report = build_report(snapshot, target, schema=schema_status(connection))
     assert imported["action"] == "apply" and imported["changed"] is True
     assert report["verdict"] == "OK", report["blocking_findings"]
@@ -1424,18 +1426,31 @@ def test_v2_snapshot_roundtrip_preserves_the_cleanup_ledger(pg):
     assert set(target_rows) == {"op-live", "op-done"}
     assert target_rows["op-done"]["state"] == "CLEANUP_COMPLETED"
     assert target_rows["op-done"]["algorithm_id"] == "algo-c"
+    from datetime import datetime, timezone
+
+    def _instant(value):
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
+
+    assert _instant(target_rows["op-done"]["created_at"]) == _instant(
+        rows["op-done"]["created_at"]
+    )
+    assert _instant(target_rows["op-done"]["updated_at"]) == _instant(
+        rows["op-done"]["updated_at"]
+    )
 
     # Replaying the same document is a no-op; a real ledger change imports
     # incrementally because the revision moved with it.
     with _connect(pg) as connection:
         assert import_snapshot(connection, snapshot)["action"] == "noop"
     store.cleanup_update(
-        project_id="ledger", operation_id="op-live",
+        project_id="v2rt", operation_id="op-live",
         patch={"phase": "waiting_for_tasks"}, remove_algorithm=False,
         expected_states=None, completed_state="CLEANUP_COMPLETED",
         now="2026-11-01T02:00:00.000001+00:00",
     )
-    changed = export_source_snapshot_v2(store.db_path, "ledger")
+    changed = export_source_snapshot_v2(store.db_path, "v2rt")
     assert changed["algorithm_revision"] > snapshot["algorithm_revision"]
     with _connect(pg) as connection:
         assert import_snapshot(connection, changed)["action"] == "apply"
@@ -1444,9 +1459,9 @@ def test_v2_snapshot_roundtrip_preserves_the_cleanup_ledger(pg):
 def test_v1_cannot_overwrite_v2_and_the_upgrade_is_legal(pg):
     _initialized(pg)
     root = pathlib.Path(tempfile.mkdtemp(prefix="t8up-"))
-    store = _seeded_cleanup_store(root)
-    legacy = export_source_snapshot(store.db_path, "ledger")
-    four = export_source_snapshot_v2(store.db_path, "ledger")
+    store = _seeded_cleanup_store(root, "upgrade")
+    legacy = export_source_snapshot(store.db_path, "upgrade")
+    four = export_source_snapshot_v2(store.db_path, "upgrade")
     # Same revision, same three domains: the V2 document completes the target.
     assert legacy["algorithm_revision"] == four["algorithm_revision"]
     with _connect(pg) as connection:
@@ -1462,20 +1477,33 @@ def test_v1_cannot_overwrite_v2_and_the_upgrade_is_legal(pg):
 def test_v2_snapshot_rejects_tampered_identity_and_absent_evidence(pg):
     _initialized(pg)
     root = pathlib.Path(tempfile.mkdtemp(prefix="t8bad-"))
-    store = _seeded_cleanup_store(root)
-    snapshot = export_source_snapshot_v2(store.db_path, "ledger")
+    store = _seeded_cleanup_store(root, "badledger")
+    snapshot = export_source_snapshot_v2(store.db_path, "badledger")
     tampered = copy.deepcopy(snapshot)
     tampered["tables"]["cleanup"][0]["product_id"] = "prod-other"
-    with pytest.raises(Exception):
+    with pytest.raises(AlgorithmShadowError) as identity_error:
         validate_snapshot(tampered)
+    assert identity_error.value.code == "ALGORITHM_SHADOW_SNAPSHOT_INVALID"
     absent = copy.deepcopy(snapshot)
     absent["cleanup_capability"] = "ABSENT"
-    with pytest.raises(Exception):
+    with pytest.raises(AlgorithmShadowError) as absent_error:
         validate_snapshot(absent)
+    assert absent_error.value.code == "ALGORITHM_SHADOW_SNAPSHOT_INVALID"
+    # A credential nested inside the ledger payload is caught by the migration
+    # secret scan (validate_snapshot only checks the top-level row keys).
     secret = copy.deepcopy(snapshot)
-    secret["tables"]["cleanup"][0]["api_key"] = "secret"
-    with pytest.raises(Exception):
-        validate_snapshot(secret)
+    payload = json.loads(secret["tables"]["cleanup"][0]["payload_json"])
+    payload["api_key"] = "secret"
+    secret["tables"]["cleanup"][0]["payload_json"] = json.dumps(payload)
+    body = _snapshot_body(
+        "badledger", secret["algorithm_revision"], secret["tables"],
+        contract_version=CONTRACT_VERSION_V2, schema_version=2,
+        cleanup_capability=secret["cleanup_capability"],
+    )
+    secret["snapshot_digest"] = _digest(body)
+    with pytest.raises(AlgorithmMigrationError) as secret_error:
+        _scan_secret_material(secret)
+    assert secret_error.value.code == "ALGORITHM_MIGRATION_SECRET_MATERIAL"
 
 
 def test_cleanup_ledger_idempotent_update_does_not_move_the_revision(tmp_path):
@@ -1503,15 +1531,77 @@ def test_cleanup_ledger_idempotent_update_does_not_move_the_revision(tmp_path):
         operation=operation, now=stamp,
     )
     before = store.revision()
+    before_snapshot = export_source_snapshot_v2(store.db_path, "rev")
     store.cleanup_update(
         project_id="rev", operation_id="op-r", patch={"phase": "confirmed"},
         remove_algorithm=False, expected_states=None,
         completed_state="CLEANUP_COMPLETED", now="2026-11-01T03:00:00+00:00",
     )
     assert store.revision() == before
+    after_snapshot = export_source_snapshot_v2(store.db_path, "rev")
+    assert after_snapshot["snapshot_digest"] == before_snapshot["snapshot_digest"]
+    assert after_snapshot["tables"]["cleanup"] == before_snapshot["tables"]["cleanup"]
     store.cleanup_update(
         project_id="rev", operation_id="op-r", patch={"phase": "waiting_for_tasks"},
         remove_algorithm=False, expected_states=None,
         completed_state="CLEANUP_COMPLETED", now="2026-11-01T04:00:00+00:00",
     )
     assert store.revision() == before + 1
+
+def test_empty_v2_project_keeps_its_downgrade_protection(pg):
+    """A V2 migration with zero ledger rows still protects against a V1 import."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8empty-"))
+    store = AlgorithmSqlStore(root / "emptyv2" / "algorithms.json")
+    store.ensure_ready()
+    snapshot = export_source_snapshot_v2(store.db_path, "emptyv2")
+    assert snapshot["contract_version"] == CONTRACT_VERSION_V2
+    assert snapshot["cleanup_capability"] == "ABSENT"
+    assert snapshot["counts"]["cleanup"] == 0
+    legacy = export_source_snapshot(store.db_path, "emptyv2")
+    with _connect(pg) as connection:
+        assert import_snapshot(connection, snapshot)["action"] == "apply"
+        target = export_target_snapshot(connection, "emptyv2", include_cleanup=True)
+        report = build_report(snapshot, target, schema=schema_status(connection))
+    # ABSENT source vs a legal empty PRESENT target is provable equal content.
+    assert target["cleanup_capability"] == "PRESENT"
+    assert report["verdict"] == "OK", report["blocking_findings"]
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as downgrade:
+            import_snapshot(connection, legacy)
+    assert downgrade.value.code == "ALGORITHM_MIGRATION_V1_CANNOT_OVERWRITE_V2"
+
+
+def test_target_only_completed_receipt_cannot_be_dropped(pg):
+    """A newer snapshot may not rebuild the ledger without a completed receipt."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8receipt-"))
+    store = _seeded_cleanup_store(root, "receipts")
+    snapshot = export_source_snapshot_v2(store.db_path, "receipts")
+    with _connect(pg) as connection:
+        assert import_snapshot(connection, snapshot)["action"] == "apply"
+    # A real ledger change moves the revision, so the next document is an
+    # incremental import -- and it must not drop the completed receipt.
+    store.cleanup_update(
+        project_id="receipts", operation_id="op-live",
+        patch={"phase": "waiting_for_tasks"}, remove_algorithm=False,
+        expected_states=None, completed_state="CLEANUP_COMPLETED",
+        now="2026-11-01T05:00:00+00:00",
+    )
+    newer = export_source_snapshot_v2(store.db_path, "receipts")
+    dropped = copy.deepcopy(newer)
+    dropped["tables"]["cleanup"] = [
+        row for row in dropped["tables"]["cleanup"]
+        if row["operation_id"] != "op-done"
+    ]
+    dropped["counts"]["cleanup"] = len(dropped["tables"]["cleanup"])
+    body = _snapshot_body(
+        "receipts", dropped["algorithm_revision"], dropped["tables"],
+        contract_version=CONTRACT_VERSION_V2, schema_version=2,
+        cleanup_capability=dropped["cleanup_capability"],
+    )
+    dropped["snapshot_digest"] = _digest(body)
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as lost:
+            import_snapshot(connection, dropped)
+    assert lost.value.code == "ALGORITHM_MIGRATION_TARGET_RECEIPT_LOST"

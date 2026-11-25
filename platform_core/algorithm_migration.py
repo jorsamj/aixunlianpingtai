@@ -157,7 +157,7 @@ def _normalized_timestamp(value: Any) -> str:
         return text
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def _normalized_cleanup_row(row: Mapping[str, Any]) -> dict:
@@ -167,8 +167,18 @@ def _normalized_cleanup_row(row: Mapping[str, Any]) -> dict:
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
-        except ValueError:
-            payload = {}
+        except ValueError as error:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_CLEANUP_PAYLOAD_INVALID",
+                "cleanup payload is not valid JSON",
+                detail=str(error),
+            ) from error
+    if not isinstance(payload, dict):
+        raise AlgorithmMigrationError(
+            "ALGORITHM_MIGRATION_CLEANUP_PAYLOAD_INVALID",
+            "cleanup payload is not an object",
+            detail=str(row.get("operation_id") or ""),
+        )
     return {
         "project_id": str(row.get("project_id") or ""),
         "operation_id": str(row.get("operation_id") or ""),
@@ -202,7 +212,10 @@ def normalize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """Return a valid snapshot whose JSON cells compare structurally."""
     tables = normalized_tables(snapshot)
     body = _snapshot_body(
-        str(snapshot["project_id"]), int(snapshot["algorithm_revision"]), tables
+        str(snapshot["project_id"]), int(snapshot["algorithm_revision"]), tables,
+        contract_version=str(snapshot.get("contract_version") or CONTRACT_VERSION),
+        schema_version=int(snapshot.get("schema_version") or SCHEMA_VERSION),
+        cleanup_capability=snapshot.get("cleanup_capability"),
     )
     body["snapshot_digest"] = _digest(body)
     body["captured_at"] = str(snapshot["captured_at"])
@@ -528,7 +541,15 @@ def import_snapshot(
                     ),
                 )
                 result["action"] = action
+                if is_v2 and not dry_run and action == "noop":
+                    with connection.cursor() as cursor:
+                        _record_v2_completion(
+                            cursor, run=run, project_id=project_id,
+                            revision=revision, content=content, counts=counts,
+                        )
                 if action == "apply":
+                    if is_v2:
+                        _assert_target_receipts_preserved(target, snapshot)
                     with connection.cursor() as cursor:
                         _delete_target_graph(
                             cursor, project_id, include_cleanup=is_v2,
@@ -536,6 +557,13 @@ def import_snapshot(
                         _write_target_rows(cursor, snapshot)
                         if is_v2:
                             _write_target_cleanup_rows(cursor, snapshot)
+                            # The V2 completion evidence commits atomically with
+                            # the data it describes, so a crash cannot leave
+                            # migrated data without the protection marker.
+                            _record_v2_completion(
+                                cursor, run=run, project_id=project_id,
+                                revision=revision, content=content, counts=counts,
+                            )
                         _set_target_revision(cursor, project_id, revision)
                     result["target_revision_after"] = revision
                     if not dry_run:
@@ -588,6 +616,61 @@ def _legacy_content(snapshot: Mapping[str, Any]) -> str:
             "tables": {name: tables[name] for name in TABLES if name in tables},
         }),
     })
+
+
+def _record_v2_completion(
+    cursor, *, run: str, project_id: str, revision: int, content: str,
+    counts: Mapping[str, int],
+) -> None:
+    """Write the V2 completion evidence inside the data transaction."""
+    cursor.execute(
+        "UPDATE w5_algorithm.migration_run SET status='COMPLETED',"
+        "finished_at=now(),heartbeat_at=now(),"
+        "detail=COALESCE(detail,'{}'::jsonb) || %s::jsonb "
+        "WHERE run_id=%s AND project_id=%s",
+        (
+            json.dumps({
+                "contract_version": CONTRACT_VERSION_V2,
+                "cleanup_rows": int(counts.get("cleanup") or 0),
+                "algorithm_revision": int(revision),
+                "content_digest": str(content),
+                "action": "apply",
+            }, ensure_ascii=False),
+            str(run), str(project_id),
+        ),
+    )
+
+
+def _assert_target_receipts_preserved(
+    target: Mapping[str, Any] | None, snapshot: Mapping[str, Any],
+) -> None:
+    """Refuse to rebuild a ledger when a completed target receipt would be lost."""
+    target_rows = {
+        str(row.get("operation_id")): row
+        for row in ((target or {}).get("tables") or {}).get("cleanup") or []
+        if str(row.get("state") or "") == "CLEANUP_COMPLETED"
+    }
+    if not target_rows:
+        return
+    source_rows = {
+        str(row.get("operation_id")): row
+        for row in snapshot["tables"].get("cleanup") or []
+        if str(row.get("state") or "") == "CLEANUP_COMPLETED"
+    }
+    missing = sorted(set(target_rows) - set(source_rows))
+    if missing:
+        raise AlgorithmMigrationError(
+            "ALGORITHM_MIGRATION_TARGET_RECEIPT_LOST",
+            "the snapshot would drop a completed cleanup receipt",
+            detail=f"operation_ids={missing[:10]}",
+        )
+    for operation_id, row in target_rows.items():
+        if _normalized_cleanup_row(source_rows[operation_id]) != _normalized_cleanup_row(row):
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_TARGET_RECEIPT_CONFLICT",
+                "the snapshot rewrites a completed cleanup receipt",
+                detail=f"operation_id={operation_id}",
+            )
 
 
 def _import_action(
@@ -1029,8 +1112,10 @@ def _walk_secrets(value: Any, path: str, findings: list[str]) -> None:
 
 def _scan_secret_material(snapshot: Mapping[str, Any]) -> None:
     findings: list[str] = []
-    for name in TABLES:
-        for row in (snapshot.get("tables") or {}).get(name) or []:
+    tables = snapshot.get("tables") or {}
+    names = tuple(TABLES) + (("cleanup",) if "cleanup" in tables else ())
+    for name in names:
+        for row in tables.get(name) or []:
             payload = _json_value("payload_json", row.get("payload_json"))
             if isinstance(payload, (Mapping, list)):
                 _walk_secrets(payload, f"{name}:{_natural_key(str(name), row)}", findings)
@@ -1102,8 +1187,14 @@ def build_report(
         checks["snapshot_contract"] = _check(
             target is not None
             and str(source.get("contract_version")) == str(target.get("contract_version"))
-            and str(source.get("cleanup_capability") or "")
-            == str((target or {}).get("cleanup_capability") or ""),
+            and (
+                str(source.get("cleanup_capability") or "")
+                == str((target or {}).get("cleanup_capability") or "")
+                or (
+                    not (source_tables.get("cleanup") or [])
+                    and not ((target_tables or {}).get("cleanup") or [])
+                )
+            ),
             source=str(source.get("contract_version")),
             target=None if target is None else str(target.get("contract_version")),
             source_capability=source.get("cleanup_capability"),
@@ -1114,6 +1205,25 @@ def build_report(
         {name: len(target_tables.get(name) or []) for name in table_names}
         if target_tables is not None else None
     )
+    if "cleanup" in table_names:
+        source_ledger = {_natural_key("cleanup", row): row for row in source_tables["cleanup"]}
+        target_ledger = (
+            {_natural_key("cleanup", row): row for row in target_tables["cleanup"]}
+            if target_tables is not None and "cleanup" in target_tables else None
+        )
+        duplicate = len(source_ledger) != len(source_tables["cleanup"])
+        checks["cleanup_ledger"] = _check(
+            not duplicate
+            and target_ledger == source_ledger
+            and all(
+                str(row.get("project_id") or "") == project_id
+                for row in source_tables["cleanup"]
+            ),
+            duplicate_natural_keys=duplicate,
+            source_rows=len(source_tables["cleanup"]),
+            target_rows=None if target_ledger is None else len(target_ledger),
+            operations=sorted(source_ledger),
+        )
     checks["row_counts"] = _check(
         target_counts is not None and target_counts == source_counts,
         source=source_counts,
@@ -1364,8 +1474,9 @@ def verify_migration(connection, source: Mapping[str, Any]) -> dict[str, Any]:
     """
     snapshot = validate_snapshot(source)
     project_id = str(snapshot["project_id"])
-    is_v2 = str(snapshot.get("contract_version")) == CONTRACT_VERSION_V2
-    target = export_target_snapshot(connection, project_id, include_cleanup=is_v2)
+    # Always include the ledger: a V1 document must not report a clean verdict
+    # over a project that already holds V2 data.
+    target = export_target_snapshot(connection, project_id, include_cleanup=True)
     return build_report(snapshot, target, schema=schema_status(connection))
 
 def restore_source_snapshot(

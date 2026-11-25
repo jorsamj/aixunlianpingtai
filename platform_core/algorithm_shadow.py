@@ -112,6 +112,20 @@ def _snapshot_body(
     return body
 
 
+def _cleanup_timestamp(value: Any) -> str | None:
+    """UTC-normalised timestamp for cross-engine comparison, None if unparsable."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def _read_rows(database: sqlite3.Connection, sql: str) -> list[dict[str, Any]]:
     return [dict(row) for row in database.execute(sql).fetchall()]
 
@@ -327,31 +341,70 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(payload, Mapping):
                 raise _invalid("cleanup payload is missing or not an object")
             if (
-                str(payload.get("operation_id") or "") != operation_id
+                str(payload.get("project_id") or "") != project_id
+                or str(payload.get("operation_id") or "") != operation_id
                 or str(payload.get("algorithm_id") or "") != algorithm_id
                 or str(payload.get("product_id") or "") != product_id
                 or str(payload.get("generation") or "") != generation
                 or str(payload.get("state") or "") != state
             ):
                 raise _invalid("cleanup SQL projection disagrees with its payload")
+            for field in ("created_at", "updated_at"):
+                if payload.get(field) and row.get(field):
+                    left = _cleanup_timestamp(payload.get(field))
+                    right = _cleanup_timestamp(row.get(field))
+                    if left is not None and right is not None and left != right:
+                        raise _invalid(f"cleanup SQL {field} disagrees with its payload")
             if state != "CLEANUP_COMPLETED":
                 if algorithm_id not in algorithms:
                     raise _invalid("active cleanup references an algorithm outside the snapshot")
+                # The active ledger must be bound to the algorithm's real
+                # retirement state, not just to an algorithm id that exists.
+                algorithm_row = algorithms[algorithm_id]
+                algorithm_payload = algorithm_row.get("payload_json")
+                if isinstance(algorithm_payload, str):
+                    try:
+                        algorithm_payload = json.loads(algorithm_payload)
+                    except ValueError as error:
+                        raise _invalid("algorithm payload is not valid JSON") from error
+                if not isinstance(algorithm_payload, Mapping):
+                    raise _invalid("cleanup algorithm payload is missing")
+                if (
+                    str(algorithm_payload.get("external_cleanup_operation_id") or "")
+                    != operation_id
+                    or not algorithm_payload.get("external_delete_pending")
+                    or str(algorithm_payload.get("external_product_id") or "") != product_id
+                    or str(algorithm_payload.get("external_deletion_status") or "") != state
+                ):
+                    raise _invalid("active cleanup is not bound to the algorithm retirement")
                 cycle = (algorithm_id, product_id)
                 owner = active_cycles.get(cycle)
                 if owner is not None and owner != operation_id:
                     raise _invalid("two active cleanup cycles for one product")
                 active_cycles[cycle] = operation_id
-            elif algorithm_id not in algorithms and not str(
-                payload.get("external_delete_pending")
-            ) in {"True", "true", "1"} and not payload.get("external_delete_pending"):
-                # A completed receipt may outlive its algorithm; it must still
-                # carry the trusted deletion evidence that justified it.
-                if not isinstance(payload.get("evidence"), Mapping):
-                    raise _invalid("completed cleanup receipt has no deletion evidence")
+            else:
+                # A completed receipt may outlive its algorithm, but it must
+                # carry the trusted DeletionEvidence the contract requires.
+                evidence = payload.get("evidence")
+                if not isinstance(evidence, Mapping) or not all(
+                    str(evidence.get(key) or "").strip()
+                    for key in ("provider", "product_id", "source", "contract_id",
+                                "evidence_id", "observed_at")
+                ):
+                    raise _invalid("completed cleanup receipt has no trusted deletion evidence")
+                if str(evidence.get("product_id")) != product_id:
+                    raise _invalid("completed receipt evidence names another product")
         if capability == "ABSENT":
             for row in tables["algorithms"]:
-                if str(row.get("payload", {}).get("external_delete_pending")) in {"True", "true", "1"}:
+                algorithm_payload = row.get("payload_json")
+                if isinstance(algorithm_payload, str):
+                    try:
+                        algorithm_payload = json.loads(algorithm_payload)
+                    except ValueError as error:
+                        raise _invalid("algorithm payload is not valid JSON") from error
+                if not isinstance(algorithm_payload, Mapping):
+                    continue
+                if algorithm_payload.get("external_delete_pending"):
                     raise _invalid("an absent cleanup domain cannot hide a pending deletion")
     body_tables = {
         name: [dict(row) for row in tables[name]]
