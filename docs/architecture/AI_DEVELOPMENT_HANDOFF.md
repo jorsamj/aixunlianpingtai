@@ -1,5 +1,15 @@
 # AI 开发接续入口
 
+## 第二阶段素材库增量（2026-11-26）
+
+- 工作目录 `D:\lab\p2b2-backend`，唯一分支 `feature/external-algorithm-publishing`。起始本地与远端均为 `83b489a530513932ee3c9a3c3e9633e1d3edeb3f`。开工快照 21 项 PR、8 项 push，合计 18 排队、11 运行、0 完成，前端 push run 45655471943 排队。该快照没有可整改的失败 Job。
+- A/C 候选 `68aca9a67663a218d80178e8d7a2f9f8ba25b892`。素材卡片可直接打开指定图片的原人工标注工作台，保留身份验证及返回查询。改名由原 v47 路由和 MaterialGovernanceService 写入，持有匹配素材 ID 的回执后局部更新。名称筛选打开时读取原分页重算集合，未知回执只读核对。修正末页全删后的越界请求。素材库菜单 `NATIVE_PARTIAL`，人工 GT 编辑仍由原工作台负责。
+- B 候选 `534b249f241a27f4b40db4524c6ada096b05b732`。原 reader_view 先执行一遍 public_material 再覆盖结果，现只执行 reader 投影，有界页逐行省一次旧投影（标准 48 条满页省 48 次）。删除回执集合匹配从逐项线性查找改为 Set，处理已选 ID 的时间随集合大小线性增长。SQLite 分页仍同一快照计算精确总数、旧 API 数据形态及媒体权限保持。未测大规模真实延迟。
+- D 先处理核心前端能力。保留算法 U1 原 Provider、Schema、迁移及隔离验证资产，正式清理和算法库读投影的切换门槛见 [U1 记录](T8_ALGORITHM_DOMAIN_PROVIDER_AND_CUTOVER_20261124.md) 与 [数据 Owner 清单](P2_DATA_OWNERS_AND_POSTGRESQL_PREPARATION_20261117.md)。素材与负池同库，正式 GT、候选、任务、产物、发布和配置仍由各原存储负责；下一数据库单元尚未实施。
+- E 复核现有 Frontend Runtime 构建及制品链、verify_vue_app_offline.mjs、package_vue_offline.py 与 production_upgrade.py 的离线收录路径。本批组件随现有 Vite 构建纳入，安装/升级/回退与三档桌面渲染仍待证据。验收需先在独立 4070 环境核对素材、标注、AI 审核、训练资源和恢复、报告评测、转换发布及离线备份/回退，再安排生产验收。
+- 本机 Python AST、TS 语法、Vue 类型与 diff 静态检查通过。API 原投影和浏览器改名丢响应的合同由现有 CI 执行，当前代码候选的验收为 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`。最终含文档 HEAD 按本提交和远端分支核对，交付后只取一次准确 SHA CI 快照。
+- 下一步核实准确 SHA 的失败 Job 和浏览器制品，随后完成正式人工标注的原生编辑、空标注确认和冲突闭环，或标签审计/修复独立单元。默认入口切换及旧前端退役仍为待产品确认项。
+
 项目：畅联云算法训练平台；仓库 `jorsamj/aixunlianpingtai`；唯一分支 `feature/external-algorithm-publishing`。
 
 ## 当前接续摘要（2026-11-26，Vue 产品化增量）

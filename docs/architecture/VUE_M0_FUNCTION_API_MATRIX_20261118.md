@@ -1,5 +1,15 @@
 # 功能/API迁移矩阵（M0基线2026-11-18，当前M4-D0）
 
+## 第二阶段素材库增量（2026-11-26）
+
+| 操作 | 实现 / 原业务 Owner | 状态及证据 |
+|---|---|---|
+| 素材改名 | Vue MaterialRename / Materials，PUT v47 projects/{p}/images/{i}，原 MaterialGovernanceService 和 MaterialRepository | NATIVE_COMPLETE。只改展示名称，未知回执只读核对，已有浏览器用例覆盖。CI、视觉待验。 |
+| 卡片人工标注 | MaterialLibrary 卡片按钮，通过原 material-annotate 交接打开指定图片 | LEGACY_BRIDGE。新增直接入口，保留原工作台、标注保存及 GT 合同。 |
+| 删除后继续浏览 | useMaterialDelete 既有预检和回执，MaterialLibrary 回收选择并处理末页越界 | 原生删除闭环的修正。按服务端已确认 ID 更新，前端无法认定未确认结果。CI 待验。 |
+
+14 菜单的总体状态沿用下文，素材库继续 NATIVE_PARTIAL。批量分类、正式人工 GT、完整 AI 创建等仍按原入口和既有矩阵维护。
+
 ## 当前增量：标签维护与统一（2026-11-26）
 
 迁移状态与验收分别记录。下列 `NATIVE_COMPLETE` 仅指已实现本行操作闭环，不表示整个菜单完整、CI 通过或视觉验收通过。代码候选与最终 SHA 见[接续入口](AI_DEVELOPMENT_HANDOFF.md)。未改原菜单名、分组及顺序。
