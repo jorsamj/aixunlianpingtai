@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/training_create_service.py
       - platform_core/external_algorithm_publish.py
       - platform_core/compute_platform_catalog.py
       - platform_core/external_publish_request.py
@@ -40,6 +41,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/training_create_service.py
       - platform_core/external_algorithm_publish.py
       - platform_core/compute_platform_catalog.py
       - platform_core/external_publish_request.py
@@ -184,7 +186,8 @@ jobs:
           grep -Fq 'def _algorithm_version_reference_fence(' app.py
           grep -Fq 'ALGORITHM_VERSION_REFERENCE_RETIRED' app.py
           grep -Fq 'ALGORITHM_VERSION_REFERENCE_STALE' app.py
-          grep -Fq 'reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()' app.py
+          grep -Fq 'dependencies.current_version_id(asset_algorithm)' platform_core/training_create_service.py
+          grep -Fq 'reference_version_id = str(' platform_core/training_create_service.py
           grep -Fq 'def _v39_create_deploy_job_under_version_fence(' app.py
           grep -Fq 'async def _v39_create_rknn_hardware_test_under_version_fence(' app.py
           grep -Fq 'async def _create_deployment_test_under_version_fence(' app.py

@@ -323,6 +323,27 @@ def import_snapshot(
                 "a dry run cannot be the window's final import",
                 detail=f"operation={maintenance_operation}",
             )
+        # Prove the window ownership *before* registering a run row: an illegal
+        # request must not create, abort or otherwise touch the legitimate
+        # operation's migration_run history. The same verdict is re-checked
+        # inside the data transaction below, so a switch that lands in between
+        # still fails.
+        require_idle_transaction(connection, purpose="algorithm import authority precheck")
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"algorithm-cutover:{project_id}",),
+                )
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"algorithm-import:{project_id}",),
+                )
+                _require_import_authority(
+                    cursor,
+                    project_id=project_id,
+                    maintenance_operation=maintenance_operation,
+                )
     run, resumed = _begin_run(
         connection,
         project_id=project_id,

@@ -1016,8 +1016,8 @@ def test_rollback_with_an_empty_project_is_authorised_at_revision_zero(pg):
         )
     assert result["rolled_back"] is True, result["assessment"]["blocking"]
     assert result["admission"]["writer_generation"] >= 2
-    from platform_core.algorithm_sql_store import AlgorithmSqlStore
-
+    # AlgorithmSqlStore is imported at module scope: a function-local import here
+    # made the earlier use of the same name an UnboundLocalError.
     barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
     assert barrier["phase"] == "ROLLBACK_APPLIED"
 
@@ -1067,8 +1067,6 @@ def test_recovery_finishes_a_switching_crash_with_local_record_lost(pg):
     republished = json.loads(record_path.read_text(encoding="utf-8"))
     assert republished["maintenance_phase"] == MAINTENANCE_POSTGRES_ACTIVE
     assert republished["operation_id"] == operation
-    from platform_core.algorithm_sql_store import AlgorithmSqlStore
-
     barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
     assert barrier["phase"] == "POSTGRES_ACTIVE"
     assert barrier["operation_id"] == operation
