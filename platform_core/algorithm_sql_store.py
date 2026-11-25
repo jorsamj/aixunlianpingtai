@@ -1542,6 +1542,27 @@ class AlgorithmSqlStore:
         now: str,
     ) -> dict[str, Any]:
         """Advance one cleanup receipt, keeping algorithm status in the same txn."""
+        if str(project_id) != str(self.project_id):
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_PROJECT_MISMATCH",
+                "cleanup operation belongs to another project",
+                f"requested={project_id!r} bound={self.project_id!r}",
+                "use the project that owns this algorithm.",
+                409,
+            )
+        immutable = {
+            "project_id", "operation_id", "algorithm_id", "product_id",
+            "generation", "created_at",
+        }
+        rewritten = immutable.intersection(patch)
+        if rewritten:
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_IDENTITY_IMMUTABLE",
+                "cleanup identity fields cannot be rewritten",
+                f"fields={sorted(rewritten)}",
+                "only state, phase and receipt fields may advance.",
+                409,
+            )
         self.ensure_ready()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -1577,6 +1598,8 @@ class AlgorithmSqlStore:
                 and patch.get(key) != op.get(key)
                 for key in patch
             )
+            if not changed and not remove_algorithm:
+                return {"outcome": "updated", "operation": op}
             op.update(dict(patch), updated_at=str(now))
             algorithm_changed = False
             if remove_algorithm:

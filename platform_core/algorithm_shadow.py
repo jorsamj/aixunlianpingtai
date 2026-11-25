@@ -30,6 +30,10 @@ SCHEMA_VERSION_V2 = 2
 _SUPPORTED_CONTRACTS = {CONTRACT_VERSION, CONTRACT_VERSION_V2}
 _V1_TABLES = frozenset({"algorithms", "versions", "analyses"})
 _V2_TABLES = _V1_TABLES | {"cleanup"}
+_CLEANUP_STATES = frozenset({
+    "CONFIRMED_DELETED", "CLEANUP_PENDING", "CLEANUP_RUNNING",
+    "CLEANUP_FAILED", "CLEANUP_COMPLETED",
+})
 _CLEANUP_TABLE = "external_algorithm_cleanup"
 _CLEANUP_SQL = (
     "SELECT operation_id,algorithm_id,product_id,state,payload_json,"
@@ -153,6 +157,29 @@ def export_snapshot(store: AlgorithmSqlStore, *, include_cleanup: bool = False) 
                     # The SQLite ledger is per project; the snapshot carries the
                     # project identity explicitly like every other row.
                     row["project_id"] = str(store.project_id)
+                    try:
+                        payload = json.loads(str(row.get("payload_json") or "{}"))
+                    except ValueError as error:
+                        raise AlgorithmShadowError(
+                            "ALGORITHM_SHADOW_CLEANUP_PAYLOAD_INVALID",
+                            "cleanup payload is not valid JSON",
+                            detail=str(error),
+                        ) from error
+                    if not isinstance(payload, Mapping):
+                        raise AlgorithmShadowError(
+                            "ALGORITHM_SHADOW_CLEANUP_PAYLOAD_INVALID",
+                            "cleanup payload is not an object",
+                        )
+                    generation = str(payload.get("generation") or "").strip()
+                    if not generation:
+                        raise AlgorithmShadowError(
+                            "ALGORITHM_SHADOW_CLEANUP_GENERATION_MISSING",
+                            "cleanup payload carries no generation",
+                            detail=str(row.get("operation_id") or ""),
+                        )
+                    # The ledger column does not exist in SQLite: the real
+                    # generation comes from the persisted payload, never "".
+                    row["generation"] = generation
         finally:
             database.execute("ROLLBACK")
     except sqlite3.Error as error:
@@ -271,9 +298,71 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         analyses.add(key)
         if algorithm_id not in algorithms:
             raise _invalid("external analysis references an algorithm outside the snapshot")
-    body = _snapshot_body(project_id, revision, {
-        name: [dict(row) for row in tables[name]] for name in ("algorithms", "versions", "analyses")
-    })
+    if is_v2:
+        operations: set[str] = set()
+        active_cycles: dict[tuple[str, str], str] = {}
+        for row in tables["cleanup"]:
+            operation_id = str(row.get("operation_id") or "").strip()
+            algorithm_id = str(row.get("algorithm_id") or "").strip()
+            product_id = str(row.get("product_id") or "").strip()
+            generation = str(row.get("generation") or "").strip()
+            state = str(row.get("state") or "").strip()
+            if not operation_id or not algorithm_id or not product_id or not state:
+                raise _invalid("cleanup natural key or state is empty")
+            if not generation:
+                raise _invalid("cleanup generation is missing")
+            if operation_id in operations:
+                raise _invalid("cleanup operation id is duplicated")
+            operations.add(operation_id)
+            if str(row.get("project_id") or "") != project_id:
+                raise _invalid("cleanup project ownership mismatch")
+            if state not in _CLEANUP_STATES:
+                raise _invalid("cleanup state is not recognised")
+            payload = row.get("payload")
+            if payload is None and isinstance(row.get("payload_json"), str):
+                try:
+                    payload = json.loads(row["payload_json"])
+                except ValueError as error:
+                    raise _invalid("cleanup payload is not valid JSON") from error
+            if not isinstance(payload, Mapping):
+                raise _invalid("cleanup payload is missing or not an object")
+            if (
+                str(payload.get("operation_id") or "") != operation_id
+                or str(payload.get("algorithm_id") or "") != algorithm_id
+                or str(payload.get("product_id") or "") != product_id
+                or str(payload.get("generation") or "") != generation
+                or str(payload.get("state") or "") != state
+            ):
+                raise _invalid("cleanup SQL projection disagrees with its payload")
+            if state != "CLEANUP_COMPLETED":
+                if algorithm_id not in algorithms:
+                    raise _invalid("active cleanup references an algorithm outside the snapshot")
+                cycle = (algorithm_id, product_id)
+                owner = active_cycles.get(cycle)
+                if owner is not None and owner != operation_id:
+                    raise _invalid("two active cleanup cycles for one product")
+                active_cycles[cycle] = operation_id
+            elif algorithm_id not in algorithms and not str(
+                payload.get("external_delete_pending")
+            ) in {"True", "true", "1"} and not payload.get("external_delete_pending"):
+                # A completed receipt may outlive its algorithm; it must still
+                # carry the trusted deletion evidence that justified it.
+                if not isinstance(payload.get("evidence"), Mapping):
+                    raise _invalid("completed cleanup receipt has no deletion evidence")
+        if capability == "ABSENT":
+            for row in tables["algorithms"]:
+                if str(row.get("payload", {}).get("external_delete_pending")) in {"True", "true", "1"}:
+                    raise _invalid("an absent cleanup domain cannot hide a pending deletion")
+    body_tables = {
+        name: [dict(row) for row in tables[name]]
+        for name in (expected_tables if is_v2 else _V1_TABLES)
+    }
+    body = _snapshot_body(
+        project_id, revision, body_tables,
+        contract_version=CONTRACT_VERSION_V2 if is_v2 else CONTRACT_VERSION,
+        schema_version=SCHEMA_VERSION_V2 if is_v2 else SCHEMA_VERSION,
+        cleanup_capability=str(snapshot.get("cleanup_capability") or "") or None,
+    )
     expected = _digest(body)
     supplied = str(snapshot.get("snapshot_digest") or "")
     if len(supplied) != 64 or not hmac.compare_digest(expected, supplied):
@@ -356,6 +445,11 @@ def _shadow_rows(snapshot: Mapping[str, Any]) -> list[tuple[str, str, str, dict]
 
 
 def import_snapshot(connection, snapshot: Mapping[str, Any]) -> bool:
+    if str(snapshot.get("contract_version") or "") == CONTRACT_VERSION_V2:
+        raise AlgorithmShadowError(
+            "ALGORITHM_SHADOW_V2_NOT_SUPPORTED",
+            "the shadow store does not persist the cleanup domain yet",
+        )
     """Atomically import one validated project snapshot into PostgreSQL.
 
     The connection must be an idle, non-autocommit Psycopg 3 connection; the

@@ -25,7 +25,14 @@ from .algorithm_repository import (
     AlgorithmProviderUnsupported,
     AlgorithmRepositoryError,
 )
-from .algorithm_shadow import _digest, _snapshot_body
+from .algorithm_shadow import (
+    CONTRACT_VERSION,
+    CONTRACT_VERSION_V2,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_V2,
+    _digest,
+    _snapshot_body,
+)
 from .algorithm_sql_store import AlgorithmSqlStore
 from .errors import PlatformError
 
@@ -504,6 +511,8 @@ class PostgresAlgorithmRepository:
                 and patch.get(key) != op.get(key)
                 for key in patch
             )
+            if not changed and not remove_algorithm:
+                return {"outcome": "updated", "operation": op}
             op.update(dict(patch), updated_at=str(now))
             algorithm_changed = False
             if remove_algorithm:
