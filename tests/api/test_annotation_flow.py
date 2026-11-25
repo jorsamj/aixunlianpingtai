@@ -520,14 +520,20 @@ def test_rescan_content_change_requires_formal_re_review_before_training(client,
 def test_annotation_governance_migration_preserves_original_http_contract():
     import re
     import app as application
+    try:
+        from fastapi.routing import iter_route_contexts
+        route_contexts = list(iter_route_contexts(application.app.routes))
+    except ImportError:
+        from types import SimpleNamespace
+        route_contexts = [SimpleNamespace(path=route.path, original_route=route) for route in application.app.routes if hasattr(route, "path")]
     expected = [('post', '/api/projects/{project_id}/labels', 'add_label', 'AddLabelReq'), ('get', '/api/projects/{project_id}/annotations/{image_id}', 'get_annotation', None), ('post', '/api/projects/{project_id}/annotations/{image_id}', 'save_annotation', 'AnnotationSave'), ('put', '/api/v12/projects/{project_id}/labels/{class_id}', 'v12_update_label', 'LabelUpdateReq'), ('delete', '/api/v12/projects/{project_id}/labels/{class_id}', 'v12_delete_label', None), ('post', '/api/v52/projects/{project_id}/labels/remap', 'v52_remap_import_labels', 'V52LabelRemapReq'), ('get', '/api/v54/projects/{project_id}/label-schema', 'v54_label_schema', None), ('post', '/api/v54/projects/{project_id}/labels/unify/preview', 'v54_preview_unify_labels', 'V54LabelsUnifyPreviewReq'), ('post', '/api/v54/projects/{project_id}/labels/unify', 'v54_unify_labels', 'V54LabelsUnifyReq'), ('post', '/api/v54/projects/{project_id}/labels/{class_id}/unify', 'v54_unify_label', 'V54LabelUnifyReq')]
     schema = application.app.openapi()
     for method, path, name, payload in expected:
         operation = schema["paths"][path][method]
         assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
-        routes = [route for route in application.app.routes if getattr(route, "path", None) == path and method.upper() in getattr(route, "methods", set())]
+        routes = [context for context in route_contexts if context.path == path and method.upper() in getattr(context.original_route, "methods", set())]
         assert len(routes) == 1
-        assert routes[0].endpoint.__module__ == "platform_core.annotation_governance_api"
+        assert routes[0].original_route.endpoint.__module__ == "platform_core.annotation_governance_api"
         if payload:
             assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/" + payload
     annotation = schema["components"]["schemas"]["AnnotationSave"]["properties"]

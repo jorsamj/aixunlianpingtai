@@ -31,13 +31,19 @@ def test_material_catalog_migration_preserves_original_openapi_surface():
 def test_material_governance_migration_preserves_original_http_contract():
     import re
     import app as application
+    try:
+        from fastapi.routing import iter_route_contexts
+        route_contexts = list(iter_route_contexts(application.app.routes))
+    except ImportError:
+        from types import SimpleNamespace
+        route_contexts = [SimpleNamespace(path=route.path, original_route=route) for route in application.app.routes if hasattr(route, "path")]
     expected = [('delete', '/api/projects/{project_id}/datasets/{dataset_id}', 'delete_dataset', None), ('delete', '/api/projects/{project_id}/images/{image_id}', 'delete_image', None), ('post', '/api/v46/projects/{project_id}/images/batch-delete', 'v46_batch_delete_images', 'V46BatchDeleteImagesReq'), ('patch', '/api/v12/projects/{project_id}/images/{image_id}', 'v12_patch_image', 'ImagePatchReq'), ('post', '/api/v20/projects/{project_id}/images/batch_split', 'v20_batch_image_split', 'BatchImageSplitReq'), ('post', '/api/v12/projects/{project_id}/datasets/{dataset_id}/auto_split', 'v12_auto_split', 'BatchSplitReq'), ('post', '/api/v52/projects/{project_id}/images/mark-ready', 'v52_mark_ready', 'V52ReadyReq'), ('post', '/api/v49/projects/{project_id}/images/mark-processed', 'v49_mark_processed', 'V46BatchDeleteImagesReq')]
     schema = application.app.openapi()
     for method, path, name, payload in expected:
         operation = schema["paths"][path][method]
         assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
-        routes = [route for route in application.app.routes if getattr(route, "path", None) == path and method.upper() in getattr(route, "methods", set())]
+        routes = [context for context in route_contexts if context.path == path and method.upper() in getattr(context.original_route, "methods", set())]
         assert len(routes) == 1
-        assert routes[0].endpoint.__module__ == "platform_core.material_governance_api"
+        assert routes[0].original_route.endpoint.__module__ == "platform_core.material_governance_api"
         if payload:
             assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/" + payload
