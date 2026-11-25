@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 
 const zip = readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url), 'utf8');
 const app = readFileSync(new URL('../../app.py',import.meta.url), 'utf8');
+const ingestionService = readFileSync(new URL('../../platform_core/material_ingestion_service.py',import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../static/styles.css',import.meta.url), 'utf8');
 const training = readFileSync(new URL('../../static/app.js',import.meta.url), 'utf8');
 const modalStyles = readFileSync(new URL('../../static/training-create-modal.css',import.meta.url), 'utf8');
@@ -20,7 +21,7 @@ test('ZIP source class offers real source image and box preview before manual ma
   assert.match(app,/def v19_label_samples\(/);
   assert.match(app,/def v19_label_sample_content\(/);
   assert.match(app,/v19_write_class_samples\(project_id, upload_id, scan_class_samples\)/);
-  assert.match(app,/v19_write_class_samples\(project_id, job_id, scan_class_samples\)/);
+  assert.match(ingestionService,/self\.dependencies\.v19_write_class_samples\(project_id, job_id, scan_class_samples\)/);
   assert.match(css,/\.label-mapping-sample-box/);
   const scopedPreview=css.match(/\.zip-label-confirm \.zip-label-workspace \.label-mapping-sample-panel:not\(\[hidden\]\)\{([^}]*)\}/);
   assert.ok(scopedPreview, 'ZIP sample viewer must be contained within its layout');

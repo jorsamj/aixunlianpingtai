@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 const resources = readFileSync(new URL('../../static/modules/resource-discovery.js', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8');
+const catalogService = readFileSync(new URL('../../platform_core/runtime_catalog_service.py', import.meta.url), 'utf8');
 const controlPlane = readFileSync(new URL('../../platform_core/remote_training_tasks.py', import.meta.url), 'utf8');
 
 test('training resources allow explicit trusted .pt preload into the existing durable model directory', () => {
@@ -13,7 +14,7 @@ test('training resources allow explicit trusted .pt preload into the existing du
   assert.match(resources,/uploadResourceMotherModel\(this\)/);
   assert.match(resources,/\/api\/v63\/base-models\/upload/);
   assert.match(backend,/root = DATA_DIR \/ "models"/);
-  assert.match(backend,/sha256_file\(path\)/);
+  assert.match(catalogService,/sha256_file\(path\)/);
   assert.match(backend,/os\.replace\(temp, path\)/);
 });
 
@@ -24,8 +25,8 @@ test('mother-model verifier displays distinct environment, interrupted and model
   assert.match(resources,/PT_VERIFY_INTERRUPTED/);
   assert.match(resources,/校验运行环境已配置/);
   assert.match(resources,/校验已中断/);
-  assert.match(backend,/_public_mother_model_asset_status\(item\)/);
-  assert.match(backend,/_mother_model_verifier_environment\(\)/);
+  assert.match(catalogService,/_public_mother_model_asset_status\(item\)/);
+  assert.match(catalogService,/_mother_model_verifier_environment\(\)/);
   assert.doesNotMatch(resources,/window\.openMotherModelVerifierModal\s*=/);
 });
 
@@ -34,8 +35,8 @@ test('first train task selects an actually prepared model; iteration remains ver
   assert.match(app,/selectTrainingMotherModel429/);
   assert.match(app,/base\.hasPrevious/);
   assert.match(app,/model_status\|\|''\)\.toUpperCase\(\)==='FOUND'/);
-  assert.match(backend,/payload\.model = prepared_model/);
-  assert.match(backend,/raw_request\["model"\] = prepared_model/);
+  assert.match(backend,/payload\.model = frozen_mother_model/);
+  assert.match(backend,/raw_request\["model"\] = frozen_mother_model/);
 });
 
 test('remote scheduler offers local preinstalled weights not downloadable official names', () => {

@@ -116,7 +116,8 @@ def test_refreshed_bootstrap_counts_each_project_once_and_replaces_cache(monkeyp
     calls = []
     monkeypatch.setattr(app_module, "_V53_BOOTSTRAP_STATUS", {"status": "ready"})
     monkeypatch.setattr(app_module, "_V53_BOOTSTRAP_SNAPSHOT", {"project": {"id": "p1"}})
-    monkeypatch.setattr(app_module, "read_json", lambda *_args, **_kwargs: projects)
+    monkeypatch.setattr(app_module, "list_projects", lambda: projects)
+    monkeypatch.setattr(app_module, "ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", True)
     monkeypatch.setattr(
         app_module,
         "_v53_project_counts",

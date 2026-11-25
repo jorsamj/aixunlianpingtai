@@ -16,7 +16,12 @@ def test_material_status_summary_is_a_read_only_endpoint_with_source_specific_ba
     monkeypatch.setattr(app_module, "get_project", lambda pid: seen.append(pid))
     monkeypatch.setattr(app_module, "material_store", lambda pid: repository)
 
-    route = next(route for route in app_module.app.routes
+    try:
+        from fastapi.routing import iter_route_contexts
+        routes = [context.original_route for context in iter_route_contexts(app_module.app.routes)]
+    except ImportError:
+        routes = app_module.app.routes
+    route = next(route for route in routes
                  if getattr(route, "path", "") == "/api/v61/projects/{project_id}/materials/status-counts")
     assert route.methods == {"GET"}
     before = repository.current_revision()

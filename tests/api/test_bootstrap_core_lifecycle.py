@@ -79,7 +79,7 @@ def test_algorithm_summary_reuses_same_revision_in_original_core_snapshot(client
     assert core.json()['algorithms']==first.json()['items']
 
     # A revision change can never silently reuse the old version cards.
-    monkeypatch.setattr(api,'algorithm_store_revision',lambda path:cached['algorithm_revision']+1)
+    monkeypatch.setattr('platform_core.algorithm_catalog_service.algorithm_store_revision',lambda path:cached['algorithm_revision']+1)
     changed=client.get(url)
     assert changed.status_code==200
     assert len(calls)==2

@@ -68,11 +68,11 @@ def test_direct_remote_training_assignment_matches_new_worker_contract():
 
 
 def test_product_wiring_exposes_build_and_passes_remote_device_contract():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    runtime_catalog = (ROOT / "platform_core/runtime_catalog_service.py").read_text(encoding="utf-8")
     launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
     worker = (ROOT / "task_worker.py").read_text(encoding="utf-8")
     remote = (ROOT / "remote_train_server.py").read_text(encoding="utf-8")
-    assert '"build_id": BUILD_ID' in app
+    assert '"build_id": self.dependencies.BUILD_ID()' in runtime_catalog
     assert "service_matches_build(VERSION, BUILD_ID" in launcher
     assert "ensure_worker_build_compatible" in worker
     assert '"--assigned-device", assigned_device' in remote

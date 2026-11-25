@@ -166,7 +166,7 @@ def test_v19_selected_import_extracts_only_selected_images_and_keeps_annotation_
 def test_v19_worker_has_no_second_selected_root_copy_owner():
     source = Path(app_module.__file__).read_text(encoding="utf-8")
     start = source.index("def v19_import_worker(")
-    end = source.index("class V19MultipartUploadReq", start)
+    end = source.index("def v19_retry_folder_classification", start)
     worker = source[start:end]
 
     assert "selected_image_paths=selected_paths if selected_paths else None" in worker

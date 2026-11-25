@@ -189,7 +189,7 @@ def test_chip_detection_reuses_resource_owner_once_and_keeps_each_sdk_fact(tmp_p
     good={**live(),"id":"good","name":"remote good","mode":"remote"}
     bad={**live(),"id":"bad","name":"local invalid","mode":"local","status":"missing","message":"API Key 鉴权失败","targets":[],"supported_chips":[],"sophon_probe":{"available":False,"version":"1.29.0","error":"authentication failed"}}
     resources=[good,bad];seen=[]
-    monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda:{"items":resources}))
+    monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda **_kwargs:{"items":resources}))
     def detect(identity):
         seen.append(identity);return next(r for r in resources if r["id"]==identity)
     monkeypatch.setattr(ConversionManagementService,"v39_detect_deploy_resource",staticmethod(detect))

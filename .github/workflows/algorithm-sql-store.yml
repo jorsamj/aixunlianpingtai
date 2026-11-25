@@ -154,7 +154,8 @@ jobs:
           if grep -Fq 'payload.pop("external_analysis_ids", None)' platform_core/algorithm_sql_store.py; then echo "trainable analysis subset must survive payload_json round-trip" >&2; exit 1; fi
           grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
           grep -Fq 'test_legacy_sql_rows_without_trainable_subset_infer_only_active_visual_ids' tests/unit/test_algorithm_sql_store.py
-          grep -q 'AlgorithmSqlStore(Path(path)).attach_version' platform_core/algorithms.py
+          grep -Fq '_algorithm_repository(path).attach_version(str(algorithm_id), version)' platform_core/algorithms.py
+          grep -Fq 'return open_algorithm_repository(Path(path))' platform_core/algorithms.py
           grep -q 'algs=list_algorithm_assets(algorithms_file(pid))' app.py
           ! grep -Fq 'read_json(project_dir(pid)/"algorithms.json",[])' app.py
           ! grep -q 'save_algorithms_internal' app.py
@@ -189,7 +190,7 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
           boto3 oss2 cryptography pydantic
       - name: Read-only model HTTP projection contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/api tests/api/test_model_asset_views.py tests/api/test_core_productization_views.py tests/api/test_material_reader_views.py tests/api/test_annotation_reader_views.py tests/api/test_evaluation_reader_views.py tests/api/test_algorithm_version_rollback.py tests/api/test_material_response_performance.py tests/api/test_material_status_summary_api.py tests/api/test_material_library_filters_api.py tests/api/test_material_content.py
+        run: PYTHONPATH=. pytest -q tests/api/test_model_asset_views.py tests/api/test_core_productization_views.py tests/api/test_material_reader_views.py tests/api/test_annotation_reader_views.py tests/api/test_evaluation_reader_views.py tests/api/test_algorithm_version_rollback.py tests/api/test_material_response_performance.py tests/api/test_material_status_summary_api.py tests/api/test_material_library_filters_api.py tests/api/test_material_content.py
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome algorithm version lineage
