@@ -737,6 +737,7 @@ def _runtime_task_for_project(project_id: str, task_id: str) -> TaskRecord:
     return task
 
 
+from platform_core.task_runtime.management_api import create_task_management_router
 from platform_core.task_runtime.query_api import create_task_query_router
 
 _task_query_router = create_task_query_router(
@@ -749,46 +750,14 @@ _task_query_router = create_task_query_router(
 app.include_router(_task_query_router)
 
 
-@app.post("/api/v62/projects/{project_id}/tasks/{task_id}/promote")
-def promote_unified_runtime_task(project_id: str, task_id: str):
-    _runtime_task_for_project(project_id, task_id)
-    repository = shared_task_repository()
-    try:
-        task = repository.promote(task_id)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return task_to_public(task, repository)
-
-
-@app.post("/api/v62/projects/{project_id}/tasks/{task_id}/cancel")
-def cancel_unified_runtime_task(project_id: str, task_id: str):
-    current = _runtime_task_for_project(project_id, task_id)
-    repository = shared_task_repository()
-    try:
-        task = repository.request_cancel(task_id)
-        if current.kind is TaskKind.TRAINING:
-            _cancel_training_prepare_child(repository, current)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if (
-        current.status is TaskStatus.RUNNING
-        and current.process_pid is not None
-        and current.process_create_time is not None
-        and str(current.process_command_hash or "").strip()
-    ):
-        identity = ProcessIdentity(
-            pid=int(current.process_pid),
-            create_time=float(current.process_create_time),
-            command_hash=str(current.process_command_hash),
-        )
-        try:
-            ProcessController().terminate_tree(identity)
-        except PermissionError as error:
-            raise HTTPException(
-                status_code=409,
-                detail=f"取消请求已记录，但任务进程无法安全终止：{error}",
-            ) from error
-    return task_to_public(task, repository)
+_task_management_router = create_task_management_router(
+    task_for_project=lambda project_id, task_id: _runtime_task_for_project(project_id, task_id),
+    repository=lambda: shared_task_repository(),
+    cancel_prepare_child=lambda repository, task: _cancel_training_prepare_child(repository, task),
+    terminate_tree=lambda identity: ProcessController().terminate_tree(identity),
+    public_task=lambda task, repository: task_to_public(task, repository),
+)
+app.include_router(_task_management_router)
 
 
 def _cancel_training_prepare_child(repository, parent: TaskRecord) -> None:
