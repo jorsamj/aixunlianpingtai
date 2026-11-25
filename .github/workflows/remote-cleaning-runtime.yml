@@ -18,6 +18,7 @@ on:
       - 'platform_core/node_agent_cleaning_runtime.py'
       - 'platform_core/task_node_assignments.py'
       - 'app.py'
+      - platform_core/cleaning_management_*.py
       - 'tests/api/test_clean_unified_execution_truth.py'
       - 'node_agent.py'
       - 'tests/unit/test_remote_cleaning.py'
@@ -55,6 +56,7 @@ on:
       - 'platform_core/node_agent_cleaning_runtime.py'
       - 'platform_core/task_node_assignments.py'
       - 'app.py'
+      - platform_core/cleaning_management_*.py
       - 'tests/api/test_clean_unified_execution_truth.py'
       - 'node_agent.py'
       - 'tests/unit/test_remote_cleaning.py'

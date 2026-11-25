@@ -1,4 +1,5 @@
 """Real API and temporary repositories; no production material is used."""
+from platform_core.ai_annotation_service import AiAnnotationService
 import uuid
 
 import pytest
@@ -459,7 +460,7 @@ def test_selected_twice_confirmed_writes_formal_gt_immediately_without_finishing
 
     before_write = {**body, 'request_id': 'direct-gt-interrupted-0001'}
     with monkeypatch.context() as patch:
-        patch.setattr(host, '_decide_annotation_candidates', crash_before_journal)
+        patch.setattr(AiAnnotationService, '_decide_annotation_candidates', staticmethod(crash_before_journal))
         with pytest.raises(OSError):
             client.post(base+'/decisions', json=before_write)
     unwritten = client.get(base+'/decisions/by-request/'+before_write['request_id']).json()
@@ -691,7 +692,7 @@ def test_explicit_single_decision_isolated_and_recovers_durable_receipt(client, 
     with monkeypatch.context() as patch:
         def interrupt_before_commit(*args):
             raise OSError("interrupted before single decision")
-        patch.setattr(host, "_decide_single_annotation_candidate", interrupt_before_commit)
+        patch.setattr(AiAnnotationService, "_decide_single_annotation_candidate", staticmethod(interrupt_before_commit))
         with pytest.raises(OSError, match="before single decision"):
             client.post(base+"/decisions", json=never_written)
     receipt = client.get(base+"/decisions/by-request/"+never_written["request_id"])
@@ -1313,9 +1314,9 @@ def test_bulk_formal_commit_stops_on_changed_authority(client, review_task, monk
                  else {"_dataset_delete_claim": {"token": "audit-delete"}})
         materials.upsert({**row, **patch})
     if changed == "labels":
-        catalog = host._annotation_label_catalog
-        monkeypatch.setattr(host, "_annotation_label_catalog",
-                            lambda project: [row for row in catalog(project) if row["code"] != "fire"])
+        catalog = host._ai_annotation_service()._annotation_label_catalog
+        monkeypatch.setattr(AiAnnotationService, "_annotation_label_catalog",
+                            staticmethod(lambda project: [row for row in catalog(project) if row["code"] != "fire"]))
     if changed == "legacy_digest":
         assert original[image_id]["version"] == 0
 
@@ -2423,3 +2424,30 @@ def test_bulk_formal_second_operation_after_success(client, review_task, monkeyp
     assert all(after_second[key]["version"] == before[key]["version"] + 1 for key in ids)
     assert len(store.get_commit_summaries(ids[:3])) == 3
     assert len(store.get_commit_summaries(ids[3:])) == 3
+
+def test_ai_and_cleaning_migration_preserves_effective_http_contracts():
+    import re
+    from types import SimpleNamespace
+    try:
+        from fastapi.routing import iter_route_contexts
+        contexts = list(iter_route_contexts(host.app.routes))
+    except ImportError:
+        contexts = [SimpleNamespace(path=r.path, original_route=r) for r in host.app.routes if hasattr(r, "path")]
+    expected = [('get', '/api/v47/projects/{project_id}/clean-tasks', 'v47_list_clean_tasks', None, 'cleaning_management'), ('post', '/api/v47/projects/{project_id}/clean-runtime/preflight', 'v47_clean_runtime_preflight', 'V47CleanRuntimeReq', 'cleaning_management'), ('post', '/api/v47/projects/{project_id}/clean-tasks', 'v47_create_clean_task', 'V47CleanReq', 'cleaning_management'), ('post', '/api/v47/projects/{project_id}/clean-tasks/{task_id}/stop', 'v47_stop_clean_task', None, 'cleaning_management'), ('get', '/api/v47/projects/{project_id}/clean-tasks/{task_id}/result', 'v47_clean_result', None, 'cleaning_management'), ('get', '/api/v47/projects/{project_id}/clean-tasks/{task_id}/annotation-audit', 'v47_clean_annotation_audit', None, 'cleaning_management'), ('post', '/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm', 'v47_confirm_clean', 'V47CleanConfirmReq', 'cleaning_management'), ('post', '/api/v60/projects/{project_id}/annotation-tasks', 'create_annotation_task', 'AnnotationTaskCreateReq', 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/by-request/{request_id}', 'get_annotation_task_by_create_request', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-selections', 'freeze_annotation_selection', 'AnnotationSelectionReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-selections/summary', 'annotation_selection_summary', 'AnnotationSelectionReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-selections/membership', 'annotation_selection_membership', 'AnnotationSelectionMembershipReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-preview/compare', 'compare_annotation_preview', 'AnnotationComparisonReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-preview', 'preview_annotation_image', 'AnnotationTaskCreateReq', 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks', 'list_annotation_tasks', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}', 'get_annotation_task', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit', 'audit_annotation_task_gt', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-material-states', 'annotation_material_states', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates', 'get_annotation_candidates', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/{image_id}', 'get_annotation_candidate', None, 'ai_annotation'), ('put', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/{image_id}/draft', 'save_annotation_review_draft', 'AnnotationDraftReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/drafts-batch', 'save_annotation_review_drafts_batch', 'AnnotationDraftBatchReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection', 'create_annotation_review_selection', 'AnnotationSelectionReq', 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents', 'accept_bulk_formal_intent', 'BulkFormalIntentReq', 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}', 'read_bulk_formal_intent', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execute', 'execute_bulk_formal_intent', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execution', 'read_bulk_formal_execution', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execution/cancel', 'cancel_bulk_formal_execution', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/bulk-formal/intents/{request_id}/execution/recover', 'recover_bulk_formal_execution', None, 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection/{selection_id}/candidates', 'get_annotation_review_selection_candidates', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer', 'transfer_annotation_candidates', 'AnnotationTransferReq', 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}', 'get_annotation_transfer', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}/undo', 'undo_annotation_transfer', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer-preview', 'preview_annotation_transfer', 'AnnotationTransferReq', 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/{image_id}/diagnostics', 'get_annotation_candidate_diagnostics', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions', 'decide_annotation_candidates', 'AnnotationDecisionReq', 'ai_annotation'), ('get', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions/by-request/{request_id}', 'get_annotation_review_operation', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel', 'cancel_annotation_task', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry', 'retry_annotation_task', None, 'ai_annotation'), ('post', '/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-completed', 'review_completed_annotation_task', None, 'ai_annotation')]
+    schema = host.app.openapi()
+    for method, path, name, payload, owner in expected:
+        operation = schema["paths"][path][method]
+        assert operation["operationId"] == re.sub(r"\W", "_", name + path) + "_" + method
+        matches = [c.original_route for c in contexts if c.path == path and method.upper() in getattr(c.original_route, "methods", set())]
+        assert len(matches) == 1
+        assert matches[0].endpoint.__module__ == "platform_core." + owner + "_api"
+        if payload:
+            ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+            if payload != "AnnotationSelectionReq":
+                assert ref == "#/components/schemas/" + payload
+            else:
+                properties = schema["components"]["schemas"][ref.rsplit("/", 1)[1]]["properties"]
+                if name == "create_annotation_review_selection":
+                    assert set(properties) == {"filter", "purpose", "review_revision"}
+                else:
+                    assert set(properties) == {"labels", "query", "annotation_state", "previous_ref", "image_ids", "excluded_image_ids"}

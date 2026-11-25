@@ -1,4 +1,5 @@
 """The optional AI preview uses the durable inference contract without writes."""
+from platform_core.ai_annotation_service import AiAnnotationService
 import app as app_module
 from platform_core import annotation_runtime, annotation_task_service
 from platform_core.task_runtime import ArtifactStore, TaskRepository
@@ -33,7 +34,7 @@ def test_one_image_preview_reuses_inference_without_creating_candidates_or_gt(
         return {"boxes": [{"label": "fire", "confidence": 0.93, "x1": 1, "y1": 2, "x2": 40, "y2": 50}],
                 "latency_ms": 145, "model": "vision-1", "provider": "local"}
 
-    monkeypatch.setattr(app_module, "_annotation_create_payload", freeze)
+    monkeypatch.setattr(AiAnnotationService, "_annotation_create_payload", staticmethod(freeze))
     monkeypatch.setattr(annotation_runtime, "prepare_request", runtime)
     monkeypatch.setattr(annotation_task_service, "load_task_images", resolve)
     monkeypatch.setattr(annotation_task_service, "annotate_one", infer)
@@ -57,7 +58,7 @@ def test_preview_rejects_multi_image_and_unknown_image_before_model_call(
     client, seeded_project, monkeypatch,
 ):
     project_id, image = seeded_project
-    monkeypatch.setattr(app_module, "_annotation_create_payload", lambda *args: 1 / 0)
+    monkeypatch.setattr(AiAnnotationService, "_annotation_create_payload", staticmethod(lambda *args: 1 / 0))
     path = f"/api/v60/projects/{project_id}/annotation-preview"
     multi = client.post(path, json={"image_ids": [image["id"], "another"], "labels_text": "fire"})
     assert multi.status_code == 422
@@ -75,7 +76,7 @@ def test_preview_rejects_oversized_material_before_materializing(
             return [{"id": image["id"], "size_bytes": 16 * 1024 * 1024 + 1}]
 
     monkeypatch.setattr(app_module, "material_store", lambda *_: BigMaterial())
-    monkeypatch.setattr(app_module, "_annotation_create_payload", lambda *args: 1 / 0)
+    monkeypatch.setattr(AiAnnotationService, "_annotation_create_payload", staticmethod(lambda *args: 1 / 0))
     result = client.post(f"/api/v60/projects/{project_id}/annotation-preview", json={
         "image_ids": [image["id"]], "labels_text": "fire",
     })
@@ -86,7 +87,7 @@ def test_preview_redacts_provider_exceptions(client, seeded_project, monkeypatch
     project_id, image = seeded_project
     source = tmp_path / "source.jpg"
     source.write_bytes(b"safe")
-    monkeypatch.setattr(app_module, "_annotation_create_payload", lambda *args: ({"image_ids": [image["id"]]}, "provider"))
+    monkeypatch.setattr(AiAnnotationService, "_annotation_create_payload", staticmethod(lambda *args: ({"image_ids": [image["id"]]}, "provider")))
     monkeypatch.setattr(annotation_runtime, "prepare_request", lambda *args, **kwargs: {})
     monkeypatch.setattr(annotation_task_service, "load_task_images", lambda *args: [{"id": image["id"], "path": str(source)}])
     monkeypatch.setattr(annotation_task_service, "annotate_one", lambda *args: (_ for _ in ()).throw(RuntimeError("Authorization: Bearer sk-test-secret")))

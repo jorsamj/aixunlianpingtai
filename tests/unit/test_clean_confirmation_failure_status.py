@@ -1,4 +1,5 @@
 """A failed delete must never turn a bad image into 'processed'."""
+from platform_core.cleaning_management_service import CleaningManagementService
 
 from types import SimpleNamespace
 
@@ -26,8 +27,8 @@ def test_clean_confirm_does_not_mark_failed_deletions_processed(
             patches.append((list(image_ids), dict(patch)))
 
     monkeypatch.setattr(app, "_v33_get_task", lambda *_: {"id": task_id, "status": "done"})
-    monkeypatch.setattr(app, "_v47_validate_clean_confirmation", lambda *_: {"keep", "delete-ok", "delete-error"})
-    monkeypatch.setattr(app, "_v47_frozen_clean_selection_ids", lambda *_: ["keep", "delete-ok", "delete-error"])
+    monkeypatch.setattr(CleaningManagementService, "_v47_validate_clean_confirmation", staticmethod(lambda *_: {"keep", "delete-ok", "delete-error"}))
+    monkeypatch.setattr(CleaningManagementService, "_v47_frozen_clean_selection_ids", staticmethod(lambda *_: ["keep", "delete-ok", "delete-error"]))
     monkeypatch.setattr(app, "material_store", lambda *_: FakeMaterials())
     monkeypatch.setattr(app, "v46_batch_delete_images", lambda *_args, **_kwargs: {
         "ok": not failed,

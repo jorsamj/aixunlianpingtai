@@ -1,4 +1,5 @@
 from __future__ import annotations
+from platform_core.ai_annotation_service import AiAnnotationService
 
 import json
 from contextlib import nullcontext
@@ -33,7 +34,7 @@ def test_p2_reviewed_mining_preview_adoption_reuses_original_candidate_set_and_p
     task = SimpleNamespace(kind=TaskKind.AI_ANNOTATION, status=TaskStatus.SUCCEEDED, result_ref='result.json', payload_ref='request.json')
     version = {'id': 'v1'}
     monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *a: (version, {'model_sha256': 'f' * 64}))
-    monkeypatch.setattr(platform, '_require_annotation_review_task', lambda *a: task)
+    monkeypatch.setattr(AiAnnotationService, '_require_annotation_review_task', staticmethod(lambda *a: task))
     monkeypatch.setattr(platform, 'shared_task_artifacts', lambda: artifacts)
     monkeypatch.setattr(platform, 'AnnotationRepository', Annotations)
     action = {'status': 'confirmed', 'action': 'supplement_data', 'action_id': 'e' * 64,
@@ -108,15 +109,15 @@ def _setup(monkeypatch, tmp_path: Path):
                         lambda p, a, v: ({"id": a}, {"id": v, "best_path": str(path),
                                               "snapshot_id": "c" * 64}))
     monkeypatch.setattr(platform, "material_store", lambda _: Material())
-    monkeypatch.setattr(platform, "_annotation_label_catalog",
-                        lambda _: [{"code": "person", "class_id": 0}])
+    monkeypatch.setattr(AiAnnotationService, "_annotation_label_catalog",
+                        staticmethod(lambda _: [{"code": "person", "class_id": 0}]))
     monkeypatch.setattr(platform, "shared_task_repository", lambda: Repository())
     monkeypatch.setattr(platform, "shared_task_artifacts", lambda: Artifacts())
     monkeypatch.setattr(platform, "_storage_source_fence", lambda: nullcontext())
-    monkeypatch.setattr(platform, "public_annotation_task", lambda record: {
+    monkeypatch.setattr(AiAnnotationService, "public_annotation_task", staticmethod(lambda record: {
         "id": record.task_id, "status": record.status.value,
         "kind": record.kind.value, "required_capabilities": record.required_capabilities,
-    })
+    }))
     return platform, project, rows, tasks, payloads
 
 

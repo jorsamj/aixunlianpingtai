@@ -1,3 +1,4 @@
+from platform_core.cleaning_management_service import CleaningManagementService
 import json
 from types import SimpleNamespace
 
@@ -682,19 +683,19 @@ def test_clean_confirmation_updates_only_frozen_selection_without_full_table_mut
         lambda _project_id, _kind, task_id: {"id": task_id, "status": "awaiting_confirmation"},
     )
     monkeypatch.setattr(
-        app_module,
+        CleaningManagementService,
         "_v47_durable_clean_results",
-        lambda *_args, **_kwargs: {"items": []},
+        staticmethod(lambda *_args, **_kwargs: {"items": []}),
     )
     monkeypatch.setattr(
-        app_module,
+        CleaningManagementService,
         "_v47_frozen_clean_selection_ids",
-        lambda _task_id: image_ids,
+        staticmethod(lambda _task_id: image_ids),
     )
     monkeypatch.setattr(
-        app_module,
+        CleaningManagementService,
         "_v47_validate_clean_confirmation",
-        lambda _project_id, _task_id: set(image_ids),
+        staticmethod(lambda _project_id, _task_id: set(image_ids)),
     )
     monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
     monkeypatch.setattr(app_module, "shared_task_artifacts", lambda: FakeArtifacts())
