@@ -369,12 +369,19 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                         raise _invalid("algorithm payload is not valid JSON") from error
                 if not isinstance(algorithm_payload, Mapping):
                     raise _invalid("cleanup algorithm payload is missing")
+                # Product/provider/active are relational columns; only the
+                # extended retirement fields live in the payload.
                 if (
                     str(algorithm_payload.get("external_cleanup_operation_id") or "")
                     != operation_id
                     or not algorithm_payload.get("external_delete_pending")
-                    or str(algorithm_payload.get("external_product_id") or "") != product_id
+                    or str(algorithm_row.get("external_product_id") or "") != product_id
                     or str(algorithm_payload.get("external_deletion_status") or "") != state
+                    or str(algorithm_row.get("source_type") or "") != "EXTERNAL"
+                    or str(algorithm_row.get("provider_type") or "") != str(
+                        (payload.get("evidence") or {}).get("provider") or ""
+                    )
+                    or bool(algorithm_row.get("external_active"))
                 ):
                     raise _invalid("active cleanup is not bound to the algorithm retirement")
                 cycle = (algorithm_id, product_id)

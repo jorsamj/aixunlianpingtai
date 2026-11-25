@@ -1169,6 +1169,7 @@ def build_report(
     target: Mapping[str, Any] | None,
     *,
     schema: Mapping[str, Any] | None = None,
+    target_v2_evidence: bool = False,
 ) -> dict[str, Any]:
     """Full migration report: isolation, counts, keys, relations, JSON, NULLs."""
     source = validate_snapshot(source)
@@ -1198,9 +1199,9 @@ def build_report(
     table_names = list(TABLES)
     source_has_cleanup = "cleanup" in source_tables
     target_has_cleanup = target_tables is not None and "cleanup" in target_tables
-    if source_has_cleanup or target_has_cleanup:
-        if source_has_cleanup:
-            table_names.append("cleanup")
+    if source_has_cleanup:
+        table_names.append("cleanup")
+    if True:
         checks["snapshot_contract"] = _check(
             target is not None
             and str(source.get("contract_version")) == str(target.get("contract_version"))
@@ -1219,13 +1220,17 @@ def build_report(
         )
         # A V1 document cannot prove anything about a project that owns the
         # fourth domain, and a V2 document cannot be verified against a target
-        # that never captured it.
+        # that never captured it. The target's real migration capability comes
+        # from its persisted evidence (rows / completed V2 run), never from a
+        # table or field merely existing.
         checks["capability_evidence"] = _check(
-            source_has_cleanup == target_has_cleanup,
+            (not source_has_cleanup and not target_has_v2_evidence)
+            or (source_has_cleanup and target_has_cleanup),
             source_contract=str(source.get("contract_version")),
             target_contract=None if target is None else str(target.get("contract_version")),
             source_has_cleanup=source_has_cleanup,
             target_has_cleanup=target_has_cleanup,
+            target_v2_evidence=target_has_v2_evidence,
         )
     source_counts = {name: len(source_tables.get(name) or []) for name in table_names}
     target_counts = (
@@ -1434,7 +1439,17 @@ def build_report(
     )
 
     # secret material -------------------------------------------------------
-    checks["secret_material"] = _check(True, checked=True, findings=[])
+    secret_findings: list[str] = []
+    for side in (source, target):
+        if side is None:
+            continue
+        try:
+            _scan_secret_material(side)
+        except AlgorithmMigrationError as error:
+            secret_findings.append(f"{error.code}:{error.detail}")
+    checks["secret_material"] = _check(
+        not secret_findings, checked=True, findings=secret_findings,
+    )
 
     # content digest --------------------------------------------------------
     source_content = content_digest(source)
@@ -1504,7 +1519,13 @@ def verify_migration(connection, source: Mapping[str, Any]) -> dict[str, Any]:
     # Always include the ledger: a V1 document must not report a clean verdict
     # over a project that already holds V2 data.
     target = export_target_snapshot(connection, project_id, include_cleanup=True)
-    return build_report(snapshot, target, schema=schema_status(connection))
+    target_rows = (target or {}).get("tables", {}).get("cleanup") or []
+    return build_report(
+        snapshot, target, schema=schema_status(connection),
+        target_v2_evidence=bool(target_rows) or _v2_completed_evidence(
+            connection, project_id,
+        ),
+    )
 
 def restore_source_snapshot(
     db_path: str | Path,
@@ -1560,12 +1581,12 @@ def restore_source_snapshot(
             connection.execute("DELETE FROM algorithm_versions")
             connection.execute("DELETE FROM algorithms")
             if is_v2:
-                from .algorithm_sql_store import CLEANUP_SCHEMA
-
                 # The ledger table may legitimately not exist yet (a V1 project
-                # being restored from a V2 snapshot); create it inside the same
-                # transaction and then rebuild it.
-                connection.executescript(CLEANUP_SCHEMA)
+                # being restored from a V2 snapshot); create it with single
+                # statements - executescript would implicitly commit the open
+                # restore transaction.
+                for statement in _cleanup_ddl_statements():
+                    connection.execute(statement)
                 connection.execute("DELETE FROM external_algorithm_cleanup")
             _insert_sqlite_rows(connection, "algorithms", normalized["algorithms"])
             _insert_sqlite_rows(connection, "versions", normalized["versions"])
@@ -1577,26 +1598,22 @@ def restore_source_snapshot(
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(int(snapshot["algorithm_revision"])),),
             )
-            if is_v2:
-                restored_tables = _read_sqlite_tables(connection, str(project_id), include_cleanup=True)
-                restored = _snapshot_from_tables(
-                    str(project_id), int(snapshot["algorithm_revision"]),
-                    restored_tables, contract_version=CONTRACT_VERSION_V2,
-                    schema_version=SCHEMA_VERSION_V2, cleanup_capability="PRESENT",
-                )
-                if content_digest(restored) != content_digest(snapshot):
-                    raise AlgorithmMigrationError(
-                        "ALGORITHM_ROLLBACK_RESTORE_MISMATCH",
-                        "the restored SQLite content does not match the snapshot",
-                    )
             connection.execute(
                 "INSERT INTO algorithm_store_meta(key,value) VALUES('schema_version',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SQLITE_SCHEMA_VERSION),),
             )
-            restored = _read_sqlite_tables(connection, str(project_id))
+            restored = _read_sqlite_tables(
+                connection, str(project_id), include_cleanup=is_v2,
+            )
             restored_snapshot = _snapshot_from_tables(
-                str(project_id), int(snapshot["algorithm_revision"]), restored
+                str(project_id), int(snapshot["algorithm_revision"]), restored,
+                contract_version=CONTRACT_VERSION_V2 if is_v2 else CONTRACT_VERSION,
+                schema_version=SCHEMA_VERSION_V2 if is_v2 else SCHEMA_VERSION,
+                cleanup_capability=(
+                    str(snapshot.get("cleanup_capability") or "PRESENT")
+                    if is_v2 else None
+                ),
             )
             actual = content_digest(restored_snapshot)
             if actual != content_digest(snapshot):
@@ -1645,10 +1662,18 @@ def _insert_sqlite_rows(connection, name: str, rows: Sequence[Mapping[str, Any]]
     connection.executemany(statement, payload)
 
 
-def _insert_sqlite_cleanup_rows(connection, rows: Sequence[Mapping[str, Any]]) -> None:
+def _cleanup_ddl_statements() -> tuple[str, ...]:
+    """The cleanup ledger DDL as individual statements (no executescript)."""
     from .algorithm_sql_store import CLEANUP_SCHEMA
 
-    connection.executescript(CLEANUP_SCHEMA)
+    return tuple(
+        part.strip() for part in CLEANUP_SCHEMA.split(";") if part.strip()
+    )
+
+
+def _insert_sqlite_cleanup_rows(connection, rows: Sequence[Mapping[str, Any]]) -> None:
+    for statement in _cleanup_ddl_statements():
+        connection.execute(statement)
     for row in rows or []:
         payload = _normalized_cleanup_row(row)["payload"]
         connection.execute(
@@ -1674,14 +1699,38 @@ def _read_sqlite_tables(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
             ("external_algorithm_cleanup",),
         ).fetchone()
-        tables["cleanup"] = (
-            [dict(row) for row in connection.execute(
+        tables["cleanup"] = []
+        if present is not None:
+            for row in connection.execute(
                 "SELECT operation_id,algorithm_id,product_id,state,payload_json,"
                 "created_at,updated_at FROM external_algorithm_cleanup "
                 "ORDER BY created_at,operation_id"
-            )]
-            if present is not None else []
-        )
+            ):
+                value = dict(row)
+                try:
+                    payload = json.loads(str(value.get("payload_json") or "{}"))
+                except ValueError as error:
+                    raise AlgorithmMigrationError(
+                        "ALGORITHM_ROLLBACK_RESTORE_LEDGER_INVALID",
+                        "restored cleanup payload is not valid JSON",
+                        detail=str(error),
+                    ) from error
+                if not isinstance(payload, Mapping):
+                    raise AlgorithmMigrationError(
+                        "ALGORITHM_ROLLBACK_RESTORE_LEDGER_INVALID",
+                        "restored cleanup payload is not an object",
+                        detail=str(value.get("operation_id") or ""),
+                    )
+                generation = str(payload.get("generation") or "").strip()
+                if not generation:
+                    raise AlgorithmMigrationError(
+                        "ALGORITHM_ROLLBACK_RESTORE_LEDGER_INVALID",
+                        "restored cleanup payload carries no generation",
+                        detail=str(value.get("operation_id") or ""),
+                    )
+                value["project_id"] = str(project_id)
+                value["generation"] = generation
+                tables["cleanup"].append(value)
     for name in TABLES:
         statement = f"SELECT {_SQLITE_COLUMNS[name]} FROM {_SQLITE_TABLES[name]}"
         if name == "algorithms":

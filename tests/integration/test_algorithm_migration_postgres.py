@@ -1656,3 +1656,46 @@ def test_v2_restore_rebuilds_the_ledger_and_keeps_the_barrier(pg):
             confirmed=True,
         )
     assert mismatch.value.code == "ALGORITHM_ROLLBACK_SNAPSHOT_CHANGED"
+
+def test_v2_restore_is_atomic_when_a_write_fails(pg):
+    """A failing restore leaves the four domains and the barrier untouched."""
+    from platform_core.algorithm_migration import (
+        content_digest,
+        restore_source_snapshot,
+    )
+    from platform_core.algorithm_repository import write_authority_barrier
+
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8atomic-"))
+    store = _seeded_cleanup_store(root, "atomic")
+    snapshot = export_source_snapshot_v2(store.db_path, "atomic")
+    assert write_authority_barrier(
+        store.json_path, project_id="atomic", phase="POSTGRES_ACTIVE",
+        operation_id="op-atomic", writer_generation=3, admission_id="admit-a",
+    ) is True
+    before = export_source_snapshot_v2(store.db_path, "atomic")
+    broken = copy.deepcopy(snapshot)
+    # A row that passes validation but whose insert violates the ledger's unique
+    # identity forces the transaction to fail after DELETE/INSERT already ran.
+    broken["tables"]["cleanup"][1]["operation_id"] = broken["tables"]["cleanup"][0]["operation_id"]
+    body = _snapshot_body(
+        "atomic", broken["algorithm_revision"], broken["tables"],
+        contract_version=CONTRACT_VERSION_V2, schema_version=2,
+        cleanup_capability=broken["cleanup_capability"],
+    )
+    broken["snapshot_digest"] = _digest(body)
+    with pytest.raises(Exception):
+        restore_source_snapshot(
+            store.db_path, "atomic", broken,
+            assessment={
+                "allowed": True, "blocking": [],
+                "restore_content_digest": content_digest(broken),
+            },
+            confirmed=True,
+        )
+    after = export_source_snapshot_v2(store.db_path, "atomic")
+    assert content_digest(after) == content_digest(before)
+    assert after["algorithm_revision"] == before["algorithm_revision"]
+    assert after["tables"]["cleanup"] == before["tables"]["cleanup"]
+    barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
+    assert barrier["phase"] == "POSTGRES_ACTIVE" and barrier["operation_id"] == "op-atomic"

@@ -727,7 +727,7 @@ def revoke_admission(
     reason: str,
     assessment: Mapping[str, Any],
     operation_id: str | None = None,
-    include_cleanup: bool = False,
+    admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Flip authority back to SQLite only after a passing rollback assessment."""
     from psycopg.rows import dict_row
@@ -824,7 +824,7 @@ def revoke_admission(
                 revision_row = interior.fetchone()
             target_revision = int(revision_row[0]) if revision_row else 0
             target_snapshot = export_target_snapshot(
-                connection, project_id, include_cleanup=include_cleanup,
+                connection, project_id, include_cleanup=_admission_is_v2(admission),
             )
             target_content = (
                 None if target_snapshot is None else content_digest(target_snapshot)
@@ -1051,7 +1051,7 @@ def rollback(
         reason=reason,
         assessment=assessment,
         operation_id=operation_id,
-        include_cleanup=admission_is_v2,
+        admission=admission,
     )
     if str(revoked.get("authoritative_provider") or "") != PROVIDER_SQLITE:
         raise AlgorithmCutoverError(
@@ -1651,6 +1651,7 @@ def verify_maintenance_window(
         source_provider=PROVIDER_SQLITE,
         target_provider=PROVIDER_POSTGRESQL,
         snapshot_digest=str(current.get("snapshot_digest") or ""),
+        snapshot_contract=str(current.get("snapshot_contract") or ""),
         content_digest=str(current.get("content_digest") or ""),
         source_revision=current.get("source_revision"),
         verification_digest=str(verification_digest or ""),
@@ -1696,6 +1697,7 @@ def switch_maintenance_owner(
         source_provider=PROVIDER_SQLITE,
         target_provider=PROVIDER_POSTGRESQL,
         snapshot_digest=str(current.get("snapshot_digest") or ""),
+        snapshot_contract=str(current.get("snapshot_contract") or ""),
         content_digest=str(current.get("content_digest") or ""),
         source_revision=current.get("source_revision"),
         verification_digest=str(current.get("verification_digest") or ""),
@@ -1752,6 +1754,7 @@ def switch_maintenance_owner(
             source_provider=PROVIDER_SQLITE,
             target_provider=PROVIDER_POSTGRESQL,
             snapshot_digest=str(current.get("snapshot_digest") or ""),
+        snapshot_contract=str(current.get("snapshot_contract") or ""),
             content_digest=str(current.get("content_digest") or ""),
             source_revision=current.get("source_revision"),
             verification_digest=str(current.get("verification_digest") or ""),
@@ -1791,6 +1794,7 @@ def switch_maintenance_owner(
         source_provider=PROVIDER_POSTGRESQL,
         target_provider=PROVIDER_SQLITE,
         snapshot_digest=str(current.get("snapshot_digest") or ""),
+        snapshot_contract=str(current.get("snapshot_contract") or ""),
         content_digest=str(current.get("content_digest") or ""),
         source_revision=current.get("source_revision"),
         verification_digest=str(current.get("verification_digest") or ""),
@@ -1804,7 +1808,7 @@ def switch_maintenance_owner(
     admission["admission_mode"] = "maintenance"
     admission["verification_digest"] = str(current.get("verification_digest") or "")
     admission["snapshot_contract"] = str(
-        current.get("snapshot_contract") or CONTRACT_VERSION_V2
+        current.get("snapshot_contract") or CONTRACT_VERSION
     )
     path = write_admission_record(admission, record_path)
     # Prove the local record against the durable row before the marker is
@@ -2418,6 +2422,7 @@ def recover_maintenance(
             generation=int(current.get("generation") or 0),
             source_provider=PROVIDER_SQLITE, target_provider=PROVIDER_POSTGRESQL,
             snapshot_digest=str(current.get("snapshot_digest") or ""),
+        snapshot_contract=str(current.get("snapshot_contract") or ""),
             content_digest=str(current.get("content_digest") or ""),
             source_revision=current.get("source_revision"),
             verification_digest=str(current.get("verification_digest") or ""),
@@ -2451,6 +2456,18 @@ def recover_maintenance(
                 operation_id=operation, phase=MAINTENANCE_ROLLBACK_APPLIED,
                 durable_phase=MAINTENANCE_ROLLBACK_QUIESCING,
             )
+            rolled_contract = str(record.get("snapshot_contract") or "")
+            restored_source = (
+                export_source_snapshot_v2(db_path, project_id)
+                if rolled_contract == CONTRACT_VERSION_V2
+                else export_source_snapshot(db_path, project_id)
+            )
+            if content_digest(restored_source) != str(record.get("content_digest") or ""):
+                result["next_step"] = (
+                    "the revoked authority does not match the restored SQLite "
+                    "content; the marker and barrier are kept"
+                )
+                return result
             _set_maintenance(connection, project_id, _maintenance_record(
                 MAINTENANCE_ROLLBACK_APPLIED,
                 operation_id=operation, project_id=project_id,
