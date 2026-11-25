@@ -50,6 +50,73 @@ class TrainingCreateAdmission:
     compatibility_page: Callable[..., Mapping[str, Any]]
 
 
+@dataclass(frozen=True)
+class TrainingIdentityDependencies:
+    """Collaborators the training identity resolution needs (resolved at use)."""
+
+    list_algorithms: Callable[[str], list[dict[str, Any]]]
+    current_version_id: Callable[[Mapping[str, Any]], str]
+    confirmed_iteration_action: Callable[[Mapping[str, Any], Any], Any]
+    freeze_mother_model: Callable[[str, str], str]
+
+
+def resolve_algorithm_asset(
+    *,
+    project_id: str,
+    payload: Any,
+    dependencies: TrainingIdentityDependencies,
+) -> tuple[dict[str, Any], str]:
+    """Resolve the asset the request iterates and the version it is based on.
+
+    The asset must exist in this project (404 otherwise) and the reference
+    version is the asset's current version at creation time, which TRAINING_PREPARE
+    re-checks under the creation fence.
+    """
+    asset_algorithm = next(
+        (
+            row for row in dependencies.list_algorithms(project_id)
+            if str(row.get("id") or "") == str(payload.algorithm_asset_id or "")
+        ),
+        None,
+    )
+    if asset_algorithm is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在")
+    reference_version_id = str(
+        dependencies.current_version_id(asset_algorithm) or ""
+    ).strip()
+    return dict(asset_algorithm), reference_version_id
+
+
+def confirmed_training_iteration_action(
+    *,
+    payload: Any,
+    asset_algorithm: Mapping[str, Any],
+    dependencies: TrainingIdentityDependencies,
+) -> Any | None:
+    """Validate the confirmed iteration action, keeping its existing errors."""
+    if not payload.iteration_action:
+        return None
+    return dependencies.confirmed_iteration_action(asset_algorithm, payload)
+
+
+def freeze_training_mother_model(
+    *,
+    project_id: str,
+    payload: Any,
+    asset_algorithm: Mapping[str, Any],
+    dependencies: TrainingIdentityDependencies,
+) -> str:
+    """Freeze the local mother-model path for a brand-new algorithm.
+
+    An algorithm that already owns versions keeps its existing model reference;
+    only the first training freezes the uploaded/selected mother model, exactly
+    as before.
+    """
+    if list(asset_algorithm.get("versions") or []):
+        return ""
+    return str(dependencies.freeze_mother_model(project_id, payload.model))
+
+
 def training_background_confirmation(
     *,
     project_id: str,

@@ -629,3 +629,25 @@ app.py 只装配 `TrainingCreateAdmission`（全部按调用时解析，保持�
 Snapshot/冻结标签/数据集合同、训练身份幂等与并发锁、TRAINING_PREPARE/TRAINING 职责、外部母数据预检时机均未改变。
 
 **状态**：A/B/C 均 CODE_IMPLEMENTED，CI_PENDING；U1 仍为 CUTOVER_NOT_VERIFIED，PG 清理域正式切换继续阻断。
+
+### 9.27 第十六轮（A U1 权威/栅栏/撤销收敛；C 训练身份与母模型冻结 Service）
+
+- A 代码 SHA：`b623d64f7fc1ffaa66b7d2f7954efe41283b7c1d`
+- B：本轮未实施（见下）
+- C 代码 SHA：本轮最后一个提交（`platform_core/training_create_service.py` 身份解析 + app.py 装配）
+
+**A1 最终导入权限**：`_require_import_authority()` 不再用 `revoked_at` 判定 SQLite 无权威（首次维护窗口写入的 SQLite 权威行本就带 `revoked_at=now()`）。窗口最终导入要求：provider=sqlite、phase 恰为 `SOURCE_FROZEN`（QUIESCING/SWITCHING/ROLLBACK_QUIESCING 一律拒绝）、operation 匹配、冻结 content_digest 与 revision 与本次导入一致，且必须是 `run_id == operation` 的 APPLY（dry-run 单独拒绝）。纯影子导入在 PG 权威下拒绝，回滚结算后才恢复。
+**A2 栅栏权限与 CAS**：Provider factory 不再改写栅栏（只选 Provider）；栅栏写入在调用方 admission 记录的同一 switch 锁内做 CAS：禁止旧 generation 覆盖新 generation，结算必须命名已记录的 operation/phase；自定义 admission_path 与栅栏锁路径一致（同项目单锁身份）。
+**A3 统一收尾**：SWITCHING 未提交恢复现在同时结算栅栏（SQLITE_ACTIVE）再清 marker；审计 operator/reason 在恢复入口一次性解析（VERIFIED 分支不再使用未定义变量）。
+**A4 迁移写权限与旧入口**：维护导入在同一 run 上不再因 heartbeat 超时重开；旧 `admit_cutover` 入口在提交前写同一持久栅栏、成功后结算为 POSTGRES_ACTIVE，异常时保留阻断（不再存在无栅栏的第二条权威切换路径）。
+**A5 撤销授权**：`revoke_admission()` 在撤销事务内核验 `ROLLBACK_QUIESCING`、operation、admission_id、generation、provider/revoked_at、admitted revision（0 亦比较）、admitted content 与 target content；调用方 assessment 仅作交叉校验；返回记录使用数据库 `RETURNING` 的 committed generation/revoked_at；rollback 在交还权威前核对 SQLite 恢复内容。
+**A6 合同**：冻结阶段导入权限、陈旧 admission 不能解除栅栏、栅栏 CAS 与锁身份、revision=0 回滚，均已补最小用例。
+
+**B（PG 清理域）本轮未实施**：PG 清理域需要同时改动 U1 快照合同（第 4 张表）、export/import/report/restore、PG schema 迁移和 8 个 Repository 方法，并保持历史快照/无清理表旧项目的兼容语义。为避免“只加表却遗漏迁移合同”的半迁移，本轮保留 `CLEANUP_DOMAIN_MIGRATED` 硬阻断与 `cleanup_supported=False`，未宣称支持。具体缺口见交付简报。
+
+**C 训练身份 Service**：`training_create_service.py` 新增 `TrainingIdentityDependencies` 与
+`resolve_algorithm_asset()` / `confirmed_training_iteration_action()` / `freeze_training_mother_model()`，
+迁出创建时的算法身份解析、当前版本引用、确认迭代动作校验与首个训练的母模型冻结；app.py 仅装配依赖
+（按调用时解析，测试可替换绑定），调用顺序、错误码、version 引用与 TRAINING_PREPARE 复检合同不变。
+
+**状态**：A/C = CODE_IMPLEMENTED，CI_PENDING；U1 仍为 CUTOVER_NOT_VERIFIED；PG 清理域仍为明确阻断（未迁移）。

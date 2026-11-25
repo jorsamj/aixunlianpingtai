@@ -8149,7 +8149,11 @@ def gpu_resources():
 # platform_core.training_create_service; app.py only supplies the collaborators.
 from platform_core.training_create_service import (  # noqa: E402
     TrainingCreateAdmission,
+    TrainingIdentityDependencies,
+    confirmed_training_iteration_action,
+    freeze_training_mother_model,
     prepare_training_create_admission,
+    resolve_algorithm_asset,
 )
 
 # Training creation contract, validation and HTTP entry points are owned by
@@ -8702,6 +8706,20 @@ def _reconcile_training_create_replay(
     return repository.get(task_id) or parent
 
 
+# Training identity collaborators: asset lookup, the creation-time reference
+# version, the confirmed iteration action and the mother-model freeze all stay
+# with the existing owners and are resolved at use time.
+_TRAINING_IDENTITY = TrainingIdentityDependencies(
+    list_algorithms=lambda project_id: list_algorithms_internal(project_id),
+    current_version_id=lambda asset_algorithm: resolve_current_version_id(asset_algorithm),
+    confirmed_iteration_action=lambda asset_algorithm, payload: (
+        _validated_training_iteration_action(asset_algorithm, payload)
+    ),
+    freeze_mother_model=lambda project_id, model: _ready_ultralytics_mother_model(
+        project_id, model
+    ),
+)
+
 # Creation admission collaborators: the service never imports app, so every
 # store, artifact root and project helper is resolved through a callable at use
 # time (tests and callers may replace these module-level bindings).
@@ -8774,24 +8792,16 @@ def _enqueue_explicit_training_locked(
                     raise HTTPException(409,'训练任务 ID 已绑定其他请求，不能静默复用')
                 existing=_reconcile_training_create_replay(project_id,existing,stored)
                 return JSONResponse(status_code=202,content={'ok':True,'task':_public_task(existing),'idempotent':True})
-    asset_algorithm = next(
-        (
-            row for row in list_algorithms_internal(project_id)
-            if str(row.get("id") or "") == str(payload.algorithm_asset_id or "")
-        ),
-        None,
+    asset_algorithm, reference_version_id = resolve_algorithm_asset(
+        project_id=project_id, payload=payload, dependencies=_TRAINING_IDENTITY,
     )
-    if asset_algorithm is None:
-        raise HTTPException(status_code=404, detail="训练算法不存在")
-    reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()
     try:
         requested_split = _explicit_training_split(payload, project_id)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    confirmed_iteration_action = (
-        _validated_training_iteration_action(asset_algorithm, payload)
-        if payload.iteration_action
-        else None
+    confirmed_iteration_action = confirmed_training_iteration_action(
+        payload=payload, asset_algorithm=asset_algorithm,
+        dependencies=_TRAINING_IDENTITY,
     )
     framework = str(payload.framework or "ultralytics").strip().lower()
     target = str(payload.target or "local").strip().lower()
@@ -8835,12 +8845,15 @@ def _enqueue_explicit_training_locked(
                     "ok": True, "task": _public_task(existing_task), "idempotent": True,
                 })
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
-    if not list(asset_algorithm.get("versions") or []):
-        # Idempotent replays are resolved above without doing new filesystem IO.
-        # On first creation, freeze the local path before persisting any task.
-        prepared_model = _ready_ultralytics_mother_model(project_id, payload.model)
-        payload.model = prepared_model
-        raw_request["model"] = prepared_model
+    # Idempotent replays are resolved above without doing new filesystem IO.
+    # On first creation, freeze the local path before persisting any task.
+    frozen_mother_model = freeze_training_mother_model(
+        project_id=project_id, payload=payload, asset_algorithm=asset_algorithm,
+        dependencies=_TRAINING_IDENTITY,
+    )
+    if frozen_mother_model:
+        payload.model = frozen_mother_model
+        raw_request["model"] = frozen_mother_model
     prepare_task_id = f"trainprep_{task_id}"
     frozen_robustness = {}
     if payload.robustness_policy is not None:
