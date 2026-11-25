@@ -140,10 +140,18 @@ def normalize_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
 
 def normalized_tables(snapshot: Mapping[str, Any]) -> dict[str, list[dict]]:
     tables = snapshot.get("tables") or {}
-    return {
-        name: [normalize_row(name, row) for row in tables.get(name) or []]
-        for name in TABLES
-    }
+    names = tuple(TABLES) + (("cleanup",) if "cleanup" in tables else ())
+    normalized: dict[str, list[dict]] = {}
+    for name in names:
+        if name == "cleanup":
+            # The ledger payload is already a project-scoped JSON document;
+            # keep its text so no field is lost while comparing snapshots.
+            normalized[name] = [dict(row) for row in tables.get(name) or []]
+        else:
+            normalized[name] = [
+                normalize_row(name, row) for row in tables.get(name) or []
+            ]
+    return normalized
 
 
 def normalize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -177,6 +185,18 @@ def _natural_key(name: str, row: Mapping[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 def export_source_snapshot(db_path: str | Path, project_id: str) -> dict[str, Any]:
     snapshot = export_snapshot_from_path(db_path, project_id)
+    _scan_secret_material(snapshot)
+    return snapshot
+
+
+def export_source_snapshot_v2(db_path: str | Path, project_id: str) -> dict[str, Any]:
+    """Export the four-domain V2 snapshot from one consistent SQLite read.
+
+    The cleanup domain is read in the same transaction; a source without the
+    ledger table is recorded as ``cleanup_capability = "ABSENT"``. The V1 export
+    above is untouched and remains the one every current caller uses.
+    """
+    snapshot = export_snapshot_from_path(db_path, project_id, include_cleanup=True)
     _scan_secret_material(snapshot)
     return snapshot
 

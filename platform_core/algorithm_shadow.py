@@ -71,23 +71,41 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
-def _snapshot_body(project_id: str, revision: int, tables: Mapping[str, list[dict]]) -> dict:
-    return {
-        "contract_version": CONTRACT_VERSION,
-        "schema_version": SCHEMA_VERSION,
+def _snapshot_body(
+    project_id: str,
+    revision: int,
+    tables: Mapping[str, list[dict]],
+    *,
+    contract_version: str = CONTRACT_VERSION,
+    schema_version: int = SCHEMA_VERSION,
+    cleanup_capability: str | None = None,
+) -> dict:
+    body = {
+        "contract_version": contract_version,
+        "schema_version": schema_version,
         "project_id": project_id,
         "algorithm_revision": revision,
         "counts": {name: len(rows) for name, rows in tables.items()},
         "tables": tables,
     }
+    if cleanup_capability is not None:
+        # "ABSENT" is an observed fact (the source has no ledger), not an empty
+        # cleanup array pretending to be complete evidence.
+        body["cleanup_capability"] = str(cleanup_capability)
+    return body
 
 
 def _read_rows(database: sqlite3.Connection, sql: str) -> list[dict[str, Any]]:
     return [dict(row) for row in database.execute(sql).fetchall()]
 
 
-def export_snapshot(store: AlgorithmSqlStore) -> dict[str, Any]:
-    """Export one consistent SQLite read transaction without initialization."""
+def export_snapshot(store: AlgorithmSqlStore, *, include_cleanup: bool = False) -> dict[str, Any]:
+    """Export one consistent SQLite read transaction without initialization.
+
+    ``include_cleanup`` produces the V2 contract: the ledger is read inside the
+    same transaction, and a source without the ledger table is recorded as
+    ``cleanup_capability = "ABSENT"`` rather than filled with an empty array.
+    """
     path = Path(store.db_path)
     if not path.is_file():
         raise AlgorithmShadowError("ALGORITHM_SHADOW_SOURCE_MISSING", "algorithm source database is missing")
@@ -108,6 +126,20 @@ def export_snapshot(store: AlgorithmSqlStore) -> dict[str, Any]:
             tables: dict[str, list[dict]] = {}
             for name, sql in _TABLES:
                 tables[name] = _read_rows(database, sql)
+            cleanup_capability = None
+            if include_cleanup:
+                present = database.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (_CLEANUP_TABLE,),
+                ).fetchone()
+                cleanup_capability = "PRESENT" if present is not None else "ABSENT"
+                tables["cleanup"] = (
+                    _read_rows(database, _CLEANUP_SQL) if present is not None else []
+                )
+                for row in tables["cleanup"]:
+                    # The SQLite ledger is per project; the snapshot carries the
+                    # project identity explicitly like every other row.
+                    row["project_id"] = str(store.project_id)
         finally:
             database.execute("ROLLBACK")
     except sqlite3.Error as error:
@@ -128,7 +160,12 @@ def export_snapshot(store: AlgorithmSqlStore) -> dict[str, Any]:
                 "source rows contain a different project_id",
                 detail=f"{row.get('project_id')!r} != {project_id!r}",
             )
-    body = _snapshot_body(project_id, revision, tables)
+    body = _snapshot_body(
+        project_id, revision, tables,
+        contract_version=CONTRACT_VERSION_V2 if include_cleanup else CONTRACT_VERSION,
+        schema_version=SCHEMA_VERSION_V2 if include_cleanup else SCHEMA_VERSION,
+        cleanup_capability=cleanup_capability,
+    )
     body["snapshot_digest"] = _digest(body)
     body["captured_at"] = datetime.now(timezone.utc).isoformat()
     return body
@@ -148,9 +185,12 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """Recompute and validate the complete U1 snapshot contract."""
     if not isinstance(snapshot, Mapping):
         raise _invalid("snapshot must be an object")
-    if snapshot.get("contract_version") not in _SUPPORTED_CONTRACTS:
+    contract_version = str(snapshot.get("contract_version") or "")
+    if contract_version not in _SUPPORTED_CONTRACTS:
         raise _invalid("unsupported snapshot contract_version")
-    if _integer(snapshot.get("schema_version")) != SCHEMA_VERSION:
+    is_v2 = contract_version == CONTRACT_VERSION_V2
+    expected_schema = SCHEMA_VERSION_V2 if is_v2 else SCHEMA_VERSION
+    if _integer(snapshot.get("schema_version")) != expected_schema:
         raise _invalid("unsupported snapshot schema_version")
     project_id = str(snapshot.get("project_id") or "")
     if not _PROJECT_ID.fullmatch(project_id):
@@ -162,13 +202,24 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError
     except ValueError as error:
         raise _invalid("snapshot captured_at is invalid") from error
+    expected_tables = _V2_TABLES if is_v2 else _V1_TABLES
     tables = snapshot.get("tables")
-    if not isinstance(tables, Mapping) or set(tables) != {"algorithms", "versions", "analyses"}:
+    if not isinstance(tables, Mapping) or set(tables) != set(expected_tables):
         raise _invalid("snapshot tables are incomplete or contain unrelated data")
     counts = snapshot.get("counts")
-    if not isinstance(counts, Mapping) or set(counts) != {"algorithms", "versions", "analyses"}:
+    if not isinstance(counts, Mapping) or set(counts) != set(expected_tables):
         raise _invalid("snapshot counts are invalid")
-    for name in ("algorithms", "versions", "analyses"):
+    if is_v2:
+        capability = str(snapshot.get("cleanup_capability") or "")
+        if capability not in {"PRESENT", "ABSENT"}:
+            raise _invalid("snapshot cleanup capability is missing")
+        if capability == "ABSENT" and tables["cleanup"]:
+            raise _invalid("an absent cleanup domain cannot carry rows")
+    elif "cleanup_capability" in snapshot or "cleanup" in tables:
+        # V1 carries no cleanup evidence: an empty array must not impersonate a
+        # complete V2 document.
+        raise _invalid("a V1 snapshot cannot claim cleanup evidence")
+    for name in expected_tables:
         values = tables.get(name)
         if not isinstance(values, list):
             raise _invalid(f"snapshot {name} must be a list")
@@ -221,7 +272,9 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     return dict(snapshot)
 
 
-def export_snapshot_from_path(db_path: str | Path, project_id: str) -> dict[str, Any]:
+def export_snapshot_from_path(
+    db_path: str | Path, project_id: str, *, include_cleanup: bool = False,
+) -> dict[str, Any]:
     """Export without constructing AlgorithmSqlStore (no mkdir/initialization)."""
     database_path = Path(db_path)
     probe = AlgorithmSqlStore.__new__(AlgorithmSqlStore)
@@ -229,7 +282,7 @@ def export_snapshot_from_path(db_path: str | Path, project_id: str) -> dict[str,
     probe.project_dir = database_path.parent
     probe.db_path = database_path
     probe.project_id = str(project_id)
-    return export_snapshot(probe)
+    return export_snapshot(probe, include_cleanup=include_cleanup)
 
 
 def write_snapshot(snapshot: Mapping[str, Any], destination: str | Path) -> Path:
