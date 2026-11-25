@@ -673,6 +673,8 @@ def write_authority_barrier(
     record_path: str | Path | None = None,
     require_operation: str | None = None,
     require_phase: str | None = None,
+    allowed_phases: Sequence[str] | None = None,
+    require_existing: bool = False,
 ) -> bool:
     """Record this project's local authority state inside the SQLite catalog.
 
@@ -683,6 +685,11 @@ def write_authority_barrier(
     names the operation/phase it settles must match what is recorded. Releasing a
     blocking barrier (SQLITE_ACTIVE / ROLLBACK_APPLIED) therefore requires the
     exact predecessor the maintenance contract proved.
+
+    ``writer_generation`` is the generation the barrier *claims* - the committed
+    durable generation, never a not-yet-committed target. A switch therefore
+    records its attempt at the current generation and only settles at the
+    committed one after the admission transaction succeeds.
     """
     from .algorithm_sql_store import AlgorithmSqlStore
 
@@ -691,6 +698,17 @@ def write_authority_barrier(
     with admission_switch_lock(lock_owner):
         store = AlgorithmSqlStore(path)
         current = store.read_authority_barrier()
+        if current is None and (
+            require_existing or require_operation is not None or require_phase is not None
+            or allowed_phases is not None
+        ):
+            # A settlement must prove the blocker it releases; a missing barrier
+            # is not "nothing to check".
+            raise AlgorithmAdmissionRequired(
+                "ALGORITHM_SQLITE_CUTOVER_BARRIER_MISSING",
+                "no local authority barrier records this operation",
+                detail=f"project={project_id!r} expected={require_operation!r}",
+            )
         if current is not None:
             if str(current.get("project_id") or "") != str(project_id):
                 raise AlgorithmAdmissionRequired(
@@ -718,13 +736,23 @@ def write_authority_barrier(
                         f"expected={require_operation!r}"
                     ),
                 )
-            if require_phase is not None and str(
-                current.get("phase") or ""
-            ) != str(require_phase):
+            recorded_phase = str(current.get("phase") or "")
+            if require_phase is not None and recorded_phase != str(require_phase):
                 raise AlgorithmAdmissionRequired(
                     "ALGORITHM_SQLITE_CUTOVER_BARRIER_PHASE_MISMATCH",
                     "the local authority barrier is not in the expected phase",
-                    detail=f"recorded={current.get('phase')!r} expected={require_phase!r}",
+                    detail=f"recorded={recorded_phase!r} expected={require_phase!r}",
+                )
+            if allowed_phases is not None and recorded_phase not in {
+                str(value) for value in allowed_phases
+            }:
+                raise AlgorithmAdmissionRequired(
+                    "ALGORITHM_SQLITE_CUTOVER_BARRIER_PHASE_MISMATCH",
+                    "the local authority barrier is not in an allowed phase",
+                    detail=(
+                        f"recorded={recorded_phase!r} "
+                        f"allowed={[str(value) for value in allowed_phases]}"
+                    ),
                 )
         return store.write_authority_barrier({
             "schema": "algorithm-authority-barrier/1",

@@ -347,7 +347,8 @@ def admit_cutover(
     if legacy_authority:
         _authority_barrier(
             db_path, project_id=project_id, phase=MAINTENANCE_SWITCHING,
-            writer_generation=attempt_generation,
+            # The target generation is not committed yet.
+            writer_generation=int(expected_generation),
         )
     require_idle_transaction(connection, purpose="cutover admission")
     with connection.transaction():
@@ -1495,6 +1496,8 @@ def _authority_barrier(
     record_path: str | Path | None = None,
     require_operation: str | None = None,
     require_phase: str | None = None,
+    allowed_phases: Sequence[str] | None = None,
+    require_existing: bool = False,
 ) -> bool:
     """Write this project's local authority barrier next to the SQLite catalog.
 
@@ -1517,6 +1520,8 @@ def _authority_barrier(
             record_path=record_path,
             require_operation=require_operation,
             require_phase=require_phase,
+            allowed_phases=allowed_phases,
+            require_existing=require_existing,
         )
     except Exception as error:  # unresolved barrier must not be guessed past
         raise AlgorithmCutoverError(
@@ -1678,7 +1683,9 @@ def switch_maintenance_owner(
     _authority_barrier(
         db_path, project_id=project_id, phase=MAINTENANCE_SWITCHING,
         operation_id=operation_id,
-        writer_generation=int(expected_generation) + 1,
+        # The admission generation is not committed yet: the barrier records the
+        # generation this attempt starts from and settles at the committed one.
+        writer_generation=int(expected_generation),
         record_path=record_path,
     )
     admitted = admit_cutover(
@@ -1795,6 +1802,7 @@ def switch_maintenance_owner(
         record_path=record_path,
         require_operation=operation_id,
         require_phase=MAINTENANCE_SWITCHING,
+        require_existing=True,
     )
     _remove_marker(admission_transition_path(record_path), operation_id)
     return {
@@ -2237,12 +2245,14 @@ def recover_maintenance(
                     return result
                 if (
                     str(recorded.get("content_digest") or "") != frozen_content
-                    or int(recorded.get("algorithm_revision") or -1)
+                    # A revision of 0 is a valid revision: only a missing value
+                    # is treated as unknown, never "0 or -1".
+                    or recorded.get("algorithm_revision") is None
+                    or int(recorded.get("algorithm_revision"))
                     != int(final_snapshot["algorithm_revision"])
                     or (
                         frozen_revision is not None
-                        and int(recorded.get("algorithm_revision") or -1)
-                        != int(frozen_revision)
+                        and int(recorded.get("algorithm_revision")) != int(frozen_revision)
                     )
                 ):
                     result["next_step"] = (
@@ -2346,6 +2356,10 @@ def recover_maintenance(
                     "the marker is kept"
                 )
                 return result
+            # The durable phase is SWITCHING, but the local barrier may already
+            # be settled for the *same* operation (a crash after the settle
+            # write). Both phases are the same operation's evidence; any other
+            # phase/operation is refused.
             _authority_barrier(
                 db_path, project_id=project_id, phase=MAINTENANCE_POSTGRES_ACTIVE,
                 operation_id=operation,
@@ -2353,7 +2367,8 @@ def recover_maintenance(
                 admission_id=str(record.get("admission_id") or ""),
                 record_path=record_path,
                 require_operation=operation,
-                require_phase=MAINTENANCE_SWITCHING,
+                allowed_phases=(MAINTENANCE_SWITCHING, MAINTENANCE_POSTGRES_ACTIVE),
+                require_existing=True,
             )
             _remove_marker(marker_path, operation)
             result.update(applied=True, settled=True, phase=MAINTENANCE_POSTGRES_ACTIVE,

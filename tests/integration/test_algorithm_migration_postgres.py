@@ -981,8 +981,14 @@ def test_rollback_with_an_empty_project_is_authorised_at_revision_zero(pg):
     """revision 0 is a valid revision: the revocation compares it like any other."""
     _initialized(pg)
     root = pathlib.Path(tempfile.mkdtemp(prefix="t8zero-"))
-    store = _store(root, "zero", rows=[])
-    assert export_source_snapshot(store.db_path, "zero")["algorithm_revision"] == 0
+    store = AlgorithmSqlStore(root / "zero" / "algorithms.json")
+    # Initialise an empty catalog without replace_all: writing an empty list is
+    # still a catalog mutation and would legitimately bump the revision.
+    store.ensure_ready()
+    snapshot_zero = export_source_snapshot(store.db_path, "zero")
+    assert snapshot_zero["algorithm_revision"] == 0
+    assert snapshot_zero["counts"]["algorithms"] == 0
+    _import(pg, snapshot_zero)
     record_path = admission_record_path(store.db_path)
     with _connect(pg) as connection:
         admitted = admit_cutover(

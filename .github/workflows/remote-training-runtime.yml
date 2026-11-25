@@ -7,6 +7,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/training_create_api.py'
+      - 'platform_core/training_create_service.py'
       - 'platform_core/paddle_detection_catalog.py'
       - 'tests/unit/test_paddle_detection_catalog.py'
       - 'train_worker.py'
@@ -96,6 +98,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - 'platform_core/training_create_api.py'
+      - 'platform_core/training_create_service.py'
       - 'platform_core/paddle_detection_catalog.py'
       - 'tests/unit/test_paddle_detection_catalog.py'
       - 'train_worker.py'
@@ -456,8 +460,10 @@ jobs:
           grep -Fq 'class TrainingPrepareHandler' platform_core/remote_training_tasks.py
           grep -Fq '"remote_input_state": "PREPARING"' app.py
           grep -Fq '"runtime_stop_policy": "target_only"' platform_core/training_tasks.py
-          grep -Fq '目标正确率必须在 0~1 之间' app.py
-          grep -Fq '设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0' app.py
+          grep -Fq '目标正确率必须在 0~1 之间' platform_core/training_create_api.py
+          grep -Fq '设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0' platform_core/training_create_api.py
+          # The creation contract lives in its own module: keep the workflow
+          # triggered when it (or its service) changes.
           grep -Fq 'test_training_target_contract_rejects_invalid_metric_threshold_and_interval' tests/api/test_training_request.py
           grep -Fq 'service.training_preflight(' platform_core/remote_training_tasks.py
           grep -Fq 'assert_external_algorithm_master_data_current(self.data_dir, algorithm)' platform_core/remote_training_tasks.py

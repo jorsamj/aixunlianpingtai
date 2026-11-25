@@ -323,12 +323,6 @@ def import_snapshot(
                 "a dry run cannot be the window's final import",
                 detail=f"operation={maintenance_operation}",
             )
-        if str(run_id or "") != str(maintenance_operation):
-            raise AlgorithmMigrationError(
-                "ALGORITHM_MIGRATION_RUN_IDENTITY_REQUIRED",
-                "the final import must run under the window operation id",
-                detail=f"run_id={run_id!r} operation={maintenance_operation}",
-            )
     run, resumed = _begin_run(
         connection,
         project_id=project_id,
@@ -384,6 +378,15 @@ def import_snapshot(
                             maintenance_operation=maintenance_operation,
                         )
                         if maintenance_operation is not None:
+                            # Ownership is proven above; only then is the run id
+                            # bound, so a wrong operation still reports the
+                            # established operation-mismatch code.
+                            if str(run) != str(maintenance_operation):
+                                raise AlgorithmMigrationError(
+                                    "ALGORITHM_MIGRATION_RUN_IDENTITY_REQUIRED",
+                                    "the final import must run under the window operation id",
+                                    detail=f"run_id={run!r} operation={maintenance_operation}",
+                                )
                             # The window's frozen evidence must describe exactly
                             # this import: same content, same revision.
                             frozen_content = str(
