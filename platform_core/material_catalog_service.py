@@ -74,10 +74,13 @@ class MaterialCatalogService:
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+        if reader_view:
+            from platform_core.material_reader_views import material_display
+            items = [material_display(project_id, item) for item in material_page.items]
+        else:
+            items = [self.dependencies.public_material(project_id, item) for item in material_page.items]
         response = {
-            "items": [
-                self.dependencies.public_material(project_id, item) for item in material_page.items
-            ],
+            "items": items,
             "next_cursor": material_page.next_cursor,
             "total": material_page.total,
         }
@@ -94,9 +97,7 @@ class MaterialCatalogService:
                 "has_next": requested_page < total_pages,
             })
         if reader_view:
-            from platform_core.material_reader_views import material_display
             response.update(ok=True,project_id=project_id)
-            response['items']=[material_display(project_id,item) for item in material_page.items]
         return response
 
     def list_material_ids_v61(self,
