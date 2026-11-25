@@ -669,3 +669,20 @@ Snapshot/冻结标签/数据集合同、训练身份幂等与并发锁、TRAININ
 **C**：`training_create_service.build_training_create_payload()` 承接冻结创建请求的装配（schema_version/request_identity/reference_request_identity/training_input_state/training_prepare_task_id/requested_split 投影/算法身份与父版本/资源与远端准备字段），app.py 只调用并传入解析后的身份；字段与顺序不变。
 
 **状态**：A/B1/C = CODE_IMPLEMENTED，CI_PENDING；B2/B3 = NOT_MIGRATED；U1 = CUTOVER_NOT_VERIFIED。
+
+### 9.29 第十八轮（S 同步；A CI 精准修复；B2.3 revision 合同；C 训练拆分身份 Service）
+
+- 起始本地/远端：`5914b99d` / `bf971c18`；B1+C 已 fast-forward 推送，远端现为 `5914b99d`。
+- A 代码 SHA：`73deff101a405becc0ae4de6f9e62183d2e3a4b1`
+- B2 代码 SHA（revision 合同部分）：`dc7ef28009ea9de4b4be2bb33c4336ef8f9133bb`
+- C 代码 SHA：本轮最后一个提交
+
+**A1**：revision=0 用例不再有函数内 `AlgorithmSqlStore` 局部 import（此前把模块级名字变成局部变量，`UnboundLocalError` 在断言前抛出）；真 revision=0 目录、真实导入、准入与安全回滚断言保留。
+**A2**：`external-algorithm-publish.yml` 的创建时参考版本守卫改查 `training_create_service.py`（身份解析真实属主），并补该模块 path trigger；其余 8 条"缺失"均为否定式守卫（要求字符串不存在），未改动。
+**A3**：窗口最终导入在 `_begin_run()` 之前先在同一 cutover/import 咨询锁内证明 operation 归属；非法请求不再创建/中止/触碰合法 operation 的 `migration_run` 行，事务内权威校验仍保留。
+
+**B2.3（本轮 B2 实际代码）**：SQLite 与 PG 的 `cleanup_update` 现在对**真实发生的**账本变化推进一次算法 revision（幂等无变化不推进），避免 V2 快照同 revision 不同内容永久冲突。**快照 V2（四域 export/import/report/restore）本轮仍未实施**：`cleanup_supported=False`、`cleanup_*` 仍列在 `unsupported_operations()`、`CLEANUP_DOMAIN_MIGRATED` 继续阻断。
+
+**C**：`training_create_service.resolve_training_split()` 承接 train/val/test 角色与拆分身份解析（selection reference 展开、固定 ZIP 源证明、每角色 image id 具体化、旧字段互斥校验），依赖经 `TrainingSplitDependencies` 注入；app.py 保留同名兼容绑定（既有测试与进程内调用）。冻结请求装配、准入、身份解析不变。
+
+**状态**：A/C = CODE_IMPLEMENTED（A 已推送）；B1 已推送；B2 仅 revision 合同；B2 快照/迁移、B3 = NOT_MIGRATED；U1 = CUTOVER_NOT_VERIFIED。

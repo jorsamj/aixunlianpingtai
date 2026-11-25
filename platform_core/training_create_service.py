@@ -362,3 +362,65 @@ def build_training_create_payload(
         if target == "remote" else {}
     ),
     }
+
+
+def resolve_training_split(
+    *, payload: Any, project_id: str = "",
+    dependencies: "TrainingSplitDependencies",
+) -> Any:
+    """Resolve the train/val/test role identity for one creation request.
+
+    The selection references, the fixed-ZIP source proof and the per-role image
+    identity are resolved here, exactly as before; the request object is mutated
+    with the resolved ids because the frozen payload is built from it.
+    """
+    from .training_splits import SplitMode, SplitRequest
+    from .training_selection_reference import read_selection, selection_context, read_fixed_zip_references
+    if payload.split_mode == SplitMode.FIXED_ZIP_TRAIN_VAL_TEST.value:
+        if (not project_id or payload.train_image_ids or payload.validation_image_ids or payload.test_image_ids
+                or payload.selected_image_ids or payload.val_image_ids):
+            raise ValueError('固定 ZIP 划分只允许三组经核验的服务端引用')
+        if (payload.benchmark_source_version_id or payload.benchmark_scope_id or payload.supplement_candidate_set_id
+                or payload.supplement_count or payload.auto_supplement or payload.train_max_samples or payload.val_max_samples
+                or payload.duplicate_review):
+            raise ValueError('固定 ZIP 划分不可复用 Benchmark、补数据、删减素材或限制样本数')
+        packet = payload.model_dump()
+        ids = read_fixed_zip_references(dependencies.data_dir(), project_id, packet)
+        split = SplitRequest.from_payload({**packet, **ids})
+        from .zip_fixed_training import current_source_proof
+        if current_source_proof(dependencies.material_store(project_id), split)['source_digest'] != payload.zip_selection_digest:
+            raise ValueError('固定 ZIP 来源证据已变化，请重新核验')
+        for field, values in ids.items():
+            setattr(payload, field, values)
+        return split
+    if payload.validation_selection_ref or payload.validation_image_ids or payload.zip_source_job_ids or payload.zip_selection_digest:
+        raise ValueError('只有固定 ZIP 模式支持固定 Validation 与 ZIP 来源')
+    for role in ('train','test'):
+        reference=getattr(payload,role+'_selection_ref',None)
+        if reference:
+            if not project_id:raise ValueError('selection reference requires project identity')
+            if getattr(payload,role+'_image_ids',None):raise ValueError('不能混用冻结选择与显式图片ID')
+            context=selection_context(dependencies.data_dir(),project_id,payload.model_dump(),role)
+            ids=read_selection(dependencies.data_dir(),reference,context)
+            setattr(payload,role+'_image_ids',ids)
+        elif len(getattr(payload,role+'_image_ids',None) or [])>50000:
+            raise ValueError('显式素材ID最多50000张，请使用服务器冻结选择')
+
+    if not payload.split_mode:
+        raise ValueError("split_mode 不能为空")
+    if payload.selected_image_ids or payload.val_image_ids:
+        raise ValueError("新版训练任务不能混用旧版候选池或验证集字段")
+    return SplitRequest(
+        mode=SplitMode(payload.split_mode),
+        train_image_ids=tuple(payload.train_image_ids or ()),
+        test_image_ids=tuple(payload.test_image_ids or ()),
+        experiment_percent=payload.experiment_percent,
+        validation_percent=payload.validation_percent,
+    )
+
+@dataclass(frozen=True)
+class TrainingSplitDependencies:
+    """Collaborators the split/role resolution needs (resolved at use time)."""
+
+    data_dir: Callable[[], Path]
+    material_store: Callable[[str], Any]
