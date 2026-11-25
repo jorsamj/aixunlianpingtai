@@ -5,6 +5,9 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/algorithm_catalog_api.py
+      - platform_core/algorithm_catalog_contracts.py
+      - platform_core/algorithm_catalog_service.py
       - platform_core/training_create_service.py
       - platform_core/external_algorithm_publish.py
       - platform_core/compute_platform_catalog.py
@@ -41,6 +44,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/algorithm_catalog_api.py
+      - platform_core/algorithm_catalog_contracts.py
+      - platform_core/algorithm_catalog_service.py
       - platform_core/training_create_service.py
       - platform_core/external_algorithm_publish.py
       - platform_core/compute_platform_catalog.py
@@ -143,15 +149,15 @@ jobs:
           grep -Fq 'MODEL_ARTIFACT_ALGORITHM_RETIRING' platform_core/model_artifacts.py
           grep -Fq 'with model_delivery_version_fence(' platform_core/external_algorithm_publish.py
           grep -Fq 'return self._publish_under_version_fence(' platform_core/external_algorithm_publish.py
-          grep -Fq 'DATA_DIR, project_id, algorithm_id, version_id' app.py
-          grep -Fq 'str(payload.expected_current_version_id)' app.py
+          grep -Fq 'self.dependencies.data_dir(), project_id, algorithm_id, version_id' platform_core/algorithm_catalog_service.py
+          grep -Fq 'str(payload.expected_current_version_id)' platform_core/algorithm_catalog_service.py
           grep -Fq '"validation_status": str(job.get("validation_status") or "")' platform_core/model_artifacts.py
           grep -Fq 'test_conversion_validation_promotes_on_same_canonical_artifact_identity' tests/unit/test_model_artifacts.py
           grep -Fq 'canonical_artifact_ids' platform_core/remote_execution_transport.py
           grep -Fq "usage||'')!=='model_artifact'" static/app.js
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/external_publish_request.py platform_core/deployment/conversion_tasks.py platform_core/remote_execution_transport.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
+          python -m py_compile app.py platform_core/algorithm_catalog_api.py platform_core/algorithm_catalog_contracts.py platform_core/algorithm_catalog_service.py platform_core/external_algorithm_publish.py platform_core/external_publish_request.py platform_core/deployment/conversion_tasks.py platform_core/remote_execution_transport.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
           node --check static/modules/external-algorithm-publish.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
@@ -173,19 +179,19 @@ jobs:
           grep -Fq 'def delete_algorithm(' platform_core/external_algorithm_publish.py
           grep -Fq 'test_publication_repository_delete_version_cascades_only_target_version' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'def delete_version(' platform_core/external_algorithm_publish.py
-          grep -Fq 'model_assets.purge_version(project_id, algorithm_id, version_id)' app.py
-          grep -Fq 'ExternalPublicationRepository(DATA_DIR).delete_version(' app.py
+          grep -Fq 'model_assets.purge_version(project_id, algorithm_id, version_id)' platform_core/algorithm_catalog_service.py
+          grep -Fq 'ExternalPublicationRepository(self.dependencies.data_dir()).delete_version(' platform_core/algorithm_catalog_service.py
           grep -Fq 'test_rollback_cleanup_purges_deleted_version_delivery_state_only' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'test_rollback_and_delete_blocks_active_rknn_board_validation_by_conversion_lineage' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'test_rollback_retires_rknn_board_result_output_with_legacy_upload_evidence' tests/api/test_algorithm_version_rollback.py
-          grep -Fq 'def _retire_rknn_board_result_output(' app.py
-          grep -Fq 'deleted_with_version_at' app.py
+          grep -Fq 'def _retire_rknn_board_result_output(' platform_core/algorithm_catalog_service.py
+          grep -Fq 'deleted_with_version_at' platform_core/algorithm_catalog_service.py
           grep -Fq 'verification["result_output_storage"]["sha256"] == "a" * 64' tests/unit/test_remote_execution_transport.py
-          grep -Fq 'source_conversion_job_id' app.py
-          grep -Fq '该版本仍有活动 RKNN 板端验证任务' app.py
-          grep -Fq 'def _algorithm_version_reference_fence(' app.py
-          grep -Fq 'ALGORITHM_VERSION_REFERENCE_RETIRED' app.py
-          grep -Fq 'ALGORITHM_VERSION_REFERENCE_STALE' app.py
+          grep -Fq 'source_conversion_job_id' platform_core/algorithm_catalog_service.py
+          grep -Fq '该版本仍有活动 RKNN 板端验证任务' platform_core/algorithm_catalog_service.py
+          grep -Fq 'def _algorithm_version_reference_fence(' platform_core/algorithm_catalog_service.py
+          grep -Fq 'ALGORITHM_VERSION_REFERENCE_RETIRED' platform_core/algorithm_catalog_service.py
+          grep -Fq 'ALGORITHM_VERSION_REFERENCE_STALE' platform_core/algorithm_catalog_service.py
           grep -Fq 'dependencies.current_version_id(asset_algorithm)' platform_core/training_create_service.py
           grep -Fq 'reference_version_id = str(' platform_core/training_create_service.py
           grep -Fq 'def _v39_create_deploy_job_under_version_fence(' app.py
@@ -193,7 +199,7 @@ jobs:
           grep -Fq 'async def _create_deployment_test_under_version_fence(' app.py
           grep -Fq 'test_version_reference_fence_rechecks_live_version_and_current_truth' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'def retry_algorithm_version_cleanup(' platform_core/algorithms.py
-          grep -Fq 'version-operations/{operation_id}/retry-cleanup' app.py
+          grep -Fq 'version-operations/{operation_id}/retry-cleanup' platform_core/algorithm_catalog_api.py
           grep -Fq 'test_cleanup_failure_can_be_retried_idempotently_after_version_row_is_deleted' tests/unit/test_algorithms.py
           grep -Fq 'test_rollback_cleanup_failure_can_retry_without_recreating_deleted_version' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'return self.version_create(payload)' platform_core/external_algorithm_publish.py
@@ -335,7 +341,7 @@ jobs:
           grep -q "test_historical_version_remote_delete_failure_keeps_local_version" tests/unit/test_algorithms.py
           grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
           grep -q "client.version_remove" platform_core/external_algorithm_publish.py
-          grep -Fq 'delete_current_version: Literal[True] = True' app.py
+          grep -Fq 'delete_current_version: Literal[True] = True' platform_core/algorithm_catalog_contracts.py
           grep -Fq 'delete_current_version: bool = True' platform_core/algorithms.py
           grep -Fq 'delete_current_version = True' platform_core/algorithms.py
           grep -q 'test_rollback_always_deletes_current_version_and_records_audit' tests/unit/test_algorithms.py
@@ -343,7 +349,7 @@ jobs:
           grep -q 'test_direct_delete_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails' tests/unit/test_algorithms.py
           grep -q 'ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE' platform_core/algorithms.py
           grep -q 'ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE' platform_core/algorithms.py
-          grep -Fq 'remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback' app.py
+          grep -Fq 'remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback' platform_core/algorithm_catalog_service.py
           grep -Fq 'delete_current_version:true' static/app.js
           ! grep -Fq 'id="rollbackDeleteCurrent"' static/app.js
           grep -Fq 'version rollback is destructive and external deletion is explained in the UI' tests/frontend/external-algorithm-publish.test.mjs

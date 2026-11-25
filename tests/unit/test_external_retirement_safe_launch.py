@@ -25,8 +25,15 @@ def test_safe_launch_blocks_only_external_changlian_algorithm_retirement(monkeyp
 def test_version_delete_and_rollback_routes_consume_safe_launch_guard():
     from pathlib import Path
 
-    source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
-    delete = source.split("def v12_delete_version(", 1)[1].split("@app.post(", 1)[0]
-    rollback = source.split("def v12_rollback_version(", 1)[1].split("@app.get(", 1)[0]
-    assert "_safe_launch_reject_external_version_retirement(" in delete
-    assert "_safe_launch_reject_external_version_retirement(" in rollback
+    import ast
+
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "platform_core/algorithm_catalog_service.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    service = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "AlgorithmCatalogService")
+    methods = {node.name: ast.get_source_segment(source, node) for node in service.body if isinstance(node, ast.FunctionDef)}
+    assert "self._safe_launch_reject_external_version_retirement(" in methods["v12_delete_version"]
+    assert "self._safe_launch_reject_external_version_retirement(" in methods["v12_rollback_version"]
+    api = (root / "platform_core/algorithm_catalog_api.py").read_text(encoding="utf-8")
+    assert "return service().v12_delete_version(" in api
+    assert "return service().v12_rollback_version(" in api
