@@ -836,8 +836,10 @@ def test_recovery_never_replays_a_completed_final_import(pg):
         # The final import committed under the operation's run id, then the
         # process died before verify_maintenance_window().
         snapshot = export_source_snapshot(store.db_path, "imp")
-        assert content_digest(snapshot) == frozen["snapshot_digest"]
-        import_snapshot(connection, snapshot, run_id=operation)
+        assert content_digest(snapshot) == frozen["content_digest"]
+        import_snapshot(
+            connection, snapshot, run_id=operation, maintenance_operation=operation,
+        )
 
     with _connect(pg) as connection:
         recovered = recover_maintenance(
@@ -907,6 +909,104 @@ def test_library_map50_skips_hostile_candidates_without_failing(pg):
     assert values[1] == pytest.approx(42.0)
     assert values[2] == pytest.approx(0.0)
     assert all(value is None for value in values[3:])
+
+
+def test_import_tool_cannot_bypass_the_authoritative_owner(pg):
+    """The migration tool writes only when the durable state allows it."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8authority-"))
+    store = _store(root, "authority")
+    record_path, window = _window_setup(pg, root, store, "authority")
+    operation = window["operation_id"]
+    snapshot = export_source_snapshot(store.db_path, "authority")
+
+    # A blocking window owns the project: a plain import must name its operation.
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as window_blocked:
+            import_snapshot(connection, snapshot)
+    assert window_blocked.value.code == "ALGORITHM_MIGRATION_WINDOW_ACTIVE"
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as wrong_operation:
+            import_snapshot(connection, snapshot, maintenance_operation="someone-else")
+    assert wrong_operation.value.code == "ALGORITHM_MIGRATION_OPERATION_MISMATCH"
+    # The window's own final import is allowed, and proves the same identity.
+    with _connect(pg) as connection:
+        allowed = import_snapshot(
+            connection, snapshot, run_id=operation, maintenance_operation=operation,
+        )
+    assert allowed["action"] in {"apply", "noop"}
+
+    with _connect(pg) as connection:
+        freeze_maintenance_source(
+            connection, project_id="authority", db_path=store.db_path,
+            operation_id=operation,
+        )
+        verify_maintenance_window(
+            connection, project_id="authority", operation_id=operation,
+            verification_digest=str(snapshot["snapshot_digest"]),
+        )
+        switch_maintenance_owner(
+            connection, project_id="authority", db_path=store.db_path,
+            record_path=record_path, operation_id=operation,
+            expected_generation=0, operator="ops", reason="switch",
+            acknowledge_unported=True,
+        )
+    # PostgreSQL is authoritative now: the tool may not write around the owner.
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as authority:
+            import_snapshot(connection, snapshot)
+    assert authority.value.code == "ALGORITHM_MIGRATION_AUTHORITY_REQUIRED"
+
+
+def test_recovery_finishes_a_switching_crash_with_local_record_lost(pg):
+    """SWITCHING is completed from the durable evidence, not relaxed blindly."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8sw-"))
+    store = _store(root, "sw")
+    record_path, window = _window_setup(pg, root, store, "sw")
+    operation = window["operation_id"]
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="sw", db_path=store.db_path,
+            operation_id=operation,
+        )
+        verify_maintenance_window(
+            connection, project_id="sw", operation_id=operation,
+            verification_digest=str(frozen["snapshot_digest"]),
+        )
+        switch_maintenance_owner(
+            connection, project_id="sw", db_path=store.db_path,
+            record_path=record_path, operation_id=operation,
+            expected_generation=0, operator="ops", reason="switch",
+            acknowledge_unported=True,
+        )
+    # Crash window: the switch committed in PostgreSQL, the phase never advanced
+    # past SWITCHING and the local admission record never landed.
+    record_path.unlink()
+    with _connect(pg) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE w5_algorithm.cutover_state SET evidence = jsonb_set("
+                "jsonb_set(evidence,'{phase}','\"SWITCHING\"'),"
+                "'{maintenance,phase}','\"SWITCHING\"') WHERE project_id=%s",
+                ("sw",),
+            )
+        connection.commit()
+    with _connect(pg) as connection:
+        recovered = recover_maintenance(
+            connection, project_id="sw", db_path=store.db_path,
+            record_path=record_path, apply=True,
+        )
+    assert recovered["settled"] is True
+    assert recovered["phase"] == MAINTENANCE_POSTGRES_ACTIVE
+    republished = json.loads(record_path.read_text(encoding="utf-8"))
+    assert republished["maintenance_phase"] == MAINTENANCE_POSTGRES_ACTIVE
+    assert republished["operation_id"] == operation
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+    barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
+    assert barrier["phase"] == "POSTGRES_ACTIVE"
+    assert barrier["operation_id"] == operation
 
 
 def read_maintenance_result(server, project_id):

@@ -322,6 +322,7 @@ def main(argv=None) -> int:
                     final_snapshot,
                     actor=args.operator or "cutover",
                     run_id=window["operation_id"],
+                    maintenance_operation=window["operation_id"],
                 )
                 target_snapshot = export_target_snapshot(connection, args.project)
                 reconciliation = build_report(

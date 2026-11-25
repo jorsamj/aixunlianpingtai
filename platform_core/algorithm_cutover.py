@@ -150,7 +150,7 @@ def _cleanup_domain_pending(db_path: str | Path) -> tuple[bool, str]:
         return False, ""
     try:
         with closing(
-            sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+            sqlite3.connect(str(path), timeout=1.0)
         ) as connection:
             tables = {
                 str(row[0])
@@ -588,6 +588,9 @@ def write_admission_record(record: Mapping[str, Any], path: str | Path) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
+        # The rename is only durable once the directory entry is flushed; without
+        # it a crash can lose the admission record the marker was cleared for.
+        _fsync_directory(target.parent)
     except Exception:
         try:
             os.unlink(temporary)
@@ -726,8 +729,9 @@ def revoke_admission(
                 (f"algorithm-cutover:{project_id}",),
             )
             cursor.execute(
-                "SELECT writer_generation,admission_id,evidence FROM "
-                "w5_algorithm.cutover_state WHERE project_id=%s FOR UPDATE",
+                "SELECT writer_generation,admission_id,evidence,algorithm_revision,"
+                "content_digest,revoked_at,authoritative_provider "
+                "FROM w5_algorithm.cutover_state WHERE project_id=%s FOR UPDATE",
                 (project_id,),
             )
             locked = cursor.fetchone()
@@ -747,9 +751,51 @@ def revoke_admission(
                     "admission id no longer matches the database",
                 )
             evidence = dict(locked["evidence"] or {})
+            authority = str(locked["authoritative_provider"] or "")
+            admitted_revision = int(locked["algorithm_revision"] or 0)
+            admitted_content = str(locked["content_digest"] or "")
+            if locked.get("revoked_at") is not None or authority != PROVIDER_POSTGRESQL:
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_ADMISSION_INVALID",
+                    "the admission is not an active PostgreSQL authority",
+                    detail=f"provider={authority} revoked={locked.get('revoked_at') is not None}",
+                )
+            # The caller's assessment is not trusted: re-read the authoritative
+            # content inside this transaction and refuse any drift (a new
+            # PostgreSQL write, or a target that no longer matches the admitted
+            # digest) before revoking.
+            with connection.cursor() as interior:
+                interior.execute(
+                    "SELECT algorithm_revision FROM w5_algorithm.store_revision "
+                    "WHERE project_id=%s",
+                    (project_id,),
+                )
+                revision_row = interior.fetchone()
+            target_revision = int(revision_row[0]) if revision_row else 0
+            target_snapshot = export_target_snapshot(connection, project_id)
+            target_content = (
+                None if target_snapshot is None else content_digest(target_snapshot)
+            )
+            expected_content = str(
+                assessment.get("restore_content_digest") or admitted_content or ""
+            )
+            if not expected_content or target_content != expected_content:
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_TARGET_CHANGED",
+                    "PostgreSQL content changed before the revocation",
+                    detail=f"target={target_content} expected={expected_content}",
+                )
+            if admitted_revision and target_revision != admitted_revision:
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_TARGET_HAS_NEW_WRITES",
+                    "PostgreSQL received new writes after admission",
+                    detail=f"target_revision={target_revision} admitted={admitted_revision}",
+                )
             evidence["revocation"] = {
                 "operator": str(operator).strip(),
                 "reason": str(reason).strip(),
+                "target_revision": target_revision,
+                "target_content_digest": target_content,
                 "assessment": {
                     "allowed": assessment.get("allowed"),
                     "blocking": list(assessment.get("blocking") or []),
@@ -862,8 +908,15 @@ def rollback(
             expected_generation=int(admission.get("writer_generation") or 0),
         )
     except BaseException:
+        state = _maintenance_commit_state(
+            connection, project_id,
+            operation_id=operation_id, phase=MAINTENANCE_ROLLBACK_QUIESCING,
+            previous_operation=previous_operation if current is not None else None,
+            previous_phase=previous_phase if current is not None else None,
+        )
         try:
-            _remove_marker(marker_path, operation_id)
+            if state == "known_not_committed":
+                _remove_marker(marker_path, operation_id)
         finally:
             raise
 
@@ -935,6 +988,13 @@ def rollback(
         expected_phase=MAINTENANCE_ROLLBACK_QUIESCING,
         expected_operation_id=operation_id,
         expected_generation=int(revoked.get("writer_generation") or 0),
+    )
+    # Only a completed, verified rollback releases the local barrier.
+    _authority_barrier(
+        db_path, project_id=project_id, phase=MAINTENANCE_ROLLBACK_APPLIED,
+        operation_id=operation_id,
+        writer_generation=int(revoked.get("writer_generation") or 0),
+        admission_id=str(revoked.get("admission_id") or ""),
     )
     _remove_marker(marker_path, operation_id)
     return {
@@ -1237,6 +1297,41 @@ def read_maintenance(connection, project_id: str) -> dict[str, Any] | None:
     return dict(record)
 
 
+def _maintenance_commit_state(
+    connection,
+    project_id: str,
+    *,
+    operation_id: str,
+    phase: str,
+    previous_operation: str | None = None,
+    previous_phase: str | None = None,
+) -> str:
+    """Prove whether a phase write landed: ``committed``/``known_not_committed``/``unknown``.
+
+    A failed transaction usually means nothing was written, but a connection
+    that died after the server committed looks identical to the caller. Only the
+    state that can be re-read proves the difference; anything else keeps the
+    marker so writes stay blocked instead of being released on a guess.
+    """
+    try:
+        current = read_maintenance(connection, project_id)
+    except Exception:  # noqa: BLE001 - an unreadable state is an unknown commit
+        return "unknown"
+    if current is not None:
+        current_phase = str(current.get("phase") or "")
+        current_operation = str(current.get("operation_id") or "")
+        if current_operation == str(operation_id) and current_phase == str(phase):
+            return "committed"
+        if (
+            previous_operation is not None
+            and current_operation == str(previous_operation)
+            and current_phase == str(previous_phase or "")
+        ):
+            return "known_not_committed"
+        return "unknown"
+    return "known_not_committed" if previous_operation is None else "unknown"
+
+
 def begin_maintenance_window(
     connection,
     *,
@@ -1292,13 +1387,66 @@ def begin_maintenance_window(
             expected_generation=int(expected_generation),
         )
     except BaseException:
+        # A phase that may have committed is never released: the marker stays
+        # until recovery proves the durable state. Only a provably unwritten
+        # phase may clear its own marker.
+        state = _maintenance_commit_state(
+            connection, project_id,
+            operation_id=operation, phase=MAINTENANCE_QUIESCING,
+            previous_operation=previous_operation if current is not None else None,
+            previous_phase=previous_phase if current is not None else None,
+        )
         try:
-            _remove_marker(marker, operation)
+            if state == "known_not_committed":
+                _remove_marker(marker, operation)
         finally:
             raise
     return {"operation_id": operation, "phase": MAINTENANCE_QUIESCING,
             "previous_phase": previous_phase, "marker": str(marker),
             "write_blocked": True}
+
+
+def _authority_barrier(
+    db_path: str | Path,
+    *,
+    project_id: str,
+    phase: str,
+    operation_id: str = "",
+    writer_generation: int = 0,
+    admission_id: str = "",
+) -> bool:
+    """Write this project's local authority barrier next to the SQLite catalog.
+
+    The barrier is the persistent local evidence that SQLite is (or is not) the
+    admitted writer, so a lost admission record cannot silently re-open it. It is
+    written *before* PostgreSQL becomes authoritative; failing to record it stops
+    the switch instead of proceeding without blocking evidence.
+    """
+    from .algorithm_repository import write_authority_barrier
+
+    json_path = Path(db_path).parent / "algorithms.json"
+    try:
+        recorded = write_authority_barrier(
+            json_path,
+            project_id=project_id,
+            phase=phase,
+            operation_id=operation_id,
+            writer_generation=writer_generation,
+            admission_id=admission_id,
+        )
+    except Exception as error:  # unresolved barrier must not be guessed past
+        raise AlgorithmCutoverError(
+            "ALGORITHM_CUTOVER_BARRIER_UNAVAILABLE",
+            "the local authority barrier could not be recorded",
+            detail=f"{type(error).__name__}: {error}",
+        ) from error
+    if not recorded:
+        raise AlgorithmCutoverError(
+            "ALGORITHM_CUTOVER_BARRIER_UNAVAILABLE",
+            "the local SQLite catalog cannot hold the authority barrier",
+            detail=f"expected an initialized catalog at {json_path}",
+        )
+    return True
 
 
 def _require_phase(
@@ -1441,6 +1589,13 @@ def switch_maintenance_owner(
         expected_operation_id=operation_id,
         expected_generation=int(expected_generation),
     )
+    # Blocking evidence first: from here on the local catalog itself says SQLite
+    # is not the writer, even if the admission record is lost during the switch.
+    _authority_barrier(
+        db_path, project_id=project_id, phase=MAINTENANCE_SWITCHING,
+        operation_id=operation_id,
+        writer_generation=int(expected_generation) + 1,
+    )
     admitted = admit_cutover(
         connection,
         db_path=db_path,
@@ -1490,6 +1645,14 @@ def switch_maintenance_owner(
             expected_operation_id=operation_id,
             expected_generation=int(expected_generation),
         )
+        # The refused switch wrote a blocking barrier; release it to whatever the
+        # durable authority actually is (SQLite_ACTIVE releases, PostgreSQL keeps
+        # blocking SQLite).
+        _authority_barrier(
+            db_path, project_id=project_id, phase=str(restore_phase),
+            operation_id=operation_id,
+            writer_generation=int(expected_generation),
+        )
         _remove_marker(admission_transition_path(record_path), operation_id)
         raise AlgorithmCutoverRefused(
             "ALGORITHM_MAINTENANCE_SWITCH_REFUSED",
@@ -1535,6 +1698,12 @@ def switch_maintenance_owner(
         expected_phase=MAINTENANCE_SWITCHING,
         expected_operation_id=operation_id,
         expected_generation=int(admitted["admission"]["writer_generation"]),
+    )
+    _authority_barrier(
+        db_path, project_id=project_id, phase=MAINTENANCE_POSTGRES_ACTIVE,
+        operation_id=operation_id,
+        writer_generation=int(admitted["admission"]["writer_generation"]),
+        admission_id=str(admission.get("admission_id") or ""),
     )
     _remove_marker(admission_transition_path(record_path), operation_id)
     return {
@@ -1689,6 +1858,14 @@ def _local_record_matches(
     return False
 
 
+#: A crash during the final local step may complete a recorded phase into the
+#: settled phase it was about to publish. Nothing else may be completed.
+_DURABLE_PHASE_COMPLETIONS = frozenset({
+    (MAINTENANCE_SWITCHING, MAINTENANCE_POSTGRES_ACTIVE),
+    (MAINTENANCE_ROLLBACK_QUIESCING, MAINTENANCE_ROLLBACK_APPLIED),
+})
+
+
 def _write_local_from_durable(
     connection,
     *,
@@ -1696,8 +1873,15 @@ def _write_local_from_durable(
     record_path: str | Path,
     operation_id: str,
     phase: str,
+    durable_phase: str | None = None,
 ) -> dict[str, Any]:
-    """Republish the local admission record from the durable PostgreSQL row."""
+    """Republish the local admission record from the durable PostgreSQL row.
+
+    ``phase`` is the settled phase being published; ``durable_phase`` is what the
+    durable row actually records (a crash may leave SWITCHING or
+    ROLLBACK_QUIESCING there). Only the two completion transitions above are
+    allowed, so this is not a general relaxation of the phase check.
+    """
     state = _durable_admission(connection, project_id)
     if state is None:
         raise AlgorithmCutoverError(
@@ -1711,12 +1895,25 @@ def _write_local_from_durable(
             detail=f"record={state.get('project_id')} requested={project_id}",
         )
     maintenance = _durable_maintenance(state)
-    durable_phase = str(maintenance.get("phase") or "")
-    if durable_phase != str(phase):
+    recorded_phase = str(maintenance.get("phase") or "")
+    expected_durable = str(durable_phase or phase)
+    if recorded_phase != expected_durable:
         raise AlgorithmCutoverError(
             "ALGORITHM_MAINTENANCE_PHASE_MISMATCH",
             "the durable phase does not match the phase being republished",
-            detail=f"durable={durable_phase} requested={phase}",
+            detail=f"durable={recorded_phase} expected={expected_durable} target={phase}",
+        )
+    # A target phase is only reachable from the recorded phase it finishes: a
+    # crash may settle SWITCHING into POSTGRES_ACTIVE and ROLLBACK_QUIESCING into
+    # ROLLBACK_APPLIED, but nothing may jump from an unrelated phase, and a
+    # settled phase only republishes itself.
+    if expected_durable != str(phase) and (
+        str(expected_durable), str(phase)
+    ) not in _DURABLE_PHASE_COMPLETIONS:
+        raise AlgorithmCutoverError(
+            "ALGORITHM_MAINTENANCE_PHASE_INVALID",
+            "the recorded phase cannot be completed into the requested phase",
+            detail=f"durable={expected_durable} target={phase}",
         )
     if str(maintenance.get("operation_id") or "") != str(operation_id):
         raise AlgorithmCutoverError(
@@ -1982,11 +2179,13 @@ def recover_maintenance(
                     import_snapshot(
                         connection, final_snapshot, actor=effective_operator,
                         run_id=operation, resume=True,
+                        maintenance_operation=operation,
                     )
             else:
                 import_snapshot(
                     connection, final_snapshot, actor=effective_operator,
                     run_id=operation, resume=True,
+                    maintenance_operation=operation,
                 )
             if str(current.get("phase")) == MAINTENANCE_SOURCE_FROZEN:
                 target = export_target_snapshot(connection, project_id)
@@ -2023,6 +2222,7 @@ def recover_maintenance(
             record = _write_local_from_durable(
                 connection, project_id=project_id, record_path=record_path,
                 operation_id=operation, phase=MAINTENANCE_POSTGRES_ACTIVE,
+                durable_phase=MAINTENANCE_SWITCHING,
             )
             _set_maintenance(connection, project_id, _maintenance_record(
                 MAINTENANCE_POSTGRES_ACTIVE,
@@ -2038,6 +2238,25 @@ def recover_maintenance(
                 expected_phase=MAINTENANCE_SWITCHING,
                 expected_operation_id=operation,
                 expected_generation=int(record["writer_generation"]),
+            )
+            # The completion contract: the local record must prove the settled
+            # durable state before the marker is cleared, otherwise both sides
+            # stay blocked (safe direction) instead of unblocking on a guess.
+            durable_after = _durable_admission(connection, project_id)
+            if not _local_record_matches(
+                record_path, project_id=project_id, operation_id=operation,
+                phase=MAINTENANCE_POSTGRES_ACTIVE, durable=durable_after,
+            ):
+                result["next_step"] = (
+                    "the republished admission does not prove the durable state; "
+                    "the marker is kept"
+                )
+                return result
+            _authority_barrier(
+                db_path, project_id=project_id, phase=MAINTENANCE_POSTGRES_ACTIVE,
+                operation_id=operation,
+                writer_generation=int(record["writer_generation"]),
+                admission_id=str(record.get("admission_id") or ""),
             )
             _remove_marker(marker_path, operation)
             result.update(applied=True, settled=True, phase=MAINTENANCE_POSTGRES_ACTIVE,
@@ -2074,6 +2293,7 @@ def recover_maintenance(
             record = _write_local_from_durable(
                 connection, project_id=project_id, record_path=record_path,
                 operation_id=operation, phase=MAINTENANCE_ROLLBACK_APPLIED,
+                durable_phase=MAINTENANCE_ROLLBACK_QUIESCING,
             )
             _set_maintenance(connection, project_id, _maintenance_record(
                 MAINTENANCE_ROLLBACK_APPLIED,
@@ -2087,6 +2307,22 @@ def recover_maintenance(
                 expected_phase=MAINTENANCE_ROLLBACK_QUIESCING,
                 expected_operation_id=operation,
                 expected_generation=int(record["writer_generation"]),
+            )
+            durable_after = _durable_admission(connection, project_id)
+            if not _local_record_matches(
+                record_path, project_id=project_id, operation_id=operation,
+                phase=MAINTENANCE_ROLLBACK_APPLIED, durable=durable_after,
+            ):
+                result["next_step"] = (
+                    "the republished admission does not prove the revoked "
+                    "authority; the marker is kept"
+                )
+                return result
+            _authority_barrier(
+                db_path, project_id=project_id, phase=MAINTENANCE_ROLLBACK_APPLIED,
+                operation_id=operation,
+                writer_generation=int(record["writer_generation"]),
+                admission_id=str(record.get("admission_id") or ""),
             )
             _remove_marker(marker_path, operation)
             result.update(applied=True, settled=True, phase=MAINTENANCE_ROLLBACK_APPLIED,
@@ -2141,6 +2377,14 @@ def recover_maintenance(
         ):
             result["next_step"] = "the local admission still disagrees; marker kept"
             return result
+        # A settled window re-proves (and heals) the local barrier from the
+        # durable state, so a catalog that lost the barrier cannot re-open.
+        _authority_barrier(
+            db_path, project_id=project_id, phase=phase_now,
+            operation_id=operation,
+            writer_generation=int((durable or {}).get("writer_generation") or 0),
+            admission_id=str((durable or {}).get("admission_id") or ""),
+        )
         if marker is not None:
             _remove_marker(marker_path, operation)
         result.update(applied=True, settled=True, write_blocked=False)

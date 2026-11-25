@@ -131,6 +131,62 @@ def test_transition_marker_blocks_an_already_open_sqlite_provider(tmp_path):
     assert repository.create_algorithm({"id": "after", "name": "after"})["id"] == "after"
 
 
+def test_lost_admission_keeps_a_switched_project_closed(tmp_path):
+    """The barrier lives in the catalog: losing the admission file must not reopen SQLite."""
+    from platform_core.algorithm_repository import (
+        authority_barrier_path,
+        write_authority_barrier,
+    )
+
+    path = _legacy_project(tmp_path)
+    repository = open_algorithm_repository(path)
+    repository.create_algorithm({"id": "first", "name": "first"})
+    assert authority_barrier_path(path).is_file()
+    assert write_authority_barrier(
+        path, project_id="p", phase="POSTGRES_ACTIVE", operation_id="op-switch",
+        writer_generation=2, admission_id="admit-1",
+    ) is True
+
+    # No admission record exists at all: the catalog barrier alone must refuse.
+    assert not admission_record_path(path).exists()
+    with pytest.raises(AlgorithmAdmissionRequired) as blocked:
+        repository.create_algorithm({"id": "stale", "name": "stale"})
+    assert blocked.value.code == "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER"
+    assert [row["id"] for row in open_algorithm_repository(
+        path, allow_stale_sqlite=True
+    ).read_all()] == ["first"]
+
+    # A verified rollback rewrites the barrier; only then does SQLite write again.
+    assert write_authority_barrier(
+        path, project_id="p", phase="ROLLBACK_APPLIED", operation_id="op-rollback",
+        writer_generation=3, admission_id="admit-1",
+    ) is True
+    assert repository.create_algorithm({"id": "restored", "name": "restored"})["id"] == "restored"
+
+    # A barrier that names another project, or is damaged, fails closed.
+    authority_barrier_path(path).unlink()
+    fresh = _legacy_project(tmp_path, "q")
+    fresh_repository = open_algorithm_repository(fresh)
+    fresh_repository.create_algorithm({"id": "base", "name": "base"})
+    assert write_authority_barrier(
+        fresh, project_id="other", phase="SQLITE_ACTIVE"
+    ) is True
+    with pytest.raises(AlgorithmAdmissionRequired) as foreign:
+        fresh_repository.create_algorithm({"id": "cross", "name": "cross"})
+    assert foreign.value.code == "ALGORITHM_SQLITE_CUTOVER_BARRIER_INVALID"
+
+    from platform_core.errors import PlatformError
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+    store = AlgorithmSqlStore(fresh)
+    with store._connect() as connection:
+        with connection:
+            store._set_meta(connection, store.BARRIER_KEY, "{not json")
+    with pytest.raises(PlatformError) as damaged:
+        fresh_repository.create_algorithm({"id": "broken", "name": "broken"})
+    assert damaged.value.code == "ALGORITHM_CUTOVER_BARRIER_INVALID"
+
+
 def test_cleanup_domain_is_served_by_the_contract_and_fails_closed(tmp_path):
     path = _legacy_project(tmp_path)
     from platform_core.external_algorithm_cleanup import CleanupRepository

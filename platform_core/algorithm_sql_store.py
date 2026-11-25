@@ -108,6 +108,80 @@ class AlgorithmSqlStore:
         except sqlite3.Error:
             return False
 
+    # -- local cutover authority barrier -----------------------------------
+    # Persistent, project-level evidence that this SQLite copy is no longer the
+    # admitted writer. It is written into the SQLite metadata *before* PostgreSQL
+    # commits the switch and is only relaxed by a fully verified rollback, so a
+    # lost local admission record cannot silently re-open SQLite for writing.
+    BARRIER_KEY = "cutover_authority_barrier"
+
+    def write_authority_barrier(self, record: Mapping[str, Any]) -> bool:
+        """Persist the barrier inside the store; never creates a new catalog."""
+        if not self._ready_without_init_lock():
+            return False
+        payload = json.dumps(dict(record), ensure_ascii=False, sort_keys=True)
+        with closing(self._connect()) as conn:
+            with conn:
+                self._set_meta(conn, self.BARRIER_KEY, payload)
+        return True
+
+    def read_authority_barrier(self) -> dict | None:
+        return self.read_authority_barrier_file(self.db_path)
+
+    @classmethod
+    def read_authority_barrier_file(cls, db_path: str | Path) -> dict | None:
+        """Read the barrier from one SQLite file without initializing it.
+
+        A normal (not read-only URI) connection is used on purpose: a WAL
+        database with no live ``-shm`` cannot always be opened read-only, and a
+        healthy catalog must never look "damaged" just because nobody else has
+        it open yet.
+        """
+        path = Path(db_path)
+        if not path.is_file():
+            return None
+        try:
+            with closing(connect_sqlite(path, timeout=1.0)) as conn:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    ("algorithm_store_meta",),
+                ).fetchone()
+                if rows is None:
+                    return None
+                row = conn.execute(
+                    "SELECT value FROM algorithm_store_meta WHERE key=?",
+                    (cls.BARRIER_KEY,),
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise PlatformError(
+                "ALGORITHM_CUTOVER_BARRIER_UNREADABLE",
+                "算法存储的切换栅栏无法读取，已拒绝写入",
+                str(error),
+                "请核验本地算法库与准入记录后再重试。",
+                409,
+            ) from error
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row[0]))
+        except ValueError as error:
+            raise PlatformError(
+                "ALGORITHM_CUTOVER_BARRIER_INVALID",
+                "算法存储的切换栅栏内容损坏，已拒绝写入",
+                str(error),
+                "请从权威状态重建栅栏后再重试。",
+                409,
+            ) from error
+        if not isinstance(value, dict):
+            raise PlatformError(
+                "ALGORITHM_CUTOVER_BARRIER_INVALID",
+                "算法存储的切换栅栏内容损坏，已拒绝写入",
+                "barrier must be an object",
+                "请从权威状态重建栅栏后再重试。",
+                409,
+            )
+        return value
+
     def ensure_ready(self) -> None:
         # The steady-state path is read-only and lock-free across processes.
         # Only an uninitialized/uncertain store enters the persistent init lock.

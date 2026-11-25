@@ -638,9 +638,86 @@ def open_algorithm_repository(
         )
     from .algorithm_postgres_store import PostgresAlgorithmRepository
 
+    # Heal the local barrier from the admission that was just validated. A
+    # project switched before the barrier existed (or whose catalog lost it)
+    # keeps refusing SQLite writes through the admission record; recording the
+    # barrier makes that protection survive the record being lost later. The
+    # heal is best effort: PostgreSQL is already authoritative, so a local
+    # catalog problem must not take the provider down.
+    barrier_phase = (
+        "ROLLBACK_APPLIED" if record.get("revoked_at") else "POSTGRES_ACTIVE"
+    )
+    try:
+        from .algorithm_sql_store import AlgorithmSqlStore
+
+        project_id = str(record["project_id"])
+        current = AlgorithmSqlStore.read_authority_barrier_file(
+            authority_barrier_path(json_path)
+        )
+        if (
+            current is None
+            or str(current.get("project_id") or "") != project_id
+            or str(current.get("phase") or "") != barrier_phase
+            or str(current.get("admission_id") or "")
+            != str(record.get("admission_id") or "")
+        ):
+            write_authority_barrier(
+                json_path,
+                project_id=project_id,
+                phase=barrier_phase,
+                operation_id=str(record.get("operation_id") or ""),
+                writer_generation=int(record.get("writer_generation") or 0),
+                admission_id=str(record.get("admission_id") or ""),
+            )
+    except Exception:  # noqa: BLE001 - the barrier is repaired, never required
+        pass
+
     return PostgresAlgorithmRepository(
         resolved_dsn, str(record["project_id"]), admission=record
     )
+
+
+#: Barrier phases that prove this SQLite copy is not the admitted writer.
+_BARRIER_BLOCKING_PHASES = frozenset({"SWITCHING", "POSTGRES_ACTIVE"})
+#: Barrier phases that prove SQLite is the writer again (or never left it).
+_BARRIER_RELEASED_PHASES = frozenset({"SQLITE_ACTIVE", "ROLLBACK_APPLIED"})
+
+
+def authority_barrier_path(json_path: str | Path) -> Path:
+    """The SQLite file that carries the local authority barrier."""
+    from .algorithm_sql_store import DB_FILENAME
+
+    return Path(json_path).parent / DB_FILENAME
+
+
+def write_authority_barrier(
+    json_path: str | Path,
+    *,
+    project_id: str,
+    phase: str,
+    operation_id: str = "",
+    writer_generation: int = 0,
+    admission_id: str = "",
+) -> bool:
+    """Record this project's local authority state inside the SQLite catalog.
+
+    The write takes the same switch mutex every SQLite writer takes, so it can
+    never land in the middle of an admitted write: the barrier follows a drained
+    writer and precedes the PostgreSQL commit.
+    """
+    from .algorithm_sql_store import AlgorithmSqlStore
+
+    path = Path(json_path)
+    with admission_switch_lock(admission_record_path(path)):
+        store = AlgorithmSqlStore(path)
+        return store.write_authority_barrier({
+            "schema": "algorithm-authority-barrier/1",
+            "project_id": str(project_id),
+            "phase": str(phase),
+            "operation_id": str(operation_id or ""),
+            "writer_generation": int(writer_generation or 0),
+            "admission_id": str(admission_id or ""),
+        })
 
 
 def _refuse_stale_sqlite(json_path: Path, record_path: Path) -> None:
@@ -653,6 +730,35 @@ def _refuse_stale_sqlite(json_path: Path, record_path: Path) -> None:
                 "inspect it and finish or roll back the cutover before writing"
             ),
         )
+    project_id = json_path.parent.name
+    # The barrier lives in the SQLite catalog itself, so it survives a lost or
+    # damaged admission record: once the switch recorded "not SQLite", only a
+    # verified rollback (which rewrites the barrier) may re-open writing.
+    from .algorithm_sql_store import AlgorithmSqlStore
+
+    barrier = AlgorithmSqlStore.read_authority_barrier_file(
+        authority_barrier_path(json_path)
+    )
+    if barrier is not None:
+        barrier_project = str(barrier.get("project_id") or "")
+        barrier_phase = str(barrier.get("phase") or "")
+        if barrier_project != project_id:
+            raise AlgorithmAdmissionRequired(
+                "ALGORITHM_SQLITE_CUTOVER_BARRIER_INVALID",
+                "the local authority barrier belongs to another project",
+                detail=f"barrier={barrier_project!r} project={project_id!r}",
+            )
+        if barrier_phase not in _BARRIER_RELEASED_PHASES:
+            raise AlgorithmAdmissionRequired(
+                "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER",
+                "SQLite is no longer the authoritative algorithm writer",
+                detail=(
+                    f"local authority barrier phase={barrier_phase or 'UNKNOWN'} "
+                    f"operation={barrier.get('operation_id')} "
+                    f"generation={barrier.get('writer_generation')}; a verified "
+                    "rollback must rewrite the barrier before SQLite writes again"
+                ),
+            )
     record = load_admission_record(record_path)
     if record is None:
         return
@@ -660,7 +766,7 @@ def _refuse_stale_sqlite(json_path: Path, record_path: Path) -> None:
         return
     if record.get("revoked_at"):
         return
-    if str(record.get("project_id") or "") != json_path.parent.name:
+    if str(record.get("project_id") or "") != project_id:
         return
     raise AlgorithmAdmissionRequired(
         "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER",

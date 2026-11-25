@@ -184,6 +184,100 @@ def export_source_snapshot(db_path: str | Path, project_id: str) -> dict[str, An
 # ---------------------------------------------------------------------------
 # import
 # ---------------------------------------------------------------------------
+def _cutover_state(cursor, project_id: str) -> dict[str, Any]:
+    """Read (and row-lock) this project's durable writer state."""
+    from psycopg.rows import dict_row
+
+    cursor.execute(
+        "SELECT authoritative_provider,writer_generation,revoked_at,evidence "
+        "FROM w5_algorithm.cutover_state WHERE project_id=%s FOR UPDATE",
+        (str(project_id),),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return {}
+    value = dict(row) if isinstance(row, Mapping) else dict(zip(
+        ("authoritative_provider", "writer_generation", "revoked_at", "evidence"), row
+    ))
+    evidence = value.get("evidence")
+    value["evidence"] = dict(evidence) if isinstance(evidence, Mapping) else {}
+    return value
+
+
+def _require_import_authority(
+    cursor, *, project_id: str, maintenance_operation: str | None
+) -> dict[str, Any]:
+    """Prove the importer is allowed to write this project's data right now.
+
+    A shadow import is a tool operation and may only write while SQLite is still
+    the admitted writer and no maintenance window owns the project. The final
+    import inside a window must name the operation that owns it. Once PostgreSQL
+    is the authoritative writer, a direct import is refused: the data write has
+    to go through the maintenance contract, never around it.
+    """
+    from .algorithm_cutover import (
+        BLOCKING_MAINTENANCE_PHASES,
+        MAINTENANCE_SQLITE_ACTIVE,
+        MAINTENANCE_POSTGRES_ACTIVE,
+    )
+
+    state = _cutover_state(cursor, project_id)
+    provider = str(state.get("authoritative_provider") or "sqlite")
+    revoked = bool(state.get("revoked_at"))
+    evidence = state.get("evidence") or {}
+    maintenance = evidence.get("maintenance") if isinstance(evidence, Mapping) else None
+    maintenance = dict(maintenance) if isinstance(maintenance, Mapping) else {}
+    phase = str(
+        maintenance.get("phase") or (evidence.get("phase") if isinstance(evidence, Mapping) else "") or ""
+    )
+    operation = str(maintenance.get("operation_id") or "")
+    generation = int(state.get("writer_generation") or 0)
+    if maintenance_operation is not None:
+        if provider != "sqlite" or revoked:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_AUTHORITY_INVALID",
+                "the final import belongs to a window that no longer owns SQLite",
+                detail=f"provider={provider} revoked={revoked} phase={phase}",
+            )
+        if phase not in BLOCKING_MAINTENANCE_PHASES:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_AUTHORITY_INVALID",
+                "no blocking maintenance phase allows a final import",
+                detail=f"phase={phase}",
+            )
+        if operation != str(maintenance_operation):
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_OPERATION_MISMATCH",
+                "the maintenance operation does not own this project",
+                detail=f"record={operation} requested={maintenance_operation}",
+            )
+        return {"phase": phase, "provider": provider, "generation": generation,
+                "maintenance_operation": operation}
+    if provider == "postgresql" and not revoked:
+        raise AlgorithmMigrationError(
+            "ALGORITHM_MIGRATION_AUTHORITY_REQUIRED",
+            "PostgreSQL is the authoritative writer; a direct import is refused",
+            detail=f"generation={generation}",
+        )
+    if phase in BLOCKING_MAINTENANCE_PHASES:
+        raise AlgorithmMigrationError(
+            "ALGORITHM_MIGRATION_WINDOW_ACTIVE",
+            "a maintenance window owns this project; name its operation to import",
+            detail=f"phase={phase} operation={operation}",
+        )
+    if provider == "postgresql" and revoked:
+        # A completed rollback restored SQLite; the shadow tool may run again,
+        # but only against a settled window.
+        if phase not in {"", MAINTENANCE_SQLITE_ACTIVE, "ROLLBACK_APPLIED"}:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_AUTHORITY_INVALID",
+                "the rolled-back window is not settled",
+                detail=f"phase={phase}",
+            )
+    return {"phase": phase, "provider": provider, "generation": generation,
+            "maintenance_operation": ""}
+
+
 def import_snapshot(
     connection,
     snapshot: Mapping[str, Any],
@@ -193,6 +287,7 @@ def import_snapshot(
     actor: str = DEFAULT_ACTOR,
     run_id: str | None = None,
     stale_after_seconds: int = DEFAULT_STALE_RUN_SECONDS,
+    maintenance_operation: str | None = None,
 ) -> dict[str, Any]:
     """Import one project snapshot into ``w5_algorithm`` (idempotent, resumable)."""
     snapshot = validate_snapshot(snapshot)
@@ -237,10 +332,26 @@ def import_snapshot(
         try:
             with connection.transaction():
                 with connection.cursor() as cursor:
+                    # Same lock order as the cutover owner: the project's cutover
+                    # mutex first, then the import slot, so an import and a
+                    # switch/rollback can never interleave.
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"algorithm-cutover:{project_id}",),
+                    )
                     cursor.execute(
                         "SELECT pg_advisory_xact_lock(hashtext(%s))",
                         (f"algorithm-import:{project_id}",),
                     )
+                    if not dry_run:
+                        # The ownership verdict and the data write are one
+                        # transaction: a cutover/rollback cannot land between
+                        # the check and the rows.
+                        _require_import_authority(
+                            cursor,
+                            project_id=project_id,
+                            maintenance_operation=maintenance_operation,
+                        )
                 target = export_target_snapshot(connection, project_id)
                 target_revision = (
                     int(target["algorithm_revision"]) if target is not None else None
@@ -433,6 +544,10 @@ def _begin_run(
         with connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"algorithm-cutover:{project_id}",),
+            )
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 (f"algorithm-import:{project_id}",),
             )
             # A caller may supply a stable run id for one logical operation (the
@@ -511,6 +626,27 @@ def _begin_run(
                         "ALGORITHM_MIGRATION_RUN_ACTIVE",
                         "the running import is still heartbeating; refusing takeover",
                         detail=f"run_id={active['run_id']} age={int(active['age_seconds'])}s",
+                    )
+                # A stale heartbeat is evidence, not proof that the old executor
+                # stopped. A run owned by a recorded maintenance window is never
+                # taken over implicitly: that window's own recovery must resolve
+                # its identity first.
+                window = _cutover_state(cursor, project_id)
+                evidence = window.get("evidence") or {}
+                maintenance = evidence.get("maintenance") if isinstance(evidence, Mapping) else None
+                maintenance = dict(maintenance) if isinstance(maintenance, Mapping) else {}
+                if (
+                    str(maintenance.get("operation_id") or "")
+                    and str(maintenance.get("operation_id")) == str(active["run_id"])
+                    and str(maintenance.get("phase") or "")
+                ):
+                    raise AlgorithmMigrationError(
+                        "ALGORITHM_MIGRATION_RUN_IN_PROGRESS",
+                        "the maintenance window's final import still owns this project",
+                        detail=(
+                            f"operation={maintenance.get('operation_id')} "
+                            f"phase={maintenance.get('phase')}"
+                        ),
                     )
                 if (
                     str(active["snapshot_digest"]) != digest
