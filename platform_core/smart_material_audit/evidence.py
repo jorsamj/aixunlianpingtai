@@ -10,6 +10,7 @@ import sqlite3
 from ..algorithm_sql_store import AlgorithmSqlStore
 from ..evaluation_analysis import analyze_evaluation_trust
 from ..scenario_models import resolve_scenario_model, ScenarioModelUnavailable
+from ..algorithm_repository import open_algorithm_repository
 
 
 def load_evidence(project, options, repository, artifacts):
@@ -21,7 +22,7 @@ def load_evidence(project, options, repository, artifacts):
         project = Path(project)
         if not project.is_dir():
             return dict(empty,reason="项目不存在；不创建或迁移算法存储")
-        store = AlgorithmSqlStore(project / "algorithms.json")
+        store = open_algorithm_repository(project / "algorithms.json")
         # Use the existing Owner's row decoder; never ensure_ready/read_one,
         # because those intentionally migrate legacy stores in normal workflows.
         with closing(sqlite3.connect(store.db_path.resolve().as_uri()+"?mode=ro", uri=True)) as database:

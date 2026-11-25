@@ -3,6 +3,7 @@ from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from platform_core.task_runtime import TaskKind, TaskStatus, WorkerInstanceService, task_to_public
+from ..algorithm_repository import open_algorithm_repository
 
 
 def create_task_query_router(
@@ -33,7 +34,7 @@ def create_task_query_router(
                 page=shared_task_repository().list(project_id=project_id,kinds=kinds,statuses=statuses,task_query=query,limit=limit,cursor=cursor)
             except ValueError as error:raise HTTPException(422,detail=str(error)) from error
             rows=[task_display(task,shared_task_artifacts()) for task in page.items]
-            refs=AlgorithmSqlStore(algorithms_file(project_id)).training_display_refs([task.task_id for task in page.items])
+            refs=open_algorithm_repository(algorithms_file(project_id)).training_display_refs([task.task_id for task in page.items])
             return {'ok':True,'project_id':project_id,'items':attach_version_refs(rows,refs),'next_cursor':page.next_cursor,'filter_options':{'status':[item.value for item in TaskStatus],'kind':[TaskKind.TRAINING.value,TaskKind.TRAINING_PREPARE.value]}}
         kinds = None
         if kind:
@@ -80,7 +81,7 @@ def create_task_query_router(
             from platform_core.algorithm_sql_store import AlgorithmSqlStore
             task=_runtime_task_for_project(project_id,task_id)
             if task.kind not in (TaskKind.TRAINING,TaskKind.TRAINING_PREPARE):raise HTTPException(404,detail='训练任务不存在')
-            rows=attach_version_refs([task_display(task,shared_task_artifacts(),detail=True)],AlgorithmSqlStore(algorithms_file(project_id)).training_display_refs([task_id]))
+            rows=attach_version_refs([task_display(task,shared_task_artifacts(),detail=True)],open_algorithm_repository(algorithms_file(project_id)).training_display_refs([task_id]))
             if task.kind is TaskKind.TRAINING:
                 child = shared_task_repository().get(f'trainprep_{task_id}')
                 if child and child.project_id == project_id and child.kind is TaskKind.TRAINING_PREPARE:

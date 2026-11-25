@@ -20,6 +20,7 @@ from ..algorithms import is_trainable_version
 from . import audit_configuration
 from .service import OPERATION, configuration, project_path, estimate_audit, create_audit, reject
 from .results import findings_page, review_finding
+from ..algorithm_repository import open_algorithm_repository
 
 
 def smart_material_audit_router(get_project,data_dir_provider,task_repository,task_artifacts,*,actor_provider):
@@ -96,7 +97,7 @@ def smart_material_audit_router(get_project,data_dir_provider,task_repository,ta
             path=project/'algorithms.sqlite3'
             if not path.is_file():
                 return {'items':[],'next_cursor':None,'reason':'旧算法存储未迁移，智能分析不会执行迁移'}
-            store=AlgorithmSqlStore(project/'algorithms.json')
+            store=open_algorithm_repository(project/'algorithms.json')
             with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)) as db:
                 db.row_factory=sqlite3.Row
                 if not store._initialization_complete(db):

@@ -23,6 +23,7 @@ from .errors import PlatformError
 from .integration_audit import IntegrationAuditRepository, redact
 from .performance_diagnostics import measure
 from .secrets import SecretCredentialStore, secret_ref
+from .algorithm_repository import open_algorithm_repository
 
 
 PROVIDER_LOCAL = "LOCAL"
@@ -1419,7 +1420,7 @@ def mirror_products_to_algorithms(
             "external_master_data_digest": str(master_digest or ""),
         }
 
-    return AlgorithmSqlStore(algorithms_path).sync_external_algorithms(incoming, provider=provider, synced_at=synced_at)
+    return open_algorithm_repository(algorithms_path).sync_external_algorithms(incoming, provider=provider, synced_at=synced_at)
 
 
 class ExternalAlgorithmLocalPurger:
@@ -2263,7 +2264,7 @@ class ExternalAlgorithmPlatformService:
         algorithms_path = Path(algorithms_path)
         # The training gate is scoped to a single product. Reading the entire
         # algorithm/version graph here also decodes unrelated evaluation blobs.
-        algorithm = AlgorithmSqlStore(algorithms_path).read_one(str(algorithm_id))
+        algorithm = open_algorithm_repository(algorithms_path).read_one(str(algorithm_id))
         if algorithm is None:
             raise PlatformError(
                 "ALGORITHM_NOT_FOUND",

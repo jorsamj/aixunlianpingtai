@@ -30,6 +30,7 @@ from .task_runtime.payload_publications import VERSION_REF, _native_name
 from .task_runtime.process_control import ProcessController
 from .training_bundle_cache import _is_link_like, _resolve_relative
 from .training_prepare_child import ensure_training_prepare_child
+from .algorithm_repository import open_algorithm_repository
 
 
 MARKER = "workspace-lifecycle.json"
@@ -110,7 +111,7 @@ class TrainingWorkspaceLifecycle:
                     or path.stat().st_size != model.get("size_bytes") or _sha(path) != model.get("sha256")):
                 return False
         algorithms = self.data_dir / "projects" / task.project_id / "algorithms.json"
-        return AlgorithmSqlStore(algorithms).has_verified_training_version_readonly(
+        return open_algorithm_repository(algorithms).has_verified_training_version_readonly(
             task.task_id, snapshot.get("snapshot_id"), result["verified_models"],
         )
 
@@ -668,7 +669,7 @@ class TrainingWorkspaceLifecycle:
                 snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
                 result = self.artifacts.read_json(task_id, qualified.result_ref or "result.json", default={})
                 models = result.get("verified_models") or []
-                catalog = AlgorithmSqlStore(self.data_dir / "projects" / project_id / "algorithms.json")
+                catalog = open_algorithm_repository(self.data_dir / "projects" / project_id / "algorithms.json")
                 version_ids = catalog.verified_training_version_identity_readonly(
                     task_id, snapshot.get("snapshot_id"), models)
                 if not version_ids:

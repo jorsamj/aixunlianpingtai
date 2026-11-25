@@ -2,6 +2,7 @@
 import sqlite3
 from fastapi import APIRouter, Body, HTTPException, Query
 from .negative_pool import NegativePool, MemberOperationConflict, MemberOperationScopeError
+from .algorithm_repository import open_algorithm_repository
 
 
 def create_negative_pool_router(material_store, get_project, public_material, usage_for_page=None):
@@ -20,7 +21,7 @@ def create_negative_pool_router(material_store, get_project, public_material, us
         if not (path.exists() or (path.parent / 'algorithms.sqlite3').exists()):
             raise ValueError('algorithm not found')
         identity = str(algorithm_id).strip()
-        if not AlgorithmSqlStore(path).exists(identity):
+        if not open_algorithm_repository(path).exists(identity):
             raise ValueError('algorithm not found')
         return identity
 
@@ -54,7 +55,7 @@ def create_negative_pool_router(material_store, get_project, public_material, us
         if selected.get('algorithm_id'):
             from .algorithm_sql_store import AlgorithmSqlStore
             store = material_store(project_id)
-            algorithm = AlgorithmSqlStore(store.project_path/'algorithms.json').read_one(selected['algorithm_id'])
+            algorithm = open_algorithm_repository(store.project_path/'algorithms.json').read_one(selected['algorithm_id'])
             if algorithm is None:
                 raise HTTPException(400, 'algorithm not found')
             if algorithm.get('current_version_id') or algorithm.get('versions'):

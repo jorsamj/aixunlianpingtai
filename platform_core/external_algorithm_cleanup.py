@@ -21,6 +21,7 @@ from .algorithm_sql_store import AlgorithmSqlStore
 from .errors import PlatformError
 from .task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from .task_runtime.models import utc_now
+from .algorithm_repository import open_algorithm_repository
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class VerifiedDeletionContract:
 
 class CleanupRepository:
     def __init__(self, algorithms_path: Path, *, contracts=()):
-        self.store = AlgorithmSqlStore(algorithms_path)
+        self.store = open_algorithm_repository(algorithms_path)
         self.contracts = tuple(contracts)
         self.store.ensure_ready()
         with closing(self.store._connect()) as db:
