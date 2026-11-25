@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import tempfile
 import threading
@@ -201,21 +202,27 @@ class NodeRecoveryCoordinator:
         execution and process identity. A missing file is legacy (``(None, "")``);
         an unreadable, corrupt or mismatching file is fail-closed.
         """
-        resolver = getattr(self.workdirs, "stop_evidence_path", None)
-        if resolver is None:
+        reader = getattr(self.workdirs, "read_stop_evidence", None)
+        if reader is None:
             return None, ""
         try:
-            path = resolver(str(record["task_id"]), int(record["generation"]))
-        except (OSError, ValueError):
-            return None, ""
-        if not path.is_file():
+            value = reader(str(record["task_id"]), int(record["generation"]))
+        except ValueError as error:
+            # Path escape, symlink, unsafe file type, unreadable or corrupt JSON
+            # and lineage mismatch are all fail-closed, never "no evidence".
+            return None, f"persisted stop evidence is unsafe: {error}"
+        except OSError as error:
+            return None, f"persisted stop evidence is unreadable: {error}"
+        if value is None:
             return None, ""
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None, "persisted stop evidence is unreadable"
-        if not isinstance(value, dict):
-            return None, "persisted stop evidence is invalid"
+            return self._validated_stop_evidence(record, value)
+        except (TypeError, ValueError, OverflowError) as error:
+            return None, f"persisted stop evidence has invalid fields: {error}"
+
+    def _validated_stop_evidence(
+        self, record: dict[str, Any], value: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, str]:
         if str(value.get("proof_type") or "") != PROCESS_STOP_VERIFIED:
             return None, "persisted stop evidence has an unknown proof type"
         if value.get("stop_verified") is not True:
@@ -229,9 +236,12 @@ class NodeRecoveryCoordinator:
         identity = value.get("process_identity")
         if not isinstance(identity, dict):
             return None, "persisted stop evidence has no process identity"
+        create_time = float(identity.get("create_time") or 0.0)
+        if not math.isfinite(create_time) or create_time <= 0.0:
+            return None, "persisted stop evidence has an invalid create time"
         if (
             int(identity.get("pid") or 0) != int(record["pid"])
-            or float(identity.get("create_time") or 0.0) != float(record["create_time"])
+            or create_time != float(record["create_time"])
             or str(identity.get("command_hash") or "") != str(record["command_hash"])
         ):
             return None, "persisted stop evidence names another process identity"
@@ -422,11 +432,18 @@ class NodeRecoveryCoordinator:
                     if (str(status.get("status")) not in TERMINAL_TASK_STATUSES
                             or str(hold_state or "") != "RELEASED"):
                         if hold_state is None:
-                            # Original legacy single-slot execution: no resource
-                            # Hold and no stop-proof contract exists. The verified
-                            # termination above is the whole local obligation;
-                            # central lease expiry reclaims the execution.
-                            pass
+                            # A single-slot execution has no Hold, but that is not a
+                            # central settlement. Until the control plane reports a
+                            # terminal task for this exact attempt, the original
+                            # identity is the only evidence and must survive; the
+                            # existing central lease expiry is the legal path to
+                            # that terminal state.
+                            if str(status.get("status")) not in TERMINAL_TASK_STATUSES:
+                                self._error = (
+                                    "single-slot execution is not centrally settled; "
+                                    "original process identity retained"
+                                )
+                                return self._error
                         else:
                             try:
                                 recovered = self.client.recover_execution(

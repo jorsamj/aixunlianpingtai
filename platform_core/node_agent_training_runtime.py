@@ -58,6 +58,11 @@ _MAX_PROGRESS_HEARTBEAT_SECONDS = 1.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+_SETTLED_TASK_STATUSES = frozenset({
+    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
+})
+
 class AgentTrainingRuntimeError(RuntimeError):
     pass
 
@@ -466,6 +471,41 @@ class AgentTrainingRunner:
             except OSError:
                 pass  # Retain files when even the local audit write is unavailable.
 
+    def _central_settlement(self, lease) -> bool:
+        """Whether the control plane already settled this exact execution."""
+        client = self.client
+        if client is None:
+            return False
+        try:
+            status = client.execution_status(str(lease.task_id))
+        except Exception:
+            return False
+        if not isinstance(status, Mapping):
+            return False
+        if str(status.get("status") or "") not in _SETTLED_TASK_STATUSES:
+            return False
+        if int(status.get("execution_attempt") or 0) != int(lease.generation):
+            return False
+        hold_state = status.get("hold_state")
+        if hold_state is not None and str(hold_state) != "RELEASED":
+            return False
+        return True
+
+    def _terminal_body_settled(self, body, lease, status: str) -> bool:
+        """A finish body alone is not a settlement unless it names this task."""
+        if not isinstance(body, Mapping):
+            return False
+        task = body.get("task")
+        if isinstance(task, Mapping):
+            if str(task.get("status") or "") != str(status):
+                return False
+            attempt = task.get("execution_attempt")
+            if attempt is not None and int(attempt) != int(lease.generation):
+                return False
+            return True
+        # The control plane answered without a task body: verify the real fact.
+        return self._central_settlement(lease)
+
     def _persist_stop_evidence(self, lease, identity, *, reason: str) -> bool:
         """Record a verified local stop without discarding the original identity.
 
@@ -561,8 +601,14 @@ class AgentTrainingRunner:
                             "stop proof was not confirmed by the control plane; "
                             "the original process identity is retained"
                         )
-                if confirmed and not self._shutdown_error:
+                if (confirmed and not self._shutdown_error
+                        and self._central_settlement(lease)):
                     self._confirm_stop_cleanup(lease)
+                elif confirmed and not self._shutdown_error:
+                    self._shutdown_error = (
+                        "the control plane accepted the stop proof but has not "
+                        "settled the execution; the original process identity is retained"
+                    )
             elif not persisted:
                 self._shutdown_error = (
                     "the verified local stop could not be persisted; the original "
@@ -1522,8 +1568,10 @@ class AgentTrainingRunner:
             )
         except (NodeExecutorHTTPError, OSError, requests.RequestException, AgentTrainingRuntimeError):
             return None
-        # The control plane just accepted this terminal state, so the durable
-        # process identity may now be dropped safely.
+        if not self._terminal_body_settled(body, lease, status):
+            # A lost or unexpected response is not a settlement: keep the
+            # durable identity so a restart can recover idempotently.
+            return None
         self._confirm_stop_cleanup(lease)
         return body
 

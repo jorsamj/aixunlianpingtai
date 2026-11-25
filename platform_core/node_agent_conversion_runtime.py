@@ -41,6 +41,11 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_SOURCE_SUFFIXES = {".pt", ".pth", ".onnx"}
 
 
+_SETTLED_TASK_STATUSES = frozenset({
+    "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
+})
+
 class AgentConversionRuntimeError(RuntimeError):
     pass
 
@@ -253,6 +258,25 @@ class AgentConversionRunner:
                     f"{type(error).__name__}: {error}"
                 )
                 return False
+            if self.client is not None:
+                # The legacy no-coordinator path still needs the central fact: a
+                # verified local stop is not a settlement.
+                try:
+                    status = self.client.execution_status(str(record["task_id"]))
+                except Exception as error:
+                    self._recovery_error = (
+                        "central conversion recovery status is unavailable: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                    return False
+                if (str(status.get("status") or "") not in _SETTLED_TASK_STATUSES
+                        or int(status.get("execution_attempt") or 0)
+                        != int(record["generation"])):
+                    self._recovery_error = (
+                        "conversion execution is not centrally settled; the original "
+                        "process identity is retained"
+                    )
+                    return False
             try:
                 self.workdirs.clear_process_identity_record(
                     str(record["task_id"]),
@@ -267,21 +291,56 @@ class AgentConversionRunner:
         self._recovery_error = ""
         return True
 
+    def _assignment_identity(self, lease) -> tuple[int, str]:
+        assignment = lease.assignment if isinstance(lease.assignment, Mapping) else {}
+        config = assignment.get("resolved_execution_config")
+        config = config if isinstance(config, Mapping) else {}
+        selected = config.get("selected_gpu")
+        selected = selected if isinstance(selected, Mapping) else {}
+        return int(assignment.get("generation") or 0), str(selected.get("uuid") or "")
+
+    def _central_settlement(self, lease) -> bool:
+        client = self.client
+        if client is None:
+            return False
+        try:
+            status = client.execution_status(str(lease.task_id))
+        except Exception:
+            return False
+        if not isinstance(status, Mapping):
+            return False
+        if str(status.get("status") or "") not in _SETTLED_TASK_STATUSES:
+            return False
+        if int(status.get("execution_attempt") or 0) != int(lease.generation):
+            return False
+        hold_state = status.get("hold_state")
+        if hold_state is not None and str(hold_state) != "RELEASED":
+            return False
+        return True
+
+    def _terminal_body_settled(self, body, lease, status: str) -> bool:
+        if not isinstance(body, Mapping):
+            return False
+        task = body.get("task")
+        if isinstance(task, Mapping):
+            if str(task.get("status") or "") != str(status):
+                return False
+            attempt = task.get("execution_attempt")
+            if attempt is not None and int(attempt) != int(lease.generation):
+                return False
+            return True
+        return self._central_settlement(lease)
+
     def _persist_stop_evidence(self, lease, identity, *, reason: str) -> bool:
         """Record the verified local stop next to the durable process identity."""
         try:
             workdir = self.workdirs.path_for(lease)
         except (OSError, ValueError):
             return False
-        assignment_generation = 0
-        gpu_uuid = ""
-        assignment = getattr(lease, "assignment", None)
-        if isinstance(assignment, Mapping):
-            try:
-                assignment_generation = int(assignment.get("generation") or 0)
-            except (TypeError, ValueError):
-                assignment_generation = 0
-            gpu_uuid = str(assignment.get("gpu_uuid") or "")
+        try:
+            assignment_generation, gpu_uuid = self._assignment_identity(lease)
+        except (TypeError, ValueError):
+            return False
         record = {
             "task_id": str(lease.task_id),
             "execution_attempt": int(lease.generation),
@@ -572,6 +631,8 @@ class AgentConversionRunner:
                 error=error,
             )
         except (NodeExecutorHTTPError, OSError, requests.RequestException):
+            return None
+        if not self._terminal_body_settled(body, lease, status):
             return None
         self._confirm_stop_cleanup(lease)
         return body
@@ -1235,11 +1296,17 @@ class AgentConversionRunner:
                 lease,
                 f"[agent] conversion cancelled: {error}\n",
             )
-            self._finish_best_effort(
+            cancelled = self._finish_best_effort(
                 lease,
                 "CANCELLED",
                 error=str(error),
             )
+            if cancelled is None:
+                # The control plane did not confirm the cancellation: keep the
+                # durable identity and do not report a terminal outcome.
+                raise RemoteExecutionFenced(
+                    "control plane did not confirm the conversion cancellation"
+                ) from error
             return AgentConversionOutcome(
                 lease.task_id,
                 lease.generation,
@@ -1296,7 +1363,17 @@ class AgentConversionRunner:
             monitor.stop()
             _lease, identity = self._active_process()
             if identity is None and self.workdirs.read_process_launch_intent(lease) is None:
-                self.workdirs.cleanup(lease)
+                # Never delete a workdir that still holds recovery evidence.
+                try:
+                    evidence_free = (
+                        self.workdirs.read_process_identity(lease) is None
+                        and self.workdirs.read_stop_evidence(
+                            lease.task_id, lease.generation) is None
+                    )
+                except (OSError, ValueError):
+                    evidence_free = False
+                if evidence_free:
+                    self.workdirs.cleanup(lease)
 
 
 __all__ = [

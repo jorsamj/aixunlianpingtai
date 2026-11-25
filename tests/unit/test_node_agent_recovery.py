@@ -25,6 +25,21 @@ class FakeWorkdirs:
             raise ValueError("execution workdir is missing")
         return path
 
+    def read_stop_evidence(self, task_id, generation):
+        path = self.evidence.get((str(task_id), int(generation)))
+        if path is None:
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError("persisted stop evidence is unreadable") from error
+        if not isinstance(value, dict):
+            raise ValueError("persisted stop evidence is invalid")
+        if (str(value.get("task_id") or "") != str(task_id)
+                or int(value.get("execution_attempt") or 0) != int(generation)):
+            raise ValueError("persisted stop evidence lineage mismatch")
+        return value
+
     def list_process_identities(self):
         return list(self.records)
 
@@ -634,5 +649,40 @@ def test_corrupt_stop_evidence_blocks_recovery(tmp_path, monkeypatch):
     path.write_text("{not json", encoding="utf-8")
     workdirs = FakeWorkdirs([record_value], evidence={("a", 1): path})
     coordinator = NodeRecoveryCoordinator(workdirs, FakeController())
-    assert coordinator.prepare() == "persisted stop evidence is unreadable"
+    assert "persisted stop evidence is unsafe" in coordinator.prepare()
     assert workdirs.cleared == []
+
+class _SingleSlotClient:
+    def __init__(self, status):
+        self.status = status
+        self.node_id = "node-a"
+
+    def execution_status(self, task_id):
+        return dict(self.status, task_id=task_id)
+
+
+def test_single_slot_unsettled_execution_retains_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11, assignment_generation=0, gpu_uuid="")
+    workdirs = FakeWorkdirs([record_value])
+    client = _SingleSlotClient({
+        "status": "RUNNING", "execution_attempt": 1, "hold_state": None,
+        "process_identity_sha256": NodeRecoveryCoordinator._identity_sha256(record_value),
+    })
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
+    error = coordinator.prepare()
+    assert "not centrally settled" in error
+    assert workdirs.cleared == []
+
+
+def test_single_slot_settled_execution_is_cleaned(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    record_value = record("a", 1, 11, assignment_generation=0, gpu_uuid="")
+    workdirs = FakeWorkdirs([record_value])
+    client = _SingleSlotClient({
+        "status": "CANCELLED", "execution_attempt": 1, "hold_state": None,
+        "process_identity_sha256": NodeRecoveryCoordinator._identity_sha256(record_value),
+    })
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client)
+    assert coordinator.prepare() == ""
+    assert workdirs.cleared == [("a", 1)]

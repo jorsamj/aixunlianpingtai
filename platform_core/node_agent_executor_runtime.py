@@ -1080,6 +1080,38 @@ class AgentExecutionWorkdir:
         marker.unlink(missing_ok=True)
         path.unlink(missing_ok=True)
 
+    def read_stop_evidence(
+        self, task_id: str, generation: int,
+    ) -> dict[str, Any] | None:
+        """Read the persisted trusted-stop witness with the identity safety rules."""
+        task = _safe_component(task_id, "task_id")
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return None
+        task_dir = self._contained_directory(Path(executions) / task, create=False)
+        if task_dir is None:
+            return None
+        target = self._contained_directory(
+            Path(task_dir) / str(int(generation)), create=False,
+        )
+        if target is None:
+            return None
+        path = Path(target) / "process-stop-verified.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("persisted stop evidence path is unsafe")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("persisted stop evidence is unreadable") from error
+        if not isinstance(raw, dict):
+            raise ValueError("persisted stop evidence is invalid")
+        if (str(raw.get("task_id") or "") != task
+                or int(raw.get("execution_attempt") or 0) != int(generation)):
+            raise ValueError("persisted stop evidence lineage mismatch")
+        return raw
+
     def read_execution_metadata(self, task_id: str, generation: int) -> dict[str, Any]:
         """Read the recovery metadata persisted with the start response.
 
