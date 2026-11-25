@@ -51,6 +51,12 @@ export interface MaterialBatchTask {
   physical_retained?: number;
   reclaimed_bytes?: number | null;
   reclamation_state?: string | null;
+  source_labels?: string[];
+  target_label?: string;
+  retire_sources_on_success?: boolean;
+  changed_images?: number | null;
+  changed_boxes?: number | null;
+  log_available?: boolean;
   results_url?: string | null;
   error_examples?: {error?: string}[];
   created_at?: string;

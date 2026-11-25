@@ -7,12 +7,13 @@ import {menus,legacyUrl} from './navigation';
 const store=useWorkspace(),route=useRoute(),router=useRouter(),error=ref(''),advanced=ref(false);
 const projectId=computed(()=>String(route.params.projectId||store.projects[0]?.id||''));
 const immersive=computed(()=>route.meta.immersive===true);
-const title=computed(()=>route.name==='ai-tasks'?'AI 标注任务':route.name==='external-publish-native'?'外部发布（新畅联交付）':route.name==='platform-integration'?'平台对接':route.name==='ai-review-native'?'AI 候选审核':route.name==='public-negative-pool'?'项目公共负样本池':route.name==='materials'?'素材库':route.name==='material-upload'?'上传图片':route.name==='material-zip-import'?'ZIP 数据集导入':route.name==='upload-tasks'?'上传任务':route.name==='training-tasks'?'训练任务':route.name==='training-create'?'创建训练任务':route.name==='training-report'||route.name==='version-report'?'训练报告与评测':route.name==='version-conversions'?'转换记录与诊断':route.name==='conversion-create-native'?'创建模型转换':route.name==='conversion-detail-native'?'转换任务详情':route.name==='service-nodes-native'?'服务节点与算力':route.name==='algorithms'?'算法库':menus.flatMap(group=>group.pages).find(([,page])=>page===route.params.page)?.[0]||'畅联云算法训练平台');
+const title=computed(()=>route.name==='labels'?'标签管理':route.name==='ai-tasks'?'AI 标注任务':route.name==='external-publish-native'?'外部发布（新畅联交付）':route.name==='platform-integration'?'平台对接':route.name==='ai-review-native'?'AI 候选审核':route.name==='public-negative-pool'?'项目公共负样本池':route.name==='materials'?'素材库':route.name==='material-upload'?'上传图片':route.name==='material-zip-import'?'ZIP 数据集导入':route.name==='upload-tasks'?'上传任务':route.name==='training-tasks'?'训练任务':route.name==='training-create'?'创建训练任务':route.name==='training-report'||route.name==='version-report'?'训练报告与评测':route.name==='version-conversions'?'转换记录与诊断':route.name==='conversion-create-native'?'创建模型转换':route.name==='conversion-detail-native'?'转换任务详情':route.name==='service-nodes-native'?'服务节点与算力':route.name==='algorithms'?'算法库':menus.flatMap(group=>group.pages).find(([,page])=>page===route.params.page)?.[0]||'畅联云算法训练平台');
 function projectChange(id:string){void router.push({name:route.name==='public-negative-pool'?'public-negative-pool':route.name==='materials'?'materials':'algorithms',params:{projectId:id}})}
 function target(page:string){
  const project={projectId:projectId.value};
  if(page==='算法列表')return {name:'algorithms',params:project};
  if(page==='数据集')return {name:'materials',params:project};
+ if(page==='标签管理')return {name:'labels',params:project};
  if(page==='训练任务')return {name:'training-tasks',params:project};
  if(page==='平台对接')return {name:'platform-integration',params:project};
  return {name:'legacy',params:{...project,page}};
@@ -22,7 +23,7 @@ onMounted(()=>{void store.load().catch(cause=>{error.value=cause.message})});
 </script>
 <template><div class="application-shell">
  <aside v-if="!immersive" class="sidebar"><a class="brand" href="/app/">畅联云<span>算法训练平台</span></a>
-  <nav v-if="projectId" aria-label="主导航"><template v-for="(group,index) in menus" :key="group.name"><section v-if="index<3||advanced"><h2>{{ group.name }}</h2><router-link v-for="[label,page] in group.pages" :key="page" :to="target(page)" :aria-current="title===label?'page':undefined">{{ label }}<small v-if="page!=='算法列表'&&page!=='训练任务'&&page!=='数据集'&&page!=='平台对接'">原系统</small></router-link></section><el-button v-if="index===2" text @click="advanced=!advanced">{{ advanced?'收起高级功能':'展开高级功能' }}</el-button></template></nav>
+  <nav v-if="projectId" aria-label="主导航"><template v-for="(group,index) in menus" :key="group.name"><section v-if="index<3||advanced"><h2>{{ group.name }}</h2><router-link v-for="[label,page] in group.pages" :key="page" :to="target(page)" :aria-current="title===label?'page':undefined">{{ label }}<small v-if="page!=='算法列表'&&page!=='训练任务'&&page!=='数据集'&&page!=='平台对接'&&page!=='标签管理'">原系统</small></router-link></section><el-button v-if="index===2" text @click="advanced=!advanced">{{ advanced?'收起高级功能':'展开高级功能' }}</el-button></template></nav>
   <a class="demo-link" :href="legacyUrl(projectId,'AI算法底座')">AI算法底座 · 独立业务演示系统</a>
  </aside>
  <div class="application-main"><header class="app-header"><div><small>畅联云 / {{ store.projects.find(p=>p.id===projectId)?.name||'项目' }}</small><h1>{{ title }}</h1></div><div class="session-tools"><el-select :model-value="projectId" aria-label="当前项目" @change="projectChange"><el-option v-for="project in store.projects" :key="project.id" :label="project.name" :value="project.id"/></el-select><span>{{ store.username }}</span><el-button @click="logout">退出</el-button></div></header>

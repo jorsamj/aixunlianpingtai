@@ -70,7 +70,10 @@ const context:MaterialContext={
   },
 };
 
-function locationFor(action:string,page:string){location.assign(original(action,page))}
+function locationFor(action:string,page:string){
+  if(page==='标签管理'){void router.push({name:'labels',params:{projectId}});return}
+  location.assign(original(action,page))
+}
 
 const legacyActions=[
   ['上传图片','material-upload','数据集'],['ZIP 数据集导入','material-zip','数据集'],
