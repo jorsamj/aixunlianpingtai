@@ -191,6 +191,15 @@ _KNOWN_READ_OPERATIONS = frozenset(CORE_OPERATIONS) | frozenset(PRESENTATION_OPE
 })
 
 
+def is_write_operation(name: str) -> bool:
+    """Explicit write-authority contract (never inferred from the method name).
+
+    Anything outside the known read set is treated as a write, so an undeclared
+    helper cannot reach storage without passing the authority guard.
+    """
+    return name in WRITE_OPERATIONS or name not in _KNOWN_READ_OPERATIONS
+
+
 class _GuardedStore:
     """Pass-through store wrapper that gates mutating calls on write authority."""
 
@@ -203,8 +212,7 @@ class _GuardedStore:
         attribute = getattr(store, name)
         if name.startswith("_"):
             return attribute
-        is_write = name in WRITE_OPERATIONS or name not in _KNOWN_READ_OPERATIONS
-        if callable(attribute) and is_write:
+        if callable(attribute) and is_write_operation(name):
             guard = object.__getattribute__(self, "_wrapped_guard")
 
             def guarded(*args: Any, **kwargs: Any) -> Any:
@@ -275,7 +283,7 @@ class SqliteAlgorithmRepository:
         if name.startswith("_"):
             raise AttributeError(name)
         attribute = getattr(self.store, name)
-        if callable(attribute) and name.startswith(_WRITE_NAME_PREFIXES):
+        if callable(attribute) and is_write_operation(name):
             def guarded(*args: Any, **kwargs: Any) -> Any:
                 self._guard_write()
                 return attribute(*args, **kwargs)

@@ -261,7 +261,7 @@ class PostgresAlgorithmRepository:
             connection.close()
 
     #: Transition phases during which neither provider may accept writes.
-    _WRITABLE_PHASES = frozenset({"steady", "switched"})
+    _WRITABLE_PHASES = frozenset({"steady", "switched", "POSTGRES_ACTIVE"})
 
     def _require_write_authority(self, cursor) -> None:
         """Verify admission and writer generation inside the write transaction."""
