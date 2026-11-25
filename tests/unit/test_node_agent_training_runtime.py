@@ -1780,6 +1780,10 @@ def test_training_unknown_launch_cannot_publish_terminal_state(tmp_path, hazard)
         runner._launch_boundary_entered = True
     else:
         workdirs.begin_process_launch(lease)
+    from platform_core.training_resource_policy import resource_shortage
+    shortage = resource_shortage("RESOURCE_HOST_MEMORY_INSUFFICIENT", "host RAM busy",
+                                 required=8 * 1024**3, total=32 * 1024**3, available=2 * 1024**3)
+    assert runner._requeue_resource_shortage(lease, shortage) is None
     assert runner._execution_record(lease) is None
     assert runner._finish_best_effort(lease, "FAILED", error="unknown launch") is None
     assert client.finish_calls == []

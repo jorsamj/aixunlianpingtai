@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -1029,11 +1031,18 @@ def test_remote_agent_recovery_diagnosis_refuses_nonheld_execution(tmp_path):
 
 
 
-def _start_single_slot_execution(client, repository, artifacts):
+def _start_single_slot_execution(client, repository, artifacts, *, slots=1):
     _nodes, token = prepare(
         client, repository, artifacts,
         gpu_uuid="GPU-12345678-1234-1234-1234-123456789abc",
     )
+    if slots == 2:
+        node = _nodes.get_public("gpu-api-agent")
+        capabilities = ["training", "execution-slots:2"]
+        _nodes.update("gpu-api-agent", {"allowed_capabilities": capabilities})
+        _nodes.heartbeat("gpu-api-agent", token, {
+            "reported_capabilities": capabilities, "resources": node["resources"],
+        })
     claim = client.post(
         "/api/v63/node-executor/gpu-api-agent/assignments/claim",
         headers=auth(token),
@@ -1158,3 +1167,114 @@ def test_single_slot_recovery_rejects_another_assignment_or_identity(tmp_path):
     )
     assert client.post(path, headers=auth(token), json=wrong_generation).status_code == 409
     assert repository.get("train-api-agent").status.value == "RUNNING"
+
+
+def _resource_wait_request(repository, assignment_generation, generation, gpu_uuid):
+    from platform_core.node_agent_settlement import no_launch_evidence
+
+    with repository._connect() as database:
+        lease_token = database.execute("SELECT lease_token FROM tasks WHERE task_id='train-api-agent'").fetchone()[0]
+    return {
+        "execution_lease_token": lease_token, "execution_generation": generation,
+        "assignment_generation": assignment_generation, "gpu_uuid": gpu_uuid,
+        "no_launch_evidence": no_launch_evidence({"task_id": "train-api-agent", "generation": generation,
+                                                 "assignment_generation": assignment_generation, "gpu_uuid": gpu_uuid}),
+        "admission": {"classification": "TEMPORARILY_UNAVAILABLE", "code": "RESOURCE_HOST_MEMORY_INSUFFICIENT",
+                      "reason": "execution-node RAM headroom is temporarily insufficient", "required_bytes": 8 * 1024**3,
+                      "total_bytes": 32 * 1024**3, "available_bytes": 2 * 1024**3},
+    }
+
+
+def _resource_wait_snapshot(repository):
+    with repository._connect() as database:
+        return {table: [dict(row) for row in database.execute(f"SELECT * FROM {table} WHERE task_id='train-api-agent'")]
+                for table in ("tasks", "task_node_assignments", "execution_resource_holds")}
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_resource_wait_requeue_is_atomic_idempotent_and_allows_another_node(tmp_path, slots):
+    client, repository, artifacts = client_for(tmp_path)
+    token, assignment, attempt, gpu_uuid = _start_single_slot_execution(client, repository, artifacts, slots=slots)
+    body = _resource_wait_request(repository, assignment, attempt, gpu_uuid)
+    path = "/api/v63/node-executor/gpu-api-agent/executions/train-api-agent/resource-wait"
+    response = client.post(path, headers=auth(token), json=body)
+    assert response.status_code == 200, response.text
+    receipt = response.json()
+    assert receipt["state"] == "REQUEUED"
+    assert receipt["proof_type"] == "NO_PROCESS_LAUNCHED"
+    assert receipt["proof_sha256"]
+    task = repository.get("train-api-agent")
+    assert task.status.value == "QUEUED" and task.stage == "resource_waiting"
+    assert task.attempt == attempt and task.finished_at is None
+    assert task.worker_id is None and task.lease_expires_at is None
+    assert "TEMPORARILY_UNAVAILABLE" in task.resource_wait_reason
+    snapshot = _resource_wait_snapshot(repository)
+    assert snapshot["task_node_assignments"][0]["state"] == "RELEASED"
+    if slots == 2:
+        assert snapshot["execution_resource_holds"][0]["state"] == "RELEASED"
+        assert snapshot["execution_resource_holds"][0]["proof_sha256"] == receipt["proof_sha256"]
+    else:
+        assert snapshot["execution_resource_holds"] == []
+    assert client.post(path, headers=auth(token), json=body).json() == receipt
+    assert _resource_wait_snapshot(repository) == snapshot
+    assert AgentExecutionService(repository, artifacts).allocator.assign_next() is None  # Per-node bounded backoff.
+
+    _, other_token = create_node(repository, "other-agent", gpu_uuid="GPU-other")
+    allocated = AgentExecutionService(repository, artifacts).allocator.assign_next()
+    assert allocated["node_id"] == "other-agent"
+    claim = client.post("/api/v63/node-executor/other-agent/assignments/claim", headers=auth(other_token)).json()
+    started = client.post("/api/v63/node-executor/other-agent/assignments/train-api-agent/start", headers=auth(other_token),
+                          json={"assignment_lease_token": claim["item"]["assignment"]["assignment_lease_token"]})
+    assert started.status_code == 200, started.text
+    assert started.json()["execution"]["generation"] == attempt + 1
+    new_snapshot = _resource_wait_snapshot(repository)
+    assert client.post(path, headers=auth(token), json=body).json() == receipt
+    readback = client.get(path, headers=auth(token), params={"assignment_generation": assignment, "execution_generation": attempt})
+    assert readback.status_code == 200 and readback.json() == receipt
+    changed_request = {**body, "admission": {**body["admission"], "reason": "different request"}}
+    assert client.post(path, headers=auth(token), json=changed_request).status_code == 409
+    assert _resource_wait_snapshot(repository) == new_snapshot  # Old receipt never releases the new owner/resources.
+    assert repository.get("train-api-agent").worker_id == "agent:other-agent"
+    status = client.get("/api/v63/node-executor/other-agent/executions/train-api-agent/status", headers=auth(other_token))
+    assert status.status_code == 200 and status.json()["hold_state"] is None
+
+
+@pytest.mark.parametrize("fault", ["cancel", "attempt", "assignment", "lease", "gpu", "node", "launched", "unknown-launch", "coerced-proof", "missing-hold"])
+def test_resource_wait_requeue_rejects_unsafe_requests_without_writes(tmp_path, fault):
+    client, repository, artifacts = client_for(tmp_path)
+    token, assignment, attempt, gpu_uuid = _start_single_slot_execution(client, repository, artifacts, slots=2)
+    body = _resource_wait_request(repository, assignment, attempt, gpu_uuid)
+    node_id = "gpu-api-agent"
+    if fault == "cancel":
+        repository.request_cancel("train-api-agent")
+    elif fault == "attempt":
+        body["execution_generation"] += 1
+    elif fault == "assignment":
+        body["assignment_generation"] += 1
+    elif fault == "lease":
+        body["execution_lease_token"] = "old-lease"
+    elif fault == "gpu":
+        body["gpu_uuid"] = "GPU-wrong"
+    elif fault == "node":
+        node_id = "other-agent"
+        _, token = create_node(repository, node_id, gpu_uuid="GPU-other")
+    elif fault == "unknown-launch":
+        body["no_launch_evidence"]["launch_boundary_entered"] = True
+    elif fault == "coerced-proof":
+        body["no_launch_evidence"]["launch_boundary_entered"] = 0
+    else:
+        with repository._connect() as database:
+            if fault == "launched":
+                database.execute("UPDATE tasks SET process_pid=123,process_create_time=1,process_command_hash=? WHERE task_id='train-api-agent'", ("a" * 64,))
+            else:
+                database.execute("DELETE FROM execution_resource_holds WHERE task_id='train-api-agent'")
+    if fault in {"attempt", "assignment", "gpu"}:
+        from platform_core.node_agent_settlement import no_launch_evidence
+        body["no_launch_evidence"] = no_launch_evidence({
+            "task_id": "train-api-agent", "generation": body["execution_generation"],
+            "assignment_generation": body["assignment_generation"], "gpu_uuid": body["gpu_uuid"],
+        })
+    before = _resource_wait_snapshot(repository)
+    response = client.post(f"/api/v63/node-executor/{node_id}/executions/train-api-agent/resource-wait", headers=auth(token), json=body)
+    assert response.status_code == 409, response.text
+    assert _resource_wait_snapshot(repository) == before

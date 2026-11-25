@@ -849,16 +849,24 @@ def test_formal_training_runner_http_success(tmp_path):
         _stop_formal(stack)
 
 
-def test_formal_training_runner_process_failure(tmp_path):
+@pytest.mark.parametrize("worker_script", [
+    "import sys,time\ntime.sleep(0.2)\nsys.exit(7)\n",
+    "import time\ntime.sleep(0.2)\nraise RuntimeError('CUDA out of memory')\n",
+])
+def test_formal_training_runner_process_failure(tmp_path, worker_script):
     stack = _start_formal(
         tmp_path, task_id="formal-fail",
-        worker_script="import sys,time\ntime.sleep(0.2)\nsys.exit(7)\n",
+        worker_script=worker_script,
     )
     try:
         outcome = stack["runner"].run(stack["lease"])
         assert outcome.status == "FAILED"
         task = stack["repository"].get("formal-fail")
         assert task.status.value == "FAILED"
+        assert task.process_pid is not None
+        with stack["repository"]._connect() as database:
+            config = database.execute("SELECT resolved_execution_config FROM task_node_assignments WHERE task_id='formal-fail'").fetchone()[0]
+        assert "resource_wait_receipt" not in json.loads(config)
         with stack["repository"]._connect() as database:
             hold = database.execute(
                 "SELECT state,proof_sha256 FROM execution_resource_holds WHERE task_id='formal-fail'"
@@ -2087,3 +2095,66 @@ def test_real_agent_dual_slot_simultaneous_crash_recovers_both(tmp_path):
 @pytest.mark.skipif(os.name != "nt", reason="Windows dual-slot real Agent fail-closed contract")
 def test_real_agent_dual_slot_simultaneous_crash_is_fail_closed(tmp_path):
     _load_real_agent_support().run_dual_slot_simultaneous_agent_crash_fail_closed(tmp_path)
+
+
+@pytest.mark.parametrize("readback", ["normal", "lost-response", "unavailable", "cancel"])
+def test_formal_prelaunch_resource_wait_requeues_with_verified_receipt(tmp_path, monkeypatch, readback):
+    from platform_core.training_resource_policy import resource_shortage
+
+    stack = _start_formal(tmp_path, task_id="formal-resource-wait")
+    try:
+        def shortage(*_args, **_kwargs):
+            raise resource_shortage("RESOURCE_HOST_MEMORY_INSUFFICIENT", "execution-node RAM is busy",
+                                    required=8 * 1024**3, total=32 * 1024**3, available=2 * 1024**3)
+
+        stack["runner"].resource_resolver = shortage
+        calls = []
+        original_requeue = stack["client"].requeue_resource_wait
+        original_finish = stack["client"].finish
+
+        def requeue(lease, body):
+            calls.append("resource-wait")
+            if readback == "cancel":
+                stack["repository"].request_cancel(lease.task_id)
+            response = original_requeue(lease, body)
+            if readback == "lost-response":
+                raise OSError("response lost after central commit")
+            return response
+
+        def finish(*args, **kwargs):
+            calls.append("finish")
+            return original_finish(*args, **kwargs)
+
+        monkeypatch.setattr(stack["client"], "requeue_resource_wait", requeue)
+        monkeypatch.setattr(stack["client"], "finish", finish)
+        if readback == "unavailable":
+            def unavailable(*args, **kwargs):
+                raise OSError("receipt readback unavailable")
+            monkeypatch.setattr(stack["client"], "resource_wait_receipt", unavailable)
+            with pytest.raises(RemoteExecutionFenced, match="resource-wait settlement is unknown"):
+                stack["runner"].run(stack["lease"])
+            assert (stack["workdirs"].path_for(stack["lease"]) / "resource-wait-request.json").is_file()
+        else:
+            outcome = stack["runner"].run(stack["lease"])
+            if readback == "cancel":
+                assert outcome.status == "CANCELLED"
+            else:
+                assert outcome.status == "QUEUED"
+                assert outcome.resource_wait_receipt["proof_type"] == "NO_PROCESS_LAUNCHED"
+                assert outcome.resource_wait_receipt["hold_state"] == "RELEASED"
+        assert calls == (["resource-wait", "finish"] if readback == "cancel" else ["resource-wait"])
+        task = stack["repository"].get("formal-resource-wait")
+        assert task.attempt == stack["lease"].generation and task.process_pid is None
+        if readback == "cancel":
+            assert task.status.value == "CANCELLED" and task.finished_at is not None
+        else:
+            assert task.status.value == "QUEUED" and task.stage == "resource_waiting"
+            assert task.finished_at is None
+            assert "RESOURCE_HOST_MEMORY_INSUFFICIENT" in task.resource_wait_reason
+        with stack["repository"]._connect() as database:
+            hold = database.execute("SELECT * FROM execution_resource_holds WHERE task_id='formal-resource-wait'").fetchone()
+        assert hold["state"] == "RELEASED" and hold["proof_type"] == "NO_PROCESS_LAUNCHED"
+        assert hold["proof_sha256"]
+        assert stack["service"].allocator.assign_next() is None
+    finally:
+        _stop_formal(stack)

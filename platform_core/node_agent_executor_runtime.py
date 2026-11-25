@@ -649,6 +649,15 @@ class NodeExecutorClient:
     def execution_status(self, task_id: str) -> dict[str, Any]:
         return self._get(f"/executions/{quote(str(task_id), safe='')}/status")
 
+    def requeue_resource_wait(self, lease, payload):
+        return self._post(f"/executions/{quote(lease.task_id, safe='')}/resource-wait", payload)
+
+    def resource_wait_receipt(self, task_id, *, assignment_generation, execution_generation):
+        return self._get(
+            f"/executions/{quote(str(task_id), safe='')}/resource-wait"
+            f"?assignment_generation={int(assignment_generation)}&execution_generation={int(execution_generation)}"
+        )
+
     def recover_execution(
         self,
         task_id: str,

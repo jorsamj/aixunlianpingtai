@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
+from .node_agent_settlement import resource_wait_receipt_error
 from .node_agent_execution_slots import BoundedExecutionSlots, SlotNotReleased
 from .node_agent_deployment_runtime import (
     AgentDeploymentOutcome,
@@ -441,6 +442,28 @@ class NodeAgentExecutorLoop:
     def _reap_dual_slots_locked(self) -> None:
         for slot in self._slots.active():
             if not slot.worker_exited:
+                continue
+            if getattr(slot.outcome, "status", None) == "QUEUED":
+                runner = self._slot_runners.get((slot.task_id, slot.generation))
+                request = getattr(runner, "_resource_wait_request_body", None)
+                if slot.identity is not None or not isinstance(request, Mapping):
+                    continue
+                try:
+                    receipt = self.client.resource_wait_receipt(
+                        slot.task_id, assignment_generation=slot.generation,
+                        execution_generation=slot.execution_attempt,
+                    )
+                    problem = resource_wait_receipt_error(
+                        receipt, request, node_id=self.client.node_id, task_id=slot.task_id, execution_slots=2,
+                    )
+                    if problem or receipt.get("hold_state") != "RELEASED":
+                        self._set_error(problem or "SLOT_REQUEUE_HOLD_NOT_RELEASED")
+                        continue
+                    if self._slots.confirm_stopped(slot, self._slot_controller, allow_no_process=True):
+                        self._slot_runners.pop((slot.task_id, slot.generation), None)
+                        self._set_active(slot.task_id, False)
+                except Exception as error:
+                    self._set_error(f"SLOT_REQUEUE_UNKNOWN: {type(error).__name__}: {error}")
                 continue
             try:
                 status = self.client.execution_status(slot.task_id)

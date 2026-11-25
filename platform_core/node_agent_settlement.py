@@ -443,3 +443,29 @@ __all__ = [
     "strict_int",
     "strict_positive_number",
 ]
+
+
+def resource_wait_receipt_error(receipt, request, *, node_id, task_id, execution_slots=0):
+    """Verify the immutable Assignment receipt, even after another attempt starts."""
+    if not isinstance(receipt, Mapping):
+        return "resource-wait receipt is unavailable"
+    expected = {
+        "state": "REQUEUED", "task_id": str(task_id), "node_id": str(node_id),
+        "execution_attempt": request["execution_generation"],
+        "assignment_generation": request["assignment_generation"],
+        "gpu_uuid": request["gpu_uuid"], "request_sha256": canonical_digest(request),
+        "proof_type": NO_PROCESS_LAUNCHED,
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        return "resource-wait receipt identity mismatch"
+    record = {"task_id": task_id, "generation": request["execution_generation"],
+              "assignment_generation": request["assignment_generation"],
+              "gpu_uuid": request["gpu_uuid"], "no_process_launched": True}
+    if receipt.get("proof_sha256") != stop_proof_digests({"node_id": node_id}, record)[0]:
+        return "resource-wait proof digest mismatch"
+    slots = strict_int(receipt.get("execution_slots"))
+    if slots not in (1, 2) or (execution_slots in (1, 2) and slots != execution_slots):
+        return "resource-wait slot contract mismatch"
+    if receipt.get("hold_state") != (HOLD_RELEASED if slots == 2 else None):
+        return "resource-wait Hold was not released"
+    return ""

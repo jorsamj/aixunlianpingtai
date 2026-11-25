@@ -30,6 +30,7 @@ from .node_agent_settlement import (
     recover_and_verify,
     settlement_of,
     no_launch_evidence,
+    resource_wait_receipt_error,
     strict_int,
 )
 from .node_agent_supervisor_gate import (
@@ -78,6 +79,7 @@ class AgentTrainingOutcome:
     status: str
     result_ref: str = ""
     error: str = ""
+    resource_wait_receipt: dict | None = None
 
 
 class _MonitoredUploadBody:
@@ -255,6 +257,7 @@ class AgentTrainingRunner:
         self._recovery_coordinator = recovery_coordinator
         self._on_process_started = on_process_started
         self._require_stop_proof = bool(require_stop_proof)
+        self._resource_wait_pending = False
         self._launch_boundary_entered = False
         self._last_process_identity = None
         self._recover_persisted_processes()
@@ -1058,6 +1061,12 @@ class AgentTrainingRunner:
                 f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
             ) from error
         if completed.returncode != 0:
+            failure = _read_json(output_path, {})
+            admission = failure.get("resource_admission") if isinstance(failure, dict) else None
+            if isinstance(admission, dict):
+                error = AgentTrainingRuntimeError(f"{admission.get('code')}: {admission.get('reason')}")
+                error.resource_admission = admission
+                raise error
             detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
             canonical_errors = re.findall(
                 r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)",
@@ -1670,6 +1679,50 @@ class AgentTrainingRunner:
         self._confirm_stop_cleanup(lease)
         return str(status)
 
+    def _requeue_resource_shortage(self, lease, error):
+        admission = getattr(error, "resource_admission", None)
+        if not isinstance(admission, Mapping):
+            return None
+        record = self._execution_record(lease)
+        if record is None or record.get("no_process_launched") is not True:
+            return None  # Started OOM/runtime errors keep the original failure path.
+        request = {
+            "execution_lease_token": lease.lease_token, "execution_generation": int(lease.generation),
+            "assignment_generation": record["assignment_generation"], "gpu_uuid": record["gpu_uuid"],
+            "no_launch_evidence": record["no_launch_evidence"], "admission": dict(admission),
+        }
+        self._resource_wait_pending = True
+        self._resource_wait_request_body = request
+        self.workdirs._atomic_write_json(self.workdirs.path_for(lease) / "resource-wait-request.json", request)
+        try:
+            self.client.requeue_resource_wait(lease, request)
+        except (NodeExecutorHTTPError, OSError, requests.RequestException) as failure:
+            if isinstance(failure, NodeExecutorHTTPError) and failure.code == "CANCELLATION_WON":
+                self._resource_wait_pending = False
+                if self._finish_best_effort(lease, "CANCELLED", error="cancellation won resource requeue"):
+                    return AgentTrainingOutcome(lease.task_id, lease.generation, "CANCELLED")
+                self._resource_wait_pending = True
+                raise RemoteExecutionFenced("resource-wait cancellation is not centrally confirmed") from failure
+            pass  # A committed request with a lost response is proved by its receipt.
+        try:
+            receipt = self.client.resource_wait_receipt(
+                lease.task_id, assignment_generation=record["assignment_generation"],
+                execution_generation=int(lease.generation),
+            )
+        except (NodeExecutorHTTPError, OSError, requests.RequestException) as failure:
+            raise RemoteExecutionFenced("resource-wait settlement is unknown; evidence retained") from failure
+        problem = resource_wait_receipt_error(receipt, request, node_id=self._node_id(), task_id=lease.task_id,
+                                              execution_slots=int(getattr(lease, "execution_slots", 0) or 0))
+        if problem:
+            raise RemoteExecutionFenced(problem)
+        self._resource_wait_pending = False
+        try:
+            (self.workdirs.path_for(lease) / "resource-wait-request.json").unlink(missing_ok=True)
+        except OSError:
+            pass  # Cleanup cannot replace an already authoritative receipt.
+        return AgentTrainingOutcome(lease.task_id, lease.generation, "QUEUED",
+                                    error=str(receipt["resource_wait_reason"]), resource_wait_receipt=receipt)
+
     def _runtime_result(self, job: Mapping[str, Any]) -> dict[str, Any]:
         keys = (
             "training_outcome",
@@ -1720,7 +1773,8 @@ class AgentTrainingRunner:
             completed = True
             return outcome
         except Exception as error:
-            if self._require_stop_proof and self._last_process_identity is None:
+            if (not self._resource_wait_pending and self._require_stop_proof
+                    and self._last_process_identity is None):
                 try:
                     # Same unified terminal contract: the no-launch proof is
                     # submitted and the FAILED finish is verified, never trusted.
@@ -1744,6 +1798,7 @@ class AgentTrainingRunner:
             )
         self._last_process_identity = None
         self._launch_boundary_entered = False
+        self._resource_wait_pending = False
         if self._shutdown_event.is_set():
             raise RemoteExecutionFenced("Agent process shutdown requested")
         if lease.kind != "TRAINING":
@@ -2381,7 +2436,8 @@ class AgentTrainingRunner:
             raise
         except Exception as error:
             self._record_execution_failure(
-                lease, "FENCED" if result_committed else "FAILED", error,
+                lease, "FENCED" if result_committed else
+                "RESOURCE_WAIT" if getattr(error, "resource_admission", None) and not self._launch_boundary_entered else "FAILED", error,
             )
             self._terminate_active(strict=True)
             if result_committed:
@@ -2415,6 +2471,9 @@ class AgentTrainingRunner:
             except RemoteExecutionFenced:
                 raise
 
+            requeued = self._requeue_resource_shortage(lease, error)
+            if requeued is not None:
+                return requeued
             message = f"{type(error).__name__}: {error}"
             self._append_log(
                 lease,
@@ -2441,7 +2500,7 @@ class AgentTrainingRunner:
             try:
                 monitor.stop()
                 _active_lease, active_identity = self._active_process()
-                if (active_identity is None
+                if (not self._resource_wait_pending and active_identity is None
                         and self.workdirs.read_process_launch_intent(lease) is None):
                     self._cleanup_training_workdir(lease, trainer_started=trainer_started,
                         committed=committed, model_evidence=model_evidence)

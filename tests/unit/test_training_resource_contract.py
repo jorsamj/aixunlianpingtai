@@ -751,3 +751,35 @@ def test_linux_cgroup_v2_snapshot_matches_runtime_memory_files():
             else "host"
         )
         assert snapshot["memory_source"] == expected_source
+
+
+@pytest.mark.parametrize("total,available,cgroup,expected", [
+    (64 * GIB, 1 * GIB, None, "TEMPORARILY_UNAVAILABLE"),
+    (2 * GIB, 1 * GIB, None, "INCOMPATIBLE"),
+    (None, 1 * GIB, None, "UNKNOWN"),
+    (64 * GIB, None, None, "UNKNOWN"),
+    (64 * GIB, 1 * GIB, 2 * GIB, "INCOMPATIBLE"),
+])
+def test_host_shortage_distinguishes_capacity_from_current_headroom(total, available, cgroup, expected):
+    request = _request(batch=1, workers=0)
+    original = dict(request)
+    with pytest.raises(RuntimeError) as failure:
+        training_metrics.plan_host_training_resources(
+            request, _context(), profile="balanced", batch=1, workers=0, cache=False,
+            snapshot={"effective_available_bytes": available, "host_total_bytes": total, "cgroup_limit_bytes": cgroup},
+        )
+    assert failure.value.resource_admission["classification"] == expected
+    assert failure.value.resource_admission["required_bytes"] > 0
+    assert request == original
+
+
+def test_manual_host_shortage_never_reduces_requested_parameters():
+    request = _request(resource_strategy="manual", batch=128, workers=8)
+    original = dict(request)
+    with pytest.raises(ValueError, match="RESOURCE_MANUAL_INVALID") as failure:
+        training_metrics.plan_host_training_resources(
+            request, _context(), profile="balanced", batch=128, workers=8, cache=False,
+            snapshot={"effective_available_bytes": 8 * GIB, "host_total_bytes": 256 * GIB},
+        )
+    assert failure.value.resource_admission["classification"] == "TEMPORARILY_UNAVAILABLE"
+    assert request == original

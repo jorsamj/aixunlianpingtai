@@ -28,7 +28,8 @@ from .service_nodes import (
     ServiceNodeRepository,
     verify_service_node_token,
 )
-from .task_node_assignments import CentralTaskAllocator
+from .node_agent_settlement import canonical_digest, no_launch_evidence, stop_proof_digests
+from .task_node_assignments import CentralTaskAllocator, _node_capacity_signature
 from .task_runtime import TaskKind, TaskStatus
 from .task_runtime.fenced_repository import FencedTaskRepository
 from .task_runtime.repository import TERMINAL_STATUSES, _from_row
@@ -1146,6 +1147,17 @@ class AgentExecutionService:
                     "the service node has no free authorized execution slot",
                     409,
                 )
+            if execution_slots == 1:
+                # A requeued task may move from a dual-slot to a single-slot
+                # node. Its old released Hold is retained in the immutable
+                # Assignment receipt, not projected as the new attempt's Hold.
+                old_hold = database.execute("SELECT state FROM execution_resource_holds WHERE task_id=?",
+                                            (str(task_id),)).fetchone()
+                if old_hold is not None:
+                    if str(old_hold["state"]) != "RELEASED":
+                        database.rollback()
+                        raise AgentExecutionError("RESOURCE_HOLD_CONFLICT", "previous execution still owns its Hold", 409)
+                    database.execute("DELETE FROM execution_resource_holds WHERE task_id=?", (str(task_id),))
             if execution_slots == 2:
                 config = _json(assignment["resolved_execution_config"], {})
                 selected = config.get("selected_gpu") if isinstance(config, dict) else None
@@ -3384,6 +3396,146 @@ class AgentExecutionService:
         return {"task_id": str(task.task_id), "state": "RELEASED" if terminal_recovery else "STOP_VERIFIED",
                 "proof_sha256": digest}
 
+    def resource_wait_receipt(self, node_id, node_token, task_id, *, assignment_generation, execution_generation):
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        with closing(self.repository._connect()) as database:
+            row = database.execute(
+                "SELECT resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? AND generation=? AND node_id=? AND state='RELEASED'",
+                (str(task_id), int(assignment_generation), str(node_id)),
+            ).fetchone()
+        config = _json(row[0], {}) if row is not None else {}
+        receipt = config.get("resource_wait_receipt")
+        if not isinstance(receipt, dict) or receipt.get("execution_attempt") != execution_generation:
+            raise AgentExecutionError("RESOURCE_WAIT_RECEIPT_NOT_FOUND", "resource-wait receipt is not recorded", 404)
+        return receipt
+
+    def requeue_resource_wait(self, node_id, node_token, task_id, *, payload):
+        """Atomically requeue an authenticated, proved-never-launched attempt."""
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        required = {"execution_lease_token", "execution_generation", "assignment_generation",
+                    "gpu_uuid", "no_launch_evidence", "admission"}
+        if (not isinstance(payload, Mapping) or set(payload) != required
+                or type(payload.get("execution_generation")) is not int
+                or type(payload.get("assignment_generation")) is not int
+                or payload["execution_generation"] <= 0 or payload["assignment_generation"] <= 0
+                or not isinstance(payload.get("execution_lease_token"), str)
+                or not isinstance(payload.get("gpu_uuid"), str)):
+            raise AgentExecutionError("RESOURCE_WAIT_INVALID", "invalid resource-wait request", 422)
+        attempt = payload["execution_generation"]
+        generation = payload["assignment_generation"]
+        record = {"task_id": str(task_id), "generation": attempt,
+                  "assignment_generation": generation, "gpu_uuid": payload["gpu_uuid"],
+                  "no_process_launched": True}
+        if (not isinstance(payload["no_launch_evidence"], Mapping)
+                or canonical_digest(payload["no_launch_evidence"]) != canonical_digest(no_launch_evidence(record))):
+            raise AgentExecutionError("NO_LAUNCH_EVIDENCE_INVALID", "no-launch proof does not match execution", 409)
+        admission = payload["admission"]
+        if (not isinstance(admission, Mapping)
+                or set(admission) != {"classification", "code", "reason", "required_bytes", "total_bytes", "available_bytes"}
+                or admission.get("classification") not in {"TEMPORARILY_UNAVAILABLE", "INCOMPATIBLE", "UNKNOWN"}
+                or admission.get("code") not in {"RESOURCE_HOST_MEMORY_INSUFFICIENT", "RESOURCE_HOST_MEMORY_UNKNOWN",
+                                                  "RESOURCE_MANUAL_INVALID", "GPU_MEMORY_INSUFFICIENT", "RESOURCE_RAM_UNSAFE"}
+                or not isinstance(admission.get("reason"), str) or not admission["reason"]
+                or len(admission["reason"]) > 1000
+                or type(admission.get("required_bytes")) is not int or admission["required_bytes"] <= 0
+                or any(value is not None and (type(value) is not int or value < 0)
+                       for value in (admission.get("total_bytes"), admission.get("available_bytes")))):
+            raise AgentExecutionError("RESOURCE_WAIT_INVALID", "invalid resource admission facts", 422)
+        total, available = admission["total_bytes"], admission["available_bytes"]
+        classification = ("INCOMPATIBLE" if total and admission["required_bytes"] > total else
+                          "TEMPORARILY_UNAVAILABLE" if total and available is not None else "UNKNOWN")
+        if (classification != admission["classification"]
+                or (classification == "TEMPORARILY_UNAVAILABLE" and available >= admission["required_bytes"])
+                or (total and available is not None and available > total)):
+            raise AgentExecutionError("RESOURCE_WAIT_INVALID", "resource classification contradicts evidence", 422)
+        request_sha = canonical_digest(payload)
+        proof_sha = stop_proof_digests({"node_id": node_id}, record)[0]
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                assignment = database.execute(
+                    "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=? AND node_id=?",
+                    (str(task_id), generation, str(node_id)),
+                ).fetchone()
+                config = _json(assignment["resolved_execution_config"], {}) if assignment is not None else {}
+                receipt = config.get("resource_wait_receipt")
+                if isinstance(receipt, dict):
+                    if receipt.get("request_sha256") != request_sha:
+                        raise AgentExecutionError("RESOURCE_WAIT_CONFLICT", "resource-wait replay differs", 409)
+                    database.commit()
+                    return receipt  # No writes, including when a newer attempt owns the task.
+                selected = config.get("selected_gpu")
+                gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, Mapping) else ""
+                slots = config.get("execution_slots")
+                if (assignment is None or str(assignment["state"]) != "RELEASED"
+                        or str(assignment["release_reason"]) != "execution_started"
+                        or type(config.get("execution_attempt")) is not int
+                        or config["execution_attempt"] != attempt
+                        or type(slots) is not int or slots not in (1, 2)
+                        or gpu_uuid != payload["gpu_uuid"]
+                        or (not gpu_uuid and config.get("selected_device") != "cpu")):
+                    raise AgentExecutionError("RESOURCE_WAIT_IDENTITY_MISMATCH", "original Assignment does not match", 409)
+                task = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(task_id),)).fetchone()
+                if task is not None and int(task["attempt"]) == attempt and str(task["status"]) == "CANCEL_REQUESTED":
+                    raise AgentExecutionError("CANCELLATION_WON", "cancel-requested execution cannot be requeued", 409)
+                if (task is None or str(task["kind"]) != "TRAINING" or int(task["attempt"]) != attempt
+                        or str(task["worker_id"] or "") != _agent_worker_id(node_id)
+                        or not hmac.compare_digest(str(task["lease_token"] or ""), payload["execution_lease_token"])
+                        or not _lease_valid(task["lease_expires_at"]) or str(task["status"]) != "RUNNING"):
+                    raise AgentExecutionError("EXECUTION_FENCED", "execution cannot be requeued", 409)
+                if any(task[key] is not None for key in ("process_pid", "process_create_time", "process_command_hash")):
+                    raise AgentExecutionError("START_IDENTITY_PRESENT", "launched execution cannot be requeued", 409)
+                hold = database.execute("SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)).fetchone()
+                if slots == 2:
+                    if (hold is None or str(hold["node_id"]) != str(node_id)
+                            or int(hold["execution_attempt"]) != attempt
+                            or int(hold["assignment_generation"]) != generation
+                            or str(hold["gpu_uuid"]) != gpu_uuid
+                            or str(hold["state"]) not in {"HELD", "STOP_VERIFIED"}
+                            or (str(hold["state"]) == "HELD" and (hold["proof_type"] or hold["proof_sha256"]))
+                            or (str(hold["state"]) == "STOP_VERIFIED" and
+                                (str(hold["proof_type"]) != "NO_PROCESS_LAUNCHED" or str(hold["proof_sha256"]) != proof_sha))):
+                        raise AgentExecutionError("STOP_PROOF_REQUIRED", "original Hold/no-launch proof is invalid", 409)
+                    database.execute(
+                        "UPDATE execution_resource_holds SET state='RELEASED',proof_type='NO_PROCESS_LAUNCHED',"
+                        "proof_sha256=?,updated_at=? WHERE task_id=? AND execution_attempt=?",
+                        (proof_sha, now, str(task_id), attempt),
+                    )
+                elif hold is not None:
+                    raise AgentExecutionError("RESOURCE_WAIT_IDENTITY_MISMATCH", "unexpected Hold on single-slot execution", 409)
+                reason = f"{classification}: {admission['code']}: {admission['reason']}"
+                receipt = {
+                    "state": "REQUEUED", "task_id": str(task_id), "node_id": str(node_id),
+                    "assignment_generation": generation, "execution_attempt": attempt, "gpu_uuid": gpu_uuid,
+                    "request_sha256": request_sha, "proof_sha256": proof_sha, "proof_type": "NO_PROCESS_LAUNCHED",
+                    "hold_state": "RELEASED" if hold is not None else None, "execution_slots": slots,
+                    "resource_wait_reason": reason, "admission": dict(admission),
+                    "node_capacity": _node_capacity_signature(database.execute(
+                        "SELECT * FROM service_nodes WHERE node_id=?", (str(node_id),)).fetchone()),
+                    "retry_after": (now_dt + timedelta(seconds=min(300, 30 * 2 ** min(attempt - 1, 4)))).isoformat(),
+                }
+                config["resource_wait_receipt"] = receipt
+                database.execute(
+                    "UPDATE task_node_assignments SET resolved_execution_config=?,updated_at=? WHERE task_id=? AND generation=?",
+                    (_canonical_json(config), now, str(task_id), generation),
+                )
+                changed = database.execute(
+                    "UPDATE tasks SET status='QUEUED',stage='resource_waiting',resource_wait_reason=?,"
+                    "worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress=0,current_item=NULL,error=NULL,"
+                    "updated_at=?,finished_at=NULL WHERE task_id=? AND attempt=? AND status='RUNNING' AND worker_id=? AND lease_token=?",
+                    (reason, now, str(task_id), attempt, _agent_worker_id(node_id), payload["execution_lease_token"]),
+                ).rowcount
+                if changed != 1:
+                    raise AgentExecutionError("EXECUTION_FENCED", "resource-wait CAS lost", 409)
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return receipt
+
     def finish_execution(
         self,
         node_id: str,
@@ -3825,6 +3977,17 @@ def agent_executor_router(
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
         )
+
+    @router.post("/executions/{task_id}/resource-wait")
+    def requeue_resource_wait(node_id: str, task_id: str, payload: dict = Body(...),
+                              authorization: str | None = Header(default=None)):
+        return invoke(service().requeue_resource_wait, node_id, token(authorization), task_id, payload=payload)
+
+    @router.get("/executions/{task_id}/resource-wait")
+    def resource_wait_receipt(node_id: str, task_id: str, assignment_generation: int = Query(...),
+                              execution_generation: int = Query(...), authorization: str | None = Header(default=None)):
+        return invoke(service().resource_wait_receipt, node_id, token(authorization), task_id,
+                      assignment_generation=assignment_generation, execution_generation=execution_generation)
 
     @router.post("/executions/{task_id}/recover")
     def recover_execution(

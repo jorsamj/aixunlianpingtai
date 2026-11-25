@@ -102,9 +102,9 @@ def test_vram_and_high_utilization_are_hard_rejections(tmp_path):
 
 def test_cpu_ram_and_scratch_hard_rejections(tmp_path):
     cases = [
-        ("cpu", {"cpu_cores": 20}, node_resources(cpu=8), "CPU_INSUFFICIENT"),
-        ("ram", {"ram_bytes": 64 * 1024**3}, node_resources(memory=8 * 1024**3), "RAM_INSUFFICIENT"),
-        ("disk", {"scratch_bytes": 200 * 1024**3}, node_resources(disk=10 * 1024**3), "SCRATCH_INSUFFICIENT"),
+        ("cpu", {"cpu_cores": 20}, node_resources(cpu=8), "INCOMPATIBLE: CPU_INSUFFICIENT"),
+        ("ram", {"ram_bytes": 64 * 1024**3}, node_resources(memory=8 * 1024**3), "INCOMPATIBLE: RAM_INSUFFICIENT"),
+        ("disk", {"scratch_bytes": 200 * 1024**3}, node_resources(disk=10 * 1024**3), "INCOMPATIBLE: SCRATCH_INSUFFICIENT"),
     ]
     for name, values, resources, expected_reason in cases:
         repository, artifacts = runtime(tmp_path / name)
@@ -255,7 +255,7 @@ def test_running_released_assignment_evidence_is_counted(tmp_path):
         configs = _active_assignment_configs(database, "node-a")
         assert len(configs) == 1
         ok, reason, _ = _hard_admission(database, node, "training", {"gpu_count": 1})
-    assert not ok and reason == "GPU_INSUFFICIENT"
+    assert not ok and reason == "TEMPORARILY_UNAVAILABLE: GPU_INSUFFICIENT"
 
 
 def test_resource_requirements_reject_float_null_and_duplicate_identity(tmp_path):
@@ -293,7 +293,7 @@ def test_training_opt_in_without_physical_uuid_is_not_verified(tmp_path):
     with allocator.repository._connect() as database:
         node = database.execute("SELECT * FROM service_nodes LIMIT 1").fetchone()
         ok, reason, _ = _hard_admission(database, node, "training", {"gpu_count": 1})
-    assert not ok and reason == "GPU_IDENTITY_UNVERIFIED"
+    assert not ok and reason == "UNKNOWN: GPU_IDENTITY_UNVERIFIED"
 
 
 def test_same_cuda_index_on_different_nodes_is_resolved_by_uuid(tmp_path):
@@ -334,3 +334,32 @@ def test_concurrent_allocators_do_not_share_one_gpu(tmp_path):
         ).fetchone()[0]
     assert active == 1
 
+
+
+@pytest.mark.parametrize("kind", ["temporary", "incompatible", "unknown", "stale"])
+def test_admission_waits_with_real_reason_and_can_select_another_node(tmp_path, kind):
+    gib = 1024**3
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "waiting", requirement(ram_bytes=8 * gib, min_gpu_memory_bytes=2 * gib))
+    resources = node_resources(memory=32 * gib)
+    resources["memory"]["available_bytes"] = 1 * gib
+    if kind == "incompatible":
+        resources["memory"]["total_bytes"] = 4 * gib
+    elif kind == "unknown":
+        resources["memory"].pop("available_bytes")
+    online_node(repository, "unavailable", resources)
+    if kind == "stale":
+        with repository._connect() as database:
+            database.execute("UPDATE service_nodes SET last_heartbeat_at=? WHERE node_id='unavailable'",
+                             ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),))
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next() is None
+    task = repository.get("waiting")
+    assert task.status.value == "QUEUED" and task.stage == "resource_waiting"
+    expected = {"temporary": "TEMPORARILY_UNAVAILABLE:", "incompatible": "INCOMPATIBLE:",
+                "unknown": "UNKNOWN:", "stale": "UNKNOWN:"}[kind]
+    assert task.resource_wait_reason.startswith(expected)
+    assert task.finished_at is None and task.attempt == 0
+    online_node(repository, "compatible", node_resources(memory=32 * gib))
+    selected = allocator.assign_next()
+    assert selected is not None and selected["node_id"] == "compatible"

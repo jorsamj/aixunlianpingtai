@@ -401,6 +401,7 @@ jobs:
           tests/unit/task_runtime/test_process_control.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
+          tests/unit/test_w7a_hard_admission.py
       - name: Actual existing-ONNX CPU Runtime pilot (NO Supervisor launch)
         if: runner.os == 'Linux'
         timeout-minutes: 3

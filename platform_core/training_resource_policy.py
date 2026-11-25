@@ -145,3 +145,19 @@ def deferred_auto_reservation_bytes(
     # Shared admission stays at the batch=1 floor and therefore remains
     # conservative until runtime evidence proves headroom.
     return floor if int(active_count) > 0 else planning_budget
+
+
+def resource_shortage(code, message, *, required, total, available, error_type=RuntimeError):
+    """Preserve the original error type/code while carrying admission facts."""
+    required = max(1, int(required))
+    total = int(total) if total is not None and int(total) > 0 else None
+    available = int(available) if available is not None and int(available) >= 0 else None
+    classification = ("INCOMPATIBLE" if total is not None and required > total else
+                      "TEMPORARILY_UNAVAILABLE" if total is not None and available is not None else
+                      "UNKNOWN")
+    error = error_type(f"{code}: {message}")
+    error.resource_admission = {
+        "classification": classification, "code": str(code), "reason": str(message),
+        "required_bytes": required, "total_bytes": total, "available_bytes": available,
+    }
+    return error

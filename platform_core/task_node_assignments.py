@@ -281,7 +281,7 @@ def _online_nodes(
     result = []
     for row in rows:
         heartbeat = _utc(row["last_heartbeat_at"])
-        if heartbeat is None or (now - heartbeat).total_seconds() > ttl_seconds:
+        if heartbeat is None or not -5 <= (now - heartbeat).total_seconds() <= ttl_seconds:
             continue
         allowed = set(_loads(row["allowed_capabilities"], []))
         reported = set(_loads(row["reported_capabilities"], []))
@@ -794,6 +794,56 @@ def _reported_storage_ids(resources: Mapping[str, Any]) -> set[str]:
     return {str(value) for value in values if str(value)}
 
 
+def _node_capacity_signature(node):
+    resources = _loads(node["resource_json"], {})
+    resources = resources if isinstance(resources, Mapping) else {}
+    memory = resources.get("memory") if isinstance(resources.get("memory"), Mapping) else {}
+    gpu = resources.get("gpu") if isinstance(resources.get("gpu"), Mapping) else {}
+    items = gpu.get("gpus") if isinstance(gpu.get("gpus"), list) else []
+    return {
+        "build_id": str(node["build_id"] or ""),
+        "ram": memory.get("effective_total_bytes", memory.get("total_bytes")),
+        "gpus": sorted([str(item.get("uuid") or ""), str(item.get("memory_total_bytes"))]
+                       for item in items if isinstance(item, Mapping)),
+    }
+
+
+def _capacity_wait(required, total, available, reserved, code):
+    if not required:
+        return ""
+    if (type(total) in (int, float) and math.isfinite(total) and total > 0
+            and type(available) in (int, float) and math.isfinite(available) and available > total):
+        return f"UNKNOWN: {code}"
+    if type(total) in (int, float) and math.isfinite(total) and total > 0 and required > total:
+        return f"INCOMPATIBLE: {code}"
+    if type(available) not in (int, float) or not math.isfinite(available) or available < 0:
+        return f"UNKNOWN: {code}"
+    if required > max(0, available - reserved):
+        kind = "TEMPORARILY_UNAVAILABLE" if type(total) in (int, float) and total > 0 else "UNKNOWN"
+        return f"{kind}: {code}"
+    return ""
+
+
+def _resource_wait_backoff(database, task_id, node, now):
+    row = database.execute(
+        "SELECT resolved_execution_config FROM task_node_assignments WHERE task_id=? AND node_id=? "
+        "ORDER BY generation DESC LIMIT 1", (task_id, str(node["node_id"])),
+    ).fetchone()
+    config = _loads(row[0], {}) if row is not None else {}
+    receipt = config.get("resource_wait_receipt") or {}
+    admission = receipt.get("admission", {})
+    host_capacity = (str(admission.get("code") or "").startswith("RESOURCE_HOST_MEMORY")
+                     or admission.get("code") == "RESOURCE_RAM_UNSAFE"
+                     or (admission.get("code") == "RESOURCE_MANUAL_INVALID" and "host RAM" in str(admission.get("reason"))))
+    if (host_capacity and admission.get("classification") == "INCOMPATIBLE"
+            and receipt.get("node_capacity") == _node_capacity_signature(node)):
+        return str(receipt.get("resource_wait_reason") or "INCOMPATIBLE: execution-node capacity")
+    retry = _utc(receipt.get("retry_after"))
+    if retry is not None and retry > now:
+        return str(receipt.get("resource_wait_reason") or "TEMPORARILY_UNAVAILABLE: retry backoff")
+    return ""
+
+
 def _hard_admission(
     database,
     node,
@@ -854,15 +904,15 @@ def _hard_admission(
     cpu = resources.get("cpu") if isinstance(resources.get("cpu"), Mapping) else {}
     memory = resources.get("memory") if isinstance(resources.get("memory"), Mapping) else {}
     disk = resources.get("disk") if isinstance(resources.get("disk"), Mapping) else {}
-    available_cpu = max(0.0, float(cpu.get("logical_cores") or 0) - used_cpu)
-    available_ram = max(0, int(memory.get("available_bytes") or 0) - used_ram)
-    available_scratch = max(0, int(disk.get("free_bytes") or 0) - used_scratch)
-    if float(requirements.get("cpu_cores") or 0) > available_cpu:
-        return False, "CPU_INSUFFICIENT", None
-    if int(requirements.get("ram_bytes") or 0) > available_ram:
-        return False, "RAM_INSUFFICIENT", None
-    if int(requirements.get("scratch_bytes") or 0) > available_scratch:
-        return False, "SCRATCH_INSUFFICIENT", None
+    for required, total, available, reserved, code in (
+        (float(requirements.get("cpu_cores") or 0), cpu.get("logical_cores"), cpu.get("logical_cores"), used_cpu, "CPU_INSUFFICIENT"),
+        (int(requirements.get("ram_bytes") or 0), memory.get("effective_total_bytes", memory.get("total_bytes")),
+         memory.get("effective_available_bytes", memory.get("available_bytes")), used_ram, "RAM_INSUFFICIENT"),
+        (int(requirements.get("scratch_bytes") or 0), disk.get("total_bytes"), disk.get("free_bytes"), used_scratch, "SCRATCH_INSUFFICIENT"),
+    ):
+        reason = _capacity_wait(required, total, available, reserved, code)
+        if reason:
+            return False, reason, None
     required_storage = set(requirements.get("storage_source_ids") or ())
     if required_storage and not required_storage.issubset(_reported_storage_ids(resources)):
         return False, "STORAGE_REACHABILITY_UNVERIFIED", None
@@ -885,28 +935,33 @@ def _hard_admission(
     minimum_memory = int(requirements.get("min_gpu_memory_bytes") or 0)
     allowed_uuids = {str(value) for value in requirements.get("gpu_uuids") or ()}
     candidates = []
-    identity_available = False
+    failures = []
     for item in items:
         uuid = str(item.get("uuid") or "").strip()
         if not uuid:
+            failures.append("UNKNOWN: GPU_IDENTITY_UNVERIFIED")
             continue
-        identity_available = True
-        identity = uuid
         device = str(item.get("id") or f"cuda:{item.get('index', 0)}")
-        if identity in assigned_gpus or device in assigned_gpus:
+        if (allowed_uuids and uuid not in allowed_uuids) or (requested.startswith("cuda:") and device != requested):
+            failures.append("INCOMPATIBLE: GPU_IDENTITY_NOT_SELECTED")
             continue
-        if allowed_uuids and uuid not in allowed_uuids:
+        total_value, free_value = item.get("memory_total_bytes"), item.get("memory_free_bytes")
+        if (type(total_value) not in (int, float) or not math.isfinite(total_value) or total_value <= 0
+                or type(free_value) not in (int, float) or not math.isfinite(free_value) or free_value < 0):
+            failures.append("UNKNOWN: GPU_REPORT_MISSING")
             continue
-        if requested.startswith("cuda:") and device != requested:
+        reason = _capacity_wait(max(1, minimum_memory), total_value, free_value, 0, "GPU_INSUFFICIENT")
+        if reason:
+            failures.append(reason)
             continue
-        if int(item.get("memory_free_bytes") or 0) < minimum_memory:
-            continue
-        if not _gpu_is_training_candidate(item):
+        if uuid in assigned_gpus or device in assigned_gpus or not _gpu_is_training_candidate(item):
+            failures.append("TEMPORARILY_UNAVAILABLE: GPU_INSUFFICIENT")
             continue
         candidates.append(item)
     if not candidates:
-        return False, ("GPU_IDENTITY_UNVERIFIED" if items and not identity_available
-                       else "GPU_INSUFFICIENT"), None
+        reason = next((value for value in failures if value.startswith("UNKNOWN:")), None)
+        reason = reason or next((value for value in failures if value.startswith("TEMPORARILY_UNAVAILABLE:")), None)
+        return False, reason or (failures[0] if failures else "UNKNOWN: GPU_REPORT_MISSING"), None
     best = max(candidates, key=_gpu_rank_value)
     return True, "OK", {
         "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
@@ -1412,6 +1467,8 @@ class CentralTaskAllocator:
                     required_connection_mode=required_connection_mode,
                 )
                 if not nodes:
+                    database.execute("UPDATE tasks SET stage='resource_waiting',resource_wait_reason=? WHERE task_id=? AND status='QUEUED'",
+                                     ("UNKNOWN: no online compatible resource report", task.task_id))
                     continue
                 requested_node_id = task_requested_node_id(task, self.artifacts)
                 if requested_node_id:
@@ -1423,30 +1480,24 @@ class CentralTaskAllocator:
                         # Manual node selection is strict affinity. Never spill a
                         # requested task onto another machine when that node is
                         # offline, busy with incompatible work, or loses capability.
+                        database.execute("UPDATE tasks SET stage='resource_waiting',resource_wait_reason=? WHERE task_id=? AND status='QUEUED'",
+                                         ("UNKNOWN: selected node has no valid online report", task.task_id))
                         continue
-                if capability == "training":
-                    gpu_nodes = []
-                    for candidate in nodes:
-                        resources = _loads(candidate["resource_json"], {})
-                        gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
-                        items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
-                        if any(
-                            isinstance(item, Mapping)
-                            and int(item.get("memory_total_bytes") or 0) > 0
-                            for item in (items if isinstance(items, list) else [])
-                        ):
-                            gpu_nodes.append(candidate)
-                    if gpu_nodes:
-                        nodes = gpu_nodes
                 requested_device = (
                     _requested_training_device(task, self.artifacts)
                     if capability == "training"
                     else "auto"
                 )
                 ranked = []
+                waiting_reasons = []
                 for node in nodes:
+                    wait = _resource_wait_backoff(database, task.task_id, node, current)
+                    if wait:
+                        waiting_reasons.append(wait)
+                        continue
                     active = _node_active_work_count(database, str(node["node_id"]))
                     if agent_only and active >= _agent_execution_slots(node):
+                        waiting_reasons.append("TEMPORARILY_UNAVAILABLE: node execution slots occupied")
                         continue
                     selected_gpu = None
                     if requirements is not None:
@@ -1455,6 +1506,7 @@ class CentralTaskAllocator:
                             requested_device=requested_device,
                         )
                         if not admitted:
+                            waiting_reasons.append(reason if ":" in reason else f"UNKNOWN: {reason}")
                             continue
                     elif capability == "training":
                         assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))
@@ -1467,6 +1519,7 @@ class CentralTaskAllocator:
                         # heartbeats. Do not hand the same physical GPU to a
                         # second task while its prior assignment is active.
                         if selected_gpu is None:
+                            waiting_reasons.append("TEMPORARILY_UNAVAILABLE: no free eligible GPU; capacity not proven incompatible")
                             continue
                     if capability == "training" and selected_gpu is None:
                         continue
@@ -1478,6 +1531,13 @@ class CentralTaskAllocator:
                     )
                     ranked.append((score, node_id, node, selected_gpu, active))
                 if not ranked:
+                    # No terminal blocking from a filtered/offline subset. A
+                    # future heartbeat or another legal node can still admit it.
+                    summary = next((reason for reason in waiting_reasons if reason.startswith("UNKNOWN:")), None)
+                    summary = summary or next((reason for reason in waiting_reasons if reason.startswith("TEMPORARILY_UNAVAILABLE:")), None)
+                    summary = summary or (waiting_reasons[0] if waiting_reasons else "UNKNOWN: resource admission unavailable")
+                    database.execute("UPDATE tasks SET stage='resource_waiting',resource_wait_reason=? WHERE task_id=? AND status='QUEUED'",
+                                     (summary, task.task_id))
                     continue
                 if capability == "cleaning":
                     # Cleaning is background CPU work: an idle eligible node is
@@ -1523,6 +1583,11 @@ class CentralTaskAllocator:
                 VALUES (?,?,?,?, 'ASSIGNED',?,?,?)
                 """,
                 (task.task_id, generation, str(node["node_id"]), capability, now, now, _dumps(resolved)),
+            )
+            database.execute(
+                "UPDATE tasks SET stage='queued',resource_wait_reason=NULL,updated_at=? "
+                "WHERE task_id=? AND status='QUEUED' AND stage='resource_waiting'",
+                (now, task.task_id),
             )
             row = database.execute(
                 "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=?",

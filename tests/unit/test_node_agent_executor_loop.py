@@ -846,3 +846,42 @@ def test_concurrent_slot_reaping_is_single_flight_and_idempotent():
     assert confirmations == ["a"]
     assert loop._slots.active() == ()
     loop._slots.shutdown(0.1)
+
+
+def test_requeued_dual_slot_releases_only_with_exact_persisted_no_launch_receipt():
+    from types import SimpleNamespace
+    from platform_core.node_agent_settlement import canonical_digest, no_launch_evidence, stop_proof_digests
+
+    from dataclasses import replace
+    current = replace(lease("waiting", "TRAINING"), assignment={
+        "generation": 2, "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}},
+    })
+    request = {"execution_generation": 1, "assignment_generation": 2, "gpu_uuid": "GPU-A"}
+    record = {"task_id": "waiting", "generation": 1, "assignment_generation": 2,
+              "gpu_uuid": "GPU-A", "no_process_launched": True}
+    request["no_launch_evidence"] = no_launch_evidence(record)
+    receipt = {"state": "REQUEUED", "task_id": "waiting", "node_id": "node-1",
+               "execution_attempt": 1, "assignment_generation": 2, "gpu_uuid": "GPU-A",
+               "request_sha256": canonical_digest(request), "proof_type": "NO_PROCESS_LAUNCHED",
+               "proof_sha256": stop_proof_digests({"node_id": "node-1"}, record)[0], "hold_state": "RELEASED", "execution_slots": 2}
+
+    class Client:
+        node_id = "node-1"
+        def resource_wait_receipt(self, *args, **kwargs):
+            return dict(receipt)
+
+    loop = NodeAgentExecutorLoop(Client(), object(), capabilities=["training"], max_slots=2,
+                                 slot_runner_factory=lambda *_args: object(), slot_controller=object())
+    slot = loop._slots.reserve(SimpleNamespace(task_id="waiting", generation=2), gpu_uuid="GPU-A")
+    loop._slots.mark_started(slot, current)
+    loop._slots.start_worker(slot, lambda *_args: SimpleNamespace(status="QUEUED"))
+    loop._slots.wait(5)
+    loop._slot_runners[(slot.task_id, slot.generation)] = SimpleNamespace(_resource_wait_request_body=request)
+    true_digest = receipt["proof_sha256"]
+    receipt["proof_sha256"] = "0" * 64
+    loop._reap_dual_slots()
+    assert not slot.released
+    receipt["proof_sha256"] = true_digest
+    loop._reap_dual_slots()
+    assert slot.released
+    assert loop._slots.active() == ()

@@ -150,6 +150,11 @@ def collect_local_snapshot(
     data_dir: str | Path | None = None,
     runtime_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from .training_metrics import host_resource_snapshot
+
+    host_memory = host_resource_snapshot()
+    totals = [value for value in (host_memory["host_total_bytes"], host_memory["cgroup_limit_bytes"])
+              if value is not None and value > 0]
     memory = psutil.virtual_memory()
     disk_path = _disk_root(data_dir)
     disk = psutil.disk_usage(str(disk_path))
@@ -194,6 +199,9 @@ def collect_local_snapshot(
             "memory": {
                 "total_bytes": int(memory.total),
                 "available_bytes": int(memory.available),
+                "effective_total_bytes": min(totals) if totals else None,
+                "effective_available_bytes": host_memory["effective_available_bytes"],
+                "sampled_at": host_memory["sampled_at"],
                 "used_bytes": int(memory.used),
                 "usage_percent": float(memory.percent),
             },

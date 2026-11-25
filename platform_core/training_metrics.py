@@ -20,6 +20,7 @@ from .annotations import atomic_write_json
 from .gpu_resources import sample_gpus
 from .training_resource_policy import (
     GIB,
+    resource_shortage,
     model_memory_components,
     precision_policy,
     resource_profile_config,
@@ -85,7 +86,7 @@ def host_resource_snapshot():
             cgroup_current = _read_positive_int(scope / "memory.current")
             if cgroup_limit is not None and cgroup_current is not None:
                 cgroup_headroom = max(0, cgroup_limit - cgroup_current)
-                if not effective or cgroup_headroom < effective:
+                if available is None or cgroup_headroom < effective:
                     effective = cgroup_headroom
                     source = "cgroup_v2"
         except OSError:
@@ -97,7 +98,8 @@ def host_resource_snapshot():
         "cgroup_limit_bytes": cgroup_limit,
         "cgroup_current_bytes": cgroup_current,
         "cgroup_headroom_bytes": cgroup_headroom,
-        "effective_available_bytes": max(0, int(effective or 0)),
+        "effective_available_bytes": (None if available is None and cgroup_headroom is None
+                                      else max(0, int(effective or 0))),
         "memory_source": source,
         "sampled_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -116,8 +118,6 @@ def plan_host_training_resources(
 ):
     """Jointly bound Batch/DataLoader memory without hard-coded 32/2 values."""
     available = max(0, int(snapshot.get("effective_available_bytes") or 0))
-    if available <= 0:
-        raise RuntimeError("RESOURCE_HOST_MEMORY_UNKNOWN: execution-node RAM headroom is unavailable")
     concurrency = max(1, int(concurrency or 1))
     profile_fraction = _HOST_MEMORY_FRACTIONS[profile]
     budget = int((available / concurrency) * profile_fraction)
@@ -151,11 +151,15 @@ def plan_host_training_resources(
         total = trainer_base + cache_bytes + batch_workspace + per_worker * candidate_workers
         return total, batch_workspace, per_worker
 
+    totals = [int(value) for value in (snapshot.get("host_total_bytes"), snapshot.get("cgroup_limit_bytes"))
+              if value is not None and int(value) > 0]
+    capacity = int(min(totals) * profile_fraction) if totals else None
+    manual = str(request.get("resource_strategy") or "auto") == "manual"
     selected_batch = max(1, int(batch))
     selected_workers = max(0, int(workers))
     estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
     requested_estimated = estimated
-    if prefer_loader_parallelism and selected_workers > 0 and estimated > budget:
+    if not manual and prefer_loader_parallelism and selected_workers > 0 and estimated > budget:
         # A VRAM-maximized batch can starve the input pipeline: the old host
         # planner discarded all workers before considering a smaller batch.
         # Preserve a modest, CPU-dependent loader lane when it fits the same
@@ -171,15 +175,20 @@ def plan_host_training_resources(
             while selected_workers < workers and estimate(selected_batch, selected_workers + 1)[0] <= budget:
                 selected_workers += 1
             estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
-    while selected_workers > 0 and estimated > budget:
+    while not manual and selected_workers > 0 and estimated > budget:
         selected_workers -= 1
         estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
-    while selected_batch > 1 and estimated > budget:
+    while not manual and selected_batch > 1 and estimated > budget:
         selected_batch -= 1
         estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
     if estimated > budget:
-        raise RuntimeError(
-            "RESOURCE_HOST_MEMORY_INSUFFICIENT: batch=1/workers=0 exceeds execution-node RAM budget"
+        code = ("RESOURCE_HOST_MEMORY_UNKNOWN" if snapshot.get("effective_available_bytes") is None else
+                "RESOURCE_MANUAL_INVALID" if manual else "RESOURCE_HOST_MEMORY_INSUFFICIENT")
+        raise resource_shortage(
+            code, "host RAM budget exceeded" if manual else "batch=1/workers=0 exceeds execution-node RAM budget",
+            required=estimated, total=capacity,
+            available=budget if snapshot.get("effective_available_bytes") is not None else None,
+            error_type=ValueError if manual else RuntimeError,
         )
     return {
         "batch": selected_batch,
@@ -341,7 +350,7 @@ def resolve_resources(request, context, model, torch):
 
     host_snapshot = host_resource_snapshot()
     cores = int(host_snapshot["cpu_cores"])
-    ram = int(host_snapshot["effective_available_bytes"])
+    ram = int(host_snapshot["effective_available_bytes"] or 0)
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
     cpu_budget = max(1, cores // concurrency)
     dataset_bytes = max(0, int(context.get("dataset_bytes") or 0))
@@ -373,7 +382,16 @@ def resolve_resources(request, context, model, torch):
         if request.get("device") == "cpu" and workers != 0:
             raise ValueError("RESOURCE_MANUAL_INVALID: this Ultralytics CPU runtime requires workers=0")
         if cache == "ram" and (decoded is None or decoded <= 0 or decoded * 3 > cache_budget):
-            raise ValueError("RESOURCE_RAM_UNSAFE: decoded dataset size or available RAM does not support requested cache")
+            if decoded is None or decoded <= 0:
+                raise ValueError("RESOURCE_RAM_UNSAFE: decoded dataset size or available RAM does not support requested cache")
+            totals = [int(value) for value in (host_snapshot.get("host_total_bytes"), host_snapshot.get("cgroup_limit_bytes"))
+                      if value is not None and int(value) > 0]
+            raise resource_shortage(
+                "RESOURCE_RAM_UNSAFE", "decoded dataset size or available RAM does not support requested cache",
+                required=int(decoded * 3), total=int(min(totals) * float(profile_cfg["ram_fraction"])) if totals else None,
+                available=cache_budget if host_snapshot.get("effective_available_bytes") is not None else None,
+                error_type=ValueError,
+            )
         if cache == "disk" and (decoded is None or disk_need + 2 * GIB > disk):
             raise ValueError("RESOURCE_DISK_UNSAFE: insufficient known disk headroom for requested cache")
         reasons.append("Validated manual values; incompatible runtime changes fail explicitly")
@@ -459,16 +477,24 @@ def resolve_resources(request, context, model, torch):
                 (budget - fixed) // max(1, per_image),
             )
             if maximum < 1:
-                raise RuntimeError("GPU_MEMORY_INSUFFICIENT: batch=1 exceeds adaptive budget; no CPU fallback")
+                raise resource_shortage(
+                    "GPU_MEMORY_INSUFFICIENT", "batch=1 exceeds adaptive budget; no CPU fallback",
+                    required=fixed + per_image,
+                    total=int(max(0, total - reserve_floor) * float(profile_cfg["gpu_fraction"])),
+                    available=budget,
+                )
             batch = int(maximum)
             reasons.append(
                 f"Adaptive batch capacity profile={profile}; gpu_fraction={profile_cfg['gpu_fraction']:.2f}; "
                 f"candidate_batch={batch}"
             )
         else:
-            if fixed + requested_batch * per_image > budget and budget > 0:
-                raise ValueError(
-                    f"RESOURCE_MANUAL_INVALID: requested batch={requested_batch} exceeds current GPU budget"
+            if fixed + requested_batch * per_image > budget:
+                raise resource_shortage(
+                    "RESOURCE_MANUAL_INVALID", f"requested batch={requested_batch} exceeds current GPU budget",
+                    required=fixed + requested_batch * per_image,
+                    total=int(max(0, total - reserve_floor) * float(profile_cfg["gpu_fraction"])),
+                    available=budget, error_type=ValueError,
                 )
             batch = requested_batch
     elif strategy == "auto":
@@ -1018,7 +1044,13 @@ def resource_resolution_cli(argv=None):
     from ultralytics import YOLO
 
     model = YOLO(str(args.model))
-    resolved = resolve_resources(request, context, model, torch)
+    try:
+        resolved = resolve_resources(request, context, model, torch)
+    except (RuntimeError, ValueError) as error:
+        admission = getattr(error, "resource_admission", None)
+        if admission is not None:
+            atomic_write_json(Path(args.output), {"resource_admission": admission})
+        raise
     atomic_write_json(Path(args.output), resolved)
     return 0
 
