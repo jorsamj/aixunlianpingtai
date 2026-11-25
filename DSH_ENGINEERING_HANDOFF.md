@@ -336,7 +336,7 @@ W8/M7 双槽故障隔离（`56b22658`）、W15/W16 单槽候选证据（`ec1199f
 ### 9.14 第四轮（T0–T8）交付摘要（2026-11-24 晚）
 
 起始 HEAD `32a260add5762c238ddfa25ef6a72e8c9f6605e4`（=远端 HEAD），VERSION `42.24.592`，
-四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**
+四份受保护文档 SHA256 全部匹配。**代码候选 SHA：`7ee407d476a50582333a15bc3b66f204343d908d`**
 （本文件与候选文档的提交仅改文档，不改变代码候选身份）。
 
 环境说明（新会话遇到，已解决）：本机 DNS 把 `github.com` 解析到不可达地址，`git` 直连
@@ -380,7 +380,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.15 第五轮（M0–M5）交付摘要（2026-11-24 20:1x +08）
 
-起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**
+起始 HEAD `63cfa5b4`（=远端），本轮**代码候选 SHA：`7ee407d476a50582333a15bc3b66f204343d908d`**
 （`63cfa5b4` 之后仅文档提交）。执行纪律：默认单主 Agent、不建子 Agent、本地仅轻量检查
 （`py_compile`/`git diff --check`/`ast`），重型验证全部交 CI。
 
@@ -394,7 +394,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.16 第六轮（P0 安全收口 + T7）交付摘要（2026-11-24 21:xx +08）
 
-起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**。
+起始 HEAD `23227a50`（=远端）。**代码候选 SHA：`7ee407d476a50582333a15bc3b66f204343d908d`**。
 纪律：单主 Agent + 至多 1 个活跃子 Agent（仅 T7 迁移使用），本地仅 `py_compile`/`import app`/
 定向用例/守卫 grep，无重型测试。
 
@@ -405,7 +405,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.17 第七轮（真实 PG CI + 算法访问收口）交付摘要（2026-11-24 22:xx +08）
 
-起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**。
+起始 HEAD `2b79a74a`（=远端）。**代码候选 SHA：`7ee407d476a50582333a15bc3b66f204343d908d`**。
 本轮按序推进第 1 项（真实 PG CI）与第 3 项（T8 业务接线）的可独立部分；本地仅
 `py_compile` / `import app` / pytest `--collect-only` / 守卫 grep，未执行任何 PG、集成或重型测试。
 
@@ -415,7 +415,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.18 第八轮（单一算法事实源 + PG CI 修复）交付摘要（2026-11-24 23:xx +08）
 
-起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`**。
+起始 HEAD `13111ebc`（=远端）。**代码候选 SHA：`7ee407d476a50582333a15bc3b66f204343d908d`**。
 
 | 提交 | 内容 |
 |---|---|
@@ -452,7 +452,7 @@ https 失败，而 api.github.com 正常。已用 `.dsh-local/gh_connect_proxy.p
 
 ### 9.19 第九轮（PG 投影去遮蔽 + 准入合同）— 2026-11-24 23:xx +08
 
-代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
+代码候选：`7ee407d476a50582333a15bc3b66f204343d908d`。真实缺陷两项：`algorithm_postgres_store.py` 中 `bootstrap_summary`/`training_display_refs`
 被类尾同名占位方法**覆盖**（能力断言与实际不符），已删除占位；`algorithm_migration_cli.py` 调用
 `cutover_transition` 未导入（cutover-admit 必 NameError），已补 import 并复核调用链。CI 合同：
 parity 测试改为先按真实生产流程做隔离 admission 再打开 Provider（不取消写入准入、不加绕过开关）；
@@ -466,7 +466,7 @@ parity 测试改为先按真实生产流程做隔离 admission 再打开 Provide
 分页/筛选/排序/`filter_options` 与 revision 同快照。PG 正式切换保持关闭。
 ### 9.20 第九轮补记（PG 展示查询 6/7）
 
-代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。本轮在 9.19 之后补齐四个 `asset_*` 展示查询的真实 PG 实现
+代码候选：`7ee407d476a50582333a15bc3b66f204343d908d`。本轮在 9.19 之后补齐四个 `asset_*` 展示查询的真实 PG 实现
 （`asset_algorithm_basic`/`asset_versions`/`asset_version`/`asset_algorithms`），复用
 `model_asset_views.version_record` 纯投影与 `_version_columns_sql` 的 JSONB 列合同；
 联表统一 `(project_id, algorithm_id)`，分页/筛选/排序/`filter_options`/revision 同快照。
@@ -481,7 +481,7 @@ parity 测试改为先按真实生产流程做隔离 admission 再打开 Provide
 PG 正式切换继续关闭。
 ### 9.21 第十轮（PG 七个展示方法收口 + 训练报告接 Provider）
 
-代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。七个 `PRESENTATION_OPERATIONS` **全部具备真实 PG 实现**（能力缺口为空，
+代码候选：`7ee407d476a50582333a15bc3b66f204343d908d`。七个 `PRESENTATION_OPERATIONS` **全部具备真实 PG 实现**（能力缺口为空，
 `capabilities()` = CORE ∪ 七个），并修复审计指出的六项缺陷：`admission_switch_lock` 未导入、
 `capabilities()` 与实际不符、`self._json_object` 未定义、`#>>` 破坏数值类型、
 `training_display_refs` 把计数转成字符串、多语句读取无一致性快照。
@@ -497,7 +497,7 @@ Provider 中立的 `is_initialized()`。新增真实行为测试
 资源 requeue、离线交付；PG 正式切换保持关闭。
 ### 9.22 第十一轮（PG 展示合同缺陷修复；维护窗口未完成）
 
-代码候选：`9e76dddd7af830ac135765f7a240d4e7f3cb5d56`。本轮完成第 1、2 项：CI 两处断言与能力合同/双算法 fixture 对齐（保留
+代码候选：`7ee407d476a50582333a15bc3b66f204343d908d`。本轮完成第 1、2 项：CI 两处断言与能力合同/双算法 fixture 对齐（保留
 single-writer、旧 SQLite 拒写、重复切换等安全断言；七个方法改为按 id 定位，避免一条断言失败
 掩盖其余六个方法的证据）；`library_algorithms` 的 `ready` CASE 统一为 BOOLEAN 并用
 `IS TRUE/IS FALSE` 过滤；mAP50 恢复“数值或合法数值字符串 + 八来源优先级 + 排除 NaN/Infinity +
@@ -515,3 +515,24 @@ marker 以让 SQLite 侧共同阻断；还需 rollback 的 `revoked_at` 完成�
 **第 4 项（正式读写调用方收口）同样未完成**：`platform_core/algorithms.py` 仍有多处直接构造
 `AlgorithmSqlStore`，`training_report_api` 的 `_list_algorithms_internal` 历史兼容查询仍走 app 层
 原实现，需要统一到 Provider。
+### 9.23 第十二轮（A：正式调用方收口；B：维护窗口/安全切换/回滚）
+
+代码候选：`7ee407d476a50582333a15bc3b66f204343d908d`。
+
+**A. U1 正式调用方收口（CODE_IMPLEMENTED）**
+- `platform_core/algorithms.py` 13 个业务函数全部改走 `_algorithm_repository(path)`（默认 SQLite、PG 仅准入后启用、不静默回退）。
+- 另收口 7 个正式调用方：`external_algorithm_platform`（外部同步/读）、`external_algorithm_cleanup`、`negative_pool_api`、`training_workspace_lifecycle`、`smart_material_audit/{api,evidence}`、`task_runtime/query_api`。
+- **provider/tooling 之外已无任何 `AlgorithmSqlStore(` 直接构造**（可 grep 复核）。
+- 写入权限不再靠方法名前缀：adapter 与受控 store 共用显式 `is_write_operation()`（`WRITE_OPERATIONS` 11 项；不在已知只读集合内的一律视为写，fail-closed）。
+
+**B. 维护窗口/安全切换/回滚（CODE_IMPLEMENTED）**
+`cutover_state.evidence` 持久阶段：`QUIESCING → SOURCE_FROZEN → VERIFIED → SWITCHING → POSTGRES_ACTIVE`，回滚镜像 `ROLLBACK_QUIESCING → ROLLBACK_APPLIED`，另有 settled `SQLITE_ACTIVE`。
+- 唯一 operation_id 绑定 project/source/target/generation/snapshot_digest/verification_digest；每步校验 phase + operation。
+- marker 原子发布（temp+fsync+replace，switch.lock 内），拒绝覆盖他人未完成操作；仅在自身 operation 且本地 admission 证明权威状态匹配后清理。
+- 阶段持久化（非事务级），崩溃后两侧都拒写；PG 写入仅允许 `steady/switched/POSTGRES_ACTIVE`。
+- `rollback` 先 `ROLLBACK_QUIESCING` 阻断 PG，再复核 digest、恢复 SQLite、revoke，要求 `revoked_at` 且权威回到 sqlite 才落 `ROLLBACK_APPLIED`；PG 有新写入时按既有 `TARGET_HAS_NO_NEW_WRITES` 明确拒绝。
+- `resume_maintenance()` 为可重复恢复入口（CLI `maintenance-status`），未完成阶段只报告不清理。
+- CLI `cutover-admit` 已改为整窗执行；准入被拒时按**持久真实权威**回退阶段（PG 已权威→POSTGRES_ACTIVE，否则 SQLITE_ACTIVE）并释放 marker，避免把未变更项目永久锁死。
+
+**CI**：`Algorithm PostgreSQL Runtime` 新增 3 条真实 PG 合同（窗口双写阻断/并发窗口与旧 generation 拒绝、未完成窗口 resume 不清理、PG 新写入后拒绝回滚）。全部 `CI_PENDING`，未轮询。
+**未验证**：真实 PG 下的窗口/回滚执行结果、并发压力、生产切换；`CUTOVER_NOT_VERIFIED` 保持。
