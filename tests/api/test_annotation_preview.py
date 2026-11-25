@@ -2,6 +2,7 @@
 from platform_core.ai_annotation_service import AiAnnotationService
 import app as app_module
 from platform_core import annotation_runtime, annotation_task_service
+from platform_core import ai_annotation_service
 from platform_core.task_runtime import ArtifactStore, TaskRepository
 
 
@@ -131,7 +132,7 @@ def test_frozen_annotation_selection_resolves_at_creation_and_honors_exclusions(
     frozen=client.post(f'/api/v60/projects/{project_id}/annotation-selections',json={}).json()
     monkeypatch.setattr(app_module,'_v35_model_items',lambda:[])
     monkeypatch.setattr(app_module,'_v35_prompt_items',lambda:[])
-    monkeypatch.setattr(app_module,'prepare_annotation_request',lambda root,project,request,**kwargs:{**request,'model_config_id':'mock'})
+    monkeypatch.setattr(ai_annotation_service,'prepare_annotation_request',lambda root,project,request,**kwargs:{**request,'model_config_id':'mock'})
     payload=app_module.AnnotationTaskCreateReq(image_ids=[],selection_ref=frozen['selection_ref'],labels_text='fire')
     request,_=app_module._annotation_create_payload(project_id,payload)
     assert request['image_ids']==[image['id']]

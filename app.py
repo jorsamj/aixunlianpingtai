@@ -14409,7 +14409,7 @@ app.include_router(create_conversion_management_router_2(_conversion_management_
 
 
 def v39_list_deploy_resources(detect_missing: bool=True):
-    return _conversion_management_service().v39_list_deploy_resources(detect_missing)
+    return _conversion_management_service().v39_list_deploy_resources(detect_missing=detect_missing)
 
 
 def v39_create_deploy_resource(payload: DeployResourceReq):

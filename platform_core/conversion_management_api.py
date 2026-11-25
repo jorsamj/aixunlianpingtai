@@ -27,7 +27,7 @@ def create_conversion_management_router_2(service: Callable[[], ConversionManage
 
     @router.get('/api/v39/deploy/resources')
     def v39_list_deploy_resources(detect_missing: bool=True):
-        return service().v39_list_deploy_resources(detect_missing)
+        return service().v39_list_deploy_resources(detect_missing=detect_missing)
 
     @router.post('/api/v39/deploy/resources')
     def v39_create_deploy_resource(payload: DeployResourceReq):

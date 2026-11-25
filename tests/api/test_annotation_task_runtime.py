@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 import app as app_module
+from platform_core import ai_annotation_service
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
@@ -1177,7 +1178,7 @@ def test_annotation_create_payload_uses_bounded_material_lookup_and_shared_runti
 
     monkeypatch.setattr(app_module, "get_project", lambda _project_id: project)
     monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
-    monkeypatch.setattr(app_module, "prepare_annotation_request", fake_prepare)
+    monkeypatch.setattr(ai_annotation_service, "prepare_annotation_request", fake_prepare)
     monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
         "id": "model-1",
         "name": "Scale Model",
@@ -1243,7 +1244,7 @@ def test_strict_supplement_creation_freezes_1200_images_in_bounded_gt_pages(monk
     monkeypatch.setattr(app_module, "read_annotations_many", read_gt)
     monkeypatch.setattr(app_module, "_v35_model_items", lambda: [])
     monkeypatch.setattr(app_module, "_v35_prompt_items", lambda: [])
-    monkeypatch.setattr(app_module, "prepare_annotation_request", lambda *_args, **kwargs: {
+    monkeypatch.setattr(ai_annotation_service, "prepare_annotation_request", lambda *_args, **kwargs: {
         **_args[2], "labels": ["fire", "smoke"], "model_config_id": "model-1",
     })
     frozen, provider = app_module._annotation_create_payload("synthetic", app_module.AnnotationTaskCreateReq(
@@ -1405,14 +1406,23 @@ def test_annotation_task_rejects_raw_provider_id_without_model_config(
 
 
 def test_canonical_annotation_create_uses_shared_model_snapshot_owner():
+    import inspect
+    from platform_core.ai_annotation_service import AiAnnotationService
+
+    block = inspect.getsource(AiAnnotationService._annotation_create_payload)
     source = Path(app_module.__file__).read_text(encoding="utf-8")
-    start = source.index("def _annotation_create_payload(")
-    end = source.index('@app.post("/api/v60/projects/{project_id}/annotation-tasks")', start)
-    block = source[start:end]
 
     assert "prepare_annotation_request(" in block
     assert "_v35_resolve_model_and_prompt" not in block
     assert "_annotation_runtime_provider" not in source
+    assert "_annotation_runtime_provider" not in block
+    api_source = Path(ai_annotation_service.__file__).with_name("ai_annotation_api.py").read_text(encoding="utf-8")
+    assert "return service().create_annotation_task(project_id, payload)" in api_source
+    assert "self.dependencies.get_project(project_id)" in block
+    assert "payload.selection_ref" in block
+    assert "payload.excluded_image_ids" in block
+    assert "range(0, len(image_ids), 500)" in block
+    assert 'self.dependencies.read_annotations_many(project_id, chunk)' in block
 
 
 

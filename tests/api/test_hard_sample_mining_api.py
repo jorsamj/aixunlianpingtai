@@ -1,4 +1,5 @@
 from __future__ import annotations
+import platform_core.training_evaluation_service as evaluation_owner
 from platform_core.training_evaluation_service import TrainingEvaluationService
 from platform_core.ai_annotation_service import AiAnnotationService
 
@@ -37,14 +38,14 @@ def test_p2_reviewed_mining_preview_adoption_reuses_original_candidate_set_and_p
     monkeypatch.setattr(TrainingEvaluationService, '_advanced_evaluation_context', staticmethod(lambda *a: (version, {'model_sha256': 'f' * 64})))
     monkeypatch.setattr(AiAnnotationService, '_require_annotation_review_task', staticmethod(lambda *a: task))
     monkeypatch.setattr(platform, 'shared_task_artifacts', lambda: artifacts)
-    monkeypatch.setattr(platform, 'AnnotationRepository', Annotations)
+    monkeypatch.setattr(evaluation_owner, 'AnnotationRepository', Annotations)
     action = {'status': 'confirmed', 'action': 'supplement_data', 'action_id': 'e' * 64,
               'source': {'algorithm_id': 'algo', 'version_id': 'v1'}}
     monkeypatch.setattr(TrainingEvaluationService, '_supplement_data_action', staticmethod(lambda *a: ({'id': 'algo'}, version, action)))
     monkeypatch.setattr(platform, 'algorithms_file', lambda _: project / 'algorithms.json')
     def update(path, algorithm_id, version_id, patch, **kwargs):
         version.update(patch);return dict(version)
-    monkeypatch.setattr(platform, 'update_algorithm_version', update)
+    monkeypatch.setattr(evaluation_owner, 'update_algorithm_version', update)
     preview = platform.preview_reviewed_mining('project', 'algo', 'v1', task_id)
     assert preview['items'][0]['eligible'] is True
     assert not (project / 'online_feedback.sqlite3').exists()
@@ -115,10 +116,15 @@ def _setup(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(platform, "shared_task_repository", lambda: Repository())
     monkeypatch.setattr(platform, "shared_task_artifacts", lambda: Artifacts())
     monkeypatch.setattr(platform, "_storage_source_fence", lambda: nullcontext())
-    monkeypatch.setattr(AiAnnotationService, "public_annotation_task", staticmethod(lambda record: {
-        "id": record.task_id, "status": record.status.value,
-        "kind": record.kind.value, "required_capabilities": record.required_capabilities,
-    }))
+    def public_task(record, *, summary=None, **projection_options):
+        result = {
+            "id": record.task_id, "status": record.status.value,
+            "kind": record.kind.value, "required_capabilities": record.required_capabilities,
+        }
+        if summary is not None:
+            result["summary"] = dict(summary)
+        return result
+    monkeypatch.setattr(AiAnnotationService, "public_annotation_task", staticmethod(public_task))
     return platform, project, rows, tasks, payloads
 
 

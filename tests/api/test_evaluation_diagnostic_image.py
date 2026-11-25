@@ -1,4 +1,5 @@
 from __future__ import annotations
+import platform_core.training_evaluation_service as evaluation_owner
 from platform_core.training_evaluation_service import TrainingEvaluationService
 
 import json
@@ -189,7 +190,7 @@ def _setup(monkeypatch, tmp_path: Path):
         def get_many(self, ids): return [row for row in rows if row["id"] in ids]
         def get_by_content_sha256(self, digest):
             return next((row for row in rows if row['content_sha256'] == digest), None)
-    monkeypatch.setattr(platform, "MaterialRepository", Repository)
+    monkeypatch.setattr(evaluation_owner, "MaterialRepository", Repository)
     class Manager:
         def material(self, image_id):
             assert image_id == "test-image"
@@ -329,7 +330,7 @@ def test_legacy_filename_stem_never_overrides_unique_frozen_stored_name(monkeypa
         def materialize(self, material, *, read_only=False):
             return SimpleNamespace(path=wrong if material['id'] == 'foo' else expected)
 
-    monkeypatch.setattr(platform, 'MaterialRepository', Repository)
+    monkeypatch.setattr(evaluation_owner, 'MaterialRepository', Repository)
     monkeypatch.setattr(platform, 'storage_manager', lambda _: Manager())
     response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'foo.jpg')
     assert Path(response.path).read_bytes() == expected.read_bytes()
@@ -471,7 +472,7 @@ def test_missing_original_id_can_resolve_hash_identical_migrated_object(monkeypa
     platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
     version['evaluation']['error_samples'][0].update(image='test-image.jpg', image_id='test-image')
     migrated = {**rows.pop(0), 'id': 'migrated-id', 'stored_name': 'another.jpg', 'storage_source_id': 'archive-s3'}
-    monkeypatch.setattr(platform.MaterialRepository, 'get_by_content_sha256', lambda self, digest: migrated)
+    monkeypatch.setattr(evaluation_owner.MaterialRepository, 'get_by_content_sha256', lambda self, digest: migrated)
     seen = []
     class Manager:
         def material(self, identity):
@@ -568,13 +569,13 @@ def test_20k_named_frozen_test_preview_only_fetches_one_material(monkeypatch, tm
             "content_sha256": "d" * 64,
         })
     snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
-    original = platform.MaterialRepository
+    original = evaluation_owner.MaterialRepository
     read_ids = []
     class ObservedRepository(original):
         def get_many(self, ids):
             read_ids.append(tuple(ids))
             return super().get_many(ids)
-    monkeypatch.setattr(platform, "MaterialRepository", ObservedRepository)
+    monkeypatch.setattr(evaluation_owner, "MaterialRepository", ObservedRepository)
 
     result = platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
     assert Path(result.path) == image
@@ -628,14 +629,14 @@ def test_legacy_unnamed_frozen_test_preview_reads_bounded_batches(monkeypatch, t
         snapshot["test_image_ids"].append(image_id)
         snapshot["images"].append({"image_id": image_id, "content_sha256": "d" * 64})
     snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
-    original = platform.MaterialRepository
+    original = evaluation_owner.MaterialRepository
     calls = []
     class ObservedRepository(original):
         def get_many(self, ids):
             calls.append(tuple(ids))
             assert len(ids) <= 500
             return super().get_many(ids)
-    monkeypatch.setattr(platform, "MaterialRepository", ObservedRepository)
+    monkeypatch.setattr(evaluation_owner, "MaterialRepository", ObservedRepository)
 
     result = platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
     assert Path(result.path) == image
