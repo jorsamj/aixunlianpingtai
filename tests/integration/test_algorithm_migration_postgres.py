@@ -75,6 +75,7 @@ from platform_core.algorithm_postgres_store import (
 )
 from platform_core.algorithm_repository import (
     AlgorithmAdmissionRequired,
+    AlgorithmRepositoryError,
     admission_record_path,
     admission_transition_path,
     open_algorithm_repository,
@@ -1329,7 +1330,18 @@ def test_cleanup_ledger_is_served_by_the_postgres_repository(pg):
     assert repo.read_one("algo-b") is None
     assert [row["state"] for row in repo.cleanup_list()] == ["CLEANUP_COMPLETED"]
 
-    # Project isolation: another project's provider never sees this ledger.
-    other = PostgresAlgorithmRepository(pg.get_uri(), "clean-other",
-                                        admission=repo._admission)
+    # Project isolation. A foreign admission is refused outright, and the other
+    # project may only ever see its own (empty) ledger once it has its own.
+    with pytest.raises(AlgorithmAdmissionRequired):
+        PostgresAlgorithmRepository(
+            pg.get_uri(), "clean-other", admission=repo._admission
+        ).cleanup_list()
+    other_store = _store(root, "clean-other")
+    other = _presentation_repository(pg, other_store, "clean-other")
+    other.cleanup_ensure_schema()
     assert other.cleanup_list() == []
+    assert other.cleanup_get("op-1") is None
+    # Its SQL is bound to its own project: naming another project is refused.
+    with pytest.raises(AlgorithmRepositoryError) as mismatch:
+        other.cleanup_summary(project_id="clean", suspected_state="SUSPECTED_DELETED")
+    assert mismatch.value.code == "ALGORITHM_CLEANUP_PROJECT_MISMATCH"

@@ -212,6 +212,25 @@ class PostgresAlgorithmRepository:
     # so these methods are reachable by isolated contracts only.
     cleanup_supported = False
 
+    def _require_configured_admission(self) -> None:
+        """Cleanup is a write-authority domain: no admission, no connection."""
+        if not self._admission:
+            raise AlgorithmAdmissionRequired(
+                "ALGORITHM_POSTGRES_ADMISSION_REQUIRED",
+                "PostgreSQL repository requires a cutover admission record",
+                detail=f"project={self.project_id!r}",
+            )
+
+    def _require_project(self, project_id: str) -> str:
+        """Every project argument must match the project this repository bound."""
+        if str(project_id) != str(self.project_id):
+            raise AlgorithmRepositoryError(
+                "ALGORITHM_CLEANUP_PROJECT_MISMATCH",
+                "cleanup operation belongs to another project",
+                detail=f"requested={project_id!r} bound={self.project_id!r}",
+            )
+        return str(self.project_id)
+
     _CLEANUP_COLUMNS = (
         "project_id, operation_id, algorithm_id, product_id, generation, state, "
         "payload, created_at, updated_at"
@@ -226,6 +245,7 @@ class PostgresAlgorithmRepository:
         return json.loads(payload) if payload else None
 
     def cleanup_ensure_schema(self) -> None:
+        self._require_configured_admission()
         self.ensure_ready()
         with self._read() as cursor:
             cursor.execute(
@@ -241,6 +261,7 @@ class PostgresAlgorithmRepository:
             )
 
     def cleanup_get(self, operation_id: str) -> dict | None:
+        self._require_configured_admission()
         self.ensure_ready()
         with self._read() as cursor:
             cursor.execute(
@@ -252,6 +273,7 @@ class PostgresAlgorithmRepository:
             return self._cleanup_row(cursor.fetchone())
 
     def cleanup_list(self) -> list[dict]:
+        self._require_configured_admission()
         self.ensure_ready()
         with self._read() as cursor:
             cursor.execute(
@@ -266,6 +288,8 @@ class PostgresAlgorithmRepository:
             ]
 
     def cleanup_summary(self, *, project_id: str, suspected_state: str) -> dict[str, int]:
+        project_id = self._require_project(project_id)
+        self._require_configured_admission()
         self.ensure_ready()
         with self._read() as cursor:
             cursor.execute(
@@ -286,6 +310,8 @@ class PostgresAlgorithmRepository:
     def cleanup_public_operations(
         self, *, project_id: str, suspected_state: str, limit: int, offset: int
     ) -> list[dict]:
+        project_id = self._require_project(project_id)
+        self._require_configured_admission()
         self.ensure_ready()
         with self._read_snapshot() as cursor:
             cursor.execute(
@@ -298,7 +324,11 @@ class PostgresAlgorithmRepository:
                        CASE WHEN COALESCE(
                                 NULLIF(payload->>'external_deletion_checked_at',''),
                                 NULLIF(payload->>'external_deletion_since','')
-                            ) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                            ) IS NOT NULL
+                            AND pg_input_is_valid(COALESCE(
+                                NULLIF(payload->>'external_deletion_checked_at',''),
+                                NULLIF(payload->>'external_deletion_since','')
+                            ), 'timestamptz')
                             THEN COALESCE(
                                 NULLIF(payload->>'external_deletion_checked_at',''),
                                 NULLIF(payload->>'external_deletion_since','')
@@ -328,8 +358,10 @@ class PostgresAlgorithmRepository:
     def cleanup_public_operation(
         self, *, project_id: str, operation_id: str, suspected_state: str
     ) -> dict | None:
+        project_id = self._require_project(project_id)
         if not str(operation_id).startswith("suspect:"):
             return self.cleanup_get(operation_id)
+        self._require_configured_admission()
         self.ensure_ready()
         with self._read() as cursor:
             cursor.execute(
@@ -361,6 +393,7 @@ class PostgresAlgorithmRepository:
         now: str,
     ) -> dict[str, Any]:
         """Persist the confirmed intent and the algorithm retirement atomically."""
+        self._require_configured_admission()
         with self._write() as cursor:
             cursor.execute(
                 "SELECT payload FROM w5_algorithm.external_algorithm_cleanup "
@@ -422,6 +455,22 @@ class PostgresAlgorithmRepository:
         now: str,
     ) -> dict[str, Any]:
         """Advance one receipt, keeping the algorithm status in the same txn."""
+        project_id = self._require_project(project_id)
+        # Identity fields are immutable: a patch may advance state, never rewrite
+        # who this operation is. task_id and evidence stay part of the payload by
+        # the existing Outbox contract.
+        immutable = {
+            "project_id", "operation_id", "algorithm_id", "product_id",
+            "generation", "created_at",
+        }
+        rewritten = immutable.intersection(patch)
+        if rewritten:
+            raise AlgorithmRepositoryError(
+                "ALGORITHM_CLEANUP_IDENTITY_IMMUTABLE",
+                "cleanup identity fields cannot be rewritten",
+                detail=f"fields={sorted(rewritten)}",
+            )
+        self._require_configured_admission()
         with self._write() as cursor:
             cursor.execute(
                 "SELECT " + self._CLEANUP_COLUMNS + " FROM "
@@ -429,11 +478,7 @@ class PostgresAlgorithmRepository:
                 "WHERE project_id=%s AND operation_id=%s FOR UPDATE",
                 (self.project_id, str(operation_id)),
             )
-            stored = cursor.fetchone()
-            before = json.dumps(
-                self._cleanup_row(stored) or {}, ensure_ascii=False, sort_keys=True
-            )
-            op = self._cleanup_row(stored)
+            op = self._cleanup_row(cursor.fetchone())
             if op is None:
                 return {"outcome": "missing", "operation": None}
             row = self._read_one(cursor, str(op["algorithm_id"]))
@@ -454,6 +499,11 @@ class PostgresAlgorithmRepository:
                     "phase": patch.get("phase", op["phase"]),
                     "observed_at": str(now),
                 })
+            changed = any(
+                key not in ("updated_at", "history")
+                and patch.get(key) != op.get(key)
+                for key in patch
+            )
             op.update(dict(patch), updated_at=str(now))
             algorithm_changed = False
             if remove_algorithm:
@@ -469,7 +519,6 @@ class PostgresAlgorithmRepository:
                     row.update(external_deletion_status=op["state"])
                     self._update_algorithm(cursor, row)
                     algorithm_changed = True
-            after = json.dumps(op, ensure_ascii=False, sort_keys=True)
             cursor.execute(
                 "UPDATE w5_algorithm.external_algorithm_cleanup SET state=%s,"
                 "payload=%s::jsonb,updated_at=%s::timestamptz "
@@ -481,7 +530,7 @@ class PostgresAlgorithmRepository:
             )
             # A ledger change is migrated content: it must move the revision, or a
             # later V2 snapshot would differ at the same revision.
-            if algorithm_changed or after != before:
+            if algorithm_changed or changed:
                 self._bump_revision(cursor)
         return {"outcome": "updated", "operation": op}
 

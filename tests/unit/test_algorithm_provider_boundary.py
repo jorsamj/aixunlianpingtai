@@ -183,8 +183,13 @@ def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
     # capability declaration is what keeps the domain off, and without an
     # admission record every cleanup call still fails closed.
     assert set(CLEANUP_OPERATIONS) <= set(repository.unsupported_operations())
+    # No admission: cleanup refuses before any connection is attempted (the DSN
+    # in this contract is deliberately unreachable, so a connection would raise
+    # OperationalError instead).
     with pytest.raises(AlgorithmAdmissionRequired):
         repository.cleanup_list()
+    with pytest.raises(AlgorithmAdmissionRequired):
+        repository.cleanup_summary(project_id="project", suspected_state="SUSPECTED_DELETED")
     assert "example.invalid" not in repr(repository)
 
 

@@ -1545,12 +1545,10 @@ class AlgorithmSqlStore:
         self.ensure_ready()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            stored = db.execute(
+            op = self._cleanup_payload(db.execute(
                 "SELECT * FROM external_algorithm_cleanup WHERE operation_id=?",
                 (str(operation_id),),
-            ).fetchone()
-            before_payload = stored["payload_json"] if stored is not None else "{}"
-            op = self._cleanup_payload(stored)
+            ).fetchone())
             if not op:
                 return {"outcome": "missing", "operation": None}
             row = self._read_one_conn(db, str(op["algorithm_id"]))
@@ -1565,14 +1563,20 @@ class AlgorithmSqlStore:
                 or str(row.get("external_product_id")) != op["product_id"]
             ):
                 return {"outcome": "generation_changed", "operation": op}
-            before = json.dumps(self._cleanup_payload({"payload_json": before_payload}),
-                                ensure_ascii=False, sort_keys=True)
             if any(patch.get(key, op.get(key)) != op.get(key) for key in ("state", "phase")):
                 op.setdefault("history", []).append({
                     "state": patch.get("state", op["state"]),
                     "phase": patch.get("phase", op["phase"]),
                     "observed_at": str(now),
                 })
+            # Only a real business change advances the revision: updated_at (and
+            # the history entry it comes with) is bookkeeping, so an idempotent
+            # re-send of the same state must not look like new content.
+            changed = any(
+                key not in ("updated_at", "history")
+                and patch.get(key) != op.get(key)
+                for key in patch
+            )
             op.update(dict(patch), updated_at=str(now))
             algorithm_changed = False
             if remove_algorithm:
@@ -1588,7 +1592,6 @@ class AlgorithmSqlStore:
                     row.update(external_deletion_status=op["state"])
                     self._update_algorithm_conn(db, row)
                     algorithm_changed = True
-            after = json.dumps(op, ensure_ascii=False, sort_keys=True)
             db.execute(
                 "UPDATE external_algorithm_cleanup SET state=?,payload_json=?,updated_at=? "
                 "WHERE operation_id=?",
@@ -1601,7 +1604,7 @@ class AlgorithmSqlStore:
             # idempotent no-op) must move the algorithm revision, otherwise a V2
             # snapshot would carry different content at the same revision and be
             # rejected as a digest conflict.
-            if algorithm_changed or after != before:
+            if algorithm_changed or changed:
                 self._bump_revision(db)
             db.commit()
         return {"outcome": "updated", "operation": op}
