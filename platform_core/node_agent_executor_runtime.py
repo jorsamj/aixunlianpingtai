@@ -1300,6 +1300,91 @@ class AgentExecutionWorkdir:
                 })
         return result
 
+    def list_resource_wait_requests(self) -> list[dict[str, Any]]:
+        """Read credential-bearing recovery requests without exposing their contents."""
+        from .node_agent_settlement import canonical_digest, no_launch_evidence
+
+        base = self._contained_directory(self.root / "executions", create=False)
+        if base is None:
+            return []
+        result = []
+        for marker in sorted(Path(base).glob("*/*/resource-wait-request.json")):
+            self._contained_directory(marker.parent.parent, create=False)
+            self._contained_directory(marker.parent, create=False)
+            if marker.is_symlink() or not marker.is_file():
+                raise ValueError("resource-wait request path is unsafe")
+            task_id = _safe_component(marker.parent.parent.name, "task_id")
+            try:
+                generation = int(marker.parent.name)
+                request = json.loads(marker.read_text(encoding="utf-8"))
+                execution_path = marker.parent / "execution.json"
+                if execution_path.is_symlink() or not execution_path.is_file():
+                    raise ValueError()
+                execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raise ValueError("resource-wait request or execution metadata is unreadable") from None
+            required = {"execution_lease_token", "execution_generation", "assignment_generation",
+                        "gpu_uuid", "no_launch_evidence", "admission"}
+            if (generation <= 0 or str(generation) != marker.parent.name
+                    or not isinstance(request, dict) or set(request) != required
+                    or type(request.get("execution_generation")) is not int or request["execution_generation"] != generation
+                    or type(request.get("assignment_generation")) is not int or request["assignment_generation"] <= 0
+                    or not isinstance(request.get("execution_lease_token"), str) or not request["execution_lease_token"]
+                    or not isinstance(request.get("gpu_uuid"), str)
+                    or not isinstance(request.get("admission"), dict)
+                    or not isinstance(request.get("no_launch_evidence"), dict)
+                    or not isinstance(execution, dict) or execution.get("task_id") != task_id
+                    or type(execution.get("generation")) is not int or execution["generation"] != generation
+                    or execution.get("kind") != "TRAINING"
+                    or not str(execution.get("worker_id") or "").startswith("agent:")
+                    or len(str(execution["worker_id"])) <= 6):
+                raise ValueError("resource-wait request identity is invalid")
+            admission = request["admission"]
+            if (set(admission) != {"classification", "code", "reason", "required_bytes", "total_bytes", "available_bytes"}
+                    or admission.get("classification") not in {"TEMPORARILY_UNAVAILABLE", "INCOMPATIBLE", "UNKNOWN"}
+                    or admission.get("code") not in {"RESOURCE_HOST_MEMORY_INSUFFICIENT", "RESOURCE_HOST_MEMORY_UNKNOWN",
+                                                      "RESOURCE_MANUAL_INVALID", "GPU_MEMORY_INSUFFICIENT", "RESOURCE_RAM_UNSAFE"}
+                    or not isinstance(admission.get("reason"), str) or not admission["reason"] or len(admission["reason"]) > 1000
+                    or type(admission.get("required_bytes")) is not int or admission["required_bytes"] <= 0
+                    or any(value is not None and (type(value) is not int or value < 0)
+                           for value in (admission.get("total_bytes"), admission.get("available_bytes")))):
+                raise ValueError("resource-wait admission evidence is invalid")
+            metadata = self.read_execution_metadata(task_id, generation)
+            assignment = execution.get("assignment") or {}
+            config = assignment.get("resolved_execution_config") or {}
+            node_id = str(execution["worker_id"])[6:]
+            if (metadata["assignment_generation"] != request["assignment_generation"]
+                    or metadata["gpu_uuid"] != request["gpu_uuid"] or metadata["execution_slots"] not in (1, 2)
+                    or (assignment.get("node_id") is not None and assignment["node_id"] != node_id)
+                    or (not request["gpu_uuid"] and config.get("selected_device") != "cpu")):
+                raise ValueError("resource-wait request conflicts with original Assignment")
+            record = {"task_id": task_id, "generation": generation,
+                      "assignment_generation": request["assignment_generation"], "gpu_uuid": request["gpu_uuid"]}
+            if canonical_digest(request["no_launch_evidence"]) != canonical_digest(no_launch_evidence(record)):
+                raise ValueError("resource-wait no-launch proof is invalid")
+            lease = SimpleNamespace(task_id=task_id, generation=generation, kind="TRAINING")
+            if (self.read_process_launch_intent(lease) is not None or self.read_process_identity(lease) is not None
+                    or self.read_stop_evidence(task_id, generation) is not None):
+                raise ValueError("resource-wait execution has conflicting launch evidence")
+            result.append({**record, "node_id": node_id, "execution_slots": metadata["execution_slots"], "request": request})
+        return result
+
+    def clear_resource_wait_request(self, task_id: str, generation: int, request_sha256: str) -> None:
+        from .node_agent_settlement import canonical_digest
+
+        marker = self.path_for(SimpleNamespace(task_id=task_id, generation=generation)) / "resource-wait-request.json"
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise ValueError("resource-wait request path is unsafe")
+        if not marker.exists():
+            return
+        try:
+            current = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise ValueError("resource-wait request is unreadable") from None
+        if not isinstance(current, dict) or canonical_digest(current) != request_sha256:
+            raise ValueError("resource-wait request changed during recovery")
+        marker.unlink()
+
     def cleanup(self, lease: RemoteExecutionLease) -> None:
         task_id = _safe_component(lease.task_id, "task_id")
         generation = str(int(lease.generation))
@@ -1311,6 +1396,9 @@ class AgentExecutionWorkdir:
             return
         target = self._contained_directory(Path(task_dir) / generation, create=False)
         if target is not None:
+            pending = Path(target) / "resource-wait-request.json"
+            if pending.exists() or pending.is_symlink():
+                raise ValueError("unsettled resource-wait request blocks workspace cleanup")
             if self.read_process_launch_intent(lease) is not None:
                 raise ValueError("unverified process launch blocks workspace cleanup")
             # An interrupted clear_process_identity_record() can leave the

@@ -11,6 +11,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Mapping
 
 from .node_agent_settlement import (
@@ -23,6 +24,7 @@ from .node_agent_settlement import (
     is_dual_slot,
     process_identity_sha256,
     proof_error,
+    resource_wait_receipt_error,
     settlement_error,
     single_slot_contract_error,
     status_identity_error,
@@ -218,6 +220,7 @@ class NodeRecoveryCoordinator:
         execution_attempt: int | None = None,
         gpu_uuid: str | None = None,
         assignment_generation: int | None = None,
+        ignore_newer_assignments: bool = False,
     ) -> int:
         """Remove the exact recovered slot intent; never a different attempt.
 
@@ -255,6 +258,7 @@ class NodeRecoveryCoordinator:
         same_task = [
             item for item in records
             if isinstance(item, dict) and str(item.get("task_id")) == str(task_id)
+            and (not ignore_newer_assignments or int(item.get("generation") or 0) <= int(generation))
         ]
         matched = [item for item in same_task if matches(item)]
         if same_task and not matched:
@@ -332,8 +336,59 @@ class NodeRecoveryCoordinator:
         )
         return message
 
+    def _recover_resource_wait_requests(self) -> str:
+        scan = getattr(self.workdirs, "list_resource_wait_requests", None)
+        records = scan() if callable(scan) else []
+        for record in records:
+            task_id, attempt = record["task_id"], record["generation"]
+            if (task_id, attempt) in self._owners:
+                continue
+            if self.client is None or record["node_id"] != self._node_id():
+                return self._block("resource-wait request belongs to an unverified node")
+            request = record["request"]
+            try:
+                receipt = self.client.resource_wait_receipt(
+                    task_id, assignment_generation=request["assignment_generation"], execution_generation=attempt,
+                )
+            except Exception as error:
+                # Only an explicit absence permits exact replay; transport/5xx
+                # errors retain evidence for the existing bounded retry loop.
+                if getattr(error, "code", None) != "RESOURCE_WAIT_RECEIPT_NOT_FOUND" or getattr(error, "status_code", None) != 404:
+                    return self._block("resource-wait receipt unavailable", retryable=True)
+                lease = SimpleNamespace(task_id=task_id)
+                try:
+                    self.client.requeue_resource_wait(lease, request)
+                except Exception as replay_error:
+                    if getattr(replay_error, "status_code", 0) in {400, 401, 403, 404, 409, 422}:
+                        return self._block("resource-wait replay rejected by original execution fence")
+                    # A lost replay response can still have committed.
+                try:
+                    receipt = self.client.resource_wait_receipt(
+                        task_id, assignment_generation=request["assignment_generation"], execution_generation=attempt,
+                    )
+                except Exception:
+                    return self._block("resource-wait replay settlement unavailable", retryable=True)
+            problem = resource_wait_receipt_error(
+                receipt, request, node_id=self._node_id(), task_id=task_id, execution_slots=record["execution_slots"],
+            )
+            if problem:
+                return self._block(problem)
+            # Keep the credential-bearing request until intent cleanup is
+            # durable. Never erase the request merely because a directory is empty.
+            try:
+                self._clear_intent(task_id, request["assignment_generation"], execution_attempt=attempt,
+                                   gpu_uuid=request["gpu_uuid"], assignment_generation=request["assignment_generation"],
+                                   ignore_newer_assignments=True)
+                self.workdirs.clear_resource_wait_request(task_id, attempt, canonical_digest(request))
+            except OSError:
+                return self._block("resource-wait local cleanup is unavailable", retryable=True)
+        return ""
+
     def _prepare_locked(self) -> str:
         try:
+            error = self._recover_resource_wait_requests()
+            if error:
+                return error
             unverified = self.workdirs.list_unverified_process_launch_intents()
             if unverified:
                 if self.client is None:

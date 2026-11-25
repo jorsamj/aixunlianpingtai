@@ -992,3 +992,111 @@ def test_shared_no_launch_settlement_requires_real_dual_proof(fault):
         status["process_identity_sha256"] = "a" * 64
     error = settlement_error(status, local, node_id="node-a", expected_status="FAILED")
     assert bool(error) == (fault is not None)
+
+
+def _pending_resource_wait(tmp_path, slots):
+    from platform_core.node_agent_executor_runtime import AgentExecutionWorkdir, RemoteExecutionLease
+    from platform_core.node_agent_settlement import canonical_digest, no_launch_evidence, stop_proof_digests
+
+    workdirs = AgentExecutionWorkdir(tmp_path / "state")
+    lease = RemoteExecutionLease(task_id="pending", kind="TRAINING", project_id="p", generation=3,
+        worker_id="agent:node-a", lease_token="credential-not-for-logs", lease_expires_at="2099-01-01T00:00:00+00:00",
+        payload={}, transport={}, execution_slots=slots, assignment={"generation": 5, "node_id": "node-a",
+        "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}, "selected_device": "cuda:0"}})
+    workdir = workdirs.prepare(lease)
+    record = {"task_id": "pending", "generation": 3, "assignment_generation": 5, "gpu_uuid": "GPU-A", "no_process_launched": True}
+    request = {"execution_lease_token": lease.lease_token, "execution_generation": 3, "assignment_generation": 5,
+        "gpu_uuid": "GPU-A", "no_launch_evidence": no_launch_evidence(record),
+        "admission": {"classification": "TEMPORARILY_UNAVAILABLE", "code": "RESOURCE_HOST_MEMORY_INSUFFICIENT",
+                      "reason": "RAM busy", "required_bytes": 8, "total_bytes": 32, "available_bytes": 2}}
+    workdirs._atomic_write_json(workdir / "resource-wait-request.json", request)
+    receipt = {"state": "REQUEUED", "task_id": "pending", "node_id": "node-a", "execution_attempt": 3,
+        "assignment_generation": 5, "gpu_uuid": "GPU-A", "request_sha256": canonical_digest(request),
+        "proof_type": "NO_PROCESS_LAUNCHED", "proof_sha256": stop_proof_digests({"node_id": "node-a"}, record)[0],
+        "execution_slots": slots, "hold_state": "RELEASED" if slots == 2 else None}
+    return workdirs, lease, workdir / "resource-wait-request.json", request, receipt
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+@pytest.mark.parametrize("mode", ["receipt", "replay-lost-response", "unavailable", "cancel"])
+def test_restart_recovers_original_resource_wait_receipt_without_touching_new_attempt(tmp_path, slots, mode):
+    from platform_core.node_agent_executor_runtime import NodeExecutorHTTPError
+
+    workdirs, lease, marker, request, receipt = _pending_resource_wait(tmp_path, slots)
+    intent = tmp_path / "slots.json"
+    old = {"task_id": "pending", "generation": 5, "assignment_generation": 5, "execution_attempt": 3, "gpu_uuid": "GPU-A"}
+    newer = {**old, "generation": 6, "assignment_generation": 6, "execution_attempt": 4}
+    original_intents = ([old, newer] if mode == "receipt" else [old]) if slots == 2 else []
+    remaining_intents = [newer] if slots == 2 and mode == "receipt" else []
+    intent.write_text(json.dumps(original_intents), encoding="utf-8")
+    from platform_core.node_agent_execution_slots import BoundedExecutionSlots
+    capacity = BoundedExecutionSlots(slots, persist_path=intent)
+
+    class Client:
+        node_id = "node-a"
+        committed = mode == "receipt"
+        offline = mode == "unavailable"
+        replays = []
+        def resource_wait_receipt(self, task_id, **kwargs):
+            assert task_id == "pending" and kwargs == {"assignment_generation": 5, "execution_generation": 3}
+            if self.offline:
+                raise OSError("credential-not-for-logs")
+            if not self.committed:
+                raise NodeExecutorHTTPError("RESOURCE_WAIT_RECEIPT_NOT_FOUND", "absent", status_code=404)
+            return dict(receipt)
+        def execution_status(self, *_args):
+            raise AssertionError("must not inspect the task's newer attempt")
+        def requeue_resource_wait(self, original, body):
+            assert original.task_id == "pending" and body == request
+            self.replays.append(body)
+            if mode == "cancel":
+                raise NodeExecutorHTTPError("CANCELLATION_WON", "cancelled", status_code=409)
+            self.committed = True
+            raise OSError("lost replay response")
+
+    client = Client()
+    coordinator = NodeRecoveryCoordinator(workdirs, FakeController(), client=client, intent_path=intent)
+    error = coordinator.prepare()
+    assert lease.lease_token not in error
+    if mode == "cancel":
+        assert error and marker.exists() and not coordinator.retryable
+        assert json.loads(intent.read_text()) == original_intents
+        return
+    if mode == "unavailable":
+        assert error and marker.exists() and coordinator.retryable and client.replays == []
+        client.offline = False
+        client.committed = True
+        assert coordinator.prepare() == ""
+    else:
+        assert error == ""
+    assert not marker.exists()
+    assert json.loads(intent.read_text()) == remaining_intents
+    assert capacity.reconcile_persisted_intent() is (not remaining_intents)
+    workdirs.cleanup(lease)
+    assert not marker.parent.exists()
+    assert len(client.replays) == (1 if mode == "replay-lost-response" else 0)
+
+
+@pytest.mark.parametrize("fault", ["corrupt", "node", "gpu", "launch", "receipt"])
+def test_restart_resource_wait_fails_closed_and_retains_credentials(tmp_path, fault):
+    workdirs, lease, marker, request, receipt = _pending_resource_wait(tmp_path, 2)
+    if fault == "corrupt":
+        marker.write_text('{"credential-not-for-logs":', encoding="utf-8")
+    elif fault == "gpu":
+        request["gpu_uuid"] = "GPU-wrong"
+        workdirs._atomic_write_json(marker, request)
+    elif fault == "launch":
+        workdirs.begin_process_launch(lease)
+    elif fault == "receipt":
+        receipt["proof_sha256"] = "0" * 64
+    class Client:
+        node_id = "other-node" if fault == "node" else "node-a"
+        def resource_wait_receipt(self, *_args, **_kwargs):
+            return receipt
+        def requeue_resource_wait(self, *_args, **_kwargs):
+            raise AssertionError("invalid request must not replay")
+    error = NodeRecoveryCoordinator(workdirs, FakeController(), client=Client()).prepare()
+    assert error and lease.lease_token not in error and marker.exists()
+    with pytest.raises(ValueError):
+        workdirs.cleanup(lease)
+    assert marker.exists()

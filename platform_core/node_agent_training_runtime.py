@@ -30,6 +30,7 @@ from .node_agent_settlement import (
     recover_and_verify,
     settlement_of,
     no_launch_evidence,
+    canonical_digest,
     resource_wait_receipt_error,
     strict_int,
 )
@@ -1700,6 +1701,7 @@ class AgentTrainingRunner:
             if isinstance(failure, NodeExecutorHTTPError) and failure.code == "CANCELLATION_WON":
                 self._resource_wait_pending = False
                 if self._finish_best_effort(lease, "CANCELLED", error="cancellation won resource requeue"):
+                    self.workdirs.clear_resource_wait_request(lease.task_id, lease.generation, canonical_digest(request))
                     return AgentTrainingOutcome(lease.task_id, lease.generation, "CANCELLED")
                 self._resource_wait_pending = True
                 raise RemoteExecutionFenced("resource-wait cancellation is not centrally confirmed") from failure
@@ -1717,7 +1719,7 @@ class AgentTrainingRunner:
             raise RemoteExecutionFenced(problem)
         self._resource_wait_pending = False
         try:
-            (self.workdirs.path_for(lease) / "resource-wait-request.json").unlink(missing_ok=True)
+            self.workdirs.clear_resource_wait_request(lease.task_id, lease.generation, canonical_digest(request))
         except OSError:
             pass  # Cleanup cannot replace an already authoritative receipt.
         return AgentTrainingOutcome(lease.task_id, lease.generation, "QUEUED",
