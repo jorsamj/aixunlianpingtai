@@ -239,3 +239,76 @@ def test_no_module_defines_the_same_class_method_twice():
                     )
                 seen[item.name] = item.lineno
     assert offenders == []
+
+def test_stale_admission_cannot_release_the_barrier(tmp_path):
+    """Only a verified settlement may release, and only at its own generation."""
+    from platform_core.algorithm_repository import write_authority_barrier
+
+    path = _legacy_project(tmp_path, rows=[])
+    repository = open_algorithm_repository(path)
+    repository.create_algorithm({"id": "base", "name": "base"})
+    assert write_authority_barrier(
+        path, project_id="p", phase="POSTGRES_ACTIVE", operation_id="op-2",
+        writer_generation=2, admission_id="admit-2",
+    ) is True
+
+    # A stale local admission that claims SQLite authority is not evidence.
+    record = admission_record_path(path)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(
+        json.dumps({
+            "contract_version": "algorithm-repository-v1",
+            "project_id": "p",
+            "admission_id": "admit-1",
+            "authoritative_provider": "sqlite",
+            "algorithm_revision": 0,
+            "snapshot_digest": "",
+            "content_digest": "",
+            "writer_generation": 1,
+            "admitted_at": "2026-11-24T00:00:00+00:00",
+            "revoked_at": "2026-11-24T01:00:00+00:00",
+            "operation_id": "op-1",
+            "maintenance_phase": "ROLLBACK_APPLIED",
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(AlgorithmAdmissionRequired) as blocked:
+        repository.create_algorithm({"id": "stale", "name": "stale"})
+    assert blocked.value.code == "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER"
+
+    # An older generation never overwrites a newer blocking barrier.
+    with pytest.raises(AlgorithmAdmissionRequired) as stale:
+        write_authority_barrier(
+            path, project_id="p", phase="ROLLBACK_APPLIED", writer_generation=1,
+        )
+    assert stale.value.code == "ALGORITHM_SQLITE_CUTOVER_BARRIER_STALE"
+
+    # Releasing must name the blocking phase it settles.
+    with pytest.raises(AlgorithmAdmissionRequired) as wrong_phase:
+        write_authority_barrier(
+            path, project_id="p", phase="ROLLBACK_APPLIED", writer_generation=3,
+            require_phase="ROLLBACK_QUIESCING",
+        )
+    assert wrong_phase.value.code == "ALGORITHM_SQLITE_CUTOVER_BARRIER_PHASE_MISMATCH"
+    assert write_authority_barrier(
+        path, project_id="p", phase="ROLLBACK_APPLIED", writer_generation=3,
+        require_phase="POSTGRES_ACTIVE",
+    ) is True
+    assert repository.create_algorithm({"id": "after", "name": "after"})["id"] == "after"
+
+
+def test_barrier_uses_the_same_switch_lock_as_a_custom_admission(tmp_path):
+    """A project must never end up with two lock identities."""
+    from platform_core.algorithm_repository import write_authority_barrier
+
+    path = _legacy_project(tmp_path, rows=[])
+    custom = tmp_path / "custom-admission" / "cutover_admission.json"
+    repository = open_algorithm_repository(path, admission_path=custom)
+    repository.create_algorithm({"id": "base", "name": "base"})
+    assert write_authority_barrier(
+        path, project_id="p", phase="POSTGRES_ACTIVE", writer_generation=1,
+        record_path=custom,
+    ) is True
+    assert custom.with_name(custom.name + ".switch.lock").is_file()
+    default = admission_record_path(path)
+    assert not default.with_name(default.name + ".switch.lock").is_file()

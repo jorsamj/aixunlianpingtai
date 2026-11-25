@@ -209,21 +209,26 @@ def _require_import_authority(
 ) -> dict[str, Any]:
     """Prove the importer is allowed to write this project's data right now.
 
-    A shadow import is a tool operation and may only write while SQLite is still
-    the admitted writer and no maintenance window owns the project. The final
-    import inside a window must name the operation that owns it. Once PostgreSQL
-    is the authoritative writer, a direct import is refused: the data write has
-    to go through the maintenance contract, never around it.
+    The verdict is a combination of the *actual* durable facts, never of
+    ``revoked_at`` alone. A project whose first maintenance window created its
+    SQLite authority row carries ``revoked_at = now()`` (nothing has been revoked
+    there yet), and a safely rolled-back project is legitimate SQLite authority
+    again - so both must accept a window-owned final import. What the final
+    import does require is a frozen window, that window's operation, and the
+    frozen content it claims to import.
+
+    A plain (shadow) import is a tool operation: it may only write while SQLite
+    owns the project and no window owns it, and it is refused entirely once
+    PostgreSQL is authoritative.
     """
     from .algorithm_cutover import (
         BLOCKING_MAINTENANCE_PHASES,
         MAINTENANCE_SQLITE_ACTIVE,
-        MAINTENANCE_POSTGRES_ACTIVE,
+        MAINTENANCE_SOURCE_FROZEN,
     )
 
     state = _cutover_state(cursor, project_id)
     provider = str(state.get("authoritative_provider") or "sqlite")
-    revoked = bool(state.get("revoked_at"))
     evidence = state.get("evidence") or {}
     maintenance = evidence.get("maintenance") if isinstance(evidence, Mapping) else None
     maintenance = dict(maintenance) if isinstance(maintenance, Mapping) else {}
@@ -233,16 +238,18 @@ def _require_import_authority(
     operation = str(maintenance.get("operation_id") or "")
     generation = int(state.get("writer_generation") or 0)
     if maintenance_operation is not None:
-        if provider != "sqlite" or revoked:
+        if provider != "sqlite":
             raise AlgorithmMigrationError(
                 "ALGORITHM_MIGRATION_AUTHORITY_INVALID",
                 "the final import belongs to a window that no longer owns SQLite",
-                detail=f"provider={provider} revoked={revoked} phase={phase}",
+                detail=f"provider={provider} phase={phase}",
             )
-        if phase not in BLOCKING_MAINTENANCE_PHASES:
+        if phase != MAINTENANCE_SOURCE_FROZEN:
+            # QUIESCING/SWITCHING/ROLLBACK_QUIESCING must never import: the
+            # source is not frozen yet, or a switch/rollback is in flight.
             raise AlgorithmMigrationError(
                 "ALGORITHM_MIGRATION_AUTHORITY_INVALID",
-                "no blocking maintenance phase allows a final import",
+                "the final import requires the frozen window phase",
                 detail=f"phase={phase}",
             )
         if operation != str(maintenance_operation):
@@ -251,29 +258,37 @@ def _require_import_authority(
                 "the maintenance operation does not own this project",
                 detail=f"record={operation} requested={maintenance_operation}",
             )
-        return {"phase": phase, "provider": provider, "generation": generation,
-                "maintenance_operation": operation}
-    if provider == "postgresql" and not revoked:
-        raise AlgorithmMigrationError(
-            "ALGORITHM_MIGRATION_AUTHORITY_REQUIRED",
-            "PostgreSQL is the authoritative writer; a direct import is refused",
-            detail=f"generation={generation}",
+        frozen_content = str(
+            maintenance.get("content_digest") or maintenance.get("snapshot_digest") or ""
         )
+        if not frozen_content:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_FROZEN_EVIDENCE_MISSING",
+                "the window records no frozen content digest",
+                detail=f"operation={operation}",
+            )
+        return {
+            "phase": phase, "provider": provider, "generation": generation,
+            "maintenance_operation": operation,
+            "frozen_content_digest": frozen_content,
+            "frozen_revision": maintenance.get("source_revision"),
+        }
+    if provider == "postgresql":
+        # PostgreSQL is authoritative. A revoked (rolled back) admission is only
+        # SQLite authority again when the window settled; a stale/unsettled
+        # record must not be read as permission.
+        if phase not in {MAINTENANCE_SQLITE_ACTIVE, "ROLLBACK_APPLIED"}:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_AUTHORITY_REQUIRED",
+                "PostgreSQL owns the writer slot; a direct import is refused",
+                detail=f"provider={provider} phase={phase}",
+            )
     if phase in BLOCKING_MAINTENANCE_PHASES:
         raise AlgorithmMigrationError(
             "ALGORITHM_MIGRATION_WINDOW_ACTIVE",
             "a maintenance window owns this project; name its operation to import",
             detail=f"phase={phase} operation={operation}",
         )
-    if provider == "postgresql" and revoked:
-        # A completed rollback restored SQLite; the shadow tool may run again,
-        # but only against a settled window.
-        if phase not in {"", MAINTENANCE_SQLITE_ACTIVE, "ROLLBACK_APPLIED"}:
-            raise AlgorithmMigrationError(
-                "ALGORITHM_MIGRATION_AUTHORITY_INVALID",
-                "the rolled-back window is not settled",
-                detail=f"phase={phase}",
-            )
     return {"phase": phase, "provider": provider, "generation": generation,
             "maintenance_operation": ""}
 
@@ -299,6 +314,21 @@ def import_snapshot(
     digest = str(snapshot["snapshot_digest"])
     content = content_digest(snapshot)
     mode = "DRY_RUN" if dry_run else "APPLY"
+    if maintenance_operation is not None:
+        # The final import is an APPLY step of one frozen window and one run id:
+        # a dry run or an unnamed run must never stand in for it.
+        if dry_run:
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_DRY_RUN_NOT_FINAL",
+                "a dry run cannot be the window's final import",
+                detail=f"operation={maintenance_operation}",
+            )
+        if str(run_id or "") != str(maintenance_operation):
+            raise AlgorithmMigrationError(
+                "ALGORITHM_MIGRATION_RUN_IDENTITY_REQUIRED",
+                "the final import must run under the window operation id",
+                detail=f"run_id={run_id!r} operation={maintenance_operation}",
+            )
     run, resumed = _begin_run(
         connection,
         project_id=project_id,
@@ -310,6 +340,7 @@ def import_snapshot(
         run_id=run_id,
         resume=resume,
         stale_after_seconds=int(stale_after_seconds),
+        refuse_running_reopen=maintenance_operation is not None,
     )
     counts = {name: len(snapshot["tables"][name]) for name in TABLES}
     result: dict[str, Any] = {
@@ -347,11 +378,30 @@ def import_snapshot(
                         # The ownership verdict and the data write are one
                         # transaction: a cutover/rollback cannot land between
                         # the check and the rows.
-                        _require_import_authority(
+                        authority = _require_import_authority(
                             cursor,
                             project_id=project_id,
                             maintenance_operation=maintenance_operation,
                         )
+                        if maintenance_operation is not None:
+                            # The window's frozen evidence must describe exactly
+                            # this import: same content, same revision.
+                            frozen_content = str(
+                                authority.get("frozen_content_digest") or ""
+                            )
+                            if frozen_content != content:
+                                raise AlgorithmMigrationError(
+                                    "ALGORITHM_MIGRATION_FROZEN_CONTENT_MISMATCH",
+                                    "the import content differs from the frozen window",
+                                    detail=f"frozen={frozen_content} import={content}",
+                                )
+                            frozen_revision = authority.get("frozen_revision")
+                            if frozen_revision is not None and int(frozen_revision) != revision:
+                                raise AlgorithmMigrationError(
+                                    "ALGORITHM_MIGRATION_FROZEN_REVISION_MISMATCH",
+                                    "the import revision differs from the frozen window",
+                                    detail=f"frozen={frozen_revision} import={revision}",
+                                )
                 target = export_target_snapshot(connection, project_id)
                 target_revision = (
                     int(target["algorithm_revision"]) if target is not None else None
@@ -534,6 +584,7 @@ def _begin_run(
     run_id: str | None,
     resume: bool,
     stale_after_seconds: int,
+    refuse_running_reopen: bool = False,
 ) -> tuple[str, bool]:
     from psycopg.rows import dict_row
 
@@ -584,6 +635,14 @@ def _begin_run(
                         detail=f"run_id={run}",
                     )
                 if recorded_status == "RUNNING":
+                    if refuse_running_reopen:
+                        # A window-owned import proves nothing from a heartbeat
+                        # age: reopening it could run beside a live executor.
+                        raise AlgorithmMigrationError(
+                            "ALGORITHM_MIGRATION_RUN_IN_PROGRESS",
+                            "the window import is still recorded as running",
+                            detail=f"run_id={run}",
+                        )
                     if not resume:
                         raise AlgorithmMigrationError(
                             "ALGORITHM_MIGRATION_RUN_IN_PROGRESS",

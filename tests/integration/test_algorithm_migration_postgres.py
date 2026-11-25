@@ -920,30 +920,49 @@ def test_import_tool_cannot_bypass_the_authoritative_owner(pg):
     operation = window["operation_id"]
     snapshot = export_source_snapshot(store.db_path, "authority")
 
-    # A blocking window owns the project: a plain import must name its operation.
+    # QUIESCING owns the project but the source is not frozen: no import at all.
     with _connect(pg) as connection:
         with pytest.raises(AlgorithmMigrationError) as window_blocked:
             import_snapshot(connection, snapshot)
     assert window_blocked.value.code == "ALGORITHM_MIGRATION_WINDOW_ACTIVE"
     with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as unfrozen:
+            import_snapshot(
+                connection, snapshot, run_id=operation, maintenance_operation=operation,
+            )
+    assert unfrozen.value.code == "ALGORITHM_MIGRATION_AUTHORITY_INVALID"
+
+    with _connect(pg) as connection:
+        frozen = freeze_maintenance_source(
+            connection, project_id="authority", db_path=store.db_path,
+            operation_id=operation,
+        )
+    # Frozen: only this window's operation may import, and only as an APPLY run.
+    with _connect(pg) as connection:
         with pytest.raises(AlgorithmMigrationError) as wrong_operation:
-            import_snapshot(connection, snapshot, maintenance_operation="someone-else")
+            import_snapshot(
+                connection, snapshot, run_id=operation,
+                maintenance_operation="someone-else",
+            )
     assert wrong_operation.value.code == "ALGORITHM_MIGRATION_OPERATION_MISMATCH"
-    # The window's own final import is allowed, and proves the same identity.
+    with _connect(pg) as connection:
+        with pytest.raises(AlgorithmMigrationError) as dry_run:
+            import_snapshot(
+                connection, snapshot, run_id=operation, dry_run=True,
+                maintenance_operation=operation,
+            )
+    assert dry_run.value.code == "ALGORITHM_MIGRATION_DRY_RUN_NOT_FINAL"
     with _connect(pg) as connection:
         allowed = import_snapshot(
             connection, snapshot, run_id=operation, maintenance_operation=operation,
         )
     assert allowed["action"] in {"apply", "noop"}
+    assert str(allowed["content_digest"]) == content_digest(snapshot)
 
     with _connect(pg) as connection:
-        freeze_maintenance_source(
-            connection, project_id="authority", db_path=store.db_path,
-            operation_id=operation,
-        )
         verify_maintenance_window(
             connection, project_id="authority", operation_id=operation,
-            verification_digest=str(snapshot["snapshot_digest"]),
+            verification_digest=str(frozen["snapshot_digest"]),
         )
         switch_maintenance_owner(
             connection, project_id="authority", db_path=store.db_path,
@@ -956,6 +975,41 @@ def test_import_tool_cannot_bypass_the_authoritative_owner(pg):
         with pytest.raises(AlgorithmMigrationError) as authority:
             import_snapshot(connection, snapshot)
     assert authority.value.code == "ALGORITHM_MIGRATION_AUTHORITY_REQUIRED"
+
+
+def test_rollback_with_an_empty_project_is_authorised_at_revision_zero(pg):
+    """revision 0 is a valid revision: the revocation compares it like any other."""
+    _initialized(pg)
+    root = pathlib.Path(tempfile.mkdtemp(prefix="t8zero-"))
+    store = _store(root, "zero", rows=[])
+    assert export_source_snapshot(store.db_path, "zero")["algorithm_revision"] == 0
+    record_path = admission_record_path(store.db_path)
+    with _connect(pg) as connection:
+        admitted = admit_cutover(
+            connection, db_path=store.db_path, project_id="zero",
+            expected_generation=0, operator="ops", reason="pilot",
+            acknowledge_unported=True,
+        )
+        assert admitted["admitted"] is True, admitted
+        from platform_core.algorithm_cutover import write_admission_record
+
+        write_admission_record(admitted["admission"], record_path)
+        assessment = assess_rollback(
+            connection, db_path=store.db_path, admission=admitted["admission"],
+        )
+    assert assessment["allowed"] is True, assessment["blocking"]
+    with _connect(pg) as connection:
+        result = rollback(
+            connection, db_path=store.db_path, admission_path=record_path,
+            confirmed=True, operator="ops", reason="undo",
+        )
+    assert result["rolled_back"] is True, result["assessment"]["blocking"]
+    assert result["admission"]["writer_generation"] >= 2
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+    barrier = AlgorithmSqlStore.read_authority_barrier_file(store.db_path)
+    assert barrier["phase"] == "ROLLBACK_APPLIED"
+
 
 
 def test_recovery_finishes_a_switching_crash_with_local_record_lost(pg):

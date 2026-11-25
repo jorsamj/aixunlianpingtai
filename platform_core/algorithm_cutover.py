@@ -307,6 +307,9 @@ def admit_cutover(
                 "maintenance switch instead of the legacy admission",
                 detail=f"phase={window.get('phase')} operation={window.get('operation_id')}",
             )
+    attempt_generation = int(expected_generation) + 1
+    maintenance_record = dict(maintenance) if maintenance else {}
+    legacy_authority = not maintenance_record
     evaluation = evaluate_admission(
         connection,
         db_path=db_path,
@@ -328,7 +331,6 @@ def admit_cutover(
         }
     report = evaluation["report"]
     admission_id = f"admit-{uuid.uuid4().hex}"
-    maintenance_record = dict(maintenance) if maintenance else {}
     evidence = {
         "operator": str(operator).strip(),
         "reason": str(reason).strip(),
@@ -339,6 +341,14 @@ def admit_cutover(
         "schema_version": (report.get("schema") or {}).get("target_version"),
         "source_db_path": str(db_path),
     }
+    # The legacy admission (used by tools and tests) must not become a second
+    # authority path that switches PostgreSQL without the persistent local
+    # barrier: the same blocking evidence is written before the commit.
+    if legacy_authority:
+        _authority_barrier(
+            db_path, project_id=project_id, phase=MAINTENANCE_SWITCHING,
+            writer_generation=attempt_generation,
+        )
     require_idle_transaction(connection, purpose="cutover admission")
     with connection.transaction():
         with connection.cursor(row_factory=dict_row) as cursor:
@@ -432,6 +442,15 @@ def admit_cutover(
             connection, project_id, admission_id,
             reason="source SQLite content changed during cutover admission",
         )
+        if legacy_authority:
+            try:
+                _authority_barrier(
+                    db_path, project_id=project_id, phase=MAINTENANCE_SQLITE_ACTIVE,
+                    writer_generation=attempt_generation,
+                    require_phase=MAINTENANCE_SWITCHING,
+                )
+            except Exception:  # noqa: BLE001 - the barrier stays blocking if unprovable
+                pass
         raise AlgorithmCutoverError(
             "ALGORITHM_CUTOVER_SOURCE_CHANGED_AFTER_ADMIT",
             "source changed during admission; authority was returned to SQLite",
@@ -454,6 +473,15 @@ def admit_cutover(
         "capabilities": ["ensure_ready", "revision", "read_all", "read_one", "write"],
         "unported_operations": list(UNSUPPORTED_OPERATIONS),
     }
+    # The authority really moved: settle the barrier the legacy path wrote. The
+    # maintenance path settles its own barrier under the window contract.
+    if legacy_authority:
+        _authority_barrier(
+            db_path, project_id=project_id, phase=MAINTENANCE_POSTGRES_ACTIVE,
+            writer_generation=int(expected_generation) + 1,
+            admission_id=admission_id,
+            require_phase=MAINTENANCE_SWITCHING,
+        )
     return {
         "admitted": True,
         "blocking": [],
@@ -696,6 +724,7 @@ def revoke_admission(
     operator: str,
     reason: str,
     assessment: Mapping[str, Any],
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     """Flip authority back to SQLite only after a passing rollback assessment."""
     from psycopg.rows import dict_row
@@ -760,6 +789,25 @@ def revoke_admission(
                     "the admission is not an active PostgreSQL authority",
                     detail=f"provider={authority} revoked={locked.get('revoked_at') is not None}",
                 )
+            # The revocation is only legal inside this rollback window: the
+            # durable phase and operation identity must be the ones the caller
+            # is rolling back.
+            maintenance = evidence.get("maintenance")
+            maintenance = dict(maintenance) if isinstance(maintenance, Mapping) else {}
+            durable_phase = str(maintenance.get("phase") or "")
+            durable_operation = str(maintenance.get("operation_id") or "")
+            if durable_phase != MAINTENANCE_ROLLBACK_QUIESCING:
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_PHASE_INVALID",
+                    "the durable phase does not allow a revocation",
+                    detail=f"phase={durable_phase}",
+                )
+            if operation_id is not None and durable_operation != str(operation_id):
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_OPERATION_MISMATCH",
+                    "the rollback operation does not own this project",
+                    detail=f"record={durable_operation} requested={operation_id}",
+                )
             # The caller's assessment is not trusted: re-read the authoritative
             # content inside this transaction and refuse any drift (a new
             # PostgreSQL write, or a target that no longer matches the admitted
@@ -776,16 +824,23 @@ def revoke_admission(
             target_content = (
                 None if target_snapshot is None else content_digest(target_snapshot)
             )
-            expected_content = str(
-                assessment.get("restore_content_digest") or admitted_content or ""
-            )
-            if not expected_content or target_content != expected_content:
+            # The durable admitted values are authoritative; the caller's
+            # assessment is only a cross-check. A revision of 0 is a valid
+            # revision and is compared like any other.
+            if not admitted_content or target_content != admitted_content:
                 raise AlgorithmCutoverError(
                     "ALGORITHM_ROLLBACK_TARGET_CHANGED",
                     "PostgreSQL content changed before the revocation",
-                    detail=f"target={target_content} expected={expected_content}",
+                    detail=f"target={target_content} admitted={admitted_content}",
                 )
-            if admitted_revision and target_revision != admitted_revision:
+            caller_digest = str(assessment.get("restore_content_digest") or "")
+            if caller_digest and caller_digest != admitted_content:
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_ASSESSMENT_MISMATCH",
+                    "the assessment does not describe the admitted content",
+                    detail=f"assessment={caller_digest} admitted={admitted_content}",
+                )
+            if target_revision != admitted_revision:
                 raise AlgorithmCutoverError(
                     "ALGORITHM_ROLLBACK_TARGET_HAS_NEW_WRITES",
                     "PostgreSQL received new writes after admission",
@@ -805,9 +860,20 @@ def revoke_admission(
             cursor.execute(
                 "UPDATE w5_algorithm.cutover_state SET authoritative_provider=%s,"
                 "writer_generation=writer_generation+1,revoked_at=now(),evidence=%s::jsonb "
-                "WHERE project_id=%s",
+                "WHERE project_id=%s "
+                "RETURNING writer_generation,revoked_at",
                 (PROVIDER_SQLITE, json.dumps(evidence, ensure_ascii=False), project_id),
             )
+            committed = cursor.fetchone()
+            if committed is None:
+                raise AlgorithmCutoverError(
+                    "ALGORITHM_ROLLBACK_NOT_SETTLED",
+                    "the revocation did not report its committed row",
+                )
+            committed_generation = int(committed["writer_generation"])
+            # Use the revocation evidence the database committed; never a local
+            # approximation of the timestamp.
+            revoked_at = str(committed["revoked_at"])
     return {
         "contract_version": CONTRACT_VERSION,
         "admission_id": admission_id,
@@ -816,11 +882,12 @@ def revoke_admission(
         "algorithm_revision": int(assessment.get("admitted_revision") or 0),
         "content_digest": assessment.get("admitted_content_digest"),
         "snapshot_digest": "",
-        "writer_generation": int(expected_generation) + 1,
+        "writer_generation": committed_generation,
         "admitted_at": None,
         "revoked_at": revoked_at,
         "operator": str(operator).strip(),
         "reason": str(reason).strip(),
+        "committed_generation": committed_generation,
     }
 
 
@@ -941,6 +1008,14 @@ def rollback(
         assessment=assessment,
         confirmed=True,
     )
+    # Prove the SQLite restore really happened before the authority is handed
+    # back: the revoked admission must describe the copy SQLite will serve.
+    restored_snapshot = export_source_snapshot(db_path, project_id)
+    if content_digest(restored_snapshot) != content_digest(snapshot):
+        raise AlgorithmCutoverError(
+            "ALGORITHM_ROLLBACK_RESTORE_UNPROVEN",
+            "the SQLite restore does not match the PostgreSQL content",
+        )
     revoked = revoke_admission(
         connection,
         project_id=project_id,
@@ -949,6 +1024,7 @@ def rollback(
         operator=operator,
         reason=reason,
         assessment=assessment,
+        operation_id=operation_id,
     )
     if str(revoked.get("authoritative_provider") or "") != PROVIDER_SQLITE:
         raise AlgorithmCutoverError(
@@ -995,6 +1071,8 @@ def rollback(
         operation_id=operation_id,
         writer_generation=int(revoked.get("writer_generation") or 0),
         admission_id=str(revoked.get("admission_id") or ""),
+        record_path=record_path,
+        require_phase=MAINTENANCE_POSTGRES_ACTIVE,
     )
     _remove_marker(marker_path, operation_id)
     return {
@@ -1414,6 +1492,9 @@ def _authority_barrier(
     operation_id: str = "",
     writer_generation: int = 0,
     admission_id: str = "",
+    record_path: str | Path | None = None,
+    require_operation: str | None = None,
+    require_phase: str | None = None,
 ) -> bool:
     """Write this project's local authority barrier next to the SQLite catalog.
 
@@ -1433,6 +1514,9 @@ def _authority_barrier(
             operation_id=operation_id,
             writer_generation=writer_generation,
             admission_id=admission_id,
+            record_path=record_path,
+            require_operation=require_operation,
+            require_phase=require_phase,
         )
     except Exception as error:  # unresolved barrier must not be guessed past
         raise AlgorithmCutoverError(
@@ -1595,6 +1679,7 @@ def switch_maintenance_owner(
         db_path, project_id=project_id, phase=MAINTENANCE_SWITCHING,
         operation_id=operation_id,
         writer_generation=int(expected_generation) + 1,
+        record_path=record_path,
     )
     admitted = admit_cutover(
         connection,
@@ -1652,6 +1737,9 @@ def switch_maintenance_owner(
             db_path, project_id=project_id, phase=str(restore_phase),
             operation_id=operation_id,
             writer_generation=int(expected_generation),
+            record_path=record_path,
+            require_operation=operation_id,
+            require_phase=MAINTENANCE_SWITCHING,
         )
         _remove_marker(admission_transition_path(record_path), operation_id)
         raise AlgorithmCutoverRefused(
@@ -1704,6 +1792,9 @@ def switch_maintenance_owner(
         operation_id=operation_id,
         writer_generation=int(admitted["admission"]["writer_generation"]),
         admission_id=str(admission.get("admission_id") or ""),
+        record_path=record_path,
+        require_operation=operation_id,
+        require_phase=MAINTENANCE_SWITCHING,
     )
     _remove_marker(admission_transition_path(record_path), operation_id)
     return {
@@ -2092,6 +2183,18 @@ def recover_maintenance(
     if str(current.get("phase")) in (
         MAINTENANCE_QUIESCING, MAINTENANCE_SOURCE_FROZEN, MAINTENANCE_VERIFIED,
     ):
+        # The audit identity is the window's own, or the caller's explicit one;
+        # it is resolved for every phase that can reach the switch, not only the
+        # frozen one (a VERIFIED window resumes straight into the switch).
+        stored_operator = str(current.get("operator") or "").strip()
+        stored_reason = str(current.get("reason") or "").strip()
+        effective_operator = str(operator or stored_operator).strip()
+        effective_reason = str(reason or stored_reason).strip()
+        if not effective_operator or not effective_reason:
+            result["next_step"] = (
+                "the window has no recorded operator/reason; supply them explicitly"
+            )
+            return result
         if durable_provider == PROVIDER_POSTGRESQL and not revoked:
             # PostgreSQL already owns the writer slot: re-importing straight into
             # it would bypass the provider's write gate. Finish the local side
@@ -2115,15 +2218,6 @@ def recover_maintenance(
                 current.get("content_digest") or current.get("snapshot_digest") or ""
             )
             frozen_revision = current.get("source_revision")
-            stored_operator = str(current.get("operator") or "").strip()
-            stored_reason = str(current.get("reason") or "").strip()
-            effective_operator = str(operator or stored_operator).strip()
-            effective_reason = str(reason or stored_reason).strip()
-            if not effective_operator or not effective_reason:
-                result["next_step"] = (
-                    "the window has no recorded operator/reason; supply them explicitly"
-                )
-                return result
             final_snapshot = export_source_snapshot(db_path, project_id)
             # Recovery may only replay the *frozen* source. A source that moved
             # after the freeze is a different dataset and must stay blocked.
@@ -2257,6 +2351,9 @@ def recover_maintenance(
                 operation_id=operation,
                 writer_generation=int(record["writer_generation"]),
                 admission_id=str(record.get("admission_id") or ""),
+                record_path=record_path,
+                require_operation=operation,
+                require_phase=MAINTENANCE_SWITCHING,
             )
             _remove_marker(marker_path, operation)
             result.update(applied=True, settled=True, phase=MAINTENANCE_POSTGRES_ACTIVE,
@@ -2282,6 +2379,18 @@ def recover_maintenance(
             expected_phase=MAINTENANCE_SWITCHING,
             expected_operation_id=operation,
             expected_generation=int(current.get("generation") or 0),
+        )
+        # The barrier was written as SWITCHING before the admission attempt: if
+        # the restore leaves it there, the durable authority says SQLite again but
+        # every SQLite write still refuses. Settle the barrier with the same
+        # verdict before the marker is cleared.
+        _authority_barrier(
+            db_path, project_id=project_id, phase=str(restore_phase),
+            operation_id=operation,
+            writer_generation=int(current.get("generation") or 0),
+            record_path=record_path,
+            require_operation=operation,
+            require_phase=MAINTENANCE_SWITCHING,
         )
         _remove_marker(marker_path, operation)
         result.update(applied=True, settled=True, phase=restore_phase, write_blocked=False)
@@ -2323,6 +2432,8 @@ def recover_maintenance(
                 operation_id=operation,
                 writer_generation=int(record["writer_generation"]),
                 admission_id=str(record.get("admission_id") or ""),
+                record_path=record_path,
+                require_phase=MAINTENANCE_POSTGRES_ACTIVE,
             )
             _remove_marker(marker_path, operation)
             result.update(applied=True, settled=True, phase=MAINTENANCE_ROLLBACK_APPLIED,
@@ -2384,6 +2495,7 @@ def recover_maintenance(
             operation_id=operation,
             writer_generation=int((durable or {}).get("writer_generation") or 0),
             admission_id=str((durable or {}).get("admission_id") or ""),
+            record_path=record_path,
         )
         if marker is not None:
             _remove_marker(marker_path, operation)

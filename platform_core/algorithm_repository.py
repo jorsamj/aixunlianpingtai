@@ -638,40 +638,12 @@ def open_algorithm_repository(
         )
     from .algorithm_postgres_store import PostgresAlgorithmRepository
 
-    # Heal the local barrier from the admission that was just validated. A
-    # project switched before the barrier existed (or whose catalog lost it)
-    # keeps refusing SQLite writes through the admission record; recording the
-    # barrier makes that protection survive the record being lost later. The
-    # heal is best effort: PostgreSQL is already authoritative, so a local
-    # catalog problem must not take the provider down.
-    barrier_phase = (
-        "ROLLBACK_APPLIED" if record.get("revoked_at") else "POSTGRES_ACTIVE"
-    )
-    try:
-        from .algorithm_sql_store import AlgorithmSqlStore
-
-        project_id = str(record["project_id"])
-        current = AlgorithmSqlStore.read_authority_barrier_file(
-            authority_barrier_path(json_path)
-        )
-        if (
-            current is None
-            or str(current.get("project_id") or "") != project_id
-            or str(current.get("phase") or "") != barrier_phase
-            or str(current.get("admission_id") or "")
-            != str(record.get("admission_id") or "")
-        ):
-            write_authority_barrier(
-                json_path,
-                project_id=project_id,
-                phase=barrier_phase,
-                operation_id=str(record.get("operation_id") or ""),
-                writer_generation=int(record.get("writer_generation") or 0),
-                admission_id=str(record.get("admission_id") or ""),
-            )
-    except Exception:  # noqa: BLE001 - the barrier is repaired, never required
-        pass
-
+    # This factory only *selects* the provider; it has no authority to write or
+    # release the SQLite barrier. Changing that persistent evidence requires a
+    # verified maintenance settlement (switch_maintenance_owner / rollback /
+    # recover_maintenance), which proves the durable PostgreSQL state first.
+    # Opening a provider from a stale local admission record must never be able
+    # to release a newer generation's blocking barrier.
     return PostgresAlgorithmRepository(
         resolved_dsn, str(record["project_id"]), admission=record
     )
@@ -698,18 +670,62 @@ def write_authority_barrier(
     operation_id: str = "",
     writer_generation: int = 0,
     admission_id: str = "",
+    record_path: str | Path | None = None,
+    require_operation: str | None = None,
+    require_phase: str | None = None,
 ) -> bool:
     """Record this project's local authority state inside the SQLite catalog.
 
-    The write takes the same switch mutex every SQLite writer takes, so it can
-    never land in the middle of an admitted write: the barrier follows a drained
-    writer and precedes the PostgreSQL commit.
+    The write takes the same switch mutex every SQLite writer takes (the mutex of
+    the *same* admission record the caller uses, so a project never ends up with
+    two lock identities). It is compare-and-swap: a barrier recording a *higher*
+    writer generation is never overwritten by an older one, and a caller that
+    names the operation/phase it settles must match what is recorded. Releasing a
+    blocking barrier (SQLITE_ACTIVE / ROLLBACK_APPLIED) therefore requires the
+    exact predecessor the maintenance contract proved.
     """
     from .algorithm_sql_store import AlgorithmSqlStore
 
     path = Path(json_path)
-    with admission_switch_lock(admission_record_path(path)):
+    lock_owner = Path(record_path) if record_path else admission_record_path(path)
+    with admission_switch_lock(lock_owner):
         store = AlgorithmSqlStore(path)
+        current = store.read_authority_barrier()
+        if current is not None:
+            if str(current.get("project_id") or "") != str(project_id):
+                raise AlgorithmAdmissionRequired(
+                    "ALGORITHM_SQLITE_CUTOVER_BARRIER_INVALID",
+                    "the local authority barrier belongs to another project",
+                    detail=f"barrier={current.get('project_id')!r} project={project_id!r}",
+                )
+            recorded_generation = int(current.get("writer_generation") or 0)
+            if int(writer_generation or 0) < recorded_generation:
+                raise AlgorithmAdmissionRequired(
+                    "ALGORITHM_SQLITE_CUTOVER_BARRIER_STALE",
+                    "a newer generation owns the local authority barrier",
+                    detail=(
+                        f"recorded={recorded_generation} requested={int(writer_generation or 0)}"
+                    ),
+                )
+            if require_operation is not None and str(
+                current.get("operation_id") or ""
+            ) != str(require_operation):
+                raise AlgorithmAdmissionRequired(
+                    "ALGORITHM_SQLITE_CUTOVER_BARRIER_OPERATION_MISMATCH",
+                    "the local authority barrier names another operation",
+                    detail=(
+                        f"recorded={current.get('operation_id')!r} "
+                        f"expected={require_operation!r}"
+                    ),
+                )
+            if require_phase is not None and str(
+                current.get("phase") or ""
+            ) != str(require_phase):
+                raise AlgorithmAdmissionRequired(
+                    "ALGORITHM_SQLITE_CUTOVER_BARRIER_PHASE_MISMATCH",
+                    "the local authority barrier is not in the expected phase",
+                    detail=f"recorded={current.get('phase')!r} expected={require_phase!r}",
+                )
         return store.write_authority_barrier({
             "schema": "algorithm-authority-barrier/1",
             "project_id": str(project_id),
