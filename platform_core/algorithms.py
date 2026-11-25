@@ -8,6 +8,18 @@ from .algorithm_sql_store import AlgorithmSqlStore
 from .errors import PlatformError
 
 
+def _algorithm_repository(path: Path):
+    """The authoritative algorithm provider for one project catalog path.
+
+    Every formal business access in this module goes through here, so a project
+    has exactly one authoritative fact source: the existing SQLite store by
+    default, the PostgreSQL provider once a cutover admission exists. It never
+    falls back silently and an unresolved cutover refuses both sides.
+    """
+    from .algorithm_repository import open_algorithm_repository
+
+    return open_algorithm_repository(Path(path))
+
 def _update_lock(path: Path) -> FileLock:
     return FileLock(str(path.resolve()) + ".lock", timeout=30)
 
@@ -251,22 +263,22 @@ def list_algorithms(path: Path, *, summary_only: bool = False) -> list[dict]:
     without changing algorithm/version IDs. The JSON file is retained as a
     read-only migration source and backed up before SQL becomes authoritative.
     """
-    return AlgorithmSqlStore(Path(path)).read_all(summary_only=summary_only)
+    return _algorithm_repository(path).read_all(summary_only=summary_only)
 
 
 def save_algorithms(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
     """Persist the full algorithm graph transactionally in SQL."""
-    AlgorithmSqlStore(Path(path)).replace_all(algorithms)
+    _algorithm_repository(path).replace_all(algorithms)
 
 
 def algorithm_store_status(path: Path) -> dict[str, Any]:
     """Expose migration/storage diagnostics without changing frontend payloads."""
-    return AlgorithmSqlStore(Path(path)).migration_status()
+    return _algorithm_repository(path).migration_status()
 
 
 def algorithm_store_revision(path: Path) -> int:
     """Return the canonical algorithm graph revision for read-cache invalidation."""
-    return AlgorithmSqlStore(Path(path)).revision()
+    return _algorithm_repository(path).revision()
 
 
 def create_algorithm(
@@ -292,10 +304,10 @@ def create_algorithm(
         "created_at": now,
         "updated_at": now,
     }
-    return AlgorithmSqlStore(Path(path)).create_algorithm(item)
+    return _algorithm_repository(path).create_algorithm(item)
 
 def update_algorithm(path: Path, algorithm_id: str, payload: Mapping[str, Any], now: str) -> dict:
-    store = AlgorithmSqlStore(Path(path))
+    store = _algorithm_repository(path)
     existing = store.read_one(str(algorithm_id))
     if existing is None:
         raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
@@ -311,10 +323,10 @@ def update_algorithm(path: Path, algorithm_id: str, payload: Mapping[str, Any], 
     return store.patch_algorithm(str(algorithm_id), patch)
 
 def delete_algorithm(path: Path, algorithm_id: str) -> None:
-    AlgorithmSqlStore(Path(path)).delete_algorithm(str(algorithm_id))
+    _algorithm_repository(path).delete_algorithm(str(algorithm_id))
 
 def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any]) -> dict:
-    return AlgorithmSqlStore(Path(path)).attach_version(str(algorithm_id), version)
+    return _algorithm_repository(path).attach_version(str(algorithm_id), version)
 
 def attach_version_if_current(
     path: Path,
@@ -327,7 +339,7 @@ def attach_version_if_current(
     from .model_metadata import model_metadata
     algorithm = next((row for row in list_algorithms(Path(path)) if str(row.get("id")) == str(algorithm_id)), {})
     version = {**version, "model_metadata": model_metadata(Path(path).parent.parent.parent, version, algorithm=algorithm)}
-    result = AlgorithmSqlStore(Path(path)).attach_version_if_current(
+    result = _algorithm_repository(path).attach_version_if_current(
         str(algorithm_id),
         version,
         expected_current_version_id=expected_current_version_id,
@@ -348,7 +360,7 @@ def update_algorithm_version(
 ) -> dict:
     protected = {"id", "version_id", "base_version_id", "parent_version_id"}
     values = {key: value for key, value in patch.items() if key not in protected}
-    return AlgorithmSqlStore(Path(path)).patch_version(str(algorithm_id), str(version_id), values, now=now)
+    return _algorithm_repository(path).patch_version(str(algorithm_id), str(version_id), values, now=now)
 
 def rollback_algorithm_version(
     path: Path,
@@ -368,7 +380,7 @@ def rollback_algorithm_version(
     # pointer-only rollback to bypass the deletion contract.
     delete_current_version = True
     operation_id = uuid.uuid4().hex[:12]
-    store = AlgorithmSqlStore(Path(path))
+    store = _algorithm_repository(path)
     algorithm = store.read_one(str(algorithm_id))
     if algorithm is None:
         raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
@@ -467,7 +479,7 @@ def delete_algorithm_version(
     cleanup: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict:
     operation_id = uuid.uuid4().hex[:12]
-    store = AlgorithmSqlStore(Path(path))
+    store = _algorithm_repository(path)
     algorithm = store.read_one(str(algorithm_id))
     if algorithm is None:
         raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
@@ -561,7 +573,7 @@ def retry_algorithm_version_cleanup(
     algorithm_id = str(algorithm_id)
     operation_id = str(operation_id)
     with _update_lock(path):
-        store = AlgorithmSqlStore(path)
+        store = _algorithm_repository(path)
         algorithm = store.read_one(algorithm_id)
         if algorithm is None:
             raise PlatformError(

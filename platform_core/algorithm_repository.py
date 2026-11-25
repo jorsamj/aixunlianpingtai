@@ -167,12 +167,28 @@ class AlgorithmRepository(Protocol):
 #: Store method names that mutate algorithm state. Anything reached through the
 #: pass-through adapter with one of these prefixes is treated as a write and must
 #: pass the authority guard, so an undeclared helper cannot silently bypass it.
-_NON_WRITE_NAME_PREFIXES = ("read_", "list_", "get_", "load_", "count_", "describe_", "find_", "query_")
+#: The explicit mutating contract of the algorithm repository. Write authority
+#: is decided by membership here, never by guessing from a method name.
+WRITE_OPERATIONS = frozenset({
+    "replace_all",
+    "create_algorithm",
+    "patch_algorithm",
+    "delete_algorithm",
+    "attach_version",
+    "attach_version_if_current",
+    "patch_version",
+    "rollback_version",
+    "delete_version_with_operation",
+    "update_version_operation",
+    "sync_external_algorithms",
+})
 
-_WRITE_NAME_PREFIXES = (
-    "replace_", "create_", "patch_", "delete_", "attach_", "rollback_",
-    "update_", "sync_", "save_", "write_", "set_", "remap_", "repair_",
-)
+#: Operations a pass-through adapter may serve without a write check. Anything
+#: outside this set is treated as a write (fail closed), so an undeclared helper
+#: cannot bypass the authority guard.
+_KNOWN_READ_OPERATIONS = frozenset(CORE_OPERATIONS) | frozenset(PRESENTATION_OPERATIONS) | frozenset({
+    "ensure_ready",
+})
 
 
 class _GuardedStore:
@@ -185,9 +201,10 @@ class _GuardedStore:
     def __getattr__(self, name: str) -> Any:
         store = object.__getattribute__(self, "_wrapped_store")
         attribute = getattr(store, name)
-        if name.startswith("_") or name.startswith(_NON_WRITE_NAME_PREFIXES):
+        if name.startswith("_"):
             return attribute
-        if callable(attribute) and name.startswith(_WRITE_NAME_PREFIXES):
+        is_write = name in WRITE_OPERATIONS or name not in _KNOWN_READ_OPERATIONS
+        if callable(attribute) and is_write:
             guard = object.__getattribute__(self, "_wrapped_guard")
 
             def guarded(*args: Any, **kwargs: Any) -> Any:
