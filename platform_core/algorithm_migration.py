@@ -1202,17 +1202,34 @@ def build_report(
     if source_has_cleanup:
         table_names.append("cleanup")
     if True:
-        checks["snapshot_contract"] = _check(
-            target is not None
-            and str(source.get("contract_version")) == str(target.get("contract_version"))
+        target_cleanup_rows = (target_tables or {}).get("cleanup") or []
+        same_contract = (
+            str(source.get("contract_version")) == str(target.get("contract_version"))
             and (
                 str(source.get("cleanup_capability") or "")
                 == str((target or {}).get("cleanup_capability") or "")
                 or (
                     not (source_tables.get("cleanup") or [])
-                    and not ((target_tables or {}).get("cleanup") or [])
+                    and not target_cleanup_rows
                 )
-            ),
+            )
+        )
+        # A V1 document over a genuine V1 project is a legal three-domain
+        # comparison even though the target was exported as a four-domain
+        # document to read its full safety facts. It never covers a project with
+        # receipts or completed V2 evidence, and a V2 document still needs both
+        # the fourth domain and the persisted APPLY evidence.
+        v1_over_v1 = (
+            not source_has_cleanup
+            and not target_v2_evidence
+            and not target_cleanup_rows
+        )
+        v2_complete = (
+            source_has_cleanup and target_has_cleanup and target_v2_evidence
+        )
+        checks["snapshot_contract"] = _check(
+            target is not None and (same_contract or v1_over_v1) and
+            (not source_has_cleanup or v2_complete),
             source=str(source.get("contract_version")),
             target=None if target is None else str(target.get("contract_version")),
             source_capability=source.get("cleanup_capability"),

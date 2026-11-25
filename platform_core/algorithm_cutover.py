@@ -26,7 +26,7 @@ import uuid
 from contextlib import contextmanager, closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .algorithm_migration import (
     build_report,
