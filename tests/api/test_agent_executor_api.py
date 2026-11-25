@@ -66,7 +66,7 @@ def create_task(repository, artifacts, task_id="train-api-agent"):
     )
 
 
-def create_node(repository, node_id="gpu-api-agent"):
+def create_node(repository, node_id="gpu-api-agent", *, gpu_uuid=None):
     nodes = ServiceNodeRepository(repository)
     _node, token = nodes.create({
         "node_id": node_id,
@@ -84,6 +84,7 @@ def create_node(repository, node_id="gpu-api-agent"):
                 "gpus": [{
                     "id": "cuda:0",
                     "index": 0,
+                    **({"uuid": gpu_uuid} if gpu_uuid is not None else {}),
                     "name": "NVIDIA A800",
                     "memory_free_bytes": 30 * 1024**3,
                     "memory_total_bytes": 40 * 1024**3,
@@ -99,9 +100,9 @@ def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def prepare(client, repository, artifacts):
+def prepare(client, repository, artifacts, *, gpu_uuid=None):
     create_task(repository, artifacts)
-    nodes, token = create_node(repository)
+    nodes, token = create_node(repository, gpu_uuid=gpu_uuid)
     service = AgentExecutionService(repository, artifacts)
     assignment = service.allocator.assign_next()
     assert assignment is not None
@@ -1029,7 +1030,10 @@ def test_remote_agent_recovery_diagnosis_refuses_nonheld_execution(tmp_path):
 
 
 def _start_single_slot_execution(client, repository, artifacts):
-    _nodes, token = prepare(client, repository, artifacts)
+    _nodes, token = prepare(
+        client, repository, artifacts,
+        gpu_uuid="GPU-12345678-1234-1234-1234-123456789abc",
+    )
     claim = client.post(
         "/api/v63/node-executor/gpu-api-agent/assignments/claim",
         headers=auth(token),
@@ -1042,16 +1046,18 @@ def _start_single_slot_execution(client, repository, artifacts):
         json={"assignment_lease_token": assignment["assignment_lease_token"]},
     )
     assert started.status_code == 200, started.text
+    gpu_uuid = assignment["resolved_execution_config"]["selected_gpu"]["uuid"]
+    assert gpu_uuid
     return token, int(assignment["generation"]), int(
         started.json()["execution"]["generation"]
-    )
+    ), gpu_uuid
 
 
-def _single_slot_recovery_body(assignment_generation, execution_generation):
+def _single_slot_recovery_body(assignment_generation, execution_generation, gpu_uuid):
     return {
         "assignment_generation": int(assignment_generation),
         "execution_generation": int(execution_generation),
-        "gpu_uuid": "",
+        "gpu_uuid": gpu_uuid,
         "process_identity": {
             "pid": 4321, "create_time": 1234.5, "command_hash": "a" * 64,
         },
@@ -1061,7 +1067,7 @@ def _single_slot_recovery_body(assignment_generation, execution_generation):
 def test_single_slot_recovery_settles_the_exact_original_execution(tmp_path):
     """A single-slot execution has no Hold; the fenced recovery is its settlement."""
     client, repository, artifacts = client_for(tmp_path)
-    token, assignment_generation, generation = _start_single_slot_execution(
+    token, assignment_generation, generation, gpu_uuid = _start_single_slot_execution(
         client, repository, artifacts,
     )
     with repository._connect() as database:
@@ -1074,7 +1080,7 @@ def test_single_slot_recovery_settles_the_exact_original_execution(tmp_path):
     path = (
         "/api/v63/node-executor/gpu-api-agent/executions/train-api-agent/recover"
     )
-    body = _single_slot_recovery_body(assignment_generation, generation)
+    body = _single_slot_recovery_body(assignment_generation, generation, gpu_uuid)
     recovered = client.post(path, headers=auth(token), json=body)
     assert recovered.status_code == 200, recovered.text
     payload = recovered.json()
@@ -1116,7 +1122,7 @@ def test_single_slot_recovery_settles_the_exact_original_execution(tmp_path):
 
 def test_single_slot_recovery_of_a_cancel_requested_execution_returns_cancelled(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
-    token, assignment_generation, generation = _start_single_slot_execution(
+    token, assignment_generation, generation, gpu_uuid = _start_single_slot_execution(
         client, repository, artifacts,
     )
     assert repository.request_cancel("train-api-agent").status.value == "CANCEL_REQUESTED"
@@ -1126,7 +1132,7 @@ def test_single_slot_recovery_of_a_cancel_requested_execution_returns_cancelled(
     recovered = client.post(
         path,
         headers=auth(token),
-        json=_single_slot_recovery_body(assignment_generation, generation),
+        json=_single_slot_recovery_body(assignment_generation, generation, gpu_uuid),
     )
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["terminal_status"] == "CANCELLED"
@@ -1135,20 +1141,20 @@ def test_single_slot_recovery_of_a_cancel_requested_execution_returns_cancelled(
 
 def test_single_slot_recovery_rejects_another_assignment_or_identity(tmp_path):
     client, repository, artifacts = client_for(tmp_path)
-    token, assignment_generation, generation = _start_single_slot_execution(
+    token, assignment_generation, generation, gpu_uuid = _start_single_slot_execution(
         client, repository, artifacts,
     )
     path = (
         "/api/v63/node-executor/gpu-api-agent/executions/train-api-agent/recover"
     )
     wrong_assignment = _single_slot_recovery_body(
-        assignment_generation + 1, generation,
+        assignment_generation + 1, generation, gpu_uuid,
     )
     rejected = client.post(path, headers=auth(token), json=wrong_assignment)
     assert rejected.status_code == 409
     assert rejected.json()["detail"]["code"] == "STOP_PROOF_IDENTITY_MISMATCH"
     wrong_generation = _single_slot_recovery_body(
-        assignment_generation, generation + 1,
+        assignment_generation, generation + 1, gpu_uuid,
     )
     assert client.post(path, headers=auth(token), json=wrong_generation).status_code == 409
     assert repository.get("train-api-agent").status.value == "RUNNING"
