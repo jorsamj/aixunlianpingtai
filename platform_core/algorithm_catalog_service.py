@@ -16,7 +16,7 @@ import shutil
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from fastapi import HTTPException
-from platform_core.algorithms import algorithm_store_revision, delete_algorithm_version, project_current_version, resolve_current_version_id, rollback_algorithm_version, retry_algorithm_version_cleanup, create_algorithm as create_algorithm_asset, delete_algorithm as delete_algorithm_asset, list_algorithms as list_algorithm_assets, update_algorithm as update_algorithm_asset, update_algorithm_version
+from platform_core.algorithms import algorithm_store_revision, delete_algorithm_version, project_current_version, resolve_current_version_id, rollback_algorithm_version, retry_algorithm_version_cleanup, create_algorithm as create_algorithm_asset, list_algorithms as list_algorithm_assets, update_algorithm as update_algorithm_asset, update_algorithm_version
 from platform_core.errors import PlatformError
 from platform_core.model_artifacts import ModelArtifactService, model_delivery_version_fence
 from platform_core.storage import StorageProviderFactory, StorageType
@@ -713,10 +713,50 @@ class AlgorithmCatalogService:
         item = update_algorithm_asset(self.dependencies.algorithms_file(project_id), algorithm_id, payload.model_dump(), self.dependencies.now_iso())
         return {"ok": True, "algorithm": {'id':item['id']} if asset_view else item}
 
+    def _catalog_algorithm(self, project_id: str, algorithm_id: str):
+        self.dependencies.get_project(project_id)
+        algorithm = self.dependencies.repository(project_id).read_one(algorithm_id)
+        if algorithm is None:
+            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", algorithm_id, "请刷新算法库。", 404)
+        return algorithm
+
+    def algorithm_deletion_preflight(self, project_id: str, algorithm_id: str):
+        algorithm = self._catalog_algorithm(project_id, algorithm_id)
+        try:
+            assert_algorithm_mutable(self.dependencies.algorithms_file(project_id), algorithm_id)
+        except PlatformError as error:
+            if error.code != "EXTERNAL_ALGORITHM_READONLY":
+                raise
+            return {"project_id": project_id, "algorithm_id": algorithm_id, "allowed": False,
+                    "code": error.code, "message": error.message, "detail": error.detail, "solution": error.solution}
+        version_count = len(algorithm.get("versions") or [])
+        current_version_id = algorithm.get("current_version_id")
+        operation_count = len(algorithm.get("version_operations") or [])
+        known_history = bool(version_count or current_version_id or operation_count)
+        return {
+            "project_id": project_id, "algorithm_id": algorithm_id, "allowed": False,
+            "version_count": version_count, "current_version_id": current_version_id,
+            "version_operation_count": operation_count,
+            "code": "ALGORITHM_DELETE_HISTORY_EXISTS" if known_history else "ALGORITHM_DELETE_REFERENCES_UNVERIFIED",
+            "message": "算法仍有版本、当前版本指针或版本操作历史" if known_history
+            else "尚无法在同一保护边界内核验算法的任务、产物及业务引用",
+        }
+
     def v12_delete_algorithm(self, project_id: str, algorithm_id: str):
-        assert_algorithm_mutable(self.dependencies.algorithms_file(project_id), algorithm_id)
-        delete_algorithm_asset(self.dependencies.algorithms_file(project_id), algorithm_id)
-        return {"ok": True}
+        decision = self.algorithm_deletion_preflight(project_id, algorithm_id)
+        # A version fence only protects a known version. First training without
+        # a base version, and other algorithm-level owners, can publish while
+        # a catalog scan is in progress. No HTTP path may call cascading DELETE.
+        raise PlatformError(decision["code"], decision["message"], decision.get("detail", algorithm_id),
+                            decision.get("solution", "算法及历史已保留。请使用原版本退役流程或等待整算法安全退役。"), 409)
+
+    def list_algorithm_version_operations(self, project_id: str, algorithm_id: str, offset: int, limit: int):
+        algorithm = self._catalog_algorithm(project_id, algorithm_id)
+        operations = [row for row in (algorithm.get("version_operations") or []) if isinstance(row, Mapping)]
+        operations.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")), reverse=True)
+        fields = ("id", "action", "deleted_version_id", "from_version_id", "to_version_id", "cleanup_status", "created_at")
+        return {"project_id": project_id, "algorithm_id": algorithm_id, "total": len(operations),
+                "items": [{key: row.get(key) for key in fields} for row in operations[offset:offset + limit]]}
 
     def v12_pending_models(self, project_id: str):
         used = self.used_model_keys(project_id)

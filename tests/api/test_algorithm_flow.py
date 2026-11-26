@@ -31,6 +31,24 @@ def test_duplicate_algorithm_name_is_actionable(client, seeded_project):
     assert response.json()["solution"]
 
 
+def test_algorithm_delete_fails_closed_when_cross_domain_references_cannot_be_proved(client, seeded_project):
+    project_id, _ = seeded_project
+    collection = f"/api/v12/projects/{project_id}/algorithms"
+    created = client.post(collection, json={"name": "空算法删除保护", "industry": "", "algorithm_type": "", "remark": ""})
+    assert created.status_code == 200, created.text
+    algorithm_id = created.json()["algorithm"]["id"]
+    path = f"{collection}/{algorithm_id}"
+
+    preview = client.get(path + "/deletion-preflight")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["allowed"] is False
+    assert preview.json()["version_count"] == 0
+    denied = client.delete(path)
+    assert denied.status_code == 409
+    assert denied.json()["code"] == preview.json()["code"] == "ALGORITHM_DELETE_REFERENCES_UNVERIFIED"
+    assert client.get(path).json()["algorithm"]["id"] == algorithm_id
+
+
 def test_algorithm_detail_endpoint_returns_current_asset_and_missing_is_404(client, seeded_project):
     project_id, _ = seeded_project
     created = client.post(

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Callable
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from .algorithm_catalog_contracts import AlgorithmReq, AlgorithmVersionReq, VersionPatchReq, AlgorithmVersionRollbackReq
 from .algorithm_catalog_service import AlgorithmCatalogService
 
@@ -29,6 +29,15 @@ def create_algorithm_catalog_router(service: Callable[[], AlgorithmCatalogServic
     @router.delete('/api/v12/projects/{project_id}/algorithms/{algorithm_id}')
     def v12_delete_algorithm(project_id: str, algorithm_id: str):
         return service().v12_delete_algorithm(project_id, algorithm_id)
+
+    @router.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/deletion-preflight')
+    def algorithm_deletion_preflight(project_id: str, algorithm_id: str):
+        return service().algorithm_deletion_preflight(project_id, algorithm_id)
+
+    @router.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/version-operations')
+    def list_algorithm_version_operations(project_id: str, algorithm_id: str,
+                                          offset: int=Query(default=0, ge=0), limit: int=Query(default=20, ge=1, le=50)):
+        return service().list_algorithm_version_operations(project_id, algorithm_id, offset, limit)
 
     @router.get('/api/v12/projects/{project_id}/publish/pending')
     def v12_pending_models(project_id: str):

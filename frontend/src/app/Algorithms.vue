@@ -7,6 +7,8 @@ import {deletedVersion,retryVersionCleanup,type LifecycleTarget,type VersionOper
 import type {AlgorithmCategory,AlgorithmSummary,ModelVersion,Paged,VersionPage,VersionDetail} from '../types/model-browse';
 import {useReadScope} from '../composables/useReadScope';
 import AlgorithmLifecycleDialog from '../components/AlgorithmLifecycleDialog.vue';
+import AlgorithmCatalogOperations from '../components/AlgorithmCatalogOperations.vue';
+import AlgorithmReport from '../components/AlgorithmReport.vue';
 import ModelVersionDetails from '../components/ModelVersionDetails.vue';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {request} from './http';
@@ -105,6 +107,8 @@ function versionReport(algorithmId:string,versionId:string,evaluation=false){
 const algorithms=ref<Paged<AlgorithmSummary>|null>(null),versions=ref<VersionPage|null>(null),detail=ref<VersionDetail|null>(null),basic=ref<AlgorithmBasic|null>(null);
 const selected=computed(()=>String(route.query.algorithm||'')),versionPage=ref(1),drawer=ref(false),editing=ref(false),editingId=ref(''),saving=ref(false),writeError=ref('');
 const lifecycleTarget=ref<LifecycleTarget|null>(null);
+const catalogOperations=ref<{id:string;name:string;mode:'deletion'|'history'}>();
+const reportTarget=ref<string>();
 const lifecycleKey='algorithm-lifecycle:'+JSON.stringify([useWorkspace().actorKey,projectId]);
 const lifecyclePending=ref<LifecycleTarget|null>(null),lifecycleStorageProblem=ref(false);
 try{
@@ -373,15 +377,19 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
     <el-button :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ selected===algorithm.id?'收起详情':'详情与版本' }}</el-button>
     <el-button :disabled="unconfirmed&&!external(algorithm)" @click="edit(algorithm.id)">{{ external(algorithm)?'基本信息':'基本编辑' }}</el-button>
     <a v-if="algorithm.trainable===true" :href="'/app/#/projects/'+encodeURIComponent(projectId)+'/training/create?algorithm='+encodeURIComponent(algorithm.id)">训练</a>
-    <a :href="original(algorithm.id,'algorithm-report')">算法报告</a>
+    <el-button link @click="reportTarget=algorithm.id">算法报告</el-button>
     <a v-if="external(algorithm)" :href="legacyUrl(projectId,'平台对接')">外部同步 · 原流程</a>
-    <a v-else :href="original(algorithm.id,'delete-algorithm')">删除算法 · 原流程</a>
+    <el-button v-else link @click="catalogOperations={id:algorithm.id,name:algorithm.name,mode:'deletion'}">删除算法</el-button>
    </footer>
 
   </article>
  </div>
    <section v-if="selected" class="version-panel" aria-label="算法详情与版本">
-    <header><div><h2>{{ versions?.algorithm.name||selected }}</h2><h3>模型版本</h3></div><span v-if="versions">共 {{ versions.total }} 个版本</span></header>
+    <header><div><h2>{{ versions?.algorithm.name||selected }}</h2><h3>模型版本</h3></div>
+     <div v-if="versions"><span>共 {{ versions.total }} 个版本</span>
+      <el-button link @click="catalogOperations={id:versions.algorithm.id,name:versions.algorithm.name,mode:'history'}">版本操作历史</el-button>
+     </div>
+    </header>
     <el-alert v-if="reads.errors.versions" :title="reads.errors.versions" type="error" :closable="false"/>
     <el-table :data="versions?.items||[]" row-key="id" v-loading="reads.busy.versions" empty-text="暂无版本">
      <el-table-column label="模型版本" min-width="165"><template #default="{row}"><strong>{{ row.version_name||row.id }}</strong><el-tag v-if="versions?.algorithm.current_version_id===row.id" type="info">当前版本</el-tag><small class="version-id">{{ row.id }}</small></template></el-table-column>
@@ -425,4 +433,8 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
  </el-drawer>
  <AlgorithmLifecycleDialog v-if="lifecycleTarget" :project-id="projectId" :target="lifecycleTarget"
   :recovering="!!lifecyclePending" :save-intent="saveLifecycle" @close="lifecycleTarget=null" @completed="lifecycleCompleted"/>
+ <AlgorithmCatalogOperations v-if="catalogOperations" :key="catalogOperations.id+catalogOperations.mode" :project-id="projectId"
+  :algorithm-id="catalogOperations.id" :algorithm-name="catalogOperations.name" :mode="catalogOperations.mode" @close="catalogOperations=undefined"/>
+ <AlgorithmReport v-if="reportTarget" :key="reportTarget" :project-id="projectId" :algorithm-id="reportTarget"
+  :back="route.fullPath" :legacy-href="original(reportTarget,'algorithm-report')" @close="reportTarget=undefined"/>
 </section></template>

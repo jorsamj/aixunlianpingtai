@@ -522,12 +522,22 @@ def test_rollback_cleanup_failure_can_retry_without_recreating_deleted_version(
     assert operation["cleanup_version"]["id"] == "v5"
     operation_id = operation["id"]
 
+    history_path = f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/version-operations"
+    history = client.get(history_path, params={"limit": 1})
+    assert history.status_code == 200, history.text
+    history_row, = history.json()["items"]
+    assert history_row["id"] == operation_id
+    assert history_row["deleted_version_id"] == "v5"
+    assert history_row["cleanup_status"] == "cleanup_failed"
+    assert "cleanup_version" not in history_row
+
     retried = client.post(
         f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/version-operations/{operation_id}/retry-cleanup"
     )
     assert retried.status_code == 200, retried.text
     assert retried.json()["cleanup_status"] == "cleanup_completed"
     assert retried.json()["already_completed"] is False
+    assert client.get(history_path).json()["items"][0]["cleanup_status"] == "cleanup_completed"
     assert calls == {"artifacts": 2, "publications": 1}
 
     repeated = client.post(
