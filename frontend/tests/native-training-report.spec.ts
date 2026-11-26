@@ -93,7 +93,8 @@ test('native report preserves task origin, pages history, and reads frozen evalu
   await expect(page.getByRole('heading',{name:'报告已记录'})).toBeVisible();
   await page.getByRole('button',{name:'独立评测',exact:true}).click();
   await expect(page.getByText('scope-frozen',{exact:true})).toBeVisible();
-  const href=await page.getByRole('link',{name:/继续训练.*LEGACY_BRIDGE/}).getAttribute('href');
+  await expect(page.getByRole('button',{name:'困难样本与继续训练',exact:true})).toBeVisible();
+  const href=await page.getByRole('link',{name:'原高级评测',exact:true}).getAttribute('href');
   expect(new URL(href!,'https://app.example.test').searchParams.get('return_to')).toBe(source);
   await page.getByRole('link',{name:'返回来源'}).click();
   await expect(page).toHaveURL('/app/#'+source);

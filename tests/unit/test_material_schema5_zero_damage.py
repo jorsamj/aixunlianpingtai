@@ -12,6 +12,7 @@ from PIL import Image
 import pytest
 
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core import material_repository_batch as material_batch_module
 import platform_core.material_repository as materials_module
 from platform_core.material_repository import MaterialRepository, existing_sqlite_reader
 from platform_core.model_artifacts import ModelArtifactRepository
@@ -210,6 +211,9 @@ def test_existing_schema7_adds_receipts_atomically_on_reopen(tmp_path, monkeypat
         assert not repository._required_objects_present(db)
     assert repository._read_schema_version_fast() is None
     before = schema_state(filename)
+    # Simulate a fresh process reopening the damaged schema-7 file; the
+    # in-process repository-ready cache must not hide the receipt migration.
+    material_batch_module._MATERIAL_INIT_READY.discard(filename.resolve())
     initializer = unwrap(MaterialRepository._initialize)
     assert initializer.__globals__ is vars(materials_module)
     with monkeypatch.context() as fault:
