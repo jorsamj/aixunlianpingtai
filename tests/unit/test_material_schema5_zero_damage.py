@@ -2,6 +2,7 @@
 from contextlib import closing
 from dataclasses import replace
 import hashlib
+from inspect import unwrap
 import json
 from pathlib import Path
 import shutil
@@ -190,16 +191,41 @@ def schema_state(path):
 def test_existing_schema7_adds_receipts_atomically_on_reopen(tmp_path, monkeypatch):
     project = tmp_path / "p"
     repository = MaterialRepository(project)
+    original = project / "uploads" / "existing.png"
+    original.parent.mkdir()
+    Image.new("RGB", (2, 2)).save(original)
+    content_sha = sha(original)
+    stored = repository.upsert({"id": "image", "filename": original.name, "content_sha256": content_sha})
+    revision = repository.current_revision()
     filename = repository.path
-    with closing(repository._connect()) as db:
+    with closing(sqlite3.connect(filename, isolation_level=None)) as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("DROP TABLE material_assignment_receipts")
+        db.execute("COMMIT")
+    with closing(existing_sqlite_reader(filename)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert not db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='material_assignment_receipts'"
+        ).fetchone()
+        assert not repository._required_objects_present(db)
+    assert repository._read_schema_version_fast() is None
     before = schema_state(filename)
+    initializer = unwrap(MaterialRepository._initialize)
+    assert initializer.__globals__ is vars(materials_module)
     with monkeypatch.context() as fault:
-        fault.setattr(materials_module, "_SCHEMA", materials_module._SCHEMA + "\nINVALID INTERRUPTION;")
-        with pytest.raises(sqlite3.OperationalError):
+        fault.setitem(initializer.__globals__, "_SCHEMA",
+                      materials_module._SCHEMA + "\nINVALID_SCHEMA7_INTERRUPTION;")
+        with pytest.raises(sqlite3.OperationalError, match="INVALID_SCHEMA7_INTERRUPTION"):
             MaterialRepository(project)
     assert schema_state(filename) == before
+    with closing(existing_sqlite_reader(filename)) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("SELECT COUNT(*) FROM materials").fetchone()[0] == 1
     repository = MaterialRepository(project)
+    assert repository.get("image") == stored
+    assert sha(original) == content_sha
+    assert repository.current_revision() == revision
+    assert repository._read_schema_version_fast() == 7
     with closing(repository._connect()) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert db.execute("SELECT COUNT(*) FROM material_assignment_receipts").fetchone()[0] == 0

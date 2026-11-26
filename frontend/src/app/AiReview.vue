@@ -397,9 +397,9 @@ const diagnosticFacts=computed(()=>{
          :loading="review.bulkBusy" @click="review.cancelBulkFormal()">取消入库</el-button>
         <el-button v-if="review.bulkIntent && !review.bulkExecution && review.bulkCreatePending"
          :loading="review.bulkBusy" @click="review.refreshBulkFormal()">核对原任务</el-button>
-        <el-button v-if="!review.bulkIntent && review.bulkCreatePending" :loading="review.bulkBusy"
+        <el-button v-if="!review.bulkExecution && !review.bulkIntent && review.bulkCreatePending" :loading="review.bulkBusy"
          @click="review.retryBulkSeal()">恢复原预检</el-button>
-        <el-button v-else-if="!review.bulkIntent" :loading="review.bulkBusy"
+        <el-button v-else-if="!review.bulkExecution && !review.bulkIntent && !review.bulkConflict" :loading="review.bulkBusy"
          @click="review.preflightBulkFormal()">检查并确认范围</el-button>
         <el-button v-if="(review.bulkIntent || review.bulkConflict) && !review.bulkExecution && !review.bulkCreatePending" :disabled="review.bulkBusy"
          @click="review.abandonBulkFormal()">放弃预检</el-button>

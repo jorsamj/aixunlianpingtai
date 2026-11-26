@@ -5,6 +5,8 @@ const projectId='review-project',taskId='review-bulk';
 const route=`/app/#/projects/${projectId}/ai/tasks/${taskId}/review`;
 const selectionId='a'.repeat(32);
 const key=()=>'ai-review-bulk:v1:'+JSON.stringify([JSON.stringify(['local','reviewer']),projectId,taskId]);
+const eligibilityCount=dialog=>dialog.locator('dt').filter({hasText:/^符合入库条件$/})
+  .locator('xpath=following-sibling::dd[1]');
 
 function rows(committed){
   return Array.from({length:30},(_,index)=>({
@@ -199,7 +201,8 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
 
   await seal(page,'后台正式入库 29 张');
   await page.screenshot({path:'../test-results/vue-catalog/review-bulk-confirm.png',animations:'disabled'});
-  await expect(page.getByRole('dialog')).toContainText('可入库 29 张');
+  const dialog=page.getByRole('dialog',{name:'审核入库'});
+  await expect(eligibilityCount(dialog)).toHaveText('29');
   const firstBody=state.intents[0];
   expect(firstBody.excluded_image_ids).toEqual(['image-24']);
   expect(await readRecord(page)).toMatchObject({request_id:firstBody.request_id,selection_id:selectionId});
@@ -213,10 +216,15 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
   // the duplicate-event guard on the same confirmation control.
   await confirm.click({trial:true});
   await confirm.evaluate(button=>{button.click();button.click()});
-  await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
+  const preflight=dialog.getByRole('button',{name:'检查并确认范围'});
+  await expect(dialog.getByText('后台执行中',{exact:true})).toBeVisible();
+  await expect(preflight).toHaveCount(0);
   await expect(page.locator('.review-bulk')).toContainText('未证明');
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   await expect(page.locator('.review-bulk')).toContainText('已证明提交 GT 29');
+  await expect(preflight).toHaveCount(0);
+  await expect(confirm).toHaveCount(0);
+  await dialog.getByRole('button',{name:'完成',exact:true}).click();
   expect(state.executes).toBe(1);
   await expect(page.locator('.review-selection').getByText(/已选 0 张/).first()).toBeVisible();
 
@@ -225,7 +233,7 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
   await expect(page.getByText(/可操作 1 张/)).toBeVisible();
   await page.getByRole('button',{name:'后台正式入库 1 张'}).click();
   await page.getByRole('dialog').getByRole('button',{name:'检查并确认范围'}).click();
-  await expect(page.getByRole('dialog')).toContainText('可入库 1 张');
+  await expect(eligibilityCount(dialog)).toHaveText('1');
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
   await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
@@ -259,7 +267,7 @@ test('服务端已封存但响应丢失：刷新查到原 intent 并继续，不
   await seal(page);
   // The lost response is resolved by replaying the exact same request body;
   // the backend's idempotent response proves the persisted intent matches.
-  await expect(page.getByRole('dialog')).toContainText('预检通过：可入库 30 张');
+  await expect(eligibilityCount(page.getByRole('dialog'))).toHaveText('30');
   expect(state.intents).toHaveLength(2);
   expect(state.intents[1]).toEqual(state.intents[0]);
   expect(state.sealed).not.toBeNull();
@@ -328,7 +336,7 @@ test('pending preflight locks the frozen range until the request resolves',async
   await expect(page.getByRole('button',{name:'清空选择'})).toBeDisabled();
   state.releaseSeal();
   await sealing;
-  await expect(page.getByRole('dialog')).toContainText('可入库 30 张');
+  await expect(eligibilityCount(page.getByRole('dialog'))).toHaveText('30');
 });
 
 test('execute response loss keeps the original task identity and blocks abandon',async({page})=>{
@@ -421,7 +429,7 @@ test('seal 409 with a different exclusion set blocks execution and keeps the ori
   await page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true}).uncheck();
   await expect(page.locator('.review-selection').getByText(/已选 29 张/).first()).toBeVisible();
   await seal(page,'后台正式入库 29 张');
-  await expect(page.getByRole('dialog')).toContainText('预检通过：可入库 29 张');
+  await expect(eligibilityCount(page.getByRole('dialog'))).toHaveText('29');
   const newRecord=await readRecord(page);
   expect(newRecord.request_id).not.toBe(conflictRecord.request_id);
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
