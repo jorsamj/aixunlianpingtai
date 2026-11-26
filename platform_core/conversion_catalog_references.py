@@ -165,6 +165,8 @@ def catalog_references(data_dir, catalog, entity, record):
         for project in (root/"projects").iterdir() if (root/"projects").exists() else ():
             if not project.is_dir(): continue
             db=project/"algorithms.sqlite3"
+            from .algorithm_repository import require_authoritative_sqlite
+            require_authoritative_sqlite(db)
             if db.exists():
                 for table in ("algorithms","algorithm_versions"):
                     for row in _rows(db,f"SELECT id,payload_json FROM {table}"):

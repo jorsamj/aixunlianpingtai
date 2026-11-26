@@ -242,6 +242,8 @@ class TrainingMaterialUsage:
         if project.parent.resolve() != (self.path.parent.parent / 'projects').resolve():
             return False
         algorithm_db = project / 'algorithms.sqlite3'
+        from .algorithm_repository import require_authoritative_sqlite
+        require_authoritative_sqlite(algorithm_db)
         if algorithm_db.is_file():
             with closing(observe_connection(connect_sqlite(algorithm_db.resolve().as_uri()+'?mode=ro', uri=True))) as algorithms:
                 if not algorithms.execute("SELECT 1 FROM sqlite_master WHERE name='algorithm_versions'").fetchone():

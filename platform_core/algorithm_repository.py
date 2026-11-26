@@ -103,6 +103,24 @@ class AlgorithmAdmissionRequired(AlgorithmRepositoryError):
     """A cutover admission record is required but missing or stale."""
 
 
+class AlgorithmSqliteAttachRefused(AlgorithmAdmissionRequired):
+    """A SQLite-attach read path cannot serve a project owned by another provider."""
+
+
+def require_authoritative_sqlite(json_path: str | Path) -> None:
+    """Refuse a direct SQLite attachment when another provider is authoritative.
+
+    Several read projections still open the project's SQLite catalog with SQL
+    ATTACH, which PostgreSQL cannot serve. Reusing the provider-boundary checks
+    here means those readers fail closed after a cutover instead of silently
+    returning stale rows.
+    """
+    path = Path(json_path)
+    try:
+        _refuse_stale_sqlite(path, admission_record_path(path))
+    except AlgorithmAdmissionRequired as error:
+        raise AlgorithmSqliteAttachRefused(error.code, str(error), detail=error.detail) from error
+
 class AlgorithmRepository(Protocol):
     """Minimal single-domain contract shared by every provider."""
 

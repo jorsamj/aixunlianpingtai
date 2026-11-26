@@ -483,3 +483,37 @@ def test_unresolved_cutover_transition_blocks_both_providers(tmp_path):
     with pytest.raises(AlgorithmAdmissionRequired) as factory_error:
         open_algorithm_repository(json_path)
     assert factory_error.value.code == "ALGORITHM_CUTOVER_IN_PROGRESS"
+
+
+def test_sqlite_attach_readers_refuse_a_postgres_admitted_project(tmp_path):
+    """Direct SQL ATTACH readers must not serve a PostgreSQL-owned project."""
+    from platform_core.algorithm_repository import (
+        CONTRACT_VERSION,
+        AlgorithmSqliteAttachRefused,
+        require_authoritative_sqlite,
+    )
+
+    project = tmp_path / "projects" / "p"
+    project.mkdir(parents=True)
+    database = project / "algorithms.sqlite3"
+
+    # No admission record: the local SQLite catalog is still authoritative.
+    require_authoritative_sqlite(database)
+
+    record = project / "algorithm_migration" / "cutover_admission.json"
+    record.parent.mkdir()
+    admission = {
+        "contract_version": CONTRACT_VERSION,
+        "project_id": "p",
+        "admission_id": "a" * 24,
+        "authoritative_provider": "postgresql",
+        "revoked_at": None,
+    }
+    record.write_text(json.dumps(admission), encoding="utf-8")
+    with pytest.raises(AlgorithmSqliteAttachRefused) as refused:
+        require_authoritative_sqlite(database)
+    assert refused.value.code == "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER"
+
+    # A verified rollback revokes the admission and re-opens the SQLite reader.
+    record.write_text(json.dumps({**admission, "revoked_at": "2026-11-26T00:00:00Z"}), encoding="utf-8")
+    require_authoritative_sqlite(database)

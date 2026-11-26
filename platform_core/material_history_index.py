@@ -64,6 +64,8 @@ def _source_signature(project_id, project_path, repository, artifacts):
     roots.extend(full_task_roots)
     files = [Path(project_path) / "algorithms.json", *narrow_task_files]
     algo_db = Path(project_path) / "algorithms.sqlite3"
+    from .algorithm_repository import require_authoritative_sqlite
+    require_authoritative_sqlite(algo_db)
     if algo_db.is_file():
         try:
             with closing(sqlite3.connect(f"file:{algo_db}?mode=ro", uri=True)) as db:
