@@ -208,10 +208,10 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
 
   state.executeDelay=400;
   const confirm=page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'});
-  const first=confirm.click();
-  await page.waitForTimeout(100);
-  await confirm.click({force:true,timeout:1500}).catch(()=>{});
-  await first;
+  // Wait for the actual button to finish its transition before exercising
+  // the duplicate-event guard on the same confirmation control.
+  await confirm.click({trial:true});
+  await confirm.evaluate(button=>{button.click();button.click()});
   await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
   await expect(page.locator('.review-bulk')).toContainText('未证明');
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
