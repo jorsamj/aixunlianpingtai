@@ -72,7 +72,11 @@ test('label unification keeps exact sources, original task logs, task recovery a
   return route.fulfill({status:404,json:{detail:path}});
  });
  await page.goto('/app/#/projects/p/labels?tab=unify');
- await page.getByRole('checkbox',{name:/人员 person/}).check();await page.getByRole('checkbox',{name:/作业人员 worker/}).check();
+ const sources=page.locator('.unify-sources');
+ await sources.getByText('人员',{exact:true}).click();
+ await expect(sources.getByRole('checkbox',{name:/人员 person/})).toBeChecked();
+ await sources.getByText('作业人员',{exact:true}).click();
+ await expect(sources.getByRole('checkbox',{name:/作业人员 worker/})).toBeChecked();
  await expect(page.locator('.impact')).toContainText('7');
  await page.getByRole('combobox',{name:'统一目标标签'}).click();await page.getByRole('option',{name:'人员统一 · human'}).click();
  await page.setViewportSize({width:1366,height:768});await page.screenshot({path:testInfo.outputPath('label-unify-1366.png'),fullPage:true});
