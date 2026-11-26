@@ -394,8 +394,9 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
      </div>
     </header>
     <el-alert v-if="reads.errors.versions" :title="reads.errors.versions" type="error" :closable="false"/>
+    <p class="version-note">版本按创建时间倒序；“当前版本”与“最新创建”可能不同。最佳评测版本不在列表内跨基准比较，请进入版本详情查看同口径评测证据。</p>
     <el-table :data="versions?.items||[]" row-key="id" v-loading="reads.busy.versions" empty-text="暂无版本">
-     <el-table-column label="模型版本" min-width="165"><template #default="{row}"><strong>{{ row.version_name||row.id }}</strong><el-tag v-if="versions?.algorithm.current_version_id===row.id" type="info">当前版本</el-tag><small class="version-id">{{ row.id }}</small></template></el-table-column>
+     <el-table-column label="模型版本" min-width="165"><template #default="{row}"><strong>{{ row.version_name||row.id }}</strong><el-tag v-if="versions?.algorithm.current_version_id===row.id" type="info">当前版本</el-tag><el-tag v-else-if="versions?.items[0]?.id===row.id" type="info" effect="plain">最新创建</el-tag><small class="version-id">{{ row.id }}</small></template></el-table-column>
      <el-table-column label="训练状态" min-width="100"><template #default="{row}">{{ stateLabel(row.training_status) }}</template></el-table-column>
      <el-table-column prop="framework" label="框架" min-width="90"/>
      <el-table-column label="操作" min-width="310"><template #default="{row}">
@@ -586,5 +587,11 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
 
 .algorithm-version-actions .legacy-action:hover {
   color: var(--workspace-ink, #202124);
+}
+
+.version-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--workspace-subtle, #686872);
 }
 </style>

@@ -9,7 +9,7 @@ const labels:Record<string,string>={
   BLOCKED_BY_ENVIRONMENT:'环境阻断',BLOCKED_BY_HARDWARE:'硬件阻断',
 };
 const tones:Record<string,'success'|'warning'|'danger'|'info'|undefined>={
-  SUCCEEDED:'success',PARTIAL_SUCCESS:'success',FAILED:'danger',
+  SUCCEEDED:'success',PARTIAL_SUCCESS:'warning',FAILED:'danger',
   BLOCKED_BY_ENVIRONMENT:'warning',BLOCKED_BY_HARDWARE:'warning',AWAITING_CONFIRMATION:'warning',
   QUEUED:'info',WAITING_RESOURCE:'info',PAUSED:'info',CANCEL_REQUESTED:'info',CANCELLED:'info',
 };
