@@ -1,6 +1,29 @@
 # 功能/API迁移矩阵（M0基线2026-11-18）
 
-## 数据治理、版本、评测与转换（2026-11-26，当前）
+## 14 个正式菜单及本批功能差异（2026-11-26，当前）
+
+开发候选 `77035375bac317eadb39d8c18449a471c375ccd0`。下表为源码接线状态，运行期及视觉 `CI_PENDING / UAT_PENDING`。
+
+|菜单|状态|原流程、Vue 和现有 Owner|剩余操作|
+|---|---|---|---|
+|总览|NATIVE_PARTIAL|原总览 → Overview，v53 核心快照及近期训练/标注查询|历史趋势、细项诊断保留原入口|
+|质量中心|LEGACY_BRIDGE|原质量中心与治理服务|跨域质量面板及原操作仍由旧页承担|
+|算法库|NATIVE_PARTIAL|原算法卡片 → Algorithms、AlgorithmCatalogOperations 和 AlgorithmReport，原 v12/v49 与 AlgorithmRepository|整算法安全退役缺跨域生命周期边界，深层报告及血缘仍走原入口|
+|训练任务|NATIVE_PARTIAL|原任务与报告 → TrainingTasks、TrainingCreate、NativeTrainingReport、NativeEvaluation，原 TaskRuntime、评测及独立反馈库|困难样本、带来源继续训练、批量及诊断深链仍走原流程|
+|素材库|NATIVE_PARTIAL|原素材和人工 GT → Materials、AnnotationEditor，原有分页、正式 GT、上传、数据集及治理|分类、批量成员和算法级负池仍有旧入口|
+|视频切帧|NATIVE_COMPLETE|原视频页 → VideoTasks，原 v33、VIDEO_FRAMES 执行器和自动入库|创建丢失响应需核查列表，生产执行和视觉待验|
+|自动标注及清洗|NATIVE_PARTIAL|原三栏及清洗 → AiTasks、AiCreate、AiReview、NativeCleaning，CandidateStore、GT、原 v47/v62 清洗冻结（最多 500 个排除项）|批量消歧后正式入库仍走旧页，Provider 尚缺参考图实际入模|
+|标签管理|NATIVE_PARTIAL|原标签目录及审计 → Labels/LabelAudit，AnnotationRepository 与原治理服务|预设、重复冲突和 Smart Audit 仍有旧入口|
+|算力与节点|NATIVE_PARTIAL|原节点页 → ServiceNodes，原只读资源、调度授权|配置、环境与诊断仍走原入口|
+|模型转换环境|LEGACY_BRIDGE|原环境资源与字典管理|ConversionDetail 新增 v39 停止和数值验证，环境配置与硬件验收仍走原入口|
+|AI 辅助配置|LEGACY_BRIDGE|原模型和 Prompt 配置、原 SecretStore|完整旧配置入口|
+|存储管理|LEGACY_BRIDGE|原存储源、密钥和容量管理|完整旧配置入口|
+|平台对接|NATIVE_PARTIAL|原对接 → PlatformIntegration/ExternalPublish，原平台及发布 Owner|同步、连接测试、诊断、发布确认和回退仍有旧入口|
+|畅联云数据|LEGACY_BRIDGE|原数据页和原 API|列表、筛选及相关操作仍走旧页|
+
+完整 1、部分 8、旧交接 5。尚未确认旧入口退役。验证范围及提交见 [开发接续入口](AI_DEVELOPMENT_HANDOFF.md)。
+
+## 数据治理、版本、评测与转换（2026-11-26，上一批）
 
 |产品入口|新增原生操作及原 API Owner|仍待接通或验收|
 |---|---|---|
