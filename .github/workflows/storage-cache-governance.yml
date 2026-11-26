@@ -158,8 +158,12 @@ jobs:
       - name: Install U2 PostgreSQL contract dependencies
         run: |
           python -m pip install --upgrade pip
+          # requests: importing platform_core.storage.source_repository executes
+          # platform_core/storage/__init__.py, which imports the remote provider
+          # (platform_core/storage/remote.py) that imports requests at module
+          # level. The OSS/S3 SDKs stay lazy, so only requests is needed here.
           python -m pip install --disable-pip-version-check \
-            pytest "psycopg[binary]" filelock
+            pytest "psycopg[binary]" filelock requests
 
       - name: Prove the service container is the real server
         run: |

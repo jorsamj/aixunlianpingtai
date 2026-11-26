@@ -24,6 +24,14 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 5074e795 收口：U2 PostgreSQL Job 的 requests 依赖（2026-11-26，当前）
+
+- 起始 `5074e7951c06660880a4871acdd0309ab0db83b1`。两个 Storage Cache Governance 失败（push 45845036597 / PR 45845050654）根因：`ModuleNotFoundError: No module named 'requests'`。
+- 调用链：`tests/integration/test_storage_source_postgres.py → platform_core.storage.source_repository → platform_core/storage/__init__.py → platform_core/storage/remote.py → import requests`（OSS/S3 SDK 为惰性导入，故只缺 requests）。
+- 修复：仅在 `storage-source-postgres` Job 的 `Install U2 PostgreSQL contract dependencies` 追加 `requests` 并注释依赖链；未改生产代码、未改 SQLite 逻辑、未 mock/skip/删断言、未扩大依赖集合。
+- 本地验证：`tests/integration/test_storage_source_postgres.py` + `tests/unit/storage/test_storage_source_provider.py` + `test_source_repository.py` 共 39 项通过（含 10 项真实 PostgreSQL）。
+- U2 状态不变：`PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED + CUTOVER_PROTOCOL_IMPLEMENTED / CUTOVER_NOT_READY`；未启用 PostgreSQL 模式、未做真实迁移。
+
 ## 062553d6 CI 收尾：Storage Cache Governance 与 U2 真实 PostgreSQL 覆盖（2026-11-26，当前）
 
 - 起始本地及远端 `062553d61381b2aad0ce7a2e62451b0499cee5a0`。VERSION 42.24.592 未改。状态 `CODE_COMPLETE（CI 收尾与证据修正）/ CI_PENDING / U2: PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED + CUTOVER_PROTOCOL_IMPLEMENTED + CUTOVER_NOT_READY`。
