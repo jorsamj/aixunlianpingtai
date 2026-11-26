@@ -24,15 +24,18 @@ export interface TrainingBatchDeleteResult {
   requested: number;
   deleted: number;
   deleted_ids: string[];
+  audit_retained_ids: string[];
   skipped_active: number;
   skipped_active_ids: string[];
   missing: number;
   missing_ids: string[];
+  failed: number;
   failures: {job_id: string; message: string}[];
 }
 
-// Existing v48 batch record deletion. The server keeps algorithm versions and
-// artifacts, skips active tasks and caps one request at 200 records.
+// Existing v48 batch record deletion. The server keeps algorithm versions,
+// retains protected evidence per record and skips active tasks; one request is
+// capped at 200 records.
 export async function deleteTrainingTaskRecords(
   projectId: string, taskIds: string[], signal: AbortSignal,
 ) {
@@ -42,8 +45,50 @@ export async function deleteTrainingTaskRecords(
     `/api/v48/projects/${encodeURIComponent(projectId)}/jobs/batch-delete`,
     {method: 'POST', body: JSON.stringify({job_ids: ids}), signal},
   );
-  if (!result || typeof result.deleted !== 'number' || !Array.isArray(result.failures))
-    throw new Error('批量删除回执不完整');
+  const requested = ids.length;
+  const known = new Set(ids);
+  const list = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && known.has(item)) : null;
+  const deletedIds = list(result?.deleted_ids);
+  const retainedIds = list(result?.audit_retained_ids) ?? [];
+  const skippedIds = list(result?.skipped_active_ids);
+  const missingIds = list(result?.missing_ids);
+  const failures = Array.isArray(result?.failures)
+    ? result.failures.filter(row => row && known.has(String(row.job_id))) : null;
+  const consistent = !!result
+    && result.requested === requested
+    && deletedIds !== null && skippedIds !== null && missingIds !== null && failures !== null
+    && result.deleted === deletedIds.length
+    && result.skipped_active === skippedIds.length
+    && result.missing === missingIds.length
+    && result.failed === failures.length
+    && deletedIds.length + skippedIds.length + missingIds.length + failures.length === requested
+    && retainedIds.every(id => deletedIds.includes(id));
+  if (!consistent) throw new Error('批量删除回执与所选记录不一致，结果待核验');
+  return {...result, deleted_ids: deletedIds, audit_retained_ids: retainedIds,
+    skipped_active_ids: skippedIds, missing_ids: missingIds, failures};
+}
+
+export interface TrainingDeletionStatus {
+  ok: boolean;
+  project_id: string;
+  items: {job_id: string; state: 'deleted' | 'terminal' | 'active' | 'missing' | 'invalid'}[];
+  counts: Record<string, number>;
+}
+
+// Read-only verification for an unknown batch deletion result: it never deletes
+// or retries, only reports whether each record still exists in this project.
+export async function readTrainingDeletionStatus(
+  projectId: string, taskIds: string[], signal: AbortSignal,
+) {
+  const ids = [...new Set(taskIds.map(id => String(id || '').trim()).filter(Boolean))];
+  if (!ids.length || ids.length > 200) throw new Error('核对需 1–200 条训练记录');
+  const result = await request<TrainingDeletionStatus>(
+    `/api/v48/projects/${encodeURIComponent(projectId)}/jobs/deletion-status?job_ids=${encodeURIComponent(ids.join(','))}`,
+    {signal},
+  );
+  if (result?.ok !== true || result.project_id !== projectId || !Array.isArray(result.items))
+    throw new Error('删除状态核对回执不完整');
   return result;
 }
 

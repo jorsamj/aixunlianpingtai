@@ -520,6 +520,44 @@ class TrainingManagementService:
         self.dependencies.PROCESS_REGISTRY().pop(job_id,None)
         return {'status':'deleted','job_id':job_id,'artifacts_retained':retained}
 
+    def v48_job_deletion_status(self, project_id: str, job_ids: str):
+        """Read-only classification for records whose deletion result is unknown.
+
+        It never deletes, retries or invents a receipt: it only reports whether the
+        durable/legacy record still exists, whether the task is terminal, and
+        whether the repository already records a deletion for this project.
+        """
+        self.dependencies.get_project(project_id)
+        ids = list(dict.fromkeys(
+            str(value or "").strip() for value in str(job_ids or "").split(",") if str(value or "").strip()
+        ))
+        if len(ids) > 200:
+            raise HTTPException(status_code=400, detail="单次最多核对 200 条训练记录")
+        repository = self.dependencies.shared_task_repository()
+        items: List[Dict[str, str]] = []
+        for job_id in ids:
+            if job_id in {".", ".."} or "/" in job_id or "\\" in job_id:
+                items.append({"job_id": job_id, "state": "invalid"})
+                continue
+            if repository.is_deleted(job_id, project_id=project_id):
+                items.append({"job_id": job_id, "state": "deleted"})
+                continue
+            job = self.dependencies.read_json(self.dependencies.project_dir(project_id) / "jobs" / job_id / "job.json", {})
+            durable = self.dependencies._durable_training_task(project_id, job_id)
+            if durable is None and not job:
+                items.append({"job_id": job_id, "state": "missing"})
+                continue
+            if durable is not None:
+                terminal = durable.status in self.dependencies._TRAINING_DURABLE_TERMINAL_STATUSES()
+            else:
+                terminal = str(job.get("status") or "").strip().lower() in self.dependencies._TRAINING_LEGACY_TERMINAL_STATUSES()
+            proc = self.dependencies.PROCESS_REGISTRY().get(job_id)
+            running = bool(proc and proc.poll() is None)
+            items.append({"job_id": job_id, "state": "terminal" if terminal and not running else "active"})
+        counts = {state: sum(1 for row in items if row["state"] == state)
+                  for state in ("deleted", "terminal", "active", "missing", "invalid")}
+        return {"ok": True, "project_id": project_id, "items": items, "counts": counts}
+
     def v48_batch_delete_jobs(self, project_id: str, payload: V48TrainingBatchDeleteReq):
         self.dependencies.get_project(project_id)
         job_ids = list(dict.fromkeys(str(value or "").strip() for value in payload.job_ids if str(value or "").strip()))

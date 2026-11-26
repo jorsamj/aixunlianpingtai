@@ -66,6 +66,19 @@ def test_training_batch_delete_purges_terminal_truth_and_skips_active(client, se
     assert not (artifacts.root / terminal_id).exists()
     assert (artifacts.root / active_id).exists()
 
+    # Unknown-result verification is read-only and classifies both records without
+    # deleting or retrying anything.
+    status = client.get(
+        f"/api/v48/projects/{project_id}/jobs/deletion-status",
+        params={"job_ids": f"{terminal_id},{active_id}"},
+    )
+    assert status.status_code == 200
+    states = {row["job_id"]: row["state"] for row in status.json()["items"]}
+    assert states == {terminal_id: "deleted", active_id: "active"}
+    assert status.json()["counts"]["deleted"] == 1
+    assert status.json()["counts"]["active"] == 1
+    assert repository.get(active_id) is not None
+
 
 def test_training_log_endpoint_merges_worker_and_durable_task_logs(client, seeded_project):
     import app as app_module

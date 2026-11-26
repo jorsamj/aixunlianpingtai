@@ -4,11 +4,12 @@ import {useRoute,useRouter} from 'vue-router';
 import {request,requestText} from './http';
 import {legacyUrl} from './navigation';
 import {trainingReaderApi,type TrainingTask,type TaskPage} from '../api/training-reader';
-import {deleteTrainingTaskRecord,deleteTrainingTaskRecords,fetchTrainingRecovery,requestTrainingRecovery,runTrainingLifecycleAction,stopTrainingTask,type TrainingRecoveryTruth} from '../api/training-actions';
+import {deleteTrainingTaskRecord,deleteTrainingTaskRecords,fetchTrainingRecovery,readTrainingDeletionStatus,requestTrainingRecovery,runTrainingLifecycleAction,stopTrainingTask,type TrainingRecoveryTruth} from '../api/training-actions';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import TaskStatusTag from '../components/TaskStatusTag.vue';
 import {trainingBatchActionEligible} from '../../../static/modules/training-task-runtime.js';
+import {useWorkspace} from './main';
 import {trainingDisplayStatus} from '../../../static/modules/task-runtime-truth.js';
 const route=useRoute(),router=useRouter(),projectId=String(route.params.projectId),controller=new AbortController();
 const reads=useReadScope(controller),api=trainingReaderApi({projectId,get:request,memory:{}});
@@ -90,27 +91,85 @@ function mutationSignal(){
   mutationController=new AbortController();
   return mutationController.signal;
 }
-// Batch record deletion reuses the existing v48 endpoint: terminal records only,
-// at most 200 per request, algorithm versions and artifacts are retained.
+// Batch record deletion reuses the existing v48 endpoint. The server deletes the
+// task record, keeps algorithm versions, and retains protected evidence only when
+// its own evidence rules require it, so the receipt is reported per category
+// instead of promising that every artifact survives.
 const tableRef=ref<{clearSelection:()=>void}>(),batchSelected=ref<string[]>([]);
 const batchBusy=ref(false),batchNotice=ref(''),batchError=ref('');
-const deletableRow=(row:TrainingTask)=>trainingBatchActionEligible(row as unknown as Record<string,unknown>,'delete');
+const pendingBatch=ref<{ids:string[];requestedAt:string}|null>(null);
+const batchVerifyBusy=ref(false),batchVerifyResult=ref<Record<string,number>|null>(null);
+const workspace=useWorkspace();
+const pendingBatchKey=computed(()=>`training-batch-delete:${projectId}:${workspace.actorKey||'anonymous'}`);
+const deletableRow=(row:TrainingTask)=>row.kind==='TRAINING'&&trainingBatchActionEligible(row as unknown as Record<string,unknown>,'delete');
+const otherMutationBusy=computed(()=>!!lifecycleBusy.value||stopBusy.value||recoveryBusy.value);
 function onBatchSelection(rows:TrainingTask[]){batchSelected.value=rows.map(row=>row.task_id)}
 function clearBatchSelection(){batchSelected.value=[];tableRef.value?.clearSelection()}
-async function batchDelete(){
-  if(!batchSelected.value.length||batchBusy.value)return;
-  const ids=[...batchSelected.value];
-  if(!window.confirm(`确认删除 ${ids.length} 条已结束训练任务记录？已生成的算法版本与产物会保留。`))return;
-  batchBusy.value=true;batchError.value='';batchNotice.value='';
-  const signal=mutationSignal();
+function readPendingBatch(){
   try{
-    const result=await deleteTrainingTaskRecords(projectId,ids,signal);
-    if(signal.aborted)return;
-    batchNotice.value=`已删除 ${result.deleted} 条；跳过执行中 ${result.skipped_active} 条；未找到 ${result.missing} 条${result.failures.length?`；失败 ${result.failures.length} 条`:''}。算法版本与产物保留。`;
+    const raw=JSON.parse(sessionStorage.getItem(pendingBatchKey.value)||'null');
+    pendingBatch.value=raw&&Array.isArray(raw.ids)&&raw.ids.length?{ids:raw.ids.filter((id:unknown)=>typeof id==='string'),requestedAt:String(raw.requestedAt||'')}:null;
+  }catch{pendingBatch.value=null}
+}
+function writePendingBatch(value:{ids:string[];requestedAt:string}|null){
+  pendingBatch.value=value;
+  try{if(value)sessionStorage.setItem(pendingBatchKey.value,JSON.stringify(value));else sessionStorage.removeItem(pendingBatchKey.value)}catch{/* session storage is optional; the banner still shows in this tab */}
+}
+watch(()=>workspace.actorKey,readPendingBatch,{immediate:true});
+function batchMessage(result:Awaited<ReturnType<typeof deleteTrainingTaskRecords>>){
+  const parts=[`记录已删除 ${result.deleted} 条`];
+  if(result.audit_retained_ids.length)parts.push(`其中 ${result.audit_retained_ids.length} 条按原证据规则保留受保护训练证据/产物，其余按原清理规则处理`);
+  else parts.push('按原证据规则本次没有需要保留的受保护证据');
+  parts.push(`跳过执行中 ${result.skipped_active} 条`,`未找到 ${result.missing} 条`);
+  if(result.failures.length)parts.push(`失败 ${result.failures.length} 条`);
+  parts.push('算法版本不受影响');
+  return parts.join('；')+'。';
+}
+async function batchDelete(){
+  if(!batchSelected.value.length||batchBusy.value||otherMutationBusy.value||pendingBatch.value)return;
+  const ids=[...batchSelected.value];
+  if(!window.confirm(`确认删除 ${ids.length} 条已结束训练任务记录？记录删除后不可恢复，算法版本与按原规则保留的证据不受影响。`))return;
+  batchBusy.value=true;batchError.value='';batchNotice.value='';batchVerifyResult.value=null;
+  // The pending record is written before the request so a lost response still has
+  // its project, actor and task identities for a later read-only verification.
+  writePendingBatch({ids,requestedAt:new Date().toISOString()});
+  const controller=new AbortController();
+  try{
+    const result=await deleteTrainingTaskRecords(projectId,ids,controller.signal);
+    writePendingBatch(null);
+    batchNotice.value=batchMessage(result);
     clearBatchSelection();
     await loadList();
-  }catch(error){if(!signal.aborted)batchError.value=(error as Error).message}
-  finally{batchBusy.value=false}
+  }catch(error){
+    const status=(error as {httpStatus?:number}).httpStatus;
+    if(status&&status>=400&&status<500){
+      // A definite rejection never applied, so the pending record is dropped.
+      writePendingBatch(null);
+      batchError.value=(error as Error).message;
+    }else{
+      batchError.value=`删除结果未知：${(error as Error).message}。已保留原提交记录，请先核对再决定是否重试。`;
+    }
+  }finally{batchBusy.value=false}
+}
+async function verifyBatchDeletion(){
+  const pending=pendingBatch.value;
+  if(!pending||batchVerifyBusy.value||batchBusy.value)return;
+  batchVerifyBusy.value=true;batchError.value='';
+  const controller=new AbortController();
+  try{
+    const result=await readTrainingDeletionStatus(projectId,pending.ids,controller.signal);
+    batchVerifyResult.value=result.counts;
+    const deleted=result.counts.deleted||0;
+    if(deleted===pending.ids.length){
+      writePendingBatch(null);
+      batchNotice.value=`已核对：${deleted} 条记录均已删除；受保护证据与产物是否保留以原任务证据为准，算法版本不受影响。`;
+      clearBatchSelection();
+      await loadList();
+    }else{
+      batchNotice.value=`核对结果：已删除 ${deleted} 条；仍存在未结束 ${result.counts.active||0} 条、可删除记录 ${result.counts.terminal||0} 条、未找到 ${result.counts.missing||0} 条。未确认的删除不会自动重试。`;
+    }
+  }catch(error){batchError.value=`核对失败：${(error as Error).message}`}
+  finally{batchVerifyBusy.value=false}
 }
 // Bounded text log read through the shared http owner (401/deadline/cancel are
 // the same as every other native request; the caller's signal is abortable).
@@ -151,6 +210,7 @@ async function loadRecovery(id:string,epoch=detailEpoch){
 }
 async function stopTask(){
   const current=task.value;
+  if(batchBusy.value||pendingBatch.value){batchError.value='存在待核验的批量删除，请先核对后再执行其他任务操作。';return}
   if(!current||!canStop(current)||stopBusy.value||stopPendingTaskId.value===current.task_id)return;
   if(!window.confirm('确认停止该训练任务？停止请求会记录到原任务，进程安全终止后才进入取消终态。'))return;
   const id=current.task_id;
@@ -301,6 +361,7 @@ function lifecycleFailure(kind:string,error:unknown){
 }
 async function lifecycleAction(action:'pause'|'resume'|'promote'){
   const current=task.value;
+  if(batchBusy.value||pendingBatch.value){batchError.value='存在待核验的批量删除，请先核对后再执行其他任务操作。';return}
   if(!current||lifecycleBusy.value)return;
   if((action==='pause'&&!canPause.value)||(action==='resume'&&!canResume.value)||(action==='promote'&&!canPromote.value))return;
   const id=current.task_id;
@@ -324,6 +385,7 @@ async function lifecycleAction(action:'pause'|'resume'|'promote'){
 }
 async function deleteTask(){
   const current=task.value;
+  if(batchBusy.value||pendingBatch.value){batchError.value='存在待核验的批量删除，请先核对后再执行其他任务操作。';return}
   if(!current||!canDeleteRecord.value||lifecycleBusy.value)return;
   if(!window.confirm('确认删除这条已结束训练任务记录？已经生成的算法版本不会删除。'))return;
   const id=current.task_id;
@@ -344,7 +406,7 @@ async function deleteTask(){
 </script>
 <template><section class="training-tasks"><header><div><span>任务列表</span></div><div><a :href="bridge('')">原完整训练任务页</a>　<router-link :to="{name:'training-create',params:{projectId}}">新建训练</router-link></div></header>
 <form @submit.prevent="search"><el-input v-model="query" placeholder="搜索任务 ID 或阶段"/><el-select v-model="status" placeholder="状态"><el-option label="全部状态" value=""/><el-option v-for="v in page?.filter_options.status||[]" :key="v" :label="labels[v]||v" :value="v"/></el-select><el-select v-model="kind" placeholder="类型"><el-option label="全部类型" value=""/><el-option v-for="v in page?.filter_options.kind||[]" :key="v" :label="kinds[v]||v" :value="v"/></el-select><el-button native-type="submit" type="primary">查询</el-button><el-button @click="refresh">刷新</el-button></form>
-<el-alert v-if="reads.errors.tasks" :title="reads.errors.tasks" type="error" :closable="false"/><el-alert v-if="lifecycleError" :title="lifecycleError" type="error" :closable="false"/><el-alert v-if="lifecycleNotice" :title="lifecycleNotice" type="info" :closable="false"/><div v-if="batchSelected.length" class="training-batch-bar" role="status"><span>已选 {{batchSelected.length}} 条已结束记录</span><el-button size="small" type="danger" plain :loading="batchBusy" @click="batchDelete">删除所选训练记录</el-button><el-button size="small" :disabled="batchBusy" @click="clearBatchSelection">清空选择</el-button></div><p v-if="batchNotice" role="status">{{batchNotice}}</p><p v-if="batchError" role="alert">{{batchError}}</p><el-table ref="tableRef" v-loading="reads.busy.tasks" :data="page?.items||[]" row-key="task_id" empty-text="暂无任务" @selection-change="onBatchSelection"><el-table-column type="selection" width="44" :selectable="deletableRow"/><el-table-column prop="task_id" label="任务 ID" min-width="190"/><el-table-column label="类型" min-width="88"><template #default="{row}">{{ kinds[row.kind]||row.kind }}</template></el-table-column><el-table-column label="状态" min-width="100"><template #default="{row}"><TaskStatusTag :status="row.status"/></template></el-table-column><el-table-column label="进度 / 阶段" min-width="150"><template #default="{row}">{{row.progress_percent==null?'未提供':row.progress_percent+'%'}} · {{row.phase||'—'}}<small v-if="row.error" class="task-error">{{row.error}}</small></template></el-table-column><el-table-column label="算法 / 版本" min-width="165"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||'—'}}<small v-if="row.version_id" class="task-version">{{row.version_id}}</small></template></el-table-column><el-table-column label="运行设备" min-width="105"><template #default="{row}">{{row.worker_id||row.resource_key||'未提供'}}</template></el-table-column><el-table-column label="耗时" min-width="118"><template #default="{row}"><span :title="elapsedHint(row)">{{elapsed(row)}}</span></template></el-table-column><el-table-column prop="created_at" label="创建时间" min-width="170"/><el-table-column label="操作" min-width="145"><template #default="{row}"><el-button link type="primary" @click="open(row.task_id)">详情</el-button> <router-link v-if="row.kind==='TRAINING'" :to="reportLink(row)">训练报告</router-link></template></el-table-column></el-table><footer><span>本页 {{page?.items.length||0}} 条</span><el-button :disabled="!param('cursor')" @click="prev">上一页</el-button><el-button :disabled="!page?.next_cursor" @click="next">下一页</el-button></footer>
+<el-alert v-if="reads.errors.tasks" :title="reads.errors.tasks" type="error" :closable="false"/><el-alert v-if="lifecycleError" :title="lifecycleError" type="error" :closable="false"/><el-alert v-if="lifecycleNotice" :title="lifecycleNotice" type="info" :closable="false"/><div v-if="pendingBatch" class="training-batch-bar training-batch-pending" role="alert"><span>批量删除结果待核验：{{pendingBatch.ids.length}} 条记录（提交于 {{pendingBatch.requestedAt}}）</span><el-button size="small" type="primary" :loading="batchVerifyBusy" :disabled="batchBusy" @click="verifyBatchDeletion">核对删除状态</el-button><span v-if="batchVerifyResult">已删除 {{batchVerifyResult.deleted||0}} · 仍存在 {{batchVerifyResult.terminal||0}} · 执行中 {{batchVerifyResult.active||0}} · 未找到 {{batchVerifyResult.missing||0}}</span></div><div v-if="batchSelected.length" class="training-batch-bar" role="status"><span>已选 {{batchSelected.length}} 条已结束记录</span><el-button size="small" type="danger" plain :loading="batchBusy" :disabled="!!pendingBatch||otherMutationBusy" @click="batchDelete">删除所选训练记录</el-button><el-button size="small" :disabled="batchBusy" @click="clearBatchSelection">清空选择</el-button></div><p v-if="batchNotice" role="status">{{batchNotice}}</p><p v-if="batchError" role="alert">{{batchError}}</p><el-table ref="tableRef" v-loading="reads.busy.tasks" :data="page?.items||[]" row-key="task_id" empty-text="暂无任务" @selection-change="onBatchSelection"><el-table-column type="selection" width="44" :selectable="deletableRow"/><el-table-column prop="task_id" label="任务 ID" min-width="190"/><el-table-column label="类型" min-width="88"><template #default="{row}">{{ kinds[row.kind]||row.kind }}</template></el-table-column><el-table-column label="状态" min-width="100"><template #default="{row}"><TaskStatusTag :status="row.status"/></template></el-table-column><el-table-column label="进度 / 阶段" min-width="150"><template #default="{row}">{{row.progress_percent==null?'未提供':row.progress_percent+'%'}} · {{row.phase||'—'}}<small v-if="row.error" class="task-error">{{row.error}}</small></template></el-table-column><el-table-column label="算法 / 版本" min-width="165"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||'—'}}<small v-if="row.version_id" class="task-version">{{row.version_id}}</small></template></el-table-column><el-table-column label="运行设备" min-width="105"><template #default="{row}">{{row.worker_id||row.resource_key||'未提供'}}</template></el-table-column><el-table-column label="耗时" min-width="118"><template #default="{row}"><span :title="elapsedHint(row)">{{elapsed(row)}}</span></template></el-table-column><el-table-column prop="created_at" label="创建时间" min-width="170"/><el-table-column label="操作" min-width="145"><template #default="{row}"><el-button link type="primary" @click="open(row.task_id)">详情</el-button> <router-link v-if="row.kind==='TRAINING'" :to="reportLink(row)">训练报告</router-link></template></el-table-column></el-table><footer><span>本页 {{page?.items.length||0}} 条</span><el-button :disabled="!param('cursor')" @click="prev">上一页</el-button><el-button :disabled="!page?.next_cursor" @click="next">下一页</el-button></footer>
 <el-drawer :model-value="!!param('task')" title="任务详情" size="min(680px,100vw)" @close="close"><el-skeleton v-if="reads.busy.detail" :rows="8" animated/><el-alert v-else-if="reads.errors.detail" :title="reads.errors.detail" type="error" :closable="false"/><div v-else-if="task"><el-button @click="loadDetail">刷新详情</el-button>　<router-link v-if="task.kind==='TRAINING'" :to="reportLink(task)">训练报告</router-link><h3>身份与状态</h3><ReadOnlyFacts :fields="[['任务 ID',task.task_id],['类型',task.kind],['状态',`${labels[task.status]||task.status} (${task.status})`],['持久状态',task.persisted_status],['进度（%）',task.progress_percent],['阶段',task.phase],['算法',task.algorithm_name||task.algorithm_id],['版本',task.version_id]]"/><p v-if="task.related_task_id">关联任务：<el-button link type="primary" @click="open(task.related_task_id!)">{{task.related_task_id}}</el-button></p><h3>执行与资源</h3><ReadOnlyFacts :fields="[['创建',task.created_at],['开始',task.started_at],['结束',task.finished_at],['耗时',elapsed(task)+'（'+elapsedHint(task)+'）'],['算法 / 版本',(task.algorithm_name||task.algorithm_id||'未提供')+(task.version_id?' / '+task.version_id:'')],['Worker',task.worker_id],['资源',task.resource_key],['等待原因',task.resource_wait_reason],...Object.entries(task.execution||{})]"/><h3>配置</h3><ReadOnlyFacts :fields="Object.entries(task.configuration||{})"/><h4>请求的执行配置</h4><ReadOnlyFacts :fields="Object.entries(task.requested_execution||{})"/><h3>失败信息</h3><ReadOnlyFacts :fields="[['原因',task.error]]"/><template v-if="task.kind==='TRAINING'"><h3>训练日志</h3><el-button @click="loadLog(task.task_id)">刷新日志</el-button><p v-if="reads.errors.log">{{reads.errors.log}}</p><pre>{{log||'暂无日志'}}</pre></template><p v-if="actionNotice" role="status">{{ actionNotice }}</p><p><el-button v-if="canPause" size="small" :loading="lifecycleBusy==='pause'" :disabled="!!lifecycleBusy" @click="lifecycleAction('pause')">暂停训练</el-button> <el-button v-if="canResume" size="small" :loading="lifecycleBusy==='resume'" :disabled="!!lifecycleBusy" @click="lifecycleAction('resume')">继续训练</el-button> <el-button v-if="canPromote" size="small" :loading="lifecycleBusy==='promote'" :disabled="!!lifecycleBusy" @click="lifecycleAction('promote')">插队（排到最前）</el-button> <el-button v-if="canStop(task)" type="danger" plain size="small" :loading="stopBusy" :disabled="stopPending" @click="stopTask()">{{ stopPending ? '停止待核验' : '停止任务' }}</el-button> <el-button v-if="canDeleteRecord" type="danger" text size="small" :loading="lifecycleBusy==='delete'" :disabled="!!lifecycleBusy" @click="deleteTask()">删除任务记录</el-button> <el-button v-if="recoverable" type="primary" plain size="small" :loading="recoveryBusy" @click="recoverResult()">恢复结果校验</el-button> <el-button v-if="task.kind==='TRAINING'&&(recoveryPendingTaskId===task.task_id||(recovery&&!recoverable))" size="small" @click="verifyRecovery()">核验恢复状态</el-button></p><p v-if="recovery">恢复证据：{{ recovery.available ? '服务端确认可恢复' : '当前不可恢复' }}{{ recovery.task_status ? ' · 任务状态 ' + recovery.task_status : '' }}{{ recovery.failure_stage ? ' · 阶段 ' + recovery.failure_stage : '' }}</p><p><a v-if="task.kind==='TRAINING'" :href="bridge('task-detail',task.task_id)">原工作台 · 操作与恢复</a>　<a v-if="canStop(task)" :href="bridge('task-stop',task.task_id)">原工作台 · 停止任务</a></p></div></el-drawer></section></template>
 <style scoped>
 .training-tasks{padding:0}
@@ -356,6 +418,7 @@ form .el-input{max-width:280px}
 form .el-select{width:150px}
 footer{justify-content:flex-end;margin-top:12px;color:var(--workspace-muted);font-size:12px}
 .training-batch-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px;padding:8px 12px;background:var(--workspace-hover);border-radius:6px;font-size:12px;color:var(--workspace-ink)}
+.training-batch-pending{background:var(--el-color-warning-light-9);border:1px solid var(--el-color-warning-light-7)}
 .task-error{display:block;margin-top:2px;color:var(--el-color-danger);font-size:12px;overflow-wrap:anywhere}
 .task-version{display:block;color:var(--workspace-subtle);font-size:11px;overflow-wrap:anywhere}
 pre{white-space:pre-wrap;overflow:auto;max-height:300px;background:var(--workspace-page);padding:12px;border:1px solid var(--workspace-line);border-radius:6px}

@@ -52,6 +52,10 @@ def create_training_management_router_2(service: Callable[[], TrainingManagement
     def v48_stop_job(project_id: str, job_id: str):
         return service().v48_stop_job(project_id, job_id)
 
+    @router.get('/api/v48/projects/{project_id}/jobs/deletion-status')
+    def v48_job_deletion_status(project_id: str, job_ids: str = ''):
+        return service().v48_job_deletion_status(project_id, job_ids)
+
     @router.post('/api/v48/projects/{project_id}/jobs/batch-delete')
     def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
         return service().v48_batch_delete_jobs(project_id, payload)
