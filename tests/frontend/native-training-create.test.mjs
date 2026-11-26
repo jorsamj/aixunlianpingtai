@@ -6,12 +6,20 @@ import {resolve} from 'node:path';
 import ts from '../../frontend/node_modules/typescript/lib/typescript.js';
 import {createTrainingDraft} from '../../static/modules/training-draft.js';
 let serial=0;
+const asDataModule=(source,name)=>{
+ const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+ return 'data:text/javascript;base64,'+Buffer.from(code+'\n//# sourceURL='+name+'\n//'+serial++).toString('base64');
+};
 async function api(request){
  globalThis.__nativeTrainingRequest=request;
- let source=readFileSync('frontend/src/app/training-api.ts','utf8').replace("import {request} from './http';",'const request=(...args)=>globalThis.__nativeTrainingRequest(...args);');
+ const transport='const request=(...args)=>globalThis.__nativeTrainingRequest(...args);';
+ const iteration=readFileSync('frontend/src/api/training-iteration.ts','utf8')
+   .replace("import {request} from '../app/http';",transport);
+ let source=readFileSync('frontend/src/app/training-api.ts','utf8')
+   .replace("import {request} from './http';",transport)
+   .replace("'../api/training-iteration'",JSON.stringify(asDataModule(iteration,'training-iteration-under-test.mjs')));
  source=source.replaceAll('../../../static/modules/',pathToFileURL(resolve('static/modules')).href+'/');
- const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
- return import('data:text/javascript;base64,'+Buffer.from(code+'\n//# sourceURL=native-training-api-under-test.mjs\n//'+serial++).toString('base64'));
+ return import(asDataModule(source,'native-training-api-under-test.mjs'));
 }
 function fixture(){
  const values=new Map();globalThis.sessionStorage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};
