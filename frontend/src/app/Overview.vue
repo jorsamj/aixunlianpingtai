@@ -4,6 +4,7 @@ import {useRoute} from 'vue-router';
 import {aiTaskReaderApi} from '../api/ai-task-reader';
 import {trainingReaderApi,type TaskPage} from '../api/training-reader';
 import {useReadScope} from '../composables/useReadScope';
+import TaskStatusTag from '../components/TaskStatusTag.vue';
 import type {AiTaskPage} from '../types/ai-tasks';
 import {request} from './http';
 import {legacyUrl} from './navigation';
@@ -25,6 +26,7 @@ const aiApi=aiTaskReaderApi({projectId,get:request});
 const core=ref<CoreSnapshot|null>(null);
 const training=ref<TaskPage|null>(null);
 const ai=ref<AiTaskPage|null>(null);
+const failed=ref<TaskPage|null>(null);
 const metrics=computed(()=>{
   const snapshot=core.value;
   if(!snapshot)return [];
@@ -38,16 +40,10 @@ const metrics=computed(()=>{
     {label:'标注率',value:total?`${(annotated/total*100).toFixed(1)}%`:'0.0%'},
   ];
 });
-const statuses:Record<string,string>={
-  ACCEPTED:'已受理',QUEUED:'排队中',WAITING_RESOURCE:'等待资源',PREPARING:'准备中',
-  RUNNING:'运行中',AWAITING_CONFIRMATION:'等待确认',SUCCEEDED:'已完成',
-  PARTIAL_SUCCESS:'部分成功',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消',
-  FAILED:'失败',BLOCKED_BY_ENVIRONMENT:'环境不可用',BLOCKED_BY_HARDWARE:'硬件不可用',
-};
-const status=(value:string)=>statuses[value]||value||'未提供';
 const progress=(value:number|null|undefined)=>value==null?'未提供':`${value}%`;
 const time=(value:string|null|undefined)=>value?.replace('T',' ').slice(0,19)||'未提供';
 const trainingLink=(task:string)=>({name:'training-tasks',params,query:{task}});
+const failedLink=computed(()=>({name:'training-tasks',params,query:{status:'FAILED'}}));
 
 function loadCore(){
   return reads.run('core',signal=>request<CoreSnapshot>(
@@ -67,7 +63,11 @@ function loadAi(){
   return reads.run('ai',signal=>aiApi.tasks('','',signal,5),page=>{ai.value=page;});
 }
 
-onMounted(()=>{void loadCore();void loadTraining();void loadAi();});
+function loadFailed(){
+  return reads.run('failed',signal=>trainingApi.tasks({status:'FAILED'},signal,5),page=>{failed.value=page;});
+}
+
+onMounted(()=>{void loadCore();void loadTraining();void loadAi();void loadFailed();});
 </script>
 
 <template>
@@ -114,12 +114,42 @@ onMounted(()=>{void loadCore();void loadTraining();void loadAi();});
             </template>
           </el-table-column>
           <el-table-column label="状态" min-width="95">
-            <template #default="{row}">{{ status(row.status) }}</template>
+            <template #default="{row}"><TaskStatusTag :status="row.status"/></template>
           </el-table-column>
           <el-table-column label="进度" min-width="80">
             <template #default="{row}">{{ progress(row.progress_percent) }}</template>
           </el-table-column>
           <el-table-column label="创建时间" min-width="160">
+            <template #default="{row}">{{ time(row.created_at) }}</template>
+          </el-table-column>
+        </el-table>
+      </section>
+
+      <section class="overview-panel" aria-labelledby="failed-heading">
+        <header class="overview-heading">
+          <h2 id="failed-heading">待处理失败任务</h2>
+          <div class="overview-actions">
+            <router-link :to="failedLink">查看全部失败任务</router-link>
+            <el-button :loading="reads.busy.failed" @click="loadFailed">刷新</el-button>
+          </div>
+        </header>
+        <p class="overview-hint">最近 5 条失败记录，不代表全部范围；失败原因与恢复资格以任务详情为准。</p>
+        <el-alert v-if="reads.errors.failed" :title="reads.errors.failed" type="error" :closable="false"/>
+        <el-skeleton v-if="!failed&&reads.busy.failed" :rows="3" animated/>
+        <el-table v-if="failed" :data="failed.items" empty-text="暂无失败任务">
+          <el-table-column label="任务" min-width="160">
+            <template #default="{row}">
+              <router-link :to="trainingLink(row.task_id)">{{ row.algorithm_name||row.task_id }}</router-link>
+              <small v-if="row.algorithm_name" class="overview-id">{{ row.task_id }}</small>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" min-width="90">
+            <template #default="{row}"><TaskStatusTag :status="row.status"/></template>
+          </el-table-column>
+          <el-table-column label="原因" min-width="170">
+            <template #default="{row}">{{ row.error||'未提供' }}</template>
+          </el-table-column>
+          <el-table-column label="创建时间" min-width="150">
             <template #default="{row}">{{ time(row.created_at) }}</template>
           </el-table-column>
         </el-table>
@@ -140,7 +170,7 @@ onMounted(()=>{void loadCore();void loadTraining();void loadAi();});
             <template #default="{row}">{{ row.name||row.id }}</template>
           </el-table-column>
           <el-table-column label="状态" min-width="95">
-            <template #default="{row}">{{ status(row.status) }}</template>
+            <template #default="{row}"><TaskStatusTag :status="row.status"/></template>
           </el-table-column>
           <el-table-column label="进度" min-width="80">
             <template #default="{row}">{{ progress(row.progress_percent) }}</template>
@@ -167,4 +197,5 @@ onMounted(()=>{void loadCore();void loadTraining();void loadAi();});
 .overview-metrics>div{padding:12px;background:var(--el-fill-color-lighter);border-radius:6px}
 .overview-metrics dt{font-size:13px;color:var(--el-text-color-secondary)}
 .overview-metrics dd{margin:6px 0 0;font-size:23px;font-weight:600;font-variant-numeric:tabular-nums}
+.overview-hint{margin:0 0 10px;font-size:12px;color:var(--el-text-color-secondary)}
 </style>

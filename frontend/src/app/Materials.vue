@@ -118,23 +118,35 @@ async function locationFor(action:string,page:string){
   location.assign(original(action,page))
 }
 
-const legacyActions=[
-  ['上传图片','material-upload','数据集'],['ZIP 数据集导入','material-zip','数据集'],
-  ['人工标注','material-manual','数据集'],['AI 预标注','material-ai','自动标注及清洗'],
-  ['素材清洗','material-clean','自动标注及清洗'],['算法负样本池','material-negative','数据集'],
-  ['标签管理','material-labels','标签管理'],['批量治理','material-manage','数据集'],
+const primaryActions=[
+  ['上传图片','material-upload','数据集'],
+  ['人工标注','material-manual','数据集'],
+  ['AI 预标注','material-ai','自动标注及清洗'],
+  ['批量治理','material-manage','数据集'],
+] as const;
+
+const secondaryActions=[
+  ['ZIP 数据集导入','material-zip','数据集'],
+  ['素材清洗','material-clean','自动标注及清洗'],
+  ['算法负样本池','material-negative','数据集'],
+  ['标签管理','material-labels','标签管理'],
   ['删除与安全审核','material-integrity','数据集'],
-];
+] as const;
 </script>
 
 <template>
   <MaterialLibrary ref="library" :context="context" standalone delete-enabled>
     <template #actions>
       <nav class="material-actions" aria-label="素材操作">
-        <el-button tag="router-link" :to="{name:'public-negative-pool',params:{projectId}}">负样本池</el-button>
-        <el-button @click="openDatasets">数据集目录</el-button>
-        <el-button v-for="[label,action,page] in legacyActions" :key="label" @click="locationFor(action,page)">{{label}}</el-button>
-        <el-button tag="a" :href="original('material-manage')">原素材治理</el-button>
+        <div class="material-action-group">
+          <el-button v-for="[label,action,page] in primaryActions" :key="label" :type="action==='material-upload'?'primary':'default'" @click="locationFor(action,page)">{{label}}</el-button>
+          <el-button @click="openDatasets">数据集目录</el-button>
+        </div>
+        <div class="material-action-group material-action-more">
+          <el-button tag="router-link" :to="{name:'public-negative-pool',params:{projectId}}">负样本池</el-button>
+          <el-button v-for="[label,action,page] in secondaryActions" :key="label" link @click="locationFor(action,page)">{{label}}</el-button>
+          <el-button tag="a" link :href="original('material-manage')">原素材治理</el-button>
+        </div>
       </nav>
       <el-alert v-if="storageFailed" title="浏览器无法保留选择，刷新或离开页面后需重新核对。" type="warning" :closable="false"/>
       <el-alert v-if="aiHandoffError" :title="aiHandoffError" type="error" :closable="false"/>
@@ -151,9 +163,19 @@ const legacyActions=[
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 8px 16px;
   padding-block-end: 12px;
   border-bottom: 1px solid var(--workspace-line, #dedede);
+}
+.material-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.material-action-more {
+  font-size: 12px;
+  color: var(--workspace-muted, #52525b);
 }
 .material-actions :deep(.el-button) { margin: 0; }
 </style>

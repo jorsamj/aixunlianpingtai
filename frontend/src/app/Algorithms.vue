@@ -348,6 +348,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
   <el-button :aria-pressed="appliedFilters.training_state==='trainable'" :type="appliedFilters.training_state==='trainable'?'primary':'default'" @click="toggleTrainable">仅看可训练</el-button>
   <el-tag v-for="tag in appliedTags" :key="tag.key" closable @close="clearTag(tag.key)">{{ tag.label }}</el-tag>
   <el-button v-if="appliedTags.length" link @click="applyFilters({...defaults})">清空筛选</el-button>
+  <p class="algorithm-metric-note">卡片指标为当前版本记录值，可能来自训练 Val 或独立评测；不同评测基准之间不可直接比较。</p>
  </div>
  <div v-if="unconfirmed"><el-alert title="保存结果尚未核验，请先核对，勿重复提交。" type="warning" :closable="false"/><p v-if="pending?.versionId">待核算法 {{ pending.algorithmId }} · 版本 {{ pending.versionId }}</p><p v-else-if="pending">{{ pending.algorithmId?'编辑或创建回执已记录，将读取该算法核对。':'创建回执未返回算法 ID，请从原完整算法管理核对后填写对应 ID。' }}</p><el-input v-if="pending" v-model="checkId" aria-label="待核算法 ID" placeholder="待核算法 ID" :disabled="!!pending.algorithmId||checking"/><el-button v-if="pending" :loading="checking" :disabled="!(pending.algorithmId||checkId.trim())" @click="verifyPending">核对保存结果</el-button><el-alert v-if="pendingError" :title="pendingError" type="error" :closable="false"/></div>
  <el-alert v-if="reads.errors.algorithms" :title="reads.errors.algorithms" type="error" :closable="false"/>
@@ -363,7 +364,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
    <dl class="algorithm-metrics">
     <div><dt>模型版本</dt><dd>{{ algorithm.version_count??'未提供' }}</dd></div>
     <div><dt>成功训练次数</dt><dd>{{ algorithm.successful_training_count??'未提供' }}</dd></div>
-    <div><dt>mAP50</dt><dd>{{ algorithm.map50_percent==null?'未提供':algorithm.map50_percent.toFixed(1)+'%' }}</dd></div>
+    <div><dt>当前版本 mAP50</dt><dd>{{ algorithm.map50_percent==null?'未提供':algorithm.map50_percent.toFixed(1)+'%' }}</dd></div>
    </dl>
    <dl class="algorithm-facts">
     <div><dt>算法类型</dt><dd>{{ algorithm.algorithm_type||'未设置' }}</dd></div>
@@ -376,8 +377,8 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
    <p v-if="algorithm.remark" class="algorithm-remark">{{ algorithm.remark }}</p>
    <p v-if="algorithm.trainable===false&&algorithm.trainability_message" class="algorithm-blocked">{{ algorithm.trainability_message }}</p>
    <footer>
-    <el-button class="card-detail-button" :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ selected===algorithm.id?'收起详情':'详情与版本' }}</el-button>
-    <el-button :disabled="unconfirmed&&!external(algorithm)" @click="edit(algorithm.id)">{{ external(algorithm)?'基本信息':'基本编辑' }}</el-button>
+    <el-button class="card-detail-button" type="primary" :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ selected===algorithm.id?'收起详情':'详情与版本' }}</el-button>
+    <el-button link :disabled="unconfirmed&&!external(algorithm)" @click="edit(algorithm.id)">{{ external(algorithm)?'基本信息':'基本编辑' }}</el-button>
     <a v-if="algorithm.trainable===true" :href="'/app/#/projects/'+encodeURIComponent(projectId)+'/training/create?algorithm='+encodeURIComponent(algorithm.id)">训练</a>
     <el-button link @click="reportTarget=algorithm.id">算法报告</el-button>
     <a v-if="external(algorithm)" :href="legacyUrl(projectId,'平台对接')">外部同步 · 原流程</a>
@@ -405,8 +406,8 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
        <router-link v-if="row.has_evaluation" :to="versionReport(selected,row.id,true)">独立评测</router-link>
        <router-link :to="{name:'version-conversions',params:{projectId,algorithmId:selected,versionId:row.id},query:{algorithm_name:versions?.algorithm.name,version_name:row.version_name}}">转换记录（原生）</router-link>
        <router-link v-if="canOpenExternalPublish(versions?.algorithm||selectedAlgorithm||{id:selected,name:''})" :to="externalPublishTarget(row.id)">新畅联交付（原生只读）</router-link>
-       <a :href="original(selected,'conversion',row.id)">转换 · 原流程</a>
-       <a :href="original(selected,'delivery',row.id)">交付 · 原流程</a>
+       <a class="legacy-action" :href="original(selected,'conversion',row.id)">转换 · 原流程</a>
+       <a class="legacy-action" :href="original(selected,'delivery',row.id)">交付 · 原流程</a>
        <a v-if="row.has_model" :href="versionDownload(selected,row.id)" target="_blank" rel="noopener">下载模型</a>
        <template v-if="versions&&canRetireVersion(versions.algorithm)&&versions.algorithm.current_version_id!==row.id">
         <el-button v-if="versions.algorithm.current_version_id" link :disabled="unconfirmed||saving||cleanupBusy||reads.busy.versions||!!lifecyclePending||lifecycleStorageProblem" @click="openVersionLifecycle('rollback',row)">回退</el-button>
@@ -565,5 +566,25 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
 
 .version-id {
   margin-top: 4px;
+}
+
+.algorithm-metric-note {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--workspace-subtle, #666);
+}
+
+.algorithm-version-actions {
+  gap: 2px 10px;
+  font-size: 12px;
+}
+
+.algorithm-version-actions .legacy-action {
+  color: var(--workspace-subtle, #888);
+}
+
+.algorithm-version-actions .legacy-action:hover {
+  color: var(--workspace-ink, #202124);
 }
 </style>

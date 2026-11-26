@@ -2,6 +2,7 @@
 import {onMounted,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import QualityCheckChart from './QualityCheckChart.vue';
+import TaskStatusTag from '../components/TaskStatusTag.vue';
 import {trainingReaderApi,type TaskPage} from '../api/training-reader';
 import {useReadScope} from '../composables/useReadScope';
 import {request} from './http';
@@ -83,6 +84,7 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
           </el-select>
           <el-button :loading="reads.busy.issues" @click="loadIssues(cursor)">刷新</el-button>
           <el-button :loading="reads.busy.check" :disabled="!page?.items.length||reads.busy.issues" @click="checkVisible">检查本页素材</el-button>
+          <span class="scope-note">仅检查当前页最多 30 张，不是全库审计</span>
         </div>
         <el-alert v-if="reads.errors.issues||reads.errors.check" :title="reads.errors.issues||reads.errors.check" type="error" :closable="false"/>
         <el-table :data="page?.items||[]" v-loading="reads.busy.issues" row-key="id" empty-text="此范围暂无素材">
@@ -98,7 +100,8 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
           <el-button :disabled="!page?.next_cursor||reads.busy.issues" @click="loadIssues(page?.next_cursor)">下一批</el-button>
         </div>
         <section v-if="quality">
-          <h3>本页检查结果</h3>
+          <h3>本页检查结果 · {{quality.count}} 张</h3>
+          <p class="scope-note">本次只检查当前页素材，结论不适用于全库。</p>
           <QualityCheckChart :scores="quality.scores"/>
           <ul v-if="quality.warnings?.length"><li v-for="warning in quality.warnings" :key="warning">{{warning}}</li></ul>
           <el-table :data="Object.entries(quality.label_images).map(([label,count])=>({label,count}))" max-height="280" empty-text="本次没有标签记录">
@@ -112,7 +115,7 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
         <el-alert v-if="reads.errors.training" :title="reads.errors.training" type="error" :closable="false"/>
         <el-table :data="tasks?.items||[]" v-loading="reads.busy.training" row-key="task_id" empty-text="暂无训练任务">
           <el-table-column label="算法" min-width="190"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||row.task_id}}</template></el-table-column>
-          <el-table-column prop="status" label="状态"/>
+          <el-table-column label="状态" min-width="110"><template #default="{row}"><TaskStatusTag :status="row.status"/></template></el-table-column>
           <el-table-column label="质量证据" min-width="150"><template #default="{row}">
             <router-link v-if="row.report_job_id" :to="{name:'training-report',params:{...params,jobId:row.report_job_id},query:{algorithm:row.algorithm_id,version:row.version_id,back:route.fullPath}}">训练报告与评测</router-link>
             <span v-else>暂无报告</span>
@@ -133,4 +136,5 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
 .measures {display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:14px;padding-block:12px}
 .measures>div {padding:12px 14px;border:1px solid var(--el-border-color-light);border-radius:6px}
 .measures dd {margin:5px 0 0;font-size:1.45rem;font-weight:650}
+.scope-note {font-size:12px;color:var(--el-text-color-secondary);margin:0}
 </style>
