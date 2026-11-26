@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'platform_core/storage/**'
+      - platform_core/storage_source_*.py
       - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
@@ -15,12 +16,14 @@ on:
       - 'static/modules/storage-cache-runtime.js'
       - 'static/index.html'
       - 'tests/unit/storage/**'
+      - 'tests/integration/test_storage_source_postgres.py'
       - 'tests/frontend/storage-*.test.mjs'
       - '.github/workflows/storage-cache-governance.yml'
       - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
   pull_request:
     paths:
       - 'platform_core/storage/**'
+      - platform_core/storage_source_*.py
       - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
@@ -28,6 +31,7 @@ on:
       - 'static/modules/storage-cache-runtime.js'
       - 'static/index.html'
       - 'tests/unit/storage/**'
+      - 'tests/integration/test_storage_source_postgres.py'
       - 'tests/frontend/storage-*.test.mjs'
       - '.github/workflows/storage-cache-governance.yml'
       - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
@@ -50,10 +54,14 @@ jobs:
       - name: Install focused storage test dependencies
         run: |
           python -m pip install --upgrade pip
+          # psycopg[binary] is required by the storage-source provider unit
+          # contracts: the admission/cutover state machine checks the real
+          # psycopg transaction status enum (idle vs in-transaction), so the
+          # focused job must install the driver instead of skipping those tests.
           python -m pip install --disable-pip-version-check \
             fastapi uvicorn python-multipart pillow pyyaml requests \
             opencv-python-headless onnx onnxruntime onnxslim psutil \
-            keyring filelock boto3 oss2 pytest httpx
+            keyring filelock boto3 oss2 pytest httpx "psycopg[binary]"
 
       - name: Run storage cache and object-store unit guards
         run: >-
@@ -115,3 +123,95 @@ jobs:
           grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
           grep -Fq 'Worker 节点素材缓存' static/modules/storage-cache-runtime.js
           python -m platform_core.build_identity --check-version-file VERSION.txt
+
+  # Real PostgreSQL contracts for the U2 storage-source provider and its fenced
+  # cutover. The focused unit job above deliberately has no server; this job is
+  # the only place where the storage-source migration is executed against a real
+  # PostgreSQL 16, and it fails outright if a contract is skipped.
+  storage-source-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: changlian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MC_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/changlian_test
+      MC_REQUIRE_POSTGRES: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install U2 PostgreSQL contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --disable-pip-version-check \
+            pytest "psycopg[binary]" filelock
+
+      - name: Prove the service container is the real server
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          dsn = os.environ["MC_TEST_POSTGRES_DSN"]
+          with psycopg.connect(dsn) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version()")
+                  version = cursor.fetchone()[0]
+          print(version)
+          assert version.startswith("PostgreSQL 16"), version
+          PY
+
+      # --confcutdir keeps the repository-wide conftest (PIL + FastAPI + app.py)
+      # out of this focused environment: this contract owns its fixtures.
+      - name: U2 storage-source PostgreSQL contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=storage-source-postgres.xml \
+            tests/integration/test_storage_source_postgres.py
+
+      - name: Refuse a run that skipped a PostgreSQL contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("storage-source-postgres.xml")
+          if not report.is_file():
+              raise SystemExit("no JUnit report: the PostgreSQL contracts did not run")
+          root = ET.parse(report).getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          tests = int(suite.get("tests") or 0)
+          skipped = int(suite.get("skipped") or 0)
+          failures = int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+          print(f"tests={tests} skipped={skipped} failures={failures}")
+          if skipped or failures:
+              raise SystemExit("a PostgreSQL storage-source contract was skipped or failed")
+          if tests < 10:
+              raise SystemExit(f"expected the full U2 contract set, ran {tests}")
+          PY
+
+      - name: Upload the U2 PostgreSQL contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-source-postgres-report
+          path: storage-source-postgres.xml
+          if-no-files-found: warn

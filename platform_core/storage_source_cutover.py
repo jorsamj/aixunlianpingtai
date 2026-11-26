@@ -519,7 +519,14 @@ def finish_cutover(connection, sqlite_path: str | Path) -> dict[str, Any]:
 
 
 def abort_cutover(sqlite_path: str | Path) -> dict[str, Any]:
-    """Abort a switch that never published an admission (SQLite stays/writable)."""
+    """Abort a switch that never published an admission (SQLite stays/writable).
+
+    This only releases the local marker: it is **not** a PostgreSQL rollback. Rows
+    an interrupted switch already committed stay in the target database; they are
+    inert while no admission record exists (the provider refuses writes) and a
+    later admission re-imports and re-reconciles them. The result therefore reports
+    ``target_may_hold_unadmitted_rows``.
+    """
     record_path = admission_record_path(sqlite_path)
     owner = Path(sqlite_path)
     try:

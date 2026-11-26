@@ -438,51 +438,67 @@ def test_switch_lock_identity_is_shared_by_writers_and_cutover(tmp_path):
     assert storage_source_switch_lock_path(marker) == expected
 
 
-def test_admit_waits_for_an_in_flight_writer_and_sees_its_commit(pg, tmp_path):
-    """The switch cannot snapshot past a write that already passed its check."""
+def test_admit_cannot_pass_an_uncommitted_repository_write(pg, tmp_path, monkeypatch):
+    """A real repository write pauses *inside its own fence*, before COMMIT.
+
+    The barrier is the repository's own write path (the timestamp helper called by
+    ``create`` while it still holds the switch lock and before the SQLite
+    transaction commits). No external lock is taken by the test, so the ordering
+    below is produced by the repository's fence itself.
+    """
     import threading
     import time
 
-    from platform_core.storage.source_repository import storage_source_switch_lock
+    from platform_core.storage import source_repository as source_repository_module
 
     with psycopg.connect(pg.get_uri()) as connection:
         ensure_schema(connection, allow_upgrade=True)
         _clear(connection)
 
     owner = _switch_owner(tmp_path)
-    writer_inside = threading.Event()
+    real_now = source_repository_module._now
+    writer_paused = threading.Event()
     release_writer = threading.Event()
     outcome = {}
 
+    def blocking_now():
+        value = real_now()
+        if not writer_paused.is_set():
+            writer_paused.set()
+            assert release_writer.wait(20), "the in-flight writer was never released"
+        return value
+
+    monkeypatch.setattr(source_repository_module, "_now", blocking_now)
+
     def writer():
-        # A writer that holds the canonical switch lock exactly like the real
-        # write fence does (the repository's own fence is re-entrant here).
-        with storage_source_switch_lock(owner.path):
-            owner.create({"id": "nas-late", "name": "NAS late", "type": "remote"})
-            writer_inside.set()
-            release_writer.wait(15)
+        # Runs the real write path: fence -> authority check -> SQLite write.
+        outcome["created"] = owner.create(
+            {"id": "nas-inflight", "name": "NAS in-flight", "type": "remote"}
+        )
 
     def switcher():
         with psycopg.connect(pg.get_uri()) as connection:
             outcome["admit"] = admit_cutover(
-                connection, owner.path, operator="ops", reason="wait for writer"
+                connection, owner.path, operator="ops", reason="wait for the commit"
             )
 
     writer_thread = threading.Thread(target=writer)
     writer_thread.start()
-    assert writer_inside.wait(10)
+    assert writer_paused.wait(10), "the repository write never reached the barrier"
     switcher_thread = threading.Thread(target=switcher)
     switcher_thread.start()
     time.sleep(0.5)
-    # The switch is blocked while the writer lock is held (same lock identity).
+    # The switch may not pass a write that has not committed yet.
     assert "admit" not in outcome
     release_writer.set()
     writer_thread.join(20)
     switcher_thread.join(30)
 
+    assert outcome["created"].id == "nas-inflight"
     assert outcome["admit"]["admitted"] is True
     repository = _provider(pg, tmp_path)
-    assert repository.get("nas-late") is not None
+    # The admitted target contains the row committed by the in-flight writer.
+    assert repository.get("nas-inflight") is not None
 
 
 def test_postgres_commit_precedes_the_local_admission(pg, tmp_path, monkeypatch):
@@ -527,7 +543,14 @@ def test_postgres_commit_precedes_the_local_admission(pg, tmp_path, monkeypatch)
     assert check["record_present"] is False
 
 
-def test_abort_before_the_commit_leaves_no_durable_state(pg, tmp_path, monkeypatch):
+def test_import_failure_before_commit_rolls_back_and_releases_the_marker(pg, tmp_path, monkeypatch):
+    """Exception injection *before* the COMMIT: the transaction rolls back.
+
+    This is not a real SIGKILL. The failure is raised inside the switch and the
+    handler releases the marker; a real process kill in this window leaves the
+    marker in place (only pre-commit cleanup removes it), which is the fail-closed
+    variant of the same state and is recovered by ``abort_cutover``.
+    """
     from platform_core import storage_source_cutover as cutover_module
 
     with psycopg.connect(pg.get_uri()) as connection:
@@ -551,7 +574,16 @@ def test_abort_before_the_commit_leaves_no_durable_state(pg, tmp_path, monkeypat
     assert owner.update("nas-1", {"name": "NAS recovered"}).name == "NAS recovered"
 
 
-def test_interruption_between_commit_and_admission_is_recoverable(pg, tmp_path, monkeypatch):
+def test_exception_after_commit_before_record_is_recovered_by_abort(pg, tmp_path, monkeypatch):
+    """Exception injection *after* the COMMIT, before the admission record exists.
+
+    The durable cutover row is really committed (verified by an independent
+    connection), the local record is absent and the marker is deliberately kept:
+    both providers stay blocked. ``finish_cutover`` refuses (nothing is published)
+    and ``abort_cutover`` is the documented recovery. A real process kill in this
+    window produces the same on-disk state, because the marker is published before
+    the transaction starts and removed only after the record exists.
+    """
     from platform_core import storage_source_cutover as cutover_module
 
     with psycopg.connect(pg.get_uri()) as connection:
@@ -603,7 +635,14 @@ def test_interruption_between_commit_and_admission_is_recoverable(pg, tmp_path, 
         provider.create({"id": "nas-z", "name": "NAS Z", "type": "remote"})
 
 
-def test_interruption_after_the_record_is_finished_by_finish_cutover(pg, tmp_path, monkeypatch):
+def test_exception_after_record_is_recovered_by_finish_cutover(pg, tmp_path, monkeypatch):
+    """Exception injection after the record exists, before the marker is released.
+
+    The durable row and the local record already agree, so ``finish_cutover`` can
+    prove the published state and release the marker. A real process kill here
+    leaves the same record+marker pair and the same finish recovery; a SIGKILL is
+    not simulated by this test.
+    """
     from platform_core import storage_source_cutover as cutover_module
 
     with psycopg.connect(pg.get_uri()) as connection:
