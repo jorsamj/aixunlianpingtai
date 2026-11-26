@@ -3,11 +3,14 @@ import {computed,onUnmounted,reactive,ref,watch} from 'vue';
 import {useRoute,useRouter,type LocationQuery} from 'vue-router';
 import {modelBrowseApi,browseError} from '../api/model-browse';
 import {algorithmManagementApi,type AlgorithmForm,type AlgorithmBasic} from '../api/algorithm-management';
-import type {AlgorithmCategory,AlgorithmSummary,Paged,VersionPage,VersionDetail} from '../types/model-browse';
+import {deletedVersion,retryVersionCleanup,type LifecycleTarget,type VersionOperation} from '../api/algorithm-lifecycle';
+import type {AlgorithmCategory,AlgorithmSummary,ModelVersion,Paged,VersionPage,VersionDetail} from '../types/model-browse';
 import {useReadScope} from '../composables/useReadScope';
+import AlgorithmLifecycleDialog from '../components/AlgorithmLifecycleDialog.vue';
 import ModelVersionDetails from '../components/ModelVersionDetails.vue';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {request} from './http';
+import {useWorkspace} from './main';
 import {legacyUrl} from './navigation';
 const route=useRoute(),router=useRouter(),projectId=String(route.params.projectId),scope=new AbortController();
 onUnmounted(()=>scope.abort());
@@ -101,6 +104,67 @@ function versionReport(algorithmId:string,versionId:string,evaluation=false){
 }
 const algorithms=ref<Paged<AlgorithmSummary>|null>(null),versions=ref<VersionPage|null>(null),detail=ref<VersionDetail|null>(null),basic=ref<AlgorithmBasic|null>(null);
 const selected=computed(()=>String(route.query.algorithm||'')),versionPage=ref(1),drawer=ref(false),editing=ref(false),editingId=ref(''),saving=ref(false),writeError=ref('');
+const lifecycleTarget=ref<LifecycleTarget|null>(null);
+const lifecycleKey='algorithm-lifecycle:'+JSON.stringify([useWorkspace().actorKey,projectId]);
+const lifecyclePending=ref<LifecycleTarget|null>(null),lifecycleStorageProblem=ref(false);
+try{
+ const value=JSON.parse(sessionStorage.getItem(lifecycleKey)||'null');
+ if(value!==null){
+  if(!['rollback','version-delete'].includes(value.action)||typeof value.algorithmId!=='string'||!value.algorithmId
+   ||typeof value.algorithmName!=='string'||typeof value.versionId!=='string'||!value.versionId
+   ||typeof value.versionName!=='string'||(value.action==='rollback'&&(typeof value.currentVersionId!=='string'||!value.currentVersionId)))
+   throw new Error('待核内容无效');
+  lifecyclePending.value=value;
+ }
+}catch{lifecycleStorageProblem.value=true}
+function saveLifecycle(value:LifecycleTarget|null){
+ if(value)sessionStorage.setItem(lifecycleKey,JSON.stringify(value));
+ else sessionStorage.removeItem(lifecycleKey);
+ lifecyclePending.value=value;
+}
+const lifecycleNotice=ref<{message:string;receipt:VersionOperation}|null>(null);
+const cleanupBusy=ref(false),cleanupError=ref('');
+const incompleteCleanup=computed(()=>!!lifecycleNotice.value?.receipt&&lifecycleNotice.value.receipt.cleanup_status!=='cleanup_completed');
+const cleanupDetails=computed(()=>{
+ const receipt=lifecycleNotice.value?.receipt;
+ if(cleanupError.value)return cleanupError.value;
+ if(!incompleteCleanup.value||!receipt)return '';
+ const status=receipt.cleanup_status==='cleanup_failed'?'部分产物清理失败。':'产物清理尚未确认完成。';
+ return status+(receipt.cleanup_errors||[]).map(message=>browseError(new Error(message))).join('；');
+});
+function openVersionLifecycle(action:'version-delete'|'rollback',version:ModelVersion){
+ const algorithm=versions.value?.algorithm;
+ if(unconfirmed.value||saving.value||cleanupBusy.value||lifecyclePending.value||lifecycleStorageProblem.value
+  ||!algorithm||algorithm.id!==selected.value||version.algorithm_id!==algorithm.id||
+  !canRetireVersion(algorithm)||algorithm.current_version_id===version.id)return;
+ const identity={algorithmId:algorithm.id,algorithmName:algorithm.name,versionId:version.id,versionName:version.version_name||version.id};
+ if(action==='rollback'){
+  if(!algorithm.current_version_id)return;
+  lifecycleTarget.value={...identity,action,currentVersionId:algorithm.current_version_id};
+ }else lifecycleTarget.value={...identity,action};
+ lifecycleNotice.value=null;
+}
+async function lifecycleCompleted(target:LifecycleTarget,message:string,receipt:VersionOperation){
+ lifecycleTarget.value=null;
+ cleanupError.value='';
+ lifecycleNotice.value={message,receipt};
+ if(selected.value===target.algorithmId){
+  if(route.query.version===deletedVersion(target))await router.replace({query:{...route.query,version:undefined}});
+  if(selected.value===target.algorithmId)loadVersions();
+ }
+ load();
+}
+async function retryCleanup(){
+ const notice=lifecycleNotice.value;
+ if(!notice?.receipt||!incompleteCleanup.value||cleanupBusy.value)return;
+ cleanupBusy.value=true;
+ cleanupError.value='';
+ try{
+  const receipt=await retryVersionCleanup(projectId,notice.receipt);
+  if(!scope.signal.aborted)lifecycleNotice.value={message:notice.message,receipt};
+ }catch(cause){if(!scope.signal.aborted)cleanupError.value=browseError(cause)}
+ finally{cleanupBusy.value=false}
+}
 const readOnlyAlgorithm=computed(()=>!!editingId.value&&(!basic.value?.editable||basic.value.source_type?.toUpperCase()==='EXTERNAL'));
 const form=reactive<AlgorithmForm>({name:'',remark:'',industry:'',algorithm_type:''});
 function externalPublishTarget(versionId:string){
@@ -129,13 +193,20 @@ function clearTag(key:typeof filterKeys[number]){applyFilters({...appliedFilters
 function toggleTrainable(){applyFilters({...appliedFilters.value,training_state:appliedFilters.value.training_state==='trainable'?'all':'trainable',page:1})}
 function choose(id:string){void router.push({query:{...route.query,algorithm:id||undefined,version:undefined,version_page:undefined}})}
 function toggle(id:string){choose(selected.value===id?'':id)}
-function loadVersions(){if(selected.value)void reads.run('versions',signal=>api.versions(selected.value,versionPage.value,signal),value=>{versions.value=value})}
+function loadVersions(){if(selected.value)void reads.run('versions',signal=>api.versions(selected.value,versionPage.value,signal),value=>{
+ const lastPage=Math.max(1,Math.ceil(value.total/value.page_size));
+ if(versionPage.value>lastPage){changeVersionPage(lastPage);return}
+ versions.value=value;
+})}
 function changeVersionPage(value:number){void router.push({query:{...route.query,version_page:value===1?undefined:String(value)}})}
 const versionRemark=ref(''),versionSaveError=ref('');
 const selectedAlgorithm=computed(()=>algorithms.value?.items.find(algorithm=>algorithm.id===selected.value)||versions.value?.algorithm);
 const canEditVersion=computed(()=>!!selectedAlgorithm.value&&selectedAlgorithm.value.id===detail.value?.algorithm_id);
 function setDetail(value:VersionDetail){detail.value=value;versionRemark.value=value.version.remark||''}
 function versionDetail(id:string){void router.push({query:{...route.query,version:id}})}
+function versionDownload(algorithmId:string,versionId:string){
+ return `/api/v12/projects/${encodeURIComponent(projectId)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/download`;
+}
 function loadVersionDetail(id:string){
  drawer.value=true;
  detail.value=null;
@@ -243,6 +314,14 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
 </script>
 <template><section aria-label="算法库卡片管理">
  <div class="page-toolbar"><p>项目算法与模型版本</p><div><el-button tag="a" :href="legacyUrl(projectId,'算法列表')">原完整算法管理</el-button><el-button type="primary" :disabled="unconfirmed" @click="edit()">新增本地算法</el-button></div></div>
+ <el-alert v-if="lifecycleStorageProblem" title="版本操作待核记录无法读取，请到原算法管理核对。" type="error" :closable="false"/>
+ <el-alert v-if="lifecyclePending && !lifecycleTarget" title="版本操作待核对。" type="warning" :closable="false">
+  <el-button @click="lifecycleTarget=lifecyclePending">核对版本操作</el-button>
+ </el-alert>
+ <el-alert v-if="lifecycleNotice" :title="lifecycleNotice.message" :type="incompleteCleanup?'warning':'success'" :closable="!cleanupBusy" @close="lifecycleNotice=null">
+  <p v-if="cleanupDetails">{{ cleanupDetails }}</p>
+  <el-button v-if="incompleteCleanup" :loading="cleanupBusy" @click="retryCleanup">重试产物清理</el-button>
+ </el-alert>
  <form class="algorithm-filters" @submit.prevent="search()">
   <el-input v-model="filters.query" aria-label="搜索算法" placeholder="搜索算法名称 / ID" clearable/>
   <el-select v-for="key in ['algorithm_type','industry'] as const" :key="key" v-model="filters[key]" :aria-label="filterLabels[key]" :placeholder="filterLabels[key]" clearable>
@@ -318,10 +397,10 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
        <router-link v-if="canOpenExternalPublish(versions?.algorithm||selectedAlgorithm||{id:selected,name:''})" :to="externalPublishTarget(row.id)">新畅联交付（原生只读）</router-link>
        <a :href="original(selected,'conversion',row.id)">转换 · 原流程</a>
        <a :href="original(selected,'delivery',row.id)">交付 · 原流程</a>
-       <a v-if="row.has_model" :href="original(selected,'download',row.id)">下载模型</a>
-       <template v-if="canRetireVersion(versions?.algorithm||selectedAlgorithm||{id:selected,name:''})">
-        <a v-if="versions?.algorithm.current_version_id!==row.id" :href="original(selected,'rollback',row.id)">回退 · 原流程</a>
-        <a :href="original(selected,'delete-version',row.id)">删除版本 · 原流程</a>
+       <a v-if="row.has_model" :href="versionDownload(selected,row.id)" target="_blank" rel="noopener">下载模型</a>
+       <template v-if="versions&&canRetireVersion(versions.algorithm)&&versions.algorithm.current_version_id!==row.id">
+        <el-button v-if="versions.algorithm.current_version_id" link :disabled="unconfirmed||saving||cleanupBusy||reads.busy.versions||!!lifecyclePending||lifecycleStorageProblem" @click="openVersionLifecycle('rollback',row)">回退</el-button>
+        <el-button link :disabled="unconfirmed||saving||cleanupBusy||reads.busy.versions||!!lifecyclePending||lifecycleStorageProblem" @click="openVersionLifecycle('version-delete',row)">删除版本</el-button>
        </template>
       </div>
      </template></el-table-column>
@@ -344,4 +423,6 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
    </form>
   </template>
  </el-drawer>
+ <AlgorithmLifecycleDialog v-if="lifecycleTarget" :project-id="projectId" :target="lifecycleTarget"
+  :recovering="!!lifecyclePending" :save-intent="saveLifecycle" @close="lifecycleTarget=null" @completed="lifecycleCompleted"/>
 </section></template>

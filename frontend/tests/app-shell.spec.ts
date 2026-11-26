@@ -78,7 +78,7 @@ test('unknown algorithm writes survive refresh, stay project scoped and clear on
 
 
 test('library filters stay server scoped, expanding avoids list reload, and version notes use verified PUT',async({page})=>{
- await assets(page);let listCalls=0,note='原备注',writes=0;const queries:URLSearchParams[]=[];
+ await assets(page);let listCalls=0,note='原备注',writes=0,rollbacks=0;const queries:URLSearchParams[]=[];
  const algorithm={id:'a',name:'算法 A',provider_type:'',editable:true,remark:'算法说明',algorithm_type:'yolo_ultralytics',industry:'工业',source_type:'local',trainable:true,current_version_id:'v',current_version:{id:'v',version_name:'当前 V1'},version_count:2,successful_training_count:12,map50_percent:0,updated_at:'2026-11-18'};
  const versions=[{id:'v',algorithm_id:'a',version_name:'当前 V1',training_status:'SUCCEEDED',has_model:true,has_lineage:true,has_evaluation:true},{id:'older',algorithm_id:'a',version_name:'历史版本',has_model:true}];
  await page.route('**/api/**',async route=>{
@@ -86,17 +86,33 @@ test('library filters stay server scoped, expanding avoids list reload, and vers
   if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'原会话'}}});
   if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'},{id:'q',name:'项目 Q'}]});
   if(request.method()==='PUT'){expect(path).toBe('/api/v12/projects/p/algorithms/a/versions/v');expect(Object.keys(request.postDataJSON())).toEqual(['remark']);note=request.postDataJSON().remark;writes++;return route.fulfill({json:{ok:true}})}
+  if(request.method()==='POST'&&path.endsWith('/rollback')){
+   expect(path).toBe('/api/v12/projects/p/algorithms/a/versions/older/rollback');
+   expect(request.postDataJSON()).toEqual({delete_current_version:true,expected_current_version_id:'v'});
+   rollbacks++;algorithm.current_version_id='older';algorithm.version_count=1;versions.shift();
+   return route.fulfill({json:{ok:true,algorithm_id:'a',operation_id:'rollback-proof',action:'rollback_and_delete',deleted_version_id:'v',
+    current_version_id:'older',previous_current_version_id:'v',cleanup_status:'cleanup_completed'}});
+  }
   if(path.endsWith('/algorithms')){listCalls++;queries.push(url.searchParams);return route.fulfill({json:{ok:true,project_id:'p',items:[algorithm],total:1,page:1,page_size:10,filter_options:{industry:['工业'],algorithm_type:['yolo_ultralytics']},categories:[{id:'root',name:'父品目',parentId:''},{id:'leaf',name:'叶子品目',parentId:'root'}]}})}
   if(url.searchParams.has('version_id'))return route.fulfill({json:{ok:true,project_id:'p',algorithm_id:'a',version:{...versions[0],remark:note,metrics:{map50:0}},artifacts:{items:[],total:0,truncated:false}}});
-  return route.fulfill({json:{ok:true,project_id:'p',algorithm,items:versions,total:2,page:1,page_size:20}});
+  return route.fulfill({json:{ok:true,project_id:'p',algorithm,items:versions,total:versions.length,page:1,page_size:20}});
  });
  await page.goto('/app/#/projects/p/algorithms?sort=metric&training_state=trained&category_ids=leaf');await expect(page.locator('.algorithm-card')).toHaveCount(1);expect(queries.at(-1)?.get('library_view')).toBe('true');expect(queries.at(-1)?.get('sort')).toBe('metric');expect(queries.at(-1)?.get('training_state')).toBe('trained');expect(queries.at(-1)?.get('category_ids')).toBe('leaf');
  await expect(page.locator('.algorithm-card')).toContainText('12');await expect(page.locator('.algorithm-card')).toContainText('0.0%');const before=listCalls;
  await page.getByRole('button',{name:'算法 A',exact:true}).click();await expect(page.getByText('历史版本',{exact:true})).toBeVisible();expect(listCalls).toBe(before);
- await expect(page.getByRole('link',{name:'训练溯源',exact:true})).toHaveAttribute('href',/algorithm_id=a&version_id=v&action=lineage/);await expect(page.getByRole('link',{name:'回退 · 原流程',exact:true})).toHaveCount(1);
+ await expect(page.getByRole('link',{name:'训练溯源',exact:true})).toHaveAttribute('href',/algorithm_id=a&version_id=v&action=lineage/);
+ await expect(page.getByRole('link',{name:'下载模型',exact:true}).first()).toHaveAttribute('href','/api/v12/projects/p/algorithms/a/versions/v/download');
+ await expect(page.getByRole('button',{name:'回退',exact:true})).toHaveCount(1);
  await page.getByRole('button',{name:'版本详情',exact:true}).first().click();await expect(page.getByRole('textbox',{name:'版本备注',exact:true})).toHaveValue('原备注');await page.getByRole('textbox',{name:'版本备注',exact:true}).fill('新备注');await page.getByRole('button',{name:'保存版本备注并核验',exact:true}).click();await expect(page.getByRole('button',{name:'保存版本备注并核验',exact:true})).toBeDisabled();expect(writes).toBe(1);
- await page.getByRole('button',{name:'关闭此对话框',exact:true}).click();await page.getByRole('button',{name:'算法 A',exact:true}).click();await expect(page.locator('.version-panel')).toHaveCount(0);
+ await page.getByRole('button',{name:'关闭此对话框',exact:true}).click();
+ await page.getByRole('button',{name:'回退',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'删除当前版本并回退'})).toContainText('回到版本 历史版本（older）');
+ expect(rollbacks).toBe(0);
+ await page.getByRole('button',{name:'确认删除当前版本并回退',exact:true}).click();
+ await expect(page.getByText(/rollback-proof/)).toBeVisible();
+ expect(rollbacks).toBe(1);
+ await page.getByRole('button',{name:'算法 A',exact:true}).click();await expect(page.locator('.version-panel')).toHaveCount(0);
  await page.reload();await expect(page).toHaveURL(/training_state=trained/);await expect(page.locator('.el-select').filter({has:page.getByRole('combobox',{name:'训练状态',exact:true})})).toContainText('已有训练版本');
  await page.getByRole('button',{name:'清空筛选',exact:true}).click();await expect(page).not.toHaveURL(/training_state=/);await expect.poll(()=>queries.at(-1)?.get('sort')).toBe('comprehensive');
- algorithm.source_type='EXTERNAL';algorithm.provider_type='CHANG_LIAN';await page.reload();await page.getByRole('button',{name:'算法 A',exact:true}).click();await expect(page.getByRole('link',{name:'删除算法 · 原流程',exact:true})).toHaveCount(0);await expect(page.getByRole('link',{name:'回退 · 原流程',exact:true})).toHaveCount(0);await expect(page.getByRole('link',{name:'删除版本 · 原流程',exact:true})).toHaveCount(0);await page.getByRole('button',{name:'基本信息',exact:true}).click();await expect(page.getByRole('textbox',{name:'算法名称',exact:true})).toBeDisabled();
+ algorithm.source_type='EXTERNAL';algorithm.provider_type='CHANG_LIAN';await page.reload();await page.getByRole('button',{name:'算法 A',exact:true}).click();await expect(page.getByRole('link',{name:'删除算法 · 原流程',exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'回退',exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'删除版本',exact:true})).toHaveCount(0);await page.getByRole('button',{name:'基本信息',exact:true}).click();await expect(page.getByRole('textbox',{name:'算法名称',exact:true})).toBeDisabled();
 });
