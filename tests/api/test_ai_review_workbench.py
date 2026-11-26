@@ -2453,8 +2453,14 @@ def test_ai_and_cleaning_migration_preserves_effective_http_contracts():
             if payload != "AnnotationSelectionReq":
                 assert ref == "#/components/schemas/" + payload
             else:
-                properties = schema["components"]["schemas"][ref.rsplit("/", 1)[1]]["properties"]
+                model = schema["components"]["schemas"][ref.rsplit("/", 1)[1]]
+                properties = model["properties"]
                 if name == "create_annotation_review_selection":
-                    assert set(properties) == {"filter", "purpose", "review_revision"}
+                    assert set(properties) == {"filter", "purpose", "review_revision", "confirmed_drafts"}
+                    drafts = properties["confirmed_drafts"]
+                    assert drafts["type"] == "array"
+                    assert drafts["maxItems"] == 50000
+                    assert drafts["items"]["$ref"] == "#/components/schemas/ConfirmedDraftSelection"
+                    assert "confirmed_drafts" not in model.get("required", [])
                 else:
                     assert set(properties) == {"labels", "query", "annotation_state", "previous_ref", "image_ids", "excluded_image_ids"}
