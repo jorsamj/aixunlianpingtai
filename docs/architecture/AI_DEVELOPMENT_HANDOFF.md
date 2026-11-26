@@ -1,6 +1,17 @@
 # AI 开发接续入口
 
-## 回执合同整改与普通业务原生化（2026-11-26，当前）
+## CI 精准修复与负样本分类、血缘落地（2026-11-26，当前）
+
+- 起始本地及远端 `dd9b93dded153a364db1ac58102100842b9b9c33`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `92359c91`、`fae64321`、`0e1f732b`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- StorageRescan 编译失败根因：上一轮插入的返回素材库链接含字面反引号且插在 `v-if`/`v-else-if` 之间，破坏相邻结构。已恢复原链，链接改为链结束后的独立 `v-if="collected"`，仅在 `SUCCEEDED/PARTIAL_SUCCESS` 且实际应用了图片或标注（`applied`/`annotation_applied` > 0）时显示；失败与取消不再表达为导入成功。用 `@vue/compiler-sfc` 对受影响 SFC 做最小编译检查通过。
+- 批量删除收口：恢复双向互斥（批量写前检查单任务生命周期/停止/恢复是否进行中）；单任务删除只与覆盖该任务的待核批量冲突；核对捕获操作者、项目、待核身份，账号或作用域变化后旧响应不写入新作用域；操作者切换清理旧核对结果；结束核验必须有可信逐项结果 + 明确确认 + 持久清除成功，否则保持保护；`writePendingBatch(null)` 失败不再冒充解除。
+- 负样本分类：新增 `NegativePoolCategories.vue` 挂载在算法级负样本池页，复用 v61 categories 的 GET/POST/PATCH 完成列表（含引用数量）、新增、改名、启停；分类删除保留原引用保护，未暴露。项目公共池原分类管理与成员分类设置保持，200 条成员写入限制未变。
+- 算法血缘：版本详情新增“版本关联与血缘”，父/基础版本名称由已加载的版本页解析（不在当前页时显示原始 ID 或“未在当前页”），显式声明血缘、冻结快照、独立评测、困难样本与转换/交付为独立证据链并指向版本行入口；服务端未记录血缘时显示“未记录”，不按名称推断父子关系。
+- 未完成（含证据）：质量中心与总览的补充分析（本轮未实施）；负样本成员分类调整在算法级页仍走公共池入口、审核为只读投影（v61 无池级审核写入端点）；母模型安装/取消/发现登记、训练批量暂停/恢复/停止、算法卡片最佳评测投影仍待专项（仅 batch-delete 存在批量端点）。
+- 验证：`vue-tsc --noEmit` 0 错误；三个改动 SFC 的 `@vue/compiler-sfc` 模板编译通过；改动 Python 文件未涉及（本轮无后端改动）。未运行全仓 pytest/Playwright，未重复构建。
+- 视觉 `VISUAL_PENDING`；四份保护文档、AGENTS.md、VERSION、vendor 与用户文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再推进质量中心/总览与安装、批量生命周期专项。
+
+## 回执合同整改与普通业务原生化（2026-11-26，上一批）
 
 - 起始本地及远端 `c781334607e6533e05d6d2cc267a7636f3c76e26`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `3bda1731`、`30beb6ca`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 批量删除回执：不再过滤非法 ID；四类集合各自唯一、两两互斥、并集等于原提交集合、`audit_retained_ids ⊆ deleted_ids`、数量与明细一致，任一异常进入“结果待核验”。只读核对逐项校验 job_id、状态枚举、唯一性、完整范围与汇总一致，不再凭 `counts.deleted` 解锁。待核记录在提交前写入，写入失败即拒绝提交；记录绑定已确认操作者与项目，异步回执只更新本作用域；核验后可显式“结束本次核验”，保留未确认明细且不宣称全部删除成功，不自动重试。仅 `batch-delete` 的 400/404/422 视为明确未执行；恢复校验等写操作按记录归属互斥，未知批量删除不再永久阻塞整个工作台。
