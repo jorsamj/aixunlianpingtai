@@ -1,5 +1,9 @@
 > 2026-10-22接续：场景评估/素材及标注UI的唯一专项进度为[本轮治理](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)，P0/P1代码及隔离CI已验收，生产未验证；新HEAD验收以唯一专项末节为准；本文原验收合同继续保留。
 
+## Vue 正式人工标注接线（2026-11-26）
+
+正式人工和 AI 候选共用现有 Vue AnnotationEditor 挂载/释放、Annotorious 3.9.5 本地 vendor、createAnnotoriousEditor 和 geometry adapter。正式上下文用原 GT API、原 payload builder、CAS 与图片代际，候选上下文用原候选草稿和审核回执。正式原图通过既有内容路由可选 SHA 匹配，未通过不挂载可编辑画布；保存前原 flush 合并隐藏框。候选几何错误不提交新草稿。vendor、许可证、NOTICE、首次历史补丁及 manifest 未改。原生浏览器合同复用现有 CI，实际运行和视觉证据待验。
+
 # Annotorious v3 人工标注工作台正式集成（2026-10-21）
 
 本文件是本专项唯一需求、设计、进度、问题、验收与接续依据，不与页面启动综合治理或GT素材生命周期专项混写。用户明确要求先完成综合治理补充验收，再单独实施本专项；前者最终 `4fcbcfc804748d37a07eaeb8b8ed960539d10b91` / VERSION `42.24.371` 已独立21/21 Actions、55/55 Checks、Chrome140/140通过。

@@ -1,5 +1,16 @@
 # 功能/API迁移矩阵（M0基线2026-11-18，当前M4-D0）
 
+## 正式人工标注增量（2026-11-26）
+
+| 操作 | 当前 Owner 与 API | 迁移 / 验收 |
+|---|---|---|
+| 从素材库进入、筛选队列、切图、返回 | FormalAnnotations，通过 v61 materials 48 条分页 | 原生入口，返回保留原素材条件、页码和选择。原工作台提供明确回退。 |
+| 画框、选框、移动调框、分类、删除、显示及类别过滤、缩放和平移、撤销重做、快捷操作 | FormalAnnotationEditor / AnnotationEditor / 原 Annotorious 和 geometry adapter | 原生接入。多个框由同一完整框集维护，编辑动作遵循原单选接口。实际 Chrome 和三档桌面待验。 |
+| 正式保存、保存并继续、按范围确认无目标、冲突及未知结果 | 原 annotations GET/POST，v61 content 可选代际匹配，AnnotationRepository CAS | 原生代码已接通。明确区分待标注和确认无目标，旧工作台仍可用，CI_PENDING / UAT_PENDING。 |
+| AI 候选编辑 | NativeAiCandidateEditor / 同一工具层 / CandidateStore | 增加错误后写入阻断。三栏与 C2-B 原接线保留，AI 创建、清洗和其余审核能力继续核对。 |
+
+下文 14 菜单分类仍适用。素材库与自动标注及清洗整体 NATIVE_PARTIAL，标签审计和治理的旧交接仍在。
+
 ## 第二阶段素材库增量（2026-11-26）
 
 | 操作 | 实现 / 原业务 Owner | 状态及证据 |

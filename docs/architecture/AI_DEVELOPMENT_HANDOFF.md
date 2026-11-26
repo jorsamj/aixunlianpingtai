@@ -1,5 +1,22 @@
 # AI 开发接续入口
 
+## 正式人工标注接续（2026-11-26）
+
+- `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`。起始本地及远端 `981922f81357ea39ca7e53c0ab4b8d4d1b32cabb`。基线独立验收提供 24 项（22 成功、2 失败）；历史 11bec617 为 50 项 42 成功、8 失败，83b489a5 为 30 项 24 成功、6 失败。触发不足的工作流不能仅凭后续 SHA 关闭。
+- 正式人工标注候选 `7368dd46afc26de5c4a67fd7a39bfe8615b876c3`。素材库按钮、卡片与详情进原生工作台，原标注台保留明确回退。队列按同项目及继承筛选查询 48 张一页，支持名称/标注状态、逐图与跨页切换、保存并继续；返回保留进入前列表查询。工作台使用原 AnnotationEditor、Annotorious 3.9.5、几何适配和原 payload builder。正式 GT 读写用原 annotations endpoint，保留完整框和元数据。原图增加可选代际绑定，写前 flush、正式版本 CAS、实际审核范围、确认无目标、只读未知回执核验、冲突后需显式重新加载。数据权威是 AnnotationRepository。
+- AI 候选候选码 `eafa898c3974888e70eed19cce37eb85dd1e4da8`。候选编辑的几何错误阻止新草稿提交，原持久请求仍可核验。AiReview 三栏、筛选/冻结、C2-B 与正式入库继续使用原 CandidateStore/服务。AI 创建、清洗及其余转池等流程未在本批迁移。标签审计修复及素材批量治理仍有旧交接，数据库和训练迁移本批未推进。
+- 静态验证通过：修改 Python AST、JS/TS 语法、Vue 类型和 diff 检查。既有 Vue Chrome 用例改为真实离线 Annotorious 画框，核对原像素、已有隐藏框、保存响应丢失后只读回查、切图及卸载。接口 fixture 与实画行为分开，CI 另走原正式 GT 接口及媒体代际合同。视觉、完整移动/调整尺寸产品链、实机、生产待验。
+- 最终含文档 HEAD 以本节所在提交及推送后准确 SHA 快照为准。下一轮先核对下表各 Job 和准确 SHA 前端制品，再处理标签审计及修复、AI 原生创建和审核剩余能力。原在线默认入口及退役决策仍需产品授权。
+
+|未关闭验证项|已知失败 Job|实际根因 / 候选|
+|---|---|---|
+|Remote Conversion Runtime|139355141231|探测替身缺 force 参数，保留逐资源次数与 SDK 证据|
+|Frontend Runtime Stabilization|139355271582|母模型原子替换守卫落在旧 app.py，改查 RuntimeCatalogService、路由委派、SHA 与原子替换|
+|ZIP Import Durable Runtime / Material Annotation Atomicity|139350843668 / 139350844545|守卫按旧函数边界读源码，移到实际 worker，保留委派、冻结选择传递及无第二复制入口的断言|
+|Training Create First Open|139350843575|未发提交 POST；源码确认延迟算法目录可覆盖一次性版本注入。夹具已对齐启动与刷新版本，历史因果待 Chrome 验证，失败时保留定向诊断、截图及 trace|
+
+四组候选均见 `ef02e2e4cba3982f2b7a9e7338ba63dc1049a21e`。启动前仅有基线/历史结果，新候选未通过运行验收。未触发的相关 workflow 继续列为待验证。
+
 ## 第二阶段素材库增量（2026-11-26）
 
 - 工作目录 `D:\lab\p2b2-backend`，唯一分支 `feature/external-algorithm-publishing`。起始本地与远端均为 `83b489a530513932ee3c9a3c3e9633e1d3edeb3f`。开工快照 21 项 PR、8 项 push，合计 18 排队、11 运行、0 完成，前端 push run 45655471943 排队。该快照没有可整改的失败 Job。
