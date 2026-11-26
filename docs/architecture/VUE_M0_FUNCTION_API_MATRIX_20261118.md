@@ -1,6 +1,29 @@
 # 功能/API迁移矩阵（M0基线2026-11-18）
 
-## 14 个正式菜单及本批功能差异（2026-11-26，当前）
+## 14 个正式菜单与五个原生预览（2026-11-26，当前）
+
+代码候选 `4b932ccd0913dbf670b9a26f83eb800f55ad4e2a`。状态描述代码覆盖，运行期与视觉 `CI_PENDING / UAT_PENDING`。五个新增页的原正式链接保留，选择原生试用才进入。
+
+|菜单|状态|原入口 → 原生页面及 API Owner|仍走原系统或待验|
+|---|---|---|---|
+|总览|NATIVE_PARTIAL|总览 → Overview，v53 核心快照、近期训练和标注|历史趋势、资源诊断|
+|质量中心|NATIVE_PARTIAL|原质量中心 → QualityCentre，v53 素材摘要、v61 问题列表、v44 本页质量、v62 训练和报告、原 ECharts|全库检查、场景实测、高级评测、完整趋势|
+|算法库|NATIVE_PARTIAL|原算法卡片 → Algorithms/AlgorithmCatalogOperations，原 v12、v49 和 AlgorithmRepository|整算法统一 409，待算法级生命周期保护；深层血缘及报告|
+|训练任务|NATIVE_PARTIAL|原任务 → TrainingTasks/TrainingCreate/NativeTrainingReport/NativeEvaluation，原 TaskRuntime、评测和反馈 Owner|困难样本、补数、带来源继续训练及诊断细项|
+|素材库|NATIVE_PARTIAL|原素材 → Materials/正式标注，原 GT、分页、上传和治理 Owner|批量分类、数据集成员及算法级负池|
+|视频切帧|NATIVE_COMPLETE|原切帧 → VideoTasks，v33 与 VIDEO_FRAMES，新增原请求精确回执|旧无 ID 标记只能人工核对；真实执行和视觉待验|
+|自动标注及清洗|NATIVE_PARTIAL|原工作台 → AiTasks/AiCreate/AiReview/NativeCleaning，原 v60/v47 及 GT Owner|批量消歧后正式入库、参考图实际推理|
+|标签管理|NATIVE_PARTIAL|原标签 → Labels/LabelAudit，AnnotationRepository 与原治理|标签预设、重复冲突和 Smart Audit|
+|算力与节点|NATIVE_PARTIAL|原节点 → ServiceNodes，原只读资源和调度证据|配置、环境与诊断|
+|模型转换环境|NATIVE_PARTIAL|原部署资源 → ConversionEnvironment，v39 资源读写、显式 SDK 检测及 CatalogPreview 字典|批量工具检测及资源删除；硬件证据仍随转换产物|
+|AI 辅助配置|NATIVE_PARTIAL|原模型配置 → AiConfiguration，v35 模型、Prompt、连接、容量及诊断，原 SecretStore|模型删除及凭据清除的安全引用保护|
+|存储管理|NATIVE_PARTIAL|原存储配置 → StorageManagement/StorageRescan，v61 存储源、资源、引用及扫描|物理位置修改、删除、标注确认、导入及完整治理|
+|平台对接|NATIVE_PARTIAL|原平台对接 → PlatformIntegration/ExternalPublish，原同步及发布 Owner|同步、连接测试、诊断、发布确认及回退|
+|畅联云数据|NATIVE_PARTIAL|原数据页 → ChangLianData，只读 v63 产品、版本、权重详情及下载|原标签分页兜底、对账及复制细项，原同步仍归平台对接|
+
+转换任务详情通过原 v39 数值验证记录恢复丢失回执，并维持硬件验证和正式交付分离。五项旧正式入口继续保留，开发分类为 1 完整、13 部分。各提交和核验见 [开发接续入口](AI_DEVELOPMENT_HANDOFF.md)。
+
+## 14 个正式菜单及本批功能差异（2026-11-26，上一批）
 
 开发候选 `77035375bac317eadb39d8c18449a471c375ccd0`。下表为源码接线状态，运行期及视觉 `CI_PENDING / UAT_PENDING`。
 
