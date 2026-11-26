@@ -448,7 +448,7 @@ const diagnosticFacts=computed(()=>{
      <p v-if="!review.item">选择候选图片查看候选框和诊断。</p>
      <template v-else>
       <h4>{{ candidateName(review.item) }}</h4>
-      <p class="review-inspector-state">{{ review.decision?.status==='pending' ? '审核结果待核验' : candidateStatus(review.item) }}</p>
+      <p class="review-inspector-state" role="status" aria-label="审核状态">{{ review.decision?.status==='pending' ? '审核结果待核验' : candidateStatus(review.item) }}</p>
       <div v-if="review.item.original_boxes" class="review-switch" role="group" aria-label="候选框版本">
        <button :aria-pressed="!original" @click="original=false">当前候选框</button>
        <button :aria-pressed="original" @click="original=true">原始候选框</button>
@@ -532,7 +532,7 @@ const diagnosticFacts=computed(()=>{
 .review-heading p, .review-pagination, small { color: var(--workspace-muted); font-size: 12px; }
 .review-columns {
   display: grid;
-  grid-template-columns: clamp(142px,12vw,188px) minmax(0,1fr) clamp(305px,28vw,520px);
+  grid-template-columns: clamp(132px,11vw,180px) minmax(0,1fr) clamp(320px,29vw,560px);
   align-items: start;
   gap: 12px;
 }
@@ -584,7 +584,7 @@ const diagnosticFacts=computed(()=>{
   padding: 12px; border-inline-start: 1px solid var(--workspace-line); border-radius: var(--workspace-radius);
 }
 .review-inspector h4 { margin: 8px 0 2px; font-size: 15px; }
-.review-inspector-state { margin: 0 0 9px; color: var(--workspace-muted); font-size: 12px; }
+.review-inspector-state { display: inline-block; margin: 0 0 9px; padding: 2px 8px; border-radius: 5px; background: var(--workspace-hover); color: var(--workspace-ink); font-size: 12px; font-weight: 600; }
 .review-inspector .review-switch { margin-bottom: 6px; }
 .review-inspector :deep(.material-media) { margin-block: 0 10px; background: #edeef0; border-radius: 6px; }
 .review-inspector :deep(.media-scroll) { max-height: 50dvh; }
