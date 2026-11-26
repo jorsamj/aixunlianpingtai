@@ -409,7 +409,7 @@ def allocator_diagnostics(stack: dict) -> str:
     try:
         with repository._connect() as database:
             tasks = [tuple(row) for row in database.execute(
-                "SELECT task_id,status,stage,attempt,worker_id,resource_key "
+                "SELECT task_id,status,stage,attempt,worker_id,resource_key,resource_wait_reason "
                 "FROM tasks ORDER BY task_id"
             )]
             assignments = [tuple(row) for row in database.execute(
@@ -421,7 +421,7 @@ def allocator_diagnostics(stack: dict) -> str:
                 "FROM execution_resource_holds ORDER BY task_id"
             )]
             nodes = [tuple(row) for row in database.execute(
-                "SELECT node_id,reported_capabilities,desired_capabilities,status,last_error "
+                "SELECT node_id,reported_capabilities,allowed_capabilities,enabled,last_heartbeat_at,last_error "
                 "FROM service_nodes"
             )]
     except Exception as error:
@@ -1443,9 +1443,19 @@ def run_dual_slot_simultaneous_agent_sigkill_recovery(tmp_path: Path) -> None:
             gpu_uuid=GPU_B, identity=identities[DUAL_SLOT_TASK_A],
         )
 
-        # GPU-B becomes admissible only after B's verified release.
-        heartbeat_with_gpus(stack)
-        assignment = assign_next(stack)
+        # GPU-B becomes admissible only after B's verified release. The
+        # restarted real Agent also sends CPU-only host observations. Retry the
+        # harness observation and allocation together if its heartbeat wins
+        # between these two writes. The production allocator still decides.
+        def assign_after_verified_release():
+            heartbeat_with_gpus(stack)
+            return stack["service"].allocator.assign_next()
+
+        assignment = wait_for(
+            assign_after_verified_release, timeout=10,
+            message="GPU-B was not assigned after both verified releases",
+            context=context,
+        )
         assert assignment["task_id"] == DUAL_SLOT_TASK_C
         assert assignment["resolved_execution_config"]["selected_gpu"]["uuid"] == GPU_B
 
