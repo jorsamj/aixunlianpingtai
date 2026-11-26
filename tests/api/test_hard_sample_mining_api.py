@@ -144,6 +144,13 @@ def test_one_durable_annotation_task_is_created_for_existing_training_material(m
     assert request["mining_snapshot_sha256"]
     assert request["mining_model_sha256"]
     assert len(tasks) == 1
+    guarded = platform.HardSampleMiningCreateReq(image_ids=["training-a"], request_key="guarded-mining",
+        expected_model_sha256=request["mining_model_sha256"], expected_source_hashes={"training-a": "b" * 64})
+    with pytest.raises(HTTPException) as drift:
+        platform.create_hard_sample_mining("project", "algorithm", "v2", guarded)
+    assert drift.value.status_code == 409
+    assert "代际" in drift.value.detail
+    assert len(tasks) == 1
 
 
 def test_frozen_test_or_same_bytes_cannot_be_mined(monkeypatch, tmp_path):

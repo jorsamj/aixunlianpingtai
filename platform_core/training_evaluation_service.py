@@ -488,6 +488,35 @@ class TrainingEvaluationService:
 
     def advanced_evaluation_report(self, project_id: str, algorithm_id: str, version_id: str, reader_view: bool=False, section: str="summary", offset: int=0, limit: int=20, class_id: Optional[int]=None):
         version, model = self._advanced_evaluation_context(project_id, algorithm_id, version_id)
+        if reader_view and section == 'iteration':
+            from platform_core.iteration_actions import ACTION_BY_DECISION
+            evaluation = version.get('evaluation') or {}
+            decision = version.get('iteration_decision') or {}
+            trusted = (evaluation.get('model_sha256') == model.get('model_sha256')
+                       and evaluation.get('task_id') == model.get('training_task_id'))
+            if not trusted:
+                decision = {}
+            stored = version.get('confirmed_iteration_action') or {}
+            source = stored.get('source') or {}
+            matching = bool(decision and source.get('decision_id') == decision.get('decision_id')
+                            and source.get('evaluation_id') == evaluation.get('evaluation_id')
+                            and source.get('algorithm_id') == algorithm_id and source.get('version_id') == version_id
+                            and stored.get('action') == ACTION_BY_DECISION.get(decision.get('decision')))
+            candidate_set = version.get('supplement_data_candidate_set') or {}
+            if not matching or stored.get('action') != 'supplement_data' or candidate_set.get('action_id') != stored.get('action_id'):
+                candidate_set = {}
+            return {
+                'ok': True, 'project_id': project_id, 'algorithm_id': algorithm_id, 'version_id': version_id,
+                'current_version_id': model['current_version_id'],
+                'evaluation_id': evaluation.get('evaluation_id'), 'model_sha256': model.get('model_sha256'),
+                'decision': {key: decision[key] for key in ('decision_id', 'decision', 'weak_labels') if key in decision},
+                'action': ({'action_id': stored.get('action_id'), 'action': stored.get('action'),
+                            'status': stored.get('status'), 'automatic_execution': stored.get('automatic_execution'),
+                            'source': source, 'training_draft': {'task_id': (stored.get('training_draft') or {}).get('task_id')}}
+                           if matching else None),
+                'candidate_set': ({'candidate_set_id': candidate_set.get('candidate_set_id'),
+                                   'material_ids': candidate_set.get('material_ids') or []} if candidate_set else None),
+            }
         if reader_view:
             if section not in {'summary','classes','curves','confusion'} or offset<0 or not 1<=limit<=100 or class_id is not None and class_id<0:raise HTTPException(422,detail='评测报告分段范围无效')
             from platform_core.evaluation_reader_views import report_section
@@ -646,6 +675,7 @@ class TrainingEvaluationService:
             raise HTTPException(status_code=409, detail=str(error)) from error
         materials = self.dependencies.material_store(project_id)
         eligible: list[str] = []
+        display_items = []
         cursor = None
         # Two fixed 500-ID pages: no unbounded Material scan on the API thread.
         for _ in range(2):
@@ -660,6 +690,8 @@ class TrainingEvaluationService:
                         or item.get("source_available") is False):
                         continue
                     eligible.append(image_id)
+                    display_items.append({'image_id': image_id, 'filename': item.get('original_name') or item.get('stored_name'),
+                                          'content_sha256': digest})
                     if len(eligible) >= count:
                         break
                 if len(eligible) >= count:
@@ -667,18 +699,20 @@ class TrainingEvaluationService:
             if len(eligible) >= count or not page.next_cursor:
                 break
             cursor = page.next_cursor
-        return {"items": eligible, "returned": len(eligible), "limit": count}
+        return {"items": eligible, "display_items": display_items, "returned": len(eligible), "limit": count}
 
     def create_hard_sample_mining(self, project_id: str, algorithm_id: str, version_id: str,
                                   payload: HardSampleMiningCreateReq):
         return self._enqueue_hard_sample_mining(
             project_id, algorithm_id, version_id, payload.image_ids,
             source=payload.source, request_key=payload.request_key,
+            expected_model_sha256=payload.expected_model_sha256, expected_source_hashes=payload.expected_source_hashes,
         )
 
     def _enqueue_hard_sample_mining(self,
         project_id: str, algorithm_id: str, version_id: str, image_ids: Sequence[str],
         *, source: str, request_key: str = "",
+        expected_model_sha256: str = "", expected_source_hashes: dict[str, str] | None = None,
     ):
         from platform_core.hard_sample_mining import (
             HardSampleSafetyError, assert_not_frozen_test, sha256_file,
@@ -739,6 +773,10 @@ class TrainingEvaluationService:
             raise HTTPException(status_code=409, detail="冻结模型标签与当前 canonical 标签不一致，请先核查")
         snapshot_hash = sha256_file(snapshot_path)
         digest = sha256_file(path)
+        if expected_model_sha256 and digest != expected_model_sha256:
+            raise HTTPException(409, detail='困难样本的来源模型已变化')
+        if expected_source_hashes is not None and source_hashes != expected_source_hashes:
+            raise HTTPException(409, detail='困难样本素材代际已变化')
         identity = {
             "algorithm_id": str(algorithm_id),
             "version_id": str(version_id),
@@ -753,11 +791,6 @@ class TrainingEvaluationService:
         key = json.dumps(identity, sort_keys=True, ensure_ascii=False)
         task_id = "hm" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:14] if request_key else "hm" + uuid.uuid4().hex[:14]
         repository = self.dependencies.shared_task_repository()
-        previous = repository.get(task_id)
-        if previous is not None:
-            if previous.project_id != project_id or previous.kind is not TaskKind.AI_ANNOTATION:
-                raise HTTPException(status_code=409, detail="困难样本任务身份冲突")
-            return self.dependencies.public_annotation_task(previous)
         request = {
             "schema_version": 2,
             "mode": "hard_sample_yolo",
@@ -776,6 +809,11 @@ class TrainingEvaluationService:
             "source_request_key": str(request_key or "")[:120],
         }
         with self.dependencies._storage_source_fence():
+            previous = repository.get(task_id)
+            if previous is not None:
+                if previous.project_id != project_id or previous.kind is not TaskKind.AI_ANNOTATION:
+                    raise HTTPException(status_code=409, detail="困难样本任务身份冲突")
+                return self.dependencies.public_annotation_task(previous)
             self.dependencies.shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
             task = repository.create(TaskRecord.new(
                 task_id, project_id, TaskKind.AI_ANNOTATION,

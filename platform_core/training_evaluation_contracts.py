@@ -32,3 +32,5 @@ class HardSampleMiningCreateReq(BaseModel):
     image_ids: List[str]
     source: Literal["existing", "upload"] = "existing"
     request_key: str = ""
+    expected_model_sha256: str = ""
+    expected_source_hashes: dict[str, str] | None = None

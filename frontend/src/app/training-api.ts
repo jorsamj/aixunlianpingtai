@@ -1,3 +1,4 @@
+import {readIteration,readTrainingSource,type IterationSource} from '../api/training-iteration';
 import {request} from './http';
 import type {AlgorithmSummary, ModelVersion} from '../types/model-browse';
 import {withRequestDeadline} from '../../../static/modules/api.js';
@@ -369,6 +370,7 @@ interface NativeTrainingSubmission {
   signal?: AbortSignal;
   fixedPreview?: any;
   fixedRequestId?: string;
+  source?: IterationSource;
 }
 
 interface CompatibilityResult {
@@ -406,7 +408,20 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
   const blockers = collectTrainingAdmissionBlockers({draft, base, target}).filter((row: {code:string}) => !fixed || row.code !== 'materials');
   if (blockers.length) throw new Error(blockers.map((row: {message: string}) => row.message).join('；'));
 
+  const source = options.source;
+  const sourceView = source ? await readIteration(source, signal || new AbortController().signal) : undefined;
+  const sourceAction = source && sourceView ? readTrainingSource(sourceView, source) : undefined;
+  if (source && (source.projectId!==projectId || source.algorithmId!==asset.id || source.versionId!==draft.baseVersionId))
+    throw new Error('训练草稿与来源版本不一致');
+  ensureCurrent();
   const payload = buildTrainingStartPayload({draft, target, algorithm: engine, trainingDraftToRequest});
+  if (sourceAction?.action==='continue_training') {
+    const evidence=sourceAction.source;
+    payload.iteration_action={
+      action_id:sourceAction.action_id,decision_id:evidence.decision_id,evaluation_id:evidence.evaluation_id,
+      version_id:evidence.version_id,dataset_revision_id:evidence.dataset_revision_id,snapshot_id:evidence.snapshot_id,
+    };
+  }
   const fixedTest = fixed ? null : benchmarkReuseContext({asset: fresh, draft, base, benchmark});
   if (fixedTest) {
     if (draft.testMaterialIds?.length) throw new Error('复用固定评测基准时不能同时选择独立试验素材');
@@ -417,6 +432,13 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
   }
   const supplement = fixed ? null : supplementCandidateContext({asset: fresh, draft, base});
   if (supplement?.active) payload.supplement_candidate_set_id = supplement.candidateSetId;
+  if (source?.candidateSetId) {
+    const candidates = sourceView?.candidate_set?.material_ids || [];
+    if (fixed || draft.trainSelectionRef || !candidates.length
+      || candidates.some(id=>!draft.materialIds?.includes(id)||draft.testMaterialIds?.includes(id)))
+      throw new Error('来源补数必须保留在明确的 Train 素材中，请核对冻结范围');
+    payload.supplement_candidate_set_id = source.candidateSetId;
+  }
 
   const selectionContext = {
     algorithm_asset_id: asset.id, base_version_id: payload.base_version_id, model: payload.model,
@@ -481,7 +503,7 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
   ensureCurrent();
   if (pendingTrainingCreation(projectId, receiptScope)) throw new Error('上次训练创建结果尚未确认，请先核验任务状态');
 
-  const taskId = 'train_' + Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+  const taskId = (sourceAction?.action==='continue_training' ? sourceAction.training_draft?.task_id : undefined) || 'train_' + Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
   const receipt = {projectId, algorithmId: asset.id, taskId};
   payload.task_id = taskId;
   rememberTrainingCreation(receipt, receiptScope);
