@@ -1,6 +1,18 @@
 # AI 开发接续入口
 
-## 评测语义收尾、工作台专业化与批量原生（2026-11-26，当前）
+## 训练批量删除安全收口与训练环境原生化（2026-11-26，当前）
+
+- 起始本地及远端 `645fdd6725c06420b69b779b7713c0d8d2181801`（业务代码 `1247dd01`）。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮业务代码候选见 `c9f9cd73`、`e6a58ef5`、`b5c0d063`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分业务单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 开工 CI（`645fdd67`）：GPT 核验 30 成功、0 失败、1 运行中；未重复整改历史已通过项。
+- 批量删除：前端按所选集合校验回执（`requested`、`deleted/skipped/missing/failed` 与 id 集合、类别互斥、`audit_retained_ids ⊆ deleted_ids`），按“记录删除 / 按原证据保留 / 跳过执行中 / 未找到 / 失败”分列，不再承诺全部产物保留。提交前写入待核验记录（项目、操作者、任务 ID），4xx 明确拒绝即清除，网络/5xx/未知保留；新增只读 `GET /api/v48/projects/{p}/jobs/deletion-status?job_ids=`（≤200，不删除不重试）用于核对，全部 `deleted` 才确认，其余保留未知并允许人工重试。批量与单项生命周期写操作互斥，选择只含 `TRAINING` 终态记录（准备任务不入批）。浏览器 abort 不代表服务端撤销。
+- 评测收尾：`compare_evaluations` 复用共享身份投影且历史独立性规则不变，原因码由断言锁定；严格排名要求 `verified_independent`；单个合格版本显示“唯一合格版本，未进行多版本比较”；v49 最新创建改为与版本分页 Owner 相同的 `created_at DESC, sort_index, id` 口径。
+- 节点：中央持久任务与 Agent 上报任务分别计数，不再合并为精确执行总数；GPU 使用、中央预留与调度资格仍分开。
+- 训练环境原生化：新增 `TrainingEnvironments.vue`（路由 `/projects/:projectId/nodes/environments`，节点页入口，菜单未改）。训练解释器探测只在点击“读取训练环境”时执行；母模型资产列表含身份/大小/来源/校验状态/SHA256，支持既有安全校验与显式 `.pt` 上传登记；节点已发现权重与安装任务只读展示，均标注“未校验/不代表可训练”。
+- 未完成（含证据）：标签快捷预设与负样本分类/审核无对应 HTTP API（`negative_pool.py` 有分类能力但仅 v61 列表/回执端点暴露）；训练批量暂停/恢复/停止无批量服务端 API（仅 `batch-delete`），按纪律未用浏览器逐任务循环；存储扫描导入创建、算法血缘深层只读、总览历史趋势、算法卡片最新/最佳投影未实施。
+- 验证：`vue-tsc --noEmit` 0 错误；改动 Python 文件 AST 通过；定向 pytest 6 项通过（批量删除与只读核对、保留证据、严格排名与历史原因码、既有比较）。未运行全仓 pytest/Playwright，未重复构建。
+- 视觉 `VISUAL_PENDING`；四份保护文档、AGENTS.md、VERSION、vendor 与用户未跟踪文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再推进存储扫描导入与负样本分类（需先补最小只读/写入端点）及算法卡片投影。
+
+## 评测语义收尾、工作台专业化与批量原生（2026-11-26，上一批）
 
 - 起始本地及远端 `e976a646e5455874d09e4d04036fa05fb96a6c86`（业务代码 `2f8ff419`）。目录 `D:\lab\p2b2-backend`（上一节写作 `D:\p2b2-backend` 系笔误，实际 Git Root、origin 与分支均未变）。分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮业务代码候选见 `0bfa4c5b`、`7eaa841f`、`33c6e91d`、`1247dd01`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 开工 CI（`e976a646`）：GPT 核验 16 成功、0 失败、9 运行中（Algorithm SQL Store、Online Feedback Runtime push 已成功）。未重复整改历史 Schema 7、AI 单图审核与训练报告问题。
