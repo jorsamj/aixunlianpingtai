@@ -10,12 +10,12 @@ import {annotationSavePayload} from '../../../static/modules/annotation-workbenc
 import {browseError} from '../api/model-browse';
 
 const props=defineProps<{projectId:string;imageId:string;labels:ReviewLabel[];hasNext:boolean}>();
-const emit=defineEmits<{back:[];navigate:[delta:number]}>();
+const emit=defineEmits<{back:[];navigate:[delta:number];settled:[imageId:string,advance:boolean]}>();
 const controller=new AbortController();
 const row=shallowRef<Awaited<ReturnType<typeof readFormalAnnotation>>>();
 const boxes=shallowRef<AiEditorBox[]>([]),baseline=shallowRef<AiEditorBox[]>([]);
 const busy=ref(false),saving=ref(false),error=ref(''),notice=ref(''),conflict=ref(false),epoch=ref(0);
-const pending=shallowRef<{payload:FormalPayload;scope:string[]}>();
+const pending=shallowRef<{payload:FormalPayload;scope:string[];advance:boolean}>();
 const active=ref<string|null>(null),selectedLabel=ref(props.labels[0]?.code||''),filter=ref(''),reviewed=ref<string[]>([]);
 const view=ref({mode:'draw',visible:true,scale:1});
 const dirty=computed(()=>JSON.stringify(boxes.value)!==JSON.stringify(baseline.value)||reviewed.value.length>0);
@@ -94,6 +94,7 @@ async function verify(){
       conflict.value=true;throw new Error('服务端标注已变化。当前修改仍保留，请重新载入核对');
     }
     apply(fresh);pending.value=undefined;notice.value='已核对当前正式标注';
+    emit('settled',props.imageId,packet.advance);
   }catch(cause){if(!controller.signal.aborted)error.value=browseError(cause)}
   finally{busy.value=false;sync()}
 }
@@ -118,13 +119,13 @@ async function save(confirmReview=false,advance=false){
     if(controller.signal.aborted)return;
     apply(result);notice.value='正式标注已保存';
     saving.value=false;
-    if(advance)emit('navigate',1);
+    emit('settled',props.imageId,advance);
   }catch(cause){
     if(controller.signal.aborted)return;
     const status=(cause as {httpStatus?:number}).httpStatus;
     if(status===409){conflict.value=true;error.value=browseError(cause)}
     else if(status&&[400,401,403,404,422].includes(status))error.value=browseError(cause);
-    else{pending.value={payload,scope};error.value='保存结果待核对，请读取当前正式标注。'}
+    else{pending.value={payload,scope,advance};error.value='保存结果待核对，请读取当前正式标注。'}
   }finally{saving.value=false;sync()}
 }
 const context:AiEditorContext={
@@ -142,7 +143,7 @@ const context:AiEditorContext={
       onVisibilityChange:visible=>{view.value.visible=visible},
     });
     if(signal.aborted||controller.signal.aborted){editor.destroy();return}
-    kernel=editor;view.value=editor.snapshot();sync();return editor;
+    kernel=editor;view.value={...editor.snapshot()};sync();return editor;
   },
   release(handle){
     if(handle&&handle!==kernel){(handle as Kernel).destroy();return}

@@ -19,13 +19,8 @@ const deletion=useMaterialDelete({
    selected.value=selected.value.filter(id=>!deleted.has(id));
    selectionPage.value=Math.min(selectionPage.value,Math.max(1,Math.ceil(selected.value.length/50)));
    if(detailId.value&&deleted.has(detailId.value))resetDetail();
-   // The numbered API rejects a page beyond the new total before returning rows.
-   const visible=page.value;
-   if(number.value>1&&visible?.page===number.value&&!visible.has_next&&visible.items.length&&visible.items.every(row=>deleted.has(row.id))){
-    number.value-=1;
-   }
   }
-  await load();
+  await load(true);
  },
 });
 const deletePending=computed(()=>deletion.pending.value);
@@ -47,7 +42,14 @@ const status:Record<string,string>={unannotated:'未标注',annotated:'已标注
 function remember(){props.context.memory.materials={filters:{...applied},page:number.value,layout:layout.value,selectedItems:selected.value,detailId:props.standalone?detailId.value:undefined}}
 function resetDetail(){detailId.value='';reads.cancel('detail');reads.cancel('history');drawer.value=false;detail.value=null;history.value=null}
 function close(){resetDetail();remember()}
-function load(){remember();page.value=null;return reads.run('materials',signal=>api.list(applied,number.value,signal),value=>{page.value=value})}
+function load(clamp=false){
+ remember();page.value=null;
+ const read=clamp?api.listAtOrBefore:api.list;
+ return reads.run('materials',signal=>read(applied,number.value,signal),value=>{
+  page.value=value;
+  if(number.value!==value.page){number.value=value.page;remember()}
+ });
+}
 function search(){Object.assign(applied,filters);number.value=1;resetDetail();void load()}
 function turn(delta:number){number.value+=delta;resetDetail();void load()}
 function choose(id:string,value:boolean){selectionNote.value='';if(value&&!selected.value.includes(id)){if(!props.standalone&&selected.value.length>=200){selectionNote.value='最多保留 200 张选择，请先清除部分选择';return}selected.value=[...selected.value,id]}if(!value)selected.value=selected.value.filter(x=>x!==id);selectionPage.value=Math.min(selectionPage.value,Math.max(1,Math.ceil(selected.value.length/50)));remember()}
@@ -61,7 +63,7 @@ function legacy(action:'manage'|'upload'|'annotate',id?:string){remember();if(!p
 onMounted(()=>{void load();if(detailId.value)open(detailId.value);if(props.standalone&&props.deleteEnabled)void deletion.recover()});
 </script>
 <template><section class="catalog-preview material-library" :aria-label="standalone?'素材库':'素材库只读浏览'"><PageHeader v-if="!standalone" title="素材库" eyebrow="数据管理 / 素材" description="浏览原素材库与正式标注；上传、标注和管理沿用原工作台。" badge="只读" @back="legacy('manage')"/>
-<slot name="actions"/><el-alert v-if="deletePending" type="warning" :closable="false" title="存在未完成的素材删除任务；请先核验原任务，不能新建删除计划。"><el-button size="small" @click="deletion.openTask()">查看删除任务</el-button></el-alert><div class="preview-actions"><el-button v-if="context.openNativeUpload" type="primary" @click="context.openNativeUpload()">上传图片（原生）</el-button><el-button v-if="context.openNativeZip" @click="context.openNativeZip()">ZIP 数据集（原生）</el-button><el-button v-if="context.openUploadTasks" @click="context.openUploadTasks()">上传任务</el-button><el-button v-if="context.openImports" @click="remember();context.openImports()">上传与治理</el-button><el-button v-if="context.legacyMaterials" @click="legacy('upload')">上传素材</el-button><el-button v-if="context.openNegativePool" @click="remember();context.openNegativePool()">负样本池</el-button><el-button :disabled="reads.busy.materials" @click="load">刷新素材</el-button></div>
+<slot name="actions"/><el-alert v-if="deletePending" type="warning" :closable="false" title="存在未完成的素材删除任务；请先核验原任务，不能新建删除计划。"><el-button size="small" @click="deletion.openTask()">查看删除任务</el-button></el-alert><div class="preview-actions"><el-button v-if="context.openNativeUpload" type="primary" @click="context.openNativeUpload()">上传图片（原生）</el-button><el-button v-if="context.openNativeZip" @click="context.openNativeZip()">ZIP 数据集（原生）</el-button><el-button v-if="context.openUploadTasks" @click="context.openUploadTasks()">上传任务</el-button><el-button v-if="context.openImports" @click="remember();context.openImports()">上传与治理</el-button><el-button v-if="context.legacyMaterials" @click="legacy('upload')">上传素材</el-button><el-button v-if="context.openNegativePool" @click="remember();context.openNegativePool()">负样本池</el-button><el-button :disabled="reads.busy.materials" @click="load()">刷新素材</el-button></div>
 <form class="filters" @submit.prevent="search"><el-input v-model="filters.query" aria-label="素材名称" placeholder="搜索图片名称"/><el-select v-model="filters.annotation_state" aria-label="标注状态"><el-option label="全部标注状态" value=""/><el-option v-for="(label,value) in status" :key="value" :label="label" :value="value"/></el-select><el-button type="primary" native-type="submit">查询素材</el-button><details><summary>更多筛选条件</summary><div class="extra-filters"><label>标签编码<el-input v-model="filters.label" placeholder="任一标签编码"/></label><label>来源 ID<el-input v-model="filters.storage_source_id"/></label><label>导入批次<el-input v-model="filters.source_batch_id"/></label><label>质量状态<el-select v-model="filters.quality_status"><el-option label="全部" value=""/><el-option label="未检查" value="pending_decision"/><el-option label="已处理" value="processed"/><el-option label="有问题" value="issue"/></el-select></label><label>起始日期<input v-model="filters.created_from" type="date"></label><label>截止日期<input v-model="filters.created_to" type="date"></label></div></details></form>
 <el-alert v-if="reads.errors.materials" :title="reads.errors.materials" type="error" :closable="false"/><p v-if="reads.errors.materials&&page">当前显示上次读取结果，请重试刷新。</p><el-alert v-if="selectionNote" :title="selectionNote" type="warning" :closable="false"/>
 <div class="result-tools"><span>{{ page?`共 ${page.total} 张素材`:reads.busy.materials?'正在读取素材':'素材列表未加载' }} · 已选 {{ selected.length }} 张</span><div class="preview-actions"><el-button @click="choosePage" :disabled="!page||reads.busy.materials">选择本页</el-button><el-button @click="selected=[];selectionPage=1;remember()">清除选择</el-button><el-button v-if="standalone&&deleteEnabled&&selected.length" type="danger" plain :disabled="deletion.state.busy" @click="deletion.prepareMany(selected)">删除所选 {{ selected.length }} 张</el-button><el-button :aria-pressed="layout==='grid'" @click="layout='grid';remember()">网格</el-button><el-button :aria-pressed="layout==='list'" @click="layout='list';remember()">列表</el-button><el-checkbox v-model="showBoxes">标注框</el-checkbox></div></div>

@@ -20,6 +20,7 @@ const search=ref(filters.query),annotationState=ref(filters.annotation_state);
 const active=computed(()=>typeof route.query.image==='string'?route.query.image:'');
 const start=Number(route.query.page);
 const pageNumber=ref(Number.isSafeInteger(start)&&start>0?start:1);
+const queueSettling=ref(false);
 const page=shallowRef<MaterialPage>(),labels=shallowRef<ReviewLabel[]>();
 const editor=ref<InstanceType<typeof FormalAnnotationEditor>>();
 const index=computed(()=>page.value?.items.findIndex(row=>row.id===active.value)??-1);
@@ -42,26 +43,52 @@ function select(id:string){
 }
 async function loadPage(number:number,edge?:'first'|'last',nextFilters=filters){
   let loaded:MaterialPage|undefined;
-  await reads.run('page',signal=>api.list(nextFilters,number,signal),result=>{loaded=result});
+  await reads.run('page',signal=>api.listAtOrBefore(nextFilters,number,signal),result=>{loaded=result});
   if(!loaded||controller.signal.aborted)return;
   const target=edge==='last'?loaded.items.at(-1):(edge||!active.value?loaded.items[0]:undefined);
   if((target||edge)&&await select(target?.id||''))return;
   if(controller.signal.aborted)return;
   page.value=loaded;pageNumber.value=loaded.page;Object.assign(filters,nextFilters);
 }
+async function refreshAfterSave(id:string,advance:boolean){
+  if(active.value!==id||queueSettling.value)return;
+  queueSettling.value=true;
+  const requested=pageNumber.value;
+  const prior=page.value?.items||[];
+  const oldIndex=prior.findIndex(row=>row.id===id);
+  let fresh:MaterialPage|undefined;
+  try{
+    await reads.run('page',signal=>api.listAtOrBefore(filters,requested,signal),result=>{fresh=result});
+    if(!fresh||controller.signal.aborted||active.value!==id)return;
+    const current=fresh.items.findIndex(row=>row.id===id);
+    page.value=fresh;pageNumber.value=fresh.page;
+    if(current>=0){
+      if(advance)await moveWithinFreshPage(current);
+      return;
+    }
+    const following=new Set(oldIndex<0?[]:prior.slice(oldIndex+1).map(row=>row.id));
+    const next=fresh.items.find(row=>following.has(row.id))||fresh.items[0];
+    await select(next?.id||'');
+  }finally{queueSettling.value=false}
+}
+async function moveWithinFreshPage(current:number){
+  const next=page.value?.items[current+1];
+  if(next)await select(next.id);
+  else if(page.value?.has_next)await loadPage(pageNumber.value+1,'first');
+}
 function navigate(delta:number){
-  if(reads.busy.page||index.value<0||!page.value)return;
+  if(queueSettling.value||reads.busy.page||index.value<0||!page.value)return;
   const target=page.value.items[index.value+delta];
   if(target){select(target.id);return}
   if(delta<0&&pageNumber.value>1)changePage(-1,'last');
   if(delta>0&&page.value.has_next)changePage(1,'first');
 }
 function changePage(delta:number,edge:'first'|'last'){
-  if(reads.busy.page)return;
+  if(queueSettling.value||reads.busy.page)return;
   void loadPage(pageNumber.value+delta,edge);
 }
 function searchQueue(){
-  if(reads.busy.page)return;
+  if(queueSettling.value||reads.busy.page)return;
   void loadPage(1,'first',{...filters,query:search.value.trim(),annotation_state:annotationState.value});
 }
 function loadLabels(){return reads.run('labels',signal=>getReviewLabels(projectId,signal),value=>{labels.value=value})}
@@ -69,7 +96,8 @@ function back(){void router.push({name:'materials',params:{projectId},query:retu
 function exitToLegacy(){if(!editor.value||editor.value.mayLeave())location.assign(originals.value)}
 function beforeLogout(event:Event){if(editor.value&&!editor.value.mayLeave())event.preventDefault()}
 onBeforeRouteLeave(()=>editor.value?.mayLeave()??true);
-onBeforeRouteUpdate((to,from)=>to.query.image===from.query.image||(editor.value?.mayLeave()??true));
+onBeforeRouteUpdate((to,from)=>
+  (to.params.projectId===from.params.projectId&&to.query.image===from.query.image)||(editor.value?.mayLeave()??true));
 onMounted(()=>{window.addEventListener('workspace-before-logout',beforeLogout);void loadLabels();void loadPage(pageNumber.value)});
 onBeforeUnmount(()=>{window.removeEventListener('workspace-before-logout',beforeLogout);controller.abort()});
 </script>
@@ -77,7 +105,7 @@ onBeforeUnmount(()=>{window.removeEventListener('workspace-before-logout',before
 <template>
   <div class="formal-workbench">
     <aside class="formal-queue">
-      <div class="queue-tools"><el-button @click="back">返回素材库</el-button><el-button link @click="exitToLegacy">原标注台</el-button></div>
+      <div class="queue-tools"><el-button v-if="!active||!labels" @click="back">返回素材库</el-button><el-button link @click="exitToLegacy">原标注台</el-button></div>
       <h2>素材队列</h2>
       <form class="queue-filter" @submit.prevent="searchQueue">
         <el-input v-model="search" aria-label="队列名称" placeholder="搜索图片"/>
@@ -92,7 +120,7 @@ onBeforeUnmount(()=>{window.removeEventListener('workspace-before-logout',before
       <el-skeleton v-if="!page&&reads.busy.page" :rows="4" animated/>
       <div class="queue-list" v-else>
         <button v-for="item in page?.items" :key="item.id" type="button" :aria-current="item.id===active?'true':undefined"
-          :disabled="reads.busy.page" @click="select(item.id)">{{ item.filename }}</button>
+          :disabled="reads.busy.page||queueSettling" @click="select(item.id)">{{ item.filename }}</button>
       </div>
       <div class="queue-tools">
         <el-button :disabled="index<0||reads.busy.page||(index===0&&pageNumber===1)" @click="navigate(-1)">上一张</el-button>
@@ -106,7 +134,7 @@ onBeforeUnmount(()=>{window.removeEventListener('workspace-before-logout',before
     </aside>
     <section class="formal-stage">
       <FormalAnnotationEditor v-if="active&&labels" :key="active" ref="editor" :project-id="projectId"
-        :image-id="active" :labels="labels" :has-next="hasNext" @back="back" @navigate="navigate"/>
+        :image-id="active" :labels="labels" :has-next="hasNext" @back="back" @navigate="navigate" @settled="refreshAfterSave"/>
       <div v-else class="queue-empty">
         <el-alert v-if="reads.errors.labels" :title="reads.errors.labels" type="error" :closable="false"/>
         <el-button v-if="reads.errors.labels" @click="loadLabels">重试标签读取</el-button>

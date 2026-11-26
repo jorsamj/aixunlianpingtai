@@ -39,9 +39,11 @@ test('native material library keeps scoped browsing, selection and original work
       expect(url.searchParams.get('reader_view')).toBe('true');
       expect(url.searchParams.get('page_size')).toBe('48');
       const term=url.searchParams.get('query');
+      const shrunk=formal.version===4&&url.searchParams.get('annotation_state')==='needs_review'&&!term;
+      if(shrunk&&itemPage===2)return route.fulfill({status:400,json:{detail:'page 2 exceeds total_pages 1'}});
       if(term==='慢查询'){notifySlow();await slowGate;}
       const id=term==='慢查询'?'stale':term==='新查询'?'fresh':project+itemPage;
-      return route.fulfill({json:{ok:true,project_id:project,page:itemPage,page_size:48,total:96,total_pages:2,has_next:itemPage===1,items:[row(id)]}}).catch(()=>{});
+      return route.fulfill({json:{ok:true,project_id:project,page:itemPage,page_size:48,total:shrunk?48:96,total_pages:shrunk?1:2,has_next:!shrunk&&itemPage===1,items:[row(id)]}}).catch(()=>{});
     }
     if(path.endsWith('/labels'))return route.fulfill({json:{items:[{code:'smoke',class_id:0},{code:'person',class_id:1}]}});
     if(path.includes('/annotations/')){
@@ -71,11 +73,11 @@ test('native material library keeps scoped browsing, selection and original work
     if(path.includes('/content'))return route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmZcAAAAASUVORK5CYII=','base64')});
     return route.fulfill({status:404,json:{detail:'unexpected request'}});
   });
-  await page.goto('/app/#/projects/p/materials?label=smoke&annotation_state=annotated&quality_status=processed&source_batch_id=zip-1');
+  await page.goto('/app/#/projects/p/materials?label=smoke&annotation_state=needs_review&quality_status=processed&source_batch_id=zip-1');
   await expect(page.getByRole('heading',{name:'素材库',exact:true})).toBeVisible();
   const image=page.getByRole('img',{name:'p1.png',exact:true});
   await expect(image).toHaveAttribute('loading','lazy');
-  for(const [key,value] of Object.entries({label:'smoke',annotation_state:'annotated',quality_status:'processed',source_batch_id:'zip-1'}))
+  for(const [key,value] of Object.entries({label:'smoke',annotation_state:'needs_review',quality_status:'processed',source_batch_id:'zip-1'}))
     expect(queries[0].searchParams.get(key)).toBe(value);
   await expect(page.locator('.material-card').getByRole('button',{name:'人工标注',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'改名',exact:true}).click();
@@ -120,13 +122,11 @@ test('native material library keeps scoped browsing, selection and original work
   await editor.getByRole('button',{name:'保存标注',exact:true}).click();
   await expect(editor.getByRole('button',{name:'核对保存结果'})).toBeVisible();
   await editor.getByRole('button',{name:'核对保存结果'}).click();
-  await expect(editor.getByText('已核对当前正式标注')).toBeVisible();
+  await expect(editor.getByRole('heading',{name:'现场照片.png'})).toBeVisible();
   expect(written).toHaveLength(1);
   expect(formal.boxes).toHaveLength(2);
   expect(formal.boxes[1].x1).toBeCloseTo(10,0);
   expect(formal.boxes[1].y2).toBeCloseTo(20,0);
-  await page.getByRole('button',{name:'上一张',exact:true}).click();
-  await expect(editor.getByRole('heading',{name:'现场照片.png'})).toBeVisible();
   await expect(editor.locator('.a9s-annotation')).toHaveCount(0);
   await editor.getByRole('button',{name:'返回素材库',exact:true}).click();
   await expect(page.locator('svg.a9s-annotationlayer')).toHaveCount(0);
