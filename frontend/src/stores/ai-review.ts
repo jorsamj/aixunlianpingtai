@@ -1,3 +1,4 @@
+import {freezeConfirmedDrafts,type ConfirmedDraftProof} from '../api/ai-review';
 import {computed,ref,shallowRef} from 'vue';
 import {defineStore} from 'pinia';
 import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection,getReviewLabels,getFormalAnnotation,submitFormalDecision,getFormalReceipt,sealBulkFormalIntent,getBulkFormalIntent,startBulkFormalExecution,getBulkFormalExecution,cancelBulkFormalExecution,recoverBulkFormalExecution} from '../api/ai-review';
@@ -743,14 +744,22 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     // HTTP (non-secure) fallback: identity only needs uniqueness, never secrecy.
     return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');
   }
-  async function preflightBulkFormal(){
+  async function preflightBulkFormal(confirmedDrafts?:ConfirmedDraftProof[]){
     if(bulkIntent.value||bulkRunning.value||bulkCreatePending.value)return;
     archiveTerminalBulk();
     await runBulk(async(address,signal)=>{
       const stored=readBulkRecord(address);
       const snapshot=frozenSelection.value;
       let body:{request_id:string;selection_id:string;review_revision:number;excluded_image_ids:string[]};
-      if(snapshot){
+      if(confirmedDrafts){
+        if(!confirmedDrafts.length||stored||bulkRequestId.value)
+          throw new Error('仍有原入库操作，请先核对后再预检新范围');
+        const exact=await freezeConfirmedDrafts(address,confirmedDrafts,signal);
+        if(signal.aborted||scope!==address)return;
+        if(exact.purpose!=='gt'||exact.filter!=='edited'||exact.count!==confirmedDrafts.length)
+          throw new Error('服务端冻结范围与人工确认草稿不一致');
+        body={request_id:newBulkRequestId(),selection_id:exact.selection_id,review_revision:exact.review_revision,excluded_image_ids:[]};
+      }else if(snapshot){
         const expected=page.value?.review_revision;
         if(expected===undefined||snapshot.review_revision!==expected||snapshot.purpose!=='gt')
           throw new Error('筛选快照已变化，请重新冻结');

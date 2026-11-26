@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import {onBeforeUnmount,ref,shallowRef,watch} from 'vue';
 import {getReviewLabels,readAmbiguitySelection,saveAmbiguityDrafts} from '../api/ai-review';
-import type {AmbiguityDraft,ReviewAddress,ReviewLabel} from '../api/ai-review';
+import type {AmbiguityDraft,ConfirmedDraftProof,ReviewAddress,ReviewLabel} from '../api/ai-review';
 import {browseError} from '../api/model-browse';
 import {aiPlanKeepAmbiguousLabel60} from '../../../static/modules/annotation-ambiguity.js';
 import {readWorkspaceSession,workspaceActorKey} from './main';
 
-const props=defineProps<{scope:ReviewAddress;actorKey:string;range:{id:string;revision:number;excluded:string[];count:number}}>();
+const props=defineProps<{scope:ReviewAddress;actorKey:string;formalBusy:boolean;formalError:string;range:{id:string;revision:number;excluded:string[];count:number}}>();
 const open=defineModel<boolean>('open',{required:true});
-const emit=defineEmits<{busy:[value:boolean];settled:[]}>();
+const emit=defineEmits<{busy:[value:boolean];settled:[];formal:[rows:ConfirmedDraftProof[]]}>();
 const scope={...props.scope},actor=props.actorKey;
 const controller=new AbortController();
 const threshold=ref(0.9),mode=ref<'manual'|'auto'>('manual'),label=ref('');
@@ -16,6 +16,8 @@ const labels=shallowRef<ReviewLabel[]>([]);
 type DraftIdentity=Pick<AmbiguityDraft,'revision'|'source_content_sha256'>;
 const plan=shallowRef<Map<string,DraftIdentity>>(),reasons=shallowRef<Record<string,number>>({});
 const scanned=ref(0),removed=ref(0),fallback=ref(0),saved=ref(0),failed=ref(0);
+const formalConsent=ref(false),proofs=shallowRef<ConfirmedDraftProof[]>([]);
+const preview=shallowRef<{id:string;before:number;after:number;labels:string}[]>([]);
 const scanning=ref(false),writing=ref(false),error=ref(''),finished=ref(false),confirmed=ref(false);
 const configChanged=()=>{plan.value=undefined;confirmed.value=false};
 watch([threshold,mode,label],configChanged);
@@ -29,9 +31,9 @@ async function prepare(){
   if(scanning.value||writing.value||finished.value||threshold.value<0.5||threshold.value>1
     ||(mode.value==='manual'&&!labels.value.some(item=>item.code===label.value)))return;
   scanning.value=true;plan.value=undefined;confirmed.value=false;error.value='';
-  scanned.value=0;removed.value=0;fallback.value=0;reasons.value={};
+  scanned.value=0;removed.value=0;fallback.value=0;reasons.value={};preview.value=[];
   const snapshot=props.range,excluded=new Set(snapshot.excluded),seen=new Set<string>(),entries=new Map<string,DraftIdentity>();
-  const skipped=new Map<string,number>();
+  const skipped=new Map<string,number>(), examples:typeof preview.value=[];
   const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
   const options={mode:mode.value,label:label.value,threshold:threshold.value};
   try{
@@ -50,6 +52,8 @@ async function prepare(){
         const result=aiPlanKeepAmbiguousLabel60(row,options);
         if('reason' in result){skip(result.reason);continue}
         entries.set(row.image_id,{revision:result.revision,source_content_sha256:hash});
+        if(examples.length<16)examples.push({id:row.image_id,before:row.boxes?.length||0,after:result.boxes.length,
+          labels:[...new Set(result.boxes.map(box=>box.label))].join('、')});
         removed.value+=result.removed;fallback.value+=result.fallbackGroups;
       }
       scanned.value=seen.size;cursor=page.next_cursor;
@@ -59,7 +63,7 @@ async function prepare(){
       }
     }while(cursor!==null);
     if(seen.size!==snapshot.count)throw new Error('服务端候选范围未完整覆盖，请重新冻结');
-    plan.value=entries;
+    plan.value=entries;preview.value=examples;
     reasons.value=Object.fromEntries(skipped);
   }catch(cause){if(!controller.signal.aborted)error.value=browseError(cause)}
   finally{scanning.value=false}
@@ -73,6 +77,7 @@ async function save(){
   const seen=new Set<string>();
   error.value='';writing.value=true;emit('busy',true);
   let attempted=false;
+  const confirmedRows:ConfirmedDraftProof[]=[];
   try{
     if(workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor)throw new Error('会话已切换，请重新打开审核');
     let cursor:string|null='0';
@@ -108,7 +113,11 @@ async function save(){
           const original=byId.get(item.image_id);
           if(!original||(item.ok&&item.revision!==original.revision+1))
             throw new Error('草稿回执身份或版本不一致');
-          if(item.ok)saved.value++;
+          if(item.ok){
+            saved.value++;
+            if(options.mode==='manual')confirmedRows.push({image_id:item.image_id,draft_revision:item.revision!,
+              source_content_sha256:original.source_content_sha256});
+          }
           else{
             failed.value++;
             const reason=browseError(new Error(typeof item.error==='string'?item.error:item.error?.message||'草稿未保存'));
@@ -124,7 +133,7 @@ async function save(){
       }
     }while(cursor!==null);
     if(seen.size!==entries.size)throw new Error('冻结范围未覆盖全部原预检候选');
-    finished.value=true;
+    proofs.value=confirmedRows;finished.value=true;
   }catch(cause){
     if(!controller.signal.aborted)error.value=(attempted?'当前批次可能已有保存，请核对候选草稿。':'')+browseError(cause);
   }finally{
@@ -132,14 +141,18 @@ async function save(){
     writing.value=false;emit('busy',false);
   }
 }
+function prepareFormal(){
+  if(!formalConsent.value||!proofs.value.length||writing.value||props.formalBusy)return;
+  emit('formal',proofs.value);
+}
 onBeforeUnmount(()=>controller.abort());
 </script>
 
 <template>
  <el-dialog v-model="open" title="IoU 批量消歧" width="min(640px, 94vw)"
-  :close-on-click-modal="false" :show-close="!writing" :close-on-press-escape="!writing">
+  :close-on-click-modal="false" :show-close="!writing&&!formalBusy" :close-on-press-escape="!writing&&!formalBusy">
   <p>已冻结并选中 {{ range.count }} 张。保存后可逐图复核候选草稿。</p>
-  <el-alert v-if="error" type="error" :title="error" :closable="false" />
+  <el-alert v-if="error||formalError" type="error" :title="error||formalError" :closable="false" />
   <el-form label-position="top" :disabled="scanning || writing || finished">
    <el-form-item label="保留策略"><el-radio-group v-model="mode">
     <el-radio value="manual">保留指定标签</el-radio><el-radio value="auto">优先可信置信度</el-radio>
@@ -155,13 +168,20 @@ onBeforeUnmount(()=>controller.abort());
   <template v-if="plan">
    <p>可处理 {{ plan.size }} 张 · 移除 {{ removed }} 个重叠框 · {{ fallback }} 组按原候选顺序保留</p>
    <ul v-if="Object.keys(reasons).length"><li v-for="(count,reason) in reasons" :key="reason">{{ reason }}（{{ count }}）</li></ul>
+   <el-table v-if="preview.length" :data="preview" max-height="200" aria-label="消歧预览（最多16张）">
+    <el-table-column prop="id" label="素材"/><el-table-column prop="before" label="原框" width="68"/>
+    <el-table-column prop="after" label="保留框" width="80"/><el-table-column prop="labels" label="保留标签"/>
+   </el-table>
    <p v-if="writing || finished" role="status">回执已确认保存 {{ saved }} 张、失败 {{ failed }} 张</p>
-   <el-checkbox v-else v-model="confirmed">确认批量保存候选草稿</el-checkbox>
+   <el-checkbox v-else v-model="confirmed">确认按选定策略批量保存候选草稿</el-checkbox>
+   <el-checkbox v-if="proofs.length" v-model="formalConsent">已核对人工指定标签和保留范围，确认预检这 {{proofs.length}} 张草稿</el-checkbox>
+   <p v-else-if="finished&&mode==='auto'">自动策略只生成草稿。请人工复核后通过原入库流程提交。</p>
   </template>
   <template #footer>
-   <el-button :disabled="writing" @click="open=false">关闭</el-button>
+   <el-button :disabled="writing||formalBusy" @click="open=false">关闭</el-button>
    <el-button :loading="scanning" :disabled="writing || finished" @click="prepare">预检消歧</el-button>
-   <el-button type="primary" :loading="writing" :disabled="!confirmed || !plan?.size || finished || scanning" @click="save">保存草稿</el-button>
+   <el-button v-if="proofs.length" type="primary" :loading="formalBusy" :disabled="!formalConsent" @click="prepareFormal">预检 C2-B 正式入库</el-button>
+   <el-button v-else type="primary" :loading="writing" :disabled="!confirmed || !plan?.size || finished || scanning" @click="save">保存草稿</el-button>
   </template>
  </el-dialog>
 </template>

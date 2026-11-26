@@ -539,3 +539,32 @@ def test_annotation_governance_migration_preserves_original_http_contract():
     annotation = schema["components"]["schemas"]["AnnotationSave"]["properties"]
     assert {"expected_version", "source_content_sha256", "reviewed_label_codes", "annotation_state"} <= set(annotation)
     assert "_review_actor" not in annotation and "_review_codes" not in annotation
+
+
+def test_confirmed_ambiguity_drafts_are_exact_and_actor_bound(tmp_path):
+    from fastapi import HTTPException
+    from platform_core.ai_annotation_contracts import ConfirmedDraftSelection
+    from platform_core.ai_annotation_service import AiAnnotationService
+    from platform_core.annotation_candidates import CandidateStore
+    from platform_core.task_runtime import ArtifactStore
+
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="ambiguity-proof")
+    store.initialize(labels=["person"], total_images=2)
+    store.append_items([
+        {"image_id": image_id, "status": "success", "boxes": [], "source_content_sha256": "a" * 64}
+        for image_id in ("selected", "automatic")
+    ])
+    store.save_draft("selected", [], expected_revision=0, request_id="manual-fixture", actor="reviewer")
+    store.save_draft("automatic", [], expected_revision=0, request_id="automatic-fixture", actor="reviewer", automatic=True)
+    expected = ConfirmedDraftSelection(image_id="selected", draft_revision=1, source_content_sha256="a" * 64)
+    verify = AiAnnotationService._confirmed_draft_ids
+    assert verify(store, "reviewer", [expected]) == ["selected"]
+    with pytest.raises(HTTPException) as other_actor:
+        verify(store, "other", [expected])
+    assert other_actor.value.status_code == 409
+    with pytest.raises(HTTPException) as automated:
+        verify(store, "reviewer", [expected.model_copy(update={"image_id": "automatic"})])
+    assert automated.value.status_code == 409
+    with pytest.raises(HTTPException) as wrong_revision:
+        verify(store, "reviewer", [expected.model_copy(update={"draft_revision": 2})])
+    assert wrong_revision.value.status_code == 409

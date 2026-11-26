@@ -545,11 +545,18 @@ class AiAnnotationService:
             revision = store.review_revision()
             if payload.review_revision is not None and payload.review_revision != revision:
                 raise HTTPException(409, detail='审核范围已变化，请刷新后重新选择')
-            try:
-                counts = store.selection_counts(payload.filter, payload.purpose)
-                ids = list(islice(store.iter_selected_ids(filter=payload.filter, purpose=payload.purpose), 50001))
-            except ValueError as error:
-                raise HTTPException(422, detail=str(error)) from error
+            confirmed_drafts = getattr(payload, 'confirmed_drafts', ())
+            if confirmed_drafts or 'confirmed_drafts' in getattr(payload, 'model_fields_set', ()):
+                if not confirmed_drafts or payload.purpose != 'gt' or payload.filter != 'edited':
+                    raise HTTPException(422, detail='确认草稿只能用于正式入库范围')
+                ids = self._confirmed_draft_ids(store, actor, confirmed_drafts)
+                counts = {'total': len(ids), 'reasons': {}}
+            else:
+                try:
+                    counts = store.selection_counts(payload.filter, payload.purpose)
+                    ids = list(islice(store.iter_selected_ids(filter=payload.filter, purpose=payload.purpose), 50001))
+                except ValueError as error:
+                    raise HTTPException(422, detail=str(error)) from error
             if len(ids) > 50000:
                 raise HTTPException(422, detail='筛选范围超过50000张，请缩小筛选')
             if payload.purpose == 'transfer':
@@ -562,6 +569,8 @@ class AiAnnotationService:
                 for offset in range(0, len(ids), 200):
                     durable.update(annotations.candidate_committed_ids(task_id, ids[offset:offset + 200]))
                 if durable:
+                    if confirmed_drafts:
+                        raise HTTPException(409, detail='部分确认草稿已经正式入库，请核对原回执')
                     ids = [image_id for image_id in ids if image_id not in durable]
                     counts['reasons']['committed'] = counts['reasons'].get('committed', 0) + len(durable)
             identity = uuid.uuid4().hex
@@ -575,6 +584,28 @@ class AiAnnotationService:
                 'filtered_total': counts['total'], 'excluded': counts['total'] - len(ids), 'reasons': counts['reasons'],
                 'filter': payload.filter, 'purpose': payload.purpose, 'review_revision': revision,
             }
+
+    @staticmethod
+    def _confirmed_draft_ids(store, actor, evidence):
+        requested = {item.image_id: item for item in evidence}
+        if len(requested) != len(evidence):
+            raise HTTPException(422, detail='确认草稿范围包含重复素材')
+        ids = list(requested)
+        for offset in range(0, len(ids), 200):
+            chunk = ids[offset:offset + 200]
+            rows = store.get_many(chunk)
+            for image_id in chunk:
+                expected = requested[image_id]
+                row = rows.get(image_id) or {}
+                draft = row.get('draft') or {}
+                if (row.get('review_state') != 'active' or row.get('accepted') is False
+                        or row.get('gt_committed') or row.get('status') not in ('success', 'empty')
+                        or row.get('review_scope_policy') not in (None, 'task_uniform_legacy')
+                        or row.get('source_content_sha256') != expected.source_content_sha256
+                        or row.get('draft_revision') != expected.draft_revision or draft.get('actor') != actor
+                        or not store._draft_has_human_resolution(expected.draft_revision, json.dumps(draft))):
+                    raise HTTPException(409, detail='确认草稿的操作者、修订、来源或入库资格已变化')
+        return ids
 
     def _load_annotation_review_selection(self, store, project_id, task_id, selection_id, actor, revision):
         if not re.fullmatch(r'[a-f0-9]{32}', selection_id):

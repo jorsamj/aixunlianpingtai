@@ -5,7 +5,7 @@ import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 import {legacyUrl} from './navigation';
 import {login} from './http';
 import {reviewFilters} from '../api/ai-review';
-import type {ReviewCandidate,TransferRange} from '../api/ai-review';
+import type {ConfirmedDraftProof,ReviewCandidate,TransferRange} from '../api/ai-review';
 import {canAdopt,hasUnresolvedAmbiguity} from '../stores/ai-review-decision';
 import {useAiReviewStore} from '../stores/ai-review';
 import MaterialPreview from '../components/MaterialPreview.vue';
@@ -24,6 +24,11 @@ function openAmbiguity(){
   if(editing.value)return;
   ambiguityRange.value=review.ambiguityRange();
   ambiguityOpen.value=!!ambiguityRange.value;
+}
+async function preflightAmbiguity(rows:ConfirmedDraftProof[]){
+  if(editing.value||ambiguityBusy.value||review.bulkBusy||review.formalLocked)return;
+  await review.preflightBulkFormal(rows);
+  if(review.bulkIntent||review.bulkPendingUnknown){ambiguityOpen.value=false;review.openBulkFormal()}
 }
 function openTransfer(kind:'single'|'selection'|'receipt'){
   if(editing.value)return;
@@ -198,8 +203,8 @@ const diagnosticFacts=computed(()=>{
    :reviewable="review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION' && !review.formalLocked && !review.decisionBusy && !review.decision"
    @busy="transferBusy=$event" @settled="review.refreshAfterCandidateMutation()" />
   <NativeReviewAmbiguity v-if="ambiguityOpen && ambiguityRange" :key="transferKey" v-model:open="ambiguityOpen"
-   :scope="editScope" :actor-key="workspace.actorKey" :range="ambiguityRange"
-   @busy="ambiguityBusy=$event" @settled="review.refreshAfterCandidateMutation()" />
+   :scope="editScope" :actor-key="workspace.actorKey" :range="ambiguityRange" :formal-busy="review.bulkBusy" :formal-error="review.bulkError"
+   @busy="ambiguityBusy=$event" @settled="review.refreshAfterCandidateMutation()" @formal="preflightAmbiguity" />
   <NativeAiCandidateEditor v-if="editing" ref="editor" :key="editing" :image-id="editing"
    :scope="editScope" :actor-key="workspace.actorKey" @close="closeEditor" @saved="review.refreshAfterDraft" />
   <div v-else-if="review.taskError" role="alert" class="review-notice">

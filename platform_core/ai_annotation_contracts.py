@@ -76,6 +76,12 @@ class AnnotationDraftBatchReq(BaseModel):
     items: List[AnnotationDraftBatchEntry] = Field(min_length=1, max_length=25)
 
 
+class ConfirmedDraftSelection(BaseModel):
+    image_id: str = Field(min_length=1, max_length=256)
+    draft_revision: StrictInt = Field(ge=1)
+    source_content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class BulkFormalIntentReq(BaseModel):
     request_id: str = Field(min_length=12, max_length=80)
     selection_id: str = Field(pattern=r"^[a-f0-9]{32}$")

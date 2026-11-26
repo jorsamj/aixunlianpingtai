@@ -16665,10 +16665,14 @@ def save_annotation_review_drafts_batch(project_id: str, task_id: str, payload: 
     return _ai_annotation_service().save_annotation_review_drafts_batch(project_id, task_id, payload, request)
 
 
+from platform_core.ai_annotation_contracts import ConfirmedDraftSelection
+
+
 class AnnotationSelectionReq(BaseModel):
     filter: str = 'all'
     purpose: Literal['gt', 'transfer', 'ambiguity'] = 'gt'
     review_revision: Optional[int] = None
+    confirmed_drafts: List[ConfirmedDraftSelection] = Field(default_factory=list, max_length=50000)
 
 
 app.include_router(create_ai_annotation_router_3(_ai_annotation_service, AnnotationSelectionReq))

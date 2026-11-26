@@ -87,6 +87,12 @@ export function freezeReviewSelection(scope:ReviewAddress, filter:ReviewFilter, 
     method:'POST',body:JSON.stringify({filter,purpose,review_revision:revision}),signal,
   });
 }
+export interface ConfirmedDraftProof {image_id:string;draft_revision:number;source_content_sha256:string}
+export function freezeConfirmedDrafts(scope:ReviewAddress, rows:ConfirmedDraftProof[], signal:AbortSignal) {
+  return request<ReviewSelection>(root(scope)+'/review-selection',{
+    method:'POST',body:JSON.stringify({filter:'edited',purpose:'gt',confirmed_drafts:rows}),signal,
+  });
+}
 export interface AmbiguityDraft {
   image_id:string;request_id:string;revision:number;source_content_sha256:string;auto_resolution:boolean;boxes:MaterialBox[];
 }
