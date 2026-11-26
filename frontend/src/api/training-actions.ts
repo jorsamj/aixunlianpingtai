@@ -47,24 +47,51 @@ export async function deleteTrainingTaskRecords(
   );
   const requested = ids.length;
   const known = new Set(ids);
-  const list = (value: unknown) => Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string' && known.has(item)) : null;
-  const deletedIds = list(result?.deleted_ids);
-  const retainedIds = list(result?.audit_retained_ids) ?? [];
-  const skippedIds = list(result?.skipped_active_ids);
-  const missingIds = list(result?.missing_ids);
-  const failures = Array.isArray(result?.failures)
-    ? result.failures.filter(row => row && known.has(String(row.job_id))) : null;
-  const consistent = !!result
+  // Receipts must describe exactly the submitted set: no filtering of unknown
+  // ids, no duplicates, no overlap between categories and no missing entries.
+  const idList = (value: unknown): string[] | null => {
+    if (!Array.isArray(value)) return null;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of value) {
+      if (typeof item !== 'string' || !known.has(item) || seen.has(item)) return null;
+      seen.add(item);
+      out.push(item);
+    }
+    return out;
+  };
+  const failureList = (value: unknown): {job_id: string; message: string}[] | null => {
+    if (!Array.isArray(value)) return null;
+    const seen = new Set<string>();
+    const out: {job_id: string; message: string}[] = [];
+    for (const row of value) {
+      const id = row && typeof row === 'object' ? String((row as {job_id?: unknown}).job_id ?? '') : '';
+      if (!known.has(id) || seen.has(id)) return null;
+      seen.add(id);
+      out.push({job_id: id, message: String((row as {message?: unknown}).message ?? '')});
+    }
+    return out;
+  };
+  const deletedIds = idList(result?.deleted_ids);
+  const retainedIds = idList(result?.audit_retained_ids);
+  const skippedIds = idList(result?.skipped_active_ids);
+  const missingIds = idList(result?.missing_ids);
+  const failures = failureList(result?.failures);
+  const consistent = !!result && typeof result.ok === 'boolean'
     && result.requested === requested
-    && deletedIds !== null && skippedIds !== null && missingIds !== null && failures !== null
+    && deletedIds !== null && retainedIds !== null && skippedIds !== null
+    && missingIds !== null && failures !== null
     && result.deleted === deletedIds.length
     && result.skipped_active === skippedIds.length
     && result.missing === missingIds.length
     && result.failed === failures.length
-    && deletedIds.length + skippedIds.length + missingIds.length + failures.length === requested
     && retainedIds.every(id => deletedIds.includes(id));
   if (!consistent) throw new Error('批量删除回执与所选记录不一致，结果待核验');
+  const categories = [deletedIds, skippedIds, missingIds, failures.map(row => row.job_id)];
+  const union = new Set(categories.flat());
+  const disjoint = categories.every((list, index) => list.every(id =>
+    categories.every((other, otherIndex) => otherIndex === index || !other.includes(id))));
+  if (union.size !== requested || !disjoint) throw new Error('批量删除回执分类不互斥或范围不一致，结果待核验');
   return {...result, deleted_ids: deletedIds, audit_retained_ids: retainedIds,
     skipped_active_ids: skippedIds, missing_ids: missingIds, failures};
 }
@@ -76,22 +103,39 @@ export interface TrainingDeletionStatus {
   counts: Record<string, number>;
 }
 
+const DELETION_STATES = ['deleted', 'terminal', 'active', 'missing', 'invalid'] as const;
+
 // Read-only verification for an unknown batch deletion result: it never deletes
-// or retries, only reports whether each record still exists in this project.
+// or retries, only reports whether each record still exists in this project. The
+// per-item list is validated so a count alone can never release the lock.
 export async function readTrainingDeletionStatus(
   projectId: string, taskIds: string[], signal: AbortSignal,
 ) {
   const ids = [...new Set(taskIds.map(id => String(id || '').trim()).filter(Boolean))];
   if (!ids.length || ids.length > 200) throw new Error('核对需 1–200 条训练记录');
+  const known = new Set(ids);
   const result = await request<TrainingDeletionStatus>(
     `/api/v48/projects/${encodeURIComponent(projectId)}/jobs/deletion-status?job_ids=${encodeURIComponent(ids.join(','))}`,
     {signal},
   );
-  if (result?.ok !== true || result.project_id !== projectId || !Array.isArray(result.items))
-    throw new Error('删除状态核对回执不完整');
-  return result;
+  if (result?.ok !== true || result.project_id !== projectId || !Array.isArray(result.items)
+      || result.items.length !== ids.length) throw new Error('删除状态核对回执不完整');
+  const seen = new Set<string>();
+  const counts: Record<string, number> = Object.fromEntries(DELETION_STATES.map(state => [state, 0]));
+  for (const row of result.items) {
+    const id = typeof row?.job_id === 'string' ? row.job_id : '';
+    const state = String(row?.state ?? '');
+    if (!known.has(id) || seen.has(id) || !DELETION_STATES.includes(state as typeof DELETION_STATES[number]))
+      throw new Error('删除状态逐项回执无效');
+    seen.add(id);
+    counts[state] += 1;
+  }
+  if (seen.size !== ids.length) throw new Error('删除状态核对范围不一致');
+  for (const state of DELETION_STATES) {
+    if (Number(result.counts?.[state] ?? -1) !== counts[state]) throw new Error('删除状态汇总与明细不一致');
+  }
+  return {...result, counts};
 }
-
 // Existing v48 training lifecycle endpoints. The native page sends the same
 // parameterless POST the original task wall sends; receipts are re-read from the
 // canonical v62 reader instead of trusting the legacy job.json projection.
