@@ -1,6 +1,17 @@
 # AI 开发接续入口
 
-## CI 精准修复与负样本分类、血缘落地（2026-11-26，当前）
+## 分类来源、血缘与有界统计（2026-11-26，当前）
+
+- 起始本地及远端 `7e702bc526d4ba8f126fac71d5d8381e53ac3637`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `4195fe7b`、`4c2c2bf1`、`4270683e`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 负样本分类：`NegativePoolCategories` 原来写入时复用 loading 标志，自身 reload 被短路导致不刷新；现拆分为 saving/loading，写成功后实际刷新。分类列表上移到工作台父级（`AlgorithmNegativePool.vue`）单一来源，管理面板与成员筛选共用，改名/启停后筛选器同步；独立 legacy 挂载仍保留有界回退。写入区分明确拒绝（400/404/409/422）与未知：未知时回读分类状态、不自动重试；名称唯一性仍由服务端判定。分类删除保留原引用保护未暴露。
+- 成员分类调整证据：`negative_pool.members` 对带 `algorithm_id` 的算法级成员操作显式拒绝 `categories/categories_only`（仅项目级 `negative_pool.members.v2` 允许 action=set + categories_only），因此算法级页不提供该操作；项目公共池 `PublicNegativePool.vue` 已有 `categories/assign` 成员分类设置，200 张上限与正式 GT/训练资格分离合同未变。
+- 算法血缘：版本详情按真实 `base_version_id`/`parent_version_id` 在展开时最多两次有界读取解析名称，解析失败保留“未在当前页或未提供”，不按名称推断；详情新增训练报告、独立评测、转换记录、交付记录四个深链，各自沿用原路由与 Owner。
+- 有界统计：`TaskRepository.summary()` 对单项目、`created_at` 窗口内的训练/训练准备任务做一次 GROUP BY，经 `GET /api/v62/projects/{p}/tasks/summary?days=1..30` 暴露；总览与质量中心展示近 7 天真实状态计数并标注范围，不扫描历史报告或全量任务。
+- 未完成：训练报告深层分析的新增分区（现有概况/训练过程/独立评测/FP-FN 诊断已具备，本轮未扩展）；质量中心异常样本联动与 Smart Audit 仍独立；P2 母模型安装/取消/登记、训练批量暂停/恢复/停止、算法卡片可信最佳评测摘要未实施（仅 batch-delete 有批量端点；最佳评测需同基准同协议+独立性证据的有界方案）。
+- 验证：`vue-tsc --noEmit` 0 错误；`Algorithms.vue`、`ModelVersionDetails.vue` `@vue/compiler-sfc` 模板编译通过；`tests/api/test_training_job_visibility.py` 12 项通过（含新路由后 OpenAPI 守卫）。未运行全仓 pytest/Playwright，未重复构建。
+- 视觉 `VISUAL_PENDING`；四份保护文档、AGENTS.md、VERSION、vendor 与用户文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再推进训练报告分区、质量中心联动与 P2 批量生命周期。
+
+## CI 精准修复与负样本分类、血缘落地（2026-11-26，上一批）
 
 - 起始本地及远端 `dd9b93dded153a364db1ac58102100842b9b9c33`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `92359c91`、`fae64321`、`0e1f732b`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - StorageRescan 编译失败根因：上一轮插入的返回素材库链接含字面反引号且插在 `v-if`/`v-else-if` 之间，破坏相邻结构。已恢复原链，链接改为链结束后的独立 `v-if="collected"`，仅在 `SUCCEEDED/PARTIAL_SUCCESS` 且实际应用了图片或标注（`applied`/`annotation_applied` > 0）时显示；失败与取消不再表达为导入成功。用 `@vue/compiler-sfc` 对受影响 SFC 做最小编译检查通过。
