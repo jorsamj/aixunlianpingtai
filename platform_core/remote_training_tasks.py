@@ -596,7 +596,13 @@ class TrainingPrepareHandler:
                 "annotation_hash": str(annotation.get("content_digest") or material.get("annotation_hash") or ""),
                 "annotation_state": str(annotation.get("annotation_state") or material.get("annotation_state") or "unannotated"),
             })
+        from .hard_sample_mining import HardSampleSafetyError, assert_not_frozen_test
         from .online_feedback import build_supplement_training_provenance
+        try:
+            assert_not_frozen_test(project, adopted_ids, {row["id"]: row["content_sha256"] for row in truth_rows})
+        except HardSampleSafetyError as error:
+            raise RemoteTrainingPreparationError(str(error), "补数据与已冻结评测集冲突或无法核验",
+                target_status=TaskStatus.FAILED) from error
         build_supplement_training_provenance(candidate, selected_ids, truth_rows)
         return dict(candidate)
 

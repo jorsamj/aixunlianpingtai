@@ -6,13 +6,90 @@ from platform_core.ai_annotation_service import AiAnnotationService
 import json
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 
+def test_eligible_mining_material_cursor_crosses_empty_page_without_releasing_frozen_test(tmp_path):
+    from platform_core.material_repository import MaterialRepository
+
+    project = tmp_path / 'project'
+    snapshots = project / 'snapshots'
+    snapshots.mkdir(parents=True)
+    (snapshots / 'source.json').write_text(json.dumps({'test_image_ids': ['first-00'], 'images': [
+        {'image_id': 'first-00', 'content_sha256': 'a' * 64},
+    ]}), encoding='utf-8')
+    materials = MaterialRepository(project)
+    rows = [
+        {'id': f'first-{i:02}', 'object_key': f'fixture/{i}.jpg', 'storage_source_id': 'fixture',
+         'created_at': '2026-01-01', 'content_sha256': 'a' * 64 if i else 'b' * 64}
+        for i in range(10)
+    ]
+    for image_id in ['a', 'b', 'c']:
+        rows.append({'id': f'later-{image_id}', 'object_key': f'fixture/{image_id}.jpg',
+                     'storage_source_id': 'fixture', 'created_at': '2026-01-02',
+                     'content_sha256': 'd' * 64, 'annotated': image_id == 'c'})
+    materials.upsert_many(rows)
+    service = TrainingEvaluationService(SimpleNamespace(
+        _algorithm_version_for_action=lambda *args: None,
+        project_dir=lambda _: project, material_store=lambda _: materials,
+    ))
+    first = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1)
+    assert first['items'] == [] and first['scanned'] == 10 and first['has_more']
+    second = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1, cursor=first['next_cursor'])
+    assert second['items'] == ['later-a'] and second['has_more']
+    assert second['display_items'][0]['content_sha256'] == 'd' * 64
+    third = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1, cursor=second['next_cursor'])
+    assert third['items'] == ['later-b'] and third['has_more']
+    last = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1, cursor=third['next_cursor'])
+    assert last['items'] == [] and not last['has_more'] and last['next_cursor'] is None
+    with pytest.raises(HTTPException) as foreign:
+        service.eligible_hard_sample_materials('p', 'a', 'other', cursor=first['next_cursor'])
+    assert foreign.value.status_code == 422
+
+
+def test_mining_history_pages_task_records_and_requires_exact_frozen_origin(tmp_path):
+    from dataclasses import replace
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+
+    repository = TaskRepository(tmp_path / 'tasks.sqlite3')
+    artifacts = ArtifactStore(tmp_path / 'artifacts')
+
+    def create(task_id, *, project='p', algorithm='a', version='v', created_at='2026-01-01T00:00:00+00:00'):
+        task = TaskRecord.new(task_id, project, TaskKind.AI_ANNOTATION, 'request.json', 'annotation')
+        if version:
+            artifacts.atomic_write_json(task_id, 'request.json', {
+                'mode': 'hard_sample_yolo', 'mining_algorithm_id': algorithm, 'mining_version_id': version,
+                'mining_model_sha256': 'f' * 64,
+            })
+        repository.create(replace(task, created_at=created_at), artifacts=artifacts)
+
+    for i in range(40):
+        create(f'annotation-{i}', version=None, created_at='2026-01-02T00:00:00+00:00')
+    create('hm00000000000000')
+    create('hm00000000000001')
+    create('hm00000000000002', version='another-version')
+    create('hm00000000000003', project='another-project')
+    create('hm00000000000004', version=None)
+    create('hm00000000000005', algorithm='another-algorithm')
+    service = TrainingEvaluationService(SimpleNamespace(
+        _algorithm_version_for_action=lambda *args: None,
+        shared_task_repository=lambda: repository, shared_task_artifacts=lambda: artifacts,
+    ))
+    first = service.hard_sample_mining_history('p', 'a', 'v')
+    assert first['items'] == [] and first['has_more']
+    second = service.hard_sample_mining_history('p', 'a', 'v', first['next_cursor'])
+    assert [row['task_id'] for row in second['items']] == ['hm00000000000001', 'hm00000000000000']
+    assert second['unverified'] == 1 and not second['has_more']
+    assert all(row['model_sha256'] == 'f' * 64 and row['status'] == 'QUEUED' for row in second['items'])
+    with pytest.raises(HTTPException) as wrong_query:
+        service.eligible_hard_sample_materials('p', 'a', 'v', cursor=first['next_cursor'])
+    assert wrong_query.value.status_code == 422
+
+
 def test_p2_reviewed_mining_preview_adoption_reuses_original_candidate_set_and_protects_test(monkeypatch, tmp_path):
-    from types import SimpleNamespace
     from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
     from platform_core.annotation_candidates import CandidateStore, CandidateDecision
     platform, project, rows, _, _ = _setup(monkeypatch, tmp_path)

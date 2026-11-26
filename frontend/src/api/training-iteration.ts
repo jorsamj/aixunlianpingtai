@@ -13,6 +13,8 @@ export interface IterationView {
   action:IterationAction|null;candidate_set:{candidate_set_id:string;material_ids:string[]}|null;
 }
 export interface MiningSample {image_id:string;filename?:string;content_sha256:string}
+export interface MiningTask {task_id:string;status:string;created_at:string;model_sha256:string}
+interface MiningPage {returned:number;has_more:boolean;next_cursor:string|null}
 export interface ReviewedSample {image_id:string;eligible:boolean;reason?:string;input_sha256?:string;candidate_digest?:string}
 export interface FeedbackSample {feedback_id:string;material_id?:string;eligible:boolean;reason_codes:string[];candidate_digest:string}
 export interface IterationSource extends IterationAddress {actionId:string;evaluationId:string;candidateSetId:string}
@@ -47,8 +49,13 @@ export function readTrainingSource(view:IterationView,source:IterationSource){
 export function confirmIteration(address:IterationAddress, action:IterationAction['action'], decision_id:string, signal:AbortSignal){
   return write(base(address)+'/iteration-actions/confirm',{action,decision_id},signal);
 }
-export function loadMiningMaterials(address:IterationAddress,signal:AbortSignal){
-  return request<{items:string[];display_items:MiningSample[]}>(base(address,'v64')+'/hard-sample-mining/eligible?limit=100',{signal});
+export function loadMiningMaterials(address:IterationAddress,cursor:string,signal:AbortSignal){
+  return request<MiningPage&{items:string[];display_items:MiningSample[];scanned:number}>(
+    base(address,'v64')+'/hard-sample-mining/eligible?limit=100'+(cursor?'&cursor='+enc(cursor):''),{signal});
+}
+export function readMiningHistory(address:IterationAddress,cursor:string,signal:AbortSignal){
+  return request<MiningPage&{items:MiningTask[];unverified:number}>(
+    base(address,'v64')+'/hard-sample-mining/history'+(cursor?'?cursor='+enc(cursor):''),{signal});
 }
 export function startMining(address:IterationAddress,body:Record<string,unknown>,signal:AbortSignal){
   return write<{id:string;task_id?:string}>(base(address,'v64')+'/hard-sample-mining',body,signal);

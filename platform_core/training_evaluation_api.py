@@ -75,12 +75,17 @@ def create_training_evaluation_router_3(service: Callable[[], TrainingEvaluation
     router = APIRouter()
 
     @router.get('/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/eligible')
-    def eligible_hard_sample_materials(project_id: str, algorithm_id: str, version_id: str, limit: int=100):
+    def eligible_hard_sample_materials(project_id: str, algorithm_id: str, version_id: str, limit: int=100,
+                                       cursor: Optional[str]=None):
         """A bounded read-only filter over canonical Materials and frozen Test truth.
 
         This is not a separate candidate database. Final POST revalidates everything.
         """
-        return service().eligible_hard_sample_materials(project_id, algorithm_id, version_id, limit)
+        return service().eligible_hard_sample_materials(project_id, algorithm_id, version_id, limit, cursor)
+
+    @router.get('/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/history')
+    def hard_sample_mining_history(project_id: str, algorithm_id: str, version_id: str, cursor: Optional[str]=None):
+        return service().hard_sample_mining_history(project_id, algorithm_id, version_id, cursor)
 
     @router.post('/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining', status_code=202)
     def create_hard_sample_mining(project_id: str, algorithm_id: str, version_id: str, payload: HardSampleMiningCreateReq):

@@ -3,15 +3,17 @@ import {computed,onMounted,onUnmounted,ref} from 'vue';
 import {useRouter} from 'vue-router';
 import {useReadScope} from '../composables/useReadScope';
 import {getReviewTask,type ReviewTask} from '../api/ai-review';
-import {adoptReviewed,confirmIteration,freezeFeedbackCandidates,isDigest,loadMiningMaterials,readFeedbackCandidates,readIteration,readReviewed,readTrainingSource,startMining} from '../api/training-iteration';
-import type {FeedbackSample,IterationView,MiningSample,ReviewedSample} from '../api/training-iteration';
+import {adoptReviewed,confirmIteration,freezeFeedbackCandidates,isDigest,loadMiningMaterials,readFeedbackCandidates,readIteration,readMiningHistory,readReviewed,readTrainingSource,startMining} from '../api/training-iteration';
+import type {FeedbackSample,IterationView,MiningSample,MiningTask,ReviewedSample} from '../api/training-iteration';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 
 const props=defineProps<{projectId:string;algorithmId:string;versionId:string;evaluationId:string}>();
 const address={projectId:props.projectId,algorithmId:props.algorithmId,versionId:props.versionId};
 const router=useRouter(),actor=useWorkspace().actorKey;
 const controller=new AbortController(),reads=useReadScope(controller);
-const view=ref<IterationView>(),eligible=ref<MiningSample[]>([]),selected=ref<string[]>([]);
+const view=ref<IterationView>(),eligible=ref<MiningSample[]>([]),selected=ref(new Map<string,string>());
+const eligibleCursors=ref<string[]>([]),eligibleNext=ref(''),eligibleScanned=ref(0);
+const history=ref<MiningTask[]>([]),historyCursors=ref<string[]>([]),historyNext=ref(''),historyUnverified=ref(0);
 const task=ref<ReviewTask>(),taskId=ref(''),taskInput=ref(''),reviewed=ref<ReviewedSample[]>([]),more=ref(false),offset=ref(0);
 const miningChoices=ref<ReviewedSample[]>([]),feedback=ref<FeedbackSample[]>([]),feedbackChoices=ref<FeedbackSample[]>([]);
 const truncated=ref(false),writing=ref(false),error=ref(''),notice=ref(''),consent=ref(false);
@@ -28,6 +30,8 @@ const states:Record<string,string>={QUEUED:'排队中',RUNNING:'运行中',AWAIT
   SUCCEEDED:'已完成',FAILED:'失败',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消'};
 const params={projectId:props.projectId};
 const taskLink=computed(()=>({name:'ai-review-native',params:{...params,taskId:taskId.value}}));
+const selectedPage=computed(()=>eligible.value.filter(row=>selected.value.has(row.image_id)).map(row=>row.image_id));
+const canSelectPage=computed(()=>selected.value.size-selectedPage.value.length+eligible.value.length<=500);
 function load(){
   return reads.run('iteration',signal=>readIteration(address,signal),value=>{
     if(value.evaluation_id!==props.evaluationId)throw new Error('冻结评测已变化，请重新打开报告');
@@ -48,27 +52,49 @@ function confirmDecision(){
   if(!current.value||!isDigest(decision)||!code||!window.confirm('确认'+actionNames[code]+'建议？本次确认只保存决策。'))return;
   return write(async()=>{await confirmIteration(address,code,decision,controller.signal);await load()});
 }
-function loadEligible(){
-  return reads.run('eligible',signal=>loadMiningMaterials(address,signal),result=>{
+function loadEligible(page=0){
+  const cursor=page===eligibleCursors.value.length?eligibleNext.value:eligibleCursors.value[page]||'';
+  return reads.run('eligible',signal=>loadMiningMaterials(address,cursor,signal),result=>{
     if(result.display_items?.length!==result.items.length||result.items.length>100||
+      result.has_more!==!!result.next_cursor||(result.next_cursor&&result.next_cursor===cursor)||
       result.display_items.some((row,index)=>row.image_id!==result.items[index]||!isDigest(row.content_sha256)))
       throw new Error('挖掘范围缺少可信素材身份');
-    eligible.value=result.display_items;selected.value=[];
+    eligible.value=result.display_items;
+    eligibleCursors.value=[...eligibleCursors.value.slice(0,page),cursor];
+    eligibleNext.value=result.next_cursor||'';
+    eligibleScanned.value=result.scanned;
+  });
+}
+function selectEligible(keys:string[]){
+  const updated=new Map(selected.value),checked=new Set(keys);
+  for(const row of eligible.value){
+    if(!checked.has(row.image_id))updated.delete(row.image_id);
+    else if(!updated.has(row.image_id))updated.set(row.image_id,row.content_sha256);
+  }
+  if(updated.size<=500)selected.value=updated;
+}
+function loadHistory(page=0){
+  const cursor=page===historyCursors.value.length?historyNext.value:historyCursors.value[page]||'';
+  return reads.run('history',signal=>readMiningHistory(address,cursor,signal),result=>{
+    if(result.items.length>40||result.has_more!==!!result.next_cursor||(result.next_cursor&&result.next_cursor===cursor)||
+      result.items.some(row=>!/^hm[a-f0-9]{14}$/.test(row.task_id)||!isDigest(row.model_sha256)))
+      throw new Error('任务历史缺少可信来源');
+    history.value=result.items;
+    historyCursors.value=[...historyCursors.value.slice(0,page),cursor];
+    historyNext.value=result.next_cursor||'';
+    historyUnverified.value=result.unverified;
   });
 }
 function createMining(){
-  if(!pending.value&&(!selected.value.length||!isDigest(view.value?.model_sha256)))return;
+  if(!pending.value&&(!selected.value.size||!isDigest(view.value?.model_sha256)))return;
   if(!window.confirm(pending.value?'按原素材摘要重试原请求？':'创建所选素材的困难样本挖掘任务？'))return;
   return write(async()=>{
     let packet=pending.value;
     if(!packet){
-      const chosen=new Set(selected.value);
-      const rows=eligible.value.filter(row=>chosen.has(row.image_id));
-      if(!rows.length||rows.length!==chosen.size)throw new Error('所选素材已变化');
-      packet={image_ids:rows.map(row=>row.image_id),source:'existing',
+      packet={image_ids:[...selected.value.keys()],source:'existing',
         request_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''),
         expected_model_sha256:view.value!.model_sha256,
-        expected_source_hashes:Object.fromEntries(rows.map(row=>[row.image_id,row.content_sha256]))};
+        expected_source_hashes:Object.fromEntries(selected.value)};
       sessionStorage.setItem(scope,JSON.stringify(packet));pending.value=packet;
     }
     const receipt=await startMining(address,{...packet},controller.signal);
@@ -76,13 +102,16 @@ function createMining(){
     if(!id||!/^hm[a-f0-9]{14}$/.test(id))throw new Error('挖掘任务回执身份缺失');
     sessionStorage.setItem(scope+':task',id);sessionStorage.removeItem(scope);pending.value=undefined;
     taskInput.value=id;
-    await findTask();
+    await Promise.all([findTask(),loadHistory()]);
   });
 }
 function findTask(){
   const id=taskInput.value.trim();
   if(!/^hm[a-f0-9]{14}$/.test(id))return;
-  if(taskId.value!==id){taskId.value='';task.value=undefined;miningChoices.value=[];reviewed.value=[];consent.value=false}
+  if(taskId.value!==id){
+    reads.cancel('reviewed');taskId.value='';task.value=undefined;miningChoices.value=[];
+    reviewed.value=[];offset.value=0;more.value=false;consent.value=false;
+  }
   return reads.run('task',signal=>getReviewTask({projectId:props.projectId,taskId:id},signal),value=>{task.value=value;taskId.value=id});
 }
 function previewReviewed(start=0){
@@ -163,16 +192,40 @@ onUnmounted(()=>controller.abort());
    <h4>挖掘非 Test 素材</h4>
    <p>冻结 Test 的问题样本可在评测中复核。挖掘范围由原服务按素材和内容摘要排除历史 Test。</p>
    <div class="iteration-actions">
-    <el-button :loading="reads.busy.eligible" :disabled="writing||!!pending" @click="loadEligible">读取可挖掘素材</el-button>
-    <el-button :loading="writing" :disabled="!pending&&!selected.length" @click="createMining">{{pending?'重试原挖掘请求':'挖掘所选素材'}}</el-button>
+    <el-button :loading="reads.busy.eligible" :disabled="writing||!!pending" @click="loadEligible()">读取可挖掘素材</el-button>
+    <el-button :loading="writing" :disabled="!pending&&!selected.size" @click="createMining">{{pending?'重试原挖掘请求':'挖掘所选素材'}}</el-button>
     <span v-if="pending">原请求待核验 · {{pending.image_ids.length}} 张</span>
-    <el-checkbox v-if="eligible.length" :model-value="selected.length===eligible.length" :disabled="!!pending||writing"
-     @change="(checked:unknown)=>selected=checked?eligible.map(row=>row.image_id):[]">选中当前批次</el-checkbox>
+    <span v-else-if="selected.size">已选 {{selected.size}} / 500 张</span>
+    <el-button v-if="selected.size&&!pending" :disabled="writing" @click="selected.clear()">清空选择</el-button>
+    <el-checkbox v-if="eligible.length" :model-value="selectedPage.length===eligible.length" :disabled="!!pending||writing||!canSelectPage"
+     @change="(checked:unknown)=>selectEligible(checked?eligible.map(row=>row.image_id):[])">选中当前批次</el-checkbox>
    </div>
    <el-alert v-if="reads.errors.eligible" :title="reads.errors.eligible" type="warning" :closable="false"/>
-   <el-checkbox-group v-if="eligible.length" v-model="selected" class="iteration-list" :disabled="!!pending||writing">
-    <el-checkbox v-for="row in eligible" :key="row.image_id" :value="row.image_id">{{row.filename||row.image_id}}</el-checkbox>
+   <el-checkbox-group v-if="eligible.length" :model-value="selectedPage" class="iteration-list" :disabled="!!pending||writing"
+    @change="(keys:string[])=>selectEligible(keys)">
+    <el-checkbox v-for="row in eligible" :key="row.image_id" :value="row.image_id"
+     :disabled="selected.size>=500&&!selected.has(row.image_id)">{{row.filename||row.image_id}}</el-checkbox>
    </el-checkbox-group>
+   <div v-if="eligibleCursors.length" class="iteration-actions">
+    <span>第 {{eligibleCursors.length}} 批 · 已检查 {{eligibleScanned}} 张 · 可挖掘 {{eligible.length}} 张</span>
+    <el-button :disabled="eligibleCursors.length<2||reads.busy.eligible||writing||!!pending" @click="loadEligible(eligibleCursors.length-2)">上一批素材</el-button>
+    <el-button :disabled="!eligibleNext||reads.busy.eligible||writing||!!pending" @click="loadEligible(eligibleCursors.length)">下一批素材</el-button>
+   </div>
+   <div class="iteration-actions">
+    <el-button :loading="reads.busy.history" :disabled="writing" @click="loadHistory()">读取挖掘任务历史</el-button>
+    <template v-if="historyCursors.length">
+     <span>第 {{historyCursors.length}} 批 · {{history.length}} 条任务</span>
+     <el-button :disabled="historyCursors.length<2||reads.busy.history||writing" @click="loadHistory(historyCursors.length-2)">上一批任务</el-button>
+     <el-button :disabled="!historyNext||reads.busy.history||writing" @click="loadHistory(historyCursors.length)">下一批任务</el-button>
+    </template>
+   </div>
+   <el-alert v-if="reads.errors.history" :title="reads.errors.history" type="warning" :closable="false"/>
+   <p v-if="historyUnverified">本批存在 {{historyUnverified}} 条来源无法核验的挖掘记录。</p>
+   <div v-for="row in history" :key="row.task_id" class="iteration-actions">
+    <el-button link :disabled="writing||reads.busy.task" @click="taskInput=row.task_id;findTask()">{{row.task_id}}</el-button>
+    <time :datetime="row.created_at">{{row.created_at}}</time>
+    <span>{{states[row.status]||row.status}}</span>
+   </div>
    <form class="iteration-actions" @submit.prevent="findTask">
     <el-input v-model="taskInput" aria-label="困难样本任务 ID" placeholder="困难样本任务 ID" :disabled="writing"/>
     <el-button native-type="submit" :loading="reads.busy.task">核验任务</el-button>

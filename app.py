@@ -8368,6 +8368,12 @@ def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: Tra
         raise HTTPException(status_code=409, detail="训练动作溯源已变化，请重新从独立评测确认继续训练")
     if expected["version_id"] != current_version_id:
         raise HTTPException(status_code=409, detail="继续训练动作不再指向当前版本")
+    decision, evaluation = version.get("iteration_decision"), version.get("evaluation")
+    if (not isinstance(decision, dict) or not isinstance(evaluation, dict)
+        or expected["decision_id"] != decision.get("decision_id")
+        or expected["evaluation_id"] != decision.get("evaluation_id")
+        or expected["evaluation_id"] != evaluation.get("evaluation_id")):
+        raise HTTPException(status_code=409, detail="当前版本的评测或迭代决策已变化，请重新确认继续训练")
     expected_task_id = str((stored.get("training_draft") or {}).get("task_id") or "")
     submitted_task_id = str(payload.task_id or "")
     if not expected_task_id or submitted_task_id != expected_task_id:

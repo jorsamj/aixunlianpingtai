@@ -662,44 +662,95 @@ class TrainingEvaluationService:
         return {'ok': True, 'idempotent': reused, 'feedback': public_feedback(row),
                 'automatic_execution': False, 'requires_confirmation': True, 'frozen_test_protected': True}
 
-    def eligible_hard_sample_materials(self, project_id: str, algorithm_id: str, version_id: str, limit: int = 100):
-        'A bounded read-only filter over canonical Materials and frozen Test truth.\n\n    This is not a separate candidate database. Final POST revalidates everything.\n    '
+    @staticmethod
+    def _mining_page_cursor(project_id: str, algorithm_id: str, version_id: str, domain: str, cursor: str | None):
+        scope = hashlib.sha256(json.dumps([project_id, algorithm_id, version_id, domain]).encode()).hexdigest()
+        if not cursor:
+            return scope, None
+        prefix, _, position = cursor.partition('.')
+        if prefix != scope or not position or len(cursor) > 1200:
+            raise HTTPException(status_code=422, detail='困难样本分页游标与当前范围不一致')
+        return scope, position
+
+    def eligible_hard_sample_materials(self, project_id: str, algorithm_id: str, version_id: str,
+                                       limit: int = 100, cursor: str | None = None):
+        """Page current unannotated Materials, excluding historical Test IDs and byte identities."""
         from platform_core.hard_sample_mining import (
             HardSampleSafetyError, frozen_test_identifiers,
         )
         self.dependencies._algorithm_version_for_action(project_id, algorithm_id, version_id)
+        scope, position = self._mining_page_cursor(project_id, algorithm_id, version_id, 'unannotated', cursor)
         count = max(1, min(100, int(limit)))
         try:
             blocked_ids, blocked_hashes = frozen_test_identifiers(self.dependencies.project_dir(project_id))
         except HardSampleSafetyError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         materials = self.dependencies.material_store(project_id)
-        eligible: list[str] = []
         display_items = []
-        cursor = None
-        # Two fixed 500-ID pages: no unbounded Material scan on the API thread.
-        for _ in range(2):
-            page = materials.list_ids(cursor=cursor, limit=500, annotated=False)
-            ids = [str(value) for value in page.items if str(value) and str(value) not in blocked_ids]
-            for offset in range(0, len(ids), 500):
-                for item in materials.get_many(ids[offset:offset + 500]):
-                    image_id = str(item.get("id") or "")
-                    digest = str(item.get("content_sha256") or "").lower()
-                    if (image_id in blocked_ids or digest in blocked_hashes
+        # Consume every ID from the canonical created-at index. Applying the annotation
+        # filter after reading the page keeps a run of annotated rows inside the budget.
+        # The count-free work budget is ten queries and at most 1,000 material IDs.
+        scanned = 0
+        for _ in range(10):
+            try:
+                page = materials.iter_filtered_ids(cursor=position, limit=count - len(display_items),
+                                                   include_total=False)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail='困难样本分页游标无效') from error
+            scanned += len(page.items)
+            ids = [image_id for image_id in page.items if image_id not in blocked_ids]
+            for item in materials.get_many(ids):
+                image_id = str(item.get('id') or '')
+                digest = str(item.get('content_sha256') or '').strip().lower()
+                if (not image_id or item.get('annotated') or digest in blocked_hashes
                         or not re.fullmatch(r"[0-9a-f]{64}", digest)
-                        or item.get("source_available") is False):
-                        continue
-                    eligible.append(image_id)
-                    display_items.append({'image_id': image_id, 'filename': item.get('original_name') or item.get('stored_name'),
-                                          'content_sha256': digest})
-                    if len(eligible) >= count:
-                        break
-                if len(eligible) >= count:
-                    break
-            if len(eligible) >= count or not page.next_cursor:
+                        or item.get('source_available') is False
+                        or item.get('dataset_delete_claim') or item.get('material_batch_delete_claim')):
+                    continue
+                display_items.append({'image_id': image_id, 'filename': item.get('original_name') or item.get('stored_name'),
+                                      'content_sha256': digest})
+            position = page.next_cursor
+            if len(display_items) >= count or not position:
                 break
-            cursor = page.next_cursor
-        return {"items": eligible, "display_items": display_items, "returned": len(eligible), "limit": count}
+        return {'items': [item['image_id'] for item in display_items], 'display_items': display_items,
+                'returned': len(display_items), 'limit': count, 'scanned': scanned,
+                'has_more': bool(position), 'next_cursor': f'{scope}.{position}' if position else None}
+
+    def hard_sample_mining_history(self, project_id: str, algorithm_id: str, version_id: str,
+                                   cursor: str | None = None):
+        """Project canonical task records whose frozen requests identify this version."""
+        self.dependencies._algorithm_version_for_action(project_id, algorithm_id, version_id)
+        scope, position = self._mining_page_cursor(project_id, algorithm_id, version_id, 'task-history', cursor)
+        repository = self.dependencies.shared_task_repository()
+        try:
+            page = repository.list(project_id=project_id, limit=40, cursor=position)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail='困难样本历史分页游标无效') from error
+        items = []
+        unverified = 0
+        artifacts = self.dependencies.shared_task_artifacts()
+        for task in page.items:
+            if task.kind is not TaskKind.AI_ANNOTATION or not re.fullmatch(r'hm[a-f0-9]{14}', task.task_id):
+                continue
+            try:
+                request = artifacts.read_json(task.task_id, task.payload_ref)
+            except (OSError, ValueError):
+                request = None
+            if not isinstance(request, dict):
+                unverified += 1
+                continue
+            if (request.get('mode') != 'hard_sample_yolo' or request.get('mining_algorithm_id') != algorithm_id
+                    or request.get('mining_version_id') != version_id):
+                continue
+            digest = str(request.get('mining_model_sha256') or '')
+            if not re.fullmatch(r'[0-9a-f]{64}', digest):
+                unverified += 1
+                continue
+            items.append({'task_id': task.task_id, 'status': task.status.value, 'created_at': task.created_at,
+                          'model_sha256': digest})
+        position = page.next_cursor
+        return {'items': items, 'returned': len(items), 'unverified': unverified,
+                'has_more': bool(position), 'next_cursor': f'{scope}.{position}' if position else None}
 
     def create_hard_sample_mining(self, project_id: str, algorithm_id: str, version_id: str,
                                   payload: HardSampleMiningCreateReq):
