@@ -1,6 +1,18 @@
 # AI 开发接续入口
 
-## 核心生产链路工作台与 CI 精准收口（2026-11-26，当前）
+## 资源与交付工作台产品化及审核状态定位（2026-11-26，当前）
+
+- 起始本地及远端 `8b98878b0c0ca52f6cccb88464656534610708fd`，工作区仅有四份未跟踪保护文档。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。代码候选见本记录提交前的 `git rev-parse HEAD`，验收以含本记录的远端最终 HEAD 为准。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 开工 CI（`8b98878b`）：Frontend Runtime Stabilization run 45770839855 唯一失败为 P1Z isolated real-entry acceptance Job 139745204550 的 “Native AI single-image review against the real API”，其余 Job（frontend、browser-navigation 1/2/3）成功；Material Annotation Atomicity 在 `d3075b56` 已成功。
+- 审核状态定位根因：`tests/browser/native-ai-review-decision.spec.mjs` 用 `inspector.getByRole('heading',{level:4})` 读取审核状态，而上一轮 UI 已把图片名放入 h4、状态移入 `.review-inspector-state`。修复给状态元素加 `role="status" aria-label="审核状态"`（真实业务语义、可访问、稳定），测试改用 `inspector.getByRole('status',{name:'审核状态'})`，并一次性替换该文件全部 6 处状态断言，保留原请求 ID、单图范围、刷新恢复、未知结果、原回执、候选隔离、GT 不提前写入、请求次数与防重复提交断言。未恢复旧标题结构，未改审核状态机。
+- 局部问题：`TaskStatusTag` 的 `PARTIAL_SUCCESS` 改为 warning 语义；训练任务耗时改为只依据服务端 `started_at/finished_at/status`：终态有结束时间为“终态 X”，运行中为“自然 X”（标注含等待与暂停、非有效训练时长），排队为“尚未开始”，终态缺结束时间显示“缺少结束时间”而不再用 `Date.now()` 推算；抽屉附口径说明，无新增轮询。算法版本面板新增“最新创建”标签（服务端按创建时间倒序）与“最佳评测版本不在列表内跨基准比较”的说明，未新增后端投影，未跨基准排名。
+- 六页产品化：算力与节点新增机群概览（节点/在线/心跳超 5 分钟/已上报 GPU/CUDA 可用/执行中）与节点卡摘要（心跳时长、CUDA、GPU 占用、Worker、执行中），明确“在线与心跳不等于可调度”；模型转换环境新增检测汇总、厂商/检测状态筛选、卡片“环境与工具链/检测证据”分组及“检测通过→转换成功→数值一致→硬件验证→交付资格”证据层级；存储管理新增存储源概览、健康状态标签、逻辑占用/清理任务分组与“逻辑量不等于物理释放”说明；平台对接新增对接状态条、连接配置与业务执行分组、同步结果四态标签与“未知结果先核对原任务”说明，并把 API 路径从标题移入高级说明；畅联云数据新增当前浏览层级与权重本地筛选（仍为 int64 字符串身份、分层读取）；AI 辅助配置新增模型概览与验证状态标签。
+- 其余页面：标签管理新增标签概览（有效/历史停用/当前筛选/引用统计）并令牌化样式；视频切帧新增本页任务概览、状态语义标签与“切帧成功≠素材正式入库”说明；AI 标注任务状态改用语义标签；AI 审核三栏压缩左侧筛选宽度、扩大右侧检查区（`clamp(320px,29vw,560px)`），状态改为可视标签样式。
+- 未做页面级专项优化：自动标注及清洗（AiCreate/NativeCleaning 仅复核未改）、转换创建/详情、算法报告深层归因。算法卡片“最佳评测版本”仍需一处有界列表投影（按评测基准分组），本轮仅按证据边界如实显示，未虚假排名。
+- 静态检查：`vue-tsc --noEmit` 通过（0 错误）；`.vue` 已按 `.gitattributes` 保持 LF；`git diff --check` 通过。本轮未运行全仓 pytest、Playwright 或大型构建，运行期交给 CI；P0 为浏览器用例定位修改，需 CI 的 “Native AI single-image review against the real API” 复核。
+- 视觉仍为 `VISUAL_PENDING`（本机无 GitHub 令牌，制品 15094506447、15094935118 未下载）。四份保护文档、AGENTS.md、VERSION、vendor 与用户未跟踪文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再推进自动标注创建/清洗与转换创建详情页。
+
+## 核心生产链路工作台与 CI 精准收口（2026-11-26，上一批）
 
 - 起始本地及远端 `b186bc237bb09e1bb890bd79c5dbc0daf07295a3`，与上一轮核验 HEAD 一致，工作区仅有四份未跟踪保护文档。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮代码候选见本记录提交前的 `git rev-parse HEAD`；实际验收以含本记录的远端最终 HEAD 为准，状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 开工 CI 快照（`b186bc23`）：PR 工作流全部成功，push 两条失败。Material Annotation Atomicity run 45765652516 / Job 139725807382 为 215 通过、1 失败、1 跳过；Frontend Runtime Stabilization run 45765652529 / Job 139725895513 为 84 通过、1 失败。
