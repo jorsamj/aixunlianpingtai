@@ -1558,6 +1558,20 @@ class ConversionManagementService:
             raise HTTPException(status_code=404, detail="数值验证任务不属于当前转换")
         return {"ok": True, **result}
 
+    @staticmethod
+    def _numeric_verification_id(project_id: str, job_id: str, request_id: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
+            raise HTTPException(status_code=422, detail="数值验证请求 ID 不合法")
+        return "nv_" + hashlib.sha256(f"{project_id}:{job_id}:{request_id}".encode()).hexdigest()[:24]
+
+    def v39_find_numeric_validation(self, project_id: str, job_id: str, request_id: str):
+        verification_id = self._numeric_verification_id(project_id, job_id, request_id)
+        result = self.v39_get_numeric_validation(project_id, job_id, verification_id)
+        receipt = self.dependencies.read_json(self._numeric_conversion_dir(project_id, verification_id) / "request.json", {})
+        if receipt.get("request_id") != request_id:
+            raise HTTPException(status_code=404, detail="数值验证请求不存在")
+        return result
+
     def v39_create_numeric_validation(self,
         project_id: str, job_id: str, files: List[UploadFile] = File(...),
         request_id: str = Form(""),
@@ -1588,9 +1602,8 @@ class ConversionManagementService:
         source_sha = str((job.get("source_trace") or {}).get("sha256") or "")
         if source_sha and source_sha != sha256_file(source_path):
             raise HTTPException(status_code=409, detail="冻结 PT 源权重 SHA256 不一致")
-        if request_id and not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
-            raise HTTPException(status_code=422, detail="数值验证请求 ID 不合法")
-        verification_id = "nv_" + (hashlib.sha256(f"{project_id}:{job_id}:{request_id}".encode()).hexdigest()[:24] if request_id else uuid.uuid4().hex[:24])
+        verification_id = (self._numeric_verification_id(project_id, job_id, request_id)
+                           if request_id else "nv_" + uuid.uuid4().hex[:24])
         directory = self._numeric_conversion_dir(project_id, verification_id)
         created_directory = False
         (self.dependencies.deploy_root(project_id) / "numeric-validations").mkdir(parents=True, exist_ok=True)

@@ -111,6 +111,10 @@ def create_conversion_management_router_3(service: Callable[[], ConversionManage
     def v39_list_numeric_validations(project_id: str, job_id: str):
         return service().v39_list_numeric_validations(project_id, job_id)
 
+    @router.get('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/numeric-validations/by-request/{request_id}')
+    def v39_find_numeric_validation(project_id: str, job_id: str, request_id: str):
+        return service().v39_find_numeric_validation(project_id, job_id, request_id)
+
     @router.get('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/numeric-validations/{verification_id}')
     def v39_get_numeric_validation(project_id: str, job_id: str, verification_id: str):
         return service().v39_get_numeric_validation(project_id, job_id, verification_id)

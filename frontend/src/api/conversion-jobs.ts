@@ -125,6 +125,13 @@ export async function loadNumericValidation(projectId: string, jobId: string, ve
   return verifyNumericReceipt(value, projectId, jobId, verificationId);
 }
 
+export async function findNumericValidation(projectId: string, jobId: string, requestId: string, signal: AbortSignal) {
+  const value = await request<ConversionNumericHistoryEntry & {ok?: boolean}>(
+    `${numericRoot(projectId, jobId)}/by-request/${encodeURIComponent(requestId)}`, {signal},
+  );
+  return verifyNumericReceipt(value, projectId, jobId, '');
+}
+
 export async function createNumericValidation(
   projectId: string, jobId: string, verificationId: string, body: FormData, signal: AbortSignal,
 ) {

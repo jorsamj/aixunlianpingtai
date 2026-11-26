@@ -2,10 +2,11 @@
 import {computed,onBeforeUnmount,onMounted,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import {legacyUrl} from './navigation';
+import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {browseError} from '../api/model-browse';
-import {createNumericValidation,loadConversionJob,loadConversionLog,loadConversionNumericHistory,loadNumericValidation,newConversionRequestId,resolveNumericVerificationId,stopConversionJob} from '../api/conversion-jobs';
+import {createNumericValidation,findNumericValidation,loadConversionJob,loadConversionLog,loadConversionNumericHistory,loadNumericValidation,newConversionRequestId,resolveNumericVerificationId,stopConversionJob} from '../api/conversion-jobs';
 import type {ConversionJobDetail,ConversionJobOutput,ConversionNumericHistoryEntry} from '../types/conversion-job';
 const props=defineProps<{projectId:string;jobId:string}>();
 const projectId=props.projectId,jobId=props.jobId,route=useRoute(),router=useRouter();
@@ -16,7 +17,28 @@ const numericFiles=ref<File[]>([]),confidence=ref(0.25),nmsIou=ref(0.7);
 const numericDialog=ref(false),numericBusy=ref(false),numericError=ref('');
 const numericResult=ref<ConversionNumericHistoryEntry|null>(null);
 let pendingNumeric:{body:FormData;id:string}|null=null;
-const numericUnknown=ref(false),pendingNumericId=ref('');
+const actor=useWorkspace().actorKey;
+const numericStorageKey='numeric-validation:'+JSON.stringify([actor,projectId,jobId]);
+const numericUnknown=ref(false),pendingNumericId=ref(''),pendingRequestId=ref('');
+function clearNumericIntent(){
+  sessionStorage.removeItem(numericStorageKey);
+  pendingNumeric=null;
+  pendingNumericId.value='';
+  pendingRequestId.value='';
+  numericUnknown.value=false;
+}
+function restoreNumericIntent(){
+  try{
+    const raw=sessionStorage.getItem(numericStorageKey);
+    if(!raw)return;
+    const intent=JSON.parse(raw);
+    if(!/^[A-Za-z0-9_-]{12,80}$/.test(intent.requestId)||!(intent.id===''||/^nv_[a-f0-9]{24}$/.test(intent.id)))throw new Error('待核验记录无效');
+    pendingNumericId.value=intent.id;
+    pendingRequestId.value=intent.requestId;
+    numericUnknown.value=true;
+    void checkPendingNumeric();
+  }catch(error){numericUnknown.value=true;numericError.value=browseError(error)}
+}
 const ACTIVE=new Set(['queued','pending','waiting_resource','running','preparing','converting','recovering','submitted','waiting','starting','uploading','downloading','validating','stopping','cancel_requested']);
 const STOPPABLE=new Set(['queued','waiting_resource','running']);
 const stopDialog=ref(false),stopBusy=ref(false),stopReceipt=ref<'accepted'|'unknown'|null>(null),stopError=ref('');
@@ -96,24 +118,20 @@ async function sendNumericValidation(){
   try{
     const value=await createNumericValidation(projectId,jobId,id,body,controller.signal);
     if(!alive)return;
-    applyNumericResult(value);
-    pendingNumeric=null;
-    pendingNumericId.value='';
-    numericUnknown.value=false;
+    numericResult.value=value;
+    clearNumericIntent();
     void loadNumericHistory();
   }catch(error){
     if(!alive)return;
     numericError.value=browseError(error);
     const httpStatus=(error as {httpStatus?:number}).httpStatus;
     if(httpStatus&&[400,401,403,404,413,422].includes(httpStatus)){
-      pendingNumeric=null;
-      pendingNumericId.value='';
-      numericUnknown.value=false;
+      try{clearNumericIntent()}catch{numericUnknown.value=true}
     }else numericUnknown.value=true;
   }finally{if(alive)numericBusy.value=false}
 }
 async function confirmNumeric(){
-  if(!numericDialog.value||!canStartNumeric.value||!validNumericInput.value||pendingNumeric||numericBusy.value)return;
+  if(!numericDialog.value||!canStartNumeric.value||!validNumericInput.value||pendingNumeric||numericUnknown.value||numericBusy.value)return;
   numericDialog.value=false;
   numericBusy.value=true;
   numericError.value='';
@@ -124,9 +142,12 @@ async function confirmNumeric(){
   body.append('nms_iou',String(nmsIou.value));
   try{
     const id=await resolveNumericVerificationId(projectId,jobId,requestId);
+    if(!actor||workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor)throw new Error('会话已变化，请重新打开转换任务');
     if(!alive)return;
+    sessionStorage.setItem(numericStorageKey,JSON.stringify({requestId,id}));
     pendingNumeric={body,id};
     pendingNumericId.value=id;
+    pendingRequestId.value=requestId;
   }catch(error){if(alive)numericError.value=browseError(error)}
   finally{if(alive)numericBusy.value=false}
   if(alive&&pendingNumeric){numericResult.value=null;await sendNumericValidation()}
@@ -134,11 +155,23 @@ async function confirmNumeric(){
 function applyNumericResult(value:ConversionNumericHistoryEntry){
   numericResult.value=value;
   if(value.id===pendingNumericId.value){
-    pendingNumeric=null;
-    pendingNumericId.value='';
-    numericUnknown.value=false;
+    clearNumericIntent();
     numericError.value='';
   }
+}
+function checkPendingNumeric(){
+  const requestId=pendingRequestId.value,id=pendingNumericId.value;
+  if(!requestId)return;
+  return reads.run('numericResult',async signal=>{
+    if(!actor||workspaceActorKey(await readWorkspaceSession(signal))!==actor)throw new Error('会话已变化，请重新打开转换任务');
+    return id?loadNumericValidation(projectId,jobId,id,signal):findNumericValidation(projectId,jobId,requestId,signal);
+  },value=>{
+    if(pendingRequestId.value!==requestId)return;
+    numericResult.value=value;
+    clearNumericIntent();
+    numericError.value='';
+    void loadNumericHistory();
+  });
 }
 function readNumericResult(id:string){
   return reads.run('numericResult',signal=>loadNumericValidation(projectId,jobId,id,signal),applyNumericResult);
@@ -193,7 +226,7 @@ async function confirmStop(){
   }
 }
 function back(){void router.push(algorithmId.value&&versionId.value?{name:'version-conversions',params:{projectId,algorithmId:algorithmId.value,versionId:versionId.value}}:{name:'algorithms',params:{projectId}})}
-onMounted(()=>{void loadJob();void loadLog()});
+onMounted(()=>{void loadJob();void loadLog();restoreNumericIntent()});
 const progress=computed(()=>{const value=Number(job.value?.progress||0);return Number.isFinite(value)?Math.max(0,Math.min(100,value)):0});
 const status=computed(()=>String(job.value?.status||''));
 const quality=computed(()=>job.value?.delivery_quality);
@@ -302,8 +335,8 @@ function downloadUrl(output:ConversionJobOutput){
    <p v-if="numericError" role="alert">{{ numericError }}</p>
    <div v-if="numericUnknown" role="status">
     <p>数值验证提交回执未知。</p>
-    <el-button v-if="pendingNumericId" :loading="reads.busy.numericResult" @click="readNumericResult(pendingNumericId)">核对原验证请求</el-button>
-    <el-button v-if="!pendingNumericId||reads.errors.numericResult" :loading="numericBusy" :disabled="reads.busy.numericResult" @click="sendNumericValidation">重试同一请求</el-button>
+    <el-button v-if="pendingRequestId" :loading="reads.busy.numericResult" @click="checkPendingNumeric">核对原验证请求</el-button>
+    <el-button v-if="pendingNumeric && (!pendingNumericId||reads.errors.numericResult)" :loading="numericBusy" :disabled="reads.busy.numericResult" @click="sendNumericValidation">重试同一请求</el-button>
    </div>
    <el-alert v-if="reads.errors.numericResult" :title="reads.errors.numericResult" type="error" :closable="false"/>
    <div v-if="numericResult">

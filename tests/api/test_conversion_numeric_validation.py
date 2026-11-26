@@ -83,6 +83,11 @@ def test_numeric_verification_has_one_durable_task_and_idempotent_retry(monkeypa
     assert receipt["image_names"] == ["image_01.png"]
     assert artifacts.writes[(first["id"], "request.json")]["execution_mode"] == "numeric_verification"
     assert api.v39_get_numeric_validation("p1", "j1", first["id"])["id"] == first["id"]
+    service = api._conversion_management_service()
+    assert service.v39_find_numeric_validation("p1", "j1", "stable-verification-1")["id"] == first["id"]
+    with pytest.raises(HTTPException) as missing:
+        service.v39_find_numeric_validation("p1", "j1", "different-request-1")
+    assert missing.value.status_code == 404
     assert len(api.v39_list_numeric_validations("p1", "j1")["items"]) == 1
 
 
