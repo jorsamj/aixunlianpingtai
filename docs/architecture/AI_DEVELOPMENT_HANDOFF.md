@@ -4,6 +4,7 @@
 
 | 状态 | 单元 | 说明 |
 |---|---|---|
+| 已完成代码 | U2 CI 覆盖 | storage 单元 Job 装 psycopg[binary]；新增 `storage-source-postgres` Job（PG16 service，10 项真实 PG 合同，JUnit+无 skip 守卫） |
 | 已完成代码 | U2 切换锁统一 | `storage_source_switch_lock_path` 统一 DB/记录/标记三种入参为同一锁；写者、admit、finish、abort 共享 |
 | 已完成代码 | U2 顶层事务 | admit 要求 IDLE 连接、单事务内 advisory 锁+generation+import+reconcile+cutover_state；COMMIT 后校验 IDLE 才写准入记录 |
 | 已完成代码 | U2 恢复语义 | 提交前失败移除标记；提交后失败保留标记，finish（已发布）/abort（未发布）恢复；损坏/未知状态 fail-closed |
@@ -22,6 +23,17 @@
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## 062553d6 CI 收尾：Storage Cache Governance 与 U2 真实 PostgreSQL 覆盖（2026-11-26，当前）
+
+- 起始本地及远端 `062553d61381b2aad0ce7a2e62451b0499cee5a0`。VERSION 42.24.592 未改。状态 `CODE_COMPLETE（CI 收尾与证据修正）/ CI_PENDING / U2: PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED + CUTOVER_PROTOCOL_IMPLEMENTED + CUTOVER_NOT_READY`。
+- Storage Cache Governance 两个失败（根因与修复）：`tests/unit/storage/test_storage_source_provider.py` 的准入事务用例导入 `psycopg.pq.TransactionStatus`（真实的 idle/INTRANS 枚举），而该 focused Job 未安装驱动。仅在 focused 依赖中追加 `"psycopg[binary]"`，未改生产依赖、未 skip/mock/删断言、SQLite 业务逻辑未动。
+- U2 PostgreSQL 集成测试进入 CI：`storage-cache-governance.yml` 新增独立 Job `storage-source-postgres`（`postgres:16` service + healthcheck、最小依赖 pytest/psycopg[binary]/filelock、`MC_TEST_POSTGRES_DSN`、`MC_REQUIRE_POSTGRES=1`、`--confcutdir=tests/integration`、只跑 `tests/integration/test_storage_source_postgres.py`、`--junitxml` 并**拒绝任何 skip/失败、要求至少 10 项**、上传报告）；paths 触发补 `platform_core/storage_source_*.py` 与 `tests/integration/test_storage_source_postgres.py`（push 与 PR 两侧）。
+- 并发证据修正：原 `test_admit_waits_for_an_in_flight_writer_and_sees_its_commit` 是测试外部**手动持锁**再等待，且 `owner.create()` 已返回——只证明"持锁等待"，未证明"未提交写入"。现改为 `test_admit_cannot_pass_an_uncommitted_repository_write`：用仓库自身写路径中的时间戳辅助函数作**窄屏障**，让真实 `repository.create` 在**仍持 switch 锁、SQLite 事务尚未 COMMIT** 时暂停；此时启动 `admit_cutover`，断言 0.5s 内未返回；释放后断言写入已提交且准入目标**包含该行**。屏障位于仓库内部，未在测试外部加锁。
+- 崩溃恢复表述修正：三个中断用例改为异常注入命名与文档（`test_import_failure_before_commit_rolls_back_and_releases_the_marker`、`test_exception_after_commit_before_record_is_recovered_by_abort`、`test_exception_after_record_is_recovered_by_finish_cutover`），明确指出**不是 SIGKILL 实测**：提交前异常由代码清理移除 marker（真实进程终止则保留 marker，属同一状态的 fail-closed 变体，由 abort 恢复）；提交后/记录前与记录后/marker 前两种窗口下，标记与记录顺序保证真实进程终止留下相同的磁盘状态，恢复分别由 abort 与 finish 完成。`abort_cutover` 文档明确：abort **不是** PostgreSQL 数据回滚，目标侧可能保留未准入的行（无本地准入记录时 Provider 拒绝一切写，后续准入会重新导入并对账）。
+- 验证（本轮）：`tests/integration/test_storage_source_postgres.py` 10 项真实 PostgreSQL 通过；`tests/unit/storage/test_storage_source_provider.py` + `test_source_repository.py` 29 项通过；`py_compile` 与 `git diff --check` 通过。未跑全仓 pytest/Playwright/前端构建/20 万素材压力测试。
+- 未启用：`STORAGE_SOURCE_PROVIDER` 仍默认 sqlite；未做生产切换/迁移，未操作 NAS/OSS/S3；未启动 U3/U5。U2 = **CUTOVER_NOT_READY**（CI 通过不等于生产就绪）。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改；未连接 4070/A800。
 
 ## 141026b1 安全复审整改：切换锁、PG 顶层事务、Provider 与 revision fail-closed（2026-11-26，当前）
 
