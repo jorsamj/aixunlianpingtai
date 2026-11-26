@@ -4,6 +4,14 @@
 
 | 状态 | 单元 | 说明 |
 |---|---|---|
+| 已完成代码 | U2 完整性（SIGKILL/回滚/删除证据） | 真实子进程终止三窗口；反向回滚含切后 create/update/delete；删除需完整跨域证据（收集器仅实现素材侧） |
+| 已完成代码 | 素材热点（C） | v12/v20/v44/video 改为 id 快照 + 500 批 GT/素材读取；合成 1201 行 v12 GT 快照 4271ms→15ms |
+| 已完成代码 | 转换 BMODEL 门禁（D） | BMODEL 交付要求 ONNX↔BMODEL 数值/检测均 consistent，否则 `BMODEL_EVIDENCE_NOT_ELIGIBLE`；L0–L5 矩阵文档 |
+| 设计完成 | U5 ADR / U3 清单（F/B1） | 十问答案 + Owner 图 + 状态机 + 事务边界 + 迁移/回滚 + 测试矩阵；U3 逐表清单与三个 ATTACH 合同 |
+| 未开发 | U3 影子迁移工具（B2/B3） | 仅有清单与设计；未实现导出/导入/对账代码 |
+| 未开发 | Vue 业务补齐（E） | 本轮未开工；等待与后端接口能力一起排期 |
+| 未开发 | 跨域删除证据来源（A3 剩余） | 产物引用 Owner、NAS/OSS/S3 退役探测未实现，生产删除仍阻断 |
+| 安全设计阻塞 | U2 生产切换/回滚演练 | 需授权与隔离真实部署；`STORAGE_SOURCE_PROVIDER` 仍默认 sqlite |
 | 已完成代码 | U2 CI 覆盖 | storage 单元 Job 装 psycopg[binary]；新增 `storage-source-postgres` Job（PG16 service，10 项真实 PG 合同，JUnit+无 skip 守卫） |
 | 已完成代码 | U2 切换锁统一 | `storage_source_switch_lock_path` 统一 DB/记录/标记三种入参为同一锁；写者、admit、finish、abort 共享 |
 | 已完成代码 | U2 顶层事务 | admit 要求 IDLE 连接、单事务内 advisory 锁+generation+import+reconcile+cutover_state；COMMIT 后校验 IDLE 才写准入记录 |
@@ -23,6 +31,22 @@
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## 多工作流批次：U2 完整性、素材热点、转换门禁、U3/U5 设计（2026-11-26/27，当前）
+
+- 起始 `2bc8a01f40339924830b5563c4c73517abad7008`（该 SHA CI 24/24 SUCCESS）。VERSION 42.24.592 未改；未启用 PostgreSQL Provider、未迁移真实数据、未操作 NAS/OSS/S3、未连接 4070/A800。
+- 提交边界：`5bb49655`（A1/A2/A3 合同与 SIGKILL/回滚）、`dada39ac`（A3 删除证据收集器）、`afd4fc8d`（D 门禁 + 矩阵）、`9b0928dc`（F/B1 设计文档）、`bbc6066b`（C 热点），本记录为文档提交。
+- U2（A）：
+  - A1 真实 SIGKILL：新增 `tests/integration/_storage_source_crash_probe.py`（子进程在三个协议点自终止，POSIX=SIGKILL、Windows=TerminateProcess），父进程用全新连接验证 durable 行、marker、准入记录、两侧写权限、generation 单调与"重新准入不重复导入"。三项测试 `test_sigkill_*`。
+  - A2 反向回滚：`rollback_cutover` 冻结 PostgreSQL（advisory 锁 + `FOR UPDATE` + `SWITCHING`），独立只读事务导出当前权威快照，`import_snapshot_sqlite` 单事务 upsert/删除缺失行/原子切换默认源并拒绝"SQLite 行更新"，重新对账后发布 `ROLLBACK_APPLIED`（generation+1）、再写 SQLite 准入、最后删 marker；发布前失败恢复 `POSTGRES_ACTIVE`，发布后失败保留 marker 由 `finish_cutover` 按 durable 相位分派恢复；`abort_cutover` 在 durable 冻结时必须提供连接，否则拒绝。**所有 PostgreSQL 读取都放在各自事务内**，避免后续 `transaction()` 退化为 SAVEPOINT。CI 真实 PG 合同从 10 项增至 **18 项**（Job 守卫要求 ≥18、0 skip、0 failure）。
+  - A3 删除证据：Provider 要求"当前 revision + 素材引用 0 + 产物引用 0 + 物理退役 RETIRED proof"；新增 `storage_source_delete_evidence.collect_delete_evidence` 用真实 `MaterialRepository.reference_count` 按有界项目列表统计素材引用。**产物引用与 NAS/OSS/S3 退役探测未实现**，因此生产删除仍阻断；零引用不等于对象已退役。
+- C（素材热点）：`material_governance_service` 的 v12 自动划分与 v20 filtered、`quality_analysis_service` 的 v44 补数候选、`video_tasks` 幂等检查改为"id 快照 + 500 条批量 GT/素材读取"，有 dataset 作用域时写走 `mutate_dataset`；无 dataset 的 filtered 路径保留原全表事务（回调必须重算全库），v44 写事务与 Bundle 合同未动。合成 1201 行：v12 GT 快照 4270/4690ms→15/18ms（P50/P95），video 9.7ms→4.5ms；**合成数据不代表生产规模**。新增 `tests/unit/test_material_hot_paths_scale.py`（7 项）与 `docs/performance/MATERIAL_HOT_PATH_REMEDIATION_20261126.md`。
+- D（转换）：`assert_delivery_quality_eligibility` 对 BMODEL 交付物（`bmodel_expected` 或 target 为 sophon/bmodel）新增硬门禁：ONNX↔BMODEL 数值与检测必须均 `consistent`，否则 `BMODEL_EVIDENCE_NOT_ELIGIBLE`（此前只看 PT↔ONNX 即放行）。证据文件/指标/产物仍可读，未改比较算法与容差；历史证据不被重写，恢复方式是到有离线 BMODEL 运行器的节点重跑。新增 L0–L5 证据矩阵（`CONVERSION_L0_L5_EVIDENCE_MATRIX_20261126.md`），逐级标注真实 Owner、错误码、证据位置、CI 与 **HARDWARE_PENDING**。
+- F/B1（设计）：`U5_TASK_DB_MIGRATION_ADR_20261126.md`（十问、Owner 图、状态机、事务边界、迁移/回滚、测试矩阵）与 `U3_MATERIAL_GT_NEGATIVE_POOL_MIGRATION_INVENTORY_20261126.md`（逐表 Owner/键/revision/事务/索引/删除恢复、三个 ATTACH 的 PG 等价合同、影子迁移设计与未实现清单）。两份均为 `DESIGN_ONLY`，未落地任何表或代码。
+- 未开工：B2/B3（U3 影子迁移工具——只有清单与设计，没有导出/导入/对账代码）、E（Vue 业务补齐）。
+- 验证（本轮定向）：U2 真实 PG 18 项 + U2 unit 18 项；C 新测试 7 项 + 关联 28/35 项；D 新测试 4 项 + `test_conversion_numeric_consistency`/`test_model_artifacts` 145 项 + 转换 API 62 项 + 真实 PT→ONNX→准入 1 项；`py_compile`、`git diff --check` 通过。未跑全仓 pytest/Playwright/前端构建/20 万压力测试。
+- 真实环境待验证：20 万素材与 2 万批选、训练准备冷热缓存、NAS/OSS/S3、BM1684/BM1684X/BM1688、RKNN 板端、昇腾运行期、生产切换与回滚演练。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改；未连接 4070/A800。
 
 ## 5074e795 收口：U2 PostgreSQL Job 的 requests 依赖（2026-11-26，当前）
 
