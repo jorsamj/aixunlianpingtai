@@ -7,6 +7,7 @@ import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import ConversionHardwareValidation from '../components/ConversionHardwareValidation.vue';
 import {browseError} from '../api/model-browse';
+import {digestHex,sha256Bytes} from '../api/file-digest';
 import {createNumericValidation,findNumericValidation,loadConversionJob,loadConversionLog,loadConversionNumericHistory,loadNumericValidation,newConversionRequestId,resolveNumericVerificationId,stopConversionJob} from '../api/conversion-jobs';
 import type {ConversionJobDetail,ConversionJobOutput,ConversionNumericHistoryEntry} from '../types/conversion-job';
 const props=defineProps<{projectId:string;jobId:string}>();
@@ -118,11 +119,10 @@ function selectNumericFiles(event:Event){
   numericError.value='';
 }
 async function sampleDigests(files:File[]){
-  if(!globalThis.crypto?.subtle)return [];
   const digests:string[]=[];
   for(const file of files){
-    const value=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
-    digests.push(Array.from(new Uint8Array(value),byte=>byte.toString(16).padStart(2,'0')).join(''));
+    controller.signal.throwIfAborted();
+    digests.push(digestHex(await sha256Bytes(await file.arrayBuffer())));
   }
   return digests;
 }

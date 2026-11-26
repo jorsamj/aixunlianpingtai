@@ -98,6 +98,66 @@ test('native numeric validation sends the original multipart contract and recove
  expect(writes).toBe(1);
 });
 
+test('native numeric validation resumes the same ordered samples on plain LAN HTTP',async({page})=>{
+ await assets(page);
+ const endpoint='/api/v39/projects/p/deploy/jobs/job-1';
+ const validations=endpoint+'/numeric-validations';
+ const files=['first','second'].map(text=>({name:text+'.png',mimeType:'image/png',buffer:Buffer.from(text)}));
+ const digests=files.map(file=>createHash('sha256').update(file.buffer).digest('hex')).join(',');
+ let writes=0,readbacks=0,requestId='',verificationId='';
+ await page.route('**/api/**',async route=>{
+  const request=route.request(),path=new URL(request.url()).pathname;
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'隔离用户'}}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'}]});
+  if(path===endpoint)return route.fulfill({json:{...deployment,project_id:'p',source_name:'frozen.pt',outputs:[{rel:'artifacts/model.onnx'}]}});
+  if(path===endpoint+'/log')return route.fulfill({contentType:'text/plain',body:'转换完成'});
+  if(path===validations&&request.method()==='POST'){
+   const body=await new Response(request.postDataBuffer(),{headers:{'content-type':request.headers()['content-type']}}).formData();
+   expect(body.get('sample_sha256')).toBe(digests);
+   expect(body.get('confidence')).toBe('0.25');
+   expect(body.get('nms_iou')).toBe('0.7');
+   const supplied=String(body.get('request_id')||'');
+   expect(supplied).toMatch(/^[A-Za-z0-9_-]{12,80}$/);
+   if(writes===0){
+    requestId=supplied;
+    verificationId='nv_'+createHash('sha256').update(`p:job-1:${requestId}`).digest('hex').slice(0,24);
+   }
+   expect(supplied).toBe(requestId);
+   writes++;
+   if(writes===1)return route.abort();
+   return route.fulfill({json:{ok:true,id:verificationId,conversion_job_id:'job-1',
+    task:{task_id:verificationId,project_id:'p',kind:'MODEL_CONVERSION',status:'SUCCEEDED'},
+    result:{verdict:'consistent',sample_count:2}}});
+  }
+  if(path===validations+'/by-request/'+requestId){
+   readbacks++;
+   return route.fulfill({status:404,json:{detail:'尚未登记'}});
+  }
+  if(path===validations)return route.fulfill({json:{ok:true,items:[]}});
+  return route.fulfill({status:404,json:{detail:'unexpected '+path}});
+ });
+ await page.goto('http://training.test/app/#/projects/p/conversions/job-1');
+ await expect.poll(()=>page.evaluate(()=>globalThis.isSecureContext||!!crypto.subtle)).toBe(false);
+ await page.getByLabel('验证图片').setInputFiles(files);
+ await page.getByRole('button',{name:'开始数值验证'}).click();
+ await page.getByRole('button',{name:'确认发起验证'}).click();
+ await expect(page.getByText('数值验证提交回执未知。')).toBeVisible();
+ await page.reload();
+ await expect.poll(()=>readbacks).toBe(1);
+ expect(writes).toBe(1);
+ const original=page.getByLabel('按原顺序重选验证图片');
+ const retry=page.getByRole('button',{name:'核对图片并重试原请求'});
+ page.on('dialog',dialog=>dialog.accept());
+ await original.setInputFiles([...files].reverse());
+ await retry.click();
+ await expect(page.getByText('图片内容或顺序与原请求不同')).toBeVisible();
+ expect(writes).toBe(1);
+ await original.setInputFiles(files);
+ await retry.click();
+ await expect(page.getByRole('button',{name:'刷新验证报告'})).toBeVisible();
+ expect(writes).toBe(2);
+});
+
 test('native conversion stop requires confirmation and reads server state after a lost response',async({page})=>{
  await assets(page);
  const endpoint='/api/v39/projects/p/deploy/jobs/job-1';

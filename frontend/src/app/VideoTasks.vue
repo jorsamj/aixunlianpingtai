@@ -160,7 +160,7 @@ async function create() {
   busy.value=true;
   try {
     const record = {requestId: videoCreationRequestId(), name: original.name, size: original.size,
-      fingerprint: await videoFileFingerprint(original), split: form.split, values};
+      fingerprint: await videoFileFingerprint(original, scope.signal), split: form.split, values};
     if(!actor||workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
     if(scope.signal.aborted)return;
     sessionStorage.setItem(createKey, JSON.stringify(record));
@@ -221,7 +221,7 @@ async function submitPending(retrying:boolean){
   try{
     if (retrying) {
       if (!pendingFile.value && (selected.name !== pending.name || selected.size !== pending.size ||
-          !pending.fingerprint || await videoFileFingerprint(selected) !== pending.fingerprint)) {
+          !pending.fingerprint || await videoFileFingerprint(selected, scope.signal) !== pending.fingerprint)) {
         receiptError.value = '所选视频与原请求的文件不一致，请重新选择原视频。';
         return;
       }

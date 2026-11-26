@@ -1,5 +1,6 @@
 import {request} from '../app/http';
 import {normalizeVideoTask, videoTaskFormValues} from '../../../static/modules/video-tasks.js';
+import {digestHex, sha256Bytes} from './file-digest';
 
 interface VideoRecord {
   id: string;
@@ -29,17 +30,16 @@ export type VideoRecovery =
 
 // Hash every byte using bounded reads. This fingerprint is for browser reselection;
 // the task payload still uses the server's full-file SHA-256.
-export async function videoFileFingerprint(file: File) {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) return null;
+export async function videoFileFingerprint(file: File, signal: AbortSignal) {
   const chunkSize = 4 * 1024 * 1024;
   const digest = new Uint8Array(32 * Math.ceil(file.size / chunkSize));
   for (let offset = 0; offset < file.size; offset += chunkSize) {
+    signal.throwIfAborted();
     const bytes = await file.slice(offset, offset + chunkSize).arrayBuffer();
-    digest.set(new Uint8Array(await subtle.digest('SHA-256', bytes)), (offset / chunkSize) * 32);
+    digest.set(await sha256Bytes(bytes), (offset / chunkSize) * 32);
   }
-  const fingerprint = await subtle.digest('SHA-256', digest);
-  return Array.from(new Uint8Array(fingerprint), byte => byte.toString(16).padStart(2, '0')).join('');
+  signal.throwIfAborted();
+  return digestHex(await sha256Bytes(digest.buffer));
 }
 
 export function videoTasks(projectId: string) {

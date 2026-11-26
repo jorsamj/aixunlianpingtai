@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {"build": "vue-tsc --noEmit && vite build && node ../tools/verify_vue_offline.mjs && npm run build:app", "build:app": "vite build --config vite.app.config.ts && node ../tools/verify_vue_app_offline.mjs", "test:browser": "playwright test"},
-  "dependencies": {"vue": "3.5.45", "vue-router": "4.6.5", "pinia": "4.1.0", "element-plus": "2.14.8"},
+  "dependencies": {"@noble/hashes": "2.0.1", "vue": "3.5.45", "vue-router": "4.6.5", "pinia": "4.1.0", "element-plus": "2.14.8"},
   "devDependencies": {"vite": "6.4.6", "@vitejs/plugin-vue": "5.2.4", "typescript": "5.9.3", "vue-tsc": "3.2.5", "@playwright/test": "1.58.2"},
   "engines": {"node": ">=22"}
 }

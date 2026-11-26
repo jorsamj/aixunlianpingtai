@@ -1,5 +1,6 @@
 import {expect, test} from '@playwright/test';
 import {resolve} from 'node:path';
+import {createHash} from 'node:crypto';
 
 for (const alreadyAccepted of [true, false]) {
 test(`native video tasks recover ${alreadyAccepted ? 'an accepted' : 'an unregistered'} upload after reload`, async ({page}) => {
@@ -47,7 +48,9 @@ test(`native video tasks recover ${alreadyAccepted ? 'an accepted' : 'an unregis
     if (path === api + '/frame-task') return route.fulfill({json: record});
     return route.fulfill({status: 404, json: {detail: 'unexpected ' + path}});
   });
-  await page.goto('/app/#/projects/p/algorithms');
+  const entry = '/app/#/projects/p/algorithms';
+  await page.goto(alreadyAccepted ? entry : 'http://training.test' + entry);
+  if (!alreadyAccepted) await expect.poll(() => page.evaluate(() => globalThis.isSecureContext || !!crypto.subtle)).toBe(false);
   await page.getByRole('link', {name: '视频切帧', exact: true}).click();
   await expect(page).toHaveURL(/video-tasks$/);
   await expect(page.getByText('暂无切帧任务')).toBeVisible();
@@ -57,6 +60,12 @@ test(`native video tasks recover ${alreadyAccepted ? 'an accepted' : 'an unregis
   await dialog.getByLabel('切帧方式').selectOption('fixed_count');
   await dialog.getByRole('button', {name: '创建任务', exact: true}).click();
   await expect(dialog.getByText('创建结果未知，请按原请求核对。')).toBeVisible();
+  const persisted = await page.evaluate(() => {
+    const key = Object.keys(sessionStorage).find(value => value.startsWith('video-create:'))!;
+    return JSON.parse(sessionStorage.getItem(key)!).fingerprint;
+  });
+  const chunkHash = createHash('sha256').update('video').digest();
+  expect(persisted).toBe(createHash('sha256').update(chunkHash).digest('hex'));
   await page.reload();
   await expect.poll(()=>lookups).toBe(1);
   expect(submissions).toBe(1);
