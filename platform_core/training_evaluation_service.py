@@ -873,6 +873,41 @@ class TrainingEvaluationService:
             ))
         return self.dependencies.public_annotation_task(task)
 
+    _EVALUATION_COMPARABILITY_FIELDS = (
+        'scope_id', 'content_digest', 'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest',
+    )
+
+    def _v49_evaluation_comparability(self, evaluation: Any) -> Dict[str, Any]:
+        """Project the strict same-benchmark key used by compare_evaluations.
+
+        The algorithm report may only rank Test metrics inside one benchmark and
+        protocol. This mirrors the existing comparison contract instead of
+        inventing a second one; anything unproven keeps ``key=None`` so callers
+        cannot present a cross-benchmark ranking.
+        """
+        if not isinstance(evaluation, dict):
+            return {'key': None, 'reason': 'evaluation_missing', 'scope_id': '', 'evaluation_protocol_id': ''}
+        if evaluation.get('status') != 'succeeded' or not evaluation.get('evaluation_id'):
+            return {'key': None, 'reason': 'evaluation_missing', 'scope_id': '', 'evaluation_protocol_id': ''}
+        scope = evaluation.get('benchmark_scope')
+        if not isinstance(scope, dict):
+            scope = {}
+        scope_id = str(scope.get('scope_id') or '')
+        protocol = str(evaluation.get('evaluation_protocol_id') or '')
+        base = {'scope_id': scope_id, 'evaluation_protocol_id': protocol}
+        if any(not scope.get(field) for field in self._EVALUATION_COMPARABILITY_FIELDS):
+            return {'key': None, 'reason': 'benchmark_evidence_missing', **base}
+        if scope.get('binding_level') != 'bundle_verified':
+            return {'key': None, 'reason': 'benchmark_input_binding_missing', **base}
+        if evaluation.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}:
+            return {'key': None, 'reason': 'benchmark_historical_independence_unverified', **base}
+        if not protocol:
+            return {'key': None, 'reason': 'evaluation_protocol_missing', **base}
+        identity = {field: scope.get(field) for field in self._EVALUATION_COMPARABILITY_FIELDS}
+        identity['evaluation_protocol_id'] = protocol
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        return {'key': key, 'reason': None, **base}
+
     def v49_algorithm_report(self, project_id: str, algorithm_id: str, lightweight: bool = False):
         algo = next((x for x in self.dependencies.list_algorithms_internal(project_id, algorithm_id=algorithm_id) if x.get('id') == algorithm_id), None)
         if not algo:
@@ -959,6 +994,7 @@ class TrainingEvaluationService:
             test_map50 = self._v49_metric_from_report(
                 {'metrics': ev_metrics}, 'metrics/mAP50(B)', 'map50', 'mAP50'
             ) if evaluation.get('status') == 'succeeded' else None
+            comparability = self._v49_evaluation_comparability(evaluation)
             quality_rows.append({
                 'version_id': version.get('id'),
                 'version_name': version.get('version_name') or '',
@@ -969,6 +1005,11 @@ class TrainingEvaluationService:
                 'test_snapshot_id': evaluation.get('snapshot_id') or '',
                 'train_snapshot_id': version.get('snapshot_id') or '',
                 'is_current': str(version.get('id') or '') == current_id,
+                'evaluation_id': str(evaluation.get('evaluation_id') or ''),
+                'benchmark_scope_id': comparability['scope_id'],
+                'evaluation_protocol_id': comparability['evaluation_protocol_id'],
+                'comparability_key': comparability['key'],
+                'comparability_reason': comparability['reason'],
             })
         current_quality = next(
             (row for row in quality_rows if row['is_current']), None
