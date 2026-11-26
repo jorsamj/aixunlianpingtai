@@ -289,11 +289,11 @@ onBeforeUnmount(() => controller.abort());
         <el-form-item v-if="adapter !== 'ollama'" label="API Key" class="full">
           <el-radio-group v-model="credential" @change="setCredential">
             <el-radio value="keep">{{ hasKey ? '保留原值' : '不设置' }}</el-radio>
-            <el-radio value="update">{{ hasKey ? '更新' : '设置' }}</el-radio>
+            <el-radio value="update" :disabled="hasKey">{{ hasKey ? '替换' : '设置' }}</el-radio>
             <el-radio v-if="hasKey" value="clear" disabled>清除</el-radio>
           </el-radio-group>
           <el-input v-if="credential === 'update'" v-model="keyInput" type="password" autocomplete="new-password" aria-label="新 API Key" />
-          <small v-else-if="hasKey">清除凭据需核对引用。现有接口支持保留或更新。</small>
+          <small v-else-if="hasKey">原凭据保留给已冻结任务。更换凭据可停用原配置并新增配置。</small>
         </el-form-item>
         <el-form-item class="full">
           <el-checkbox v-model="draft.enabled">启用此模型配置</el-checkbox>

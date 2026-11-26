@@ -98,6 +98,14 @@ class AiConfigurationService:
                                 data.pop(field, None)
                     self.dependencies._v35_normalize_adapter(data)
                     api_key = str(data.pop("api_key", "") or "")
+                    existing_reference = str(item.get("secret_ref") or "")
+                    if api_key and existing_reference:
+                        saved = self.dependencies._v35_secret_store().get(existing_reference)
+                        if not saved or hashlib.sha256(saved.encode()).digest() != hashlib.sha256(api_key.encode()).digest():
+                            raise PlatformError("AI_MODEL_CREDENTIAL_REFERENCES_UNVERIFIED", "原凭据可能仍被已冻结任务引用",
+                                "本次未替换凭据。", "可停用原配置，并为新任务新建模型配置。", 409)
+                        # An identical key is a no-op for the original secret reference.
+                        api_key = ""
                     if api_key:
                         data["inference_account_identity"] = hashlib.sha256(api_key.encode()).hexdigest()
                     elif item.get("inference_account_identity"):
@@ -135,10 +143,11 @@ class AiConfigurationService:
         with FileLock(str(self.dependencies.MODEL_CONFIGS_FILE()) + ".lock", timeout=10):
             current = self.dependencies._v35_model_items()
             removed = next((x for x in current if x.get("id") == config_id), None)
+            if removed and removed.get("secret_ref"):
+                raise PlatformError("AI_MODEL_CREDENTIAL_REFERENCES_UNVERIFIED", "原凭据可能仍被已冻结任务引用",
+                    "本次未删除配置或凭据。", "当前可停用该模型配置。", 409)
             items = [x for x in current if x.get("id") != config_id]
             self.dependencies._v35_save_items(self.dependencies.MODEL_CONFIGS_FILE(), items)
-            if removed and removed.get("secret_ref"):
-                self.dependencies._v35_secret_store().delete(str(removed.get("secret_ref")))
             self.dependencies._v35_publish_model_config(removed_id=config_id)
             return {"ok": True}
 

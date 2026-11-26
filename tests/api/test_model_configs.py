@@ -42,6 +42,19 @@ def test_model_api_key_is_kept_out_of_json_and_responses(client, monkeypatch):
     assert config["secret_ref"].startswith("xjalgo:model-config:")
     assert store.get(config["secret_ref"]) == secret
 
+    path = "/api/v35/model-configs/" + config["id"]
+    attempted = client.put(path, json={
+        "name": "火山方舟视觉", "provider_type": "volcengine_ark", "model_kind": "vlm",
+        "detect_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "model_name": "vision-endpoint", "api_key": "replacement-fixture",
+    })
+    assert attempted.status_code == 409, attempted.text
+    assert "AI_MODEL_CREDENTIAL_REFERENCES_UNVERIFIED" in attempted.text
+    deletion = client.delete(path)
+    assert deletion.status_code == 409, deletion.text
+    assert app_module.MODEL_CONFIGS_FILE.read_text(encoding="utf-8") == persisted
+    assert store.get(config["secret_ref"]) == secret
+
     listed = client.get("/api/v35/model-configs")
     assert secret not in listed.text
 
