@@ -1,8 +1,21 @@
 # AI 开发接续入口
 
-## 算法版本身份与评测可比性收口（2026-11-26，当前）
+## 评测语义收尾、工作台专业化与批量原生（2026-11-26，当前）
 
-- 起始本地及远端 `38c0ea534c6fc397416cdc7e1b70b0f7e97a6228`（GPT 独立核验 23/23 workflow 成功：PR 22/22、push 1/1，Frontend Runtime Stabilization run 45774436074 全 6 Job 成功，P1Z Job 139757446845 成功）。目录 `D:\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮业务代码候选见提交 `Algorithms`/`AlgorithmReport`/`training_evaluation_service` 的提交；含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 起始本地及远端 `e976a646e5455874d09e4d04036fa05fb96a6c86`（业务代码 `2f8ff419`）。目录 `D:\lab\p2b2-backend`（上一节写作 `D:\p2b2-backend` 系笔误，实际 Git Root、origin 与分支均未变）。分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮业务代码候选见 `0bfa4c5b`、`7eaa841f`、`33c6e91d`、`1247dd01`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 开工 CI（`e976a646`）：GPT 核验 16 成功、0 失败、9 运行中（Algorithm SQL Store、Online Feedback Runtime push 已成功）。未重复整改历史 Schema 7、AI 单图审核与训练报告问题。
+- A 版本身份与可比性：`training_evaluation.evaluation_benchmark_identity` 统一投影五项基准摘要与 `bundle_verified` 输入绑定；`evaluation_strict_rank_evidence` 追加“verified_independent 历史独立性 + 协议 + 类别身份不歧义”才给排名 key，并把协议并入 key；`compare_evaluations` 复用同一身份投影但保留原历史独立性规则（旧比较行为不变）。v49 报告改为调用该共享函数，不再自持一份规则。算法库与算法报告的“当前/最新创建”改为两个独立条件，可同时显示。最新创建版本身份改由版本分页 Owner（SQLite `asset_versions` 与 PostgreSQL Provider）以单行有界查询返回 `latest_created_version`，翻页不再触发完整报告读取。
+- B 语义整改：节点任务统计按 `task_id` 去重中央持久任务与 Agent 上报，无身份时分别计数，不推断可调度；视频切帧概览改为互斥业务分类（取消请求计入“正在停止”而非失败/已停止）；标签概览区分未读取与真实 0。
+- C 工作台：AI 创建第一步显示实际已选、冻结引用、手动排除与当前页/筛选总数；清洗工作台新增互斥任务概览、状态标签、选中任务待处理数量、返回素材库入口并令牌化面板样式。
+- D 转换：创建与详情改用工作区令牌（去除蓝色/石板色与 12px 卡片），详情明确“转换结果 → 结构验证 → 张量与检测框一致性 → 板端验证 → 交付准入”证据分层。
+- E 原生补齐：训练任务墙新增基于既有 v48 `/jobs/batch-delete` 的批量删除（≤200 条、服务端跳过执行中、保留算法版本与产物、回执分列删除/跳过/未找到/失败），选择项沿用原资格投影。
+- 未完成：算法卡片列表的“最新创建/最佳评测”有界投影（需在 SQLite 与 PostgreSQL 两个 Owner 同步增加相关子查询）；标签快捷预设（后端无该 API，需先产品确认，未新建）；节点训练环境/母模型/诊断的完整原生入口；有界历史趋势。AiCreate/NativeCleaning 未重建任何引擎，参考图多图入模仍属独立专项。
+- 验证：`vue-tsc --noEmit` 0 错误；四个改动 Python 文件 AST 通过；定向 pytest 4 项通过（新增严格排名回归、两个既有比较回归、版本分页投影断言）。未运行全仓 pytest/Playwright，未重复构建。
+- 视觉 `VISUAL_PENDING`。四份保护文档、AGENTS.md、VERSION、vendor 与用户未跟踪文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再做算法卡片投影与节点环境原生入口。
+
+## 算法版本身份与评测可比性收口（2026-11-26，上一批）
+
+- 起始本地及远端 `38c0ea534c6fc397416cdc7e1b70b0f7e97a6228`（GPT 独立核验 23/23 workflow 成功：PR 22/22、push 1/1，Frontend Runtime Stabilization run 45774436074 全 6 Job 成功，P1Z Job 139757446845 成功）。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮业务代码候选见提交 `Algorithms`/`AlgorithmReport`/`training_evaluation_service` 的提交；含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 算法报告可比性：`TrainingEvaluationService._v49_evaluation_comparability` 复用 `compare_evaluations` 的严格口径（五项 benchmark_scope 摘要 + `bundle_verified` 绑定 + 历史独立性 + `evaluation_protocol_id`）生成同口径 key，无法证明时返回原因码；v49 轻量报告的 `version_quality` 行新增 `evaluation_id/benchmark_scope_id/evaluation_protocol_id/comparability_key/comparability_reason`，仍是同一 40 版本有界窗口，无新增扫描。
 - `AlgorithmReport.vue`：移除跨全部近期版本的单一 `highestTest`，改为按同口径 key 分组、组内取最高并在界面标注“基准 + 协议 + 该口径版本数”；不可比的成功 Test 按原因计数提示；明确窗口“仅最近 N/M 个版本，不是全历史最佳”；版本表新增“可比性”列。不新建最佳版本权威，不跨基准排名，不填 0。
 - `Algorithms.vue`：删除“分页第一条即最新创建”的错误标记，改为展开时读取现有 v49 轻量报告的 `latest_created_version`（全算法服务端身份），当前版本与最新创建各自独立、可同时成立；读取失败时只提示不显示标签，不影响版本表。
