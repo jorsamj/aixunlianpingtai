@@ -1399,6 +1399,90 @@ def _evaluation_class_map(value: Mapping[str, Any] | None) -> tuple[dict[Any, di
     return result, has_legacy, ambiguous
 
 
+_EVALUATION_SCOPE_IDENTITY_FIELDS = (
+    'scope_id', 'content_digest', 'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest',
+)
+_EVALUATION_VERIFIED_INDEPENDENCE = 'verified_independent'
+_EVALUATION_UNVERIFIED_INDEPENDENCE = frozenset({'assumed_unseen', 'known_exposed', 'unavailable'})
+
+
+def evaluation_benchmark_identity(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Shared strict benchmark identity used by every comparability caller.
+
+    Covers the evaluation result identity, the five frozen benchmark digests and
+    the verified input binding. It deliberately does not decide historical
+    independence: legacy comparison and strict ranking apply different rules and
+    must not be conflated.
+    """
+    reasons: list[str] = []
+    evaluation = value if isinstance(value, Mapping) else {}
+    if evaluation.get('status') != 'succeeded' or not evaluation.get('evaluation_id'):
+        reasons.append('evaluation_missing')
+    scope = evaluation.get('benchmark_scope')
+    scope = scope if isinstance(scope, Mapping) else {}
+    if any(not scope.get(field) for field in _EVALUATION_SCOPE_IDENTITY_FIELDS):
+        reasons.append('benchmark_evidence_missing')
+    if scope.get('binding_level') != 'bundle_verified':
+        reasons.append('benchmark_input_binding_missing')
+    identity = None
+    if not reasons:
+        identity = hashlib.sha256(json.dumps(
+            {field: str(scope.get(field)) for field in _EVALUATION_SCOPE_IDENTITY_FIELDS},
+            sort_keys=True, separators=(',', ':'),
+        ).encode()).hexdigest()
+    return {
+        'reasons': sorted(set(reasons)),
+        'identity': identity,
+        'scope_id': str(scope.get('scope_id') or ''),
+        'protocol': str(evaluation.get('evaluation_protocol_id') or ''),
+        'historical_independence': str(evaluation.get('historical_independence') or ''),
+    }
+
+
+def evaluation_class_identity_ambiguous(value: Mapping[str, Any] | None) -> bool:
+    """Class-level comparability: ambiguous or empty class identity cannot be ranked."""
+    classes, _legacy, ambiguous = _evaluation_class_map(value)
+    return bool(ambiguous) or not classes
+
+
+def evaluation_strict_rank_evidence(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Evidence required before a version may join a strict metric ranking.
+
+    Keeps three contracts apart: overall-metric comparability (benchmark identity
+    and protocol), class-level comparability (unambiguous class identity) and
+    strict ranking eligibility (which additionally needs verified independent test
+    evidence). Missing or unknown independence never qualifies.
+    """
+    identity = evaluation_benchmark_identity(value)
+    reasons = list(identity['reasons'])
+    evaluation = value if isinstance(value, Mapping) else {}
+    if identity['historical_independence'] != _EVALUATION_VERIFIED_INDEPENDENCE:
+        reasons.append('benchmark_historical_independence_unverified')
+    if not identity['protocol']:
+        reasons.append('evaluation_protocol_missing')
+    class_ambiguous = evaluation_class_identity_ambiguous(evaluation) if identity['identity'] else False
+    if class_ambiguous:
+        reasons.append('class_identity_ambiguous')
+    overall_comparable = not identity['reasons'] and bool(identity['protocol'])
+    # The ranking key must bind the protocol as well: one benchmark scope can be
+    # evaluated under different protocols, and those metrics are not rankable.
+    ranking_key = None
+    if not reasons:
+        ranking_key = hashlib.sha256(
+            f"{identity['identity']}:{identity['protocol']}".encode()
+        ).hexdigest()
+    return {
+        'reasons': sorted(set(reasons)),
+        'key': ranking_key,
+        'overall_comparable': overall_comparable,
+        'class_comparable': overall_comparable and not class_ambiguous,
+        'strict_rank_eligible': not reasons,
+        'scope_id': identity['scope_id'],
+        'protocol': identity['protocol'],
+        'historical_independence': identity['historical_independence'],
+    }
+
+
 def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
     """Strict same-benchmark comparison of existing evaluation truth."""
     reasons = []
@@ -1406,13 +1490,18 @@ def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> di
         if value.get('status') != 'succeeded' or not value.get('evaluation_id'):
             reasons.append('evaluation_missing')
     source_scope, new_scope = source.get('benchmark_scope') or {}, new.get('benchmark_scope') or {}
-    for key in ('scope_id', 'content_digest', 'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest'):
-        if not source_scope.get(key) or not new_scope.get(key):
-            reasons.append('benchmark_evidence_missing')
-        elif source_scope[key] != new_scope[key]:
-            reasons.append('benchmark_scope_mismatch')
-    if source_scope.get('binding_level') != 'bundle_verified' or new_scope.get('binding_level') != 'bundle_verified':
-        reasons.append('benchmark_input_binding_missing')
+    source_identity = evaluation_benchmark_identity(source)
+    new_identity = evaluation_benchmark_identity(new)
+    # Shared identity projection: the same five digests and verified binding that
+    # the strict ranking path uses. Legacy comparison keeps its own independence
+    # rule below so historical behaviour does not silently change.
+    reasons.extend(
+        reason for reason in (source_identity['reasons'] + new_identity['reasons'])
+        if reason != 'evaluation_missing'
+    )
+    if (source_identity['identity'] and new_identity['identity']
+            and source_identity['identity'] != new_identity['identity']):
+        reasons.append('benchmark_scope_mismatch')
     if any(value.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}
            for value in (source, new)):
         reasons.append('benchmark_historical_independence_unverified')

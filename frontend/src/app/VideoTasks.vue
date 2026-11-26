@@ -9,6 +9,24 @@ const api = videoTasks(projectId);
 const statusTone = (status:string) => status === 'SUCCEEDED' ? 'success'
   : status === 'FAILED' ? 'danger'
   : ['CANCELLED','CANCEL_REQUESTED'].includes(status) ? 'info' : 'info';
+// Mutually exclusive business categories: a cancellation request is still
+// stopping, never "already stopped", and it is not counted as a failure.
+const taskBreakdown = computed(() => {
+  const buckets = [
+    {label:'排队', statuses:['QUEUED','WAITING_RESOURCE']},
+    {label:'运行', statuses:['RUNNING','PREPARING']},
+    {label:'正在停止', statuses:['CANCEL_REQUESTED']},
+    {label:'已完成', statuses:['SUCCEEDED']},
+    {label:'失败', statuses:['FAILED']},
+    {label:'已停止', statuses:['CANCELLED']},
+  ];
+  const known = new Set(buckets.flatMap(bucket => bucket.statuses));
+  const rowsValue = rows.value;
+  return [
+    ...buckets.map(bucket => ({label:bucket.label, count:rowsValue.filter(row => bucket.statuses.includes(row.status)).length})),
+    {label:'其他状态', count:rowsValue.filter(row => !known.has(row.status)).length},
+  ];
+});
 const scope = new AbortController();
 const rows = ref<VideoTask[]>([]);
 const cursors = ref(['']);
@@ -305,13 +323,11 @@ async function stop(task: VideoTask) {
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-alert v-if="receiptMessage" :title="receiptMessage" type="info" :closable="false"/>
-    <dl v-if="rows.length" class="video-summary" aria-label="切帧任务概览">
-      <div><dt>本页任务</dt><dd>{{ rows.length }}</dd></div>
-      <div><dt>运行中</dt><dd>{{ rows.filter(row=>isActiveVideoTask(row)).length }}</dd></div>
-      <div><dt>已完成</dt><dd>{{ rows.filter(row=>row.status==='SUCCEEDED').length }}</dd></div>
-      <div><dt>失败 / 已停止</dt><dd>{{ rows.filter(row=>['FAILED','CANCELLED','CANCEL_REQUESTED'].includes(row.status)).length }}</dd></div>
-      <div><dt>已生成帧</dt><dd>{{ rows.reduce((sum,row)=>sum+(row.extractedFrames||0),0) }}</dd></div>
-    </dl>
+    <p v-if="rows.length" class="video-summary" aria-label="切帧任务概览">
+      <span>本页 {{ rows.length }} 项</span>
+      <span v-for="item in taskBreakdown" :key="item.label">{{ item.label }} {{ item.count }}</span>
+      <span>已生成 {{ rows.reduce((sum,row)=>sum+(row.extractedFrames||0),0) }} 帧</span>
+    </p>
     <el-alert v-if="uncertain" title="上次切帧创建结果待核验。" type="warning" :closable="false">
       <p v-if="receiptError">{{receiptError}}</p>
       <el-button v-if="pendingId" text :loading="checking" :disabled="busy" @click="checkReceipt">核对原请求</el-button>
@@ -378,10 +394,8 @@ async function stop(task: VideoTask) {
 .page-toolbar a {margin-inline: 12px; font-size: 14px;}
 .el-table small {display: block; color: var(--workspace-subtle, #686872); overflow-wrap: anywhere;}
 .el-table .task-error {color: var(--el-color-danger);}
-.video-summary {display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 0 0 12px;}
-.video-summary > div {padding: 10px 12px; background: var(--workspace-surface, #fff); border: 1px solid var(--workspace-line, #e4e4e7); border-radius: 8px;}
-.video-summary dt {font-size: 12px; color: var(--workspace-subtle, #686872);}
-.video-summary dd {margin: 4px 0 0; font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums;}
+.video-summary {display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 10px; font-size: 12px; color: var(--workspace-muted, #52525b);}
+.video-summary span {white-space: nowrap;}
 .video-note {margin: 8px 0 0; font-size: 12px; color: var(--workspace-muted, #52525b);}
 .video-form {display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;}
 .video-form label {display: grid; gap: 8px;}

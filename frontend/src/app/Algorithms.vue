@@ -197,24 +197,15 @@ function clearTag(key:typeof filterKeys[number]){applyFilters({...appliedFilters
 function toggleTrainable(){applyFilters({...appliedFilters.value,training_state:appliedFilters.value.training_state==='trainable'?'all':'trainable',page:1})}
 function choose(id:string){void router.push({query:{...route.query,algorithm:id||undefined,version:undefined,version_page:undefined}})}
 function toggle(id:string){choose(selected.value===id?'':id)}
-function loadVersions(){if(selected.value){loadVersionIdentity();void reads.run('versions',signal=>api.versions(selected.value,versionPage.value,signal),value=>{
+function loadVersions(){if(selected.value)void reads.run('versions',signal=>api.versions(selected.value,versionPage.value,signal),value=>{
  const lastPage=Math.max(1,Math.ceil(value.total/value.page_size));
  if(versionPage.value>lastPage){changeVersionPage(lastPage);return}
  versions.value=value;
-})}}
-// The newest created version is a server identity across the whole algorithm, not
-// the first row of the current page; reuse the existing lightweight v49 report.
-const latestCreated=ref<{id:string;version_name?:string}|null>(null);
-function loadVersionIdentity(){
- const algorithmId=selected.value;
- latestCreated.value=null;
- if(!algorithmId){reads.cancel('version-identity');return}
- void reads.run('version-identity',signal=>request<{ok:boolean;report_type:string;algorithm?:{id:string};latest_created_version?:{id:string;version_name?:string}|null}>(
-  `/api/v49/projects/${encodeURIComponent(projectId)}/algorithms/${encodeURIComponent(algorithmId)}/report?lightweight=true`,{signal}),value=>{
-  if(value.ok!==true||value.report_type!=='algorithm'||value.algorithm?.id!==algorithmId)throw new Error('版本身份响应不一致');
-  latestCreated.value=value.latest_created_version||null;
- });
-}
+})}
+// The newest created version is returned by the version page owner as a bounded
+// whole-algorithm identity, so paging never renames it and no extra report read is
+// issued per page.
+const latestCreated=computed(()=>versions.value?.latest_created_version??null);
 function changeVersionPage(value:number){void router.push({query:{...route.query,version_page:value===1?undefined:String(value)}})}
 const versionRemark=ref(''),versionSaveError=ref('');
 const selectedAlgorithm=computed(()=>algorithms.value?.items.find(algorithm=>algorithm.id===selected.value)||versions.value?.algorithm);
@@ -407,10 +398,9 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
      </div>
     </header>
     <el-alert v-if="reads.errors.versions" :title="reads.errors.versions" type="error" :closable="false"/>
-    <p class="version-note">“当前版本”与“最新创建”是两项独立身份，可同时成立；标签按服务端全算法身份显示，不受分页影响。最佳评测版本只在同基准同协议内比较，请进入算法报告查看。</p>
-    <p v-if="reads.errors['version-identity']" class="version-note">最新创建版本身份未获取，本页不显示该标签。</p>
+    <p class="version-note">“当前版本”与“最新创建”是两项独立身份，可同时显示在同一版本上；两者均由服务端全算法身份决定，不受分页影响。最佳评测版本只在同基准同协议内比较，请进入算法报告查看。</p>
     <el-table :data="versions?.items||[]" row-key="id" v-loading="reads.busy.versions" empty-text="暂无版本">
-     <el-table-column label="模型版本" min-width="165"><template #default="{row}"><strong>{{ row.version_name||row.id }}</strong><el-tag v-if="versions?.algorithm.current_version_id===row.id" type="info">当前版本</el-tag><el-tag v-else-if="latestCreated?.id===row.id" type="info" effect="plain">最新创建</el-tag><small class="version-id">{{ row.id }}</small></template></el-table-column>
+     <el-table-column label="模型版本" min-width="165"><template #default="{row}"><strong>{{ row.version_name||row.id }}</strong><el-tag v-if="versions?.algorithm.current_version_id===row.id" type="info">当前版本</el-tag><el-tag v-if="latestCreated?.id===row.id" type="info" effect="plain">最新创建</el-tag><small class="version-id">{{ row.id }}</small></template></el-table-column>
      <el-table-column label="训练状态" min-width="100"><template #default="{row}">{{ stateLabel(row.training_status) }}</template></el-table-column>
      <el-table-column prop="framework" label="框架" min-width="90"/>
      <el-table-column label="操作" min-width="310"><template #default="{row}">

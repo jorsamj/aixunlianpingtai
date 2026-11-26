@@ -94,7 +94,7 @@ onMounted(()=>void load());
    <el-table :data="versions" row-key="version_id" max-height="310" empty-text="暂无版本质量数据">
     <el-table-column label="版本" min-width="165"><template #default="{row}">{{row.version_name||row.version_id}}
      <el-tag v-if="row.version_id===report.algorithm.current_version_id" size="small">当前</el-tag>
-     <el-tag v-if="report.latest_created_version?.id===row.version_id&&row.version_id!==report.algorithm.current_version_id" size="small" effect="plain">最新创建</el-tag>
+     <el-tag v-if="report.latest_created_version?.id===row.version_id" size="small" effect="plain">最新创建</el-tag>
     </template></el-table-column>
     <el-table-column label="Val mAP50" width="112"><template #default="{row}">{{metric(row.val_map50)}}</template></el-table-column>
     <el-table-column label="独立 Test mAP50" min-width="135"><template #default="{row}">{{metric(row.test_map50)}}</template></el-table-column>

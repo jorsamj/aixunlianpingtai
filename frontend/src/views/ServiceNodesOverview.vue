@@ -14,13 +14,21 @@ const filtered=computed(()=>nodes.value.filter(node=>(!query.value||`${node.node
 const summary=computed(()=>{
  const list=nodes.value;
  const stale=list.filter(node=>node.status==='ONLINE'&&typeof node.heartbeat_age_seconds==='number'&&node.heartbeat_age_seconds>=300).length;
+ const running=list.reduce((sum,node)=>{
+  const durable=new Set((node.durable_tasks||[]).map(task=>String(task.task_id||'').trim()).filter(Boolean));
+  const reportedOnly=(node.reported_active_tasks||[]).filter(task=>{
+   const id=String(task.task_id||'').trim();
+   return !id||!durable.has(id);
+  });
+  return sum+(node.durable_tasks||[]).length+reportedOnly.length;
+ },0);
  return {
   total:list.length,
   online:list.filter(node=>node.status==='ONLINE').length,
   stale,
   gpu:list.reduce((sum,node)=>sum+(node.resources?.gpu?.gpus?.length||0),0),
   cuda:list.filter(node=>node.runtime?.cuda_available===true).length,
-  running:list.reduce((sum,node)=>sum+(node.durable_tasks?.length||0)+(node.reported_active_tasks?.length||0),0),
+  running,
  };
 });
 async function load(){

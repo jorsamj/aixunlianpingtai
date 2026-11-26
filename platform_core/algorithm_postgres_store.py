@@ -839,6 +839,13 @@ class PostgresAlgorithmRepository:
                 ),
             )
             rows = cursor.fetchall()
+            cursor.execute(
+                "SELECT id, version_name FROM w5_algorithm.algorithm_version "
+                "WHERE project_id=%s AND algorithm_id=%s "
+                "ORDER BY created_at DESC, sort_index, id LIMIT 1",
+                (self.project_id, str(algorithm_id)),
+            )
+            latest = cursor.fetchone()
             revision = self._revision(cursor)
         return {
             "project_id": self.project_id,
@@ -849,6 +856,10 @@ class PostgresAlgorithmRepository:
             "page_size": page_size,
             "algorithm_revision": revision,
             "versions_deferred": False,
+            "latest_created_version": (
+                {"id": text(latest["id"]), "version_name": text(latest["version_name"])}
+                if latest is not None else None
+            ),
         }
 
     def asset_version(self, algorithm_id, version_id, *, detail=True):

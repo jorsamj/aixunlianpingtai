@@ -14,6 +14,8 @@ def test_opt_in_views_use_scoped_repository_without_full_algorithm_or_model_scan
     assert result['project_id']=='p' and result['items'][0]['versions_deferred'] is True
     versions=api.v12_get_algorithm('p','a',asset_view=True,page_size=1)
     assert versions['total']==1 and versions['algorithm']['current_version_id']=='v'
+    # The newest created identity is a whole-algorithm fact, not a page fact.
+    assert versions['latest_created_version']['id']=='v'
     detail=api.v12_get_algorithm('p','a',asset_view=True,version_id='v')
     assert detail['version']['metrics']['map50']==0 and detail['artifacts']['total']==0
     assert '/secret' not in json.dumps(detail) and 'FROZEN_GT_SENTINEL' not in json.dumps(detail)

@@ -486,8 +486,12 @@ class AlgorithmSqlStore:
             if row is None:raise PlatformError('ALGORITHM_NOT_FOUND','算法不存在','',status_code=404)
             total=conn.execute('SELECT COUNT(*) FROM algorithm_versions WHERE algorithm_id=?',(str(algorithm_id),)).fetchone()[0]
             rows=conn.execute('SELECT '+version_columns()+' FROM algorithm_versions v WHERE v.algorithm_id=? ORDER BY v.created_at DESC,v.sort_index,v.id LIMIT ? OFFSET ?',(str(algorithm_id),page_size,(page-1)*page_size)).fetchall()
+            # Newest created identity is a whole-algorithm fact; one bounded row
+            # keeps it independent from the requested page and stable on ties.
+            latest=conn.execute('SELECT id,version_name FROM algorithm_versions WHERE algorithm_id=? ORDER BY created_at DESC,sort_index,id LIMIT 1',(str(algorithm_id),)).fetchone()
             revision=int(self._meta(conn,'algorithm_revision') or 0);conn.commit()
-        return {'project_id':self.project_id,'algorithm':{key:text(value) for key,value in dict(row).items()},'items':[version_record(row,self._json_object) for row in rows],'total':total,'page':page,'page_size':page_size,'algorithm_revision':revision,'versions_deferred':False}
+        return {'project_id':self.project_id,'algorithm':{key:text(value) for key,value in dict(row).items()},'items':[version_record(row,self._json_object) for row in rows],'total':total,'page':page,'page_size':page_size,'algorithm_revision':revision,'versions_deferred':False,
+                'latest_created_version':({'id':text(latest['id']),'version_name':text(latest['version_name'])} if latest is not None else None)}
 
     def asset_version(self, algorithm_id, version_id, *, detail=True):
         from .model_asset_views import version_columns,version_record

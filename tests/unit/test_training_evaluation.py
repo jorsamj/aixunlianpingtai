@@ -887,6 +887,46 @@ def test_version_comparison_requires_identical_verified_inputs_and_reports_class
     assert evaluation.compare_evaluations(source,current)["comparable"] is False
 
 
+def test_strict_rank_evidence_requires_verified_independence_and_binds_protocol():
+    scope = {key: 'c' * 64 for key in (
+        'scope_id', 'content_digest', 'ground_truth_digest',
+        'label_schema_digest', 'evaluation_input_digest',
+    )}
+    scope['binding_level'] = 'bundle_verified'
+    base = {
+        'status': 'succeeded', 'evaluation_id': 'a' * 64,
+        'evaluation_protocol_id': 'b' * 64, 'benchmark_scope': scope,
+        'historical_independence': 'verified_independent',
+        'metrics': {'metrics/mAP50(B)': .6},
+        'per_class': [{'class_id': 0, 'label': 'fire', 'recall': .8, 'map50': .7}],
+    }
+    evidence = evaluation.evaluation_strict_rank_evidence(base)
+    assert evidence['strict_rank_eligible'] is True and evidence['key']
+    # Missing or unknown independence can never join a strict ranking.
+    for independence in ('', None, 'assumed_unseen', 'known_exposed', 'unavailable'):
+        variant = {**base, 'historical_independence': independence}
+        rejected = evaluation.evaluation_strict_rank_evidence(variant)
+        assert rejected['strict_rank_eligible'] is False
+        assert 'benchmark_historical_independence_unverified' in rejected['reasons']
+        # Overall metrics stay comparable; only ranking eligibility is withheld.
+        assert rejected['overall_comparable'] is True
+    # The protocol is part of the ranking key, not just a displayed field.
+    other_protocol = evaluation.evaluation_strict_rank_evidence({**base, 'evaluation_protocol_id': 'd' * 64})
+    assert other_protocol['key'] != evidence['key']
+    # Ambiguous class identity blocks the class-level contract and strict ranking.
+    legacy = {**base, 'per_class': [
+        {'label': 'same', 'recall': .9, 'map50': .9},
+        {'label': 'same', 'recall': .8, 'map50': .8},
+    ]}
+    ambiguous = evaluation.evaluation_strict_rank_evidence(legacy)
+    assert ambiguous['strict_rank_eligible'] is False
+    assert 'class_identity_ambiguous' in ambiguous['reasons']
+    assert ambiguous['overall_comparable'] is True and ambiguous['class_comparable'] is False
+    # Legacy comparison behaviour is unchanged: it still compares without the
+    # verified-independence requirement it never had.
+    assert evaluation.compare_evaluations(base, {**base, 'metrics': {'metrics/mAP50(B)': .7}})['comparable'] is True
+
+
 def test_version_comparison_uses_class_id_when_display_labels_are_duplicated():
     import copy
     scope = {key: 'c' * 64 for key in (

@@ -873,40 +873,30 @@ class TrainingEvaluationService:
             ))
         return self.dependencies.public_annotation_task(task)
 
-    _EVALUATION_COMPARABILITY_FIELDS = (
-        'scope_id', 'content_digest', 'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest',
+    _EVALUATION_COMPARABILITY_REASON_ORDER = (
+        'evaluation_missing', 'benchmark_evidence_missing', 'benchmark_input_binding_missing',
+        'benchmark_historical_independence_unverified', 'evaluation_protocol_missing', 'class_identity_ambiguous',
     )
 
     def _v49_evaluation_comparability(self, evaluation: Any) -> Dict[str, Any]:
-        """Project the strict same-benchmark key used by compare_evaluations.
+        """Project the shared strict ranking evidence for the algorithm report.
 
-        The algorithm report may only rank Test metrics inside one benchmark and
-        protocol. This mirrors the existing comparison contract instead of
-        inventing a second one; anything unproven keeps ``key=None`` so callers
-        cannot present a cross-benchmark ranking.
+        Delegates to ``training_evaluation.evaluation_strict_rank_evidence`` so the
+        report cannot drift from the evaluation module: strict ranking needs the
+        verified benchmark identity, the protocol and verified independent test
+        evidence, and it must not rank ambiguous class identities.
         """
-        if not isinstance(evaluation, dict):
-            return {'key': None, 'reason': 'evaluation_missing', 'scope_id': '', 'evaluation_protocol_id': ''}
-        if evaluation.get('status') != 'succeeded' or not evaluation.get('evaluation_id'):
-            return {'key': None, 'reason': 'evaluation_missing', 'scope_id': '', 'evaluation_protocol_id': ''}
-        scope = evaluation.get('benchmark_scope')
-        if not isinstance(scope, dict):
-            scope = {}
-        scope_id = str(scope.get('scope_id') or '')
-        protocol = str(evaluation.get('evaluation_protocol_id') or '')
-        base = {'scope_id': scope_id, 'evaluation_protocol_id': protocol}
-        if any(not scope.get(field) for field in self._EVALUATION_COMPARABILITY_FIELDS):
-            return {'key': None, 'reason': 'benchmark_evidence_missing', **base}
-        if scope.get('binding_level') != 'bundle_verified':
-            return {'key': None, 'reason': 'benchmark_input_binding_missing', **base}
-        if evaluation.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}:
-            return {'key': None, 'reason': 'benchmark_historical_independence_unverified', **base}
-        if not protocol:
-            return {'key': None, 'reason': 'evaluation_protocol_missing', **base}
-        identity = {field: scope.get(field) for field in self._EVALUATION_COMPARABILITY_FIELDS}
-        identity['evaluation_protocol_id'] = protocol
-        key = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        return {'key': key, 'reason': None, **base}
+        from platform_core.training_evaluation import evaluation_strict_rank_evidence
+        evidence = evaluation_strict_rank_evidence(evaluation if isinstance(evaluation, dict) else {})
+        reasons = set(evidence['reasons'])
+        reason = next((code for code in self._EVALUATION_COMPARABILITY_REASON_ORDER if code in reasons),
+                      sorted(reasons)[0] if reasons else None)
+        return {
+            'key': evidence['key'],
+            'reason': reason,
+            'scope_id': evidence['scope_id'],
+            'evaluation_protocol_id': evidence['protocol'],
+        }
 
     def v49_algorithm_report(self, project_id: str, algorithm_id: str, lightweight: bool = False):
         algo = next((x for x in self.dependencies.list_algorithms_internal(project_id, algorithm_id=algorithm_id) if x.get('id') == algorithm_id), None)

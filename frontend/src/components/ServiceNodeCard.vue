@@ -20,7 +20,21 @@ const gpus=computed(()=>props.node.resources?.gpu?.gpus||[]);
 const busyGpus=computed(()=>gpus.value.filter(gpu=>(gpu.utilization_percent||0)>0||(gpu.memory_used_bytes||0)>0).length);
 const workers=computed(()=>props.node.workers||[]);
 const onlineWorkers=computed(()=>workers.value.filter(worker=>worker.online===true).length);
-const runningTasks=computed(()=>(props.node.durable_tasks||[]).length+(props.node.reported_active_tasks||[]).length);
+const durableTasks=computed(()=>props.node.durable_tasks||[]);
+const reportedTasks=computed(()=>props.node.reported_active_tasks||[]);
+// Central durable tasks and Agent-reported tasks describe different sources. A
+// shared task identity is deduplicated; anything without identity is counted
+// separately instead of being silently added or merged.
+const reportedOnlyTasks=computed(()=>{
+  const known=new Set(durableTasks.value.map(task=>String(task.task_id||'').trim()).filter(Boolean));
+  return reportedTasks.value.filter(task=>{
+    const id=String(task.task_id||'').trim();
+    return !id||!known.has(id);
+  });
+});
+const runningTasks=computed(()=>durableTasks.value.length+reportedOnlyTasks.value.length);
+const taskSourceText=computed(()=>durableTasks.value.length||reportedTasks.value.length
+  ?`中央 ${durableTasks.value.length} · Agent 独有 ${reportedOnlyTasks.value.length}`:'');
 const cuda=computed(()=>props.node.runtime?.cuda_available===true?'CUDA 已上报可用'
   :props.node.runtime?.cuda_available===false?'CUDA 已上报不可用'
   :props.node.runtime?.cuda_version?`CUDA ${props.node.runtime.cuda_version}（可用性未核验）`:'运行环境未上报');
@@ -32,7 +46,7 @@ const cuda=computed(()=>props.node.runtime?.cuda_available===true?'CUDA 已上�
   <span>{{ cuda }}</span>
   <span>GPU {{ gpus.length }} 张{{ busyGpus?` · 占用 ${busyGpus}`:'' }}</span>
   <span>Worker {{ onlineWorkers }}/{{ workers.length }}</span>
-  <span>执行中 {{ runningTasks }} 项</span>
+  <span>执行中 {{ runningTasks }} 项<template v-if="taskSourceText">（{{ taskSourceText }}）</template></span>
   <span>调度准入：需独立证据</span>
  </p>
  <dl class="node-meta"><div><dt>连接类型</dt><dd>{{ node.connection_mode==='local'?'本地 Agent':node.connection_mode==='agent'?'远程 Agent':'未上报' }}</dd></div><div><dt>操作系统 / CPU 架构</dt><dd>{{ node.os_name||'系统未上报' }} / {{ node.architecture||'架构未上报' }}</dd></div><div><dt>最近心跳</dt><dd>{{ node.last_heartbeat_at||'未上报' }}</dd></div><div><dt>Agent 版本</dt><dd>{{ node.agent_version||'未上报' }}<small v-if="node.build_id"> / {{ node.build_id }}</small></dd></div></dl>
