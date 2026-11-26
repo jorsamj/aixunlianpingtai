@@ -4,10 +4,16 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 from fastapi import HTTPException
 
+import hashlib
+import json
+import os
+import re
+import tempfile
 import uuid
 from pathlib import Path
 from fastapi import File, Form, UploadFile
 from fastapi.responses import JSONResponse
+from filelock import FileLock, Timeout
 from platform_core.task_runtime import TaskKind, TaskRecord, WorkerInstanceService
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
@@ -60,6 +66,17 @@ class VideoTasksService:
         self.dependencies._require_shared_task(project_id, task_id, TaskKind.VIDEO_FRAMES)
         return self.dependencies._public_task(self.dependencies.shared_task_repository().request_cancel(task_id))
 
+    @staticmethod
+    def _creation_task_id(project_id: str, actor_id: str, request_id: str) -> str:
+        if not actor_id or not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
+            raise HTTPException(422, detail="切帧创建请求 ID 不合法")
+        scope = json.dumps([project_id, actor_id, request_id], ensure_ascii=False, separators=(",", ":"))
+        return "video_" + hashlib.sha256(scope.encode()).hexdigest()
+
+    def v33_find_video_task(self, project_id: str, actor_id: str, request_id: str):
+        task_id = self._creation_task_id(project_id, actor_id, request_id)
+        return {"request_id": request_id, "task": self.v33_get_video_task(project_id, task_id)}
+
     async def v33_create_video_task(self,
         project_id: str,
         video: UploadFile = File(...),
@@ -72,6 +89,9 @@ class VideoTasksService:
         max_frames: Optional[int] = Form(None),
         backend: str = Form("auto"),
         priority: int = Form(50),
+        *,
+        request_id: str = "",
+        actor_id: str = "",
     ):
         self.dependencies.get_project(project_id)
         self.dependencies.ensure_project_dirs(project_id)
@@ -90,19 +110,8 @@ class VideoTasksService:
             )
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        task_id = uuid.uuid4().hex[:12]
+        task_id = self._creation_task_id(project_id, actor_id, request_id) if request_id else uuid.uuid4().hex[:12]
         source_ref = f"inputs/{filename}"
-        video_path = self.dependencies.shared_task_artifacts().artifact_path(task_id, source_ref)
-        video_path.parent.mkdir(parents=True, exist_ok=True)
-        with video_path.open("wb") as fp:
-            while True:
-                chunk = await video.read(1024 * 1024)
-                if not chunk:
-                    break
-                fp.write(chunk)
-        if video_path.stat().st_size <= 0:
-            video_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="上传的视频为空")
         payload = {
             "source_ref": source_ref,
             "original_name": filename,
@@ -115,19 +124,54 @@ class VideoTasksService:
             "max_frames": request.max_frames,
             "backend": str(backend or "auto").lower(),
         }
-        self.dependencies.shared_task_artifacts().atomic_write_json(task_id, "payload.json", payload)
-        record = self.dependencies.shared_task_repository().create(
-            TaskRecord.new(
-                task_id,
-                project_id,
-                TaskKind.VIDEO_FRAMES,
-                "payload.json",
-                "cpu:video",
-                priority=priority,
-                required_capabilities=("opencv",),
-            )
+        artifacts = self.dependencies.shared_task_artifacts()
+        repository = self.dependencies.shared_task_repository()
+        video_path = artifacts.artifact_path(task_id, source_ref)
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = artifacts.artifact_path(task_id, "create.lock")
+        proposed = TaskRecord.new(
+            task_id, project_id, TaskKind.VIDEO_FRAMES, "payload.json", "cpu:video",
+            priority=priority, required_capabilities=("opencv",),
         )
-        return JSONResponse(status_code=202, content=self._public_video_task(record))
+        digest = hashlib.sha256()
+        size = 0
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=video_path.parent, suffix=".upload", delete=False) as fp:
+                temp_path = Path(fp.name)
+                while chunk := await video.read(1024 * 1024):
+                    fp.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+                if request_id:
+                    fp.flush()
+                    os.fsync(fp.fileno())
+            if not size:
+                raise HTTPException(400, detail="上传的视频为空")
+
+            # Upload is staged first. No asynchronous I/O occurs while the
+            # cross-process publication lock protects this task's immutable input.
+            with FileLock(str(lock_path), timeout=0):
+                evidence = {**payload, "input_sha256": digest.hexdigest(), "input_size": size,
+                            "initial_priority": proposed.priority}
+                record = repository.get(task_id) if request_id else None
+                if record is not None:
+                    existing = artifacts.read_json(task_id, record.payload_ref, default={})
+                    if (record.project_id != project_id or record.kind is not TaskKind.VIDEO_FRAMES
+                            or existing != evidence):
+                        raise HTTPException(409, detail="同一切帧请求的源视频或参数不一致")
+                else:
+                    if request_id and repository.is_deleted(task_id):
+                        raise HTTPException(410, detail="原切帧任务已退役")
+                    temp_path.replace(video_path)
+                    artifacts.atomic_write_json(task_id, "payload.json", evidence if request_id else payload)
+                    record = repository.create(proposed, artifacts=artifacts)
+        except Timeout:
+            raise HTTPException(409, detail="原切帧请求正在登记，请核对原请求") from None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        return JSONResponse(status_code=202, content={**self._public_video_task(record), **({"request_id": request_id} if request_id else {})})
 
     def _public_video_task(self, task: TaskRecord, *, worker_runtime=None, queued_candidates=None) -> Dict[str, Any]:
         response = self.dependencies._public_task(

@@ -84,3 +84,33 @@ def test_video_task_list_and_cancel_use_persistent_repository(client, seeded_pro
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == TaskStatus.CANCELLED.value
     assert app_module.shared_task_repository().get(task_id).status is TaskStatus.CANCELLED
+
+
+def test_video_creation_request_reuses_one_task_and_binds_upload_identity(client, seeded_project):
+    project_id, _ = seeded_project
+    base = f"/api/v33/projects/{project_id}/video-tasks"
+    identity = "native-video-request-01"
+    form = {"mode": "fixed_count", "fixed_count": "3", "request_id": identity}
+    lookup = f"{base}/by-request/{identity}"
+    assert client.get(lookup).status_code == 404
+
+    def submit(content=b"unchanged-video", **changes):
+        return client.post(base, data={**form, **changes}, files={"video": ("input.mp4", content, "video/mp4")})
+
+    first = submit()
+    assert first.status_code == 202, first.text
+    task_id = first.json()["id"]
+    recovered = client.get(lookup)
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["request_id"] == identity
+    assert recovered.json()["task"]["id"] == task_id
+    again = submit()
+    assert again.status_code == 202, again.text
+    assert again.json()["id"] == task_id
+    assert submit(b"different-video").status_code == 409
+    assert submit(fixed_count="4").status_code == 409
+    assert [row["id"] for row in client.get(base).json()["items"]] == [task_id]
+    task = app_module.shared_task_repository().get(task_id)
+    artifacts = app_module.shared_task_artifacts()
+    payload = artifacts.read_json(task_id, task.payload_ref)
+    assert artifacts.artifact_path(task_id, payload["source_ref"]).read_bytes() == b"unchanged-video"

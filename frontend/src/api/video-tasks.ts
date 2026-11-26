@@ -3,6 +3,7 @@ import {normalizeVideoTask, videoTaskFormValues} from '../../../static/modules/v
 
 interface VideoRecord {
   id: string;
+  request_id?: string;
   project_id: string;
   kind: string;
   video_name?: string;
@@ -14,6 +15,11 @@ interface VideoRecord {
   finished_at?: string;
   error?: string;
   result?: {output_ref?: string; extracted_frames?: number};
+}
+
+export function videoCreationRequestId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return 'video_' + Array.from(bytes, byte => byte.toString(16).padStart(2,'0')).join('');
 }
 
 export type VideoTask = ReturnType<typeof normalizeVideoTask> & VideoRecord;
@@ -34,14 +40,22 @@ export function videoTasks(projectId: string) {
     async detail(taskId: string, signal: AbortSignal) {
       return checked(await request<VideoRecord>(taskUrl(taskId), {signal}), taskId);
     },
-    async create(video: File, split: string, values: ReturnType<typeof videoTaskFormValues>) {
+    async byRequest(requestId: string, signal: AbortSignal) {
+      const value = await request<{request_id:string;task:VideoRecord}>(url + '/by-request/' + encodeURIComponent(requestId), {signal});
+      if (value.request_id !== requestId) throw new Error('切帧请求回执身份不一致');
+      return checked(value.task);
+    },
+    async create(video: File, split: string, values: ReturnType<typeof videoTaskFormValues>, requestId: string, signal: AbortSignal) {
       const body = new FormData();
       body.set('video', video);
       body.set('split', split);
       body.set('dataset_id', 'default');
       body.set('backend', 'auto');
       for (const [key, value] of Object.entries(values)) body.set(key, String(value));
-      return checked(await request<VideoRecord>(url, {method: 'POST', body}, 120000));
+      body.set('request_id', requestId);
+      const value = await request<VideoRecord>(url, {method: 'POST', body, signal}, 120000);
+      if (value.request_id !== requestId) throw new Error('切帧创建回执身份不一致');
+      return checked(value);
     },
     stop: (taskId: string) => request(taskUrl(taskId) + '/stop', {method: 'POST'}),
   };

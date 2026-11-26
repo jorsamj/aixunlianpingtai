@@ -12264,7 +12264,7 @@ def _video_tasks_service() -> VideoTasksService:
     ))
 
 
-app.include_router(create_video_tasks_router_1(_video_tasks_service))
+app.include_router(create_video_tasks_router_1(_video_tasks_service, _material_governance_actor))
 
 
 def v33_list_video_tasks(project_id: str, limit: int=50, cursor: Optional[str]=None):
@@ -12717,11 +12717,11 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
         raise PlatformError(
             code=code,
             message="模型标注连接测试失败",
-            detail=str(error),
-            solution=solution,
+            detail=redact(str(error)),
+            solution=redact(solution),
             status_code=400,
-            request_id=str(getattr(error, "request_id", "")),
-            server_error_code=str(getattr(error, "server_error_code", "")),
+            request_id=redact(str(getattr(error, "request_id", ""))),
+            server_error_code=redact(str(getattr(error, "server_error_code", ""))),
             upstream_status=int(getattr(error, "status_code", 0)),
         ) from error
 

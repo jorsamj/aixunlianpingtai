@@ -1,12 +1,13 @@
 import {expect, test} from '@playwright/test';
 import {resolve} from 'node:path';
 
-test('native video tasks submit original multipart fields and stop the created task', async ({page}) => {
+test('native video tasks recover the original upload after reload and stop the created task', async ({page}) => {
   const api = '/api/v33/projects/p/video-tasks';
   const task = {id: 'frame-task', project_id: 'p', kind: 'VIDEO_FRAMES', video_name: 'fixture.mp4', split: 'unassigned', mode: 'fixed_count',
     fixed_count: 50, dataset_id: 'default', status: 'QUEUED', progress: 0};
   let created = false;
   let stopped = false;
+  let submissions=0, lookups=0, requestId='';
   let multipart = '';
   const fields = new Map<string, string | File>();
   await page.route('**/app/**', route => {
@@ -23,8 +24,14 @@ test('native video tasks submit original multipart fields and stop the created t
       multipart = request.headers()['content-type'];
       const response = new Response(request.postDataBuffer(), {headers: {'content-type': multipart}});
       (await response.formData()).forEach((value, key) => fields.set(key, value));
+      requestId=String(fields.get('request_id')||'');
       created = true;
-      return route.fulfill({status: 202, json: task});
+      submissions++;
+      return route.abort();
+    }
+    if(path===api+'/by-request/'+requestId && requestId){
+      lookups++;
+      return route.fulfill({json:{request_id:requestId,task}});
     }
     const record = stopped ? {...task, status: 'CANCELLED'} : task;
     if (path === api) return route.fulfill({json: {items: created ? [record] : []}});
@@ -44,12 +51,17 @@ test('native video tasks submit original multipart fields and stop the created t
   await dialog.getByLabel('上传视频文件').setInputFiles({name: 'fixture.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video')});
   await dialog.getByLabel('切帧方式').selectOption('fixed_count');
   await dialog.getByRole('button', {name: '创建任务', exact: true}).click();
+  await expect(dialog.getByText('创建结果未知，请按原请求核对。')).toBeVisible();
+  await page.reload();
+  await expect.poll(()=>lookups).toBe(1);
+  expect(submissions).toBe(1);
   const row = page.getByRole('row', {name: /fixture.mp4/});
   await expect(row).toContainText('排队中');
   expect(multipart).toMatch(/^multipart\/form-data; boundary=/);
-  expect(Object.fromEntries([...fields].filter(([key]) => key !== 'video'))).toEqual({
+  expect(Object.fromEntries([...fields].filter(([key]) => key !== 'video' && key !== 'request_id'))).toEqual({
     split: 'unassigned', dataset_id: 'default', backend: 'auto', mode: 'fixed_count', fixed_count: '50',
   });
+  expect(requestId).toMatch(/^[A-Za-z0-9_-]{12,80}$/);
   expect((fields.get('video') as File).name).toBe('fixture.mp4');
   await row.getByRole('button', {name: '停止'}).click();
   await expect(row).toContainText('已停止');

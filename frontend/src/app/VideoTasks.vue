@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import {computed, onMounted, onUnmounted, reactive, ref} from 'vue';
 import {isActiveVideoTask, videoTaskFormValues} from '../../../static/modules/video-tasks.js';
-import {videoTasks, type VideoTask} from '../api/video-tasks';
-import {useWorkspace} from './main';
+import {videoCreationRequestId, videoTasks, type VideoTask} from '../api/video-tasks';
+import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 
 const {projectId} = defineProps<{projectId: string}>();
 const api = videoTasks(projectId);
@@ -17,10 +17,20 @@ const showDetail = ref(false);
 const showCreate = ref(false);
 const busy = ref(false);
 const uncertain = ref(false);
-const createKey = 'video-create:' + JSON.stringify([useWorkspace().actorKey, projectId]);
-try { uncertain.value = sessionStorage.getItem(createKey) === 'pending'; }
-catch { uncertain.value = true; }
+const actor=useWorkspace().actorKey;
+const createKey = 'video-create:' + JSON.stringify([actor, projectId]);
+const pendingId=ref(''),receiptError=ref(''),checking=ref(false);
 const createError = ref('');
+type FormValues=ReturnType<typeof videoTaskFormValues>;
+let pendingUpload:{file:File;split:string;values:FormValues}|undefined;
+try {
+  const saved=sessionStorage.getItem(createKey);
+  if(saved){
+    uncertain.value=true;
+    if(/^[A-Za-z0-9_-]{12,80}$/.test(saved) && saved!=='pending')pendingId.value=saved;
+    else receiptError.value='旧记录缺少请求 ID，请联系管理员核对原任务受理记录。';
+  }
+} catch { uncertain.value = true;receiptError.value='浏览器无法读取待核验记录。'; }
 const stopping = ref('');
 const file = ref<File>();
 const duration = ref(0);
@@ -94,6 +104,7 @@ function visibilityChange() {
 onMounted(() => {
   document.addEventListener('visibilitychange', visibilityChange);
   void refresh();
+  if(pendingId.value)void checkReceipt();
 });
 onUnmounted(() => {
   scope.abort();
@@ -117,33 +128,61 @@ async function create() {
   let values: ReturnType<typeof videoTaskFormValues>;
   try { values = videoTaskFormValues(form.mode, form); }
   catch (cause) { createError.value = (cause as Error).message; return; }
-  busy.value = true;
-  createError.value = '';
-  let sent = false;
+  createError.value='';
+  const requestId=videoCreationRequestId();
+  const upload={file:file.value,split:form.split,values};
+  busy.value=true;
   try {
-    sessionStorage.setItem(createKey, 'pending');
-    sent = true;
-    await api.create(file.value, form.split, values);
-    sessionStorage.removeItem(createKey);
-    showCreate.value = false;
-  } catch (cause) {
-    const failure = cause as Error & {httpStatus?: number; outcome?: string};
-    uncertain.value = sent && !(failure.httpStatus && failure.httpStatus >= 400 && failure.httpStatus < 500);
-    if (sent && !uncertain.value) sessionStorage.removeItem(createKey);
-    createError.value = uncertain.value
-      ? '创建结果未知，请先查看任务记录，确认是否已经受理。'
-      : failure.message;
-  } finally {
-    busy.value = false;
-    if (!createError.value || uncertain.value) {
-      await pendingRefresh;
-      await refresh(['']);
-    }
-  }
+    if(!actor||workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
+    if(scope.signal.aborted)return;
+    sessionStorage.setItem(createKey,requestId);
+  } catch(cause) { createError.value=(cause as Error).message;return; }
+  finally{busy.value=false}
+  pendingId.value=requestId;
+  pendingUpload=upload;
+  uncertain.value=true;
+  await submitPending(false);
 }
-function confirmTaskList() {
-  try { sessionStorage.removeItem(createKey); uncertain.value = false; }
-  catch { error.value = '浏览器无法保存核对状态。'; }
+function settleReceipt(){
+  sessionStorage.removeItem(createKey);
+  pendingId.value='';pendingUpload=undefined;uncertain.value=false;
+}
+async function submitPending(retrying:boolean){
+  const pending=pendingUpload,requestId=pendingId.value;
+  if(!pending||!requestId||busy.value||checking.value)return;
+  busy.value=true;
+  createError.value='';receiptError.value='';
+  try{
+    if(retrying&&workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
+    await api.create(pending.file,pending.split,pending.values,requestId,scope.signal);
+    settleReceipt();
+    showCreate.value=false;
+  }catch(cause){
+    const failure=cause as Error&{httpStatus?:number};
+    if(!scope.signal.aborted){
+      if(!retrying&&failure.httpStatus&&[400,401,403,413,422].includes(failure.httpStatus)){
+        try{settleReceipt()}catch{/* keep the original request locked */}
+      }
+      createError.value=uncertain.value?'创建结果未知，请按原请求核对。':failure.message;
+    }
+  }finally{busy.value=false}
+  if(!scope.signal.aborted){await pendingRefresh;await refresh(['']);}
+}
+async function checkReceipt(){
+  if(!pendingId.value||busy.value||checking.value)return;
+  checking.value=true;receiptError.value='';
+  try{
+    if(!actor||workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
+    await api.byRequest(pendingId.value,scope.signal);
+    settleReceipt();
+    showCreate.value=false;
+    await pendingRefresh;
+    await refresh(['']);
+  }catch(cause){
+    const failure=cause as Error&{httpStatus?:number};
+    if(!scope.signal.aborted)receiptError.value=failure.httpStatus===404
+      ?'暂未查到原请求回执，不能确定后台未受理。':failure.message;
+  }finally{checking.value=false}
 }
 async function openDetail(task: VideoTask) {
   detail.value = task;
@@ -181,8 +220,10 @@ async function stop(task: VideoTask) {
       <el-button type="primary" :disabled="uncertain" @click="openCreate">＋ 创建切帧任务</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
-    <el-alert v-if="uncertain" title="上次创建结果未知，请核对最新任务记录。" type="warning" :closable="false">
-      <el-button text :disabled="loading" @click="confirmTaskList">已核对，允许再次创建</el-button>
+    <el-alert v-if="uncertain" title="上次切帧创建结果待核验。" type="warning" :closable="false">
+      <p v-if="receiptError">{{receiptError}}</p>
+      <el-button v-if="pendingId" text :loading="checking" :disabled="busy" @click="checkReceipt">核对原请求</el-button>
+      <el-button v-if="pendingUpload&&receiptError" text :loading="busy" :disabled="checking" @click="submitPending(true)">重试同一请求</el-button>
     </el-alert>
     <el-table :data="rows" row-key="id" :empty-text="loading ? '正在读取切帧任务…' : '暂无切帧任务'">
       <el-table-column label="视频" min-width="160"><template #default="{row}">{{ row.video_name || '—' }}<small>{{ row.id }}</small></template></el-table-column>
@@ -217,7 +258,7 @@ async function stop(task: VideoTask) {
         <span class="wide">{{ duration ? `视频约 ${duration.toFixed(1)} 秒 · 预计生成 ${estimate} 张` : file ? '正在读取视频时长，部分格式无法预估' : '选择视频后计算预计帧数' }}</span>
         <el-alert v-if="createError" class="wide" :title="createError" type="error" :closable="false"/>
       </form>
-      <template #footer><el-button :disabled="busy" @click="showCreate = false">取消</el-button><el-button type="primary" native-type="submit" form="video-task-form" :disabled="uncertain" :loading="busy">创建任务</el-button></template>
+      <template #footer><el-button :disabled="busy" @click="showCreate = false">取消</el-button><el-button v-if="uncertain&&pendingId" :loading="checking" :disabled="busy" @click="checkReceipt">核对原请求</el-button><el-button type="primary" native-type="submit" form="video-task-form" :disabled="uncertain" :loading="busy">创建任务</el-button></template>
     </el-dialog>
     <el-dialog v-model="showDetail" title="切帧任务详情" width="min(620px, 94vw)">
       <dl v-if="detail" class="readonly-facts">
