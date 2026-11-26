@@ -35,6 +35,7 @@ export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/projects/:projectId/algorithms',name:'algorithms',component:()=>import('./Algorithms.vue')},
   {path:'/projects/:projectId/materials/negative-pool',name:'public-negative-pool',props:true,component:()=>import('./PublicNegativePool.vue')},
   {path:'/projects/:projectId/materials',name:'materials',component:()=>import('./Materials.vue')},
+  {path:'/projects/:projectId/materials/annotate',name:'formal-annotation',meta:{immersive:true},component:()=>import('./FormalAnnotations.vue')},
   {path:'/projects/:projectId/labels',name:'labels',component:()=>import('./Labels.vue')},
   {path:'/projects/:projectId/materials/upload',name:'material-upload',component:()=>import('./MaterialUpload.vue')},
   {path:'/projects/:projectId/materials/zip',name:'material-zip-import',component:()=>import('./ZipImport.vue')},

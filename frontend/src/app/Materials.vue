@@ -58,7 +58,10 @@ const context:MaterialContext={
         void router.replace({name:'materials',params:{projectId},query});
     },
   },
-  legacyMaterials(action,id){location.assign(original(action==='annotate'?'material-annotate':action==='upload'?'material-upload':'material-manage','数据集',id))},
+  legacyMaterials(action,id){
+    if(action==='annotate'){openAnnotation(id);return}
+    location.assign(original(action==='upload'?'material-upload':'material-manage','数据集',id));
+  },
   async renameMaterial(id,name){
     const result=await request<{ok:boolean;image:{id:string;filename:string}}>(
       `/api/v47/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(id)}`,
@@ -78,7 +81,11 @@ const context:MaterialContext={
   },
 };
 
+function openAnnotation(image?:string){
+  void router.push({name:'formal-annotation',params:{projectId},query:{...routeQuery(current),image}});
+}
 function locationFor(action:string,page:string){
+  if(action==='material-manual'){openAnnotation();return}
   if(page==='标签管理'){void router.push({name:'labels',params:{projectId}});return}
   location.assign(original(action,page))
 }

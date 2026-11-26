@@ -38,6 +38,10 @@ def test_paginated_material_api_and_unified_content_endpoint(client, seeded_proj
     assert content.status_code == 200
     assert content.content[:2] == b"\xff\xd8"
     assert len(row["content_sha256"]) == 64
+    matching = client.get(row["url"], params={"expected_sha256": row["content_sha256"]})
+    assert matching.status_code == 200 and matching.content == content.content
+    stale = client.get(row["url"], params={"expected_sha256": "0" * 64})
+    assert stale.status_code == 409
 
 
 def test_remote_material_content_is_backend_proxied_without_browser_redirect(

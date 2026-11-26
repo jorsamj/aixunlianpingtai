@@ -61,9 +61,17 @@ declare module '*static/modules/annotorious-editor.js' {
   interface EditorOptions extends AiEditorDomRefs {
     signal:AbortSignal;getBoxes():AiEditorBox[];getLabels():ReviewLabel[];getLabel():ReviewLabel|null;
     isActive():boolean;onCommit(boxes:AiEditorBox[]):void;onSelect(id:string|null):void;
-    onSave():void;onUndo():void;onRedo():void;onChooseLabel(label:ReviewLabel):void;
+    onSave():void;onNavigate?(delta:number):void;onUndo():void;onRedo():void;onChooseLabel(label:ReviewLabel):void;
     onError(error:unknown):void;onViewportChange(view:{scale:number}):void;
     onModeChange(mode:string):void;onVisibilityChange(visible:boolean):void;
   }
   export function createAnnotoriousEditor(options:EditorOptions):Promise<Kernel>;
+}
+
+declare module '*static/modules/annotation-workbench.js' {
+  import type {AiEditorBox} from '../types/ai-editor';
+  export function annotationSavePayload(input:{
+    annotation:{version:number};image:{content_sha256:string};boxes:AiEditorBox[];
+    reviewedLabelCodes:string[];confirmEmpty:boolean;
+  }): {boxes:AiEditorBox[];annotation_state:'annotated'|'confirmed_empty'|'unannotated';expected_version:number;source_content_sha256:string;reviewed_label_codes:string[]};
 }

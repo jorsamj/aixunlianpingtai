@@ -143,11 +143,13 @@ class MaterialCatalogService:
         # page-size=1 requests this never hydrates image JSON or a page of cards.
         return self.dependencies.material_store(project_id).processing_status_counts(storage_source_id)
 
-    def material_content_v61(self, project_id: str, image_id: str):
+    def material_content_v61(self, project_id: str, image_id: str, expected_sha256: Optional[str]=None):
         self.dependencies._authorize_business_file_project(project_id)
         try:
             manager = self.dependencies.storage_manager(project_id)
             row = manager.material(image_id)
+            if expected_sha256 is not None and row.get('content_sha256') != expected_sha256:
+                raise HTTPException(409, detail='原图代际已变化，请重新载入标注')
             resolved = manager.materialize(row)
             from platform_core.storage.http import StoredSourceFileResponse
             return StoredSourceFileResponse(resolved.path, manager=manager, material=row,

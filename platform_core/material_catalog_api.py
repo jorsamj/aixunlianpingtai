@@ -21,8 +21,8 @@ def create_material_reader_router(service: Callable[[], MaterialCatalogService])
         return service().material_status_counts_v61(project_id, storage_source_id)
 
     @router.get('/api/v61/projects/{project_id}/materials/{image_id}/content')
-    def material_content_v61(project_id: str, image_id: str):
-        return service().material_content_v61(project_id, image_id)
+    def material_content_v61(project_id: str, image_id: str, expected_sha256: Optional[str]=None):
+        return service().material_content_v61(project_id, image_id, expected_sha256)
 
 
     return router
