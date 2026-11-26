@@ -3,6 +3,7 @@ import {onBeforeUnmount,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import MaterialLibrary from '../views/MaterialLibrary.vue';
 import MaterialBatchGovernance from '../components/MaterialBatchGovernance.vue';
+import MaterialDatasets from '../components/MaterialDatasets.vue';
 import type {MaterialContext,MaterialFilters,MaterialHistory,MaterialMemory} from '../types/materials';
 import {request} from './http';
 import {useWorkspace} from './main';
@@ -30,6 +31,10 @@ let current:MaterialMemory={
 };
 const library=ref<InstanceType<typeof MaterialLibrary>>();
 const governance=ref(false),governanceScope=ref<{ids:string[];filters:MaterialFilters}>();
+const datasets=ref(false),datasetSelection=ref<string[]>([]);
+function openDatasets(){
+  datasetSelection.value=[...current.selectedItems];datasets.value=true;
+}
 
 function routeQuery(value:MaterialMemory):Record<string,string> {
   const query:Record<string,string>={};
@@ -125,6 +130,7 @@ const legacyActions=[
     <template #actions>
       <nav class="material-actions" aria-label="素材操作">
         <el-button tag="router-link" :to="{name:'public-negative-pool',params:{projectId}}">负样本池</el-button>
+        <el-button @click="openDatasets">数据集目录</el-button>
         <el-button v-for="[label,action,page] in legacyActions" :key="label" @click="locationFor(action,page)">{{label}}</el-button>
         <el-button tag="a" :href="original('material-manage')">原素材治理</el-button>
       </nav>
@@ -134,6 +140,8 @@ const legacyActions=[
   </MaterialLibrary>
   <MaterialBatchGovernance v-if="governanceScope" v-model:open="governance" :project-id="projectId" :actor-key="actorKey"
     :ids="governanceScope.ids" :filters="governanceScope.filters" @changed="library?.refresh()" />
+  <MaterialDatasets v-model:open="datasets" :project-id="projectId" :actor-key="actorKey"
+    :selected="datasetSelection" @changed="library?.refresh()" />
 </template>
 
 <style scoped>

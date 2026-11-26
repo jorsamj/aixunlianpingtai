@@ -1,5 +1,5 @@
 """HTTP adapters registered in original order; shared legacy selection types are injected."""
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 from fastapi import APIRouter, Query
 from .cleaning_management_service import CleaningManagementService
 from .cleaning_management_contracts import V47CleanConfirmReq, V47CleanReq, V47CleanRuntimeReq
@@ -32,8 +32,15 @@ def create_cleaning_management_router_2(service: Callable[[], CleaningManagement
         return service().v47_stop_clean_task(project_id, task_id)
 
     @router.get('/api/v47/projects/{project_id}/clean-tasks/{task_id}/result')
-    def v47_clean_result(project_id: str, task_id: str):
-        return service().v47_clean_result(project_id, task_id)
+    def v47_clean_result(project_id: str, task_id: str, page: Optional[int]=Query(default=None, ge=1),
+                         page_size: int=Query(default=20, ge=1, le=100),
+                         review_filter: Literal['all', 'suggested', 'failed']='all',
+                         issue_code: str=Query(default='', max_length=120),
+                         include_suggested_ids: bool=False):
+        return service().v47_clean_result(
+            project_id, task_id, page=page, page_size=page_size, review_filter=review_filter,
+            issue_code=issue_code, include_suggested_ids=include_suggested_ids,
+        )
 
     @router.get('/api/v47/projects/{project_id}/clean-tasks/{task_id}/annotation-audit')
     def v47_clean_annotation_audit(project_id: str, task_id: str, cursor: str='', limit: int=100, page: Optional[int]=Query(default=None, ge=1), page_size: int=Query(default=20, ge=1, le=100)):

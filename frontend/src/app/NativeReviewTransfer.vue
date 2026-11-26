@@ -4,7 +4,7 @@ import {request} from './http';
 import {readWorkspaceSession,workspaceActorKey} from './main';
 import {browseError,modelBrowseApi} from '../api/model-browse';
 import {transferReviewApi} from '../api/ai-review';
-import type {ReviewAddress,TransferPacket,TransferPreview,TransferRange,TransferReceipt} from '../api/ai-review';
+import type {ReviewAddress,TransferHistory,TransferPacket,TransferPreview,TransferRange,TransferReceipt} from '../api/ai-review';
 import type {AlgorithmSummary} from '../types/model-browse';
 
 const props=defineProps<{scope:ReviewAddress;actorKey:string;range?:TransferRange;reviewable:boolean}>();
@@ -20,11 +20,15 @@ const selectedAlgorithm=shallowRef<AlgorithmSummary>();
 const preview=shallowRef<{result:TransferPreview;packet:TransferPacket}>();
 const receipt=shallowRef<TransferReceipt>();
 const record=shallowRef<{packet:TransferPacket;action:'submit'|'undo'}>();
+const history=shallowRef<TransferHistory>(),historyId=ref(''),historyOpen=ref(false);
 const offset=ref('0'),error=ref(''),targetError=ref(''),busy=ref(false),writing=ref(false),storageInvalid=ref(false);
 const undoConfirmed=ref(false);
 const operationStatus=computed(()=>receipt.value?.status??(record.value?'unknown':''));
 const terminal=computed(()=>['completed','undone'].includes(operationStatus.value));
 const pendingUndo=computed(()=>operationStatus.value==='undo_pending');
+const settledPartial=computed(()=>receipt.value?.status==='partial'&&receipt.value.pending===0
+  &&receipt.value.processed===receipt.value.total);
+const receiptId=computed(()=>historyId.value||record.value?.packet.request_id||'');
 const controller=new AbortController();
 const coordinated=!!navigator.locks;
 const statusText:Record<string,string>={
@@ -34,7 +38,8 @@ const statusText:Record<string,string>={
 const storage=()=>coordinated?localStorage:sessionStorage;
 async function exclusive(action:()=>Promise<void>){
   if(!navigator.locks)return action();
-  return navigator.locks.request(key,{ifAvailable:true,signal:controller.signal},async lock=>{
+  return navigator.locks.request(key,{ifAvailable:true},async lock=>{
+    if(controller.signal.aborted)return;
     if(!lock)throw new Error('同一审核任务正在另一标签页执行转池，请稍后核验');
     return action();
   });
@@ -85,12 +90,13 @@ async function loadTargets(page=1){
   }catch(cause){if(!signal.aborted)targetError.value=browseError(cause)}
 }
 async function fetchReceipt(at='0'){
-  const p=record.value?.packet;
-  if(!p)return;
-  const value=await transferReviewApi.receipt(scope,p.request_id,at,controller.signal);
-  if(value.request_id!==p.request_id||value.target?.algorithm_id!==p.algorithm_id
+  const id=receiptId.value;
+  if(!id)return;
+  const p=historyId.value?undefined:record.value?.packet;
+  const value=await transferReviewApi.receipt(scope,id,at,controller.signal);
+  if(value.request_id!==id||!value.target||(p&&(value.target.algorithm_id!==p.algorithm_id
     ||value.target.confirm_absent!==p.confirm_absent
-    ||JSON.stringify(value.target.category_ids)!==JSON.stringify(p.category_ids)
+    ||JSON.stringify(value.target.category_ids)!==JSON.stringify(p.category_ids)))
     ||!Number.isSafeInteger(value.processed)||!Number.isSafeInteger(value.total)||value.total<1
     ||value.processed<0||value.processed>value.total||!Array.isArray(value.items)||value.items.length>100
     ||(value.next_cursor!==null&&(!/^\d+$/.test(value.next_cursor)||Number(value.next_cursor)<=Number(at))))
@@ -107,6 +113,35 @@ async function check(at='0'){
   catch(cause){if(!controller.signal.aborted)error.value=isMissing(cause)
     ?'当前没有持久回执，请保留原操作并核验。':browseError(cause)}
   finally{busy.value=false}
+}
+async function readHistory(cursor=''){
+  if(busy.value)return;
+  historyOpen.value=true;busy.value=true;error.value='';
+  try{
+    const result=await transferReviewApi.history(scope,cursor,controller.signal);
+    history.value=cursor&&history.value?{...result,items:[...history.value.items,...result.items]}:result;
+  }catch(cause){if(!controller.signal.aborted)error.value=browseError(cause)}
+  finally{busy.value=false}
+}
+async function inspectHistory(id:string){
+  if(busy.value)return;
+  historyId.value=id;receipt.value=undefined;undoConfirmed.value=false;
+  if(id||record.value)await check();
+}
+async function undoHistory(){
+  if(!historyId.value||busy.value||!undoConfirmed.value||!props.reviewable)return;
+  const id=historyId.value;
+  error.value='';busy.value=true;writing.value=true;emit('busy',true);
+  try{
+    await exclusive(async()=>{
+      await verifyActor();
+      const current=await fetchReceipt();
+      if(current?.request_id!==id||current.target.confirm_absent||!['completed','partial','undo_pending'].includes(current.status))return;
+      await transferReviewApi.undo(scope,id,controller.signal);
+      await fetchReceipt();
+    });
+  }catch(cause){if(!controller.signal.aborted){receipt.value=undefined;error.value=browseError(cause)}}
+  finally{if(!controller.signal.aborted)emit('settled');writing.value=false;busy.value=false;emit('busy',false)}
 }
 async function prepare(){
   if(busy.value||!props.range||!props.reviewable||!categoryIds.value.length||storageInvalid.value
@@ -182,7 +217,8 @@ async function finish(){
       readJournal();
       if(record.value?.packet.request_id!==id)return;
       const current=await fetchReceipt();
-      if(!current||!['completed','undone'].includes(current.status))return;
+      if(!current||!(['completed','undone'].includes(current.status)
+        ||(current.status==='partial'&&current.pending===0&&current.processed===current.total)))return;
       storage().removeItem(key);
       record.value=undefined;receipt.value=undefined;undoConfirmed.value=false;
     });
@@ -192,7 +228,8 @@ async function finish(){
 }
 watch(open,visible=>{
   if(!visible)return;
-  error.value='';preview.value=undefined;confirmed.value=false;undoConfirmed.value=false;syncJournal();
+  error.value='';preview.value=undefined;confirmed.value=false;undoConfirmed.value=false;
+  historyId.value='';historyOpen.value=false;history.value=undefined;syncJournal();
   if(record.value)void check();
   else if(props.range&&!storageInvalid.value)void loadTargets();
 });
@@ -203,13 +240,27 @@ onBeforeUnmount(()=>controller.abort());
  <el-dialog v-model="open" title="转入负样本池" width="min(720px, 94vw)" destroy-on-close
   :close-on-click-modal="false" :close-on-press-escape="!writing" :show-close="!writing">
   <el-alert v-if="error" type="error" :closable="false" :title="error" show-icon />
-  <section v-if="record" class="transfer-panel">
-   <p role="status">{{ statusText[operationStatus] || operationStatus }} · 操作 {{ record.packet.request_id }}</p>
+  <div class="transfer-actions">
+   <el-button link :disabled="busy" @click="historyOpen?historyOpen=false:readHistory()">转池操作历史</el-button>
+   <el-button v-if="historyId" link :disabled="busy" @click="inspectHistory('')">返回当前操作</el-button>
+  </div>
+  <div v-if="historyOpen" class="transfer-panel" aria-label="转池操作历史">
+   <p v-if="history && !history.items.length">此页没有当前操作者的操作。</p>
+   <div v-for="item in history?.items" :key="item.request_id" class="transfer-actions">
+    <el-button link :disabled="busy" @click="inspectHistory(item.request_id)">{{ item.request_id }}</el-button>
+    <span>{{ statusText[item.status] || item.status }} · {{ item.created_at || '时间未记录' }}</span>
+   </div>
+   <el-button v-if="history?.next_cursor" :disabled="busy" @click="readHistory(history.next_cursor)">加载更多操作</el-button>
+  </div>
+  <section v-if="receiptId" class="transfer-panel">
+   <p role="status">{{ statusText[operationStatus] || operationStatus || '结果待核验' }} · 操作 {{ receiptId }}</p>
    <template v-if="receipt">
     <p>已记录 {{ receipt.processed }} / {{ receipt.total }} 张</p>
+    <p v-if="receipt.failed!==undefined">已转池 {{ receipt.transferred }} · 失败 {{ receipt.failed }}（身份冲突 {{ receipt.permanent_conflicts }}） · 待处理 {{ receipt.pending }}</p>
+    <p v-if="receipt.target.confirm_absent">此操作可能已写入正式负样本证据，请通过正式冲突处理核验。</p>
     <el-table :data="receipt.items" max-height="260" empty-text="还没有逐图回执">
      <el-table-column label="素材" min-width="160"><template #default="{row}">{{ (row.filename || row.image_id).split(/[\\/]/).at(-1) }}</template></el-table-column>
-     <el-table-column label="结果" width="115"><template #default="{row}">{{ statusText[row.status] || row.status }}</template></el-table-column>
+     <el-table-column label="结果" width="115"><template #default="{row}">{{ row.permanent_conflict ? '身份冲突' : statusText[row.status] || row.status }}</template></el-table-column>
      <el-table-column label="原因" min-width="220"><template #default="{row}">{{ row.error ? browseError(new Error(row.error)) : '—' }}</template></el-table-column>
     </el-table>
     <div class="transfer-actions">
@@ -219,13 +270,16 @@ onBeforeUnmount(()=>controller.abort());
    </template>
    <div class="transfer-actions">
     <el-button :loading="busy && !writing" :disabled="writing" @click="check()">核验原回执</el-button>
-    <el-button v-if="!terminal && !pendingUndo && record.action==='submit'" :loading="writing" :disabled="busy"
+    <el-button v-if="!historyId && !terminal && !pendingUndo && record?.action==='submit'
+      && (!settledPartial || receipt?.failed!==receipt?.permanent_conflicts)" :loading="writing" :disabled="busy"
      @click="run('submit')">{{ operationStatus==='partial' ? '重试原操作的失败项' : '按原操作核验并续批' }}</el-button>
-    <el-button v-if="terminal" :disabled="busy" @click="finish()">关闭并清除本地记录</el-button>
+    <el-button v-if="!historyId && terminal" :disabled="busy" @click="finish()">关闭并清除本地记录</el-button>
+    <el-button v-if="!historyId && settledPartial" :disabled="busy" @click="finish()">结束本次部分完成，保留服务端回执</el-button>
    </div>
-   <div v-if="receipt && operationStatus!=='undone' && reviewable && !record.packet.confirm_absent" class="transfer-actions">
+   <div v-if="receipt && operationStatus!=='undone' && reviewable && !receipt.target.confirm_absent
+       && (!historyId || ['completed','partial','undo_pending'].includes(operationStatus))" class="transfer-actions">
     <el-checkbox v-model="undoConfirmed" :disabled="busy">确认按原回执核验撤销资格</el-checkbox>
-    <el-button :loading="writing" :disabled="busy || !undoConfirmed" @click="run('undo')">{{ pendingUndo ? '继续撤销' : '撤销转池' }}</el-button>
+    <el-button :loading="writing" :disabled="busy || !undoConfirmed" @click="historyId?undoHistory():run('undo')">{{ pendingUndo ? '继续撤销' : '撤销转池' }}</el-button>
    </div>
   </section>
   <section v-else-if="preview" class="transfer-panel">

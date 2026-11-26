@@ -205,9 +205,14 @@ class MaterialCatalogService:
         except (OSError, ValueError) as error:
             raise HTTPException(503, detail='缩略图暂不可用，可重试；原图和正式 GT 未修改') from error
 
-    def list_datasets(self, project_id: str):
+    def list_datasets(self, project_id: str, *, directory_only=False):
         self.dependencies.get_project(project_id)
         datasets = self.dependencies.ensure_default_datasets(project_id)
+        if directory_only:
+            return {'ok': True, 'project_id': project_id, 'items': [
+                {key: row[key] for key in ('id', 'name', 'description') if key in row}
+                for row in datasets
+            ]}
         images = self.dependencies.load_images(project_id)
         image_ids = [
             str(image.get("id") or "")

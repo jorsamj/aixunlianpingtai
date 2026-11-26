@@ -24,7 +24,14 @@ export interface CleaningAudit {
   class_balance?:{label:string; count?:number; share?:number}[];
   heatmap?:{cells?:number[]}; items?:CleaningItem[];
 }
-export interface CleaningResult { task:CleaningTask; result:{items:CleaningItem[]; annotation_audit?:CleaningAudit} }
+export interface CleaningResult {
+  task:CleaningTask;
+  result:{
+    items:CleaningItem[]; page:number; page_size:number; total:number;
+    scanned:number; suggested:number; failed:number; issue_options:[string,string][];
+    suggested_ids?:string[]; annotation_audit?:CleaningAudit;
+  };
+}
 
 export function cleaningApi(projectId:string, signal:AbortSignal) {
   const root='/api/v47/projects/'+encodeURIComponent(projectId);
@@ -37,7 +44,11 @@ export function cleaningApi(projectId:string, signal:AbortSignal) {
     list:()=>request<{items:CleaningTask[]}>(tasks,{signal}),
     preflight:(selection:object)=>post<CleaningRuntime>(root+'/clean-runtime/preflight',selection),
     create:(body:object)=>post<CleaningTask>(tasks,body),
-    result:(id:string)=>request<CleaningResult>(task(id)+'/result',{signal}),
+    result:(id:string,page:number,reviewFilter:string,issueCode:string,includeSuggestedIds:boolean)=>{
+      const query=new URLSearchParams({page:String(page),page_size:'20',review_filter:reviewFilter,issue_code:issueCode,
+        include_suggested_ids:String(includeSuggestedIds)});
+      return request<CleaningResult>(task(id)+'/result?'+query,{signal});
+    },
     audit:(id:string,page:number)=>request<CleaningAudit>(task(id)+'/annotation-audit?page='+page+'&page_size=20',{signal}),
     stop:(id:string)=>post<{ok:boolean}>(task(id)+'/stop'),
     retry:async(id:string)=>{
@@ -45,7 +56,8 @@ export function cleaningApi(projectId:string, signal:AbortSignal) {
       if(value.task_id!==id||value.project_id!==projectId||value.operation!=='CLEAN')throw new Error('清洗重试回执身份不一致');
       return value;
     },
-    confirm:(id:string,excluded:string[])=>post<{ok:boolean; processed_ids:string[]}>(
-      task(id)+'/confirm',{delete_ids:[],skip_image_ids:excluded}),
+    confirm:(id:string,excluded:string[],planId?:string,validateOnly=false)=>post<{ok:boolean; processed_ids:string[]; deletion_plan_id?:string}>(
+      task(id)+'/confirm',{delete_ids:[],skip_image_ids:excluded,...(planId?{deletion_plan_id:planId}:{}),
+        ...(validateOnly?{validate_only:true}:{})}),
   };
 }

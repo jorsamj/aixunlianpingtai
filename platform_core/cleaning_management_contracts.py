@@ -30,6 +30,8 @@ class V47CleanReq(BaseModel):
 class V47CleanConfirmReq(BaseModel):
     delete_ids: List[str]
     skip_image_ids: List[str] = Field(default_factory=list)
+    deletion_plan_id: str = Field(default='', pattern=r'^(?:[a-f0-9]{32})?$')
+    validate_only: bool = False
 
 
 class V47CleanRuntimeReq(BaseModel):

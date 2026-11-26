@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed,onBeforeUnmount,onMounted,reactive,ref,watch} from 'vue';
 import {useRoute} from 'vue-router';
-import {cleaningApi,type CleaningAudit,type CleaningItem,type CleaningResult,type CleaningRuntime,type CleaningTask} from '../api/cleaning';
+import {cleaningApi,type CleaningAudit,type CleaningResult,type CleaningRuntime,type CleaningTask} from '../api/cleaning';
 import {materialsApi,materialMediaUrl} from '../api/materials';
 import {browseError} from '../api/model-browse';
 import {legacyUrl} from './navigation';
@@ -17,6 +17,7 @@ const lifetime=new AbortController(), api=cleaningApi(projectId,lifetime.signal)
 const materials=materialsApi({projectId,get:request,signal:lifetime.signal,memory:{}});
 const rows=ref<CleaningTask[]>([]), selected=ref(String(route.query.task_id||'')), detail=ref<CleaningResult|null>(null);
 const failure=ref<MaterialBatchTask>();
+const removalReceipt=ref<MaterialBatchTask>();
 const task=computed(()=>rows.value.find(row=>row.id===selected.value));
 const form=ref(false), error=ref(''), notice=ref(''), busy=ref(false), refreshing=ref(false), checking=ref(false);
 const uncertain=ref(false), confirmationUnknown=ref('');
@@ -64,16 +65,9 @@ const legacy=legacyUrl(projectId,'自动标注及清洗','','','material-clean')
 const legacyTask=computed(()=>task.value&&detail.value?.task.id===task.value.id
   ?legacyUrl(projectId,'自动标注及清洗','','','material-clean-task')+'&task_id='+encodeURIComponent(task.value.id):'');
 const resultTab=ref('image'), resultFilter=ref('all'), issueFilter=ref(''), resultPage=ref(1);
-const audit=ref<CleaningAudit|null>(null), auditPage=ref(1);
+const audit=ref<CleaningAudit|null>(null), auditPage=ref(1),auditLoading=ref(false);
 const auditCells=computed(()=>audit.value?.heatmap?.cells||[]);
 const auditMaximum=computed(()=>Math.max(1,...auditCells.value));
-const failed=(row:CleaningItem)=>row.status?.toLowerCase()==='failed'||row.item_state==='failed';
-const reviewItems=computed(()=>detail.value?.result.items.filter(row=>failed(row)||row.issues?.length)||[]);
-const issueKey=(issue:{code?:string;name?:string})=>issue.code||issue.name||'';
-const issueOptions=computed(()=>new Map(reviewItems.value.flatMap(row=>(row.issues||[]).map(issue=>[issueKey(issue),issue.name||issueKey(issue)] as const))));
-const visibleItems=computed(()=>reviewItems.value.filter(row=>
-  (resultFilter.value==='all'||(resultFilter.value==='failed'?failed(row):row.suggest_delete))
-  &&(!issueFilter.value||row.issues?.some(issue=>issueKey(issue)===issueFilter.value))));
 const active=(row:CleaningTask)=>cleanTaskView(row).active;
 const reviewable=(row:CleaningTask)=>['awaiting_confirmation','done'].includes(row.status);
 const retriable=(row:CleaningTask)=>cleanTaskView(row).canRetry;
@@ -130,25 +124,27 @@ function selectPage(){
   filtered.value=false;
   imageIds.value=[...new Set([...imageIds.value,...pickerRows.value.map(row=>row.id)])];
 }
-async function loadResult(row:CleaningTask){
+async function loadResult(row:CleaningTask,page=resultPage.value){
   const generation=++resultGeneration;
+  const firstRead=detail.value?.task.id!==row.id;
   try{
-    const value=await api.result(row.id);
+    const value=await api.result(row.id,page,resultFilter.value,issueFilter.value,firstRead);
     if(generation!==resultGeneration||selected.value!==row.id)return;
     if(value.task.id!==row.id)throw new Error('清洗结果身份不一致');
-    if(detail.value?.task.id!==row.id)deleteSelection.value=value.result.items.filter(item=>item.suggest_delete).map(item=>item.image_id);
+    if(firstRead)deleteSelection.value=value.result.suggested_ids||[];
+    resultPage.value=value.result.page;
     detail.value=value;
-    audit.value=value.result.annotation_audit||null;
-    auditPage.value=1;
   }catch(cause){if(generation===resultGeneration)reportError(cause)}
 }
 async function loadAudit(page:number){
   if(!task.value)return;
   const id=task.value.id, generation=++auditGeneration;
+  auditLoading.value=true;
   try{
     const value=await api.audit(id,page);
     if(generation===auditGeneration&&selected.value===id){audit.value=value;auditPage.value=page}
   }catch(cause){if(generation===auditGeneration)reportError(cause)}
+  finally{if(generation===auditGeneration)auditLoading.value=false}
 }
 function selectTask(row:CleaningTask){
   ++resultGeneration;
@@ -156,8 +152,10 @@ function selectTask(row:CleaningTask){
   selected.value=row.id;
   detail.value=null;
   failure.value=undefined;
+  removalReceipt.value=undefined;
   deleteSelection.value=[];
   audit.value=null;
+  auditLoading.value=false;
   resultTab.value='image';
   resultFilter.value='all';
   issueFilter.value='';
@@ -275,6 +273,8 @@ async function submitDeletion(){
   try{
     await verifyActor();
     const link={planId:preview.plan_id,ids:[...deletion.state.targetIds]};
+    const validation=await api.confirm(row.id,link.ids,link.planId,true);
+    if(!validation.ok||validation.deletion_plan_id!==link.planId)throw new Error('清洗与删除预检身份不一致');
     localStorage.setItem(linkKey(row.id),JSON.stringify(link));
     linkedDelete.value=link;
     await deletion.confirm();
@@ -290,14 +290,12 @@ async function acknowledgeRemaining(){
   busy.value=true;error.value='';
   try{
     await verifyActor();
-    const receipt=await getMaterialBatch(projectId,link.planId,lifetime.signal);
-    if(receipt.task_id!==link.planId||receipt.project_id!==projectId||receipt.operation!=='DELETE_INDEX'||receipt.total!==link.ids.length)
-      throw Object.assign(new Error('删除任务身份或冻结数量不一致，请核验原计划'),{httpStatus:409});
+    await readRemovalReceipt(link);
     const pending={...link,confirmationPending:true};
     localStorage.setItem(linkKey(row.id),JSON.stringify(pending));linkedDelete.value=pending;
-    const result=await api.confirm(row.id,link.ids);
-    if(!result.ok||!Array.isArray(result.processed_ids))throw new Error('清洗确认回执无效');
-    notice.value='已确认其余 '+result.processed_ids.length+' 张，删除按原任务回执核算。';
+    const result=await api.confirm(row.id,link.ids,link.planId);
+    if(!result.ok||result.deletion_plan_id!==link.planId||!Array.isArray(result.processed_ids))throw new Error('清洗确认回执无效');
+    notice.value='已确认其余 '+result.processed_ids.length+' 张。已排除 '+link.ids.length+' 张，按原删除任务回执核算。';
   }catch(cause){
     const status=(cause as {httpStatus?:number})?.httpStatus;
     if(status&&status>=400&&status<500&&linkedDelete.value?.confirmationPending){
@@ -306,6 +304,13 @@ async function acknowledgeRemaining(){
     reportError(cause);
   }finally{await refresh();busy.value=false}
 }
+async function readRemovalReceipt(link=linkedDelete.value){
+  if(!link)return;
+  const receipt=await getMaterialBatch(projectId,link.planId,lifetime.signal);
+  if(receipt.task_id!==link.planId||receipt.project_id!==projectId||receipt.operation!=='DELETE_INDEX'||receipt.total!==link.ids.length)
+    throw Object.assign(new Error('删除任务身份或冻结数量不一致，请核验原计划'),{httpStatus:409});
+  if(linkedDelete.value?.planId===link.planId)removalReceipt.value=receipt;
+}
 function resolveCreate(){
   if(!window.confirm('请先核对清洗任务列表。确认后才能开始创建另一项任务。'))return;
   try{sessionStorage.removeItem(createKey);uncertain.value=false}
@@ -313,7 +318,8 @@ function resolveCreate(){
 }
 watch([form,scope,annotation,labelCodes,imageIds,filtered],()=>void preflight());
 watch([scope,annotation],()=>{if(scope.value==='selected')void loadPicker()});
-watch([resultFilter,issueFilter],()=>{resultPage.value=1});
+watch([resultFilter,issueFilter],()=>{if(task.value&&detail.value?.task.id===task.value.id)void loadResult(task.value,1)});
+watch(resultTab,value=>{if(value==='annotation'&&!audit.value)void loadAudit(1)});
 onMounted(()=>{void refresh();void deletion.recover()});
 onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
 </script>
@@ -354,12 +360,12 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
       <template v-if="detail?.task.id===task.id">
         <el-tabs v-model="resultTab">
           <el-tab-pane label="图片质量" name="image">
-            <p>扫描 {{detail.result.items.length}} 张 · 建议剔除 {{reviewItems.filter(row=>row.suggest_delete).length}} 张 · 扫描失败 {{reviewItems.filter(failed).length}} 张</p>
+            <p>扫描 {{detail.result.scanned}} 张 · 建议剔除 {{detail.result.suggested}} 张 · 扫描失败 {{detail.result.failed}} 张</p>
             <div class="cleaning-controls">
               <el-select v-model="resultFilter" aria-label="复核范围"><el-option label="全部复核项" value="all"/><el-option label="建议剔除" value="suggested"/><el-option label="扫描失败" value="failed"/></el-select>
-              <el-select v-model="issueFilter" aria-label="问题类型"><el-option label="全部问题" value=""/><el-option v-for="[key,label] in issueOptions" :key="key" :label="label" :value="key"/></el-select>
+              <el-select v-model="issueFilter" aria-label="问题类型"><el-option label="全部问题" value=""/><el-option v-for="[key,label] in detail.result.issue_options" :key="key" :label="label" :value="key"/></el-select>
             </div>
-            <el-table :data="visibleItems.slice((resultPage-1)*20,resultPage*20)" empty-text="暂无需复核图片">
+            <el-table :data="detail.result.items" empty-text="暂无需复核图片">
               <el-table-column v-if="task.status==='awaiting_confirmation'" label="选为剔除" width="95">
                 <template #default="{row}"><el-checkbox
                   :model-value="deleteSelection.includes(row.image_id)" :disabled="busy || !!linkedDelete || linkInvalid"
@@ -370,7 +376,8 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
               <el-table-column label="问题"><template #default="{row}">{{row.issues?.map((issue: {name?:string;code?:string})=>issue.name||issue.code).join('、')||row.item_error}}</template></el-table-column>
               <el-table-column label="建议剔除"><template #default="{row}">{{row.suggest_delete?'是':'否'}}</template></el-table-column>
             </el-table>
-            <el-pagination v-if="visibleItems.length>20" v-model:current-page="resultPage" :page-size="20" :total="visibleItems.length" layout="prev, pager, next" />
+            <el-pagination v-if="detail.result.total>detail.result.page_size" :current-page="resultPage" :page-size="detail.result.page_size" :total="detail.result.total" layout="prev, pager, next"
+              @current-change="(page:number)=>task&&loadResult(task,page)" />
           </el-tab-pane>
           <el-tab-pane label="标注质量" name="annotation">
             <template v-if="audit?.enabled">
@@ -387,7 +394,9 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
               </el-table>
               <el-pagination v-if="(audit.review_images||0)>20" :current-page="auditPage" :page-size="20" :total="audit.review_images||0" layout="prev, pager, next" @current-change="loadAudit" />
             </template>
-            <p v-else>本次结果没有标注质量审计。</p>
+            <p v-else-if="auditLoading" role="status">正在读取标注审计。</p>
+            <p v-else-if="audit">本次结果没有标注质量审计。</p>
+            <el-button v-else @click="loadAudit(1)">读取标注审计</el-button>
           </el-tab-pane>
         </el-tabs>
         <template v-if="task.status==='awaiting_confirmation'">
@@ -399,6 +408,10 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
         <template v-if="linkedDelete">
           <p>删除任务 {{linkedDelete.planId}} · {{deletion.state.task?.task_id===linkedDelete.planId ? deletion.statusLabel.value : '待核对'}}</p>
           <p v-if="deletion.state.task?.task_id===linkedDelete.planId">{{deletion.state.notice}}</p>
+          <p v-if="removalReceipt?.task_id===linkedDelete.planId" role="status">
+            删除状态 {{removalReceipt.status}} · 已删除 {{removalReceipt.logical_removed ?? '待核对'}} · 失败 {{removalReceipt.failed ?? '待核对'}}
+          </p>
+          <el-button :disabled="busy" @click="readRemovalReceipt().catch(reportError)">核验删除回执</el-button>
           <el-button v-if="deletion.state.pendingPlanId===linkedDelete.planId" :disabled="busy" @click="deletion.openTask()">查看删除任务</el-button>
           <el-button v-if="task.status==='awaiting_confirmation'" :disabled="busy || linkedDelete.confirmationPending"
             @click="acknowledgeRemaining">核对删除任务并确认其余素材</el-button>

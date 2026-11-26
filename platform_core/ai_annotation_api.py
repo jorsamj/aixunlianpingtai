@@ -121,21 +121,25 @@ def create_ai_annotation_router_3(service: Callable[[], AiAnnotationService], An
         return service().recover_bulk_formal_execution(project_id, task_id, request_id, request)
 
     @router.get('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection/{selection_id}/candidates')
-    def get_annotation_review_selection_candidates(project_id: str, task_id: str, selection_id: str, request: Request, cursor: int=0, limit: int=100):
+    def get_annotation_review_selection_candidates(project_id: str, task_id: str, selection_id: str, request: Request, cursor: int=0, limit: int=100, ambiguity_revision: int | None=Query(default=None, ge=0)):
         """Bounded read of the already frozen selection; no second cache or GT write."""
-        return service().get_annotation_review_selection_candidates(project_id, task_id, selection_id, request, cursor, limit)
+        return service().get_annotation_review_selection_candidates(project_id, task_id, selection_id, request, cursor, limit, ambiguity_revision=ambiguity_revision)
 
     @router.post('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer')
     def transfer_annotation_candidates(project_id: str, task_id: str, payload: AnnotationTransferReq, request: Request):
         return service().transfer_annotation_candidates(project_id, task_id, payload, request)
 
+    @router.get('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfers')
+    def list_annotation_transfers(project_id: str, task_id: str, request: Request, cursor: str='', limit: int=Query(default=25, ge=1, le=50)):
+        return service().list_annotation_transfers(project_id, task_id, request, cursor, limit)
+
     @router.get('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}')
-    def get_annotation_transfer(project_id: str, task_id: str, request_id: str, offset: int=Query(default=0, ge=0, le=50000), limit: int=Query(default=100, ge=1, le=200)):
-        return service().get_annotation_transfer(project_id, task_id, request_id, offset, limit)
+    def get_annotation_transfer(project_id: str, task_id: str, request_id: str, request: Request, offset: int=Query(default=0, ge=0, le=50000), limit: int=Query(default=100, ge=1, le=200), own: bool=False):
+        return service().get_annotation_transfer(project_id, task_id, request_id, offset, limit, request=request if own else None)
 
     @router.post('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}/undo')
-    def undo_annotation_transfer(project_id: str, task_id: str, request_id: str, request: Request):
-        return service().undo_annotation_transfer(project_id, task_id, request_id, request)
+    def undo_annotation_transfer(project_id: str, task_id: str, request_id: str, request: Request, own: bool=False):
+        return service().undo_annotation_transfer(project_id, task_id, request_id, request, own=own)
 
     @router.post('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer-preview')
     def preview_annotation_transfer(project_id: str, task_id: str, payload: AnnotationTransferReq, request: Request):

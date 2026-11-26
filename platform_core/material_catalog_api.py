@@ -32,8 +32,8 @@ def create_dataset_directory_router(service: Callable[[], MaterialCatalogService
     router = APIRouter()
 
     @router.get('/api/projects/{project_id}/datasets')
-    def list_datasets(project_id: str):
-        return service().list_datasets(project_id)
+    def list_datasets(project_id: str, directory_only: bool=False):
+        return service().list_datasets(project_id, directory_only=directory_only)
 
     @router.post('/api/projects/{project_id}/datasets')
     def create_dataset(project_id: str, payload: DatasetReq):

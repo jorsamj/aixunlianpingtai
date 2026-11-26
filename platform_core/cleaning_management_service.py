@@ -7,9 +7,10 @@ from .cleaning_management_contracts import V47CleanConfirmReq, V47CleanReq, V47C
 
 import json
 import sqlite3
+from contextlib import closing
 from platform_core.task_node_assignments import CentralTaskAllocator, NodeAssignmentError
 from platform_core.task_runtime import TaskKind, TaskStatus
-from platform_core.material_batches import SELECTION_REF as MATERIAL_BATCH_SELECTION_REF
+from platform_core.material_batches import SELECTION_REF as MATERIAL_BATCH_SELECTION_REF, _material_integrity_plan_ref, _json_metadata
 
 @dataclass(frozen=True)
 class CleaningManagementDependencies:
@@ -80,11 +81,18 @@ class CleaningManagementService:
         self.dependencies.shared_task_repository().request_cancel(task_id)
         return {'ok': True}
 
-    def v47_clean_result(self, project_id: str, task_id: str):
+    def v47_clean_result(
+        self, project_id: str, task_id: str, *, page: Optional[int] = None,
+        page_size: int = 20, review_filter: str = 'all', issue_code: str = '',
+        include_suggested_ids: bool = False,
+    ):
         task = self.dependencies._v33_get_task(project_id, 'clean_tasks', task_id)
         if not task:
             raise HTTPException(status_code=404, detail='清洗任务不存在')
-        return {'task': task, 'result': self._v47_durable_clean_results(task_id, project_id)}
+        return {'task': task, 'result': self._v47_durable_clean_results(
+            task_id, project_id, page=page, page_size=page_size, review_filter=review_filter,
+            issue_code=issue_code, include_suggested_ids=include_suggested_ids,
+        )}
 
     def v47_clean_annotation_audit(self,
         project_id: str,
@@ -107,17 +115,27 @@ class CleaningManagementService:
         task = self.dependencies._v33_get_task(project_id, 'clean_tasks', task_id)
         if not task:
             raise HTTPException(status_code=404, detail='清洗任务不存在')
+        if payload.validate_only and (not payload.deletion_plan_id or task.get('status') != 'awaiting_confirmation'):
+            raise HTTPException(409, detail='清洗任务当前不能核验删除计划')
         # Never delete or mark processed based on the previous contents of a
         # storage-source object. Validate the entire frozen selection first.
         if payload.delete_ids:
             self.dependencies._require_material_delete_preview(project_id)
         skipped={str(value) for value in payload.skip_image_ids}
-        allowed = self._v47_validate_clean_confirmation(project_id, task_id, skip_image_ids=skipped) if skipped else self._v47_validate_clean_confirmation(project_id,task_id)
+        if payload.deletion_plan_id:
+            if not skipped or payload.delete_ids:
+                raise HTTPException(422, detail='清洗确认须提供原删除计划的排除范围')
+            hashes = self._linked_deletion_hashes(project_id, payload.deletion_plan_id, skipped, preview=payload.validate_only)
+            allowed = self._v47_validate_clean_confirmation(project_id, task_id, skip_image_ids=skipped, skipped_source_hashes=hashes)
+        else:
+            allowed = self._v47_validate_clean_confirmation(project_id, task_id, skip_image_ids=skipped) if skipped else self._v47_validate_clean_confirmation(project_id,task_id)
         requested = {str(x) for x in payload.delete_ids}
         if requested - allowed:
             raise HTTPException(status_code=409, detail='删除范围不属于本次有效清洗结果')
         if skipped - allowed:
             raise HTTPException(status_code=409,detail='跳过范围不属于本次有效清洗结果')
+        if payload.validate_only:
+            return {'ok': True, 'deletion_plan_id': payload.deletion_plan_id, 'processed_ids': []}
         deleted = 0
         deleted_images = []
         failed_items = []
@@ -158,24 +176,75 @@ class CleaningManagementService:
             'confirmed_at': self.dependencies.now_iso(), 'deleted': deleted, 'deleted_ids': deleted_ids,
             'delete_failures': len(failed_items), 'processed_ids': processed_ids,
             'skipped_image_ids': sorted(skipped),
+            **({'deletion_plan_id': payload.deletion_plan_id} if payload.deletion_plan_id else {}),
         })
-        return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids}
+        return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids,
+                **({'deletion_plan_id': payload.deletion_plan_id} if payload.deletion_plan_id else {})}
 
     def _v47_durable_clean_results(self,
         task_id: str,
         project_id: Optional[str] = None,
+        *,
+        page: Optional[int] = None,
+        page_size: int = 20,
+        review_filter: str = 'all',
+        issue_code: str = '',
+        include_suggested_ids: bool = False,
     ) -> Dict[str, Any]:
         artifacts = self.dependencies.shared_task_artifacts()
         path = artifacts.artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+        projection: Dict[str, Any] = {}
+        if page is not None:
+            projection.update(page=1, page_size=page_size, total=0, scanned=0, suggested=0,
+                              failed=0, issue_options=[])
+            if include_suggested_ids:
+                projection['suggested_ids'] = []
         if not path.is_file():
-            return {'items': []}
+            return {'items': [], **projection}
         with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+            database.execute('BEGIN')
             if database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clean_results'").fetchone() is None:
-                return {'items': []}
-            rows = database.execute(
-                'SELECT r.result_json,s.state,s.error FROM clean_results r '
-                'JOIN selection s ON s.image_id=r.image_id ORDER BY r.image_id'
-            ).fetchall()
+                return {'items': [], **projection}
+            source = ' FROM clean_results r JOIN selection s ON s.image_id=r.image_id'
+            columns = 'SELECT r.result_json,s.state,s.error'
+            if page is None:
+                rows = database.execute(columns + source + ' ORDER BY r.image_id').fetchall()
+            else:
+                failed = "(s.state='failed' OR LOWER(COALESCE(json_extract(r.result_json,'$.status'),''))='failed')"
+                suggested = "COALESCE(json_extract(r.result_json,'$.suggest_delete'),0)=1"
+                issues = "json_each(r.result_json,'$.issues') j"
+                key = "COALESCE(NULLIF(json_extract(j.value,'$.code'),''),NULLIF(json_extract(j.value,'$.name'),''),'')"
+                name = f"COALESCE(NULLIF(json_extract(j.value,'$.name'),''),{key})"
+                reviewable = f"({failed} OR json_array_length(r.result_json,'$.issues')>0)"
+                where = ' WHERE ' + reviewable
+                if review_filter == 'suggested':
+                    where += ' AND ' + suggested
+                elif review_filter == 'failed':
+                    where += ' AND ' + failed
+                parameters = ()
+                if issue_code:
+                    where += f' AND EXISTS (SELECT 1 FROM {issues} WHERE {key}=?)'
+                    parameters = (issue_code,)
+                total = database.execute('SELECT COUNT(*)' + source + where, parameters).fetchone()[0]
+                page = min(page, max(1, (total + page_size - 1) // page_size))
+                rows = database.execute(
+                    columns + source + where + ' ORDER BY r.image_id LIMIT ? OFFSET ?',
+                    (*parameters, page_size, (page - 1) * page_size),
+                ).fetchall()
+                scanned, suggested_count, failed_count = database.execute(
+                    f'SELECT COUNT(*), COALESCE(SUM({suggested}),0), COALESCE(SUM({failed}),0)' + source
+                ).fetchone()
+                options = database.execute(
+                    f'SELECT {key}, MIN({name})' + source + f', {issues} WHERE {key}<>\'\' GROUP BY 1 ORDER BY 1'
+                ).fetchall()
+                projection.update(page=page, total=total, scanned=scanned, suggested=suggested_count,
+                                  failed=failed_count, issue_options=options)
+                if include_suggested_ids:
+                    projection['suggested_ids'] = [
+                        row[0] for row in database.execute(
+                            'SELECT r.image_id' + source + ' WHERE ' + suggested + ' ORDER BY r.image_id'
+                        )
+                    ]
         items = [
             {**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]}
             for row in rows
@@ -208,10 +277,9 @@ class CleaningManagementService:
                     'box_count': int(material.get('box_count') or 0),
                     'labels': list(material.get('labels') or []),
                 })
-        return {
-            'items': items,
-            'annotation_audit': self._v47_durable_annotation_audit(task_id, project_id),
-        }
+        if page is None:
+            projection['annotation_audit'] = self._v47_durable_annotation_audit(task_id, project_id)
+        return {'items': items, **projection}
 
     def _v47_durable_annotation_audit(self,
         task_id: str,
@@ -271,7 +339,38 @@ class CleaningManagementService:
                 ).fetchall()
             ]
 
-    def _v47_validate_clean_confirmation(self, project_id: str, task_id: str, *, skip_image_ids=()) -> set[str]:
+    def _linked_deletion_hashes(self, project_id, plan_id, skipped, *, preview=False):
+        repository = self.dependencies.shared_task_repository()
+        artifacts = self.dependencies.shared_task_artifacts()
+        if preview:
+            path = artifacts.artifact_path(plan_id, _material_integrity_plan_ref(plan_id))
+        else:
+            deletion = repository.get(plan_id)
+            if deletion is None or deletion.project_id != project_id or deletion.kind is not TaskKind.MATERIAL_BATCH:
+                raise HTTPException(409, detail='删除任务尚未登记或与当前项目不一致')
+            body = artifacts.read_json(plan_id, deletion.payload_ref, default={}) or {}
+            if body.get('operation') != 'DELETE_INDEX' or (body.get('options') or {}).get('material_integrity_plan_id') != plan_id:
+                raise HTTPException(409, detail='删除任务未绑定原删除计划')
+            path = artifacts.artifact_path(plan_id, MATERIAL_BATCH_SELECTION_REF)
+        try:
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as database:
+                if preview:
+                    metadata = _json_metadata(database)
+                    if (metadata.get('project_id') != project_id or metadata.get('plan_id') != plan_id
+                            or metadata.get('general_deletion') is not True):
+                        raise HTTPException(409, detail='删除预检计划与当前项目不一致')
+                    rows = database.execute("SELECT image_id,content_sha256 FROM plan_items WHERE action='DELETE'")
+                else:
+                    rows = database.execute('SELECT s.image_id, p.content_sha256 FROM selection s '
+                                            'LEFT JOIN integrity_plan_items p ON p.image_id=s.image_id')
+                hashes = {str(image_id): str(digest or '').lower() for image_id, digest in rows}
+        except sqlite3.Error as error:
+            raise HTTPException(409, detail='原删除计划缺少冻结证据') from error
+        if hashes.keys() != skipped or not all(hashes.values()):
+            raise HTTPException(409, detail='排除项与原删除冻结范围或素材身份不一致')
+        return hashes
+
+    def _v47_validate_clean_confirmation(self, project_id: str, task_id: str, *, skip_image_ids=(), skipped_source_hashes=None) -> set[str]:
         """Fail closed before any destructive or processed-status confirmation."""
         from platform_core.cleaning_batches import clean_result_source_sha256
 
@@ -315,6 +414,9 @@ class CleaningManagementService:
                         source_hash = clean_result_source_sha256(result)
                     except (TypeError, ValueError, AttributeError):
                         source_hash = ''
+                    if (skipped_source_hashes is not None and str(image_id) in skip_image_ids
+                            and source_hash != skipped_source_hashes.get(str(image_id))):
+                        raise HTTPException(409, detail='删除计划与清洗结果的素材代际不一致')
                     if not source_hash or (str(image_id) not in skip_image_ids and source_hash != current.get(str(image_id), '')):
                         raise HTTPException(
                             status_code=409,

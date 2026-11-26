@@ -1182,6 +1182,13 @@ class CandidateStore:
         with closing(self._connect()) as db:
             return {str(row['image_id']):str(row['status']) for row in db.execute('SELECT image_id,status FROM review_transfer_receipts WHERE operation_id=?',(str(operation_id),))}
 
+    def permanent_transfer_conflicts(self, operation_id):
+        self._ready()
+        with closing(self._connect()) as db:
+            return {str(row['image_id']) for row in db.execute(
+                "SELECT image_id FROM review_transfer_receipts WHERE operation_id=? AND status='failed' "
+                "AND json_extract(receipt_json, '$.permanent_conflict')=1", (str(operation_id),))}
+
     def transfer_receipt_counts(self, operation_id):
         self._ready()
         with closing(self._connect()) as db:

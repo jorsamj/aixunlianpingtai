@@ -265,7 +265,7 @@ const snapshot=computed<AiAnnotationCreateSnapshot>(()=>({
   providerName:selectedModel.value?.provider_adapter||selectedModel.value?.provider_type,
   inferenceProtocol:selectedModel.value?(dedicated.value?'wevisone_detection':'generic_prompt'):'unknown',
   selectedCount:batch.value?undefined:count.value,confirmedCount:scopeCount.value,frozenCount:frozen.value?.count,
-  excludedCount:excluded.value.size,labelCodes:configured.labels,threshold:configured.threshold,referenceCount:referenceIds.value.size,
+  excludedCount:excluded.value.size,labelCodes:configured.labels,threshold:configured.threshold,referenceCount:dedicated.value?0:referenceIds.value.size,
   busy:submitting.value||recovering.value,loading:scopeBusy.value||!!reads.busy.inputs,confirmationReady:!!confirmed.value,
   error:error.value||journalProblem.value||scopeError.value||reads.errors.inputs||reads.errors.summary||reads.errors.preview,
   pending:pending.value?{requestId:pending.value,message:'请核对原请求回执。'}:null,
@@ -322,6 +322,7 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
             @click="toggleReference(item.id)">{{ referenceIds.has(item.id)?'移除参考':'设为参考' }}</el-button>
         </article>
       </div>
+      <p v-if="!dedicated && referenceIds.size" role="status">参考素材只记录在任务配置中，当前模型接口不会读取这些图片。</p>
       <div v-if="page" class="create-actions"><el-button :disabled="configLocked||scopeBusy||page.page<=1" @click="materials.load(page.page-1)">上一页</el-button>
         <span>第 {{ page.page }} 页 / {{ page.total_pages }} 页</span>
         <el-button :disabled="configLocked||scopeBusy||!page.has_next" @click="materials.load(page.page+1)">下一页</el-button></div>

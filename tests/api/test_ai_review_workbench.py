@@ -117,6 +117,13 @@ def test_transfer_gt_conflict_and_stale_final_count_fail_closed(client, review_t
     response=client.post(base+'/negative-transfer',json={'request_id':'transfer-test-003','image_ids':[image['id']],'category_ids':[category['id']]})
     assert response.status_code==200,response.text
     assert response.json()['conflicts']==1
+    history = client.get(base+'/negative-transfers')
+    assert history.status_code == 200, history.text
+    assert [row['request_id'] for row in history.json()['items']] == ['transfer-test-003']
+    receipt = client.get(base+'/negative-transfer/transfer-test-003?own=true').json()
+    assert receipt['status'] == 'partial' and receipt['pending'] == 0
+    assert receipt['permanent_conflicts'] == receipt['failed'] == 1
+    assert receipt['items'][0]['permanent_conflict'] is True
     assert host.read_annotation(project,image['id'])['boxes']
     stale=client.post(base+'/decisions',json={'decisions':[],'accept_unmentioned':True,'reject_unmentioned':False,'expected_remaining':99})
     assert stale.status_code==409,stale.text

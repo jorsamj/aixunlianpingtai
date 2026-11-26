@@ -6,7 +6,7 @@ def boxes(values,limit):
     return [fields(value,('class_id','label','class_name','x1','y1','x2','y2','source','confidence')) for value in (values or [])[:limit] if isinstance(value,dict)]
 
 def material_display(project_id,row):
-    result=fields(row,('id','width','height','size_bytes','storage_source_id','storage_type','source_type','source_batch_id','import_batch_id','processing_status','quality_status','source_available','content_sha256','created_at','annotation_state','annotation_status','annotation_issue_type','box_count','annotated'))
+    result=fields(row,('id','width','height','size_bytes','storage_source_id','storage_type','source_type','source_batch_id','import_batch_id','processing_status','quality_status','source_available','content_sha256','created_at','annotation_state','annotation_status','annotation_issue_type','box_count','annotated','dataset_id'))
     result['filename']=filename(row.get('filename') or row.get('id'))
     result['storage_source_id']=result.get('storage_source_id') or 'default_local'
     result['annotation_preview']=boxes(row.get('annotation_preview'),32)

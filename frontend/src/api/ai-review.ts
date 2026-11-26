@@ -48,8 +48,10 @@ export interface TransferPreview {
 export interface TransferReceipt {
   request_id:string;status:string;total:number;processed:number;next_cursor:string|null;
   target:{algorithm_id:string;category_ids:string[];confirm_absent:boolean};
-  items:{image_id:string;status:string;error?:string;filename?:string}[];
+  pending?:number;failed?:number;transferred?:number;permanent_conflicts?:number;
+  items:{image_id:string;status:string;error?:string;filename?:string;permanent_conflict?:boolean}[];
 }
+export interface TransferHistory {items:{request_id:string;status:string;created_at?:string}[];next_cursor:string|null}
 export const transferReviewApi={
   preview:(scope:ReviewAddress,packet:TransferPacket,signal:AbortSignal)=>
     request<TransferPreview>(root(scope)+'/negative-transfer-preview',{method:'POST',body:JSON.stringify(packet),signal}),
@@ -57,9 +59,11 @@ export const transferReviewApi={
     request<{request_id:string;status:string;succeeded:number;failed:number;total:number}>(
       root(scope)+'/negative-transfer',{method:'POST',body:JSON.stringify(packet),signal}),
   receipt:(scope:ReviewAddress,id:string,offset:string,signal:AbortSignal)=>
-    request<TransferReceipt>(root(scope)+'/negative-transfer/'+enc(id)+'?'+new URLSearchParams({offset,limit:'100'}),{signal}),
+    request<TransferReceipt>(root(scope)+'/negative-transfer/'+enc(id)+'?'+new URLSearchParams({offset,limit:'100',own:'true'}),{signal}),
+  history:(scope:ReviewAddress,cursor:string,signal:AbortSignal)=>
+    request<TransferHistory>(root(scope)+'/negative-transfers?'+new URLSearchParams({cursor,limit:'25'}),{signal}),
   undo:(scope:ReviewAddress,id:string,signal:AbortSignal)=>
-    request<{status:string}>(root(scope)+'/negative-transfer/'+enc(id)+'/undo',{method:'POST',signal}),
+    request<{status:string}>(root(scope)+'/negative-transfer/'+enc(id)+'/undo?own=true',{method:'POST',signal}),
 };
 
 export async function getReviewTask(scope:ReviewAddress, signal:AbortSignal) {
@@ -89,6 +93,12 @@ export interface AmbiguityDraft {
 export function saveAmbiguityDrafts(scope:ReviewAddress,items:AmbiguityDraft[],signal:AbortSignal){
   return request<{items:{image_id:string;ok:boolean;revision?:number;error?:string|{message?:string}}[];total:number}>(
     root(scope)+'/candidates/drafts-batch',{method:'POST',body:JSON.stringify({items}),signal});
+}
+export function readAmbiguitySelection(scope:ReviewAddress,id:string,cursor:string,signal:AbortSignal,revision?:number){
+  const query=new URLSearchParams({cursor,limit:'100'});
+  if(revision!==undefined)query.set('ambiguity_revision',String(revision));
+  return request<{items:ReviewCandidate[];total:number;review_revision:number;selection_revision:number;next_cursor:string|null}>(
+    root(scope)+'/review-selection/'+enc(id)+'/candidates?'+query,{signal});
 }
 export async function getReviewCandidateDetail(scope:ReviewAddress, id:string, signal:AbortSignal) {
   const result=await request<{item:ReviewCandidate;review_revision:number}>(root(scope)+'/candidates/'+enc(id),{signal});

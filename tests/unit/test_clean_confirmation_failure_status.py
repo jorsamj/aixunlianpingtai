@@ -1,5 +1,9 @@
 """A failed delete must never turn a bad image into 'processed'."""
+import sqlite3
+from contextlib import closing
 from platform_core.cleaning_management_service import CleaningManagementService
+from platform_core.task_runtime import TaskKind
+from fastapi import HTTPException
 
 from types import SimpleNamespace
 
@@ -43,7 +47,6 @@ def test_clean_confirm_does_not_mark_failed_deletions_processed(
 
     # Legacy synchronous deletion was retired before this workbench change.
     # It must refuse before any mocked deletion, material patch or receipt write.
-    from fastapi import HTTPException
     with pytest.raises(HTTPException) as failure:
         app.v47_confirm_clean(
             "project-1", task_id,
@@ -53,3 +56,25 @@ def test_clean_confirm_does_not_mark_failed_deletions_processed(
     assert failure.value.detail["code"] == "MATERIAL_DELETE_PREVIEW_REQUIRED"
     assert patches == []
     assert written == {}
+
+
+def test_clean_link_checks_exact_registered_delete_manifest_membership(tmp_path):
+    manifest = tmp_path / 'selection.sqlite3'
+    digest = 'a' * 64
+    with closing(sqlite3.connect(manifest)) as database, database:
+        database.executescript('CREATE TABLE selection(image_id TEXT); '
+                               'CREATE TABLE integrity_plan_items(image_id TEXT,content_sha256 TEXT);')
+        database.execute('INSERT INTO selection VALUES (?)', ('selected-image',))
+        database.execute('INSERT INTO integrity_plan_items VALUES (?, ?)', ('selected-image', digest))
+    artifacts = SimpleNamespace(artifact_path=lambda *_: manifest, read_json=lambda *_args, **_kw: {
+        'operation': 'DELETE_INDEX', 'options': {'material_integrity_plan_id': 'plan'},
+    })
+    repository = SimpleNamespace(get=lambda _id: SimpleNamespace(
+        kind=TaskKind.MATERIAL_BATCH, project_id='p', payload_ref='request.json',
+    ))
+    service = CleaningManagementService(SimpleNamespace(
+        shared_task_artifacts=lambda: artifacts, shared_task_repository=lambda: repository,
+    ))
+    assert service._linked_deletion_hashes('p', 'plan', {'selected-image'}) == {'selected-image': digest}
+    with pytest.raises(HTTPException, match='排除项与原删除冻结范围'):
+        service._linked_deletion_hashes('p', 'plan', {'other-image'})
