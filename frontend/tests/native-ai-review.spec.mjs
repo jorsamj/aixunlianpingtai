@@ -82,7 +82,7 @@ test('原生审核读取 24 张分页及失败诊断，三个视口保留原工�
   await expect(cards).toHaveCount(1);
   expect(reads).toEqual([['all',null],['all','24'],['all',null],['failed',null]]);
 
-  for(const [width,height] of [[1920,1080],[1366,768],[768,1024]]){
+  for(const [width,height] of [[2560,1440],[1920,1080],[1366,768],[768,1024]]){
     await page.setViewportSize({width,height});
     await page.getByRole('button',{name:'候选 99.jpg'}).focus();
     await page.keyboard.press('Enter');
@@ -90,7 +90,8 @@ test('原生审核读取 24 张分页及失败诊断，三个视口保留原工�
     await expect(page.getByText('502',{exact:true})).toBeVisible();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     if(width!==768){
-      expect(await page.locator('.review-columns').evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(width===1920?3:2);
+      expect(await page.locator('.review-columns').evaluate(el=>getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(3);
+      await page.screenshot({path:`../test-results/vue-catalog/review-workspace-${width}.png`,animations:'disabled'});
       await page.getByRole('button',{name:'关闭检查'}).click();
     }
   }

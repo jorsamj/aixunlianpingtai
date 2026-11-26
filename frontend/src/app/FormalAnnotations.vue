@@ -146,10 +146,10 @@ onBeforeUnmount(()=>{window.removeEventListener('workspace-before-logout',before
 </template>
 
 <style scoped>
-.formal-workbench{display:grid;grid-template-columns:minmax(160px,210px) minmax(0,1fr);gap:12px;height:calc(100dvh - 135px);min-height:560px}
-.formal-stage,.formal-queue{min-height:0;min-width:0;background:#fff;border:1px solid #dedede;border-radius:8px;overflow:hidden}
-.formal-queue{display:flex;flex-direction:column;gap:10px;padding:12px}.formal-queue h2{font-size:15px;margin:0}.formal-queue p{font-size:12px;color:#666;margin:0}
-.queue-list{flex:1;overflow:auto}.queue-list button{display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;width:100%;padding:9px 6px;text-align:left;border:0;border-bottom:1px solid #eee;background:white;cursor:pointer}
-.queue-list button[aria-current=true]{background:#ededed;font-weight:600}.queue-tools{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.queue-tools :deep(.el-button){margin:0}.queue-tools span{font-size:12px}
+.formal-workbench{display:grid;grid-template-columns:clamp(160px,15vw,212px) minmax(0,1fr);gap:10px;height:calc(100dvh - 104px);min-height:560px}
+.formal-stage,.formal-queue{min-height:0;min-width:0;background:var(--workspace-surface);border-radius:var(--workspace-radius);overflow:hidden}
+.formal-queue{display:flex;flex-direction:column;gap:8px;padding:12px}.formal-queue h2{font-size:15px;margin:0}.formal-queue p{font-size:12px;color:var(--workspace-muted);margin:0}
+.queue-list{flex:1;overflow:auto}.queue-list button{display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;width:100%;padding:7px 8px;text-align:left;border:0;border-radius:5px;background:transparent;color:inherit;cursor:pointer}
+.queue-list button[aria-current=true],.queue-list button:hover:not(:disabled){background:var(--workspace-hover)}.queue-list button[aria-current=true]{font-weight:650}.queue-tools{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.queue-tools :deep(.el-button){margin:0}.queue-tools span{font-size:12px}
 .queue-filter{display:grid;gap:6px}.queue-empty{padding:20px}.formal-stage :deep(.editor-canvas){background:#ededed}
 </style>

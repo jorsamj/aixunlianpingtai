@@ -147,6 +147,13 @@ const legacyActions=[
 </template>
 
 <style scoped>
-.material-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-.material-actions :deep(.el-button){margin:0}
+.material-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-block-end: 12px;
+  border-bottom: 1px solid var(--workspace-line, #dedede);
+}
+.material-actions :deep(.el-button) { margin: 0; }
 </style>

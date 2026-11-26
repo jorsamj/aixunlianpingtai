@@ -113,6 +113,7 @@ test('native material library keeps scoped browsing, selection and original work
   const boxes=editor.locator('.a9s-annotation[data-id]');
   await expect(boxes).toHaveCount(1);
   await expect(boxes).toHaveAttribute('data-id','existing');
+  await page.screenshot({path:'../test-results/vue-catalog/native-formal-annotation.png',animations:'disabled'});
   await editor.getByLabel('显示类别').selectOption('smoke');
   await expect(boxes).toHaveCount(0);
   await draw.click();

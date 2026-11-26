@@ -152,7 +152,7 @@ const readRecord=page=>page.evaluate(k=>JSON.parse(sessionStorage.getItem(k)||'n
 
 async function seal(page,label='后台正式入库 30 张'){
   await page.getByRole('button',{name:label}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'预检并封存'}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'检查并确认范围'}).click();
 }
 
 test('转池保留冻结排除及原预检身份，丢失响应后只读核验并按原回执撤销',async({page})=>{
@@ -198,6 +198,7 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
   await expect(page.locator('.review-selection').getByText(/已选 29 张/).first()).toBeVisible();
 
   await seal(page,'后台正式入库 29 张');
+  await page.screenshot({path:'../test-results/vue-catalog/review-bulk-confirm.png',animations:'disabled'});
   await expect(page.getByRole('dialog')).toContainText('可入库 29 张');
   const firstBody=state.intents[0];
   expect(firstBody.excluded_image_ids).toEqual(['image-24']);
@@ -212,7 +213,7 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
   // the duplicate-event guard on the same confirmation control.
   await confirm.click({trial:true});
   await confirm.evaluate(button=>{button.click();button.click()});
-  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
   await expect(page.locator('.review-bulk')).toContainText('未证明');
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   await expect(page.locator('.review-bulk')).toContainText('已证明提交 GT 29');
@@ -223,10 +224,10 @@ test('冻结→排除→封存→确认→进度→成功，随后可发起第�
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await expect(page.getByText(/可操作 1 张/)).toBeVisible();
   await page.getByRole('button',{name:'后台正式入库 1 张'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'预检并封存'}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'检查并确认范围'}).click();
   await expect(page.getByRole('dialog')).toContainText('可入库 1 张');
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   expect(state.executes).toBe(2);
   expect(state.intents).toHaveLength(2);
@@ -269,7 +270,7 @@ test('服务端已封存但响应丢失：刷新查到原 intent 并继续，不
   expect(new Set(state.intents.map(item=>item.request_id)).size).toBe(1);
   await page.locator('.review-bulk').getByRole('button',{name:'查看预检'}).click();
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   expect(state.executes).toBe(1);
 });
@@ -286,7 +287,7 @@ test('sessionStorage 不可用时不发送封存请求',async({page})=>{
   await page.goto(route);
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await page.getByRole('button',{name:'后台正式入库 30 张'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'预检并封存'}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'检查并确认范围'}).click();
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('浏览器无法保存本次操作身份');
   expect(state.intents).toHaveLength(0);
   expect(state.sealed).toBeNull();
@@ -299,7 +300,7 @@ test('取消请求与阻断不被展示为成功，恢复 409 保留阻断',asyn
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await seal(page);
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
   await expect(page.locator('.review-bulk')).toContainText('正在取消');
   await expect(page.locator('.review-bulk')).not.toContainText('已完成');
 
@@ -321,7 +322,7 @@ test('pending preflight locks the frozen range until the request resolves',async
   await page.getByRole('button',{name:'选择全部筛选结果'}).click();
   await expect(page.getByText(/可操作 30 张/)).toBeVisible();
   await page.getByRole('button',{name:'后台正式入库 30 张'}).click();
-  const sealing=page.getByRole('dialog').getByRole('button',{name:'预检并封存'}).click();
+  const sealing=page.getByRole('dialog').getByRole('button',{name:'检查并确认范围'}).click();
   await expect.poll(()=>state.sealStarted).toBe(true);
   await expect(page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true})).toBeDisabled();
   await expect(page.getByRole('button',{name:'清空选择'})).toBeDisabled();
@@ -424,7 +425,7 @@ test('seal 409 with a different exclusion set blocks execution and keeps the ori
   const newRecord=await readRecord(page);
   expect(newRecord.request_id).not.toBe(conflictRecord.request_id);
   await page.getByRole('dialog').getByRole('button',{name:'确认创建后台任务'}).click();
-  await page.getByRole('dialog').getByRole('button',{name:'关闭'}).last().click();
+  await page.getByRole('dialog').getByRole('button',{name:/^(关闭|完成)$/}).click();
   await expect(page.locator('.review-bulk')).toContainText('已完成',{timeout:10000});
   expect(state.executes).toBe(1);
 });

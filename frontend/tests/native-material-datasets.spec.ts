@@ -55,11 +55,12 @@ test('native dataset membership moves an explicit selection and verifies an unre
   });
   await page.goto('/app/#/projects/p/materials');
   await page.getByRole('button',{name:'选择本页'}).click();
+  await page.screenshot({path:'../test-results/vue-catalog/native-materials-selected.png',animations:'disabled'});
   await page.getByRole('button',{name:'数据集目录'}).click();
   const dialog=page.getByRole('dialog',{name:'数据集目录'});
   await expect(dialog.getByRole('cell',{name:'质检素材'})).toBeVisible();
   const choose=async(name:string)=>{
-    await dialog.getByRole('combobox',{name:'目标数据集'}).click();
+    await dialog.getByRole('combobox',{name:'目标数据集'}).press('Enter');
     await page.getByRole('option',{name,exact:true}).click();
     await dialog.getByRole('button',{name:'预检范围'}).click();
     await expect(dialog.getByText('将处理 2 张素材。')).toBeVisible();

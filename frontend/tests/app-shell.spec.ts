@@ -25,6 +25,7 @@ test('independent cards use canonical API for CRUD, versions and refresh without
   return route.fulfill({json:{ok:true,project_id:'p',algorithm,items:id==='a0'?[version]:[],total:id==='a0'?1:0,page:1,page_size:20}});
  });
  await page.goto('/app/#/projects/p/algorithms');await expect(page.locator('.algorithm-card')).toHaveCount(10);await page.locator('.pagination .btn-next').click();await page.locator('.pagination .btn-next').click();await expect(page.locator('.algorithm-card')).toHaveCount(1);await page.locator('.pagination .btn-prev').click();await page.locator('.pagination .btn-prev').click();await expect(page.locator('.algorithm-card')).toHaveCount(10);
+ await page.screenshot({path:'../test-results/vue-catalog/native-algorithm-library.png',animations:'disabled'});
  await page.getByRole('button',{name:'算法 0',exact:true}).click();await expect(page.getByText('原版本 V1',{exact:true})).toBeVisible();await page.getByRole('button',{name:'版本详情',exact:true}).click();await expect(page.getByRole('heading',{name:'模型版本详情',exact:true})).toBeVisible();await expect(page.getByText('0.75',{exact:true})).toBeVisible();await page.getByRole('button',{name:'关闭此对话框',exact:true}).click();
  const conversion=page.getByRole('link',{name:'转换 · 原流程'});await expect(conversion).toHaveAttribute('href',/algorithm_id=a0&version_id=v1&action=conversion/);
  await page.reload();await expect(page.getByText('原版本 V1',{exact:true})).toBeVisible();

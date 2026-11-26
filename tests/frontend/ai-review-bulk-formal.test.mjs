@@ -49,7 +49,7 @@ test('store keeps honest progress and recovery semantics', () => {
 });
 
 test('native page distinguishes preflight, execution, proven GT and manual review', () => {
-  assert.match(page, /预检并封存/);
+  assert.match(page, /检查并确认范围/);
   assert.match(page, /确认创建后台任务/);
   assert.match(page, /已证明提交 GT/);
   assert.match(page, /未证明/);

@@ -30,11 +30,24 @@ async function logout(){if(immersive.value&&!window.dispatchEvent(new Event('wor
 onMounted(()=>{void store.load().catch(cause=>{error.value=cause.message})});
 </script>
 <template><div class="application-shell">
- <aside v-if="!immersive" class="sidebar"><a class="brand" href="/app/">畅联云<span>算法训练平台</span></a>
+ <aside v-if="!immersive" class="sidebar"><a class="brand" href="/app/"><span class="brand-name">畅联云</span><span class="brand-caption">算法训练平台</span></a>
   <nav v-if="projectId" aria-label="主导航"><template v-for="(group,index) in menus" :key="group.name"><section v-if="index<3||advanced"><h2>{{ group.name }}</h2><router-link v-for="[label,page] in group.pages" :key="page" :to="target(page)" :aria-current="title===label||(page==='自动标注及清洗'&&['ai-tasks','ai-create'].includes(String(route.name)))?'page':undefined">{{ label }}<small v-if="target(page).name==='legacy'">原系统</small></router-link></section><el-button v-if="index===2" text @click="advanced=!advanced">{{ advanced?'收起高级功能':'展开高级功能' }}</el-button></template></nav>
   <a class="demo-link" :href="legacyUrl(projectId,'AI算法底座')">AI算法底座 · 独立业务演示系统</a>
  </aside>
- <div class="application-main"><header class="app-header"><div><small>畅联云 / {{ store.projects.find(p=>p.id===projectId)?.name||'项目' }}</small><h1>{{ title }}</h1></div><div class="session-tools"><el-select :model-value="projectId" aria-label="当前项目" @change="projectChange"><el-option v-for="project in store.projects" :key="project.id" :label="project.name" :value="project.id"/></el-select><span>{{ store.username }}</span><el-button @click="logout">退出</el-button></div></header>
+ <div class="application-main">
+  <header class="app-header">
+   <div class="app-page-heading">
+    <p>{{ store.projects.find(p=>p.id===projectId)?.name||'项目' }}</p>
+    <h1>{{ title }}</h1>
+   </div>
+   <div class="session-tools">
+    <el-select :model-value="projectId" aria-label="当前项目" @change="projectChange">
+     <el-option v-for="project in store.projects" :key="project.id" :label="project.name" :value="project.id"/>
+    </el-select>
+    <span class="session-user">{{ store.username }}</span>
+    <el-button text @click="logout">退出</el-button>
+   </div>
+  </header>
   <main class="app-content" :class="{immersive}"><el-alert v-if="error" :title="error" type="error" :closable="false"/>
    <section v-if="route.name==='legacy'" class="legacy-page"><h2>{{ title }}</h2><router-link v-if="nativePreviews[String(route.params.page)]" :to="{name:nativePreviews[String(route.params.page)],params:{projectId}}">试用 {{ title }} 原生页面</router-link><router-link v-if="route.params.page==='训练任务'" :to="{name:'training-create',params:{projectId}}">原生创建训练任务</router-link><router-link v-if="route.params.page==='自动标注及清洗'" :to="{name:'ai-tasks',params:{projectId}}">AI 标注任务</router-link><router-link v-if="route.params.page==='服务节点'" :to="{name:'service-nodes-native',params:{projectId}}">原生服务节点只读总览</router-link><router-link v-if="route.params.page==='平台对接'" :to="{name:'platform-integration',params:{projectId}}">原生平台对接（配置读取与既有保存契约）</router-link><p v-if="route.params.page==='平台对接'">平台对接已提供原生配置入口；原页面仍提供总开关、立即同步、连接测试与联调诊断。</p><p v-else-if="!nativePreviews[String(route.params.page)]">此入口仍使用原系统。</p><el-button tag="a" :href="legacyUrl(projectId,String(route.params.page))" type="primary">进入原{{ title }}</el-button><router-link :to="target('算法列表')">返回算法库</router-link></section>
    <router-view v-else :key="route.name==='training-create'?route.fullPath:route.path"/>

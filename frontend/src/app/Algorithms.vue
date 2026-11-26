@@ -316,7 +316,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
  if(algorithm&&typeof version==='string'&&version)loadVersionDetail(version);
 },{immediate:true});
 </script>
-<template><section aria-label="算法库卡片管理">
+<template><section class="algorithm-library" aria-label="算法库卡片管理">
  <div class="page-toolbar"><p>项目算法与模型版本</p><div><el-button tag="a" :href="legacyUrl(projectId,'算法列表')">原完整算法管理</el-button><el-button type="primary" :disabled="unconfirmed" @click="edit()">新增本地算法</el-button></div></div>
  <el-alert v-if="lifecycleStorageProblem" title="版本操作待核记录无法读取，请到原算法管理核对。" type="error" :closable="false"/>
  <el-alert v-if="lifecyclePending && !lifecycleTarget" title="版本操作待核对。" type="warning" :closable="false">
@@ -360,21 +360,23 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
    </div>
    <h2><button class="title-button" :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ algorithm.name }}</button></h2>
    <code>{{ algorithm.id }}</code>
-   <dl>
-    <div><dt>算法类型</dt><dd>{{ algorithm.algorithm_type||'未设置' }}</dd></div>
-    <div><dt>行业</dt><dd>{{ algorithm.industry||'未设置' }}</dd></div>
+   <dl class="algorithm-metrics">
     <div><dt>模型版本</dt><dd>{{ algorithm.version_count??'未提供' }}</dd></div>
-    <div><dt>当前版本</dt><dd>{{ algorithm.current_version?.version_name||algorithm.current_version_id||'未设置' }}</dd></div>
-    <div><dt>训练状态</dt><dd>{{ algorithmState(algorithm) }}</dd></div>
     <div><dt>成功训练次数</dt><dd>{{ algorithm.successful_training_count??'未提供' }}</dd></div>
     <div><dt>mAP50</dt><dd>{{ algorithm.map50_percent==null?'未提供':algorithm.map50_percent.toFixed(1)+'%' }}</dd></div>
+   </dl>
+   <dl class="algorithm-facts">
+    <div><dt>算法类型</dt><dd>{{ algorithm.algorithm_type||'未设置' }}</dd></div>
+    <div><dt>行业</dt><dd>{{ algorithm.industry||'未设置' }}</dd></div>
+    <div class="current-version"><dt>当前版本</dt><dd>{{ algorithm.current_version?.version_name||algorithm.current_version_id||'未设置' }}</dd></div>
+    <div><dt>训练状态</dt><dd>{{ algorithmState(algorithm) }}</dd></div>
     <div><dt>更新时间</dt><dd>{{ dateLabel(algorithm.updated_at) }}</dd></div>
     <div v-if="external(algorithm)"><dt>产品 / 品目 ID</dt><dd>{{ algorithm.external_product_id||'未提供' }} / {{ algorithm.external_category_id||'未提供' }}</dd></div><div v-if="external(algorithm)"><dt>外部状态</dt><dd>{{ algorithm.external_status||(algorithm.external_active===true?'已启用':algorithm.external_active===false?'已停用':'未提供') }}</dd></div>
    </dl>
    <p v-if="algorithm.remark" class="algorithm-remark">{{ algorithm.remark }}</p>
    <p v-if="algorithm.trainable===false&&algorithm.trainability_message" class="algorithm-blocked">{{ algorithm.trainability_message }}</p>
    <footer>
-    <el-button :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ selected===algorithm.id?'收起详情':'详情与版本' }}</el-button>
+    <el-button class="card-detail-button" :aria-expanded="selected===algorithm.id" @click="toggle(algorithm.id)">{{ selected===algorithm.id?'收起详情':'详情与版本' }}</el-button>
     <el-button :disabled="unconfirmed&&!external(algorithm)" @click="edit(algorithm.id)">{{ external(algorithm)?'基本信息':'基本编辑' }}</el-button>
     <a v-if="algorithm.trainable===true" :href="'/app/#/projects/'+encodeURIComponent(projectId)+'/training/create?algorithm='+encodeURIComponent(algorithm.id)">训练</a>
     <el-button link @click="reportTarget=algorithm.id">算法报告</el-button>
@@ -438,3 +440,130 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
  <AlgorithmReport v-if="reportTarget" :key="reportTarget" :project-id="projectId" :algorithm-id="reportTarget"
   :back="route.fullPath" :legacy-href="original(reportTarget,'algorithm-report')" @close="reportTarget=undefined"/>
 </section></template>
+
+<style scoped>
+.algorithm-library .algorithm-cards {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+}
+
+.algorithm-library .algorithm-card,
+.algorithm-library .version-panel {
+  background: var(--workspace-surface, #fff);
+  border-color: var(--workspace-line, #dedede);
+  border-radius: var(--workspace-radius, 10px);
+  color: var(--workspace-ink, #202124);
+}
+
+.algorithm-library .algorithm-card {
+  display: flex;
+  flex-direction: column;
+  padding: clamp(16px, 2.4vw, 24px);
+}
+
+.algorithm-library .algorithm-card.selected {
+  border-color: var(--workspace-accent, #333);
+}
+
+.card-heading {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.algorithm-card h2 {
+  margin: 12px 0 4px;
+}
+
+.title-button {
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.title-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.algorithm-card code,
+.algorithm-card dt,
+.version-panel header span,
+.version-id {
+  color: var(--workspace-muted, #666);
+}
+
+.algorithm-card .algorithm-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 16px 0;
+  padding: 10px 0;
+  border-block: 1px solid var(--workspace-line, #dedede);
+}
+
+.algorithm-card .algorithm-metrics > div {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding-inline: 10px;
+}
+
+.algorithm-metrics > div + div {
+  border-inline-start: 1px solid var(--workspace-line, #dedede);
+}
+
+.algorithm-metrics dt {
+  white-space: normal;
+}
+
+.algorithm-metrics dd {
+  font-size: clamp(15px, 2vw, 19px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.algorithm-card .algorithm-facts {
+  gap: 8px 16px;
+  margin: 0 0 16px;
+}
+
+.algorithm-facts .current-version dd {
+  font-weight: 650;
+}
+
+.algorithm-card footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-color: var(--workspace-line, #dedede);
+}
+
+.algorithm-card footer > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding-inline: 6px;
+  border-radius: var(--workspace-radius, 6px);
+}
+
+.algorithm-card footer > a:hover,
+.algorithm-card footer > a:focus-visible {
+  background: var(--workspace-hover, #f2f2f2);
+}
+
+.algorithm-card footer .card-detail-button {
+  font-weight: 650;
+}
+
+.version-panel header {
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.version-panel h2 {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.version-id {
+  margin-top: 4px;
+}
+</style>

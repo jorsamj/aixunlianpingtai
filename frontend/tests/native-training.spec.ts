@@ -82,6 +82,10 @@ for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry
   throw new Error('Unexpected API '+path);
  });
  await page.goto('/app/#/projects/p/training/create?algorithm=a');
+ if(variant==='ordinary'){
+  await expect(page.getByRole('button',{name:'核验并创建训练',exact:true})).toBeVisible();
+  await page.screenshot({path:'../test-results/vue-catalog/native-training-form.png',animations:'disabled'});
+ }
  if(fixedZip){
   await page.locator('.el-form-item').filter({hasText:'划分模式'}).locator('.el-select__wrapper').click();
   await page.getByRole('option',{name:'按 ZIP 来源固定划分'}).click();
