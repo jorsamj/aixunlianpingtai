@@ -2,6 +2,7 @@
 import {onBeforeUnmount} from 'vue';
 import {useRouter} from 'vue-router';
 import NegativePool from '../views/NegativePool.vue';
+import NegativePoolCategories from './NegativePoolCategories.vue';
 import type {PoolContext} from '../types/negative-pool';
 import {frozenPoolPacket} from '../api/negative-pool';
 import {request} from './http';
@@ -51,5 +52,6 @@ onBeforeUnmount(()=>controller.abort());
 </script>
 
 <template>
+ <NegativePoolCategories :project-id="projectId"/>
  <NegativePool :context="context"/>
 </template>
