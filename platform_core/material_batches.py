@@ -64,9 +64,13 @@ class BatchOperation(str, Enum):
     AUDIT_LABEL_INTEGRITY = "AUDIT_LABEL_INTEGRITY"
     AUDIT_MATERIAL_INTEGRITY = "AUDIT_MATERIAL_INTEGRITY"
     AI_ANNOTATE = "AI_ANNOTATE"
+    MOVE_DATASET = "MOVE_DATASET"
+    CLASSIFY_SPLIT = "CLASSIFY_SPLIT"
 
 
 NOT_READY = set()
+ASSIGNMENT_OPERATIONS = {BatchOperation.MOVE_DATASET, BatchOperation.CLASSIFY_SPLIT}
+ASSIGNMENT_VALUES = {operation.value for operation in ASSIGNMENT_OPERATIONS}
 
 
 class BatchRequestError(ValueError):
@@ -186,11 +190,11 @@ def parse_request(payload):
             422,
         )
     selection = MaterialSelectionSpec.from_mapping(
-        payload.get("selection_spec"), allow_filtered_exclusions=operation is BatchOperation.CLEAN,
+        payload.get("selection_spec"), allow_filtered_exclusions=operation in ASSIGNMENT_OPERATIONS | {BatchOperation.CLEAN},
     )
     explicit_limit = (
         MAX_LARGE_EXPLICIT_SELECTION
-        if operation in {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED, BatchOperation.DELETE_INDEX}
+        if operation in ASSIGNMENT_OPERATIONS | {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED, BatchOperation.DELETE_INDEX}
         else BATCH_SIZE
     )
     if len(selection.image_ids) > explicit_limit:
@@ -203,6 +207,17 @@ def parse_request(payload):
     if not isinstance(options, dict):
         raise ValueError("options must be an object")
     options = dict(options)
+    if operation in ASSIGNMENT_OPERATIONS:
+        field = "dataset_id" if operation is BatchOperation.MOVE_DATASET else "split"
+        target = options.get(field)
+        if not isinstance(target, str) or not target.strip() or len(target) > 128:
+            raise ValueError(f"options.{field} must be a nonempty identifier")
+        if field == "split" and target not in {"train", "val", "test", "unassigned"}:
+            raise ValueError("invalid split")
+        digest = options.get("dataset_revision")
+        if digest is not None and (not isinstance(digest, str) or len(digest) != 64 or field != "dataset_id"):
+            raise ValueError("invalid dataset revision")
+        options = {field: target, **({"dataset_revision": digest} if digest is not None else {})}
     if operation is BatchOperation.CLEAN:
         options = clean_options(options)
     if operation is BatchOperation.AI_ANNOTATE and int(options.get("preview_count") or 0):
@@ -358,10 +373,53 @@ def estimate_batch(project_id, materials, payload, *, repository=None, artifacts
         result["confirmation_token"] = _confirmation_token(project_id, operation, confirmed_selection, options)
     if operation is BatchOperation.DELETE_INDEX and repository is not None and artifacts is not None:
         result['deletion_preview'] = _general_delete_preview(project_id, materials, confirmed_selection, options, repository, artifacts, actor, project)
+    if operation in ASSIGNMENT_OPERATIONS:
+        _assignment_actor(actor)
+        if operation is BatchOperation.MOVE_DATASET:
+            from app import _v50_dataset_locks
+            with _v50_dataset_locks(project_id, [options["dataset_id"]]):
+                result["dataset_revision"] = _dataset_revision(project_id, materials, options["dataset_id"])
     return result
 
 
-def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
+def _request_digest(payload):
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def _assignment_actor(actor):
+    actor_id = str((actor or {}).get("actor_id") or "")
+    if not actor_id:
+        raise BatchRequestError("MATERIAL_ASSIGNMENT_SESSION_REQUIRED", "素材治理需要有效登录会话", 401)
+    return actor_id
+
+
+def _assignment_task_id(project_id, actor_id, request_id):
+    try:
+        token = str(uuid.UUID(str(request_id)))
+    except ValueError as error:
+        raise ValueError("request_id must be a UUID") from error
+    return "assignment_" + _request_digest([project_id, actor_id, token])
+
+
+def _dataset_revision(project_id, materials, dataset_id):
+    from fastapi import HTTPException
+    from app import _v50_assert_dataset_writable_locked, _v50_read_datasets_strict, project_dir
+    if Path(project_dir(project_id)).resolve() != materials.project_path.resolve():
+        raise RuntimeError("material assignment dataset owner does not match the worker project")
+    try:
+        _v50_assert_dataset_writable_locked(project_id, dataset_id)
+        rows = _v50_read_datasets_strict(project_id)
+    except HTTPException as error:
+        if error.status_code != 409:
+            raise
+        raise BatchRequestError("DATASET_CHANGED_OR_UNAVAILABLE", str(error.detail), 409) from error
+    for row in rows:
+        if row.get("id") == dataset_id:
+            return _request_digest(row)
+    raise BatchRequestError("DATASET_CHANGED_OR_UNAVAILABLE", "数据集已变化或不可用", 409)
+
+
+def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None, assignment_actor=None):
     """Freeze a batch selection durably without publishing executable queue truth yet."""
     operation, selection, options = parse_request(payload)
     if operation is BatchOperation.AI_ANNOTATE:
@@ -379,6 +437,10 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
         "selection_spec": selection.as_dict(),
         "options": options,
     }
+    if operation in ASSIGNMENT_OPERATIONS:
+        if not assignment_actor:
+            raise BatchRequestError("MATERIAL_ASSIGNMENT_SESSION_REQUIRED", "素材治理需要有效登录会话", 401)
+        request_payload["actor_id"] = assignment_actor
     execution_mode = str(payload.get("execution_mode") or "").strip().lower()
     remote_execution = payload.get("remote_execution")
     scheduling = payload.get("scheduling")
@@ -449,8 +511,15 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
             f"materials:{project_id}", required_capabilities=required_capabilities,
         )
     try:
-        with closing(BatchSelection(selection_path)):
-            pass
+        with closing(BatchSelection(selection_path)) as manifest:
+            frozen_digest = manifest.database.execute("SELECT value FROM meta WHERE key='assignment_request_digest'").fetchone()
+            if frozen_digest is not None:
+                if not manifest.frozen() or frozen_digest[0] != _request_digest(request_payload):
+                    raise BatchRequestError("BATCH_TASK_ID_CONFLICT", "操作请求身份与已冻结范围不一致", 409)
+                artifacts.atomic_write_json(task_id, "request.json", request_payload)
+                artifacts.atomic_write_json(task_id, CHECKPOINT_REF, manifest.summary())
+                return TaskRecord.new(task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+                    f"materials:{project_id}", required_capabilities=required_capabilities)
         with closing(materials._connect()) as database:
             database.execute("ATTACH DATABASE ? AS batch_selection", (str(selection_path),))
             database.execute("PRAGMA batch_selection.synchronous=FULL")
@@ -465,7 +534,7 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
                     params,
                 ).rowcount
                 if selection.excluded_image_ids and inserted == 0:
-                    raise BatchRequestError("MATERIAL_SELECTION_EMPTY", "当前清洗范围没有可处理素材", 409)
+                    raise BatchRequestError("MATERIAL_SELECTION_EMPTY", "当前范围没有可处理素材", 409)
             else:
                 database.executemany(
                     "INSERT INTO batch_selection.selection(image_id) VALUES (?)",
@@ -487,6 +556,20 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
                     inserted = int(database.execute(
                         "SELECT COUNT(*) FROM batch_selection.selection"
                     ).fetchone()[0])
+            if operation in ASSIGNMENT_OPERATIONS:
+                if not inserted:
+                    raise BatchRequestError("MATERIAL_SELECTION_EMPTY", "当前范围没有可处理素材", 409)
+                field, default = ("dataset_id", "default") if operation is BatchOperation.MOVE_DATASET else ("split", "unassigned")
+                database.execute(
+                    "INSERT INTO batch_selection.assignment_evidence "
+                    "SELECT m.id,m.storage_source_id,m.object_key,m.content_sha256,m.size_bytes,m.etag,m.created_at,"
+                    "COALESCE(NULLIF(json_extract(m.payload_json,'$.dataset_id'),''),'default'),"
+                    "COALESCE(NULLIF(json_extract(m.payload_json,?),''),?) "
+                    "FROM batch_selection.selection s JOIN main.materials m ON m.id=s.image_id",
+                    (f"$.{field}", default),
+                )
+                database.execute("INSERT INTO batch_selection.meta VALUES ('assignment_request_digest',?)",
+                    (_request_digest(request_payload),))
             database.executemany(
                 "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
                 (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),
@@ -535,6 +618,24 @@ def publish_prepared_batch(task, repository, artifacts):
 
 def create_batch(project_id, materials, repository, artifacts, payload, *, actor=None, project=None):
     operation, selection, options = parse_request(payload)
+    if operation in ASSIGNMENT_OPERATIONS:
+        actor_id = _assignment_actor(actor)
+        task_id = _assignment_task_id(project_id, actor_id, payload.get("request_id"))
+        path = artifacts.artifact_path(task_id, SELECTION_REF)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(path) + ".prepare.lock", timeout=60):
+            dataset_id = options.get("dataset_id")
+            if dataset_id and not artifacts.read_json(task_id, "request.json", default=None):
+                from app import _v50_dataset_locks
+                with _v50_dataset_locks(project_id, [dataset_id]):
+                    with closing(BatchSelection(path)) as manifest:
+                        already_frozen = manifest.frozen()
+                    if not already_frozen and options.get("dataset_revision") != _dataset_revision(project_id, materials, dataset_id):
+                        raise BatchRequestError("DATASET_CHANGED_OR_UNAVAILABLE", "数据集修订已变化，请重新预览", 409)
+                    task = prepare_batch(project_id, materials, artifacts, payload, task_id=task_id, assignment_actor=actor_id)
+            else:
+                task = prepare_batch(project_id, materials, artifacts, payload, task_id=task_id, assignment_actor=actor_id)
+            return publish_prepared_batch(task, repository, artifacts)
     if operation is BatchOperation.DELETE_SOURCE:
         raise BatchRequestError('PHYSICAL_DELETE_SAFETY_UNVERIFIED', '尚未证明物理回收安全，请使用逻辑删除保留源字节', 409)
     if operation is BatchOperation.DELETE_INDEX:
@@ -2134,6 +2235,11 @@ CREATE TRIGGER IF NOT EXISTS selection_delete AFTER DELETE ON selection BEGIN
     UPDATE counters SET count=count-1 WHERE state=OLD.state;
 END;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS assignment_evidence (
+    image_id TEXT PRIMARY KEY, storage_source_id TEXT NOT NULL, object_key TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL, etag TEXT NOT NULL,
+    created_at TEXT NOT NULL, dataset_id TEXT NOT NULL, previous_value TEXT NOT NULL
+) WITHOUT ROWID;
 """
 
 
@@ -2717,6 +2823,8 @@ class MaterialBatchHandler:
         confirmed_revision = manifest.database.execute("SELECT value FROM meta WHERE key='repository_revision'").fetchone()
         if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
             raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)
+        if operation in ASSIGNMENT_OPERATIONS:
+            return self._run_assignment(context, manifest, materials, operation, options)
         if context.task.retry_of:
             # A CLEAN task may be safely preempted between the durable
             # selection transition to "running" and result persistence. Reset
@@ -2822,6 +2930,61 @@ class MaterialBatchHandler:
         status = (TaskStatus.PARTIAL_SUCCESS if summary["succeeded"] else TaskStatus.FAILED) if summary["failed"] else TaskStatus.SUCCEEDED
         append_task_log(context, "finished", status.value)
         return status, RESULT_REF
+
+    def _run_assignment(self, context, manifest, materials, operation, options):
+        project_id = context.task.project_id
+        task_id = context.task.task_id
+        payload = context.artifacts.read_json(task_id, context.task.payload_ref)
+        digest = manifest.database.execute("SELECT value FROM meta WHERE key='assignment_request_digest'").fetchone()
+        if not payload.get("actor_id") or digest is None or digest[0] != _request_digest(payload):
+            raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "素材治理范围与操作身份不一致", 409)
+        field = "dataset_id" if operation is BatchOperation.MOVE_DATASET else "split"
+        target = options[field]
+        while batch := manifest.rows():
+            _check_active(context)
+            ids = [row["image_id"] for row in batch]
+            placeholders = ",".join("?" for _ in ids)
+            frozen = manifest.database.execute(
+                f"SELECT * FROM assignment_evidence WHERE image_id IN ({placeholders}) ORDER BY image_id", ids,
+            ).fetchall()
+            if len(frozen) != len(ids):
+                raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "素材冻结证据不完整", 409)
+            manifest.transition(ids, "running", commit_guard=lambda: _check_active(context))
+            blocked = set()
+            lock = nullcontext()
+            datasets = set()
+            if field == "dataset_id":
+                from app import _v50_dataset_locks
+                datasets = {target, *(row["dataset_id"] for row in frozen)}
+                lock = _v50_dataset_locks(project_id, datasets)
+            with lock:
+                with material_annotation_lifecycle_fence(materials.project_path):
+                    for dataset_id in sorted(datasets):
+                        try:
+                            revision = _dataset_revision(project_id, materials, dataset_id)
+                            if dataset_id == target and revision != options.get("dataset_revision"):
+                                blocked.add(dataset_id)
+                        except BatchRequestError:
+                            blocked.add(dataset_id)
+                    receipts = materials.apply_assignment_batch(
+                        task_id, frozen, field, target, blocked, lambda: _check_active(context),
+                    )
+            with manifest.transaction():
+                manifest.database.executemany(
+                    "UPDATE selection SET state=?,error=?,tombstone_json=? WHERE image_id=?",
+                    (("failed" if error else "succeeded", error, outcome, image_id)
+                     for image_id, (outcome, error) in receipts.items()),
+                )
+                _check_active(context)
+            summary = manifest.summary()
+            _check_active(context, progress=100 * summary["processed"] / summary["total"])
+            context.save_checkpoint(summary)
+        summary = manifest.summary()
+        context.save_checkpoint(summary)
+        context.artifacts.atomic_write_json(task_id, RESULT_REF, summary)
+        if summary["failed"]:
+            return (TaskStatus.PARTIAL_SUCCESS if summary["succeeded"] else TaskStatus.FAILED), RESULT_REF
+        return TaskStatus.SUCCEEDED, RESULT_REF
 
     def _reconcile_index_retirement_backups(self, context, manifest, project_path, materials):
         """Reconcile only this task's durable GT/identity commit boundary."""
@@ -3958,7 +4121,7 @@ def public_batch(task, artifacts, repository=None):
         checkpoint={'total':checkpoint.get('total'),'processed':0,'succeeded':0,'failed':0,'selection_frozen':bool(checkpoint.get('selection_frozen'))}
     result = (
         artifacts.read_json(task.task_id, RESULT_REF, default={})
-        if request.get("operation") in {
+        if request.get("operation") in ASSIGNMENT_VALUES | {
             BatchOperation.REMAP_ANNOTATION_LABELS.value,
             BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value,
             BatchOperation.AUDIT_LABEL_INTEGRITY.value,
@@ -4050,7 +4213,9 @@ def public_batch(task, artifacts, repository=None):
             "review_url": (f"/api/v60/projects/{task.project_id}/annotation-tasks/{task.task_id}"
                            if request.get("operation") == BatchOperation.AI_ANNOTATE.value else None),
             "results_url": (f"/api/v62/projects/{task.project_id}/smart-material-audit/{task.task_id}/findings" if request.get("operation")=="SMART_AUDIT" else f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
-                            if request.get("operation") in {BatchOperation.CLEAN.value,BatchOperation.DELETE_INDEX.value,"SMART_AUDIT"} else None),
+                            if request.get("operation") in ASSIGNMENT_VALUES | {BatchOperation.CLEAN.value,BatchOperation.DELETE_INDEX.value,"SMART_AUDIT"} else None),
+            **({"target_dataset_id": options.get("dataset_id"), "target_split": options.get("split")}
+               if request.get("operation") in ASSIGNMENT_VALUES else {}),
             "error_examples": error_examples, "selection_frozen": frozen,
             "result": result if result else None,
             "logical_removed": result.get('logical_removed',checkpoint.get('logical_removed',0)),
@@ -4399,6 +4564,14 @@ def material_batch_router(
             raise HTTPException(404, detail="material batch not found")
         return task
 
+    def assignment_request(task, request):
+        payload = task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+        if payload.get("operation") in ASSIGNMENT_VALUES:
+            actor = actor_provider(request, task.project_id) if actor_provider else {}
+            if payload.get("actor_id") != invoke(_assignment_actor, actor):
+                raise HTTPException(404, detail="material batch not found")
+        return payload
+
     def require_integrity_audit(project_id, task_id):
         task = require_task(project_id, task_id)
         request = task_artifacts().read_json(task_id, task.payload_ref, default={})
@@ -4441,7 +4614,7 @@ def material_batch_router(
         return public_batch(task, task_artifacts(), task_repository())
 
     @router.get("")
-    def list_batches(project_id: str, active_only: bool = False, limit: int = 50, cursor: str = ""):
+    def list_batches(project_id: str, request: Request, active_only: bool = False, limit: int = 50, cursor: str = ""):
         get_project(project_id)
         statuses = (
             [
@@ -4461,27 +4634,62 @@ def material_batch_router(
             )
         except ValueError as error:
             raise HTTPException(422, detail=str(error)) from error
+        items = []
+        for task in page.items:
+            try:
+                assignment_request(task, request)
+            except HTTPException as error:
+                if error.status_code not in {401, 404}:
+                    raise
+                continue
+            items.append(public_batch(task, task_artifacts(), task_repository()))
         return {
-            "items": [
-                public_batch(task, task_artifacts(), task_repository())
-                for task in page.items
-            ],
+            "items": items,
             "next_cursor": page.next_cursor,
         }
 
+    @router.get("/by-request/{request_id}")
+    def assignment_by_request(project_id: str, request_id: str, request: Request):
+        get_project(project_id)
+        actor = actor_provider(request, project_id) if actor_provider else {}
+        actor_id = invoke(_assignment_actor, actor)
+        task = require_task(project_id, invoke(_assignment_task_id, project_id, actor_id, request_id))
+        assignment_request(task, request)
+        return public_batch(task, task_artifacts(), task_repository())
+
     @router.get("/{task_id}")
-    def get(project_id: str, task_id: str):
-        return public_batch(require_task(project_id, task_id), task_artifacts(), task_repository())
+    def get(project_id: str, task_id: str, request: Request):
+        task = require_task(project_id, task_id)
+        assignment_request(task, request)
+        return public_batch(task, task_artifacts(), task_repository())
 
     @router.post("/{task_id}/cancel")
-    def cancel(project_id: str, task_id: str):
-        require_task(project_id, task_id)
+    def cancel(project_id: str, task_id: str, request: Request):
+        assignment_request(require_task(project_id, task_id), request)
         return public_batch(task_repository().request_cancel(task_id), task_artifacts(), task_repository())
 
     @router.get("/{task_id}/results")
-    def results(project_id: str, task_id: str, cursor: str = "", limit: int = 100):
+    def results(project_id: str, task_id: str, request: Request, cursor: str = "", limit: int = 100):
         task = require_task(project_id, task_id)
-        request = task_artifacts().read_json(task_id, task.payload_ref, default={})
+        request = assignment_request(task, request)
+        if request.get("operation") in ASSIGNMENT_VALUES:
+            if not 1 <= limit <= BATCH_SIZE:
+                raise HTTPException(422, detail="limit must be between 1 and 500")
+            path = task_artifacts().artifact_path(task_id, SELECTION_REF)
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+                rows = database.execute("SELECT image_id,state FROM selection WHERE image_id>? ORDER BY image_id LIMIT ?",
+                                        (cursor, limit + 1)).fetchall()
+            items = rows[:limit]
+            receipts = material_store(project_id).assignment_receipts(task_id, [row[0] for row in items]) if items else {}
+            unresolved = "cancelled" if task.status is TaskStatus.CANCELLED else "pending"
+            return {
+                "items": [
+                    {"image_id": image_id, "item_state": state, "outcome": outcome, "item_error": error}
+                    for image_id, state in items
+                    for outcome, error in [receipts.get(image_id, ("unknown" if state == "running" else unresolved, None))]
+                ],
+                "next_cursor": items[-1][0] if len(rows) > limit else None,
+            }
         if request.get("operation") == BatchOperation.DELETE_INDEX.value:
             if not 1 <= limit <= BATCH_SIZE:
                 raise HTTPException(422, detail='limit must be between 1 and 500')
@@ -4512,8 +4720,9 @@ def material_batch_router(
                     "next_cursor": next_cursor, "scan_only": True}
 
     @router.post("/{task_id}/retry", status_code=202)
-    def retry(project_id: str, task_id: str):
+    def retry(project_id: str, task_id: str, request: Request):
         task = require_task(project_id, task_id)
+        assignment_request(task, request)
         if "materials.smart_audit" in task.required_capabilities:
             raise HTTPException(409,detail="请从智能分析入口核验开关并重试")
         if task.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.CANCELLED,
@@ -4525,8 +4734,9 @@ def material_batch_router(
         return public_batch(retried, task_artifacts(), task_repository())
 
     @router.get("/{task_id}/log")
-    def log(project_id: str, task_id: str):
+    def log(project_id: str, task_id: str, request: Request):
         task = require_task(project_id, task_id)
+        assignment_request(task, request)
         path = task_artifacts().artifact_path(task_id, task.log_ref)
         if not path.is_file():
             raise HTTPException(404, detail="task log unavailable")

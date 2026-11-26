@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,onBeforeUnmount,ref,shallowRef,watch} from 'vue';
-import {request} from '../app/http';
+import MaterialAssignmentPanel from './MaterialAssignmentPanel.vue';
 import {readWorkspaceSession,workspaceActorKey} from '../app/main';
 import {getMaterialBatch,markMaterialsReady} from '../api/material-batches';
 import type {MaterialBatchEstimate,MaterialBatchSelection,MaterialBatchTask} from '../api/material-batches';
@@ -22,8 +22,7 @@ const terminal=computed(()=>!!task.value&&['SUCCEEDED','PARTIAL_SUCCESS','FAILED
 const locked=computed(()=>busy.value||!!pending.value||!!task.value);
 const filteredAvailable=computed(()=>props.filters.annotation_state!=='partial');
 const total=computed(()=>props.ids.length);
-const effective=computed(()=>operation.value==='ready'?scope.value:'SELECTED');
-function filters(){
+function batchFilters(){
   const {label,storage_source_id,...values}=props.filters;
   return {...Object.fromEntries(Object.entries(values).filter(([,value])=>!!value.trim())),
     ...(label.trim()?{labels:[label.trim()]}:{}),...(storage_source_id.trim()?{storage_source_ids:[storage_source_id.trim()]}:{})};
@@ -59,11 +58,11 @@ watch(open,value=>{
 });
 watch([operation,scope],()=>{estimate.value=undefined;error.value=''});
 async function preflight(){
-  if(locked.value||(effective.value==='SELECTED'&&!total.value)||(effective.value==='FILTERED'&&!filteredAvailable.value))return;
+  if(locked.value||(scope.value==='SELECTED'&&!total.value)||(scope.value==='FILTERED'&&!filteredAvailable.value))return;
   busy.value=true;error.value='';estimate.value=undefined;
   try{
-    const selection:MaterialBatchSelection=effective.value==='SELECTED'
-      ?{scope:'SELECTED',image_ids:[...props.ids]}:{scope:'FILTERED',filters:filters()};
+    const selection:MaterialBatchSelection=scope.value==='SELECTED'
+      ?{scope:'SELECTED',image_ids:[...props.ids]}:{scope:'FILTERED',filters:batchFilters()};
     const value=await markMaterialsReady(props.projectId,selection,signal.signal,true);
     if(!value.supported||value.operation!=='MARK_CLEAN_SKIPPED'||!value.count
       ||value.selection_spec.scope!==selection.scope||(selection.scope==='SELECTED'&&value.count!==total.value))
@@ -73,25 +72,16 @@ async function preflight(){
   finally{busy.value=false}
 }
 async function submit(){
-  if(locked.value||(operation.value==='ready'?!estimate.value:(!split.value||!total.value)))return;
+  const preview=estimate.value;
+  if(locked.value||!preview)return;
   busy.value=true;error.value='';note.value='';
   let sent=false;
   try{
     await identity();
-    if(operation.value==='ready'){
-      remember('unknown');sent=true;
-      const value=await markMaterialsReady(props.projectId,estimate.value!.selection_spec,signal.signal,false);
-      if(!valid(value)||value.total!==estimate.value!.count)throw new Error('后台回执身份或范围不一致');
-      remember(value.task_id);task.value=value;estimate.value=undefined;
-    }else{
-      remember('unknown');sent=true;
-      const value=await request<{ok:boolean;changed:number;split:string}>(
-        `/api/v20/projects/${encodeURIComponent(props.projectId)}/images/batch_split`,{method:'POST',signal:signal.signal,
-          body:JSON.stringify({image_ids:props.ids,scope:'selected',split:split.value})});
-      if(value.ok!==true||value.split!==split.value||!Number.isSafeInteger(value.changed)||value.changed<1||value.changed>total.value)
-        throw new Error('用途变更回执无效');
-      remember('');note.value=`已更新 ${value.changed} / ${total.value} 张`;emit('changed');
-    }
+    remember('unknown');sent=true;
+    const value=await markMaterialsReady(props.projectId,preview.selection_spec,signal.signal,false);
+    if(!valid(value)||value.total!==preview.count)throw new Error('后台回执身份或范围不一致');
+    remember(value.task_id);task.value=value;estimate.value=undefined;
   }catch(cause){
     const status=(cause as {httpStatus?:number})?.httpStatus;
     if(sent&&status&&status>=400&&status<500)remember('');
@@ -130,10 +120,14 @@ onBeforeUnmount(()=>signal.abort());
     <el-radio value="SELECTED">已选 {{total}} 张</el-radio>
     <el-radio value="FILTERED" :disabled="!filteredAvailable">全部筛选结果</el-radio>
    </el-radio-group></el-form-item>
-   <p v-if="effective==='SELECTED'">本次操作范围为已选 {{total}} 张。</p>
-   <p v-if="estimate" role="status">服务端预检 {{estimate.count}} 张，任务创建时会再次核对素材版本并冻结范围。</p>
-   <el-button v-if="operation==='ready'" :disabled="effective==='SELECTED'&&!total" @click="preflight">预检范围</el-button>
-   <el-button type="primary" :disabled="operation==='ready'?!estimate:(!split||!total)" @click="submit">确认执行</el-button>
+   <template v-if="operation==='ready'">
+    <p v-if="scope==='SELECTED'">本次操作范围为已选 {{total}} 张。</p>
+    <p v-if="estimate" role="status">服务端预检 {{estimate.count}} 张。</p>
+    <el-button :disabled="scope==='SELECTED'&&!total" @click="preflight">预检范围</el-button>
+    <el-button type="primary" :disabled="!estimate" @click="submit">确认执行</el-button>
+   </template>
   </el-form>
+  <MaterialAssignmentPanel v-if="operation==='usage'" :visible="open" :project-id="projectId" :actor-key="actorKey"
+   :ids="ids" :filters="filters" operation="CLASSIFY_SPLIT" :target="split" @changed="emit('changed')" />
  </el-dialog>
 </template>

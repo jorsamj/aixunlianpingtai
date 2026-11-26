@@ -32,8 +32,9 @@ let current:MaterialMemory={
 const library=ref<InstanceType<typeof MaterialLibrary>>();
 const governance=ref(false),governanceScope=ref<{ids:string[];filters:MaterialFilters}>();
 const datasets=ref(false),datasetSelection=ref<string[]>([]);
+const datasetFilters=ref<MaterialFilters>(filters);
 function openDatasets(){
-  datasetSelection.value=[...current.selectedItems];datasets.value=true;
+  datasetSelection.value=[...current.selectedItems];datasetFilters.value={...current.filters};datasets.value=true;
 }
 
 function routeQuery(value:MaterialMemory):Record<string,string> {
@@ -141,7 +142,7 @@ const legacyActions=[
   <MaterialBatchGovernance v-if="governanceScope" v-model:open="governance" :project-id="projectId" :actor-key="actorKey"
     :ids="governanceScope.ids" :filters="governanceScope.filters" @changed="library?.refresh()" />
   <MaterialDatasets v-model:open="datasets" :project-id="projectId" :actor-key="actorKey"
-    :selected="datasetSelection" @changed="library?.refresh()" />
+    :selected="datasetSelection" :filters="datasetFilters" @changed="library?.refresh()" />
 </template>
 
 <style scoped>

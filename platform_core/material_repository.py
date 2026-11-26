@@ -44,6 +44,11 @@ _ANNOTATION_INDEX_COUNTS_LOCK = threading.Lock()
 _ANNOTATION_INDEX_COUNTS: OrderedDict[tuple[Any, ...], tuple[int, int]] = OrderedDict()
 _ANNOTATION_INDEX_COUNTS_LIMIT = 128
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS material_assignment_receipts (
+    task_id TEXT NOT NULL, image_id TEXT NOT NULL,
+    outcome TEXT NOT NULL, error TEXT,
+    PRIMARY KEY(task_id, image_id)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL DEFAULT '',
@@ -396,17 +401,17 @@ class MaterialRepository:
         database.execute("PRAGMA foreign_keys=ON")
         return observe_connection(database)
 
-    # Indexes that every supported schema version must have before a read skips
-    # initialization. Additive indexes are created in place without changing
+    # Objects that must exist before a read skips initialization. Additive
+    # objects are created in place without changing
     # user_version, so an older build can still open the same database.
-    _REQUIRED_INDEXES = ('ix_materials_import_batch', 'ix_materials_source_status')
+    _REQUIRED_OBJECTS = ('ix_materials_import_batch', 'ix_materials_source_status', 'material_assignment_receipts')
 
-    def _required_indexes_present(self, database: sqlite3.Connection) -> bool:
+    def _required_objects_present(self, database: sqlite3.Connection) -> bool:
         rows = database.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name IN (?,?)",
-            self._REQUIRED_INDEXES,
+            "SELECT name FROM sqlite_master WHERE type IN ('index','table') AND name IN (?,?,?)",
+            self._REQUIRED_OBJECTS,
         ).fetchall()
-        return len(rows) == len(self._REQUIRED_INDEXES)
+        return len(rows) == len(self._REQUIRED_OBJECTS)
 
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():
@@ -417,7 +422,7 @@ class MaterialRepository:
             ) as database:
                 database.execute("PRAGMA busy_timeout=250")
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
-                if version == _SCHEMA_VERSION and not self._required_indexes_present(database):
+                if version == _SCHEMA_VERSION and not self._required_objects_present(database):
                     return None
                 return version
         except sqlite3.Error:
@@ -434,7 +439,7 @@ class MaterialRepository:
         with lock:
             with closing(self._connect()) as database:
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
-                if version == _SCHEMA_VERSION and self._required_indexes_present(database):
+                if version == _SCHEMA_VERSION and self._required_objects_present(database):
                     return
                 if version > _SCHEMA_VERSION:
                     raise RuntimeError(
@@ -1780,6 +1785,73 @@ class MaterialRepository:
                 (str(storage_source_id), str(object_key)),
             ).fetchone()
         return self._row_payload(row) if row else None
+
+    def assignment_receipts(self, task_id, image_ids):
+        with closing(self._connect()) as database:
+            return self._assignment_receipts(database, task_id, image_ids)
+
+    @staticmethod
+    def _assignment_receipts(database, task_id, image_ids):
+        placeholders = ",".join("?" for _ in image_ids)
+        return {row["image_id"]: (row["outcome"], row["error"]) for row in database.execute(
+            f"SELECT image_id,outcome,error FROM material_assignment_receipts "
+            f"WHERE task_id=? AND image_id IN ({placeholders})",
+            (task_id, *image_ids),
+        )}
+
+    @controlled_material_write_fence
+    def apply_assignment_batch(self, task_id, frozen, field, target, blocked_datasets, commit_guard):
+        """Commit material changes and their idempotency receipts in the same database."""
+        if field not in {"dataset_id", "split"} or not 1 <= len(frozen) <= 500:
+            raise ValueError("invalid material assignment batch")
+        ids = [row["image_id"] for row in frozen]
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            receipts = self._assignment_receipts(database, task_id, ids)
+            current = {row["id"]: row for row in database.execute(
+                f"SELECT * FROM materials WHERE id IN ({placeholders})", ids,
+            )}
+            default = "default" if field == "dataset_id" else "unassigned"
+            now = datetime.now(timezone.utc).isoformat()
+            changed = False
+            for evidence in frozen:
+                image_id = evidence["image_id"]
+                if image_id in receipts:
+                    continue
+                record = current.get(image_id)
+                if record is None:
+                    outcome = ("conflict", "MATERIAL_NOT_FOUND")
+                elif any(record[key] != evidence[key] for key in (
+                    "storage_source_id", "object_key", "content_sha256", "size_bytes", "etag", "created_at",
+                )):
+                    outcome = ("conflict", "MATERIAL_IDENTITY_CHANGED")
+                else:
+                    row = self._row_payload(record)
+                    previous = str(row.get(field) or default)
+                    if row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD):
+                        outcome = ("conflict", "MATERIAL_DELETE_PENDING")
+                    elif target in blocked_datasets or previous in blocked_datasets:
+                        outcome = ("conflict", "DATASET_CHANGED_OR_UNAVAILABLE")
+                    elif previous == target:
+                        outcome = ("unchanged", None)
+                    elif previous != evidence["previous_value"]:
+                        outcome = ("conflict", "MATERIAL_ASSIGNMENT_CHANGED")
+                    else:
+                        row.update({field: target, "updated_at": now})
+                        self._write_row(database, row)
+                        changed = True
+                        outcome = ("updated", None)
+                database.execute(
+                    "INSERT INTO material_assignment_receipts VALUES (?,?,?,?)",
+                    (task_id, image_id, *outcome),
+                )
+                receipts[image_id] = outcome
+            if changed:
+                self._bump_revision(database)
+            commit_guard()
+            database.commit()
+        return receipts
 
     @controlled_material_write_fence
     def mutate_ids(

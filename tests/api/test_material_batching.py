@@ -18,6 +18,71 @@ def write_png(path, color: str):
     Image.new("RGB", (64, 64), color).save(path, format="PNG")
 
 
+@pytest.mark.parametrize("operation", ["MOVE_DATASET", "CLASSIFY_SPLIT"])
+def test_assignment_freeze_replays_original_receipts_without_rewriting(client, tmp_path, monkeypatch, operation):
+    import app as app_module
+    from platform_core.material_batches import BatchSelection, MaterialBatchHandler, SELECTION_REF
+    from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRepository
+    from contextlib import closing
+
+    project = create_project(client)
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    scheduler = Scheduler(repository, artifacts, "assignment-worker",
+        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app_module.DATA_DIR)}, {"materials.batch"})
+    store = app_module.material_store(project)
+    dataset = client.post(f"/api/projects/{project}/datasets", json={"name": "Review"}).json()["id"]
+    for image_id in ("apply", "drift", "exclude"):
+        store.upsert({"id": image_id, "filename": image_id + ".png", "content_sha256": "a" * 64,
+                      "split": "unassigned", "dataset_id": "default"})
+    base = f"/api/v62/projects/{project}/material-batches"
+    field, target = ("dataset_id", dataset) if operation == "MOVE_DATASET" else ("split", "val")
+    packet = {"operation": operation, "selection_spec": {"scope": "FILTERED", "excluded_image_ids": ["exclude"]},
+              "options": {field: target}, "request_id": str(uuid.uuid4())}
+    preview = client.post(base + "/estimate", json=packet)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["count"] == 2
+    packet["selection_spec"] = preview.json()["selection_spec"]
+    if "dataset_revision" in preview.json():
+        packet["options"]["dataset_revision"] = preview.json()["dataset_revision"]
+    created = client.post(base, json=packet)
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+    assert client.get(base + "/by-request/" + packet["request_id"]).json()["task_id"] == task_id
+    assert client.post(base, json=packet).json()["task_id"] == task_id
+    assert client.post(base, json={**packet, "options": {field: "train" if field == "split" else "default",
+                **({"dataset_revision": "f" * 64} if field == "dataset_id" else {})}}).status_code == 409
+    store.patch({"drift": {"content_sha256": "b" * 64}})
+
+    # Lose the selection checkpoint after a material transaction commits.
+    apply = type(store).apply_assignment_batch
+    def lost_checkpoint(self, *args, **kwargs):
+        apply(self, *args, **kwargs)
+        raise RuntimeError("simulated interruption after material commit")
+    monkeypatch.setattr(type(store), "apply_assignment_batch", lost_checkpoint)
+    assert scheduler.run_once()
+    assert store.get("apply")[field] == target
+    revision = store.read().revision
+    page = client.get(f"{base}/{task_id}/results?limit=1").json()
+    assert page["items"][0]["outcome"] == "updated"
+    assert page["next_cursor"] == "apply"
+
+    monkeypatch.setattr(type(store), "apply_assignment_batch", apply)
+    assert client.post(f"{base}/{task_id}/retry").status_code == 202
+    assert scheduler.run_once()
+    assert store.read().revision == revision
+    assert store.get("drift")[field] != target
+    assert store.get("exclude")[field] != target
+    assert client.get(f"{base}/{task_id}").json()["status"] == "PARTIAL_SUCCESS"
+    assert client.get(f"{base}/{task_id}/results?cursor=apply").json()["items"] == [{
+        "image_id": "drift", "item_state": "failed", "outcome": "conflict", "item_error": "MATERIAL_IDENTITY_CHANGED",
+    }]
+    with closing(BatchSelection(artifacts.artifact_path(task_id, SELECTION_REF))) as selection:
+        assert selection.summary()["total"] == 2
+
+
 def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path):
     import app as app_module
 

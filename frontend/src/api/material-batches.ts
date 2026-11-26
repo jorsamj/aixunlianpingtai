@@ -25,6 +25,7 @@ export interface MaterialBatchSelection {
   scope: 'SELECTED' | 'CURRENT_PAGE' | 'FILTERED';
   image_ids?: string[];
   filters?: Record<string, unknown>;
+  excluded_image_ids?: string[];
 }
 
 export interface MaterialBatchEstimate {
@@ -35,6 +36,7 @@ export interface MaterialBatchEstimate {
   error_code?: string;
   message?: string;
   operation?: string;
+  dataset_revision?: string;
 }
 
 export interface MaterialBatchTask {
@@ -59,6 +61,8 @@ export interface MaterialBatchTask {
   changed_boxes?: number | null;
   log_available?: boolean;
   results_url?: string | null;
+  target_dataset_id?: string;
+  target_split?: string;
   error_examples?: {error?: string}[];
   created_at?: string;
   updated_at?: string;
@@ -71,6 +75,7 @@ export interface MaterialBatchItemResult {
   image_id: string;
   item_state: MaterialBatchItemState | string;
   item_error?: string | null;
+  outcome?: string;
 }
 
 export interface MaterialBatchResults {
@@ -81,6 +86,33 @@ export interface MaterialBatchResults {
 
 const batchBase = (projectId: string) =>
   `/api/v62/projects/${encodeURIComponent(projectId)}/material-batches`;
+
+export interface MaterialAssignmentRequest {
+  operation: 'MOVE_DATASET' | 'CLASSIFY_SPLIT';
+  selection_spec: MaterialBatchSelection;
+  options: {dataset_id?: string; split?: string; dataset_revision?: string};
+  request_id?: string;
+}
+
+export function estimateMaterialAssignment(project: string, packet: MaterialAssignmentRequest, signal: AbortSignal) {
+  return request<MaterialBatchEstimate>(batchBase(project) + '/estimate', {
+    method: 'POST', signal, body: JSON.stringify(packet),
+  });
+}
+
+export function submitMaterialAssignment(project: string, packet: MaterialAssignmentRequest, signal: AbortSignal) {
+  return request<MaterialBatchTask>(batchBase(project), {method: 'POST', signal, body: JSON.stringify(packet)});
+}
+
+export function readMaterialAssignment(project: string, id: string, signal: AbortSignal) {
+  return request<MaterialBatchTask>(batchBase(project) + '/by-request/' + encodeURIComponent(id), {signal});
+}
+
+export function manageMaterialBatch(project: string, taskId: string, action: 'cancel' | 'retry', signal: AbortSignal) {
+  return request<MaterialBatchTask>(batchBase(project) + '/' + encodeURIComponent(taskId) + '/' + action, {
+    method: 'POST', signal,
+  });
+}
 
 export function markMaterialsReady(projectId:string,selection:MaterialBatchSelection,signal:AbortSignal,estimate:true):Promise<MaterialBatchEstimate>;
 export function markMaterialsReady(projectId:string,selection:MaterialBatchSelection,signal:AbortSignal,estimate:false):Promise<MaterialBatchTask>;
