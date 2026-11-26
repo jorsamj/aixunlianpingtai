@@ -1,6 +1,16 @@
 # AI 开发接续入口
 
-## 资源与交付工作台产品化及审核状态定位（2026-11-26，当前）
+## 算法版本身份与评测可比性收口（2026-11-26，当前）
+
+- 起始本地及远端 `38c0ea534c6fc397416cdc7e1b70b0f7e97a6228`（GPT 独立核验 23/23 workflow 成功：PR 22/22、push 1/1，Frontend Runtime Stabilization run 45774436074 全 6 Job 成功，P1Z Job 139757446845 成功）。目录 `D:\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮业务代码候选见提交 `Algorithms`/`AlgorithmReport`/`training_evaluation_service` 的提交；含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 算法报告可比性：`TrainingEvaluationService._v49_evaluation_comparability` 复用 `compare_evaluations` 的严格口径（五项 benchmark_scope 摘要 + `bundle_verified` 绑定 + 历史独立性 + `evaluation_protocol_id`）生成同口径 key，无法证明时返回原因码；v49 轻量报告的 `version_quality` 行新增 `evaluation_id/benchmark_scope_id/evaluation_protocol_id/comparability_key/comparability_reason`，仍是同一 40 版本有界窗口，无新增扫描。
+- `AlgorithmReport.vue`：移除跨全部近期版本的单一 `highestTest`，改为按同口径 key 分组、组内取最高并在界面标注“基准 + 协议 + 该口径版本数”；不可比的成功 Test 按原因计数提示；明确窗口“仅最近 N/M 个版本，不是全历史最佳”；版本表新增“可比性”列。不新建最佳版本权威，不跨基准排名，不填 0。
+- `Algorithms.vue`：删除“分页第一条即最新创建”的错误标记，改为展开时读取现有 v49 轻量报告的 `latest_created_version`（全算法服务端身份），当前版本与最新创建各自独立、可同时成立；读取失败时只提示不显示标签，不影响版本表。
+- 未做：算法卡片列表的“最新创建/最佳评测”投影（需在 `AlgorithmSqlStore`/Postgres 两个 Owner 增加有界相关子查询，属下一轮，避免 N+1 与跨基准排名）；AiCreate/NativeCleaning 的页面级专项优化本轮未实施，既有三步表单、冻结选材、试跑、范围预检、后台执行、停止/重试、逐图处理与确认链路未改。
+- 静态检查：`vue-tsc --noEmit` 0 错误；Python AST 通过；新增可比性投影用脚本逐项验证（有效→key、缺协议/缺绑定/历史独立性未验/缺基准证据/评测未成功→对应原因码、key 稳定、协议变化改变 key）。未运行全仓 pytest/Playwright，运行期交给 CI。
+- 视觉 `VISUAL_PENDING`（本机无 GitHub 令牌，制品 15096021961、15095377753、15095019996、15096530190、15095119973 未下载）。四份保护文档、AGENTS.md、VERSION、vendor 与用户未跟踪文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再做算法卡片有界投影与 AiCreate/NativeCleaning 工作台优化。
+
+## 资源与交付工作台产品化及审核状态定位（2026-11-26，上一批）
 
 - 起始本地及远端 `8b98878b0c0ca52f6cccb88464656534610708fd`，工作区仅有四份未跟踪保护文档。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。代码候选见本记录提交前的 `git rev-parse HEAD`，验收以含本记录的远端最终 HEAD 为准。状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 开工 CI（`8b98878b`）：Frontend Runtime Stabilization run 45770839855 唯一失败为 P1Z isolated real-entry acceptance Job 139745204550 的 “Native AI single-image review against the real API”，其余 Job（frontend、browser-navigation 1/2/3）成功；Material Annotation Atomicity 在 `d3075b56` 已成功。
