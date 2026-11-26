@@ -4,6 +4,8 @@
 
 正式人工和 AI 候选共用现有 Vue AnnotationEditor 挂载/释放、Annotorious 3.9.5 本地 vendor、createAnnotoriousEditor 和 geometry adapter。正式上下文用原 GT API、原 payload builder、CAS 与图片代际，候选上下文用原候选草稿和审核回执。正式原图通过既有内容路由可选 SHA 匹配，未通过不挂载可编辑画布；保存前原 flush 合并隐藏框。候选几何错误不提交新草稿。vendor、许可证、NOTICE、首次历史补丁及 manifest 未改。原生浏览器合同复用现有 CI，实际运行和视觉证据待验。
 
+AI 创建单图试跑的高级对比已接入 Vue。AiCreate 在独立容器内挂载既有 annotation-trial.js，与正式标注共用同一路径的 createAnnotoriousEditor。关闭、切换试跑或卸载时终止比较请求并销毁会话。原正式标注只作为临时人工基准来源，临时编辑经原 flush 后调 v60 compare，导出原 JSON 诊断。沿用现有本地资源与几何适配。控制台实画、导出和三档视觉证据待准确 SHA 的 CI 或隔离验收。
+
 # Annotorious v3 人工标注工作台正式集成（2026-10-21）
 
 本文件是本专项唯一需求、设计、进度、问题、验收与接续依据，不与页面启动综合治理或GT素材生命周期专项混写。用户明确要求先完成综合治理补充验收，再单独实施本专项；前者最终 `4fcbcfc804748d37a07eaeb8b8ed960539d10b91` / VERSION `42.24.371` 已独立21/21 Actions、55/55 Checks、Chrome140/140通过。

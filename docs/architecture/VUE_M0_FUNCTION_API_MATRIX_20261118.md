@@ -1,4 +1,18 @@
-# 功能/API迁移矩阵（M0基线2026-11-18，当前M4-D0）
+# 功能/API迁移矩阵（M0基线2026-11-18）
+
+## AI 审核、清洗与数据治理增量（2026-11-26，当前）
+
+|正式操作|原入口、当前 Vue 与 API Owner|迁移和验证状态|
+|---|---|---|
+|AI 创建、跨页继承与高级试跑|素材库/AI 创建 → AiCreate；v35 模型配置、v60 选择与创建回执；annotation-trial.js、Annotorious、v60 compare|NATIVE_PARTIAL。原试跑人工基准编辑、预测对比及 JSON 导出已接入。参考图 ID 贯通请求，Provider 实际多图输入尚缺。非等价素材筛选继续用显式选择。|
+|审核单图、跨页及冻结转池|原审核工作台 → AiReview、NativeReviewTransfer；v60 review-selection、negative-transfer-preview、negative-transfer/receipt/undo；CandidateStore、NegativePool、AnnotationRepository|NATIVE_PARTIAL。接通冻结排除、目标、修订、资格、分页回执、部分续批和原撤销检查。原操作身份用于核对丢失响应。无 Web Locks 使用标签页会话；当前 Vue 浏览器入口只保留最近一笔。|
+|IoU 与消歧|原审核 → NativeReviewAmbiguity；共有 annotation-ambiguity.js；v60 candidates/drafts-batch|NATIVE_PARTIAL。服务端待消歧冻结、阈值、按标签或置信度预检、25 张有界候选草稿。原消歧直接正式入库仍有旧入口。|
+|清洗创建、进度、停止与诊断|自动标注及清洗/素材库 → NativeCleaning；v47 clean-runtime/preflight、clean-tasks；v62 原 MaterialBatch 状态、日志、重试|NATIVE_PARTIAL。显式跨页或条件范围，创建时由原后台冻结。清洗规范范围暂不提供全选后排除，旧 v47 创建没有精确按请求回执。|
+|清洗结果与选中剔除|NativeCleaning；v47 result/annotation-audit/confirm；原 v62 DELETE_INDEX 的预检、凭据、任务及回执|NATIVE_PARTIAL。逐项浏览及选中，确认其余素材时只提交原剔除排除项。标注质量服务端分页，图片结果沿用原整批响应。|
+|素材用途与处理状态|原批量工具 → Materials、MaterialBatchGovernance；v20 batch_split、v62 MARK_CLEAN_SKIPPED|NATIVE_PARTIAL。已选调整用途，免清洗按已选或兼容筛选预检并在同库版本冻结。分类、数据集成员、算法级负池和统一筛选排除仍保留旧入口。|
+|标签完整性审计及修复|原标签审计 → Labels、LabelAudit；v54 integrity audits/repairs，v62 MaterialBatch，原 GT Owner|NATIVE_PARTIAL。审计、问题样例、影响确认、历史重映射、投影修复、状态、日志及原任务重试。快速预设、Smart Audit 和重复冲突仍依赖旧页。|
+
+本批验证为 `CI_PENDING / UAT_PENDING`。隔离用例覆盖原转池身份、丢失响应及撤销，以及清洗预检后同一删除计划和排除项。三条正式菜单整体仍为 `NATIVE_PARTIAL`，以本节为当前进度。
 
 ## 连续标注和 AI 创建增量（2026-11-26）
 
@@ -54,10 +68,10 @@
 |质量中心|LEGACY_BRIDGE|原质量中心/治理 Owner，未改|
 |算法库|NATIVE_PARTIAL|app/Algorithms.vue 卡片/CRUD/版本；算法报告、删除/回退等原流程仍保留|
 |训练任务|NATIVE_PARTIAL|TrainingTasks/Create/NativeTrainingReport；完整操作/高级参数仍按原矩阵逐项验收|
-|素材库|NATIVE_PARTIAL|Materials/MaterialLibrary/原生上传、ZIP 与正式人工标注；批量用途、分类等仍旧入口|
+|素材库|NATIVE_PARTIAL|原生浏览、上传、ZIP、正式人工标注、已选用途和免清洗；分类、成员和算法池仍有旧入口|
 |视频切帧|LEGACY_BRIDGE|原视频任务页，尚未原生化|
-|自动标注及清洗|NATIVE_PARTIAL|AiTasks/AiCreate/AiReview 与原批量 GT；转池、清洗及其余操作仍有旧入口|
-|标签管理|NATIVE_PARTIAL|本轮目录维护+后台统一；预设/审计/修复仍旧入口|
+|自动标注及清洗|NATIVE_PARTIAL|AiTasks/AiCreate/AiReview、转池、候选消歧与清洗；原消歧直接批量入库等仍有旧入口|
+|标签管理|NATIVE_PARTIAL|目录、后台统一、标签完整性审计和修复已接通；预设和 Smart Audit 等仍有旧入口|
 |算力与节点|NATIVE_PARTIAL|ServiceNodes 只读总览；配置、环境、诊断仍原入口|
 |模型转换环境|LEGACY_BRIDGE|原环境、资源与字典管理；现有 ConversionCreate/Detail/History 属转换业务，不能据此标环境菜单完成|
 |AI 辅助配置|LEGACY_BRIDGE|原模型/Prompt配置 Owner|
