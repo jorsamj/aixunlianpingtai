@@ -4,20 +4,33 @@
 
 | 状态 | 单元 | 说明 |
 |---|---|---|
-| 已完成代码 | U1 Provider 边界 | 三个 SQLite ATTACH 读投影 fail-closed；边界测试 18 项通过 |
-| 已完成代码 | 前端 CI 修复 | 分类面板模板表达式截断已修，本地 app 构建通过 |
-| 未完成开发 | U2 存储源元数据 | 需最小 Provider 合同、PG Schema/Provider、迁移对账；未开始 |
+| 已完成代码 | A 前端数据安全 | 分类未知写入结构化待核+可信回读门禁；报告溯源按版本作用域隔离/迟到丢弃/深链自动读取；FP/FN 直达样本子页 |
+| 已完成代码 | U1 三个旧读取者 Provider 化 | 新增 `algorithm_history_evidence`；revision/存在性/有界 payload 分页由权威 Provider 提供，SQLite 与 PostgreSQL 等价，失败 fail-closed |
+| 已完成代码 | U2 存储源元数据 | PG Schema/Provider/导出/幂等导入/对账/CLI；SQLite 写者按准入记录 fail-closed；跨域删除保留阻断 |
+| 已完成代码 | 素材名查找热点 | `find_by_stored_name`（schema 8 表达式索引）替换业务文件按名全文读取；实测 217k 行 1485ms → 0.9ms |
 | 未完成开发 | U3 素材+GT+负样本池 | 需联合边界设计（batch ATTACH、rescan manifest、picker usage/GT，ATTACH、负样本池同库事务），未开始 |
-| 未完成开发 | 素材读写热点 | `MaterialRepository.read()/mutate()` 全量路径仍待按调用点整改 |
 | 未完成开发 | 训练准备与缓存 | Prepare/Cache 复用依据、取消回收与磁盘占用仍需治理 |
 | 未完成开发 | 转换 L0–L5 | 数值/检测/板端合同补齐与算能 BModel 误检根因待现场证据 |
 | 未完成开发 | 任务执行架构 | 正式 Runner、进程句柄、恢复与 Legacy 退役条件 |
 | 安全设计阻塞 | U5 任务库迁移 | 必须与执行权威、Lease、资源预留、恢复联合设计 |
+| 安全设计阻塞 | 存储源跨域删除 | 需素材引用证据与存储退役证明，Provider 已声明能力缺口并对普通配置放行 |
 | 安全设计阻塞 | 整算法删除/凭据轮换/发布回退 | 缺原引用与持有者证明，保持原保护 |
-| CI 待确认 | `4dafd1f8`、`245be439` | 推送后单次查询；Historical 已通过项不重复整改 |
+| CI 待确认 | 本轮业务提交 | 推送后单次查询；Historical 已通过项不重复整改 |
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## A/B/C/D 批次：前端安全、U1 兼容、U2 迁移与素材热点（2026-11-26，当前）
+
+- 起始本地及远端 `99f9ba26895bf657e8a5f60a5c35a6afba39e410`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592（未改）。状态 `CODE_COMPLETE（A/B/C/D 首批）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / HARDWARE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。**本批仅为授权范围内首批，不代表平台完成。**
+- A 前端数据安全（`NegativePoolCategories.vue`、`AlgorithmNegativePool.vue`、`NativeTrainingReport.vue`、`NativeEvaluation.vue`）：未知写入的待核记录改为结构化 `{operation,targetId,targetName,submitted,at}`，存在未核记录时拒绝再次提交，读取错误与写入错误分列（父级 `categoryError` 作为 `readError` 传入），只有“写入之后成功完成的一次读取”才启用“已核对分类列表”，`enabled` 回执按显式值（兼容 SQLite 的 1/0）判定而非缺失即启用。报告溯源以 `algorithmId/versionId` 作用域存储、切换即清除、迟到响应按 token+作用域丢弃；版本路由复用已取回的版本详情不重复请求；`?tab=trace` 深链自动触发一次有界读取；样本诊断改为 TP/FP/FN 直达 `?tab=evaluation&view=samples&issue=…`（保留 `back`）。未新增组件/依赖，未改 API。
+- B U1 三个旧读取者真正 Provider 化：新增 `platform_core/algorithm_history_evidence.py`（`open_history_repository`、`revision_token`、`iter_history_payloads`），并由 `SqliteAlgorithmStore` 与 `PostgresAlgorithmRepository` 提供等价合同——只读 revision（不初始化目录）、三态存在性探针（`None`=无法证明为空）、按 id 键集分页的 payload（每页 ≤500，总量 ≤5000，超限 `ALGORITHM_HISTORY_EVIDENCE_UNBOUNDED`）。`material_history_index` 的签名改由 Provider 的 `(provider, revision)` 组成；`training_material_usage._empty_project_history` 用 Provider 存在性探针且失败即“不新鲜”；`conversion_catalog_references` 用 Provider 分页读取并把 `AlgorithmRepositoryError` 纳入原 409 `CATALOG_REFERENCE_CHECK_FAILED`（此前 `AlgorithmSqliteAttachRefused` 会逃逸为 500）。`HISTORY_EVIDENCE_OPERATIONS` 已纳入 `_KNOWN_READ_OPERATIONS`、`capabilities()` 与切换准入记录的 capabilities 列表。旧 `require_authoritative_sqlite` 守卫保留。
+- C U2 存储源元数据实际迁移：新增 `storage_source_postgres_schema.py`（`w4_storage_source`，v1；`(scope,id)` 主键、名称唯一、`WHERE is_default` 部分唯一索引、revision≥1 约束）、`storage_source_postgres_store.py`（`list/get/default/create/update/set_default/record_health/migration_status` 与 SQLite 同合同；scope 级 advisory 事务锁；`default_local` 幂等引导；`A→B→A` 仍 bump `runtime_revision`，仅改名不 bump；健康消息走 `redact_storage_error`；唯一冲突翻译为 `StorageSourceConflictError`（ValueError 子类，API 维持 409））、`storage_source_migration.py`（确定性导出、幂等导入、逐行更新而非全表写、目标更新代次更新时拒绝回退、对账区分身份差异与健康证据）、`storage_source_migration_cli.py`（status/export/import/report/admit，`admit` 仅在目标完全对账时写准入记录）。`storage/source_repository.py` 新增 Provider 选择、准入记录与 `open_storage_source_repository`；**所有 SQLite 写路径（含构造时的默认源引导）在准入后 fail-closed**，转换标记阻断两侧。`StorageManager` 与 `app.py::storage_source_repository` 已切换到工厂。跨域删除保持阻断（`STORAGE_SOURCE_DELETE_REQUIRES_CROSS_DOMAIN_EVIDENCE`），普通配置读写可用；凭据仍只在 SecretStore。
+- D 素材热点首个闭环：`MaterialRepository.find_by_stored_name` + schema 8（新增 `ix_materials_stored_name` 表达式索引，`MATERIAL_READ_SCHEMA_VERSIONS` 增 8，`_REQUIRED_OBJECTS` 纳入该索引）；`app.py::_business_material_by_name` 由“全量 `read()` 后按名过滤”改为有界索引查找（`limit=2`，≥2 仍判定不唯一）。无 `stored_name` 的旧行通过一次有界补查（≤200 行，超出即视为不存在，绝不返回错误行）。本地合成实测：217,000 行时 `read()` 中位 1485.1ms，`find_by_stored_name` 命中 0.9ms／未命中 0.8ms；50,000 行 311.3ms → 2.1ms／0.8ms；查询计划使用 `ix_materials_stored_name`。
+- 验证（本地定向，未跑全仓）：`tests/unit/test_algorithm_provider_boundary.py` + `test_material_history_index.py` 24 项；`test_training_material_usage.py` 相关 24 项；`tests/unit/test_conversion_catalog_crud.py` 47 项；`tests/unit/storage/test_source_repository.py`+`test_manager.py` 18 项；`tests/unit/storage/test_storage_source_provider.py` 10 项；`tests/api/test_storage_sources.py`+`test_storage_source_lifecycle.py` 11 项；`tests/integration/test_storage_source_postgres.py` 2 项（**真实 PostgreSQL**，pgserver）；素材仓库/业务文件 45 项；素材 schema 与查找 18 项；治理/交付/NAS 17 项；`vue-tsc --noEmit` 0 错误，四个改动 SFC 均通过 `@vue/compiler-sfc` 模板编译；`git diff --check` 干净。CI 侧新增：`storage-cache-governance.yml` 加 `test_storage_source_provider.py`，`algorithm-sql-store.yml` 的 PG 步骤加 `test_storage_source_postgres.py`（仅新增测试路径，未改触发/并发）。
+- 未完成/下一步：U3 联合迁移设计；U5 任务库；训练准备与缓存治理；转换 L0–L5 与实机；任务执行架构；Smart Audit；VLM 参考图；剩余生命周期能力（整算法删除、凭据轮换、发布回退、存储源跨域删除证据）。存储源 Provider 尚未在生产启用（`STORAGE_SOURCE_PROVIDER` 默认 sqlite，未授权切换）。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改；未连接 4070/A800，未改真实数据库，未切换生产 Provider。
+
 
 ## 架构阶段开工：CI 修复与 U1 Provider 边界收口（2026-11-26，当前）
 
