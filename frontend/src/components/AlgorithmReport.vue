@@ -78,9 +78,9 @@ onMounted(()=>void load());
    <p>当前版本 {{report.algorithm.current_version_id||'无'}} · 最新创建 {{report.latest_created_version?.version_name||report.latest_created_version?.id||'未提供'}}（两项身份独立，可同时成立）</p>
    <div v-if="comparableGroups.length" class="comparability-groups">
     <p v-for="group in comparableGroups" :key="group.key">
-     <strong>同口径最佳</strong> · 基准 {{shortScope(group.scopeId)}} · 协议 {{group.protocol||'未提供'}}：
+     <strong>{{ group.rows.length>1?'同口径最佳':'唯一合格版本' }}</strong> · 基准 {{shortScope(group.scopeId)}} · 协议 {{group.protocol||'未提供'}}：
      {{group.best?.version_name||group.best?.version_id}} {{metric(group.best?.test_map50??null)}}
-     <small>该口径内 {{group.rows.length}} 个版本</small>
+     <small>{{ group.rows.length>1?`该口径内 ${group.rows.length} 个版本比较`:'该口径内只有 1 个合格版本，未进行多版本优劣比较' }}</small>
     </p>
    </div>
    <el-alert v-else title="暂无可比评测证据：没有版本同时满足同基准、同协议与输入绑定已验证的 Test 结果，因此不提供最佳版本排名。" type="info" :closable="false"/>

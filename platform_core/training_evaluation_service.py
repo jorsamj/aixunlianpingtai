@@ -1004,8 +1004,15 @@ class TrainingEvaluationService:
         current_quality = next(
             (row for row in quality_rows if row['is_current']), None
         )
-        latest_created = max((row for row in versions if row.get('created_at')),
-                             key=lambda row: str(row['created_at']), default=None)
+        # Same ordering as the version page owner: created_at DESC, sort_index, id.
+        created_rows = [row for row in versions if row.get('created_at')]
+        latest_created = None
+        if created_rows:
+            newest_created = max(str(row['created_at']) for row in created_rows)
+            latest_created = min(
+                (row for row in created_rows if str(row['created_at']) == newest_created),
+                key=lambda row: (int(row.get('sort_index') or 0), str(row.get('id') or '')),
+            )
         success = self.dependencies._successful_training_counts(project_id, history_context=(rows, repository, durable)).get(str(algorithm_id), 0)
         return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,
            'label_counts_scope': 'not_computed_fast' if lightweight else 'cumulative_training_boxes',

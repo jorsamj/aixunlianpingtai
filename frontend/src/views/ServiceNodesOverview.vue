@@ -14,21 +14,18 @@ const filtered=computed(()=>nodes.value.filter(node=>(!query.value||`${node.node
 const summary=computed(()=>{
  const list=nodes.value;
  const stale=list.filter(node=>node.status==='ONLINE'&&typeof node.heartbeat_age_seconds==='number'&&node.heartbeat_age_seconds>=300).length;
- const running=list.reduce((sum,node)=>{
-  const durable=new Set((node.durable_tasks||[]).map(task=>String(task.task_id||'').trim()).filter(Boolean));
-  const reportedOnly=(node.reported_active_tasks||[]).filter(task=>{
-   const id=String(task.task_id||'').trim();
-   return !id||!durable.has(id);
-  });
-  return sum+(node.durable_tasks||[]).length+reportedOnly.length;
- },0);
+ // Two task sources are reported separately: a cross-source global identity and
+ // late-report ownership are not proven, so they are never summed into one total.
+ const centralTasks=list.reduce((sum,node)=>sum+(node.durable_tasks||[]).length,0);
+ const reportedTasks=list.reduce((sum,node)=>sum+(node.reported_active_tasks||[]).length,0);
  return {
   total:list.length,
   online:list.filter(node=>node.status==='ONLINE').length,
   stale,
   gpu:list.reduce((sum,node)=>sum+(node.resources?.gpu?.gpus?.length||0),0),
   cuda:list.filter(node=>node.runtime?.cuda_available===true).length,
-  running,
+  centralTasks,
+  reportedTasks,
  };
 });
 async function load(){
@@ -51,9 +48,9 @@ onMounted(()=>{props.context.signal.addEventListener('abort',dispose,{once:true}
   <div><dt>心跳超 5 分钟</dt><dd :class="{warn:summary.stale>0}">{{ summary.stale }}</dd></div>
   <div><dt>已上报 GPU</dt><dd>{{ summary.gpu }}</dd></div>
   <div><dt>CUDA 已上报可用</dt><dd>{{ summary.cuda }}</dd></div>
-  <div><dt>执行中任务</dt><dd>{{ summary.running }}</dd></div>
+  <div><dt>中央持久任务</dt><dd>{{ summary.centralTasks }}</dd></div><div><dt>Agent 上报任务</dt><dd>{{ summary.reportedTasks }}</dd></div>
  </dl>
- <p v-if="loaded&&nodes.length" class="node-fleet-note">在线与心跳只说明连接证据；可调度、环境就绪和 GPU 可训练资格需各自的服务端证据，本页不推断。</p>
+ <p v-if="loaded&&nodes.length" class="node-fleet-note">在线与心跳只说明连接证据；中央持久任务与 Agent 上报任务来自不同来源，未合并为精确执行总数；可调度、环境就绪与 GPU 可训练资格需各自的服务端证据，本页不推断。</p>
  <el-alert v-if="error" :title="error" type="error" :closable="false"/>
  <el-skeleton v-if="busy&&!loaded" :rows="8" animated/>
  <el-empty v-else-if="!error&&!filtered.length" :description="nodes.length?'没有匹配的服务节点':'暂无已登记的服务节点'"/>

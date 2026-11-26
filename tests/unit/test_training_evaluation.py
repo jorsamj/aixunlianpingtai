@@ -925,6 +925,11 @@ def test_strict_rank_evidence_requires_verified_independence_and_binds_protocol(
     # Legacy comparison behaviour is unchanged: it still compares without the
     # verified-independence requirement it never had.
     assert evaluation.compare_evaluations(base, {**base, 'metrics': {'metrics/mAP50(B)': .7}})['comparable'] is True
+    # The historical reason codes are stable.
+    drift = evaluation.compare_evaluations(base, {**base, 'benchmark_scope': {**scope, 'scope_id': 'd' * 64}})
+    assert drift['reason_codes'] == ['benchmark_scope_mismatch']
+    missing = evaluation.compare_evaluations(base, {**base, 'benchmark_scope': {**scope, 'scope_id': ''}})
+    assert missing['reason_codes'] == ['benchmark_evidence_missing']
 
 
 def test_version_comparison_uses_class_id_when_display_labels_are_duplicated():
