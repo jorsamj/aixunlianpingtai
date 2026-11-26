@@ -185,7 +185,9 @@ def parse_request(payload):
             "素材完整性审计必须通过项目级专用入口创建，不能伪造普通素材 selection",
             422,
         )
-    selection = MaterialSelectionSpec.from_mapping(payload.get("selection_spec"))
+    selection = MaterialSelectionSpec.from_mapping(
+        payload.get("selection_spec"), allow_filtered_exclusions=operation is BatchOperation.CLEAN,
+    )
     explicit_limit = (
         MAX_LARGE_EXPLICIT_SELECTION
         if operation in {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED, BatchOperation.DELETE_INDEX}
@@ -217,7 +219,7 @@ def parse_request(payload):
 
 def _predicate(materials, selection):
     if selection.scope is SelectionScope.FILTERED:
-        return materials._filters(selection.filters)
+        return selection.filtered_predicate(materials)
     return ["m.id IN (" + ",".join("?" for _ in selection.image_ids) + ")"], list(selection.image_ids)
 
 
@@ -462,6 +464,8 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
                     "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
                     params,
                 ).rowcount
+                if selection.excluded_image_ids and inserted == 0:
+                    raise BatchRequestError("MATERIAL_SELECTION_EMPTY", "当前清洗范围没有可处理素材", 409)
             else:
                 database.executemany(
                     "INSERT INTO batch_selection.selection(image_id) VALUES (?)",

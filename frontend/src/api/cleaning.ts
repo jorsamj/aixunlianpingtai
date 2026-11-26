@@ -10,6 +10,7 @@ export interface CleaningTask {
 }
 export interface CleaningRuntime {
   selected_count:number; agent_available:boolean; reason?:string;
+  repository_revision?:number;
   eligible_nodes?:{node_id:string; display_name?:string; name?:string; idle?:boolean; preemptible?:boolean}[];
   label_counts?:Record<string,{images:number}>;
 }

@@ -56,6 +56,8 @@ const imageIds=ref<string[]>([]), pickerQuery=ref(''), appliedQuery=ref(''), pic
 const pickerRows=ref<{id:string;filename:string}[]>([]);
 const labelChoices=ref<NonNullable<CleaningRuntime['label_counts']>>({});
 const filtered=ref(false);
+const excludedIds=ref<string[]>([]);
+const maximumExclusions=500;
 const execution=ref<'local'|'agent'>('local'), scheduling=ref<'auto'|'node'>('auto'), node=ref(''), queue=ref<'normal'|'front'|'preempt'>('normal');
 const rules=reactive({exact_duplicate:true,near_duplicate:true,low:true,high:false,blur_check:true,brightness_check:false,corrupt_check:true});
 const thresholds=reactive({min_width:320,min_height:240,max_width:10000,max_height:10000,near_duplicate_hamming:5,blur_min_laplacian:45,brightness_min:15,brightness_max:245});
@@ -73,11 +75,14 @@ const reviewable=(row:CleaningTask)=>['awaiting_confirmation','done'].includes(r
 const retriable=(row:CleaningTask)=>cleanTaskView(row).canRetry;
 const reportError=(cause:unknown)=>{if(!lifetime.signal.aborted)error.value=browseError(cause)};
 
-function selection(){
+function selection(repositoryRevision?:number){
   const result=cleanScopeRequest(scope.value,imageIds.value,{labels:labelCodes.value,annotationState:annotation.value,
     filters:scope.value==='selected'&&filtered.value?{query:appliedQuery.value}:{},selectionMode:filtered.value?'filtered':'explicit'});
   // The canonical selection_spec carries SELECTED. The v47 adapter accepts only annotation states in clean_scope.
-  return {...result,clean_scope:result.clean_scope==='selected'?'all':result.clean_scope};
+  const exclusions=scope.value==='selected'&&filtered.value&&excludedIds.value.length
+    ?{excluded_image_ids:excludedIds.value,...(repositoryRevision!==undefined?{repository_revision:repositoryRevision}:{})}:{};
+  return {...result,clean_scope:result.clean_scope==='selected'?'all':result.clean_scope,
+    selection_spec:{...result.selection_spec,...exclusions}};
 }
 async function preflight(){
   const generation=++checkGeneration;
@@ -112,17 +117,30 @@ async function loadPicker(page=1){
   }catch(cause){if(generation===pickerGeneration)reportError(cause)}
 }
 function searchPicker(){
-  filtered.value=false;
+  clearFilteredSelection();
   appliedQuery.value=pickerQuery.value.trim();
   void loadPicker();
 }
 function toggleImage(id:string){
-  filtered.value=false;
+  if(filtered.value){
+    if(excludedIds.value.includes(id))excludedIds.value=excludedIds.value.filter(value=>value!==id);
+    else if(excludedIds.value.length<maximumExclusions)excludedIds.value=[...excludedIds.value,id];
+    return;
+  }
   imageIds.value=imageIds.value.includes(id)?imageIds.value.filter(value=>value!==id):[...imageIds.value,id];
 }
 function selectPage(){
-  filtered.value=false;
+  if(filtered.value){
+    const visibleIds=new Set(pickerRows.value.map(row=>row.id));
+    excludedIds.value=excludedIds.value.filter(id=>!visibleIds.has(id));
+    return;
+  }
   imageIds.value=[...new Set([...imageIds.value,...pickerRows.value.map(row=>row.id)])];
+}
+function clearFilteredSelection(){
+  filtered.value=false;
+  excludedIds.value=[];
+  pickerRows.value=[];
 }
 async function loadResult(row:CleaningTask,page=resultPage.value){
   const generation=++resultGeneration;
@@ -191,7 +209,9 @@ async function refresh(){
   }
 }
 async function submit(){
-  if(busy.value||uncertain.value||!runtime.value?.selected_count)return;
+  const checkedScope=runtime.value;
+  if(busy.value||uncertain.value||!checkedScope?.selected_count)return;
+  const checkedSelection=selection(checkedScope.repository_revision);
   busy.value=true;
   error.value='';
   notice.value='';
@@ -199,8 +219,8 @@ async function submit(){
     await verifyActor();
     const isAgent=execution.value==='agent';
     const assigned=isAgent&&scheduling.value==='node';
-    const target=runtime.value.eligible_nodes?.find(row=>row.node_id===node.value);
-    if(isAgent&&(!runtime.value.agent_available||(assigned&&!target)))
+    const target=checkedScope.eligible_nodes?.find(row=>row.node_id===node.value);
+    if(isAgent&&(!checkedScope.agent_available||(assigned&&!target)))
       throw Object.assign(new Error('当前无可用清洗节点，请重新核对范围'),{httpStatus:409});
     if(assigned&&queue.value==='preempt'&&target?.idle===false&&!target.preemptible)
       throw Object.assign(new Error('该节点当前任务不支持安全抢占'),{httpStatus:409});
@@ -208,7 +228,7 @@ async function submit(){
     const scopeLabel={all:'全部图片',selected:'选定图片',labels:'选定标签'};
     sessionStorage.setItem(createKey,'pending');
     const row=await api.create({
-      ...selection(),...checks,...thresholds,
+      ...checkedSelection,...checks,...thresholds,
       min_width:low?thresholds.min_width:0,min_height:low?thresholds.min_height:0,
       max_width:high?thresholds.max_width:999999,max_height:high?thresholds.max_height:999999,
       execution_mode:execution.value,scheduling_mode:isAgent?scheduling.value:'auto',
@@ -227,6 +247,7 @@ async function submit(){
     if(!uncertain.value)sessionStorage.removeItem(createKey);
     reportError(cause);
     if(uncertain.value)await refresh();
+    else if(status===409)await preflight();
   }finally{busy.value=false}
 }
 async function action(kind:'stop'|'retry'|'keep'){
@@ -316,8 +337,8 @@ function resolveCreate(){
   try{sessionStorage.removeItem(createKey);uncertain.value=false}
   catch(cause){reportError(cause)}
 }
-watch([form,scope,annotation,labelCodes,imageIds,filtered],()=>void preflight());
-watch([scope,annotation],()=>{if(scope.value==='selected')void loadPicker()});
+watch([scope,annotation],()=>{clearFilteredSelection();if(scope.value==='selected')void loadPicker()});
+watch([form,scope,annotation,labelCodes,imageIds,filtered,excludedIds],()=>void preflight());
 watch([resultFilter,issueFilter],()=>{if(task.value&&detail.value?.task.id===task.value.id)void loadResult(task.value,1)});
 watch(resultTab,value=>{if(value==='annotation'&&!audit.value)void loadAudit(1)});
 onMounted(()=>{void refresh();void deletion.recover()});
@@ -450,9 +471,13 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
         <el-radio-group v-model="scope"><el-radio value="all">全部图片</el-radio><el-radio value="selected">选定图片</el-radio><el-radio value="labels">选定标签</el-radio></el-radio-group>
         <div v-if="scope==='selected'">
           <div class="cleaning-controls"><el-input v-model="pickerQuery" aria-label="图片名称" placeholder="搜索图片名称" @keyup.enter="searchPicker" /><el-button @click="searchPicker">查询</el-button></div>
-          <el-button @click="selectPage">全选当前页</el-button><el-button @click="filtered=true">全选当前筛选结果</el-button><el-button @click="imageIds=[];filtered=false">取消选择</el-button>
-          <p>{{filtered?'按当前筛选结果冻结范围':'跨页已选 '+imageIds.length+' 张'}}</p>
-          <div class="cleaning-options"><el-checkbox v-for="row in pickerRows" :key="row.id" :model-value="!filtered&&imageIds.includes(row.id)" @change="toggleImage(row.id)">{{row.filename||row.id}}</el-checkbox></div>
+          <el-button @click="selectPage">全选当前页</el-button><el-button @click="filtered=true;excludedIds=[]">全选当前筛选结果</el-button><el-button @click="imageIds=[];filtered=false;excludedIds=[]">取消选择</el-button>
+          <p>{{filtered?`按当前筛选结果冻结范围，已排除 ${excludedIds.length} 张`:'跨页已选 '+imageIds.length+' 张'}}</p>
+          <p v-if="filtered&&excludedIds.length===maximumExclusions">已达到 500 张排除上限，可勾回已排除的图片。</p>
+          <div class="cleaning-options"><el-checkbox v-for="row in pickerRows" :key="row.id"
+            :model-value="filtered?!excludedIds.includes(row.id):imageIds.includes(row.id)"
+            :disabled="filtered&&excludedIds.length===maximumExclusions&&!excludedIds.includes(row.id)"
+            @change="toggleImage(row.id)">{{row.filename||row.id}}</el-checkbox></div>
           <el-pagination :current-page="pickerPage" :page-count="pickerTotal" layout="prev, pager, next" @current-change="loadPicker" />
         </div>
         <el-select v-if="scope==='labels'" v-model="labelCodes" multiple aria-label="标签" placeholder="选择标签，任一命中">

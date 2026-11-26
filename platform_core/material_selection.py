@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 # upload selections without relying on giant SQL IN clauses.
 MAX_EXPLICIT_MATERIAL_IDS = 100_000
 MAX_EXPLICIT_SELECTION_IDS = MAX_EXPLICIT_MATERIAL_IDS
+MAX_FILTERED_EXCLUSION_IDS = 500
 
 
 def _normalized_values(values: Sequence[object] | None) -> tuple[str, ...]:
@@ -103,6 +104,7 @@ class MaterialSelectionSpec:
     filters: MaterialFilters = MaterialFilters()
     image_ids: tuple[str, ...] = ()
     repository_revision: int | None = None
+    excluded_image_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -111,6 +113,15 @@ class MaterialSelectionSpec:
             raise ValueError("invalid material selection scope") from error
         filters = MaterialFilters.from_mapping(self.filters)
         image_ids = _normalized_values(self.image_ids)
+        if not isinstance(self.excluded_image_ids, (list, tuple)) or any(
+            not isinstance(value, str) or not value.strip() for value in self.excluded_image_ids
+        ):
+            raise ValueError("excluded_image_ids must contain nonempty image IDs")
+        excluded = _normalized_values(self.excluded_image_ids)
+        if len(excluded) > MAX_FILTERED_EXCLUSION_IDS:
+            raise ValueError(f"filtered exclusions are limited to {MAX_FILTERED_EXCLUSION_IDS} IDs")
+        if excluded and scope is not SelectionScope.FILTERED:
+            raise ValueError("only FILTERED selection can exclude image IDs")
         if len(image_ids) > MAX_EXPLICIT_MATERIAL_IDS:
             raise ValueError(f"explicit material selection is limited to {MAX_EXPLICIT_MATERIAL_IDS} ids")
         if scope is SelectionScope.FILTERED and image_ids:
@@ -124,14 +135,27 @@ class MaterialSelectionSpec:
         object.__setattr__(self, "scope", scope)
         object.__setattr__(self, "filters", filters)
         object.__setattr__(self, "image_ids", image_ids)
+        object.__setattr__(self, "excluded_image_ids", excluded)
+
+    def filtered_predicate(self, materials):
+        clauses, params = materials._filters(self.filters)
+        if self.excluded_image_ids:
+            placeholders = ",".join("?" for _ in self.excluded_image_ids)
+            clauses.append(f"m.id NOT IN ({placeholders})")
+            params.extend(self.excluded_image_ids)
+        return clauses, params
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "MaterialSelectionSpec":
+    def from_mapping(cls, value: Mapping[str, Any], *, allow_filtered_exclusions: bool = False) -> "MaterialSelectionSpec":
         if isinstance(value, cls):
+            if value.excluded_image_ids and not allow_filtered_exclusions:
+                raise ValueError("filtered exclusions are supported only for CLEAN material batches")
             return value
         if not isinstance(value, Mapping):
             raise TypeError("material selection must be an object")
         allowed = set(cls.__dataclass_fields__)
+        if not allow_filtered_exclusions:
+            allowed.remove("excluded_image_ids")
         unknown = sorted(set(value) - allowed)
         if unknown:
             raise ValueError(f"unknown material selection fields: {', '.join(unknown)}")
@@ -143,4 +167,5 @@ class MaterialSelectionSpec:
             "filters": self.filters.as_dict(),
             "image_ids": list(self.image_ids),
             "repository_revision": self.repository_revision,
+            **({"excluded_image_ids": list(self.excluded_image_ids)} if self.excluded_image_ids else {}),
         }

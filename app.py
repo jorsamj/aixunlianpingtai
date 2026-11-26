@@ -15525,7 +15525,7 @@ def _v47_clean_selection_spec(
             raw_filters['annotation_state'] = requested_state
         raw['filters'] = raw_filters
         try:
-            normalized = MaterialSelectionSpec.from_mapping(raw)
+            normalized = MaterialSelectionSpec.from_mapping(raw, allow_filtered_exclusions=True)
         except (TypeError, ValueError) as error:
             raise ValueError(str(error)) from error
         if normalized.scope is SelectionScope.FILTERED:
@@ -15598,9 +15598,22 @@ def _v47_clean_agent_preflight(
         }
     selected = list(selection.get('image_ids') or [])
     materials = material_store(project_id)
-    clauses, params = materials._filters(selection.get('filters') or {})
+    spec = (
+        MaterialSelectionSpec.from_mapping(selection, allow_filtered_exclusions=True)
+        if selection.get('scope') == 'FILTERED' else None
+    )
+    clauses, params = spec.filtered_predicate(materials) if spec else materials._filters(selection.get('filters') or {})
     where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
     with closing(materials._connect()) as database:
+        database.execute('BEGIN')
+        revision = materials._revision(database)
+        if spec and spec.excluded_image_ids and spec.repository_revision is not None and spec.repository_revision != revision:
+            return {
+                'agent_available': False,
+                'reason': '素材范围已变化，请重新核对清洗范围',
+                'selected_count': 0,
+                'eligible_nodes': [],
+            }
         join = ''
         existing_selected = len(selected)
         if selected:
@@ -15637,6 +15650,7 @@ def _v47_clean_agent_preflight(
             'agent_available': False,
             'reason': '所选素材已发生变化，请刷新后重新选择',
             'selected_count': total,
+            'repository_revision': revision,
             'eligible_nodes': [],
         }
     if total <= 0:
@@ -15652,6 +15666,7 @@ def _v47_clean_agent_preflight(
             'agent_available': False,
             'reason': f'有 {incomplete} 张素材缺少对象存储大小或 SHA256 证据',
             'selected_count': total,
+            'repository_revision': revision,
             'clean_scope': normalized_scope,
             'eligible_nodes': [],
         }
@@ -15683,6 +15698,7 @@ def _v47_clean_agent_preflight(
             'agent_available': False,
             'reason': f'本次范围包含不可远程读取的素材存储：{names}',
             'selected_count': total,
+            'repository_revision': revision,
             'sources': source_truth,
             'eligible_nodes': [],
         }
@@ -15720,6 +15736,7 @@ def _v47_clean_agent_preflight(
             'agent_available': False,
             'reason': '当前没有在线且已授权 cleaning 能力的 Agent 节点',
             'selected_count': total,
+            'repository_revision': revision,
             'sources': source_truth,
             'eligible_nodes': [],
         }
@@ -15734,6 +15751,7 @@ def _v47_clean_agent_preflight(
             'agent_available': False,
             'reason': str(error),
             'selected_count': total,
+            'repository_revision': revision,
             'sources': source_truth,
             'eligible_nodes': [],
         }
@@ -15789,6 +15807,7 @@ def _v47_clean_agent_preflight(
         'agent_available': True,
         'reason': '',
         'selected_count': total,
+            'repository_revision': revision,
         'sources': source_truth,
         'eligible_nodes': eligible_nodes,
         'idle_nodes': sum(1 for row in eligible_nodes if row['idle']),
@@ -15848,6 +15867,10 @@ def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[s
     _v47_validate_clean_selection_labels(project_id, selection)
     draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data, 'scheduling': scheduling}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)
+    if selection.get('excluded_image_ids') and (
+        selection.get('repository_revision') != estimate['repository_revision'] or not estimate['count']
+    ):
+        raise ValueError('素材范围已变化或为空，请重新核对清洗范围')
     draft['selection_spec'] = estimate['selection_spec']
     if execution_mode == 'agent':
         draft['execution_mode'] = 'agent'

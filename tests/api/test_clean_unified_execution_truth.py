@@ -356,8 +356,9 @@ def test_clean_agent_preflight_rejects_local_material_and_create_does_not_fallba
 
 def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client):
     project_id = _create_project(client, "clean-agent-portable")
-    uploaded = _upload(client, project_id, "portable.png")
+    uploaded = _upload(client, project_id, "portable.png", "excluded-local.png")
     image_id = uploaded["uploaded"][0]["id"]
+    excluded_id = uploaded["uploaded"][1]["id"]
     payload_bytes = _png_bytes()
     digest = hashlib.sha256(payload_bytes).hexdigest()
 
@@ -409,23 +410,40 @@ def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client)
         "runtime": {},
     })
 
+    selection = {
+        "scope": "FILTERED",
+        "filters": {"query": ".png"},
+        "excluded_image_ids": [excluded_id],
+    }
     preflight = client.post(
         f"/api/v47/projects/{project_id}/clean-runtime/preflight",
-        json={"image_ids": [image_id]},
+        json={"selection_mode": "selected", "selection_spec": selection},
     )
     preflight.raise_for_status()
     truth = preflight.json()
     assert truth["agent_available"] is True
     assert truth["selected_count"] == 1
+    assert [source["storage_source_id"] for source in truth["sources"]] == [source_id]
     assert truth["eligible_nodes"][0]["node_id"] == node_id
     assert truth["eligible_nodes"][0]["idle"] is True
     assert truth["eligible_nodes"][0]["active_count"] == 0
     assert truth["eligible_nodes"][0]["resources"]["memory"]["available_bytes"] == 8 * 1024**3
 
+    rejected = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={"selection_mode": "selected", "selection_spec": {
+            **selection, "repository_revision": truth["repository_revision"] - 1,
+        }, "execution_mode": "agent"},
+    )
+    assert rejected.status_code == 409
+    assert not app_module.shared_task_repository().list(
+        project_id=project_id, kinds={TaskKind.MATERIAL_BATCH}, limit=20,
+    ).items
     response = client.post(
         f"/api/v47/projects/{project_id}/clean-tasks",
         json={
-            "image_ids": [image_id],
+            "selection_mode": "selected",
+            "selection_spec": {**selection, "repository_revision": truth["repository_revision"]},
             "task_name": "portable remote clean",
             "execution_mode": "agent",
         },
@@ -442,6 +460,8 @@ def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client)
         task.task_id, task.payload_ref, default={}
     )
     assert request["operation"] == "CLEAN"
+    assert request["selection_spec"]["excluded_image_ids"] == [excluded_id]
+    assert app_module._v47_frozen_clean_selection_ids(task.task_id) == [image_id]
     assert request["execution_mode"] == "agent"
     assert request["remote_execution"]["task_kind"] == "MATERIAL_BATCH"
     assert request["remote_execution"]["transport"] == "object-storage-v1"
