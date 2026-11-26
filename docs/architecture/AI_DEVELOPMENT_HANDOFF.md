@@ -1,6 +1,18 @@
 # AI 开发接续入口
 
-## Schema 7 与审核入库定向收口（2026-11-26，当前）
+## 核心生产链路工作台与 CI 精准收口（2026-11-26，当前）
+
+- 起始本地及远端 `b186bc237bb09e1bb890bd79c5dbc0daf07295a3`，与上一轮核验 HEAD 一致，工作区仅有四份未跟踪保护文档。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。本轮代码候选见本记录提交前的 `git rev-parse HEAD`；实际验收以含本记录的远端最终 HEAD 为准，状态 `CODE_COMPLETE / CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 开工 CI 快照（`b186bc23`）：PR 工作流全部成功，push 两条失败。Material Annotation Atomicity run 45765652516 / Job 139725807382 为 215 通过、1 失败、1 跳过；Frontend Runtime Stabilization run 45765652529 / Job 139725895513 为 84 通过、1 失败。
+- Schema 7 根因（本轮定位）：`platform_core/__init__.py` 导入 `material_repository_batch`，其 `_install_repository_initialization_cache` 把 `MaterialRepository.__init__` 换成进程级就绪缓存。测试先在 193 行成功构造同一项目，随后删表再构造时命中 `_MATERIAL_INIT_READY` 快路径，`_initialize` 与注入的 `_SCHEMA` 从未执行，故未抛异常。诊断脚本确认 `cached: True`、`_read_schema_version_fast() is None`、构造不抛错。生产实现无缺陷：缓存按模块注释仅保证进程内首次构造权威，进程重启即重新校验；同文件其它用例已用 `_MATERIAL_INIT_READY.discard(...)` 模拟新进程。修复只在夹具丢弃该路径的缓存并注释原因，保留 DDL 回滚、旧素材与修订号、原图 SHA256、回执补建及再次打开幂等断言。单项 pytest 通过（1 passed）。
+- 训练报告旧入口断言（本轮定位）：`23e1797c` 已把第一处 `/继续训练.*LEGACY_BRIDGE/` 换成原生入口，第二处（第 96 行，`back=` 场景）漏改。源码核对：继续训练已由 `TrainingIteration.openTraining` + `readTrainingSource` 校验动作身份、评测身份、模型摘要与固定任务 ID，并带 `algorithm/source_version/evaluation/action/supplement` 进入 `TrainingCreate`，后者再次读取来源并保留固定 Test 基准；原高级评测桥仍携带 `return_to`。用例改为断言原生“困难样本与继续训练”入口存在，并沿用原高级评测桥的 `return_to` 等于来源，保留返回来源、身份不一致与版本对比断言。
+- 核心生产链路 UI：全局样式把历史算法库硬编码灰阶（`#ddd/#eee/#333/#777/#888`）与 10px 圆角改为 `--workspace-*` 令牌、8px 圆角及 4/8/12/16 间距。算法库卡片明确“当前版本 mAP50”口径并新增基准不可比提示，卡片主操作改为 `primary`，版本行原流程链接降级为次级样式。素材库把 11 个并列按钮拆为常用动作组与次级链接组，保留全部入口与名称。训练任务新增算法/版本、运行设备、已运行与失败原因，状态改用共享语义标签。总览新增有界“待处理失败任务”（`status=FAILED`、limit 5）并说明不代表全量。质量中心明确本页检查范围与结果张数，训练与评测页签改用共享状态标签。
+- 新增公共组件 `frontend/src/components/TaskStatusTag.vue`，统一总览、质量中心与训练任务的状态用词和语义色（仅成功/警告/失败着色），未引入第二套主题或状态机。
+- 仅继承公共主题而未做页面级专项优化的菜单：算力与节点、模型转换环境、AI 辅助配置、存储管理、平台对接、畅联云数据、标签管理、视频切帧、自动标注及清洗。本轮未改其业务代码。
+- 静态检查：`vue-tsc --noEmit` 仅报本机缺少 `@noble/hashes/sha2.js`（package.json 已声明 2.0.1，属本机依赖缺失，非本轮改动）；`git diff --check` 见交付报告。未运行全仓 pytest、Playwright 或大型构建；单项 Schema 7 复现属最小定向验证。
+- 本机无法下载 CI 制品（无 GitHub 令牌），截图未核对，视觉保持 `VISUAL_PENDING`。四份保护文档、AGENTS.md、VERSION、vendor 与用户未跟踪文件均未改动；未进行任何生产环境操作。下一轮先按最终 SHA 单次查询 CI，确认两条失败是否关闭，再继续资源与交付页面（算力与节点、存储、平台对接、转换环境、畅联云数据）的专项优化。
+
+## Schema 7 与审核入库定向收口（2026-11-26，上一批）
 
 - 起始本地及远端 `041f91d714d3eb104fce0e045b22cca177082ee6`。代码候选 `cc59bc0c272cf94fa547dc9349ae3f5e8598e0b0`。工作目录、分支及 VERSION 沿用下节记录。验收以含本记录的远端最终 HEAD 为准。
 - 基线最后一次定向快照为 28 成功、1 失败、2 运行，当前仅已确认 Material Annotation Atomicity Job 139722844359 的 Schema 7 补建用例未触发预期异常。夹具显式提交删表，用独立连接校验 DDL 缺失、Schema 7 和快路径拒绝，并在初始化函数实际使用的模块中注入特定错误。覆盖 DDL 回滚、旧素材和修订、原图摘要、回执补建与再次打开。Schema 5 夹具与生产迁移原样保留。
