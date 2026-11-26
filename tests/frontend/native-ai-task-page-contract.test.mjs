@@ -27,11 +27,15 @@ test('AI task write buttons call only the existing v60 write endpoints',()=>{
   assert.match(api,/\$\{encodeURIComponent\(taskId\)\}\/review-completed/);
 });
 
-test('AI task page keeps the legacy create entry instead of inventing creation',()=>{
-  assert.match(page,/const createHref=legacyUrl\(projectId,'自动标注及清洗','','','material-ai'\);/);
+test('AI tasks routes creation to the native form while preserving the full legacy fallback',async()=>{
+  const create=await readFile(new URL('../../frontend/src/api/ai-annotation-create.ts',import.meta.url),'utf8');
+  const router=await readFile(new URL('../../frontend/src/app/main.ts',import.meta.url),'utf8');
+  assert.match(page,/const createTarget=\{name:'ai-create',params:\{projectId\}\};/);
   assert.match(page,/const legacyHref=legacyUrl\(projectId,'自动标注及清洗'\);/);
-  assert.match(page,/创建任务（原工作台）/);
-  assert.match(page,/<el-button tag="a" type="primary" :href="createHref">创建任务（原工作台）<\/el-button>/);
+  assert.match(page,/<el-button tag="router-link" type="primary" :to="createTarget">创建任务<\/el-button>/);
+  assert.match(router,/name:'ai-create',component:\(\)=>import\('\.\/AiCreate\.vue'\)/);
+  assert.match(create,/post<AiTask>\(root\(project\)\+'\/annotation-tasks',body\)/);
+  assert.match(create,/\/annotation-tasks\/by-request\//);
   assert.match(page,/原完整自动标注/);
 });
 

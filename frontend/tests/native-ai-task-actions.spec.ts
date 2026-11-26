@@ -99,7 +99,7 @@ test('native AI task writes never auto-repeat an unconfirmed receipt or accept a
  await expect(drawer.getByRole('button',{name:'取消任务',exact:true})).toBeEnabled();
 });
 
-test('native AI task page keeps create on the legacy owner, links review back and locates materials',async({page})=>{
+test('native AI task page links native creation, links review back and locates materials',async({page})=>{
  const writes:string[]=[];
  await assets(page);
  await page.route('**/api/**',async route=>{
@@ -116,10 +116,9 @@ test('native AI task page keeps create on the legacy owner, links review back an
   return route.fulfill({status:404,json:{detail:'unexpected '+path}});
  });
  await page.goto('/app/#/projects/p/ai/tasks');
- const create=page.getByRole('link',{name:'创建任务（原工作台）',exact:true});
+ const create=page.getByRole('link',{name:'创建任务',exact:true});
  await expect(create).toBeVisible();
- await expect(create).toHaveAttribute('href',/page=%E8%87%AA%E5%8A%A8%E6%A0%87%E6%B3%A8/);
- await expect(create).toHaveAttribute('href',/action=material-ai/);
+ await expect(create).toHaveAttribute('href',/projects\/p\/ai\/create$/);
  await expect(page.getByRole('link',{name:'原完整自动标注',exact:true})).toHaveAttribute('href',/page=%E8%87%AA%E5%8A%A8%E6%A0%87%E6%B3%A8/);
  await page.getByRole('row').filter({hasText:'task-await'}).getByRole('button',{name:'查看进度',exact:true}).click();
  const drawer=page.getByRole('dialog',{name:'AI 标注任务：进度与写操作'});

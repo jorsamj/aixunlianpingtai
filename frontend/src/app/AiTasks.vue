@@ -61,7 +61,7 @@ const detailFacts=computed<[string,unknown][]>(()=>{
   ['Worker',row.worker_id],['等待原因',row.resource_wait_reason],['创建',created(row.created_at)],['完成',created(row.finished_at)],['统计同步',created(row.statistics_synced_at)],
  ];
 });
-const createHref=legacyUrl(projectId,'自动标注及清洗','','','material-ai');
+const createTarget={name:'ai-create',params:{projectId}};
 const legacyHref=legacyUrl(projectId,'自动标注及清洗');
 onBeforeUnmount(()=>{alive=false;controller.abort();stopDetailPoll();detailController?.abort();failureController?.abort();actionController?.abort()});
 function openDetail(row:AiTask){
@@ -201,7 +201,8 @@ function locateMaterial(imageId:string){
 onMounted(()=>void load());
 </script>
 <template><section class="ai-tasks" aria-label="AI 标注任务">
- <header><div><h2>AI 标注任务</h2><p>任务状态与写回执沿用原 v60 任务 Owner；创建任务仍进入原工作台，完整导出与审核写回不在此页重建。</p></div><div class="ai-tasks-links"><el-button tag="a" type="primary" :href="createHref">创建任务（原工作台）</el-button><a :href="legacyHref">原完整自动标注</a></div></header>
+ <header><div><h2>AI 标注任务</h2></div><div class="ai-tasks-links"><el-button tag="router-link" type="primary" :to="createTarget">创建任务</el-button><a :href="legacyHref">原完整自动标注</a></div></header>
+ <el-alert v-if="typeof route.query.created==='string'" :title="`任务已创建：${route.query.created}`" type="success" :closable="false"/>
  <form @submit.prevent="search"><el-select v-model="status" aria-label="AI任务状态"><el-option label="全部状态" value=""/><el-option v-for="(name,code) in statuses" :key="code" :label="name" :value="code"/></el-select><el-button native-type="submit" type="primary" :disabled="reads.busy.tasks">查询</el-button><el-button :disabled="reads.busy.tasks" @click="load">刷新</el-button></form>
  <el-alert v-if="reads.errors.tasks" :title="reads.errors.tasks" type="error" :closable="false"/>
  <p v-if="reads.errors.tasks&&page" class="ai-tasks-note">下方为上次读取的快照，不能作为最新任务状态。</p>

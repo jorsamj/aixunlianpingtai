@@ -86,6 +86,10 @@ function openAnnotation(image?:string){
 }
 function locationFor(action:string,page:string){
   if(action==='material-manual'){openAnnotation();return}
+  if(action==='material-ai'){
+    void router.push({name:'ai-create',params:{projectId},query:{...current.filters}});
+    return;
+  }
   if(page==='标签管理'){void router.push({name:'labels',params:{projectId}});return}
   location.assign(original(action,page))
 }

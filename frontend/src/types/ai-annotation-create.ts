@@ -27,7 +27,7 @@ export interface AiAnnotationCreateContext {
   subscribe(listener: (snapshot: AiAnnotationCreateSnapshot) => void): () => void;
   // Original live controls retain their IDs/events and authoritative state.
   // The runtime restores these same nodes after presentation is released.
-  slots: {
+  slots?: {
     configuration: HTMLElement;
     materials: HTMLElement;
     advanced?: HTMLElement;

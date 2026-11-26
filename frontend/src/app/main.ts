@@ -45,6 +45,7 @@ export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/projects/:projectId/algorithms/:algorithmId/versions/:versionId/report',name:'version-report',component:()=>import('./NativeTrainingReport.vue')},
   {path:'/projects/:projectId/training/create',name:'training-create',component:()=>import('./TrainingCreate.vue')},
   {path:'/projects/:projectId/ai/tasks',name:'ai-tasks',component:()=>import('./AiTasks.vue')},
+  {path:'/projects/:projectId/ai/create',name:'ai-create',component:()=>import('./AiCreate.vue')},
   {path:'/projects/:projectId/ai/tasks/:taskId/review',name:'ai-review-native',props:true,meta:{immersive:true},component:()=>import('./AiReview.vue')},
   {path:'/projects/:projectId/algorithms/:algorithmId/versions/:versionId/conversions',name:'version-conversions',props:true,component:()=>import('./ConversionHistory.vue')},
   {path:'/projects/:projectId/conversions/new',name:'conversion-create-native',props:true,component:()=>import('./ConversionCreate.vue')},
