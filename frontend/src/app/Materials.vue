@@ -97,6 +97,7 @@ function openAnnotation(image?:string){
 async function locationFor(action:string,page:string){
   if(action==='material-manual'){openAnnotation();return}
   if(action==='material-clean'){await router.push({name:'native-cleaning',params:{projectId}});return}
+  if(action==='material-negative'){await router.push({name:'algorithm-negative-pool',params:{projectId}});return}
   if(action==='material-manage'){
     governanceScope.value={ids:[...current.selectedItems],filters:{...current.filters}};
     governance.value=true;return;
@@ -120,7 +121,7 @@ async function locationFor(action:string,page:string){
 const legacyActions=[
   ['上传图片','material-upload','数据集'],['ZIP 数据集导入','material-zip','数据集'],
   ['人工标注','material-manual','数据集'],['AI 预标注','material-ai','自动标注及清洗'],
-  ['素材清洗','material-clean','自动标注及清洗'],['历史算法池','material-negative','数据集'],
+  ['素材清洗','material-clean','自动标注及清洗'],['算法负样本池','material-negative','数据集'],
   ['标签管理','material-labels','标签管理'],['批量治理','material-manage','数据集'],
   ['删除与安全审核','material-integrity','数据集'],
 ];

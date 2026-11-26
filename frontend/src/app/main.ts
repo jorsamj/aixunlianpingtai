@@ -34,6 +34,7 @@ export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/',component:{render:()=>h('p','当前账号没有可用项目。')}},
   {path:'/projects/:projectId/algorithms',name:'algorithms',component:()=>import('./Algorithms.vue')},
   {path:'/projects/:projectId/materials/negative-pool',name:'public-negative-pool',props:true,component:()=>import('./PublicNegativePool.vue')},
+  {path:'/projects/:projectId/materials/algorithm-negative-pool',name:'algorithm-negative-pool',props:true,component:()=>import('./AlgorithmNegativePool.vue')},
   {path:'/projects/:projectId/materials',name:'materials',component:()=>import('./Materials.vue')},
   {path:'/projects/:projectId/video-tasks',name:'video-tasks',props:true,component:()=>import('./VideoTasks.vue')},
   {path:'/projects/:projectId/overview',name:'overview',props:true,component:()=>import('./Overview.vue')},

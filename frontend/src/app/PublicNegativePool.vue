@@ -44,9 +44,13 @@ async function fetchRows(){
   if(current.project_id!==projectId)throw new Error('负样本池项目不一致');
   revision.value=current.negative_pool_revision;
  }
- selected.value=[];
 }
-function browse(pageNumber=1){void run(async()=>{page.value=pageNumber;await fetchRows()})}
+function browse(pageNumber?:number){
+ void run(async()=>{
+  if(pageNumber===undefined)selected.value=[];
+  page.value=pageNumber??1;await fetchRows();
+ });
+}
 function operationId(){return Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('')}
 function journal(packet:Packet|null){
  if(!key)throw new Error('无法确认当前登录账号，不能保存公共池操作回执');
@@ -60,6 +64,7 @@ async function accept(result:Receipt,packet:Packet){
  journal(null);
  if(controller.signal.aborted)return;
  await fetchRows();
+ selected.value=[];
  message.value='操作已核实';
 }
 function execute(){
@@ -97,7 +102,8 @@ void run(async()=>{await fetchCategories();await fetchRows()});
 
 <template>
  <section class="project-pool">
-  <header><h2>项目公共负样本池</h2><router-link :to="{name:'materials',params:{projectId}}">返回素材库</router-link></header>
+  <header><h2>项目公共负样本池</h2><router-link :to="{name:'materials',params:{projectId}}">返回素材库</router-link>
+   <router-link :to="{name:'algorithm-negative-pool',params:{projectId}}">算法负样本池</router-link></header>
   <p>分类用于管理素材。训练角色按当前任务的正式 GT 和确认凭证核验。</p>
   <el-alert v-if="error" :title="error" type="error" :closable="false"/>
   <p v-if="message" role="status">{{message}}</p>
@@ -119,14 +125,15 @@ void run(async()=>{await fetchCategories();await fetchRows()});
    </form>
   </details>
   <div class="pool-tools">
-   <span>当前页已选 {{selected.length}} 张</span>
+   <span>已选 {{selected.length}} 张</span>
+   <el-button :disabled="busy || !selected.length" @click="selected=[]">清除选择</el-button>
    <el-select v-model="assigned" multiple collapse-tags aria-label="操作分类" placeholder="选择要设置的分类">
     <el-option v-for="row in categories.filter(row=>row.enabled)" :key="row.id" :label="row.name" :value="row.id"/>
    </el-select>
    <el-button v-if="catalog" :disabled="busy||!!pending||!selected.length" @click="confirmation='add'">加入公共池</el-button>
    <template v-else><el-button :disabled="busy||!!pending||!selected.length" @click="confirmation='set'">替换所选素材分类</el-button><el-button :disabled="busy||!!pending||!selected.length" @click="confirmation='remove'">移出公共池</el-button></template>
   </div>
-  <el-checkbox-group v-model="selected">
+  <el-checkbox-group v-model="selected" :max="200">
    <div v-loading="busy" class="pool-grid">
     <article v-for="row in rows" :key="row.id">
      <MaterialPreview :image="row" :project-id="projectId" :boxes="row.annotation_preview"/>
@@ -137,7 +144,7 @@ void run(async()=>{await fetchCategories();await fetchRows()});
   </el-checkbox-group>
   <el-empty v-if="!busy&&!rows.length" description="当前条件下没有素材"/>
   <div class="pool-tools"><el-button :disabled="busy||page<=1" @click="browse(page-1)">上一页</el-button><span>第 {{page}} 页 · 共 {{total}} 张</span><el-button :disabled="busy||page*48>=total" @click="browse(page+1)">下一页</el-button></div>
-  <el-dialog :model-value="!!confirmation" title="确认公共池操作" @close="confirmation=null"><p>{{visibleNames.join('、')}}</p><p v-if="confirmation==='set'">当前选择的分类将替换这些素材的原分类。</p><template #footer><el-button @click="confirmation=null">取消</el-button><el-button type="primary" @click="execute">确认</el-button></template></el-dialog>
+  <el-dialog :model-value="!!confirmation" title="确认公共池操作" @close="confirmation=null"><p>已选 {{selected.length}} 张<span v-if="selected.length>visibleNames.length">，其中 {{selected.length-visibleNames.length}} 张来自其他页</span>。</p><p v-if="visibleNames.length">{{visibleNames.join('、')}}</p><p v-if="confirmation==='set'">当前选择的分类将替换这些素材的原分类。</p><template #footer><el-button @click="confirmation=null">取消</el-button><el-button type="primary" @click="execute">确认</el-button></template></el-dialog>
  </section>
 </template>
 <style scoped>
