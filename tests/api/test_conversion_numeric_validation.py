@@ -70,8 +70,14 @@ def _image(name="test.png", invalid=False):
 
 def test_numeric_verification_has_one_durable_task_and_idempotent_retry(monkeypatch, tmp_path):
     root, tasks, artifacts = _setup(monkeypatch, tmp_path)
-    first = api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="stable-verification-1")
-    second = api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="stable-verification-1")
+    service = api._conversion_management_service()
+    uploaded = _image()
+    digest = hashlib.sha256(uploaded.file.getbuffer()).hexdigest()
+    first = service.v39_create_numeric_validation("p1", "j1", [uploaded], request_id="stable-verification-1", sample_sha256=digest)
+    second = service.v39_create_numeric_validation("p1", "j1", [_image()], request_id="stable-verification-1", sample_sha256=digest)
+    with pytest.raises(HTTPException) as wrong_sample:
+        service.v39_create_numeric_validation("p1", "j1", [_image(invalid=True)], request_id="stable-verification-1", sample_sha256=digest)
+    assert wrong_sample.value.status_code == 409
     assert first["id"] == second["id"]
     assert second["idempotent"] is True
     assert tasks.created == 1

@@ -120,9 +120,9 @@ def create_conversion_management_router_3(service: Callable[[], ConversionManage
         return service().v39_get_numeric_validation(project_id, job_id, verification_id)
 
     @router.post('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/numeric-validations')
-    def v39_create_numeric_validation(project_id: str, job_id: str, files: List[UploadFile]=File(...), request_id: str=Form(''), confidence: float=Form(0.25), nms_iou: float=Form(0.7)):
+    def v39_create_numeric_validation(project_id: str, job_id: str, files: List[UploadFile]=File(...), request_id: str=Form(''), confidence: float=Form(0.25), nms_iou: float=Form(0.7), sample_sha256: str=Form('')):
         """Freeze real samples and enqueue PT-vs-ONNX only; never assert BMODEL pass."""
-        return service().v39_create_numeric_validation(project_id, job_id, files, request_id, confidence, nms_iou)
+        return service().v39_create_numeric_validation(project_id, job_id, files, request_id, confidence, nms_iou, sample_sha256=sample_sha256)
 
     @router.get('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/log', response_class=PlainTextResponse)
     def v39_deploy_job_log(project_id: str, job_id: str):

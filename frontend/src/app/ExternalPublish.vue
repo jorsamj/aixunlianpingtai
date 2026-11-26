@@ -7,9 +7,7 @@ import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {request} from './http';
 import {legacyUrl} from './navigation';
-// Read-only native view of the existing external-publish owner. Every fact
-// comes from the existing v64 status projection; this page never calls the
-// publish/run-auto/selection endpoints and never contacts the external platform.
+import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 interface PublishQuality {
   schema?:string;target?:string;numeric_required?:boolean;numeric_status?:string;
   numeric_status_alone_is_sufficient?:boolean;
@@ -30,7 +28,7 @@ interface PublishArtifact {
   formal_activation_eligible?:boolean;delivery_presentation?:string;hardware_acceptance?:string;
 }
 interface Publication {
-  publication_key?:string;status?:string;last_error?:string;attempts?:number;
+  publication_key?:string;project_id?:string;algorithm_id?:string;version_id?:string;status?:string;last_error?:string;attempts?:number;
   created_at?:string|null;updated_at?:string|null;published_at?:string|null;
   remote_checked_at?:string|null;remote_check_error?:string;external_algo_version_id?:string;
   external_product_id?:string;external_analysis_id?:string;version_name?:string;version_no?:string;
@@ -52,7 +50,11 @@ interface PublishStatus {
 const props=defineProps<{projectId:string}>();
 const route=useRoute(),router=useRouter(),controller=new AbortController();
 onBeforeUnmount(()=>controller.abort());
-const reads=useReadScope(controller);
+const reads=useReadScope(controller),actor=useWorkspace().actorKey;
+const publishing=ref(false),pending=ref<{attempts:number;key:string}>(),publishError=ref(''),publishNotice=ref('');
+const terminalStates=new Set(['PUBLISHED','PARTIAL','FAILED','BLOCKED_CONFIG']);
+const activeStates=new Set(['PREPARING','UPLOADING','PUBLISHING','SYNCING','RUNNING','QUEUED']);
+
 const api=modelBrowseApi({projectId:props.projectId,algorithmPageSize:20,get:request});
 const queryText=(key:string)=>typeof route.query[key]==='string'?String(route.query[key]):'';
 const pageNumber=(key:string)=>{const value=Number(queryText(key));return Number.isSafeInteger(value)&&value>0?value:1};
@@ -63,21 +65,66 @@ const selectedAlgorithm=computed(()=>algorithms.value?.items.find(row=>row.id===
 const selectedVersion=computed(()=>versions.value?.items.find(row=>row.id===versionId.value)||null);
 function loadAlgorithms(){void reads.run('algorithms',signal=>api.algorithms({source_type:'external',page:algorithmPage.value},signal),value=>{algorithms.value=value})}
 function loadVersions(){if(!selected.value)return;void reads.run('versions',signal=>api.versions(selected.value,versionPage.value,signal),value=>{versions.value=value})}
+function publicationUrl(algorithmId:string,version:string){
+ return `/api/v64/external-publish/projects/${encodeURIComponent(props.projectId)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(version)}`;
+}
+function pendingKey(algorithmId:string,version:string){return 'external-publish:'+JSON.stringify([actor,props.projectId,algorithmId,version])}
 function loadStatus(){
  const aid=selected.value,vid=versionId.value;
  if(!aid||!vid)return;
- void reads.run('publication',signal=>request<PublishStatus>(
-  `/api/v64/external-publish/projects/${encodeURIComponent(props.projectId)}/algorithms/${encodeURIComponent(aid)}/versions/${encodeURIComponent(vid)}`,
-  {signal},
- ).then(value=>{
-  // The page only presents a projection that proves the exact project/algorithm/version identity.
-  if(value?.ok!==true||value.project_id!==props.projectId||value.algorithm?.id!==aid||value.version?.id!==vid)throw new Error('交付状态响应身份不一致');
+ const key=pendingKey(aid,vid);
+ return reads.run('publication',signal=>request<PublishStatus>(publicationUrl(aid,vid),{signal}).then(value=>{
+  if(value?.ok!==true||value.project_id!==props.projectId||value.algorithm?.id!==aid||value.version?.id!==vid)
+   throw new Error('交付状态响应身份不一致');
   return value;
- }),value=>{status.value=value});
+ }),value=>{
+  status.value=value;
+  const attempt=pending.value,receipt=value.publication;
+  if(attempt&&receipt&&Number(receipt.attempts)>attempt.attempts&&(!attempt.key||receipt.publication_key===attempt.key)
+    &&terminalStates.has(String(receipt.status||'').toUpperCase())){
+   sessionStorage.removeItem(key);pending.value=undefined;
+   publishNotice.value='已读到该版本更新后的发布记录 · '+receipt.status;
+  }
+ });
+}
+const canPublish=computed(()=>actor&&!publishing.value&&!pending.value&&!reads.busy.publication&&!reads.errors.publication
+ &&status.value?.publish_ready===true&&status.value.transport_ready===true&&status.value.identity_ready===true
+ &&status.value.requires_sync!==true&&status.value.conversion_active!==true
+ &&!activeStates.has(String(status.value.publication?.status||'').toUpperCase())
+ &&String(status.value.publication?.status||'').toUpperCase()!=='PUBLISHED');
+async function publishVersion(){
+ const snapshot=status.value,aid=selected.value,vid=versionId.value,key=pendingKey(aid,vid);
+ if(!canPublish.value||!snapshot||!window.confirm(`向新畅联发布版本 ${vid}？本次范围由当前版本的原发布规则核验，未验证产物仅按原准入呈现。`))return;
+ publishing.value=true;publishError.value='';publishNotice.value='';
+ let sent=false;
+ try{
+  if(workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor||aid!==selected.value||vid!==versionId.value)
+   throw new Error('会话或版本已变化，请重新核验');
+  if(sessionStorage.getItem(key))throw new Error('浏览器仍有原发布结果待核验');
+  const receipt={attempts:Number(snapshot.publication?.attempts||0),key:snapshot.publication?.publication_key||''};
+  sessionStorage.setItem(key,JSON.stringify(receipt));pending.value=receipt;sent=true;
+  const result=await request<{ok:boolean;publication?:Publication}>(publicationUrl(aid,vid)+'/publish',
+   {method:'POST',signal:controller.signal},120000);
+  if(result.ok!==true||result.publication?.project_id!==props.projectId||result.publication.algorithm_id!==aid
+    ||result.publication.version_id!==vid)throw new Error('发布回执待核验');
+  if(aid===selected.value&&vid===versionId.value)publishNotice.value='发布接口已返回，请查看持久发布状态。';
+ }catch(cause){
+  if(!controller.signal.aborted&&aid===selected.value&&vid===versionId.value)
+   publishError.value=sent?'提交结果待核验。'+safe((cause as Error).message):safe((cause as Error).message);
+ }finally{
+  publishing.value=false;
+  if(!controller.signal.aborted&&aid===selected.value&&vid===versionId.value)await loadStatus();
+ }
 }
 watch(algorithmPage,()=>{reads.cancel('algorithms');algorithms.value=null;loadAlgorithms()},{immediate:true});
 watch([selected,versionPage],()=>{reads.cancel('versions');versions.value=null;loadVersions()},{immediate:true});
-watch([selected,versionId],()=>{reads.cancel('publication');status.value=null;loadStatus()},{immediate:true});
+watch([selected,versionId],()=>{
+ reads.cancel('publication');status.value=null;pending.value=undefined;publishError.value='';publishNotice.value='';
+ if(!selected.value||!versionId.value)return;
+ try{const record=sessionStorage.getItem(pendingKey(selected.value,versionId.value));if(record)pending.value=JSON.parse(record)}
+ catch{publishError.value='无法读取原发布操作，请使用原入口核验。';pending.value={attempts:Number.MAX_SAFE_INTEGER,key:''}}
+ void loadStatus();
+},{immediate:true});
 function choose(id:string){void router.push({query:{...route.query,algorithm:id||undefined,version:undefined,version_page:undefined}})}
 function openStatus(id:string){void router.push({query:{...route.query,version:id||undefined}})}
 function changeVersionPage(value:number){void router.push({query:{...route.query,version_page:value===1?undefined:String(value)}})}
@@ -164,14 +211,14 @@ const publicationFacts=computed<[string,unknown][]>(()=>{
 <template>
  <section aria-label="外部发布列表与只读详情">
   <div class="page-toolbar">
-   <p>外部发布 / 新畅联交付 · 只读核对</p>
+   <p>外部发布 / 新畅联交付</p>
    <div>
     <el-button @click="loadAlgorithms();loadVersions();loadStatus()">刷新</el-button>
     <el-button tag="a" :href="legacyListHref">原完整算法管理</el-button>
     <el-button tag="a" :href="legacyDeliveryHref" type="primary">原「新畅联交付」</el-button>
    </div>
   </div>
-  <el-alert title="本页只读：直接读取既有交付状态投影，不提供发布、同步、重试或权重选择操作，也不会访问外部平台。" type="info" :closable="false"/>
+
   <el-alert title="数值质量状态、硬件验证状态、发布准入状态是三项独立事实；只有后端判定可正式启用时才呈现 FORMAL_ACTIVATION，UNVERIFIED_ATTACHMENT 仅为未验证附件。" type="warning" :closable="false"/>
   <el-alert v-if="reads.errors.algorithms" :title="reads.errors.algorithms" type="error" :closable="false"/>
   <section class="version-panel" aria-label="外部平台算法列表">
@@ -200,7 +247,7 @@ const publicationFacts=computed<[string,unknown][]>(()=>{
    <el-pagination v-if="versions" :current-page="versions.page" :page-size="versions.page_size" :total="versions.total" layout="prev, pager, next" @current-change="changeVersionPage"/>
   </section>
   <section v-if="versionId" class="version-panel" aria-label="外部发布只读详情" v-loading="reads.busy.publication">
-   <header><div><h2>交付状态只读详情</h2><h3>{{ selectedVersion?.version_name||versionId }} · 后端原始投影</h3></div><el-button @click="loadStatus">重新读取</el-button></header>
+   <header><div><h2>交付状态</h2><h3>{{ selectedVersion?.version_name||versionId }} · 后端原始投影</h3></div><el-button @click="loadStatus">重新读取</el-button></header>
    <el-alert v-if="reads.errors.publication" :title="reads.errors.publication" type="error" :closable="false"/>
    <template v-if="status">
     <ReadOnlyFacts :fields="statusFacts"/>
@@ -211,7 +258,13 @@ const publicationFacts=computed<[string,unknown][]>(()=>{
      <p v-for="issue in status.transport_issues||[]" :key="issue.code||issue.message">{{ issue.code||'' }} {{ safe(issue.message||issue.detail)||'未提供原因' }}</p>
     </el-alert>
     <p>已发现可交付产物：{{ (status.discovered||[]).length }} · 已映射 {{ status.mapped_artifact_count??'未提供' }} · 阻塞 {{ status.blocked_artifact_count??'未提供' }} · 关闭发布 {{ status.ignored_artifact_count??'未提供' }} · 延后转换 {{ status.deferred_conversion_count??'未提供' }}</p>
-    <h3>发布记录</h3>
+    <div class="publish-actions">
+      <el-button v-if="canPublish" type="primary" :loading="publishing" @click="publishVersion">{{status.publication?.status==='FAILED'||status.publication?.status==='PARTIAL'?'确认按原版本重试':'确认发布当前版本'}}</el-button>
+      <el-button v-if="pending" :loading="reads.busy.publication" @click="loadStatus">核对原版本发布状态</el-button>
+      <p v-if="publishNotice" role="status">{{publishNotice}}</p>
+      <el-alert v-if="publishError" :title="publishError" type="warning" :closable="false"/>
+     </div>
+     <h3>发布记录</h3>
     <el-alert v-if="!status.publication" title="尚未创建发布记录：该版本还没有进入外部交付流程。" type="info" :closable="false"/>
     <template v-else>
      <ReadOnlyFacts :fields="publicationFacts"/>
@@ -227,7 +280,7 @@ const publicationFacts=computed<[string,unknown][]>(()=>{
      <el-table-column label="发布准入状态（独立事实）" min-width="210"><template #default="{row}"><el-tag :type="quality(row).formal_activation_eligible===true?'success':'warning'">{{ quality(row).formal_activation_eligible===true?'可正式启用':quality(row).formal_activation_eligible===false?'不可正式启用':'未提供 · 不视为可正式启用' }}</el-tag><small>后端 formal_activation_eligible={{ quality(row).formal_activation_eligible===true?'true':quality(row).formal_activation_eligible===false?'false':'未提供' }}</small><small v-if="quality(row).code">准入码 {{ quality(row).code }}</small><small v-if="reasonsText(quality(row).reasons)">原因：{{ reasonsText(quality(row).reasons) }}</small></template></el-table-column>
      <el-table-column label="交付呈现（后端原值）" min-width="200"><template #default="{row}"><el-tag :type="presentation(row).type">{{ presentation(row).raw }}</el-tag><small>{{ presentation(row).label }}</small><small v-if="presentation(row).note">{{ presentation(row).note }}</small><small>仅附件可交付：{{ quality(row).attachment_delivery_allowed===true?'是':quality(row).attachment_delivery_allowed===false?'否':'未提供' }}</small></template></el-table-column>
     </el-table>
-    <p><small>数值质量、硬件验证、发布准入分别由后端投影原样展示，互不替代。正式交付与人工确认请使用 <a :href="legacyDeliveryHref">原「新畅联交付」</a>。</small></p>
+    <p><small>数值质量、硬件验证、发布准入分别由后端投影原样展示，互不替代。远端对账及回退见 <a :href="legacyDeliveryHref">原「新畅联交付」</a>。</small></p>
    </template>
   </section>
   <el-empty v-if="!algorithms&&!reads.busy.algorithms" description="暂无外部平台算法"/>

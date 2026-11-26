@@ -1576,6 +1576,7 @@ class ConversionManagementService:
         project_id: str, job_id: str, files: List[UploadFile] = File(...),
         request_id: str = Form(""),
         confidence: float = Form(0.25), nms_iou: float = Form(0.7),
+        *, sample_sha256: str = "",
     ):
         """Freeze real samples and enqueue PT-vs-ONNX only; never assert BMODEL pass."""
         # Direct in-process callers (including legacy tests) receive the FastAPI
@@ -1587,6 +1588,10 @@ class ConversionManagementService:
             raise HTTPException(status_code=409, detail="转换产物尚未完成，无法进行数值比较")
         if not 1 <= len(files) <= 12:
             raise HTTPException(status_code=422, detail="每批请选择 1～12 张真实图片")
+        expected_samples = sample_sha256.split(",") if sample_sha256 else []
+        if expected_samples and (not request_id or len(expected_samples) != len(files)
+                or any(not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in expected_samples)):
+            raise HTTPException(422, detail="验证样本摘要与请求身份不一致")
         if (not math.isfinite(confidence) or not 0 < confidence < 1
                 or not math.isfinite(nms_iou) or not 0 < nms_iou < 1):
             raise HTTPException(status_code=422, detail="验证置信度和 NMS IoU 必须在 0 与 1 之间")
@@ -1617,6 +1622,21 @@ class ConversionManagementService:
                         raise HTTPException(status_code=409, detail="相同验证请求标识已有不同任务")
                     if float(receipt.get("confidence", 0.25)) != confidence or float(receipt.get("nms_iou", 0.7)) != nms_iou:
                         raise HTTPException(status_code=409, detail="相同请求 ID 的验证阈值不同，请发起新验证")
+                    if (receipt.get("sample_sha256") or []) != expected_samples:
+                        raise HTTPException(409, detail="原验证样本摘要不一致")
+                    if expected_samples:
+                        total = 0
+                        for file, expected in zip(files, expected_samples):
+                            hasher = hashlib.sha256()
+                            size = 0
+                            while chunk := file.file.read(1024 * 1024):
+                                size += len(chunk)
+                                total += len(chunk)
+                                if size > 10 * 1024 * 1024 or total > 60 * 1024 * 1024:
+                                    raise HTTPException(413, detail="单图不能超过 10 MB，整批不能超过 60 MB")
+                                hasher.update(chunk)
+                            if hasher.hexdigest() != expected:
+                                raise HTTPException(409, detail="重选的验证样本与原请求不一致")
                     return {"ok": True, "idempotent": True, **self._numeric_conversion_public(project_id, verification_id)}
                 if directory.exists():
                     raise HTTPException(status_code=409, detail="验证任务准备状态未知，请核对原请求")
@@ -1631,6 +1651,7 @@ class ConversionManagementService:
                         raise HTTPException(status_code=422, detail=f"第 {index+1} 张不是允许的图片格式")
                     name = f"image_{index+1:02d}{suffix}"
                     size = 0
+                    hasher = hashlib.sha256() if expected_samples else None
                     with (images_dir / name).open("wb") as output:
                         while True:
                             chunk = file.file.read(1024 * 1024)
@@ -1641,6 +1662,10 @@ class ConversionManagementService:
                             if size > 10 * 1024 * 1024 or total > 60 * 1024 * 1024:
                                 raise HTTPException(status_code=413, detail="单图不能超过 10 MB，整批不能超过 60 MB")
                             output.write(chunk)
+                            if hasher is not None:
+                                hasher.update(chunk)
+                    if hasher is not None and hasher.hexdigest() != expected_samples[index]:
+                        raise HTTPException(409, detail="上传的验证样本与已确认摘要不一致")
                     from PIL import Image
                     try:
                         with Image.open(images_dir / name) as picture:
@@ -1655,6 +1680,7 @@ class ConversionManagementService:
                 receipt = {
                     "id": verification_id, "project_id": project_id, "conversion_job_id": job_id,
                     "created_at": self.dependencies.now_iso(), "request_id": request_id,
+                    **({"sample_sha256": expected_samples} if expected_samples else {}),
                     "source_path": str(source_path), "onnx_path": str(onnx_path),
                     "source_sha256": source_sha or sha256_file(source_path),
                     "onnx_sha256": str(onnx_evidence.get("sha256") or sha256_file(onnx_path)),

@@ -5,6 +5,7 @@ import {legacyUrl} from './navigation';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
+import ConversionHardwareValidation from '../components/ConversionHardwareValidation.vue';
 import {browseError} from '../api/model-browse';
 import {createNumericValidation,findNumericValidation,loadConversionJob,loadConversionLog,loadConversionNumericHistory,loadNumericValidation,newConversionRequestId,resolveNumericVerificationId,stopConversionJob} from '../api/conversion-jobs';
 import type {ConversionJobDetail,ConversionJobOutput,ConversionNumericHistoryEntry} from '../types/conversion-job';
@@ -20,9 +21,15 @@ let pendingNumeric:{body:FormData;id:string}|null=null;
 const actor=useWorkspace().actorKey;
 const numericStorageKey='numeric-validation:'+JSON.stringify([actor,projectId,jobId]);
 const numericUnknown=ref(false),pendingNumericId=ref(''),pendingRequestId=ref('');
+interface NumericSamples {digests:string[];confidence:number;nmsIou:number}
+const originalSamples=ref<NumericSamples>(),numericMissing=ref(false);
+const validSampleIntent=(data:NumericSamples|undefined)=>!!data&&Array.isArray(data.digests)
+  &&data.digests.length>0&&data.digests.length<=12&&data.digests.every(value=>/^[a-f0-9]{64}$/.test(value))
+  &&data.confidence>0&&data.confidence<1&&data.nmsIou>0&&data.nmsIou<1;
 function clearNumericIntent(){
   sessionStorage.removeItem(numericStorageKey);
   pendingNumeric=null;
+  originalSamples.value=undefined;numericMissing.value=false;
   pendingNumericId.value='';
   pendingRequestId.value='';
   numericUnknown.value=false;
@@ -33,6 +40,7 @@ function restoreNumericIntent(){
     if(!raw)return;
     const intent=JSON.parse(raw);
     if(!/^[A-Za-z0-9_-]{12,80}$/.test(intent.requestId)||!(intent.id===''||/^nv_[a-f0-9]{24}$/.test(intent.id)))throw new Error('待核验记录无效');
+    if(validSampleIntent(intent.samples))originalSamples.value=intent.samples;
     pendingNumericId.value=intent.id;
     pendingRequestId.value=intent.requestId;
     numericUnknown.value=true;
@@ -109,13 +117,46 @@ function selectNumericFiles(event:Event){
   numericFiles.value=Array.from((event.target as HTMLInputElement).files||[]);
   numericError.value='';
 }
-async function sendNumericValidation(){
+async function sampleDigests(files:File[]){
+  if(!globalThis.crypto?.subtle)return [];
+  const digests:string[]=[];
+  for(const file of files){
+    const value=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());
+    digests.push(Array.from(new Uint8Array(value),byte=>byte.toString(16).padStart(2,'0')).join(''));
+  }
+  return digests;
+}
+function verificationBody(files:File[],requestId:string,params:NumericSamples){
+  const body=new FormData();
+  for(const file of files)body.append('files',file,file.name);
+  body.set('request_id',requestId);
+  body.set('confidence',String(params.confidence));
+  body.set('nms_iou',String(params.nmsIou));
+  if(params.digests.length)body.set('sample_sha256',params.digests.join(','));
+  return body;
+}
+async function recoverNumericFiles(){
+  const samples=originalSamples.value,files=[...numericFiles.value],requestId=pendingRequestId.value,id=pendingNumericId.value;
+  if(!samples||!numericMissing.value||!requestId||!validNumericInput.value||numericBusy.value||reads.busy.numericResult)return;
+  if(!window.confirm('确认按原图片和原阈值重试同一验证请求？'))return;
+  numericBusy.value=true;numericError.value='';
+  try{
+    const digests=await sampleDigests(files);
+    if(digests.join(',')!==samples.digests.join(','))throw new Error('图片内容或顺序与原请求不同');
+    if(!alive||pendingRequestId.value!==requestId)return;
+    pendingNumeric={id,body:verificationBody(files,requestId,samples)};
+  }catch(error){if(alive)numericError.value=browseError(error)}
+  finally{if(alive)numericBusy.value=false}
+  if(alive&&pendingNumeric)await sendNumericValidation(true);
+}
+async function sendNumericValidation(retrying=false){
   if(!alive||numericBusy.value||!pendingNumeric)return;
   numericBusy.value=true;
   numericError.value='';
   reads.cancel('numericResult');
   const {body,id}=pendingNumeric;
   try{
+    if(!actor||workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor)throw new Error('会话已变化，请重新打开转换任务');
     const value=await createNumericValidation(projectId,jobId,id,body,controller.signal);
     if(!alive)return;
     numericResult.value=value;
@@ -125,7 +166,7 @@ async function sendNumericValidation(){
     if(!alive)return;
     numericError.value=browseError(error);
     const httpStatus=(error as {httpStatus?:number}).httpStatus;
-    if(httpStatus&&[400,401,403,404,413,422].includes(httpStatus)){
+    if(!retrying&&httpStatus&&[400,401,403,413,422].includes(httpStatus)){
       try{clearNumericIntent()}catch{numericUnknown.value=true}
     }else numericUnknown.value=true;
   }finally{if(alive)numericBusy.value=false}
@@ -135,17 +176,16 @@ async function confirmNumeric(){
   numericDialog.value=false;
   numericBusy.value=true;
   numericError.value='';
-  const body=new FormData(),requestId=newConversionRequestId();
-  for(const file of numericFiles.value)body.append('files',file,file.name);
-  body.append('request_id',requestId);
-  body.append('confidence',String(confidence.value));
-  body.append('nms_iou',String(nmsIou.value));
+  const files=[...numericFiles.value],requestId=newConversionRequestId();
+  const samples:NumericSamples={digests:[],confidence:confidence.value,nmsIou:nmsIou.value};
   try{
+    samples.digests=await sampleDigests(files);
     const id=await resolveNumericVerificationId(projectId,jobId,requestId);
     if(!actor||workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor)throw new Error('会话已变化，请重新打开转换任务');
     if(!alive)return;
-    sessionStorage.setItem(numericStorageKey,JSON.stringify({requestId,id}));
-    pendingNumeric={body,id};
+    originalSamples.value=validSampleIntent(samples)?samples:undefined;
+    sessionStorage.setItem(numericStorageKey,JSON.stringify({requestId,id,samples:originalSamples.value}));
+    pendingNumeric={body:verificationBody(files,requestId,samples),id};
     pendingNumericId.value=id;
     pendingRequestId.value=requestId;
   }catch(error){if(alive)numericError.value=browseError(error)}
@@ -164,7 +204,12 @@ function checkPendingNumeric(){
   if(!requestId)return;
   return reads.run('numericResult',async signal=>{
     if(!actor||workspaceActorKey(await readWorkspaceSession(signal))!==actor)throw new Error('会话已变化，请重新打开转换任务');
-    return id?loadNumericValidation(projectId,jobId,id,signal):findNumericValidation(projectId,jobId,requestId,signal);
+    numericMissing.value=false;
+    try{return await (id?loadNumericValidation(projectId,jobId,id,signal):findNumericValidation(projectId,jobId,requestId,signal))}
+    catch(error){
+      if(!signal.aborted&&(error as {httpStatus?:number}).httpStatus===404&&pendingRequestId.value===requestId)numericMissing.value=true;
+      throw error;
+    }
   },value=>{
     if(pendingRequestId.value!==requestId)return;
     numericResult.value=value;
@@ -244,6 +289,8 @@ const hardwareLabel=computed(()=>{
   if(acceptance)return acceptance==='VERIFIED'?'VERIFIED（目标硬件实机验收）':`${acceptance}（未完成实机验收）`;
   return job.value?.hardware_verified===true?'VERIFIED（目标硬件实机验收）':'NOT_VERIFIED（未完成实机验收）';
 });
+const supportsBoardVerification=computed(()=>['rockchip','rknn'].includes(String(job.value?.target||'').toLowerCase())&&
+  ['done','blocked_by_hardware'].includes(status.value.toLowerCase()));
 const eligibilityLabel=computed(()=>quality.value?.formal_activation_eligible===true?'允许正式交付/激活':'不允许（未满足正式交付准入）');
 const tagType=computed<'success'|'warning'|'danger'|'info'>(()=>{
   const value=status.value.toLowerCase();
@@ -316,12 +363,13 @@ function downloadUrl(output:ConversionJobOutput){
    <el-alert v-else-if="job.message" :title="job.message" type="info" :closable="false"/>
   </section>
   <section class="card" aria-label="质量与验证投影">
-   <h3>质量 / 验证投影（只读）</h3>
+   <h3>质量与验证</h3>
    <ReadOnlyFacts :fields="qualityFacts"/>
    <ul v-if="quality?.reasons?.length" class="reasons"><li v-for="(reason,index) in quality.reasons" :key="index">{{ reason }}</li></ul>
    <h4 v-if="hardwareFacts.length">目标硬件验收字段</h4>
    <ReadOnlyFacts v-if="hardwareFacts.length" :fields="hardwareFacts"/>
    <p class="evidence-note">数值一致、Runtime 加载与目标硬件验收分别记录、互不代替；未知或未记录一律显示 NOT_VERIFIED。数值状态不会单独构成正式交付准入。</p>
+   <ConversionHardwareValidation v-if="supportsBoardVerification" :project-id="projectId" :job-id="jobId" :verified="job.hardware_verified===true" :stale="!!reads.errors.job" @refresh="refresh"/>
    <section v-if="canStartNumeric" aria-label="发起数值验证">
     <h4>PT／ONNX 数值验证</h4>
     <p class="evidence-note">选择 1～12 张真实图片，单图最多 10 MB，整批最多 60 MB。</p>
@@ -336,7 +384,11 @@ function downloadUrl(output:ConversionJobOutput){
    <div v-if="numericUnknown" role="status">
     <p>数值验证提交回执未知。</p>
     <el-button v-if="pendingRequestId" :loading="reads.busy.numericResult" @click="checkPendingNumeric">核对原验证请求</el-button>
-    <el-button v-if="pendingNumeric && (!pendingNumericId||reads.errors.numericResult)" :loading="numericBusy" :disabled="reads.busy.numericResult" @click="sendNumericValidation">重试同一请求</el-button>
+    <el-button v-if="pendingNumeric && (!pendingNumericId||reads.errors.numericResult)" :loading="numericBusy" :disabled="reads.busy.numericResult" @click="sendNumericValidation(true)">重试同一请求</el-button>
+    <template v-else-if="originalSamples&&numericMissing">
+     <label>按原顺序重选验证图片 <input type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp" :disabled="numericBusy" @change="selectNumericFiles"></label>
+     <el-button :disabled="!validNumericInput||reads.busy.numericResult" :loading="numericBusy" @click="recoverNumericFiles">核对图片并重试原请求</el-button>
+    </template>
    </div>
    <el-alert v-if="reads.errors.numericResult" :title="reads.errors.numericResult" type="error" :closable="false"/>
    <div v-if="numericResult">
@@ -376,7 +428,7 @@ function downloadUrl(output:ConversionJobOutput){
     <el-table-column label="大小" min-width="90"><template #default="{row}">{{ row.size_mb!=null?row.size_mb+' MB':row.size_bytes!=null?row.size_bytes+' B':'未提供' }}</template></el-table-column>
     <el-table-column label="SHA256" min-width="170"><template #default="{row}"><code :title="row.sha256">{{ row.sha256?String(row.sha256).slice(0,16)+'…':'未提供' }}</code></template></el-table-column>
     <el-table-column label="完整性记录" min-width="120"><template #default="{row}">{{ row.validation_status||'未提供' }}</template></el-table-column>
-    <el-table-column label="" width="80"><template #default="{row}"><a v-if="downloadUrl(row)" :href="downloadUrl(row)">下载</a></template></el-table-column>
+    <el-table-column label="" width="110"><template #default="{row}"><a v-if="downloadUrl(row)" :href="downloadUrl(row)">归档下载</a></template></el-table-column>
    </el-table>
    <template v-if="artifacts.length"><h4>已登记模型资产（交付质量投影）</h4><el-table :data="artifacts" max-height="360"><el-table-column prop="artifact_id" label="Artifact ID" min-width="150"/><el-table-column label="文件" min-width="160"><template #default="{row}">{{ row.file_name||'未提供' }}</template></el-table-column><el-table-column label="交付呈现" min-width="150"><template #default="{row}">{{ row.delivery_presentation||'未提供' }}</template></el-table-column><el-table-column label="正式交付准入" min-width="110"><template #default="{row}">{{ row.formal_activation_eligible===true?'允许':'不允许' }}</template></el-table-column><el-table-column label="硬件验收" min-width="110"><template #default="{row}">{{ row.hardware_acceptance||'NOT_VERIFIED' }}</template></el-table-column><el-table-column label="原因" min-width="200"><template #default="{row}">{{ (row.reasons||[]).join('；')||'未提供' }}</template></el-table-column></el-table></template>
    <template v-if="unregistered.length"><h4>未登记为模型资产的原始输出</h4><ReadOnlyFacts :fields="unregistered.slice(0,20).map(row=>[row.name||row.rel||'输出',`${row.delivery_presentation||'未提供'}${row.archive_download_allowed?' · 允许归档下载':' · 不可下载'}`])"/></template>

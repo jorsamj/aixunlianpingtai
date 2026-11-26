@@ -5,11 +5,7 @@ import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {request} from './http';
 import {legacyUrl} from './navigation';
-// Native migration of the existing platform-integration configuration read and
-// its existing save contract. Secrets are only ever rendered as the masked /
-// boolean state returned by the server; this page never reads, stores or logs a
-// credential. Master switch, connection test, sync and diagnostics stay on the
-// original page because they perform outbound external operations.
+import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 interface CredentialState {configured?:boolean;masked?:string;available?:boolean;error?:string;backend?:string;writable?:boolean;environment_name?:string}
 interface PlatformConfig {
   schema_version?:string|null;mode?:string;provider?:string;provider_name?:string;base_url?:string;
@@ -41,6 +37,62 @@ const config=ref<PlatformConfig|null>(null),publish=ref<PublishConfigBody|null>(
 const editing=ref(false),saving=ref(false),writeError=ref(''),notice=ref('');
 const form=reactive({base_url:'',access_key:'',access_secret:''});
 const legacyHref=legacyUrl(props.projectId,'平台对接');
+interface SyncOperation {operation_id:string;project_id:string;status:string;sync_type:string;current_phase:string;
+ processed_products:number;total_products:number|null;error?:string}
+interface ConnectionStep {key:string;name:string;status:string;count?:number;detail?:string}
+const actor=useWorkspace().actorKey,platformRoot='/api/v63/external-algorithm-platform';
+const projectQuery='?project_id='+encodeURIComponent(props.projectId);
+const syncKey='changlian-sync:'+JSON.stringify([actor,props.projectId]);
+const operation=ref<SyncOperation>(),steps=ref<ConnectionStep[]>([]),operationError=ref('');
+const runningAction=ref(''),syncPending=ref<string|null>(null);
+try{syncPending.value=sessionStorage.getItem(syncKey)}catch{syncPending.value='unavailable'}
+const syncActive=computed(()=>['queued','running'].includes(operation.value?.status||''));
+function applySync(value:SyncOperation|null){
+ if(!value)return;
+ if(value.project_id!==props.projectId||!value.operation_id)throw new Error('同步回执项目身份不一致');
+ operation.value=value;
+ if(syncPending.value!==null&&syncPending.value!=='unavailable'&&value.operation_id!==syncPending.value
+   &&value.sync_type==='manual'){
+  sessionStorage.removeItem(syncKey);syncPending.value=null;
+ }
+}
+function readSync(){
+ return reads.run('sync',signal=>request<{ok:boolean;operation:SyncOperation|null}>(platformRoot+'/sync-operation'+projectQuery,{signal}),value=>{
+  if(value.ok!==true)throw new Error('同步回执不可用');
+  applySync(value.operation);
+ });
+}
+async function runPlatformAction(action:'test'|'diagnostics'|'sync'){
+ if(!savedConnectionReady.value||editing.value||saving.value||runningAction.value||!actor)return;
+ if(action==='sync'&&(syncActive.value||syncPending.value!==null||!window.confirm('从新畅联同步当前项目主数据？')))return;
+ runningAction.value=action;operationError.value='';
+ try{
+  if(workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor)throw new Error('会话已变化，请重新打开平台对接');
+  if(action==='sync'){
+   const current=await request<{ok:boolean;operation:SyncOperation|null}>(platformRoot+'/sync-operation'+projectQuery,{signal:controller.signal});
+   if(current.ok!==true)throw new Error('同步状态不可用');
+   applySync(current.operation);
+   if(syncActive.value||syncPending.value!==null)return;
+   const previous=current.operation?.operation_id||'';
+   sessionStorage.setItem(syncKey,previous);syncPending.value=previous;
+   const result=await request<{ok:boolean;accepted:boolean;operation:SyncOperation|null}>(platformRoot+'/sync'+projectQuery,
+    {method:'POST',signal:controller.signal});
+   if(result.ok!==true||!result.operation)throw new Error('同步结果待核验');
+   applySync(result.operation);
+   if(result.accepted===false){sessionStorage.removeItem(syncKey);syncPending.value=null}
+  }else{
+   steps.value=[];
+   const result=await request<{steps?:ConnectionStep[]}>(platformRoot+'/'+action,{method:'POST',signal:controller.signal},120000);
+   if(!Array.isArray(result.steps))throw new Error('测试没有返回可核验步骤');
+   steps.value=result.steps;
+  }
+ }catch(cause){if(!controller.signal.aborted)operationError.value=safe((cause as Error).message)}
+ finally{
+  runningAction.value='';
+  if(action==='sync'&&!controller.signal.aborted)void readSync();
+ }
+}
+
 const date=(value?:string|null)=>value?String(value).replace('T',' ').slice(0,19):'未提供';
 // Provider/OSS/storage errors can embed addresses, tokens or local paths; hide
 // them before rendering, exactly as the legacy delivery/config projections do.
@@ -189,13 +241,13 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
 <template>
  <section aria-label="外部平台配置（原生只读与既有保存契约）">
   <div class="page-toolbar">
-   <p>外部平台配置 / 平台对接 · 既有 API</p>
+   <p>外部平台配置 / 平台对接</p>
    <div>
     <el-button :loading="reads.busy.platform||reads.busy.publish" @click="load">刷新</el-button>
-    <el-button tag="a" :href="legacyHref" type="primary">原平台对接（总开关 / 同步 / 测试）</el-button>
+    <el-button tag="a" :href="legacyHref" type="primary">原平台对接（总开关 / 映射）</el-button>
    </div>
   </div>
-  <el-alert title="本页复用既有平台配置读取与保存接口；不触发连接测试、立即同步、联调诊断或任何外部平台请求。" type="info" :closable="false"/>
+
   <el-alert title="Secret 仅由后端安全存储持有。本页只显示后端返回的已配置布尔值与脱敏标识，不读取、不回显、不写入 localStorage 或 URL。" type="warning" :closable="false"/>
   <el-alert v-if="writeError" :title="writeError" type="error" :closable="false"/>
   <el-alert v-if="notice" :title="notice" type="success" :closable="false"/>
@@ -205,7 +257,7 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
    <template v-if="config">
     <ReadOnlyFacts :fields="configurationFacts"/>
     <h3>最近同步</h3>
-    <el-alert v-if="!config.last_sync" title="尚无同步记录；主数据以外部平台为准，本页不触发同步。" type="info" :closable="false"/>
+    <el-alert v-if="!config.last_sync" title="尚无同步记录。" type="info" :closable="false"/>
     <template v-else>
      <ReadOnlyFacts :fields="syncFacts"/>
      <el-alert v-if="config.last_sync.error" :title="safe(config.last_sync.error)" type="error" :closable="false"/>
@@ -225,9 +277,25 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
     <label>AccessSecret<el-input v-model="form.access_secret" aria-label="AccessSecret" type="password" autocomplete="new-password" spellcheck="false" :disabled="locked||saving||credentialManaged||credentialUnavailable" :placeholder="credentialManaged?'由环境变量管理':credential.configured?'已配置，编辑时留空表示继续使用原 Secret':'请输入 AccessSecret'"/></label>
     <p>凭据状态：{{ credentialText }} · 存储后端：{{ credential.backend||'未提供' }}。{{ credentialUnavailable?'安全存储不可用，保存凭据会失败关闭，不会降级为明文。':credentialManaged?'凭据由环境变量管理，本页不覆盖。':'AccessSecret 仅提交给后端安全存储，保存后立即清空输入。' }}</p>
     <el-alert v-if="credentialUnavailable" title="安全存储不可用：只能查看公开配置，不能保存新的 AccessKey / AccessSecret。" type="warning" :closable="false"/>
-    <p><small>总开关（mode）、立即同步、连接测试与联调诊断仍只在 <a :href="legacyHref">原平台对接</a> 中执行；本页保存不会替代这些外部操作。</small></p>
+    <p><small>总开关和映射编辑使用 <a :href="legacyHref">原平台对接</a>。</small></p>
    </form>
    <el-alert v-else-if="!reads.busy.platform" title="平台配置尚未读取成功，暂不提供编辑。" type="info" :closable="false"/>
+  </section>
+  <section class="version-panel" aria-label="平台测试与同步">
+   <header><h2>平台测试与同步</h2><div>
+    <el-button :disabled="!locked||!!runningAction" :loading="runningAction==='test'" @click="runPlatformAction('test')">测试已保存连接</el-button>
+    <el-button :disabled="!locked||!!runningAction" :loading="runningAction==='diagnostics'" @click="runPlatformAction('diagnostics')">读取联调诊断</el-button>
+    <el-button :disabled="!locked||!!runningAction||syncPending!==null||syncActive" :loading="runningAction==='sync'" @click="runPlatformAction('sync')">同步当前项目</el-button>
+    <el-button :loading="reads.busy.sync" @click="readSync">核对同步状态</el-button>
+   </div></header>
+   <el-alert v-if="operationError||reads.errors.sync" :title="operationError||reads.errors.sync" type="warning" :closable="false"/>
+   <p v-if="syncPending!==null" role="status">原同步提交结果待核验。</p>
+   <p v-if="operation">{{operation.operation_id}} · {{syncLabel(operation.status)}} · {{operation.current_phase}} · {{operation.processed_products}} / {{operation.total_products??'待统计'}}</p>
+   <p v-if="operation?.error" role="alert">{{safe(operation.error)}}</p>
+   <el-table v-if="steps.length" :data="steps" row-key="key" size="small" max-height="334">
+    <el-table-column prop="name" label="步骤"/><el-table-column prop="status" label="结果"/>
+    <el-table-column prop="count" label="数量"/><el-table-column label="明细"><template #default="{row}">{{safe(row.detail)}}</template></el-table-column>
+   </el-table>
   </section>
   <section class="version-panel" v-loading="reads.busy.platform" aria-label="平台接口路径配置">
    <header><div><h2>平台接口路径</h2><h3>只读展示后端权威路径；保存时原样回传</h3></div></header>
