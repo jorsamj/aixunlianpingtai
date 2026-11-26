@@ -68,7 +68,7 @@ test('AI create freezes a large selection, excludes one image and recovers the o
   await expect(first.getByRole('checkbox')).not.toBeChecked();
   await first.getByRole('button',{name:'设为参考'}).click();
   await page.locator('article').filter({hasText:'visible-b.jpg'}).getByRole('button',{name:'试跑此图'}).click();
-  await page.getByRole('combobox',{name:'审核标签'}).click();
+  await page.getByRole('combobox',{name:'审核标签'}).press('ArrowDown');
   await page.getByRole('option',{name:'烟雾 · smoke'}).click();
   await page.keyboard.press('Escape');
   await page.getByText('允许为已有标注素材生成候选',{exact:true}).click();

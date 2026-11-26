@@ -284,7 +284,7 @@ async function recoverSessionLocked(){
 function viewUploaded(){
   if(!uploadedIds.value.length)return;
   try{
-    sessionStorage.setItem('materials.selection:'+JSON.stringify([workspace.username,projectId]),
+    sessionStorage.setItem('materials.selection:'+JSON.stringify([workspace.actorKey,projectId]),
       JSON.stringify(uploadedIds.value.slice(0,200)));
   }catch{/* selection is optional */}
   void router.push({name:'materials',params:{projectId}});

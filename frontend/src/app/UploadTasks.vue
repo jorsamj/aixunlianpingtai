@@ -183,7 +183,7 @@ async function viewImages(row:ImageSessionRow){
   }
   if(!ids.length){error.value='服务器回执没有可定位的已入库素材。';return}
   try{
-    sessionStorage.setItem('materials.selection:'+JSON.stringify([workspace.username,projectId]),
+    sessionStorage.setItem('materials.selection:'+JSON.stringify([workspace.actorKey,projectId]),
       JSON.stringify([...new Set(ids)].slice(0,200)));
   }catch{/* selection is optional */}
   void router.push({name:'materials',params:{projectId}});
