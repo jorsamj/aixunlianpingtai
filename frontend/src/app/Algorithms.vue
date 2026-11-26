@@ -213,7 +213,23 @@ const versionRemark=ref(''),versionSaveError=ref('');
 const versionNames=computed(()=>Object.fromEntries((versions.value?.items||[]).map(row=>[row.id,row.version_name||row.id])));
 const selectedAlgorithm=computed(()=>algorithms.value?.items.find(algorithm=>algorithm.id===selected.value)||versions.value?.algorithm);
 const canEditVersion=computed(()=>!!selectedAlgorithm.value&&selectedAlgorithm.value.id===detail.value?.algorithm_id);
-function setDetail(value:VersionDetail){detail.value=value;versionRemark.value=value.version.remark||''}
+// Lineage-related versions are resolved on demand by their real ids, at most two
+// bounded reads per opened version, and never by scanning the whole history.
+const lineageNames=ref<Record<string,string>>({});
+async function resolveLineageNames(value:VersionDetail){
+  const ids=[value.version.base_version_id,value.version.parent_version_id]
+    .filter((id):id is string=>!!id&&!versionNames.value[id]&&!lineageNames.value[id]);
+  for(const id of [...new Set(ids)].slice(0,2)){
+    try{
+      const fetched=await api.detail(value.algorithm_id,id,scope.signal);
+      lineageNames.value={...lineageNames.value,[id]:fetched.version.version_name||id};
+    }catch{/* a missing lineage version stays unresolved instead of being guessed */}
+  }
+}
+function setDetail(value:VersionDetail){
+  detail.value=value;versionRemark.value=value.version.remark||'';
+  void resolveLineageNames(value);
+}
 function versionDetail(id:string){void router.push({query:{...route.query,version:id}})}
 function versionDownload(algorithmId:string,versionId:string){
  return `/api/v12/projects/${encodeURIComponent(projectId)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/download`;
@@ -433,7 +449,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
   <el-skeleton v-if="reads.busy.detail" :rows="8"/>
   <el-alert v-else-if="reads.errors.detail" :title="reads.errors.detail" type="error"/>
   <template v-else-if="detail">
-   <ModelVersionDetails :detail="detail" :version-names="versionNames"/>
+   <ModelVersionDetails :detail="detail" :version-names="{...versionNames,...lineageNames}" :project-id="projectId"/>
    <p><router-link :to="versionReport(detail.algorithm_id,detail.version.id)">训练报告</router-link>　<router-link v-if="detail.version.has_evaluation" :to="versionReport(detail.algorithm_id,detail.version.id,true)">独立评测</router-link></p>
    <form class="algorithm-form version-remark-form" @submit.prevent="saveVersionRemark">
     <label>版本备注<el-input v-model="versionRemark" aria-label="版本备注" type="textarea" :readonly="!canEditVersion" :disabled="saving"/></label>

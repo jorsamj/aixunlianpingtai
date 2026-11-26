@@ -3,7 +3,7 @@ import {computed} from 'vue';
 import type {VersionDetail} from '../types/model-browse';
 import ReadOnlyFacts from './ReadOnlyFacts.vue';
 import {shownValue} from '../api/model-browse';
-const props=defineProps<{detail:VersionDetail;versionNames?:Record<string,string>}>();
+const props=defineProps<{detail:VersionDetail;versionNames?:Record<string,string>;projectId?:string}>();
 // Lineage identity is never guessed from version names: a parent/base version is
 // resolved only when the server returned its id and the caller already loaded that
 // page; otherwise the raw id is shown as unresolved.
@@ -20,7 +20,13 @@ const lineageFacts=computed(()=>Object.entries(props.detail.version.training_lin
  <ReadOnlyFacts :fields="[['训练任务 ID',detail.version.training_job_id],['父版本 ID',detail.version.parent_version_id],['父版本名称',resolve(detail.version.parent_version_id)||'未在当前页或未提供'],['基础版本 ID',detail.version.base_version_id],['基础版本名称',resolve(detail.version.base_version_id)||'未在当前页或未提供'],['ModelArtifact ID',detail.version.artifact_id]]"/>
  <ReadOnlyFacts v-if="lineageFacts.length" :fields="lineageFacts"/>
  <p v-else class="evidence-note">服务端未记录该版本的血缘字段；不根据版本名称推断父子关系。</p>
- <p class="evidence-note">血缘、冻结快照、独立评测、困难样本与转换/交付是独立证据链，可分别核对：训练报告、独立评测、转换记录、交付记录均在版本行提供对应入口。</p>
+ <p class="evidence-note">血缘、冻结快照、独立评测、困难样本与转换/交付是独立证据链，可分别核对：</p>
+ <p class="evidence-links">
+  <router-link v-if="projectId&&detail.version.training_job_id" :to="{name:'training-report',params:{projectId,jobId:detail.version.training_job_id}}">训练报告</router-link>
+  <router-link v-if="projectId&&detail.version.has_evaluation" :to="{name:'version-report',params:{projectId,algorithmId:detail.algorithm_id,versionId:detail.version.id},query:{tab:'evaluation'}}">独立评测</router-link>
+  <router-link v-if="projectId" :to="{name:'version-conversions',params:{projectId,algorithmId:detail.algorithm_id,versionId:detail.version.id}}">转换记录</router-link>
+  <router-link v-if="projectId&&detail.version.has_model" :to="{name:'external-publish-native',params:{projectId},query:{algorithm:detail.algorithm_id,version:detail.version.id}}">交付记录</router-link>
+ </p>
  <h3>已登记模型资产 · {{ detail.artifacts.total }}</h3><p v-if="!detail.artifacts.total" class="evidence-note">没有匹配的登记记录；未执行存储扫描。</p><article v-for="artifact in detail.artifacts.items" :key="artifact.artifact_id" class="artifact-evidence"><strong>{{ artifact.file_name||artifact.artifact_id }}</strong><ReadOnlyFacts :fields="[['资产 ID',artifact.artifact_id],['资产类型',artifact.artifact_kind],['目标',artifact.target],['芯片',artifact.chip_code],['转换记录 ID',artifact.conversion_job_id],['SHA256',artifact.sha256],['大小（字节）',artifact.size_bytes],['存储来源 ID',artifact.storage_source_id],['存储状态（非发布状态）',artifact.storage_status],['上传时间',artifact.uploaded_at]]"/></article><p v-if="detail.artifacts.truncated">共{{ detail.artifacts.total }}项，本次详情展示前20项。</p>
  <p class="evidence-note">登记记录、文件校验、OSS 上传和发布是独立证据。版本发布字段：{{ shownValue(detail.version.external_publish_status) }}。</p>
 </div></template>
