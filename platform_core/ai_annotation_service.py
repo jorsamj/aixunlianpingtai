@@ -536,11 +536,105 @@ class AiAnnotationService:
                 })
         return {"items": results, "total": len(results), "saved": sum(row["ok"] for row in results)}
 
-    def create_annotation_review_selection(self, project_id: str, task_id: str, payload: BaseModel, request: Request):
+    def annotation_ambiguity_task(self, project_id, task_id, request_id, phase, request, body=None):
+        """Address durable plan and draft-save tasks by the verified user's request ID."""
+        from math import isfinite
+        from platform_core.annotation_ambiguity_tasks import APPLY, PLAN, ambiguity_task_id, publish_ambiguity_task, selected_plan_ids
+        from platform_core.labels import active_project_label_ids
+        from platform_core.material_batches import BatchRequestError, public_batch
+
+        source = self._require_annotation_review_task(project_id, task_id)
+        actor = self.dependencies._material_governance_actor(request, project_id)['actor_id']
+        self._annotation_review_operation_path(request_id)
+        repository, artifacts = self.dependencies.shared_task_repository(), self.dependencies.shared_task_artifacts()
+        operation = PLAN if phase == "plan" else APPLY
+        target_id = ambiguity_task_id(project_id, task_id, actor, request_id, operation)
+        task = repository.get(target_id)
+        if body is None:
+            if task is None:
+                raise HTTPException(404, detail="消歧任务尚未登记")
+            return public_batch(task, artifacts, repository)
+        existing = artifacts.read_json(target_id, "request.json", default=None)
+        if existing and existing.get("request") != body:
+            raise HTTPException(409, detail="原消歧请求参数已变化")
+        if task is not None:
+            return public_batch(task, artifacts, repository)
+        if source.status is not TaskStatus.AWAITING_CONFIRMATION:
+            raise HTTPException(409, detail="原 AI 任务当前不可编辑")
+        with FileLock(str(artifacts.artifact_path(task_id, "review.lock")), timeout=30):
+            store = CandidateStore(artifacts, task_id=task_id)
+            if operation == PLAN:
+                if set(body) != {"selection_id", "review_revision", "excluded_image_ids", "mode", "label", "threshold"}:
+                    raise HTTPException(422, detail="消歧预检参数不完整")
+                labels = active_project_label_ids(self.dependencies.project_dir(project_id)) or {}
+                mode, label, threshold = body["mode"], body["label"], body["threshold"]
+                revision, snapshot_id, excluded = body["review_revision"], body["selection_id"], body["excluded_image_ids"]
+                if (mode not in ("manual", "auto") or not isinstance(label, str)
+                        or mode == "manual" and label not in labels
+                        or type(threshold) not in (int, float) or not isfinite(threshold) or not 0.5 <= threshold <= 1
+                        or not isinstance(snapshot_id, str) or type(revision) is not int
+                        or not isinstance(excluded, list) or len(excluded) > 50000
+                        or any(not isinstance(image_id, str) or not image_id for image_id in excluded)):
+                    raise HTTPException(422, detail="消歧策略或冻结范围无效")
+                if store.review_revision() != revision:
+                    raise HTTPException(409, detail="候选范围已变化，请重新冻结")
+                selection = self._load_annotation_review_selection(store, project_id, task_id, snapshot_id, actor, revision)
+                exclusions = set(excluded)
+                if (selection.get("purpose") != "ambiguity" or not exclusions.issubset(selection["image_ids"])):
+                    raise HTTPException(422, detail="消歧选区用途或排除范围不一致")
+                ids = [image_id for image_id in selection["image_ids"] if image_id not in exclusions]
+                payload = {"review_revision": revision, "labels": labels, "mode": mode,
+                           "label": label, "threshold": threshold}
+            else:
+                plan_id = ambiguity_task_id(project_id, task_id, actor, request_id, PLAN)
+                plan = repository.get(plan_id)
+                if body != {"plan_task_id": plan_id} or plan is None or plan.status is not TaskStatus.SUCCEEDED:
+                    raise HTTPException(409, detail="请先核对完成的原消歧预检")
+                planned = artifacts.read_json(plan_id, plan.payload_ref)
+                ids = selected_plan_ids(artifacts, plan_id)
+                payload = {key: planned[key] for key in ("labels", "mode", "label", "threshold")}
+                payload["plan_task_id"] = plan_id
+            if not ids:
+                raise HTTPException(409, detail="消歧范围没有可处理候选")
+            payload.update(operation=operation, project_id=project_id, source_task_id=task_id, actor_id=actor, request=body)
+            try:
+                task = publish_ambiguity_task(repository, artifacts, target_id, payload, ids)
+            except BatchRequestError as error:
+                raise HTTPException(error.status_code, detail={"code": error.code, "message": str(error)}) from error
+        return public_batch(task, artifacts, repository)
+
+    def freeze_ambiguity_task_drafts(self, project_id, task_id, request_id, request):
+        from contextlib import closing
+        from types import SimpleNamespace
+        from platform_core.annotation_ambiguity_tasks import APPLY, ambiguity_task_id
+        from platform_core.material_batches import BatchSelection, SELECTION_REF
+
+        self._require_annotation_review_task(project_id, task_id)
+        actor = self.dependencies._material_governance_actor(request, project_id)['actor_id']
+        self._annotation_review_operation_path(request_id)
+        repository, artifacts = self.dependencies.shared_task_repository(), self.dependencies.shared_task_artifacts()
+        assignment = ambiguity_task_id(project_id, task_id, actor, request_id, APPLY)
+        task = repository.get(assignment)
+        if task is None or task.status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+            raise HTTPException(409, detail="请先核对已完成的草稿保存任务")
+        payload = artifacts.read_json(assignment, task.payload_ref)
+        if payload.get("mode") != "manual":
+            raise HTTPException(409, detail="自动消歧草稿需要逐图人工确认")
+        with closing(BatchSelection(artifacts.artifact_path(assignment, SELECTION_REF))) as manifest:
+            proofs = [SimpleNamespace(**json.loads(row[0])) for row in manifest.database.execute(
+                "SELECT tombstone_json FROM selection WHERE state='succeeded' ORDER BY image_id")]
+        return self.create_annotation_review_selection(project_id, task_id, SimpleNamespace(
+            filter="edited", purpose="gt", review_revision=None, confirmed_drafts=proofs,
+            model_fields_set={"confirmed_drafts"}), request, verify_current_source=True)
+
+    def create_annotation_review_selection(self, project_id: str, task_id: str, payload: BaseModel, request: Request,
+                                           *, verify_current_source=False):
+        from contextlib import nullcontext
         self._require_annotation_review_task(project_id, task_id)
         actor = self.dependencies._material_governance_actor(request, project_id)['actor_id']
         artifacts = self.dependencies.shared_task_artifacts()
-        with FileLock(str(artifacts.artifact_path(task_id, 'review.lock')), timeout=30):
+        fence = material_annotation_lifecycle_fence(self.dependencies.project_dir(project_id)) if verify_current_source else nullcontext()
+        with FileLock(str(artifacts.artifact_path(task_id, 'review.lock')), timeout=30), fence:
             store = CandidateStore(artifacts, task_id=task_id)
             revision = store.review_revision()
             if payload.review_revision is not None and payload.review_revision != revision:
@@ -550,6 +644,16 @@ class AiAnnotationService:
                 if not confirmed_drafts or payload.purpose != 'gt' or payload.filter != 'edited':
                     raise HTTPException(422, detail='确认草稿只能用于正式入库范围')
                 ids = self._confirmed_draft_ids(store, actor, confirmed_drafts)
+                if verify_current_source:
+                    materials = self.dependencies.material_store(project_id)
+                    for offset in range(0, len(confirmed_drafts), 200):
+                        chunk = confirmed_drafts[offset:offset + 200]
+                        current = {row["id"]: row for row in materials.get_many(item.image_id for item in chunk)}
+                        for proof in chunk:
+                            row = current.get(proof.image_id) or {}
+                            if (row.get("content_sha256") != proof.source_content_sha256 or row.get("source_available") is False
+                                    or row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim")):
+                                raise HTTPException(409, detail="已保存草稿的源素材已变化")
                 counts = {'total': len(ids), 'reasons': {}}
             else:
                 try:

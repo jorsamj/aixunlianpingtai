@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from filelock import FileLock
 
 from .annotation_repository import AnnotationRepository
+from .annotation_ambiguity_tasks import OPERATIONS as AMBIGUITY_OPERATIONS
 from .annotation_quality import audit_cleaning_annotations
 from .cleaning import DurableHashIndex, clean_options
 from .cleaning import ImageDecodeError
@@ -2259,10 +2260,10 @@ class BatchSelection:
     def frozen(self):
         return self.database.execute("SELECT 1 FROM meta WHERE key='frozen'").fetchone() is not None
 
-    def rows(self, states=("pending", "running")):
+    def rows(self, states=("pending", "running"), *, limit=BATCH_SIZE):
         return self.database.execute(
             "SELECT * FROM selection WHERE state IN (" + ",".join("?" for _ in states) + ") ORDER BY image_id LIMIT ?",
-            (*states, BATCH_SIZE),
+            (*states, limit),
         ).fetchall()
 
     def transition(self, ids, state, error=None, *, commit_guard=None):
@@ -2796,6 +2797,9 @@ class MaterialBatchHandler:
 
     def _run(self, context, manifest):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
+        if payload.get("operation") in AMBIGUITY_OPERATIONS:
+            from .annotation_ambiguity_tasks import run_ambiguity_task
+            return run_ambiguity_task(context, manifest, payload, self.data_dir)
         if str((payload or {}).get("operation") or "").upper() == BatchOperation.REMAP_ANNOTATION_LABELS.value:
             return self._run_annotation_remap(context, manifest, payload)
         if str((payload or {}).get("operation") or "").upper() == BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value:
@@ -4121,7 +4125,7 @@ def public_batch(task, artifacts, repository=None):
         checkpoint={'total':checkpoint.get('total'),'processed':0,'succeeded':0,'failed':0,'selection_frozen':bool(checkpoint.get('selection_frozen'))}
     result = (
         artifacts.read_json(task.task_id, RESULT_REF, default={})
-        if request.get("operation") in ASSIGNMENT_VALUES | {
+        if request.get("operation") in ASSIGNMENT_VALUES | AMBIGUITY_OPERATIONS | {
             BatchOperation.REMAP_ANNOTATION_LABELS.value,
             BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value,
             BatchOperation.AUDIT_LABEL_INTEGRITY.value,
@@ -4566,7 +4570,7 @@ def material_batch_router(
 
     def assignment_request(task, request):
         payload = task_artifacts().read_json(task.task_id, task.payload_ref, default={})
-        if payload.get("operation") in ASSIGNMENT_VALUES:
+        if payload.get("operation") in ASSIGNMENT_VALUES | AMBIGUITY_OPERATIONS:
             actor = actor_provider(request, task.project_id) if actor_provider else {}
             if payload.get("actor_id") != invoke(_assignment_actor, actor):
                 raise HTTPException(404, detail="material batch not found")

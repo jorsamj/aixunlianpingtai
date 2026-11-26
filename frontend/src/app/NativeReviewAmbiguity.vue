@@ -1,187 +1,150 @@
 <script setup lang="ts">
-import {onBeforeUnmount,ref,shallowRef,watch} from 'vue';
-import {getReviewLabels,readAmbiguitySelection,saveAmbiguityDrafts} from '../api/ai-review';
-import type {AmbiguityDraft,ConfirmedDraftProof,ReviewAddress,ReviewLabel} from '../api/ai-review';
+import {computed,onBeforeUnmount,onMounted,ref,shallowRef} from 'vue';
+import {ambiguityKey,createAmbiguityTask,getReviewLabels,readAmbiguityTask} from '../api/ai-review';
+import type {AmbiguityPhase,AmbiguityPlanRequest,AmbiguityTask,ReviewAddress,ReviewLabel} from '../api/ai-review';
+import {manageMaterialBatch} from '../api/material-batches';
 import {browseError} from '../api/model-browse';
-import {aiPlanKeepAmbiguousLabel60} from '../../../static/modules/annotation-ambiguity.js';
 import {readWorkspaceSession,workspaceActorKey} from './main';
 
-const props=defineProps<{scope:ReviewAddress;actorKey:string;formalBusy:boolean;formalError:string;range:{id:string;revision:number;excluded:string[];count:number}}>();
+const props=defineProps<{scope:ReviewAddress;actorKey:string;formalBusy:boolean;formalError:string;
+  range?:{id:string;revision:number;excluded:string[];count:number}}>();
 const open=defineModel<boolean>('open',{required:true});
-const emit=defineEmits<{busy:[value:boolean];settled:[];formal:[rows:ConfirmedDraftProof[]]}>();
+const emit=defineEmits<{busy:[value:boolean];settled:[];formal:[proof:{requestId:string;count:number}]}>();
 const scope={...props.scope},actor=props.actorKey;
-const controller=new AbortController();
-const threshold=ref(0.9),mode=ref<'manual'|'auto'>('manual'),label=ref('');
+const controller=new AbortController(),signal=controller.signal,key=ambiguityKey(scope,actor);
+const threshold=ref<number|undefined>(0.9),mode=ref<'manual'|'auto'>('manual'),label=ref('');
 const labels=shallowRef<ReviewLabel[]>([]);
-type DraftIdentity=Pick<AmbiguityDraft,'revision'|'source_content_sha256'>;
-const plan=shallowRef<Map<string,DraftIdentity>>(),reasons=shallowRef<Record<string,number>>({});
-const scanned=ref(0),removed=ref(0),fallback=ref(0),saved=ref(0),failed=ref(0);
-const formalConsent=ref(false),proofs=shallowRef<ConfirmedDraftProof[]>([]);
-const preview=shallowRef<{id:string;before:number;after:number;labels:string}[]>([]);
-const scanning=ref(false),writing=ref(false),error=ref(''),finished=ref(false),confirmed=ref(false);
-const configChanged=()=>{plan.value=undefined;confirmed.value=false};
-watch([threshold,mode,label],configChanged);
-watch(open,async visible=>{
-  if(!visible||labels.value.length)return;
-  try{labels.value=await getReviewLabels(scope.projectId,controller.signal)}
-  catch(cause){if(!controller.signal.aborted)error.value=browseError(cause)}
-},{immediate:true});
+type Pending={id:string;plan:AmbiguityPlanRequest;planId?:string;phase:AmbiguityPhase};
+const pending=shallowRef<Pending>(),task=shallowRef<AmbiguityTask>();
+const busy=ref(false),canReplay=ref(false),error=ref(''),confirmed=ref(false),formalConsent=ref(false);
+const isPlan=computed(()=>pending.value?.phase==='plan');
+const statusLabels:Record<string,string>={QUEUED:'排队中',WAITING_RESOURCE:'等待资源',RUNNING:'执行中',
+  SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分完成',FAILED:'失败',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消'};
+const terminal=computed(()=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(task.value?.status||''));
+const canSave=computed(()=>isPlan.value&&task.value?.status==='SUCCEEDED'&&!!task.value.succeeded);
+const canFormal=computed(()=>!isPlan.value&&pending.value?.plan.mode==='manual'&&
+  ['SUCCEEDED','PARTIAL_SUCCESS'].includes(task.value?.status||'')&&!!task.value?.succeeded);
 
-async function prepare(){
-  if(scanning.value||writing.value||finished.value||threshold.value<0.5||threshold.value>1
-    ||(mode.value==='manual'&&!labels.value.some(item=>item.code===label.value)))return;
-  scanning.value=true;plan.value=undefined;confirmed.value=false;error.value='';
-  scanned.value=0;removed.value=0;fallback.value=0;reasons.value={};preview.value=[];
-  const snapshot=props.range,excluded=new Set(snapshot.excluded),seen=new Set<string>(),entries=new Map<string,DraftIdentity>();
-  const skipped=new Map<string,number>(), examples:typeof preview.value=[];
-  const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
-  const options={mode:mode.value,label:label.value,threshold:threshold.value};
+async function run(action:()=>Promise<void>){
+  if(busy.value)return;
+  busy.value=true;error.value='';emit('busy',true);
   try{
-    let cursor:string|null='0';
-    const visited=new Set<string>();
-    do{
-      const page=await readAmbiguitySelection(scope,snapshot.id,cursor,controller.signal);
-      if(page.review_revision!==snapshot.revision||page.selection_revision!==snapshot.revision||page.items.length>100)
-        throw new Error('审核选区已变化，请重新冻结');
-      for(const row of page.items){
-        if(excluded.has(row.image_id))continue;
-        if(!row.image_id||seen.has(row.image_id)||seen.size>=snapshot.count)throw new Error('候选范围身份不一致');
-        seen.add(row.image_id);
-        const hash=row.source_content_sha256||row.content_sha256;
-        if(row.gt_committed||!hash){skip('已有正式 GT 或缺少源素材证据');continue}
-        const result=aiPlanKeepAmbiguousLabel60(row,options);
-        if('reason' in result){skip(result.reason);continue}
-        entries.set(row.image_id,{revision:result.revision,source_content_sha256:hash});
-        if(examples.length<16)examples.push({id:row.image_id,before:row.boxes?.length||0,after:result.boxes.length,
-          labels:[...new Set(result.boxes.map(box=>box.label))].join('、')});
-        removed.value+=result.removed;fallback.value+=result.fallbackGroups;
-      }
-      scanned.value=seen.size;cursor=page.next_cursor;
-      if(cursor!==null){
-        if(visited.has(cursor)||visited.size>=500)throw new Error('候选分页无法继续核验');
-        visited.add(cursor);
-      }
-    }while(cursor!==null);
-    if(seen.size!==snapshot.count)throw new Error('服务端候选范围未完整覆盖，请重新冻结');
-    plan.value=entries;preview.value=examples;
-    reasons.value=Object.fromEntries(skipped);
-  }catch(cause){if(!controller.signal.aborted)error.value=browseError(cause)}
-  finally{scanning.value=false}
+    if(workspaceActorKey(await readWorkspaceSession(signal))!==actor)throw new Error('会话已切换，请重新打开审核');
+    await action();
+  }catch(cause){if(!signal.aborted)error.value=browseError(cause)}
+  finally{busy.value=false;emit('busy',false)}
 }
-
-async function save(){
-  const entries=plan.value;
-  if(!entries?.size||!confirmed.value||writing.value||finished.value)return;
-  const snapshot=props.range;
-  const options={mode:mode.value,label:label.value,threshold:threshold.value};
-  const seen=new Set<string>();
-  error.value='';writing.value=true;emit('busy',true);
-  let attempted=false;
-  const confirmedRows:ConfirmedDraftProof[]=[];
+function remember(record:Pending){
+  sessionStorage.setItem(key,JSON.stringify(record));pending.value=record;
+}
+function accept(record:AmbiguityTask,phase:AmbiguityPhase){
+  if(!record.task_id||record.project_id!==scope.projectId
+    ||record.operation!==(phase==='plan'?'PLAN_AI_AMBIGUITY':'SAVE_AI_AMBIGUITY_DRAFTS'))
+    throw new Error('消歧任务回执身份不一致');
+  const previous=task.value?.succeeded||0;
+  task.value=record;
+  if(phase==='save'&&(record.succeeded||0)>previous)emit('settled');
+}
+async function submit(record:Pending){
+  canReplay.value=false;
+  const body=record.phase==='plan'?record.plan:{plan_task_id:record.planId!};
+  accept(await createAmbiguityTask(scope,record.id,record.phase,body,signal),record.phase);
+}
+function prepare(){
+  const range=props.range,iou=threshold.value;
+  if(!range||iou===undefined||iou<0.5||iou>1||(mode.value==='manual'&&!labels.value.some(item=>item.code===label.value)))return;
+  const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+  const record:Pending={id,phase:'plan',plan:{selection_id:range.id,review_revision:range.revision,
+    excluded_image_ids:[...range.excluded],mode:mode.value,label:label.value,threshold:iou}};
+  void run(async()=>{remember(record);await submit(record)});
+}
+function save(){
+  if(!canSave.value||!pending.value||!task.value||!confirmed.value)return;
+  const record:Pending={...pending.value,phase:'save',planId:task.value.task_id};
+  void run(async()=>{remember(record);task.value=undefined;await submit(record)});
+}
+function refresh(){
+  const record=pending.value;
+  if(!record)return;
+  void run(async()=>{
+    canReplay.value=false;
+    try{accept(await readAmbiguityTask(scope,record.id,record.phase,signal),record.phase)}
+    catch(cause){
+      if((cause as {httpStatus?:number}).httpStatus===404&&!task.value){canReplay.value=true;return}
+      throw cause;
+    }
+  });
+}
+function replay(){
+  const record=pending.value;
+  if(record&&canReplay.value)void run(()=>submit(record));
+}
+function manage(action:'cancel'|'retry'){
+  const id=task.value?.task_id,phase=pending.value?.phase;
+  if(id&&phase)void run(async()=>{accept(await manageMaterialBatch(scope.projectId,id,action,signal),phase)});
+}
+function clear(){
   try{
-    if(workspaceActorKey(await readWorkspaceSession(controller.signal))!==actor)throw new Error('会话已切换，请重新打开审核');
-    let cursor:string|null='0';
-    const visited=new Set<string>(),counts={...reasons.value};
-    do{
-      const page=await readAmbiguitySelection(scope,snapshot.id,cursor,controller.signal,cursor==='0'?undefined:snapshot.revision);
-      if(page.selection_revision!==snapshot.revision||page.items.length>100
-        ||(cursor==='0'&&page.review_revision!==snapshot.revision))throw new Error('审核范围已变化，请重新预检');
-      const drafts:AmbiguityDraft[]=[];
-      for(const row of page.items){
-        const identity=entries.get(row.image_id);
-        if(!identity)continue;
-        if(seen.has(row.image_id))throw new Error('冻结候选重复，请重新预检');
-        seen.add(row.image_id);
-        const result=aiPlanKeepAmbiguousLabel60(row,options);
-        if(row.gt_committed||'reason' in result||result.revision!==identity.revision
-          ||(row.source_content_sha256||row.content_sha256)!==identity.source_content_sha256){
-          const message='候选身份、版本或资格变化';
-          counts[message]=(counts[message]??0)+1;failed.value++;continue;
-        }
-        const request_id=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
-        drafts.push({...identity,image_id:row.image_id,request_id,boxes:result.boxes,auto_resolution:options.mode==='auto'});
-      }
-      for(let offset=0;offset<drafts.length;offset+=25){
-        const batch=drafts.slice(offset,offset+25);
-        const byId=new Map(batch.map(item=>[item.image_id,item]));
-        attempted=true;
-        const result=await saveAmbiguityDrafts(scope,batch,controller.signal);
-        if(result.total!==batch.length||result.items.length!==batch.length
-          ||new Set(result.items.map(item=>item.image_id)).size!==batch.length)
-          throw new Error('逐项草稿回执不完整，请检查当前候选');
-        for(const item of result.items){
-          const original=byId.get(item.image_id);
-          if(!original||(item.ok&&item.revision!==original.revision+1))
-            throw new Error('草稿回执身份或版本不一致');
-          if(item.ok){
-            saved.value++;
-            if(options.mode==='manual')confirmedRows.push({image_id:item.image_id,draft_revision:item.revision!,
-              source_content_sha256:original.source_content_sha256});
-          }
-          else{
-            failed.value++;
-            const reason=browseError(new Error(typeof item.error==='string'?item.error:item.error?.message||'草稿未保存'));
-            counts[reason]=(counts[reason]??0)+1;
-          }
-        }
-      }
-      reasons.value=counts;
-      cursor=page.next_cursor;
-      if(cursor!==null){
-        if(visited.has(cursor)||visited.size>=500)throw new Error('候选分页无法继续核验');
-        visited.add(cursor);
-      }
-    }while(cursor!==null);
-    if(seen.size!==entries.size)throw new Error('冻结范围未覆盖全部原预检候选');
-    proofs.value=confirmedRows;finished.value=true;
-  }catch(cause){
-    if(!controller.signal.aborted)error.value=(attempted?'当前批次可能已有保存，请核对候选草稿。':'')+browseError(cause);
-  }finally{
-    if(attempted){finished.value=true;emit('settled')}
-    writing.value=false;emit('busy',false);
-  }
+    sessionStorage.removeItem(key);pending.value=undefined;task.value=undefined;
+    canReplay.value=false;confirmed.value=false;formalConsent.value=false;
+  }catch(cause){error.value=browseError(cause)}
 }
-function prepareFormal(){
-  if(!formalConsent.value||!proofs.value.length||writing.value||props.formalBusy)return;
-  emit('formal',proofs.value);
+function freeze(){
+  if(canFormal.value&&pending.value&&task.value?.succeeded&&formalConsent.value)
+    emit('formal',{requestId:pending.value.id,count:task.value.succeeded});
 }
+onMounted(async()=>{
+  try{
+    const stored=sessionStorage.getItem(key);
+    if(stored){pending.value=JSON.parse(stored) as Pending;refresh()}
+    labels.value=await getReviewLabels(scope.projectId,signal);
+  }catch(cause){if(!signal.aborted)error.value=browseError(cause)}
+});
 onBeforeUnmount(()=>controller.abort());
 </script>
 
 <template>
- <el-dialog v-model="open" title="IoU 批量消歧" width="min(640px, 94vw)"
-  :close-on-click-modal="false" :show-close="!writing&&!formalBusy" :close-on-press-escape="!writing&&!formalBusy">
-  <p>已冻结并选中 {{ range.count }} 张。保存后可逐图复核候选草稿。</p>
+ <el-dialog v-model="open" title="IoU 批量消歧" width="min(680px,94vw)"
+  :close-on-click-modal="false" :show-close="!busy&&!formalBusy" :close-on-press-escape="!busy&&!formalBusy">
   <el-alert v-if="error||formalError" type="error" :title="error||formalError" :closable="false" />
-  <el-form label-position="top" :disabled="scanning || writing || finished">
+  <el-form v-if="!pending&&range" label-position="top" :disabled="busy">
+   <p>已冻结 {{range.count}} 张候选。</p>
    <el-form-item label="保留策略"><el-radio-group v-model="mode">
     <el-radio value="manual">保留指定标签</el-radio><el-radio value="auto">优先可信置信度</el-radio>
    </el-radio-group></el-form-item>
    <el-form-item v-if="mode==='manual'" label="正式标签">
     <el-select v-model="label" filterable><el-option v-for="item in labels" :key="item.code" :label="item.display_name || item.code" :value="item.code" /></el-select>
    </el-form-item>
-   <el-form-item label="处理阈值（IoU 大于或等于）">
+   <el-form-item label="IoU 阈值（大于或等于）">
     <el-input-number v-model="threshold" :min="0.5" :max="1" :step="0.01" :precision="2" />
    </el-form-item>
   </el-form>
-  <p v-if="scanning" role="status">已预检 {{ scanned }} / {{ range.count }} 张</p>
-  <template v-if="plan">
-   <p>可处理 {{ plan.size }} 张 · 移除 {{ removed }} 个重叠框 · {{ fallback }} 组按原候选顺序保留</p>
-   <ul v-if="Object.keys(reasons).length"><li v-for="(count,reason) in reasons" :key="reason">{{ reason }}（{{ count }}）</li></ul>
-   <el-table v-if="preview.length" :data="preview" max-height="200" aria-label="消歧预览（最多16张）">
+  <template v-if="pending">
+   <p v-if="task" role="status">{{isPlan?'消歧预检':'保存草稿'}} · {{statusLabels[task.status]||task.status}} · {{task.processed ?? 0}} / {{task.total ?? '待核验'}} 张 · {{isPlan?'可处理':'已保存'}} {{task.succeeded ?? 0}} 张 · {{isPlan?'跳过':'失败'}} {{task.failed ?? 0}} 张</p>
+   <p v-else role="status">{{canReplay?'尚未查到任务，可按原请求继续提交。':'任务结果待核验。'}}</p>
+   <p v-if="isPlan && task?.result">移除 {{task.result.removed ?? 0}} 个重叠框 · {{task.result.fallback_groups ?? 0}} 组按原候选顺序保留</p>
+   <ul v-if="task?.result?.skipped_reasons"><li v-for="(count,reason) in task.result.skipped_reasons" :key="reason">{{reason}}（{{count}}）</li></ul>
+   <ul v-else-if="task?.error_examples?.length"><li v-for="(item,index) in task.error_examples" :key="index">{{item.error}}</li></ul>
+   <el-table v-if="task?.result?.examples?.length" :data="task.result.examples" max-height="200" aria-label="消歧样例">
     <el-table-column prop="id" label="素材"/><el-table-column prop="before" label="原框" width="68"/>
-    <el-table-column prop="after" label="保留框" width="80"/><el-table-column prop="labels" label="保留标签"/>
+    <el-table-column prop="after" label="保留框" width="80"/><el-table-column label="保留标签">
+     <template #default="{row}">{{row.labels.join('、')}}</template>
+    </el-table-column>
    </el-table>
-   <p v-if="writing || finished" role="status">回执已确认保存 {{ saved }} 张、失败 {{ failed }} 张</p>
-   <el-checkbox v-else v-model="confirmed">确认按选定策略批量保存候选草稿</el-checkbox>
-   <el-checkbox v-if="proofs.length" v-model="formalConsent">已核对人工指定标签和保留范围，确认预检这 {{proofs.length}} 张草稿</el-checkbox>
-   <p v-else-if="finished&&mode==='auto'">自动策略只生成草稿。请人工复核后通过原入库流程提交。</p>
+   <el-checkbox v-if="canSave" v-model="confirmed">确认按选定策略保存候选草稿</el-checkbox>
+   <el-checkbox v-if="canFormal" v-model="formalConsent">已核对人工指定标签和保留范围</el-checkbox>
+   <p v-else-if="!isPlan&&terminal&&pending.plan.mode==='auto'">自动策略只保存草稿，请人工复核后入库。</p>
   </template>
   <template #footer>
-   <el-button :disabled="writing||formalBusy" @click="open=false">关闭</el-button>
-   <el-button :loading="scanning" :disabled="writing || finished" @click="prepare">预检消歧</el-button>
-   <el-button v-if="proofs.length" type="primary" :loading="formalBusy" :disabled="!formalConsent" @click="prepareFormal">预检 C2-B 正式入库</el-button>
-   <el-button v-else type="primary" :loading="writing" :disabled="!confirmed || !plan?.size || finished || scanning" @click="save">保存草稿</el-button>
+   <el-button :disabled="busy||formalBusy" @click="open=false">关闭</el-button>
+   <el-button v-if="!pending&&range" type="primary" :disabled="busy||(mode==='manual'&&!label)" @click="prepare">预检消歧</el-button>
+   <el-button v-if="pending" :loading="busy" @click="refresh">刷新任务</el-button>
+   <el-button v-if="canReplay" :disabled="busy" @click="replay">按原请求提交</el-button>
+   <el-button v-if="task&&!terminal&&task.status!=='CANCEL_REQUESTED'" :disabled="busy" @click="manage('cancel')">取消任务</el-button>
+   <el-button v-if="!isPlan&&terminal&&(task?.status==='CANCELLED'||task?.status==='FAILED')" :disabled="busy" @click="manage('retry')">继续未处理项</el-button>
+   <el-button v-if="terminal||canReplay" :disabled="busy||formalBusy" @click="clear">完成核对</el-button>
+   <el-button v-if="canSave" type="primary" :disabled="!confirmed||busy" @click="save">保存草稿</el-button>
+   <el-button v-if="canFormal" type="primary" :loading="formalBusy" :disabled="!formalConsent||busy" @click="freeze">预检 C2-B 正式入库</el-button>
   </template>
  </el-dialog>
 </template>

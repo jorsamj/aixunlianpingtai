@@ -26,6 +26,100 @@ def review_task(seeded_project, tmp_path, monkeypatch):
     return project, image, identity, store, repo
 
 
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_background_ambiguity_freezes_qualified_drafts_without_changing_gt(client, review_task, mode):
+    from platform_core.material_batches import MaterialBatchHandler
+    from platform_core.task_runtime import Scheduler
+
+    project, image, task, store, repo = review_task
+    materials = host.material_store(project)
+    source = materials.get(image["id"])
+    ids = ["bg-ambiguity-apply", "bg-ambiguity-drift", "bg-ambiguity-exclude"]
+    materials.upsert_many([{**source, "id": image_id} for image_id in ids])
+    boxes = [
+        {"id": "f", "label": "fire", "x1": 1, "y1": 2, "x2": 20, "y2": 25, "confidence": .3},
+        {"id": "s", "label": "smoke", "x1": 1, "y1": 2, "x2": 20, "y2": 25, "confidence": .8},
+    ]
+    store.append_items({"image_id": image_id, "status": "success", "width": 128, "height": 128,
+                        "source_content_sha256": source["content_sha256"],
+                        "manual_review_required": True, "boxes": boxes} for image_id in ids)
+    scheduler = Scheduler(repo, store.artifacts, "ambiguity-worker",
+        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(host.DATA_DIR)}, {"materials.batch"})
+    source_api = f"/api/v60/projects/{project}/annotation-tasks/{task}"
+    selection = client.post(source_api + "/review-selection", json={"filter": "ambiguous", "purpose": "ambiguity"})
+    assert selection.status_code == 200, selection.text
+    selected = selection.json()
+    base = source_api + "/ambiguity/" + uuid.uuid4().hex
+    packet = {"selection_id": selected["selection_id"], "review_revision": selected["review_revision"],
+              "excluded_image_ids": [ids[2]], "mode": mode, "label": "fire", "threshold": 1}
+    plan = client.post(base + "/plan", json=packet)
+    assert plan.status_code == 202, plan.text
+    assert scheduler.run_once()
+    assert client.get(base + "/plan").json()["succeeded"] == 2
+    assert store.get(ids[0])["draft_revision"] == 0
+    assert client.post(base + "/plan", json=packet).json()["task_id"] == plan.json()["task_id"]
+    materials.patch({ids[1]: {"content_sha256": "e" * 64}})
+    baseline = host.read_annotation(project, ids[0])
+    draft = client.post(base + "/save", json={"plan_task_id": plan.json()["task_id"]})
+    assert draft.status_code == 202, draft.text
+    assert scheduler.run_once()
+    result = client.get(base + "/save").json()
+    assert result["status"] == "PARTIAL_SUCCESS"
+    assert result["succeeded"] == result["failed"] == 1
+    current = store.get(ids[0])
+    assert current["draft_revision"] == 1
+    assert current["boxes"][0]["label"] == ("fire" if mode == "manual" else "smoke")
+    assert current["draft"]["auto_resolution"] is (mode == "auto")
+    assert store.get(ids[1])["draft_revision"] == store.get(ids[2])["draft_revision"] == 0
+    assert host.read_annotation(project, ids[0]) == baseline
+    assert client.post(base + "/save", json={"plan_task_id": plan.json()["task_id"]}).json()["task_id"] == result["task_id"]
+    freeze = client.post(base + "/freeze-drafts")
+    if mode == "manual":
+        assert freeze.status_code == 200, freeze.text
+        assert freeze.json()["count"] == 1
+        materials.patch({ids[0]: {"content_sha256": "d" * 64}})
+        assert client.post(base + "/freeze-drafts").status_code == 409
+    else:
+        assert freeze.status_code == 409
+
+
+def test_background_ambiguity_geometry_matches_original_js():
+    import json
+    import subprocess
+    from pathlib import Path
+    from platform_core.annotation_ambiguity_geometry import plan_ambiguity
+
+    def scenario(xs, labels, mode, threshold, confidence=()):
+        boxes = [{"id": str(i), "label": label, "x1": x, "x2": x + 10, "y1": 0, "y2": 10,
+                  **({"confidence": confidence[i]} if i < len(confidence) else {})}
+                 for i, (x, label) in enumerate(zip(xs, labels))]
+        return [{"status": "success", "manual_review_required": True, "boxes": boxes},
+                {"mode": mode, "label": "a", "threshold": threshold}]
+
+    cases = [
+        scenario([0, 0, 25], ["a", "b", "c"], "manual", 1),
+        scenario([0, 0], ["a", "b"], "auto", .5, [.3, "0.8"]),
+        scenario([0, 0], ["b", "a"], "auto", .5, [None, ""]),
+        scenario([0, 2, 4], ["a", "b", "c"], "manual", .6),
+        scenario([0, 0, 28, 30], ["a", "b", "b", "a"], "auto", .9),
+        scenario([0, 0, 0], ["a", "b", "a"], "manual", .5),
+    ]
+    module = Path(__file__).resolve().parents[2] / "static/modules/annotation-ambiguity.js"
+    script = """
+import fs from 'node:fs';
+const code = fs.readFileSync(process.argv[1]);
+const {aiPlanKeepAmbiguousLabel60: plan} = await import('data:text/javascript;base64,' + code.toString('base64'));
+const results = JSON.parse(fs.readFileSync(0, 'utf8')).map(([item, options]) => {
+  const {removedBoxes, groups, revision, ...core} = plan(item, options);
+  return core;
+});
+console.log(JSON.stringify(results));
+"""
+    output = subprocess.run(["node", "--input-type=module", "-e", script, str(module)],
+                            input=json.dumps(cases), capture_output=True, text=True, check=True, timeout=15)
+    assert [plan_ambiguity(item, **options) for item, options in cases] == json.loads(output.stdout)
+
+
 def test_saved_draft_survives_reload_and_stale_revision_conflicts(client, review_task):
     project, image, task, store, _ = review_task
     base = f'/api/v60/projects/{project}/annotation-tasks/{task}'

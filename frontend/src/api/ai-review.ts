@@ -1,6 +1,7 @@
 import {request} from '../app/http';
 import type {AiEditorBox} from '../types/ai-editor';
 import type {MaterialBox} from '../types/materials';
+import type {MaterialBatchTask} from './material-batches';
 
 export const reviewFilters = [
   ['all', '全部'], ['clean_boxes', '有框 · 无歧义'], ['ambiguous', '有歧义'], ['zero', '零框'],
@@ -87,24 +88,28 @@ export function freezeReviewSelection(scope:ReviewAddress, filter:ReviewFilter, 
     method:'POST',body:JSON.stringify({filter,purpose,review_revision:revision}),signal,
   });
 }
-export interface ConfirmedDraftProof {image_id:string;draft_revision:number;source_content_sha256:string}
-export function freezeConfirmedDrafts(scope:ReviewAddress, rows:ConfirmedDraftProof[], signal:AbortSignal) {
-  return request<ReviewSelection>(root(scope)+'/review-selection',{
-    method:'POST',body:JSON.stringify({filter:'edited',purpose:'gt',confirmed_drafts:rows}),signal,
-  });
+export type AmbiguityPhase='plan'|'save';
+export interface AmbiguityPlanRequest {
+  selection_id:string;review_revision:number;excluded_image_ids:string[];
+  mode:'manual'|'auto';label:string;threshold:number;
 }
-export interface AmbiguityDraft {
-  image_id:string;request_id:string;revision:number;source_content_sha256:string;auto_resolution:boolean;boxes:MaterialBox[];
+export interface AmbiguityTask extends MaterialBatchTask {
+  result?: {examples?:{id:string;before:number;after:number;labels:string[]}[];
+    removed?:number;fallback_groups?:number;skipped_reasons?:Record<string,number>}|null;
 }
-export function saveAmbiguityDrafts(scope:ReviewAddress,items:AmbiguityDraft[],signal:AbortSignal){
-  return request<{items:{image_id:string;ok:boolean;revision?:number;error?:string|{message?:string}}[];total:number}>(
-    root(scope)+'/candidates/drafts-batch',{method:'POST',body:JSON.stringify({items}),signal});
+export function ambiguityKey(scope:ReviewAddress, actor:string){
+  return 'ai-ambiguity:'+JSON.stringify([actor,scope.projectId,scope.taskId]);
 }
-export function readAmbiguitySelection(scope:ReviewAddress,id:string,cursor:string,signal:AbortSignal,revision?:number){
-  const query=new URLSearchParams({cursor,limit:'100'});
-  if(revision!==undefined)query.set('ambiguity_revision',String(revision));
-  return request<{items:ReviewCandidate[];total:number;review_revision:number;selection_revision:number;next_cursor:string|null}>(
-    root(scope)+'/review-selection/'+enc(id)+'/candidates?'+query,{signal});
+function ambiguityRoot(scope:ReviewAddress,id:string){return root(scope)+'/ambiguity/'+enc(id)}
+export function readAmbiguityTask(scope:ReviewAddress,id:string,phase:AmbiguityPhase,signal:AbortSignal){
+  return request<AmbiguityTask>(ambiguityRoot(scope,id)+'/'+phase,{signal});
+}
+export function createAmbiguityTask(scope:ReviewAddress,id:string,phase:AmbiguityPhase,
+  body:AmbiguityPlanRequest|{plan_task_id:string},signal:AbortSignal){
+  return request<AmbiguityTask>(ambiguityRoot(scope,id)+'/'+phase,{method:'POST',body:JSON.stringify(body),signal});
+}
+export function freezeAmbiguityDrafts(scope:ReviewAddress,id:string,signal:AbortSignal){
+  return request<ReviewSelection>(ambiguityRoot(scope,id)+'/freeze-drafts',{method:'POST',signal});
 }
 export async function getReviewCandidateDetail(scope:ReviewAddress, id:string, signal:AbortSignal) {
   const result=await request<{item:ReviewCandidate;review_revision:number}>(root(scope)+'/candidates/'+enc(id),{signal});

@@ -4,8 +4,8 @@ import {onBeforeRouteLeave,onBeforeRouteUpdate} from 'vue-router';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 import {legacyUrl} from './navigation';
 import {login} from './http';
-import {reviewFilters} from '../api/ai-review';
-import type {ConfirmedDraftProof,ReviewCandidate,TransferRange} from '../api/ai-review';
+import {ambiguityKey,reviewFilters} from '../api/ai-review';
+import type {ReviewCandidate,TransferRange} from '../api/ai-review';
 import {canAdopt,hasUnresolvedAmbiguity} from '../stores/ai-review-decision';
 import {useAiReviewStore} from '../stores/ai-review';
 import MaterialPreview from '../components/MaterialPreview.vue';
@@ -23,11 +23,15 @@ const ambiguityRange=ref<ReturnType<typeof review.ambiguityRange>>();
 function openAmbiguity(){
   if(editing.value)return;
   ambiguityRange.value=review.ambiguityRange();
-  ambiguityOpen.value=!!ambiguityRange.value;
+  ambiguityOpen.value=true;
 }
-async function preflightAmbiguity(rows:ConfirmedDraftProof[]){
+function hasAmbiguityReceipt(){
+  try{return !!sessionStorage.getItem(ambiguityKey({projectId:props.projectId,taskId:props.taskId},workspace.actorKey))}
+  catch{return false}
+}
+async function preflightAmbiguity(proof:{requestId:string;count:number}){
   if(editing.value||ambiguityBusy.value||review.bulkBusy||review.formalLocked)return;
-  await review.preflightBulkFormal(rows);
+  await review.preflightBulkFormal(proof);
   if(review.bulkIntent||review.bulkPendingUnknown){ambiguityOpen.value=false;review.openBulkFormal()}
 }
 function openTransfer(kind:'single'|'selection'|'receipt'){
@@ -202,7 +206,7 @@ const diagnosticFacts=computed(()=>{
    :scope="editScope" :actor-key="workspace.actorKey" :range="transferRange"
    :reviewable="review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION' && !review.formalLocked && !review.decisionBusy && !review.decision"
    @busy="transferBusy=$event" @settled="review.refreshAfterCandidateMutation()" />
-  <NativeReviewAmbiguity v-if="ambiguityOpen && ambiguityRange" :key="transferKey" v-model:open="ambiguityOpen"
+  <NativeReviewAmbiguity v-if="ambiguityOpen" :key="transferKey" v-model:open="ambiguityOpen"
    :scope="editScope" :actor-key="workspace.actorKey" :range="ambiguityRange" :formal-busy="review.bulkBusy" :formal-error="review.bulkError"
    @busy="ambiguityBusy=$event" @settled="review.refreshAfterCandidateMutation()" @formal="preflightAmbiguity" />
   <NativeAiCandidateEditor v-if="editing" ref="editor" :key="editing" :image-id="editing"
@@ -275,7 +279,7 @@ const diagnosticFacts=computed(()=>{
         @click="review.freezeSelection('transfer')">选择筛选内可转池素材</el-button>
        <el-button v-if="review.filter==='ambiguous'&&!review.frozenSelection" :disabled="!review.canSelect||!review.page?.total"
         @click="review.freezeSelection('ambiguity')">选择待消歧素材</el-button>
-       <el-button v-if="review.frozenSelection?.purpose==='ambiguity'" :disabled="!review.ambiguityRange()"
+       <el-button v-if="review.frozenSelection?.purpose==='ambiguity' || hasAmbiguityReceipt()" :disabled="!review.ambiguityRange()&&!hasAmbiguityReceipt()"
         @click="openAmbiguity()">IoU 批量消歧</el-button>
        <el-button :disabled="!review.canPrepareFormal" @click="review.prepareFormal()">
         正式入库已选 {{ review.selectedCount }} 张

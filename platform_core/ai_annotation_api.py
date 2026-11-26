@@ -1,6 +1,6 @@
 """HTTP adapters registered in original order; shared legacy selection types are injected."""
 from pydantic import BaseModel
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Literal, Optional
 from fastapi import APIRouter, Body, Query, Request
 from .ai_annotation_service import AiAnnotationService
 from .ai_annotation_contracts import AnnotationComparisonReq, AnnotationDecisionReq, AnnotationDraftBatchReq, AnnotationDraftReq, AnnotationSelectionMembershipReq, AnnotationTaskCreateReq, AnnotationTransferReq, BulkFormalIntentReq
@@ -89,6 +89,19 @@ def create_ai_annotation_router_2(service: Callable[[], AiAnnotationService], An
 
 def create_ai_annotation_router_3(service: Callable[[], AiAnnotationService], AnnotationSelectionReq: type[BaseModel]) -> APIRouter:
     router = APIRouter()
+
+    @router.post('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/ambiguity/{request_id}/freeze-drafts')
+    def freeze_ambiguity_task_drafts(project_id: str, task_id: str, request_id: str, request: Request):
+        return service().freeze_ambiguity_task_drafts(project_id, task_id, request_id, request)
+
+    @router.post('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/ambiguity/{request_id}/{phase}', status_code=202)
+    def create_annotation_ambiguity_task(project_id: str, task_id: str, request_id: str, phase: Literal['plan', 'save'],
+                                         request: Request, payload: dict = Body(...)):
+        return service().annotation_ambiguity_task(project_id, task_id, request_id, phase, request, payload)
+
+    @router.get('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/ambiguity/{request_id}/{phase}')
+    def read_annotation_ambiguity_task(project_id: str, task_id: str, request_id: str, phase: Literal['plan', 'save'], request: Request):
+        return service().annotation_ambiguity_task(project_id, task_id, request_id, phase, request)
 
     @router.post('/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-selection')
     def create_annotation_review_selection(project_id: str, task_id: str, payload: AnnotationSelectionReq, request: Request):

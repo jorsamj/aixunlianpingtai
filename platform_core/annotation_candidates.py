@@ -1062,7 +1062,19 @@ class CandidateStore:
             result['revision'] = int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
             return result
 
-    def save_draft(self, image_id, boxes, *, expected_revision, actor, request_id, automatic=False):
+    def draft_receipts(self, image_ids, operation_id):
+        ids = list(image_ids)
+        if not 1 <= len(ids) <= 200:
+            raise ValueError("invalid candidate receipt page")
+        self._ready()
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            return {row[0]: json.loads(row[1])["result"] for row in db.execute(
+                f"SELECT image_id,event_json FROM review_events WHERE kind='draft' AND operation_id=? "
+                f"AND image_id IN ({placeholders})", (operation_id, *ids),
+            )}
+
+    def save_draft(self, image_id, boxes, *, expected_revision, actor, request_id, automatic=False, commit_guard=None):
         """Persist a task-local review revision, never write formal annotations.
 
         Geometry, source hash and permission checks belong to the API holding
@@ -1098,6 +1110,8 @@ class CandidateStore:
                        (result['revision'],json.dumps(result,ensure_ascii=False),len(boxes),str(image_id)))
             db.execute("INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,'draft',?)",(str(image_id),str(request_id),json.dumps(dict(digest=digest,actor=actor,automatic=bool(automatic),result=result),ensure_ascii=False)))
             self._bump_revision(db)
+            if commit_guard is not None:
+                commit_guard()
             return result
 
     def set_review_exclusion(self, image_id, state, *, operation_id, actor, expected_revision=None, details=None, transfer_receipt=None):

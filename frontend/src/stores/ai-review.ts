@@ -1,4 +1,4 @@
-import {freezeConfirmedDrafts,type ConfirmedDraftProof} from '../api/ai-review';
+import {freezeAmbiguityDrafts} from '../api/ai-review';
 import {computed,ref,shallowRef} from 'vue';
 import {defineStore} from 'pinia';
 import {getReviewTask,getReviewPage,getReviewCandidateDetail,getReviewDiagnostics,sendSingleDecision,getDecisionReceipt,freezeReviewSelection,getReviewLabels,getFormalAnnotation,submitFormalDecision,getFormalReceipt,sealBulkFormalIntent,getBulkFormalIntent,startBulkFormalExecution,getBulkFormalExecution,cancelBulkFormalExecution,recoverBulkFormalExecution} from '../api/ai-review';
@@ -744,7 +744,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     // HTTP (non-secure) fallback: identity only needs uniqueness, never secrecy.
     return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');
   }
-  async function preflightBulkFormal(confirmedDrafts?:ConfirmedDraftProof[]){
+  async function preflightBulkFormal(confirmedDrafts?:{requestId:string;count:number}){
     if(bulkIntent.value||bulkRunning.value||bulkCreatePending.value)return;
     archiveTerminalBulk();
     await runBulk(async(address,signal)=>{
@@ -752,11 +752,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
       const snapshot=frozenSelection.value;
       let body:{request_id:string;selection_id:string;review_revision:number;excluded_image_ids:string[]};
       if(confirmedDrafts){
-        if(!confirmedDrafts.length||stored||bulkRequestId.value)
+        if(!confirmedDrafts.count||stored||bulkRequestId.value)
           throw new Error('仍有原入库操作，请先核对后再预检新范围');
-        const exact=await freezeConfirmedDrafts(address,confirmedDrafts,signal);
+        const exact=await freezeAmbiguityDrafts(address,confirmedDrafts.requestId,signal);
         if(signal.aborted||scope!==address)return;
-        if(exact.purpose!=='gt'||exact.filter!=='edited'||exact.count!==confirmedDrafts.length)
+        if(exact.purpose!=='gt'||exact.filter!=='edited'||exact.count!==confirmedDrafts.count)
           throw new Error('服务端冻结范围与人工确认草稿不一致');
         body={request_id:newBulkRequestId(),selection_id:exact.selection_id,review_revision:exact.review_revision,excluded_image_ids:[]};
       }else if(snapshot){
