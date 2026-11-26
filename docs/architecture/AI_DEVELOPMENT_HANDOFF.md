@@ -4,9 +4,11 @@
 
 | 状态 | 单元 | 说明 |
 |---|---|---|
-| 已完成代码 | 本轮 CI 修复 | 重复 `capabilities` 删除；PG focused 依赖补 psutil；任务路由守卫改为三条真实 GET；ZIP 失败用例按文件名注入 503 |
-| 已完成代码 | U2 准入安全协议 | 切换锁+转换标记+durable `cutover_state`；拒绝源端变化；原子准入记录；单调 generation；finish/abort 崩溃恢复 |
-| 已完成代码 | U1 引用一致性 | 分页前后核验权威 revision，变化即 409，不把变化数据当作无引用 |
+| 已完成代码 | U2 切换锁统一 | `storage_source_switch_lock_path` 统一 DB/记录/标记三种入参为同一锁；写者、admit、finish、abort 共享 |
+| 已完成代码 | U2 顶层事务 | admit 要求 IDLE 连接、单事务内 advisory 锁+generation+import+reconcile+cutover_state；COMMIT 后校验 IDLE 才写准入记录 |
+| 已完成代码 | U2 恢复语义 | 提交前失败移除标记；提交后失败保留标记，finish（已发布）/abort（未发布）恢复；损坏/未知状态 fail-closed |
+| 已完成代码 | 准入 Provider 严格校验 | 缺失/未知 Provider 视为无效记录：写者拒绝、`cutover_status` 报 INCONSISTENT；合法 sqlite/postgresql 不变 |
+| 已完成代码 | U1 revision 证明 | `require_revision_token`：revision 不可用即证据不完整（409），不再以 None==None 证明稳定 |
 | 已完成代码 | 素材旧数据补查 | 命中 200 行上限即 `MaterialEvidenceIncomplete`（409），不再当作"不存在" |
 | 未完成开发 | U3 素材+GT+负样本池 | 需联合边界设计（batch ATTACH、rescan manifest、picker usage/GT，ATTACH、负样本池同库事务），未开始 |
 | 未完成开发 | 训练准备与缓存 | Prepare/Cache 复用依据、取消回收与磁盘占用仍需治理 |
@@ -21,7 +23,18 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
-## 80514712 审计整改：CI、U2 准入安全、U1 引用一致性与素材证据（2026-11-26，当前）
+## 141026b1 安全复审整改：切换锁、PG 顶层事务、Provider 与 revision fail-closed（2026-11-26，当前）
+
+- 起始本地及远端 `141026b1ef9f6190d6d51ada9108637c131ac163`（上一轮 51/51 CI SUCCESS）。VERSION 42.24.592 未改。状态 `CODE_COMPLETE（本轮四项）/ CI_PENDING / U2: PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED + CUTOVER_PROTOCOL_IMPLEMENTED + CUTOVER_NOT_READY / PRODUCTION_NOT_VERIFIED`。
+- P0-1 切换锁路径不一致（根因与修复）：`storage_source_switch_lock` 原按传入路径的 **parent** 建锁——SQLite 写者传 `storage_sources.sqlite3`（锁在 `storage/`），而 admit/finish/abort 传准入记录（锁在 `storage/storage_source_migration/`），两侧根本不是同一把锁，切换无法等待已通过 authority check 的写者。新增 `storage_source_switch_lock_path()` 作为**唯一**锁身份解析：数据库文件、准入记录、转换标记、锁文件本身都归一到 `<storage>/.storage-source-switch.lock`；写者与 admit/finish/abort 现在共享同一把 FileLock；保留同线程重入、跨进程互斥、lifecycle→switch 顺序，普通 SQLite 业务行为不变。
+- P0-2 PostgreSQL 事务边界（根因与修复）：`admit_cutover` 原在 `connection.transaction()` **之前** 调 `_durable_generation()`，该 SELECT 在非 autocommit 连接上开启隐式事务，使随后的 `transaction()` 变成 SAVEPOINT；于是本地准入记录与 marker 删除可能发生在 PostgreSQL 真正 COMMIT 之前。现在：入口 `require_idle_connection`（已开启事务直接 `STORAGE_SOURCE_CUTOVER_TRANSACTION_BUSY`，不接管调用者事务）；`_lock_cutover_scope`（`pg_advisory_xact_lock`）→ `_next_generation`（同一事务内读 durable generation，`max(本地, durable)+1`）→ import → reconcile → cutover_state 全在**一个顶层事务**；事务退出后再次校验 `transaction_status == IDLE` 才原子写准入记录，记录成功后才重写/删除 marker。CLI `_ensure_schema` 以只读 `rollback` 回到 IDLE。失败清理按阶段区分：提交前失败移除标记（SQLite 恢复可写）；提交后失败**保留**标记（两侧阻断，需 finish/abort）。
+- P1 准入 Provider 严格校验：`load_storage_source_admission_record` 仅接受 `sqlite`/`postgresql`，缺失或未知即 `STORAGE_SOURCE_ADMISSION_RECORD_INVALID`；`_refuse_stale_sqlite` 不再对未知 Provider 放行；`cutover_status` 捕获该错误并报告 `INCONSISTENT`（`admission_error` 随附）；合法 SQLite 权限模式与合法 PostgreSQL 准入模式不变。
+- P1 revision 证明：新增 `require_revision_token`（revision 为 None 即 `ALGORITHM_HISTORY_REVISION_UNAVAILABLE`）；转换目录引用投影改用该严格形式，扫描前后各取一次，变化或不可用均 → 409 `CATALOG_REFERENCE_CHECK_FAILED`；5000 条上限、键集分页与原匹配逻辑不变。
+- 验证（本轮新增定向，未跑全仓）：`tests/integration/test_storage_source_postgres.py` **10 项真实 PostgreSQL**——锁身份一致、admit 等待持锁写者且快照包含其提交、admit 返回时 `IDLE`、第二连接在准入记录发布前已读到 `POSTGRES_ACTIVE` durable 行且 marker 仍在、提交前中断无 durable 行、提交后/记录前中断为 SWITCHING 且两侧阻断（finish 拒绝、abort 恢复、Provider 无准入不可写）、记录后/marker 前中断由 finish 恢复、generation 单调；`test_storage_source_provider.py` 16 项（含 BUSY 事务、未知 Provider、INCONSISTENT、锁重入/互斥）；`test_algorithm_provider_boundary.py` 24 项（含 revision 不可用）；路由守卫 13 项；受影响 storage-owner 与素材查找 37 项。`git diff --check` 干净，`py_compile` 通过；本轮无 SFC 变更。
+- 未启用：`STORAGE_SOURCE_PROVIDER` 仍默认 sqlite；未做生产切换、未操作 NAS/OSS/S3。U2 仍为 **CUTOVER_NOT_READY**（需真实部署演练与用户授权）。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改；未连接 4070/A800。
+
+## 80514712 审计整改：CI、U2 准入安全、U1 引用一致性与素材证据（2026-11-26，上一批）
 
 - 起始本地及远端 `805147121db7693c1f736d56b80359673c65ac36`（业务 `271d807a`，文档 `80514712`）。VERSION 42.24.592 未改。状态 `CODE_COMPLETE（本轮缺陷）/ CI_PENDING / U2: PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED + CUTOVER_PROTOCOL_IMPLEMENTED / CUTOVER_NOT_READY（未在任何真实部署启用）/ PRODUCTION_NOT_VERIFIED`。
 - CI 四项根因与修复：
