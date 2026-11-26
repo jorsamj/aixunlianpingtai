@@ -121,10 +121,18 @@ class QualityAnalysisService:
         weak=set((job.get('training_report') or {}).get('weak_labels') or [])
         if not weak: raise HTTPException(status_code=400,detail='当前报告没有识别出弱标签')
         limit=int((job.get('quality_gate') or {}).get('supplement_count') or 50);images=self.dependencies.load_images(project_id);eligible=[]
-        for img in images:
-            if (img.get('split') or 'unassigned')!='unassigned': continue
-            labs=self.dependencies._v44_labels_in_ann(self.dependencies.read_annotation(project_id,img['id']))
-            if labs.intersection(weak): eligible.append(str(img['id']))
+        # Only rows that are currently unassigned can become supplements; read
+        # their formal GT in bounded repository batches instead of opening the
+        # annotation owner once per catalog row.
+        unassigned=[img for img in images if (img.get('split') or 'unassigned')=='unassigned']
+        for offset in range(0,len(unassigned),500):
+            chunk=unassigned[offset:offset+500]
+            annotations=self.dependencies.read_annotations_many(
+                project_id,[str(img['id']) for img in chunk]
+            )
+            for img in chunk:
+                labs=self.dependencies._v44_labels_in_ann(annotations.get(str(img['id'])) or {})
+                if labs.intersection(weak): eligible.append(str(img['id']))
         eligible_set=set(eligible); updated=self.dependencies.now_iso()
         def apply_supplement(rows):
             changed=[]

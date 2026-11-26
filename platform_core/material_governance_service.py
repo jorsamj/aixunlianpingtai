@@ -125,8 +125,11 @@ class MaterialGovernanceService:
 
         annotation_box_counts = {}
         if scope == "filtered" and filt in {"marked", "unmarked"}:
-            images = self.dependencies.load_images(project_id)
-            image_ids = [str(img.get("id") or "") for img in images if str(img.get("id") or "")]
+            # The annotation filter still needs a full identity snapshot, but it
+            # must not hydrate every material payload document to obtain it.
+            # list_all_ids() is one canonical-order statement over the id column;
+            # GT is then read in bounded formal-repository batches.
+            image_ids = materials.list_all_ids()
             annotations = AnnotationRepository(self.dependencies.project_dir(project_id))
             for offset in range(0, len(image_ids), 500):
                 batch_ids = image_ids[offset:offset + 500]
@@ -166,21 +169,33 @@ class MaterialGovernanceService:
                 raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
             return changed
 
-        if scope == "dataset":
+        if scope == "dataset" or dataset_id is not None:
+            # Latest dataset membership is still re-read inside the write
+            # transaction, but rows outside that dataset are never decoded.
             changed = materials.mutate_dataset(dataset_id, apply_split)
         else:
+            # No dataset scope: the callback must re-evaluate the latest split /
+            # annotation snapshot across the whole library, so keep the original
+            # single full-table transaction rather than a pre-computed id list.
             changed = materials.mutate(apply_split)
         return {"ok": True, "changed": changed, "split": split}
 
     def v12_auto_split(self, project_id: str, dataset_id: str, payload: BatchSplitReq):
         self.dependencies.get_project(project_id)
-        annotation_presence = {}
+        materials = self.dependencies.material_store(project_id)
+        annotation_presence: Dict[str, bool] = {}
         if not payload.include_unannotated:
-            for img in self.dependencies.load_images(project_id):
-                image_id = str(img.get("id"))
-                annotation_presence[image_id] = bool(
-                    self.dependencies.read_annotation(project_id, image_id).get("boxes")
-                )
+            # Preserve the original pre-transaction GT snapshot boundary: the
+            # snapshot still covers every identity (a row reassigned into the
+            # dataset during the request must keep its already-read GT state),
+            # but it is now one id-only statement plus bounded 500-id GT batches
+            # instead of one full payload read and one repository open per image.
+            annotations = AnnotationRepository(self.dependencies.project_dir(project_id))
+            image_ids = materials.list_all_ids()
+            for offset in range(0, len(image_ids), 500):
+                batch = annotations.get_many(image_ids[offset:offset + 500])
+                for image_id, annotation in batch.items():
+                    annotation_presence[str(image_id)] = bool(annotation.get("boxes"))
 
         def apply_auto_split(rows):
             images = [
@@ -212,7 +227,11 @@ class MaterialGovernanceService:
                 counts[split] += 1
             return counts
 
-        counts = self.dependencies.material_store(project_id).mutate(apply_auto_split)
+        # Only the target dataset rows are decoded and written.  The callback
+        # keeps the original exact dataset predicate so historical "default"
+        # identities are not widened, and membership is still re-read from the
+        # latest row inside the same BEGIN IMMEDIATE transaction.
+        counts = materials.mutate_dataset(dataset_id, apply_auto_split)
         return {"ok": True, "counts": counts}
 
     def v52_mark_ready(self, project_id: str, payload: V52ReadyReq):
