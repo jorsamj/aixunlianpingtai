@@ -100,6 +100,8 @@ class PostgresStorageSourceRepository:
         self._admission_path = Path(admission_path) if admission_path else None
         self.reference_counter = reference_counter or (lambda _source_id: 0)
         self.delete_supported = bool(allow_cross_domain_delete)
+        #: Collected by the owning domains before a delete may proceed.
+        self._delete_evidence: Mapping[str, Any] | None = None
         self._ready = False
 
     def __repr__(self) -> str:  # never render the DSN
@@ -540,6 +542,72 @@ class PostgresStorageSourceRepository:
             raise KeyError(f"storage source does not exist: {source_id}")
         return _from_row(row)
 
+    #: Evidence keys a delete must present, produced by the owning domains.
+    DELETE_EVIDENCE_KEYS = (
+        "source_revision",
+        "material_references",
+        "artifact_references",
+        "physical_retirement",
+        "checked_at",
+    )
+
+    def _require_delete_evidence(self, evidence: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        """A source may only be deleted with complete, current evidence.
+
+        Counting zero references is not enough: other owners must confirm they hold
+        none, and the storage objects must already be retired with a proof. An
+        unavailable owner means "unknown", which is refused.
+        """
+        if not evidence:
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_REQUIRED",
+                "storage source deletion requires cross-domain evidence",
+                detail="material_references, artifact_references and physical retirement proof",
+            )
+        missing = [key for key in self.DELETE_EVIDENCE_KEYS if key not in evidence]
+        if missing:
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE",
+                "storage source delete evidence is incomplete",
+                detail=f"missing={missing}",
+            )
+        for key in ("material_references", "artifact_references", "source_revision"):
+            value = evidence.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise StorageSourceOperationBlocked(
+                    "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE",
+                    "storage source delete evidence has an invalid counter",
+                    detail=f"{key}={value!r}",
+                )
+        if int(evidence["material_references"]) or int(evidence["artifact_references"]):
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_STILL_REFERENCED",
+                "storage source is still referenced by other owners",
+                detail=(
+                    f"materials={evidence['material_references']} "
+                    f"artifacts={evidence['artifact_references']}"
+                ),
+            )
+        retirement = evidence.get("physical_retirement")
+        if not isinstance(retirement, Mapping) or str(
+            retirement.get("status") or ""
+        ).upper() != "RETIRED":
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_RETIREMENT_UNPROVEN",
+                "the storage objects are not proven retired",
+                detail="a RETIRED proof is required; a zero reference count is not proof",
+            )
+        if not str(retirement.get("proof") or "").strip():
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_RETIREMENT_UNPROVEN",
+                "the retirement proof is empty",
+            )
+        return evidence
+
+    def set_delete_evidence(self, evidence: Mapping[str, Any] | None) -> None:
+        """Attach the cross-domain evidence a pending delete must present."""
+        self._delete_evidence = dict(evidence) if evidence else None
+
     def delete(self, source_id: str) -> bool:
         """Cross-domain deletion stays blocked without admitted evidence."""
         if not self.delete_supported:
@@ -573,6 +641,16 @@ class PostgresStorageSourceRepository:
                 )
             if current.is_default:
                 raise ValueError("default storage source cannot be deleted")
+            evidence = self._require_delete_evidence(self._delete_evidence)
+            if int(evidence["source_revision"]) != current.runtime_revision:
+                raise StorageSourceOperationBlocked(
+                    "STORAGE_SOURCE_DELETE_EVIDENCE_STALE",
+                    "the delete evidence was collected for another source revision",
+                    detail=(
+                        f"evidence={int(evidence['source_revision'])} "
+                        f"current={current.runtime_revision}"
+                    ),
+                )
             cursor.execute(
                 f"DELETE FROM {SCHEMA_NAME}.storage_source WHERE scope=%s AND id=%s",
                 (self.scope, str(source_id)),

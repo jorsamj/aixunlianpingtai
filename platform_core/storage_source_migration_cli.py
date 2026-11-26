@@ -33,6 +33,7 @@ from .storage_source_cutover import (
     admit_cutover,
     cutover_status,
     finish_cutover,
+    rollback_cutover,
     summarize_error,
 )
 from .storage_source_migration import (
@@ -184,8 +185,31 @@ def command_finish(args) -> int:
     return 0
 
 
+def command_rollback(args) -> int:
+    if not args.operator.strip() or not args.reason.strip():
+        raise SystemExit("rollback requires --operator and --reason")
+    expected = None
+    if args.snapshot:
+        expected = str(_load_snapshot(args.snapshot)["content_digest"])
+    with _connect(args.dsn) as connection:
+        _ensure_schema(connection)
+        result = rollback_cutover(
+            connection,
+            args.sqlite,
+            operator=args.operator,
+            reason=args.reason,
+            expected_target_digest=expected,
+        )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def command_abort(args) -> int:
-    result = abort_cutover(args.sqlite)
+    if args.dsn:
+        with _connect(args.dsn) as connection:
+            result = abort_cutover(args.sqlite, connection)
+    else:
+        result = abort_cutover(args.sqlite)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -237,10 +261,25 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--sqlite", required=True)
     finish.set_defaults(handler=command_finish)
 
+    rollback = subparsers.add_parser(
+        "rollback",
+        help="reverse switch: export PostgreSQL, import SQLite and publish SQLite authority",
+    )
+    rollback.add_argument("--dsn", required=True)
+    rollback.add_argument("--sqlite", required=True)
+    rollback.add_argument("--operator", required=True)
+    rollback.add_argument("--reason", required=True)
+    rollback.add_argument("--snapshot", default="")
+    rollback.set_defaults(handler=command_rollback)
+
     abort = subparsers.add_parser(
         "abort", help="release an unpublished transition (SQLite stays writable)"
     )
     abort.add_argument("--sqlite", required=True)
+    abort.add_argument(
+        "--dsn", default="",
+        help="needed when an interrupted switch froze the durable PostgreSQL phase",
+    )
     abort.set_defaults(handler=command_abort)
     return parser
 

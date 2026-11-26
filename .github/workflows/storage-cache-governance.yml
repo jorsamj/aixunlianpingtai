@@ -208,7 +208,9 @@ jobs:
           print(f"tests={tests} skipped={skipped} failures={failures}")
           if skipped or failures:
               raise SystemExit("a PostgreSQL storage-source contract was skipped or failed")
-          if tests < 10:
+          # 10 provider/migration contracts + 3 real SIGKILL recovery contracts +
+          # 5 reverse-cutover/abort contracts.
+          if tests < 18:
               raise SystemExit(f"expected the full U2 contract set, ran {tests}")
           PY
 

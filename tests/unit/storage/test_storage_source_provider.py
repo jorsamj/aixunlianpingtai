@@ -438,3 +438,63 @@ def test_cutover_status_never_guesses_unknown_states(tmp_path):
     with pytest.raises(Exception) as invalid:
         cutover_status(repository.path)
     assert getattr(invalid.value, "code", "") == "STORAGE_SOURCE_CUTOVER_TRANSITION_INVALID"
+
+def test_delete_requires_complete_cross_domain_evidence():
+    """A zero reference count alone never authorises deleting a source."""
+    from platform_core.storage_source_postgres_store import (
+        PostgresStorageSourceRepository,
+    )
+
+    repository = PostgresStorageSourceRepository(
+        "postgresql://example.invalid/db", "platform", allow_cross_domain_delete=True
+    )
+    assert repository.unsupported_operations() == ()
+
+    # No evidence at all.
+    repository.set_delete_evidence(None)
+    with pytest.raises(Exception) as required:
+        repository._require_delete_evidence(None)
+    assert getattr(required.value, "code", "") == "STORAGE_SOURCE_DELETE_EVIDENCE_REQUIRED"
+
+    # Incomplete evidence.
+    with pytest.raises(Exception) as incomplete:
+        repository._require_delete_evidence({"source_revision": 1})
+    assert getattr(incomplete.value, "code", "") == "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE"
+
+    # Still referenced by another owner.
+    with pytest.raises(Exception) as referenced:
+        repository._require_delete_evidence(
+            {
+                "source_revision": 1,
+                "material_references": 0,
+                "artifact_references": 2,
+                "physical_retirement": {"status": "RETIRED", "proof": "x"},
+                "checked_at": "2026-11-26T00:00:00+00:00",
+            }
+        )
+    assert getattr(referenced.value, "code", "") == "STORAGE_SOURCE_DELETE_STILL_REFERENCED"
+
+    # Objects not proven retired (zero references is not proof).
+    with pytest.raises(Exception) as unproven:
+        repository._require_delete_evidence(
+            {
+                "source_revision": 1,
+                "material_references": 0,
+                "artifact_references": 0,
+                "physical_retirement": {"status": "NOT_RETIRED", "proof": ""},
+                "checked_at": "2026-11-26T00:00:00+00:00",
+            }
+        )
+    assert getattr(unproven.value, "code", "") == "STORAGE_SOURCE_DELETE_RETIREMENT_UNPROVEN"
+
+    # Complete evidence is accepted.
+    evidence = repository._require_delete_evidence(
+        {
+            "source_revision": 3,
+            "material_references": 0,
+            "artifact_references": 0,
+            "physical_retirement": {"status": "RETIRED", "proof": "s3://bucket/empty@digest"},
+            "checked_at": "2026-11-26T00:00:00+00:00",
+        }
+    )
+    assert evidence["source_revision"] == 3

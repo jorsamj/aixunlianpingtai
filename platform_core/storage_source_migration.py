@@ -317,6 +317,145 @@ def import_snapshot(connection, snapshot: Mapping[str, Any]) -> dict[str, Any]:
     return counters
 
 
+def import_snapshot_sqlite(
+    sqlite_path: str | Path, snapshot: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Publish a PostgreSQL snapshot back into the SQLite owner (reverse cutover).
+
+    Runs inside one SQLite write transaction and is idempotent: a second identical
+    import changes nothing. Safety rules:
+
+    * a SQLite row whose ``runtime_revision`` is *newer* than the snapshot proves
+      the local copy kept writing after the cutover, so the rollback is refused
+      instead of overwriting it;
+    * rows absent from the snapshot are deleted (the source was removed while
+      PostgreSQL was authoritative) except the platform default row, which the
+      owner must always have;
+    * the default source is switched atomically inside the same transaction
+      (clear current default, then set the snapshot's default), so the partial
+      unique index is never violated.
+
+    The caller must already hold the storage-source switch lock and have proven
+    the PostgreSQL side is frozen; this function only writes the local owner.
+    """
+    if str(snapshot.get("contract_version") or "") != CONTRACT_VERSION:
+        raise StorageSourceMigrationError(
+            "STORAGE_SOURCE_MIGRATION_CONTRACT_MISMATCH",
+            "storage-source snapshot contract does not match this tool",
+            detail=f"contract={snapshot.get('contract_version')!r}",
+        )
+    scope = str(snapshot.get("scope") or "")
+    if not scope:
+        raise StorageSourceMigrationError(
+            "STORAGE_SOURCE_MIGRATION_SCOPE_MISSING",
+            "storage-source snapshot has no scope",
+        )
+    rows = [_normalize_row(row) for row in snapshot.get("rows") or []]
+    defaults = [row["id"] for row in rows if row["is_default"]]
+    if len(defaults) > 1:
+        raise StorageSourceMigrationError(
+            "STORAGE_SOURCE_MIGRATION_DUPLICATE_DEFAULT",
+            "storage-source snapshot declares more than one default source",
+            detail=f"ids={defaults}",
+        )
+    database_path = Path(sqlite_path)
+    if not database_path.is_file():
+        raise StorageSourceMigrationError(
+            "STORAGE_SOURCE_MIGRATION_TARGET_MISSING",
+            "the SQLite storage-source database does not exist",
+            detail=str(database_path),
+        )
+    counters = {
+        "scope": scope,
+        "inserted": 0,
+        "updated": 0,
+        "deleted": 0,
+        "unchanged": 0,
+        "applied": False,
+    }
+    with closing(sqlite3.connect(str(database_path), timeout=30, isolation_level=None)) as database:
+        database.row_factory = sqlite3.Row
+        database.execute("PRAGMA busy_timeout=30000")
+        database.execute("BEGIN IMMEDIATE")
+        try:
+            existing = {
+                str(row["id"]): dict(row)
+                for row in database.execute(
+                    f"SELECT {_SQLITE_COLUMNS} FROM storage_sources"
+                ).fetchall()
+            }
+            newer = [
+                row["id"]
+                for row in rows
+                if row["id"] in existing
+                and int(existing[row["id"]]["runtime_revision"]) > row["runtime_revision"]
+            ]
+            if newer:
+                raise StorageSourceMigrationError(
+                    "STORAGE_SOURCE_MIGRATION_REVISION_REGRESSION",
+                    "SQLite holds a newer storage-source generation than the snapshot",
+                    detail=f"ids={newer}",
+                )
+            incoming_ids = {row["id"] for row in rows}
+            for source_id in sorted(set(existing) - incoming_ids):
+                if source_id == "default_local":
+                    continue
+                database.execute("DELETE FROM storage_sources WHERE id=?", (source_id,))
+                counters["deleted"] += 1
+            if defaults:
+                database.execute(
+                    "UPDATE storage_sources SET is_default=0 WHERE is_default=1 AND id<>?",
+                    (defaults[0],),
+                )
+            for row in rows:
+                values = (
+                    row["name"],
+                    row["type"],
+                    json.dumps(row["config"], ensure_ascii=False, sort_keys=True),
+                    row["secret_ref"],
+                    row["runtime_revision"],
+                    int(row["enabled"]),
+                    int(row["is_default"]),
+                    row["health_status"],
+                    row["health_message"],
+                    row["last_checked_at"],
+                    row["created_at"],
+                    row["updated_at"],
+                    row["id"],
+                )
+                current = existing.get(row["id"])
+                if current is None:
+                    database.execute(
+                        "INSERT INTO storage_sources"
+                        "(name,type,config_json,secret_ref,runtime_revision,enabled,"
+                        "is_default,health_status,health_message,last_checked_at,"
+                        "created_at,updated_at,id) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        values,
+                    )
+                    counters["inserted"] += 1
+                    continue
+                if _identity(current) == _identity(row):
+                    counters["unchanged"] += 1
+                    continue
+                database.execute(
+                    "UPDATE storage_sources SET name=?,type=?,config_json=?,secret_ref=?,"
+                    "runtime_revision=?,enabled=?,is_default=?,health_status=?,"
+                    "health_message=?,last_checked_at=?,created_at=?,updated_at=? "
+                    "WHERE id=?",
+                    values,
+                )
+                counters["updated"] += 1
+            database.execute("COMMIT")
+        except BaseException:
+            database.execute("ROLLBACK")
+            raise
+    counters["applied"] = bool(
+        counters["inserted"] or counters["updated"] or counters["deleted"]
+    )
+    return counters
+
+
 def _identity(row: Mapping[str, Any]) -> tuple[Any, ...]:
     return tuple(
         json.dumps(row[field], sort_keys=True, ensure_ascii=False)
