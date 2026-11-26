@@ -1,6 +1,35 @@
 # AI 开发接续入口
 
-## 训练报告工作台与状态计数口径（2026-11-26，当前）
+## 统一剩余任务台账（架构阶段）
+
+| 状态 | 单元 | 说明 |
+|---|---|---|
+| 已完成代码 | U1 Provider 边界 | 三个 SQLite ATTACH 读投影 fail-closed；边界测试 18 项通过 |
+| 已完成代码 | 前端 CI 修复 | 分类面板模板表达式截断已修，本地 app 构建通过 |
+| 未完成开发 | U2 存储源元数据 | 需最小 Provider 合同、PG Schema/Provider、迁移对账；未开始 |
+| 未完成开发 | U3 素材+GT+负样本池 | 需联合边界设计（batch ATTACH、rescan manifest、picker usage/GT，ATTACH、负样本池同库事务），未开始 |
+| 未完成开发 | 素材读写热点 | `MaterialRepository.read()/mutate()` 全量路径仍待按调用点整改 |
+| 未完成开发 | 训练准备与缓存 | Prepare/Cache 复用依据、取消回收与磁盘占用仍需治理 |
+| 未完成开发 | 转换 L0–L5 | 数值/检测/板端合同补齐与算能 BModel 误检根因待现场证据 |
+| 未完成开发 | 任务执行架构 | 正式 Runner、进程句柄、恢复与 Legacy 退役条件 |
+| 安全设计阻塞 | U5 任务库迁移 | 必须与执行权威、Lease、资源预留、恢复联合设计 |
+| 安全设计阻塞 | 整算法删除/凭据轮换/发布回退 | 缺原引用与持有者证明，保持原保护 |
+| CI 待确认 | `4dafd1f8`、`245be439` | 推送后单次查询；Historical 已通过项不重复整改 |
+| 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
+| 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
+| 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## 架构阶段开工：CI 修复与 U1 Provider 边界收口（2026-11-26，当前）
+
+- 起始本地及远端 `bdb705b2ea072a593014d5eb30c4ee86e2417a69`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592（未改）。业务候选 `4dafd1f8`、`245be439`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / HARDWARE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。**本阶段仅局部推进，不代表平台开发完成。**
+- 开工 CI（`bdb705b2`）：Frontend Runtime Stabilization 失败，`Build opt-in Vue catalog preview` 与三个 `Build standalone Vue app` 同因。根因是 `NegativePoolCategories.vue` 待核验行的 `@click="pendingWrite=''"` 单引号在被脚本化替换时丢失，表达式截断（`Unterminated string constant`），`vue-tsc` 与单文件 SFC 编译检查当时未覆盖该行。已改为具名处理器 `clearPending`，并对其余改动 SFC 全部执行 `@vue/compiler-sfc` 编译检查；本机 `npm run build:app` 复现通过（99 个本地资源校验）。
+- U1（算法域）本轮实际收口：审计发现三个读投影仍以 SQL `ATTACH` 直接打开项目 `algorithms.sqlite3`（`material_history_index`、`training_material_usage`、`conversion_catalog_references`），绕过 `open_algorithm_repository` 的 Provider 边界，切换后可能读到过期 SQLite 行。新增 `algorithm_repository.require_authoritative_sqlite()` 与 `AlgorithmSqliteAttachRefused`，复用既有 transition marker、authority barrier 与 admission record 判定，使这些读取在 PostgreSQL 权威下 fail-closed；并以此作为相关项目进入切换的准入前提。回归测试覆盖“无记录 / 已准入 / 已撤销”三种情形，`tests/unit/test_algorithm_provider_boundary.py` 18 项通过。
+- 已确认无需重做的能力：`algorithm_cutover` 已含 admission、maintenance freeze/verify/switch/resume、recovery、rollback 评估与 transition/barrier；`algorithm_migration` 已含 v2 快照、内容摘要、自然键、目标侧回执保留与清理行；`open_algorithm_repository` 在 PG 准入下拒绝过期 SQLite 且不回退。本轮未重写这些模块。
+- 未开始（本阶段后续单元）：U2 存储源元数据 PostgreSQL Provider/Schema/迁移；U3 素材+正式GT+负样本池联合迁移设计与代码；素材全量读取/写入热点整改；训练准备与缓存治理；转换 L0–L5 合同补齐与算能 BModel 误检根因；任务执行架构与生命周期收口。以上均需独立设计或真实环境，未在本轮冒称完成。
+- 验证：受影响 Python 文件 AST 与导入通过；provider 边界专项 18 项通过；三个改动 SFC 编译检查通过；`npm run build:app` 本地通过。未运行全仓 pytest/Playwright，未做 20 万素材压力测试。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档与用户文件未改；未连接 4070/A800，未切换生产数据库，未改远端。
+
+## 训练报告工作台与状态计数口径（2026-11-26，上一批）
 
 - 起始本地及远端 `bacf4f10e384baee341f33f77436f70670d54e24`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `add2bf9e`、`60f31ea8`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 负样本分类：父级共享来源保留；新增写入排队刷新（读取进行中不再丢弃刷新）、创建/编辑核验真实 ID 与请求字段、未知结果保留待核记录并回读不重试、读取失败与上次成功列表分别提示；项目级成员分类仍走公共池 v2 合同，算法级不新增分类关系。
