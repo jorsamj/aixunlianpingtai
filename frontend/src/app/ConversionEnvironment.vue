@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed,onBeforeUnmount,onMounted,ref,shallowRef} from 'vue';
 import {loadConversionResources,newConversionRequestId} from '../api/conversion-jobs';
-import {readResourceCheck,saveResourceConfiguration,startResourceCheck} from '../api/conversion-environment';
+import {detectLocalResources,readResourceCheck,saveResourceConfiguration,startResourceCheck} from '../api/conversion-environment';
 import type {ResourceConfiguration} from '../api/conversion-environment';
 import {useReadScope} from '../composables/useReadScope';
 import type {CatalogOperation,PendingSlot,PreviewContext} from '../types/catalog';
@@ -101,6 +101,17 @@ async function check(row:DeployResource,observeOnly:boolean){
     if(!controller.signal.aborted)actionError.value=`${failureText(error)}${observeOnly?'':'。启动结果未确认，可先读取检测结果。'}`;
   }finally{checking.value=''}
 }
+async function detectLocal(){
+  if(locked.value||editing.value)return;
+  checking.value='local-batch';actionError.value='';notice.value='';
+  try{
+    const found=await detectLocalResources(controller.signal);
+    notice.value=found.length?`本机检测通过 ${found.length} 项。`:'本次未核验到可用的本机工具。';
+    await load();
+  }catch(error){
+    if(!controller.signal.aborted)actionError.value=`本机检测结果待核对。 ${failureText(error)}`;
+  }finally{checking.value=''}
+}
 </script>
 
 <template>
@@ -109,6 +120,7 @@ async function check(row:DeployResource,observeOnly:boolean){
    <el-tab-pane name="resources" label="转换资源">
     <div class="page-toolbar"><p>转换资源</p><div class="environment-actions">
      <el-button :loading="reads.busy.resources" :disabled="saving||!!checking" @click="load">刷新状态</el-button>
+     <el-button :loading="checking==='local-batch'" :disabled="locked||editing" @click="detectLocal">检测本机工具</el-button>
      <el-button type="primary" :disabled="locked||!!reads.errors.resources" @click="startEditing(null)">新增部署资源</el-button>
      <el-button tag="a" :href="legacyHref">原转换环境管理</el-button>
     </div></div>
@@ -145,7 +157,7 @@ async function check(row:DeployResource,observeOnly:boolean){
     </div>
     <details class="environment-help"><summary>远程工具链接入说明</summary>
      <p>瑞芯微 RKNN-Toolkit2、算能 TPU-MLIR、华为 CANN / ATC 按厂商工具链执行。Windows 主机可执行 ONNX 导出。RKNN 可使用 Linux/WSL2、远程转换服务器或已安装相应工具的服务节点 Agent。</p>
-     <p>检测本机工具和删除资源可在原转换环境管理中执行。</p>
+     <p>删除资源入口保留在原转换环境管理。</p>
     </details>
    </el-tab-pane>
    <el-tab-pane name="catalog" label="厂商与芯片字典">

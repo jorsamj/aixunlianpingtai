@@ -42,3 +42,10 @@ export async function startResourceCheck(resource:DeployResource,signal:AbortSig
 export async function readResourceCheck(id:string,signal:AbortSignal){
   return verifyResource(await request<DeployResource>(resourcePath(id)+'/detect/status',{signal}),id);
 }
+
+export async function detectLocalResources(signal:AbortSignal){
+  const result=await request<{ok:boolean;found:DeployResource[]}>('/api/v39/deploy/local/auto-detect',{method:'POST',signal});
+  if(result.ok!==true||!Array.isArray(result.found)||result.found.some(resource=>!resource.id||resource.mode!=='local'))
+    throw new Error('未收到可核验的本机检测结果');
+  return result.found;
+}
