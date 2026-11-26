@@ -4,23 +4,40 @@
 
 | 状态 | 单元 | 说明 |
 |---|---|---|
-| 已完成代码 | A 前端数据安全 | 分类未知写入结构化待核+可信回读门禁；报告溯源按版本作用域隔离/迟到丢弃/深链自动读取；FP/FN 直达样本子页 |
-| 已完成代码 | U1 三个旧读取者 Provider 化 | 新增 `algorithm_history_evidence`；revision/存在性/有界 payload 分页由权威 Provider 提供，SQLite 与 PostgreSQL 等价，失败 fail-closed |
-| 已完成代码 | U2 存储源元数据 | PG Schema/Provider/导出/幂等导入/对账/CLI；SQLite 写者按准入记录 fail-closed；跨域删除保留阻断 |
-| 已完成代码 | 素材名查找热点 | `find_by_stored_name`（schema 8 表达式索引）替换业务文件按名全文读取；实测 217k 行 1485ms → 0.9ms |
+| 已完成代码 | 本轮 CI 修复 | 重复 `capabilities` 删除；PG focused 依赖补 psutil；任务路由守卫改为三条真实 GET；ZIP 失败用例按文件名注入 503 |
+| 已完成代码 | U2 准入安全协议 | 切换锁+转换标记+durable `cutover_state`；拒绝源端变化；原子准入记录；单调 generation；finish/abort 崩溃恢复 |
+| 已完成代码 | U1 引用一致性 | 分页前后核验权威 revision，变化即 409，不把变化数据当作无引用 |
+| 已完成代码 | 素材旧数据补查 | 命中 200 行上限即 `MaterialEvidenceIncomplete`（409），不再当作"不存在" |
 | 未完成开发 | U3 素材+GT+负样本池 | 需联合边界设计（batch ATTACH、rescan manifest、picker usage/GT，ATTACH、负样本池同库事务），未开始 |
 | 未完成开发 | 训练准备与缓存 | Prepare/Cache 复用依据、取消回收与磁盘占用仍需治理 |
 | 未完成开发 | 转换 L0–L5 | 数值/检测/板端合同补齐与算能 BModel 误检根因待现场证据 |
 | 未完成开发 | 任务执行架构 | 正式 Runner、进程句柄、恢复与 Legacy 退役条件 |
 | 安全设计阻塞 | U5 任务库迁移 | 必须与执行权威、Lease、资源预留、恢复联合设计 |
+| 安全设计阻塞 | 存储源回滚（rollback） | 反向切换需目标侧新写后的回滚证据，当前只阻断不自动回滚 |
 | 安全设计阻塞 | 存储源跨域删除 | 需素材引用证据与存储退役证明，Provider 已声明能力缺口并对普通配置放行 |
 | 安全设计阻塞 | 整算法删除/凭据轮换/发布回退 | 缺原引用与持有者证明，保持原保护 |
-| CI 待确认 | 本轮业务提交 | 推送后单次查询；Historical 已通过项不重复整改 |
+| CI 待确认 | 本轮业务提交 | 推送后单次查询 |
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
-## A/B/C/D 批次：前端安全、U1 兼容、U2 迁移与素材热点（2026-11-26，当前）
+## 80514712 审计整改：CI、U2 准入安全、U1 引用一致性与素材证据（2026-11-26，当前）
+
+- 起始本地及远端 `805147121db7693c1f736d56b80359673c65ac36`（业务 `271d807a`，文档 `80514712`）。VERSION 42.24.592 未改。状态 `CODE_COMPLETE（本轮缺陷）/ CI_PENDING / U2: PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED + CUTOVER_PROTOCOL_IMPLEMENTED / CUTOVER_NOT_READY（未在任何真实部署启用）/ PRODUCTION_NOT_VERIFIED`。
+- CI 四项根因与修复：
+  1. `algorithm_postgres_store.py` 中 `PostgresAlgorithmRepository.capabilities()` 被重复定义（历史证据方法旁边的第二个定义遮蔽第一个），Ruff F811。删除旧定义、保留含 `CORE_OPERATIONS + _PORTED_PRESENTATION + HISTORY_EVIDENCE_OPERATIONS` 的单一实现；AST 扫描全仓改动类无重复方法。
+  2. `algorithm-postgres-runtime.yml` 的 focused 依赖缺少 `psutil`（转换目录引用投影经 `performance_diagnostics` 间接导入）。补依赖，未跳过测试、未 mock。
+  3. `tests/api/test_core_productization_views.py` 仍断言路由数为 2；实际为 `tasks`、`tasks/summary`（起始 SHA 即存在）、`tasks/{task_id}` 三条合法 GET。改为按路径+方法精确断言的三条集合，未删除 summary、未改接口。
+  4. ZIP 失败用例 `one ZIP session failure stays visible and the next queued file still uploads`：注入的 503 以"第一个 POST"为目标，但双槽 FIFO 会并发创建前两个文件的会话，"第一个请求"不是稳定身份（失败现象正是 503 落到第二个文件：第二个缺失、第三个存在）。本地单用例连续 5 次通过，CI 失败日志同构；改为按 `file_name===filenames[0]` 注入，未加 timeout、未删断言、未跳过。
+- U2 准入安全（新增 `storage_source_cutover.py`，扩展 schema v2）：共享切换锁 `storage_source_switch_lock`（**所有** SQLite 写者——含构造时的默认源引导与 `record_health`——在"准入检查→写入"全程持有；与既有 lifecycle fence 固定顺序 lifecycle→switch；跨线程互斥、同线程可重入）；PostgreSQL `_write` 在同一事务内 `FOR UPDATE` 校验 `w4_storage_source.cutover_state`（admission_id/generation/phase），并在写前拒绝转换标记；`admit_cutover` 在锁内重导当前 SQLite（非操作者旧快照，可用 `expected_source_digest` 拒绝源变化）→ 单事务 import+对账+写 durable cutover_state → 原子写准入记录（`os.replace`，含 source/target/content 摘要、`operation_id`、`previous_admission_id`）→ 移除标记；`finish_cutover` 仅在已发布准入时，校验 durable 行、目标摘要、冻结源摘要后释放标记；`abort_cutover` 仅在未发布准入时移除标记（SQLite 恢复可写，PostgreSQL 因缺本地准入记录仍不可写）；`writer_generation` = max(本地记录, durable 行)+1 单调；损坏标记/标记+记录并存一律 fail-closed。CLI 新增 `finish`/`abort`，`admit` 走上述协议，`status` 输出 `STEADY_SQLITE/STEADY_POSTGRES/SWITCHING/INCONSISTENT`。
+- U1 引用一致性（`conversion_catalog_references.py`）：每个项目的分页扫描前后各取一次权威 `revision_token`，不一致抛 `ALGORITHM_HISTORY_CHANGED_DURING_SCAN` 并转 409（detail 带 Provider 错误码），绝不再以"扫描了一部分"为无引用；5000 条上限与原有匹配逻辑不变。
+- 素材旧数据补查（`material_repository.py`）：legacy 补查命中 200 行上限时抛 `MaterialEvidenceIncomplete`（`MATERIAL_STORED_NAME_EVIDENCE_INCOMPLETE`），业务文件解析映射为 409 而非 404；低于上限的未命中仍是完整证据（空结果）。索引与有界查询不变，未恢复 `read()`，未做启动全表回填。
+- 验证（本地定向，未跑全仓）：`test_algorithm_provider_boundary.py` 23 项（含新增 revision 变化）、`test_material_history_index.py`、`test_training_material_usage.py`、`test_conversion_catalog_crud.py`、`test_core_productization_views.py` 13 项、storage provider 14 项、素材查找 10 项、业务文件 27 项、`tests/integration/test_storage_source_postgres.py` **4 项真实 PostgreSQL**（含准入→双写者阻断→崩溃恢复 finish/abort→单调 generation→源变化拒绝→损坏标记）。ZIP 单用例本地 5 次通过。前端无 SFC 变更，故未重跑编译。
+- 已知本地环境差异：`tests/unit/test_algorithm_repository_readiness.py::test_barrier_uses_the_same_switch_lock_as_a_custom_admission` 断言"锁文件在释放后仍存在"，本机 filelock 3.29.3 会在释放时删除锁文件（CI 为 4.3.1，该用例在 80514712 的 CI 中未失败）。本轮未修改该用例，行为合同（同一锁身份）未变。
+- 未启用：`STORAGE_SOURCE_PROVIDER` 仍默认 sqlite；未在生产切换、未操作 NAS/OSS/S3、未做真实迁移。U2 = **PROVIDER_SCHEMA_MIGRATION_IMPLEMENTED / CUTOVER_PROTOCOL_IMPLEMENTED，CUTOVER_NOT_READY**（仍需真实部署演练与用户授权）。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改；未连接 4070/A800。
+
+## A/B/C/D 批次：前端安全、U1 兼容、U2 迁移与素材热点（2026-11-26，上一批）
 
 - 起始本地及远端 `99f9ba26895bf657e8a5f60a5c35a6afba39e410`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592（未改）。状态 `CODE_COMPLETE（A/B/C/D 首批）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / HARDWARE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。**本批仅为授权范围内首批，不代表平台完成。**
 - A 前端数据安全（`NegativePoolCategories.vue`、`AlgorithmNegativePool.vue`、`NativeTrainingReport.vue`、`NativeEvaluation.vue`）：未知写入的待核记录改为结构化 `{operation,targetId,targetName,submitted,at}`，存在未核记录时拒绝再次提交，读取错误与写入错误分列（父级 `categoryError` 作为 `readError` 传入），只有“写入之后成功完成的一次读取”才启用“已核对分类列表”，`enabled` 回执按显式值（兼容 SQLite 的 1/0）判定而非缺失即启用。报告溯源以 `algorithmId/versionId` 作用域存储、切换即清除、迟到响应按 token+作用域丢弃；版本路由复用已取回的版本详情不重复请求；`?tab=trace` 深链自动触发一次有界读取；样本诊断改为 TP/FP/FN 直达 `?tab=evaluation&view=samples&issue=…`（保留 `back`）。未新增组件/依赖，未改 API。
