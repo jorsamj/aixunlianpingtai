@@ -1,31 +1,37 @@
 <script setup lang="ts">
-import {computed,ref} from 'vue';
+import {computed,ref,shallowRef,watch} from 'vue';
+import {ElMessage} from 'element-plus';
 import {providerItems,providerDetail,productIdentity,versionIdentity,weightIdentity,weightRemoteLink,remoteField,tagsView} from '../../../static/modules/changlian-data-browser.js';
+import {changLianProvider as provider,isProviderId,readWeightDetail,weightDetailGroups,type WeightSelection} from '../api/changlian-weight-details';
 import {useReadScope} from '../composables/useReadScope';
 import {request} from './http';
 import {legacyUrl} from './navigation';
 
 const {projectId}=defineProps<{projectId:string}>();
 type Row=Record<string,unknown>;
-const provider='/api/v63/external-algorithm-platform/provider';
 const reads=useReadScope(new AbortController());
 const products=ref<{row:Row;enabled:boolean}[]>([]),versions=ref<Row[]>([]),weights=ref<Row[]>([]);
 const product=ref(''),version=ref(''),query=ref(''),time=ref(''),sourceStatus=ref('');
-const show=ref(false),weight=ref(''),detail=ref<Row|null>();
-const detailFields=[
-  ['weightId','权重文件 ID'],['productId','产品 ID'],['algoVersionId','版本 ID'],['fileName','文件名称'],['fileSize','文件大小'],
-  ['fileSha256','SHA256'],['computePlatformName','算力环境'],['chipCode','芯片'],['filePath','文件地址'],
-  ['imageWidth','输入宽度'],['imageHeight','输入高度'],['updateTime','更新时间'],['remark','备注'],
-];
+const show=ref(false),showEvidence=ref(false);
+const selected=shallowRef<WeightSelection>();
+const detail=shallowRef<Awaited<ReturnType<typeof readWeightDetail>>>();
+const detailTags=computed(()=>detail.value && tagsView(detail.value.tags));
+const rawEvidence=computed(()=>detail.value ? JSON.stringify(detail.value.evidence,null,2) : '');
 const productName=(row:Row)=>String(row.productName||row.name||productIdentity(row));
 const versionName=(row:Row)=>String(row.versionName||row.name||versionIdentity(row));
+const selectionLabel=computed(()=>{
+  const current=selected.value;
+  if(!current)return '';
+  const productRow=products.value.find(item=>productIdentity(item.row)===current.productId)?.row;
+  const versionRow=versions.value.find(row=>versionIdentity(row)===current.versionId);
+  return `${productRow ? productName(productRow) : current.productId} / ${versionRow ? versionName(versionRow) : current.versionId}`;
+});
 const filtered=computed(()=>products.value.filter(item=>
   (!sourceStatus.value||String(item.enabled)===sourceStatus.value)&&
   (!query.value||[productName(item.row),productIdentity(item.row)].some(value=>value.toLowerCase().includes(query.value.trim().toLowerCase())))));
-const safeId=(id:string)=>/^[1-9][0-9]{0,18}$/.test(id)&&BigInt(id)<=9223372036854775807n;
 function clearVersion(){
-  reads.cancel('weights');reads.cancel('detail');
-  version.value='';weights.value=[];weight.value='';detail.value=undefined;show.value=false;
+  reads.cancel('weights');closeDetail();
+  version.value='';weights.value=[];show.value=false;
 }
 function clearProduct(){
   reads.cancel('versions');clearVersion();product.value='';versions.value=[];
@@ -37,7 +43,7 @@ function refresh(){
     const seen=new Set<string>();
     return results.flatMap((value,index)=>providerItems(providerDetail(value)).flatMap(row=>{
       const id=productIdentity(row);
-      if(!safeId(id)||seen.has(id))return [];
+      if(!isProviderId(id)||seen.has(id))return [];
       seen.add(id);return [{row,enabled:index===0}];
     }));
   },value=>{clearProduct();products.value=value;time.value=new Date().toLocaleString()});
@@ -45,7 +51,7 @@ function refresh(){
 function chooseProduct(row:Row){
   clearProduct();
   const id=productIdentity(row);
-  if(!safeId(id))return;
+  if(!isProviderId(id))return;
   product.value=id;
   return reads.run('versions',signal=>request(provider+'/versions/by-product/'+encodeURIComponent(id),{signal}),value=>{
     if(product.value===id)versions.value=providerItems(providerDetail(value));
@@ -54,29 +60,45 @@ function chooseProduct(row:Row){
 function chooseVersion(row:Row){
   clearVersion();
   const id=versionIdentity(row);
-  if(!safeId(id))return;
+  if(!isProviderId(id))return;
   version.value=id;
   return reads.run('weights',signal=>request(provider+'/weights/by-version/'+encodeURIComponent(id),{signal}),value=>{
     if(version.value===id)weights.value=providerItems(providerDetail(value));
   });
 }
 function openWeight(row:Row){
-  const id=weightIdentity(row),productId=product.value,versionId=version.value;
-  if(!safeId(id))return;
-  show.value=true;weight.value=id;detail.value=undefined;
-  return reads.run('detail',signal=>request(provider+'/weights/'+encodeURIComponent(id)+'?withTags=true',{signal}),value=>{
-    const found=providerDetail(value).data;
-    if(weight.value!==id||product.value!==productId||version.value!==versionId)return;
-    if(found===null){detail.value=null;return}
-    if(!found||typeof found!=='object'||Array.isArray(found)||
-      weightIdentity(found)!==id||
-      (found.productId!==undefined&&String(found.productId)!==productId)||
-      (found.algoVersionId!==undefined&&String(found.algoVersionId)!==versionId))
-      throw new Error('权重详情与所选产品、版本或文件身份不一致');
-    detail.value=found;
-  });
+  const weightId=weightIdentity(row),productId=product.value,versionId=version.value;
+  if(![weightId,productId,versionId].every(isProviderId))return;
+  selected.value={weightId,productId,versionId,listWeight:row};
+  show.value=true;
+  return loadDetail();
 }
-function closeDetail(){reads.cancel('detail');weight.value='';detail.value=undefined}
+function loadDetail(){
+  const current=selected.value;
+  if(!current)return;
+  detail.value=undefined;showEvidence.value=false;
+  return reads.run('detail',signal=>readWeightDetail(current,signal),value=>{detail.value=value});
+}
+function closeDetail(){
+  reads.cancel('detail');selected.value=undefined;detail.value=undefined;showEvidence.value=false;
+}
+function canCopyField(key:string,value:unknown){
+  return ['weightId','filePath','fileSha256'].includes(key)&&
+    (typeof value==='string'||typeof value==='number')&&String(value)!=='';
+}
+async function copy(value:unknown){
+  try{
+    await navigator.clipboard.writeText(String(value));
+    ElMessage.success('已复制');
+  }catch{
+    ElMessage.error('复制失败，请检查浏览器剪贴板权限。');
+  }
+}
+watch(()=>projectId,()=>{
+  reads.cancel('products');
+  clearProduct();
+  products.value=[];time.value='';query.value='';sourceStatus.value='';
+});
 </script>
 
 <template>
@@ -127,14 +149,50 @@ function closeDetail(){reads.cancel('detail');weight.value='';detail.value=undef
         </el-table>
       </section>
     </div>
-    <el-dialog v-model="show" title="权重文件详情" width="min(840px, 94vw)" @closed="closeDetail">
-      <el-alert v-if="reads.errors.detail" :title="reads.errors.detail" type="error" :closable="false"/>
+    <el-dialog v-model="show" title="权重文件详情" width="min(840px, 94vw)" @close="closeDetail">
+      <p v-if="selectionLabel" class="weight-context">列表位置 · {{selectionLabel}} · Weight ID {{selected?.weightId}}</p>
+      <div v-if="reads.errors.detail" class="detail-section">
+        <el-alert :title="reads.errors.detail" type="error" :closable="false"/>
+        <el-button @click="loadDetail">重新加载</el-button>
+      </div>
       <el-skeleton v-else-if="reads.busy.detail" :rows="4" animated/>
       <p v-else-if="detail===null">远端没有返回详情。</p>
       <template v-else-if="detail">
-        <dl class="detail"><div v-for="[key,label] in detailFields" :key="key"><dt>{{label}}</dt><dd>{{remoteField(detail,key)}}</dd></div></dl>
-        <p>{{tagsView(detail).items.join('、')||tagsView(detail).label}}</p>
-        <a v-if="weightRemoteLink(detail)" :href="weightRemoteLink(detail)" target="_blank" rel="noopener noreferrer">打开文件下载地址</a>
+        <div class="detail-sections">
+          <el-alert v-if="detail.differences.length" title="列表信息已变化，请手动刷新列表。" type="warning" :closable="false">
+            <ul><li v-for="difference in detail.differences" :key="difference">{{difference}}</li></ul>
+          </el-alert>
+          <section v-if="detailTags" class="detail-section">
+            <header><h3>标签信息</h3><small>{{detail.source}}</small></header>
+            <p :data-tags-state="detailTags.state">{{detailTags.label}}<template v-if="Array.isArray(detail.tags.tags)"> · {{detailTags.items.length}} 项</template></p>
+            <div v-if="detailTags.items.length" class="tools">
+              <el-tag v-for="(tag,index) in detailTags.items" :key="index" type="info">{{tag===''?'空字符串':tag}}</el-tag>
+            </div>
+            <el-alert v-if="detail.tagsError" :title="'标签查询失败：'+detail.tagsError" type="error" :closable="false"/>
+            <el-button v-if="detail.tagsError" @click="loadDetail">重新加载</el-button>
+          </section>
+          <section v-for="group in weightDetailGroups" :key="group.name" class="detail-section">
+            <h3>{{group.name}}</h3>
+            <p v-if="group.name==='模型基本信息'">输入尺寸 · {{remoteField(detail.data,'imageWidth')}} × {{remoteField(detail.data,'imageHeight')}}</p>
+            <dl class="detail">
+              <div v-for="[key,label] in group.fields" :key="key">
+                <dt>{{label}}</dt>
+                <dd>
+                  {{remoteField(detail.data,key)}}
+                  <el-button v-if="canCopyField(key,detail.data[key])" link :aria-label="'复制'+label" @click="copy(detail.data[key])">复制</el-button>
+                </dd>
+              </div>
+            </dl>
+          </section>
+          <a v-if="weightRemoteLink(detail.data)" :href="weightRemoteLink(detail.data)" target="_blank" rel="noopener noreferrer">打开文件下载地址</a>
+          <details @toggle="showEvidence=($event.currentTarget as HTMLDetailsElement).open">
+            <summary>完整原始数据</summary>
+            <template v-if="showEvidence">
+              <el-button @click="copy(rawEvidence)">复制原始数据</el-button>
+              <pre class="raw-evidence">{{rawEvidence}}</pre>
+            </template>
+          </details>
+        </div>
       </template>
     </el-dialog>
   </section>
@@ -152,5 +210,11 @@ function closeDetail(){reads.cancel('detail');weight.value='';detail.value=undef
 .browser-grid small{display:block}
 .detail{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:12px}
 .detail dd{margin:4px 0 0;overflow-wrap:anywhere}
+.weight-context,.detail-section,.detail-sections{overflow-wrap:anywhere}
+.detail-sections,.detail-section{display:grid;gap:8px}
+.detail-section>h3,.detail-section>p,.detail-section>dl{margin:0}
+.detail-section{border-bottom:1px solid var(--el-border-color);padding-block:8px}
+.detail-section>.el-button{justify-self:start}
+.raw-evidence{max-height:22rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:1050px){.browser-grid{grid-template-columns:1fr}}
 </style>
