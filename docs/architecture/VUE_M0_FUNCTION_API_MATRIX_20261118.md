@@ -2,6 +2,8 @@
 
 ## 14 个正式菜单及后台闭环（2026-11-26，当前）
 
+视觉候选 `8ba383fa8691dac3243d830b7dfdaa0531796fe7`。原生页面经独立应用主题统一控件、表格和弹窗。AI 审核、素材库、算法库、人工标注及训练表单/报告另做页面级调整。运行期及视觉为 `CI_PENDING / VISUAL_PENDING`。下方沿用上一轮已实现的业务范围及状态，配套 [前端设计规范](../FRONTEND_DESIGN_SYSTEM.md)。
+
 代码候选 `75e41e0d3fea764ca16ba55ab370ddf1746dda6c`。功能状态描述源码覆盖，运行期、视觉和现场分列为 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`。
 
 |菜单|状态|原入口、Vue 及原 API/Owner|尚未迁移或验证|

@@ -1,6 +1,14 @@
 # AI 开发接续入口
 
-## 大规模素材治理、后台消歧与原任务回执（2026-11-26，当前）
+## 全平台视觉收口与基线 CI 修复（2026-11-26，当前）
+
+- 畅联云使用 FastAPI 模块化单体、SQLite 与独立 Vue 应用。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`。起始 `1893e2ee93108d62341be8cbdef4c6b63bc55771`，代码候选 `8ba383fa8691dac3243d830b7dfdaa0531796fe7`。实际验收以含本记录的远端最终 HEAD 为准，状态 `CI_PENDING / VISUAL_PENDING / PRODUCTION_NOT_VERIFIED`。
+- 起始 CI 最终 43 成功、7 失败。修复提交 `23e1797c2b2db41918a2f3a9636df3983562efaf`。素材 Schema 5/7 DDL、数据升级及版本号同事务，保留全库旧数据比较、注入中断和备份恢复断言，成功后额外验证新回执表。板端未领取恢复改读真实任务租约到期字段及进程身份。相关 Jobs 139706970567、139706994573、139706995054、139706971949、139706970779。训练创建 Job 139706970987 的测试生存期内预取真实算法目录，评测 Job 139708321093 验证当前入口和原评测身份。该 Job 的数据集选择改由键盘打开原控件，原写入及回执断言保留。
+- 共用主题、侧栏和项目页头、Element Plus 控件、表单、表格与弹窗使用 [前端设计规范](../FRONTEND_DESIGN_SYSTEM.md)。AI 审核三栏、素材图库、算法卡片、人工标注、训练表单与报告已做定向视觉调整。入库进度仅以已核验结果显示。图像预览按原比例显示，编辑器、GT、选择冻结和任务权威沿用。
+- 本轮视觉优先，业务覆盖维持 [14 菜单矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md) 的 2 完整、12 部分。未扩展可选功能。继续暂缓算法/资源生命周期、凭据轮换与撤销、已领取硬件及转换恢复、PostgreSQL、Smart Audit 规模重构、参考图推理及真实部署。
+- 本机 Vue 类型、Vue SFC/CSS/JS/TS、Python AST 与 Git 差异检查通过。运行期留给现有 CI。截图采集复用审核、素材、算法、人工标注和训练用例，当前 SHA 尚未人工确认渲染结果。下一轮先核对实际 CI 与三档桌面截图。默认入口、VERSION 42.24.592、AGENTS、四份保护文档及 vendor 已保留。
+
+## 大规模素材治理、后台消歧与原任务回执（2026-11-26，上一批）
 
 - 畅联云算法训练平台采用 FastAPI 模块化单体、SQLite 权威及独立 Vue `/app/`。工作目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`。起始本地及远端 `c942abc864923504b6083a692b8d5ebfcd2fec77`。代码候选 `75e41e0d3fea764ca16ba55ab370ddf1746dda6c`，含交接记录的最终 HEAD 为其后的文档提交，实际 PR 和 push 工作流以远端最终 HEAD 的一次性快照为准。验收状态 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`。
 - 基线最终 PR 21 成功 / 1 失败，push 26 成功 / 2 失败。AI Annotation Recovery 的 push run 45755428664、Job 139692828963 为 213 通过 / 1 失败。OpenAPI 守卫补入已有的可选 `confirmed_drafts`、50,000 条上限、项模型及非必填证据，保留原断言，提交 `530e7e1498de62538e47a050683cc8e31a54b5a8`。Frontend Runtime Stabilization 的 push run 45755428783、Job 139694443335 在 Node 合同阶段为 1,838 通过 / 7 失败，测试用 data URI 无法解析新增的训练迭代相对导入。测试装载器改用真实模块及原请求替身，提交 `82858af5920bccfec7928b607a9b47296a15bd28`。
