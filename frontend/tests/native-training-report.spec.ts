@@ -74,7 +74,8 @@ test('native report preserves task origin, pages history, and reads frozen evalu
   await diagnostics;
   await expect(page.getByText('置信度阈值 0.5')).toBeVisible();
   expect(paths).not.toContain('/api/materials/unsafe.png');
-  await expect(page.getByRole('link',{name:/继续训练.*LEGACY_BRIDGE/})).toHaveAttribute('href',/algorithm_id=a&version_id=v&action=evaluation&expected_evaluation_id=e/);
+  await expect(page.getByRole('button',{name:'困难样本与继续训练',exact:true})).toBeVisible();
+  await expect(page.getByRole('link',{name:'原高级评测',exact:true})).toHaveAttribute('href',/algorithm_id=a&version_id=v&action=evaluation&expected_evaluation_id=e/);
   await page.getByRole('button',{name:'版本对比',exact:true}).click();
   await page.getByRole('combobox',{name:'对照版本'}).selectOption('previous');
   await page.getByRole('button',{name:'读取对比',exact:true}).click();

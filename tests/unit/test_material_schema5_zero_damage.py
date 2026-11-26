@@ -132,6 +132,10 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     target, restored = tmp_path / "upgrade-copy", tmp_path / "restore-copy"
     clone_fixture(source, target)
     before = business_state(source)
+    material_path = "projects/p/materials.sqlite3"
+    receipts = "material_assignment_receipts"
+    assert receipts not in before["databases"][material_path]
+    baseline_ddl = schema_state(target / material_path)
     assert business_state(target) == before
     project = target / "projects/p"
     if interrupt:
@@ -140,10 +144,12 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
             with pytest.raises(sqlite3.OperationalError):
                 MaterialRepository(project)
         assert business_state(target) == before
+        assert schema_state(target / material_path) == baseline_ddl
         with closing(existing_sqlite_reader(project / "materials.sqlite3")) as db:
             assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         clone_fixture(source, restored)
         assert business_state(restored) == before
+        assert schema_state(restored / material_path) == baseline_ddl
         with closing(existing_sqlite_reader(restored / "projects/p/materials.sqlite3")) as db:
             assert db.execute("PRAGMA user_version").fetchone()[0] == 5
     repository = MaterialRepository(project)
@@ -154,7 +160,10 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     assert len(claim) == 1 and claim[0]["id"] == rows[1]["id"]
     assert "dataset_id" not in claim[0]
     assert claim[0]["_dataset_delete_claim"] == "1" * 32
-    assert business_state(target) == before == business_state(source)
+    expected = business_state(source)
+    assert expected == before
+    expected["databases"][material_path][receipts] = []
+    assert business_state(target) == expected
     with closing(repository._connect()) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone()
@@ -168,4 +177,31 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     rebuilt = build_snapshot([{**repository.get(row["id"]), "boxes": current_gt.get(row["id"])["boxes"]} for row in rows],
                              snapshot["train_image_ids"], snapshot["val_image_ids"], [{"code": "target"}], seed=42)
     assert rebuilt["snapshot_id"] == snapshot["snapshot_id"]
-    assert business_state(target) == before
+    assert business_state(target) == expected
+
+
+def schema_state(path):
+    with closing(existing_sqlite_reader(path)) as db:
+        return [tuple(row) for row in db.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+        )]
+
+
+def test_existing_schema7_adds_receipts_atomically_on_reopen(tmp_path, monkeypatch):
+    project = tmp_path / "p"
+    repository = MaterialRepository(project)
+    filename = repository.path
+    with closing(repository._connect()) as db:
+        db.execute("DROP TABLE material_assignment_receipts")
+    before = schema_state(filename)
+    with monkeypatch.context() as fault:
+        fault.setattr(materials_module, "_SCHEMA", materials_module._SCHEMA + "\nINVALID INTERRUPTION;")
+        with pytest.raises(sqlite3.OperationalError):
+            MaterialRepository(project)
+    assert schema_state(filename) == before
+    repository = MaterialRepository(project)
+    with closing(repository._connect()) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("SELECT COUNT(*) FROM material_assignment_receipts").fetchone()[0] == 0
+        db.execute("INSERT INTO material_assignment_receipts VALUES ('task','image','updated',NULL)")
+    assert MaterialRepository(project).assignment_receipts("task", ["image"]) == {"image": ("updated", None)}

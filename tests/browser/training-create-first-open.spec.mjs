@@ -719,12 +719,12 @@ test('verified fixed benchmark stays aligned from backend availability to traini
     seedBenchmarkVersion(body.algorithms);
     await route.fulfill({response, json:body});
   });
-  await page.route(url => url.pathname === `/api/v12/projects/${project.id}/algorithms`, async route => {
-    const response = await route.fetch();
-    const body = await response.json();
-    seedBenchmarkVersion(Array.isArray(body) ? body : body.items);
-    await route.fulfill({response, json:body});
-  });
+  const catalogPath = `/api/v12/projects/${project.id}/algorithms`;
+  const catalogResponse = await request.get(catalogPath);
+  expect(catalogResponse.ok()).toBeTruthy();
+  const catalog = await catalogResponse.json();
+  seedBenchmarkVersion(Array.isArray(catalog) ? catalog : catalog.items);
+  await page.route(url => url.pathname === catalogPath, route => route.fulfill({json:catalog}));
   await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]})}));
   await page.route('**/api/system/recommendation', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({device:'cpu',batch:4,workers:0})}));
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));

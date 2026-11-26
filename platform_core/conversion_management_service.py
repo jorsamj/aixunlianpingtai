@@ -1238,7 +1238,9 @@ class ConversionManagementService:
                 if record.status is TaskStatus.QUEUED and record.retry_of == record.task_id and not record.attempt:
                     return self._rknn_hardware_receipt(record, frozen, status_code=202)
                 if (record.status not in {TaskStatus.CANCELLED, TaskStatus.FAILED} or record.attempt
-                        or record.worker_id or record.lease_token or record.process_pid is not None):
+                        or record.worker_id or record.lease_expires_at or any(value is not None for value in (
+                            record.process_pid, record.process_create_time, record.process_command_hash,
+                        ))):
                     raise HTTPException(409, detail="原板端执行已领取或停止证据不足，不能恢复")
                 context = self._rknn_hardware_validation_context(project_id, job_id)
                 if (self.dependencies._deploy_job_version_identity(context["job"]) != identity

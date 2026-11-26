@@ -437,7 +437,7 @@ class MaterialRepository:
             timeout=_INIT_LOCK_TIMEOUT,
         )
         with lock:
-            with closing(self._connect()) as database:
+            with closing(self._connect()) as database, database:
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
                 if version == _SCHEMA_VERSION and self._required_objects_present(database):
                     return
@@ -452,7 +452,9 @@ class MaterialRepository:
                     raise RuntimeError(
                         f"material repository requires WAL mode, got {mode}"
                     )
-                database.executescript(_SCHEMA)
+                # Start the transaction inside executescript, which otherwise
+                # commits a pending transaction before running its statements.
+                database.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
                 if version < 2:
                     database.execute(
                         """
@@ -503,10 +505,7 @@ class MaterialRepository:
                         """
                     )
                 if version < 7:
-                    # Existing schema-6 databases skip _SCHEMA entirely on the
-                    # fast path.  Build the expression index once, under the
-                    # initialization lock; a failure aborts before user_version
-                    # is advanced, so the next open retries visibly.
+                    # Build the expression index within the upgrade transaction.
                     database.execute(
                         "CREATE INDEX IF NOT EXISTS ix_materials_dataset "
                         "ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'), "
