@@ -67,7 +67,7 @@ onBeforeUnmount(()=>controller.abort());
 </script>
 
 <template>
- <NegativePoolCategories :project-id="projectId" :categories="categories" :loading="categoryLoading"
+ <NegativePoolCategories :project-id="projectId" :categories="categories" :loading="categoryLoading" :read-error="categoryError"
   @refresh="loadCategories"/>
  <el-alert v-if="categoryError" :title="`分类读取失败：${categoryError}`" type="warning" :closable="false"/>
  <NegativePool :context="context" :pool-categories="categories"/>

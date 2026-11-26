@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {computed,onMounted,onBeforeUnmount,ref} from 'vue';
+import {useRoute} from 'vue-router';
 import {trainingReaderApi,type EvaluationPage} from '../api/training-reader';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
@@ -9,7 +10,7 @@ import EvaluationSampleReview from './EvaluationSampleReview.vue';
 import TrainingIteration from './TrainingIteration.vue';
 import {request} from './http';
 const props=defineProps<{projectId:string;algorithmId:string;versionId:string;jobId:string;legacyHref:string}>();
-const controller=new AbortController();onBeforeUnmount(()=>controller.abort());
+const route=useRoute(),controller=new AbortController();onBeforeUnmount(()=>controller.abort());
 const reads=useReadScope(controller),api=trainingReaderApi({projectId:props.projectId,get:request,memory:{}}),selection={jobId:props.jobId,algorithmId:props.algorithmId,versionId:props.versionId,returnPage:'assets' as const};
 const tab=ref('classes'),summary=ref<EvaluationPage|null>(null),detail=ref<EvaluationPage|null>(null),offset=ref(0),classId=ref(''),issue=ref('fp'),sort=ref('severity'),versions=ref<{id:string;version_name?:string}[]>([]),versionPage=ref(1),versionTotal=ref(0),other=ref(''),comparison=ref<Record<string,unknown>|null>(null),comparisonOffset=ref(0),expanded=ref('');
 const records=(v:unknown):Record<string,unknown>[]=>Array.isArray(v)?v.filter(x=>x&&typeof x==='object'):[];
@@ -55,7 +56,14 @@ function frozenUrl(row:Record<string,unknown>){
 }
 function retry(){if(tab.value==='compare'){if(other.value)void compare(comparisonOffset.value);else void loadVersions();return}summary.value=null;void load()}
 function samples(id:unknown,kind:string){classId.value=String(id??'');issue.value=kind;select('samples')}
-onMounted(()=>void load());
+// Only the initial tab/issue come from the route (?tab=evaluation&view=samples&issue=fp);
+// switching tabs stays local and never rewrites the query.
+const sampleKinds=['tp','fp','fn','wrong_class','localization','low_confidence','duplicate'];
+onMounted(()=>{
+  const view=typeof route.query.view==='string'?route.query.view:'',requested=typeof route.query.issue==='string'?route.query.issue:'';
+  if(view==='samples'){tab.value='samples';if(sampleKinds.includes(requested))issue.value=requested}
+  void load();
+});
 </script>
 <template><EvaluationSampleReview v-if="reviewTarget" :key="reviewTarget.evaluationId+reviewTarget.imageId" v-bind="reviewTarget" :project-id="projectId" :algorithm-id="algorithmId" :version-id="versionId" @close="reviewTarget=undefined"/><section aria-label="独立评测"><nav class="actions"><el-button v-for="[key,label] in [['classes','类别指标'],['curves','PR 阈值曲线'],['confusion','混淆矩阵'],['samples','TP / FP / FN 样本'],['compare','版本对比'],['iteration','困难样本与继续训练']]" :key="key" :type="tab===key?'primary':'default'" @click="select(key)">{{label}}</el-button><a :href="originalEvaluation">原高级评测</a></nav>
 <p v-if="reads.errors.detail||reads.errors.versions||reads.errors.comparison" role="alert">{{reads.errors.detail||reads.errors.versions||reads.errors.comparison}} <el-button @click="retry">重试</el-button></p><el-skeleton v-if="reads.busy.detail||reads.busy.versions||reads.busy.comparison" :rows="4" animated/>

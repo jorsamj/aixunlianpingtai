@@ -24,11 +24,17 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 7
-# Schema 7 adds the dataset expression index; old read-only lifecycle evidence
-# remains readable without rewriting material payloads.
-MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6, 7})
+_SCHEMA_VERSION = 8
+# Schema 7 adds the dataset expression index; schema 8 adds the stored-name
+# expression index. Old read-only lifecycle evidence remains readable without
+# rewriting material payloads.
+MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
 _INIT_LOCK_TIMEOUT = 30
+# Hard cap on legacy payloads decoded by one stored-name lookup. Rows without a
+# canonical payload stored_name are only a pre-normalization legacy shape; the
+# completion query decodes at most this many of them and fails closed, so a
+# legacy row outside the cap is reported as absent rather than guessed.
+_LEGACY_STORED_NAME_SCAN_LIMIT = 200
 DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
 MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
 _MATERIAL_ANNOTATION_LIFECYCLE_LOCK = ".material-annotation-lifecycle.lock"
@@ -81,6 +87,8 @@ CREATE INDEX IF NOT EXISTS ix_materials_dataset_delete_claim
 CREATE INDEX IF NOT EXISTS ix_materials_dataset
     ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'),
                  created_at, id);
+CREATE INDEX IF NOT EXISTS ix_materials_stored_name
+    ON materials(json_extract(payload_json, '$.stored_name'));
 CREATE TABLE IF NOT EXISTS material_labels (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
@@ -404,11 +412,16 @@ class MaterialRepository:
     # Objects that must exist before a read skips initialization. Additive
     # objects are created in place without changing
     # user_version, so an older build can still open the same database.
-    _REQUIRED_OBJECTS = ('ix_materials_import_batch', 'ix_materials_source_status', 'material_assignment_receipts')
+    _REQUIRED_OBJECTS = (
+        'ix_materials_import_batch', 'ix_materials_source_status',
+        'material_assignment_receipts', 'ix_materials_stored_name',
+    )
 
     def _required_objects_present(self, database: sqlite3.Connection) -> bool:
+        placeholders = ",".join("?" for _ in self._REQUIRED_OBJECTS)
         rows = database.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('index','table') AND name IN (?,?,?)",
+            "SELECT name FROM sqlite_master WHERE type IN ('index','table') "
+            f"AND name IN ({placeholders})",
             self._REQUIRED_OBJECTS,
         ).fetchall()
         return len(rows) == len(self._REQUIRED_OBJECTS)
@@ -510,6 +523,14 @@ class MaterialRepository:
                         "CREATE INDEX IF NOT EXISTS ix_materials_dataset "
                         "ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'), "
                         "created_at, id)"
+                    )
+                if version < 8:
+                    # Schema 8 adds the stored-name expression index. This is an
+                    # index-only upgrade: no table, column, payload or business
+                    # field changes and no material row is rewritten.
+                    database.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_materials_stored_name "
+                        "ON materials(json_extract(payload_json, '$.stored_name'))"
                     )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
@@ -694,6 +715,73 @@ class MaterialRepository:
         with closing(self._connect()) as database:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
+
+    def find_by_stored_name(
+        self, stored_name: str, *, limit: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Resolve one business-file name without hydrating the project catalog.
+
+        The primary lookup is an exact comparison on the indexed
+        ``payload['stored_name']`` expression and is bounded by ``limit`` (and by
+        its ``ORDER BY created_at, id`` prefix), so a single business-file
+        request never reads the whole catalog.
+
+        Rows written before ``stored_name`` became part of the payload have no
+        canonical value to compare, yet ``_row_payload`` still derives one from
+        ``object_key``.  ONE legacy completion query therefore looks at rows
+        whose canonical stored name is absent, decodes at most
+        ``_LEGACY_STORED_NAME_SCAN_LIMIT`` of them and keeps only exact matches.
+        That fallback is bounded and fails closed: a miss (or a legacy row beyond
+        the cap) yields fewer rows, never a different row.
+
+        Returned rows are ordered by ``(created_at, id)`` ascending and truncated
+        to the clamped ``limit`` (1..50).
+        """
+        name = _basename(stored_name)
+        if not name:
+            return []
+        bounded = max(1, min(50, int(limit)))
+        selected: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                "SELECT id, created_at, payload_json FROM materials "
+                "WHERE json_extract(payload_json, '$.stored_name') = ? "
+                "ORDER BY created_at, id LIMIT ?",
+                (name, bounded),
+            ).fetchall()
+            for row in rows:
+                image_id = str(row["id"])
+                selected[image_id] = (
+                    str(row["created_at"]), image_id, self._row_payload(row),
+                )
+            if len(selected) < bounded:
+                # "Canonical stored name absent" means the payload field is a
+                # missing key, JSON null or the empty string.  This IS NULL /
+                # = '' form selects exactly the same rows as the equivalent
+                # COALESCE(CAST(json_extract(...) AS TEXT), '') = '' predicate,
+                # but it is servable by ix_materials_stored_name instead of a
+                # full payload scan.  The LIMIT still caps decoded legacy rows.
+                legacy_rows = database.execute(
+                    "SELECT id, created_at, payload_json FROM materials "
+                    "WHERE json_extract(payload_json, '$.stored_name') IS NULL "
+                    "   OR json_extract(payload_json, '$.stored_name') = '' "
+                    "ORDER BY created_at, id LIMIT ?",
+                    (_LEGACY_STORED_NAME_SCAN_LIMIT,),
+                ).fetchall()
+                for row in legacy_rows:
+                    image_id = str(row["id"])
+                    if image_id in selected:
+                        continue
+                    payload = self._row_payload(row)
+                    if payload.get("stored_name") != name:
+                        continue
+                    selected[image_id] = (
+                        str(row["created_at"]), image_id, payload,
+                    )
+                    if len(selected) >= bounded:
+                        break
+        ordered = sorted(selected.values(), key=lambda item: (item[0], item[1]))
+        return [payload for _, _, payload in ordered[:bounded]]
 
     def _dataset_delete_claims(self, database, dataset_id=None) -> list[dict[str, Any]]:
         # Pin the sparse index: choosing the created_at index to satisfy ORDER

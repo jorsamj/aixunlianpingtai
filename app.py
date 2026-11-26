@@ -155,6 +155,7 @@ from platform_core.storage import (
     StorageSource,
     StorageSourceRepository,
     StorageType,
+    open_storage_source_repository,
     redact_storage_error,
     storage_source_lifecycle_fence,
 )
@@ -1537,8 +1538,8 @@ def _raise_file_storage_error(error, status_code=503):
 
 
 def _business_material_by_name(project_id, stored_name):
-    matches = [row for row in material_store(project_id).read().rows
-               if row.get('stored_name') == stored_name]
+    # One bounded indexed lookup; the catalog is never hydrated for a single name.
+    matches = material_store(project_id).find_by_stored_name(stored_name, limit=2)
     return matches[0] if len(matches) == 1 else None
 
 
@@ -1809,7 +1810,7 @@ def storage_source_repository() -> StorageSourceRepository:
             total += MaterialRepository(child).reference_count(source_id)
         return total
 
-    return StorageSourceRepository(
+    return open_storage_source_repository(
         DATA_DIR / "storage" / "storage_sources.sqlite3",
         reference_counter=references,
     )

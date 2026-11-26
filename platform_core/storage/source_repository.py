@@ -47,6 +47,205 @@ _INITIALIZATION_LOCKS_GUARD = threading.Lock()
 _SOURCE_LIFECYCLE_LOCK = ".storage-source-lifecycle.lock"
 _SOURCE_LIFECYCLE_LOCAL = threading.local()
 
+#: Storage-source provider boundary (U2).  The default provider is SQLite and
+#: keeps the existing behaviour; PostgreSQL needs an explicit DSN plus a cutover
+#: admission record and never falls back.  These names mirror the algorithm
+#: domain so operators see one convention across migrated domains.
+PROVIDER_SQLITE = "sqlite"
+PROVIDER_POSTGRESQL = "postgresql"
+SUPPORTED_PROVIDERS = (PROVIDER_SQLITE, PROVIDER_POSTGRESQL)
+ENV_PROVIDER = "STORAGE_SOURCE_PROVIDER"
+ENV_DSN = "STORAGE_SOURCE_POSTGRES_DSN"
+ENV_ADMISSION = "STORAGE_SOURCE_ADMISSION_RECORD"
+ENV_DELETE_ADMISSION = "STORAGE_SOURCE_DELETE_ADMISSION"
+ADMISSION_DIRNAME = "storage_source_migration"
+ADMISSION_FILENAME = "cutover_admission.json"
+CONTRACT_VERSION = "storage-source-repository-v1"
+#: The platform-wide scope of storage-source metadata (one PostgreSQL database may
+#: host several deployments, so every row is scoped explicitly).
+DEFAULT_SCOPE = "platform"
+
+
+class StorageSourceRepositoryError(RuntimeError):
+    """Provider-boundary failure with a stable machine-readable code."""
+
+    def __init__(self, code: str, message: str, *, detail: str = ""):
+        super().__init__(message)
+        self.code = str(code)
+        self.detail = str(detail or "")
+
+
+class StorageSourceProviderConfigError(StorageSourceRepositoryError):
+    """Provider selection or DSN configuration is missing/invalid."""
+
+
+class StorageSourceAdmissionRequired(StorageSourceRepositoryError):
+    """A cutover admission record is required but missing/invalid/stale."""
+
+
+class StorageSourceConflictError(ValueError):
+    """A write conflicts with an existing source (duplicate id or name)."""
+
+
+class StorageSourceOperationBlocked(StorageSourceRepositoryError):
+    """A cross-domain operation is withheld until its evidence is admitted."""
+
+
+def scope_for_path(path: str | Path, *, default: str = DEFAULT_SCOPE) -> str:
+    """The business scope of one storage-source database path."""
+    Path(path)
+    return str(default)
+
+
+def admission_record_path(path: str | Path) -> Path:
+    return Path(path).parent / ADMISSION_DIRNAME / ADMISSION_FILENAME
+
+
+def admission_transition_path(record_path: str | Path) -> Path:
+    """Marker published before a cutover changes the authoritative writer."""
+    target = Path(record_path)
+    return target.with_name(target.name + ".transition")
+
+
+def load_storage_source_admission_record(path: str | Path) -> dict[str, Any] | None:
+    """Read the local admission record; a malformed record is refused."""
+    target = Path(path)
+    if not target.is_file():
+        return None
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record cannot be read",
+            detail=str(error),
+        ) from error
+    if not isinstance(value, dict):
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record is not an object",
+        )
+    if str(value.get("contract_version") or "") != CONTRACT_VERSION:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record contract does not match",
+            detail=f"contract={value.get('contract_version')!r}",
+        )
+    return value
+
+
+def resolve_provider(
+    provider: str | None = None, *, environ: Mapping[str, str] | None = None
+) -> str:
+    environment = os.environ if environ is None else environ
+    selected = str(
+        provider or environment.get(ENV_PROVIDER) or PROVIDER_SQLITE
+    ).strip().lower()
+    if selected not in SUPPORTED_PROVIDERS:
+        raise StorageSourceProviderConfigError(
+            "STORAGE_SOURCE_PROVIDER_UNKNOWN",
+            "unknown storage-source provider",
+            detail=f"provider={selected!r} supported={list(SUPPORTED_PROVIDERS)}",
+        )
+    return selected
+
+
+def _refuse_stale_sqlite(
+    path: str | Path, record_path: str | Path | None = None
+) -> None:
+    """Refuse a SQLite write/read when PostgreSQL owns this source metadata.
+
+    Every SQLite write path calls this under the same lifecycle fence it already
+    uses, so a cutover cannot leave two admitted writers; a transition marker
+    blocks both sides until the cutover is finished or rolled back.
+    """
+    target = Path(path)
+    record = Path(record_path) if record_path else admission_record_path(target)
+    if admission_transition_path(record).exists():
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_CUTOVER_IN_PROGRESS",
+            "a storage-source cutover is unresolved; neither provider may write",
+            detail=(
+                "a transition marker is present next to the admission record; "
+                "inspect it and finish or roll back the cutover before writing"
+            ),
+        )
+    value = load_storage_source_admission_record(record)
+    if value is None:
+        return
+    if value.get("revoked_at"):
+        return
+    if str(value.get("authoritative_provider") or "") != PROVIDER_POSTGRESQL:
+        return
+    raise StorageSourceAdmissionRequired(
+        "STORAGE_SOURCE_SQLITE_STALE_AFTER_CUTOVER",
+        "SQLite is no longer the authoritative storage-source writer",
+        detail=(
+            f"PostgreSQL admission {value.get('admission_id')} is active; run the "
+            "rollback assessment before serving SQLite again"
+        ),
+    )
+
+
+def open_storage_source_repository(
+    path: str | Path,
+    *,
+    provider: str | None = None,
+    dsn: str | None = None,
+    reference_counter: Callable[[str], int] | None = None,
+    environ: Mapping[str, str] | None = None,
+    admission_path: str | Path | None = None,
+    allow_stale_sqlite: bool = False,
+    allow_cross_domain_delete: bool | None = None,
+    scope: str | None = None,
+):
+    """Open the storage-source owner for one deployment.
+
+    Default: SQLite with the existing behaviour.  PostgreSQL requires a DSN and a
+    cutover admission record; selecting it never falls back to SQLite.  Selecting
+    SQLite while a PostgreSQL admission is active is refused unless a migration
+    tool passes ``allow_stale_sqlite``.
+    """
+    environment = os.environ if environ is None else environ
+    selected = resolve_provider(provider, environ=environment)
+    target = Path(path)
+    record_path = Path(admission_path) if admission_path else admission_record_path(target)
+
+    if selected == PROVIDER_SQLITE:
+        if not allow_stale_sqlite:
+            _refuse_stale_sqlite(target, record_path)
+        return StorageSourceRepository(target, reference_counter=reference_counter)
+
+    resolved_dsn = str(dsn or environment.get(ENV_DSN) or "").strip()
+    if not resolved_dsn:
+        raise StorageSourceProviderConfigError(
+            "STORAGE_SOURCE_POSTGRES_DSN_MISSING",
+            "PostgreSQL provider requires a DSN",
+            detail=f"pass dsn= or set {ENV_DSN}",
+        )
+    record = load_storage_source_admission_record(record_path)
+    if record is None:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_POSTGRES_ADMISSION_REQUIRED",
+            "PostgreSQL provider requires a cutover admission record",
+            detail=f"expected {record_path}",
+        )
+    resolved_scope = str(scope or record.get("scope") or scope_for_path(target))
+    if allow_cross_domain_delete is None:
+        allow_cross_domain_delete = (
+            str(environment.get(ENV_DELETE_ADMISSION) or "").strip() == "1"
+        )
+    from ..storage_source_postgres_store import PostgresStorageSourceRepository
+
+    return PostgresStorageSourceRepository(
+        resolved_dsn,
+        resolved_scope,
+        admission=record,
+        admission_path=record_path,
+        reference_counter=reference_counter,
+        allow_cross_domain_delete=bool(allow_cross_domain_delete),
+    )
+
 
 @contextmanager
 def storage_source_lifecycle_fence(
@@ -161,9 +360,16 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
 def _controlled_source_write(function):
     @wraps(function)
     def fenced(self, *args, **kwargs):
+        # Authority is re-checked on every write (including construction, whose
+        # default-source bootstrap is a write): a long-lived instance cannot keep
+        # writing after a cutover admitted another provider.
+        path = getattr(self, "path", None)
+        if path is None and args:
+            path = Path(args[0])
+        if path is not None:
+            _refuse_stale_sqlite(path)
         if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
             return function(self, *args, **kwargs)
-        path = getattr(self, "path", None)
         if path is None:
             path = Path(args[0])
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +587,7 @@ class StorageSourceRepository:
         return self.get(source_id)  # type: ignore[return-value]
 
     def record_health(self, source_id: str, *, ok: bool, message: str) -> StorageSource:
+        _refuse_stale_sqlite(self.path)
         checked = _now()
         safe_message = redact_storage_error(message)
         with closing(self._connect()) as database:

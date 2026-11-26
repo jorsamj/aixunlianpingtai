@@ -1,0 +1,257 @@
+"""U2 provider boundary for storage-source metadata (no PostgreSQL server).
+
+Real PostgreSQL behaviour (schema, import idempotency, reconciliation) lives in
+``tests/integration/test_storage_source_postgres.py`` and is never claimed here.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+import pytest
+
+from platform_core.storage.source_repository import (
+    CONTRACT_VERSION,
+    StorageSourceAdmissionRequired,
+    StorageSourceConflictError,
+    StorageSourceOperationBlocked,
+    StorageSourceProviderConfigError,
+    StorageSourceRepository,
+    admission_record_path,
+    admission_transition_path,
+    open_storage_source_repository,
+    resolve_provider,
+)
+from platform_core.storage_source_migration import (
+    StorageSourceMigrationError,
+    export_snapshot,
+    import_snapshot,
+    reconcile,
+)
+from platform_core.storage_source_postgres_store import PostgresStorageSourceRepository
+
+
+def _admission(path, *, scope="platform", revoked=None, provider="postgresql"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": CONTRACT_VERSION,
+                "admission_id": "admit-test",
+                "scope": scope,
+                "authoritative_provider": provider,
+                "source_count": 1,
+                "content_digest": "0" * 64,
+                "writer_generation": 1,
+                "admitted_at": "2026-11-26T00:00:00+00:00",
+                "revoked_at": revoked,
+                "operator": "ops",
+                "reason": "pilot",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _repository(tmp_path):
+    return StorageSourceRepository(
+        tmp_path / "storage" / "storage_sources.sqlite3",
+        reference_counter=lambda _source_id: 0,
+    )
+
+
+def test_default_provider_is_sqlite_and_unknown_values_fail(tmp_path):
+    assert resolve_provider(None, environ={}) == "sqlite"
+    assert (
+        resolve_provider(None, environ={"STORAGE_SOURCE_PROVIDER": "postgresql"})
+        == "postgresql"
+    )
+    with pytest.raises(StorageSourceProviderConfigError) as error:
+        resolve_provider("mysql", environ={})
+    assert error.value.code == "STORAGE_SOURCE_PROVIDER_UNKNOWN"
+    repository = open_storage_source_repository(tmp_path / "storage" / "sources.sqlite3")
+    assert isinstance(repository, StorageSourceRepository)
+    assert repository.default().id == "default_local"
+
+
+def test_postgresql_selection_requires_dsn_and_admission(tmp_path):
+    path = tmp_path / "storage" / "sources.sqlite3"
+    with pytest.raises(StorageSourceProviderConfigError) as dsn:
+        open_storage_source_repository(path, provider="postgresql", environ={})
+    assert dsn.value.code == "STORAGE_SOURCE_POSTGRES_DSN_MISSING"
+    with pytest.raises(StorageSourceAdmissionRequired) as admission:
+        open_storage_source_repository(
+            path,
+            provider="postgresql",
+            dsn="postgresql://example.invalid/db",
+            environ={},
+        )
+    assert admission.value.code == "STORAGE_SOURCE_POSTGRES_ADMISSION_REQUIRED"
+
+
+def test_active_postgres_admission_blocks_every_sqlite_writer(tmp_path):
+    repository = _repository(tmp_path)
+    path = repository.path
+    _admission(admission_record_path(path))
+
+    # A fresh open is refused, and a long-lived instance cannot write either:
+    # the guard is re-checked per write, not only at construction.
+    with pytest.raises(StorageSourceAdmissionRequired) as stale:
+        StorageSourceRepository(path)
+    assert stale.value.code == "STORAGE_SOURCE_SQLITE_STALE_AFTER_CUTOVER"
+    with pytest.raises(StorageSourceAdmissionRequired):
+        repository.create({"id": "nas-1", "name": "NAS", "type": "local"})
+    with pytest.raises(StorageSourceAdmissionRequired):
+        repository.update("default_local", {"name": "Renamed"})
+    with pytest.raises(StorageSourceAdmissionRequired):
+        repository.set_default("default_local")
+    with pytest.raises(StorageSourceAdmissionRequired):
+        repository.record_health("default_local", ok=True, message="ok")
+    with pytest.raises(StorageSourceAdmissionRequired):
+        repository.delete("nas-1")
+
+    # A verified rollback revokes the admission and re-opens the SQLite writer.
+    _admission(admission_record_path(path), revoked="2026-11-26T01:00:00+00:00")
+    assert repository.update("default_local", {"name": "Local"}).name == "Local"
+
+
+def test_unresolved_transition_blocks_both_providers(tmp_path):
+    repository = _repository(tmp_path)
+    marker = admission_transition_path(admission_record_path(repository.path))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}", encoding="utf-8")
+    with pytest.raises(StorageSourceAdmissionRequired) as blocked:
+        repository.create({"id": "nas-1", "name": "NAS", "type": "local"})
+    assert blocked.value.code == "STORAGE_SOURCE_CUTOVER_IN_PROGRESS"
+    with pytest.raises(StorageSourceAdmissionRequired):
+        open_storage_source_repository(repository.path)
+
+
+def test_export_is_deterministic_and_never_exports_credentials(tmp_path):
+    repository = _repository(tmp_path)
+    repository.create(
+        {
+            "id": "nas-1",
+            "name": "NAS",
+            "type": "remote",
+            "config": {"root": "/mnt/nas"},
+            "secret_ref": "secret://storage-source/nas-1",
+            "enabled": True,
+        }
+    )
+    repository.set_default("nas-1")
+    first = export_snapshot(repository.path, "platform")
+    second = export_snapshot(repository.path, "platform")
+    assert first == second
+    assert first["contract_version"]
+    assert [row["id"] for row in first["rows"]] == ["default_local", "nas-1"]
+    payload = json.dumps(first, ensure_ascii=False)
+    assert "secret://storage-source/nas-1" in payload
+    assert [row["id"] for row in first["rows"] if row["is_default"]] == ["nas-1"]
+
+    # A row that somehow holds credential material cannot be exported.
+    with sqlite3.connect(repository.path) as database:
+        database.execute(
+            "UPDATE storage_sources SET config_json=? WHERE id='nas-1'",
+            (json.dumps({"api_key": "sk-live"}),),
+        )
+    with pytest.raises(ValueError):
+        export_snapshot(repository.path, "platform")
+
+
+def test_reconcile_explains_every_difference(tmp_path):
+    repository = _repository(tmp_path)
+    repository.create({"id": "nas-1", "name": "NAS", "type": "remote"})
+    snapshot = export_snapshot(repository.path, "platform")
+    assert reconcile(snapshot, snapshot)["same"] is True
+    assert reconcile(snapshot, None)["verdict"] == "TARGET_MISSING"
+
+    missing = {**snapshot, "rows": [row for row in snapshot["rows"] if row["id"] != "nas-1"]}
+    report = reconcile(missing, snapshot)
+    assert report["verdict"] == "MISMATCH"
+    assert "extra_rows" in report["blocking_findings"]
+
+    renamed = json.loads(json.dumps(snapshot))
+    for row in renamed["rows"]:
+        if row["id"] == "nas-1":
+            row["name"] = "NAS renamed"
+    report = reconcile(snapshot, renamed)
+    assert "identity_differences" in report["blocking_findings"]
+    assert report["checks"]["identity_differences"][0]["field"] == "name"
+
+
+def test_import_snapshot_rejects_a_malformed_snapshot_before_touching_the_target():
+    base = {
+        "contract_version": "storage-source-migration-v1",
+        "scope": "platform",
+        "backend": "sqlite",
+        "rows": [],
+        "counts": {"sources": 0},
+        "content_digest": "0" * 64,
+    }
+    with pytest.raises(StorageSourceMigrationError) as contract:
+        import_snapshot(None, {**base, "contract_version": "unknown"})
+    assert contract.value.code == "STORAGE_SOURCE_MIGRATION_CONTRACT_MISMATCH"
+    with pytest.raises(StorageSourceMigrationError) as scope:
+        import_snapshot(None, {**base, "scope": ""})
+    assert scope.value.code == "STORAGE_SOURCE_MIGRATION_SCOPE_MISSING"
+    row = {
+        "id": "nas-1",
+        "name": "NAS",
+        "type": "remote",
+        "config": {},
+        "secret_ref": "",
+        "runtime_revision": 1,
+        "enabled": True,
+        "is_default": True,
+        "health_status": "UNKNOWN",
+        "health_message": "",
+        "last_checked_at": None,
+        "created_at": "",
+        "updated_at": "",
+    }
+    with pytest.raises(StorageSourceMigrationError) as duplicate:
+        import_snapshot(None, {**base, "rows": [row, dict(row)]})
+    assert duplicate.value.code == "STORAGE_SOURCE_MIGRATION_DUPLICATE_ID"
+    second = {**row, "id": "nas-2", "name": "NAS 2"}
+    with pytest.raises(StorageSourceMigrationError) as defaults:
+        import_snapshot(None, {**base, "rows": [row, second]})
+    assert defaults.value.code == "STORAGE_SOURCE_MIGRATION_DUPLICATE_DEFAULT"
+
+
+def test_cross_domain_delete_stays_blocked_without_admitted_evidence():
+    repository = PostgresStorageSourceRepository(
+        "postgresql://example.invalid/db", "platform"
+    )
+    # Refused before any connection: the capability gap is declared, not attempted.
+    with pytest.raises(StorageSourceOperationBlocked) as blocked:
+        repository.delete("nas-1")
+    assert blocked.value.code == "STORAGE_SOURCE_DELETE_REQUIRES_CROSS_DOMAIN_EVIDENCE"
+    assert repository.unsupported_operations() == ("delete",)
+    assert "example.invalid" not in repr(repository)
+
+    admitted = PostgresStorageSourceRepository(
+        "postgresql://example.invalid/db", "platform", allow_cross_domain_delete=True
+    )
+    assert admitted.unsupported_operations() == ()
+    assert "delete" in admitted.capabilities()
+
+
+def test_postgres_provider_refuses_an_admission_for_another_scope():
+    repository = PostgresStorageSourceRepository(
+        "postgresql://example.invalid/db",
+        "platform",
+        admission={
+            "contract_version": CONTRACT_VERSION,
+            "scope": "another-deployment",
+            "authoritative_provider": "postgresql",
+            "revoked_at": None,
+        },
+    )
+    with pytest.raises(StorageSourceAdmissionRequired) as mismatch:
+        repository.ensure_ready()
+    assert mismatch.value.code == "STORAGE_SOURCE_POSTGRES_ADMISSION_SCOPE_MISMATCH"
+
+
+def test_conflict_error_is_a_value_error_for_the_existing_api_contract():
+    assert issubclass(StorageSourceConflictError, ValueError)

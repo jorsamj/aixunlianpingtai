@@ -1,18 +1,25 @@
 <script setup lang="ts">
-import {ref,watch} from 'vue';
+import {computed,ref,watch} from 'vue';
 import {request} from './http';
 import type {PoolCategory} from '../types/negative-pool';
 
 // Reuses the existing v61 negative-pool category owner (GET/POST/PATCH). The
 // category list itself lives in the workbench parent so the member filter always
 // sees the same data; category deletion keeps its original reference protection.
-const props=defineProps<{projectId:string;categories:PoolCategory[];loading:boolean}>();
+// The parent's read error stays separate from this panel's write error, and an
+// unverified write keeps its real operation identity until a trusted read-back.
+interface PendingWrite{operation:'create'|'rename'|'enable'|'disable';targetId:string;targetName:string;submitted:{name?:string;enabled?:boolean};at:string}
+const props=defineProps<{projectId:string;categories:PoolCategory[];loading:boolean;readError:string}>();
 const emit=defineEmits<{refresh:[]}>();
-const saving=ref(false),error=ref(''),notice=ref('');
-const pendingWrite=ref('');
+const saving=ref(false),writeError=ref(''),notice=ref('');
+const pendingWrite=ref<PendingWrite|null>(null),readBackTrusted=ref(false);
 const draftName=ref(''),editing=ref(''),editName=ref('');
 const root=()=>`/api/v61/projects/${encodeURIComponent(props.projectId)}/negative-pool/categories`;
 const enabledOf=(row:PoolCategory)=>row.enabled!==false&&row.enabled!==0;
+// The v61 PATCH returns the stored row: SQLite keeps `enabled` as 1/0 and the repo
+// type is boolean|number. A receipt is only accepted with an explicit, matching
+// value; a missing/null field is never read as "enabled".
+const confirmedEnabled=(value:PoolCategory['enabled'])=>(value===true||value===1)?true:(value===false||value===0)?false:null;
 const definite=(status?:number)=>status===400||status===404||status===409||status===422;
 // A reload requested while the parent is already reading must not be dropped.
 const pendingReload=ref(false);
@@ -20,45 +27,69 @@ function refresh(){
   if(props.loading){pendingReload.value=true;return}
   emit('refresh');
 }
+// The pending record may only be cleared after a read that started after the
+// unknown write finished successfully: the parent stopped loading with no read
+// error. A failed read leaves the record unverified.
 watch(()=>props.loading,(value:boolean)=>{
-  if(!value&&pendingReload.value){pendingReload.value=false;emit('refresh')}
+  if(value)return;
+  if(pendingReload.value){pendingReload.value=false;emit('refresh');return}
+  if(pendingWrite.value)readBackTrusted.value=!props.readError;
 });
-function unknown(description:string,message:string){
-  pendingWrite.value=`${description} · ${new Date().toLocaleString('zh-CN',{hour12:false})}`;
-  error.value=`写入结果未知：${message}。已保留待核记录并回读原分类状态，未重复提交。`;
+const pendingText=computed(()=>{
+  const pending=pendingWrite.value;
+  if(!pending)return '';
+  const operation={create:'新增分类',rename:'改名',enable:'启用',disable:'停用'}[pending.operation];
+  const submitted=[pending.submitted.name!==undefined?`name=${pending.submitted.name}`:'',pending.submitted.enabled!==undefined?`enabled=${pending.submitted.enabled}`:''].filter(Boolean).join('、');
+  return `${operation} · ${pending.targetId?`${pending.targetName}（${pending.targetId}）`:`${pending.targetName}（尚未分配 ID）`} · 提交字段 ${submitted||'未提供'} · ${pending.at}`;
+});
+function unknown(pending:Omit<PendingWrite,'at'>,message:string){
+  pendingWrite.value={...pending,at:new Date().toLocaleString('zh-CN',{hour12:false})};
+  readBackTrusted.value=false;
+  writeError.value=`写入结果未知：${message}。已保留待核记录并回读原分类状态，未重复提交。`;
   refresh();
 }
-async function write(description:string,action:()=>Promise<PoolCategory>,accept:(row:PoolCategory)=>boolean,success:(row:PoolCategory)=>string){
+async function write(pending:Omit<PendingWrite,'at'>,action:()=>Promise<PoolCategory>,accept:(row:PoolCategory)=>boolean,success:(row:PoolCategory)=>string){
   if(saving.value)return;
-  saving.value=true;error.value='';notice.value='';
+  if(pendingWrite.value){
+    writeError.value=`已存在未核对的写入（${pendingText.value}）；请重新读取并核对分类列表后再提交，本次未发出请求。`;
+    return;
+  }
+  saving.value=true;writeError.value='';notice.value='';
   try{
     const row=await action();
-    if(!row||typeof row.id!=='string'||!row.id||!accept(row)){unknown(description,'回执未确认实际分类身份');return}
-    notice.value=success(row);pendingWrite.value='';
+    if(!row||typeof row.id!=='string'||!row.id||!accept(row)){unknown(pending,'回执未确认实际分类身份');return}
+    notice.value=success(row);
     refresh();
   }catch(cause){
     const status=(cause as {httpStatus?:number}).httpStatus;
-    if(definite(status))error.value=(cause as Error).message;
-    else unknown(description,(cause as Error).message);
+    if(definite(status))writeError.value=(cause as Error).message;
+    else unknown(pending,(cause as Error).message);
   }finally{saving.value=false}
 }
 function create(){
   const name=draftName.value.trim();
   if(!name||saving.value)return;
-  void write(`新增分类「${name}」`,()=>request<PoolCategory>(root(),{method:'POST',body:JSON.stringify({name})}),
-    row=>row.name===name,(row)=>{draftName.value='';return `已新增分类 ${row.name}（${row.id}）。`});
+  void write({operation:'create',targetId:'',targetName:name,submitted:{name}},
+    ()=>request<PoolCategory>(root(),{method:'POST',body:JSON.stringify({name})}),
+    row=>typeof row.name==='string'&&row.name===name,(row)=>{draftName.value='';return `已新增分类 ${row.name}（${row.id}）。`});
 }
 function patch(row:PoolCategory,body:{name?:string;enabled?:boolean}){
   if(saving.value)return;
-  const description=body.name?`改名「${row.name}」→「${body.name}」`:`${body.enabled?'启用':'停用'}分类「${row.name}」`;
-  void write(description,()=>request<PoolCategory>(`${root()}/${encodeURIComponent(row.id)}`,{method:'PATCH',body:JSON.stringify(body)}),
+  const operation:'rename'|'enable'|'disable'=body.name!==undefined?'rename':body.enabled?'enable':'disable';
+  void write({operation,targetId:row.id,targetName:row.name,
+      submitted:{...(body.name!==undefined?{name:body.name}:{}),...(body.enabled!==undefined?{enabled:body.enabled}:{})}},
+    ()=>request<PoolCategory>(`${root()}/${encodeURIComponent(row.id)}`,{method:'PATCH',body:JSON.stringify(body)}),
     (result)=>result.id===row.id
       &&(body.name===undefined||result.name===body.name)
-      &&(body.enabled===undefined||enabledOf(result)===body.enabled),
+      &&(body.enabled===undefined||confirmedEnabled(result.enabled)===body.enabled),
     (result)=>{editing.value='';return `已更新分类 ${result.name}。`});
 }
 function startEdit(row:PoolCategory){editing.value=row.id;editName.value=row.name}
-function clearPending(){pendingWrite.value=''}
+function clearPending(){
+  if(!pendingWrite.value)return;
+  if(!readBackTrusted.value){writeError.value='分类列表尚未重新读取成功，不能清除待核记录。';return}
+  pendingWrite.value=null;writeError.value='';notice.value='已核对分类列表，待核记录已清除。';
+}
 function saveEdit(row:PoolCategory){
   const name=editName.value.trim();
   if(!name||name===row.name){editing.value='';return}
@@ -68,11 +99,12 @@ function saveEdit(row:PoolCategory){
 <template>
  <details class="pool-categories" aria-label="负样本分类管理">
   <summary>负样本分类（{{categories.length}}）</summary>
-  <el-alert v-if="error" :title="error" type="error" :closable="false"/>
+  <el-alert v-if="writeError" :title="writeError" type="error" :closable="false"/>
+  <el-alert v-if="readError" :title="`分类读取失败：${readError}`" type="warning" :closable="false"/>
   <p v-if="notice" role="status">{{notice}}</p>
-  <p v-if="pendingWrite" class="pool-category-pending" role="alert">待核验：{{pendingWrite}}。请核对下方分类列表后再继续操作。<el-button link @click="clearPending">已核对分类列表</el-button></p>
-  <p v-if="error&&!categories.length" class="pool-category-note">读取失败，当前没有可信分类列表。</p>
-  <p v-else-if="error" class="pool-category-note">读取失败，下方为上次成功读取的分类状态。</p>
+  <p v-if="pendingWrite" class="pool-category-pending" role="alert">待核验写入：{{pendingText}}。请重新读取并核对下方分类列表后再继续操作。<el-button link :disabled="!readBackTrusted" @click="clearPending">{{readBackTrusted?'已核对分类列表':'分类列表尚未重新读取'}}</el-button></p>
+  <p v-if="readError&&!categories.length" class="pool-category-note">读取失败，当前没有可信分类列表。</p>
+  <p v-else-if="readError" class="pool-category-note">读取失败，下方为上次成功读取的分类状态。</p>
   <form class="pool-category-create" @submit.prevent="create">
     <el-input v-model="draftName" aria-label="新分类名称" placeholder="新分类名称（1–100 字）" maxlength="100" :disabled="saving"/>
     <el-button native-type="submit" :loading="saving" :disabled="!draftName.trim()||saving">新增分类</el-button>

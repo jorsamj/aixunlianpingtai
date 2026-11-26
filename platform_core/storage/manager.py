@@ -14,7 +14,11 @@ from .errors import StorageError
 from .factory import StorageProviderFactory
 from .models import ObjectMetadata, StorageHealth, StorageType
 from .nas_health import check_nas_source
-from .source_repository import StorageSource, StorageSourceRepository
+from .source_repository import (
+    StorageSource,
+    StorageSourceRepository,
+    open_storage_source_repository,
+)
 
 
 ProviderResolver = Callable[[StorageSource, Mapping[str, str]], StorageProvider]
@@ -33,7 +37,12 @@ class StorageManager:
         self.project_id = str(project_id)
         self.project_dir = self.data_dir / "projects" / self.project_id
         self.materials = materials or MaterialRepository(self.project_dir)
-        self.sources = sources or StorageSourceRepository(self.data_dir / "storage" / "storage_sources.sqlite3")
+        # One provider boundary for the runtime source lookup: SQLite stays the
+        # default and a PostgreSQL-owned deployment is served by its provider
+        # (never a stale SQLite configuration).
+        self.sources = sources or open_storage_source_repository(
+            self.data_dir / "storage" / "storage_sources.sqlite3"
+        )
         self.credentials = credentials
         self._provider_resolver = provider_resolver
         cache_location = resolve_material_cache_location(self.data_dir)

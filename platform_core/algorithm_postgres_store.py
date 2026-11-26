@@ -19,6 +19,7 @@ from .algorithm_postgres_schema import require_current_schema
 from .algorithm_repository import (
     CLEANUP_OPERATIONS,
     CORE_OPERATIONS,
+    HISTORY_EVIDENCE_OPERATIONS,
     PRESENTATION_OPERATIONS,
     PROVIDER_POSTGRESQL,
     AlgorithmAdmissionRequired,
@@ -210,6 +211,84 @@ class PostgresAlgorithmRepository:
         # The cleanup domain is a declared gap, not a silent absence: the cutover
         # tool refuses admission while a project still owns cleanup receipts.
         return tuple(_UNSUPPORTED) + tuple(CLEANUP_OPERATIONS)
+
+    def capabilities(self) -> frozenset[str]:
+        # The declared capability set must match what this class really serves:
+        # core operations, the ported presentation projections and the bounded
+        # history-reference evidence used by the impact/reference projections.
+        return (
+            frozenset(CORE_OPERATIONS)
+            | frozenset(_PORTED_PRESENTATION)
+            | frozenset(HISTORY_EVIDENCE_OPERATIONS)
+        )
+
+    # -- history-reference evidence ----------------------------------------
+    # Equivalent contract to the SQLite reader: the authoritative revision, a
+    # bounded existence probe and keyset-paged payload pages. Only the
+    # non-structural `payload` JSONB is exposed, exactly like SQLite's
+    # `payload_json`, so both backends match the same reference evidence.
+    def history_revision(self) -> str | None:
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT algorithm_revision FROM w5_algorithm.store_revision "
+                "WHERE project_id=%s",
+                (self.project_id,),
+            )
+            row = cursor.fetchone()
+        return str(int(row["algorithm_revision"])) if row else None
+
+    def history_has_versions(self) -> bool | None:
+        with self._read() as cursor:
+            cursor.execute(
+                "SELECT EXISTS(SELECT 1 FROM w5_algorithm.algorithm_version "
+                "WHERE project_id=%s) AS present",
+                (self.project_id,),
+            )
+            row = cursor.fetchone()
+        return bool(row["present"]) if row else False
+
+    def history_algorithm_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        return self._history_payload_page("algorithm", after, limit)
+
+    def history_version_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        return self._history_payload_page("algorithm_version", after, limit)
+
+    def _history_payload_page(
+        self, table: str, after: str | None, limit: int
+    ) -> list[tuple[str, dict]]:
+        if table not in ("algorithm", "algorithm_version"):
+            raise AlgorithmRepositoryError(
+                "ALGORITHM_HISTORY_TABLE_INVALID",
+                "unsupported history payload table",
+                detail=str(table),
+            )
+        page = int(limit)
+        if not 1 <= page <= 500:
+            raise AlgorithmRepositoryError(
+                "ALGORITHM_HISTORY_PAGE_INVALID",
+                "history payload page size must be 1..500",
+                detail=str(limit),
+            )
+        statement = (
+            f"SELECT id, payload::text AS payload_json FROM w5_algorithm.{table} "
+            "WHERE project_id=%s"
+        )
+        parameters: list[Any] = [self.project_id]
+        if after is not None:
+            statement += " AND id > %s"
+            parameters.append(str(after))
+        statement += " ORDER BY id ASC LIMIT %s"
+        parameters.append(page)
+        with self._read() as cursor:
+            cursor.execute(statement, parameters)
+            rows = cursor.fetchall()
+        return [
+            (str(row["id"]), _json_object(row["payload_json"])) for row in rows
+        ]
 
     # -- external algorithm cleanup -----------------------------------------
     # The ledger is part of schema V2 and shares one transaction with the

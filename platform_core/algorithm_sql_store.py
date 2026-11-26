@@ -691,6 +691,92 @@ class AlgorithmSqlStore:
                 (self.project_id, str(algorithm_id)),
             ).fetchone() is not None
 
+    # -- history-reference evidence (read-only; never initializes) ---------
+    # These serve the material impact index, the training-history freshness
+    # proof and conversion-catalog reference protection. They are deliberately
+    # side-effect free: a read projection must not migrate/create the catalog
+    # just to answer whether historical algorithm references exist.
+    def _readonly_history_connection(self) -> sqlite3.Connection | None:
+        if not self.db_path.is_file():
+            return None
+        connection = sqlite3.connect(
+            self.db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def history_revision(self) -> str | None:
+        connection = self._readonly_history_connection()
+        if connection is None:
+            return None
+        with closing(connection) as conn:
+            try:
+                row = conn.execute(
+                    "SELECT value FROM algorithm_store_meta WHERE key='algorithm_revision'"
+                ).fetchone()
+            except sqlite3.Error:
+                return None
+        return None if row is None else str(row[0])
+
+    def history_has_versions(self) -> bool | None:
+        """True/False when the catalog can be read; None when it proves nothing."""
+        connection = self._readonly_history_connection()
+        if connection is None:
+            return None
+        with closing(connection) as conn:
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='algorithm_versions' LIMIT 1"
+                ).fetchone() is None:
+                    return None
+                return conn.execute(
+                    "SELECT 1 FROM algorithm_versions LIMIT 1"
+                ).fetchone() is not None
+            except sqlite3.Error:
+                return None
+
+    def history_algorithm_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        page = self._history_page_size(limit)
+        return self._history_payload_page(
+            "SELECT id, payload_json FROM algorithms WHERE id > ? "
+            "ORDER BY id ASC LIMIT ?",
+            after,
+            page,
+        )
+
+    def history_version_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        page = self._history_page_size(limit)
+        return self._history_payload_page(
+            "SELECT id, payload_json FROM algorithm_versions WHERE id > ? "
+            "ORDER BY id ASC LIMIT ?",
+            after,
+            page,
+        )
+
+    @staticmethod
+    def _history_page_size(limit: int) -> int:
+        page = int(limit)
+        if not 1 <= page <= 500:
+            raise ValueError("history payload page size must be 1..500")
+        return page
+
+    def _history_payload_page(
+        self, query: str, after: str | None, limit: int
+    ) -> list[tuple[str, dict]]:
+        connection = self._readonly_history_connection()
+        if connection is None:
+            return []
+        rows: list[tuple[str, dict]] = []
+        with closing(connection) as conn:
+            for row in conn.execute(query, ("" if after is None else str(after), limit)):
+                rows.append((str(row["id"]), self._json_object(row["payload_json"])))
+        return rows
+
     def create_algorithm(self, item: Mapping[str, Any]) -> dict:
         self.ensure_ready()
         value = dict(item)

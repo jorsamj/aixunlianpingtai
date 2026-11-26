@@ -97,6 +97,7 @@ jobs:
           python -c "import psycopg, pgserver"
           PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_shadow.py
           PYTHONPATH=. pytest -q --confcutdir=tests/integration tests/integration/test_algorithm_shadow_postgres.py
+          PYTHONPATH=. pytest -q --confcutdir=tests/integration tests/integration/test_storage_source_postgres.py
       - name: Read-only model and conversion display contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_model_asset_views.py tests/unit/test_conversion_history.py tests/unit/test_training_reader_views.py tests/unit/test_training_report_reader.py tests/unit/test_annotation_reader_views.py tests/unit/test_evaluation_reader_views.py
       - name: Negative pool query contracts

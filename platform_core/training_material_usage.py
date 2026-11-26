@@ -242,14 +242,18 @@ class TrainingMaterialUsage:
         if project.parent.resolve() != (self.path.parent.parent / 'projects').resolve():
             return False
         algorithm_db = project / 'algorithms.sqlite3'
-        from .algorithm_repository import require_authoritative_sqlite
-        require_authoritative_sqlite(algorithm_db)
-        if algorithm_db.is_file():
-            with closing(observe_connection(connect_sqlite(algorithm_db.resolve().as_uri()+'?mode=ro', uri=True))) as algorithms:
-                if not algorithms.execute("SELECT 1 FROM sqlite_master WHERE name='algorithm_versions'").fetchone():
-                    return False
-                return algorithms.execute('SELECT 1 FROM algorithm_versions LIMIT 1').fetchone() is None
-        return not (project / 'algorithms.json').exists()
+        from .algorithm_history_evidence import open_history_repository
+        from .algorithm_repository import AlgorithmRepositoryError
+        try:
+            has_versions = open_history_repository(algorithm_db).history_has_versions()
+        except AlgorithmRepositoryError:
+            # An unreadable/unselectable provider cannot prove a fresh dataset;
+            # never turn a failed history read into "no history".
+            return False
+        if has_versions is None:
+            # No readable algorithm catalog: only the legacy JSON can still own history.
+            return not (project / 'algorithms.json').exists()
+        return has_versions is False
 
     def read_revision(self):
         """O(1) invalidation token; no source file or usage-row enumeration."""

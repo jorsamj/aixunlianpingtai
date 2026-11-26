@@ -22,19 +22,30 @@ const query=(key:string)=>typeof route.query[key]==='string'?route.query[key] as
 const PANES=['overview','history','evaluation','samples','trace'] as const;
 const pane=computed(()=>PANES.includes(query('tab') as typeof PANES[number])?query('tab'):'overview');
 // Lineage is read on demand with one bounded version-detail call per opened report;
-// it never scans the version history or infers relationships from names.
-const traceDetail=ref<{version:{base_version_id?:string;parent_version_id?:string;training_lineage?:Record<string,unknown>;training_parameters?:Record<string,unknown>;snapshot_id?:string;dataset_revision_id?:string}}|null>(null);
-const traceBusy=ref(false),traceError=ref('');
+// it never scans the version history or infers relationships from names. Every
+// value and error is stored with the algorithm/version scope it was read for, so a
+// late response or a route change can never show another version's lineage.
+type TraceVersion={base_version_id?:string;parent_version_id?:string;training_lineage?:Record<string,unknown>;training_parameters?:Record<string,unknown>;snapshot_id?:string;dataset_revision_id?:string};
+type TraceDetail={scope:string;version:TraceVersion};
+const traceDetail=ref<TraceDetail|null>(null),traceFailure=ref<{scope:string;message:string}|null>(null),traceBusy=ref(false);
+let traceToken=0;
+const traceScope=computed(()=>canonical.value?canonical.value.algorithmId+'/'+canonical.value.versionId:'');
+const routeKey=computed(()=>[String(route.name),projectId,String(route.params.algorithmId??''),String(route.params.versionId??''),String(route.params.jobId??'')].join('|'));
+const traceError=computed(()=>traceFailure.value&&traceFailure.value.scope===traceScope.value?traceFailure.value.message:'');
+const trace=computed(()=>traceDetail.value&&traceDetail.value.scope===traceScope.value?traceDetail.value:null);
+function resetTrace(){traceToken++;traceDetail.value=null;traceFailure.value=null;traceBusy.value=false}
 async function loadTrace(){
-  const current=canonical.value;
-  if(!current||traceDetail.value||traceBusy.value)return;
-  traceBusy.value=true;traceError.value='';
+  const current=canonical.value,scope=traceScope.value;
+  if(!current||!scope||traceBusy.value||traceDetail.value?.scope===scope)return;
+  const token=++traceToken,key=routeKey.value;
+  const live=()=>token===traceToken&&!controller.signal.aborted&&scope===traceScope.value&&key===routeKey.value;
+  traceBusy.value=true;traceFailure.value=null;
   try{
     const value=await versions.detail(current.algorithmId,current.versionId,controller.signal);
-    if(controller.signal.aborted)return;
-    traceDetail.value={version:value.version};
-  }catch(cause){if(!controller.signal.aborted)traceError.value=browseError(cause)}
-  finally{traceBusy.value=false}
+    if(!live())return;
+    traceDetail.value={scope,version:value.version};
+  }catch(cause){if(live())traceFailure.value={scope,message:browseError(cause)}}
+  finally{if(token===traceToken)traceBusy.value=false}
 }
 function selectPane(name:string){
   tab(name);
@@ -45,6 +56,12 @@ const canonical=computed(()=>{
   const algorithmId=report.value?.algorithm_id||current?.algorithmId;
   const versionId=report.value?.version_id||current?.versionId;
   return algorithmId&&versionId?{algorithmId,versionId,jobId:current?.jobId||''}:null;
+});
+// A changed canonical identity drops lineage read for a previous version/algorithm.
+watch(traceScope,()=>{
+  if(traceDetail.value&&traceDetail.value.scope!==traceScope.value)traceDetail.value=null;
+  if(traceFailure.value&&traceFailure.value.scope!==traceScope.value)traceFailure.value=null;
+  if(pane.value==='trace')void loadTrace();
 });
 const back=computed(()=>{
   const source=query('back');
@@ -80,6 +97,7 @@ function page(start:number){
     }
     report.value=value;
     offset.value=value.history_offset??start;
+    if(pane.value==='trace')void loadTrace();
   });
 }
 function load(){
@@ -87,11 +105,16 @@ function load(){
   report.value=null;
   selection.value=null;
   offset.value=0;
+  resetTrace();
   if(route.name==='version-report'){
     const algorithmId=String(route.params.algorithmId),versionId=String(route.params.versionId);
     void reads.run('version',signal=>versions.detail(algorithmId,versionId,signal),value=>{
       selection.value={algorithmId,versionId,jobId:value.version.training_job_id||'',returnPage:'assets'};
       job.value=selection.value.jobId;
+      // The version route already returned this exact version detail; reuse it for
+      // the trace pane under the same scope key instead of a second identical read.
+      traceDetail.value={scope:algorithmId+'/'+versionId,version:value.version};
+      if(pane.value==='trace')void loadTrace();
       if(job.value)page(0);
       else {
         const version=value.version;
@@ -111,6 +134,15 @@ function load(){
 }
 function openTask(){
   if(job.value.trim())void router.push({name:'training-report',params:{projectId,jobId:job.value.trim()},query:{back:query('back')||undefined}});
+}
+// Deep link into the evaluation samples of this same report, keeping the back target.
+function openSamples(kind:'tp'|'fp'|'fn'){
+  const current=canonical.value;
+  if(!current)return;
+  const search={tab:'evaluation',view:'samples',issue:kind,back:query('back')||undefined};
+  void router.push(route.name==='version-report'
+    ?{name:'version-report',params:{projectId,algorithmId:current.algorithmId,versionId:current.versionId},query:search}
+    :{name:'training-report',params:{projectId,jobId:selection.value?.jobId||String(route.params.jobId||'')},query:search});
 }
 watch(()=>route.path,load,{immediate:true});
 </script>
@@ -181,7 +213,9 @@ watch(()=>route.path,load,{immediate:true});
         <h3>进入样本与后续处理</h3>
         <p class="report-note">FP/FN、低置信度、类别退化与冻结图片证据在“独立评测”中按真实评测结果展示；困难样本、采纳与补数在“困难样本与继续训练”中处理。</p>
         <div class="report-actions">
-          <el-button :disabled="!canonical" @click="selectPane('evaluation')">查看 TP / FP / FN 样本</el-button>
+          <el-button :disabled="!canonical" @click="openSamples('tp')">查看 TP 正确识别样本</el-button>
+          <el-button :disabled="!canonical" @click="openSamples('fp')">查看 FP 误检样本</el-button>
+          <el-button :disabled="!canonical" @click="openSamples('fn')">查看 FN 漏检样本</el-button>
           <a v-if="canonical" :href="originalEvaluation">原高级评测与样本证据</a>
         </div>
         <p v-if="report.test_status==='not_generated'" class="report-note">该任务没有独立 Test 评测记录，因此没有 Test 侧的 FP/FN 证据；正式 Test 不会因困难样本被重新用于训练。</p>
@@ -190,15 +224,15 @@ watch(()=>route.path,load,{immediate:true});
         <h3>身份与来源</h3>
         <ReadOnlyFacts :fields="[['记录来源',report.source],['任务',selection?.jobId],['算法',canonical?.algorithmId],['版本',canonical?.versionId],['训练快照',report.result?.snapshot_id],['数据集修订',report.result?.dataset_revision_id],['固定 ZIP 划分',report.fixed_zip_split?.state]]"/>
         <el-alert v-if="traceError" :title="traceError" type="error" :closable="false"/>
-        <el-skeleton v-if="traceBusy&&!traceDetail" :rows="3" animated/>
-        <template v-else-if="traceDetail">
+        <el-skeleton v-if="traceBusy&&!trace" :rows="3" animated/>
+        <template v-else-if="trace">
           <h3>版本血缘</h3>
-          <ReadOnlyFacts :fields="[['父版本 ID',traceDetail.version.parent_version_id],['基础版本 ID',traceDetail.version.base_version_id]]"/>
-          <ReadOnlyFacts v-if="Object.keys(traceDetail.version.training_lineage||{}).length" :fields="Object.entries(traceDetail.version.training_lineage||{})"/>
+          <ReadOnlyFacts :fields="[['父版本 ID',trace.version.parent_version_id],['基础版本 ID',trace.version.base_version_id]]"/>
+          <ReadOnlyFacts v-if="Object.keys(trace.version.training_lineage||{}).length" :fields="Object.entries(trace.version.training_lineage||{})"/>
           <p v-else class="report-note">未记录血缘字段；不根据版本名称推断父版本或母模型。</p>
-          <div v-if="traceDetail.version.parent_version_id||traceDetail.version.base_version_id" class="report-actions">
-            <router-link v-if="traceDetail.version.parent_version_id&&canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:String(traceDetail.version.parent_version_id)},query:{back:query('back')||undefined}}">查看父版本报告</router-link>
-            <router-link v-if="traceDetail.version.base_version_id&&canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:String(traceDetail.version.base_version_id)},query:{back:query('back')||undefined}}">查看基础版本报告</router-link>
+          <div v-if="trace.version.parent_version_id||trace.version.base_version_id" class="report-actions">
+            <router-link v-if="trace.version.parent_version_id&&canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:String(trace.version.parent_version_id)},query:{back:query('back')||undefined}}">查看父版本报告</router-link>
+            <router-link v-if="trace.version.base_version_id&&canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:String(trace.version.base_version_id)},query:{back:query('back')||undefined}}">查看基础版本报告</router-link>
           </div>
         </template>
         <p v-else-if="!traceError" class="report-note">尚未读取版本血缘；打开本页按需读取一次，不扫描历史版本。</p>

@@ -11,6 +11,10 @@ from platform_core.errors import PlatformError
 from platform_core.model_artifacts import ModelArtifactService
 from platform_core.secrets import secret_ref
 from platform_core.storage import StorageError
+from platform_core.storage.source_repository import (
+    StorageSourceConflictError,
+    StorageSourceOperationBlocked,
+)
 
 @dataclass(frozen=True)
 class StorageConfigurationDependencies:
@@ -54,6 +58,8 @@ class StorageConfigurationService:
                         repository.delete(source_id)
                         raise
                 return self.dependencies._public_storage_source(source)
+        except StorageSourceConflictError as error:
+            raise HTTPException(status_code=409, detail="存储源名称或 ID 已存在") from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except sqlite3.IntegrityError as error:
@@ -191,6 +197,8 @@ class StorageConfigurationService:
             self.dependencies._assert_storage_source_mutation_allowed(source_id)
             try:
                 repository.delete(source_id)
+            except StorageSourceOperationBlocked as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
             except ValueError as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
             # Retired credentials are no longer available to any committed

@@ -167,7 +167,7 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     expected["databases"][material_path][receipts] = []
     assert business_state(target) == expected
     with closing(repository._connect()) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone()
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_dataset'").fetchone()
         plan = " ".join(row[3] for row in db.execute(
@@ -204,7 +204,7 @@ def test_existing_schema7_adds_receipts_atomically_on_reopen(tmp_path, monkeypat
         db.execute("DROP TABLE material_assignment_receipts")
         db.execute("COMMIT")
     with closing(existing_sqlite_reader(filename)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert not db.execute(
             "SELECT 1 FROM sqlite_master WHERE name='material_assignment_receipts'"
         ).fetchone()
@@ -223,15 +223,15 @@ def test_existing_schema7_adds_receipts_atomically_on_reopen(tmp_path, monkeypat
             MaterialRepository(project)
     assert schema_state(filename) == before
     with closing(existing_sqlite_reader(filename)) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert db.execute("SELECT COUNT(*) FROM materials").fetchone()[0] == 1
     repository = MaterialRepository(project)
     assert repository.get("image") == stored
     assert sha(original) == content_sha
     assert repository.current_revision() == revision
-    assert repository._read_schema_version_fast() == 7
+    assert repository._read_schema_version_fast() == 8
     with closing(repository._connect()) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert db.execute("SELECT COUNT(*) FROM material_assignment_receipts").fetchone()[0] == 0
         db.execute("INSERT INTO material_assignment_receipts VALUES ('task','image','updated',NULL)")
     assert MaterialRepository(project).assignment_receipts("task", ["image"]) == {"image": ("updated", None)}

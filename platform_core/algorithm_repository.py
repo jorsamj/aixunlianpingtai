@@ -55,6 +55,20 @@ PRESENTATION_OPERATIONS = (
     "training_display_refs",
 )
 
+#: Read-only history-reference evidence. Material impact previews, training
+#: history freshness and conversion-catalog reference protection all need the
+#: authoritative algorithm revision, a bounded version-existence probe and
+#: bounded payload pages. These are part of the domain contract: a provider that
+#: cannot serve them must refuse the read instead of letting a caller read a
+#: stale SQLite catalog directly (which is what the old ATTACH projections did).
+HISTORY_EVIDENCE_OPERATIONS = (
+    "provider_name",
+    "history_revision",
+    "history_has_versions",
+    "history_algorithm_payloads",
+    "history_version_payloads",
+)
+
 #: External-algorithm cleanup receipts. The ledger row and the algorithm
 #: retirement flags change in one transaction, so this is a real part of the
 #: domain contract: the default SQLite provider serves it, and a provider that
@@ -144,6 +158,30 @@ class AlgorithmRepository(Protocol):
     def exists(self, algorithm_id: str) -> bool: ...
 
     def training_version_refs(self, task_id: str) -> list[tuple[str, str]]: ...
+
+    #: Provider identity used in derived-read signatures ("sqlite"/"postgresql").
+    @property
+    def provider_name(self) -> str: ...
+
+    def history_revision(self) -> str | None:
+        """Authoritative algorithm revision, or ``None`` when not yet initialized."""
+        ...
+
+    def history_has_versions(self) -> bool | None:
+        """Bounded existence probe; ``None`` means "cannot prove this store is empty"."""
+        ...
+
+    def history_algorithm_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        """One bounded, deterministic page of algorithm payloads (keyset by id)."""
+        ...
+
+    def history_version_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        """One bounded, deterministic page of version payloads (keyset by id)."""
+        ...
 
     def replace_all(self, algorithms: Sequence[Mapping[str, Any]]) -> None: ...
 
@@ -248,6 +286,7 @@ WRITE_OPERATIONS = frozenset({
 _KNOWN_READ_OPERATIONS = (
     frozenset(CORE_OPERATIONS)
     | frozenset(PRESENTATION_OPERATIONS)
+    | frozenset(HISTORY_EVIDENCE_OPERATIONS)
     | frozenset(CLEANUP_OPERATIONS)
     | frozenset()
 )
@@ -386,7 +425,12 @@ class SqliteAlgorithmRepository:
 
     # -- provider metadata -------------------------------------------------
     def capabilities(self) -> frozenset[str]:
-        return frozenset(CORE_OPERATIONS + PRESENTATION_OPERATIONS + CLEANUP_OPERATIONS)
+        return frozenset(
+            CORE_OPERATIONS
+            + PRESENTATION_OPERATIONS
+            + HISTORY_EVIDENCE_OPERATIONS
+            + CLEANUP_OPERATIONS
+        )
 
     def unsupported_operations(self) -> tuple[str, ...]:
         return ()
@@ -422,6 +466,23 @@ class SqliteAlgorithmRepository:
 
     def training_version_refs(self, task_id: str) -> list[tuple[str, str]]:
         return self.store.training_version_refs(task_id)
+
+    # -- history-reference evidence (read-only, never initializes) ---------
+    def history_revision(self) -> str | None:
+        return self.store.history_revision()
+
+    def history_has_versions(self) -> bool | None:
+        return self.store.history_has_versions()
+
+    def history_algorithm_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        return self.store.history_algorithm_payloads(after=after, limit=limit)
+
+    def history_version_payloads(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> list[tuple[str, dict]]:
+        return self.store.history_version_payloads(after=after, limit=limit)
 
     def replace_all(self, algorithms: Sequence[Mapping[str, Any]]) -> None:
         self.store.replace_all(algorithms)

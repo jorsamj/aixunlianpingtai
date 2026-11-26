@@ -56,3 +56,23 @@ def test_history_signature_ignores_progress_and_log_writes_but_tracks_evidence(t
     assert signature() == stable
     artifacts.atomic_write_json(batch.task_id, batch.payload_ref, {'image_ids': ['image-d']})
     assert signature() != stable
+
+
+def test_history_signature_tracks_the_authoritative_algorithm_revision(tmp_path):
+    """The signature is signed by the provider, not by a direct SQLite read."""
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+
+    project = tmp_path / 'projects' / 'p'
+    project.mkdir(parents=True)
+    repository = TaskRepository(tmp_path / 'task_runtime' / 'tasks.sqlite3')
+    artifacts = ArtifactStore(tmp_path / 'task_runtime' / 'artifacts')
+    store = AlgorithmSqlStore(project / 'algorithms.json')
+    store.replace_all([{'id': 'algo-1', 'name': 'Algo', 'versions': []}])
+
+    def signature():
+        return _source_signature('p', project, repository, artifacts)
+
+    initial = signature()
+    assert signature() == initial
+    store.patch_algorithm('algo-1', {'name': 'Renamed'})
+    assert signature() != initial

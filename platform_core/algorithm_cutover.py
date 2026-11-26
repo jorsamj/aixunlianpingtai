@@ -44,6 +44,7 @@ from .algorithm_postgres_schema import (
 from .algorithm_postgres_store import UNSUPPORTED_OPERATIONS, export_target_snapshot
 from .algorithm_repository import (
     CONTRACT_VERSION,
+    HISTORY_EVIDENCE_OPERATIONS,
     PROVIDER_POSTGRESQL,
     PROVIDER_SQLITE,
     admission_switch_lock,
@@ -476,7 +477,14 @@ def admit_cutover(
         "reason": str(reason).strip(),
         "summary_digest": report["summary_digest"],
         "schema_version": (report.get("schema") or {}).get("target_version"),
-        "capabilities": ["ensure_ready", "revision", "read_all", "read_one", "write"],
+        "capabilities": [
+            "ensure_ready",
+            "revision",
+            "read_all",
+            "read_one",
+            "write",
+            *HISTORY_EVIDENCE_OPERATIONS,
+        ],
         "unported_operations": list(UNSUPPORTED_OPERATIONS),
     }
     # The authority really moved: settle the barrier the legacy path wrote. The

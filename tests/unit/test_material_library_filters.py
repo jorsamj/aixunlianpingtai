@@ -47,7 +47,7 @@ def test_existing_schema6_adds_batch_index_without_data_rewrite(tmp_path):
     with closing(restored._connect()) as db:
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone()
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_dataset'").fetchone()
-        assert db.execute('PRAGMA user_version').fetchone()[0]==7
+        assert db.execute('PRAGMA user_version').fetchone()[0]==8
     assert restored.get('keep')['processing_status']=='pending_decision'
     assert restored.current_revision()==revision
     # A second open at schema 7 must reuse the fast path, not rebuild indexes.

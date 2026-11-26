@@ -27,6 +27,7 @@ from platform_core.algorithm_postgres_store import (
 from platform_core.algorithm_repository import (
     CLEANUP_OPERATIONS,
     CONTRACT_VERSION,
+    HISTORY_EVIDENCE_OPERATIONS,
     admission_transition_path,
     CORE_OPERATIONS,
     PRESENTATION_OPERATIONS,
@@ -166,9 +167,10 @@ def test_postgres_provider_declares_and_fails_closed_on_unported_operations():
     # the presentation projections that are ported, never the whole set. The
     # external-algorithm cleanup domain is served by SQLite only, and is declared
     # unsupported instead of silently reaching into a SQLite copy.
-    assert set(repository.capabilities()) == set(CORE_OPERATIONS) | set(
-        PRESENTATION_OPERATIONS
-    ) - set(UNSUPPORTED_OPERATIONS)
+    assert set(repository.capabilities()) == (
+        (set(CORE_OPERATIONS) | set(PRESENTATION_OPERATIONS) - set(UNSUPPORTED_OPERATIONS))
+        | set(HISTORY_EVIDENCE_OPERATIONS)
+    )
     assert set(repository.unsupported_operations()) == set(UNSUPPORTED_OPERATIONS) | set(
         CLEANUP_OPERATIONS
     )
@@ -517,3 +519,115 @@ def test_sqlite_attach_readers_refuse_a_postgres_admitted_project(tmp_path):
     # A verified rollback revokes the admission and re-opens the SQLite reader.
     record.write_text(json.dumps({**admission, "revoked_at": "2026-11-26T00:00:00Z"}), encoding="utf-8")
     require_authoritative_sqlite(database)
+
+
+# ---------------------------------------------------------------------------
+# U1 history-reference evidence (provider parity for the old ATTACH readers)
+# ---------------------------------------------------------------------------
+def test_history_evidence_pages_are_bounded_and_deterministic(tmp_path):
+    store = _store(tmp_path)
+    from platform_core.algorithm_history_evidence import (
+        open_history_repository,
+        revision_token,
+    )
+    repository = open_history_repository(store.json_path)
+    provider, revision = revision_token(repository)
+    assert provider == "sqlite"
+    assert revision == str(store.revision())
+    assert repository.history_has_versions() is True
+
+    algorithms = []
+    after = None
+    while True:
+        page = repository.history_algorithm_payloads(after=after, limit=1)
+        assert len(page) <= 1
+        algorithms.extend(record_id for record_id, _payload in page)
+        if len(page) < 1:
+            break
+        after = page[-1][0]
+    assert algorithms == sorted(algorithms) == ["algo-1", "algo-2"]
+
+    versions = repository.history_version_payloads(limit=1)
+    assert [record_id for record_id, _payload in versions] == ["v1"]
+    assert versions[0][1]["version_name"] == "1"
+
+    with pytest.raises(ValueError):
+        repository.history_algorithm_payloads(limit=0)
+
+    # A project bigger than the bounded reference scan fails closed instead of
+    # silently checking only the first records.
+    from platform_core.algorithm_history_evidence import iter_history_payloads
+    from platform_core.algorithm_repository import AlgorithmRepositoryError
+
+    with pytest.raises(AlgorithmRepositoryError) as overflow:
+        list(iter_history_payloads(repository, page_size=1, max_records=2))
+    assert overflow.value.code == "ALGORITHM_HISTORY_EVIDENCE_UNBOUNDED"
+
+
+def test_history_evidence_fails_closed_for_a_postgres_owned_project(tmp_path):
+    store = _store(tmp_path)
+    from platform_core.algorithm_history_evidence import open_history_repository
+
+    _admission(admission_record_path(store.json_path))
+
+    # The SQLite provider must not serve a PostgreSQL-owned project...
+    with pytest.raises(AlgorithmAdmissionRequired) as stale:
+        open_history_repository(store.json_path, environ={})
+    assert stale.value.code == "ALGORITHM_SQLITE_STALE_AFTER_CUTOVER"
+    # ...and PostgreSQL is never opened without its own DSN/admission either.
+    with pytest.raises(AlgorithmProviderConfigError) as missing:
+        open_history_repository(store.json_path, provider="postgresql", environ={})
+    assert missing.value.code == "ALGORITHM_POSTGRES_DSN_MISSING"
+
+
+def test_reference_projection_refuses_instead_of_reporting_no_reference(tmp_path):
+    """A PostgreSQL-owned project must yield "cannot verify", not "no reference"."""
+    from platform_core.conversion_catalog_references import catalog_references
+    from platform_core.errors import PlatformError
+
+    root = tmp_path / "data"
+    project = root / "projects" / "project"
+    project.mkdir(parents=True)
+    AlgorithmSqlStore(project / "algorithms.json").replace_all(_rows())
+    catalog = {"vendors": [], "chips": []}
+    # SQLite authority: the projection can really verify and reports no reference.
+    verified = catalog_references(root, catalog, "vendors", {"id": "vendor-1"})
+    assert verified["check_status"] == "VERIFIED"
+    assert verified["can_delete"] is True
+
+    _admission(admission_record_path(project / "algorithms.json"))
+    with pytest.raises(PlatformError) as refused:
+        catalog_references(root, catalog, "vendors", {"id": "vendor-1"})
+    assert refused.value.code == "CATALOG_REFERENCE_CHECK_FAILED"
+
+
+def test_training_usage_freshness_uses_the_algorithm_provider(tmp_path):
+    """Only a provider-proven empty history may be reported as fresh."""
+    import sqlite3
+
+    from platform_core.training_material_usage import TrainingMaterialUsage
+
+    data = tmp_path / "data"
+    project = data / "projects" / "p"
+    project.mkdir(parents=True)
+    tasks = data / "task_runtime" / "tasks.sqlite3"
+    tasks.parent.mkdir()
+    with sqlite3.connect(tasks) as database:
+        database.execute("CREATE TABLE tasks (project_id TEXT, kind TEXT)")
+    usage = TrainingMaterialUsage(tasks)
+
+    def freshness(project_id="p"):
+        with sqlite3.connect(tasks) as database:
+            database.row_factory = sqlite3.Row
+            return usage._empty_project_history(database, project_id)
+
+    assert freshness() is True
+    AlgorithmSqlStore(project / "algorithms.json").replace_all(_rows())
+    assert freshness() is False
+
+    # Another provider owns a project: a failed read is never "no history".
+    other = data / "projects" / "q"
+    other.mkdir()
+    assert freshness("q") is True
+    _admission(admission_record_path(other / "algorithms.json"), project="q")
+    assert freshness("q") is False

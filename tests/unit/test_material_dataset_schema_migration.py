@@ -30,7 +30,7 @@ def test_schema_6_database_gains_dataset_index_once_and_keeps_data(tmp_path):
     material_batch_module._MATERIAL_INIT_READY.discard(repository.path.resolve())
     migrated = MaterialRepository(project)
     with sqlite3.connect(migrated.path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 8
         index = database.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_materials_dataset'"
         ).fetchone()
@@ -49,7 +49,7 @@ def test_schema_6_database_gains_dataset_index_once_and_keeps_data(tmp_path):
     # A second open must be a no-op and must not lose the index/version.
     MaterialRepository(project)
     with sqlite3.connect(migrated.path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 8
         assert database.execute(
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ix_materials_dataset'"
         ).fetchone()

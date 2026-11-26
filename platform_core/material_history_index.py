@@ -64,21 +64,11 @@ def _source_signature(project_id, project_path, repository, artifacts):
     roots.extend(full_task_roots)
     files = [Path(project_path) / "algorithms.json", *narrow_task_files]
     algo_db = Path(project_path) / "algorithms.sqlite3"
-    from .algorithm_repository import require_authoritative_sqlite
-    require_authoritative_sqlite(algo_db)
-    if algo_db.is_file():
-        try:
-            with closing(sqlite3.connect(f"file:{algo_db}?mode=ro", uri=True)) as db:
-                row = db.execute(
-                    "SELECT value FROM algorithm_store_meta WHERE key='algorithm_revision'"
-                ).fetchone()
-            digest.update(repr(("algorithm_revision", row[0] if row else None)).encode())
-        except sqlite3.Error:
-            # The first legacy read may initialize/migrate the SQL store;
-            # the before/after signature check will detect that change.
-            digest.update(b"algorithm_sql_not_initialized")
-    else:
-        digest.update(b"algorithm_sql_missing")
+    from .algorithm_history_evidence import open_history_repository, revision_token
+    # The signature must be signed by the *authoritative* provider: a
+    # PostgreSQL-owned project is signed by its PostgreSQL revision, so a stale
+    # SQLite catalog can never masquerade as an unchanged history generation.
+    digest.update(repr(("algorithm_history", *revision_token(open_history_repository(algo_db)))).encode())
 
     def record(path):
         path = Path(path)

@@ -67,6 +67,7 @@ jobs:
           tests/unit/storage/test_optional_providers.py
           tests/unit/storage/test_object_store_immutability.py
           tests/unit/storage/test_source_repository.py
+          tests/unit/storage/test_storage_source_provider.py
 
       - name: Run storage frontend guards
         run: >-

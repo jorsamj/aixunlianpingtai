@@ -11,7 +11,13 @@ from .s3 import S3StorageProvider
 from .models import ObjectMetadata, ObjectPage, StorageHealth, StorageType
 from .source_repository import (
     StorageSource,
+    StorageSourceAdmissionRequired,
+    StorageSourceConflictError,
+    StorageSourceOperationBlocked,
+    StorageSourceProviderConfigError,
     StorageSourceRepository,
+    StorageSourceRepositoryError,
+    open_storage_source_repository,
     storage_source_lifecycle_fence,
 )
 from .yolo_import import (
@@ -38,6 +44,12 @@ __all__ = [
     "StorageProvider",
     "StorageSource",
     "StorageSourceRepository",
+    "StorageSourceRepositoryError",
+    "StorageSourceProviderConfigError",
+    "StorageSourceAdmissionRequired",
+    "StorageSourceConflictError",
+    "StorageSourceOperationBlocked",
+    "open_storage_source_repository",
     "storage_source_lifecycle_fence",
     "StorageType",
     "StorageManager",

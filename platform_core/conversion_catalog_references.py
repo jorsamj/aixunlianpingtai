@@ -7,6 +7,8 @@ from contextlib import closing
 from pathlib import Path
 
 from .compute_platform_catalog import conversion_templates, local_chip_key
+from .algorithm_history_evidence import iter_history_payloads, open_history_repository
+from .algorithm_repository import AlgorithmRepositoryError
 from .errors import PlatformError
 from .task_runtime.artifacts import ArtifactStore
 
@@ -165,12 +167,14 @@ def catalog_references(data_dir, catalog, entity, record):
         for project in (root/"projects").iterdir() if (root/"projects").exists() else ():
             if not project.is_dir(): continue
             db=project/"algorithms.sqlite3"
-            from .algorithm_repository import require_authoritative_sqlite
-            require_authoritative_sqlite(db)
-            if db.exists():
-                for table in ("algorithms","algorithm_versions"):
-                    for row in _rows(db,f"SELECT id,payload_json FROM {table}"):
-                        if matches(json.loads(row["payload_json"])): add("ALGORITHM_VERSION",row["id"])
+            # The reference evidence comes from the authoritative provider. It
+            # raises when another provider owns the project (or the catalog
+            # cannot be read) instead of checking a stale SQLite file and then
+            # reporting "no reference".
+            repository=open_history_repository(db)
+            if repository.provider_name!="sqlite" or db.exists():
+                for _kind,record_id,payload in iter_history_payloads(repository):
+                    if matches(payload): add("ALGORITHM_VERSION",record_id)
             legacy=project/"algorithms.json"
             if legacy.exists() and matches(_json(legacy)): add("LEGACY_ALGORITHM",str(legacy.relative_to(root)))
         publications=root/"external_algorithm_publish"/"publications.sqlite3"
@@ -189,7 +193,7 @@ def catalog_references(data_dir, catalog, entity, record):
             for target,mapping in value.get("target_mappings",{}).items():
                 codes=list((mapping.get("chip_mappings") or {}).keys())+[mapping.get("chip_code")]
                 if any((target,local_chip_key(code)) in sdk_identities for code in codes if code): add("EXTERNAL_CHIP_BINDING",target)
-    except (OSError,ValueError,TypeError,sqlite3.Error) as error:
+    except (OSError,ValueError,TypeError,sqlite3.Error,AlgorithmRepositoryError) as error:
         raise PlatformError("CATALOG_REFERENCE_CHECK_FAILED","无法完整核验历史引用，禁止物理删除或改挂",str(error),"请修复引用证据后重试；可以停用以保留历史。",409) from error
     return {"check_status":"RECOVERED" if diagnostics else "VERIFIED","diagnostics":diagnostics,"can_delete":count==0,"reference_count":count,"references":references,"references_truncated":count>len(references),
             "solution":"已有业务引用，只能停用；不会删除历史数据。" if count else "未发现业务引用，可确认物理删除。"}
