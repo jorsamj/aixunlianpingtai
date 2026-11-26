@@ -1,4 +1,4 @@
-import {createAnnotoriousEditor} from './annotorious-editor.js?v=20261022a';
+import {createAnnotoriousEditor} from './annotorious-editor.js';
 const clone = value => JSON.parse(JSON.stringify(value));
 const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 // A disposable session: its only request is the read-only comparison endpoint.

@@ -5,7 +5,7 @@ import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 import {legacyUrl} from './navigation';
 import {login} from './http';
 import {reviewFilters} from '../api/ai-review';
-import type {ReviewCandidate} from '../api/ai-review';
+import type {ReviewCandidate,TransferRange} from '../api/ai-review';
 import {canAdopt,hasUnresolvedAmbiguity} from '../stores/ai-review-decision';
 import {useAiReviewStore} from '../stores/ai-review';
 import MaterialPreview from '../components/MaterialPreview.vue';
@@ -13,6 +13,24 @@ import MaterialPreview from '../components/MaterialPreview.vue';
 const props=defineProps<{projectId:string;taskId:string}>();
 const workspace=useWorkspace(),review=useAiReviewStore();
 const NativeAiCandidateEditor=defineAsyncComponent(()=>import('./NativeAiCandidateEditor.vue'));
+const NativeReviewTransfer=defineAsyncComponent(()=>import('./NativeReviewTransfer.vue'));
+const NativeReviewAmbiguity=defineAsyncComponent(()=>import('./NativeReviewAmbiguity.vue'));
+const transferOpen=ref(false),transferBusy=ref(false);
+const transferRange=ref<TransferRange>();
+const transferKey=computed(()=>JSON.stringify([props.projectId,props.taskId,workspace.actorKey]));
+const ambiguityOpen=ref(false),ambiguityBusy=ref(false);
+const ambiguityRange=ref<ReturnType<typeof review.ambiguityRange>>();
+function openAmbiguity(){
+  if(editing.value)return;
+  ambiguityRange.value=review.ambiguityRange();
+  ambiguityOpen.value=!!ambiguityRange.value;
+}
+function openTransfer(kind:'single'|'selection'|'receipt'){
+  if(editing.value)return;
+  const selected=kind==='receipt'?undefined:review.transferRange(kind==='single');
+  if(kind!=='receipt'&&!selected)return;
+  transferRange.value=selected;transferOpen.value=true;
+}
 const editor=ref<{canLeave():boolean;suspend(value:boolean):void;hasUnresolved():boolean}>();
 const editing=ref<string>();
 const editScope=computed(()=>({projectId:props.projectId,taskId:props.taskId}));
@@ -25,7 +43,7 @@ const adoptAvailable=computed(()=>!!review.item&&canAdopt(review.item,checkedSco
 const canEdit=computed(()=>review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION'
   &&!review.formalLocked&&!review.decision&&!review.decisionBusy&&!review.itemBusy&&!review.itemError&&['success','empty'].includes(review.item?.status||'')
   &&review.item?.review_state==='active'&&!review.item.gt_committed);
-const canLeave=()=>editor.value?.canLeave()??true;
+const canLeave=()=>!transferBusy.value&&!ambiguityBusy.value&&(editor.value?.canLeave()??true);
 onBeforeRouteLeave(canLeave);
 onBeforeRouteUpdate((to,from)=>to.path===from.path||canLeave());
 function beforeUnload(event:BeforeUnloadEvent){
@@ -51,6 +69,8 @@ function open(){
   });
 }
 watch([()=>props.projectId,()=>props.taskId,()=>workspace.actorKey],()=>{
+  transferOpen.value=false;transferBusy.value=false;transferRange.value=undefined;
+  ambiguityOpen.value=false;ambiguityBusy.value=false;ambiguityRange.value=undefined;
   sessionRead?.abort();
   closeEditor();
   review.reset();
@@ -166,11 +186,20 @@ const diagnosticFacts=computed(()=>{
    <div><h2>{{ review.task?.name || '候选审核' }}</h2>
     <p>任务 {{ taskId }} <template v-if="taskStatus"> · {{ taskStatus }}</template></p>
    </div>
-   <div class="review-heading-actions"><router-link :to="{name:'ai-tasks',params:{projectId}}">返回任务列表</router-link><el-button tag="a" :href="legacy">返回原工作台</el-button></div>
+   <div class="review-heading-actions"><router-link :to="{name:'ai-tasks',params:{projectId}}">返回任务列表</router-link>
+    <el-button v-if="review.task" :disabled="!!editing" @click="openTransfer('receipt')">转池回执</el-button>
+    <el-button tag="a" :href="legacy">返回原工作台</el-button></div>
   </header>
   <div v-if="sessionError" role="alert" class="review-notice">
    {{ sessionError }} <el-button @click="verifySession()">重试会话核验</el-button>
   </div>
+  <NativeReviewTransfer v-if="workspace.actorKey" :key="transferKey" v-model:open="transferOpen"
+   :scope="editScope" :actor-key="workspace.actorKey" :range="transferRange"
+   :reviewable="review.task?.status.toUpperCase()==='AWAITING_CONFIRMATION' && !review.formalLocked && !review.decisionBusy && !review.decision"
+   @busy="transferBusy=$event" @settled="review.refreshAfterCandidateMutation()" />
+  <NativeReviewAmbiguity v-if="ambiguityOpen && ambiguityRange" :key="transferKey" v-model:open="ambiguityOpen"
+   :scope="editScope" :actor-key="workspace.actorKey" :range="ambiguityRange"
+   @busy="ambiguityBusy=$event" @settled="review.refreshAfterCandidateMutation()" />
   <NativeAiCandidateEditor v-if="editing" ref="editor" :key="editing" :image-id="editing"
    :scope="editScope" :actor-key="workspace.actorKey" @close="closeEditor" @saved="review.refreshAfterDraft" />
   <div v-else-if="review.taskError" role="alert" class="review-notice">
@@ -237,12 +266,19 @@ const diagnosticFacts=computed(()=>{
        <el-button :disabled="!review.canSelect||!review.page?.items.length" @click="review.selectPage()">选择本页</el-button>
        <el-button :disabled="!review.canSelect||!!review.frozenSelection||!review.page?.total"
         :loading="review.selectionBusy" @click="review.freezeSelection()">选择全部筛选结果</el-button>
+       <el-button :disabled="!review.canSelect||!!review.frozenSelection||!review.page?.total"
+        @click="review.freezeSelection('transfer')">选择筛选内可转池素材</el-button>
+       <el-button v-if="review.filter==='ambiguous'&&!review.frozenSelection" :disabled="!review.canSelect||!review.page?.total"
+        @click="review.freezeSelection('ambiguity')">选择待消歧素材</el-button>
+       <el-button v-if="review.frozenSelection?.purpose==='ambiguity'" :disabled="!review.ambiguityRange()"
+        @click="openAmbiguity()">IoU 批量消歧</el-button>
        <el-button :disabled="!review.canPrepareFormal" @click="review.prepareFormal()">
         正式入库已选 {{ review.selectedCount }} 张
        </el-button>
-       <el-button v-if="review.frozenSelection" :disabled="!review.canBulkFormal" @click="review.openBulkFormal()">
+       <el-button v-if="review.frozenSelection?.purpose==='gt'" :disabled="!review.canBulkFormal" @click="review.openBulkFormal()">
         后台正式入库 {{ review.selectedCount }} 张
        </el-button>
+       <el-button :disabled="!!editing || !review.transferRange()" @click="openTransfer('selection')">已选转负样本池</el-button>
        <el-button :disabled="review.formalLocked||(!review.frozenSelection&&!review.selectedCount&&!review.selectionBusy)"
         @click="review.clearSelection()">清空选择</el-button>
       </div>
@@ -388,6 +424,7 @@ const diagnosticFacts=computed(()=>{
       <h4>{{ candidateName(review.item) }} · {{ review.decision?.status==='pending' ? '审核结果待核验' : candidateStatus(review.item) }}</h4>
       <div class="review-actions" role="group" aria-label="单图审核">
        <el-button v-if="canEdit" @click="editing=review.item.image_id">编辑候选</el-button>
+       <el-button v-if="review.transferRange(true)" :disabled="!!editing" @click="openTransfer('single')">转负样本池</el-button>
        <el-button :disabled="!review.decisionEligible || !adoptAvailable || review.item.accepted===true"
         @click="decide(true)">采用候选</el-button>
        <el-button :disabled="!review.decisionEligible || review.item.accepted===false"

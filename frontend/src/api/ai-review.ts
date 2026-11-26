@@ -35,26 +35,60 @@ const enc=encodeURIComponent;
 const root=({projectId,taskId}:ReviewAddress)=>`/api/v60/projects/${enc(projectId)}/annotation-tasks/${enc(taskId)}`;
 export const reviewPageSize=24;
 
+export interface TransferRange {
+  image_ids:string[];selection_id?:string;excluded_image_ids:string[];review_revision:number;
+}
+export interface TransferPacket extends TransferRange {
+  request_id:string;category_ids:string[];algorithm_id:string;confirm_absent:boolean;
+}
+export interface TransferPreview {
+  total:number;eligible:number;with_boxes:number;zero:number;discarded_boxes:number;conflicts:number;
+  review_revision:number;ineligible_reasons?:Record<string,number>;
+}
+export interface TransferReceipt {
+  request_id:string;status:string;total:number;processed:number;next_cursor:string|null;
+  target:{algorithm_id:string;category_ids:string[];confirm_absent:boolean};
+  items:{image_id:string;status:string;error?:string;filename?:string}[];
+}
+export const transferReviewApi={
+  preview:(scope:ReviewAddress,packet:TransferPacket,signal:AbortSignal)=>
+    request<TransferPreview>(root(scope)+'/negative-transfer-preview',{method:'POST',body:JSON.stringify(packet),signal}),
+  submit:(scope:ReviewAddress,packet:TransferPacket,signal:AbortSignal)=>
+    request<{request_id:string;status:string;succeeded:number;failed:number;total:number}>(
+      root(scope)+'/negative-transfer',{method:'POST',body:JSON.stringify(packet),signal}),
+  receipt:(scope:ReviewAddress,id:string,offset:string,signal:AbortSignal)=>
+    request<TransferReceipt>(root(scope)+'/negative-transfer/'+enc(id)+'?'+new URLSearchParams({offset,limit:'100'}),{signal}),
+  undo:(scope:ReviewAddress,id:string,signal:AbortSignal)=>
+    request<{status:string}>(root(scope)+'/negative-transfer/'+enc(id)+'/undo',{method:'POST',signal}),
+};
+
 export async function getReviewTask(scope:ReviewAddress, signal:AbortSignal) {
   const result=await request<{project_id:string;task:ReviewTask}>(root(scope)+'?reader_view=true',{signal});
   if(result.project_id!==scope.projectId||result.task?.project_id!==scope.projectId||result.task.id!==scope.taskId)
     throw new Error('审核任务与当前项目或任务编号不一致');
   return result.task;
 }
-export function getReviewPage(scope:ReviewAddress, filter:ReviewFilter, cursor:string|null, signal:AbortSignal, selectionId?:string) {
-  const query=new URLSearchParams({filter,limit:String(reviewPageSize)});
+export function getReviewPage(scope:ReviewAddress, filter:ReviewFilter, cursor:string|null, signal:AbortSignal, selectionId?:string,limit=reviewPageSize) {
+  const query=new URLSearchParams({filter,limit:String(limit)});
   if(cursor!==null)query.set('cursor',cursor);
   if(selectionId)query.set('selection_id',selectionId);
   return request<ReviewPage>(root(scope)+'/candidates?'+query,{signal});
 }
 export interface ReviewSelection {
-  selection_id:string;filter:ReviewFilter;purpose:'gt';review_revision:number;
+  selection_id:string;filter:ReviewFilter;purpose:'gt'|'transfer'|'ambiguity';review_revision:number;
   filtered_total:number;count:number;excluded?:number;reasons:Record<string,number>;
 }
-export function freezeReviewSelection(scope:ReviewAddress, filter:ReviewFilter, revision:number, signal:AbortSignal) {
+export function freezeReviewSelection(scope:ReviewAddress, filter:ReviewFilter, revision:number, signal:AbortSignal, purpose:ReviewSelection['purpose']='gt') {
   return request<ReviewSelection>(root(scope)+'/review-selection',{
-    method:'POST',body:JSON.stringify({filter,purpose:'gt',review_revision:revision}),signal,
+    method:'POST',body:JSON.stringify({filter,purpose,review_revision:revision}),signal,
   });
+}
+export interface AmbiguityDraft {
+  image_id:string;request_id:string;revision:number;source_content_sha256:string;auto_resolution:boolean;boxes:MaterialBox[];
+}
+export function saveAmbiguityDrafts(scope:ReviewAddress,items:AmbiguityDraft[],signal:AbortSignal){
+  return request<{items:{image_id:string;ok:boolean;revision?:number;error?:string|{message?:string}}[];total:number}>(
+    root(scope)+'/candidates/drafts-batch',{method:'POST',body:JSON.stringify({items}),signal});
 }
 export async function getReviewCandidateDetail(scope:ReviewAddress, id:string, signal:AbortSignal) {
   const result=await request<{item:ReviewCandidate;review_revision:number}>(root(scope)+'/candidates/'+enc(id),{signal});

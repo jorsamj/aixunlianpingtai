@@ -13,8 +13,8 @@ export interface AiCreateBody {
 export interface SelectionInput {image_ids:string[];previous_ref?:string;excluded_image_ids:string[]}
 interface Summary {count:number;state_counts:Record<string,number>;repository_revision:number}
 export interface CreatePreview {
-  image:{id:string;filename:string;width:number;height:number};boxes:MaterialBox[];
-  preview_only:boolean;latency_ms:number;
+  image:{id:string;filename:string;width:number;height:number;url?:string};boxes:MaterialBox[];
+  preview_only:boolean;latency_ms:number;baseline?:{boxes?:MaterialBox[]};model?:string;diagnostics?:unknown;
 }
 const root=(project:string)=>`/api/v60/projects/${encodeURIComponent(project)}`;
 function post<T>(url:string,body:unknown,signal?:AbortSignal){

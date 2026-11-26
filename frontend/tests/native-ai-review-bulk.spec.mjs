@@ -34,7 +34,8 @@ async function fixture(page){
     committed:false,mode:'success',executionPolls:0,recoverStatus:0,executeDelay:0,
     holdSeal:false,sealStarted:false,sealGate:null,
     loseExecuteResponse:false,hideExecution:false,conflictExisting:false,
-    sealedRequest:null,intentStatus:0,executionStatus:0,sealFailures:0,replayStatus:0};
+    sealedRequest:null,intentStatus:0,executionStatus:0,sealFailures:0,replayStatus:0,
+    transferPreview:null,transferWrites:[],transferUndo:0,transferReads:0,transferStatus:''};
   await page.route('**/app/**',r=>{
     const path=new URL(r.request().url()).pathname.slice('/app/'.length)||'index.html';
     return r.fulfill({path:resolve('../static/vue-app',path),
@@ -46,6 +47,9 @@ async function fixture(page){
   await page.route('**/api/v61/projects/*/materials/*/content**',r=>r.fulfill({contentType:'image/svg+xml',
     body:'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="#ddd"/></svg>'}));
   await page.route('**/api/v12/projects/*/labels',r=>r.fulfill({json:{items:[{code:'person',class_id:0}]}}));
+  await page.route('**/api/v12/projects/*/algorithms?**',r=>r.fulfill({json:{
+    ok:true,project_id:projectId,items:[],page:1,page_size:20,total:0}}));
+  await page.route('**/negative-pool/categories',r=>r.fulfill({json:{items:[{id:'difficult',name:'困难负样本',enabled:true}]}}));
   await page.route('**/api/v60/projects/*/annotation-tasks/**',async r=>{
     const request=r.request(),url=new URL(request.url()),method=request.method();
     const tail=url.pathname.split('/').slice(6);
@@ -54,13 +58,36 @@ async function fixture(page){
         review_scope_policy:'task_uniform_legacy'}}});
     if(method==='GET'&&tail.at(-1)==='candidates'){
       const start=Number(url.searchParams.get('cursor')||0),member=url.searchParams.has('selection_id');
-      const all=rows(state.committed).map(row=>member?{...row,selection_member:true}:row);
+      const all=rows(state.committed).map(row=>({...row,...(member?{selection_member:true}:{}),
+        ...(state.transferStatus==='completed'&&row.image_id!=='image-24'?{review_state:'transferred'}:{})}));
       return r.fulfill({json:{items:all.slice(start,start+24),total:all.length,
         next_cursor:start+24<all.length?String(start+24):null,review_revision:1,summary:{}}});
     }
     if(method==='POST'&&tail.at(-1)==='review-selection')return r.fulfill({json:{selection_id:selectionId,
-      filter:'all',purpose:'gt',review_revision:1,filtered_total:30,count:available(state),
+      filter:'all',purpose:request.postDataJSON().purpose,review_revision:1,filtered_total:30,count:available(state),
       excluded:30-available(state),reasons:{committed:30-available(state)}}});
+    if(method==='POST'&&tail.at(-1)==='negative-transfer-preview'){
+      state.transferPreview=request.postDataJSON();
+      return r.fulfill({json:{total:29,eligible:29,conflicts:0,with_boxes:29,zero:0,discarded_boxes:29,
+        ineligible_reasons:{},review_revision:1}});
+    }
+    if(method==='POST'&&tail.at(-1)==='negative-transfer'){
+      state.transferWrites.push(request.postDataJSON());
+      state.transferStatus='completed';
+      return r.abort('failed');
+    }
+    if(tail[1]==='negative-transfer'&&tail[2]===state.transferPreview?.request_id){
+      if(method==='POST'&&tail[3]==='undo'){
+        state.transferUndo++;state.transferStatus='undone';
+        return r.fulfill({json:{status:'undone'}});
+      }
+      if(method==='GET'){
+        state.transferReads++;
+        return r.fulfill({json:{request_id:tail[2],total:29,processed:29,status:state.transferStatus,
+          target:{algorithm_id:'',category_ids:['difficult'],confirm_absent:false},
+          items:[{image_id:'image-0',filename:'候选 0.jpg',status:state.transferStatus==='undone'?'undone':'transferred'}],next_cursor:null}});
+      }
+    }
     if(tail.includes('bulk-formal')){
       const bulk=tail.slice(tail.indexOf('bulk-formal')+1);
       if(method==='POST'&&bulk.length===1){
@@ -127,6 +154,39 @@ async function seal(page,label='后台正式入库 30 张'){
   await page.getByRole('button',{name:label}).click();
   await page.getByRole('dialog').getByRole('button',{name:'预检并封存'}).click();
 }
+
+test('转池保留冻结排除及原预检身份，丢失响应后只读核验并按原回执撤销',async({page})=>{
+  const state=await fixture(page);
+  await page.goto(route);
+  await page.getByRole('button',{name:'选择筛选内可转池素材'}).click();
+  await expect(page.getByText(/可操作 30 张/)).toBeVisible();
+  await page.getByRole('button',{name:'下一页'}).click();
+  await page.getByRole('checkbox',{name:'选择 候选 24.jpg',exact:true}).uncheck();
+  await page.getByRole('button',{name:'已选转负样本池'}).click();
+  const dialog=page.getByRole('dialog',{name:'转入负样本池'});
+  await dialog.getByText('选择分类',{exact:true}).click();
+  await page.getByRole('option',{name:'困难负样本'}).click();
+  await dialog.getByRole('button',{name:'预检转池'}).click();
+  await expect(dialog).toContainText('可转池 29 张');
+  expect(state.transferPreview).toMatchObject({selection_id:selectionId,excluded_image_ids:['image-24'],image_ids:[],review_revision:1});
+  await dialog.getByText('确认转池范围及候选框弃用',{exact:true}).click();
+  await dialog.getByRole('button',{name:'确认转池',exact:true}).click();
+  await expect(dialog).toContainText('执行结果待核验');
+  await page.reload();
+  await page.getByRole('button',{name:'转池回执'}).click();
+  await expect(dialog).toContainText('转池完成');
+  expect(state.transferReads).toBeGreaterThan(0);
+  expect(state.transferWrites).toEqual([state.transferPreview]);
+  await dialog.getByRole('button',{name:'关闭此对话框'}).click();
+  await expect(page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true})).toBeDisabled();
+  await page.getByRole('button',{name:'转池回执'}).click();
+  await dialog.getByText('确认按原回执核验撤销资格',{exact:true}).click();
+  await dialog.getByRole('button',{name:'撤销转池'}).click();
+  await expect(dialog).toContainText('已撤销');
+  expect(state.transferUndo).toBe(1);
+  await dialog.getByRole('button',{name:'关闭并清除本地记录'}).click();
+  await expect(page.getByRole('checkbox',{name:'选择 候选 0.jpg',exact:true})).toBeEnabled();
+});
 
 test('冻结→排除→封存→确认→进度→成功，随后可发起第二笔新操作',async({page})=>{
   const state=await fixture(page);

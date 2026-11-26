@@ -14,6 +14,7 @@ import type {MaterialFilters} from '../types/materials';
 import type {AiTask} from '../types/ai-tasks';
 import {legacyUrl} from './navigation';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
+import {request} from './http';
 
 const route=useRoute(),router=useRouter(),projectId=String(route.params.projectId);
 const controller=new AbortController(),reads=useReadScope(controller);
@@ -44,6 +45,28 @@ const handoffMissing=ref(fromSelected&&!initialIds.length);
 const materials=useAiCreateMaterials(projectId,controller,materialFilters,initialIds);
 const {page,busy:scopeBusy,count,canFreeze,frozen,excluded,error:scopeError}=materials;
 const referenceIds=shallowRef(new Set<string>()),previewId=ref(''),preview=shallowRef<CreatePreview>();
+const trialOpen=ref(false),trialRoot=ref<HTMLElement>(),trialError=ref('');
+watch([trialRoot,preview],async ([root,result],_,onCleanup)=>{
+  if(!root||!result)return;
+  const trial=new AbortController();
+  let dispose:(()=>void)|undefined;
+  onCleanup(()=>{trial.abort();dispose?.()});
+  trialError.value='';
+  try{
+    const {mountTrial}=await import('../../../static/modules/annotation-trial.js');
+    if(trial.signal.aborted)return;
+    const project=encodeURIComponent(projectId);
+    const image={...result.image,url:`/api/v61/projects/${project}/materials/${encodeURIComponent(result.image.id)}/content`};
+    dispose=await mountTrial(root,{...result,image},{
+      labels:labels.value.filter(label=>configured.labels.includes(label.code))
+        .map(label=>({code:label.code,display_name_zh:label.display_name})),
+      compareUrl:`/api/v60/projects/${project}/annotation-preview/compare`,
+      active:()=>trialOpen.value&&preview.value===result&&workspace.actorKey===actorKey,
+      signal:trial.signal,request,
+    });
+    if(trial.signal.aborted)dispose();
+  }catch(cause){if(!trial.signal.aborted)trialError.value=browseError(cause)}
+},{flush:'post'});
 const configLocked=computed(()=>submitting.value||recovering.value||!!pending.value||!!journalProblem.value
   ||!actorKey||workspace.actorKey!==actorKey);
 const confirmed=shallowRef<AiCreateBody>();
@@ -233,6 +256,7 @@ function runPreview(){
 const previewImage=computed(()=>preview.value?{...preview.value.image,
   content_url:`/api/v61/projects/${encodeURIComponent(projectId)}/materials/${encodeURIComponent(preview.value.image.id)}/content`}:undefined);
 watch([()=>JSON.stringify(configured),frozen,count,excluded,batch,referenceIds,previewId],()=>{
+  trialOpen.value=false;
   confirmed.value=undefined;scopeCount.value=undefined;stateCounts.value=undefined;
   reads.cancel('summary');reads.cancel('preview');reads.cancel('prompt');preview.value=undefined;promptText.value='';
 });
@@ -336,6 +360,11 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
       <section v-if="preview&&previewImage" aria-label="单图试跑结果">
         <p>{{ preview.boxes.length }} 个候选框 · {{ preview.latency_ms }} ms</p>
         <MaterialPreview :image="previewImage" :boxes="preview.boxes" :project-id="projectId" full/>
+        <el-button @click="trialOpen=true">打开高级试跑对比</el-button>
+        <el-dialog v-model="trialOpen" title="高级试跑对比" width="min(1120px, 96vw)" destroy-on-close>
+          <el-alert v-if="trialError" type="error" :closable="false" :title="trialError" />
+          <div v-if="trialOpen" ref="trialRoot" class="advanced-trial" />
+        </el-dialog>
       </section>
     </template>
     <template #confirmation>
@@ -366,4 +395,6 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
 .material-choice article{min-width:0;border:1px solid var(--el-border-color);border-radius:6px;padding:8px}
 .material-choice :deep(.el-checkbox){max-width:100%}.material-choice :deep(.el-checkbox__label){overflow:hidden;text-overflow:ellipsis}
 .rendered-prompt{max-height:240px;overflow:auto;white-space:pre-wrap}.advanced-prompt{margin-top:16px}.advanced-prompt label{margin-top:10px}
+.advanced-trial{max-height:70vh;overflow:auto}.advanced-trial :deep(.row){display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.advanced-trial :deep(.btn){background:#fff;border:1px solid #d4d4d4;border-radius:5px;color:#252525;padding:5px 9px;cursor:pointer}
 </style>

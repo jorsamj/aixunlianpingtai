@@ -4,6 +4,25 @@ declare module '*static/modules/api.js' {
 }
 declare module '*static/auth-session.js' {}
 
+declare module '*static/modules/annotation-trial.js' {
+  export function mountTrial(root:HTMLElement,response:unknown,options:{
+    labels:{code:string;display_name_zh?:string}[];compareUrl:string;
+    active:()=>boolean;signal:AbortSignal;request:(url:string,options?:RequestInit)=>Promise<unknown>;
+  }):Promise<()=>void>;
+}
+declare module '*static/modules/annotation-ambiguity.js' {
+  import type {ReviewCandidate} from '../api/ai-review';
+  import type {MaterialBox} from '../types/materials';
+  export function aiPlanKeepAmbiguousLabel60(item:ReviewCandidate,options:{mode:'auto'|'manual';label:string;threshold:number}):
+    {reason:string}|{boxes:MaterialBox[];removed:number;fallbackGroups:number;revision:number};
+}
+declare module '*static/modules/cleaning.js' {
+  export function cleanTaskView(task:object):{active:boolean;canRetry:boolean;statusText:string;runtimeText:string;percent:number};
+  export function cleanScopeRequest(scope:string,ids:string[],options:{
+    labels:string[];annotationState:string;filters:{query?:string};selectionMode:'filtered'|'explicit';
+  }):{selection_mode:string;clean_scope:string;image_ids:string[];selection_spec:object};
+}
+
 declare module '*static/modules/annotation-task-view.js' {
   export interface AnnotationTaskViewModel {
     status: string;

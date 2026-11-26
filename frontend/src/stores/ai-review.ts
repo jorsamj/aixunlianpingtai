@@ -50,7 +50,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     ?frozenSelection.value.count-excludedIds.value.size:explicitSelection.value.size);
   const canSelect=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'&&!!page.value
     &&!pageBusy.value&&!pageError.value&&!selectionBusy.value&&!page.value.task_error&&!formalLocked.value);
-  const canBulkFormal=computed(()=>!!frozenSelection.value&&canSelect.value&&selectedCount.value>0&&!bulkBusy.value);
+  const canBulkFormal=computed(()=>frozenSelection.value?.purpose==='gt'&&canSelect.value&&selectedCount.value>0&&!bulkBusy.value);
   let decisionRequest:AbortController|undefined;
   const decisionEligible=computed(()=>task.value?.status.toUpperCase()==='AWAITING_CONFIRMATION'
     &&revision.value!==undefined&&!itemBusy.value&&!itemError.value&&!draftOutstanding.value
@@ -176,11 +176,11 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   }
   function selectionReason(row:ReviewCandidate){
     const snapshot=frozenSelection.value;
-    if(snapshot&&membershipId.value===snapshot.selection_id&&row.selection_member===true)return '';
     if(row.gt_committed)return '已正式入库';
     if(row.review_state==='transferred')return '已转池';
     if(row.review_state==='pending_transfer')return '转池待恢复';
     if(row.review_state!=='active')return '当前候选不可操作';
+    if(snapshot&&membershipId.value===snapshot.selection_id&&row.selection_member===true)return '';
     if(!['success','empty'].includes(row.status))return '候选生成失败或未生成';
     if(row.accepted===false)return '已拒绝';
     if(row.manual_review_required&&(!row.draft_revision||row.draft?.auto_resolution))return '待人工消歧';
@@ -189,6 +189,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     return '';
   }
   function isSelected(row:ReviewCandidate){
+    if(selectionReason(row))return false;
     return frozenSelection.value
       ?membershipId.value===frozenSelection.value.selection_id&&row.selection_member===true&&!excludedIds.value.has(row.image_id)
       :explicitSelection.value.has(row.image_id);
@@ -204,7 +205,34 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
   function selectPage(){
     for(const row of page.value?.items??[])selectCandidate(row,true);
   }
-  async function freezeSelection(){
+  function transferRange(single=false){
+    const review_revision=page.value?.review_revision;
+    if(!canSelect.value||decision.value||decisionBusy.value||draftOutstanding.value||!validRevision(review_revision))return;
+    if(single){
+      const candidate=item.value;
+      if(itemBusy.value||itemError.value||!candidate||candidate.gt_committed||candidate.review_state!=='active'
+        ||!['success','empty'].includes(candidate.status)||revision.value!==review_revision)return;
+      return {image_ids:[candidate.image_id],excluded_image_ids:[],review_revision};
+    }
+    if(!selectedCount.value)return;
+    const snapshot=frozenSelection.value;
+    if(snapshot)return snapshot.purpose==='ambiguity'?undefined
+      :{image_ids:[],selection_id:snapshot.selection_id,excluded_image_ids:[...excludedIds.value],review_revision};
+    if(explicitSelection.value.size>200)return;
+    return {image_ids:[...explicitSelection.value],excluded_image_ids:[],review_revision};
+  }
+  function ambiguityRange(){
+    const snapshot=frozenSelection.value;
+    if(!canSelect.value||!snapshot||snapshot.purpose!=='ambiguity'||filter.value!=='ambiguous'
+      ||decision.value||decisionBusy.value||draftOutstanding.value||selectedCount.value<1)return;
+    return {id:snapshot.selection_id,revision:snapshot.review_revision,excluded:[...excludedIds.value],count:selectedCount.value};
+  }
+  async function refreshAfterCandidateMutation(){
+    invalidateSelection();
+    closeImage();
+    await readPage(filter.value,[null]);
+  }
+  async function freezeSelection(purpose:ReviewSelection['purpose']='gt'){
     const currentPage=page.value,address=scope;
     if(!address||!currentPage||!canSelect.value||!validRevision(currentPage.review_revision))return;
     const requestedFilter=filter.value,expected=currentPage.review_revision;
@@ -212,9 +240,9 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     const current=()=>generation===epoch&&!controller.signal.aborted;
     selectionBusy.value=true;selectionNotice.value='';
     try{
-      const snapshot=await freezeReviewSelection(address,requestedFilter,expected,controller.signal);
+      const snapshot=await freezeReviewSelection(address,requestedFilter,expected,controller.signal,purpose);
       if(!current())return;
-      if(snapshot.filter!==requestedFilter||snapshot.purpose!=='gt'||snapshot.review_revision!==expected
+      if(snapshot.filter!==requestedFilter||snapshot.purpose!==purpose||snapshot.review_revision!==expected
         ||page.value?.review_revision!==expected){
         invalidateSelection();
         return;
@@ -950,7 +978,7 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     inspect,closeImage,readDiagnostics,refreshAfterDraft,revision,decision,decisionBusy,decisionNotice,
     decisionEligible,decisionStorageError,draftOutstanding,decisionOutsidePage,checkDraftOutstanding,
     decide,recoverDecision,retryDecisionRefresh,selectedCount,canSelect,frozenSelection,
-    selectionBusy,selectionNotice,selectionReason,isSelected,selectCandidate,selectPage,freezeSelection,clearSelection,
+    selectionBusy,selectionNotice,selectionReason,isSelected,selectCandidate,selectPage,freezeSelection,clearSelection,transferRange,ambiguityRange,refreshAfterCandidateMutation,
     formalPlan,formalOperation,formalBusy,formalLocked,formalNotice,formalUnavailable,canPrepareFormal,
     prepareFormal,cancelFormal,confirmFormal,recoverFormal,
     bulkIntent,bulkExecution,bulkBusy,bulkNotice,bulkError,bulkDialog,bulkStatus,bulkTerminal,bulkRunning,

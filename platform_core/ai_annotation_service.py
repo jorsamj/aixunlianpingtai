@@ -724,6 +724,7 @@ class AiAnnotationService:
     def _annotation_transfer_eligible_selection(self, project_id, store, ids):
         eligible = []
         metrics = {'with_boxes': 0, 'zero': 0, 'discarded_boxes': 0}
+        ineligible_reasons = {}
         materials = self.dependencies.material_store(project_id)
         for offset in range(0, len(ids), 200):
             part = ids[offset:offset + 200]
@@ -733,16 +734,17 @@ class AiAnnotationService:
             rows = {str(row['id']): row for row in materials.get_many(part)}
             for image_id in part:
                 item = candidates.get(image_id)
-                if not item:
-                    continue
-                boxes = item.get('boxes') or []
+                boxes = (item or {}).get('boxes') or []
                 metrics['with_boxes'] += int(bool(boxes))
-                metrics['zero'] += int(not boxes and item.get('status') in {'success', 'empty'})
+                metrics['zero'] += int(not boxes and (item or {}).get('status') in {'success', 'empty'})
                 metrics['discarded_boxes'] += len(boxes)
-                if image_id not in durable and not self._annotation_transfer_ineligibility(
-                        item, rows.get(image_id), formal.get(image_id) or {}):
+                reason = ('已有正式GT，必须在正式标注流程显式处理冲突' if image_id in durable
+                          else self._annotation_transfer_ineligibility(item, rows.get(image_id), formal.get(image_id) or {}))
+                if reason:
+                    ineligible_reasons[reason] = ineligible_reasons.get(reason, 0) + 1
+                else:
                     eligible.append(image_id)
-        return eligible, {**metrics, 'conflicts': len(ids) - len(eligible)}
+        return eligible, {**metrics, 'conflicts': len(ids) - len(eligible), 'ineligible_reasons': ineligible_reasons}
 
     def _annotation_transfer_identity(self, payload):
         body = payload.model_dump(mode='json', exclude={'review_revision'})
