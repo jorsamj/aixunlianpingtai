@@ -1,6 +1,16 @@
 # AI 开发接续入口
 
-## 分类来源、血缘与有界统计（2026-11-26，当前）
+## 训练报告工作台与状态计数口径（2026-11-26，当前）
+
+- 起始本地及远端 `bacf4f10e384baee341f33f77436f70670d54e24`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `add2bf9e`、`60f31ea8`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
+- 负样本分类：父级共享来源保留；新增写入排队刷新（读取进行中不再丢弃刷新）、创建/编辑核验真实 ID 与请求字段、未知结果保留待核记录并回读不重试、读取失败与上次成功列表分别提示；项目级成员分类仍走公共池 v2 合同，算法级不新增分类关系。
+- 训练报告：`NativeTrainingReport` 扩为五个分区——训练概况（原概况内容保留）、训练过程（原曲线/分页）、独立评测（原 NativeEvaluation）、**样本诊断**（已记录失败/警告/质量门禁 + 指向真实 FP/FN 与困难样本入口，明确“无 Test 评测则无 Test 侧证据”、正式 Test 不被困难样本回流）、**训练溯源**（打开时一次有界版本详情读取，父/基础版本按 ID 直达其报告，冻结数据/评测基准/转换/交付深链；未记录时显示未记录，不按名称推断）。Tab 仍走 `?tab=`，返回与深链合同未变。
+- 状态计数口径：`tasks/summary` 现分列训练任务与准备任务（`counts`/`total` 与 `prepare_counts`/`prepare_total`），总览与质量中心文案改为“近 7 天训练任务 N 条（另有准备任务 M 条，不计入训练次数）”并说明只统计仍在任务表中、created_at 在窗口内的记录，已删除任务不计入；不冒充历史趋势。
+- 未完成：质量中心异常样本联动与检查结果详情、Smart Audit 专项；P2 母模型安装/取消/发现登记、训练批量暂停/恢复/停止、算法卡片可信最佳评测摘要。
+- 验证：`vue-tsc --noEmit` 0 错误；`NativeTrainingReport.vue` `@vue/compiler-sfc` 模板编译通过；`tests/api/test_training_job_visibility.py` 12 项通过（含 summary 路由）。未运行全仓 pytest/Playwright，未重复构建。
+- 视觉 `VISUAL_PENDING`；四份保护文档、AGENTS.md、VERSION、vendor 与用户文件未改；无生产环境操作。下一轮先按最终 SHA 核对 CI，再做质量中心联动与 P2 批量/安装能力。
+
+## 分类来源、血缘与有界统计（2026-11-26，上一批）
 
 - 起始本地及远端 `7e702bc526d4ba8f126fac71d5d8381e53ac3637`。目录 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`，VERSION 42.24.592。业务候选 `4195fe7b`、`4c2c2bf1`、`4270683e`，含本记录的最终 HEAD 为其后的文档提交。状态 `CODE_COMPLETE（部分单元）/ CI_PENDING / VISUAL_PENDING / UAT_PENDING / SCALE_NOT_VERIFIED / PRODUCTION_NOT_VERIFIED`。
 - 负样本分类：`NegativePoolCategories` 原来写入时复用 loading 标志，自身 reload 被短路导致不刷新；现拆分为 saving/loading，写成功后实际刷新。分类列表上移到工作台父级（`AlgorithmNegativePool.vue`）单一来源，管理面板与成员筛选共用，改名/启停后筛选器同步；独立 legacy 挂载仍保留有界回退。写入区分明确拒绝（400/404/409/422）与未知：未知时回读分类状态、不自动重试；名称唯一性仍由服务端判定。分类删除保留原引用保护未暴露。
