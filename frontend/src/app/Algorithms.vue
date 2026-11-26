@@ -373,7 +373,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
    <dl class="algorithm-facts">
     <div><dt>算法类型</dt><dd>{{ algorithm.algorithm_type||'未设置' }}</dd></div>
     <div><dt>行业</dt><dd>{{ algorithm.industry||'未设置' }}</dd></div>
-    <div class="current-version"><dt>当前版本</dt><dd>{{ algorithm.current_version?.version_name||algorithm.current_version_id||'未设置' }}</dd></div>
+    <div class="current-version"><dt>当前版本</dt><dd>{{ algorithm.current_version?.version_name||algorithm.current_version_id||'未设置' }}</dd></div><div><dt>最新创建版本</dt><dd>{{ algorithm.latest_created_version?.version_name||algorithm.latest_created_version?.id||'未提供' }}</dd></div>
     <div><dt>训练状态</dt><dd>{{ algorithmState(algorithm) }}</dd></div>
     <div><dt>更新时间</dt><dd>{{ dateLabel(algorithm.updated_at) }}</dd></div>
     <div v-if="external(algorithm)"><dt>产品 / 品目 ID</dt><dd>{{ algorithm.external_product_id||'未提供' }} / {{ algorithm.external_category_id||'未提供' }}</dd></div><div v-if="external(algorithm)"><dt>外部状态</dt><dd>{{ algorithm.external_status||(algorithm.external_active===true?'已启用':algorithm.external_active===false?'已停用':'未提供') }}</dd></div>

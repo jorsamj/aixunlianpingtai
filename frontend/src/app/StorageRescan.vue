@@ -218,7 +218,7 @@ onUnmounted(() => {
         <div><el-checkbox v-model="policy.changed" :disabled="busy">更新图片内容变化</el-checkbox></div>
         <el-button type="primary" :disabled="busy || reading || !!readError || writeUnknown" @click="changeTask('confirm')">确认应用</el-button>
       </template>
-      <el-alert v-else-if="waiting" title="使用原存储配置完成标注质量报告、类别映射及同步确认。" :closable="false"/>
+      <p v-if="completion" class="rescan-link"><router-link :to="{name:'materials',params:{projectId}}">返回素材库查看归集结果</router-link></p>`n      <el-alert v-else-if="waiting" title="使用原存储配置完成标注质量报告、类别映射及同步确认。" :closable="false"/>
     </section>
     <p v-else-if="!taskId">尚未创建扫描任务。</p>
     <template #footer>

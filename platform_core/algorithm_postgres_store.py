@@ -1037,6 +1037,10 @@ class PostgresAlgorithmRepository:
             "(SELECT count(*) FROM w5_algorithm.algorithm_version n "
             "WHERE n.project_id=a.project_id AND n.algorithm_id=a.id) AS version_count,"
             "v.id AS current_record_id,v.version_name AS current_version_name,"
+            "(SELECT lv.id FROM w5_algorithm.algorithm_version lv WHERE lv.project_id=a.project_id AND lv.algorithm_id=a.id "
+            "ORDER BY lv.created_at DESC, lv.sort_index, lv.id LIMIT 1) AS latest_created_version_id,"
+            "(SELECT lv.version_name FROM w5_algorithm.algorithm_version lv WHERE lv.project_id=a.project_id AND lv.algorithm_id=a.id "
+            "ORDER BY lv.created_at DESC, lv.sort_index, lv.id LIMIT 1) AS latest_created_version_name,"
             "m.map50_percent "
             "FROM w5_algorithm.algorithm a "
             "LEFT JOIN w5_algorithm.algorithm_version v ON v.project_id=a.project_id "
@@ -1150,6 +1154,12 @@ class PostgresAlgorithmRepository:
                 if item.pop("current_record_id") is not None else None
             )
             item.pop("current_version_name", None)
+            latest_id = item.pop("latest_created_version_id", None)
+            latest_name = item.pop("latest_created_version_name", None)
+            item["latest_created_version"] = (
+                {"id": str(latest_id), "version_name": str(latest_name or "")}
+                if latest_id else None
+            )
             item["versions_deferred"] = True
             items.append(item)
         return {

@@ -411,6 +411,8 @@ class AlgorithmSqlStore:
             stats.active AS training_status,COALESCE(stats.filter_active,0) AS filter_active,
             (SELECT COUNT(*) FROM algorithm_versions n WHERE n.algorithm_id=a.id) AS version_count,
             v.id AS current_record_id,v.version_name AS current_version_name,
+            (SELECT lv.id FROM algorithm_versions lv WHERE lv.algorithm_id=a.id ORDER BY lv.created_at DESC,lv.sort_index,lv.id LIMIT 1) AS latest_created_version_id,
+            (SELECT lv.version_name FROM algorithm_versions lv WHERE lv.algorithm_id=a.id ORDER BY lv.created_at DESC,lv.sort_index,lv.id LIMIT 1) AS latest_created_version_name,
             library_map50(v.payload_json) AS map50_percent
           FROM algorithms a LEFT JOIN algorithm_versions v ON v.algorithm_id=a.id AND v.id=a.current_version_id
           LEFT JOIN stats ON stats.algorithm_id=a.id WHERE a.project_id=?) """
@@ -447,6 +449,8 @@ class AlgorithmSqlStore:
             item=dict(row);item.pop('sort_index');item.pop('filter_active');item['trainable']=bool(item['trainable']);item['external_active']=None if item['external_active'] is None else bool(item['external_active'])
             item['trainability_message']='' if item['trainable'] else ('外部主数据下架、视觉分析缺失或同步版本过期，请到平台对接核对' if str(item['source_type']).upper()=='EXTERNAL' else '当前算法类型暂不支持直接训练')
             item['current_version']={'id':item['current_version_id'],'version_name':item.pop('current_version_name')} if item.pop('current_record_id') is not None else None
+            latest_id=item.pop('latest_created_version_id',None);latest_name=item.pop('latest_created_version_name',None)
+            item['latest_created_version']={'id':str(latest_id),'version_name':str(latest_name or '')} if latest_id else None
             item.pop('current_version_name',None);item['versions_deferred']=True;items.append(item)
         return {'project_id':self.project_id,'items':items,'total':total,'page':page,'page_size':page_size,
                 'algorithm_revision':revision,'filter_options':options,
