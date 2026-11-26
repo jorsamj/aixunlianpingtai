@@ -27,6 +27,7 @@ const url='/api/v61/projects/'+encodeURIComponent(props.scope.projectId)+'/mater
 let apiRead:AbortController|undefined, mountController:AbortController|undefined,dead=false;
 type Kernel=Awaited<ReturnType<typeof createAnnotoriousEditor>>;
 let kernel:Kernel|undefined;
+let geometryError=false;
 
 function message(cause:unknown){return cause instanceof Error?cause.message:'读取或保存失败'}
 function sync(){
@@ -35,6 +36,7 @@ function sync(){
 function loadBoxes(result:ReviewCandidate,working?:AiEditorBox[]){
   item.value=result;
   const normalized=(result.boxes||[]).map(box=>({...box,label:box.label||''}));
+  geometryError=false;
   baseline.value=withLegacyBoxIdentities(normalized,{imageId:props.imageId});
   boxes.value=working??baseline.value;
   activeId.value=null;history.length=redo.length=0;
@@ -136,6 +138,7 @@ async function save(){
   if(!candidate||dead||loading.value||saving.value||suspended.value||refreshRequired.value||conflict.value)return;
   kernel?.flush();
   const pending=outstanding.value;
+  if(!pending&&geometryError){error.value='框坐标转换有误，请重新载入草稿核对。';return}
   if(!pending&&(!dirty.value||!Number.isInteger(candidate.draft_revision)))return;
   let draft:CandidateDraft;
   try{
@@ -206,7 +209,7 @@ const context:AiEditorContext={
       getLabels:()=>labels.value,getLabel:()=>labels.value.find(label=>label.code===labelCode.value)||null,
       isActive:()=>!dead&&!suspended.value&&!conflict.value,
       onCommit:update,onSelect:id=>{activeId.value=id},onSave:()=>void save(),onUndo:undo,onRedo:redoEdit,
-      onChooseLabel:label=>chooseLabel(label.code),onError:cause=>{error.value=message(cause)},
+      onChooseLabel:label=>chooseLabel(label.code),onError:cause=>{geometryError=true;error.value=message(cause)},
       onViewportChange:({scale})=>{view.value.scale=scale},onModeChange:mode=>{view.value.mode=mode},
       onVisibilityChange:visible=>{view.value.visible=visible},
     });
