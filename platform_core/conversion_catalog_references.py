@@ -10,7 +10,7 @@ from .compute_platform_catalog import conversion_templates, local_chip_key
 from .algorithm_history_evidence import (
     iter_history_payloads,
     open_history_repository,
-    revision_token,
+    require_revision_token,
 )
 from .algorithm_repository import AlgorithmRepositoryError
 from .errors import PlatformError
@@ -180,10 +180,12 @@ def catalog_references(data_dir, catalog, entity, record):
                 # A paged scan is only evidence if the authoritative history did
                 # not change while it ran: otherwise a deleted reference could
                 # disappear between pages and be reported as "no reference".
-                before=revision_token(repository)
+                # A missing revision cannot prove stability, so it is treated as
+                # incomplete evidence instead of a None==None "match".
+                before=require_revision_token(repository)
                 for _kind,record_id,payload in iter_history_payloads(repository):
                     if matches(payload): add("ALGORITHM_VERSION",record_id)
-                if revision_token(repository)!=before:
+                if require_revision_token(repository)!=before:
                     raise AlgorithmRepositoryError(
                         "ALGORITHM_HISTORY_CHANGED_DURING_SCAN",
                         "algorithm history changed while the reference scan ran",

@@ -114,7 +114,12 @@ def admission_transition_path(record_path: str | Path) -> Path:
 
 
 def load_storage_source_admission_record(path: str | Path) -> dict[str, Any] | None:
-    """Read the local admission record; a malformed record is refused."""
+    """Read the local admission record; a malformed record is refused.
+
+    ``authoritative_provider`` must be one of the supported providers.  A missing
+    or unknown value is *not* "assume SQLite": that would silently let a stale or
+    hand-written record re-open writes on the wrong store.
+    """
     target = Path(path)
     if not target.is_file():
         return None
@@ -137,6 +142,17 @@ def load_storage_source_admission_record(path: str | Path) -> dict[str, Any] | N
             "cutover admission record contract does not match",
             detail=f"contract={value.get('contract_version')!r}",
         )
+    provider = str(value.get("authoritative_provider") or "").strip().lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record names an unknown provider",
+            detail=(
+                f"authoritative_provider={value.get('authoritative_provider')!r} "
+                f"supported={list(SUPPORTED_PROVIDERS)}"
+            ),
+        )
+    value["authoritative_provider"] = provider
     return value
 
 
@@ -181,7 +197,11 @@ def _refuse_stale_sqlite(
         return
     if value.get("revoked_at"):
         return
-    if str(value.get("authoritative_provider") or "") != PROVIDER_POSTGRESQL:
+    provider = str(value.get("authoritative_provider") or "")
+    # Strictly validated by the loader: only an explicit, supported provider can
+    # reach this point. Everything except PostgreSQL keeps SQLite authoritative;
+    # a missing/unknown provider raised above instead of silently allowing writes.
+    if provider != PROVIDER_POSTGRESQL:
         return
     raise StorageSourceAdmissionRequired(
         "STORAGE_SOURCE_SQLITE_STALE_AFTER_CUTOVER",
@@ -285,6 +305,29 @@ def storage_source_lifecycle_fence(
             held.pop(lock_path, None)
 
 
+def storage_source_switch_lock_path(path: str | Path) -> Path:
+    """One canonical lock identity for a storage-source owner.
+
+    Callers legitimately hold different paths for the same owner: a writer has the
+    database file, the cutover tool has the admission record (which lives in the
+    ``storage_source_migration`` directory next to it).  Deriving the lock from
+    the passed path's parent alone therefore produced *two* different locks, and
+    the switch could not wait for an admitted SQLite writer.  Every caller now
+    resolves through this function, which always returns
+    ``<storage-dir>/.storage-source-switch.lock`` for any path that belongs to that
+    owner (database file, admission record, transition marker or the lock itself).
+    """
+    target = Path(path).resolve()
+    if target.name == _SWITCH_LOCK_FILENAME:
+        return target
+    # Admission artifacts: <storage>/storage_source_migration/<file>
+    if target.parent.name == ADMISSION_DIRNAME:
+        return target.parent.parent / _SWITCH_LOCK_FILENAME
+    if target.is_dir():
+        return target / _SWITCH_LOCK_FILENAME
+    return target.parent / _SWITCH_LOCK_FILENAME
+
+
 @contextmanager
 def storage_source_switch_lock(
     path: str | Path, *, timeout: float = 5.0,
@@ -295,8 +338,13 @@ def storage_source_switch_lock(
     constructor bootstrap followed by a create).  A writer that cannot enter
     within ``timeout`` fails closed with ``STORAGE_SOURCE_CUTOVER_IN_PROGRESS``
     instead of writing while a switch is deciding authority.
+
+    The lock identity is canonical (:func:`storage_source_switch_lock_path`), so
+    the SQLite writers, ``admit_cutover``, ``finish_cutover`` and
+    ``abort_cutover`` all contend on the same file even though they pass
+    different paths.
     """
-    lock_path = str(Path(path).resolve().parent / _SWITCH_LOCK_FILENAME)
+    lock_path = str(storage_source_switch_lock_path(path))
     held = getattr(_SWITCH_LOCK_LOCAL, "held", None)
     if held is None:
         held = {}

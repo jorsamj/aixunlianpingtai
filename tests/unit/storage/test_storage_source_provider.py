@@ -305,6 +305,15 @@ def test_switch_lock_reports_a_cutover_in_progress(tmp_path):
     assert outcome.get("code") == "STORAGE_SOURCE_CUTOVER_IN_PROGRESS"
 
 
+class _IdleConnection:
+    """Minimal psycopg-like connection that reports an idle transaction."""
+
+    def __init__(self):
+        from psycopg.pq import TransactionStatus
+
+        self.info = type("Info", (), {"transaction_status": TransactionStatus.IDLE})()
+
+
 def test_admission_refuses_an_already_active_record(tmp_path):
     """A second switch cannot be admitted while one is published."""
     from platform_core.storage_source_cutover import admit_cutover
@@ -313,9 +322,85 @@ def test_admission_refuses_an_already_active_record(tmp_path):
     _admission(admission_record_path(repository.path))
     with pytest.raises(Exception) as admitted:
         admit_cutover(
-            None, repository.path, operator="ops", reason="second"
+            _IdleConnection(), repository.path, operator="ops", reason="second"
         )
     assert getattr(admitted.value, "code", "") == "STORAGE_SOURCE_CUTOVER_ALREADY_ADMITTED"
+
+
+def test_admission_refuses_a_busy_caller_transaction(tmp_path):
+    """An open caller transaction must not be adopted as a savepoint."""
+    from psycopg.pq import TransactionStatus
+
+    from platform_core.storage_source_cutover import admit_cutover
+
+    repository = _repository(tmp_path)
+
+    class _Busy:
+        info = type("Info", (), {"transaction_status": TransactionStatus.INTRANS})()
+
+    with pytest.raises(Exception) as busy:
+        admit_cutover(_Busy(), repository.path, operator="ops", reason="busy")
+    assert getattr(busy.value, "code", "") == "STORAGE_SOURCE_CUTOVER_TRANSACTION_BUSY"
+    # Nothing was published: the marker is gone and SQLite still owns writes.
+    assert not admission_transition_path(
+        admission_record_path(repository.path)
+    ).exists()
+    assert repository.update("default_local", {"name": "Local still"}).name == "Local still"
+
+
+def test_unknown_admission_provider_is_never_treated_as_sqlite(tmp_path):
+    """A missing/unknown provider is invalid evidence, not "assume SQLite"."""
+    from platform_core.storage.source_repository import (
+        load_storage_source_admission_record,
+    )
+    from platform_core.storage_source_cutover import STATE_INCONSISTENT, cutover_status
+
+    repository = _repository(tmp_path)
+    record_path = admission_record_path(repository.path)
+    for provider in ("mysql", "", None):
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(
+            json.dumps(
+                {
+                    "contract_version": CONTRACT_VERSION,
+                    "admission_id": "admit-unknown",
+                    "scope": "platform",
+                    "authoritative_provider": provider,
+                    "writer_generation": 1,
+                    "admitted_at": "2026-11-26T00:00:00+00:00",
+                    "revoked_at": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(StorageSourceAdmissionRequired) as invalid:
+            load_storage_source_admission_record(record_path)
+        assert invalid.value.code == "STORAGE_SOURCE_ADMISSION_RECORD_INVALID"
+        # Every writer refuses, and the status reports the broken state.
+        with pytest.raises(StorageSourceAdmissionRequired):
+            repository.create({"id": "nas-x", "name": "NAS X", "type": "remote"})
+        with pytest.raises(StorageSourceAdmissionRequired):
+            StorageSourceRepository(repository.path)
+        status = cutover_status(repository.path)
+        assert status["state"] == STATE_INCONSISTENT
+        assert status["sqlite_writable"] is False and status["postgres_writable"] is False
+        assert status["admission_error"]["code"] == "STORAGE_SOURCE_ADMISSION_RECORD_INVALID"
+
+    # A legal explicit SQLite authority record still allows writes.
+    record_path.write_text(
+        json.dumps(
+            {
+                "contract_version": CONTRACT_VERSION,
+                "admission_id": "rollback-1",
+                "scope": "platform",
+                "authoritative_provider": "sqlite",
+                "writer_generation": 3,
+                "revoked_at": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert repository.update("default_local", {"name": "Local ok"}).name == "Local ok"
 
 
 def test_cutover_status_never_guesses_unknown_states(tmp_path):

@@ -406,3 +406,232 @@ def test_admission_refuses_a_changed_source_and_unknown_states(pg, tmp_path):
     assert getattr(invalid.value, "code", "") == "STORAGE_SOURCE_CUTOVER_TRANSITION_INVALID"
     with pytest.raises(Exception):
         owner.update("nas-1", {"name": "must not write"})
+
+def _switch_owner(tmp_path):
+    """Fresh SQLite owner + cleared PostgreSQL scope for one cutover scenario."""
+    return _sqlite_owner(tmp_path)
+
+
+def _durable_row(dsn, scope=SCOPE):
+    with psycopg.connect(dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT admission_id,writer_generation,phase "
+                f"FROM {SCHEMA_NAME}.cutover_state WHERE scope=%s",
+                (scope,),
+            )
+            row = cursor.fetchone()
+        connection.rollback()
+    return row
+
+
+def test_switch_lock_identity_is_shared_by_writers_and_cutover(tmp_path):
+    """Writers pass the database file, the cutover passes admission paths."""
+    from platform_core.storage.source_repository import storage_source_switch_lock_path
+
+    database = tmp_path / "storage" / "storage_sources.sqlite3"
+    record = admission_record_path(database)
+    marker = admission_transition_path(record)
+    expected = database.parent / ".storage-source-switch.lock"
+    assert storage_source_switch_lock_path(database) == expected
+    assert storage_source_switch_lock_path(record) == expected
+    assert storage_source_switch_lock_path(marker) == expected
+
+
+def test_admit_waits_for_an_in_flight_writer_and_sees_its_commit(pg, tmp_path):
+    """The switch cannot snapshot past a write that already passed its check."""
+    import threading
+    import time
+
+    from platform_core.storage.source_repository import storage_source_switch_lock
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    writer_inside = threading.Event()
+    release_writer = threading.Event()
+    outcome = {}
+
+    def writer():
+        # A writer that holds the canonical switch lock exactly like the real
+        # write fence does (the repository's own fence is re-entrant here).
+        with storage_source_switch_lock(owner.path):
+            owner.create({"id": "nas-late", "name": "NAS late", "type": "remote"})
+            writer_inside.set()
+            release_writer.wait(15)
+
+    def switcher():
+        with psycopg.connect(pg.get_uri()) as connection:
+            outcome["admit"] = admit_cutover(
+                connection, owner.path, operator="ops", reason="wait for writer"
+            )
+
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert writer_inside.wait(10)
+    switcher_thread = threading.Thread(target=switcher)
+    switcher_thread.start()
+    time.sleep(0.5)
+    # The switch is blocked while the writer lock is held (same lock identity).
+    assert "admit" not in outcome
+    release_writer.set()
+    writer_thread.join(20)
+    switcher_thread.join(30)
+
+    assert outcome["admit"]["admitted"] is True
+    repository = _provider(pg, tmp_path)
+    assert repository.get("nas-late") is not None
+
+
+def test_postgres_commit_precedes_the_local_admission(pg, tmp_path, monkeypatch):
+    """The record may only appear after a real COMMIT (second connection proof)."""
+    from psycopg.pq import TransactionStatus
+
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    seen = {"checks": []}
+    real_write = cutover_module._write_json_atomic
+
+    def spying_write(path, payload):
+        if path.name == "cutover_admission.json":
+            # Independent connection: the durable row must already be visible,
+            # while the local admission does not exist yet.
+            seen["checks"].append(
+                {
+                    "durable": _durable_row(pg.get_uri()),
+                    "marker_present": admission_transition_path(path).exists(),
+                    "record_present": path.exists(),
+                }
+            )
+        return real_write(path, payload)
+
+    monkeypatch.setattr(cutover_module, "_write_json_atomic", spying_write)
+    with psycopg.connect(pg.get_uri()) as connection:
+        admitted = admit_cutover(connection, owner.path, operator="ops", reason="commit order")
+        assert connection.info.transaction_status == TransactionStatus.IDLE
+
+    assert admitted["admitted"] is True
+    assert seen["checks"], "the admission write was never observed"
+    check = seen["checks"][0]
+    assert check["durable"] is not None
+    assert str(check["durable"][2]) == "POSTGRES_ACTIVE"
+    assert int(check["durable"][1]) == admitted["writer_generation"]
+    assert check["marker_present"] is True
+    assert check["record_present"] is False
+
+
+def test_abort_before_the_commit_leaves_no_durable_state(pg, tmp_path, monkeypatch):
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+
+    def failing_import(*_args, **_kwargs):
+        raise RuntimeError("import interrupted before commit")
+
+    monkeypatch.setattr(cutover_module, "import_snapshot", failing_import)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(RuntimeError):
+            admit_cutover(connection, owner.path, operator="ops", reason="crash before commit")
+
+    # PostgreSQL rolled back, the marker was released, SQLite owns writes again.
+    assert _durable_row(pg.get_uri()) is None
+    assert cutover_status(owner.path)["state"] == STATE_SQLITE
+    assert not admission_transition_path(admission_record_path(owner.path)).exists()
+    assert owner.update("nas-1", {"name": "NAS recovered"}).name == "NAS recovered"
+
+
+def test_interruption_between_commit_and_admission_is_recoverable(pg, tmp_path, monkeypatch):
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    record_path = admission_record_path(owner.path)
+    marker_path = admission_transition_path(record_path)
+    real_write = cutover_module._write_json_atomic
+
+    def interrupt_record(path, payload):
+        if path.name == "cutover_admission.json":
+            raise RuntimeError("interrupted after the PostgreSQL commit")
+        return real_write(path, payload)
+
+    monkeypatch.setattr(cutover_module, "_write_json_atomic", interrupt_record)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(RuntimeError):
+            admit_cutover(connection, owner.path, operator="ops", reason="crash window")
+
+    # Durable state exists, the local record does not, and both providers are
+    # blocked: no fake STEADY_POSTGRES with a removed marker.
+    assert _durable_row(pg.get_uri()) is not None
+    assert not record_path.exists()
+    assert marker_path.exists()
+    status = cutover_status(owner.path)
+    # The marker is the only local evidence: the switch is unresolved, so neither
+    # provider may write and no state is reported as steady.
+    assert status["state"] == "SWITCHING"
+    assert status["sqlite_writable"] is False and status["postgres_writable"] is False
+    with pytest.raises(Exception) as blocked:
+        owner.update("nas-1", {"name": "must stay blocked"})
+    assert getattr(blocked.value, "code", "") == "STORAGE_SOURCE_CUTOVER_IN_PROGRESS"
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as no_record:
+            finish_cutover(connection, owner.path)
+    assert getattr(no_record.value, "code", "") == "STORAGE_SOURCE_CUTOVER_NOT_ADMITTED"
+
+    # Abort is the documented recovery for an unpublished switch, and the
+    # still-unpublished PostgreSQL rows cannot be written by the provider.
+    assert abort_cutover(owner.path)["aborted"] is True
+    assert cutover_status(owner.path)["state"] == STATE_SQLITE
+    assert owner.update("nas-1", {"name": "NAS after abort"}).name == "NAS after abort"
+    provider = PostgresStorageSourceRepository(
+        pg.get_uri(), SCOPE, admission=None
+    )
+    with pytest.raises(Exception):
+        provider.create({"id": "nas-z", "name": "NAS Z", "type": "remote"})
+
+
+def test_interruption_after_the_record_is_finished_by_finish_cutover(pg, tmp_path, monkeypatch):
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    record_path = admission_record_path(owner.path)
+    marker_path = admission_transition_path(record_path)
+    real_write = cutover_module._write_json_atomic
+
+    def interrupt_marker_release(path, payload):
+        if path.name.endswith(".transition") and str(payload.get("phase")) == "POSTGRES_ACTIVE":
+            raise RuntimeError("interrupted after the admission was published")
+        return real_write(path, payload)
+
+    monkeypatch.setattr(cutover_module, "_write_json_atomic", interrupt_marker_release)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(RuntimeError):
+            admit_cutover(connection, owner.path, operator="ops", reason="crash after publish")
+
+    assert record_path.exists() and marker_path.exists()
+    assert cutover_status(owner.path)["state"] == STATE_INCONSISTENT
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        finished = finish_cutover(connection, owner.path)
+    assert finished["finished"] is True
+    assert not marker_path.exists()
+    assert cutover_status(owner.path)["state"] == STATE_POSTGRES
+    repository = _provider(pg, tmp_path)
+    assert repository.update("nas-1", {"name": "NAS finished"}).name == "NAS finished"

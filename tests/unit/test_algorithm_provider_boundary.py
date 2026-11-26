@@ -655,3 +655,43 @@ def test_reference_scan_refuses_a_history_change_between_pages(tmp_path, monkeyp
         references.catalog_references(root, catalog, "vendors", {"id": "vendor-1"})
     assert failed.value.code == "CATALOG_REFERENCE_CHECK_FAILED"
     assert "ALGORITHM_HISTORY_CHANGED_DURING_SCAN" in str(failed.value.detail)
+
+def test_reference_scan_refuses_when_no_revision_can_prove_stability(tmp_path, monkeypatch):
+    """None == None is not proof: an unavailable revision blocks deletion."""
+    from platform_core import conversion_catalog_references as references
+    from platform_core.algorithm_history_evidence import require_revision_token
+    from platform_core.algorithm_repository import AlgorithmRepositoryError
+    from platform_core.errors import PlatformError
+
+    class _NoRevisionRepository:
+        provider_name = "sqlite"
+
+        def history_revision(self):
+            return None
+
+        def history_has_versions(self):
+            return None
+
+        def history_algorithm_payloads(self, *, after=None, limit=200):
+            return []
+
+        def history_version_payloads(self, *, after=None, limit=200):
+            return []
+
+    with pytest.raises(AlgorithmRepositoryError) as unavailable:
+        require_revision_token(_NoRevisionRepository())
+    assert unavailable.value.code == "ALGORITHM_HISTORY_REVISION_UNAVAILABLE"
+
+    root = tmp_path / "data"
+    project = root / "projects" / "project"
+    project.mkdir(parents=True)
+    # A catalog file exists but cannot tokenise its history.
+    (project / "algorithms.sqlite3").write_bytes(b"")
+    monkeypatch.setattr(
+        references, "open_history_repository",
+        lambda _path, **_kwargs: _NoRevisionRepository(),
+    )
+    with pytest.raises(PlatformError) as failed:
+        references.catalog_references(root, {"vendors": [], "chips": []}, "vendors", {"id": "v-1"})
+    assert failed.value.code == "CATALOG_REFERENCE_CHECK_FAILED"
+    assert "ALGORITHM_HISTORY_REVISION_UNAVAILABLE" in str(failed.value.detail)

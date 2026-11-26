@@ -57,6 +57,24 @@ def revision_token(repository: AlgorithmRepository) -> tuple[str, str | None]:
     return (str(repository.provider_name), repository.history_revision())
 
 
+def require_revision_token(repository: AlgorithmRepository) -> tuple[str, str]:
+    """A revision that can actually prove a scan was stable.
+
+    A ``None`` revision means the provider cannot tokenise its history (missing
+    catalog, missing metadata or an unreadable store). Comparing ``None`` with
+    ``None`` would "prove" stability without any evidence, so callers that use
+    the token as a proof must take this stricter form instead.
+    """
+    provider, revision = revision_token(repository)
+    if revision is None:
+        raise AlgorithmRepositoryError(
+            "ALGORITHM_HISTORY_REVISION_UNAVAILABLE",
+            "the authoritative algorithm revision is unavailable",
+            detail=f"provider={provider}",
+        )
+    return provider, revision
+
+
 def iter_history_payloads(
     repository: AlgorithmRepository,
     *,

@@ -62,13 +62,27 @@ def _load_snapshot(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _reset_to_idle(connection) -> None:
+    """Release any implicit read transaction before the fenced cutover starts.
+
+    Psycopg opens a transaction for the first statement of a non-autocommit
+    connection; the schema inspection is read-only, so the clean way back to IDLE
+    is a rollback (never a commit of unrelated work).
+    """
+    from psycopg.pq import TransactionStatus
+
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        connection.rollback()
+
+
 def _ensure_schema(connection) -> dict:
     from .storage_source_postgres_schema import ensure_schema, schema_status
 
     status = schema_status(connection)
-    if status["up_to_date"]:
-        return status
-    return ensure_schema(connection, allow_upgrade=True)
+    if not status["up_to_date"]:
+        status = ensure_schema(connection, allow_upgrade=True)
+    _reset_to_idle(connection)
+    return status
 
 
 def command_status(args) -> int:

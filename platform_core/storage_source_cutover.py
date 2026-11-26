@@ -131,12 +131,24 @@ def read_transition(record_path: str | Path) -> dict[str, Any] | None:
 
 
 def cutover_status(sqlite_path: str | Path) -> dict[str, Any]:
-    """Classify the current local state (never guesses)."""
+    """Classify the current local state (never guesses).
+
+    A record whose provider cannot be validated is ``INCONSISTENT``: the tool must
+    be able to report the broken state, while every writer still refuses it (the
+    loader raises for them).
+    """
     record_path = admission_record_path(sqlite_path)
-    record = load_storage_source_admission_record(record_path)
+    record_error: dict[str, Any] | None = None
+    record: dict[str, Any] | None = None
+    try:
+        record = load_storage_source_admission_record(record_path)
+    except StorageSourceAdmissionRequired as error:
+        record_error = {"code": error.code, "detail": error.detail}
     marker = read_transition(record_path)
     state = STATE_SQLITE
-    if marker is not None and record is None:
+    if record_error is not None:
+        state = STATE_INCONSISTENT
+    elif marker is not None and record is None:
         state = STATE_SWITCHING
     elif marker is not None and record is not None:
         state = STATE_INCONSISTENT
@@ -147,6 +159,7 @@ def cutover_status(sqlite_path: str | Path) -> dict[str, Any]:
     return {
         "sqlite_path": str(sqlite_path),
         "admission_record": record,
+        "admission_error": record_error,
         "transition": marker,
         "state": state,
         "sqlite_writable": state == STATE_SQLITE,
@@ -154,7 +167,42 @@ def cutover_status(sqlite_path: str | Path) -> dict[str, Any]:
     }
 
 
-def _durable_generation(connection, scope: str) -> int:
+def require_idle_connection(connection, *, purpose: str) -> None:
+    """Refuse to run a cutover on a connection with an open transaction.
+
+    Psycopg's ``connection.transaction()`` becomes a SAVEPOINT when a transaction
+    is already in progress, so a caller's uncommitted work would make the switch
+    "commit" only to a savepoint and publish the local admission before
+    PostgreSQL really committed. The tool never silently takes over such a
+    connection.
+    """
+    from psycopg.pq import TransactionStatus
+
+    status = connection.info.transaction_status
+    if status != TransactionStatus.IDLE:
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_TRANSACTION_BUSY",
+            f"{purpose} requires an idle PostgreSQL connection",
+            detail=f"transaction_status={status!r}",
+        )
+
+
+def _lock_cutover_scope(connection, scope: str) -> None:
+    """Serialise same-scope switches inside the transaction (advisory lock)."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"storage_source_cutover:{scope}",),
+        )
+
+
+def _next_generation(connection, scope: str, *, local_generation: int) -> int:
+    """Monotonic generation, read inside the switch transaction.
+
+    The advisory lock above serialises concurrent admits for this scope, so the
+    read and the ``cutover_state`` write cannot interleave and two switches can
+    never publish the same generation.
+    """
     from psycopg.rows import dict_row
 
     with connection.cursor(row_factory=dict_row) as cursor:
@@ -163,13 +211,20 @@ def _durable_generation(connection, scope: str) -> int:
             (scope,),
         )
         row = cursor.fetchone()
-    return int(row["writer_generation"]) if row else 0
+    durable = int(row["writer_generation"]) if row else 0
+    return max(int(local_generation), durable) + 1
 
 
 def _require_clean_source(
     sqlite_path: str | Path, *, state: Mapping[str, Any]
 ) -> None:
     """Only a SQLite-authoritative, marker-free project can be switched."""
+    if str(state.get("state") or "") == STATE_INCONSISTENT and state.get("admission_error"):
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+            "the local admission record is not a valid authority record",
+            detail=json.dumps(state.get("admission_error"), ensure_ascii=False),
+        )
     marker = state["transition"]
     record = state["admission_record"]
     if marker is not None:
@@ -206,25 +261,30 @@ def admit_cutover(
             "operator and reason are required for the audit trail",
         )
     record_path = admission_record_path(sqlite_path)
+    owner = Path(sqlite_path)
+    # The switch is its own top-level PostgreSQL transaction. A caller that
+    # already opened one would turn ``connection.transaction()`` into a SAVEPOINT
+    # and the local admission could then be published before PostgreSQL really
+    # committed, so an unfinished caller transaction is refused, never adopted.
+    require_idle_connection(connection, purpose="storage-source cutover admission")
     try:
-        with storage_source_switch_lock(record_path, timeout=60):
-            state = cutover_status(sqlite_path)
-            _require_clean_source(sqlite_path, state=state)
+        # Canonical lock identity: the SQLite writers hold the same lock (they
+        # pass the database path, this tool passes the owner path).
+        with storage_source_switch_lock(owner, timeout=60):
+            require_idle_connection(connection, purpose="storage-source cutover admission")
+            state = cutover_status(owner)
+            _require_clean_source(owner, state=state)
             existing_marker = state["transition"]
             record = state["admission_record"]
             operation_id = str(
                 (existing_marker or {}).get("operation_id") or uuid.uuid4().hex
             )
-            generation = max(
-                int((record or {}).get("writer_generation") or 0),
-                _durable_generation(connection, scope),
-            ) + 1
+            local_generation = int((record or {}).get("writer_generation") or 0)
             marker = {
                 "contract_version": TRANSITION_CONTRACT_VERSION,
                 "operation_id": operation_id,
                 "scope": str(scope),
                 "phase": PHASE_SWITCHING,
-                "writer_generation": generation,
                 "started_at": (existing_marker or {}).get("started_at") or _now(),
                 "operator": str(operator).strip(),
                 "reason": str(reason).strip(),
@@ -233,10 +293,14 @@ def admit_cutover(
                 ),
             }
             _write_json_atomic(admission_transition_path(record_path), marker)
+            # Recovery depends on whether PostgreSQL really committed: before
+            # the commit nothing durable exists (the marker may be removed);
+            # after it, the marker must stay and finish/abort resolves the state.
+            durable_committed = False
             try:
                 # Writers are now blocked. Re-export the *current* SQLite copy:
                 # an operator snapshot may be older than the switch fence.
-                snapshot = export_snapshot(sqlite_path, scope)
+                snapshot = export_snapshot(owner, scope)
                 if expected_source_digest and str(snapshot["content_digest"]) != str(
                     expected_source_digest
                 ):
@@ -249,7 +313,16 @@ def admit_cutover(
                         ),
                     )
                 admission_id = str(uuid.uuid4().hex)
+                # ONE real top-level transaction: scope lock, generation, import,
+                # reconcile and the durable cutover row commit together, or none
+                # of them does.
                 with connection.transaction():
+                    _lock_cutover_scope(connection, scope)
+                    generation = _next_generation(
+                        connection, scope, local_generation=local_generation
+                    )
+                    marker["writer_generation"] = generation
+                    _write_json_atomic(admission_transition_path(record_path), marker)
                     import_snapshot(connection, snapshot)
                     target = export_target_snapshot(connection, scope)
                     report = reconcile(snapshot, target)
@@ -285,9 +358,12 @@ def admit_cutover(
                                 operation_id,
                             ),
                         )
-                # The durable PostgreSQL state is committed: publish the local
-                # admission record atomically. A crash from here on leaves both
-                # providers blocked until finish_cutover proves this state.
+                # The transaction committed for real (no savepoint, verified by the
+                # transaction status) before the local admission may exist.
+                require_idle_connection(
+                    connection, purpose="storage-source cutover admission"
+                )
+                durable_committed = True
                 admission = {
                     "contract_version": CONTRACT_VERSION,
                     "admission_id": admission_id,
@@ -304,6 +380,9 @@ def admit_cutover(
                     "operator": str(operator).strip(),
                     "reason": str(reason).strip(),
                 }
+                # PostgreSQL committed: publish the local record atomically, then
+                # release the marker. A crash in between leaves both providers
+                # blocked until finish_cutover proves the published state.
                 _write_json_atomic(record_path, admission)
                 _write_json_atomic(
                     admission_transition_path(record_path),
@@ -311,13 +390,18 @@ def admit_cutover(
                 )
                 admission_transition_path(record_path).unlink(missing_ok=True)
             except BaseException:
-                # Nothing was published locally: the marker is removed so SQLite
-                # stays writable, and PostgreSQL writes still require a record.
-                if not record_path.is_file():
-                    try:
-                        admission_transition_path(record_path).unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                if not durable_committed:
+                    # Nothing was published locally *and* PostgreSQL rolled back:
+                    # the marker is removed so SQLite stays writable, while
+                    # PostgreSQL writes still require a local admission record.
+                    if not record_path.is_file():
+                        try:
+                            admission_transition_path(record_path).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                # After a durable commit the marker is deliberately kept: both
+                # providers stay blocked until finish_cutover (record published)
+                # or abort_cutover (record not published) proves the state.
                 raise
     except FileLockTimeout as error:
         raise StorageSourceCutoverError(
@@ -338,8 +422,11 @@ def admit_cutover(
 def finish_cutover(connection, sqlite_path: str | Path) -> dict[str, Any]:
     """Release a published but unresolved transition after proving its state."""
     record_path = admission_record_path(sqlite_path)
+    owner = Path(sqlite_path)
+    require_idle_connection(connection, purpose="storage-source cutover finish")
     try:
-        with storage_source_switch_lock(record_path, timeout=60):
+        # Same canonical lock as the SQLite writers and admit_cutover.
+        with storage_source_switch_lock(owner, timeout=60):
             record = load_storage_source_admission_record(record_path)
             marker = read_transition(record_path)
             if record is None:
@@ -365,54 +452,56 @@ def finish_cutover(connection, sqlite_path: str | Path) -> dict[str, Any]:
                         f"record={record.get('operation_id')!r}"
                     ),
                 )
-            from psycopg.rows import dict_row
+            scope = str(record.get("scope") or DEFAULT_SCOPE)
+            # Verification reads inside one explicit transaction: the durable row
+            # is locked and the target digest is read from the same snapshot.
+            with connection.transaction():
+                _lock_cutover_scope(connection, scope)
+                from psycopg.rows import dict_row
 
-            with connection.cursor(row_factory=dict_row) as cursor:
-                cursor.execute(
-                    f"SELECT admission_id,writer_generation,phase,source_digest,"
-                    f"target_digest FROM {SCHEMA_NAME}.cutover_state WHERE scope=%s "
-                    "FOR UPDATE",
-                    (str(record.get("scope") or DEFAULT_SCOPE),),
-                )
-                row = cursor.fetchone()
-            if not row:
-                raise StorageSourceCutoverError(
-                    "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
-                    "the durable cutover state is missing",
-                )
-            if (
-                str(row["admission_id"]) != str(record.get("admission_id") or "")
-                or int(row["writer_generation"])
-                != int(record.get("writer_generation") or 0)
-                or str(row["phase"]) != PHASE_POSTGRES_ACTIVE
-            ):
-                raise StorageSourceCutoverError(
-                    "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
-                    "the durable cutover state does not match the admission record",
-                )
-            target = export_target_snapshot(
-                connection, str(record.get("scope") or DEFAULT_SCOPE)
-            )
-            if str(target["content_digest"]) != str(row["target_digest"]):
-                raise StorageSourceCutoverError(
-                    "STORAGE_SOURCE_CUTOVER_TARGET_CHANGED",
-                    "PostgreSQL changed while the transition was unresolved",
-                    detail=(
-                        f"durable={row['target_digest']} "
-                        f"current={target['content_digest']}"
-                    ),
-                )
-            if str(target["content_digest"]) != str(
-                record.get("content_digest") or ""
-            ):
-                raise StorageSourceCutoverError(
-                    "STORAGE_SOURCE_CUTOVER_TARGET_CHANGED",
-                    "the published admission does not describe the current target",
-                )
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    cursor.execute(
+                        f"SELECT admission_id,writer_generation,phase,source_digest,"
+                        f"target_digest FROM {SCHEMA_NAME}.cutover_state "
+                        "WHERE scope=%s FOR UPDATE",
+                        (scope,),
+                    )
+                    row = cursor.fetchone()
+                if not row:
+                    raise StorageSourceCutoverError(
+                        "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                        "the durable cutover state is missing",
+                    )
+                if (
+                    str(row["admission_id"]) != str(record.get("admission_id") or "")
+                    or int(row["writer_generation"])
+                    != int(record.get("writer_generation") or 0)
+                    or str(row["phase"]) != PHASE_POSTGRES_ACTIVE
+                ):
+                    raise StorageSourceCutoverError(
+                        "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                        "the durable cutover state does not match the admission record",
+                    )
+                target = export_target_snapshot(connection, scope)
+                if str(target["content_digest"]) != str(row["target_digest"]):
+                    raise StorageSourceCutoverError(
+                        "STORAGE_SOURCE_CUTOVER_TARGET_CHANGED",
+                        "PostgreSQL changed while the transition was unresolved",
+                        detail=(
+                            f"durable={row['target_digest']} "
+                            f"current={target['content_digest']}"
+                        ),
+                    )
+                if str(target["content_digest"]) != str(
+                    record.get("content_digest") or ""
+                ):
+                    raise StorageSourceCutoverError(
+                        "STORAGE_SOURCE_CUTOVER_TARGET_CHANGED",
+                        "the published admission does not describe the current target",
+                    )
+            require_idle_connection(connection, purpose="storage-source cutover finish")
             # The frozen SQLite copy must still be the admitted source.
-            current_source = export_snapshot(
-                sqlite_path, str(record.get("scope") or DEFAULT_SCOPE)
-            )
+            current_source = export_snapshot(owner, scope)
             if str(current_source["content_digest"]) != str(
                 record.get("content_digest") or ""
             ):
@@ -432,8 +521,10 @@ def finish_cutover(connection, sqlite_path: str | Path) -> dict[str, Any]:
 def abort_cutover(sqlite_path: str | Path) -> dict[str, Any]:
     """Abort a switch that never published an admission (SQLite stays/writable)."""
     record_path = admission_record_path(sqlite_path)
+    owner = Path(sqlite_path)
     try:
-        with storage_source_switch_lock(record_path, timeout=60):
+        # Same canonical lock as the SQLite writers and admit_cutover.
+        with storage_source_switch_lock(owner, timeout=60):
             record = load_storage_source_admission_record(record_path)
             if record is not None and not record.get("revoked_at") and str(
                 record.get("authoritative_provider") or ""
