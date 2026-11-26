@@ -46,6 +46,15 @@ const form = reactive<{mode: Mode; format: ScanFormat; yaml: string}>({mode: 'lo
 const policy = reactive({newImages: true, missing: true, changed: true});
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE']);
 const completion = computed(() => !!task.value && terminal.has(task.value.status));
+// Only a task that actually applied images or annotations has collected results;
+// a failed or cancelled task must not be presented as an import result.
+const collected = computed(() => {
+  const current = task.value;
+  if (!current || !['SUCCEEDED', 'PARTIAL_SUCCESS'].includes(String(current.status))) return false;
+  const applied = Number(current.applied ?? 0);
+  const annotations = Number(current.annotation_applied ?? 0);
+  return (Number.isFinite(applied) && applied > 0) || (Number.isFinite(annotations) && annotations > 0);
+});
 const waiting = computed(() => task.value?.status === 'AWAITING_CONFIRMATION' && task.value.accepted !== true);
 const formats = computed(() => (form.mode === 'agent' ? preflight.value?.agent_supported_formats : preflight.value?.local_supported_formats) || []);
 const canStart = computed(() => !!preflight.value && (form.mode === 'agent' ? preflight.value.agent_available : preflight.value.local_available)
@@ -218,7 +227,8 @@ onUnmounted(() => {
         <div><el-checkbox v-model="policy.changed" :disabled="busy">更新图片内容变化</el-checkbox></div>
         <el-button type="primary" :disabled="busy || reading || !!readError || writeUnknown" @click="changeTask('confirm')">确认应用</el-button>
       </template>
-      <p v-if="completion" class="rescan-link"><router-link :to="{name:'materials',params:{projectId}}">返回素材库查看归集结果</router-link></p>`n      <el-alert v-else-if="waiting" title="使用原存储配置完成标注质量报告、类别映射及同步确认。" :closable="false"/>
+      <el-alert v-else-if="waiting" title="使用原存储配置完成标注质量报告、类别映射及同步确认。" :closable="false"/>
+      <p v-if="collected" class="rescan-link"><router-link :to="{name:'materials',params:{projectId}}">返回素材库查看归集结果</router-link></p>
     </section>
     <p v-else-if="!taskId">尚未创建扫描任务。</p>
     <template #footer>

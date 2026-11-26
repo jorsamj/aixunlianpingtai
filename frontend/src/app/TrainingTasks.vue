@@ -106,6 +106,7 @@ const deletableRow=(row:TrainingTask)=>row.kind==='TRAINING'&&trainingBatchActio
 // A batch request in flight blocks every training write; an unverified result
 // only blocks the operations that would touch the same records.
 const batchInFlight=computed(()=>batchBusy.value);
+const otherMutationBusy=computed(()=>!!lifecycleBusy.value||stopBusy.value||recoveryBusy.value);
 const pendingIds=computed(()=>new Set(pendingBatch.value?.ids||[]));
 function onBatchSelection(rows:TrainingTask[]){batchSelected.value=rows.map(row=>row.task_id)}
 function clearBatchSelection(){batchSelected.value=[];tableRef.value?.clearSelection()}
@@ -130,7 +131,12 @@ function writePendingBatch(value:{ids:string[];requestedAt:string;actor:string;p
   pendingBatch.value=value;
   return true;
 }
-watch(()=>workspace.actorKey,readPendingBatch,{immediate:true});
+// Switching the confirmed actor invalidates any previous verification result so a
+// stale count can never be reused in another scope.
+watch(()=>workspace.actorKey,()=>{
+  batchVerifyResult.value=null;batchNotice.value='';batchError.value='';
+  readPendingBatch();
+},{immediate:true});
 function batchMessage(result:Awaited<ReturnType<typeof deleteTrainingTaskRecords>>){
   const parts=[`记录已删除 ${result.deleted} 条`];
   if(result.audit_retained_ids.length)parts.push(`其中 ${result.audit_retained_ids.length} 条按原证据规则保留受保护训练证据/产物，其余按原清理规则处理`);
@@ -141,7 +147,9 @@ function batchMessage(result:Awaited<ReturnType<typeof deleteTrainingTaskRecords
   return parts.join('；')+'。';
 }
 async function batchDelete(){
-  if(!batchSelected.value.length||batchBusy.value||pendingBatch.value)return;
+  // Batch deletion is mutually exclusive with every single-task write, in both
+  // directions, so one action can never overwrite another's receipt.
+  if(!batchSelected.value.length||batchBusy.value||pendingBatch.value||otherMutationBusy.value)return;
   if(!actorKey.value){batchError.value='当前会话身份未确认，不能提交批量删除。';return}
   const ids=[...batchSelected.value];
   if(!window.confirm(`确认删除 ${ids.length} 条已结束训练任务记录？记录删除后不可恢复，算法版本与按原规则保留的证据不受影响。`))return;
@@ -158,7 +166,11 @@ async function batchDelete(){
   try{
     const result=await deleteTrainingTaskRecords(projectId,ids,controller.signal);
     if(scopeKey!==pendingBatchKey.value)return;
-    writePendingBatch(null);
+    if(!writePendingBatch(null)){
+      batchNotice.value=batchMessage(result);
+      batchError.value='删除已执行，但浏览器无法清除本地待核验记录；请核对后使用“结束本次核验”。';
+      return;
+    }
     batchNotice.value=batchMessage(result);
     clearBatchSelection();
     await loadList();
@@ -178,35 +190,56 @@ async function batchDelete(){
 async function verifyBatchDeletion(){
   const pending=pendingBatch.value;
   if(!pending||batchVerifyBusy.value||batchBusy.value)return;
+  const scopeKey=pendingBatchKey.value,actor=actorKey.value,expected=[...pending.ids];
   batchVerifyBusy.value=true;batchError.value='';
   const controller=new AbortController();
   try{
-    const result=await readTrainingDeletionStatus(projectId,pending.ids,controller.signal);
+    const result=await readTrainingDeletionStatus(projectId,expected,controller.signal);
+    // A response that arrives after the actor/project or pending identity changed
+    // must not write into the new scope.
+    const current=pendingBatch.value;
+    if(scopeKey!==pendingBatchKey.value||actor!==actorKey.value||!current
+      ||current.ids.length!==expected.length||current.ids.some(id=>!expected.includes(id)))return;
     batchVerifyResult.value=result.counts;
     const deleted=result.counts.deleted||0;
-    if(deleted===pending.ids.length){
-      writePendingBatch(null);
+    if(deleted===expected.length){
+      if(!writePendingBatch(null)){
+        batchNotice.value=`已核对：${deleted} 条记录均已删除；但浏览器无法清除本地待核验记录，请稍后重试结束核验。`;
+        return;
+      }
       batchNotice.value=`已核对：${deleted} 条记录均已删除；受保护证据与产物是否保留以原任务证据为准，算法版本不受影响。`;
       clearBatchSelection();
       await loadList();
     }else{
       const remaining=result.items.filter(row=>row.state!=='deleted')
         .map(row=>`${row.job_id}（${({terminal:'记录仍在',active:'执行中',missing:'未找到',invalid:'ID 无效'} as Record<string,string>)[row.state]||row.state}）`);
-      batchNotice.value=`核对结果：已删除 ${deleted} 条；未确认 ${remaining.length} 条：${remaining.slice(0,10).join('、')}${remaining.length>10?' 等':''}。本次核对不会自动重试，可按“结束本次核验”关闭后再决定是否重新发起。`;
+      batchNotice.value=`核对结果：已删除 ${deleted} 条；未确认 ${remaining.length} 条：${remaining.slice(0,10).join('、')}${remaining.length>10?' 等':''}。本次核对不会自动重试；确认无误后可“结束本次核验”。`;
     }
   }catch(error){batchError.value=`核对失败：${(error as Error).message}`}
   finally{batchVerifyBusy.value=false}
 }
-// Ending the verification is not a success claim: it releases the lock while the
-// unverified details stay in the notice, and nothing is retried automatically.
+// Ending the verification is not a success claim: it needs a trusted per-item
+// result, an explicit confirmation and a persisted clear, and it never retries.
 function endBatchVerification(){
   if(!pendingBatch.value||batchBusy.value||batchVerifyBusy.value)return;
-  const pending=pendingBatch.value;
-  const counts=batchVerifyResult.value;
-  writePendingBatch(null);
-  batchNotice.value=counts
-    ?`已结束本次核验：已删除 ${counts.deleted||0} 条，未确认 ${pending.ids.length-(counts.deleted||0)} 条。未确认记录未做任何自动重试，如需清理请重新核对资格后发起新操作。`
-    :`已结束本次核验：${pending.ids.length} 条删除结果仍未确认。未做任何自动重试，请按原任务记录判断后续操作。`;
+  const pending=pendingBatch.value,counts=batchVerifyResult.value;
+  if(!counts){
+    batchError.value='尚未取得可信的逐项核对结果，不能结束本次核验。请先“核对删除状态”。';
+    return;
+  }
+  const deleted=counts.deleted||0,remaining=pending.ids.length-deleted;
+  const message=remaining
+    ?`已核对：已删除 ${deleted} 条，未确认 ${remaining} 条。结束核验只解除本次保护，不代表这些记录已删除。确认结束？`
+    :`已核对 ${deleted} 条记录均已删除，确认结束本次核验？`;
+  if(!window.confirm(message))return;
+  if(!writePendingBatch(null)){
+    batchError.value='浏览器无法清除本地待核验记录，未解除保护；请稍后重试。';
+    return;
+  }
+  batchNotice.value=remaining
+    ?`已结束本次核验：已删除 ${deleted} 条，未确认 ${remaining} 条（未做任何自动重试）。如需清理，请重新核对资格后发起新操作。`
+    :`已结束本次核验：${deleted} 条记录均已删除。`;
+  batchVerifyResult.value=null;
 }// Bounded text log read through the shared http owner (401/deadline/cancel are
 // the same as every other native request; the caller's signal is abortable).
 function loadLog(id:string) {
@@ -427,7 +460,9 @@ async function lifecycleAction(action:'pause'|'resume'|'promote'){
 }
 async function deleteTask(){
   const current=task.value;
-  if(batchBusy.value||pendingBatch.value){batchError.value='存在待核验的批量删除，请先核对后再删除记录。';return}
+  // Only a pending record that covers this task conflicts with deleting it; an
+  // unrelated pending batch must not block other records.
+  if(current&&pendingIds.value.has(current.task_id)){batchError.value='该任务存在未核验的批量删除，请先核对后再删除记录。';return}
   if(batchInFlight.value){batchError.value='批量删除正在执行，请稍后再操作。';return}
   if(!current||!canDeleteRecord.value||lifecycleBusy.value)return;
   if(!window.confirm('确认删除这条已结束训练任务记录？已经生成的算法版本不会删除。'))return;
