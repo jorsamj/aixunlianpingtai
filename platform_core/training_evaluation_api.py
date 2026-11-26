@@ -50,6 +50,10 @@ def create_training_evaluation_router_1(service: Callable[[], TrainingEvaluation
     def review_evaluation_sample(project_id: str, algorithm_id: str, version_id: str, payload: EvaluationReviewReq):
         return service().review_evaluation_sample(project_id, algorithm_id, version_id, payload)
 
+    @router.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/review')
+    def read_evaluation_sample_review(project_id: str, algorithm_id: str, version_id: str, expected_evaluation_id: str, image_id: str):
+        return service().read_evaluation_sample_review(project_id, algorithm_id, version_id, expected_evaluation_id, image_id)
+
     return router
 
 

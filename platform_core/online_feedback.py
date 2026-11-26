@@ -587,6 +587,12 @@ class OnlineFeedbackRepository:
                 "SELECT * FROM online_feedback WHERE id=?", (str(feedback_id),)
             ).fetchone())
 
+    def get_by_prediction(self, prediction_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as db:
+            return self._decode(db.execute(
+                "SELECT * FROM online_feedback WHERE prediction_id=?", (str(prediction_id),)
+            ).fetchone())
+
     def get_many(self, feedback_ids) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in feedback_ids if str(value)))
         if len(ids) > 500:

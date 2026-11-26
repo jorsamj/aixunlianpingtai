@@ -580,31 +580,45 @@ class TrainingEvaluationService:
             return self.freeze_supplement_feedback_candidates(project_id, algorithm_id, version_id,
                 FreezeSupplementFeedbackCandidatesReq(candidates=selections))
 
-    def review_evaluation_sample(self, project_id: str, algorithm_id: str, version_id: str, payload: EvaluationReviewReq):
-        from platform_core.online_feedback import public_feedback
-        if payload.observation not in {'', 'model_error', 'gt_error', 'model_correct', 'unknown', 'hard_sample'} or len(payload.note) > 1000:
-            raise HTTPException(status_code=422, detail='复核意见无效')
+    def _evaluation_sample_review_source(self, project_id: str, algorithm_id: str, version_id: str, evaluation_id: str, image_id: str):
         version, model = self._advanced_evaluation_context(project_id, algorithm_id, version_id)
         evaluation = version.get('evaluation') or {}
-        if evaluation.get('evaluation_id') != payload.expected_evaluation_id or not re.fullmatch(r'[a-f0-9]{64}', payload.expected_evaluation_id):
+        if evaluation.get('evaluation_id') != evaluation_id or not re.fullmatch(r'[a-f0-9]{64}', evaluation_id):
             raise HTTPException(status_code=409, detail='评测身份已变化，请重新读取报告')
         if evaluation.get('model_sha256') != model.get('model_sha256') or evaluation.get('task_id') != model.get('training_task_id'):
             raise HTTPException(status_code=409, detail='评测模型与正式任务身份不一致')
         samples = evaluation.get('sample_outcomes') or evaluation.get('error_samples') or []
-        matches = [row for row in samples if str(row.get('image_id') or '') == payload.image_id]
+        matches = [row for row in samples if str(row.get('image_id') or '') == image_id]
         if len(matches) != 1:
             raise HTTPException(status_code=409, detail='冻结样本身份不唯一或未保存')
         sample = matches[0]
         # Persist only an opinion in the existing feedback owner. No image/GT write.
-        prediction_id = 'evalreview_' + hashlib.sha256((payload.expected_evaluation_id + ':' + payload.image_id).encode()).hexdigest()[:48]
-        source = {'schema_version': 1, 'prediction_id': prediction_id, 'project_id': project_id,
+        prediction_id = 'evalreview_' + hashlib.sha256((evaluation_id + ':' + image_id).encode()).hexdigest()[:48]
+        return {'schema_version': 1, 'prediction_id': prediction_id, 'project_id': project_id,
                   'algorithm_id': algorithm_id,
                   'version_id': version_id, 'model_sha256': model['model_sha256'],
                   'input_sha256': sample.get('image_content_sha256'), 'width': sample.get('image_width'),
                   'height': sample.get('image_height'), 'detections': [], 'engine': 'formal_evaluation',
                   'original_filename': sample.get('image'), 'input_file': '', 'created_at': evaluation.get('finished_at', ''),
-                  'source_channel': 'evaluation', 'external_source': payload.expected_evaluation_id,
-                  'external_sample_id': payload.image_id}
+                  'source_channel': 'evaluation', 'external_source': evaluation_id,
+                  'external_sample_id': image_id}
+
+    def read_evaluation_sample_review(self, project_id: str, algorithm_id: str, version_id: str, expected_evaluation_id: str, image_id: str):
+        from platform_core.online_feedback import public_feedback
+        source = self._evaluation_sample_review_source(project_id, algorithm_id, version_id, expected_evaluation_id, image_id)
+        row = self.dependencies._online_feedback_repository(project_id).get_by_prediction(source['prediction_id'])
+        if row is None:
+            return {'ok': True, 'feedback': None}
+        feedback = public_feedback(row)
+        if any(feedback[key] != source[key] for key in ('project_id', 'algorithm_id', 'version_id', 'model_sha256', 'input_sha256')):
+            raise HTTPException(409, detail='复核记录与冻结样本身份不一致')
+        return {'ok': True, 'feedback': feedback}
+
+    def review_evaluation_sample(self, project_id: str, algorithm_id: str, version_id: str, payload: EvaluationReviewReq):
+        from platform_core.online_feedback import public_feedback
+        if payload.observation not in {'', 'model_error', 'gt_error', 'model_correct', 'unknown', 'hard_sample'} or len(payload.note) > 1000:
+            raise HTTPException(status_code=422, detail='复核意见无效')
+        source = self._evaluation_sample_review_source(project_id, algorithm_id, version_id, payload.expected_evaluation_id, payload.image_id)
         repository = self.dependencies._online_feedback_repository(project_id)
         try:
             row, reused = repository.stage(source, feedback_type='needs_correction', note=payload.note, created_at=self.dependencies.now_iso())
@@ -870,6 +884,8 @@ class TrainingEvaluationService:
         current_quality = next(
             (row for row in quality_rows if row['is_current']), None
         )
+        latest_created = max((row for row in versions if row.get('created_at')),
+                             key=lambda row: str(row['created_at']), default=None)
         success = self.dependencies._successful_training_counts(project_id, history_context=(rows, repository, durable)).get(str(algorithm_id), 0)
         return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,
            'label_counts_scope': 'not_computed_fast' if lightweight else 'cumulative_training_boxes',
@@ -878,7 +894,9 @@ class TrainingEvaluationService:
                 'version_quality':quality_rows,
                 'version_quality_total':len(versions),
                 'version_quality_truncated':len(versions)>40,
-                'current_quality':current_quality}
+                'current_quality':current_quality,
+                'latest_created_version': ({key: latest_created.get(key) for key in ('id', 'version_name', 'created_at')}
+                                           if latest_created else None)}
 
     def _advanced_trust_evidence(self, project_id, algorithm_id, version, model, *, offset=0, limit=20):
         from platform_core.evaluation_analysis import analyze_evaluation_trust, append_historical_test_independence

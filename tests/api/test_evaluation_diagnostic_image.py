@@ -62,6 +62,8 @@ def test_p2_frozen_evaluation_review_is_only_opinion_and_idempotent(monkeypatch,
     repository = OnlineFeedbackRepository(root)
     monkeypatch.setattr(platform, '_online_feedback_repository', lambda _: repository)
     before = image.read_bytes()
+    service = platform._training_evaluation_service()
+    assert service.read_evaluation_sample_review('evaluation-project', 'algo', 'v1', 'e' * 64, 'test-image')['feedback'] is None
     request = platform.EvaluationReviewReq(expected_evaluation_id='e' * 64, image_id='test-image', observation='gt_error')
     first = platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request)
     second = platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request)
@@ -70,6 +72,10 @@ def test_p2_frozen_evaluation_review_is_only_opinion_and_idempotent(monkeypatch,
     assert first['feedback']['result']['formal_gt_changed'] is False
     assert first['feedback']['result']['frozen_test_protected'] is True
     assert first['feedback']['material_id'] == ''
+    verified = service.read_evaluation_sample_review('evaluation-project', 'algo', 'v1', 'e' * 64, 'test-image')['feedback']
+    assert verified['id'] == first['feedback']['id']
+    assert verified['result']['review_observation'] == 'gt_error'
+    assert verified['input_sha256'] == 'd' * 64
     assert image.read_bytes() == before and not (root / 'annotations.sqlite3').exists()
     with pytest.raises(HTTPException) as stale:
         platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request.model_copy(update={'expected_evaluation_id': 'a' * 64}))
