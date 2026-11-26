@@ -208,6 +208,9 @@ function loadVersions(){if(selected.value)void reads.run('versions',signal=>api.
 const latestCreated=computed(()=>versions.value?.latest_created_version??null);
 function changeVersionPage(value:number){void router.push({query:{...route.query,version_page:value===1?undefined:String(value)}})}
 const versionRemark=ref(''),versionSaveError=ref('');
+// Lineage names come from the already loaded version page; no extra request and no
+// inference from version naming.
+const versionNames=computed(()=>Object.fromEntries((versions.value?.items||[]).map(row=>[row.id,row.version_name||row.id])));
 const selectedAlgorithm=computed(()=>algorithms.value?.items.find(algorithm=>algorithm.id===selected.value)||versions.value?.algorithm);
 const canEditVersion=computed(()=>!!selectedAlgorithm.value&&selectedAlgorithm.value.id===detail.value?.algorithm_id);
 function setDetail(value:VersionDetail){detail.value=value;versionRemark.value=value.version.remark||''}
@@ -430,7 +433,7 @@ watch([selected,()=>route.query.version],([algorithm,version])=>{
   <el-skeleton v-if="reads.busy.detail" :rows="8"/>
   <el-alert v-else-if="reads.errors.detail" :title="reads.errors.detail" type="error"/>
   <template v-else-if="detail">
-   <ModelVersionDetails :detail="detail"/>
+   <ModelVersionDetails :detail="detail" :version-names="versionNames"/>
    <p><router-link :to="versionReport(detail.algorithm_id,detail.version.id)">训练报告</router-link>　<router-link v-if="detail.version.has_evaluation" :to="versionReport(detail.algorithm_id,detail.version.id,true)">独立评测</router-link></p>
    <form class="algorithm-form version-remark-form" @submit.prevent="saveVersionRemark">
     <label>版本备注<el-input v-model="versionRemark" aria-label="版本备注" type="textarea" :readonly="!canEditVersion" :disabled="saving"/></label>
