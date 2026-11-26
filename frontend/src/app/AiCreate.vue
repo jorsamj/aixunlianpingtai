@@ -4,7 +4,7 @@ import {onBeforeRouteLeave,useRoute,useRouter} from 'vue-router';
 import AiAnnotationCreate from '../views/AiAnnotationCreate.vue';
 import MaterialPreview from '../components/MaterialPreview.vue';
 import {getReviewLabels,type ReviewLabel} from '../api/ai-review';
-import {aiCreateInputs,createAiTask,previewAiImage,readAiCreateReceipt,summarizeAiMaterials,renderAiPrompt,
+import {aiCreateInputs,aiMaterialMembership,createAiTask,previewAiImage,readAiCreateReceipt,summarizeAiMaterials,renderAiPrompt,
   type AiCreateBody,type AiCreateModel,type AiCreatePrompt,type CreatePreview} from '../api/ai-annotation-create';
 import {useAiCreateMaterials} from '../composables/useAiCreateMaterials';
 import {useReadScope} from '../composables/useReadScope';
@@ -13,11 +13,13 @@ import type {AiAnnotationCreateContext,AiAnnotationCreateSnapshot} from '../type
 import type {MaterialFilters} from '../types/materials';
 import type {AiTask} from '../types/ai-tasks';
 import {legacyUrl} from './navigation';
+import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 
 const route=useRoute(),router=useRouter(),projectId=String(route.params.projectId);
 const controller=new AbortController(),reads=useReadScope(controller);
 const project={projectId};
 const taskList={name:'ai-tasks',params:project};
+const workspace=useWorkspace(),actorKey=workspace.actorKey;
 const journal='ai-create-operation:'+encodeURIComponent(projectId);
 const rules=/^[A-Za-z0-9_-]{12,80}$/;
 const pending=ref(''),journalProblem=ref(''),submitting=ref(false),recovering=ref(false),error=ref('');
@@ -33,10 +35,17 @@ for(const key of Object.keys(materialFilters) as (keyof MaterialFilters)[]){
 }
 const batch=ref(typeof route.query.zip_batch==='string'&&/^[0-9a-f]{10}$/.test(route.query.zip_batch)?route.query.zip_batch:'');
 const filters=reactive({...materialFilters});
-const materials=useAiCreateMaterials(projectId,controller,materialFilters,[]);
+const inherited=history.state?.aiCreateSelection;
+const fromSelected=route.query.material_scope==='selected';
+const initialIds:string[]=fromSelected&&actorKey&&inherited?.actorKey===actorKey&&inherited?.projectId===projectId
+  &&Array.isArray(inherited.imageIds)&&inherited.imageIds.length<=50000
+  &&inherited.imageIds.every((id:unknown)=>typeof id==='string'&&!!id)?inherited.imageIds:[];
+const handoffMissing=ref(fromSelected&&!initialIds.length);
+const materials=useAiCreateMaterials(projectId,controller,materialFilters,initialIds);
 const {page,busy:scopeBusy,count,canFreeze,frozen,excluded,error:scopeError}=materials;
 const referenceIds=shallowRef(new Set<string>()),previewId=ref(''),preview=shallowRef<CreatePreview>();
-const configLocked=computed(()=>submitting.value||recovering.value||!!pending.value||!!journalProblem.value);
+const configLocked=computed(()=>submitting.value||recovering.value||!!pending.value||!!journalProblem.value
+  ||!actorKey||workspace.actorKey!==actorKey);
 const confirmed=shallowRef<AiCreateBody>();
 const scopeCount=ref<number>();
 const stateCounts=shallowRef<Record<string,number>>();
@@ -107,6 +116,11 @@ function readJournal(){
     const saved=JSON.parse(raw);
     if(saved.project_id!==projectId||typeof saved.request_id!=='string'||!rules.test(saved.request_id))
       throw new Error('invalid journal');
+    if(saved.actor_key&&saved.actor_key!==actorKey){
+      pending.value='';
+      journalProblem.value='此项目有其他操作者尚未核对的创建记录，请由原操作者核对。';
+      return;
+    }
     pending.value=saved.request_id;journalProblem.value='';
   }catch{journalProblem.value='创建记录无法核验，请恢复浏览器存储后重试。'}
 }
@@ -118,8 +132,16 @@ function clearJournal(id:string){
   if(journalProblem.value||pending.value)throw new Error('创建记录暂未清除，请重新核对。');
 }
 function journalChanged(event:StorageEvent){if(event.key===journal||event.key===null)readJournal()}
+async function verifyActor(){
+  if(!actorKey||workspace.actorKey!==actorKey
+      ||workspaceActorKey(await readWorkspaceSession(controller.signal))!==actorKey||controller.signal.aborted)
+    throw new Error('登录账号已变化，请刷新页面后重新核对。');
+}
+function withJournalLock<T>(work:()=>T):Promise<T>{
+  return navigator.locks?navigator.locks.request(journal,()=>work()):Promise.resolve(work());
+}
 async function finish(task:AiTask,id:string){
-  clearJournal(id);
+  await withJournalLock(()=>clearJournal(id));
   submitting.value=false;
   if(!controller.signal.aborted)await router.push({...taskList,query:{created:task.id}});
 }
@@ -130,6 +152,7 @@ async function verify(){
   if(!id||journalProblem.value)return;
   recovering.value=true;error.value='';
   try{
+    await verifyActor();
     const task=await readAiCreateReceipt(projectId,id,controller.signal);
     if(!controller.signal.aborted)await finish(task,id);
   }catch(cause){
@@ -139,7 +162,7 @@ async function verify(){
   }finally{recovering.value=false}
 }
 async function prepare(){
-  if(configLocked.value||scopeBusy.value||reads.busy.summary)return;
+  if(configLocked.value||handoffMissing.value||scopeBusy.value||reads.busy.summary)return;
   error.value='';
   try{
     const body=build();
@@ -150,36 +173,44 @@ async function prepare(){
     }
     const selection=materials.input();
     await reads.run('summary',signal=>summarizeAiMaterials(projectId,selection,signal),summary=>{
-      if(JSON.stringify(build())!==JSON.stringify(body)||!Number.isSafeInteger(summary.count)||summary.count<1)
+      if(JSON.stringify(build())!==JSON.stringify(body)||summary.count!==count.value||summary.count<1)
         throw new Error('配置或素材范围已变化，请重新核对。');
       scopeCount.value=summary.count;stateCounts.value=summary.state_counts;confirmed.value=body;step.value=3;
     });
   }catch(cause){error.value=browseError(cause)}
 }
 async function create(){
-  if(configLocked.value||!confirmed.value||scopeBusy.value||reads.busy.summary||reads.busy.preview)return;
+  if(configLocked.value||handoffMissing.value||!confirmed.value||scopeBusy.value||reads.busy.summary||reads.busy.preview)return;
   readJournal();
   if(configLocked.value)return;
   error.value='';
   let id='';
+  let sent=false;
+  submitting.value=true;
   try{
+    await verifyActor();
     const current=build();
     if(JSON.stringify(current)!==JSON.stringify(confirmed.value))throw new Error('配置已变化，请重新核对。');
     id='ai-'+Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
-    localStorage.setItem(journal,JSON.stringify({project_id:projectId,request_id:id}));
-    readJournal();
-    if(journalProblem.value||pending.value!==id)throw new Error('无法可靠保存创建记录，本次未提交。');
-    submitting.value=true;
+    await withJournalLock(()=>{
+      if(controller.signal.aborted)throw new Error('当前页面已退出，请重新核对。');
+      readJournal();
+      if(pending.value||journalProblem.value)throw new Error('已有创建记录，请先核对。');
+      localStorage.setItem(journal,JSON.stringify({project_id:projectId,request_id:id,actor_key:actorKey}));
+      readJournal();
+      if(journalProblem.value||pending.value!==id)throw new Error('无法可靠保存创建记录，本次未提交。');
+    });
+    sent=true;
     const task=await createAiTask(projectId,{...current,request_id:id});
     if(!controller.signal.aborted)await finish(task,id);
   }catch(cause){
     if(controller.signal.aborted)return;
     const status=(cause as {httpStatus?:number}).httpStatus;
-    if(submitting.value&&[400,422].includes(status??0)){
-      try{clearJournal(id)}catch{/* The original record stays blocked. */}
+    if(sent&&[400,422].includes(status??0)){
+      try{await withJournalLock(()=>clearJournal(id))}catch{/* The original record stays blocked. */}
       confirmed.value=undefined;
       error.value=browseError(cause);
-    }else error.value=submitting.value?'创建结果待核对，请读取原请求回执。':browseError(cause);
+    }else error.value=sent?'创建结果待核对，请读取原请求回执。':browseError(cause);
   }finally{submitting.value=false}
 }
 function runPreview(){
@@ -187,7 +218,16 @@ function runPreview(){
   error.value='';preview.value=undefined;
   try{
     const body=build(),id=previewId.value;
-    void reads.run('preview',signal=>previewAiImage(projectId,body,id,signal),result=>{preview.value=result});
+    void reads.run('preview',async signal=>{
+      await verifyActor();
+      if(!body.source_batch_id&&!body.image_ids.includes(id)){
+        const ref=body.selection_ref;
+        if(!ref||body.excluded_image_ids?.includes(id)||!(await aiMaterialMembership(projectId,ref,[id],signal)).includes(id))
+          throw new Error('请选择本次任务中的一张素材试跑。');
+      }
+      if(signal.aborted)throw new DOMException('已取消','AbortError');
+      return previewAiImage(projectId,body,id,signal);
+    },result=>{preview.value=result});
   }catch(cause){error.value=browseError(cause)}
 }
 const previewImage=computed(()=>preview.value?{...preview.value.image,
@@ -226,6 +266,10 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
 <template>
   <AiAnnotationCreate :context="context">
     <template #materials>
+      <el-alert v-if="handoffMissing" title="无法读取原已选范围，请返回素材库重新进入。" type="warning" :closable="false"/>
+      <p v-else-if="fromSelected">已从素材库带入 {{ initialIds.length }} 张已选素材。筛选只改变浏览范围。</p>
+      <p v-else-if="route.query.material_scope==='filters'">已带入素材库筛选条件，请选择本次任务素材。</p>
+      <el-button v-if="handoffMissing" @click="handoffMissing=false">按当前筛选条件重新选择</el-button>
       <form class="create-fields" @submit.prevent="loadMaterials()">
         <label>图片名称<el-input v-model="filters.query" :disabled="configLocked"/></label>
         <label>素材标签<el-select v-model="filters.label" clearable filterable :disabled="configLocked">
@@ -249,7 +293,7 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
           <MaterialPreview :image="item" :project-id="projectId" :show-boxes="false"/>
           <el-checkbox :model-value="materials.isSelected(item.id)" :disabled="configLocked||scopeBusy||!!batch"
             @change="(value:unknown)=>materials.setSelected(item.id,value===true)">{{ item.filename }}</el-checkbox>
-          <el-button link :disabled="configLocked" @click="previewId=item.id;step=2">试跑此图</el-button>
+          <el-button link :disabled="configLocked||scopeBusy||(!batch&&!materials.isSelected(item.id))" @click="previewId=item.id;step=2">试跑此图</el-button>
           <el-button v-if="!dedicated&&item.annotation_state==='annotated'" link :disabled="configLocked"
             @click="toggleReference(item.id)">{{ referenceIds.has(item.id)?'移除参考':'设为参考' }}</el-button>
         </article>
@@ -306,7 +350,7 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
         <el-button v-if="journalProblem" @click="readJournal">重新读取创建记录</el-button>
         <el-button v-if="pending" type="primary" :loading="recovering" :disabled="submitting||!!journalProblem" @click="verify">核对原请求</el-button>
         <template v-else>
-          <el-button :loading="reads.busy.summary" :disabled="configLocked||scopeBusy||!editable" @click="prepare">核对配置和范围</el-button>
+          <el-button :loading="reads.busy.summary" :disabled="configLocked||handoffMissing||scopeBusy||!editable" @click="prepare">核对配置和范围</el-button>
           <el-button v-if="step===3" type="primary" :disabled="configLocked||!confirmed||!!reads.busy.preview" @click="create">确认创建任务</el-button>
         </template>
       </div>

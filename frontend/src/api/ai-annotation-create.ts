@@ -43,9 +43,10 @@ export async function aiMaterialMembership(project:string,ref:string,ids:string[
   return result.items;
 }
 export async function previewAiImage(project:string,body:AiCreateBody,id:string,signal:AbortSignal){
-  const {labels_text,model_config_id,prompt_template_id,prompt_override,business_instruction,threshold}=body;
+  const {labels_text,model_config_id,prompt_template_id,prompt_override,business_instruction,threshold,reference_image_ids,overwrite}=body;
   const result=await request<CreatePreview>(root(project)+'/annotation-preview',{method:'POST',signal,
-    body:JSON.stringify({image_ids:[id],labels_text,model_config_id,prompt_template_id,prompt_override,business_instruction,threshold})},190000);
+    body:JSON.stringify({image_ids:[id],labels_text,model_config_id,prompt_template_id,prompt_override,business_instruction,
+      threshold,overwrite,...(reference_image_ids.length?{reference_image_ids}:{})})},190000);
   if(result.preview_only!==true||result.image?.id!==id||!Array.isArray(result.boxes))throw new Error('试跑结果与所选素材不一致');
   return result;
 }

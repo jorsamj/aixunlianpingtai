@@ -8897,25 +8897,36 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     return `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
   }
   // The original create Owner persists only its recovery identity, never inference input.
-  const aiCreatePendingMemory429=new Map();
   const aiCreateJournalKey429=project=>'ai-create-operation:'+encodeURIComponent(project);
+  function aiCreateActor429(session=window.__changLianAuthSession){
+    return session?.authenticated&&session.user?.username?JSON.stringify([session.provider||'',session.user.username]):'';
+  }
+  function withAiCreateJournal429(project,work){
+    return window.navigator?.locks?window.navigator.locks.request(aiCreateJournalKey429(project),()=>work()):Promise.resolve(work());
+  }
+  async function verifiedAiCreateActor429(expected){
+    if(!window.fetch)return expected;
+    const response=await window.fetch('/api/auth/session',{credentials:'same-origin',cache:'no-store'});
+    const actor=response.ok&&aiCreateActor429(await response.json());
+    if(!actor||(expected&&actor!==expected))throw new Error('登录账号已变化，请刷新页面后重新核对。');
+    return actor;
+  }
   window.pendingAiCreate429=function(project=pid()){
     project=String(project||'');if(!project)return null;
     try{
       const storage=window.localStorage;if(!storage)throw new Error('storage unavailable');
       const raw=storage.getItem(aiCreateJournalKey429(project));
-      if(!raw)return aiCreatePendingMemory429.get(project)||null;
+      if(!raw)return null;
       const saved=JSON.parse(raw);
       if(saved.project_id!==project||typeof saved.request_id!=='string'||!/^[A-Za-z0-9_-]{12,80}$/.test(saved.request_id))throw new Error('invalid recovery identity');
-      const pending={project_id:project,request_id:saved.request_id,state:'UNKNOWN'};
-      aiCreatePendingMemory429.set(project,pending);return pending;
-    }catch(_error){return {...(aiCreatePendingMemory429.get(project)||{project_id:project,request_id:''}),state:'UNKNOWN',error:'创建恢复记录暂时不可读取或身份异常；禁止重复创建，请恢复浏览器存储后查询。'}}
+      if(saved.actor_key&&saved.actor_key!==aiCreateActor429())return {project_id:project,request_id:'',state:'UNKNOWN',error:'此项目有其他操作者尚未核对的创建记录，请由原操作者核对。'};
+      return {project_id:project,request_id:saved.request_id,state:'UNKNOWN'};
+    }catch(_error){return {project_id:project,request_id:'',state:'UNKNOWN',error:'创建恢复记录暂时不可读取或身份异常；禁止重复创建，请恢复浏览器存储后查询。'}}
   };
-  function persistAiCreate429(project,requestId){
-    const raw=JSON.stringify({project_id:project,request_id:requestId}),storage=window.localStorage;
+  function persistAiCreate429(project,requestId,actor){
+    const raw=JSON.stringify({project_id:project,request_id:requestId,...(actor?{actor_key:actor}:{})}),storage=window.localStorage;
     if(!storage)throw new Error('恢复存储不可用');
     storage.setItem(aiCreateJournalKey429(project),raw);
-    aiCreatePendingMemory429.set(project,{project_id:project,request_id:requestId,state:'UNKNOWN'});
     if(storage.getItem(aiCreateJournalKey429(project))!==raw)throw new Error('恢复记录写后校验失败');
   }
   function clearAiCreate429(pending){
@@ -8923,7 +8934,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!current||current.error||current.request_id!==pending.request_id)return false;
     const storage=window.localStorage;storage.removeItem(aiCreateJournalKey429(pending.project_id));
     if(storage.getItem(aiCreateJournalKey429(pending.project_id))!==null)return false;
-    aiCreatePendingMemory429.delete(pending.project_id);return true;
+    return true;
   }
   window.renderAiCreateRecovery429=function(){
     const root=document.querySelector('.ai429[data-ai-create-epoch]');if(!root)return;
@@ -8952,10 +8963,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!pending||!pending.request_id||pending.error){window.renderAiCreateRecovery429();return null}
     const controller=new AbortController();captured.draft.createReceiptController=controller;captured.draft.receiptLoading=true;window.renderAiCreateRecovery429();
     try{
+      await verifiedAiCreateActor429(aiCreateActor429());
       const receipt=await api(`${taskApi(null,pending.project_id)}/by-request/${encodeURIComponent(pending.request_id)}`,{signal:controller.signal});
       if(typeof receipt?.id!=='string'||!receipt.id.trim()||(receipt.project_id!=null&&String(receipt.project_id)!==pending.project_id))throw new Error('缺少匹配任务回执');
       // A stale GET may clear its exact identity but never close a replacement modal.
-      if(!clearAiCreate429(pending))return null;
+      if(!await withAiCreateJournal429(pending.project_id,()=>clearAiCreate429(pending)))return null;
       await showAiCreateReceipt429(receipt,captured);return receipt;
     }catch(_error){if(captured.current()){window.renderAiCreateRecovery429();toast('尚未确认原创建回执；保留 UNKNOWN，请稍后再次查询，勿重复提交。')}return null}
     finally{if(captured.draft.createReceiptController===controller){captured.draft.createReceiptController=null;captured.draft.receiptLoading=false;if(captured.current())window.renderAiCreateRecovery429()}}
@@ -9011,20 +9023,28 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const ownerRoot=document.querySelector(`.ai429[data-ai-create-epoch="${ownerEpoch}"]`);
     const current=()=>captured.current()&&!!ownerRoot?.isConnected;
     if(!current()||window.pendingAiCreate429(ownerProject))return false;
-    try{persistAiCreate429(ownerProject,body.request_id)}catch(_error){window.renderAiCreateRecovery429();toast('无法保存创建恢复记录，本次未提交。请恢复浏览器存储后再核查。');return false}
     draft.submitting=true;
+    try{
+      const actor=await verifiedAiCreateActor429(aiCreateActor429());
+      const reserved=await withAiCreateJournal429(ownerProject,()=>{
+        if(!current()||window.pendingAiCreate429(ownerProject))return false;
+        persistAiCreate429(ownerProject,body.request_id,actor);
+        return true;
+      });
+      if(!reserved){draft.submitting=false;window.renderAiCreateRecovery429();return false}
+    }catch(error){draft.submitting=false;window.renderAiCreateRecovery429();toast(error.message||'无法保存创建恢复记录，本次未提交。');return false}
     try{
       if(submit){submit.disabled=true;submit.textContent='正在创建…'}
       const task=await api(taskApi(null,ownerProject),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if(typeof task?.id!=='string'||!task.id.trim()||(task.project_id!=null&&String(task.project_id)!==ownerProject))throw new Error('创建请求缺少匹配任务回执');
-      if(!clearAiCreate429({project_id:ownerProject,request_id:body.request_id}))throw new Error('创建回执恢复记录尚未清除');
+      if(!await withAiCreateJournal429(ownerProject,()=>clearAiCreate429({project_id:ownerProject,request_id:body.request_id})))throw new Error('创建回执恢复记录尚未清除');
       if(!current())return true;
       await showAiCreateReceipt429(task,captured);
       return true;
     }catch(error){
       // This route validates the payload before writing request.json or a task.
       // Explicit 400/422 rejects can be corrected; conflict/timeout/transport remain UNKNOWN.
-      if([400,422].includes(Number(error.httpStatus))&&clearAiCreate429({project_id:ownerProject,request_id:body.request_id})){
+      if([400,422].includes(Number(error.httpStatus))&&await withAiCreateJournal429(ownerProject,()=>clearAiCreate429({project_id:ownerProject,request_id:body.request_id}))){
         if(current()){
           draft.confirmationSnapshot='';
           draft.createError=String(error.message||'创建配置未通过服务端校验').replace(/https?:\/\/\S+/g,'[地址已隐藏]').replace(/(token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;}]+/gi,'$1=[已隐藏]').replace(/[A-Za-z]:[\\/][^\s,;]+|(?:\/[\w.\-]+){2,}/g,'[路径已隐藏]').slice(0,600);

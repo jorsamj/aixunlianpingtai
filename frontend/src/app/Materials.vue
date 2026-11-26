@@ -10,9 +10,10 @@ import {legacyUrl} from './navigation';
 const route=useRoute(),router=useRouter(),controller=new AbortController();
 onBeforeUnmount(()=>controller.abort());
 const projectId=String(route.params.projectId);
-const workspace=useWorkspace(),username=workspace.username;
-const selectionKey='materials.selection:'+JSON.stringify([username,projectId]);
+const workspace=useWorkspace(),actorKey=workspace.actorKey;
+const selectionKey='materials.selection:'+JSON.stringify([actorKey,projectId]);
 const storageFailed=ref(false);
+const aiHandoffError=ref('');
 const filterKeys=['query','label','annotation_state','quality_status','storage_source_id','source_batch_id','created_from','created_to'] as const;
 const queryValue=(key:string)=>typeof route.query[key]==='string'?route.query[key] as string:'';
 const filters=Object.fromEntries(filterKeys.map(key=>[key,queryValue(key)])) as unknown as MaterialFilters;
@@ -84,10 +85,18 @@ const context:MaterialContext={
 function openAnnotation(image?:string){
   void router.push({name:'formal-annotation',params:{projectId},query:{...routeQuery(current),image}});
 }
-function locationFor(action:string,page:string){
+async function locationFor(action:string,page:string){
   if(action==='material-manual'){openAnnotation();return}
   if(action==='material-ai'){
-    void router.push({name:'ai-create',params:{projectId},query:{...current.filters}});
+    if(!actorKey||workspace.actorKey!==actorKey)return;
+    aiHandoffError.value='';
+    const imageIds=[...current.selectedItems];
+    if(imageIds.length>50000){aiHandoffError.value='一次最多继承 50000 张已选素材，请缩小已选范围。';return}
+    try{
+      await router.push({name:'ai-create',params:{projectId},
+        query:{...current.filters,material_scope:imageIds.length?'selected':'filters'},
+        state:imageIds.length?{aiCreateSelection:{projectId,actorKey,imageIds}}:undefined});
+    }catch{aiHandoffError.value='无法带入已选素材，请保留当前选择并重试。'}
     return;
   }
   if(page==='标签管理'){void router.push({name:'labels',params:{projectId}});return}
@@ -111,6 +120,7 @@ const legacyActions=[
         <el-button v-for="[label,action,page] in legacyActions" :key="label" @click="locationFor(action,page)">{{label}}</el-button>
       </nav>
       <el-alert v-if="storageFailed" title="浏览器无法保留选择，刷新或离开页面后需重新核对。" type="warning" :closable="false"/>
+      <el-alert v-if="aiHandoffError" :title="aiHandoffError" type="error" :closable="false"/>
     </template>
   </MaterialLibrary>
 </template>

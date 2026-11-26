@@ -164,7 +164,7 @@ test('AI create requires an effective-configuration review before its only durab
   assert.doesNotMatch(submit, /aiCreateIsCurrent429|aiCreateLabelName429/);
   assert.match(submit, /draft\.createRequestId=newAiCreateRequestId429\(\)/);
   assert.match(submit, /body\.request_id=draft\.createRequestId/);
-  assert.match(submit, /persistAiCreate429\(ownerProject,body\.request_id\)/);
+  assert.match(submit, /persistAiCreate429\(ownerProject,body\.request_id,actor\)/);
   assert.match(submit, /return window\.queryAiCreateReceipt429\(\)/);
   assert.match(source, /taskApi\(null,pending\.project_id\)\}\/by-request\/\$\{encodeURIComponent\(pending\.request_id\)\}/);
 });

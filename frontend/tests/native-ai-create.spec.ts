@@ -4,7 +4,12 @@ import {resolve} from 'node:path';
 test('AI create freezes a large selection, excludes one image and recovers the original request',async({page})=>{
   let creates=0,previews=0,reads=0,savedRequest='';
   const ids=['visible-a','visible-b'];
-  const rows=ids.map(id=>({id,filename:id+'.jpg',width:32,height:32,annotation_state:'unannotated'}));
+  const rows=ids.map((id,index)=>({id,filename:id+'.jpg',width:32,height:32,annotation_state:index?'unannotated':'annotated'}));
+  await page.addInitScript(()=>{
+    const seeded='materials.selection:'+JSON.stringify([JSON.stringify(['local','operator']),'p']);
+    if(sessionStorage.getItem(seeded)===null)
+      sessionStorage.setItem(seeded,JSON.stringify(['visible-b',...Array.from({length:19999},(_,i)=>'off-page-'+i)]));
+  });
   await page.route('**/app/**',route=>{
     const name=new URL(route.request().url()).pathname.slice('/app/'.length)||'index.html';
     return route.fulfill({path:resolve('../static/vue-app',name),contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'});
@@ -19,8 +24,10 @@ test('AI create freezes a large selection, excludes one image and recovers the o
     if(path.endsWith('/materials'))return route.fulfill({json:{ok:true,project_id:'p',items:rows,page:1,page_size:48,total:20001,total_pages:417,has_next:true}});
     if(path.endsWith('/annotation-selections'))return route.fulfill({json:{selection_ref:'ref-large',count:20001}});
     if(path.endsWith('/annotation-selections/membership')){
-      expect(route.request().postDataJSON()).toMatchObject({selection_ref:'ref-large',image_ids:ids});
-      return route.fulfill({json:{items:ids}});
+      const request=route.request().postDataJSON();
+      expect(request).toMatchObject({selection_ref:'ref-large'});
+      expect([ids,['visible-b']]).toContainEqual(request.image_ids);
+      return route.fulfill({json:{items:request.image_ids}});
     }
     if(path.endsWith('/annotation-selections/summary')){
       expect(route.request().postDataJSON()).toEqual({image_ids:[],previous_ref:'ref-large',excluded_image_ids:['visible-a']});
@@ -28,13 +35,15 @@ test('AI create freezes a large selection, excludes one image and recovers the o
     }
     if(path.endsWith('/annotation-preview')){
       previews++;
-      expect(route.request().postDataJSON()).toMatchObject({image_ids:['visible-b'],labels_text:'smoke',model_config_id:'vision'});
+      expect(route.request().postDataJSON()).toMatchObject({image_ids:['visible-b'],labels_text:'smoke',model_config_id:'vision',
+        reference_image_ids:['visible-a'],overwrite:true});
       return route.fulfill({json:{image:rows[1],preview_only:true,boxes:[],latency_ms:25}});
     }
     if(path.endsWith('/annotation-tasks')&&method==='POST'){
       creates++;
       const body=route.request().postDataJSON();
-      expect(body).toMatchObject({selection_ref:'ref-large',image_ids:[],excluded_image_ids:['visible-a'],model_config_id:'vision',threshold:0.45,overwrite:false});
+      expect(body).toMatchObject({selection_ref:'ref-large',image_ids:[],excluded_image_ids:['visible-a'],model_config_id:'vision',
+        threshold:0.45,reference_image_ids:['visible-a'],overwrite:true});
       savedRequest=body.request_id;
       expect(savedRequest).toMatch(/^ai-[a-f0-9]{32}$/);
       return route.abort('failed');
@@ -46,16 +55,23 @@ test('AI create freezes a large selection, excludes one image and recovers the o
     if(path.endsWith('/annotation-tasks'))return route.fulfill({json:{ok:true,project_id:'p',items:[],next_cursor:null}});
     return route.fulfill({status:404,json:{detail:'unexpected route'}});
   });
-  await page.goto('/app/#/projects/p/ai/create');
+  await page.goto('/app/#/projects/p/materials');
+  await page.getByRole('button',{name:'AI 预标注'}).click();
+  await expect(page.getByText('已从素材库带入 20000 张已选素材。筛选只改变浏览范围。')).toBeVisible();
+  expect(page.url()).not.toContain('visible-b');
+  await expect(page.locator('article').filter({hasText:'visible-b.jpg'}).getByRole('checkbox')).toBeChecked();
+  await page.getByRole('button',{name:'清除选择'}).click();
   await page.getByRole('button',{name:'冻结全部筛选结果'}).click();
   const first=page.locator('article').filter({hasText:'visible-a.jpg'});
   await expect(first.getByRole('checkbox')).toBeChecked();
   await first.locator('.el-checkbox').click();
   await expect(first.getByRole('checkbox')).not.toBeChecked();
+  await first.getByRole('button',{name:'设为参考'}).click();
   await page.locator('article').filter({hasText:'visible-b.jpg'}).getByRole('button',{name:'试跑此图'}).click();
   await page.getByRole('combobox',{name:'审核标签'}).click();
   await page.getByRole('option',{name:'烟雾 · smoke'}).click();
   await page.keyboard.press('Escape');
+  await page.getByText('允许为已有标注素材生成候选',{exact:true}).click();
   expect(previews).toBe(0);
   await page.getByRole('button',{name:'运行单图试跑'}).click();
   await expect(page.getByText('0 个候选框 · 25 ms')).toBeVisible();
