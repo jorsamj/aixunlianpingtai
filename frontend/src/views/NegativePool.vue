@@ -7,15 +7,19 @@ import {modelBrowseApi} from '../api/model-browse';
 import {useReadScope} from '../composables/useReadScope';
 import PageHeader from '../components/PageHeader.vue';
 import MaterialPreview from '../components/MaterialPreview.vue';
-const props=defineProps<{context:PoolContext}>(),reads=useReadScope(props.context),api=negativePoolApi(props.context),catalog=modelBrowseApi(props.context),saved=props.context.memory.negativePool;
+const props=defineProps<{context:PoolContext;poolCategories?:PoolCategory[]}>(),reads=useReadScope(props.context),api=negativePoolApi(props.context),catalog=modelBrowseApi(props.context),saved=props.context.memory.negativePool;
 const pending=ref<PoolPacket|null>(null),invalidPending=ref('');try{pending.value=frozenPoolPacket(props.context.poolPending.value)}catch(error){invalidPending.value=error instanceof Error?error.message:'待确认操作无法读取'}
 type PoolCategory={id:string;name:string;enabled?:boolean|number;material_count?:number};
-const categories=ref<PoolCategory[]>([]),categoryError=ref('');
+// The workbench parent owns the shared category source so management and the
+// member filter cannot drift; a standalone legacy mount keeps a bounded fallback.
+const localCategories=ref<PoolCategory[]>([]),categoryError=ref('');
+const categories=computed<PoolCategory[]>(()=>props.poolCategories??localCategories.value);
 async function loadCategories(){
+  if(props.poolCategories!==undefined)return;
   try{
     const result=await props.context.get<{items:PoolCategory[]}>(`/api/v61/projects/${encodeURIComponent(props.context.projectId)}/negative-pool/categories`,{signal:props.context.signal});
     if(!Array.isArray(result.items))throw new Error('分类响应格式无效');
-    categories.value=result.items;categoryError.value='';
+    localCategories.value=result.items;categoryError.value='';
   }catch(error){categoryError.value=error instanceof Error?error.message:'分类读取失败'}
 }
 const categoryLabel=(row:PoolCategory)=>`${row.name}${typeof row.material_count==='number'?` · ${row.material_count} 张`:''}${row.enabled===false||row.enabled===0?' · 已停用':''}`;const algorithm=ref(pending.value?.project_id===props.context.projectId?pending.value.algorithm_id:saved?.algorithmId||props.context.memory.selection?.algorithmId||''),filters=reactive<PoolFilters>({query:'',category_id:'',label:'',joined_days:'',review_status:'',target_label:'',...saved?.filters}),number=ref(saved?.algorithmId===algorithm.value?saved.page:1),selected=ref<string[]>(saved?.algorithmId===algorithm.value?saved.selected:[]),page=ref<PoolPage|null>(null),algorithms=ref<Paged<AlgorithmSummary>|null>(null),algorithmPage=ref(1),algorithmQuery=ref(''),confirm=ref<PoolPacket|null>(null),receipt=ref<PoolReceipt|null>(null),note=ref(''),knownRejected=ref(false);

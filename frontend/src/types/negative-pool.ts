@@ -1,4 +1,5 @@
 import type {MaterialContext,MaterialRow} from './materials';
+export interface PoolCategory {id:string;name:string;enabled?:boolean|number;material_count?:number}
 export interface PoolFilters {query:string;category_id:string;label:string;joined_days:string;review_status:string;target_label:string}
 export interface PoolPacket {project_id:string;algorithm_id:string;image_ids:string[];action:'add'|'remove';expected_revision:string;operation_id:string;report_counts:true}
 export interface PoolReceipt {operation_kind:string;operation_id:string;project_id:string;algorithm_id:string;action:'add'|'remove';negative_pool_revision:string;affected:number;added?:number;already_present?:number;removed?:number;already_absent?:number}

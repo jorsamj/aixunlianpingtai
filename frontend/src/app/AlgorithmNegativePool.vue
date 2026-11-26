@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import {onBeforeUnmount} from 'vue';
+import {onBeforeUnmount,onMounted,ref} from 'vue';
 import {useRouter} from 'vue-router';
 import NegativePool from '../views/NegativePool.vue';
 import NegativePoolCategories from './NegativePoolCategories.vue';
-import type {PoolContext} from '../types/negative-pool';
+import type {PoolCategory,PoolContext} from '../types/negative-pool';
 import {frozenPoolPacket} from '../api/negative-pool';
 import {request} from './http';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
@@ -21,6 +21,20 @@ try{
   if(Array.isArray(stored))selected=[...new Set(stored.filter((id):id is string=>typeof id==='string'&&!!id))];
 }catch{}
 const memory:PoolContext['memory']={materials:{filters,page:1,layout:'grid',selectedItems:selected}};
+// The workbench parent owns the single category source: the management panel and
+// the member filter both read it, so a rename or enable toggle is visible at once
+// without a second loader or a global store.
+const categories=ref<PoolCategory[]>([]),categoryLoading=ref(false),categoryError=ref('');
+async function loadCategories(){
+  if(categoryLoading.value)return;
+  categoryLoading.value=true;
+  try{
+    const result=await request<{items:PoolCategory[]}>(`/api/v61/projects/${encodeURIComponent(projectId)}/negative-pool/categories`,{signal:controller.signal});
+    if(!Array.isArray(result.items))throw new Error('分类响应格式无效');
+    categories.value=result.items;categoryError.value='';
+  }catch(cause){if(!controller.signal.aborted)categoryError.value=(cause as Error).message}
+  finally{categoryLoading.value=false}
+}
 const context:PoolContext={
   projectId,actorKey:actor,get:request,signal:controller.signal,memory,
   poolPending:{
@@ -48,10 +62,13 @@ const context:PoolContext={
     void router.push({name:'materials',params:{projectId}});
   },
 };
+onMounted(()=>void loadCategories());
 onBeforeUnmount(()=>controller.abort());
 </script>
 
 <template>
- <NegativePoolCategories :project-id="projectId"/>
- <NegativePool :context="context"/>
+ <NegativePoolCategories :project-id="projectId" :categories="categories" :loading="categoryLoading"
+  @refresh="loadCategories"/>
+ <el-alert v-if="categoryError" :title="`分类读取失败：${categoryError}`" type="warning" :closable="false"/>
+ <NegativePool :context="context" :pool-categories="categories"/>
 </template>
