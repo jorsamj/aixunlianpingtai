@@ -6,7 +6,7 @@ import hashlib
 import json
 
 import app as app_module
-from platform_core.task_runtime import TaskKind
+from platform_core.task_runtime import TaskKind, TaskStatus
 
 
 class ReadyBoardNodes:
@@ -164,6 +164,46 @@ def test_rknn_hardware_test_creates_agent_only_deployment_task(
     assert request["remote_execution"]["deployment"]["board"]["chip"] == "rk3568"
     assert transport.calls[0]["input_size"] == 640
     assert body["board_nodes"][0]["node_id"] == "rk3568-board"
+
+
+def test_rknn_hardware_request_replays_exact_identity_and_retries_only_before_claim(client, seeded_project, monkeypatch):
+    import uuid
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(f"/api/v12/projects/{project_id}/algorithms", json={
+        "name": "board-request-" + uuid.uuid4().hex[:8], "algorithm_type": "yolo_ultralytics",
+    }).json()["algorithm"]
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"], {"id": "v1", "version_name": "V1"})
+    job, model_sha = seed_rknn_job(project_id)
+    file = app_module._deploy_job_dir(project_id, job) / "job.json"
+    row = json.loads(file.read_text(encoding="utf-8"))
+    row["source_id"] = f"version::{algorithm['id']}::v1"
+    file.write_text(json.dumps(row), encoding="utf-8")
+    transport = FakeBoardTransport()
+    monkeypatch.setattr(conversion_management_owner, "ServiceNodeRepository", ReadyBoardNodes)
+    monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: transport)
+    upload = b"board-request-image"
+    identity = {"request_id": uuid.uuid4().hex, "model_sha256": model_sha,
+                "input_sha256": hashlib.sha256(upload).hexdigest()}
+    base = f"/api/v39/projects/{project_id}/deploy/jobs/{job}/hardware-tests"
+    lookup = base + "/by-request/" + identity["request_id"]
+    assert client.get(lookup).status_code == 404
+    files = {"file": ("verify.jpg", upload, "image/jpeg")}
+    first = client.post(base, data=identity, files=files)
+    assert first.status_code == 202, first.text
+    task_id = first.json()["task_id"]
+    assert client.get(lookup).json()["input_sha256"] == identity["input_sha256"]
+    assert client.post(base, data=identity, files=files).json()["task_id"] == task_id
+    assert len(transport.calls) == 1
+    assert client.post(base, data={**identity, "model_sha256": "d" * 64}, files=files).status_code == 409
+    repository = app_module.shared_task_repository()
+    assert repository.request_cancel(task_id).status is TaskStatus.CANCELLED
+    assert client.post(f"/api/v61/projects/{project_id}/deployment-tests/{task_id}/retry").status_code == 409
+    retried = client.post(lookup + "/retry")
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["task_id"] == task_id
+    assert len(transport.calls) == 1
 
 
 def test_rknn_hardware_test_fails_before_task_creation_without_matching_board(

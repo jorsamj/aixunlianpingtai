@@ -406,6 +406,8 @@ class DeploymentValidationService:
         repository, artifacts = self.dependencies.shared_task_repository(), self.dependencies.shared_task_artifacts()
         with creation_lock(artifacts, task_id):
             parent = self.dependencies._require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
+            if str(parent.resource_key).startswith("deployment-rknn-board:"):
+                raise HTTPException(409, detail="请通过原转换产物的板端验证请求核验和恢复，不能通用重试")
             child = repository.get(task_id + '-prepare')
             failed = {TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE, TaskStatus.CANCELLED}
             pending = 'deployment.input.pending' in parent.required_capabilities

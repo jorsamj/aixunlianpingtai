@@ -6,6 +6,7 @@ from fastapi import Query, HTTPException
 from .conversion_management_contracts import DeployJobReq, DeployResourceReq, ModelExportReq
 
 import json
+import asyncio
 import hashlib
 import math
 import re
@@ -1170,7 +1171,21 @@ class ConversionManagementService:
         project_id: str,
         job_id: str,
         file: UploadFile = File(...),
+        *,
+        request_id: str = "",
+        model_sha256: str = "",
+        input_sha256: str = "",
     ):
+        if request_id or model_sha256 or input_sha256:
+            task_id = self._rknn_hardware_request_task_id(project_id, job_id, request_id)
+            image = await file.read()
+            if not image:
+                raise HTTPException(400, detail="板端验证图片为空")
+            if (not re.fullmatch(r"[a-f0-9]{64}", model_sha256)
+                    or hashlib.sha256(image).hexdigest() != input_sha256):
+                raise HTTPException(409, detail="模型或测试图 SHA256 不匹配")
+            return await asyncio.to_thread(self._create_rknn_hardware_request,
+                project_id, job_id, task_id, request_id, model_sha256, input_sha256, image, file.filename)
         context = self._rknn_hardware_validation_context(project_id, job_id)
         algorithm_id, version_id = self.dependencies._deploy_job_version_identity(context["job"])
         with self.dependencies._algorithm_version_reference_fence(
@@ -1180,14 +1195,132 @@ class ConversionManagementService:
                 project_id, job_id, file,
             )
 
+    @staticmethod
+    def _rknn_hardware_request_task_id(project_id, job_id, request_id):
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{16,80}", request_id):
+            raise HTTPException(422, detail="板端验证请求编号无效")
+        identity = json.dumps(["rknn-hardware", project_id, job_id, request_id])
+        return hashlib.sha256(identity.encode()).hexdigest()[:32]
+
+    def _rknn_hardware_receipt(self, record, frozen, nodes=None, *, status_code=200):
+        return JSONResponse(status_code=status_code, content={
+            **self.dependencies.public_deployment_test(record),
+            "board_nodes": nodes if nodes is not None else frozen["board_nodes"],
+            "source_conversion_job_id": frozen["source_conversion_job_id"],
+            "chip": frozen["chip"], "request_id": frozen["request_id"],
+            "model_sha256": frozen["model_sha256"], "input_sha256": frozen["input_sha256"],
+        })
+
+    def _load_rknn_hardware_request(self, project_id, job_id, request_id):
+        self.dependencies.get_project(project_id)
+        task_id = self._rknn_hardware_request_task_id(project_id, job_id, request_id)
+        record = self.dependencies.shared_task_repository().get(task_id)
+        if record is None or record.project_id != project_id or record.kind is not TaskKind.DEPLOYMENT_TEST:
+            raise HTTPException(404, detail="板端验证请求尚未登记")
+        payload = self.dependencies.shared_task_artifacts().read_json(task_id, record.payload_ref, default={})
+        frozen = payload.get("hardware_request") or {}
+        if frozen.get("request_id") != request_id or frozen.get("source_conversion_job_id") != job_id:
+            raise HTTPException(404, detail="板端验证请求身份不匹配")
+        return record, frozen
+
+    def v39_rknn_hardware_test_receipt(self, project_id, job_id, request_id):
+        record, frozen = self._load_rknn_hardware_request(project_id, job_id, request_id)
+        return self._rknn_hardware_receipt(record, frozen)
+
+    def v39_retry_unstarted_rknn_hardware_test(self, project_id, job_id, request_id):
+        from platform_core.deployment.scenario_preparation import creation_lock
+        record, frozen = self._load_rknn_hardware_request(project_id, job_id, request_id)
+        repository, artifacts = self.dependencies.shared_task_repository(), self.dependencies.shared_task_artifacts()
+        identity = (frozen["algorithm_id"], frozen["version_id"])
+        with self.dependencies._algorithm_version_reference_fence(project_id, *identity):
+            with creation_lock(artifacts, record.task_id):
+                record, frozen = self._load_rknn_hardware_request(project_id, job_id, request_id)
+                if record.status is TaskStatus.QUEUED and record.retry_of == record.task_id and not record.attempt:
+                    return self._rknn_hardware_receipt(record, frozen, status_code=202)
+                if (record.status not in {TaskStatus.CANCELLED, TaskStatus.FAILED} or record.attempt
+                        or record.worker_id or record.lease_token or record.process_pid is not None):
+                    raise HTTPException(409, detail="原板端执行已领取或停止证据不足，不能恢复")
+                context = self._rknn_hardware_validation_context(project_id, job_id)
+                if (self.dependencies._deploy_job_version_identity(context["job"]) != identity
+                        or context["model_sha256"] != frozen["model_sha256"] or context["chip"] != frozen["chip"]
+                        or context["hardware_verified"] or not context["board_nodes"]
+                        or self._rknn_input_size(context["job"]) != frozen["input_size"]
+                        or str(context["manifest"]["target"].get("precision") or "") != frozen["precision"]):
+                    raise HTTPException(409, detail="原验证模型、目标或板端条件已变化")
+                record = repository.retry(record.task_id)
+                return self._rknn_hardware_receipt(record, frozen, status_code=202)
+
+    def _create_rknn_hardware_request(self, project_id, job_id, task_id, request_id, model_sha, input_sha, image, filename):
+        self.dependencies.get_project(project_id)
+        repository = self.dependencies.shared_task_repository()
+        artifacts = self.dependencies.shared_task_artifacts()
+        lock = artifacts.artifact_path(task_id, "hardware-request.lock")
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock), timeout=60):
+            record = repository.get(task_id)
+            prior = artifacts.read_json(task_id, "request.json", default={})
+            intent = artifacts.read_json(task_id, "hardware-intent.json", default={})
+            frozen = prior.get("hardware_request") or intent
+            extension = self._rknn_input_extension(filename)
+            if frozen and any(frozen.get(key) != value for key, value in {
+                "request_id": request_id, "source_conversion_job_id": job_id,
+                "model_sha256": model_sha, "input_sha256": input_sha, "input_extension": extension,
+            }.items()):
+                raise HTTPException(409, detail="板端验证原请求内容已变化")
+            if record is not None:
+                if (not prior.get("hardware_request") or record.project_id != project_id
+                        or record.kind is not TaskKind.DEPLOYMENT_TEST):
+                    raise HTTPException(409, detail="板端验证任务编号已被占用")
+                return self._rknn_hardware_receipt(record, frozen, status_code=202)
+            context = self._rknn_hardware_validation_context(project_id, job_id)
+            algorithm, version = self.dependencies._deploy_job_version_identity(context["job"])
+            if not algorithm or not version or context["model_sha256"] != model_sha:
+                raise HTTPException(409, detail="缺少可核验的算法版本或转换产物已变化")
+            with self.dependencies._algorithm_version_reference_fence(project_id, algorithm, version):
+                context = self._rknn_hardware_validation_context(project_id, job_id)
+                current_identity = dict(request_id=request_id, source_conversion_job_id=job_id,
+                    algorithm_id=algorithm, version_id=version, model_sha256=model_sha, input_sha256=input_sha,
+                    chip=context["chip"], board_nodes=context["board_nodes"],
+                    input_size=self._rknn_input_size(context["job"]),
+                    input_extension=extension,
+                    precision=str(context["manifest"]["target"].get("precision") or ""))
+                if (context["model_sha256"] != model_sha
+                        or self.dependencies._deploy_job_version_identity(context["job"]) != (algorithm, version)
+                        or frozen and {k: v for k, v in frozen.items() if k != "board_nodes"} !=
+                                      {k: v for k, v in current_identity.items() if k != "board_nodes"}):
+                    raise HTTPException(409, detail="板端验证冻结的转换模型或参数已变化")
+                if context["hardware_verified"]:
+                    raise HTTPException(409, detail="该 RKNN 产物已完成板端 Runtime 验证")
+                frozen = frozen or current_identity
+                if not intent:
+                    artifacts.atomic_write_json(task_id, "hardware-intent.json", frozen)
+                if prior:
+                    record = self._publish_rknn_hardware_task(project_id, task_id, frozen["chip"])
+                    return self._rknn_hardware_receipt(record, frozen, status_code=202)
+                return self._create_rknn_hardware_test(project_id, job_id, context, image, filename,
+                                                       task_id=task_id, hardware_request=frozen)
+
     async def _v39_create_rknn_hardware_test_under_version_fence(self,
         project_id: str,
         job_id: str,
         file: UploadFile,
     ):
         context = self._rknn_hardware_validation_context(project_id, job_id)
-        job = context["job"]
-        job_dir = context["job_dir"]
+        return self._create_rknn_hardware_test(project_id, job_id, context, await file.read(), file.filename)
+
+    @staticmethod
+    def _rknn_input_size(job):
+        params = job.get("params")
+        try:
+            return int((params if isinstance(params, Mapping) else {}).get("input_size") or 640)
+        except (TypeError, ValueError):
+            return 640
+
+    def _rknn_input_extension(self, filename):
+        extension = Path(filename or "test.jpg").suffix.lower()
+        return extension if extension in self.dependencies.IMAGE_EXTS() else ".jpg"
+
+    def _create_rknn_hardware_test(self, project_id, job_id, context, image, filename, *, task_id=None, hardware_request=None):
         chip = str(context["chip"])
         model_path = context["model_path"]
         if context["hardware_verified"]:
@@ -1203,24 +1336,17 @@ class ConversionManagementService:
                 status_code=409,
             )
 
-        extension = Path(file.filename or "test.jpg").suffix.lower()
-        if extension not in self.dependencies.IMAGE_EXTS():
-            extension = ".jpg"
-        task_id = uuid.uuid4().hex[:12]
+        extension = self._rknn_input_extension(filename)
+        task_id = task_id or uuid.uuid4().hex[:12]
         prediction_dir = self.dependencies.project_dir(project_id) / "predictions" / task_id
         prediction_dir.mkdir(parents=True, exist_ok=True)
         input_path = prediction_dir / f"input{extension}"
-        input_path.write_bytes(await file.read())
+        input_path.write_bytes(image)
         if input_path.stat().st_size <= 0:
             input_path.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail="板端验证图片为空")
 
-        params = job.get("params")
-        params = dict(params) if isinstance(params, Mapping) else {}
-        try:
-            input_size = int(params.get("input_size") or 640)
-        except (TypeError, ValueError):
-            input_size = 640
+        input_size = self._rknn_input_size(context["job"])
         try:
             remote_execution = self.dependencies._remote_execution_transport_service().stage_rknn_board_validation(
                 project_id=project_id,
@@ -1257,21 +1383,24 @@ class ConversionManagementService:
             "image_url": self.dependencies._business_file_url(project_id, 'predictions', f'{task_id}/result.jpg'),
             "remote_execution": remote_execution,
         }
+        if hardware_request:
+            request["hardware_request"] = hardware_request
         self.dependencies.shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
-        record = self.dependencies.shared_task_repository().create(TaskRecord.new(
-            task_id,
-            project_id,
-            TaskKind.DEPLOYMENT_TEST,
-            "request.json",
-            f"deployment-rknn-board:{chip}",
-            required_capabilities=("agent.remote",),
-        ))
+        record = self._publish_rknn_hardware_task(project_id, task_id, chip)
+        if hardware_request:
+            return self._rknn_hardware_receipt(record, hardware_request, nodes, status_code=202)
         return JSONResponse(status_code=202, content={
             **self.dependencies.public_deployment_test(record),
             "board_nodes": nodes,
             "source_conversion_job_id": job_id,
             "chip": chip,
         })
+
+    def _publish_rknn_hardware_task(self, project_id, task_id, chip):
+        return self.dependencies.shared_task_repository().create(TaskRecord.new(
+            task_id, project_id, TaskKind.DEPLOYMENT_TEST, "request.json",
+            f"deployment-rknn-board:{chip}", required_capabilities=("agent.remote",),
+        ))
 
     def _conversion_history_csc(self, job):
         params=job.get('params') or {}

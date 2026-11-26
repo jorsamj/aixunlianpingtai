@@ -67,23 +67,41 @@ export async function loadHardwarePreflight(projectId: string, jobId: string, si
 }
 
 function verifyTask(task: HardwareTask, projectId: string, taskId: string, chip: string) {
-  if (!/^[a-f0-9]{12}$/.test(taskId) || task?.task_id !== taskId || task.project_id !== projectId ||
+  if (!/^(?:[a-f0-9]{12}|[a-f0-9]{32})$/.test(taskId) || task?.task_id !== taskId || task.project_id !== projectId ||
       task.kind !== 'DEPLOYMENT_TEST' || task.resource_key !== `deployment-rknn-board:${chip}`)
     throw new Error('板端验证任务回执身份不一致');
   return task;
 }
 
+export interface HardwareRequest {
+  request_id:string;
+  model_sha256:string;
+  input_sha256:string;
+}
+type HardwareReceipt=HardwareTask&HardwareRequest&{source_conversion_job_id:string;chip:string};
+function verifyReceipt(value:HardwareReceipt, projectId:string, jobId:string, chip:string, identity:HardwareRequest){
+  if(value?.source_conversion_job_id!==jobId||value.chip!==chip||value.request_id!==identity.request_id||
+    value.model_sha256!==identity.model_sha256||value.input_sha256!==identity.input_sha256)
+    throw new Error('板端验证回执与原请求不一致');
+  return verifyTask(value,projectId,value.task_id,chip);
+}
 export async function createHardwareTest(
-  projectId: string, jobId: string, chip: string, file: File, signal: AbortSignal,
+  projectId: string, jobId: string, chip: string, file: File, identity:HardwareRequest, signal: AbortSignal,
 ) {
   const body = new FormData();
   body.append('file', file);
-  const value = await request<HardwareTask & {source_conversion_job_id: string; chip: string}>(
+  for(const [name,value] of Object.entries(identity))body.append(name,value);
+  const value = await request<HardwareReceipt>(
     root(projectId, jobId), {method: 'POST', body, signal},
   );
-  if (value?.source_conversion_job_id !== jobId || value.chip !== chip)
-    throw new Error('板端验证回执与当前转换产物不一致');
-  return verifyTask(value, projectId, value.task_id, chip);
+  return verifyReceipt(value,projectId,jobId,chip,identity);
+}
+
+export async function readHardwareRequest(projectId:string,jobId:string,chip:string,
+  identity:HardwareRequest,signal:AbortSignal,retry=false){
+  const path=`${root(projectId,jobId)}/by-request/${encodeURIComponent(identity.request_id)}`;
+  const value=await request<HardwareReceipt>(retry?path+'/retry':path,{method:retry?'POST':'GET',signal});
+  return verifyReceipt(value,projectId,jobId,chip,identity);
 }
 
 export async function loadHardwareTask(projectId: string, taskId: string, chip: string, signal: AbortSignal) {

@@ -96,8 +96,18 @@ def create_conversion_management_router_3(service: Callable[[], ConversionManage
         return service().v39_rknn_hardware_acceptance_report(project_id, job_id, download)
 
     @router.post('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests')
-    async def v39_create_rknn_hardware_test(project_id: str, job_id: str, file: UploadFile=File(...)):
-        return await service().v39_create_rknn_hardware_test(project_id, job_id, file)
+    async def v39_create_rknn_hardware_test(project_id: str, job_id: str, file: UploadFile=File(...),
+                                            request_id: str=Form(''), model_sha256: str=Form(''), input_sha256: str=Form('')):
+        return await service().v39_create_rknn_hardware_test(project_id, job_id, file,
+            request_id=request_id, model_sha256=model_sha256, input_sha256=input_sha256)
+
+    @router.get('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/by-request/{request_id}')
+    def v39_rknn_hardware_test_receipt(project_id: str, job_id: str, request_id: str):
+        return service().v39_rknn_hardware_test_receipt(project_id, job_id, request_id)
+
+    @router.post('/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/by-request/{request_id}/retry')
+    def v39_retry_unstarted_rknn_hardware_test(project_id: str, job_id: str, request_id: str):
+        return service().v39_retry_unstarted_rknn_hardware_test(project_id, job_id, request_id)
 
     @router.get('/api/v39/projects/{project_id}/deploy/jobs')
     def v39_list_deploy_jobs(project_id: str):
