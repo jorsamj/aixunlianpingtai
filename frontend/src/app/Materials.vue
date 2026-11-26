@@ -2,6 +2,7 @@
 import {onBeforeUnmount,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import MaterialLibrary from '../views/MaterialLibrary.vue';
+import MaterialBatchGovernance from '../components/MaterialBatchGovernance.vue';
 import type {MaterialContext,MaterialFilters,MaterialHistory,MaterialMemory} from '../types/materials';
 import {request} from './http';
 import {useWorkspace} from './main';
@@ -27,6 +28,8 @@ let current:MaterialMemory={
   filters,page:Number.isSafeInteger(page)&&page>=1?page:1,
   layout:queryValue('layout')==='list'?'list':'grid',detailId:queryValue('detail'),selectedItems,
 };
+const library=ref<InstanceType<typeof MaterialLibrary>>();
+const governance=ref(false),governanceScope=ref<{ids:string[];filters:MaterialFilters}>();
 
 function routeQuery(value:MaterialMemory):Record<string,string> {
   const query:Record<string,string>={};
@@ -87,6 +90,11 @@ function openAnnotation(image?:string){
 }
 async function locationFor(action:string,page:string){
   if(action==='material-manual'){openAnnotation();return}
+  if(action==='material-clean'){await router.push({name:'native-cleaning',params:{projectId}});return}
+  if(action==='material-manage'){
+    governanceScope.value={ids:[...current.selectedItems],filters:{...current.filters}};
+    governance.value=true;return;
+  }
   if(action==='material-ai'){
     if(!actorKey||workspace.actorKey!==actorKey)return;
     aiHandoffError.value='';
@@ -113,16 +121,19 @@ const legacyActions=[
 </script>
 
 <template>
-  <MaterialLibrary :context="context" standalone delete-enabled>
+  <MaterialLibrary ref="library" :context="context" standalone delete-enabled>
     <template #actions>
       <nav class="material-actions" aria-label="素材操作">
         <el-button tag="router-link" :to="{name:'public-negative-pool',params:{projectId}}">负样本池</el-button>
         <el-button v-for="[label,action,page] in legacyActions" :key="label" @click="locationFor(action,page)">{{label}}</el-button>
+        <el-button tag="a" :href="original('material-manage')">原素材治理</el-button>
       </nav>
       <el-alert v-if="storageFailed" title="浏览器无法保留选择，刷新或离开页面后需重新核对。" type="warning" :closable="false"/>
       <el-alert v-if="aiHandoffError" :title="aiHandoffError" type="error" :closable="false"/>
     </template>
   </MaterialLibrary>
+  <MaterialBatchGovernance v-if="governanceScope" v-model:open="governance" :project-id="projectId" :actor-key="actorKey"
+    :ids="governanceScope.ids" :filters="governanceScope.filters" @changed="library?.refresh()" />
 </template>
 
 <style scoped>

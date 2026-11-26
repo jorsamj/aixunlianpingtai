@@ -34,6 +34,7 @@ export interface MaterialBatchEstimate {
   deletion_preview?: MaterialDeletionPreview;
   error_code?: string;
   message?: string;
+  operation?: string;
 }
 
 export interface MaterialBatchTask {
@@ -80,6 +81,16 @@ export interface MaterialBatchResults {
 
 const batchBase = (projectId: string) =>
   `/api/v62/projects/${encodeURIComponent(projectId)}/material-batches`;
+
+export function markMaterialsReady(projectId:string,selection:MaterialBatchSelection,signal:AbortSignal,estimate:true):Promise<MaterialBatchEstimate>;
+export function markMaterialsReady(projectId:string,selection:MaterialBatchSelection,signal:AbortSignal,estimate:false):Promise<MaterialBatchTask>;
+export function markMaterialsReady(projectId:string,selection:MaterialBatchSelection,signal:AbortSignal,estimate:boolean){
+  const body=JSON.stringify({operation:'MARK_CLEAN_SKIPPED',selection_spec:selection,options:{}});
+  const options={method:'POST',body,signal};
+  return estimate
+    ?request<MaterialBatchEstimate>(batchBase(projectId)+'/estimate',options)
+    :request<MaterialBatchTask>(batchBase(projectId),options);
+}
 
 export function estimateMaterialDeletion(
   projectId: string, imageIds: string[], signal: AbortSignal,
