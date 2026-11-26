@@ -13,6 +13,7 @@ const router=useRouter(),controller=new AbortController();
 onBeforeUnmount(()=>controller.abort());
 const context:PreviewContext={
   signal:controller.signal,
+  projectId:props.projectId,
   get:<T,>(url:string,options?:{signal?:AbortSignal})=>request<T>(url,options),
   returnToManagement:()=>void router.push({name:'legacy',params:{projectId:props.projectId,page:'服务节点'}}),
 };

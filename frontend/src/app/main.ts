@@ -60,6 +60,7 @@ export const router=createRouter({history:createWebHashHistory('/app/'),routes:[
   {path:'/projects/:projectId/conversions/new',name:'conversion-create-native',props:true,component:()=>import('./ConversionCreate.vue')},
   {path:'/projects/:projectId/conversions/:jobId',name:'conversion-detail-native',props:true,component:()=>import('./ConversionDetail.vue')},
   {path:'/projects/:projectId/nodes',name:'service-nodes-native',props:true,component:()=>import('./ServiceNodes.vue')},
+ {path:'/projects/:projectId/nodes/environments',name:'training-environments-native',props:true,component:()=>import('./TrainingEnvironments.vue')},
   {path:'/projects/:projectId/external-publish',name:'external-publish-native',props:true,component:()=>import('./ExternalPublish.vue')},
   {path:'/projects/:projectId/platform-integration',name:'platform-integration',props:true,component:()=>import('./PlatformIntegration.vue')},
   {path:'/projects/:projectId/legacy/:page',name:'legacy',component:{render:()=>null}},

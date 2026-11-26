@@ -8,5 +8,5 @@ export type CatalogAction='create'|'update'|'enable'|'disable'|'delete';
 export interface CatalogOperation {entity:Entity;action:CatalogAction;operation_id:string;expected_revision:number;id?:string;record?:Partial<CatalogRecord>;confirm_delete?:boolean}
 export interface CatalogReceipt {ok:boolean;operation_id:string;entity:Entity;action:CatalogAction;id:string;item:CatalogRecord|null;revision:number;replayed?:boolean}
 export interface PendingSlot {value:CatalogOperation|null;save(value:CatalogOperation|null):void}
-export interface PreviewContext {signal:AbortSignal;get<T>(url:string,options?:{signal?:AbortSignal}):Promise<T>;returnToManagement():void;openConfiguration?():void;openResource?(kind:string):void;management?:boolean;post?<T>(url:string,body:unknown):Promise<T>;createOperationId?():string;pending?:PendingSlot;invalidate?():void}
+export interface PreviewContext {signal:AbortSignal;projectId?:string;get<T>(url:string,options?:{signal?:AbortSignal}):Promise<T>;returnToManagement():void;openConfiguration?():void;openResource?(kind:string):void;management?:boolean;post?<T>(url:string,body:unknown):Promise<T>;createOperationId?():string;pending?:PendingSlot;invalidate?():void}
 export interface Filters {query:string;enabled:string;template_id:string;page:number;sort:string}
