@@ -26,6 +26,11 @@ PROTOCOL = "pt-onnx-raw-and-detection-v4"
 RUNTIME_MODULES = ("torch", "ultralytics", "onnx", "onnxruntime", "numpy", "cv2")
 DYNAMIC_INPUT_WITHOUT_FROZEN_CODE = "DYNAMIC_INPUT_WITHOUT_FROZEN_IMGSZ"
 NON_RGB_INPUT_CODE = "NON_RGB_INPUT_NOT_COMPARABLE"
+# A BMODEL conversion's deliverable is the compiled BMODEL, not the ONNX
+# intermediate. PT-vs-ONNX agreement alone never proves the BMODEL's outputs;
+# when the frozen evidence says a BMODEL was expected, delivery admission must
+# also see the recorded ONNX-vs-BMODEL numeric and detection verdicts.
+BMODEL_EVIDENCE_NOT_ELIGIBLE_CODE = "BMODEL_EVIDENCE_NOT_ELIGIBLE"
 NUMERIC_STATUS_BY_VERDICT = {
     "consistent": "consistent",
     "difference_detected": "difference_detected",
@@ -1681,6 +1686,15 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
     interpretable ``consistent`` PT/ONNX verdict, and the conversion record's
     published summary (when present) is bound to exactly this verification.
 
+    When the bound deliverable is a compiled BMODEL (``bmodel_expected`` or a
+    ``sophon``/``bmodel`` target artifact), the frozen ONNX-vs-BMODEL numeric and
+    detection verdicts are part of the contract too: `unavailable` or
+    `difference_detected` refuses formal delivery with
+    ``BMODEL_EVIDENCE_NOT_ELIGIBLE``. The recorded PT/ONNX metrics, the evidence
+    file and the artifact stay readable/downloadable; only the formal claim is
+    refused, and re-running the verification where the official offline BMODEL
+    runner is available is the recovery path.
+
     A ``numeric_status == "consistent"`` field on its own never influences the
     verdict: the function does not read that mutable field as evidence.
     """
@@ -1707,6 +1721,8 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
         "verdict": "unavailable",
         "raw_verdict": "",
         "detection_status": "unavailable",
+        "bmodel_required": False,
+        "bmodel": {"numeric_status": "", "detection_status": "", "error": ""},
         "sample_count": None,
         "hardware_verified": False,
         "ground_truth_used": False,
@@ -1831,13 +1847,28 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
     summary = stored.get("result_summary") if isinstance(stored.get("result_summary"), Mapping) else {}
     metrics = summary.get("metrics") if isinstance(summary.get("metrics"), Mapping) else {}
     detection = summary.get("detection") if isinstance(summary.get("detection"), Mapping) else {}
+    bmodel = summary.get("bmodel") if isinstance(summary.get("bmodel"), Mapping) else {}
     observed_verdict = _clean(summary.get("verdict"))
     observed_detection = _clean(summary.get("detection_status"))
     sample_count = summary.get("sample_count")
+    # A compiled BMODEL is its own deliverable. The receipt/identity already
+    # freeze whether one was expected, so delivery admission can require its
+    # recorded comparison instead of silently treating PT/ONNX agreement as the
+    # BMODEL's proof.
+    bmodel_required = (
+        parameters.get("bmodel_expected") is True
+        or _clean(identity.get("target_artifact_kind")).lower() in {"sophon", "bmodel"}
+    )
     verdict.update(
         verdict=observed_verdict or "unavailable",
         raw_verdict=_clean(summary.get("raw_verdict")),
         detection_status=observed_detection or "unavailable",
+        bmodel_required=bmodel_required,
+        bmodel={
+            "numeric_status": _clean(bmodel.get("numeric_status")),
+            "detection_status": _clean(bmodel.get("detection_status")),
+            "error": str(bmodel.get("error") or "")[:300],
+        },
         sample_count=sample_count if type(sample_count) is int else None,
         hardware_verified=summary.get("hardware_verified") is True,
         ground_truth_used=summary.get("ground_truth_used") is True,
@@ -1857,6 +1888,16 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
         failures.append(("TENSOR_TOLERANCE_UNAVAILABLE", "冻结张量指标未证明在容差内"))
     if detection.get("within_tolerance") is not True:
         failures.append(("DETECTION_TOLERANCE_UNAVAILABLE", "冻结检测指标未证明在容差内"))
+    if bmodel_required:
+        bmodel_numeric = _clean(bmodel.get("numeric_status"))
+        bmodel_detection = _clean(bmodel.get("detection_status"))
+        if bmodel_numeric != "consistent" or bmodel_detection != "consistent":
+            failures.append((
+                BMODEL_EVIDENCE_NOT_ELIGIBLE_CODE,
+                "该转换为 BMODEL 交付物，但 ONNX/BMODEL 数值或检测证据不是 consistent"
+                f"（numeric={bmodel_numeric or '<empty>'}, detection={bmodel_detection or '<empty>'}）；"
+                "PT/ONNX 一致不能代替 BMODEL 自身的比较证据",
+            ))
     if type(sample_count) is not int or sample_count < 1:
         failures.append(("SAMPLE_COUNT_UNAVAILABLE", "冻结样本数为空或非法"))
     if summary.get("rejection") not in (None, {}):
