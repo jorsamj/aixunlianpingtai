@@ -1,5 +1,6 @@
 import {expect,test,type Page} from '@playwright/test';
 import {resolve} from 'node:path';
+import {createHash} from 'node:crypto';
 
 async function assets(page:Page){
  await page.route('**/app/**',route=>{
@@ -48,6 +49,84 @@ test('native conversion detail reads bound numeric history without creating vali
  await page.getByRole('button',{name:'刷新数值验证历史'}).click();
  await expect(page.getByText('数值验证历史响应身份不一致',{exact:true})).toBeVisible();
  await expect(page.getByRole('row').filter({hasText:'nv_previous'})).toHaveCount(0);
+});
+
+test('native numeric validation sends the original multipart contract and verifies a lost receipt by ID',async({page})=>{
+ await assets(page);
+ const endpoint='/api/v39/projects/p/deploy/jobs/job-1';
+ let writes=0;
+ let verificationId='';
+ await page.route('**/api/**',route=>{
+  const request=route.request();
+  const path=new URL(request.url()).pathname;
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'}]});
+  if(path===endpoint)return route.fulfill({json:{...deployment,project_id:'p',source_name:'frozen.pt',outputs:[{rel:'artifacts/model.onnx'}]}});
+  if(path===endpoint+'/log')return route.fulfill({contentType:'text/plain',body:'转换完成'});
+  if(path===endpoint+'/numeric-validations'&&request.method()==='POST'){
+   expect(request.headers()['content-type']).toContain('multipart/form-data');
+   expect(request.postData()).toContain('filename="sample.png"');
+   expect(request.postData()).toContain('name="request_id"');
+   expect(request.postData()).toContain('name="confidence"');
+   expect(request.postData()).toContain('name="nms_iou"');
+   const requestId=/name="request_id"\r\n\r\n([A-Za-z0-9_-]+)/.exec(request.postData()||'')?.[1];
+   expect(requestId).toBeTruthy();
+   verificationId='nv_'+createHash('sha256').update(`p:job-1:${requestId}`).digest('hex').slice(0,24);
+   writes++;
+   return route.abort();
+  }
+  if(path.startsWith(endpoint+'/numeric-validations/')&&request.method()==='GET'){
+   expect(path.split('/').at(-1)).toBe(verificationId);
+   return route.fulfill({json:{ok:true,id:verificationId,conversion_job_id:'job-1',
+    task:{task_id:verificationId,project_id:'p',kind:'MODEL_CONVERSION',status:'SUCCEEDED'},
+    result:{verdict:'consistent',raw_verdict:'consistent',detection_status:'unavailable',sample_count:1}}});
+  }
+  return route.fulfill({status:404,json:{detail:'unexpected '+path}});
+ });
+ await page.goto('/app/#/projects/p/conversions/job-1');
+ await page.getByLabel('验证图片').setInputFiles({name:'sample.png',mimeType:'image/png',buffer:Buffer.from('fixture')});
+ await page.getByRole('button',{name:'开始数值验证'}).click();
+ expect(writes).toBe(0);
+ await page.getByRole('button',{name:'确认发起验证'}).click();
+ await expect(page.getByText('数值验证提交回执未知。')).toBeVisible();
+ await page.getByRole('button',{name:'核对原验证请求'}).click();
+ await expect(page.getByRole('button',{name:'刷新验证报告'})).toBeVisible();
+ await expect(page.getByText('unavailable',{exact:true})).toBeVisible();
+ expect(verificationId).toMatch(/^nv_[a-f0-9]{24}$/);
+ expect(writes).toBe(1);
+});
+
+test('native conversion stop requires confirmation and reads server state after a lost response',async({page})=>{
+ await assets(page);
+ const endpoint='/api/v39/projects/p/deploy/jobs/job-1';
+ let stops=0;
+ let stopped=false;
+ await page.route('**/api/**',route=>{
+  const path=new URL(route.request().url()).pathname;
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'}]});
+  if(path===endpoint+'/stop'){
+   expect(route.request().method()).toBe('POST');
+   stops++;
+   return route.abort();
+  }
+  expect(route.request().method()).toBe('GET');
+  if(path===endpoint)return route.fulfill({json:{...deployment,project_id:'p',source_id:'source-1',status:stopped?'stopped':'running'}});
+  if(path===endpoint+'/log')return route.fulfill({contentType:'text/plain',body:'转换日志'});
+  return route.fulfill({status:404,json:{detail:'unexpected '+path}});
+ });
+ await page.goto('/app/#/projects/p/conversions/job-1');
+ await page.getByRole('button',{name:'停止转换',exact:true}).click();
+ const confirm=page.getByRole('dialog',{name:'停止转换'});
+ await expect(confirm).toContainText('job-1');
+ expect(stops).toBe(0);
+ await confirm.getByRole('button',{name:'确认停止转换'}).click();
+ await expect(page.getByText('停止回执未知。请刷新并核对当前任务状态。',{exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'停止转换',exact:true})).toHaveCount(0);
+ stopped=true;
+ await page.getByRole('button',{name:'刷新',exact:true}).click();
+ await expect(page.getByText('转换任务已停止',{exact:true})).toBeVisible();
+ expect(stops).toBe(1);
 });
 
 test('native conversion history reuses the pilot read-only view against the v42 asset projection',async({page})=>{

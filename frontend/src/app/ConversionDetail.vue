@@ -5,14 +5,22 @@ import {legacyUrl} from './navigation';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {browseError} from '../api/model-browse';
-import {loadConversionJob,loadConversionLog,loadConversionNumericHistory} from '../api/conversion-jobs';
+import {createNumericValidation,loadConversionJob,loadConversionLog,loadConversionNumericHistory,loadNumericValidation,newConversionRequestId,resolveNumericVerificationId,stopConversionJob} from '../api/conversion-jobs';
 import type {ConversionJobDetail,ConversionJobOutput,ConversionNumericHistoryEntry} from '../types/conversion-job';
 const props=defineProps<{projectId:string;jobId:string}>();
 const projectId=props.projectId,jobId=props.jobId,route=useRoute(),router=useRouter();
 const controller=new AbortController(),reads=useReadScope(controller);
 const job=ref<ConversionJobDetail|null>(null),log=ref('');
 const numericHistory=ref<ConversionNumericHistoryEntry[]|null>(null);
-const ACTIVE=new Set(['queued','pending','waiting_resource','running','preparing','converting','recovering','submitted','waiting','starting','uploading','downloading','validating','stopping']);
+const numericFiles=ref<File[]>([]),confidence=ref(0.25),nmsIou=ref(0.7);
+const numericDialog=ref(false),numericBusy=ref(false),numericError=ref('');
+const numericResult=ref<ConversionNumericHistoryEntry|null>(null);
+let pendingNumeric:{body:FormData;id:string}|null=null;
+const numericUnknown=ref(false),pendingNumericId=ref('');
+const ACTIVE=new Set(['queued','pending','waiting_resource','running','preparing','converting','recovering','submitted','waiting','starting','uploading','downloading','validating','stopping','cancel_requested']);
+const STOPPABLE=new Set(['queued','waiting_resource','running']);
+const stopDialog=ref(false),stopBusy=ref(false),stopReceipt=ref<'accepted'|'unknown'|null>(null),stopError=ref('');
+const stopTarget=ref<ConversionJobDetail|null>(null);
 const NUMERIC_HINTS:Record<string,string>={'consistent':'数值一致，但仍不等于正式交付准入','difference_detected':'检测到差异','not_comparable':'不可比较','unavailable':'不可用或未完成'};
 let alive=true,timer:number|undefined,pollController:AbortController|null=null;
 const query=(name:string)=>typeof route.query[name]==='string'?String(route.query[name]):'';
@@ -68,7 +76,122 @@ function loadNumericHistory(){
   numericHistory.value=null;
   return reads.run('numericHistory',signal=>loadConversionNumericHistory(projectId,jobId,signal),value=>{numericHistory.value=value});
 }
+const canStartNumeric=computed(()=>['done','blocked_by_hardware'].includes(String(job.value?.status||'').toLowerCase())&&
+  /\.pt(?:h)?$/i.test(job.value?.source_name||'')&&
+  job.value?.outputs?.some(output=>/\.onnx$/i.test(output.rel||output.name||''))&&!reads.errors.job);
+const validNumericInput=computed(()=>numericFiles.value.length>=1&&numericFiles.value.length<=12&&
+  numericFiles.value.every(file=>file.size>0&&file.size<=10*1024*1024&&/\.(jpe?g|png|webp|bmp)$/i.test(file.name))&&
+  numericFiles.value.reduce((size,file)=>size+file.size,0)<=60*1024*1024&&
+  confidence.value>0&&confidence.value<1&&nmsIou.value>0&&nmsIou.value<1);
+function selectNumericFiles(event:Event){
+  numericFiles.value=Array.from((event.target as HTMLInputElement).files||[]);
+  numericError.value='';
+}
+async function sendNumericValidation(){
+  if(!alive||numericBusy.value||!pendingNumeric)return;
+  numericBusy.value=true;
+  numericError.value='';
+  reads.cancel('numericResult');
+  const {body,id}=pendingNumeric;
+  try{
+    const value=await createNumericValidation(projectId,jobId,id,body,controller.signal);
+    if(!alive)return;
+    applyNumericResult(value);
+    pendingNumeric=null;
+    pendingNumericId.value='';
+    numericUnknown.value=false;
+    void loadNumericHistory();
+  }catch(error){
+    if(!alive)return;
+    numericError.value=browseError(error);
+    const httpStatus=(error as {httpStatus?:number}).httpStatus;
+    if(httpStatus&&[400,401,403,404,413,422].includes(httpStatus)){
+      pendingNumeric=null;
+      pendingNumericId.value='';
+      numericUnknown.value=false;
+    }else numericUnknown.value=true;
+  }finally{if(alive)numericBusy.value=false}
+}
+async function confirmNumeric(){
+  if(!numericDialog.value||!canStartNumeric.value||!validNumericInput.value||pendingNumeric||numericBusy.value)return;
+  numericDialog.value=false;
+  numericBusy.value=true;
+  numericError.value='';
+  const body=new FormData(),requestId=newConversionRequestId();
+  for(const file of numericFiles.value)body.append('files',file,file.name);
+  body.append('request_id',requestId);
+  body.append('confidence',String(confidence.value));
+  body.append('nms_iou',String(nmsIou.value));
+  try{
+    const id=await resolveNumericVerificationId(projectId,jobId,requestId);
+    if(!alive)return;
+    pendingNumeric={body,id};
+    pendingNumericId.value=id;
+  }catch(error){if(alive)numericError.value=browseError(error)}
+  finally{if(alive)numericBusy.value=false}
+  if(alive&&pendingNumeric){numericResult.value=null;await sendNumericValidation()}
+}
+function applyNumericResult(value:ConversionNumericHistoryEntry){
+  numericResult.value=value;
+  if(value.id===pendingNumericId.value){
+    pendingNumeric=null;
+    pendingNumericId.value='';
+    numericUnknown.value=false;
+    numericError.value='';
+  }
+}
+function readNumericResult(id:string){
+  return reads.run('numericResult',signal=>loadNumericValidation(projectId,jobId,id,signal),applyNumericResult);
+}
 function refresh(){stopPolling();void loadJob();void loadLog()}
+function cancellationRequested(value:ConversionJobDetail|null){
+  return value?.cancel_requested===true ||
+    [value?.status,value?.task_status,value?.durable_status].some(state=>String(state||'').toLowerCase()==='cancel_requested') ||
+    String(value?.status||'').toLowerCase()==='stopping';
+}
+function canStopJob(value:ConversionJobDetail|null){
+  return STOPPABLE.has(String(value?.status||'').toLowerCase())&&!cancellationRequested(value);
+}
+const canStop=computed(()=>canStopJob(job.value)&&!reads.errors.job&&!stopReceipt.value);
+function openStopDialog(){
+  stopTarget.value=job.value;
+  stopDialog.value=true;
+}
+const stopNotice=computed(()=>{
+  const state=String(job.value?.status||'').toLowerCase();
+  if(['stopped','cancelled','canceled'].includes(state))return '转换任务已停止';
+  if(stopReceipt.value&&state&&!ACTIVE.has(state))return '任务已结束，最终结果见当前任务状态。';
+  if(cancellationRequested(job.value)||stopReceipt.value==='accepted')return '停止请求已登记，等待任务状态更新。';
+  if(stopReceipt.value==='unknown')return '停止回执未知。请刷新并核对当前任务状态。';
+  return '';
+});
+async function confirmStop(){
+  if(!stopDialog.value||stopBusy.value||!canStop.value)return;
+  stopBusy.value=true;
+  stopDialog.value=false;
+  stopError.value='';
+  stopPolling();
+  const confirmed=stopTarget.value;
+  let sent=false;
+  try{
+    const latest=await loadConversionJob(projectId,jobId,controller.signal);
+    if(!alive)return;
+    job.value=latest;
+    if(latest.source_id!==confirmed?.source_id||latest.target!==confirmed?.target)
+      throw new Error('源模型或目标格式已变化，请核对后重新确认。');
+    if(!canStopJob(latest))return;
+    sent=true;
+    await stopConversionJob(projectId,jobId,controller.signal);
+    if(alive)stopReceipt.value='accepted';
+  }catch(error){
+    if(alive){
+      if(sent)stopReceipt.value='unknown';
+      stopError.value=browseError(error);
+    }
+  }finally{
+    if(alive){stopBusy.value=false;refresh()}
+  }
+}
 function back(){void router.push(algorithmId.value&&versionId.value?{name:'version-conversions',params:{projectId,algorithmId:algorithmId.value,versionId:versionId.value}}:{name:'algorithms',params:{projectId}})}
 onMounted(()=>{void loadJob();void loadLog()});
 const progress=computed(()=>{const value=Number(job.value?.progress||0);return Number.isFinite(value)?Math.max(0,Math.min(100,value)):0});
@@ -143,7 +266,7 @@ function downloadUrl(output:ConversionJobOutput){
 </script>
 <template>
 <section class="conversion-detail-page">
- <header class="detail-head"><div><button class="back" @click="back">返回转换记录</button><h2>转换任务详情</h2><p>状态、产物、日志与质量投影均来自后端既有返回；本页只读，不提供执行转换、外部发布或设备激活操作。</p></div><div class="head-actions"><el-button :loading="reads.busy.job" @click="refresh">刷新</el-button><a :href="legacy">原任务操作与验证</a></div></header>
+ <header class="detail-head"><div><button class="back" @click="back">返回转换记录</button><h2>转换任务详情</h2></div><div class="head-actions"><el-button :loading="reads.busy.job" :disabled="stopBusy" @click="refresh">刷新</el-button><a :href="legacy">原任务操作与验证</a></div></header>
  <el-alert v-if="reads.errors.job" :title="reads.errors.job" type="error" :closable="false"/>
  <el-alert v-if="job&&reads.errors.job" title="以下为上次成功读取的快照，不能作为最新状态。" type="warning" :closable="false"/>
  <el-skeleton v-if="reads.busy.job&&!job" :rows="10" animated/>
@@ -153,6 +276,9 @@ function downloadUrl(output:ConversionJobOutput){
    <div class="status-line"><strong>{{ job.stage||'阶段未提供' }}</strong><span v-if="job.task_status">任务状态 {{ job.task_status }}</span><span v-if="job.durable_status">持久状态 {{ job.durable_status }}</span></div>
    <el-progress :percentage="progress" :stroke-width="10"/>
    <ReadOnlyFacts :fields="statusFacts"/>
+   <el-button v-if="canStop" type="danger" plain :loading="stopBusy" :disabled="reads.busy.job" @click="openStopDialog">停止转换</el-button>
+   <p v-if="stopNotice" role="status">{{ stopNotice }}</p>
+   <p v-if="stopError&&(!stopReceipt||(stopReceipt==='unknown'&&ACTIVE.has(status.toLowerCase())&&!cancellationRequested(job)))" role="alert">{{ stopError }}</p>
    <el-alert v-if="job.error" :title="`转换错误：${job.error}`" type="error" :closable="false"/>
    <el-alert v-else-if="job.message" :title="job.message" type="info" :closable="false"/>
   </section>
@@ -163,6 +289,28 @@ function downloadUrl(output:ConversionJobOutput){
    <h4 v-if="hardwareFacts.length">目标硬件验收字段</h4>
    <ReadOnlyFacts v-if="hardwareFacts.length" :fields="hardwareFacts"/>
    <p class="evidence-note">数值一致、Runtime 加载与目标硬件验收分别记录、互不代替；未知或未记录一律显示 NOT_VERIFIED。数值状态不会单独构成正式交付准入。</p>
+   <section v-if="canStartNumeric" aria-label="发起数值验证">
+    <h4>PT／ONNX 数值验证</h4>
+    <p class="evidence-note">选择 1～12 张真实图片，单图最多 10 MB，整批最多 60 MB。</p>
+    <fieldset :disabled="numericBusy||numericUnknown||numericDialog">
+     <label>验证图片 <input type="file" multiple accept=".jpg,.jpeg,.png,.webp,.bmp" @change="selectNumericFiles"></label>
+     <label>置信度 <input v-model.number="confidence" type="number" min="0.001" max="0.999" step="0.001"></label>
+     <label>NMS IoU <input v-model.number="nmsIou" type="number" min="0.001" max="0.999" step="0.001"></label>
+     <el-button :disabled="!validNumericInput" @click="numericDialog=true">开始数值验证</el-button>
+    </fieldset>
+   </section>
+   <p v-if="numericError" role="alert">{{ numericError }}</p>
+   <div v-if="numericUnknown" role="status">
+    <p>数值验证提交回执未知。</p>
+    <el-button v-if="pendingNumericId" :loading="reads.busy.numericResult" @click="readNumericResult(pendingNumericId)">核对原验证请求</el-button>
+    <el-button v-if="!pendingNumericId||reads.errors.numericResult" :loading="numericBusy" :disabled="reads.busy.numericResult" @click="sendNumericValidation">重试同一请求</el-button>
+   </div>
+   <el-alert v-if="reads.errors.numericResult" :title="reads.errors.numericResult" type="error" :closable="false"/>
+   <div v-if="numericResult">
+    <ReadOnlyFacts :fields="[['验证任务 ID',numericResult.id],['验证任务状态',numericResult.task.status],['阶段',numericResult.task.phase],['原始张量结论',numericResult.result?.raw_verdict],['检测框比较',numericResult.result?.detection_status],['报告结论',numericResult.result?.verdict],['实际样本数',numericResult.result?.sample_count],['错误',numericResult.result?.error||numericResult.task.error]]"/>
+    <p v-if="numericResult.result?.detection_status==='unavailable'" class="evidence-note">当前报告仅提供数值对照，检测框一致性未验证。</p>
+    <el-button :loading="reads.busy.numericResult" @click="readNumericResult(numericResult.id)">刷新验证报告</el-button>
+   </div>
    <header class="card-head numeric-history-head">
     <h4>数值验证历史</h4>
     <el-button size="small" :loading="reads.busy.numericHistory" @click="loadNumericHistory">{{numericHistory?'刷新数值验证历史':'读取数值验证历史'}}</el-button>
@@ -176,6 +324,7 @@ function downloadUrl(output:ConversionJobOutput){
     <el-table-column label="历史报告结论" min-width="140"><template #default="{row}">{{row.result?.verdict||'未提供'}}</template></el-table-column>
     <el-table-column label="样本数" min-width="90"><template #default="{row}">{{row.result?.sample_count??'未提供'}}</template></el-table-column>
     <el-table-column label="任务错误" min-width="150"><template #default="{row}">{{row.task.error||row.result?.error||'未提供'}}</template></el-table-column>
+    <el-table-column label="报告" width="100"><template #default="{row}"><el-button link @click="readNumericResult(row.id)">查看报告</el-button></template></el-table-column>
    </el-table>
   </section>
   <section class="card" aria-label="Manifest 摘要">
@@ -211,6 +360,21 @@ function downloadUrl(output:ConversionJobOutput){
   </section>
  </template>
  <el-empty v-else-if="!reads.busy.job" description="没有读取到转换任务记录"/>
+ <el-dialog v-model="stopDialog" title="停止转换" width="min(520px, 92vw)">
+  <p>停止任务 {{ jobId }}，源模型 {{ stopTarget?.source_name||stopTarget?.source_id||'未提供' }}，目标格式 {{ stopTarget?.target_name||stopTarget?.target||'未提供' }}？</p>
+  <template #footer>
+   <el-button @click="stopDialog=false">返回</el-button>
+   <el-button type="danger" :disabled="!canStop" @click="confirmStop">确认停止转换</el-button>
+  </template>
+ </el-dialog>
+ <el-dialog v-model="numericDialog" title="确认数值验证" width="min(520px, 92vw)">
+  <p>转换任务 {{ jobId }} · {{ job?.source_name||job?.source_id||'源模型未提供' }} · {{ job?.target_name||job?.target||'目标格式未提供' }}</p>
+  <p>使用 {{ numericFiles.length }} 张真实图片对照冻结的 PT 源模型与 ONNX 产物，置信度 {{ confidence }}，NMS IoU {{ nmsIou }}。</p>
+  <template #footer>
+   <el-button @click="numericDialog=false">返回</el-button>
+   <el-button type="primary" :disabled="!canStartNumeric||!validNumericInput" @click="confirmNumeric">确认发起验证</el-button>
+  </template>
+ </el-dialog>
 </section>
 </template>
 <style scoped>

@@ -274,6 +274,7 @@ export interface ConversionJobDetail {
   task_id?: string;
   task_status?: string;
   durable_status?: string;
+  cancel_requested?: boolean;
   worker_id?: string;
   resource_id?: string;
   resource?: { id?: string; name?: string; kind?: string; mode?: string };

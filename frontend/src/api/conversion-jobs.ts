@@ -93,6 +93,47 @@ export async function loadConversionNumericHistory(projectId:string,jobId:string
   return value.items;
 }
 
+export async function stopConversionJob(projectId: string, jobId: string, signal: AbortSignal) {
+  const value = await request<{ok?: boolean}>(
+    `${projectRoot(projectId)}/deploy/jobs/${encodeURIComponent(jobId)}/stop`, {method: 'POST', signal},
+  );
+  if (value?.ok !== true) throw new Error('转换停止请求回执不完整');
+}
+
+const numericRoot = (projectId: string, jobId: string) =>
+  `${projectRoot(projectId)}/deploy/jobs/${encodeURIComponent(jobId)}/numeric-validations`;
+
+export async function resolveNumericVerificationId(projectId: string, jobId: string, requestId: string) {
+  if (!globalThis.crypto?.subtle) return '';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${projectId}:${jobId}:${requestId}`));
+  return 'nv_' + Array.from(new Uint8Array(digest).slice(0, 12), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function verifyNumericReceipt(
+  value: ConversionNumericHistoryEntry & {ok?: boolean}, projectId: string, jobId: string, verificationId: string,
+) {
+  if (value?.ok !== true || !/^nv_[a-f0-9]{24}$/.test(value.id) || (verificationId && value.id !== verificationId) ||
+      value.conversion_job_id !== jobId || value.task?.task_id !== value.id || value.task?.project_id !== projectId ||
+      value.task?.kind !== 'MODEL_CONVERSION') throw new Error('数值验证回执身份不一致');
+  return value;
+}
+
+export async function loadNumericValidation(projectId: string, jobId: string, verificationId: string, signal: AbortSignal) {
+  const value = await request<ConversionNumericHistoryEntry & {ok?: boolean}>(
+    `${numericRoot(projectId, jobId)}/${encodeURIComponent(verificationId)}`, {signal},
+  );
+  return verifyNumericReceipt(value, projectId, jobId, verificationId);
+}
+
+export async function createNumericValidation(
+  projectId: string, jobId: string, verificationId: string, body: FormData, signal: AbortSignal,
+) {
+  const value = await request<ConversionNumericHistoryEntry & {ok?: boolean}>(
+    numericRoot(projectId, jobId), {method: 'POST', body, signal},
+  );
+  return verifyNumericReceipt(value, projectId, jobId, verificationId);
+}
+
 // Read-only recovery of an unconfirmed creation; no new request ID is minted.
 export async function findConversionByRequest(
   projectId: string, requestId: string, signal: AbortSignal,
