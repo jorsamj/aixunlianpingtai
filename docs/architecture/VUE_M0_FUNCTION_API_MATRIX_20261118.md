@@ -1,6 +1,29 @@
 # 功能/API迁移矩阵（M0基线2026-11-18）
 
-## 14 个正式菜单及业务闭环（2026-11-26，当前）
+## 14 个正式菜单及后台闭环（2026-11-26，当前）
+
+代码候选 `75e41e0d3fea764ca16ba55ab370ddf1746dda6c`。功能状态描述源码覆盖，运行期、视觉和现场分列为 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`。
+
+|菜单|状态|原入口、Vue 及原 API/Owner|尚未迁移或验证|
+|---|---|---|---|
+|总览|NATIVE_PARTIAL|原总览 → Overview，v53 核心快照和有界近期任务|历史趋势、资源诊断|
+|质量中心|NATIVE_PARTIAL|原质量中心 → QualityCentre，v53/v61 有界检查、v44 本页质量、v62 报告与原 ECharts|Smart Audit 全库分析界面、场景实测及高级评测|
+|算法库|NATIVE_PARTIAL|原算法卡片与交付 → Algorithms/ConversionDetail，算法版本历史、转换记录、v39 硬件回执和未领取恢复|整算法删除 409，转换终态和已领取板端恢复缺安全准入。深层血缘报告及真实硬件待验|
+|训练任务|NATIVE_PARTIAL|原任务、报告 → TrainingIteration/NativeEvaluation/TrainingCreate，v64 困难样本游标、原 TaskRepository 历史、固定 Test 与继续训练来源|原训练批量管理、报告深层归因|
+|素材库|NATIVE_PARTIAL|原数据集 → Materials/MaterialDatasets/MaterialBatchGovernance，v62 后台归属和用途。正式人工标注沿用原 Annotorious 和 GT。算法级 v1 及公共 v2 负池支持跨页操作|算法级负池高级分类与审核仍有原入口，每次成员写入保留 200 张合同。2 万级治理与 20 万浏览待实测|
+|视频切帧|NATIVE_COMPLETE|原切帧 → VideoTasks，v33 回执和暂存恢复，局域网 HTTP 原视频摘要核验|历史无摘要请求仅可读取回执，现场离线和真实切帧待验|
+|自动标注及清洗|NATIVE_PARTIAL|原审核三栏 → AiReview/NativeReviewAmbiguity，v60 后台预检、草稿 CAS、原 C2-B 正式入库，保留正式 GT 及清洗 Owner|参考图实际推理。自动策略须原人工复核，真实规模和视觉待验|
+|标签管理|NATIVE_PARTIAL|原标签 → Labels/LabelAudit，原标签目录、合并及 GT 修复任务|预设操作、重复冲突及 Smart Audit 专业复核|
+|算力与节点|NATIVE_PARTIAL|原算力 → ServiceNodes，原只读资源和调度证据|连接、凭据、环境、母模型、诊断的完整原生入口|
+|模型转换环境|NATIVE_PARTIAL|原部署资源 → ConversionEnvironment，v39 配置、单项检测、本机批量检测、厂商芯片字典|资源删除缺旧引用与凭据生命周期保护，原入口保留|
+|AI 辅助配置|NATIVE_PARTIAL|原配置 → AiConfiguration，v35 模型、Prompt、诊断、样本验证、原 SecretStore|凭据换密/清理持有者证明与产品安全策略|
+|存储管理|NATIVE_PARTIAL|原存储 → StorageManagement/StorageRescan，v61 存储配置、引用和扫描|扫描确认、导入、归档、空间缓存、迁移与物理地址删除|
+|平台对接|NATIVE_PARTIAL|原对接 → PlatformIntegration/ExternalPublish，v63 连接、诊断、同步与 v64 版本发布回执|映射写入、发布回退和未知远端结果对账|
+|畅联云数据|NATIVE_COMPLETE|原查看 → ChangLianData，v63 产品/版本/权重读取，标签分页、列表对账、int64 字符串与证据复制|原查看链接保留，真实远端、三档视觉仍待验。同步和发布归平台对接|
+
+共 2 项原生完整、12 项部分原生。五个试用入口与原正式默认入口保留。任务、回执与保护核对见 [开发接续入口](AI_DEVELOPMENT_HANDOFF.md)。
+
+## 14 个正式菜单及业务闭环（2026-11-26，上一批）
 
 代码候选 `1cd6323069a5070efeb85ea91f462fc8346f09d5`。状态为代码覆盖，验收 `CI_PENDING / UAT_PENDING`。
 
