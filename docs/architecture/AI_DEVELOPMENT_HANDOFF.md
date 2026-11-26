@@ -9,7 +9,7 @@
 - 核心生产链路 UI：全局样式把历史算法库硬编码灰阶（`#ddd/#eee/#333/#777/#888`）与 10px 圆角改为 `--workspace-*` 令牌、8px 圆角及 4/8/12/16 间距。算法库卡片明确“当前版本 mAP50”口径并新增基准不可比提示，卡片主操作改为 `primary`，版本行原流程链接降级为次级样式。素材库把 11 个并列按钮拆为常用动作组与次级链接组，保留全部入口与名称。训练任务新增算法/版本、运行设备、已运行与失败原因，状态改用共享语义标签。总览新增有界“待处理失败任务”（`status=FAILED`、limit 5）并说明不代表全量。质量中心明确本页检查范围与结果张数，训练与评测页签改用共享状态标签。
 - 新增公共组件 `frontend/src/components/TaskStatusTag.vue`，统一总览、质量中心与训练任务的状态用词和语义色（仅成功/警告/失败着色），未引入第二套主题或状态机。
 - 仅继承公共主题而未做页面级专项优化的菜单：算力与节点、模型转换环境、AI 辅助配置、存储管理、平台对接、畅联云数据、标签管理、视频切帧、自动标注及清洗。本轮未改其业务代码。
-- 静态检查：`vue-tsc --noEmit` 仅报本机缺少 `@noble/hashes/sha2.js`（package.json 已声明 2.0.1，属本机依赖缺失，非本轮改动）；`git diff --check` 见交付报告。未运行全仓 pytest、Playwright 或大型构建；单项 Schema 7 复现属最小定向验证。
+- 静态检查：`vue-tsc --noEmit` 仅报本机缺少 `@noble/hashes/sha2.js`（package.json 已声明 2.0.1，属本机依赖缺失，非本轮改动）；`git diff --check` 通过。补齐本机前端依赖后 `npm run build:app` 构建成功（95 个本地资源校验通过），并定向运行受影响的 6 个 Vue 用例（`app-shell`、`training-tasks-native`、`native-materials`、`native-material-datasets`、`native-ai-create`、`native-training-report`）共 16 项全部通过。未运行全仓 pytest 或其他 Playwright 集合。
 - 本机无法下载 CI 制品（无 GitHub 令牌），截图未核对，视觉保持 `VISUAL_PENDING`。四份保护文档、AGENTS.md、VERSION、vendor 与用户未跟踪文件均未改动；未进行任何生产环境操作。下一轮先按最终 SHA 单次查询 CI，确认两条失败是否关闭，再继续资源与交付页面（算力与节点、存储、平台对接、转换环境、畅联云数据）的专项优化。
 
 ## Schema 7 与审核入库定向收口（2026-11-26，上一批）
