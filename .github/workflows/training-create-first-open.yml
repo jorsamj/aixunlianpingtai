@@ -176,6 +176,14 @@ jobs:
           npx playwright test
           tests/browser/training-create-first-open.spec.mjs
           tests/browser/training-quality-reports.spec.mjs
+      - name: Preserve fixed Benchmark failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-benchmark-failure-${{ github.sha }}
+          path: test-results/training-create-first-open-*-lability-to-training-submit/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Feedback provenance browser guard
         run: |
           grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs

@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 const resources = readFileSync(new URL('../../static/modules/resource-discovery.js', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8');
+const catalogApi = readFileSync(new URL('../../platform_core/runtime_catalog_api.py', import.meta.url), 'utf8');
 const catalogService = readFileSync(new URL('../../platform_core/runtime_catalog_service.py', import.meta.url), 'utf8');
 const controlPlane = readFileSync(new URL('../../platform_core/remote_training_tasks.py', import.meta.url), 'utf8');
 
@@ -14,8 +15,13 @@ test('training resources allow explicit trusted .pt preload into the existing du
   assert.match(resources,/uploadResourceMotherModel\(this\)/);
   assert.match(resources,/\/api\/v63\/base-models\/upload/);
   assert.match(backend,/root = DATA_DIR \/ "models"/);
-  assert.match(catalogService,/sha256_file\(path\)/);
-  assert.match(backend,/os\.replace\(temp, path\)/);
+  assert.match(backend,/app\.include_router\(create_runtime_catalog_router_4\(_runtime_catalog_service\)\)/);
+  assert.match(catalogApi,/@router\.post\('\/api\/v63\/base-models\/upload'\)[\s\S]*?return await service\(\)\.upload_preinstalled_base_model\(file\)/);
+  const upload = catalogService.split('async def upload_preinstalled_base_model(')[1].split('\n    def ')[0];
+  assert.match(upload,/root = self\.dependencies\.DATA_DIR\(\) \/ "models"/);
+  assert.match(upload,/sha256_file\(path\)/);
+  assert.match(upload,/os\.replace\(temp, path\)/);
+  assert.match(upload,/_verify_official_mother_model_checkpoint\(path\)/);
 });
 
 test('mother-model verifier displays distinct environment, interrupted and model errors without extra modal owners', () => {

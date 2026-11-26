@@ -190,17 +190,17 @@ def test_chip_detection_reuses_resource_owner_once_and_keeps_each_sdk_fact(tmp_p
     bad={**live(),"id":"bad","name":"local invalid","mode":"local","status":"missing","message":"API Key 鉴权失败","targets":[],"supported_chips":[],"sophon_probe":{"available":False,"version":"1.29.0","error":"authentication failed"}}
     resources=[good,bad];seen=[]
     monkeypatch.setattr(ConversionManagementService,"v39_list_deploy_resources",staticmethod(lambda **_kwargs:{"items":resources}))
-    def detect(identity):
-        seen.append(identity);return next(r for r in resources if r["id"]==identity)
+    def detect(identity, force=True):
+        seen.append((identity, force));return next(r for r in resources if r["id"]==identity)
     monkeypatch.setattr(ConversionManagementService,"v39_detect_deploy_resource",staticmethod(detect))
     result=catalog_endpoint("v39_catalog_detect_chip")("chip-84",{})
-    assert seen==["good","bad"] and result["capability"]["sdk_ready"]
+    assert seen==[("good",True),("bad",True)] and result["capability"]["sdk_ready"]
     facts={f["resource_id"]:f for f in result["capability"]["resources"]}
     assert facts["good"]["ready"] and not facts["bad"]["ready"]
     assert facts["good"]["mode"]=="remote" and facts["bad"]["mode"]=="local"
     assert facts["bad"]["message"]==bad["message"]
     assert facts["good"]["sdk_version"]!=facts["bad"]["sdk_version"]
-    seen.clear();catalog_endpoint("v39_catalog_detect_chip")("chip-84",{"resource_ids":["good","good"]});assert seen==["good"]
+    seen.clear();catalog_endpoint("v39_catalog_detect_chip")("chip-84",{"resource_ids":["good","good"]});assert seen==[("good",True)]
     with pytest.raises(PlatformError) as error: catalog_endpoint("v39_catalog_detect_chip")("chip-84",{"resource_ids":["missing"]})
     assert error.value.code=="CATALOG_RESOURCE_MISMATCH"
     resources.clear()

@@ -698,11 +698,33 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 });
 
 
-test('verified fixed benchmark stays aligned from backend availability to training submit', async ({page, request}) => {
+test('verified fixed benchmark stays aligned from backend availability to training submit', async ({page, request}, testInfo) => {
   const {project, algorithmId} = await seedProject(request);
   await routeCompatibleTrainingMaterials(page);
   let submitted = null;
   const scopeId = 'b'.repeat(64);
+  const benchmarkVersion = {
+    id:'benchmark-version', version_name:'20260919150000', training_status:'SUCCEEDED',
+    artifact_verified:true, trainable:true, framework:'ultralytics', label_schema:[{code:'smoke',class_id:0}],
+  };
+  const seedBenchmarkVersion = rows => {
+    const asset = rows?.find(row => String(row.id) === algorithmId);
+    if (asset) Object.assign(asset, {current_version_id:benchmarkVersion.id,versions:[benchmarkVersion]});
+  };
+  // A deferred catalog refresh replaces state.algorithms. Keep the fixture's
+  // current version consistent in both initial and refreshed backend data.
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    seedBenchmarkVersion(body.algorithms);
+    await route.fulfill({response, json:body});
+  });
+  await page.route(url => url.pathname === `/api/v12/projects/${project.id}/algorithms`, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    seedBenchmarkVersion(Array.isArray(body) ? body : body.items);
+    await route.fulfill({response, json:body});
+  });
   await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]})}));
   await page.route('**/api/system/recommendation', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({device:'cpu',batch:4,workers:0})}));
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
@@ -712,7 +734,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
-  await page.evaluate(({algorithmId}) => {const asset=(state.algorithms||[]).find(row=>String(row?.id||'')===String(algorithmId));if(!asset)throw new Error('algorithm missing from browser state');asset.current_version_id='benchmark-version';asset.versions=[{id:'benchmark-version',version_name:'20260919150000',training_status:'SUCCEEDED',artifact_verified:true,trainable:true,framework:'ultralytics',label_schema:[{code:'smoke',class_id:0}]}];}, {algorithmId});
+  await expect.poll(() => page.evaluate(id => state.algorithms.find(row => row.id === id)?.current_version_id, algorithmId)).toBe(benchmarkVersion.id);
   const card=page.locator('[data-algorithm-card]',{hasText:'首次打开配置回归'});
   await card.getByRole('button',{name:'训练'}).click();
   const dialog=page.getByRole('dialog',{name:'创建训练任务'});
@@ -737,8 +759,35 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   const submitButton=dialog.getByRole('button',{name:'开始训练'});
   await expect(submitButton).toBeEnabled();
   await dialog.locator('#tr429BackgroundScopeConfirm').check();
+  const plannedTaskId = await dialog.locator('#tr429TaskId').inputValue();
   await submitButton.click();
-  await expect.poll(()=>submitted).not.toBeNull();
+  try {
+    await expect.poll(()=>submitted).not.toBeNull();
+  } catch (error) {
+    const diagnostics = await page.evaluate(() => {
+      const runtime = window.TrainingSubmitRuntime.state();
+      const draft = window.TrainingDraftRuntime.current();
+      return {
+        stage: runtime.lastStage,
+        error: runtime.lastError,
+        blockers: runtime.readiness.blockers,
+        algorithmId: draft?.algorithmId,
+        baseVersionId: draft?.baseVersionId,
+        benchmarkReuseEnabled: draft?.benchmarkReuseEnabled,
+        benchmark: state.trainingBenchmarkReuse,
+        materialCount: draft?.materialIds?.length,
+        backgroundConfirmed: document.getElementById('tr429BackgroundScopeConfirm')?.checked,
+      };
+    });
+    const diagnosticPath = testInfo.outputPath('benchmark-submit-diagnostics.json');
+    await mkdir(path.dirname(diagnosticPath), {recursive: true});
+    await writeFile(diagnosticPath, JSON.stringify(diagnostics, null, 2));
+    throw error;
+  }
+  expect(submitted.task_id).toBe(plannedTaskId);
+  expect(submitted.algorithm_asset_id).toBe(algorithmId);
+  expect(submitted.base_version_id).toBe(benchmarkVersion.id);
+  expect(submitted.train_image_ids).toEqual(['train-material-a','train-material-b']);
   expect(submitted.benchmark_source_version_id).toBe('benchmark-version');
   expect(submitted.benchmark_scope_id).toBe(scopeId);
   expect(submitted.test_image_ids).toBeUndefined();
