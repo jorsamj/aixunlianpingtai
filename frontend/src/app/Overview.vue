@@ -67,7 +67,7 @@ function loadFailed(){
   return reads.run('failed',signal=>trainingApi.tasks({status:'FAILED'},signal,5),page=>{failed.value=page;});
 }
 
-interface TrainingTrend {ok:boolean;project_id:string;window_days:number;since:string;counts:Record<string,number>;total:number}
+interface TrainingTrend {ok:boolean;project_id:string;window_days:number;since:string;counts:Record<string,number>;total:number;prepare_total?:number}
 const trend=ref<TrainingTrend|null>(null);
 const trendLabels:Record<string,string>={QUEUED:'排队',WAITING_RESOURCE:'等待资源',PREPARING:'准备',RUNNING:'运行中',
   PAUSED:'已暂停',AWAITING_CONFIRMATION:'等待确认',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消',
@@ -154,9 +154,9 @@ onMounted(()=>{void loadCore();void loadTraining();void loadAi();void loadFailed
         </header>
         <p class="overview-hint">最近 5 条失败记录，不代表全部范围；失败原因与恢复资格以任务详情为准。</p>
         <p v-if="trend" class="overview-trend" aria-label="近7天训练状态">
-          近 7 天训练与准备任务共 {{ trend.total }} 条<template v-if="trendParts.length">：<span v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }}</span></template>
+          近 7 天训练任务 {{ trend.total }} 条（另有准备任务 {{ trend.prepare_total??0 }} 条，不计入训练次数）<template v-if="trendParts.length">：<span v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }}</span></template>
           <template v-else>：窗口内没有任务</template>
-          <small>范围：本项目 created_at 落在最近 7 天内的训练与训练准备任务，按服务端状态聚合。</small>
+          <small>范围：本项目 created_at 落在最近 7 天内、仍在任务记录中的训练任务；准备任务单列，已删除任务不计入。</small>
         </p>
         <el-skeleton v-if="!trend&&reads.busy.trend" :rows="1" animated/>
         <p v-if="reads.errors.trend" class="overview-hint">近 7 天训练状态未读取：{{ reads.errors.trend }}</p>

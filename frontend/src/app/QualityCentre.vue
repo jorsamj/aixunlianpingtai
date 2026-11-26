@@ -46,7 +46,7 @@ function checkVisible(){
     method:'POST',signal,body:JSON.stringify({image_ids:ids,max_samples:ids.length}),
   }),value=>{if(value.ok!==true||!value.quality)throw new Error('质量检查证据缺失');quality.value=value.quality});
 }
-interface TrainingTrend {ok:boolean;project_id:string;window_days:number;counts:Record<string,number>;total:number}
+interface TrainingTrend {ok:boolean;project_id:string;window_days:number;counts:Record<string,number>;total:number;prepare_total?:number}
 const trend=ref<TrainingTrend|null>(null);
 const trendLabels:Record<string,string>={QUEUED:'排队',WAITING_RESOURCE:'等待资源',PREPARING:'准备',RUNNING:'运行中',
   PAUSED:'已暂停',AWAITING_CONFIRMATION:'等待确认',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消',
@@ -126,7 +126,7 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
       <el-tab-pane name="training" label="训练与评测">
         <div class="tools"><el-button :loading="reads.busy.training" @click="loadTraining">刷新近期训练</el-button><el-button :loading="reads.busy.trend" @click="loadTrend">读取近 7 天状态</el-button>
           <router-link :to="{name:'training-tasks',params}">全部训练任务</router-link></div>
-        <el-alert v-if="reads.errors.training" :title="reads.errors.training" type="error" :closable="false"/><p v-if="trend" class="scope-note">近 7 天训练与准备任务共 {{ trend.total }} 条<template v-if="trendParts.length">：<template v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }} · </template></template><template v-else>：窗口内没有任务</template></p><p v-if="reads.errors.trend" class="scope-note">近 7 天状态未读取：{{ reads.errors.trend }}</p>
+        <el-alert v-if="reads.errors.training" :title="reads.errors.training" type="error" :closable="false"/><p v-if="trend" class="scope-note">近 7 天训练任务 {{ trend.total }} 条（另有准备任务 {{ trend.prepare_total??0 }} 条）<template v-if="trendParts.length">：<template v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }} · </template></template><template v-else>：窗口内没有任务</template></p><p v-if="reads.errors.trend" class="scope-note">近 7 天状态未读取：{{ reads.errors.trend }}</p>
         <el-table :data="tasks?.items||[]" v-loading="reads.busy.training" row-key="task_id" empty-text="暂无训练任务">
           <el-table-column label="算法" min-width="190"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||row.task_id}}</template></el-table-column>
           <el-table-column label="状态" min-width="110"><template #default="{row}"><TaskStatusTag :status="row.status"/></template></el-table-column>

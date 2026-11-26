@@ -2,6 +2,7 @@
 import {computed,onBeforeUnmount,ref,watch} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import {trainingReaderApi,type ReportSelection,type TrainingReport} from '../api/training-reader';
+import {browseError} from '../api/model-browse';
 import {modelBrowseApi} from '../api/model-browse';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
@@ -18,7 +19,27 @@ const reads=useReadScope(controller),api=trainingReaderApi(context),versions=mod
 const report=ref<TrainingReport|null>(null),selection=ref<ReportSelection|null>(null);
 const offset=ref(0),job=ref('');
 const query=(key:string)=>typeof route.query[key]==='string'?route.query[key] as string:'';
-const pane=computed(()=>['history','evaluation'].includes(query('tab'))?query('tab'):'overview');
+const PANES=['overview','history','evaluation','samples','trace'] as const;
+const pane=computed(()=>PANES.includes(query('tab') as typeof PANES[number])?query('tab'):'overview');
+// Lineage is read on demand with one bounded version-detail call per opened report;
+// it never scans the version history or infers relationships from names.
+const traceDetail=ref<{version:{base_version_id?:string;parent_version_id?:string;training_lineage?:Record<string,unknown>;training_parameters?:Record<string,unknown>;snapshot_id?:string;dataset_revision_id?:string}}|null>(null);
+const traceBusy=ref(false),traceError=ref('');
+async function loadTrace(){
+  const current=canonical.value;
+  if(!current||traceDetail.value||traceBusy.value)return;
+  traceBusy.value=true;traceError.value='';
+  try{
+    const value=await versions.detail(current.algorithmId,current.versionId,controller.signal);
+    if(controller.signal.aborted)return;
+    traceDetail.value={version:value.version};
+  }catch(cause){if(!controller.signal.aborted)traceError.value=browseError(cause)}
+  finally{traceBusy.value=false}
+}
+function selectPane(name:string){
+  tab(name);
+  if(name==='trace')void loadTrace();
+}
 const canonical=computed(()=>{
   const current=selection.value;
   const algorithmId=report.value?.algorithm_id||current?.algorithmId;
@@ -109,7 +130,7 @@ watch(()=>route.path,load,{immediate:true});
       </form>
     </header>
     <nav class="report-actions report-tabs" aria-label="报告内容">
-      <el-button v-for="[key,label] in [['overview','结果概况'],['history','训练过程'],['evaluation','独立评测']]" :key="key" :type="pane===key?'primary':'default'" :aria-pressed="pane===key" :disabled="key==='evaluation'&&!canonical" @click="tab(key)">{{label}}</el-button>
+      <el-button v-for="[key,label] in [['overview','训练概况'],['history','训练过程'],['evaluation','独立评测'],['samples','样本诊断'],['trace','训练溯源']]" :key="key" :type="pane===key?'primary':'default'" :aria-pressed="pane===key" :disabled="key!=='overview'&&!canonical" @click="selectPane(key)">{{label}}</el-button>
       <a v-if="selection" :href="originalReport">完整旧报告 · LEGACY_BRIDGE</a>
       <a v-if="canonical" :href="legacyUrl(projectId,'算法列表',canonical.algorithmId,canonical.versionId,'lineage')">训练溯源 · 原工作台</a>
     </nav>
@@ -152,6 +173,45 @@ watch(()=>route.path,load,{immediate:true});
         </el-table>
         <div class="report-actions"><el-button :disabled="offset===0||reads.busy.report" @click="page(Math.max(0,offset-100))">上一页 Epoch</el-button><span>偏移 {{offset}} / {{report.history_total??'未提供'}}</span><el-button :disabled="!report.history_has_next||reads.busy.report" @click="page(offset+100)">下一页 Epoch</el-button></div>
       </section>
+      <section v-else-if="pane==='samples'" class="report-panel" aria-label="样本诊断">
+        <h3>已记录的问题与异常</h3>
+        <ReadOnlyFacts :fields="[['任务状态',report.result?.status],['完成原因',report.result?.completion_reason],['失败记录',report.result?.error],['早停原因',report.result?.early_stopping_reason],['质量门禁',report.result?.quality_gate_reason],['训练结果',report.result?.training_outcome],['质量状态',report.quality_status]]"/>
+        <ul v-if="report.warnings?.length" class="report-warnings"><li v-for="(warning,index) in report.warnings" :key="index">{{warning}}</li></ul>
+        <p v-if="Object.keys(report.credibility||{}).length" class="report-note">可信度诊断字段见“训练概况”中的可信度与质量诊断分区；本页只汇总可执行的问题线索。</p>
+        <h3>进入样本与后续处理</h3>
+        <p class="report-note">FP/FN、低置信度、类别退化与冻结图片证据在“独立评测”中按真实评测结果展示；困难样本、采纳与补数在“困难样本与继续训练”中处理。</p>
+        <div class="report-actions">
+          <el-button :disabled="!canonical" @click="selectPane('evaluation')">查看 TP / FP / FN 样本</el-button>
+          <a v-if="canonical" :href="originalEvaluation">原高级评测与样本证据</a>
+        </div>
+        <p v-if="report.test_status==='not_generated'" class="report-note">该任务没有独立 Test 评测记录，因此没有 Test 侧的 FP/FN 证据；正式 Test 不会因困难样本被重新用于训练。</p>
+      </section>
+      <section v-else-if="pane==='trace'" class="report-panel" aria-label="训练溯源">
+        <h3>身份与来源</h3>
+        <ReadOnlyFacts :fields="[['记录来源',report.source],['任务',selection?.jobId],['算法',canonical?.algorithmId],['版本',canonical?.versionId],['训练快照',report.result?.snapshot_id],['数据集修订',report.result?.dataset_revision_id],['固定 ZIP 划分',report.fixed_zip_split?.state]]"/>
+        <el-alert v-if="traceError" :title="traceError" type="error" :closable="false"/>
+        <el-skeleton v-if="traceBusy&&!traceDetail" :rows="3" animated/>
+        <template v-else-if="traceDetail">
+          <h3>版本血缘</h3>
+          <ReadOnlyFacts :fields="[['父版本 ID',traceDetail.version.parent_version_id],['基础版本 ID',traceDetail.version.base_version_id]]"/>
+          <ReadOnlyFacts v-if="Object.keys(traceDetail.version.training_lineage||{}).length" :fields="Object.entries(traceDetail.version.training_lineage||{})"/>
+          <p v-else class="report-note">未记录血缘字段；不根据版本名称推断父版本或母模型。</p>
+          <div v-if="traceDetail.version.parent_version_id||traceDetail.version.base_version_id" class="report-actions">
+            <router-link v-if="traceDetail.version.parent_version_id&&canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:String(traceDetail.version.parent_version_id)},query:{back:query('back')||undefined}}">查看父版本报告</router-link>
+            <router-link v-if="traceDetail.version.base_version_id&&canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:String(traceDetail.version.base_version_id)},query:{back:query('back')||undefined}}">查看基础版本报告</router-link>
+          </div>
+        </template>
+        <p v-else-if="!traceError" class="report-note">尚未读取版本血缘；打开本页按需读取一次，不扫描历史版本。</p>
+        <h3>冻结数据与评测基准</h3>
+        <ReadOnlyFacts :fields="[['Train/Val/Test 来源',report.fixed_zip_split?'按 ZIP 来源固定划分':(Object.keys(report.sample_distribution||{}).length?'按冻结快照样本角色':'未记录')],['输入冻结摘要',report.fixed_zip_split?.input_freeze_id],['独立 Test 评测状态',report.test_status]]"/>
+        <h3>后续证据链</h3>
+        <div class="report-actions">
+          <router-link v-if="canonical" :to="{name:'version-report',params:{projectId,algorithmId:canonical.algorithmId,versionId:canonical.versionId},query:{tab:'evaluation',back:query('back')||undefined}}">独立评测</router-link>
+          <router-link v-if="canonical" :to="{name:'version-conversions',params:{projectId,algorithmId:canonical.algorithmId,versionId:canonical.versionId}}">转换记录</router-link>
+          <router-link v-if="canonical" :to="{name:'external-publish-native',params:{projectId},query:{algorithm:canonical.algorithmId,version:canonical.versionId}}">交付记录</router-link>
+          <a v-if="canonical" :href="legacyUrl(projectId,'算法列表',canonical.algorithmId,canonical.versionId,'lineage')">原训练溯源</a>
+        </div>
+      </section>
     </template>
     <el-empty v-else-if="selection&&!selection.jobId" description="此版本没有已绑定的训练任务报告"/>
   </section>
@@ -161,4 +221,7 @@ watch(()=>route.path,load,{immediate:true});
 .native-report{min-width:0}.report-heading{display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap}.report-heading h2{margin:0 0 4px;font-size:21px}.report-heading p{color:var(--workspace-muted);overflow-wrap:anywhere}
 .report-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.report-actions :deep(.el-input){max-width:190px}.report-actions :deep(.el-button){margin-left:0}.report-tabs{margin:16px 0}
 .report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:12px}.report-panel{min-width:0;background:var(--workspace-surface);border-radius:var(--workspace-radius);padding:16px;margin-bottom:12px}.report-grid .report-panel{margin:0}.report-panel h3{margin-top:0;font-size:16px}.report-panel .report-actions{margin-top:12px}
+.report-note{margin:8px 0;font-size:12px;color:var(--workspace-muted,#52525b)}
+.report-warnings{margin:8px 0;padding-left:20px;font-size:13px;color:var(--el-color-warning);line-height:1.7}
+.report-panel :deep(.readonly-facts){font-size:13px}
 </style>

@@ -79,12 +79,15 @@ def create_task_query_router(
         get_project(project_id)
         from datetime import datetime, timedelta, timezone
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        counts = shared_task_repository().summary(
-            project_id, since=since, kinds=(TaskKind.TRAINING, TaskKind.TRAINING_PREPARE),
-        )
+        repository = shared_task_repository()
+        # Preparation tasks are reported separately: a prepare task is not an
+        # independent training run, so the two must never be summed into one trend.
+        training = repository.summary(project_id, since=since, kinds=(TaskKind.TRAINING,))
+        prepare = repository.summary(project_id, since=since, kinds=(TaskKind.TRAINING_PREPARE,))
         return {
             "ok": True, "project_id": project_id, "window_days": days, "since": since,
-            "counts": counts, "total": sum(counts.values()),
+            "counts": training, "total": sum(training.values()),
+            "prepare_counts": prepare, "prepare_total": sum(prepare.values()),
             "kinds": [TaskKind.TRAINING.value, TaskKind.TRAINING_PREPARE.value],
         }
 
