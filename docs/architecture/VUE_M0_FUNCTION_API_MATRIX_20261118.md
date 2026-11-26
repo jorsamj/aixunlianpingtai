@@ -1,6 +1,19 @@
 # 功能/API迁移矩阵（M0基线2026-11-18）
 
-## AI 审核、清洗与数据治理增量（2026-11-26，当前）
+## 数据治理、版本、评测与转换（2026-11-26，当前）
+
+|产品入口|新增原生操作及原 API Owner|仍待接通或验收|
+|---|---|---|
+|素材库|Materials/MaterialDatasets → 原目录 GET、原 v12 单图数据集调整与锁|批量分类、成员管理、算法负池及完整性治理仍有旧入口。|
+|自动标注及清洗|NativeReviewTransfer → v60 操作者历史、原回执和撤销；NativeReviewAmbiguity → 原冻结范围与草稿 CAS；NativeCleaning → v47 结果分页、原 DELETE_INDEX 计划及清洗确认|视觉参考图入模、C2-B 正式消歧入库、CLEAN 冻结排除仍待处理。首批建议剔除 ID 及真实规模性能待核验。|
+|标签管理|本轮保留已接通的原生目录、统一、标签审计及修复|预设和 Smart Audit 仍使用旧系统。|
+|算法库|Algorithms/AlgorithmLifecycleDialog → v12 版本删除、回退、产物清理和授权下载；保留原模型版本和任务引用检查|整算法删除缺引用保护；深层溯源、算法级报告及其他旧流程仍在。|
+|训练任务|NativeEvaluation/EvaluationSamplePreview → v12 独立 Test 冻结源图及真实框级诊断|继续训练、补数、跨版本样本并排及其他已有旧交接逐项推进。|
+|模型转换与交付|ConversionDetail → v39 转换冻结源身份及有界数值验证历史|验证执行、转换部分操作及交付验证仍由原 Owner。转换增量不改变「模型转换环境」菜单状态。|
+
+各新增操作以源码确认，验收为 `CI_PENDING / UAT_PENDING`。14 项正式菜单见下表。
+
+## AI 审核、清洗与数据治理增量（2026-11-26）
 
 |正式操作|原入口、当前 Vue 与 API Owner|迁移和验证状态|
 |---|---|---|
@@ -66,9 +79,9 @@
 |---|---|---|
 |总览|LEGACY_BRIDGE|原总览；独立原生总览未完成|
 |质量中心|LEGACY_BRIDGE|原质量中心/治理 Owner，未改|
-|算法库|NATIVE_PARTIAL|app/Algorithms.vue 卡片/CRUD/版本；算法报告、删除/回退等原流程仍保留|
-|训练任务|NATIVE_PARTIAL|TrainingTasks/Create/NativeTrainingReport；完整操作/高级参数仍按原矩阵逐项验收|
-|素材库|NATIVE_PARTIAL|原生浏览、上传、ZIP、正式人工标注、已选用途和免清洗；分类、成员和算法池仍有旧入口|
+|算法库|NATIVE_PARTIAL|卡片、版本删除、回退、清理与授权下载；整算法删除、算法报告等仍有旧流程|
+|训练任务|NATIVE_PARTIAL|TrainingTasks/Create/NativeTrainingReport、独立 Test 框级诊断；继续训练和补数等仍依原流程|
+|素材库|NATIVE_PARTIAL|原生浏览、上传、ZIP、正式人工标注、用途、免清洗、数据集目录及单张归属；批量成员、分类及算法池仍有旧入口|
 |视频切帧|LEGACY_BRIDGE|原视频任务页，尚未原生化|
 |自动标注及清洗|NATIVE_PARTIAL|AiTasks/AiCreate/AiReview、转池、候选消歧与清洗；原消歧直接批量入库等仍有旧入口|
 |标签管理|NATIVE_PARTIAL|目录、后台统一、标签完整性审计和修复已接通；预设和 Smart Audit 等仍有旧入口|
