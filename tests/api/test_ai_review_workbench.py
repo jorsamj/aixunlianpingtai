@@ -116,7 +116,7 @@ const results = JSON.parse(fs.readFileSync(0, 'utf8')).map(([item, options]) => 
 console.log(JSON.stringify(results));
 """
     output = subprocess.run(["node", "--input-type=module", "-e", script, str(module)],
-                            input=json.dumps(cases), capture_output=True, text=True, check=True, timeout=15)
+                            input=json.dumps(cases), capture_output=True, encoding="utf-8", check=True, timeout=15)
     assert [plan_ambiguity(item, **options) for item, options in cases] == json.loads(output.stdout)
 
 
