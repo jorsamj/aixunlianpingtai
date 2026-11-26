@@ -631,3 +631,27 @@ def test_training_usage_freshness_uses_the_algorithm_provider(tmp_path):
     assert freshness("q") is True
     _admission(admission_record_path(other / "algorithms.json"), project="q")
     assert freshness("q") is False
+def test_reference_scan_refuses_a_history_change_between_pages(tmp_path, monkeypatch):
+    """A changing history is "cannot verify", never "no reference"."""
+    from platform_core import conversion_catalog_references as references
+    from platform_core.errors import PlatformError
+
+    root = tmp_path / "data"
+    project = root / "projects" / "project"
+    project.mkdir(parents=True)
+    store = AlgorithmSqlStore(project / "algorithms.json")
+    store.replace_all(_rows())
+    catalog = {"vendors": [], "chips": []}
+    original = references.iter_history_payloads
+
+    def changing(repository, **kwargs):
+        for item in original(repository, **kwargs):
+            # A concurrent algorithm write lands between the pages.
+            store.patch_algorithm("algo-1", {"name": "Changed mid-scan"})
+            yield item
+
+    monkeypatch.setattr(references, "iter_history_payloads", changing)
+    with pytest.raises(PlatformError) as failed:
+        references.catalog_references(root, catalog, "vendors", {"id": "vendor-1"})
+    assert failed.value.code == "CATALOG_REFERENCE_CHECK_FAILED"
+    assert "ALGORITHM_HISTORY_CHANGED_DURING_SCAN" in str(failed.value.detail)

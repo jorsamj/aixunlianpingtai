@@ -2,33 +2,40 @@
 
 Commands::
 
-    python -m platform_core.storage_source_migration_cli status --dsn ...
+    python -m platform_core.storage_source_migration_cli status --sqlite ... [--dsn ...]
     python -m platform_core.storage_source_migration_cli export --sqlite ... --out snapshot.json
     python -m platform_core.storage_source_migration_cli import --dsn ... --snapshot snapshot.json
     python -m platform_core.storage_source_migration_cli report --dsn ... --snapshot snapshot.json
-    python -m platform_core.storage_source_migration_cli admit --dsn ... --snapshot snapshot.json \
-        --sqlite ... --operator ... --reason ...
+    python -m platform_core.storage_source_migration_cli admit --dsn ... --sqlite ... \
+        --operator ... --reason ... [--snapshot snapshot.json]
+    python -m platform_core.storage_source_migration_cli finish --dsn ... --sqlite ...
+    python -m platform_core.storage_source_migration_cli abort --sqlite ...
 
-``admit`` is the only command that writes the local admission record, and it
-refuses unless the target reconciles exactly.  Nothing here touches production
-unless an operator runs it against the production DSN.
+``admit`` is the only command that publishes the local admission record.  It runs
+the fenced protocol in :mod:`platform_core.storage_source_cutover`: it blocks
+SQLite writers, re-exports the current SQLite copy, imports and reconciles
+PostgreSQL in one transaction, publishes the durable cutover row, and only then
+writes the admission record atomically.  ``finish`` releases a transition that was
+interrupted after publication; ``abort`` releases one that was never published.
+Nothing here touches production unless an operator runs it against the production
+DSN, and no command enables the PostgreSQL provider by itself.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
-from .storage.source_repository import (
-    CONTRACT_VERSION,
-    DEFAULT_SCOPE,
-    admission_record_path,
+from .storage.source_repository import DEFAULT_SCOPE
+from .storage_source_cutover import (
+    abort_cutover,
+    admit_cutover,
+    cutover_status,
+    finish_cutover,
+    summarize_error,
 )
 from .storage_source_migration import (
-    StorageSourceMigrationError,
     export_snapshot,
     export_target_snapshot,
     import_snapshot,
@@ -64,31 +71,30 @@ def _ensure_schema(connection) -> dict:
     return ensure_schema(connection, allow_upgrade=True)
 
 
-def _status(connection, scope: str) -> dict:
-    from .storage_source_postgres_schema import schema_status
-
-    source = None
-    return {"scope": scope, "schema": schema_status(connection), "target": source}
-
-
 def command_status(args) -> int:
-    with _connect(args.dsn) as connection:
-        status = _status(connection, args.scope)
-        target = export_target_snapshot(connection, args.scope)
-    print(
-        json.dumps(
-            {
-                "scope": args.scope,
-                "schema": status["schema"],
-                "target_counts": target["counts"],
-                "target_default": next(
-                    (row["id"] for row in target["rows"] if row["is_default"]), None
-                ),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    local = cutover_status(args.sqlite)
+    payload = {
+        "sqlite": local["sqlite_path"],
+        "state": local["state"],
+        "sqlite_writable": local["sqlite_writable"],
+        "postgres_writable": local["postgres_writable"],
+        "admission_record": local["admission_record"],
+        "transition": local["transition"],
+    }
+    if args.dsn:
+        with _connect(args.dsn) as connection:
+            from .storage_source_postgres_schema import schema_status
+
+            payload["schema"] = schema_status(connection)
+            target = export_target_snapshot(connection, args.scope)
+        payload["target"] = {
+            "counts": target["counts"],
+            "default": next(
+                (row["id"] for row in target["rows"] if row["is_default"]), None
+            ),
+            "content_digest": target["content_digest"],
+        }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -118,7 +124,13 @@ def command_import(args) -> int:
         with connection.transaction():
             counters = import_snapshot(connection, snapshot)
         target = export_target_snapshot(connection, snapshot["scope"])
-    print(json.dumps({"imported": counters, "report": reconcile(snapshot, target)}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {"imported": counters, "report": reconcile(snapshot, target)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -134,47 +146,46 @@ def command_report(args) -> int:
 def command_admit(args) -> int:
     if not args.operator.strip() or not args.reason.strip():
         raise SystemExit("admit requires --operator and --reason")
-    if not args.sqlite:
-        raise SystemExit("admit requires --sqlite to bind the admission to a local owner")
-    snapshot = _load_snapshot(args.snapshot)
+    expected = None
+    if args.snapshot:
+        expected = str(_load_snapshot(args.snapshot)["content_digest"])
     with _connect(args.dsn) as connection:
         _ensure_schema(connection)
-        target = export_target_snapshot(connection, snapshot["scope"])
-        report = reconcile(snapshot, target)
-        if not report["same"]:
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            raise SystemExit("refusing to admit: the target does not reconcile")
-        record_path = admission_record_path(args.sqlite)
-        record_path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "contract_version": CONTRACT_VERSION,
-            "admission_id": uuid.uuid4().hex,
-            "scope": str(snapshot["scope"]),
-            "authoritative_provider": "postgresql",
-            "source_count": int(snapshot["counts"]["sources"]),
-            "content_digest": str(snapshot["content_digest"]),
-            "writer_generation": 1,
-            "admitted_at": datetime.now(timezone.utc).isoformat(),
-            "revoked_at": None,
-            "operator": args.operator.strip(),
-            "reason": args.reason.strip(),
-        }
-        record_path.write_text(
-            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+        result = admit_cutover(
+            connection,
+            args.sqlite,
+            scope=args.scope,
+            operator=args.operator,
+            reason=args.reason,
+            expected_source_digest=expected,
         )
-    print(json.dumps({"admitted": True, "record": str(record_path)}, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_finish(args) -> int:
+    with _connect(args.dsn) as connection:
+        result = finish_cutover(connection, args.sqlite)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_abort(args) -> int:
+    result = abort_cutover(args.sqlite)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="storage_source_migration_cli",
-        description="U2 storage-source metadata migration (explicit, idempotent).",
+        description="U2 storage-source metadata migration (fenced, idempotent).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    status = subparsers.add_parser("status", help="schema and target source status")
-    status.add_argument("--dsn", required=True)
+    status = subparsers.add_parser("status", help="local cutover state and target status")
+    status.add_argument("--sqlite", required=True)
+    status.add_argument("--dsn", default="")
     status.add_argument("--scope", default=DEFAULT_SCOPE)
     status.set_defaults(handler=command_status)
 
@@ -184,19 +195,39 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--out", required=True)
     export.set_defaults(handler=command_export)
 
-    for name, handler, help_text in (
-        ("import", command_import, "idempotent import of a snapshot"),
-        ("report", command_report, "reconcile a snapshot against the target"),
-        ("admit", command_admit, "write the local admission after a clean reconcile"),
-    ):
-        command = subparsers.add_parser(name, help=help_text)
-        command.add_argument("--dsn", required=True)
-        command.add_argument("--snapshot", required=True)
-        if name == "admit":
-            command.add_argument("--sqlite", required=True)
-            command.add_argument("--operator", required=True)
-            command.add_argument("--reason", required=True)
-        command.set_defaults(handler=handler)
+    import_command = subparsers.add_parser("import", help="idempotent import of a snapshot")
+    import_command.add_argument("--dsn", required=True)
+    import_command.add_argument("--snapshot", required=True)
+    import_command.set_defaults(handler=command_import)
+
+    report = subparsers.add_parser("report", help="reconcile a snapshot against the target")
+    report.add_argument("--dsn", required=True)
+    report.add_argument("--snapshot", required=True)
+    report.set_defaults(handler=command_report)
+
+    admit = subparsers.add_parser(
+        "admit", help="fenced switch: re-export, import, reconcile and publish admission"
+    )
+    admit.add_argument("--dsn", required=True)
+    admit.add_argument("--sqlite", required=True)
+    admit.add_argument("--operator", required=True)
+    admit.add_argument("--reason", required=True)
+    admit.add_argument("--snapshot", default="")
+    admit.add_argument("--scope", default=DEFAULT_SCOPE)
+    admit.set_defaults(handler=command_admit)
+
+    finish = subparsers.add_parser(
+        "finish", help="release a published transition after proving its state"
+    )
+    finish.add_argument("--dsn", required=True)
+    finish.add_argument("--sqlite", required=True)
+    finish.set_defaults(handler=command_finish)
+
+    abort = subparsers.add_parser(
+        "abort", help="release an unpublished transition (SQLite stays writable)"
+    )
+    abort.add_argument("--sqlite", required=True)
+    abort.set_defaults(handler=command_abort)
     return parser
 
 
@@ -205,8 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.handler(args))
-    except StorageSourceMigrationError as error:
-        print(json.dumps({"code": error.code, "detail": error.detail}, ensure_ascii=False))
+    except Exception as error:  # noqa: BLE001 - the CLI renders stable codes
+        print(json.dumps(summarize_error(error), ensure_ascii=False))
         return 2
 
 

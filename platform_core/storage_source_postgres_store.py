@@ -128,9 +128,18 @@ class PostgresStorageSourceRepository:
         # instance instead of leaving two possible owners.
         self._refresh_admission()
         self._require_admission()
+        if self._transition_pending():
+            raise StorageSourceAdmissionRequired(
+                "STORAGE_SOURCE_CUTOVER_IN_PROGRESS",
+                "a storage-source cutover is unresolved; neither provider may write",
+                detail="a transition marker is present next to the admission record",
+            )
         connection = self._connect()
         try:
             with connection.cursor() as cursor:
+                # The durable ownership verdict and the write share one
+                # transaction: a separate check could observe an older switch.
+                self._require_write_authority(cursor)
                 yield cursor
             connection.commit()
         except BaseException:
@@ -138,6 +147,62 @@ class PostgresStorageSourceRepository:
             raise
         finally:
             connection.close()
+
+    def _transition_pending(self) -> bool:
+        if self._admission_path is None:
+            return False
+        from .storage.source_repository import admission_transition_path
+
+        return admission_transition_path(self._admission_path).exists()
+
+    #: Cutover phases during which this provider may write.
+    _WRITABLE_PHASES = frozenset({"POSTGRES_ACTIVE"})
+
+    def _require_write_authority(self, cursor) -> None:
+        """Lock the durable cutover row and prove this provider still owns writes.
+
+        The local admission record is a file and can be lost, copied or stale;
+        this row is the durable evidence. Locking it FOR UPDATE makes a cutover
+        wait for an admitted write, and an admitted write wait for an in-flight
+        switch, so the check and the write cannot be split by a switch.
+        """
+        self._require_admission()
+        cursor.execute(
+            f"SELECT admission_id, writer_generation, phase "
+            f"FROM {SCHEMA_NAME}.cutover_state WHERE scope=%s FOR UPDATE",
+            (self.scope,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise StorageSourceAdmissionRequired(
+                "STORAGE_SOURCE_POSTGRES_ADMISSION_REQUIRED",
+                "PostgreSQL storage-source writes require a durable cutover state",
+                detail=f"scope={self.scope!r}",
+            )
+        local_id = str(self._admission.get("admission_id") or "")
+        if str(row["admission_id"]) != local_id:
+            raise StorageSourceAdmissionRequired(
+                "STORAGE_SOURCE_POSTGRES_ADMISSION_STALE",
+                "the local admission record does not own this database",
+                detail=(
+                    f"durable={row['admission_id']!r} local={local_id!r}"
+                ),
+            )
+        if str(row["phase"]) not in self._WRITABLE_PHASES:
+            raise StorageSourceAdmissionRequired(
+                "STORAGE_SOURCE_CUTOVER_IN_PROGRESS",
+                "the durable cutover state blocks writes",
+                detail=f"phase={row['phase']!r}",
+            )
+        local_generation = int(self._admission.get("writer_generation") or 0)
+        if int(row["writer_generation"]) != local_generation:
+            raise StorageSourceAdmissionRequired(
+                "STORAGE_SOURCE_POSTGRES_ADMISSION_STALE",
+                "the local admission generation is behind the durable generation",
+                detail=(
+                    f"durable={int(row['writer_generation'])} local={local_generation}"
+                ),
+            )
 
     def _refresh_admission(self) -> None:
         if self._admission_path is None:

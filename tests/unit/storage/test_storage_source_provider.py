@@ -255,3 +255,101 @@ def test_postgres_provider_refuses_an_admission_for_another_scope():
 
 def test_conflict_error_is_a_value_error_for_the_existing_api_contract():
     assert issubclass(StorageSourceConflictError, ValueError)
+
+def test_switch_lock_is_reentrant_and_excludes_other_threads(tmp_path):
+    """The cutover switch and the writers share one mutex."""
+    import threading
+
+    from platform_core.storage.source_repository import storage_source_switch_lock
+
+    path = tmp_path / "storage" / "storage_sources.sqlite3"
+    path.parent.mkdir(parents=True)
+    seen = {}
+
+    with storage_source_switch_lock(path):
+        # Re-entrant inside the owning thread (writer -> writer).
+        with storage_source_switch_lock(path):
+            seen["nested"] = True
+
+        def contender():
+            with storage_source_switch_lock(path, timeout=0.2):
+                seen["acquired"] = True
+
+        thread = threading.Thread(target=contender)
+        thread.start()
+        thread.join()
+    assert seen["nested"] is True
+    assert "acquired" not in seen
+
+
+def test_switch_lock_reports_a_cutover_in_progress(tmp_path):
+    import threading
+
+    from platform_core.storage.source_repository import storage_source_switch_lock
+
+    path = tmp_path / "storage" / "storage_sources.sqlite3"
+    path.parent.mkdir(parents=True)
+    outcome = {}
+
+    with storage_source_switch_lock(path):
+        def contender():
+            try:
+                with storage_source_switch_lock(path, timeout=0.2):
+                    outcome["acquired"] = True
+            except Exception as error:  # noqa: BLE001 - assert the stable code
+                outcome["code"] = getattr(error, "code", type(error).__name__)
+
+        thread = threading.Thread(target=contender)
+        thread.start()
+        thread.join()
+    assert outcome.get("code") == "STORAGE_SOURCE_CUTOVER_IN_PROGRESS"
+
+
+def test_admission_refuses_an_already_active_record(tmp_path):
+    """A second switch cannot be admitted while one is published."""
+    from platform_core.storage_source_cutover import admit_cutover
+
+    repository = _repository(tmp_path)
+    _admission(admission_record_path(repository.path))
+    with pytest.raises(Exception) as admitted:
+        admit_cutover(
+            None, repository.path, operator="ops", reason="second"
+        )
+    assert getattr(admitted.value, "code", "") == "STORAGE_SOURCE_CUTOVER_ALREADY_ADMITTED"
+
+
+def test_cutover_status_never_guesses_unknown_states(tmp_path):
+    from platform_core.storage_source_cutover import (
+        STATE_INCONSISTENT,
+        STATE_POSTGRES,
+        STATE_SQLITE,
+        cutover_status,
+    )
+
+    repository = _repository(tmp_path)
+    record_path = admission_record_path(repository.path)
+    marker_path = admission_transition_path(record_path)
+    assert cutover_status(repository.path)["state"] == STATE_SQLITE
+
+    _admission(record_path)
+    assert cutover_status(repository.path)["state"] == STATE_POSTGRES
+    marker_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "storage-source-cutover-transition-v1",
+                "operation_id": "op",
+                "scope": "platform",
+                "phase": "POSTGRES_ACTIVE",
+                "writer_generation": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    status = cutover_status(repository.path)
+    assert status["state"] == STATE_INCONSISTENT
+    assert status["sqlite_writable"] is False and status["postgres_writable"] is False
+
+    marker_path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(Exception) as invalid:
+        cutover_status(repository.path)
+    assert getattr(invalid.value, "code", "") == "STORAGE_SOURCE_CUTOVER_TRANSITION_INVALID"

@@ -32,9 +32,26 @@ MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
 _INIT_LOCK_TIMEOUT = 30
 # Hard cap on legacy payloads decoded by one stored-name lookup. Rows without a
 # canonical payload stored_name are only a pre-normalization legacy shape; the
-# completion query decodes at most this many of them and fails closed, so a
-# legacy row outside the cap is reported as absent rather than guessed.
+# completion query decodes at most this many of them. Hitting the cap means the
+# lookup could neither find nor exclude a match, so the caller gets an explicit
+# "evidence incomplete" outcome instead of a plain "not found" (see
+# MaterialEvidenceIncomplete). A future bounded backfill removes this state.
 _LEGACY_STORED_NAME_SCAN_LIMIT = 200
+
+
+class MaterialEvidenceIncomplete(RuntimeError):
+    """A bounded lookup could not prove its answer either way.
+
+    Returning "not found" here would turn incomplete evidence into a negative
+    fact (for example a business file 404). Callers must surface this state.
+    """
+
+    code = "MATERIAL_STORED_NAME_EVIDENCE_INCOMPLETE"
+
+    def __init__(self, message: str, *, detail: str = ""):
+        super().__init__(message)
+        self.detail = str(detail or "")
+
 DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
 MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
 _MATERIAL_ANNOTATION_LIFECYCLE_LOCK = ".material-annotation-lifecycle.lock"
@@ -731,8 +748,12 @@ class MaterialRepository:
         ``object_key``.  ONE legacy completion query therefore looks at rows
         whose canonical stored name is absent, decodes at most
         ``_LEGACY_STORED_NAME_SCAN_LIMIT`` of them and keeps only exact matches.
-        That fallback is bounded and fails closed: a miss (or a legacy row beyond
-        the cap) yields fewer rows, never a different row.
+
+        That fallback is bounded, and hitting the cap is reported as
+        :class:`MaterialEvidenceIncomplete`: at that point the lookup could
+        neither prove the name unique nor prove it absent, so it must not be
+        turned into a plain "not found".  A below-cap scan is complete evidence
+        and returns the ordered rows (possibly empty).
 
         Returned rows are ordered by ``(created_at, id)`` ascending and truncated
         to the clamped ``limit`` (1..50).
@@ -742,6 +763,7 @@ class MaterialRepository:
             return []
         bounded = max(1, min(50, int(limit)))
         selected: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        cap_hit = False
         with closing(self._connect()) as database:
             rows = database.execute(
                 "SELECT id, created_at, payload_json FROM materials "
@@ -768,6 +790,7 @@ class MaterialRepository:
                     "ORDER BY created_at, id LIMIT ?",
                     (_LEGACY_STORED_NAME_SCAN_LIMIT,),
                 ).fetchall()
+                cap_hit = len(legacy_rows) >= _LEGACY_STORED_NAME_SCAN_LIMIT
                 for row in legacy_rows:
                     image_id = str(row["id"])
                     if image_id in selected:
@@ -780,6 +803,14 @@ class MaterialRepository:
                     )
                     if len(selected) >= bounded:
                         break
+        if cap_hit:
+            raise MaterialEvidenceIncomplete(
+                "stored-name lookup exceeded its bounded legacy scan",
+                detail=(
+                    f"project={self.project_path.name} canonical_lookup_matches="
+                    f"{len(selected)} legacy_scan_cap={_LEGACY_STORED_NAME_SCAN_LIMIT}"
+                ),
+            )
         ordered = sorted(selected.values(), key=lambda item: (item[0], item[1]))
         return [payload for _, _, payload in ordered[:bounded]]
 

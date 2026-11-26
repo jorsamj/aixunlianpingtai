@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+import pytest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +18,7 @@ import app
 from platform_core import material_repository_batch as material_batch_module
 import platform_core.material_repository as material_repository_module
 from platform_core.material_repository import (
+    MaterialEvidenceIncomplete,
     MaterialRepository,
     _LEGACY_STORED_NAME_SCAN_LIMIT,
 )
@@ -212,11 +215,25 @@ def test_legacy_fallback_decodes_at_most_the_documented_cap(tmp_path, monkeypatc
         return original(row)
 
     monkeypatch.setattr(repository, "_row_payload", counting)
-    # The legacy row that sorts beyond the cap is never decoded: a miss returns
-    # fewer rows (here none) instead of scanning every payload.
-    assert repository.find_by_stored_name(f"legacy-{total - 1:04d}.jpg") == []
+    # The scan is still bounded: only the documented cap is decoded.
     assert total > _LEGACY_STORED_NAME_SCAN_LIMIT
+    # But hitting the cap is *incomplete evidence*, not "not found": the name may
+    # exist beyond the window and could also be a duplicate inside it.
+    with pytest.raises(MaterialEvidenceIncomplete) as incomplete:
+        repository.find_by_stored_name(f"legacy-{total - 1:04d}.jpg")
+    assert incomplete.value.code == "MATERIAL_STORED_NAME_EVIDENCE_INCOMPLETE"
+    assert "legacy_scan_cap=" + str(_LEGACY_STORED_NAME_SCAN_LIMIT) in incomplete.value.detail
     assert len(decoded) == _LEGACY_STORED_NAME_SCAN_LIMIT
+
+
+def test_a_below_cap_legacy_miss_is_complete_evidence(tmp_path):
+    """Fewer legacy rows than the cap means a miss can be reported as a miss."""
+    repository = MaterialRepository(tmp_path)
+    insert_legacy_row(
+        repository, "legacy-only", object_key="uploads/legacy-only.jpg",
+        created_at="2026-02-01T00:00:00+00:00",
+    )
+    assert repository.find_by_stored_name("absent.jpg") == []
 
 
 def test_limit_is_clamped_to_one_through_fifty(tmp_path):

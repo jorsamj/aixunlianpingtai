@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from .errors import redact_storage_error
 from .models import StorageType
@@ -46,6 +46,12 @@ _INITIALIZATION_LOCKS: dict[str, threading.Lock] = {}
 _INITIALIZATION_LOCKS_GUARD = threading.Lock()
 _SOURCE_LIFECYCLE_LOCK = ".storage-source-lifecycle.lock"
 _SOURCE_LIFECYCLE_LOCAL = threading.local()
+#: One mutex shared by the cutover switch and every SQLite writer. A writer holds
+#: it across *(authority check -> write)* and the switch holds it across
+#: *(marker publication -> snapshot -> admission)*, so a writer that already
+#: passed the check cannot slip a write past the switch boundary.
+_SWITCH_LOCK_FILENAME = ".storage-source-switch.lock"
+_SWITCH_LOCK_LOCAL = threading.local()
 
 #: Storage-source provider boundary (U2).  The default provider is SQLite and
 #: keeps the existing behaviour; PostgreSQL needs an explicit DSN plus a cutover
@@ -279,6 +285,46 @@ def storage_source_lifecycle_fence(
             held.pop(lock_path, None)
 
 
+@contextmanager
+def storage_source_switch_lock(
+    path: str | Path, *, timeout: float = 5.0,
+):
+    """The writer/switch mutex described by the cutover protocol.
+
+    Re-entrant inside one thread (a writer may trigger another writer, e.g. the
+    constructor bootstrap followed by a create).  A writer that cannot enter
+    within ``timeout`` fails closed with ``STORAGE_SOURCE_CUTOVER_IN_PROGRESS``
+    instead of writing while a switch is deciding authority.
+    """
+    lock_path = str(Path(path).resolve().parent / _SWITCH_LOCK_FILENAME)
+    held = getattr(_SWITCH_LOCK_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _SWITCH_LOCK_LOCAL.held = held
+    depth = held.get(lock_path)
+    if depth is not None:
+        held[lock_path] = depth + 1
+        try:
+            yield
+        finally:
+            held[lock_path] -= 1
+        return
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(lock_path, timeout=timeout, thread_local=False):
+            held[lock_path] = 1
+            try:
+                yield
+            finally:
+                held.pop(lock_path, None)
+    except FileLockTimeout as error:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_CUTOVER_IN_PROGRESS",
+            "a storage-source cutover is in progress",
+            detail="the storage-source switch lock is held by another writer",
+        ) from error
+
+
 def _initialization_lock(path: Path) -> threading.Lock:
     key = str(path.resolve())
     with _INITIALIZATION_LOCKS_GUARD:
@@ -360,25 +406,33 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
 def _controlled_source_write(function):
     @wraps(function)
     def fenced(self, *args, **kwargs):
-        # Authority is re-checked on every write (including construction, whose
-        # default-source bootstrap is a write): a long-lived instance cannot keep
-        # writing after a cutover admitted another provider.
+        # Two locks, always in this order (lifecycle -> switch):
+        #  * the switch mutex makes *(authority check -> write)* atomic against a
+        #    cutover that publishes the transition marker and the admission;
+        #  * the lifecycle fence keeps the existing material-commit serialization
+        #    the controlled local GC mode requires.
         path = getattr(self, "path", None)
         if path is None and args:
             path = Path(args[0])
-        if path is not None:
-            _refuse_stale_sqlite(path)
-        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
-            return function(self, *args, **kwargs)
         if path is None:
-            path = Path(args[0])
+            return function(self, *args, **kwargs)
+        path = Path(path)
+        controlled = os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") == "1"
+
+        def write() -> Any:
+            with storage_source_switch_lock(path):
+                _refuse_stale_sqlite(path)
+                return function(self, *args, **kwargs)
+
+        if not controlled:
+            return write()
         path.parent.mkdir(parents=True, exist_ok=True)
         from ..material_repository import _LIFECYCLE_LOCAL
         # Existing flows can hold project->source while compatibility holds
         # source->project. Never wait on the reverse edge in controlled mode.
         timeout = 0 if getattr(_LIFECYCLE_LOCAL, "held", {}) else 60
         with storage_source_lifecycle_fence(path, timeout=timeout):
-            return function(self, *args, **kwargs)
+            return write()
     return fenced
 
 
@@ -587,7 +641,11 @@ class StorageSourceRepository:
         return self.get(source_id)  # type: ignore[return-value]
 
     def record_health(self, source_id: str, *, ok: bool, message: str) -> StorageSource:
-        _refuse_stale_sqlite(self.path)
+        with storage_source_switch_lock(self.path):
+            _refuse_stale_sqlite(self.path)
+            return self._record_health(source_id, ok=ok, message=message)
+
+    def _record_health(self, source_id: str, *, ok: bool, message: str) -> StorageSource:
         checked = _now()
         safe_message = redact_storage_error(message)
         with closing(self._connect()) as database:

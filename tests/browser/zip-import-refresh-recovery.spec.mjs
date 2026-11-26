@@ -411,10 +411,17 @@ test('cancelling one active browser transfer releases its slot without affecting
 test('one ZIP session failure stays visible and the next queued file still uploads',async({page,request})=>{
   const project=await createProject(request);
   await selectIsolatedTestProject(page,project.id);
+  const filenames=['session-fails.zip','continues-two.zip','continues-three.zip'];
   let rejected=false;
+  // The two-slot FIFO creates the sessions of the first two files concurrently, so
+  // "the first POST" is not a stable identity. Target the failure by the file the
+  // scenario names instead of by arrival order, otherwise the injected 503 can land
+  // on the second file and the test would assert the wrong contract.
   await page.route('**/api/v19/projects/*/datasets/default/import/uploads',async route=>{
     const url=new URL(route.request().url());
-    if(!rejected&&route.request().method()==='POST'&&url.pathname.includes('/projects/'+project.id+'/')){
+    let file='';
+    try{file=String(route.request().postDataJSON()?.file_name||'')}catch{file=''}
+    if(!rejected&&route.request().method()==='POST'&&url.pathname.includes('/projects/'+project.id+'/')&&file===filenames[0]){
       rejected=true;
       await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'模拟上传会话不可用'})});
       return;
@@ -427,7 +434,6 @@ test('one ZIP session failure stays visible and the next queued file still uploa
     [`images/train/failure-${index}.jpg`,Buffer.from(`failure-${index}`)],
     ['data.yaml',Buffer.from(`train: images/train\nnames: [failure_${index}]\n`)],
   ]);
-  const filenames=['session-fails.zip','continues-two.zip','continues-three.zip'];
   await page.evaluate(()=>window.importData());
   await page.locator('#importFile').setInputFiles(filenames.map((name,index)=>({name,mimeType:'application/zip',buffer:zip(index)})));
   await page.evaluate(()=>{void window.doImportUploadV19()});

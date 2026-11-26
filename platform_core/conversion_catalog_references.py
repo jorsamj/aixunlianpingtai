@@ -7,7 +7,11 @@ from contextlib import closing
 from pathlib import Path
 
 from .compute_platform_catalog import conversion_templates, local_chip_key
-from .algorithm_history_evidence import iter_history_payloads, open_history_repository
+from .algorithm_history_evidence import (
+    iter_history_payloads,
+    open_history_repository,
+    revision_token,
+)
 from .algorithm_repository import AlgorithmRepositoryError
 from .errors import PlatformError
 from .task_runtime.artifacts import ArtifactStore
@@ -173,8 +177,18 @@ def catalog_references(data_dir, catalog, entity, record):
             # reporting "no reference".
             repository=open_history_repository(db)
             if repository.provider_name!="sqlite" or db.exists():
+                # A paged scan is only evidence if the authoritative history did
+                # not change while it ran: otherwise a deleted reference could
+                # disappear between pages and be reported as "no reference".
+                before=revision_token(repository)
                 for _kind,record_id,payload in iter_history_payloads(repository):
                     if matches(payload): add("ALGORITHM_VERSION",record_id)
+                if revision_token(repository)!=before:
+                    raise AlgorithmRepositoryError(
+                        "ALGORITHM_HISTORY_CHANGED_DURING_SCAN",
+                        "algorithm history changed while the reference scan ran",
+                        detail="project="+project.name,
+                    )
             legacy=project/"algorithms.json"
             if legacy.exists() and matches(_json(legacy)): add("LEGACY_ALGORITHM",str(legacy.relative_to(root)))
         publications=root/"external_algorithm_publish"/"publications.sqlite3"
@@ -194,6 +208,7 @@ def catalog_references(data_dir, catalog, entity, record):
                 codes=list((mapping.get("chip_mappings") or {}).keys())+[mapping.get("chip_code")]
                 if any((target,local_chip_key(code)) in sdk_identities for code in codes if code): add("EXTERNAL_CHIP_BINDING",target)
     except (OSError,ValueError,TypeError,sqlite3.Error,AlgorithmRepositoryError) as error:
-        raise PlatformError("CATALOG_REFERENCE_CHECK_FAILED","无法完整核验历史引用，禁止物理删除或改挂",str(error),"请修复引用证据后重试；可以停用以保留历史。",409) from error
+        detail=(f"{error.code}: {error}" if isinstance(error,AlgorithmRepositoryError) else str(error))
+        raise PlatformError("CATALOG_REFERENCE_CHECK_FAILED","无法完整核验历史引用，禁止物理删除或改挂",detail,"请修复引用证据后重试；可以停用以保留历史。",409) from error
     return {"check_status":"RECOVERED" if diagnostics else "VERIFIED","diagnostics":diagnostics,"can_delete":count==0,"reference_count":count,"references":references,"references_truncated":count>len(references),
             "solution":"已有业务引用，只能停用；不会删除历史数据。" if count else "未发现业务引用，可确认物理删除。"}

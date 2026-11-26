@@ -92,8 +92,16 @@ def test_task_query_registered_http_contract(tmp_path, monkeypatch):
     repo.create(TaskRecord.new('trainprep_foreign', 'p', TaskKind.TRAINING_PREPARE, 'payload.json', 'cpu'))
     artifacts.atomic_write_json('trainprep_foreign', 'payload.json', {'training_task_id': 'foreign'})
     assert 'related_task_id' not in client.get(base + '/trainprep_foreign', params={'reader_view': True}).json()['task']
-    assert len(api._task_query_router.routes) == 2
-    assert all(r.methods == {'GET'} for r in api._task_query_router.routes)
+    # The reader view registers exactly three GET routes on this router: the
+    # bounded task list, its bounded status summary and one task detail. A new
+    # mutating or unscoped route must fail this guard.
+    assert {
+        route.path: route.methods for route in api._task_query_router.routes
+    } == {
+        '/api/v62/projects/{project_id}/tasks': {'GET'},
+        '/api/v62/projects/{project_id}/tasks/summary': {'GET'},
+        '/api/v62/projects/{project_id}/tasks/{task_id}': {'GET'},
+    }
 
 
 @pytest.mark.parametrize('case', [

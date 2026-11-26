@@ -17,13 +17,14 @@ import hashlib
 from typing import Any
 
 SCHEMA_NAME = "w4_storage_source"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LOCK_KEY = "w4_storage_source:schema"
 APPLIED_BY_DEFAULT = "storage-source-migration-cli"
 
 _TABLE_NAMES = (
     "schema_migration",
     "storage_source",
+    "cutover_state",
 )
 
 _V1 = (
@@ -80,7 +81,31 @@ _V1 = (
     ),
 )
 
-MIGRATIONS = (_V1,)
+#: Durable single-writer evidence. The local admission record can be lost or
+#: stale; this row is what the PostgreSQL writer checks inside its own write
+#: transaction, exactly like the algorithm domain's cutover state.
+_V2 = (
+    2,
+    "storage-source-cutover-state-v2",
+    (
+        """
+        CREATE TABLE IF NOT EXISTS w4_storage_source.cutover_state (
+            scope TEXT PRIMARY KEY,
+            admission_id TEXT NOT NULL,
+            writer_generation BIGINT NOT NULL CHECK (writer_generation >= 1),
+            phase TEXT NOT NULL
+                CHECK (phase IN ('POSTGRES_ACTIVE','SWITCHING','ROLLBACK_APPLIED')),
+            source_digest CHAR(64) NOT NULL,
+            target_digest CHAR(64) NOT NULL,
+            operation_id TEXT NOT NULL,
+            admitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+    ),
+)
+
+MIGRATIONS = (_V1, _V2)
 _MIGRATIONS_BY_VERSION = {
     version: (name, statements) for version, name, statements in MIGRATIONS
 }

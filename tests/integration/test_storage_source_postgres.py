@@ -30,10 +30,20 @@ psycopg = _require_or_skip("psycopg", "psycopg 3 is required for PostgreSQL cont
 _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
 from platform_core.storage.source_repository import (
-    CONTRACT_VERSION,
     StorageSourceConflictError,
     StorageSourceOperationBlocked,
     StorageSourceRepository,
+    admission_record_path,
+    admission_transition_path,
+)
+from platform_core.storage_source_cutover import (
+    STATE_INCONSISTENT,
+    STATE_POSTGRES,
+    STATE_SQLITE,
+    abort_cutover,
+    admit_cutover,
+    cutover_status,
+    finish_cutover,
 )
 from platform_core.storage_source_migration import (
     StorageSourceMigrationError,
@@ -86,36 +96,32 @@ def pg():
     server.cleanup()
 
 
-def _admission(tmp_path, *, scope=SCOPE, revoked=None):
-    path = tmp_path / "storage_source_migration" / "cutover_admission.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "contract_version": CONTRACT_VERSION,
-                "admission_id": "admit-w4",
-                "scope": scope,
-                "authoritative_provider": "postgresql",
-                "writer_generation": 1,
-                "admitted_at": "2026-11-26T00:00:00+00:00",
-                "revoked_at": revoked,
-                "operator": "ops",
-                "reason": "pilot",
-            }
-        ),
-        encoding="utf-8",
+def _sqlite_owner(tmp_path, *, name="NAS"):
+    """A real SQLite owner with one extra source, ready to be switched."""
+    repository = StorageSourceRepository(
+        tmp_path / "storage" / "storage_sources.sqlite3",
+        reference_counter=lambda _source_id: 0,
     )
-    return path
+    repository.create(
+        {
+            "id": "nas-1",
+            "name": name,
+            "type": "remote",
+            "config": {"root": "/mnt/nas"},
+            "secret_ref": "secret://storage-source/nas-1",
+        }
+    )
+    return repository
 
 
-def _provider(pg, tmp_path, *, reference_counter=None, allow_delete=False):
-    record = _admission(tmp_path)
-    record_data = json.loads(record.read_text(encoding="utf-8"))
+def _provider(pg, tmp_path, *, scope=SCOPE, reference_counter=None, allow_delete=False):
+    path = admission_record_path(tmp_path / "storage" / "storage_sources.sqlite3")
+    record = json.loads(path.read_text(encoding="utf-8"))
     return PostgresStorageSourceRepository(
         pg.get_uri(),
-        SCOPE,
-        admission=record_data,
-        admission_path=record,
+        scope,
+        admission=record,
+        admission_path=path,
         reference_counter=reference_counter,
         allow_cross_domain_delete=allow_delete,
     )
@@ -124,6 +130,7 @@ def _provider(pg, tmp_path, *, reference_counter=None, allow_delete=False):
 def _clear(connection):
     with connection.cursor() as cursor:
         cursor.execute(f"DELETE FROM {SCHEMA_NAME}.storage_source WHERE scope=%s", (SCOPE,))
+        cursor.execute(f"DELETE FROM {SCHEMA_NAME}.cutover_state WHERE scope=%s", (SCOPE,))
     connection.commit()
 
 
@@ -133,28 +140,42 @@ def test_storage_source_owner_contract(pg, tmp_path):
         assert schema_status(connection)["up_to_date"] is True
         _clear(connection)
 
+    owner = _sqlite_owner(tmp_path)
+    with psycopg.connect(pg.get_uri()) as connection:
+        admitted = admit_cutover(
+            connection,
+            owner.path,
+            operator="ops",
+            reason="pilot",
+        )
+    assert admitted["admitted"] is True and admitted["writer_generation"] == 1
+    assert not admission_transition_path(
+        admission_record_path(owner.path)
+    ).exists()
+
     repository = _provider(pg, tmp_path)
     assert repository.provider_name == "postgresql"
-    # The provider keeps the SQLite product invariant: a fresh scope always has
-    # the platform local default source.
-    assert [source.id for source in repository.list()] == ["default_local"]
+    assert [source.id for source in repository.list()] == ["default_local", "nas-1"]
     assert repository.default().id == "default_local"
 
     nas = repository.create(
         {
-            "id": "nas-1",
-            "name": "NAS",
+            "id": "nas-2",
+            "name": "NAS 2",
             "type": "remote",
-            "config": {"root": "/mnt/nas"},
-            "secret_ref": "secret://storage-source/nas-1",
+            "config": {"root": "/mnt/nas2"},
+            "secret_ref": "secret://storage-source/nas-2",
         }
     )
-    assert nas.secret_ref == "secret://storage-source/nas-1"
-    assert [source.id for source in repository.list()] == ["default_local", "nas-1"]
+    assert nas.secret_ref == "secret://storage-source/nas-2"
+    assert [source.id for source in repository.list()] == [
+        "default_local", "nas-1", "nas-2",
+    ]
+    assert repository.get("nas-1").secret_ref == "secret://storage-source/nas-1"
 
     # Duplicate name is the owner's conflict error, not a raw driver exception.
     with pytest.raises(StorageSourceConflictError):
-        repository.create({"id": "nas-2", "name": "NAS", "type": "remote"})
+        repository.create({"id": "nas-3", "name": "NAS 2", "type": "remote"})
 
     # Default switching is atomic and refuses a disabled source.
     assert repository.set_default("nas-1").is_default is True
@@ -181,7 +202,7 @@ def test_storage_source_owner_contract(pg, tmp_path):
     with pytest.raises(ValueError):
         repository.update("nas-1", {"unsupported": 1})
 
-    health = repository.record_health("nas-1", ok=True, message="连接正常 api_key=sk-live-secret")
+    health = repository.record_health("nas-1", ok=True, message="杩炴帴姝ｅ父 api_key=sk-live-secret")
     assert health.health_status == "AVAILABLE"
     assert "[REDACTED]" in health.health_message
     with pytest.raises(KeyError):
@@ -203,7 +224,7 @@ def test_migration_export_import_is_idempotent_and_reconciles(pg, tmp_path):
     sqlite_repository.create(
         {
             "id": "oss-1",
-            "name": "对象存储",
+            "name": "瀵硅薄瀛樺偍",
             "type": "s3",
             "config": {"bucket": "changlian"},
             "secret_ref": "secret://storage-source/oss-1",
@@ -249,3 +270,139 @@ def test_migration_export_import_is_idempotent_and_reconciles(pg, tmp_path):
         mismatch = reconcile(snapshot, after)
         assert mismatch["verdict"] == "MISMATCH"
         assert "identity_differences" in mismatch["blocking_findings"]
+
+def test_fenced_cutover_blocks_writes_and_recovers(pg, tmp_path):
+    """The switch fence, the durable cutover row and the crash recovery paths."""
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _sqlite_owner(tmp_path)
+    record_path = admission_record_path(owner.path)
+    marker_path = admission_transition_path(record_path)
+    assert cutover_status(owner.path)["state"] == STATE_SQLITE
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        admitted = admit_cutover(connection, owner.path, operator="ops", reason="pilot")
+    assert admitted["writer_generation"] == 1
+    assert not marker_path.exists()
+    assert cutover_status(owner.path)["state"] == STATE_POSTGRES
+
+    # SQLite can no longer write, and PostgreSQL is the admitted writer.
+    with pytest.raises(Exception) as stale:
+        owner.create({"id": "nas-9", "name": "NAS 9", "type": "remote"})
+    assert getattr(stale.value, "code", "") == "STORAGE_SOURCE_SQLITE_STALE_AFTER_CUTOVER"
+    repository = _provider(pg, tmp_path)
+    assert [source.id for source in repository.list()] == ["default_local", "nas-1"]
+
+    # Crash after the durable publication but before the marker was released:
+    # both providers must stay blocked until finish proves the published state.
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    marker_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "storage-source-cutover-transition-v1",
+                "operation_id": record["operation_id"],
+                "scope": record["scope"],
+                "phase": "POSTGRES_ACTIVE",
+                "writer_generation": record["writer_generation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cutover_status(owner.path)["state"] == STATE_INCONSISTENT
+    with pytest.raises(Exception) as blocked:
+        repository.create({"id": "nas-8", "name": "NAS 8", "type": "remote"})
+    assert getattr(blocked.value, "code", "") == "STORAGE_SOURCE_CUTOVER_IN_PROGRESS"
+    with pytest.raises(Exception) as published:
+        abort_cutover(owner.path)
+    assert getattr(published.value, "code", "") == "STORAGE_SOURCE_CUTOVER_ALREADY_ADMITTED"
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        finished = finish_cutover(connection, owner.path)
+    assert finished["finished"] is True
+    assert not marker_path.exists()
+    assert cutover_status(owner.path)["state"] == STATE_POSTGRES
+    assert repository.create(
+        {"id": "nas-8", "name": "NAS 8", "type": "remote"}
+    ).id == "nas-8"
+
+    # A switch that crashed before publishing the record can be aborted: SQLite
+    # becomes writable again and PostgreSQL still has no admission record.
+    record_path.unlink()
+    on_disk = admission_transition_path(admission_record_path(owner.path))
+    on_disk.write_text(
+        json.dumps(
+            {
+                "contract_version": "storage-source-cutover-transition-v1",
+                "operation_id": "crashed-switch",
+                "scope": SCOPE,
+                "phase": "SWITCHING",
+                "writer_generation": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cutover_status(owner.path)["state"] == "SWITCHING"
+    assert abort_cutover(owner.path)["aborted"] is True
+    assert not on_disk.exists()
+    assert cutover_status(owner.path)["state"] == STATE_SQLITE
+    assert owner.update("nas-1", {"name": "NAS again"}).name == "NAS again"
+
+    # Re-admission after a verified rollback uses a real monotonic generation.
+    # A rollback re-aligns PostgreSQL with SQLite and records the rolled-back
+    # phase before the local admission is cleared; admitting again must then use
+    # the next durable generation instead of restarting at 1.
+    with psycopg.connect(pg.get_uri()) as connection:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM {SCHEMA_NAME}.storage_source "
+                    "WHERE scope=%s AND id='nas-8'",
+                    (SCOPE,),
+                )
+                cursor.execute(
+                    f"UPDATE {SCHEMA_NAME}.cutover_state SET phase='ROLLBACK_APPLIED' "
+                    "WHERE scope=%s",
+                    (SCOPE,),
+                )
+        with connection.transaction():
+            import_snapshot(connection, export_snapshot(owner.path, SCOPE))
+        second = admit_cutover(connection, owner.path, operator="ops", reason="re-run")
+    assert second["writer_generation"] == 2
+    assert second["admission_id"] != admitted["admission_id"]
+
+
+
+def test_admission_refuses_a_changed_source_and_unknown_states(pg, tmp_path):
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _sqlite_owner(tmp_path)
+    stale_digest = "0" * 64
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as changed:
+            admit_cutover(
+                connection,
+                owner.path,
+                operator="ops",
+                reason="pilot",
+                expected_source_digest=stale_digest,
+            )
+    assert getattr(changed.value, "code", "") == "STORAGE_SOURCE_CUTOVER_SOURCE_CHANGED"
+    # Nothing was published and no marker may remain: SQLite still owns writes.
+    assert cutover_status(owner.path)["state"] == STATE_SQLITE
+    assert not admission_transition_path(
+        admission_record_path(owner.path)
+    ).exists()
+    assert owner.update("nas-1", {"name": "NAS safe"}).name == "NAS safe"
+
+    # A malformed marker is unknown state, never "no transition".
+    marker = admission_transition_path(admission_record_path(owner.path))
+    marker.write_text("{not json", encoding="utf-8")
+    with pytest.raises(Exception) as invalid:
+        cutover_status(owner.path)
+    assert getattr(invalid.value, "code", "") == "STORAGE_SOURCE_CUTOVER_TRANSITION_INVALID"
+    with pytest.raises(Exception):
+        owner.update("nas-1", {"name": "must not write"})

@@ -204,16 +204,6 @@ class PostgresAlgorithmRepository:
     # -- provider metadata -------------------------------------------------
     def capabilities(self) -> frozenset[str]:
         # The declared capability set must match what this class really serves:
-        # core operations plus the presentation projections that are ported.
-        return frozenset(CORE_OPERATIONS) | frozenset(_PORTED_PRESENTATION)
-
-    def unsupported_operations(self) -> tuple[str, ...]:
-        # The cleanup domain is a declared gap, not a silent absence: the cutover
-        # tool refuses admission while a project still owns cleanup receipts.
-        return tuple(_UNSUPPORTED) + tuple(CLEANUP_OPERATIONS)
-
-    def capabilities(self) -> frozenset[str]:
-        # The declared capability set must match what this class really serves:
         # core operations, the ported presentation projections and the bounded
         # history-reference evidence used by the impact/reference projections.
         return (
@@ -221,6 +211,11 @@ class PostgresAlgorithmRepository:
             | frozenset(_PORTED_PRESENTATION)
             | frozenset(HISTORY_EVIDENCE_OPERATIONS)
         )
+
+    def unsupported_operations(self) -> tuple[str, ...]:
+        # The cleanup domain is a declared gap, not a silent absence: the cutover
+        # tool refuses admission while a project still owns cleanup receipts.
+        return tuple(_UNSUPPORTED) + tuple(CLEANUP_OPERATIONS)
 
     # -- history-reference evidence ----------------------------------------
     # Equivalent contract to the SQLite reader: the authoritative revision, a

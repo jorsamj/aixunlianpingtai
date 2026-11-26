@@ -120,6 +120,7 @@ from platform_core.mother_model_inventory import project_node_inventory as _proj
 from platform_core.material_repository import (
     AnnotationMaterialLifecycleError,
     DATASET_DELETE_CLAIM_FIELD,
+    MaterialEvidenceIncomplete,
     MaterialRepository,
     material_annotation_lifecycle_fence,
     material_dataset_matches,
@@ -1667,6 +1668,10 @@ def _resolve_business_file(project_id, kind, identifier):
             records=lambda pid, category: _business_file_records(pid, category, identifier),
             material_lookup=_business_material_by_name, storage_manager=storage_manager,
         ).resolve(project_id, kind, identifier)
+    except MaterialEvidenceIncomplete as error:
+        # Incomplete evidence is not "file does not exist": the bounded legacy
+        # lookup could neither confirm nor exclude this name.
+        raise HTTPException(409, detail={'code': error.code, 'message': '素材文件名索引尚未回填，暂时无法确认该文件名唯一性；请稍后重试或执行后台有界回填。'}) from None
     except (BusinessFileNotFound, StorageError, OSError, ValueError, KeyError):
         raise HTTPException(404, detail='文件不存在或无权访问') from None
 

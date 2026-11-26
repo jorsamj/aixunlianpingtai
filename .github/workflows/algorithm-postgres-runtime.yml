@@ -66,8 +66,11 @@ jobs:
       - name: Install focused dependencies
         run: |
           python -m pip install --disable-pip-version-check --upgrade pip
+          # psutil is imported by the performance diagnostics module that the
+          # conversion-catalog reference projection reaches through its provider
+          # boundary; the focused job must not need the whole application stack.
           python -m pip install --disable-pip-version-check \
-            pytest "psycopg[binary]" filelock
+            pytest "psycopg[binary]" filelock psutil
       - name: Prove the service container is the real server
         run: |
           python - <<'PY'
