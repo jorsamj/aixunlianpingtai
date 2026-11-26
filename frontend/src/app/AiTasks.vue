@@ -201,7 +201,7 @@ function locateMaterial(imageId:string){
 onMounted(()=>void load());
 </script>
 <template><section class="ai-tasks" aria-label="AI 标注任务">
- <header><div><h2>AI 标注任务</h2></div><div class="ai-tasks-links"><el-button tag="router-link" type="primary" :to="createTarget">创建任务</el-button><a :href="legacyHref">原完整自动标注</a></div></header>
+ <header><div><h2>AI 标注任务</h2></div><div class="ai-tasks-links"><el-button tag="router-link" type="primary" :to="createTarget">创建任务</el-button><el-button tag="router-link" :to="{name:'native-cleaning',params:{projectId}}">清洗任务</el-button><a :href="legacyHref">原完整自动标注</a></div></header>
  <el-alert v-if="typeof route.query.created==='string'" :title="`任务已创建：${route.query.created}`" type="success" :closable="false"/>
  <form @submit.prevent="search"><el-select v-model="status" aria-label="AI任务状态"><el-option label="全部状态" value=""/><el-option v-for="(name,code) in statuses" :key="code" :label="name" :value="code"/></el-select><el-button native-type="submit" type="primary" :disabled="reads.busy.tasks">查询</el-button><el-button :disabled="reads.busy.tasks" @click="load">刷新</el-button></form>
  <el-alert v-if="reads.errors.tasks" :title="reads.errors.tasks" type="error" :closable="false"/>
