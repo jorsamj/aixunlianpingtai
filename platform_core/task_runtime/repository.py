@@ -842,6 +842,27 @@ class TaskRepository(InferenceResourceMethods):
             ).fetchall()
         return tuple(_from_row(row) for row in rows)
 
+    def summary(
+        self,
+        project_id: str,
+        *,
+        since: str,
+        kinds: Iterable[TaskKind | str] | None = None,
+    ) -> dict[str, int]:
+        """Bounded status aggregation for one project and one created_at window."""
+        clauses = ["project_id=?", "created_at>=?"]
+        parameters: list[object] = [str(project_id), str(since)]
+        if kinds:
+            values = [item.value if isinstance(item, TaskKind) else str(item) for item in kinds]
+            clauses.append(f"kind IN ({','.join('?' for _ in values)})")
+            parameters.extend(values)
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                f"SELECT status, COUNT(*) AS total FROM tasks WHERE {' AND '.join(clauses)} GROUP BY status",
+                tuple(parameters),
+            ).fetchall()
+        return {str(row["status"]): int(row["total"]) for row in rows}
+
     def list(
         self,
         project_id: str | None = None,

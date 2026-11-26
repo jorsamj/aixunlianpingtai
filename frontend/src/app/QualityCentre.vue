@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {onMounted,ref} from 'vue';
+import {computed,onMounted,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import QualityCheckChart from './QualityCheckChart.vue';
 import TaskStatusTag from '../components/TaskStatusTag.vue';
@@ -45,6 +45,20 @@ function checkVisible(){
   return reads.run('check',signal=>request<{ok:boolean;quality:Quality}>('/api/v44/projects/'+root+'/data-quality',{
     method:'POST',signal,body:JSON.stringify({image_ids:ids,max_samples:ids.length}),
   }),value=>{if(value.ok!==true||!value.quality)throw new Error('质量检查证据缺失');quality.value=value.quality});
+}
+interface TrainingTrend {ok:boolean;project_id:string;window_days:number;counts:Record<string,number>;total:number}
+const trend=ref<TrainingTrend|null>(null);
+const trendLabels:Record<string,string>={QUEUED:'排队',WAITING_RESOURCE:'等待资源',PREPARING:'准备',RUNNING:'运行中',
+  PAUSED:'已暂停',AWAITING_CONFIRMATION:'等待确认',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消',
+  FAILED:'失败',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分成功',BLOCKED_BY_ENVIRONMENT:'环境阻断',BLOCKED_BY_HARDWARE:'硬件阻断'};
+const trendParts=computed(()=>trend.value?Object.entries(trend.value.counts).filter(([,count])=>count>0)
+  .sort((left,right)=>right[1]-left[1]).map(([status,count])=>({status,label:trendLabels[status]||status,count})):[]);
+// Same bounded aggregation as the overview; never scans history or report files.
+function loadTrend(){
+  return reads.run('trend',signal=>request<TrainingTrend>(`/api/v62/projects/${encodeURIComponent(projectId)}/tasks/summary?days=7`,{signal}),value=>{
+    if(value.ok!==true||value.project_id!==projectId)throw new Error('训练趋势响应身份不一致');
+    trend.value=value;
+  });
 }
 function loadTraining(){
   return reads.run('training',signal=>training.tasks({},signal),value=>{tasks.value=value});
@@ -110,9 +124,9 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
         </section>
       </el-tab-pane>
       <el-tab-pane name="training" label="训练与评测">
-        <div class="tools"><el-button :loading="reads.busy.training" @click="loadTraining">刷新近期训练</el-button>
+        <div class="tools"><el-button :loading="reads.busy.training" @click="loadTraining">刷新近期训练</el-button><el-button :loading="reads.busy.trend" @click="loadTrend">读取近 7 天状态</el-button>
           <router-link :to="{name:'training-tasks',params}">全部训练任务</router-link></div>
-        <el-alert v-if="reads.errors.training" :title="reads.errors.training" type="error" :closable="false"/>
+        <el-alert v-if="reads.errors.training" :title="reads.errors.training" type="error" :closable="false"/><p v-if="trend" class="scope-note">近 7 天训练与准备任务共 {{ trend.total }} 条<template v-if="trendParts.length">：<template v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }} · </template></template><template v-else>：窗口内没有任务</template></p><p v-if="reads.errors.trend" class="scope-note">近 7 天状态未读取：{{ reads.errors.trend }}</p>
         <el-table :data="tasks?.items||[]" v-loading="reads.busy.training" row-key="task_id" empty-text="暂无训练任务">
           <el-table-column label="算法" min-width="190"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||row.task_id}}</template></el-table-column>
           <el-table-column label="状态" min-width="110"><template #default="{row}"><TaskStatusTag :status="row.status"/></template></el-table-column>

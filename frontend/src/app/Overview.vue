@@ -67,7 +67,26 @@ function loadFailed(){
   return reads.run('failed',signal=>trainingApi.tasks({status:'FAILED'},signal,5),page=>{failed.value=page;});
 }
 
-onMounted(()=>{void loadCore();void loadTraining();void loadAi();void loadFailed();});
+interface TrainingTrend {ok:boolean;project_id:string;window_days:number;since:string;counts:Record<string,number>;total:number}
+const trend=ref<TrainingTrend|null>(null);
+const trendLabels:Record<string,string>={QUEUED:'排队',WAITING_RESOURCE:'等待资源',PREPARING:'准备',RUNNING:'运行中',
+  PAUSED:'已暂停',AWAITING_CONFIRMATION:'等待确认',CANCEL_REQUESTED:'正在取消',CANCELLED:'已取消',
+  FAILED:'失败',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分成功',BLOCKED_BY_ENVIRONMENT:'环境阻断',BLOCKED_BY_HARDWARE:'硬件阻断'};
+const trendParts=computed(()=>{
+  const row=trend.value;
+  if(!row)return [];
+  return Object.entries(row.counts).filter(([,count])=>count>0)
+    .sort((left,right)=>right[1]-left[1])
+    .map(([status,count])=>({status,label:trendLabels[status]||status,count}));
+});
+// Bounded aggregation over the existing task repository; no full-history scan.
+function loadTrend(){
+  return reads.run('trend',signal=>request<TrainingTrend>(`/api/v62/projects/${encodeURIComponent(projectId)}/tasks/summary?days=7`,{signal}),value=>{
+    if(value.ok!==true||value.project_id!==projectId||!value.counts)throw new Error('训练趋势响应身份不一致');
+    trend.value=value;
+  });
+}
+onMounted(()=>{void loadCore();void loadTraining();void loadAi();void loadFailed();void loadTrend();});
 </script>
 
 <template>
@@ -134,6 +153,13 @@ onMounted(()=>{void loadCore();void loadTraining();void loadAi();void loadFailed
           </div>
         </header>
         <p class="overview-hint">最近 5 条失败记录，不代表全部范围；失败原因与恢复资格以任务详情为准。</p>
+        <p v-if="trend" class="overview-trend" aria-label="近7天训练状态">
+          近 7 天训练与准备任务共 {{ trend.total }} 条<template v-if="trendParts.length">：<span v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }}</span></template>
+          <template v-else>：窗口内没有任务</template>
+          <small>范围：本项目 created_at 落在最近 7 天内的训练与训练准备任务，按服务端状态聚合。</small>
+        </p>
+        <el-skeleton v-if="!trend&&reads.busy.trend" :rows="1" animated/>
+        <p v-if="reads.errors.trend" class="overview-hint">近 7 天训练状态未读取：{{ reads.errors.trend }}</p>
         <el-alert v-if="reads.errors.failed" :title="reads.errors.failed" type="error" :closable="false"/>
         <el-skeleton v-if="!failed&&reads.busy.failed" :rows="3" animated/>
         <el-table v-if="failed" :data="failed.items" empty-text="暂无失败任务">
@@ -198,4 +224,7 @@ onMounted(()=>{void loadCore();void loadTraining();void loadAi();void loadFailed
 .overview-metrics dt{font-size:13px;color:var(--el-text-color-secondary)}
 .overview-metrics dd{margin:6px 0 0;font-size:23px;font-weight:600;font-variant-numeric:tabular-nums}
 .overview-hint{margin:0 0 10px;font-size:12px;color:var(--el-text-color-secondary)}
+.overview-trend{display:flex;flex-wrap:wrap;gap:4px 12px;margin:0 0 10px;font-size:12px;color:var(--workspace-muted,#52525b)}
+.overview-trend span{white-space:nowrap}
+.overview-trend small{flex-basis:100%;color:var(--workspace-subtle,#686872)}
 </style>

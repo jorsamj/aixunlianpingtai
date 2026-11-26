@@ -73,6 +73,21 @@ def create_task_query_router(
         }
 
 
+    @router.get("/api/v62/projects/{project_id}/tasks/summary")
+    def unified_runtime_task_summary(project_id: str, days: int = Query(default=7, ge=1, le=30)):
+        """Bounded training status aggregation for one project and a short window."""
+        get_project(project_id)
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        counts = shared_task_repository().summary(
+            project_id, since=since, kinds=(TaskKind.TRAINING, TaskKind.TRAINING_PREPARE),
+        )
+        return {
+            "ok": True, "project_id": project_id, "window_days": days, "since": since,
+            "counts": counts, "total": sum(counts.values()),
+            "kinds": [TaskKind.TRAINING.value, TaskKind.TRAINING_PREPARE.value],
+        }
+
     @router.get("/api/v62/projects/{project_id}/tasks/{task_id}")
     def get_unified_runtime_task(project_id: str, task_id: str, reader_view: bool=False):
         if reader_view:
