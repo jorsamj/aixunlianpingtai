@@ -1,5 +1,16 @@
 # 功能/API迁移矩阵（M0基线2026-11-18，当前M4-D0）
 
+## 连续标注和 AI 创建增量（2026-11-26）
+
+|操作|Vue 入口 / 原 API 及 Owner|状态|
+|---|---|---|
+| 正式标注连续队列与删除后翻页 | FormalAnnotations、MaterialLibrary；原 v61 过滤和编号页，原 GT CAS 与删除回执 | 依确认后的真实成员重查，越界读取最后有效页，保持原素材过滤与跨页选取。CI_PENDING。 |
+| 创建 AI 标注任务 | AI 任务列表、素材库、完成的 ZIP 导入 → AiCreate / AiAnnotationCreate；原 v35 脱敏配置，v60 冻结、预览、创建、回执 | 原生创建主链已接通。原试跑高级比对继续有旧入口，非 v60 可冻结条件保持逐张/本页。CI_PENDING，UAT_PENDING。 |
+| AI 审核及正式入库 | AiReview / NativeAiCandidateEditor / CandidateStore / AnnotationRepository | NATIVE_PARTIAL。原生三栏、编辑、确认、冻结与 C2-B 沿用。转池、撤销、IoU 批量等原流程待继续。 |
+| 清洗、标签审计、素材治理 | 原清洗及素材治理、标签审计入口 | 清洗及标签审计为 LEGACY_BRIDGE，素材治理含原生删除及已实现功能。批量用途、分类、审计修复仍待接入。 |
+
+下面 14 菜单分类为当前实际覆盖。各子操作的真实验收依最终 SHA 和渲染证据。
+
 ## 正式人工标注增量（2026-11-26）
 
 | 操作 | 当前 Owner 与 API | 迁移 / 验收 |
@@ -19,7 +30,7 @@
 | 卡片人工标注 | MaterialLibrary 卡片按钮，通过原 material-annotate 交接打开指定图片 | LEGACY_BRIDGE。新增直接入口，保留原工作台、标注保存及 GT 合同。 |
 | 删除后继续浏览 | useMaterialDelete 既有预检和回执，MaterialLibrary 回收选择并处理末页越界 | 原生删除闭环的修正。按服务端已确认 ID 更新，前端无法认定未确认结果。CI 待验。 |
 
-14 菜单的总体状态沿用下文，素材库继续 NATIVE_PARTIAL。批量分类、正式人工 GT、完整 AI 创建等仍按原入口和既有矩阵维护。
+14 菜单的总体状态沿用下文，素材库继续 NATIVE_PARTIAL。本段记载当批范围，人工 GT 和 AI 创建后的实际接线见上文。
 
 ## 当前增量：标签维护与统一（2026-11-26）
 
@@ -43,9 +54,9 @@
 |质量中心|LEGACY_BRIDGE|原质量中心/治理 Owner，未改|
 |算法库|NATIVE_PARTIAL|app/Algorithms.vue 卡片/CRUD/版本；算法报告、删除/回退等原流程仍保留|
 |训练任务|NATIVE_PARTIAL|TrainingTasks/Create/NativeTrainingReport；完整操作/高级参数仍按原矩阵逐项验收|
-|素材库|NATIVE_PARTIAL|Materials/MaterialLibrary/原生上传与 ZIP 等；正式人工标注、若干治理仍原 Owner|
+|素材库|NATIVE_PARTIAL|Materials/MaterialLibrary/原生上传、ZIP 与正式人工标注；批量用途、分类等仍旧入口|
 |视频切帧|LEGACY_BRIDGE|原视频任务页，尚未原生化|
-|自动标注及清洗|NATIVE_PARTIAL|AiTasks/AiReview 与原批量 GT；创建及清洗仍旧入口，不将任务列表当整个模块完成|
+|自动标注及清洗|NATIVE_PARTIAL|AiTasks/AiCreate/AiReview 与原批量 GT；转池、清洗及其余操作仍有旧入口|
 |标签管理|NATIVE_PARTIAL|本轮目录维护+后台统一；预设/审计/修复仍旧入口|
 |算力与节点|NATIVE_PARTIAL|ServiceNodes 只读总览；配置、环境、诊断仍原入口|
 |模型转换环境|LEGACY_BRIDGE|原环境、资源与字典管理；现有 ConversionCreate/Detail/History 属转换业务，不能据此标环境菜单完成|

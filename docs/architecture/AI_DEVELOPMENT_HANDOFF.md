@@ -1,5 +1,15 @@
 # AI 开发接续入口
 
+## 数据治理与 AI 创建接续（2026-11-26）
+
+- 分支 `feature/external-algorithm-publishing`，目录 `D:\lab\p2b2-backend`。起始本地及远端 `b38104f98bf7e4ac78593b9bb68eed97eb901fdd`。首次准确快照 22 项 PR（20 成功、2 运行）、7 项 push（6 成功、前端运行）。随后单次定向取得前端 Job 139631497564 和制品 15079836704。构建及离线校验通过，浏览器 70 通过、2 失败。最终 HEAD 的运行和验收以推送后快照为准。
+- 上一批历史 CI 遗留已验证关闭：Training Create First Open（Linux、Windows、真实 Chrome）、Material Annotation Atomicity、ZIP Import Durable Runtime、Remote Conversion Runtime push。Benchmark 的历史触发因果仍无独立证据，当前夹具复验通过。上一节列表保留作历史记录。
+- 前端 Chrome 两项修复待复验：标签统一 fixture 点击 Element Plus 隐藏 input 超时，改用可见标签并保留选中/请求/取消断言（`49f5ba238dde8f0cbf9dc9417caededaa85eab35`）。人工标注制品明确报视口 scale 只读，按原 AI 编辑器复制冻结快照（`abecbcec4d91ac30f285e962b89beaa218697fcd`）。
+- 人工标注候选 `abecbcec4d91ac30f285e962b89beaa218697fcd`。确认保存或只读核对成功后刷新服务端队列，当前离开筛选时优先定位仍符合条件的后继。越界用原 v61 响应定位有效页。队列减少到零时退出当前图片。项目及图片共同参与离开确认，减少重复返回按钮。素材库批删后的多页缩减复用同一有界读取，删除预检与回执继续由原任务服务负责。正式 GT 服务与 Annotorious vendor、几何适配保持。
+- AI 创建候选 `f0bf343adb6a735a16e4a5d534e779833f30dfba`。复用 AiAnnotationCreate 三步布局及新增 Vue 原生控件，正常入口为 AI 任务列表、素材库 AI 预标注、已完成的 ZIP 批次。v35 脱敏模型、模板、正式标签；v61 48 条页；v60 冻结、身份成员、排除、服务端汇总、显式单图试跑、创建和原请求 GET。文件 `frontend/src/app/AiCreate.vue`、`frontend/src/api/ai-annotation-create.ts`、`frontend/src/composables/useAiCreateMaterials.ts`。原 localStorage 项目级回执键跨新旧页面共享，超时或 404 未明状态保持核验，不自动重发创建。同一表单保留普通失败配置，实际成功进入任务列表。原试跑叠加基准编辑/导出保留在旧入口，原生提供候选只读预览。冻结接口仅支持名称、标签及标注状态，额外来源或质量条件保留逐张/本页选择，确保全选范围与原服务端过滤一致。ZIP 模式由原报告认定未标注范围。候选不直接写 GT。
+- Vue 类型、合同脚本语法、浏览器用例 TS 语法及 diff 静态验证通过。真实画框和页缩减复用 native-materials 用例。AI 创建用隔离 API 夹具覆盖 20001 张冻结、排除一张后的精确范围、主动试跑及刷新只读核对，GitHub 实际运行待验。三档渲染、离线产物及生产环境按准确 SHA 和现场证据验收。
+- AI 审核维持现有三栏、候选草稿及 C2-B。优先下一批：从原 negative-transfer preview/receipt/undo 接通转池及恢复，AI IoU 批量操作、清洗、标签审计修复及素材批量用途仍有明确旧入口。14 菜单分类见现有功能矩阵。默认入口切换和正式退役继续依产品授权。
+
 ## 正式人工标注接续（2026-11-26）
 
 - `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`。起始本地及远端 `981922f81357ea39ca7e53c0ab4b8d4d1b32cabb`。基线独立验收提供 24 项（22 成功、2 失败）；历史 11bec617 为 50 项 42 成功、8 失败，83b489a5 为 30 项 24 成功、6 失败。触发不足的工作流不能仅凭后续 SHA 关闭。
