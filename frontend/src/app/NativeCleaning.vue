@@ -73,6 +73,22 @@ const auditMaximum=computed(()=>Math.max(1,...auditCells.value));
 const active=(row:CleaningTask)=>cleanTaskView(row).active;
 const reviewable=(row:CleaningTask)=>['awaiting_confirmation','done'].includes(row.status);
 const retriable=(row:CleaningTask)=>cleanTaskView(row).canRetry;
+// Mutually exclusive task states for the list summary; an active task that is
+// stopping is not reported as done and a cancellation is not a failure.
+const statusTone=(status?:string)=>status==='done'?'success':status==='failed'?'danger'
+  :status==='awaiting_confirmation'?'warning':status==='running'?'info':'info';
+const taskBreakdown=computed(()=>{
+  const list=rows.value;
+  const bucket=(statuses:string[])=>list.filter(row=>statuses.includes(String(row.status||''))).length;
+  return [
+    {label:'排队',count:bucket(['queued','waiting_resource'])},
+    {label:'运行中',count:bucket(['running','preparing'])},
+    {label:'待确认',count:bucket(['awaiting_confirmation'])},
+    {label:'已完成',count:bucket(['done'])},
+    {label:'失败',count:bucket(['failed'])},
+    {label:'已停止',count:bucket(['cancelled'])},
+  ];
+});
 const reportError=(cause:unknown)=>{if(!lifetime.signal.aborted)error.value=browseError(cause)};
 
 function selection(repositoryRevision?:number){
@@ -348,6 +364,7 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
 <template>
   <main class="cleaning">
     <header class="cleaning-head"><h2>自动清洗</h2><div>
+      <router-link :to="{name:'materials',params:{projectId}}">返回素材库</router-link>
       <el-button @click="refresh" :loading="refreshing">刷新任务</el-button>
       <el-button type="primary" @click="form=true">创建自动清洗任务</el-button>
       <el-button tag="a" :href="legacy">原清洗创建</el-button>
@@ -357,9 +374,13 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
     <el-alert v-if="uncertain" title="上次创建结果待确认。请刷新并核对已有任务。" type="warning" :closable="false">
       <el-button :disabled="refreshing" @click="resolveCreate">已核对任务列表</el-button>
     </el-alert>
+    <p v-if="rows.length" class="cleaning-summary" aria-label="清洗任务概览">
+      <span>本页 {{rows.length}} 项</span>
+      <span v-for="item in taskBreakdown" :key="item.label">{{item.label}} {{item.count}}</span>
+    </p>
     <el-table :data="rows" empty-text="暂无清洗任务">
       <el-table-column prop="name" label="任务" />
-      <el-table-column label="状态"><template #default="{row}">{{row.status_text||row.status}}</template></el-table-column>
+      <el-table-column label="状态"><template #default="{row}"><el-tag :type="statusTone(row.status)" effect="plain" size="small">{{row.status_text||row.status}}</el-tag></template></el-table-column>
       <el-table-column label="进度"><template #default="{row}">{{row.processed_images}} / {{row.total_images}}</template></el-table-column>
       <el-table-column prop="flagged_images" label="需复核" />
       <el-table-column prop="created_at" label="创建时间" />
@@ -367,7 +388,7 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
     </el-table>
     <section v-if="task" class="cleaning-section">
       <h3>{{task.name}}</h3>
-      <p>{{task.status_text||task.status}} · {{task.processed_images}} / {{task.total_images}} <span v-if="task.stage">· {{task.stage}}</span></p>
+      <p>{{task.status_text||task.status}} · {{task.processed_images}} / {{task.total_images}} · 待处理 {{Math.max(0,(task.total_images||0)-(task.processed_images||0))}} 张 <span v-if="task.stage">· {{task.stage}}</span></p>
       <p v-if="task.resource_wait_reason||task.current_item||task.worker_id">{{task.resource_wait_reason}} {{task.current_item}} {{task.worker_id}}</p>
       <p v-if="cleanTaskView(task).runtimeText">{{cleanTaskView(task).runtimeText}}</p>
       <el-progress :percentage="Math.min(100,Math.max(0,task.progress||0))" />
@@ -508,5 +529,5 @@ onBeforeUnmount(()=>{lifetime.abort();clearTimeout(timer)});
 </template>
 
 <style scoped>
-.cleaning{display:grid;gap:16px}.cleaning-head,.cleaning-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.cleaning-head{justify-content:space-between}.cleaning-controls>*{max-width:260px}.cleaning-section{border:1px solid #ddd;border-radius:8px;padding:16px}.cleaning-section .el-progress{margin:12px 0}.cleaning-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 14px}.cleaning fieldset{border:1px solid #ddd;border-radius:6px;padding:10px 14px;margin:10px 0;min-width:0}.cleaning-heatmap{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;max-width:250px;text-align:center}.cleaning-heatmap span{padding:4px}
+.cleaning{display:grid;gap:16px}.cleaning-head,.cleaning-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.cleaning-head{justify-content:space-between}.cleaning-head a{font-size:13px}.cleaning-controls>*{max-width:260px}.cleaning-summary{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0;font-size:12px;color:var(--workspace-muted,#52525b)}.cleaning-summary span{white-space:nowrap}.cleaning-section{border:1px solid var(--workspace-line,#e4e4e7);border-radius:8px;padding:16px}.cleaning-section .el-progress{margin:12px 0}.cleaning-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 14px}.cleaning fieldset{border:1px solid var(--workspace-line,#e4e4e7);border-radius:6px;padding:10px 14px;margin:10px 0;min-width:0}.cleaning-heatmap{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;max-width:250px;text-align:center}.cleaning-heatmap span{padding:4px}
 </style>

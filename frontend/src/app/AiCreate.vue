@@ -293,6 +293,9 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
       <el-alert v-if="handoffMissing" title="无法读取原已选范围，请返回素材库重新进入。" type="warning" :closable="false"/>
       <p v-else-if="fromSelected">已从素材库带入 {{ initialIds.length }} 张已选素材。筛选只改变浏览范围。</p>
       <p v-else-if="route.query.material_scope==='filters'">已带入素材库筛选条件，请选择本次任务素材。</p>
+      <p v-if="count||excluded.size||frozen" class="create-scope-summary" role="status">
+        已选 {{count}} 张<template v-if="frozen">（冻结引用 {{frozen.count}} 张）</template><template v-if="excluded.size"> · 手动排除 {{excluded.size}} 张</template><template v-if="page"> · 当前页 {{page.items.length}} / 共 {{page.total}} 张</template>
+      </p>
       <el-button v-if="handoffMissing" @click="handoffMissing=false">按当前筛选条件重新选择</el-button>
       <form class="create-fields" @submit.prevent="loadMaterials()">
         <label>图片名称<el-input v-model="filters.query" :disabled="configLocked"/></label>
@@ -392,7 +395,7 @@ onBeforeUnmount(()=>{window.removeEventListener('storage',journalChanged);contro
 .create-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-items:end}
 .create-fields label,.advanced-prompt label{display:grid;gap:6px;font-size:13px}.create-fields .el-select{width:100%}
 .create-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:12px 0;font-size:13px}
-.create-actions :deep(.el-button){margin:0}.material-choice{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:10px}
+.create-actions :deep(.el-button){margin:0}.create-scope-summary{margin:0 0 8px;padding:8px 12px;border-radius:6px;background:var(--el-fill-color-lighter,#f5f7fa);font-size:12px;color:var(--el-text-color-regular,#52525b);overflow-wrap:anywhere}.material-choice{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:10px}
 .material-choice article{min-width:0;border:1px solid var(--el-border-color);border-radius:6px;padding:8px}
 .material-choice :deep(.el-checkbox){max-width:100%}.material-choice :deep(.el-checkbox__label){overflow:hidden;text-overflow:ellipsis}
 .rendered-prompt{max-height:240px;overflow:auto;white-space:pre-wrap}.advanced-prompt{margin-top:16px}.advanced-prompt label{margin-top:10px}
