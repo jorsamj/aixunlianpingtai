@@ -48,16 +48,32 @@ const lifecycleLabels = {
   cleanup_pending_tasks: '待清理任务',
   cleanup_failed_tasks: '清理失败任务',
 };
+function humanBytes(value:number){
+  if(!Number.isFinite(value)||value<0)return '未获取';
+  const units=['B','KB','MB','GB','TB'];let index=0;let size=value;
+  while(size>=1024&&index<4){size/=1024;index++}
+  return `${size.toFixed(index?1:0)} ${units[index]}`;
+}
+const sourceSummary = computed(()=>{
+  const list = sources.value;
+  return {
+    total: list.length,
+    enabled: list.filter(row=>row.enabled).length,
+    secrets: list.filter(row=>row.secret_configured).length,
+    unchecked: list.filter(row=>!row.health_status||row.health_status==='UNKNOWN').length,
+  };
+});
+const healthTone=(status?:string)=>status==='OK'||status==='HEALTHY'?'success':status==='UNKNOWN'||!status?'info':'danger';
 const lifecycle = computed(() => Object.entries(lifecycleLabels).map(([key, label]) => {
   const metric = sampled.value?.metrics?.[key];
-  return {key, label, scope: metric?.scope || '—',
+  const tasks = key.endsWith('_tasks');
+  return {key, label, tasks, scope: metric?.scope || '—',
     value: typeof metric?.value === 'number'
-      ? `${metric.value.toLocaleString()} ${key.endsWith('_tasks') ? '项' : 'B'}`
+      ? `${metric.value.toLocaleString()} ${tasks ? '项' : 'B'}${tasks ? '' : ' · ' + humanBytes(metric.value)}`
       : '未获取'};
 }));
 const usageLoading = ref(false);
-const usageError = ref('');
-const freshForm = () => ({
+const usageError = ref('');const freshForm = () => ({
   name: '', type: 'local', enabled: true, root: '', endpoint: '', bucket: '', region: '',
   public_base_url: '', prefix: '', base_url: '', namespace: '', use_ssl: true,
   protect_existing_objects: true, access_key_id: '', access_key_secret: '', secret_access_key: '', token: '',
@@ -242,6 +258,12 @@ onUnmounted(() => { scope.abort(); clearCredentials(); });
       </header>
       <el-alert v-if="error && !editOpen" :title="error" type="error" :closable="false"/>
       <el-alert v-if="notice" :title="notice" type="success" :closable="false"/>
+      <dl v-if="sources.length" class="storage-summary" aria-label="存储源概览">
+        <div><dt>存储源</dt><dd>{{ sourceSummary.total }}</dd></div>
+        <div><dt>已启用</dt><dd>{{ sourceSummary.enabled }}</dd></div>
+        <div><dt>已配置密钥</dt><dd>{{ sourceSummary.secrets }}</dd></div>
+        <div><dt>健康未检测</dt><dd :class="{warn:sourceSummary.unchecked>0}">{{ sourceSummary.unchecked }}</dd></div>
+      </dl>
       <el-table :data="sources" row-key="id" empty-text="暂无存储源">
         <el-table-column label="名称 / 类型" min-width="180">
           <template #default="{row}">
@@ -257,7 +279,8 @@ onUnmounted(() => { scope.abort(); clearCredentials(); });
         </el-table-column>
         <el-table-column label="状态" min-width="150">
           <template #default="{row}">
-            <span>{{ row.enabled ? '已启用' : '已停用' }} · {{ row.health_status === 'UNKNOWN' ? '未检测' : row.health_status }}</span>
+            <el-tag :type="row.enabled ? 'success' : 'info'" effect="plain" size="small">{{ row.enabled ? '已启用' : '已停用' }}</el-tag>
+            <el-tag :type="healthTone(row.health_status)" effect="plain" size="small">{{ row.health_status === 'UNKNOWN' || !row.health_status ? '未检测' : row.health_status }}</el-tag>
             <small>{{ row.last_checked_at || '—' }} · {{ row.secret_configured ? '已配置密钥' : '未配置密钥' }}</small>
           </template>
         </el-table-column>
@@ -295,9 +318,17 @@ onUnmounted(() => { scope.abort(); clearCredentials(); });
         <el-button :loading="usageLoading" @click="readUsage">刷新占用信息</el-button>
       </header>
       <el-alert v-if="usageError" :title="usageError" type="error" :closable="false"/>
-      <el-table :data="lifecycle" row-key="key">
+      <p class="storage-note">逻辑量来自服务端采样，不等于物理文件大小；“可回收逻辑量”不代表已确认释放，物理释放需由原服务执行并回执。</p>
+      <h3>逻辑占用</h3>
+      <el-table :data="lifecycle.filter(row=>!row.tasks)" row-key="key">
         <el-table-column prop="label" label="项目" min-width="170"/>
-        <el-table-column prop="value" label="占用 / 任务数" min-width="130"/>
+        <el-table-column prop="value" label="逻辑量" min-width="200"/>
+        <el-table-column prop="scope" label="采样范围" min-width="245"/>
+      </el-table>
+      <h3>清理任务</h3>
+      <el-table :data="lifecycle.filter(row=>row.tasks)" row-key="key" empty-text="暂无清理任务统计">
+        <el-table-column prop="label" label="项目" min-width="170"/>
+        <el-table-column prop="value" label="任务数" min-width="120"/>
         <el-table-column prop="scope" label="采样范围" min-width="245"/>
       </el-table>
       <small>采样时间 {{ sampled?.sampled_at || '未获取' }}</small>
@@ -359,5 +390,41 @@ onUnmounted(() => { scope.abort(); clearCredentials(); });
 }
 .version-panel header .el-button + .el-button {
   margin-left: 0;
+}
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.storage-summary > div {
+  padding: 10px 12px;
+  background: var(--workspace-surface, #fff);
+  border: 1px solid var(--workspace-line, #e4e4e7);
+  border-radius: 8px;
+}
+.storage-summary dt {
+  font-size: 12px;
+  color: var(--workspace-subtle, #686872);
+}
+.storage-summary dd {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.storage-summary dd.warn {
+  color: var(--el-color-warning);
+}
+.storage-note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--workspace-muted, #52525b);
+}
+.version-panel h3 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  color: var(--workspace-muted, #52525b);
+  font-weight: 600;
 }
 </style>

@@ -57,6 +57,19 @@ function testLabel(item: ModelConfig) {
   if (item.last_test?.status === 'failed') return '上次测试失败';
   return item.last_test?.status === 'protocol_passed' ? '上次协议通过' : '尚未测试';
 }
+const testTone = (item: ModelConfig) => item.enabled === false ? 'info'
+  : item.last_test?.status === 'failed' || item.last_test?.code === 'MODEL_NOT_LOADED' ? 'danger'
+  : item.last_test?.status === 'protocol_passed' ? 'success' : 'info';
+const modelSummary = computed(() => {
+  const list = models.value;
+  return {
+    total: list.length,
+    enabled: list.filter(row => row.enabled !== false).length,
+    defaults: list.filter(row => row.default_for_annotation).length,
+    verified: list.filter(row => row.last_test?.status === 'protocol_passed').length,
+    untested: list.filter(row => row.enabled !== false && !row.last_test?.status).length,
+  };
+});
 function settings(item?: ModelConfig): ModelSettings {
   const kind = item ? providerOf(item) : 'local_openai';
   const baseUrl = item ? item.base_url || item.detect_url || '' : 'http://127.0.0.1:8000/v1';
@@ -233,6 +246,13 @@ onBeforeUnmount(() => controller.abort());
       <p v-if="modelLoadError" role="alert">{{ modelLoadError }}</p>
       <p v-if="!editOpen && modelError" role="alert">{{ modelError }}</p>
       <p v-if="modelNotice" role="status">{{ modelNotice }}</p>
+      <dl v-if="models.length" class="model-summary" aria-label="视觉模型概览">
+        <div><dt>模型配置</dt><dd>{{ modelSummary.total }}</dd></div>
+        <div><dt>已启用</dt><dd>{{ modelSummary.enabled }}</dd></div>
+        <div><dt>默认标注</dt><dd>{{ modelSummary.defaults }}</dd></div>
+        <div><dt>上次协议通过</dt><dd>{{ modelSummary.verified }}</dd></div>
+        <div><dt>尚未测试</dt><dd :class="{warn:modelSummary.untested>0}">{{ modelSummary.untested }}</dd></div>
+      </dl>
       <el-table v-loading="loadingModels" :data="models" empty-text="暂无视觉模型">
         <el-table-column label="模型配置" min-width="172">
           <template #default="{ row }">
@@ -250,7 +270,7 @@ onBeforeUnmount(() => controller.abort());
         </el-table-column>
         <el-table-column label="验证状态" min-width="145">
           <template #default="{ row }">
-            {{ testLabel(row) }}
+            <el-tag :type="testTone(row)" effect="plain" size="small">{{ testLabel(row) }}</el-tag>
             <small>{{ row.coordinate_validation?.status === 'verified' ? '坐标已人工确认' : '坐标未确认' }}</small>
           </template>
         </el-table-column>
@@ -386,6 +406,11 @@ onBeforeUnmount(() => controller.abort());
 .actions :deep(.el-button + .el-button) { margin-left: 0; }
 .settings-panel small { display: block; color: #666; }
 .reference-note { color: #555; margin: 0 0 12px; }
+.model-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 0 0 12px; }
+.model-summary > div { padding: 10px 12px; background: var(--workspace-surface, #fff); border: 1px solid var(--workspace-line, #e4e4e7); border-radius: 8px; }
+.model-summary dt { font-size: 12px; color: var(--workspace-subtle, #686872); }
+.model-summary dd { margin: 4px 0 0; font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.model-summary dd.warn { color: var(--el-color-warning); }
 .service-url { overflow-wrap: anywhere; }
 .settings-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 0 16px; }
 .full { grid-column: 1 / -1; }

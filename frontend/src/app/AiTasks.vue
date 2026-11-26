@@ -17,6 +17,10 @@ const status=ref(''),page=ref<AiTaskPage|null>(null),cursors=ref<string[]>([''])
 // Product-facing labels follow the existing pilot page; unknown statuses stay raw.
 const statuses:Record<string,string>={QUEUED:'排队中',WAITING_RESOURCE:'等待资源',RUNNING:'运行中',CANCEL_REQUESTED:'正在取消',AWAITING_CONFIRMATION:'等待确认',PARTIAL_SUCCESS:'部分成功',SUCCEEDED:'已完成',CANCELLED:'已取消',FAILED:'失败',BLOCKED_BY_ENVIRONMENT:'环境不可用',BLOCKED_BY_HARDWARE:'硬件不可用'};
 const label=(value?:string)=>value?statuses[value]||value:'未提供';
+const tone=(value?:string)=>value==='SUCCEEDED'?'success'
+  :value==='PARTIAL_SUCCESS'?'warning'
+  :value==='FAILED'?'danger'
+  :['BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE','AWAITING_CONFIRMATION'].includes(String(value||''))?'warning':'info';
 const shown=(value:number|null|undefined)=>typeof value==='number'?String(value):'未知';
 const created=(value?:string|null)=>value?value.replace('T',' ').slice(0,19):'未提供';
 const progress=(row:AiTask)=>row.progress_percent!=null?`${row.progress_percent}%`:row.completed_count!=null?'已处理，进度未提供':'未提供';
@@ -210,7 +214,7 @@ onMounted(()=>void load());
  <el-alert v-else-if="page?.statistics_indexing" title="部分历史统计正在准备，失败数显示“未知”；稍后刷新。" type="info" :closable="false"/>
  <el-table v-loading="reads.busy.tasks" :data="page?.items||[]" row-key="id" empty-text="当前条件下没有 AI 标注任务" @row-click="openDetail">
   <el-table-column label="任务" min-width="220"><template #default="{row}"><strong>{{row.name||row.id}}</strong><small class="ai-tasks-secondary">{{row.id}}</small></template></el-table-column>
-  <el-table-column label="状态" min-width="150"><template #default="{row}"><el-tag>{{label(row.status)}}</el-tag><small class="ai-tasks-secondary">{{row.phase||'阶段未提供'}}</small></template></el-table-column>
+  <el-table-column label="状态" min-width="150"><template #default="{row}"><el-tag :type="tone(row.status)" effect="plain">{{label(row.status)}}</el-tag><small class="ai-tasks-secondary">{{row.phase||'阶段未提供'}}</small></template></el-table-column>
   <el-table-column label="进度" min-width="150"><template #default="{row}">{{progress(row)}}<small class="ai-tasks-secondary">已处理 {{shown(row.completed_count)}} / 总数 {{shown(row.total_count)}}</small></template></el-table-column>
   <el-table-column label="失败数" width="110"><template #default="{row}">{{shown(row.counts?.failed)}}</template></el-table-column>
   <el-table-column label="创建时间" min-width="180"><template #default="{row}">{{created(row.created_at)}}</template></el-table-column>
@@ -221,7 +225,7 @@ onMounted(()=>void load());
   <el-skeleton v-if="detailBusy&&!detail" :rows="6" animated/>
   <el-alert v-else-if="detailError" :title="detailError" type="error" :closable="false"/>
   <template v-if="detail&&detailView">
-   <div class="ai-detail-head"><el-tag>{{detailView.statusText}}</el-tag><small>{{detail.name||detail.id}}</small></div>
+   <div class="ai-detail-head"><el-tag :type="tone(detail.status)" effect="plain">{{detailView.statusText}}</el-tag><small>{{detail.name||detail.id}}</small></div>
    <el-progress :percentage="Math.max(0,Math.min(100,Math.round(detailView.percent)))"/>
    <p class="ai-detail-line">{{detailView.progressText}} · {{detailView.percent.toFixed(1)}}%<template v-if="detailView.runtimeText"> · {{detailView.runtimeText}}</template></p>
    <el-alert v-if="detailView.error" :title="detailView.error" type="warning" :closable="false"/>

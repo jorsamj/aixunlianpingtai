@@ -116,7 +116,20 @@ const credentialText=computed(()=>{
 const savedConnectionReady=computed(()=>external.value&&!!String(config.value?.base_url||'').trim()&&credential.value.configured===true);
 const locked=computed(()=>savedConnectionReady.value&&!editing.value);
 const modeLabel=computed(()=>external.value?'外部平台对接模式':'独立部署模式');
-const syncLabel=(value?:string|null)=>({success:'成功',failed:'失败',running:'执行中',pending:'等待'} as Record<string,string>)[String(value||'')]||String(value||'')||'未提供';
+const syncLabel=(value?:string|null)=>({success:'成功',failed:'失败',running:'执行中',pending:'等待',partial:'部分成功',unknown:'结果未知'} as Record<string,string>)[String(value||'')]||String(value||'')||'未提供';
+// Outcome tone keeps the four business results apart; an unknown result stays
+// neutral because the original request identity must be queried first.
+const syncTone=(value?:string|null)=>['success'].includes(String(value||''))?'success'
+ :['failed'].includes(String(value||''))?'danger'
+ :['partial','partial_success'].includes(String(value||''))?'warning'
+ :['running','queued','pending'].includes(String(value||''))?'info':'info';
+const syncToneLabel=(value?:string|null)=>['partial','partial_success'].includes(String(value||''))?'部分成功':syncLabel(value);
+const statusFacts=computed(()=>[
+ ['对接模式',modeLabel.value],
+ ['凭据状态',credentialText.value],
+ ['最近同步',config.value?.last_sync?`${syncToneLabel(config.value.last_sync.status)} · ${config.value.last_sync.finished_at||config.value.last_sync.started_at||'时间未提供'}`:'尚无同步记录'],
+ ['待核验同步',syncPending.value!==null?'存在未确认的同步提交，请先核对原任务':'无'],
+]);
 function resetForm(){
  form.base_url=String(config.value?.base_url||'');
  form.access_key='';
@@ -251,8 +264,12 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
   <el-alert title="Secret 仅由后端安全存储持有。本页只显示后端返回的已配置布尔值与脱敏标识，不读取、不回显、不写入 localStorage 或 URL。" type="warning" :closable="false"/>
   <el-alert v-if="writeError" :title="writeError" type="error" :closable="false"/>
   <el-alert v-if="notice" :title="notice" type="success" :closable="false"/>
+  <dl v-if="config" class="platform-status" aria-label="平台对接状态">
+   <div v-for="[label,value] in statusFacts" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+  </dl>
+  <h2 class="platform-group">连接与身份配置</h2>
   <section class="version-panel" v-loading="reads.busy.platform" aria-label="平台配置概览">
-   <header><div><h2>平台配置</h2><h3>来源：/api/v63/external-algorithm-platform/config</h3></div><el-tag :type="external?'success':'info'">{{ modeLabel }}</el-tag></header>
+   <header><div><h2>平台配置</h2><h3>平台身份、对接模式与最近同步</h3></div><el-tag :type="external?'success':'info'">{{ modeLabel }}</el-tag></header>
    <el-alert v-if="reads.errors.platform" :title="reads.errors.platform" type="error" :closable="false"/>
    <template v-if="config">
     <ReadOnlyFacts :fields="configurationFacts"/>
@@ -281,6 +298,7 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
    </form>
    <el-alert v-else-if="!reads.busy.platform" title="平台配置尚未读取成功，暂不提供编辑。" type="info" :closable="false"/>
   </section>
+  <h2 class="platform-group">业务执行与回执</h2>
   <section class="version-panel" aria-label="平台测试与同步">
    <header><h2>平台测试与同步</h2><div>
     <el-button :disabled="!locked||!!runningAction" :loading="runningAction==='test'" @click="runPlatformAction('test')">测试已保存连接</el-button>
@@ -288,9 +306,10 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
     <el-button :disabled="!locked||!!runningAction||syncPending!==null||syncActive" :loading="runningAction==='sync'" @click="runPlatformAction('sync')">同步当前项目</el-button>
     <el-button :loading="reads.busy.sync" @click="readSync">核对同步状态</el-button>
    </div></header>
+   <p class="platform-note">同步结果分成功、失败、部分成功和未知。未知结果保留原任务身份，先“核对同步状态”再决定是否重试；部分成功按原回执分项处理。</p>
    <el-alert v-if="operationError||reads.errors.sync" :title="operationError||reads.errors.sync" type="warning" :closable="false"/>
    <p v-if="syncPending!==null" role="status">原同步提交结果待核验。</p>
-   <p v-if="operation">{{operation.operation_id}} · {{syncLabel(operation.status)}} · {{operation.current_phase}} · {{operation.processed_products}} / {{operation.total_products??'待统计'}}</p>
+   <p v-if="operation"><el-tag :type="syncTone(operation.status)" effect="plain">{{syncToneLabel(operation.status)}}</el-tag> {{operation.operation_id}} · {{operation.current_phase}} · {{operation.processed_products}} / {{operation.total_products??'待统计'}}</p>
    <p v-if="operation?.error" role="alert">{{safe(operation.error)}}</p>
    <el-table v-if="steps.length" :data="steps" row-key="key" size="small" max-height="334">
     <el-table-column prop="name" label="步骤"/><el-table-column prop="status" label="结果"/>
@@ -298,7 +317,7 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
    </el-table>
   </section>
   <section class="version-panel" v-loading="reads.busy.platform" aria-label="平台接口路径配置">
-   <header><div><h2>平台接口路径</h2><h3>只读展示后端权威路径；保存时原样回传</h3></div></header>
+   <header><div><h2>平台接口路径</h2><h3>高级：后端权威路径只读展示，保存时原样回传</h3></div></header>
    <details>
     <summary>展开 {{ endpointRows.length }} 项固定路径</summary>
     <el-table :data="endpointRows" row-key="key" size="small" empty-text="尚未读取到接口路径">
@@ -308,7 +327,7 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
    </details>
   </section>
   <section class="version-panel" v-loading="reads.busy.publish" aria-label="交付映射配置（只读）">
-   <header><div><h2>交付映射配置</h2><h3>来源：/api/v64/external-publish/config · 只读</h3></div><el-tag type="info">映射编辑使用原平台对接</el-tag></header>
+   <header><div><h2>交付映射配置</h2><h3>交付目标、芯片绑定与发布存储源 · 只读</h3></div><el-tag type="info">映射编辑使用原平台对接</el-tag></header>
    <el-alert v-if="reads.errors.publish" :title="reads.errors.publish" type="error" :closable="false"/>
    <template v-if="publish?.config">
     <ReadOnlyFacts :fields="mappingFacts"/>
@@ -333,3 +352,40 @@ const mappingFacts=computed<[string,unknown][]>(()=>{
   </section>
  </section>
 </template>
+
+<style scoped>
+.platform-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.platform-status > div {
+  padding: 10px 12px;
+  background: var(--workspace-surface, #fff);
+  border: 1px solid var(--workspace-line, #e4e4e7);
+  border-radius: 8px;
+  min-width: 0;
+}
+.platform-status dt {
+  font-size: 12px;
+  color: var(--workspace-subtle, #686872);
+}
+.platform-status dd {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.platform-group {
+  margin: 20px 0 8px;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--workspace-ink, #171717);
+}
+.platform-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--workspace-muted, #52525b);
+}
+</style>

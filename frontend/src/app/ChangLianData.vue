@@ -29,6 +29,22 @@ const selectionLabel=computed(()=>{
 const filtered=computed(()=>products.value.filter(item=>
   (!sourceStatus.value||String(item.enabled)===sourceStatus.value)&&
   (!query.value||[productName(item.row),productIdentity(item.row)].some(value=>value.toLowerCase().includes(query.value.trim().toLowerCase())))));
+// Weight lists can be long; the filter is local to the already loaded page and
+// never triggers another remote read or changes the int64 string identity.
+const weightQuery=ref('');
+const visibleWeights=computed(()=>weights.value.filter(row=>{
+  const needle=weightQuery.value.trim().toLowerCase();
+  if(!needle)return true;
+  return [row.fileName,String(row.chipCode||''),weightIdentity(row)].some(value=>String(value||'').toLowerCase().includes(needle));
+}));
+const selectionContext=computed(()=>{
+  const parts:string[]=[];
+  const productRow=products.value.find(item=>productIdentity(item.row)===product.value)?.row;
+  if(product.value)parts.push('产品 '+(productRow?productName(productRow):product.value));
+  const versionRow=versions.value.find(row=>versionIdentity(row)===version.value);
+  if(version.value)parts.push('版本 '+(versionRow?versionName(versionRow):version.value));
+  return parts;
+});
 function clearVersion(){
   reads.cancel('weights');closeDetail();
   version.value='';weights.value=[];show.value=false;
@@ -112,6 +128,7 @@ watch(()=>projectId,()=>{
       </div>
     </header>
     <el-alert v-if="reads.errors.products" :title="reads.errors.products" type="error" :closable="false"/>
+    <p v-if="selectionContext.length" class="cloud-context" aria-label="当前浏览层级">{{ selectionContext.join(' · ') }}<template v-if="selected"> · 权重 {{ selected.listWeight?.fileName||selected.weightId }}</template></p>
     <div v-if="time" class="browser-grid">
       <section>
         <h3>算法产品</h3>
@@ -141,8 +158,12 @@ watch(()=>projectId,()=>{
       </section>
       <section>
         <h3>权重与转换结果</h3>
+        <div class="tools">
+          <el-input v-model="weightQuery" placeholder="筛选文件名、芯片或 ID" aria-label="筛选权重文件" clearable/>
+          <span>{{ visibleWeights.length }} / {{ weights.length }} 项</span>
+        </div>
         <el-alert v-if="reads.errors.weights" :title="reads.errors.weights" type="error" :closable="false"/>
-        <el-table :data="weights" v-loading="reads.busy.weights" max-height="480" :empty-text="version?'暂无权重':'请先选择算法版本'">
+        <el-table :data="visibleWeights" v-loading="reads.busy.weights" max-height="480" :empty-text="version?(weights.length?'没有匹配的权重文件':'暂无权重'):'请先选择算法版本'">
           <el-table-column label="文件 / ID"><template #default="{row}">
             <el-button link @click="openWeight(row)">{{row.fileName||weightIdentity(row)}}</el-button><small>{{row.chipCode||weightIdentity(row)}}</small>
           </template></el-table-column>
@@ -207,6 +228,7 @@ watch(()=>projectId,()=>{
 .browser-grid>section{min-width:0}
 .tools .el-input{width:160px}
 .tools .el-select{width:110px}
+.cloud-context{margin:0;padding:8px 12px;background:var(--workspace-hover,#f1f2f4);border-radius:6px;font-size:12px;color:var(--workspace-muted,#52525b);overflow-wrap:anywhere}
 .browser-grid small{display:block}
 .detail{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:12px}
 .detail dd{margin:4px 0 0;overflow-wrap:anywhere}

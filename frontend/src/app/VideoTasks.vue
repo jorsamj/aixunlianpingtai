@@ -6,6 +6,9 @@ import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 
 const {projectId} = defineProps<{projectId: string}>();
 const api = videoTasks(projectId);
+const statusTone = (status:string) => status === 'SUCCEEDED' ? 'success'
+  : status === 'FAILED' ? 'danger'
+  : ['CANCELLED','CANCEL_REQUESTED'].includes(status) ? 'info' : 'info';
 const scope = new AbortController();
 const rows = ref<VideoTask[]>([]);
 const cursors = ref(['']);
@@ -302,6 +305,13 @@ async function stop(task: VideoTask) {
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-alert v-if="receiptMessage" :title="receiptMessage" type="info" :closable="false"/>
+    <dl v-if="rows.length" class="video-summary" aria-label="切帧任务概览">
+      <div><dt>本页任务</dt><dd>{{ rows.length }}</dd></div>
+      <div><dt>运行中</dt><dd>{{ rows.filter(row=>isActiveVideoTask(row)).length }}</dd></div>
+      <div><dt>已完成</dt><dd>{{ rows.filter(row=>row.status==='SUCCEEDED').length }}</dd></div>
+      <div><dt>失败 / 已停止</dt><dd>{{ rows.filter(row=>['FAILED','CANCELLED','CANCEL_REQUESTED'].includes(row.status)).length }}</dd></div>
+      <div><dt>已生成帧</dt><dd>{{ rows.reduce((sum,row)=>sum+(row.extractedFrames||0),0) }}</dd></div>
+    </dl>
     <el-alert v-if="uncertain" title="上次切帧创建结果待核验。" type="warning" :closable="false">
       <p v-if="receiptError">{{receiptError}}</p>
       <el-button v-if="pendingId" text :loading="checking" :disabled="busy" @click="checkReceipt">核对原请求</el-button>
@@ -317,7 +327,7 @@ async function stop(task: VideoTask) {
       <el-table-column label="视频" min-width="160"><template #default="{row}">{{ row.video_name || '—' }}<small>{{ row.id }}</small></template></el-table-column>
       <el-table-column label="切帧方式" min-width="130"><template #default="{row}">{{ row.samplingText }}<small>最多 {{ row.max_frames || '不限' }} 张</small></template></el-table-column>
       <el-table-column label="素材归属" min-width="92"><template #default="{row}">{{ splitLabel(row.split) }}</template></el-table-column>
-      <el-table-column label="状态" min-width="126"><template #default="{row}">{{ row.statusText }}<small>{{ row.runtimeText }}</small></template></el-table-column>
+      <el-table-column label="状态" min-width="126"><template #default="{row}"><el-tag :type="statusTone(row.status)" effect="plain" size="small">{{ row.statusText }}</el-tag><small>{{ row.runtimeText }}</small></template></el-table-column>
       <el-table-column label="进度" min-width="135"><template #default="{row}"><el-progress :percentage="row.progress"/><small>{{ row.extractedFrames }} 张</small></template></el-table-column>
       <el-table-column label="当前帧" min-width="85"><template #default="{row}">{{ row.current_item || '—' }}</template></el-table-column>
       <el-table-column label="创建/完成" min-width="164"><template #default="{row}">{{ formatDate(row.created_at) }}<small>{{ formatDate(row.finished_at) }}</small></template></el-table-column>
@@ -327,6 +337,7 @@ async function stop(task: VideoTask) {
         <small v-if="row.error" class="task-error">{{ row.error }}</small>
       </template></el-table-column>
     </el-table>
+    <p class="video-note">切帧成功只表示帧已写入任务输出；素材库正式入库、数据集归属与训练资格以素材库记录为准。</p>
     <div v-if="cursors.length > 1 || next" class="pagination">
       <el-button :disabled="loading || cursors.length === 1" @click="refresh(cursors.slice(0, -1))">上一页</el-button>
       <span>第 {{ cursors.length }} 页</span>
@@ -365,11 +376,16 @@ async function stop(task: VideoTask) {
 
 <style scoped>
 .page-toolbar a {margin-inline: 12px; font-size: 14px;}
-.el-table small {display: block; color: #666; overflow-wrap: anywhere;}
+.el-table small {display: block; color: var(--workspace-subtle, #686872); overflow-wrap: anywhere;}
 .el-table .task-error {color: var(--el-color-danger);}
+.video-summary {display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 0 0 12px;}
+.video-summary > div {padding: 10px 12px; background: var(--workspace-surface, #fff); border: 1px solid var(--workspace-line, #e4e4e7); border-radius: 8px;}
+.video-summary dt {font-size: 12px; color: var(--workspace-subtle, #686872);}
+.video-summary dd {margin: 4px 0 0; font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums;}
+.video-note {margin: 8px 0 0; font-size: 12px; color: var(--workspace-muted, #52525b);}
 .video-form {display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;}
 .video-form label {display: grid; gap: 8px;}
-.video-form input,.video-form select {min-width: 0; border: 1px solid #ccc; border-radius: 6px; padding: 8px; font: inherit;}
+.video-form input,.video-form select {min-width: 0; border: 1px solid var(--workspace-line, #d4d4d8); border-radius: 6px; padding: 8px; font: inherit;}
 .wide {grid-column: 1/-1;}
 @media(max-width:600px) {.video-form {grid-template-columns: 1fr;}}
 </style>
