@@ -498,3 +498,112 @@ def test_delete_requires_complete_cross_domain_evidence():
         }
     )
     assert evidence["source_revision"] == 3
+
+def test_delete_evidence_uses_real_material_references_and_requires_other_owners(tmp_path):
+    """The material side is measured for real; the other owners must answer."""
+    from platform_core.material_repository import MaterialRepository
+    from platform_core.storage.source_repository import StorageSource
+    from platform_core.storage_source_delete_evidence import (
+        DeleteEvidenceError,
+        collect_delete_evidence,
+    )
+
+    source = StorageSource(
+        id="nas-1", name="NAS", type="remote", config={}, runtime_revision=4
+    )
+    projects = tmp_path / "projects"
+    for project_id, references in (("p1", 2), ("p2", 0)):
+        project = projects / project_id
+        project.mkdir(parents=True)
+        repository = MaterialRepository(project)
+        for index in range(references):
+            repository.upsert(
+                {
+                    "id": f"{project_id}-m{index}",
+                    "storage_source_id": "nas-1",
+                    "object_key": f"uploads/{project_id}-{index}.jpg",
+                    "filename": f"{project_id}-{index}.jpg",
+                }
+            )
+
+    retirement = lambda _source: {"status": "RETIRED", "proof": "s3://bucket/empty@sha"}
+    # 1. The material count comes from the real indexed reads.
+    evidence = collect_delete_evidence(
+        source,
+        projects_root=projects,
+        project_ids=["p1", "p2"],
+        artifact_reference_counter=lambda _source: 0,
+        physical_retirement_probe=retirement,
+    )
+    assert evidence["material_references"] == 2
+    assert evidence["source_revision"] == 4
+    assert evidence["physical_retirement"]["status"] == "RETIRED"
+
+    # 2. A missing artifact owner is not "zero artifacts".
+    with pytest.raises(DeleteEvidenceError) as artifacts:
+        collect_delete_evidence(
+            source,
+            projects_root=projects,
+            project_ids=["p1"],
+            artifact_reference_counter=None,
+            physical_retirement_probe=retirement,
+        )
+    assert artifacts.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE"
+
+    # 3. An unavailable retirement procedure is not "retired".
+    with pytest.raises(DeleteEvidenceError) as retirement_missing:
+        collect_delete_evidence(
+            source,
+            projects_root=projects,
+            project_ids=["p1"],
+            artifact_reference_counter=lambda _source: 0,
+            physical_retirement_probe=None,
+        )
+    assert retirement_missing.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE"
+
+    # 4. A probe that says the objects still exist blocks the delete.
+    with pytest.raises(DeleteEvidenceError) as not_retired:
+        collect_delete_evidence(
+            source,
+            projects_root=projects,
+            project_ids=["p1"],
+            artifact_reference_counter=lambda _source: 0,
+            physical_retirement_probe=lambda _source: {"status": "PRESENT", "proof": ""},
+        )
+    assert not_retired.value.code == "STORAGE_SOURCE_DELETE_RETIREMENT_UNPROVEN"
+
+    # 5. An exploding owner is treated as unavailable, never as zero.
+    def exploding(_source):
+        raise RuntimeError("artifact index offline")
+
+    with pytest.raises(DeleteEvidenceError) as unavailable:
+        collect_delete_evidence(
+            source,
+            projects_root=projects,
+            project_ids=["p1"],
+            artifact_reference_counter=exploding,
+            physical_retirement_probe=retirement,
+        )
+    assert unavailable.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE"
+
+    # 6. A project list beyond the bound is refused instead of scanned.
+    with pytest.raises(DeleteEvidenceError):
+        collect_delete_evidence(
+            source,
+            projects_root=projects,
+            artifact_reference_counter=lambda _source: 0,
+            physical_retirement_probe=retirement,
+            max_projects=1,
+        )
+
+    # 7. The collected evidence is exactly what the provider validates.
+    from platform_core.storage_source_postgres_store import (
+        PostgresStorageSourceRepository,
+    )
+
+    provider = PostgresStorageSourceRepository(
+        "postgresql://example.invalid/db", "platform", allow_cross_domain_delete=True
+    )
+    assert provider._require_delete_evidence(
+        {**evidence, "material_references": 0}
+    )["source_revision"] == 4
