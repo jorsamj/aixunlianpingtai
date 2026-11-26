@@ -38,7 +38,7 @@ test('native report preserves task origin, pages history, and reads frozen evalu
       comparable:false,reason_codes:['benchmark_scope_mismatch'],metrics:{map50:{delta:0.99}}}}});
     if(path===version+'/samples'){
       expect(url.searchParams.get('limit')).toBe('20');
-      return route.fulfill({json:{...identity,items:[{image_id:'i',filename:'frame.png',image_content_sha256:digest,preview_url:image,gt_boxes:[{label:'烟雾',box:[1,1,4,4]}]},
+      return route.fulfill({json:{...identity,filter_evidence_complete:url.searchParams.get('issue')!=='low_confidence',diagnostic_low_confidence_threshold:.5,items:[{image_id:'i',filename:'frame.png',image_content_sha256:digest,preview_url:image,image_width:1,image_height:1,gt_boxes:[{label:'烟雾',box:[0,0,1,1],matched:false}],pred_boxes:[{label:'烟雾',box:[0,0,.5,.5],matched:false,confidence:.23}]},
         {image_id:'bad',filename:'unsafe.png',image_content_sha256:digest,preview_url:'/api/materials/unsafe.png'}]}});
     }
     if(path===version+'/images/frame.png')return route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmZcAAAAASUVORK5CYII=','base64')});
@@ -63,6 +63,16 @@ test('native report preserves task origin, pages history, and reads frozen evalu
   await page.getByRole('button',{name:'TP / FP / FN 样本'}).click();
   await expect(page.getByRole('img',{name:'frame.png'})).toHaveAttribute('src',image);
   await expect(page.getByText('冻结图片未提供或读取失败',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'查看框级诊断'}).click();
+  const diagnosis=page.getByRole('list',{name:'框级诊断'});
+  await expect(diagnosis).toContainText('GT · 烟雾 · 漏检');
+  await expect(diagnosis).toContainText('预测 · 烟雾 · 误检 · 23.0%');
+  await page.getByRole('checkbox',{name:'正式 GT（实线）'}).uncheck();
+  await expect(diagnosis).not.toContainText('GT · 烟雾 · 漏检');
+  const diagnostics=page.waitForRequest(request=>request.url().includes('/samples?')&&new URL(request.url()).searchParams.get('issue')==='low_confidence');
+  await page.getByLabel('样本类型').selectOption('low_confidence');
+  await diagnostics;
+  await expect(page.getByText('置信度阈值 0.5')).toBeVisible();
   expect(paths).not.toContain('/api/materials/unsafe.png');
   await expect(page.getByRole('link',{name:/继续训练.*LEGACY_BRIDGE/})).toHaveAttribute('href',/algorithm_id=a&version_id=v&action=evaluation&expected_evaluation_id=e/);
   await page.getByRole('button',{name:'版本对比',exact:true}).click();

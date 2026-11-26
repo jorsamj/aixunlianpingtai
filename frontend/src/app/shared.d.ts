@@ -65,6 +65,7 @@ declare module '*static/modules/task-runtime-truth.js' {
 
 declare module '*static/modules/annotation-geometry-adapter.js' {
   import type {AiEditorBox} from '../types/ai-editor';
+  export function toAnno(box:{id:string;x1:number;y1:number;x2:number;y2:number;label:string},size:{width:number;height:number}):{target:{selector:{geometry:{x:number;y:number;w:number;h:number}}}};
   export function withLegacyBoxIdentities(boxes:Partial<AiEditorBox>[],options:{imageId:string}):AiEditorBox[];
 }
 declare module '*static/modules/annotorious-editor.js' {

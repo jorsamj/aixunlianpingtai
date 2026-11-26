@@ -49,7 +49,7 @@ def samples_display(project,algorithm,version,value):
     result=fields(value,('total','offset','limit','evaluation_id','cohort_complete','image_count','diagnostic_low_confidence_threshold','filter_scope','filter_evidence_complete'))
     result['items']=[]
     for source in value.get('items',[]):
-        row=fields(source,('image_id','image_content_sha256','width','height','tp_count','fp_count','fn_count','box_evidence_available','evidence_complete','diagnostic_tags'))
+        row=fields(source,('image_id','image_content_sha256','image_width','image_height','width','height','tp_count','fp_count','fn_count','box_evidence_available','evidence_complete','diagnostic_tags'))
         row['image']=filename(source.get('image'));row['filename']=row['image']
         for key in ('gt_boxes','pred_boxes'):
             boxes=source.get(key) or []

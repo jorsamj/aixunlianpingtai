@@ -16,4 +16,4 @@ export function trainingReaderApi(context:Pick<BrowseContext,'projectId'|'get'|'
 
 }
 
-export interface EvaluationPage {ok:boolean;project_id:string;algorithm_id:string;version_id:string;state?:string;message?:string;evaluation_id?:string;evaluation?:Record<string,unknown>;items?:Record<string,unknown>[];total?:number;offset?:number;limit?:number;has_next?:boolean;section?:string}
+export interface EvaluationPage {ok:boolean;project_id:string;algorithm_id:string;version_id:string;state?:string;message?:string;evaluation_id?:string;evaluation?:Record<string,unknown>;items?:Record<string,unknown>[];total?:number;offset?:number;limit?:number;has_next?:boolean;section?:string;filter_evidence_complete?:boolean;diagnostic_low_confidence_threshold?:number}
