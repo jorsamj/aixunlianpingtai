@@ -19,6 +19,34 @@ export interface TrainingRecoveryTruth {
 const root = (projectId: string) =>
   `/api/v62/projects/${encodeURIComponent(projectId)}`;
 
+export interface TrainingBatchDeleteResult {
+  ok: boolean;
+  requested: number;
+  deleted: number;
+  deleted_ids: string[];
+  skipped_active: number;
+  skipped_active_ids: string[];
+  missing: number;
+  missing_ids: string[];
+  failures: {job_id: string; message: string}[];
+}
+
+// Existing v48 batch record deletion. The server keeps algorithm versions and
+// artifacts, skips active tasks and caps one request at 200 records.
+export async function deleteTrainingTaskRecords(
+  projectId: string, taskIds: string[], signal: AbortSignal,
+) {
+  const ids = [...new Set(taskIds.map(id => String(id || '').trim()).filter(Boolean))];
+  if (!ids.length || ids.length > 200) throw new Error('批量删除需选择 1–200 条训练记录');
+  const result = await request<TrainingBatchDeleteResult>(
+    `/api/v48/projects/${encodeURIComponent(projectId)}/jobs/batch-delete`,
+    {method: 'POST', body: JSON.stringify({job_ids: ids}), signal},
+  );
+  if (!result || typeof result.deleted !== 'number' || !Array.isArray(result.failures))
+    throw new Error('批量删除回执不完整');
+  return result;
+}
+
 // Existing v48 training lifecycle endpoints. The native page sends the same
 // parameterless POST the original task wall sends; receipts are re-read from the
 // canonical v62 reader instead of trusting the legacy job.json projection.
