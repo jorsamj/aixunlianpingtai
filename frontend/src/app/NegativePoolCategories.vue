@@ -58,6 +58,7 @@ function patch(row:PoolCategory,body:{name?:string;enabled?:boolean}){
     (result)=>{editing.value='';return `已更新分类 ${result.name}。`});
 }
 function startEdit(row:PoolCategory){editing.value=row.id;editName.value=row.name}
+function clearPending(){pendingWrite.value=''}
 function saveEdit(row:PoolCategory){
   const name=editName.value.trim();
   if(!name||name===row.name){editing.value='';return}
@@ -69,7 +70,7 @@ function saveEdit(row:PoolCategory){
   <summary>负样本分类（{{categories.length}}）</summary>
   <el-alert v-if="error" :title="error" type="error" :closable="false"/>
   <p v-if="notice" role="status">{{notice}}</p>
-  <p v-if="pendingWrite" class="pool-category-pending" role="alert">待核验：{{pendingWrite}}。请核对下方分类列表后再继续操作。<el-button link @click="pendingWrite='">已核对分类列表</el-button></p>
+  <p v-if="pendingWrite" class="pool-category-pending" role="alert">待核验：{{pendingWrite}}。请核对下方分类列表后再继续操作。<el-button link @click="clearPending">已核对分类列表</el-button></p>
   <p v-if="error&&!categories.length" class="pool-category-note">读取失败，当前没有可信分类列表。</p>
   <p v-else-if="error" class="pool-category-note">读取失败，下方为上次成功读取的分类状态。</p>
   <form class="pool-category-create" @submit.prevent="create">
