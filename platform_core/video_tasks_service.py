@@ -14,7 +14,9 @@ from pathlib import Path
 from fastapi import File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from filelock import FileLock, Timeout
+from starlette.concurrency import run_in_threadpool
 from platform_core.task_runtime import TaskKind, TaskRecord, WorkerInstanceService
+from platform_core.task_runtime.repository import TERMINAL_STATUSES
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
 @dataclass(frozen=True)
@@ -73,9 +75,65 @@ class VideoTasksService:
         scope = json.dumps([project_id, actor_id, request_id], ensure_ascii=False, separators=(",", ":"))
         return "video_" + hashlib.sha256(scope.encode()).hexdigest()
 
-    def v33_find_video_task(self, project_id: str, actor_id: str, request_id: str):
+    def v33_find_video_task(self, project_id: str, actor_id: str, request_id: str, recovery: bool = False):
         task_id = self._creation_task_id(project_id, actor_id, request_id)
-        return {"request_id": request_id, "task": self.v33_get_video_task(project_id, task_id)}
+        if not recovery:
+            return {"request_id": request_id, "task": self.v33_get_video_task(project_id, task_id)}
+        self.dependencies.get_project(project_id)
+        artifacts = self.dependencies.shared_task_artifacts()
+        repository = self.dependencies.shared_task_repository()
+        result = {"request_id": request_id}
+        lock_path = artifacts.artifact_path(task_id, "create.lock")
+
+        def registered():
+            task = repository.get(task_id)
+            if task is not None:
+                if task.project_id != project_id or task.kind is not TaskKind.VIDEO_FRAMES:
+                    raise HTTPException(409, detail="原切帧请求身份不一致")
+                state = "TERMINAL" if task.status in TERMINAL_STATUSES else "ACCEPTED"
+                return {**result, "state": state, "task": self._public_video_task(task)}
+            deleted = repository.deleted_task_identity(task_id)
+            if deleted is not None:
+                if deleted["project_id"] != project_id or deleted["kind"] != TaskKind.VIDEO_FRAMES.value:
+                    raise HTTPException(409, detail="原切帧请求身份不一致")
+                return {**result, "state": "RETIRED"}
+
+        if not lock_path.parent.exists():
+            return registered() or {**result, "state": "UNREGISTERED"}
+        try:
+            with FileLock(str(lock_path), timeout=0):
+                outcome = registered()
+                if outcome is not None:
+                    return outcome
+                payload = artifacts.read_json(task_id, "payload.json")
+                if payload is not None:
+                    return {**result, "state": "STAGED"}
+                if self._legacy_published_video(artifacts, task_id):
+                    return {**result, "state": "UNVERIFIED_INPUT"}
+                return {**result, "state": "UNREGISTERED"}
+        except Timeout:
+            return registered() or {**result, "state": "IN_FLIGHT"}
+        except FileNotFoundError:
+            # Retention may have removed the directory while the read acquired the lock.
+            outcome = registered()
+            if outcome is not None and outcome["state"] == "RETIRED":
+                return outcome
+            raise
+
+    @staticmethod
+    def _legacy_published_video(artifacts, task_id: str) -> bool:
+        return any(path.is_file() and path.suffix != ".upload"
+                   for path in artifacts.artifact_path(task_id, "inputs").glob("*"))
+
+    @staticmethod
+    def _published_video_matches(video_path: Path, expected_sha: str, expected_size: int) -> bool:
+        if video_path.stat().st_size != expected_size:
+            return False
+        digest = hashlib.sha256()
+        with video_path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest() == expected_sha
 
     async def v33_create_video_task(self,
         project_id: str,
@@ -126,6 +184,8 @@ class VideoTasksService:
         }
         artifacts = self.dependencies.shared_task_artifacts()
         repository = self.dependencies.shared_task_repository()
+        if request_id and repository.is_deleted(task_id):
+            raise HTTPException(410, detail="原切帧任务已退役")
         video_path = artifacts.artifact_path(task_id, source_ref)
         video_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = artifacts.artifact_path(task_id, "create.lock")
@@ -137,21 +197,23 @@ class VideoTasksService:
         size = 0
         temp_path = None
         try:
-            with tempfile.NamedTemporaryFile(dir=video_path.parent, suffix=".upload", delete=False) as fp:
-                temp_path = Path(fp.name)
-                while chunk := await video.read(1024 * 1024):
-                    fp.write(chunk)
-                    digest.update(chunk)
-                    size += len(chunk)
-                if request_id:
-                    fp.flush()
-                    os.fsync(fp.fileno())
-            if not size:
-                raise HTTPException(400, detail="上传的视频为空")
-
-            # Upload is staged first. No asynchronous I/O occurs while the
-            # cross-process publication lock protects this task's immutable input.
+            # Multipart parsing precedes this handler. The nonblocking lock
+            # covers copying that request's bytes and publishing its immutable input.
             with FileLock(str(lock_path), timeout=0):
+                if request_id and repository.is_deleted(task_id):
+                    raise HTTPException(410, detail="原切帧任务已退役")
+                with tempfile.NamedTemporaryFile(dir=video_path.parent, suffix=".upload", delete=False) as fp:
+                    temp_path = Path(fp.name)
+                    while chunk := await video.read(1024 * 1024):
+                        fp.write(chunk)
+                        digest.update(chunk)
+                        size += len(chunk)
+                    if request_id:
+                        fp.flush()
+                        os.fsync(fp.fileno())
+                if not size:
+                    raise HTTPException(400, detail="上传的视频为空")
+
                 evidence = {**payload, "input_sha256": digest.hexdigest(), "input_size": size,
                             "initial_priority": proposed.priority}
                 record = repository.get(task_id) if request_id else None
@@ -161,10 +223,26 @@ class VideoTasksService:
                             or existing != evidence):
                         raise HTTPException(409, detail="同一切帧请求的源视频或参数不一致")
                 else:
-                    if request_id and repository.is_deleted(task_id):
-                        raise HTTPException(410, detail="原切帧任务已退役")
-                    temp_path.replace(video_path)
-                    artifacts.atomic_write_json(task_id, "payload.json", evidence if request_id else payload)
+                    if request_id:
+                        frozen = artifacts.read_json(task_id, "payload.json")
+                        if frozen is not None:
+                            if frozen != evidence:
+                                raise HTTPException(409, detail="同一切帧请求的源视频或参数不一致")
+                        else:
+                            if self._legacy_published_video(artifacts, task_id):
+                                raise HTTPException(409, detail="原视频缺少冻结参数证据，请核对后台记录")
+                            artifacts.atomic_write_json(task_id, "payload.json", evidence)
+                        if video_path.exists():
+                            matches = await run_in_threadpool(
+                                self._published_video_matches, video_path, evidence["input_sha256"], size,
+                            )
+                            if not matches:
+                                raise HTTPException(409, detail="已暂存视频摘要与原请求不一致")
+                        else:
+                            temp_path.replace(video_path)
+                    else:
+                        temp_path.replace(video_path)
+                        artifacts.atomic_write_json(task_id, "payload.json", payload)
                     record = repository.create(proposed, artifacts=artifacts)
         except Timeout:
             raise HTTPException(409, detail="原切帧请求正在登记，请核对原请求") from None

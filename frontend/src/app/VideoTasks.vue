@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed, onMounted, onUnmounted, reactive, ref} from 'vue';
 import {isActiveVideoTask, videoTaskFormValues} from '../../../static/modules/video-tasks.js';
-import {videoCreationRequestId, videoTasks, type VideoTask} from '../api/video-tasks';
+import {videoCreationRequestId, videoFileFingerprint, videoTasks, type VideoRecovery, type VideoTask} from '../api/video-tasks';
 import {readWorkspaceSession,useWorkspace,workspaceActorKey} from './main';
 
 const {projectId} = defineProps<{projectId: string}>();
@@ -20,15 +20,41 @@ const uncertain = ref(false);
 const actor=useWorkspace().actorKey;
 const createKey = 'video-create:' + JSON.stringify([actor, projectId]);
 const pendingId=ref(''),receiptError=ref(''),checking=ref(false);
+const receiptMessage = ref('');
+const recoveryState = ref<VideoRecovery['state']>();
 const createError = ref('');
-type FormValues=ReturnType<typeof videoTaskFormValues>;
-let pendingUpload:{file:File;split:string;values:FormValues}|undefined;
+type FormValues = ReturnType<typeof videoTaskFormValues>;
+interface PendingVideo {
+  requestId: string;
+  name: string;
+  size: number;
+  fingerprint: string | null;
+  split: string;
+  values: FormValues;
+}
+const pendingRecord = ref<PendingVideo>();
+const pendingFile = ref<File>();
+const recoveryFile = ref<File>();
+const canResubmit = computed(() => recoveryState.value === 'UNREGISTERED' || recoveryState.value === 'STAGED');
+const requestIdPattern = /^[A-Za-z0-9_-]{12,80}$/;
 try {
-  const saved=sessionStorage.getItem(createKey);
-  if(saved){
-    uncertain.value=true;
-    if(/^[A-Za-z0-9_-]{12,80}$/.test(saved) && saved!=='pending')pendingId.value=saved;
-    else receiptError.value='旧记录缺少请求 ID，请联系管理员核对原任务受理记录。';
+  const saved = sessionStorage.getItem(createKey);
+  if (saved) {
+    uncertain.value = true;
+    if (requestIdPattern.test(saved)) {
+      pendingId.value = saved;
+    } else if (saved.startsWith('{')) {
+      const record = JSON.parse(saved) as PendingVideo;
+      if (typeof record.requestId === 'string' && requestIdPattern.test(record.requestId)) {
+        pendingId.value = record.requestId;
+        if (typeof record.name === 'string' && Number.isSafeInteger(record.size) && record.size >= 0 &&
+            (record.fingerprint === null || /^[a-f0-9]{64}$/.test(record.fingerprint)) &&
+            typeof record.split === 'string' && typeof record.values?.mode === 'string') {
+          pendingRecord.value = record;
+        }
+      }
+    }
+    if (!pendingId.value) receiptError.value = '旧记录缺少请求 ID，请联系管理员核对原任务受理记录。';
   }
 } catch { uncertain.value = true;receiptError.value='浏览器无法读取待核验记录。'; }
 const stopping = ref('');
@@ -116,6 +142,7 @@ onUnmounted(() => {
 function openCreate() {
   file.value = undefined;
   createError.value = '';
+  receiptMessage.value = '';
   Object.assign(form, initialForm());
   showCreate.value = true;
 }
@@ -129,32 +156,84 @@ async function create() {
   try { values = videoTaskFormValues(form.mode, form); }
   catch (cause) { createError.value = (cause as Error).message; return; }
   createError.value='';
-  const requestId=videoCreationRequestId();
-  const upload={file:file.value,split:form.split,values};
+  const original = file.value;
   busy.value=true;
   try {
+    const record = {requestId: videoCreationRequestId(), name: original.name, size: original.size,
+      fingerprint: await videoFileFingerprint(original), split: form.split, values};
     if(!actor||workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
     if(scope.signal.aborted)return;
-    sessionStorage.setItem(createKey,requestId);
+    sessionStorage.setItem(createKey, JSON.stringify(record));
+    pendingId.value = record.requestId;
+    pendingRecord.value = record;
+    pendingFile.value = original;
+    uncertain.value = true;
   } catch(cause) { createError.value=(cause as Error).message;return; }
   finally{busy.value=false}
-  pendingId.value=requestId;
-  pendingUpload=upload;
-  uncertain.value=true;
   await submitPending(false);
 }
 function settleReceipt(){
   sessionStorage.removeItem(createKey);
-  pendingId.value='';pendingUpload=undefined;uncertain.value=false;
+  pendingId.value = '';
+  pendingRecord.value = undefined;
+  pendingFile.value = undefined;
+  recoveryFile.value = undefined;
+  recoveryState.value = undefined;
+  uncertain.value = false;
+}
+function useReceipt(recovery: VideoRecovery) {
+  recoveryState.value = recovery.state;
+  switch (recovery.state) {
+    case 'ACCEPTED':
+    case 'TERMINAL':
+      settleReceipt();
+      receiptMessage.value = `原切帧任务${recovery.state === 'TERMINAL' ? '已结束' : '已受理'}（${recovery.task.statusText}）。`;
+      showCreate.value = false;
+      break;
+    case 'RETIRED':
+      settleReceipt();
+      receiptMessage.value = '原切帧任务已退役。';
+      showCreate.value = false;
+      break;
+    case 'IN_FLIGHT':
+      receiptError.value = '原请求正在登记，请稍后核对原请求。';
+      break;
+    case 'UNREGISTERED':
+      receiptError.value = '当前尚未登记原任务，原上传仍可能在途。可核对或用原文件重试同一请求。';
+      break;
+    case 'STAGED':
+      receiptError.value = '原请求已暂存，任务尚未登记。可用原文件重试同一请求。';
+      break;
+    case 'UNVERIFIED_INPUT':
+      receiptError.value = '后台保留了原视频，缺少冻结参数证据，请联系管理员核对。';
+      break;
+  }
+  if (canResubmit.value && !pendingFile.value && !pendingRecord.value?.fingerprint) {
+    receiptError.value += ' 当前记录缺少可核对的文件摘要，请联系管理员核对原上传。';
+  }
 }
 async function submitPending(retrying:boolean){
-  const pending=pendingUpload,requestId=pendingId.value;
-  if(!pending||!requestId||busy.value||checking.value)return;
+  const pending = pendingRecord.value;
+  const selected = pendingFile.value || recoveryFile.value;
+  if (!pending || !selected || busy.value || checking.value || (retrying && !canResubmit.value)) return;
   busy.value=true;
   createError.value='';receiptError.value='';
   try{
-    if(retrying&&workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
-    await api.create(pending.file,pending.split,pending.values,requestId,scope.signal);
+    if (retrying) {
+      if (!pendingFile.value && (selected.name !== pending.name || selected.size !== pending.size ||
+          !pending.fingerprint || await videoFileFingerprint(selected) !== pending.fingerprint)) {
+        receiptError.value = '所选视频与原请求的文件不一致，请重新选择原视频。';
+        return;
+      }
+      if(workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
+      useReceipt(await api.byRequest(pending.requestId, scope.signal));
+      if (!canResubmit.value) {
+        if (!uncertain.value) { await pendingRefresh; await refresh(['']); }
+        return;
+      }
+    }
+    recoveryState.value = undefined;
+    await api.create(selected, pending.split, pending.values, pending.requestId, scope.signal);
     settleReceipt();
     showCreate.value=false;
   }catch(cause){
@@ -164,6 +243,7 @@ async function submitPending(retrying:boolean){
         try{settleReceipt()}catch{/* keep the original request locked */}
       }
       createError.value=uncertain.value?'创建结果未知，请按原请求核对。':failure.message;
+      if (uncertain.value) receiptError.value = createError.value;
     }
   }finally{busy.value=false}
   if(!scope.signal.aborted){await pendingRefresh;await refresh(['']);}
@@ -173,13 +253,14 @@ async function checkReceipt(){
   checking.value=true;receiptError.value='';
   try{
     if(!actor||workspaceActorKey(await readWorkspaceSession(scope.signal))!==actor)throw new Error('会话已变化，请重新打开切帧任务');
-    await api.byRequest(pendingId.value,scope.signal);
-    settleReceipt();
-    showCreate.value=false;
-    await pendingRefresh;
-    await refresh(['']);
+    useReceipt(await api.byRequest(pendingId.value,scope.signal));
+    if (!uncertain.value) {
+      await pendingRefresh;
+      await refresh(['']);
+    }
   }catch(cause){
     const failure=cause as Error&{httpStatus?:number};
+    recoveryState.value = undefined;
     if(!scope.signal.aborted)receiptError.value=failure.httpStatus===404
       ?'暂未查到原请求回执，不能确定后台未受理。':failure.message;
   }finally{checking.value=false}
@@ -220,10 +301,17 @@ async function stop(task: VideoTask) {
       <el-button type="primary" :disabled="uncertain" @click="openCreate">＋ 创建切帧任务</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
+    <el-alert v-if="receiptMessage" :title="receiptMessage" type="info" :closable="false"/>
     <el-alert v-if="uncertain" title="上次切帧创建结果待核验。" type="warning" :closable="false">
       <p v-if="receiptError">{{receiptError}}</p>
       <el-button v-if="pendingId" text :loading="checking" :disabled="busy" @click="checkReceipt">核对原请求</el-button>
-      <el-button v-if="pendingUpload&&receiptError" text :loading="busy" :disabled="checking" @click="submitPending(true)">重试同一请求</el-button>
+      <label v-if="canResubmit && !pendingFile && pendingRecord?.fingerprint">
+        重新选择原视频（{{pendingRecord.name}}）
+        <input type="file" accept="video/*" :disabled="busy || checking"
+          @change="recoveryFile = ($event.target as HTMLInputElement).files?.[0]">
+      </label>
+      <el-button v-if="canResubmit && (pendingFile || pendingRecord?.fingerprint)" text :loading="busy"
+        :disabled="checking || (!pendingFile && !recoveryFile)" @click="submitPending(true)">重试同一请求</el-button>
     </el-alert>
     <el-table :data="rows" row-key="id" :empty-text="loading ? '正在读取切帧任务…' : '暂无切帧任务'">
       <el-table-column label="视频" min-width="160"><template #default="{row}">{{ row.video_name || '—' }}<small>{{ row.id }}</small></template></el-table-column>

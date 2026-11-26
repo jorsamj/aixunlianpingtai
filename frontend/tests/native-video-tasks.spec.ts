@@ -1,13 +1,15 @@
 import {expect, test} from '@playwright/test';
 import {resolve} from 'node:path';
 
-test('native video tasks recover the original upload after reload and stop the created task', async ({page}) => {
+for (const alreadyAccepted of [true, false]) {
+test(`native video tasks recover ${alreadyAccepted ? 'an accepted' : 'an unregistered'} upload after reload`, async ({page}) => {
   const api = '/api/v33/projects/p/video-tasks';
   const task = {id: 'frame-task', project_id: 'p', kind: 'VIDEO_FRAMES', video_name: 'fixture.mp4', split: 'unassigned', mode: 'fixed_count',
     fixed_count: 50, dataset_id: 'default', status: 'QUEUED', progress: 0};
   let created = false;
   let stopped = false;
   let submissions=0, lookups=0, requestId='';
+  let recoveryState = 'IN_FLIGHT';
   let multipart = '';
   const fields = new Map<string, string | File>();
   await page.route('**/app/**', route => {
@@ -24,14 +26,17 @@ test('native video tasks recover the original upload after reload and stop the c
       multipart = request.headers()['content-type'];
       const response = new Response(request.postDataBuffer(), {headers: {'content-type': multipart}});
       (await response.formData()).forEach((value, key) => fields.set(key, value));
-      requestId=String(fields.get('request_id')||'');
-      created = true;
+      const supplied = String(fields.get('request_id') || '');
+      if (submissions) expect(supplied).toBe(requestId);
+      requestId = supplied;
       submissions++;
-      return route.abort();
+      created = alreadyAccepted || submissions > 1;
+      if (submissions === 1) return route.abort();
+      return route.fulfill({status: 202, json: {...task, request_id:requestId}});
     }
     if(path===api+'/by-request/'+requestId && requestId){
       lookups++;
-      return route.fulfill({json:{request_id:requestId,task}});
+      return route.fulfill({json:created ? {request_id:requestId,state:'ACCEPTED',task} : {request_id:requestId,state:recoveryState}});
     }
     const record = stopped ? {...task, status: 'CANCELLED'} : task;
     if (path === api) return route.fulfill({json: {items: created ? [record] : []}});
@@ -55,6 +60,22 @@ test('native video tasks recover the original upload after reload and stop the c
   await page.reload();
   await expect.poll(()=>lookups).toBe(1);
   expect(submissions).toBe(1);
+  if (!alreadyAccepted) {
+    await expect(page.getByText('原请求正在登记，请稍后核对原请求。')).toBeVisible();
+    await expect(page.getByRole('button', {name:'重试同一请求'})).toHaveCount(0);
+    await expect(page.getByRole('button', {name:'＋ 创建切帧任务'})).toBeDisabled();
+    recoveryState = 'UNREGISTERED';
+    await page.getByRole('button', {name:'核对原请求'}).click();
+    const original = page.getByLabel('重新选择原视频（fixture.mp4）');
+    const retry = page.getByRole('button', {name:'重试同一请求'});
+    await original.setInputFiles({name:'fixture.mp4', mimeType:'video/mp4', buffer:Buffer.from('other')});
+    await retry.click();
+    await expect(page.getByText('所选视频与原请求的文件不一致，请重新选择原视频。')).toBeVisible();
+    expect(submissions).toBe(1);
+    await original.setInputFiles({name:'fixture.mp4', mimeType:'video/mp4', buffer:Buffer.from('video')});
+    await retry.click();
+    await expect.poll(() => submissions).toBe(2);
+  }
   const row = page.getByRole('row', {name: /fixture.mp4/});
   await expect(row).toContainText('排队中');
   expect(multipart).toMatch(/^multipart\/form-data; boundary=/);
@@ -70,3 +91,4 @@ test('native video tasks recover the original upload after reload and stop the c
   await expect(detail).toContainText('已停止');
   await expect(detail.getByRole('link', {name: '查看素材库'})).toHaveAttribute('href', /materials$/);
 });
+}

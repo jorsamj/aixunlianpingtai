@@ -20,8 +20,8 @@ def create_video_tasks_router_1(service: Callable[[], VideoTasksService], actor_
         return json.dumps([claims.get("provider") or "changlian", actor], ensure_ascii=False)
 
     @router.get('/api/v33/projects/{project_id}/video-tasks/by-request/{request_id}')
-    def v33_find_video_task(project_id: str, request_id: str, request: Request):
-        return service().v33_find_video_task(project_id, actor_scope(request, project_id), request_id)
+    def v33_find_video_task(project_id: str, request_id: str, request: Request, recovery: bool = False):
+        return service().v33_find_video_task(project_id, actor_scope(request, project_id), request_id, recovery)
 
     @router.get('/api/v33/projects/{project_id}/video-tasks/{task_id}')
     def v33_get_video_task(project_id: str, task_id: str):

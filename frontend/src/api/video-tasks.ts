@@ -23,6 +23,25 @@ export function videoCreationRequestId() {
 }
 
 export type VideoTask = ReturnType<typeof normalizeVideoTask> & VideoRecord;
+export type VideoRecovery =
+  | {state: 'ACCEPTED' | 'TERMINAL'; task: VideoTask}
+  | {state: 'IN_FLIGHT' | 'UNREGISTERED' | 'STAGED' | 'UNVERIFIED_INPUT' | 'RETIRED'};
+
+// Hash every byte using bounded reads. This fingerprint is for browser reselection;
+// the task payload still uses the server's full-file SHA-256.
+export async function videoFileFingerprint(file: File) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  const chunkSize = 4 * 1024 * 1024;
+  const digest = new Uint8Array(32 * Math.ceil(file.size / chunkSize));
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const bytes = await file.slice(offset, offset + chunkSize).arrayBuffer();
+    digest.set(new Uint8Array(await subtle.digest('SHA-256', bytes)), (offset / chunkSize) * 32);
+  }
+  const fingerprint = await subtle.digest('SHA-256', digest);
+  return Array.from(new Uint8Array(fingerprint), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function videoTasks(projectId: string) {
   const url = '/api/v33/projects/' + encodeURIComponent(projectId) + '/video-tasks';
   const taskUrl = (taskId: string) => url + '/' + encodeURIComponent(taskId);
@@ -40,10 +59,23 @@ export function videoTasks(projectId: string) {
     async detail(taskId: string, signal: AbortSignal) {
       return checked(await request<VideoRecord>(taskUrl(taskId), {signal}), taskId);
     },
-    async byRequest(requestId: string, signal: AbortSignal) {
-      const value = await request<{request_id:string;task:VideoRecord}>(url + '/by-request/' + encodeURIComponent(requestId), {signal});
+    async byRequest(requestId: string, signal: AbortSignal): Promise<VideoRecovery> {
+      const path = url + '/by-request/' + encodeURIComponent(requestId) + '?recovery=true';
+      const value = await request<{request_id:string;state:VideoRecovery['state'];task?:VideoRecord}>(path, {signal});
       if (value.request_id !== requestId) throw new Error('切帧请求回执身份不一致');
-      return checked(value.task);
+      switch (value.state) {
+        case 'ACCEPTED':
+        case 'TERMINAL':
+          if (value.task) return {state:value.state, task:checked(value.task)};
+          break;
+        case 'IN_FLIGHT':
+        case 'UNREGISTERED':
+        case 'STAGED':
+        case 'UNVERIFIED_INPUT':
+        case 'RETIRED':
+          if (!value.task) return {state:value.state};
+      }
+      throw new Error('切帧请求回执状态无效');
     },
     async create(video: File, split: string, values: ReturnType<typeof videoTaskFormValues>, requestId: string, signal: AbortSignal) {
       const body = new FormData();
