@@ -52,7 +52,9 @@ test('Uppy chunked upload, resume and pause owners remain intact on the native p
 });
 
 test('ZIP jobs list re-renders from runtime snapshot fields including unknown verification',()=>{
-  assert.match(page,/interface ZipJob \{id:string;file_name\?:string;status\?:string;/);
+  const job=page.match(/interface ZipJob \{([^}]*?)report\?:/)?.[1]??'';
+  for(const field of ['id:string;','batch_id?:string;','file_name?:string;','status?:string;'])
+    assert.ok(job.includes(field),`missing ZIP job snapshot field: ${field}`);
   assert.match(page,/const STATUS:Record<string,string>=\{uploading:'正在上传'.*unknown:'状态待核验'\}/);
   assert.match(page,/unknown:'状态待核验'/);
 });

@@ -57,9 +57,15 @@ test('core snapshot paints while background bootstrap status is pending and reco
     await page.goto('/');
     await expect.poll(() => page.evaluate(() => state.uiReady)).toBe(true);
     const interactiveMs=Date.now()-started;
+    // A cached view can paint before its one background snapshot has finished.
+    await expect.poll(()=>page.evaluate(()=>performance.getEntriesByType('resource')
+      .filter(entry=>new URL(entry.name).pathname==='/api/v53/bootstrap/snapshot'
+        &&new URL(entry.name).searchParams.get('core')!=='false').length)).toBe(1);
     rows.push(await page.evaluate(({index,interactiveMs})=>{
-      const entry=performance.getEntriesByType('resource').find(x=>x.name.includes('/api/v53/bootstrap/snapshot'));
-      return {index,interactiveMs,url:entry?.name,connectMs:entry?.connectEnd-entry?.connectStart,dnsMs:entry?.domainLookupEnd-entry?.domainLookupStart,ttfbMs:entry?.responseStart-entry?.requestStart,downloadMs:entry?.responseEnd-entry?.responseStart,durationMs:entry?.duration,bytes:entry?.encodedBodySize,decodedBytes:entry?.decodedBodySize,jsonParseMs:window.__startupDiagnostics413?.jsonParseMs,serverTiming:entry?.serverTiming?.map(x=>({name:x.name,duration:x.duration})),snapshotRequests:performance.getEntriesByType('resource').filter(x=>x.name.includes('/api/v53/bootstrap/snapshot')).length};
+      const entries=performance.getEntriesByType('resource').filter(entry=>new URL(entry.name).pathname==='/api/v53/bootstrap/snapshot'
+        &&new URL(entry.name).searchParams.get('core')!=='false');
+      const entry=entries[0];
+      return {index,interactiveMs,url:entry?.name,connectMs:entry?.connectEnd-entry?.connectStart,dnsMs:entry?.domainLookupEnd-entry?.domainLookupStart,ttfbMs:entry?.responseStart-entry?.requestStart,downloadMs:entry?.responseEnd-entry?.responseStart,durationMs:entry?.duration,bytes:entry?.encodedBodySize,decodedBytes:entry?.decodedBodySize,jsonParseMs:window.__startupDiagnostics413?.jsonParseMs,serverTiming:entry?.serverTiming?.map(x=>({name:x.name,duration:x.duration})),snapshotRequests:entries.length};
     },{index,interactiveMs}));
     expect(rows.at(-1).snapshotRequests).toBe(1);
   }
