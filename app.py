@@ -12656,6 +12656,11 @@ def v35_confirm_model_coordinates(config_id: str, payload: V35CoordinateConfirma
 
 def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, sample_labels=None, sample_size=(128, 128)):
     from platform_core.providers.base import ProviderRequestError
+    api_key = str(runtime_cfg.get("_api_key") or "")
+
+    def redact(value):
+        return value.replace(api_key, "[已隐藏凭据]") if api_key and isinstance(value, str) else value
+
     try:
         provider = auto_label_core.provider_factory(runtime_cfg)
         dedicated = (runtime_cfg.get("provider_adapter") or runtime_cfg.get("provider_type")) == "wevisone_vl"
@@ -12699,11 +12704,11 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
             "coordinate_confirmed": runtime_cfg.get("coordinate_validation", {}).get("status") == "verified",
             "no_target": not bool(boxes),
             "latency_ms": int(response.get("latency_ms") or 0),
-            "provider": response.get("provider") or runtime_cfg.get("provider_type"),
-            "model": response.get("model") or runtime_cfg.get("model_name"),
-            "request_id": response.get("request_id") or "",
-            "api_protocol": response.get("api_protocol") or "auto",
-            "raw_preview": text[:20000] if sample_prompt else text[:500],
+            "provider": redact(response.get("provider") or runtime_cfg.get("provider_type")),
+            "model": redact(response.get("model") or runtime_cfg.get("model_name")),
+            "request_id": redact(response.get("request_id") or ""),
+            "api_protocol": redact(response.get("api_protocol") or "auto"),
+            "raw_preview": redact(text)[:20000 if sample_prompt else 500],
             "parsed_boxes": boxes,
         }
     except Exception as error:

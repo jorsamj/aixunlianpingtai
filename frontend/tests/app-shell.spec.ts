@@ -116,3 +116,35 @@ test('library filters stay server scoped, expanding avoids list reload, and vers
  await page.getByRole('button',{name:'清空筛选',exact:true}).click();await expect(page).not.toHaveURL(/training_state=/);await expect.poll(()=>queries.at(-1)?.get('sort')).toBe('comprehensive');
  algorithm.source_type='EXTERNAL';algorithm.provider_type='CHANG_LIAN';await page.reload();await page.getByRole('button',{name:'算法 A',exact:true}).click();await expect(page.getByRole('button',{name:'删除算法',exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'回退',exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'删除版本',exact:true})).toHaveCount(0);await page.getByRole('button',{name:'基本信息',exact:true}).click();await expect(page.getByRole('textbox',{name:'算法名称',exact:true})).toBeDisabled();
 });
+
+
+test('ChangLian data preview reads products, versions and weights only on explicit actions',async({page})=>{
+ await assets(page);
+ const provider='/api/v63/external-algorithm-platform/provider';
+ const calls:string[]=[];
+ const product='9223372036854775801',version='9223372036854775802',weight='9223372036854775803';
+ await page.route('**/api/**',route=>{
+  const request=route.request(),url=new URL(request.url()),path=url.pathname;
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'隔离用户'}}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'}]});
+  expect(path.startsWith(provider)).toBe(true);
+  expect(request.method()).toBe('GET');
+  calls.push(path.slice(provider.length)+url.search);
+  if(path===provider+'/products')return route.fulfill({json:{response:{code:200,data:url.searchParams.get('status')==='1'?[{productId:product,productName:'安全帽'}]:[]}}});
+  if(path===provider+'/versions/by-product/'+product)return route.fulfill({json:{response:{code:200,data:[{algoVersionId:version,versionName:'交付版本'}]}}});
+  if(path===provider+'/weights/by-version/'+version)return route.fulfill({json:{response:{code:200,data:[{weightId:weight,fileName:'model.rknn'}]}}});
+  if(path===provider+'/weights/'+weight)return route.fulfill({json:{response:{code:200,data:{weightId:weight,productId:product,algoVersionId:version,fileName:'model.rknn',tags:['安全帽']}}}});
+  return route.fulfill({status:404,json:{detail:'unexpected '+path}});
+ });
+ await page.goto('/app/#/projects/p/changlian-data');
+ await expect(page.getByText('尚未读取畅联云')).toBeVisible();
+ expect(calls).toEqual([]);
+ await page.getByRole('button',{name:'读取畅联云',exact:true}).click();
+ await expect(page.getByRole('button',{name:'安全帽',exact:true})).toBeVisible();
+ expect(calls.sort()).toEqual(['/products?status=0','/products?status=1']);
+ await page.getByRole('button',{name:'安全帽',exact:true}).click();
+ await page.getByRole('button',{name:'交付版本',exact:true}).click();
+ await page.getByRole('button',{name:'model.rknn',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'权重文件详情'})).toContainText(weight);
+ expect(calls.slice(2)).toEqual(['/versions/by-product/'+product,'/weights/by-version/'+version,'/weights/'+weight+'?withTags=true']);
+});

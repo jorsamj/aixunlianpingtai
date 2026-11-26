@@ -29,7 +29,7 @@ const back=computed(()=>{
   const source=query('back');
   if(source.startsWith('/projects/')){
     const original=router.resolve(source);
-    if(original.params.projectId===projectId&&(original.name==='algorithms'||original.name==='training-tasks'))return original.fullPath;
+    if(original.params.projectId===projectId&&(original.name==='algorithms'||original.name==='training-tasks'||original.name==='quality-centre'))return original.fullPath;
   }
   return {name:route.name==='version-report'?'algorithms':'training-tasks',params:{projectId}};
 });

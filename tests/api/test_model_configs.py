@@ -344,17 +344,24 @@ def test_real_sample_coordinate_contract_and_evidence(client, monkeypatch):
     import base64
     from io import BytesIO
     from PIL import Image
+    secret = "sk-sample-test-only"
     class Provider:
         def annotate(self, **kwargs):
             assert "normalized_1000" in kwargs["prompt"]
-            return {"text": '{"boxes":[{"label":"person","confidence":0.9,"x1":100,"y1":200,"x2":500,"y2":800}]}'}
-    monkeypatch.setattr(app_module.auto_label_core, "provider_factory", lambda cfg: Provider())
-    payload = {"name":"fixture", "base_url":"http://fixture.invalid", "model_name":"fixture", "coordinate_space":"normalized_1000", "coordinate_order":"yxyx"}
+            return {"model": f"fixture {secret}", "request_id": f"request-{secret}",
+                    "text": '{"boxes":[{"label":"person","confidence":0.9,"x1":100,"y1":200,"x2":500,"y2":800}]}'}
+    def provider_factory(config):
+        assert config["_api_key"] == secret
+        return Provider()
+    monkeypatch.setattr(app_module.auto_label_core, "provider_factory", provider_factory)
+    payload = {"name":"fixture", "base_url":"http://fixture.invalid", "model_name":"fixture", "coordinate_space":"normalized_1000", "coordinate_order":"yxyx", "api_key":secret}
     saved = client.post("/api/v35/model-configs", json=payload).json()
     b = BytesIO(); Image.new("RGB", (1920,1080)).save(b, format="PNG")
     response = client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates", json={"image_base64":base64.b64encode(b.getvalue()).decode(), "labels":["person"]})
     assert response.status_code == 200, response.text
     result = response.json()
+    assert secret not in response.text
+    assert result["model"] == "fixture [已隐藏凭据]"
     assert result["parsed_boxes"][0]["x1"] == 384
     assert result["parsed_boxes"][0]["y1"] == 108
     assert result["coordinate_validation"]["status"] == "unverified"

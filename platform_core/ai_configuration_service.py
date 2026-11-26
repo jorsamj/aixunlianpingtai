@@ -251,7 +251,13 @@ class AiConfigurationService:
                 provider.inspect_model()
                 return provider.preview(payload.operation, image_bytes=buffer.getvalue(), labels=labels)
             except ProviderRequestError as error:
-                raise PlatformError(code=error.code, message="专用视觉预览失败", detail=str(error), solution=error.solution, status_code=400) from error
+                key = runtime_cfg["_api_key"]
+                detail = str(error)
+                solution = error.solution
+                if key:
+                    detail = detail.replace(key, "[已隐藏凭据]")
+                    solution = solution.replace(key, "[已隐藏凭据]")
+                raise PlatformError(code=error.code, message="专用视觉预览失败", detail=detail, solution=solution, status_code=400) from error
         contract = auto_label_core.coordinate_contract(cfg, legacy=True)
         if contract["coordinate_space"] == "legacy_auto":
             raise HTTPException(status_code=400, detail="请先明确并保存坐标范围，再验证样本")

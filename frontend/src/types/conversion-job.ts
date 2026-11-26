@@ -104,6 +104,19 @@ export interface DeployResource {
   solution?: string;
   version?: string;
   builtin?: boolean;
+  base_url?: string;
+  has_api_key?: boolean;
+  python_path?: string;
+  ultralytics_python?: string;
+  paddledet_dir?: string;
+  paddle2onnx_path?: string;
+  tool_root?: string;
+  trtexec_path?: string;
+  atc_path?: string;
+  env_script?: string;
+  remark?: string;
+  last_checked_at?: string;
+  agent_nodes?: {node_id?:string;display_name?:string}[];
 }
 
 export interface ConversionSource {
