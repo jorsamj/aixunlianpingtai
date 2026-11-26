@@ -120,7 +120,8 @@ test('native material library keeps scoped browsing, selection and original work
   if(!frame)throw new Error('原图未渲染');
   const x=(value:number)=>frame.x+frame.width*value/32;
   const y=(value:number)=>frame.y+frame.height*value/32;
-  await page.mouse.move(x(10),y(10));await page.mouse.down();await page.mouse.move(x(20),y(20),{steps:8});await page.mouse.up();
+  // Annotorious 3.9.5 accepts quick drags only when the image-space area exceeds 100 px².
+  await page.mouse.move(x(10),y(10));await page.mouse.down();await page.mouse.move(x(24),y(20),{steps:8});await page.mouse.up();
   await expect(boxes).toHaveCount(1);
   await editor.getByRole('button',{name:'保存标注',exact:true}).click();
   await expect(editor.getByRole('button',{name:'核对保存结果'})).toBeVisible();
@@ -129,6 +130,7 @@ test('native material library keeps scoped browsing, selection and original work
   expect(written).toHaveLength(1);
   expect(formal.boxes).toHaveLength(2);
   expect(formal.boxes[1].x1).toBeCloseTo(10,0);
+  expect(formal.boxes[1].x2).toBeCloseTo(24,0);
   expect(formal.boxes[1].y2).toBeCloseTo(20,0);
   await expect(boxes).toHaveCount(0);
   await editor.getByRole('button',{name:'返回素材库',exact:true}).click();
