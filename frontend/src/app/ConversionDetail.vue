@@ -5,12 +5,13 @@ import {legacyUrl} from './navigation';
 import {useReadScope} from '../composables/useReadScope';
 import ReadOnlyFacts from '../components/ReadOnlyFacts.vue';
 import {browseError} from '../api/model-browse';
-import {loadConversionJob,loadConversionLog} from '../api/conversion-jobs';
-import type {ConversionJobDetail,ConversionJobOutput} from '../types/conversion-job';
+import {loadConversionJob,loadConversionLog,loadConversionNumericHistory} from '../api/conversion-jobs';
+import type {ConversionJobDetail,ConversionJobOutput,ConversionNumericHistoryEntry} from '../types/conversion-job';
 const props=defineProps<{projectId:string;jobId:string}>();
 const projectId=props.projectId,jobId=props.jobId,route=useRoute(),router=useRouter();
 const controller=new AbortController(),reads=useReadScope(controller);
 const job=ref<ConversionJobDetail|null>(null),log=ref('');
+const numericHistory=ref<ConversionNumericHistoryEntry[]|null>(null);
 const ACTIVE=new Set(['queued','pending','waiting_resource','running','preparing','converting','recovering','submitted','waiting','starting','uploading','downloading','validating','stopping']);
 const NUMERIC_HINTS:Record<string,string>={'consistent':'数值一致，但仍不等于正式交付准入','difference_detected':'检测到差异','not_comparable':'不可比较','unavailable':'不可用或未完成'};
 let alive=true,timer:number|undefined,pollController:AbortController|null=null;
@@ -62,6 +63,10 @@ function loadJob(){
 }
 function loadLog(){
   return reads.run('log',signal=>loadConversionLog(projectId,jobId,signal),value=>{if(alive)log.value=value});
+}
+function loadNumericHistory(){
+  numericHistory.value=null;
+  return reads.run('numericHistory',signal=>loadConversionNumericHistory(projectId,jobId,signal),value=>{numericHistory.value=value});
 }
 function refresh(){stopPolling();void loadJob();void loadLog()}
 function back(){void router.push(algorithmId.value&&versionId.value?{name:'version-conversions',params:{projectId,algorithmId:algorithmId.value,versionId:versionId.value}}:{name:'algorithms',params:{projectId}})}
@@ -115,6 +120,12 @@ const manifestFacts=computed<[string,unknown][]>(()=>[
   ['源模型 SHA256 复核',job.value?.source_sha256_recheck],
   ...facts(job.value?.manifest_integrity,20),
 ]);
+const sourceFacts=computed<[string,unknown][]>(()=>[
+  ['源模型 ID',job.value?.source_trace?.source_id||job.value?.source_id],
+  ['算法 ID',job.value?.source_trace?.algorithm_id],
+  ['版本 ID',job.value?.source_trace?.version_id],
+  ['源模型 SHA256',job.value?.source_trace?.sha256],
+]);
 const executionFacts=computed<[string,unknown][]>(()=>facts(job.value?.execution_evidence,40));
 const hardwareFacts=computed<[string,unknown][]>(()=>facts(job.value?.hardware_verification,20));
 const paramFacts=computed<[string,unknown][]>(()=>facts(job.value?.params,80));
@@ -152,9 +163,25 @@ function downloadUrl(output:ConversionJobOutput){
    <h4 v-if="hardwareFacts.length">目标硬件验收字段</h4>
    <ReadOnlyFacts v-if="hardwareFacts.length" :fields="hardwareFacts"/>
    <p class="evidence-note">数值一致、Runtime 加载与目标硬件验收分别记录、互不代替；未知或未记录一律显示 NOT_VERIFIED。数值状态不会单独构成正式交付准入。</p>
+   <header class="card-head numeric-history-head">
+    <h4>数值验证历史</h4>
+    <el-button size="small" :loading="reads.busy.numericHistory" @click="loadNumericHistory">{{numericHistory?'刷新数值验证历史':'读取数值验证历史'}}</el-button>
+   </header>
+   <el-alert v-if="reads.errors.numericHistory" :title="reads.errors.numericHistory" type="error" :closable="false"/>
+   <p v-if="numericHistory" class="evidence-note">最多显示 20 条近期记录。当前产物的有效绑定与交付准入见本节上方。</p>
+   <el-table v-if="numericHistory" :data="numericHistory" row-key="id" max-height="400" empty-text="近期范围内没有数值验证记录">
+    <el-table-column prop="id" label="验证任务 ID" min-width="180"/>
+    <el-table-column label="创建时间" min-width="160"><template #default="{row}">{{row.created_at||'未提供'}}</template></el-table-column>
+    <el-table-column label="任务状态" min-width="130"><template #default="{row}">{{row.task.status||'未提供'}}</template></el-table-column>
+    <el-table-column label="历史报告结论" min-width="140"><template #default="{row}">{{row.result?.verdict||'未提供'}}</template></el-table-column>
+    <el-table-column label="样本数" min-width="90"><template #default="{row}">{{row.result?.sample_count??'未提供'}}</template></el-table-column>
+    <el-table-column label="任务错误" min-width="150"><template #default="{row}">{{row.task.error||row.result?.error||'未提供'}}</template></el-table-column>
+   </el-table>
   </section>
   <section class="card" aria-label="Manifest 摘要">
    <h3>Manifest 摘要</h3>
+   <h4>源模型身份</h4>
+   <ReadOnlyFacts :fields="sourceFacts"/>
    <ReadOnlyFacts :fields="manifestFacts"/>
    <p class="evidence-note">本页只投影转换任务记录中的 manifest 身份与完整性字段；后端当前没有独立的 manifest 汇总读取接口，完整 manifest 内容仍由原转换任务目录与原管理入口持有。</p>
    <template v-if="executionFacts.length"><h4>执行证据</h4><ReadOnlyFacts :fields="executionFacts"/></template>

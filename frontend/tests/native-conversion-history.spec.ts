@@ -21,6 +21,35 @@ const historyPage={ok:true,project_id:'p',algorithm_id:'a',version_id:'v',versio
  total:1,page:1,page_size:20,complete:true,filter_options:{status:['done'],target:['rknn'],chip:['rk3588'],precision:['fp16'],csc:['0']},
  diagnostics:[],items:[deployment]};
 
+test('native conversion detail reads bound numeric history without creating validation',async({page})=>{
+ await assets(page);
+ const endpoint='/api/v39/projects/p/deploy/jobs/job-1';
+ const recent={id:'nv_previous',conversion_job_id:'job-1',task:{task_id:'nv_previous',project_id:'p',kind:'MODEL_CONVERSION',status:'SUCCEEDED'},result:{verdict:'consistent',sample_count:3}};
+ let historyReads=0;
+ await page.route('**/api/**',route=>{
+  const path=new URL(route.request().url()).pathname;
+  expect(route.request().method()).toBe('GET');
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'项目 P'}]});
+  if(path===endpoint)return route.fulfill({json:{...deployment,project_id:'p',source_trace:deployment.source_identity}});
+  if(path===endpoint+'/log')return route.fulfill({contentType:'text/plain',body:'转换完成'});
+  if(path===endpoint+'/numeric-validations'){
+   historyReads++;
+   return route.fulfill({json:{ok:true,items:[historyReads===1?recent:{...recent,conversion_job_id:'other'}]}});
+  }
+  return route.fulfill({status:404,json:{detail:'unexpected '+path}});
+ });
+ await page.goto('/app/#/projects/p/conversions/job-1');
+ await expect(page.getByRole('heading',{name:'源模型身份'})).toBeVisible();
+ await expect(page.getByText('a'.repeat(64),{exact:true})).toBeVisible();
+ expect(historyReads).toBe(0);
+ await page.getByRole('button',{name:'读取数值验证历史'}).click();
+ await expect(page.getByRole('row').filter({hasText:'nv_previous'})).toContainText('consistent');
+ await page.getByRole('button',{name:'刷新数值验证历史'}).click();
+ await expect(page.getByText('数值验证历史响应身份不一致',{exact:true})).toBeVisible();
+ await expect(page.getByRole('row').filter({hasText:'nv_previous'})).toHaveCount(0);
+});
+
 test('native conversion history reuses the pilot read-only view against the v42 asset projection',async({page})=>{
  const writes:string[]=[];page.on('request',r=>{if(!['GET','HEAD'].includes(r.method()))writes.push(r.method()+' '+new URL(r.url()).pathname)});
  await assets(page);

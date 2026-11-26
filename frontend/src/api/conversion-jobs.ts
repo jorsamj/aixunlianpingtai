@@ -4,6 +4,7 @@ import type {
   ConversionContractResult,
   ConversionJobDetail,
   ConversionJobRequest,
+  ConversionNumericHistoryEntry,
   ConversionSource,
   DeployResource,
 } from '../types/conversion-job';
@@ -76,8 +77,20 @@ export async function loadConversionJob(
   const job = await request<ConversionJobDetail>(
     `${projectRoot(projectId)}/deploy/jobs/${encodeURIComponent(jobId)}`, {signal},
   );
-  if (job?.id !== jobId) throw new Error('转换任务响应身份不一致');
+  if (job?.id !== jobId || (job.project_id && job.project_id !== projectId))
+    throw new Error('转换任务响应身份不一致');
   return job;
+}
+
+export async function loadConversionNumericHistory(projectId:string,jobId:string,signal:AbortSignal) {
+  const value = await request<{ok:boolean;items:ConversionNumericHistoryEntry[]}>(
+    `${projectRoot(projectId)}/deploy/jobs/${encodeURIComponent(jobId)}/numeric-validations`,{signal},
+  );
+  if (value?.ok !== true || !Array.isArray(value.items) || value.items.length > 20 ||
+      value.items.some(row=>!row?.id || row.conversion_job_id!==jobId || row.task?.task_id!==row.id ||
+        row.task?.project_id!==projectId || row.task?.kind!=='MODEL_CONVERSION'))
+    throw new Error('数值验证历史响应身份不一致');
+  return value.items;
 }
 
 // Read-only recovery of an unconfirmed creation; no new request ID is minted.

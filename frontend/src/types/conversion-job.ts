@@ -247,6 +247,14 @@ export interface ConversionNumericValidation {
   identity?: Record<string, unknown>;
 }
 
+export interface ConversionNumericHistoryEntry {
+  id: string;
+  conversion_job_id: string;
+  created_at?: string;
+  task: {task_id:string; project_id:string; kind:string; status?:string; phase?:string; error?:string};
+  result: ConversionNumericValidation | null;
+}
+
 // One conversion job exactly as `GET /api/v39/projects/{p}/deploy/jobs/{id}`
 // returns it, including the read-only `delivery_quality` projection.
 export interface ConversionJobDetail {
