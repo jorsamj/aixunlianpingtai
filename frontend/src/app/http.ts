@@ -9,7 +9,9 @@ function apiError(body:unknown,status:number){
 }
 export function request<T>(url:string,options:RequestInit={},timeoutMs?:number):Promise<T>{
   return withRequestDeadline(async signal=>{
-    const response=await fetch(url,{...options,credentials:'same-origin',signal,headers:{'Content-Type':'application/json',...options.headers}});
+    const headers=new Headers(options.headers);
+    if(!(options.body instanceof FormData)&&!headers.has('Content-Type'))headers.set('Content-Type','application/json');
+    const response=await fetch(url,{...options,credentials:'same-origin',signal,headers});
     const body=await response.json();
     if(!response.ok){if(response.status===401)login();throw apiError(body,response.status)}
     return body as T;
