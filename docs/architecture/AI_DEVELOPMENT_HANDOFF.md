@@ -1,6 +1,17 @@
 # AI 开发接续入口
 
-## 五菜单原生预览及关键写入回执（2026-11-26，当前）
+## 训练来源、正式入库、交付与关键回执（2026-11-26，当前）
+
+- 畅联云算法训练平台，FastAPI 模块化单体、SQLite 权威、独立 Vue `/app/`。唯一目录 `D:\lab\p2b2-backend`，唯一分支 `feature/external-algorithm-publishing`，起始本地及远端 `9989e3ebf07144b5f8f7b3383e60397018c66e90`。代码候选 `1cd6323069a5070efeb85ea91f462fc8346f09d5`，含本记录的最终 HEAD 为其后的交接提交。推送后一次性查询准确 SHA，当前 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`。
+- A `18bd3113c951552eab1ea9cadcce4404d165efc3`。基线 22 个 PR 已成功，Node Agent Executor 双槽通过。28 个 push 中 27 成功，前端 run 45752895038 的 frontend Job 139686422893 唯一失败，80 通过、1 超时。失败制品 15086782881 确认强制点击已创建并完成 29 张入库，竞争的首个 locator 仍等待消失的按钮。先等实际确认按钮稳定，再对同一按钮触发两次事件，原封存排除、唯一创建、待核验进度、29 张入库与下一笔新身份断言保留。
+- B `8bb6e15735725d73f4a172485ff57ee0729099c0`。NativeEvaluation 的困难样本与继续训练接入 v12 分段评测真值、原决策确认、v64 限额非 Test 矿选、v60 任务和人工审核、v12 已审核采纳、v63 补数冻结。发起和重放按原模型、素材摘要及请求核验。正式 GT 与样本角色由原 CandidateStore、AnnotationRepository、OnlineFeedbackRepository 证明。TrainingCreate 子流程在提交前重新读取源动作和当前版本，传入原继续训练动作及固定任务 ID，或显式选中的原候选集；可用的原版本固定 Test 基准保留。原默认设置沿用。历史素材入训仍受原资格与冻结拒绝。困难样本多任务历史、报告深层归因及训练批量管理仍有旧入口。
+- C `729ea6910c15b66bf2a7ff4f6f72c11f7f311e70`。IoU 页按原算法有界预览，图框逐页读取，继续以 25 张一批保存候选草稿。人工指定标签并再次确认后，根据相同操作者、草稿修订和素材 SHA 精确冻结：仅已证明保存且合格的草稿交 C2-B 原封存与后台执行。保留实际确认、正式 GT 屏障、已入库排除、进度、取消和恢复。自动策略只保存候选草稿。C 的素材 `286343ce5ccfc4372f997c82e2d14fe75ecab935` 沿用 v12 数据集锁，支持最多 100 个显式跨页成员移入目标或移回默认数据集，首个失败或不确定请求后停发并读取当前素材核验。现有 v62 没有数据集批量操作或该用途的筛选排除合同，大范围需先补原冻结与回执；分类、算法级负池、标签预设及 Smart Audit 仍走原流程。
+- D/E `e443d9e3bfa03b989a2fdad036af0b3a10d873bf`。ConversionDetail 接入原 v39 RK3568/RK3576 手动验证，按原板卡调度与 v62 任务投影查看状态，恢复已知任务 ID，按原报告显示板卡、模型、样本摘要与执行代数，并提供原 JSON 下载。归档下载、数值验证、硬件、正式发布独立分层。ConversionManagement 没有冻结的原转换终态重试 API；v61 通用硬件 retry 缺与版本生命周期共用的 fence，原生入口未开启。首次板端 POST 无稳定请求 ID，响应丢失保留待核验。ExternalPublish 接通 v64 用户确认发布及原规则许可的失败重试，查版本持久记录；权重选取继续由后端自动选择。PlatformIntegration 接通 v63 显式连接测试、联调诊断、手动同步与原操作查询。映射写入、实际对账和发布回退仍由原入口。
+- E 数值验证在原请求中绑定顺序化样本 SHA256 和阈值，原回执缺失时允许用户在支持 Web Crypto 的浏览器按原图片内容及顺序重试，原 ID 不变，无自动重发。服务端保留原转换冻结与孤立目录保护。视频 `1cd6323069a5070efeb85ea91f462fc8346f09d5` 基于 v33/ArtifactStore/TaskRepository 识别在途、未登记、暂存、已受理、终态和退役；先写原冻结参数后发布文件，重放核对已发布 SHA。浏览器只持久保存参数与摘要，旧无摘要标记、历史无参数孤立文件或无 Web Crypto 时不能验证刷新重选，仍可查原回执或由原 Owner 核查。
+- E 凭据 `36c92ae7bbe1624d9c0ec7e8f84fcf26fe679bfa`。原 v35 PUT/DELETE 对既有 secret_ref 保守拒绝原地换密或删凭据，配置可停用，给新任务的新凭据由新配置与原 SecretStore 持有。冻结 Worker 仍比对 inference_account_identity。现有接口没有覆盖排队、恢复及历史重试的可信引用清点，原地换密和清除策略、显式紧急撤销需独立产品与安全决策。整算法仍为 409，无基版本首训在 app.py 的原 `_algorithm_version_reference_fence` 分支未锁住算法级身份，仍缺跨任务、绑定、转换、外部、反馈和负池的共享生命周期。
+- [14 菜单矩阵](VUE_M0_FUNCTION_API_MATRIX_20261118.md) 维持 1 完整、13 部分。五个试用入口与原 14 菜单不变。本机仅 Vue 类型、Python AST、JS/TS 用例语法及 Git 差异检查。新 SHA 需要运行期 CI，三档视觉、20 万素材、2 万冻结选择、离线部署和生产硬件均待验。VERSION、AGENTS、四份保护文档和 vendor 未改。下一阶段优先补真正的有界批量治理、标签 Smart Audit、原任务重试的版本保护、外部对账与配置安全引用清点。
+
+## 五菜单原生预览及关键写入回执（2026-11-26，上一批）
 
 - 畅联云算法训练平台使用 FastAPI 模块化单体、既有 SQLite 持久化权威及独立 Vue `/app/`。唯一路径 `D:\lab\p2b2-backend`，分支 `feature/external-algorithm-publishing`。本地与远端起始 `7954e1b3b8f4e381b29b0fa78c141ea42bbcad82`。代码候选 `4b932ccd0913dbf670b9a26f83eb800f55ad4e2a`，最终 HEAD 是代码候选之后的本交接提交。推送后一次性查询含本记录的实际远端 SHA。当前状态 `CI_PENDING / UAT_PENDING / PRODUCTION_NOT_VERIFIED`。
 - A `c612fdc2da6fb0b9dde062d1ea543b7d1e8f7d41`。开工准确基线 21/22 PR 成功，push 27 成功、前端运行中。随后基线前端 run 45750211962 的 6 个 Job 全成功，前批 Annotorious 已有框、真实绘制、正式保存及切换和清洗的修复随该回归关闭。其余已知失败为 Node Agent Executor Ubuntu 139675913253，1 失败、1076 通过、5 跳过。实际失败在双槽两份停止证明落库后第三任务未获分配；老诊断引用不存在的字段。修正诊断列，并对测试 GPU 快照可能被真实 Agent 心跳覆盖的窗口做有界重采样，保留实际中央分配、GPU、Hold 和停止证明断言。等待新 SHA 复验。

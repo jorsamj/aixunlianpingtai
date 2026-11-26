@@ -1,6 +1,29 @@
 # 功能/API迁移矩阵（M0基线2026-11-18）
 
-## 14 个正式菜单与五个原生预览（2026-11-26，当前）
+## 14 个正式菜单及业务闭环（2026-11-26，当前）
+
+代码候选 `1cd6323069a5070efeb85ea91f462fc8346f09d5`。状态为代码覆盖，验收 `CI_PENDING / UAT_PENDING`。
+
+|菜单|状态|当前原生功能及权威|仍走原系统或阻断|
+|---|---|---|---|
+|总览|NATIVE_PARTIAL|Overview，v53 核心快照、近期训练和标注|历史趋势、资源诊断|
+|质量中心|NATIVE_PARTIAL|QualityCentre，v53/v61 有界检查、v44 本页质量、v62 及原 ECharts|全库后台检查、场景实测、高级评测与完整趋势|
+|算法库|NATIVE_PARTIAL|Algorithms、原版本历史和清理、ConversionDetail v39 板端验收与数值结果|整算法删除 409，缺算法级共同保护。转换终态缺原任务恢复接口，硬件重试缺版本 fence|
+|训练任务|NATIVE_PARTIAL|NativeEvaluation/TrainingIteration/TrainingCreate 接通 v12 评测确认、v64 挖掘、v60 审核、v63/v12 补数、原来源训练提交|深层报告、原任务批量与困难样本多任务历史|
+|素材库|NATIVE_PARTIAL|Materials 原分页、上传、GT。MaterialDatasets 经 v12 显式选中归属调整，最多 100 张|批量分类、筛选冻结成员写入、持久批量回执及算法负池|
+|视频切帧|NATIVE_COMPLETE|VideoTasks/v33 原请求回执、原身份重放、暂存恢复与 VIDEO_FRAMES|无摘要旧请求及不支持 Web Crypto 时刷新重选缺证据|
+|自动标注及清洗|NATIVE_PARTIAL|AiReview 手工策略消歧、精确冻结、C2-B 正式 GT，原审核及清洗 Owner|自动消歧须人工复核，参考图实际推理|
+|标签管理|NATIVE_PARTIAL|Labels/LabelAudit，原标签目录、GT 与修复任务|预设、重复冲突和 Smart Audit|
+|算力与节点|NATIVE_PARTIAL|ServiceNodes、原只读资源与调度证据|节点配置、环境、母模型及诊断|
+|模型转换环境|NATIVE_PARTIAL|ConversionEnvironment，v39 资源读写、显式 SDK 检测及原厂商字典|批量环境检测、资源删除|
+|AI 辅助配置|NATIVE_PARTIAL|AiConfiguration，v35 模型、Prompt、样本验证及原 SecretStore|旧凭据替换和删除受 409 引用保护，显式撤销策略待确认|
+|存储管理|NATIVE_PARTIAL|StorageManagement/StorageRescan，v61 存储配置、引用及扫描|物理路径修改、删除、标注确认、导入与完整治理|
+|平台对接|NATIVE_PARTIAL|PlatformIntegration/ExternalPublish，v63 主动测试、诊断、同步，v64 原版本确认发布及回执|映射写入、原回退及未知远端结果对账|
+|畅联云数据|NATIVE_PARTIAL|ChangLianData，v63 只读产品、版本、权重详情及下载|原标签分页兜底、对账及复制细项|
+
+总计 1 项原生完整、13 项部分原生。五个试用入口保持，旧入口及正式默认交接仍在。各提交、范围和 CI 见 [开发接续入口](AI_DEVELOPMENT_HANDOFF.md)。
+
+## 14 个正式菜单与五个原生预览（2026-11-26，上一批）
 
 代码候选 `4b932ccd0913dbf670b9a26f83eb800f55ad4e2a`。状态描述代码覆盖，运行期与视觉 `CI_PENDING / UAT_PENDING`。五个新增页的原正式链接保留，选择原生试用才进入。
 
