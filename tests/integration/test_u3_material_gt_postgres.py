@@ -27,6 +27,7 @@ _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
+from platform_core.negative_pool import NegativePool
 from platform_core.u3_shadow import (
     _digest,
     _snapshot_identity,
@@ -1955,3 +1956,106 @@ def test_import_refuses_an_uncertified_structure_change(pg, tmp_path):
         assert ledger_after[:-1] == ledger_before
         assert ledger_after[-1][0] == "REFUSED"
         assert ledger_after[-1][1] == "U3_SNAPSHOT_STRUCTURE_UNVERIFIED"
+
+def _materials_generation(project):
+    with sqlite3.connect(project / "materials.sqlite3") as database:
+        return int(database.execute(
+            "SELECT value FROM material_meta WHERE key='evidence_generation'"
+        ).fetchone()[0])
+
+
+def test_pool_receipts_advance_evidence_generation_and_reject_stale_snapshot(pg, tmp_path):
+    """Two legitimate member operations differ only by their receipt rows."""
+    project = _fixture(tmp_path, project_id="n1")
+    materials = MaterialRepository(project)
+    pool = NegativePool(materials)
+    first = export_project_snapshot(project, "n1")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first)
+
+        pool.members(
+            ["m1"], action="add", expected_revision=pool.revision(),
+            operation_id="op-1", project_id="n1",
+            operation_kind="negative_pool.members.v2",
+        )
+        second = export_project_snapshot(project, "n1")
+        assert import_project_snapshot(connection, second)["outcome"] == "APPLIED"
+
+        generation_before = _materials_generation(project)
+        revision_for_op2 = pool.revision()
+        pool.members(
+            ["m2"], action="add", expected_revision=revision_for_op2,
+            operation_id="op-2", project_id="n1",
+            operation_kind="negative_pool.members.v2",
+        )
+        third = export_project_snapshot(project, "n1")
+        # Same evidence-table structure, different receipts: the generation must
+        # advance, otherwise this legitimate import would be refused as
+        # U3_SNAPSHOT_REVISION_DIVERGED.
+        assert (
+            third["evidence_streams"]["materials_evidence"]["tables"]
+            == second["evidence_streams"]["materials_evidence"]["tables"]
+        )
+        assert (
+            third["evidence_streams"]["materials_evidence"]["generation"]
+            == second["evidence_streams"]["materials_evidence"]["generation"] + 1
+        )
+        assert (
+            third["evidence_streams"]["materials_evidence"]["structure_generation"]
+            == second["evidence_streams"]["materials_evidence"]["structure_generation"]
+        )
+        assert _materials_generation(project) == generation_before + 1
+        assert import_project_snapshot(connection, third)["outcome"] == "APPLIED"
+        baseline = _u3_rows(connection, "n1")
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT count(*) FROM {SCHEMA_NAME}.evidence_row WHERE project_id='n1' "
+                    "AND table_name='negative_pool_operations'"
+                )
+                assert cursor.fetchone()[0] == 2
+
+        # Idempotent replay of the same operation_id writes no new receipt and
+        # therefore must not advance the generation.
+        generation_before = _materials_generation(project)
+        pool.members(
+            ["m2"], action="add", expected_revision=revision_for_op2,
+            operation_id="op-2", project_id="n1",
+            operation_kind="negative_pool.members.v2",
+        )
+        assert _materials_generation(project) == generation_before
+
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, second)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        assert "stream=materials_evidence" in refused.value.detail
+        assert _u3_rows(connection, "n1") == baseline
+
+
+def test_export_detects_a_materials_structure_generation_change(tmp_path, monkeypatch):
+    """Only the persisted materials structure version changes mid-export."""
+    from platform_core import u3_shadow as u3_module
+
+    project = _fixture(tmp_path, project_id="n2")
+    real_columns = u3_module._sqlite_columns
+    fired = {"done": False}
+
+    def hook(database, table):
+        if not fired["done"] and table == "annotation_delete_backup":
+            # The annotations phase runs after the materials phase and before the
+            # closing re-check; bump ONLY the materials structure version so the
+            # table set, recorded structure and row generations stay identical.
+            fired["done"] = True
+            with sqlite3.connect(project / "materials.sqlite3") as materials_db:
+                materials_db.execute(
+                    "UPDATE material_meta SET value = CAST(value AS INTEGER) + 1 "
+                    "WHERE key='evidence_structure_generation'"
+                )
+        return real_columns(database, table)
+
+    monkeypatch.setattr(u3_module, "_sqlite_columns", hook)
+    with pytest.raises(U3MigrationError) as changed:
+        export_project_snapshot(project, "n2")
+    assert changed.value.code == "U3_SNAPSHOT_SOURCE_CHANGED"
+    assert "structures=" in changed.value.detail
+    assert fired["done"] is True

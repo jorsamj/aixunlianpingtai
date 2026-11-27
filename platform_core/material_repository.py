@@ -32,11 +32,10 @@ MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
 _INIT_LOCK_TIMEOUT = 30
 
 #: Historical evidence can change without advancing ``material_meta.revision``
-#: (physical reclamation audits, deferred-cleanup retries, assignment receipts).
-#: A store-level monotonic generation, bumped by triggers in the writing
-#: transaction, is the version the U3 projection compares so a stale snapshot can
-#: never replace newer evidence. ``negative_pool_operations`` is not listed: every
-#: write there is committed together with a ``negative_pool_meta.revision`` bump.
+#: (physical reclamation audits, deferred-cleanup retries, assignment receipts,
+#: negative-pool operation receipts). A store-level monotonic generation, bumped
+#: by triggers in the writing transaction, is the version the U3 projection
+#: compares so a stale snapshot can never replace newer evidence.
 EVIDENCE_GENERATION_KEY = "evidence_generation"
 #: Table lifecycle version: bumped by the owner whenever the set of historical
 #: evidence tables it can see changes (create/drop/rebuild). Persisted in
@@ -49,10 +48,14 @@ _EVIDENCE_GENERATION_TABLES = (
     "material_retirements",
     "material_cleanup_deferred",
     "material_assignment_receipts",
+    # Receipts are historical evidence too: two legitimate member operations
+    # produce different receipt rows without changing the pool structure, so they
+    # must advance the evidence generation. The table is created lazily by
+    # ``negative_pool.py``, which installs these triggers in the same transaction.
+    "negative_pool_operations",
 )
-#: Every historical evidence table of this owner store, including the pool
-#: receipts table that ``negative_pool.py`` creates lazily.
-_EVIDENCE_STRUCTURE_TABLES = _EVIDENCE_GENERATION_TABLES + ("negative_pool_operations",)
+#: Every historical evidence table of this owner store.
+_EVIDENCE_STRUCTURE_TABLES = _EVIDENCE_GENERATION_TABLES
 _EVIDENCE_GENERATION_SENTINEL = "material_storage_audit_evidence_generation_after_insert"
 
 
@@ -594,9 +597,26 @@ class MaterialRepository:
                     # Drift (a table created/dropped/rebuilt outside the owner) must
                     # enter _initialize once so the lifecycle version is recorded.
                     return None
+                if version == _SCHEMA_VERSION and not self._evidence_generation_triggers_ready(database):
+                    # A lazily created evidence table (e.g. negative_pool_operations)
+                    # predating the trigger contract must still get its triggers.
+                    return None
                 return version
         except sqlite3.Error:
             return None
+
+    @staticmethod
+    def _evidence_generation_triggers_ready(database: sqlite3.Connection) -> bool:
+        """Every EXISTING evidence table must already have its insert trigger."""
+        placeholders = ",".join("?" for _ in _EVIDENCE_GENERATION_TABLES)
+        missing = database.execute(
+            "SELECT COUNT(*) FROM sqlite_master AS t "
+            f"WHERE t.type='table' AND t.name IN ({placeholders}) "
+            "AND NOT EXISTS (SELECT 1 FROM sqlite_master AS g WHERE g.type='trigger' "
+            "AND g.name = t.name || '_evidence_generation_after_insert')",
+            _EVIDENCE_GENERATION_TABLES,
+        ).fetchone()[0]
+        return int(missing) == 0
 
     @staticmethod
     def _evidence_structure_matches(database: sqlite3.Connection) -> bool:

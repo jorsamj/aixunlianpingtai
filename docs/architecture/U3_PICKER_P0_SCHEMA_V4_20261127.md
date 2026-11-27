@@ -77,9 +77,14 @@ image_id)`、`negative_pool_member(project_id, joined_at, material_id)`、
 |---|---|---|
 | `negative_confirmation` | `annotation_meta.task_negative_confirmation_generation` | `task_negative_confirmations` |
 | `annotations_evidence` | `annotation_meta.evidence_generation` | delete backup / candidate commits / negative reviews / confirmations |
-| `materials_evidence` | `material_meta.evidence_generation` | migrations / storage audit / retirements / deferred cleanup / assignment receipts |
+| `materials_evidence` | `material_meta.evidence_generation` | migrations / storage audit / retirements / deferred cleanup / assignment receipts / **negative_pool_operations** |
 
-`negative_pool_operations` 不单列：每次写入都与 `negative_pool_meta.revision` 同事务递增。
+`negative_pool_operations` 也属于历史证据：两次合法的成员操作会产生不同回执而**不改变表结构**，
+只靠 `negative_pool_meta.revision` 不足以让行 generation 前进，会被“同结构、同 generation、
+不同摘要”误判为 `U3_SNAPSHOT_REVISION_DIVERGED`。因此该表纳入 materials 的 evidence
+generation 触发器覆盖：懒创建表在 `negative_pool._mutate` 的同一事务里安装触发器；已有数据库
+由 `_read_schema_version_fast` 的“现有证据表是否都有 insert 触发器”探测强制进入 `_initialize`
+补装，不会被快速路径跳过。`negative_pool_meta.revision` 的原有语义保持不变。
 
 快照里每条流记录 `{generation, structure_generation, structure_certified, digest, tables(+revision)}`；
 导入端的概念同名流由快照行重算 digest 与表集合，只信任 Owner 的 generation/结构版本。
@@ -157,14 +162,15 @@ Picker 判定投影是否仍然权威。
 `confirm_task_negatives()` 与 `export_project_snapshot()` 使用同一个
 `material_annotation_lifecycle_fence`（进程/线程可重入，跨进程 FileLock）。锁顺序统一为
 “生命周期锁 → SQLite”，没有任何路径反向获取；导出在读取后复核三项 revision、三个行
-generation、结构版本与两侧实际表集合，任何变化即 `U3_SNAPSHOT_SOURCE_CHANGED`。
+generation、**materials 与 annotations 两个结构版本**以及两侧实际表集合，任何变化即
+`U3_SNAPSHOT_SOURCE_CHANGED`。
 
 ## 7. 测试证据（真实 PostgreSQL，本机 pgserver）
 
 ```
 tests/integration/test_u3_schema_upgrade_postgres.py   17 passed
-tests/integration/test_u3_material_gt_postgres.py      38 passed
-合计 55 passed, 0 failed, 0 skipped
+tests/integration/test_u3_material_gt_postgres.py      40 passed
+合计 57 passed, 0 failed, 0 skipped
 ```
 
 覆盖：V1/V2/V3→V4 升级保留数据与证据、V4 新建、checksum 1..4 篡改拒绝、四张 V4 表主键
@@ -179,7 +185,10 @@ tests/integration/test_u3_material_gt_postgres.py      38 passed
 `U3_SNAPSHOT_STRUCTURE_REGRESSION` 拒绝（证据/table_state/revision vector/游标/状态不变，
 台账只多一条 REFUSED）、删表→重建→写入新证据后 S1/S2 均被拒、空表清空与缺表保留语义、
 annotation 侧（含 `task_negative_confirmations`）缺表时 evidence_row 与确认投影同时保留、
-伪造的未认证结构变化在导入侧被 `U3_SNAPSHOT_STRUCTURE_UNVERIFIED` 拒绝。
+伪造的未认证结构变化在导入侧被 `U3_SNAPSHOT_STRUCTURE_UNVERIFIED` 拒绝；
+**负样本池回执**：连续两次真实 `NegativePool.members()` 回执操作各自导出/full 导入均成功
+（结构不变、generation +1），重放旧快照被拒，同 `operation_id` 幂等重放不推进 generation；
+导出期间仅 materials 结构版本变化也会被 `U3_SNAPSHOT_SOURCE_CHANGED` 拒绝。
 
 ## 8. 未实施 / 已知边界
 

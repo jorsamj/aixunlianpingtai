@@ -617,6 +617,10 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
             after_material_evidence_generation = (
                 int(after_generation[0]) if after_generation else 0
             )
+            after_materials_structure_generation = (
+                int(after_structure_generation[0])
+                if after_structure_generation else 0
+            )
         with closing(_open_read_only(annotations_db)) as database:
             after_meta = database.execute(
                 "SELECT value FROM annotation_meta WHERE key='revision'"
@@ -670,12 +674,12 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         confirmation_generation,
     ) or (
         after_materials_observed, after_annotations_observed,
-        after_annotations_structure_generation,
+        after_materials_structure_generation, after_annotations_structure_generation,
         recorded_structure(after_structure),
         recorded_structure(after_annotation_structure),
     ) != (
         materials_observed, annotations_observed,
-        annotations_structure_generation,
+        materials_structure_generation, annotations_structure_generation,
         materials_recorded, annotations_recorded,
     ):
         raise U3MigrationError(
@@ -692,8 +696,10 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 f"{after_annotation_evidence_generation},"
                 f"{after_confirmation_generation_value})"
                 f" structures=({materials_observed},{annotations_observed},"
+                f"{materials_structure_generation},"
                 f"{annotations_structure_generation})->"
                 f"({after_materials_observed},{after_annotations_observed},"
+                f"{after_materials_structure_generation},"
                 f"{after_annotations_structure_generation})"
             ),
         )
